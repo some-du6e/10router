@@ -181,7 +181,9 @@ provider named "Self-hosted".
 
 ## Token savers
 
-Set the header `X-9Router-Token-Saver: off` to bypass all of them for one request.
+Set the header `X-10Router-Token-Saver: off` to bypass all of them for one request. The
+pre-rebrand `X-9Router-Token-Saver` is still accepted for existing clients; if both are
+present, the `10Router` one wins.
 
 ### RTK (built in, default on)
 
