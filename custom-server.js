@@ -22,6 +22,24 @@ const origCreate = http.createServer.bind(http);
 // decline `permessage-deflate` in the handshake, which keeps the codec to plain
 // frames. Requests are bridged back through this process's own HTTP port so the
 // whole routing/auth pipeline is reused exactly as the POST path uses it.
+//
+// Two shapes of frame this bridge deliberately refuses rather than serves:
+//
+//   - the startup *prewarm*, tagged `request_kind: "prewarm"` and carrying
+//     `generate: false`. That flag means "warm the cache, do not infer", and it
+//     does not survive the executor's `RESPONSES_API_ALLOWLIST`, so bridging it
+//     as an ordinary turn would spend a real generation. Answering it locally
+//     with a synthetic `response.completed` is worse still: the client adopts
+//     that as the turn's answer and the user sees a blank reply.
+//   - a *delta* turn, which carries `previous_response_id` and only the new
+//     input. Codex builds those after a successful warmup, expecting the server
+//     to still hold the base prompt and tools. This gateway holds no upstream
+//     response state — it re-picks an account per turn — so forwarding a delta
+//     would send the model an input with no conversation under it.
+//
+// Both get an error frame, which makes the client fall back to a self-contained
+// turn on a fresh connection. That fallback is the path every working turn
+// already takes today ("websocket reuse properties didn't match").
 
 const CODEX_WS_PATH = "/backend-api/codex/responses";
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -197,6 +215,9 @@ function bridgeCodexTurn(request, port, headers, peerIp, send, done) {
   );
   req.on("error", (error) => done(error));
   req.end(payload);
+  // Handed back so the caller can `destroy()` it when the client goes away —
+  // otherwise an abandoned turn keeps streaming (and billing) upstream.
+  return req;
 }
 
 function handleCodexUpgrade(req, socket, head, port) {
@@ -241,17 +262,33 @@ function handleCodexUpgrade(req, socket, head, port) {
     isPrewarm = false;
   }
   let closed = false;
+  // The turn currently bridged upstream. `closed` is always set first, so the
+  // bridge's completion callback treats the destroy below as an abandoned turn
+  // rather than one that failed on its own.
+  let inflight = null;
+  const abortInflight = () => {
+    if (!inflight) return;
+    inflight.destroy();
+    inflight = null;
+  };
   const send = (text) => {
     if (!closed && socket.writable) socket.write(encodeWsFrame(0x1, text));
   };
   const close = (code = 1000, reason = "") => {
     if (closed) return;
     closed = true;
+    abortInflight();
     const payload = Buffer.alloc(2 + Buffer.byteLength(reason));
     payload.writeUInt16BE(code, 0);
     payload.write(reason, 2);
     if (socket.writable) socket.write(encodeWsFrame(0x8, payload));
     socket.end();
+  };
+
+  const declineTurn = (code, message) => {
+    console.log(`[CodexWS] declined ${code} from ${peerIp}`);
+    send(JSON.stringify({ type: "error", error: { message, type: "invalid_request_error", code } }));
+    close(1000, code);
   };
 
   const decode = createWsDecoder(
@@ -269,27 +306,34 @@ function handleCodexUpgrade(req, socket, head, port) {
         return;
       }
 
-      // Codex opens a second connection at session start carrying
-      // `request_kind: "prewarm"` and sends the full turn payload down it,
-      // waiting for `response.completed` before the first real turn may run.
-      // ChatGPT answers that cheaply to warm its own prompt cache; routing it
-      // upstream instead would spend a real model call on every session start
-      // and blow past the client's websocket_connect_timeout. There is no cache
-      // of ours to warm, so acknowledge it and route nothing.
-      if (isPrewarm) {
-        const responseId = `prewarm_${crypto.randomBytes(12).toString("hex")}`;
-        const usage = {
-          input_tokens: 0,
-          input_tokens_details: null,
-          output_tokens: 0,
-          output_tokens_details: null,
-          total_tokens: 0,
-        };
-        send(JSON.stringify({ type: "response.created", response: { id: responseId } }));
-        send(JSON.stringify({ type: "response.completed", response: { id: responseId, usage } }));
+      // Codex sends the next `response.create` only after the previous one
+      // completes. Honouring an overlapping one would drop the first request's
+      // handle, leaving a turn nothing can abandon.
+      if (inflight) {
+        send(JSON.stringify({
+          type: "error",
+          error: { message: "A turn is already in progress on this connection", type: "invalid_request_error", code: "turn_in_progress" },
+        }));
         return;
       }
-      bridgeCodexTurn(request, port, req.headers, peerIp, send, (error, rejectedStatus) => {
+
+      // A warmup (see the transport notes above): decline it so the client
+      // stops waiting on this socket and sends a self-contained turn instead.
+      // `generate: false` is the client's own marker; trust either signal.
+      if (isPrewarm || request.generate === false) {
+        return declineTurn("prewarm_unsupported", "this gateway does not hold prewarm state");
+      }
+      // A delta turn anchored on a response only the upstream remembers. We
+      // re-pick an account per turn and keep no response state, so there is
+      // nothing here for it to build on.
+      if (request.previous_response_id) {
+        return declineTurn("previous_response_not_found", "this gateway does not retain previous responses");
+      }
+
+      inflight = bridgeCodexTurn(request, port, req.headers, peerIp, send, (error, rejectedStatus) => {
+        inflight = null;
+        // The client is already gone — its socket handler abandoned this turn.
+        if (closed) return;
         if (error) {
           send(JSON.stringify({ type: "error", error: { message: error.message, type: "server_error" } }));
           return close(1011, "bridge error");
@@ -320,8 +364,12 @@ function handleCodexUpgrade(req, socket, head, port) {
   // is often already here — dropping `head` would hang the turn forever.
   if (head && head.length) feed(head);
   socket.on("data", feed);
-  socket.on("error", () => { closed = true; });
-  socket.on("close", () => { closed = true; });
+  const abandon = () => {
+    closed = true;
+    abortInflight();
+  };
+  socket.on("error", abandon);
+  socket.on("close", abandon);
 }
 
 let backgroundRefreshStarted = false;
