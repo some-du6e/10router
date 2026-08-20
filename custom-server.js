@@ -262,23 +262,28 @@ function handleCodexUpgrade(req, socket, head, port) {
     isPrewarm = false;
   }
   let closed = false;
+  // The turn currently bridged upstream. `closed` is always set first, so the
+  // bridge's completion callback treats the destroy below as an abandoned turn
+  // rather than one that failed on its own.
+  let inflight = null;
+  const abortInflight = () => {
+    if (!inflight) return;
+    inflight.destroy();
+    inflight = null;
+  };
   const send = (text) => {
     if (!closed && socket.writable) socket.write(encodeWsFrame(0x1, text));
   };
   const close = (code = 1000, reason = "") => {
     if (closed) return;
     closed = true;
+    abortInflight();
     const payload = Buffer.alloc(2 + Buffer.byteLength(reason));
     payload.writeUInt16BE(code, 0);
     payload.write(reason, 2);
     if (socket.writable) socket.write(encodeWsFrame(0x8, payload));
     socket.end();
   };
-
-  // The turn currently bridged upstream, so the socket handlers below can
-  // abandon it. Only one runs at a time: Codex sends the next `response.create`
-  // after the previous one completes.
-  let inflight = null;
 
   const declineTurn = (code, message) => {
     console.log(`[CodexWS] declined ${code} from ${peerIp}`);
@@ -298,6 +303,17 @@ function handleCodexUpgrade(req, socket, head, port) {
       if (request?.type !== "response.create") {
         // Anything else is a control message this bridge does not implement;
         // ignoring beats closing a connection the client still wants.
+        return;
+      }
+
+      // Codex sends the next `response.create` only after the previous one
+      // completes. Honouring an overlapping one would drop the first request's
+      // handle, leaving a turn nothing can abandon.
+      if (inflight) {
+        send(JSON.stringify({
+          type: "error",
+          error: { message: "A turn is already in progress on this connection", type: "invalid_request_error", code: "turn_in_progress" },
+        }));
         return;
       }
 
@@ -348,14 +364,9 @@ function handleCodexUpgrade(req, socket, head, port) {
   // is often already here — dropping `head` would hang the turn forever.
   if (head && head.length) feed(head);
   socket.on("data", feed);
-  // `closed` first: it makes the bridge's completion callback a no-op, so the
-  // destroy below cannot be mistaken for a turn that failed on its own.
   const abandon = () => {
     closed = true;
-    if (inflight) {
-      inflight.destroy();
-      inflight = null;
-    }
+    abortInflight();
   };
   socket.on("error", abandon);
   socket.on("close", abandon);
