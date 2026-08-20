@@ -18,11 +18,12 @@ export async function POST(request) {
 
   const lock = checkLock(ip);
   if (lock.locked) {
+    // 303: this is a POST handler; /login is GET-only and a 307 would re-POST
+    // the SAML body there. Fixed code — the retry timer is not secret, but keep
+    // all ACS redirects to stable codes for consistency.
     return NextResponse.redirect(
-      new URL(
-        `/login?error=${encodeURIComponent(`Too many failed attempts. Try again in ${lock.retryAfter}s.`)}`,
-        origin
-      )
+      new URL(`/login?error=saml_locked&retry_after=${lock.retryAfter}`, origin),
+      303
     );
   }
 
@@ -38,12 +39,12 @@ export async function POST(request) {
 
     if (!SAMLResponse) {
       recordFail(ip);
-      return NextResponse.redirect(new URL("/login?error=saml_missing_response", origin));
+      return NextResponse.redirect(new URL("/login?error=saml_missing_response", origin), 303);
     }
 
     if (!isSamlConfigured(settings)) {
       recordFail(ip);
-      return NextResponse.redirect(new URL("/login?error=saml_not_configured", origin));
+      return NextResponse.redirect(new URL("/login?error=saml_not_configured", origin), 303);
     }
 
     const profile = await validateSamlResponse(request, { SAMLResponse }, storedRequestId, settings);
@@ -59,11 +60,13 @@ export async function POST(request) {
       samlName,
     });
 
-    return NextResponse.redirect(new URL("/dashboard", origin));
+    return NextResponse.redirect(new URL("/dashboard", origin), 303);
   } catch (error) {
+    // Do not reflect error.message into the URL — validateSamlResponse builds
+    // messages that include the expected request ID, and library errors can
+    // expose config detail. Log server-side, redirect with a fixed code.
     recordFail(ip);
-    return NextResponse.redirect(
-      new URL(`/login?error=${encodeURIComponent(error.message || "saml_acs_failed")}`, origin)
-    );
+    console.error("[saml/acs] assertion validation failed:", error?.message || error);
+    return NextResponse.redirect(new URL("/login?error=saml_acs_failed", origin), 303);
   }
 }

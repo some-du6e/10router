@@ -145,3 +145,62 @@ describe("wrapQoderSSE billing detection", () => {
     expect(buf).toContain("data: [DONE]");
   });
 });
+
+describe("peekFirstQoderFrame", () => {
+  const { peekFirstQoderFrame } = qoderExecutorInternals;
+
+  function makeStream(chunks) {
+    const body = new ReadableStream({
+      start(controller) {
+        const encoder = new TextEncoder();
+        for (const c of chunks) controller.enqueue(encoder.encode(c));
+        controller.close();
+      },
+    });
+    return { reader: body.getReader(), decoder: new TextDecoder() };
+  }
+
+  it("advances past a leading keepalive comment to reach the billing frame", async () => {
+    // Regression: a leading `: keepalive\n\n` used to make the peek loop
+    // re-inspect the same first line forever and never reach the data frame.
+    const billingEnv = JSON.stringify({
+      statusCodeValue: 403,
+      body: '{"code":"112","message":"Quota exhausted","pricingUrl":"https://qoder.sh/pricing"}',
+    });
+    const { reader, decoder } = makeStream([
+      `: keepalive\n\n`,
+      `data: ${billingEnv}\n\n`,
+    ]);
+
+    const peek = await peekFirstQoderFrame(reader, decoder);
+    expect(peek.isBilling).toBe(true);
+    expect(peek.statusVal).toBe(403);
+  });
+
+  it("advances past blank lines and event fields before a success frame", async () => {
+    const inner = JSON.stringify({ choices: [{ delta: { content: "hi" } }] });
+    const successEnv = JSON.stringify({ statusCodeValue: 200, body: inner });
+    const { reader, decoder } = makeStream([
+      `\n`,
+      `event: message\n`,
+      `data: ${successEnv}\n\n`,
+    ]);
+
+    const peek = await peekFirstQoderFrame(reader, decoder);
+    expect(peek.isBilling).toBe(false);
+    expect(peek.consumed).toContain(`data: ${successEnv}`);
+  });
+
+  it("returns [DONE] as not-billing when preceded by a keepalive", async () => {
+    const { reader, decoder } = makeStream([`: keepalive\n\n`, `data: [DONE]\n\n`]);
+    const peek = await peekFirstQoderFrame(reader, decoder);
+    expect(peek.isBilling).toBe(false);
+  });
+
+  it("treats upstream close before any data frame as done, not billing", async () => {
+    const { reader, decoder } = makeStream([`: keepalive\n\n`]);
+    const peek = await peekFirstQoderFrame(reader, decoder);
+    expect(peek.isBilling).toBe(false);
+    expect(peek.upstreamDone).toBe(true);
+  });
+});

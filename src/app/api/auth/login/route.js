@@ -40,7 +40,11 @@ export async function POST(request) {
     const storedHash = settings.password;
 
     if (settings.authMode === "sso" || settings.authMode === "saml" || settings.authMode === "oidc") {
-      const ssoType = settings.ssoType || (settings.authMode === "saml" ? "saml" : "oidc");
+      // authMode can name the protocol directly ("saml"/"oidc"); honour it
+      // ahead of ssoType, whose repo default is "oidc" and would otherwise
+      // mask an operator who set authMode:"saml" without also flipping ssoType
+      // — leaving password login enabled against their intent.
+      const ssoType = settings.authMode === "saml" ? "saml" : settings.ssoType || "oidc";
       if (ssoType === "saml" && isSamlConfigured(settings)) {
         return NextResponse.json({ error: "Password login is disabled. Use SAML SSO sign in." }, { status: 403 });
       }

@@ -164,11 +164,14 @@ export function detectRequiredCapabilities(body) {
     // Scan array content blocks
     scanContent(m.content);
 
-    // Scan string content for embedded data URIs
+    // Scan string content for embedded data URIs. Independent checks, not an
+    // else-if chain: a single message can carry more than one modality (e.g.
+    // an image and an audio clip), and the chain would record only the first
+    // and drop the rest from the required-capability set.
     if (typeof m.content === "string") {
       if (m.content.includes("data:image/")) required.add("vision");
-      else if (m.content.includes("data:audio/")) required.add("audioInput");
-      else if (m.content.includes("data:application/pdf")) required.add("pdf");
+      if (m.content.includes("data:audio/")) required.add("audioInput");
+      if (m.content.includes("data:application/pdf")) required.add("pdf");
     }
   };
 

@@ -234,30 +234,41 @@ function isBillingBlock(inner) {
  */
 async function peekFirstQoderFrame(reader, decoder) {
   let consumed = "";
+  // Scan offset: we must advance past lines we have already examined.
+  // consumed.indexOf("\n") otherwise keeps returning the *first* newline, so a
+  // leading non-data frame (`: keepalive`, a blank line, an `event:` field)
+  // would be re-inspected on every read and the peek would never reach the
+  // billing/success frame — the wrapper would stall waiting for more upstream
+  // data. Process every complete line already buffered.
+  let scanOffset = 0;
   while (true) {
+    // Walk through every full line currently in `consumed`.
+    while (true) {
+      const nl = consumed.indexOf("\n", scanOffset);
+      if (nl === -1) break; // no more complete lines — read more
+      const line = consumed.slice(scanOffset, nl).replace(/\r$/, "").trim();
+      scanOffset = nl + 1;
+
+      if (!line.startsWith("data:")) continue; // comment / event / blank — skip
+
+      const data = line.slice(5).trimStart();
+      if (data === "[DONE]") return { isBilling: false, consumed };
+
+      let envelope;
+      try { envelope = JSON.parse(data); } catch { return { isBilling: false, consumed }; }
+
+      const statusVal = typeof envelope.statusCodeValue === "number" ? envelope.statusCodeValue : 200;
+      const inner = typeof envelope.body === "string" ? envelope.body : "";
+
+      if (statusVal !== 200 && isBillingBlock(inner)) {
+        return { isBilling: true, statusVal, message: inner || `qoder billing block (${statusVal})` };
+      }
+      return { isBilling: false, consumed };
+    }
+
     const { done, value } = await reader.read();
     if (done) return { isBilling: false, consumed, upstreamDone: true };
-
     consumed += decoder.decode(value, { stream: true });
-    const nl = consumed.indexOf("\n");
-    if (nl === -1) continue; // need a full line first
-
-    const line = consumed.slice(0, nl).replace(/\r$/, "").trim();
-    if (!line.startsWith("data:")) continue;
-
-    const data = line.slice(5).trimStart();
-    if (data === "[DONE]") return { isBilling: false, consumed };
-
-    let envelope;
-    try { envelope = JSON.parse(data); } catch { return { isBilling: false, consumed }; }
-
-    const statusVal = typeof envelope.statusCodeValue === "number" ? envelope.statusCodeValue : 200;
-    const inner = typeof envelope.body === "string" ? envelope.body : "";
-
-    if (statusVal !== 200 && isBillingBlock(inner)) {
-      return { isBilling: true, statusVal, message: inner || `qoder billing block (${statusVal})` };
-    }
-    return { isBilling: false, consumed };
   }
 }
 
@@ -582,4 +593,5 @@ export const __test__ = {
   wrapQoderSSE,
   buildQoderRequestBody,
   isBillingBlock,
+  peekFirstQoderFrame,
 };

@@ -46,7 +46,23 @@ export async function getClaudeUsage(accessToken, proxyOptions = null, options =
       });
       return result;
     }
-    // Soft failure (429/error): prefer the last good read over a transient error
+    // Soft failure (429/error): prefer the last good read over a transient error.
+    // Do NOT leave the settled { promise } entry in place — a later non-forced
+    // request would return this same failed promise at the `hit?.promise` check
+    // above and never retry. Restore the previous good result if we have one,
+    // otherwise clear the slot so the next call re-fetches. Guard the mutation
+    // so an older request doesn't overwrite a newer entry (identified by the
+    // promise reference it stored).
+    if (accessToken) {
+      const current = usageCache.get(accessToken);
+      if (current?.promise === promise) {
+        if (stale) {
+          usageCache.set(accessToken, { result: stale, expiresAt: 0 });
+        } else {
+          usageCache.delete(accessToken);
+        }
+      }
+    }
     if (stale) return stale;
     return result;
   })();

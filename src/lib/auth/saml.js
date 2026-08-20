@@ -1,5 +1,6 @@
 import { SAML } from "@node-saml/node-saml";
 import { getSettings } from "../db/repos/settingsRepo.js";
+import { hasTrustedPeerHeaders } from "./trustedPeer.js";
 
 /**
  * Formats a raw Base64 string or unformatted X.509 certificate into standard PEM format.
@@ -72,12 +73,20 @@ export function getSamlBaseUrl(request, settings) {
   }
 
   if (request) {
-    const forwardedProto = request?.headers?.get?.("x-forwarded-proto") || "";
-    const forwardedHost = request?.headers?.get?.("x-forwarded-host") || "";
-    const host = forwardedHost || request?.headers?.get?.("host") || "";
-    if (host) {
-      const protocol = (forwardedProto || new URL(request.url).protocol || "http:").replace(/:$/, "");
-      return `${protocol}://${host}`.replace(/\/+$/, "");
+    // Forwarded headers are client-supplied. Trusting them unconditionally lets
+    // an attacker spoof the advertised ACS URL, the assertion Destination, and
+    // the post-login redirect target. Only honour them when the request carries
+    // the per-process peer token custom-server.js stamps on sanitized requests
+    // (the same trust decision the real-IP logic uses). Otherwise fall back to
+    // the request's own URL origin, which reflects the actual socket peer.
+    if (hasTrustedPeerHeaders(request)) {
+      const forwardedProto = request?.headers?.get?.("x-forwarded-proto") || "";
+      const forwardedHost = request?.headers?.get?.("x-forwarded-host") || "";
+      const host = forwardedHost || request?.headers?.get?.("host") || "";
+      if (host) {
+        const protocol = (forwardedProto || new URL(request.url).protocol || "http:").replace(/:$/, "");
+        return `${protocol}://${host}`.replace(/\/+$/, "");
+      }
     }
     if (request.url) {
       return trimTrailingSlashes(new URL(request.url).origin);
