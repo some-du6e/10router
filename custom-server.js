@@ -22,6 +22,24 @@ const origCreate = http.createServer.bind(http);
 // decline `permessage-deflate` in the handshake, which keeps the codec to plain
 // frames. Requests are bridged back through this process's own HTTP port so the
 // whole routing/auth pipeline is reused exactly as the POST path uses it.
+//
+// Two shapes of frame this bridge deliberately refuses rather than serves:
+//
+//   - the startup *prewarm*, tagged `request_kind: "prewarm"` and carrying
+//     `generate: false`. That flag means "warm the cache, do not infer", and it
+//     does not survive the executor's `RESPONSES_API_ALLOWLIST`, so bridging it
+//     as an ordinary turn would spend a real generation. Answering it locally
+//     with a synthetic `response.completed` is worse still: the client adopts
+//     that as the turn's answer and the user sees a blank reply.
+//   - a *delta* turn, which carries `previous_response_id` and only the new
+//     input. Codex builds those after a successful warmup, expecting the server
+//     to still hold the base prompt and tools. This gateway holds no upstream
+//     response state — it re-picks an account per turn — so forwarding a delta
+//     would send the model an input with no conversation under it.
+//
+// Both get an error frame, which makes the client fall back to a self-contained
+// turn on a fresh connection. That fallback is the path every working turn
+// already takes today ("websocket reuse properties didn't match").
 
 const CODEX_WS_PATH = "/backend-api/codex/responses";
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -197,6 +215,9 @@ function bridgeCodexTurn(request, port, headers, peerIp, send, done) {
   );
   req.on("error", (error) => done(error));
   req.end(payload);
+  // Handed back so the caller can `destroy()` it when the client goes away —
+  // otherwise an abandoned turn keeps streaming (and billing) upstream.
+  return req;
 }
 
 function handleCodexUpgrade(req, socket, head, port) {
@@ -254,6 +275,17 @@ function handleCodexUpgrade(req, socket, head, port) {
     socket.end();
   };
 
+  // The turn currently bridged upstream, so the socket handlers below can
+  // abandon it. Only one runs at a time: Codex sends the next `response.create`
+  // after the previous one completes.
+  let inflight = null;
+
+  const declineTurn = (code, message) => {
+    console.log(`[CodexWS] declined ${code} from ${peerIp}`);
+    send(JSON.stringify({ type: "error", error: { message, type: "invalid_request_error", code } }));
+    close(1000, code);
+  };
+
   const decode = createWsDecoder(
     (text) => {
       let request;
@@ -269,15 +301,23 @@ function handleCodexUpgrade(req, socket, head, port) {
         return;
       }
 
-      // Codex opens a second connection at session start carrying
-      // `request_kind: "prewarm"` and sends the full turn payload down it, so
-      // the upstream prompt cache is already warm when the user hits enter.
-      // Answering it locally with a synthetic `response.completed` is what the
-      // client then adopts as the turn's answer — the user sees a blank reply
-      // and nothing is ever routed. Treat it as an ordinary turn instead: the
-      // payload is one, ChatGPT caches it, and the next turn reuses that cache.
-      if (isPrewarm) console.log(`[CodexWS] prewarm turn from ${peerIp} routed upstream`);
-      bridgeCodexTurn(request, port, req.headers, peerIp, send, (error, rejectedStatus) => {
+      // A warmup (see the transport notes above): decline it so the client
+      // stops waiting on this socket and sends a self-contained turn instead.
+      // `generate: false` is the client's own marker; trust either signal.
+      if (isPrewarm || request.generate === false) {
+        return declineTurn("prewarm_unsupported", "this gateway does not hold prewarm state");
+      }
+      // A delta turn anchored on a response only the upstream remembers. We
+      // re-pick an account per turn and keep no response state, so there is
+      // nothing here for it to build on.
+      if (request.previous_response_id) {
+        return declineTurn("previous_response_not_found", "this gateway does not retain previous responses");
+      }
+
+      inflight = bridgeCodexTurn(request, port, req.headers, peerIp, send, (error, rejectedStatus) => {
+        inflight = null;
+        // The client is already gone — its socket handler abandoned this turn.
+        if (closed) return;
         if (error) {
           send(JSON.stringify({ type: "error", error: { message: error.message, type: "server_error" } }));
           return close(1011, "bridge error");
@@ -308,8 +348,17 @@ function handleCodexUpgrade(req, socket, head, port) {
   // is often already here — dropping `head` would hang the turn forever.
   if (head && head.length) feed(head);
   socket.on("data", feed);
-  socket.on("error", () => { closed = true; });
-  socket.on("close", () => { closed = true; });
+  // `closed` first: it makes the bridge's completion callback a no-op, so the
+  // destroy below cannot be mistaken for a turn that failed on its own.
+  const abandon = () => {
+    closed = true;
+    if (inflight) {
+      inflight.destroy();
+      inflight = null;
+    }
+  };
+  socket.on("error", abandon);
+  socket.on("close", abandon);
 }
 
 let backgroundRefreshStarted = false;
