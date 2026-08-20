@@ -145,15 +145,19 @@ export async function validateSamlResponse(request, body, expectedRequestId, set
     throw new Error("Missing SAMLResponse parameter in assertion POST body");
   }
 
-  // Parse response XML to inspect InResponseTo for replay protection
-  if (expectedRequestId) {
-    const xml = Buffer.from(rawSamlResponse, "base64").toString("utf8");
-    const match = xml.match(/InResponseTo=["']([^"']+)["']/i);
-    const inResponseTo = match ? match[1] : null;
-
-    if (!inResponseTo || inResponseTo !== expectedRequestId) {
-      throw new Error(`InResponseTo mismatch: expected ${expectedRequestId}, received ${inResponseTo || "none"}`);
-    }
+  // Replay protection: a captured SAMLResponse must be bound to the request
+  // this server issued, not replayable. The SP-initiated request ID is stored
+  // in the saml_state cookie (acs/route.js). If it is absent, there is no
+  // request to bind to — fail closed instead of skipping the check, which
+  // would let a cookieless replay of a still-valid assertion through.
+  if (!expectedRequestId) {
+    throw new Error("Missing SAML request state; SP-initiated login is required");
+  }
+  const xml = Buffer.from(rawSamlResponse, "base64").toString("utf8");
+  const match = xml.match(/InResponseTo=["']([^"']+)["']/i);
+  const inResponseTo = match ? match[1] : null;
+  if (!inResponseTo || inResponseTo !== expectedRequestId) {
+    throw new Error(`InResponseTo mismatch: expected ${expectedRequestId}, received ${inResponseTo || "none"}`);
   }
 
   const result = await samlInstance.validatePostResponseAsync({ SAMLResponse: rawSamlResponse });

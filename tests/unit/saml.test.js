@@ -87,6 +87,18 @@ describe("SAML 2.0 Auth Engine Utilities", () => {
       ).rejects.toThrow(/InResponseTo mismatch/);
     });
 
+    it("rejects a cookieless replay when no expectedRequestId is present (fail closed)", async () => {
+      // A captured SAMLResponse posted straight to ACS without ever hitting
+      // /start would arrive with storedRequestId = "". The old code skipped
+      // the InResponseTo check in that case, allowing replay within the
+      // assertion's validity window. Fail closed instead.
+      const settings = { samlCert: "dummy-cert" };
+      const rawXml = Buffer.from('<Response InResponseTo="anything"></Response>').toString("base64");
+      await expect(
+        validateSamlResponse(null, { SAMLResponse: rawXml }, "", settings)
+      ).rejects.toThrow(/Missing SAML request state/);
+    });
+
     it("throws error if samlCert is not configured", async () => {
       const rawXml = Buffer.from('<Response ID="123"></Response>').toString("base64");
       await expect(
