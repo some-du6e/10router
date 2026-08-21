@@ -5,6 +5,12 @@
  * upstream usage API) so the arithmetic can be exercised on its own.
  */
 
+// Shared with account selection, which has to read the same plan the same way.
+// Re-exported because this has always been part of this module's surface.
+import { normalizePlan } from "@/shared/utils/plans.js";
+
+export { normalizePlan };
+
 // Per-plan credit allowance per window. Relative weight is what matters here:
 // these set how much each account contributes to the pool. Values mirror the
 // published ChatGPT plan allowances.
@@ -29,25 +35,6 @@ export const WINDOW_MINUTES = { primary: 300, secondary: 10080 };
 
 // getCodexUsage names the 5h window "session" and the weekly one "weekly".
 export const QUOTA_KEY = { primary: "session", secondary: "weekly" };
-
-// An account whose plan we cannot read still spends real quota. Weight it as
-// Plus so it is counted rather than silently dropped from the pool.
-const FALLBACK_PLAN = "plus";
-
-export function normalizePlan(plan) {
-  const normalized = String(plan || "").toLowerCase().replace(/[^a-z]/g, "");
-  if (!normalized || normalized === "unknown") return FALLBACK_PLAN;
-  // "prolite" before "pro" — the generic match would swallow it.
-  if (normalized.includes("prolite")) return "prolite";
-  if (normalized.includes("enterprise")) return "enterprise";
-  if (normalized.includes("business")) return "business";
-  if (normalized.includes("team")) return "team";
-  if (normalized.includes("pro")) return "pro";
-  if (normalized.includes("plus")) return "plus";
-  if (normalized.includes("edu")) return "edu";
-  if (normalized.includes("free")) return "free";
-  return FALLBACK_PLAN;
-}
 
 export function capacityFor(plan, window) {
   const table = PLAN_CAPACITY[window];

@@ -19,6 +19,20 @@ describe("resolveConnectionPlan", () => {
     })).toBe("plus");
   });
 
+  it("falls back to the legacy subscriptionType", () => {
+    expect(resolveConnectionPlan({ subscriptionType: "free" })).toBe("free");
+    expect(resolveConnectionPlan({
+      providerSpecificData: { chatgptPlanType: "plus" },
+      subscriptionType: "free",
+    })).toBe("plus");
+  });
+
+  it("canonicalises the tier labels ChatGPT actually returns", () => {
+    expect(resolveConnectionPlan({ plan: "chatgpt_free" })).toBe("free");
+    expect(resolveConnectionPlan({ plan: "ChatGPT Free" })).toBe("free");
+    expect(resolveConnectionPlan({ providerSpecificData: { chatgptPlanType: "chatgpt_plus" } })).toBe("plus");
+  });
+
   it("returns null when nothing is recorded", () => {
     expect(resolveConnectionPlan({ providerSpecificData: {} })).toBeNull();
     expect(resolveConnectionPlan({ plan: "   " })).toBeNull();
@@ -39,6 +53,21 @@ describe("planCanServeModel", () => {
     expect(planCanServeModel("codex", free, "gpt-5.6-luna")).toBe(true);
     expect(planCanServeModel("codex", free, "gpt-5.6-terra")).toBe(true);
     expect(planCanServeModel("codex", free, "gpt-5.6-terra-review")).toBe(true);
+  });
+
+  it("keeps a free account on a free-tier model carrying an effort suffix", () => {
+    expect(planCanServeModel("codex", free, "gpt-5.6-terra-high")).toBe(true);
+    expect(planCanServeModel("codex", free, "gpt-5.6-luna-low")).toBe(true);
+    expect(planCanServeModel("codex", free, "gpt-5.6-luna-xhigh")).toBe(true);
+  });
+
+  it("still skips a model a free account cannot run, suffix or not", () => {
+    expect(planCanServeModel("codex", free, "gpt-5.6-sol-high")).toBe(false);
+  });
+
+  it("reads a free plan through its legacy and label forms", () => {
+    expect(planCanServeModel("codex", { subscriptionType: "free" }, "gpt-5.6-sol")).toBe(false);
+    expect(planCanServeModel("codex", { plan: "ChatGPT Free" }, "gpt-5.6-sol")).toBe(false);
   });
 
   it("leaves paid plans alone", () => {
