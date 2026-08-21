@@ -118,6 +118,14 @@ async function runHeavyStartup() {
       .catch((e) => console.log("[AutoPing] scheduler start failed:", e.message));
   }
 
+  import("@/lib/db/index.js")
+    .then(({ getNotificationChannels }) => getNotificationChannels({ isActive: true }))
+    .then(async (channels) => {
+      const { hasQuotaNotificationSubscribers, startQuotaNotifications } = await import("@/shared/services/quotaNotifications");
+      if (hasQuotaNotificationSubscribers(channels)) startQuotaNotifications();
+    })
+    .catch((e) => console.log("[Notifications] scheduler start failed:", e.message));
+
   // Proactive OAuth token refresh (e.g. grok-cli ~6h TTL). Module is idempotent
   // and also started from custom-server.js when that entry is used.
   import("@/sse/services/backgroundTokenRefresh.js")

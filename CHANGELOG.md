@@ -1,6 +1,11 @@
 # Unreleased
 
 ## Features
+- **Quota notifications**: reusable named channels can now send quota-exhausted
+  and quota-reset alerts through ntfy, Slack incoming webhooks, generic JSON
+  webhooks, Telegram bots, or an Apprise API server. Each channel has independent
+  event toggles, test delivery, secret-redacted management APIs, and explicit
+  opt-in for trusted private-network destinations.
 - **Codex-native endpoint**: 10router now serves `/backend-api/codex`, the base
   URL the Codex CLI/IDE expects for the ChatGPT wire (same shape codex-lb
   exposes). `POST /backend-api/codex/responses` and `/responses/compact` reuse
