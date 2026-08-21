@@ -92,7 +92,10 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
         fetch("/api/providers"),
         fetch("/api/models/alias"),
       ]);
-      if (!providersRes.ok || !aliasRes.ok) return;
+      // A check we could not complete says nothing about routing, so drop any
+      // earlier answer rather than leave a warning standing that the user may
+      // already have fixed.
+      if (!providersRes.ok || !aliasRes.ok) return setUnroutableCodexModels([]);
 
       const { connections = [] } = await providersRes.json();
       // A connected Codex account serves every Codex model; nothing to warn about.
@@ -104,6 +107,7 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
       const { aliases = {} } = await aliasRes.json();
       setUnroutableCodexModels(CODEX_BUILTIN_MODELS.filter((m) => !aliases[m]));
     } catch (error) {
+      setUnroutableCodexModels([]);
       console.log("Error checking Codex model routing:", error);
     }
   };
