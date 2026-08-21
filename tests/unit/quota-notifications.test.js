@@ -1,0 +1,144 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("server-only", () => ({}), { virtual: true });
+vi.mock("@/lib/db/index.js", () => ({
+  getNotificationChannelById: vi.fn(),
+  getNotificationChannels: vi.fn(),
+}));
+
+import { detectQuotaTransitions, getQuotaRemainingPercentage } from "../../src/lib/notifications/quotaTransitions.js";
+import { dispatchNotificationEvent, sendNotificationChannel } from "../../src/lib/notifications/index.js";
+import { NOTIFICATION_EVENTS } from "../../src/lib/notifications/constants.js";
+import { normalizeNotificationChannelInput, redactNotificationChannel } from "../../src/lib/notifications/validation.js";
+
+describe("quota notification transitions", () => {
+  it("does not alert on the first quota observation", () => {
+    const result = detectQuotaTransitions(null, {
+      quotas: { weekly: { used: 100, total: 100, resetAt: "2026-01-02T00:00:00Z" } },
+    });
+
+    expect(result.events).toEqual([]);
+    expect(result.state.quotas.weekly.exhausted).toBe(true);
+  });
+
+  it("detects exhaustion and a later reset exactly once", () => {
+    const available = detectQuotaTransitions(null, {
+      quotas: { weekly: { used: 50, total: 100, resetAt: "2026-01-02T00:00:00Z" } },
+    });
+    const exhausted = detectQuotaTransitions(available.state, {
+      quotas: { weekly: { used: 100, total: 100, resetAt: "2026-01-02T00:00:00Z" } },
+    });
+    const stillExhausted = detectQuotaTransitions(exhausted.state, {
+      quotas: { weekly: { used: 100, total: 100, resetAt: "2026-01-02T00:00:00Z" } },
+    });
+    const reset = detectQuotaTransitions(stillExhausted.state, {
+      quotas: { weekly: { used: 0, total: 100, resetAt: "2026-01-09T00:00:00Z" } },
+    });
+
+    expect(exhausted.events).toEqual([expect.objectContaining({ type: NOTIFICATION_EVENTS.QUOTA_EXHAUSTED, quotaName: "weekly" })]);
+    expect(stillExhausted.events).toEqual([]);
+    expect(reset.events).toEqual([expect.objectContaining({ type: NOTIFICATION_EVENTS.QUOTA_RESET, quotaName: "weekly" })]);
+  });
+
+  it("normalizes the quota shapes used by providers", () => {
+    expect(getQuotaRemainingPercentage({ remainingPercentage: 25 })).toBe(25);
+    expect(getQuotaRemainingPercentage({ remaining: 25, total: 100 })).toBe(25);
+    expect(getQuotaRemainingPercentage({ used: 75, total: 100 })).toBe(25);
+    expect(getQuotaRemainingPercentage({ unlimited: true, used: 100, total: 100 })).toBeNull();
+  });
+});
+
+describe("notification channels", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("keeps stored secrets when an edit leaves the secret input blank", () => {
+    const input = normalizeNotificationChannelInput({
+      name: "Slack ops",
+      type: "slack",
+      events: [NOTIFICATION_EVENTS.QUOTA_RESET],
+      config: { webhookUrl: "" },
+    }, {
+      name: "Slack ops",
+      type: "slack",
+      isActive: true,
+      events: [NOTIFICATION_EVENTS.QUOTA_EXHAUSTED],
+      config: { webhookUrl: "https://hooks.slack.com/services/secret" },
+    });
+
+    expect(input.config.webhookUrl).toBe("https://hooks.slack.com/services/secret");
+    expect(redactNotificationChannel(input)).toMatchObject({
+      config: {},
+      configuredSecrets: { webhookUrl: true },
+    });
+  });
+
+  it("redacts generic webhook headers and preserves them when left blank", () => {
+    const input = normalizeNotificationChannelInput({
+      name: "Deploy webhook",
+      type: "webhook",
+      events: [NOTIFICATION_EVENTS.QUOTA_EXHAUSTED],
+      config: { url: "https://example.com/hook", headers: {} },
+    }, {
+      name: "Deploy webhook",
+      type: "webhook",
+      isActive: true,
+      events: [NOTIFICATION_EVENTS.QUOTA_RESET],
+      config: {
+        url: "https://example.com/hook",
+        headers: { "X-Webhook-Secret": "secret-value" },
+      },
+    });
+
+    expect(input.config.headers).toEqual({ "X-Webhook-Secret": "secret-value" });
+    expect(redactNotificationChannel(input)).toMatchObject({
+      config: { url: "https://example.com/hook" },
+      configuredSecrets: { headers: true },
+    });
+  });
+
+  it("sends a Slack payload without following redirects", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: vi.fn() });
+    await sendNotificationChannel({
+      id: "slack-1",
+      name: "Slack",
+      type: "slack",
+      config: { webhookUrl: "https://hooks.slack.com/services/test" },
+    }, {
+      type: NOTIFICATION_EVENTS.QUOTA_EXHAUSTED,
+      provider: "codex",
+      connectionName: "Main",
+      quotaName: "weekly",
+      remainingPercentage: 0,
+    }, {
+      fetch: fetchMock,
+      assertDestination: vi.fn(),
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(expect.any(URL), expect.objectContaining({
+      method: "POST",
+      redirect: "manual",
+      body: expect.stringContaining("codex Quota exhausted"),
+    }));
+  });
+
+  it("isolates failures between channels", async () => {
+    const channels = [
+      { id: "ok", name: "OK", type: "webhook", isActive: true, events: [NOTIFICATION_EVENTS.QUOTA_RESET], config: { url: "https://example.com/ok", method: "POST" } },
+      { id: "bad", name: "Bad", type: "webhook", isActive: true, events: [NOTIFICATION_EVENTS.QUOTA_RESET], config: { url: "https://example.com/bad", method: "POST" } },
+    ];
+    const fetchMock = vi.fn(async (url) => ({
+      ok: !url.pathname.endsWith("/bad"),
+      status: url.pathname.endsWith("/bad") ? 500 : 200,
+      text: vi.fn().mockResolvedValue("failed"),
+    }));
+
+    const result = await dispatchNotificationEvent({ type: NOTIFICATION_EVENTS.QUOTA_RESET }, {
+      getNotificationChannels: vi.fn().mockResolvedValue(channels),
+      fetch: fetchMock,
+      assertDestination: vi.fn(),
+    });
+
+    expect(result).toMatchObject({ attempted: 2, sent: 1 });
+    expect(result.failures).toEqual([expect.objectContaining({ channelId: "bad" })]);
+  });
+});
