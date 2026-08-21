@@ -6,6 +6,17 @@ import Image from "next/image";
 import BaseUrlSelect from "./BaseUrlSelect";
 import ApiKeySelect from "./ApiKeySelect";
 import { matchKnownEndpoint } from "./cliEndpointMatch";
+import { AI_MODELS, PROVIDER_ID_TO_ALIAS } from "@/shared/constants/models";
+
+// The models Codex may ask for on its own. Read from the provider registry
+// rather than written out here, so a change to the Codex line-up updates this
+// warning with it instead of leaving it quietly out of date. AI_MODELS is keyed
+// by provider alias, and the `-review` entries run the same upstream model
+// under a separate quota, so they would only pad the list.
+const CODEX_ALIAS = PROVIDER_ID_TO_ALIAS.codex || "cx";
+const CODEX_BUILTIN_MODELS = AI_MODELS
+  .filter((m) => m.provider === CODEX_ALIAS && !m.model.endsWith("-review"))
+  .map((m) => m.model);
 
 // Codex-native ingress (mirrors chatgpt.com/backend-api/codex). Codex only serves
 // its native model catalog and ChatGPT-style auth from this base path; /v1 stays
@@ -39,6 +50,7 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
   const [modelAliases, setModelAliases] = useState({});
   const [showManualConfigModal, setShowManualConfigModal] = useState(false);
   const [customBaseUrl, setCustomBaseUrl] = useState("");
+  const [unroutableCodexModels, setUnroutableCodexModels] = useState([]);
   const [useNative, setUseNative] = useState(true);
 
   useEffect(() => {
@@ -55,6 +67,7 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
     if (isExpanded) {
       if (!codexStatus) checkCodexStatus();
       fetchModelAliases();
+      checkCodexModelRouting();
     }
   }, [isExpanded]);
 
@@ -65,6 +78,37 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
       if (res.ok) setModelAliases(data.aliases || {});
     } catch (error) {
       console.log("Error fetching model aliases:", error);
+    }
+  };
+
+  // Codex asks for models of its own choosing — its side requests (thread
+  // titles among them) carry a small Codex model rather than the one configured
+  // for the session. Those names only route if a Codex account is connected or
+  // the user has aliased them, so warn while it is fixable instead of leaving
+  // the user to find silent 404s.
+  const checkCodexModelRouting = async () => {
+    try {
+      const [providersRes, aliasRes] = await Promise.all([
+        fetch("/api/providers"),
+        fetch("/api/models/alias"),
+      ]);
+      // A check we could not complete says nothing about routing, so drop any
+      // earlier answer rather than leave a warning standing that the user may
+      // already have fixed.
+      if (!providersRes.ok || !aliasRes.ok) return setUnroutableCodexModels([]);
+
+      const { connections = [] } = await providersRes.json();
+      // A connected Codex account serves every Codex model; nothing to warn about.
+      if (connections.some((c) => c.provider === "codex" && c.isActive !== false)) {
+        setUnroutableCodexModels([]);
+        return;
+      }
+
+      const { aliases = {} } = await aliasRes.json();
+      setUnroutableCodexModels(CODEX_BUILTIN_MODELS.filter((m) => !aliases[m]));
+    } catch (error) {
+      setUnroutableCodexModels([]);
+      console.log("Error checking Codex model routing:", error);
     }
   };
 
@@ -250,6 +294,31 @@ model = "${effectiveSubagentModel}"
             <div className="flex items-center gap-2 text-text-muted">
               <span className="material-symbols-outlined animate-spin">progress_activity</span>
               <span>Checking Codex CLI...</span>
+            </div>
+          )}
+
+          {unroutableCodexModels.length > 0 && (
+            <div className="flex flex-col gap-3 p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+              <div className="flex items-start gap-3">
+                <span className="material-symbols-outlined text-yellow-500">warning</span>
+                <div className="flex-1">
+                  <p className="font-medium text-yellow-600 dark:text-yellow-400">Codex&apos;s own models have nowhere to go</p>
+                  <p className="text-sm text-text-muted">
+                    Codex asks for these on its own — thread titles and other side requests use a model of its
+                    choosing, not the one you configure. With no Codex account connected and no alias for them,
+                    those requests fail and the feature silently does nothing.
+                  </p>
+                  <p className="text-sm text-text-muted mt-2">
+                    Connect a Codex account, or alias {unroutableCodexModels.length === 1 ? "it" : "them"} to a
+                    model you do have:
+                  </p>
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {unroutableCodexModels.map((model) => (
+                      <code key={model} className="px-1.5 py-0.5 bg-black/5 dark:bg-white/5 rounded font-mono text-xs">{model}</code>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
