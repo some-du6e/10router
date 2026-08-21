@@ -13,6 +13,12 @@ describe("resolveConnectionPlan", () => {
     expect(resolveConnectionPlan({ providerSpecificData: { chatgptPlanType: "FREE" } })).toBe("free");
   });
 
+  it("prefers the provider-specific plan over the OAuth-captured one", () => {
+    expect(resolveConnectionPlan({
+      providerSpecificData: { plan: "plus", chatgptPlanType: "free" },
+    })).toBe("plus");
+  });
+
   it("returns null when nothing is recorded", () => {
     expect(resolveConnectionPlan({ providerSpecificData: {} })).toBeNull();
     expect(resolveConnectionPlan({ plan: "   " })).toBeNull();
