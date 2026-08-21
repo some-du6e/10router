@@ -20,7 +20,10 @@ vi.mock("@/lib/notifications/constants.js", async () => {
 });
 vi.mock("@/lib/notifications/index.js", () => ({ dispatchNotificationEvent: vi.fn() }));
 
-import { runQuotaNotificationTick } from "../../src/shared/services/quotaNotifications.js";
+import {
+  hasQuotaNotificationSubscribers,
+  runQuotaNotificationTick,
+} from "../../src/shared/services/quotaNotifications.js";
 
 describe("quota notification scheduler", () => {
   let deps;
@@ -29,7 +32,7 @@ describe("quota notification scheduler", () => {
   beforeEach(() => {
     vi.setSystemTime(new Date("2026-01-01T12:00:00.000Z"));
     deps = {
-      getNotificationChannels: vi.fn().mockResolvedValue([{ id: "channel", isActive: true }]),
+      getNotificationChannels: vi.fn().mockResolvedValue([{ id: "channel", isActive: true, events: ["quota_exhausted"] }]),
       getProviderConnections: vi.fn().mockResolvedValue([{ id: "codex-1", provider: "codex", authType: "oauth", isActive: true, accessToken: "token", name: "Main" }]),
       getQuotaNotificationState: vi.fn().mockResolvedValue({ quotas: { weekly: { exhausted: false } } }),
       setQuotaNotificationState: vi.fn(),
@@ -41,10 +44,20 @@ describe("quota notification scheduler", () => {
     state = { running: false, lastPolledAt: {} };
   });
 
-  it("stays idle without an active channel", async () => {
-    deps.getNotificationChannels.mockResolvedValue([]);
+  it("stays idle without a subscribed active channel", async () => {
+    deps.getNotificationChannels.mockResolvedValue([{ id: "channel", isActive: true, events: [] }]);
     await runQuotaNotificationTick(deps, state);
     expect(deps.getProviderConnections).not.toHaveBeenCalled();
+  });
+
+  it("recognizes only active quota-event subscribers", () => {
+    expect(hasQuotaNotificationSubscribers([
+      { isActive: false, events: ["quota_exhausted"] },
+      { isActive: true, events: ["test"] },
+    ])).toBe(false);
+    expect(hasQuotaNotificationSubscribers([
+      { isActive: true, events: ["quota_reset"] },
+    ])).toBe(true);
   });
 
   it("persists quota state before dispatching an exhaustion event", async () => {

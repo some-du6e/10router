@@ -120,7 +120,7 @@ export async function importDb(payload) {
     db.run(`DELETE FROM notificationChannels`);
     db.run(`DELETE FROM apiKeys`);
     db.run(`DELETE FROM combos`);
-    db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'mitmAlias', 'pricing')`);
+    db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'mitmAlias', 'pricing', 'quotaNotificationState')`);
 
     // Settings
     if (payload.settings) {

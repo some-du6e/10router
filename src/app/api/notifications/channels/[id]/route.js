@@ -13,7 +13,7 @@ import {
 function configureScheduler(channels) {
   import("@/shared/services/quotaNotifications")
     .then(({ configureQuotaNotifications }) => {
-      configureQuotaNotifications(channels.some((channel) => channel.isActive));
+      configureQuotaNotifications(channels);
     })
     .catch((error) => console.warn("[Notifications] scheduler config failed:", error.message));
 }

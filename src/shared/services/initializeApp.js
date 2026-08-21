@@ -120,10 +120,9 @@ async function runHeavyStartup() {
 
   import("@/lib/db/index.js")
     .then(({ getNotificationChannels }) => getNotificationChannels({ isActive: true }))
-    .then((channels) => {
-      if (channels.length === 0) return;
-      return import("@/shared/services/quotaNotifications")
-        .then(({ startQuotaNotifications }) => startQuotaNotifications());
+    .then(async (channels) => {
+      const { hasQuotaNotificationSubscribers, startQuotaNotifications } = await import("@/shared/services/quotaNotifications");
+      if (hasQuotaNotificationSubscribers(channels)) startQuotaNotifications();
     })
     .catch((e) => console.log("[Notifications] scheduler start failed:", e.message));
 

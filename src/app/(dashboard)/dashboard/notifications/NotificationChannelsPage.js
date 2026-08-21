@@ -208,14 +208,16 @@ export default function NotificationChannelsPage() {
 
   const toggleActive = async (channel) => {
     setChannels((current) => current.map((item) => item.id === channel.id ? { ...item, isActive: !channel.isActive } : item));
-    const response = await fetch(`/api/notifications/channels/${channel.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...channel, isActive: !channel.isActive }),
-    });
-    if (!response.ok) {
+    try {
+      const response = await fetch(`/api/notifications/channels/${channel.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...channel, isActive: !channel.isActive }),
+      });
+      if (!response.ok) throw new Error("Failed to update channel");
+    } catch (error) {
       await loadChannels();
-      notify.error("Failed to update channel");
+      notify.error(error.message);
     }
   };
 
@@ -236,12 +238,13 @@ export default function NotificationChannelsPage() {
   const deleteChannel = async () => {
     const channel = deleting;
     setDeleting(null);
-    const response = await fetch(`/api/notifications/channels/${channel.id}`, { method: "DELETE" });
-    if (response.ok) {
+    try {
+      const response = await fetch(`/api/notifications/channels/${channel.id}`, { method: "DELETE" });
+      if (!response.ok) throw new Error("Failed to delete notification channel");
       setChannels((current) => current.filter((item) => item.id !== channel.id));
       notify.success("Notification channel deleted");
-    } else {
-      notify.error("Failed to delete notification channel");
+    } catch (error) {
+      notify.error(error.message);
     }
   };
 

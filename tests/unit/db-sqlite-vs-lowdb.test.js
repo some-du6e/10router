@@ -254,10 +254,15 @@ describe("DB SQLite layer — public API parity", () => {
     const snap = await sqliteDb.exportDb();
 
     await sqliteDb.setModelAlias("marker", "after");
+    await sqliteDb.setQuotaNotificationState("stale-connection", {
+      quotas: { weekly: { exhausted: true } },
+    });
     expect((await sqliteDb.getModelAliases()).marker).toBe("after");
+    expect(await sqliteDb.getQuotaNotificationState("stale-connection")).toBeDefined();
 
     await sqliteDb.importDb(snap);
     expect((await sqliteDb.getModelAliases()).marker).toBe("before");
+    expect(await sqliteDb.getQuotaNotificationState("stale-connection")).toEqual({ quotas: {} });
   });
 
   it("pricing: user pricing merged with constants", async () => {

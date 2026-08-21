@@ -10,7 +10,7 @@ import { getUsageForProvider } from "open-sse/services/usage.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { refreshAndUpdateCredentials } from "@/app/api/usage/[connectionId]/route.js";
 import { USAGE_APIKEY_PROVIDERS, USAGE_SUPPORTED_PROVIDERS } from "@/shared/constants/providers";
-import { NOTIFICATION_CONFIG } from "@/lib/notifications/constants.js";
+import { NOTIFICATION_CONFIG, NOTIFICATION_EVENTS } from "@/lib/notifications/constants.js";
 import { dispatchNotificationEvent } from "@/lib/notifications/index.js";
 import { detectQuotaTransitions } from "@/lib/notifications/quotaTransitions.js";
 
@@ -19,6 +19,12 @@ const g = (global.__quotaNotifications ??= {
   running: false,
   lastPolledAt: {},
 });
+
+export function hasQuotaNotificationSubscribers(channels) {
+  return channels.some((channel) => channel.isActive && channel.events?.some((event) => (
+    event === NOTIFICATION_EVENTS.QUOTA_EXHAUSTED || event === NOTIFICATION_EVENTS.QUOTA_RESET
+  )));
+}
 
 function supportsUsage(connection) {
   if (connection.authType === "oauth") return USAGE_SUPPORTED_PROVIDERS.includes(connection.provider);
@@ -94,7 +100,7 @@ export async function runQuotaNotificationTick(deps = createDefaultDeps(), state
   state.running = true;
   try {
     const channels = await deps.getNotificationChannels({ isActive: true });
-    if (channels.length === 0) return;
+    if (!hasQuotaNotificationSubscribers(channels)) return;
 
     const connections = (await deps.getProviderConnections({ isActive: true })).filter(supportsUsage);
     for (const connection of connections) {
@@ -126,7 +132,7 @@ export function stopQuotaNotifications() {
   console.log("[Notifications] quota monitor stopped");
 }
 
-export function configureQuotaNotifications(hasActiveChannels) {
-  if (hasActiveChannels) startQuotaNotifications();
+export function configureQuotaNotifications(channels) {
+  if (hasQuotaNotificationSubscribers(channels)) startQuotaNotifications();
   else stopQuotaNotifications();
 }
