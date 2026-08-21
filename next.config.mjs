@@ -1,7 +1,25 @@
+import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const projectRoot = dirname(fileURLToPath(import.meta.url));
+
+// Bake the git commit into the bundle at build time. `.git` isn't copied into
+// `.next/standalone`, so a runtime rev-parse would fail in production builds —
+// we resolve it once here, when the git tree is still present. Empty string
+// when there's no git context (e.g. `npm i -g 10router` from a tarball).
+function readGitCommit() {
+  try {
+    return execSync("git rev-parse --short HEAD", {
+      cwd: projectRoot,
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 3000,
+    }).toString().trim();
+  } catch {
+    return "";
+  }
+}
+const GIT_COMMIT = readGitCommit();
 // CLI bundling needs workspace root so tracing includes hoisted node_modules (slim ~50MB).
 // Docker / default uses projectRoot so server.js lands at /app/server.js (not nested).
 const tracingRoot = process.env.NEXT_TRACING_ROOT_MODE === "workspace"
@@ -34,7 +52,9 @@ const nextConfig = {
   images: {
     unoptimized: true
   },
-  env: {},
+  env: {
+    NEXT_PUBLIC_GIT_COMMIT: GIT_COMMIT,
+  },
   experimental: {
     // #1529/#1572: LLM clients can send long context or base64 image payloads through /v1 rewrites.
     proxyClientMaxBodySize,

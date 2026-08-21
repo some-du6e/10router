@@ -5,6 +5,9 @@ export const APP_CONFIG = {
   name: "10router Proxy",
   description: "AI Infrastructure Management",
   version: pkg.version,
+  // Build commit baked in at build time (next.config.mjs). Empty when built
+  // outside a git tree (e.g. installed from an npm tarball).
+  commit: process.env.NEXT_PUBLIC_GIT_COMMIT || "",
 };
 
 // GitHub configuration
