@@ -5,6 +5,13 @@ WORKDIR /app
 
 FROM base AS builder
 
+# Git commit injected by CI (Coolify's `SOURCE_COMMIT` build arg when
+# `include_source_commit_in_build` is on). `.git` is stripped from the build
+# context by `.dockerignore`, so `git rev-parse` in next.config.mjs falls back
+# to this. Declared here (before `RUN npm run build`) so Docker surfaces it to
+# the build step as an env var.
+ARG SOURCE_COMMIT
+
 RUN apk --no-cache upgrade && apk --no-cache add python3 make g++ linux-headers
 
 COPY package.json ./

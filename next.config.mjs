@@ -6,8 +6,10 @@ const projectRoot = dirname(fileURLToPath(import.meta.url));
 
 // Bake the git commit into the bundle at build time. `.git` isn't copied into
 // `.next/standalone`, so a runtime rev-parse would fail in production builds —
-// we resolve it once here, when the git tree is still present. Empty string
-// when there's no git context (e.g. `npm i -g 10router` from a tarball).
+// we resolve it once here, when the git tree is still present. The Docker build
+// context strips `.git` (`.dockerignore`), so fall back to the `SOURCE_COMMIT`
+// build var that CI injects (Coolify, GitHub Actions, Nixpacks). Empty string
+// when there's neither (e.g. `npm i -g 10router` from a tarball).
 function readGitCommit() {
   try {
     return execSync("git rev-parse --short HEAD", {
@@ -15,9 +17,10 @@ function readGitCommit() {
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 3000,
     }).toString().trim();
-  } catch {
-    return "";
-  }
+  } catch {}
+  const fromEnv = process.env.SOURCE_COMMIT;
+  // CI build vars are usually full 40-char shas; shorten to match `rev-parse --short`.
+  return fromEnv ? fromEnv.slice(0, 7) : "";
 }
 const GIT_COMMIT = readGitCommit();
 // CLI bundling needs workspace root so tracing includes hoisted node_modules (slim ~50MB).
