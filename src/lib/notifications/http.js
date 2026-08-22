@@ -25,6 +25,13 @@ async function assertPublicDestination(url, allowPrivateNetwork = false) {
   return results;
 }
 
+export function createPinnedLookup(address) {
+  return (_hostname, lookupOptions, callback) => {
+    if (lookupOptions.all) callback(null, [address]);
+    else callback(null, address.address, address.family);
+  };
+}
+
 async function readResponseText(response) {
   if (!response.body?.getReader) return "";
 
@@ -60,9 +67,7 @@ export async function notificationFetch(urlValue, options = {}, deps = {}) {
   const fetchImpl = deps.fetch || fetch;
   const assertDestination = deps.assertDestination || assertPublicDestination;
   const createDispatcher = deps.createDispatcher || ((address) => new Agent({
-    connect: {
-      lookup: (_hostname, _options, callback) => callback(null, address.address, address.family),
-    },
+    connect: { lookup: createPinnedLookup(address) },
   }));
   const url = new URL(urlValue);
   const addresses = await assertDestination(url, options.allowPrivateNetwork === true);
