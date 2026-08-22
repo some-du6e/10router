@@ -6,20 +6,26 @@ const projectRoot = dirname(fileURLToPath(import.meta.url));
 
 // Bake the git commit into the bundle at build time. `.git` isn't copied into
 // `.next/standalone`, so a runtime rev-parse would fail in production builds —
-// we resolve it once here, when the git tree is still present. Empty string
-// when there's no git context (e.g. `npm i -g 10router` from a tarball).
+// we resolve it once here, when the git tree is still present. The Docker build
+// context strips `.git` (`.dockerignore`), so fall back to the `SOURCE_COMMIT`
+// build var that CI injects (Coolify, GitHub Actions, Nixpacks). Empty string
+// when there's neither (e.g. `npm i -g 10router` from a tarball).
 function readGitCommit() {
+  // Resolve a full sha from the git tree if present.
   try {
-    return execSync("git rev-parse --short HEAD", {
+    return execSync("git rev-parse HEAD", {
       cwd: projectRoot,
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 3000,
     }).toString().trim();
-  } catch {
-    return "";
-  }
+  } catch {}
+  // Otherwise the CI build var (Coolify/GitHub Actions/Nixpacks set a full sha).
+  return process.env.SOURCE_COMMIT || "";
 }
-const GIT_COMMIT = readGitCommit();
+// Normalize to a short hash. Using the full sha from both sources avoids the
+// `core.abbrev`-dependent length of `git rev-parse --short`, so the sidebar
+// always shows the same width.
+const GIT_COMMIT = readGitCommit().slice(0, 7);
 // CLI bundling needs workspace root so tracing includes hoisted node_modules (slim ~50MB).
 // Docker / default uses projectRoot so server.js lands at /app/server.js (not nested).
 const tracingRoot = process.env.NEXT_TRACING_ROOT_MODE === "workspace"
