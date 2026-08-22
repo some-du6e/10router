@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { enrichClaudeBuiltinSearch, getBuiltinSearchRequest } from "../../src/sse/services/claudeBuiltinSearch.js";
+import {
+  buildGatewaySearchBody,
+  enrichClaudeBuiltinSearch,
+  getBuiltinSearchRequest,
+} from "../../src/sse/services/claudeBuiltinSearch.js";
 
 const requestBody = () => ({
   model: "ocg/glm-5.2",
@@ -18,6 +22,24 @@ describe("Claude built-in web search on non-Claude providers", () => {
       maxResults: 3,
       allowedDomains: undefined,
       blockedDomains: undefined,
+    });
+  });
+
+  it("ignores malformed non-array tools", () => {
+    expect(getBuiltinSearchRequest({ tools: {}, messages: [] })).toBeNull();
+  });
+
+  it("maps allowed and blocked domains into the search domain filter", () => {
+    expect(buildGatewaySearchBody("exa", {
+      query: "router",
+      maxResults: 5,
+      allowedDomains: ["example.com"],
+      blockedDomains: ["spam.example", "-ads.example"],
+    })).toEqual({
+      model: "exa",
+      query: "router",
+      max_results: 5,
+      domain_filter: ["example.com", "-spam.example", "-ads.example"],
     });
   });
 

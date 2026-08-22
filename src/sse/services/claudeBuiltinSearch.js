@@ -15,7 +15,8 @@ function extractText(content) {
 }
 
 export function getBuiltinSearchRequest(body) {
-  const tool = body?.tools?.find((candidate) => candidate?.type === CLAUDE_BLOCK.WEB_SEARCH_TOOL);
+  const tools = Array.isArray(body?.tools) ? body.tools : [];
+  const tool = tools.find((candidate) => candidate?.type === CLAUDE_BLOCK.WEB_SEARCH_TOOL);
   if (!tool) return null;
 
   const messages = Array.isArray(body.messages) ? body.messages : [];
@@ -28,6 +29,21 @@ export function getBuiltinSearchRequest(body) {
     maxResults: Math.max(1, Math.min(Number(tool.max_uses) || 5, 10)),
     allowedDomains: Array.isArray(tool.allowed_domains) ? tool.allowed_domains : undefined,
     blockedDomains: Array.isArray(tool.blocked_domains) ? tool.blocked_domains : undefined,
+  };
+}
+
+export function buildGatewaySearchBody(model, searchRequest) {
+  const allowedDomains = searchRequest.allowedDomains || [];
+  const blockedDomains = (searchRequest.blockedDomains || [])
+    .map((domain) => typeof domain === "string" ? domain.replace(/^-+/, "") : "")
+    .filter(Boolean)
+    .map((domain) => `-${domain}`);
+
+  return {
+    model,
+    query: searchRequest.query,
+    max_results: searchRequest.maxResults,
+    domain_filter: [...allowedDomains, ...blockedDomains],
   };
 }
 
@@ -66,15 +82,7 @@ async function runGatewaySearch({ model, searchRequest, request, apiKey }) {
   const response = await handleSearch(new Request("http://localhost/v1/search", {
     method: "POST",
     headers,
-    body: JSON.stringify({
-      model,
-      query: searchRequest.query,
-      max_results: searchRequest.maxResults,
-      domain_filter: searchRequest.allowedDomains,
-      provider_options: searchRequest.blockedDomains
-        ? { blocked_domains: searchRequest.blockedDomains }
-        : undefined,
-    }),
+    body: JSON.stringify(buildGatewaySearchBody(model, searchRequest)),
   }));
   if (!response.ok) throw new Error(`search returned HTTP ${response.status}`);
   return response.json();
