@@ -317,11 +317,28 @@ export async function buildModelsList(kindFilter, options = {}) {
       for (const model of providerModels) {
         if (!kindFilter.includes(modelKind(model))) continue;
         if (isDisabled(alias, model.id)) continue;
-        models.push({
+        const entry = {
           id: `${alias}/${model.id}`,
           object: "model",
           owned_by: alias,
-        });
+        };
+        // Token limits: the active-connection path emits context_length /
+        // max_completion_tokens from the capability table so clients don't
+        // fall back to unsafe name-based window guesses. The static path
+        // (no DB / no connections) omitted them for the same models, so a
+        // client pointing at a cold install would over-read the context
+        // window and hard-fail upstream. Apply the same finite-value lookup
+        // here, using the static capability table (no live catalog needed).
+        if (modelKind(model) === LLM_KIND) {
+          const caps = getCapabilitiesForModel(providerId, model.id);
+          if (caps?.contextWindow != null && Number.isFinite(caps.contextWindow)) {
+            entry.context_length = caps.contextWindow;
+          }
+          if (caps?.maxOutput != null && Number.isFinite(caps.maxOutput)) {
+            entry.max_completion_tokens = caps.maxOutput;
+          }
+        }
+        models.push(entry);
       }
     }
 
@@ -485,6 +502,27 @@ export async function buildModelsList(kindFilter, options = {}) {
           || capabilitiesFromServiceKind(customKind || liveKind)
           || (kind === LLM_KIND ? getCapabilitiesForModel(providerId, modelId) : null);
         if (caps) model.capabilities = caps;
+        // Token limits under the snake_case names the OpenAI/OpenRouter
+        // convention uses. `capabilities.contextWindow` is camelCase and nested,
+        // so clients matching context_length find nothing, fall back to guessing
+        // the window from the model name, and guess high — a 372k model read as
+        // 1.05M never reaches its compaction threshold and hard-fails upstream.
+        // Emitted at top level because not every client recurses into nested
+        // objects; the camelCase `capabilities` block stays for compatibility.
+        if (kind === LLM_KIND || allowAsLlm) {
+          let contextWindow = caps?.contextWindow;
+          let maxOutput = caps?.maxOutput;
+          // Live-catalog and service-kind capabilities are usually partial
+          // (often just { tools: true }), so fill the gaps from the static
+          // table rather than emitting null and leaving clients to guess.
+          if (!Number.isFinite(contextWindow) || !Number.isFinite(maxOutput)) {
+            const fallback = getCapabilitiesForModel(providerId, modelId);
+            if (!Number.isFinite(contextWindow)) contextWindow = fallback.contextWindow;
+            if (!Number.isFinite(maxOutput)) maxOutput = fallback.maxOutput;
+          }
+          if (Number.isFinite(contextWindow)) model.context_length = contextWindow;
+          if (Number.isFinite(maxOutput)) model.max_completion_tokens = maxOutput;
+        }
         models.push(model);
       }
 

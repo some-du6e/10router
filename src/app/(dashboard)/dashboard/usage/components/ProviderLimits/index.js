@@ -182,7 +182,7 @@ export default function ProviderLimits() {
   );
 
   // Fetch quota for a specific connection
-  const fetchQuota = useCallback(async (connectionId, provider) => {
+  const fetchQuota = useCallback(async (connectionId, provider, { force = false } = {}) => {
     setLoading((prev) => ({ ...prev, [connectionId]: true }));
     setErrors((prev) => ({ ...prev, [connectionId]: null }));
 
@@ -190,7 +190,8 @@ export default function ProviderLimits() {
       console.log(
         `[ProviderLimits] Fetching quota for ${provider} (${connectionId})`,
       );
-      const response = await fetch(`/api/usage/${connectionId}`);
+      const url = `/api/usage/${connectionId}${force ? "?force=1" : ""}`;
+      const response = await fetch(url);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -261,7 +262,7 @@ export default function ProviderLimits() {
   // Refresh quota for a specific provider
   const refreshProvider = useCallback(
     async (connectionId, provider) => {
-      await fetchQuota(connectionId, provider);
+      await fetchQuota(connectionId, provider, { force: true });
       setLastUpdated(new Date());
     },
     [fetchQuota],

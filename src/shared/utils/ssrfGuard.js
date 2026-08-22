@@ -45,6 +45,15 @@ function isBlockedIpv6(host) {
 }
 
 // Throw if URL targets a non-public host. Caller should map to 400.
+//
+// KNOWN LIMITATION: this validates the *literal* hostname/IP only. A public
+// hostname that DNS-resolves to a private/loopback/metadata address (a
+// DNS-rebind) passes this check and the subsequent fetch reaches the internal
+// target. Fully closing that requires resolving the hostname, rejecting any
+// non-public resolved address, and pinning the fetch to that resolved IP
+// (plus re-validating on redirect) — not done here because Node's fetch does
+// not expose socket-level IP pinning without a custom lookup hook, and a
+// partial fix would mask the gap rather than close it. Tracked upstream.
 export function assertPublicUrl(rawUrl) {
   const parsed = new URL(rawUrl);
   const host = parsed.hostname.toLowerCase();
