@@ -43,19 +43,46 @@ function SecretInput({ label, field, form, setConfig, placeholder }) {
   );
 }
 
+function describeApiFailure(response, fallbackMessage, isHtml) {
+  let pathname = "";
+  try {
+    pathname = new URL(response.url).pathname;
+  } catch { /* ignore malformed response URLs */ }
+
+  if (response.status === 401 || response.status === 403 || response.redirected && ["/login", "/setup"].includes(pathname)) {
+    return `${fallbackMessage}: your session expired. Open /login in this tab, sign in, return to Notifications, and click Send test again.`;
+  }
+  if (response.status === 404) {
+    return `${fallbackMessage}: the running server is older than this dashboard. Fully stop and restart 10router. If it still fails, update it first: source checkout — git pull && npm install; npm launcher — npm install -g 10router@latest; Docker — pull the latest image and recreate the container.`;
+  }
+  if (response.status === 405) {
+    return `${fallbackMessage}: the running server does not support notification tests. Fully stop it, update 10router, start it again, then retry.`;
+  }
+  if (response.status >= 500) {
+    return `${fallbackMessage}: 10router failed internally (HTTP ${response.status}). In the terminal or container logs, find the POST /api/notifications/.../test error, restart 10router, and retry. If it repeats, that log entry contains the actual cause.`;
+  }
+  if (isHtml) {
+    return `${fallbackMessage}: your proxy served the dashboard page for an API request (HTTP ${response.status}). Forward /api/notifications/* unchanged to the same 10router server as /dashboard, then reload this page.`;
+  }
+  return `${fallbackMessage}: 10router returned an invalid response (HTTP ${response.status}). Fully restart the server; if it repeats, check its terminal or container logs for the test request.`;
+}
+
 async function readApiResponse(response, fallbackMessage) {
   const text = await response.text();
-  if (!text) return {};
+  if (response.status === 401 || response.status === 403) {
+    throw new Error(describeApiFailure(response, fallbackMessage, false));
+  }
+  if (!text) {
+    if (!response.ok) throw new Error(describeApiFailure(response, fallbackMessage, false));
+    return {};
+  }
 
   try {
     return JSON.parse(text);
   } catch {
     const contentType = response.headers.get("content-type") || "";
     const isHtml = contentType.includes("text/html") || /^\s*<!doctype html/i.test(text);
-    if (isHtml) {
-      throw new Error(`${fallbackMessage} (server returned HTML with status ${response.status})`);
-    }
-    throw new Error(`${fallbackMessage} (invalid server response)`);
+    throw new Error(describeApiFailure(response, fallbackMessage, isHtml));
   }
 }
 
@@ -152,6 +179,7 @@ export default function NotificationChannelsPage() {
   const [showModal, setShowModal] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testingId, setTestingId] = useState(null);
+  const [testErrors, setTestErrors] = useState({});
   const [deleting, setDeleting] = useState(null);
   const notify = useNotificationStore();
 
@@ -254,12 +282,14 @@ export default function NotificationChannelsPage() {
 
   const testChannel = async (id) => {
     setTestingId(id);
+    setTestErrors((current) => ({ ...current, [id]: null }));
     try {
       const response = await fetch(`/api/notifications/channels/${id}/test`, { method: "POST" });
       const data = await readApiResponse(response, "Test notification failed");
       if (!response.ok) throw new Error(data.error || "Test notification failed");
       notify.success("Test notification sent");
     } catch (error) {
+      setTestErrors((current) => ({ ...current, [id]: error.message }));
       notify.error(error.message);
     } finally {
       setTestingId(null);
@@ -322,11 +352,17 @@ export default function NotificationChannelsPage() {
                       <p className="mt-1 text-xs text-text-muted">
                         {(channel.events || []).map((event) => event === NOTIFICATION_EVENTS.QUOTA_EXHAUSTED ? "Quota exhausted" : "Quota reset").join(" · ")}
                       </p>
+                      {testErrors[channel.id] && (
+                        <div className="mt-2 rounded-[8px] border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs leading-relaxed text-red-600 dark:text-red-300">
+                          <p className="font-semibold">Could not send test</p>
+                          <p className="mt-1 whitespace-pre-wrap break-words">{testErrors[channel.id]}</p>
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center justify-end gap-1">
                     <Toggle size="sm" checked={channel.isActive} onChange={() => toggleActive(channel)} />
-                    <button type="button" onClick={() => testChannel(channel.id)} disabled={testingId === channel.id} title="Send test" className="p-2 text-text-muted hover:text-primary disabled:opacity-50">
+                    <button type="button" onClick={() => testChannel(channel.id)} disabled={testingId === channel.id} title="Send test" aria-label={`Send test notification for ${channel.name}`} className="p-2 text-text-muted hover:text-primary disabled:opacity-50">
                       <span className={`material-symbols-outlined text-[19px] ${testingId === channel.id ? "animate-spin" : ""}`}>{testingId === channel.id ? "progress_activity" : "science"}</span>
                     </button>
                     <button type="button" onClick={() => openEdit(channel)} title="Edit" className="p-2 text-text-muted hover:text-primary"><span className="material-symbols-outlined text-[19px]">edit</span></button>
