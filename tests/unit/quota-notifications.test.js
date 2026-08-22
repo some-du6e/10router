@@ -8,7 +8,7 @@ vi.mock("@/lib/db/index.js", () => ({
 
 import { detectQuotaTransitions, getQuotaRemainingPercentage } from "../../src/lib/notifications/quotaTransitions.js";
 import { dispatchNotificationEvent, sendNotificationChannel } from "../../src/lib/notifications/index.js";
-import { notificationFetch } from "../../src/lib/notifications/http.js";
+import { createPinnedLookup, notificationFetch } from "../../src/lib/notifications/http.js";
 import { NOTIFICATION_EVENTS } from "../../src/lib/notifications/constants.js";
 import { normalizeNotificationChannelInput, redactNotificationChannel } from "../../src/lib/notifications/validation.js";
 
@@ -138,6 +138,20 @@ describe("notification channels", () => {
     expect(createDispatcher).toHaveBeenCalledWith({ address: "203.0.113.10", family: 4 });
     expect(fetchMock).toHaveBeenCalledWith(expect.any(URL), expect.objectContaining({ dispatcher }));
     expect(close).toHaveBeenCalled();
+  });
+
+  it("returns the pinned address in the format requested by Undici", async () => {
+    const address = { address: "203.0.113.10", family: 4 };
+    const lookup = createPinnedLookup(address);
+
+    await expect(new Promise((resolve, reject) => {
+      lookup("example.com", { all: true }, (error, result) => error ? reject(error) : resolve(result));
+    })).resolves.toEqual([address]);
+    await expect(new Promise((resolve, reject) => {
+      lookup("example.com", { all: false }, (error, result, family) => (
+        error ? reject(error) : resolve({ result, family })
+      ));
+    })).resolves.toEqual({ result: address.address, family: address.family });
   });
 
   it("bounds error response reads and cancels the remaining stream", async () => {
