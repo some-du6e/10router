@@ -48,6 +48,13 @@
   endpoint. Re-applying settings keeps an existing config on the ingress it
   already uses.
 
+## Fixes
+- **Claude Code web search on routed models**: Anthropic's built-in
+  `web_search_20250305` tool now uses the configured 10router web-search
+  provider when Claude Code is routed to a non-Claude model. Search sources are
+  injected into the model context while ordinary client tools remain intact;
+  native Claude requests continue to use Anthropic's server-side tool.
+
 # v0.6.0 (2026-08-11)
 
 ## Changed
