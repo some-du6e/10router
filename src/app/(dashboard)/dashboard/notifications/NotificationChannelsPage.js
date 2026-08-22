@@ -43,6 +43,22 @@ function SecretInput({ label, field, form, setConfig, placeholder }) {
   );
 }
 
+async function readApiResponse(response, fallbackMessage) {
+  const text = await response.text();
+  if (!text) return {};
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    const contentType = response.headers.get("content-type") || "";
+    const isHtml = contentType.includes("text/html") || /^\s*<!doctype html/i.test(text);
+    if (isHtml) {
+      throw new Error(`${fallbackMessage} (server returned HTML with status ${response.status})`);
+    }
+    throw new Error(`${fallbackMessage} (invalid server response)`);
+  }
+}
+
 function ChannelFields({ form, setConfig }) {
   switch (form.type) {
     case "ntfy":
@@ -62,7 +78,22 @@ function ChannelFields({ form, setConfig }) {
         </>
       );
     case "slack":
-      return <SecretInput label="Incoming webhook URL" field="webhookUrl" form={form} setConfig={setConfig} placeholder="https://hooks.slack.com/services/..." />;
+      return (
+        <>
+          <SecretInput label="Incoming webhook URL" field="webhookUrl" form={form} setConfig={setConfig} placeholder="https://hooks.slack.com/services/..." />
+          <p className="text-xs text-text-muted">
+            Need a webhook URL? Follow the{" "}
+            <a
+              href="https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary hover:underline"
+            >
+              Slack incoming webhooks guide
+            </a>.
+          </p>
+        </>
+      );
     case "webhook":
       return (
         <>
@@ -127,7 +158,7 @@ export default function NotificationChannelsPage() {
   const loadChannels = useCallback(async () => {
     try {
       const response = await fetch("/api/notifications/channels", { cache: "no-store" });
-      const data = await response.json();
+      const data = await readApiResponse(response, "Failed to load channels");
       if (!response.ok) throw new Error(data.error || "Failed to load channels");
       setChannels(data.channels || []);
     } catch (error) {
@@ -194,7 +225,7 @@ export default function NotificationChannelsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const data = await response.json();
+      const data = await readApiResponse(response, "Failed to save channel");
       if (!response.ok) throw new Error(data.error || "Failed to save channel");
       await loadChannels();
       setShowModal(false);
@@ -225,7 +256,7 @@ export default function NotificationChannelsPage() {
     setTestingId(id);
     try {
       const response = await fetch(`/api/notifications/channels/${id}/test`, { method: "POST" });
-      const data = await response.json();
+      const data = await readApiResponse(response, "Test notification failed");
       if (!response.ok) throw new Error(data.error || "Test notification failed");
       notify.success("Test notification sent");
     } catch (error) {
@@ -324,7 +355,7 @@ export default function NotificationChannelsPage() {
             options={NOTIFICATION_TYPE_OPTIONS}
           />
           <ChannelFields form={form} setConfig={setConfig} />
-          {form.type !== "telegram" && (
+          {form.type !== "telegram" && form.type !== "slack" && (
             <Toggle
               checked={form.config.allowPrivateNetwork === true}
               onChange={(value) => setConfig("allowPrivateNetwork", value)}
