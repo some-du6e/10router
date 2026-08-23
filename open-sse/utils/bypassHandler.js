@@ -8,7 +8,7 @@ import { formatSSE } from "./stream.js";
  * Check for bypass patterns - return fake response without calling provider
  * Only works for Claude CLI requests
  */
-export function handleBypassRequest(body, model, userAgent = "", ccFilterNaming = false) {
+export function handleBypassRequest(body, model, userAgent = "", ccFilterNaming = false, sourceFormatOverride = null) {
   if (!userAgent.includes("claude-cli")) return null;
   if (!body.messages?.length) return null;
 
@@ -72,7 +72,7 @@ export function handleBypassRequest(body, model, userAgent = "", ccFilterNaming 
 
   if (!shouldBypass) return null;
 
-  const sourceFormat = detectFormat(body);
+  const sourceFormat = sourceFormatOverride || detectFormat(body);
   const stream = body.stream !== false;
 
   // For naming bypass, generate title from user message

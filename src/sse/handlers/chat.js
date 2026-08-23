@@ -80,9 +80,13 @@ export async function handleChat(request, clientRawRequest = null) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   }
 
+  const sourceFormatOverride = request?.url
+    ? detectFormatByEndpoint(new URL(request.url).pathname, body)
+    : null;
+
   // Bypass naming/warmup requests before combo rotation to avoid wasting rotation slots
   const userAgent = request?.headers?.get("user-agent") || "";
-  const bypassResponse = handleBypassRequest(body, modelStr, userAgent, !!settings.ccFilterNaming);
+  const bypassResponse = handleBypassRequest(body, modelStr, userAgent, !!settings.ccFilterNaming, sourceFormatOverride);
   if (bypassResponse) return bypassResponse.response || bypassResponse;
 
   const requiredCapabilities = detectRequiredCapabilities(body);
@@ -288,7 +292,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       onPxpipeEvent: appendPxpipeEvent,
       providerThinking,
       // Detect source format by endpoint + body
-      sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
+      sourceFormatOverride,
       onCredentialsRefreshed: async (newCreds) => {
         await updateProviderCredentials(credentials.connectionId, {
           ...newCreds,
