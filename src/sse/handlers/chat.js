@@ -22,6 +22,7 @@ import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
+import { enrichClaudeBuiltinSearch } from "../services/claudeBuiltinSearch.js";
 
 /**
  * Handle chat completion request
@@ -213,6 +214,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   }
 
   const { provider, model } = modelInfo;
+
+  body = await enrichClaudeBuiltinSearch(body, { provider, request, apiKey, log });
 
   // Routing shown in the unified "▶" line (client model → provider/model)
 
