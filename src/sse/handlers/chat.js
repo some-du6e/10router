@@ -23,6 +23,7 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { enrichClaudeBuiltinSearch } from "../services/claudeBuiltinSearch.js";
+import { summarizeAccountFailures } from "../services/accountFailureSummary.js";
 
 /**
  * Handle chat completion request
@@ -224,6 +225,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
   // Try with available accounts (fallback on errors)
   const excludeConnectionIds = new Set();
+  const accountFailures = [];
   let lastError = null;
   let lastStatus = null;
 
@@ -233,17 +235,23 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
-        const errorMsg = lastError || credentials.lastError || "Unavailable";
+        const errorMsg = accountFailures.length > 0
+          ? summarizeAccountFailures(provider, model, accountFailures)
+          : (lastError || credentials.lastError || "Unavailable");
         const status = lastStatus || Number(credentials.lastErrorCode) || HTTP_STATUS.SERVICE_UNAVAILABLE;
-        log.warn("CHAT", `[${provider}/${model}] ${errorMsg} (${credentials.retryAfterHuman})`);
-        return unavailableResponse(status, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman);
+        const prefixedError = accountFailures.length > 0 ? errorMsg : `[${provider}/${model}] ${errorMsg}`;
+        log.warn("CHAT", `${prefixedError} (${credentials.retryAfterHuman})`);
+        return unavailableResponse(status, prefixedError, credentials.retryAfter, credentials.retryAfterHuman);
       }
       if (excludeConnectionIds.size === 0) {
         log.warn("AUTH", `No active credentials for provider: ${provider}`);
         return errorResponse(HTTP_STATUS.NOT_FOUND, `No active credentials for provider: ${provider}`);
       }
       log.warn("CHAT", "No more accounts available", { provider });
-      return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
+      return errorResponse(
+        lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE,
+        summarizeAccountFailures(provider, model, accountFailures)
+      );
     }
 
     // Account selection shown in the unified "▶" line (acc:...)
@@ -308,6 +316,11 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
     if (shouldFallback) {
       log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);
+      accountFailures.push({
+        account: credentials.connectionName,
+        status: result.status,
+        error: result.error,
+      });
       excludeConnectionIds.add(credentials.connectionId);
       lastError = result.error;
       lastStatus = result.status;
