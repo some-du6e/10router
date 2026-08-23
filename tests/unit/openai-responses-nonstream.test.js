@@ -85,6 +85,29 @@ describe("non-stream Chat upstream for a Responses-API client (op-ericding bug)"
   });
 });
 
+describe("non-stream Chat-shaped response for a Claude client", () => {
+  it("trusts the response shape when a Responses-configured upstream returns Chat JSON", () => {
+    const body = structuredClone(CHAT_TOOL_BODY);
+    delete body.usage;
+
+    const out = translateNonStreamingResponse(
+      body,
+      FORMATS.OPENAI_RESPONSES,
+      FORMATS.CLAUDE
+    );
+
+    expect(out.type).toBe("message");
+    expect(out).not.toHaveProperty("choices");
+    expect(out.content[0]).toMatchObject({
+      type: "tool_use",
+      id: "call_1",
+      name: "shell",
+      input: { cmd: "ls" }
+    });
+    expect(out.usage).toEqual({ input_tokens: 0, output_tokens: 0 });
+  });
+});
+
 describe("forced-SSE JSON path for a Responses-API client behind a chat upstream", () => {
   const sseCtx = (sourceFormat, targetFormat) => {
     const encoder = new TextEncoder();
