@@ -139,12 +139,22 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
 
   const handleSessionAffinityToggle = async (e) => {
     const value = e.target.checked;
+    const previous = sessionAffinity;
+    // Optimistic, but fetch() resolves on 4xx/5xx too — roll back unless the
+    // write actually landed, so the checkbox never claims an unsaved setting.
     setSessionAffinity(value);
-    await fetch("/api/settings", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ codexSessionAffinity: value }),
-    }).catch(() => {});
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ codexSessionAffinity: value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to save session affinity");
+    } catch (error) {
+      setSessionAffinity(previous);
+      setMessage({ type: "error", text: error.message });
+    }
   };
 
   const getConfigStatus = () => {
