@@ -23,6 +23,13 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { enrichClaudeBuiltinSearch } from "../services/claudeBuiltinSearch.js";
+import {
+  isAffinityProvider,
+  affinityKeyFor,
+  getAffinity,
+  bindAffinity,
+  releaseAffinity,
+} from "open-sse/services/sessionAffinity.js";
 
 /**
  * Handle chat completion request
@@ -231,13 +238,32 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   // Extract userAgent from request
   const userAgent = request?.headers?.get("user-agent") || "";
 
+  // Session→account affinity (Codex only, opt-in). A Codex conversation keeps a
+  // stable prompt_cache_key across turns, but the upstream prompt cache is
+  // per-account — so re-picking an account per turn throws that cache away.
+  // Pinning the session to one account is what makes the key pay off.
+  //
+  // Resolved before the loop so a retry after a failed account still knows the
+  // session, and skipped entirely (no settings read) for every other provider.
+  let affinityKey = null;
+  if (isAffinityProvider(provider)) {
+    const affinitySettings = await getSettings();
+    if (affinitySettings.codexSessionAffinity) {
+      affinityKey = affinityKeyFor({ provider, headers: request?.headers, body });
+    }
+  }
+
   // Try with available accounts (fallback on errors)
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
+    // A pin is a preference, not a requirement: getProviderCredentials ignores a
+    // connection that is excluded, model-locked or rate-limited and falls back to
+    // the configured strategy, so a dead pinned account never wedges a session.
+    const preferredConnectionId = affinityKey ? getAffinity(affinityKey) : null;
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId });
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
@@ -254,6 +280,11 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       log.warn("CHAT", "No more accounts available", { provider });
       return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
     }
+
+    // Bind before the turn runs, not after it succeeds: Codex fires side
+    // requests concurrently with the main turn, and they should land on the same
+    // account rather than racing to claim the session.
+    if (affinityKey && credentials.connectionId) bindAffinity(affinityKey, credentials.connectionId);
 
     // Account selection shown in the unified "▶" line (acc:...)
     const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
@@ -316,6 +347,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
     if (shouldFallback) {
       log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);
+      // Stale-anchor recovery: the pinned account just went away, so drop the pin
+      // and let the next iteration rebind. Guarded on the id, so a concurrent turn
+      // that already moved the session elsewhere is left alone.
+      if (affinityKey) releaseAffinity(affinityKey, credentials.connectionId);
       excludeConnectionIds.add(credentials.connectionId);
       lastError = result.error;
       lastStatus = result.status;
