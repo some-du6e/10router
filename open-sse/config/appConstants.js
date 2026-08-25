@@ -73,6 +73,23 @@ export const CLIENT_METADATA = {
 // Internal anti-loop header
 export const INTERNAL_REQUEST_HEADER = { name: "x-request-source", value: "local" };
 
+// Client headers/body fields that carry an upstream session id (priority order).
+// `x-codex-session-id` / `x-codex-conversation-id` are what recent Codex builds
+// send; older ones send the bare `session_id`. Keep all spellings.
+export const SESSION_HEADER_KEYS = [
+  "x-session-id",
+  "session-id",
+  "session_id",
+  "x-codex-session-id",
+  "x-codex-conversation-id",
+  "x-amp-thread-id",
+];
+
+// Providers whose conversations carry account-local state worth pinning to one
+// connection. Anything not listed here never gets an affinity key, so session
+// affinity stays inert for every other provider.
+export const AFFINITY_PROVIDERS = new Set(["codex"]);
+
 // Suffix added to client tools when forwarding to Antigravity provider (anti-ban cloaking)
 export const AG_TOOL_SUFFIX = "_ide";
 

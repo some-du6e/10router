@@ -52,6 +52,7 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
   const [customBaseUrl, setCustomBaseUrl] = useState("");
   const [unroutableCodexModels, setUnroutableCodexModels] = useState([]);
   const [useNative, setUseNative] = useState(true);
+  const [sessionAffinity, setSessionAffinity] = useState(false);
 
   useEffect(() => {
     if (apiKeys?.length > 0 && !selectedApiKey) {
@@ -127,6 +128,34 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
       if (codexStatus.has10Router) setUseNative(codexStatus.native === true);
     }
   }, [codexStatus]);
+
+  // Session affinity is a gateway-side setting, not part of the Codex config file.
+  useEffect(() => {
+    fetch("/api/settings")
+      .then((res) => res.json())
+      .then((data) => setSessionAffinity(!!data?.codexSessionAffinity))
+      .catch(() => {});
+  }, []);
+
+  const handleSessionAffinityToggle = async (e) => {
+    const value = e.target.checked;
+    const previous = sessionAffinity;
+    // Optimistic, but fetch() resolves on 4xx/5xx too — roll back unless the
+    // write actually landed, so the checkbox never claims an unsaved setting.
+    setSessionAffinity(value);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ codexSessionAffinity: value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to save session affinity");
+    } catch (error) {
+      setSessionAffinity(previous);
+      setMessage({ type: "error", text: error.message });
+    }
+  };
 
   const getConfigStatus = () => {
     if (!codexStatus?.installed) return null;
@@ -403,6 +432,28 @@ model = "${effectiveSubagentModel}"
                     </span>
                     <span className="min-w-0 truncate rounded bg-surface/40 px-2 py-1 text-[11px] text-text-muted">
                       {getEffectiveBaseUrl()}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Session affinity */}
+                <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr] sm:items-center sm:gap-2">
+                  <span className="text-xs font-semibold text-text-main sm:text-right sm:text-sm">Session Affinity</span>
+                  <span className="material-symbols-outlined hidden text-text-muted text-[14px] sm:inline">arrow_forward</span>
+                  <div className="flex min-w-0 flex-col gap-1">
+                    <label className="flex items-center gap-2 text-xs cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={sessionAffinity}
+                        onChange={handleSessionAffinityToggle}
+                        className="accent-primary"
+                      />
+                      <span>Pin a Codex conversation to one account</span>
+                    </label>
+                    <span className="text-[11px] text-text-muted">
+                      Keeps every turn of a session on the same account so its prompt cache
+                      (~21k tokens of system prompt and tool schemas) actually hits. Costs some
+                      load-balancing freedom; a rate-limited account still falls over to another.
                     </span>
                   </div>
                 </div>

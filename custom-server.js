@@ -28,18 +28,33 @@ const origCreate = http.createServer.bind(http);
 //   - the startup *prewarm*, tagged `request_kind: "prewarm"` and carrying
 //     `generate: false`. That flag means "warm the cache, do not infer", and it
 //     does not survive the executor's `RESPONSES_API_ALLOWLIST`, so bridging it
-//     as an ordinary turn would spend a real generation. Answering it locally
-//     with a synthetic `response.completed` is worse still: the client adopts
-//     that as the turn's answer and the user sees a blank reply.
+//     as an ordinary turn would spend a real generation. (Re-verified: the
+//     executor's allowlist still has no `generate`.) Answering it locally with
+//     a synthetic `response.completed` is worse still: the client adopts that
+//     as the turn's answer and the user sees a blank reply. Serving it would be
+//     pointless anyway while the delta turns it exists to enable cannot be
+//     forwarded — see below.
 //   - a *delta* turn, which carries `previous_response_id` and only the new
 //     input. Codex builds those after a successful warmup, expecting the server
-//     to still hold the base prompt and tools. This gateway holds no upstream
-//     response state — it re-picks an account per turn — so forwarding a delta
-//     would send the model an input with no conversation under it.
+//     to still hold the base prompt and tools. Nothing here holds it: this
+//     bridge terminates the socket locally and replays each turn as a fresh
+//     HTTP POST through the normal pipeline, and the Codex executor sends
+//     `store: false` (the ChatGPT backend requires it), which is precisely the
+//     mode in which an upstream cannot resolve a `previous_response_id`.
+//     Session→account affinity does not change that — it pins *which* account
+//     serves the turn, not whether a response id from a different transport is
+//     resolvable on it. Forwarding a delta would therefore 404 upstream, and
+//     stripping the anchor to retry would be worse: a delta carries only the
+//     new input, so the retry would ask the model to answer with no
+//     conversation under it. See the PR discussion for what serving these
+//     properly would require (an upstream websocket held per session).
 //
 // Both get an error frame, which makes the client fall back to a self-contained
 // turn on a fresh connection. That fallback is the path every working turn
-// already takes today ("websocket reuse properties didn't match").
+// already takes today ("websocket reuse properties didn't match"). It is also
+// the same recovery codex-lb performs when its own upstream rejects an anchor:
+// surface `previous_response_not_found` to the client and let it rebuild the
+// turn, rather than silently re-sending a truncated one.
 
 const CODEX_WS_PATH = "/backend-api/codex/responses";
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -285,9 +300,11 @@ function handleCodexUpgrade(req, socket, head, port) {
     socket.end();
   };
 
-  const declineTurn = (code, message) => {
+  const declineTurn = (code, message, param) => {
     console.log(`[CodexWS] declined ${code} from ${peerIp}`);
-    send(JSON.stringify({ type: "error", error: { message, type: "invalid_request_error", code } }));
+    const error = { message, type: "invalid_request_error", code };
+    if (param) error.param = param;
+    send(JSON.stringify({ type: "error", error }));
     close(1000, code);
   };
 
@@ -327,7 +344,14 @@ function handleCodexUpgrade(req, socket, head, port) {
       // re-pick an account per turn and keep no response state, so there is
       // nothing here for it to build on.
       if (request.previous_response_id) {
-        return declineTurn("previous_response_not_found", "this gateway does not retain previous responses");
+        // Wording matters: clients (and codex-lb's own classifier) recognise a
+        // stale anchor by "previous response … not found" as well as by the
+        // code, so keep both recognisable rather than inventing a message.
+        return declineTurn(
+          "previous_response_not_found",
+          "Previous response was not found; retry without previous_response_id.",
+          "previous_response_id"
+        );
       }
 
       inflight = bridgeCodexTurn(request, port, req.headers, peerIp, send, (error, rejectedStatus) => {

@@ -12,6 +12,10 @@ const DEFAULT_SETTINGS = {
   tailscaleEnabled: false,
   tailscaleUrl: "",
   stickyRoundRobinLimit: 3,
+  // Pin a Codex conversation to one account so its stable prompt_cache_key
+  // actually hits the (per-account) upstream prompt cache. Opt-in: it trades
+  // some load-balancing freedom for cache continuity.
+  codexSessionAffinity: false,
   providerStrategies: {},
   quotaVisibility: {},
   comboStrategy: "fallback",

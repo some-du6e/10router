@@ -1,6 +1,18 @@
 # Unreleased
 
 ## Features
+- **Codex session affinity**: a Codex conversation can now be pinned to a single
+  account for as long as it stays warm. The Codex executor already derives a
+  stable `prompt_cache_key` from the client's `session_id`, but the upstream
+  prompt cache is per-account, so re-picking an account every turn meant that key
+  almost never hit — each turn re-paid the ~21k tokens of system prompt and tool
+  schemas. Enable it per install with the "Session Affinity" toggle on the Codex
+  CLI tool card (setting: `codexSessionAffinity`, off by default). The pin is a
+  preference, not a requirement: a rate-limited, model-locked or failed account
+  still falls over to another and the session rebinds. Only Codex is eligible —
+  every other provider keeps per-turn selection untouched. `session_id` extraction
+  now also accepts the `x-codex-session-id` / `x-codex-conversation-id` spellings
+  recent Codex builds send, and separates threads of one CLI process by `thread-id`.
 - **Quota notifications**: reusable named channels can now send quota-exhausted
   and quota-reset alerts through ntfy, Slack incoming webhooks, generic JSON
   webhooks, Telegram bots, or an Apprise API server. Each channel has independent
