@@ -27,13 +27,8 @@
  */
 
 import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
+import { AFFINITY_PROVIDERS } from "../config/appConstants.js";
 import { resolveClientSessionId } from "../utils/sessionManager.js";
-
-// Providers whose conversations carry account-local state worth pinning.
-// Anything not listed here never gets a key, so this module is inert for it.
-const AFFINITY_PROVIDERS = new Set(["codex"]);
-
-const MAX_AFFINITY_SESSIONS = 5000;
 
 // Key = `${provider}:${sessionId}[#threadId]`, Value = { connectionId, lastUsed }
 const affinityStore = new Map();
@@ -112,7 +107,7 @@ export function bindAffinity(key, connectionId) {
     return;
   }
   // Safety cap between cleanup cycles: evict the oldest insertion.
-  if (affinityStore.size >= MAX_AFFINITY_SESSIONS) {
+  if (affinityStore.size >= MEMORY_CONFIG.maxAffinitySessions) {
     affinityStore.delete(affinityStore.keys().next().value);
   }
   affinityStore.set(key, { connectionId, lastUsed: Date.now() });

@@ -10,6 +10,7 @@
 
 import crypto from "crypto";
 import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
+import { SESSION_HEADER_KEYS } from "../config/appConstants.js";
 
 // Runtime storage: Key = connectionId, Value = { sessionId, lastUsed }
 const runtimeSessionStore = new Map();
@@ -91,17 +92,6 @@ const ASSISTANT_CAP_LEN = 50;
 const MAX_ASSISTANT_SESSIONS = 5000;
 const MAX_CONTINUATION_SESSIONS = 5000;
 
-// Client headers/body fields that carry an upstream session id (priority order)
-// `x-codex-session-id` / `x-codex-conversation-id` are what recent Codex builds
-// send; older ones send the bare `session_id`. Keep all spellings.
-const SESSION_HEADER_KEYS = [
-    "x-session-id",
-    "session-id",
-    "session_id",
-    "x-codex-session-id",
-    "x-codex-conversation-id",
-    "x-amp-thread-id",
-];
 const CLAUDE_CODE_SESSION_RE = /_session_([a-f0-9-]+)$/;
 
 function sha16(text) {
