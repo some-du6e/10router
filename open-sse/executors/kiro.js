@@ -309,10 +309,15 @@ export class KiroExecutor extends BaseExecutor {
 
   // Retry only endpoint/auth-surface failures. Payload-invalid HTTP 400 must be
   // terminal: sending the same malformed body to every surface cannot repair it.
+  // The `integrityRetry` flag is set only around the single bounded repair
+  // attempt in runIntegrityRecovery: endpoint failover is for the *initial*
+  // request, not the repair. Rotating surfaces mid-repair would exhaust the
+  // bounded attempt and throw on an unmocked fetch instead of surfacing the
+  // upstream error (e.g. a 401) as a clean kiro_integrity_retry_upstream_error.
   shouldRetry(status, urlIndex) {
     const hasFallback = urlIndex + 1 < this.getFallbackCount();
     return super.shouldRetry(status, urlIndex)
-      || (hasFallback && KIRO_ENDPOINT_FALLBACK_STATUSES.has(status));
+      || (hasFallback && !this.integrityRetry && KIRO_ENDPOINT_FALLBACK_STATUSES.has(status));
   }
 
   transformRequest(model, body, stream, credentials) {
@@ -430,11 +435,17 @@ export class KiroExecutor extends BaseExecutor {
       ? appendRepairInstruction(args.body, repairKind === "invalid_tool" ? "tool" : repairKind)
       : structuredClone(args.body || {});
 
-    const retry = await BaseExecutor.prototype.execute.call(this, {
-      ...args,
-      body: repairBody,
-      signal: options.signal
-    });
+    this.integrityRetry = true;
+    let retry;
+    try {
+      retry = await BaseExecutor.prototype.execute.call(this, {
+        ...args,
+        body: repairBody,
+        signal: options.signal
+      });
+    } finally {
+      this.integrityRetry = false;
+    }
     if (!retry?.response?.ok) {
       let body = "";
       try {

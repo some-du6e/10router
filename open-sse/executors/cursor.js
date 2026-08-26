@@ -7,7 +7,8 @@ import {
   wrapConnectRPCFrame,
   decodeMessage,
   parseConnectRPCFrame,
-  extractTextFromResponse
+  extractTextFromResponse,
+  encodeMcpTools
 } from "../utils/cursorProtobuf.js";
 import { buildCursorHeaders } from "../utils/cursorChecksum.js";
 import { estimateUsage } from "../utils/usageTracking.js";
@@ -83,6 +84,26 @@ function isAgentTextRequest(body) {
   });
 }
 
+/**
+ * Broader capability predicate: can AgentService handle this request at all?
+ * Unlike isAgentTextRequest (which keeps tool-call/result turns on the legacy
+ * path), this accepts tool schemas and prior tool-call/tool-result history —
+ * AgentService speaks the MCP tool protocol. It only rejects things AgentService
+ * genuinely cannot represent: image/attachment content, or a missing message list.
+ */
+export function isAgentCapableRequest(body) {
+  if (!body || !Array.isArray(body.messages) || body.messages.length === 0) return false;
+  return body.messages.every((message) => {
+    const content = message?.content;
+    if (content == null) return true; // assistant tool_calls carry null content
+    if (typeof content === "string") return true;
+    if (Array.isArray(content)) {
+      return content.every((part) => part?.type === "text");
+    }
+    return false;
+  });
+}
+
 function encodeHistoryMessage(message) {
   const content = textFromContent(message?.content);
   if (!content) return null;
@@ -95,7 +116,13 @@ function encodeHistoryMessage(message) {
   return agentMessage(1, agentMessage(1, agentMessage(1, text)));
 }
 
-function buildAgentRunFrame(messages, model) {
+/**
+ * Build an agent.v1.AgentClientMessage.run_request frame (Connect-RPC wrapped).
+ * @param {Array} messages  OpenAI-shaped messages (system/user/assistant/tool).
+ * @param {string} model     Requested model id.
+ * @param {Array}  [tools]   Optional OpenAI-shaped tools → encoded as mcp_tools (field 4).
+ */
+export function buildAgentRunFrame(messages, model, tools = []) {
   const system = messages
     .filter((message) => message?.role === "system")
     .map((message) => textFromContent(message.content))
@@ -119,15 +146,17 @@ function buildAgentRunFrame(messages, model) {
     ? concatBuffers(...history.map((entry) => agentMessage(1, entry)))
     : null;
   const userAction = concatBuffers(
-    agentMessage(1, userMessage),
+    agentString(1, userMessage),
     ...(conversationHistory ? [agentMessage(7, conversationHistory)] : []),
   );
   const conversationAction = agentMessage(1, userAction);
   const requestedModel = concatBuffers(agentString(1, model), agentBool(7, true));
+  const mcpTools = Array.isArray(tools) && tools.length > 0 ? encodeMcpTools(tools) : null;
   const runRequest = concatBuffers(
     // An empty ConversationStateStructure starts a fresh local agent session.
     agentMessage(1, new Uint8Array()),
     agentMessage(2, conversationAction),
+    ...(mcpTools && mcpTools.length > 0 ? [agentMessage(4, mcpTools)] : []),
     ...(system ? [agentString(8, system)] : []),
     agentMessage(9, requestedModel),
   );

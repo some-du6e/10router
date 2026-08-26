@@ -175,6 +175,10 @@ describe("openaiToClaudeResponse", () => {
       id: "chatcmpl-test",
       model: "gpt-test",
       choices: [{
+        // The response translator buffers tool args and sanitizes them at
+        // finish_reason (sanitizeReadArgs drops the empty `pages` here), so a
+        // finish_reason must be present for the input_json_delta to emit.
+        finish_reason: "tool_calls",
         delta: {
           tool_calls: [{
             index: 0,

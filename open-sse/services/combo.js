@@ -75,10 +75,14 @@ export function reorderByCapabilities(models, required) {
   };
 
   // Stable sort by tier (Array.prototype.sort is stable in modern engines).
-  return models
-    .map((m, i) => ({ m, i, t: tierOf(m) }))
-    .sort((a, b) => a.t - b.t || a.i - b.i)
-    .map((x) => x.m);
+  const tagged = models.map((m, i) => ({ m, i, t: tierOf(m) }));
+  const sorted = tagged.sort((a, b) => a.t - b.t || a.i - b.i);
+
+  // If the sort produced no actual reordering (every model in the same tier,
+  // or none matches), hand back the original array so callers can rely on
+  // reference identity for the unchanged case.
+  const moved = sorted.some((x, idx) => x.i !== idx);
+  return moved ? sorted.map((x) => x.m) : models;
 }
 
 /**
@@ -144,7 +148,17 @@ export function detectRequiredCapabilities(body) {
   const contents = body.contents || body.request?.contents;                      // gemini / antigravity
   for (const c of trailingUserItems(contents)) scanContent(c.parts);
 
-  // search: temporarily disabled in auto-switch (feature not wired yet).
+  // search: detect web_search-style tools so capability-aware reordering can
+  // prefer a search-capable model. (Auto-switch acting on it is wired elsewhere.)
+  if (Array.isArray(body.tools)) {
+    for (const tool of body.tools) {
+      const t = tool?.type || tool?.function?.type;
+      if (t === "web_search" || t === "web_search_preview" || t === "search") {
+        required.add("search");
+        break;
+      }
+    }
+  }
 
   return required;
 }

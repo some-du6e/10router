@@ -9,6 +9,7 @@
     "test:watch": "vitest --reporter=verbose"
   },
   "devDependencies": {
+    "lowdb": "^7.0.1",
     "vitest": "^4.0.0"
   },
   "engines": {

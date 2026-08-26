@@ -15,7 +15,12 @@
  * re-trigger upstream complaints about missing reasoning on the next
  * turn.
  */
-import { describe, it } from "node:test";
+// Uses vitest (the project's `npm test` runner) instead of node:test. vitest's
+// `**/*.test.js` glob collects every *.test.js but cannot execute node:test
+// suites — those surface as "No test suite found" false failures, and there
+// is no `node --test` step in CI to run them. assert is node:assert/strict,
+// whose semantics vitest preserves in its node environment.
+import { describe, it } from "vitest";
 import assert from "node:assert/strict";
 
 import KimchiExecutor, { stripReasoningContent } from "../../open-sse/executors/kimchi.js";
