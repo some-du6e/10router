@@ -79,11 +79,15 @@ async function extractTokensViaBetterSqlite(dbPath) {
     // versions), match by substring so a fresh install still imports. The query
     // has no inherent row order, so rank candidates deterministically: an
     // access-token key beats a generic token key, and a Cursor-namespaced key
-    // (cursorAuth/cursor) beats an unrelated app's key. The SQL ORDER BY asks
-    // SQLite for that order, and the in-JS ranking below re-applies it so the
-    // result is correct even if the driver returns rows in another order — an
-    // unrelated app's `…token…` row must never be returned as Cursor's
-    // accessToken when a renamed Cursor access-token key is present.
+    // (cursorAuth/cursor) beats an unrelated app's key. Crucially, within the
+    // access-token tier a Cursor-namespaced key must beat an unscoped one —
+    // otherwise `someOtherApp/accessToken` and `cursorAuth/renamedAccessToken`
+    // tie at the top rank and the first row wins, which can hand back an
+    // unrelated app's token. The SQL ORDER BY asks SQLite for that order, and
+    // the in-JS ranking below re-applies it so the result is correct even if
+    // the driver returns rows in another order — an unrelated app's `…token…`
+    // row must never be returned as Cursor's accessToken when a renamed Cursor
+    // access-token key is present.
     if (!accessToken || !machineId) {
       const fuzzyRows = db
         .prepare(
@@ -91,12 +95,14 @@ async function extractTokensViaBetterSqlite(dbPath) {
              WHERE key LIKE '%Token%' OR key LIKE '%achineId%'
              ORDER BY
                CASE
-                 WHEN lower(key) LIKE '%accesstoken%'                      THEN 0
-                 WHEN lower(key) LIKE '%cursorauth%' AND lower(key) LIKE '%token%' THEN 1
-                 WHEN lower(key) LIKE '%cursor%'    AND lower(key) LIKE '%token%' THEN 2
-                 WHEN lower(key) LIKE '%machineid%' AND lower(key) LIKE '%cursor%' THEN 3
-                 WHEN lower(key) LIKE '%machineid%'                          THEN 4
-                 WHEN lower(key) LIKE '%token%'                              THEN 5
+                 WHEN lower(key) LIKE '%cursorauth%' AND lower(key) LIKE '%accesstoken%' THEN 0
+                 WHEN lower(key) LIKE '%cursor%'    AND lower(key) LIKE '%accesstoken%' THEN 1
+                 WHEN lower(key) LIKE '%accesstoken%'                                      THEN 2
+                 WHEN lower(key) LIKE '%cursorauth%' AND lower(key) LIKE '%token%'       THEN 3
+                 WHEN lower(key) LIKE '%cursor%'    AND lower(key) LIKE '%token%'        THEN 4
+                 WHEN lower(key) LIKE '%token%'                                          THEN 5
+                 WHEN lower(key) LIKE '%machineid%' AND lower(key) LIKE '%cursor%'       THEN 6
+                 WHEN lower(key) LIKE '%machineid%'                                      THEN 7
                  ELSE 9
                END`,
         )
@@ -104,16 +110,20 @@ async function extractTokensViaBetterSqlite(dbPath) {
 
       // Collect the best candidate per slot by rank (lower rank = better),
       // rather than first-match-wins, so row order can't change the outcome.
+      // Rank tiers mirror the SQL ORDER BY exactly (see above) so an
+      // unscoped `…accessToken…` key can never tie a Cursor-namespaced one.
       let bestAccessToken = null, bestAccessTokenRank = Infinity;
       let bestMachineId = null, bestMachineIdRank = Infinity;
       const rank = (key) => {
         const k = key.toLowerCase();
-        if (k.includes("accesstoken")) return 0;
-        if (k.includes("cursorauth") && k.includes("token")) return 1;
-        if (k.includes("cursor") && k.includes("token")) return 2;
-        if (k.includes("machineid") && k.includes("cursor")) return 3;
-        if (k.includes("machineid")) return 4;
+        if (k.includes("cursorauth") && k.includes("accesstoken")) return 0;
+        if (k.includes("cursor") && k.includes("accesstoken")) return 1;
+        if (k.includes("accesstoken")) return 2;
+        if (k.includes("cursorauth") && k.includes("token")) return 3;
+        if (k.includes("cursor") && k.includes("token")) return 4;
         if (k.includes("token")) return 5;
+        if (k.includes("machineid") && k.includes("cursor")) return 6;
+        if (k.includes("machineid")) return 7;
         return 9;
       };
       for (const row of fuzzyRows) {

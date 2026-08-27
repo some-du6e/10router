@@ -174,6 +174,36 @@ describe("GET /api/oauth/cursor/auto-import", () => {
     expect(response.body.machineId).toBe("cursor-machine");
   });
 
+  // Regression (CR follow-up): two keys that both contain `accessToken` must not
+  // tie at the top rank and let an unrelated app win by row order. An unscoped
+  // `someOtherApp/accessToken` and `cursorAuth/renamedAccessToken` both match the
+  // access-token tier; the ranking must prefer the Cursor-namespaced one. The
+  // unrelated row is deliberately first so first-match-wins would pick it if the
+  // tie weren't broken.
+  it("fuzzy fallback prefers a Cursor-namespaced access token over an unscoped access-token tie", async () => {
+    vi.mocked(fsPromises.access).mockResolvedValue();
+    mockDbInstance.prepare.mockImplementation((query) => {
+      if (query.includes("IN (")) {
+        return { all: vi.fn().mockReturnValue([]) };
+      }
+      // Unscoped access-token row arrives BEFORE the Cursor-namespaced one —
+      // both contain `accessToken`, so only a Cursor-aware tie-break wins.
+      return {
+        all: vi.fn().mockReturnValue([
+          { key: "someOtherApp/accessToken", value: "unrelated-access-token" },
+          { key: "cursorAuth/renamedAccessToken", value: "cursor-access-token" },
+          { key: "cursor.someMachineId", value: "cursor-machine" },
+        ]),
+      };
+    });
+
+    const response = await GET();
+
+    expect(response.body.found).toBe(true);
+    expect(response.body.accessToken).toBe("cursor-access-token");
+    expect(response.body.machineId).toBe("cursor-machine");
+  });
+
   it("returns login-prompt error when tokens are missing even after fallback", async () => {
     vi.mocked(fsPromises.access).mockResolvedValue();
     mockDbInstance.prepare.mockReturnValue({
