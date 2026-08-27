@@ -9,6 +9,8 @@ function rowToKey(row) {
     name: row.name,
     machineId: row.machineId,
     isActive: row.isActive === 1 || row.isActive === true,
+    // null/undefined = inherit the global setting; only an explicit 0/1 overrides it
+    limitHold: row.limitHold === null || row.limitHold === undefined ? null : (row.limitHold === 1 || row.limitHold === true),
     createdAt: row.createdAt,
   };
 }
@@ -53,8 +55,8 @@ export async function updateApiKey(id, data) {
     if (!row) return;
     const merged = { ...rowToKey(row), ...data };
     db.run(
-      `UPDATE apiKeys SET key = ?, name = ?, machineId = ?, isActive = ? WHERE id = ?`,
-      [merged.key, merged.name, merged.machineId, merged.isActive ? 1 : 0, id]
+      `UPDATE apiKeys SET key = ?, name = ?, machineId = ?, isActive = ?, limitHold = ? WHERE id = ?`,
+      [merged.key, merged.name, merged.machineId, merged.isActive ? 1 : 0, toLimitHoldColumn(merged.limitHold), id]
     );
     result = merged;
   });
@@ -65,6 +67,24 @@ export async function deleteApiKey(id) {
   const db = await getAdapter();
   const res = db.run(`DELETE FROM apiKeys WHERE id = ?`, [id]);
   return (res?.changes ?? 0) > 0;
+}
+
+/** null → inherit global; anything else → explicit 0/1 */
+function toLimitHoldColumn(value) {
+  if (value === null || value === undefined) return null;
+  return value ? 1 : 0;
+}
+
+/**
+ * Read the rate-limit hold override for a raw API key.
+ * @returns {Promise<boolean|null>} null when the key is unknown or inherits the global setting
+ */
+export async function getApiKeyLimitHold(key) {
+  if (!key) return null;
+  const db = await getAdapter();
+  const row = db.get(`SELECT limitHold FROM apiKeys WHERE key = ?`, [key]);
+  if (!row || row.limitHold === null || row.limitHold === undefined) return null;
+  return row.limitHold === 1 || row.limitHold === true;
 }
 
 export async function validateApiKey(key) {

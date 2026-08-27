@@ -14,11 +14,14 @@ import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
 import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
 import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
+import { createLimitHoldResponse, awaitLimitClear, isLimitError } from "open-sse/utils/limitHold.js";
+import { resolveLimitHold } from "../services/limitHoldConfig.js";
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
+import { detectFormat } from "open-sse/services/provider.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
@@ -119,7 +122,7 @@ export async function handleChat(request, clientRawRequest = null) {
             const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
             cleanRawReq = { ...clientRawRequest, body: cleanBody };
           }
-          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false });
         },
         log,
         comboName: modelStr,
@@ -134,7 +137,7 @@ export async function handleChat(request, clientRawRequest = null) {
       body,
       models: augmentedModels,
       handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false }),
         adapterAdded
       ),
       log,
@@ -154,7 +157,7 @@ export async function handleChat(request, clientRawRequest = null) {
       body,
       models: soloAugmented,
       handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false }),
         adapterAdded
       ),
       log,
@@ -169,7 +172,7 @@ export async function handleChat(request, clientRawRequest = null) {
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, { allowHold = true } = {}) {
   // Detect source format by endpoint + body (scoped per-call; handleChat's copy is a
   // separate function and is not visible here)
   const sourceFormatOverride = request?.url
@@ -201,7 +204,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
               cleanRawReq = { ...clientRawRequest, body: cleanBody };
             }
-            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false });
           },
           log,
           comboName: modelStr,
@@ -216,7 +219,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         body,
         models: augmentedModels,
         handleSingleModel: withCapacityAdapterStripping(
-          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false }),
           adapterAdded
         ),
         log,
@@ -253,7 +256,16 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     }
   }
 
-  // Try with available accounts (fallback on errors)
+  // Rate-limit hold: when every account is limited we can keep the client's
+  // stream open and wait for the reset instead of returning an error.
+  const limitHold = allowHold ? await resolveLimitHold(apiKey) : { enabled: false, onPinned: false };
+
+  // One full pass over the available accounts. Returns a structured result so a
+  // limit can be retried later by the hold, rather than being burned into a
+  // Response the caller can no longer act on.
+  const runAccountLoop = async () => {
+  // Fresh per pass: a retry after the reset must reconsider every account, not
+  // inherit exclusions from the pass that ran hours ago.
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
@@ -271,14 +283,24 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         const errorMsg = lastError || credentials.lastError || "Unavailable";
         const status = lastStatus || Number(credentials.lastErrorCode) || HTTP_STATUS.SERVICE_UNAVAILABLE;
         log.warn("CHAT", `[${provider}/${model}] ${errorMsg} (${credentials.retryAfterHuman})`);
-        return unavailableResponse(status, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman);
+        const retryAtMs = credentials.retryAfter ? new Date(credentials.retryAfter).getTime() : 0;
+        return {
+          success: false,
+          status,
+          error: errorMsg,
+          limited: isLimitError(status, errorMsg),
+          retryAtMs,
+          response: unavailableResponse(status, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman),
+        };
       }
       if (excludeConnectionIds.size === 0) {
         log.warn("AUTH", `No active credentials for provider: ${provider}`);
-        return errorResponse(HTTP_STATUS.NOT_FOUND, `No active credentials for provider: ${provider}`);
+        return { success: false, status: HTTP_STATUS.NOT_FOUND, error: `No active credentials for provider: ${provider}`, response: errorResponse(HTTP_STATUS.NOT_FOUND, `No active credentials for provider: ${provider}`) };
       }
       log.warn("CHAT", "No more accounts available", { provider });
-      return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
+      const status = lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE;
+      const errorMsg = lastError || "All accounts unavailable";
+      return { success: false, status, error: errorMsg, response: errorResponse(status, errorMsg) };
     }
 
     // Bind before the turn runs, not after it succeeds: Codex fires side
@@ -340,10 +362,32 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       }
     });
 
-    if (result.success) return result.response;
+    if (result.success) return result;
 
     // Mark account unavailable (auto-calculates cooldown with exponential backoff, or precise resetsAtMs)
-    const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs);
+    const { shouldFallback, cooldownMs } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs);
+
+    // Hold for the pinned account rather than rotating away from it. Opt-in:
+    // rotating is instant, so waiting only pays when prompt-cache continuity is
+    // worth more than the delay.
+    if (
+      shouldFallback &&
+      limitHold.enabled &&
+      limitHold.onPinned &&
+      affinityKey &&
+      getAffinity(affinityKey) === credentials.connectionId &&
+      isLimitError(result.status, result.error)
+    ) {
+      log.warn("LIMITHOLD", `pinned ACC:${credentials.connectionName} limited — holding instead of rotating`);
+      return {
+        success: false,
+        status: result.status,
+        error: result.error,
+        limited: true,
+        retryAtMs: result.resetsAtMs || Date.now() + (cooldownMs || 0),
+        response: result.response,
+      };
+    }
 
     if (shouldFallback) {
       log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);
@@ -357,6 +401,37 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       continue;
     }
 
-    return result.response;
+    return result;
   }
+  };
+
+  const first = await runAccountLoop();
+  if (first.success) return first.response;
+
+  if (!first.limited || !limitHold.enabled) return first.response;
+
+  // Non-streaming clients have no stream to narrate into, so the request just
+  // hangs until the limit clears and the real JSON comes back.
+  if (body.stream === false) {
+    const abort = new AbortController();
+    request?.signal?.addEventListener?.("abort", () => abort.abort(), { once: true });
+    const settled = await awaitLimitClear({
+      retryAtMs: first.retryAtMs,
+      attempt: runAccountLoop,
+      provider,
+      model,
+      signal: abort.signal,
+      log,
+    });
+    return settled?.response || first.response;
+  }
+
+  return createLimitHoldResponse({
+    sourceFormat: sourceFormatOverride || detectFormat(body),
+    model: modelStr,
+    provider,
+    retryAtMs: first.retryAtMs,
+    attempt: runAccountLoop,
+    log,
+  });
 }

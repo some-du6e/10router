@@ -16,6 +16,13 @@ const DEFAULT_SETTINGS = {
   // actually hits the (per-account) upstream prompt cache. Opt-in: it trades
   // some load-balancing freedom for cache continuity.
   codexSessionAffinity: false,
+  // Rate-limit hold: instead of failing when a provider limit is hit, keep the
+  // client's stream open, print a status line, and retry when the limit resets.
+  // Per-API-key `limitHold` overrides this; keyless requests use it directly.
+  limitHoldEnabled: false,
+  // Hold for the session-pinned account even when other accounts are free.
+  // Off by default: rotating is instant, waiting can cost hours to save a cache.
+  limitHoldOnPinned: false,
   providerStrategies: {},
   quotaVisibility: {},
   comboStrategy: "fallback",

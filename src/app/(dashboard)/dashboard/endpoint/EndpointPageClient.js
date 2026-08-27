@@ -26,6 +26,8 @@ export default function APIPageClient({ machineId }) {
   const [confirmState, setConfirmState] = useState(null);
 
   const [requireApiKey, setRequireApiKey] = useState(false);
+  const [limitHoldEnabled, setLimitHoldEnabled] = useState(false);
+  const [limitHoldOnPinned, setLimitHoldOnPinned] = useState(false);
   const [requireLogin, setRequireLogin] = useState(true);
   const [hasPassword, setHasPassword] = useState(true);
  const [tunnelDashboardAccess, setTunnelDashboardAccess] = useState(false);
@@ -201,6 +203,8 @@ export default function APIPageClient({ machineId }) {
       if (settingsRes.ok) {
         const data = await settingsRes.json();
         setRequireApiKey(data.requireApiKey || false);
+        setLimitHoldEnabled(data.limitHoldEnabled || false);
+        setLimitHoldOnPinned(data.limitHoldOnPinned || false);
         setRequireLogin(data.requireLogin !== false);
         setHasPassword(data.hasPassword || false);
         setTunnelDashboardAccess(data.tunnelDashboardAccess || false);
@@ -250,6 +254,37 @@ export default function APIPageClient({ machineId }) {
       if (res.ok) setRequireApiKey(value);
     } catch (error) {
       console.log("Error updating requireApiKey:", error);
+    }
+  };
+
+  const handleLimitHoldSetting = async (field, value, setter) => {
+    const previous = field === "limitHoldEnabled" ? limitHoldEnabled : limitHoldOnPinned;
+    setter(value); // optimistic
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [field]: value }),
+      });
+      // fetch() resolves on 4xx too, so roll back unless the write landed.
+      if (!res.ok) throw new Error("save failed");
+    } catch (error) {
+      setter(previous);
+      console.log(`Error updating ${field}:`, error);
+    }
+  };
+
+  // Cycles inherit → hold → fail-fast. null means "follow the global setting".
+  const handleKeyLimitHold = async (id, next) => {
+    try {
+      const res = await fetch(`/api/keys/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ limitHold: next }),
+      });
+      if (res.ok) setKeys(prev => prev.map(k => k.id === id ? { ...k, limitHold: next } : k));
+    } catch (error) {
+      console.log("Error updating key limitHold:", error);
     }
   };
 
@@ -988,6 +1023,36 @@ export default function APIPageClient({ machineId }) {
           />
         </div>
 
+        <div className="flex items-center justify-between pb-4 mb-4 border-b border-border">
+          <div>
+            <p className="font-medium">Wait out rate limits</p>
+            <p className="text-sm text-text-muted">
+              When a provider limit is hit, keep the response open and retry when it resets
+              instead of returning an error. Individual keys can override this.
+            </p>
+          </div>
+          <Toggle
+            checked={limitHoldEnabled}
+            onChange={() => handleLimitHoldSetting("limitHoldEnabled", !limitHoldEnabled, setLimitHoldEnabled)}
+          />
+        </div>
+
+        {limitHoldEnabled && (
+          <div className="flex items-center justify-between pb-4 mb-4 border-b border-border">
+            <div>
+              <p className="font-medium">Wait for the pinned account</p>
+              <p className="text-sm text-text-muted">
+                With Codex session affinity on, wait for the session&apos;s own account to reset
+                rather than switching to a free one. Keeps the prompt cache, costs the wait.
+              </p>
+            </div>
+            <Toggle
+              checked={limitHoldOnPinned}
+              onChange={() => handleLimitHoldSetting("limitHoldOnPinned", !limitHoldOnPinned, setLimitHoldOnPinned)}
+            />
+          </div>
+        )}
+
         {isRemoteHost && !requireApiKey && (
           <div className="mb-4 -mt-2">
             <SecurityWarning message="Endpoint is exposed without an API key." />
@@ -1044,6 +1109,27 @@ export default function APIPageClient({ machineId }) {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
+                  {(() => {
+                    // null → inherit global, true → always wait, false → always fail fast
+                    const mode = key.limitHold === null || key.limitHold === undefined ? "inherit" : (key.limitHold ? "hold" : "fast");
+                    const next = { inherit: true, hold: false, fast: null }[mode];
+                    const label = {
+                      inherit: `Rate limits: follows global (${limitHoldEnabled ? "wait" : "fail fast"})`,
+                      hold: "Rate limits: always wait",
+                      fast: "Rate limits: always fail fast",
+                    }[mode];
+                    const icon = { inherit: "hourglass_disabled", hold: "hourglass_top", fast: "bolt" }[mode];
+                    const tone = { inherit: "text-text-muted", hold: "text-primary", fast: "text-orange-500" }[mode];
+                    return (
+                      <button
+                        onClick={() => handleKeyLimitHold(key.id, next)}
+                        className={`p-2 rounded hover:bg-black/5 dark:hover:bg-white/5 transition-all ${tone}`}
+                        title={`${label} — click to change`}
+                      >
+                        <span className="material-symbols-outlined text-[18px]">{icon}</span>
+                      </button>
+                    );
+                  })()}
                   <Toggle
                     size="sm"
                     checked={key.isActive ?? true}
