@@ -522,7 +522,10 @@ export class CursorExecutor extends BaseExecutor {
     let session;
     try {
       session = this.openAgentHttp2Stream(url, headers, requestController.signal);
-      session.write(buildAgentRunFrame(body.messages || [], model));
+      // Pass request tools so buildAgentRunFrame can encode MCP tool schemas
+      // into Field 4 of the run frame — without this, encodeMcpTools() is never
+      // reached (tools defaults to []) and Cursor receives no tool definitions.
+      session.write(buildAgentRunFrame(body.messages || [], model, body.tools || []));
     } catch (error) {
       throw new Error(`Cursor AgentService request failed: ${error.message}`);
     }

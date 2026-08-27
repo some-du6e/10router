@@ -80,7 +80,7 @@ export class BaseExecutor {
     return body;
   }
 
-  shouldRetry(status, urlIndex) {
+  shouldRetry(status, urlIndex, retryCtx) {
     return status === HTTP_STATUS.RATE_LIMITED && urlIndex + 1 < this.getFallbackCount();
   }
 
@@ -97,11 +97,16 @@ export class BaseExecutor {
     return { status: response.status, message: bodyText || `HTTP ${response.status}` };
   }
 
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, retryCtx = {} }) {
     const fallbackCount = this.getFallbackCount();
     let lastError = null;
     let lastStatus = 0;
     const retryAttemptsByUrl = {};
+    // Per-call retry context: a fresh local object per execute() invocation, so
+    // flags like `integrityRetry` cannot race across concurrent requests sharing
+    // one cached executor instance (getExecutor returns a module-level singleton).
+    // Subclasses' shouldRetry() may read retryCtx; the base loop also honors it on
+    // the network-error path, where shouldRetry() is not consulted.
 
     // Merge default retry config with provider-specific config
     const retryConfig = { ...DEFAULT_RETRY_CONFIG, ...this.config.retry };
@@ -154,7 +159,7 @@ export class BaseExecutor {
 
         if (await tryRetry(urlIndex, response.status, `status ${response.status}`, response)) { urlIndex--; continue; }
 
-        if (this.shouldRetry(response.status, urlIndex)) {
+        if (this.shouldRetry(response.status, urlIndex, retryCtx)) {
           log?.debug?.("RETRY", `${response.status} on ${url}, trying fallback ${urlIndex + 1}`);
           lastStatus = response.status;
           continue;
@@ -172,7 +177,12 @@ export class BaseExecutor {
         // Map network/fetch exceptions to 502 retry config
         if (await tryRetry(urlIndex, HTTP_STATUS.BAD_GATEWAY, `network "${error.message}"`)) { urlIndex--; continue; }
 
-        if (urlIndex + 1 < fallbackCount) {
+        // Endpoint failover on a network error. shouldRetry() is not consulted on
+        // this path, so honor the per-call integrity guard explicitly: a bounded
+        // repair attempt (runIntegrityRecovery) must NOT rotate endpoints — it
+        // should surface the network failure through the intended error path
+        // instead of fanning out across every fallback surface.
+        if (urlIndex + 1 < fallbackCount && !retryCtx.integrityRetry) {
           log?.debug?.("RETRY", `Error on ${url}, trying fallback ${urlIndex + 1}`);
           continue;
         }

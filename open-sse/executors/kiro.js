@@ -309,15 +309,19 @@ export class KiroExecutor extends BaseExecutor {
 
   // Retry only endpoint/auth-surface failures. Payload-invalid HTTP 400 must be
   // terminal: sending the same malformed body to every surface cannot repair it.
-  // The `integrityRetry` flag is set only around the single bounded repair
+  // The `integrityRetry` guard is set only around the single bounded repair
   // attempt in runIntegrityRecovery: endpoint failover is for the *initial*
   // request, not the repair. Rotating surfaces mid-repair would exhaust the
   // bounded attempt and throw on an unmocked fetch instead of surfacing the
   // upstream error (e.g. a 401) as a clean kiro_integrity_retry_upstream_error.
-  shouldRetry(status, urlIndex) {
+  //
+  // The guard is per-call (retryCtx), not on `this`: getExecutor("kiro") returns
+  // one shared instance, so an instance flag would race across concurrent
+  // requests — one repair's finally could clear another's flag mid-flight.
+  shouldRetry(status, urlIndex, retryCtx = {}) {
     const hasFallback = urlIndex + 1 < this.getFallbackCount();
-    return super.shouldRetry(status, urlIndex)
-      || (hasFallback && !this.integrityRetry && KIRO_ENDPOINT_FALLBACK_STATUSES.has(status));
+    return super.shouldRetry(status, urlIndex, retryCtx)
+      || (hasFallback && !retryCtx.integrityRetry && KIRO_ENDPOINT_FALLBACK_STATUSES.has(status));
   }
 
   transformRequest(model, body, stream, credentials) {
@@ -435,17 +439,18 @@ export class KiroExecutor extends BaseExecutor {
       ? appendRepairInstruction(args.body, repairKind === "invalid_tool" ? "tool" : repairKind)
       : structuredClone(args.body || {});
 
-    this.integrityRetry = true;
+    // Per-call retry context: the integrity guard is local to this single
+    // bounded repair attempt, not stored on the shared executor instance, so
+    // concurrent kiro requests can't race on the flag. execute() threads
+    // retryCtx into shouldRetry() and honors it on the network-error path.
+    const retryCtx = { integrityRetry: true };
     let retry;
-    try {
-      retry = await BaseExecutor.prototype.execute.call(this, {
-        ...args,
-        body: repairBody,
-        signal: options.signal
-      });
-    } finally {
-      this.integrityRetry = false;
-    }
+    retry = await BaseExecutor.prototype.execute.call(this, {
+      ...args,
+      body: repairBody,
+      signal: options.signal,
+      retryCtx
+    });
     if (!retry?.response?.ok) {
       let body = "";
       try {

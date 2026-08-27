@@ -144,6 +144,36 @@ describe("GET /api/oauth/cursor/auto-import", () => {
     expect(response.body.machineId).toBe("fallback-machine");
   });
 
+  // Regression: an unrelated app's generic `…token…` row must NOT be returned as
+  // Cursor's accessToken when a renamed Cursor access-token key is also present.
+  // The rows are deliberately ordered with the unrelated (generic-token) row
+  // FIRST and the Cursor access-token row SECOND — the route's ranking must
+  // prefer the access-token candidate regardless of physical row order. (The
+  // real ORDER BY clause enforces this in SQLite; the mock returns rows as
+  // given, so this exercises the in-JS precedence that mirrors the ranking.)
+  it("fuzzy fallback prefers a renamed Cursor access token over an unrelated token row", async () => {
+    vi.mocked(fsPromises.access).mockResolvedValue();
+    mockDbInstance.prepare.mockImplementation((query) => {
+      if (query.includes("IN (")) {
+        return { all: vi.fn().mockReturnValue([]) };
+      }
+      // Unrelated generic-token row arrives BEFORE the Cursor access-token row.
+      return {
+        all: vi.fn().mockReturnValue([
+          { key: "someOtherApp/authToken", value: "unrelated-token" },
+          { key: "cursorAuth/renamedAccessToken", value: "cursor-access-token" },
+          { key: "cursor.someMachineId", value: "cursor-machine" },
+        ]),
+      };
+    });
+
+    const response = await GET();
+
+    expect(response.body.found).toBe(true);
+    expect(response.body.accessToken).toBe("cursor-access-token");
+    expect(response.body.machineId).toBe("cursor-machine");
+  });
+
   it("returns login-prompt error when tokens are missing even after fallback", async () => {
     vi.mocked(fsPromises.access).mockResolvedValue();
     mockDbInstance.prepare.mockReturnValue({

@@ -75,25 +75,60 @@ async function extractTokensViaBetterSqlite(dbPath) {
       }
     }
 
-    // Fuzzy fallback: when exact keys are missing (renamed across versions),
-    // match by substring so a fresh Cursor install still imports.
+    // Fuzzy fallback: when exact keys are missing (renamed across Cursor
+    // versions), match by substring so a fresh install still imports. The query
+    // has no inherent row order, so rank candidates deterministically: an
+    // access-token key beats a generic token key, and a Cursor-namespaced key
+    // (cursorAuth/cursor) beats an unrelated app's key. The SQL ORDER BY asks
+    // SQLite for that order, and the in-JS ranking below re-applies it so the
+    // result is correct even if the driver returns rows in another order — an
+    // unrelated app's `…token…` row must never be returned as Cursor's
+    // accessToken when a renamed Cursor access-token key is present.
     if (!accessToken || !machineId) {
       const fuzzyRows = db
         .prepare(
-          "SELECT key, value FROM itemTable WHERE key LIKE '%Token%' OR key LIKE '%achineId%'",
+          `SELECT key, value FROM itemTable
+             WHERE key LIKE '%Token%' OR key LIKE '%achineId%'
+             ORDER BY
+               CASE
+                 WHEN lower(key) LIKE '%accesstoken%'                      THEN 0
+                 WHEN lower(key) LIKE '%cursorauth%' AND lower(key) LIKE '%token%' THEN 1
+                 WHEN lower(key) LIKE '%cursor%'    AND lower(key) LIKE '%token%' THEN 2
+                 WHEN lower(key) LIKE '%machineid%' AND lower(key) LIKE '%cursor%' THEN 3
+                 WHEN lower(key) LIKE '%machineid%'                          THEN 4
+                 WHEN lower(key) LIKE '%token%'                              THEN 5
+                 ELSE 9
+               END`,
         )
         .all();
 
+      // Collect the best candidate per slot by rank (lower rank = better),
+      // rather than first-match-wins, so row order can't change the outcome.
+      let bestAccessToken = null, bestAccessTokenRank = Infinity;
+      let bestMachineId = null, bestMachineIdRank = Infinity;
+      const rank = (key) => {
+        const k = key.toLowerCase();
+        if (k.includes("accesstoken")) return 0;
+        if (k.includes("cursorauth") && k.includes("token")) return 1;
+        if (k.includes("cursor") && k.includes("token")) return 2;
+        if (k.includes("machineid") && k.includes("cursor")) return 3;
+        if (k.includes("machineid")) return 4;
+        if (k.includes("token")) return 5;
+        return 9;
+      };
       for (const row of fuzzyRows) {
-        const key = String(row.key || "").toLowerCase();
-        if (!accessToken && key.includes("accesstoken")) {
-          accessToken = normalizeValue(row.value);
-        } else if (!accessToken && key.includes("token")) {
-          accessToken = normalizeValue(row.value);
-        } else if (!machineId && key.includes("machineid")) {
-          machineId = normalizeValue(row.value);
+        const key = String(row.key || "");
+        const r = rank(key);
+        if (!accessToken && r < bestAccessTokenRank && key.toLowerCase().includes("token")) {
+          bestAccessToken = normalizeValue(row.value);
+          bestAccessTokenRank = r;
+        } else if (!machineId && r < bestMachineIdRank && key.toLowerCase().includes("machineid")) {
+          bestMachineId = normalizeValue(row.value);
+          bestMachineIdRank = r;
         }
       }
+      if (!accessToken) accessToken = bestAccessToken;
+      if (!machineId) machineId = bestMachineId;
     }
 
     return { accessToken, machineId };
