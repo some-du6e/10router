@@ -10,6 +10,7 @@
 
 import crypto from "crypto";
 import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
+import { SESSION_HEADER_KEYS } from "../config/appConstants.js";
 
 // Runtime storage: Key = connectionId, Value = { sessionId, lastUsed }
 const runtimeSessionStore = new Map();
@@ -91,8 +92,6 @@ const ASSISTANT_CAP_LEN = 50;
 const MAX_ASSISTANT_SESSIONS = 5000;
 const MAX_CONTINUATION_SESSIONS = 5000;
 
-// Client headers/body fields that carry an upstream session id (priority order)
-const SESSION_HEADER_KEYS = ["x-session-id", "session-id", "session_id", "x-amp-thread-id"];
 const CLAUDE_CODE_SESSION_RE = /_session_([a-f0-9-]+)$/;
 
 function sha16(text) {
@@ -218,6 +217,18 @@ export function resolveSessionIdentity({ headers, body, connectionId, workspaceI
 
 export function resolveSessionId(opts = {}) {
     return resolveSessionIdentity(opts).sessionId;
+}
+
+/**
+ * Client-supplied session id only — no generated or connection-derived fallback.
+ *
+ * Session→account affinity needs an identity that exists *before* an account is
+ * chosen, so the per-connection fallback in `resolveSessionIdentity` is not
+ * usable there (it is derived from the very thing being selected). Returns null
+ * when the client sent nothing identifying.
+ */
+export function resolveClientSessionId({ headers, body, scope = "" } = {}) {
+    return extractClientSessionId(headers, body, scope);
 }
 
 export function resolveContinuationId({ sessionId, connectionId, scope = "", ephemeral = false } = {}) {

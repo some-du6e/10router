@@ -24,6 +24,13 @@ import { updateProviderCredentials, checkAndRefreshToken } from "../services/tok
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { enrichClaudeBuiltinSearch } from "../services/claudeBuiltinSearch.js";
 import { summarizeAccountFailures } from "../services/accountFailureSummary.js";
+import {
+  isAffinityProvider,
+  affinityKeyFor,
+  getAffinity,
+  bindAffinity,
+  releaseAffinity,
+} from "open-sse/services/sessionAffinity.js";
 
 /**
  * Handle chat completion request
@@ -81,9 +88,13 @@ export async function handleChat(request, clientRawRequest = null) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   }
 
+  const sourceFormatOverride = request?.url
+    ? detectFormatByEndpoint(new URL(request.url).pathname, body)
+    : null;
+
   // Bypass naming/warmup requests before combo rotation to avoid wasting rotation slots
   const userAgent = request?.headers?.get("user-agent") || "";
-  const bypassResponse = handleBypassRequest(body, modelStr, userAgent, !!settings.ccFilterNaming);
+  const bypassResponse = handleBypassRequest(body, modelStr, userAgent, !!settings.ccFilterNaming, sourceFormatOverride);
   if (bypassResponse) return bypassResponse.response || bypassResponse;
 
   const requiredCapabilities = detectRequiredCapabilities(body);
@@ -160,6 +171,11 @@ export async function handleChat(request, clientRawRequest = null) {
  * Handle single model chat request
  */
 async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null) {
+  // Detect source format by endpoint + body (scoped per-call; handleChat's copy is a
+  // separate function and is not visible here)
+  const sourceFormatOverride = request?.url
+    ? detectFormatByEndpoint(new URL(request.url).pathname, body)
+    : null;
   const modelInfo = await getModelInfo(modelStr);
 
   // If provider is null, this might be a combo name - check and handle
@@ -223,6 +239,21 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   // Extract userAgent from request
   const userAgent = request?.headers?.get("user-agent") || "";
 
+  // Session→account affinity (Codex only, opt-in). A Codex conversation keeps a
+  // stable prompt_cache_key across turns, but the upstream prompt cache is
+  // per-account — so re-picking an account per turn throws that cache away.
+  // Pinning the session to one account is what makes the key pay off.
+  //
+  // Resolved before the loop so a retry after a failed account still knows the
+  // session, and skipped entirely (no settings read) for every other provider.
+  let affinityKey = null;
+  if (isAffinityProvider(provider)) {
+    const affinitySettings = await getSettings();
+    if (affinitySettings.codexSessionAffinity) {
+      affinityKey = affinityKeyFor({ provider, headers: request?.headers, body });
+    }
+  }
+
   // Try with available accounts (fallback on errors)
   const excludeConnectionIds = new Set();
   const accountFailures = [];
@@ -230,7 +261,11 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
+    // A pin is a preference, not a requirement: getProviderCredentials ignores a
+    // connection that is excluded, model-locked or rate-limited and falls back to
+    // the configured strategy, so a dead pinned account never wedges a session.
+    const preferredConnectionId = affinityKey ? getAffinity(affinityKey) : null;
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId });
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
@@ -253,6 +288,11 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         summarizeAccountFailures(provider, model, accountFailures)
       );
     }
+
+    // Bind before the turn runs, not after it succeeds: Codex fires side
+    // requests concurrently with the main turn, and they should land on the same
+    // account rather than racing to claim the session.
+    if (affinityKey && credentials.connectionId) bindAffinity(affinityKey, credentials.connectionId);
 
     // Account selection shown in the unified "▶" line (acc:...)
     const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
@@ -295,8 +335,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       pxpipeTransform: chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null,
       onPxpipeEvent: appendPxpipeEvent,
       providerThinking,
-      // Detect source format by endpoint + body
-      sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
+      sourceFormatOverride,
       onCredentialsRefreshed: async (newCreds) => {
         await updateProviderCredentials(credentials.connectionId, {
           ...newCreds,
@@ -321,6 +360,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         status: result.status,
         error: result.error,
       });
+      // Stale-anchor recovery: the pinned account just went away, so drop the pin
+      // and let the next iteration rebind. Guarded on the id, so a concurrent turn
+      // that already moved the session elsewhere is left alone.
+      if (affinityKey) releaseAffinity(affinityKey, credentials.connectionId);
       excludeConnectionIds.add(credentials.connectionId);
       lastError = result.error;
       lastStatus = result.status;

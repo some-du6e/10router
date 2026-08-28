@@ -29,6 +29,7 @@ export const MEMORY_CONFIG = {
   sessionCleanupIntervalMs: 30 * 60 * 1000,
   dnsCacheTtlMs: 5 * 60 * 1000,
   proxyDispatchersMaxSize: 20,
+  maxAffinitySessions: 5000,
 };
 
 // Parse a positive integer env override, falling back to a default.

@@ -142,6 +142,15 @@ function openAICompletionToResponses(responseBody, customToolNames = null) {
  * Translate non-streaming response body from provider format → OpenAI format.
  */
 export function translateNonStreamingResponse(responseBody, targetFormat, sourceFormat, customToolNames = null) {
+  // Trust the response shape over the configured upstream format. Some
+  // Responses-compatible gateways return a Chat Completions body from
+  // /responses, which still needs conversion for non-OpenAI clients.
+  if (responseBody?.choices?.[0] && sourceFormat === FORMATS.CLAUDE) {
+    return openAICompletionToClaudeMessage(responseBody);
+  }
+  if (responseBody?.choices?.[0] && sourceFormat === FORMATS.OPENAI_RESPONSES) {
+    return openAICompletionToResponses(responseBody, customToolNames);
+  }
   if (targetFormat === sourceFormat) return responseBody;
   // Provider responded in OpenAI Chat Completions shape but the client speaks
   // Responses API — convert so tool_calls/text surface as Responses `output`.
