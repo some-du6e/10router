@@ -26,6 +26,7 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { enrichClaudeBuiltinSearch } from "../services/claudeBuiltinSearch.js";
+import { summarizeAccountFailures } from "../services/accountFailureSummary.js";
 import {
   isAffinityProvider,
   affinityKeyFor,
@@ -267,6 +268,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   // Fresh per pass: a retry after the reset must reconsider every account, not
   // inherit exclusions from the pass that ran hours ago.
   const excludeConnectionIds = new Set();
+  const accountFailures = [];
   let lastError = null;
   let lastStatus = null;
 
@@ -280,9 +282,12 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
-        const errorMsg = lastError || credentials.lastError || "Unavailable";
+        const errorMsg = accountFailures.length > 0
+          ? summarizeAccountFailures(provider, model, accountFailures)
+          : (lastError || credentials.lastError || "Unavailable");
         const status = lastStatus || Number(credentials.lastErrorCode) || HTTP_STATUS.SERVICE_UNAVAILABLE;
-        log.warn("CHAT", `[${provider}/${model}] ${errorMsg} (${credentials.retryAfterHuman})`);
+        const prefixedError = accountFailures.length > 0 ? errorMsg : `[${provider}/${model}] ${errorMsg}`;
+        log.warn("CHAT", `${prefixedError} (${credentials.retryAfterHuman})`);
         const retryAtMs = credentials.retryAfter ? new Date(credentials.retryAfter).getTime() : 0;
         return {
           success: false,
@@ -290,7 +295,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
           error: errorMsg,
           limited: isLimitError(status, errorMsg),
           retryAtMs,
-          response: unavailableResponse(status, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman),
+          response: unavailableResponse(status, prefixedError, credentials.retryAfter, credentials.retryAfterHuman),
         };
       }
       if (excludeConnectionIds.size === 0) {
@@ -299,7 +304,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       }
       log.warn("CHAT", "No more accounts available", { provider });
       const status = lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE;
-      const errorMsg = lastError || "All accounts unavailable";
+      const errorMsg = summarizeAccountFailures(provider, model, accountFailures);
       return { success: false, status, error: errorMsg, response: errorResponse(status, errorMsg) };
     }
 
@@ -391,6 +396,11 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
     if (shouldFallback) {
       log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);
+      accountFailures.push({
+        account: credentials.connectionName,
+        status: result.status,
+        error: result.error,
+      });
       // Stale-anchor recovery: the pinned account just went away, so drop the pin
       // and let the next iteration rebind. Guarded on the id, so a concurrent turn
       // that already moved the session elsewhere is left alone.
