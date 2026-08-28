@@ -56,6 +56,14 @@ describe("banner detection", () => {
     const body = { messages: [{ role: "assistant", content: [{ type: "text", text: LIMIT_HOLD_SENTINEL }] }] };
     expect(hasLimitHoldBanner(body)).toBe(true);
   });
+
+  it("does not infer model from a role-less gemini contents entry", () => {
+    // Gemini defaults an omitted contents[] role to user, so a banner-quoting
+    // user turn must not trigger the notice.
+    const body = { contents: [{ parts: [{ text: LIMIT_HOLD_SENTINEL }] }] };
+    expect(hasLimitHoldBanner(body)).toBe(false);
+    expect(injectLimitHoldNotice(body, FORMATS.GEMINI)).toBe(body);
+  });
 });
 
 describe("system turn injection", () => {

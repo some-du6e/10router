@@ -41,9 +41,11 @@ export function hasLimitHoldBanner(body) {
     for (const msg of bucket) {
       if (!msg || typeof msg !== "object") continue;
       // Only assistant/model turns can hold a banner; skip user text that merely
-      // quotes one so a pasted transcript doesn't trigger the notice.
-      const role = msg.role || (msg.parts ? GEMINI_ROLE.MODEL : null);
-      if (role && role !== ROLE.ASSISTANT && role !== GEMINI_ROLE.MODEL) continue;
+      // quotes one so a pasted transcript doesn't trigger the notice. A Gemini
+      // contents[] entry may omit role — Gemini then treats it as user, so
+      // never infer model from the presence of parts.
+      const role = msg.role;
+      if (role !== ROLE.ASSISTANT && role !== GEMINI_ROLE.MODEL) continue;
       const text = textOf(msg.content ?? msg.parts ?? msg.text);
       if (text.includes(LIMIT_HOLD_SENTINEL)) return true;
     }
