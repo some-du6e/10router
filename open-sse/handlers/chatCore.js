@@ -58,6 +58,42 @@ export function stripContinuityFields(body) {
   return body;
 }
 
+/**
+ * Will the CLIENT be answered with an SSE stream?
+ *
+ * Deliberately distinct from the `stream` flag chatCore sends upstream: a
+ * `forceStream` provider is always fetched over SSE, then converted back to JSON
+ * by handleForcedSSEToJson when the client didn't ask for a stream. Exported
+ * because the rate-limit hold can only write a status banner into a response
+ * that really is a stream — handing SSE to a JSON client breaks it.
+ */
+export function clientReceivesStream({ body, provider, model, sourceFormat, clientRawRequest }) {
+  // What the CLIENT gets, which is not always what we ask upstream for. A
+  // forceStream provider is fetched over SSE even for a JSON client, because
+  // handleForcedSSEToJson converts the stream back down — so `forceStream` says
+  // nothing about the response shape the client sees, and must not short-circuit.
+  const clientRequestedStreaming = body.stream === true
+    || sourceFormat === FORMATS.ANTIGRAVITY
+    || sourceFormat === FORMATS.GEMINI
+    || sourceFormat === FORMATS.GEMINI_CLI;
+  if (PROVIDERS[provider]?.forceStream === true && !clientRequestedStreaming) return false;
+
+  const alias = PROVIDER_ID_TO_ALIAS[provider] || provider;
+  const modelType = getModelType(alias, model);
+  const isImageGenModel = modelType === "imageGen" || /image|imagen|image-generation/i.test(model);
+  if (isImageGenModel && (provider === "antigravity" || provider === "gemini-cli")) return false;
+
+  const detectedTool = detectClientTool(clientRawRequest?.headers || {}, body);
+  if (detectedTool === "deepseek-tui" && body.stream !== true) return false;
+
+  const acceptHeader = clientRawRequest?.headers?.accept || "";
+  const clientPrefersJson = acceptHeader.includes("application/json");
+  const clientPrefersSSE = acceptHeader.includes("text/event-stream");
+  if (clientPrefersJson && !clientPrefersSSE && body.stream !== true) return false;
+
+  return body.stream !== false;
+}
+
 export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
@@ -107,6 +143,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   const clientRequestedStreaming = body.stream === true || sourceFormat === FORMATS.ANTIGRAVITY || sourceFormat === FORMATS.GEMINI || sourceFormat === FORMATS.GEMINI_CLI;
   const providerRequiresStreaming = PROVIDERS[provider]?.forceStream === true;
+  // Upstream request shape — a forceStream provider is always fetched as SSE,
+  // even when the client wants JSON (handleForcedSSEToJson converts it back).
   let stream = providerRequiresStreaming ? true : (body.stream !== false);
 
   // Image generation models require non-streaming (Google v1internal:generateContent)

@@ -7,6 +7,7 @@
 // telling the model what those lines actually are. Stateless — nothing to track
 // between requests, and it keeps working across restarts.
 import { FORMATS } from "../translator/formats.js";
+import { ROLE, GEMINI_ROLE, OPENAI_BLOCK } from "../translator/schema/index.js";
 import { LIMIT_HOLD_SENTINEL } from "./limitHold.js";
 
 const NOTICE =
@@ -41,8 +42,8 @@ export function hasLimitHoldBanner(body) {
       if (!msg || typeof msg !== "object") continue;
       // Only assistant/model turns can hold a banner; skip user text that merely
       // quotes one so a pasted transcript doesn't trigger the notice.
-      const role = msg.role || (msg.parts ? "model" : null);
-      if (role && role !== "assistant" && role !== "model") continue;
+      const role = msg.role || (msg.parts ? GEMINI_ROLE.MODEL : null);
+      if (role && role !== ROLE.ASSISTANT && role !== GEMINI_ROLE.MODEL) continue;
       const text = textOf(msg.content ?? msg.parts ?? msg.text);
       if (text.includes(LIMIT_HOLD_SENTINEL)) return true;
     }
@@ -61,7 +62,7 @@ export function injectLimitHoldNotice(body, sourceFormat) {
   if (sourceFormat === FORMATS.CLAUDE) {
     const existing = body.system;
     if (Array.isArray(existing)) {
-      return { ...body, system: [...existing, { type: "text", text: NOTICE }] };
+      return { ...body, system: [...existing, { type: OPENAI_BLOCK.TEXT, text: NOTICE }] };
     }
     if (typeof existing === "string" && existing) {
       return { ...body, system: `${existing}\n\n${NOTICE}` };
@@ -73,7 +74,10 @@ export function injectLimitHoldNotice(body, sourceFormat) {
   if (sourceFormat === FORMATS.GEMINI || sourceFormat === FORMATS.GEMINI_CLI || sourceFormat === FORMATS.ANTIGRAVITY) {
     const existing = body.systemInstruction || body.system_instruction;
     const parts = Array.isArray(existing?.parts) ? [...existing.parts, { text: NOTICE }] : [{ text: NOTICE }];
-    return { ...body, systemInstruction: { role: "system", parts } };
+    // Drop the snake_case twin: leaving both lets upstream read the original
+    // (notice-free) field and ignore the one we just wrote.
+    const { system_instruction: _dropped, ...rest } = body;
+    return { ...rest, systemInstruction: { role: ROLE.SYSTEM, parts } };
   }
 
   // Responses API: free-text instructions field alongside input[].
@@ -87,7 +91,7 @@ export function injectLimitHoldNotice(body, sourceFormat) {
   if (!Array.isArray(body.messages)) return body;
   const messages = [...body.messages];
   let insertAt = 0;
-  while (insertAt < messages.length && messages[insertAt]?.role === "system") insertAt += 1;
-  messages.splice(insertAt, 0, { role: "system", content: NOTICE });
+  while (insertAt < messages.length && messages[insertAt]?.role === ROLE.SYSTEM) insertAt += 1;
+  messages.splice(insertAt, 0, { role: ROLE.SYSTEM, content: NOTICE });
   return { ...body, messages };
 }

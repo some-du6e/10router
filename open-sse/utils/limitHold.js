@@ -6,6 +6,7 @@
 // the banner — so the client sees one continuous response that simply took a while.
 import { translateResponse, initState } from "../translator/index.js";
 import { FORMATS } from "../translator/formats.js";
+import { ROLE, OPENAI_FINISH } from "../translator/schema/index.js";
 import { formatSSE } from "./stream.js";
 
 // Present in every banner we emit. Later requests carry the banner back inside
@@ -21,6 +22,12 @@ export const DEFAULT_TIMING = {
   // second estimate either — after the first wake we re-check on a fixed beat.
   minWaitMs: 30_000,
   recheckMs: 5 * 60 * 1000,
+  // Ceiling for the non-streaming hold only. A streaming client can be left
+  // waiting indefinitely because its socket is the liveness signal — hang up and
+  // the hold ends. A non-streaming request has no such signal, so an upstream
+  // that reports a limit forever would pin a connection and handler with nothing
+  // to release them.
+  maxHoldMs: 6 * 60 * 60 * 1000,
 };
 
 /**
@@ -74,7 +81,7 @@ function renderTextChunks(sourceFormat, model, text, state) {
     object: "chat.completion.chunk",
     created: Math.floor(Date.now() / 1000),
     model,
-    choices: [{ index: 0, delta: { role: "assistant", content: text }, finish_reason: null }],
+    choices: [{ index: 0, delta: { role: ROLE.ASSISTANT, content: text }, finish_reason: null }],
   };
   const translated = translateResponse(FORMATS.OPENAI, sourceFormat, chunk, state) || [];
   return translated.map((item) => formatSSE(item, sourceFormat));
@@ -93,7 +100,7 @@ function renderFinishChunks(sourceFormat, model, state, { terminate }) {
     object: "chat.completion.chunk",
     created: Math.floor(Date.now() / 1000),
     model,
-    choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+    choices: [{ index: 0, delta: {}, finish_reason: OPENAI_FINISH.STOP }],
   };
   let translated = translateResponse(FORMATS.OPENAI, sourceFormat, chunk, state) || [];
   if (!terminate) {
@@ -122,6 +129,11 @@ function createSpliceTransform(sourceFormat, blockOffset) {
 
   let buffer = "";
   let sequence = 0;
+  // One codec pair per stream: `{ stream: true }` only carries partial-sequence
+  // state within a single decoder, so a fresh one per chunk mangles any
+  // multi-byte character that straddles a chunk boundary.
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
 
   const rewriteEvent = (raw) => {
     const dataMatch = raw.match(/^data: (.*)$/m);
@@ -150,17 +162,17 @@ function createSpliceTransform(sourceFormat, blockOffset) {
 
   return new TransformStream({
     transform(chunk, controller) {
-      buffer += new TextDecoder().decode(chunk, { stream: true });
+      buffer += decoder.decode(chunk, { stream: true });
       // SSE events are blank-line delimited; keep any partial tail for next time.
       const parts = buffer.split("\n\n");
       buffer = parts.pop() ?? "";
       const out = parts.map((p) => rewriteEvent(`${p}\n\n`)).join("");
-      if (out) controller.enqueue(new TextEncoder().encode(out));
+      if (out) controller.enqueue(encoder.encode(out));
     },
     flush(controller) {
       if (buffer.trim()) {
         const out = rewriteEvent(buffer.endsWith("\n\n") ? buffer : `${buffer}\n\n`);
-        if (out) controller.enqueue(new TextEncoder().encode(out));
+        if (out) controller.enqueue(encoder.encode(out));
       }
     },
   });
@@ -173,12 +185,13 @@ function createSpliceTransform(sourceFormat, blockOffset) {
  * @returns {Promise<object|null>} the successful result, or the last failure
  */
 export async function awaitLimitClear({ retryAtMs, attempt, provider, model, signal, log, timing }) {
-  const { minWaitMs, recheckMs } = { ...DEFAULT_TIMING, ...(timing || {}) };
+  const { minWaitMs, recheckMs, maxHoldMs } = { ...DEFAULT_TIMING, ...(timing || {}) };
+  const deadline = Date.now() + maxHoldMs;
   let waitMs = Math.max((retryAtMs || 0) - Date.now(), minWaitMs);
   let last = null;
   log?.info?.("LIMITHOLD", `${provider}/${model} holding (non-streaming), first retry in ${formatDuration(waitMs)}`);
 
-  while (!signal?.aborted) {
+  while (!signal?.aborted && Date.now() < deadline) {
     await new Promise((resolve) => {
       const timer = setTimeout(resolve, waitMs);
       signal?.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
@@ -189,6 +202,9 @@ export async function awaitLimitClear({ retryAtMs, attempt, provider, model, sig
     if (last?.success) return last;
     if (last && !isLimitError(last.status, last.error)) return last;
     waitMs = Math.max((last?.retryAtMs || 0) - Date.now(), recheckMs);
+  }
+  if (Date.now() >= deadline) {
+    log?.warn?.("LIMITHOLD", `${provider}/${model} gave up after ${formatDuration(maxHoldMs)}`);
   }
   return last;
 }

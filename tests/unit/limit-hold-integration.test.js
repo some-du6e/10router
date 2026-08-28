@@ -32,21 +32,32 @@ vi.mock("@/sse/services/tokenRefresh.js", () => ({
   checkAndRefreshToken: async (_p, c) => c,
   updateProviderCredentials: async () => {},
 }));
-vi.mock("open-sse/handlers/chatCore.js", () => ({
+vi.mock("open-sse/handlers/chatCore.js", async (importOriginal) => ({
+  // Keep the real clientReceivesStream — the streaming decision is under test.
+  ...(await importOriginal()),
   handleChatCore: async () => state.coreResults.shift(),
 }));
 
 const { handleChat } = await import("@/sse/handlers/chat.js");
 
-function makeRequest(body) {
+function makeRequest(body, extraHeaders = {}) {
   return new Request("http://localhost/v1/chat/completions", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: "Bearer sk-test" },
+    headers: { "Content-Type": "application/json", Authorization: "Bearer sk-test", ...extraHeaders },
     body: JSON.stringify(body),
   });
 }
 
+const LIMITED = () => ({
+  allRateLimited: true,
+  retryAfter: new Date(Date.now() + 7_200_000).toISOString(),
+  retryAfterHuman: "reset after 2h",
+  lastError: "usage_limit_reached",
+  lastErrorCode: 429,
+});
+
 beforeEach(() => {
+  vi.restoreAllMocks(); // the rotation test spies on getProviderCredentials
   state.settings = { limitHoldEnabled: true, limitHoldOnPinned: false, requireApiKey: false };
   state.keyHold = null;
   state.markCalls = [];
@@ -144,4 +155,24 @@ describe("rate-limit hold wiring", () => {
     expect(await res.text()).toBe("second account ok");
     expect(state.markCalls.length).toBe(1); // first account got locked, then we moved on
   });
+
+  it("never hands SSE to a client that asked for JSON via Accept", async () => {
+    // AI SDK style: Accept: application/json, no explicit stream flag. This used
+    // to get a clean JSON error; it must not now receive an SSE banner it can't parse.
+    state.credentials = { connectionId: "c1", connectionName: "acct", accessToken: "t" };
+    // First pass hits the limit; the hold's first re-attempt succeeds. A short
+    // minWait makes the hold's sleep tick so the test finishes fast.
+    state.coreResults = [
+      { success: false, status: 429, error: "usage_limit_reached", retryAtMs: Date.now() + 10 },
+      { success: true, response: new Response('{"ok":true}', { headers: { "Content-Type": "application/json" } }) },
+    ];
+
+    const res = await handleChat(
+      makeRequest({ model: "gpt-5", messages: [{ role: "user", content: "hi" }] }),
+      { endpoint: "/v1/chat/completions", body: {}, headers: { accept: "application/json" } }
+    );
+
+    expect(res.headers.get("Content-Type")).not.toBe("text/event-stream");
+    expect(await res.text()).toBe('{"ok":true}');
+  }, 30000);
 });

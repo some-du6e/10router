@@ -9,7 +9,7 @@ import {
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
-import { handleChatCore } from "open-sse/handlers/chatCore.js";
+import { handleChatCore, clientReceivesStream } from "open-sse/handlers/chatCore.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
 import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
 import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
@@ -411,8 +411,13 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   if (!first.limited || !limitHold.enabled) return first.response;
 
   // Non-streaming clients have no stream to narrate into, so the request just
-  // hangs until the limit clears and the real JSON comes back.
-  if (body.stream === false) {
+  // hangs until the limit clears and the real JSON comes back. `body.stream`
+  // alone is not the answer — an Accept: application/json client (AI SDK) or
+  // deepseek-tui resolves to JSON without ever setting it, and handing those an
+  // SSE banner would break a request that used to return a clean error.
+  const holdSourceFormat = sourceFormatOverride || detectFormat(body);
+  const willStream = clientReceivesStream({ body, provider, model, sourceFormat: holdSourceFormat, clientRawRequest });
+  if (!willStream) {
     const abort = new AbortController();
     request?.signal?.addEventListener?.("abort", () => abort.abort(), { once: true });
     const settled = await awaitLimitClear({
@@ -427,7 +432,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   }
 
   return createLimitHoldResponse({
-    sourceFormat: sourceFormatOverride || detectFormat(body),
+    sourceFormat: holdSourceFormat,
     model: modelStr,
     provider,
     retryAtMs: first.retryAtMs,

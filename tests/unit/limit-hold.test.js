@@ -98,6 +98,14 @@ describe("system turn injection", () => {
     expect(out.systemInstruction.parts[0].text).toContain(LIMIT_HOLD_SENTINEL);
   });
 
+  it("does not leave a stale snake_case systemInstruction behind", () => {
+    const body = { ...dirty, system_instruction: { role: "system", parts: [{ text: "base" }] } };
+    const out = injectLimitHoldNotice(body, FORMATS.GEMINI);
+    expect(out.system_instruction).toBeUndefined();
+    expect(out.systemInstruction.parts).toHaveLength(2);
+    expect(out.systemInstruction.parts[1].text).toContain(LIMIT_HOLD_SENTINEL);
+  });
+
   it("uses instructions for the responses api", () => {
     const out = injectLimitHoldNotice(dirty, FORMATS.OPENAI_RESPONSES);
     expect(out.instructions).toContain(LIMIT_HOLD_SENTINEL);
@@ -115,6 +123,67 @@ async function readAll(response, { limit = 50 } = {}) {
   }
   return out;
 }
+
+describe("multi-byte splice", () => {
+  it("survives a UTF-8 sequence split across upstream chunks", async () => {
+    const payload = `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "日本語テキスト 🎉" } })}\n\n`;
+    const full = new TextEncoder().encode(`event: content_block_delta\n${payload}`);
+    const cut = 40; // lands mid-character
+    const upstream = new Response(new ReadableStream({
+      start(c) { c.enqueue(full.slice(0, cut)); c.enqueue(full.slice(cut)); c.close(); },
+    }));
+
+    const res = createLimitHoldResponse({
+      sourceFormat: FORMATS.CLAUDE,
+      model: "claude-sonnet-4",
+      provider: "codex",
+      retryAtMs: Date.now() + 5,
+      attempt: async () => ({ success: true, response: upstream }),
+      timing: { keepaliveMs: 5000, minWaitMs: 5, recheckMs: 5 },
+    });
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let out = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      out += decoder.decode(value, { stream: true });
+    }
+    expect(out).toContain("日本語テキスト 🎉");
+    expect(out).not.toContain("\uFFFD"); // no replacement chars
+  }, 20000);
+});
+
+describe("awaitLimitClear", () => {
+  it("gives up at the deadline instead of retrying forever", async () => {
+    const { awaitLimitClear } = await import("open-sse/utils/limitHold.js");
+    let calls = 0;
+    const last = await awaitLimitClear({
+      retryAtMs: Date.now(),
+      attempt: async () => { calls += 1; return { success: false, status: 429, error: "usage_limit_reached" }; },
+      provider: "codex",
+      model: "gpt-5",
+      timing: { minWaitMs: 1, recheckMs: 1, maxHoldMs: 30 },
+    });
+    expect(calls).toBeGreaterThan(0);
+    expect(last).toMatchObject({ success: false, status: 429 });
+  }, 20000);
+
+  it("returns as soon as the limit clears", async () => {
+    const { awaitLimitClear } = await import("open-sse/utils/limitHold.js");
+    let calls = 0;
+    const last = await awaitLimitClear({
+      retryAtMs: Date.now(),
+      attempt: async () => { calls += 1; return calls < 2 ? { success: false, status: 429, error: "rate limit" } : { success: true, response: new Response("ok") }; },
+      provider: "codex",
+      model: "gpt-5",
+      timing: { minWaitMs: 1, recheckMs: 1, maxHoldMs: 10_000 },
+    });
+    expect(last.success).toBe(true);
+    expect(calls).toBe(2);
+  }, 20000);
+});
 
 describe("createLimitHoldResponse", () => {
   it("emits the banner immediately and splices the real stream after the wait", async () => {
