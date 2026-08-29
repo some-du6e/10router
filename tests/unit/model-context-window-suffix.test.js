@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { parseModel, stripContextWindowSuffix } from "../../open-sse/services/model.js";
+import {
+  getModelInfoCore,
+  parseModel,
+  stripContextWindowSuffix,
+} from "../../open-sse/services/model.js";
 
 // Anthropic clients request an explicit context window by appending a bracketed
 // suffix to the model id ("claude-opus-5[1m]"). The suffix is a client-side
@@ -77,6 +81,42 @@ describe("context-window model id suffix", () => {
       expect(parseModel("ocg/glm-5.2")).toMatchObject({
         model: "glm-5.2",
         contextWindow: null,
+      });
+    });
+  });
+
+  describe("getModelInfoCore", () => {
+    it("carries the selector through a provider-prefixed id", async () => {
+      await expect(getModelInfoCore("anthropic/claude-opus-5[1m]", {})).resolves.toEqual({
+        provider: "anthropic",
+        model: "claude-opus-5",
+        contextWindow: "1m",
+      });
+    });
+
+    it("carries the selector through an alias", async () => {
+      const aliases = { big: "anthropic/claude-opus-5" };
+      await expect(getModelInfoCore("big[1m]", aliases)).resolves.toEqual({
+        provider: "anthropic",
+        model: "claude-opus-5",
+        contextWindow: "1m",
+      });
+    });
+
+    it("carries the selector through prefix inference", async () => {
+      await expect(getModelInfoCore("claude-opus-5[1m]", {})).resolves.toEqual({
+        provider: "anthropic",
+        model: "claude-opus-5",
+        contextWindow: "1m",
+      });
+    });
+
+    // Callers compare the resolved pair by value, so an id with no selector must
+    // not grow a contextWindow key.
+    it("omits the key entirely when no selector was requested", async () => {
+      await expect(getModelInfoCore("anthropic/claude-opus-5", {})).resolves.toEqual({
+        provider: "anthropic",
+        model: "claude-opus-5",
       });
     });
   });

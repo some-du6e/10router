@@ -121,10 +121,7 @@ export async function getModelInfoCore(modelStr, aliasesOrGetter) {
   const parsed = parseModel(modelStr);
 
   if (!parsed.isAlias) {
-    return {
-      provider: parsed.provider,
-      model: parsed.model,
-    };
+    return withContextWindow({ provider: parsed.provider, model: parsed.model }, parsed);
   }
 
   // Get aliases (from object or function)
@@ -138,14 +135,23 @@ export async function getModelInfoCore(modelStr, aliasesOrGetter) {
     resolveModelAliasFromMap(parsed.model, aliases) ||
     resolveModelAliasFromMap(parsed.model, BUILTIN_MODEL_ALIASES);
   if (resolved) {
-    return resolved;
+    return withContextWindow(resolved, parsed);
   }
 
   // Fallback: infer provider from model name prefix
-  return {
-    provider: inferProviderFromModelName(parsed.model),
-    model: parsed.model,
-  };
+  return withContextWindow(
+    { provider: inferProviderFromModelName(parsed.model), model: parsed.model },
+    parsed,
+  );
+}
+
+/**
+ * Carry a requested context window through to a resolved {provider, model}.
+ * The key is omitted entirely when the id carried no selector, so callers that
+ * compare the resolved pair by value keep seeing the shape they always did.
+ */
+export function withContextWindow(info, parsed) {
+  return parsed?.contextWindow ? { ...info, contextWindow: parsed.contextWindow } : info;
 }
 
 // Config-driven prefix → provider inference (first match wins, fallback "openai").
