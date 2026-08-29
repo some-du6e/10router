@@ -28,13 +28,38 @@ export function resolveProviderAlias(aliasOrId) {
   return ALIAS_TO_PROVIDER_ID[aliasOrId] || aliasOrId;
 }
 
+// Anthropic clients (Claude Code, and t3 code driving it) request an explicit
+// context window by appending a bracketed suffix to the model id — e.g.
+// "claude-opus-5[1m]". The suffix is a client-side selector, not part of any
+// upstream catalogue id, so strip it before routing. Without this the id
+// matches no alias, falls through to inferProviderFromModelName(), and is sent
+// to the bare "anthropic" provider — 404 "No active credentials".
+const CONTEXT_WINDOW_SUFFIX = /\[(\d+[km])\]$/i;
+
+/**
+ * Split a trailing context-window selector off a model id.
+ * "claude-opus-5[1m]" -> { model: "claude-opus-5", contextWindow: "1m" }
+ */
+export function stripContextWindowSuffix(modelStr) {
+  if (!modelStr) return { model: modelStr, contextWindow: null };
+  const match = modelStr.match(CONTEXT_WINDOW_SUFFIX);
+  if (!match) return { model: modelStr, contextWindow: null };
+  return {
+    model: modelStr.slice(0, match.index),
+    contextWindow: match[1].toLowerCase(),
+  };
+}
+
 /**
  * Parse model string: "alias/model" or "provider/model" or just alias
  */
 export function parseModel(modelStr) {
   if (!modelStr) {
-    return { provider: null, model: null, isAlias: false, providerAlias: null };
+    return { provider: null, model: null, isAlias: false, providerAlias: null, contextWindow: null };
   }
+
+  const { model: stripped, contextWindow } = stripContextWindowSuffix(modelStr);
+  modelStr = stripped;
 
   // Check if standard format: provider/model or alias/model
   if (modelStr.includes("/")) {
@@ -42,7 +67,7 @@ export function parseModel(modelStr) {
     const providerOrAlias = modelStr.slice(0, firstSlash);
     const model = modelStr.slice(firstSlash + 1);
     const provider = resolveProviderAlias(providerOrAlias);
-    return { provider, model, isAlias: false, providerAlias: providerOrAlias };
+    return { provider, model, isAlias: false, providerAlias: providerOrAlias, contextWindow };
   }
 
   // Alias format (model alias, not provider alias)
@@ -51,6 +76,7 @@ export function parseModel(modelStr) {
     model: modelStr,
     isAlias: true,
     providerAlias: null,
+    contextWindow,
   };
 }
 
