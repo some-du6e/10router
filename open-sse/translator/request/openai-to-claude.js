@@ -253,6 +253,14 @@ function getContentBlocksFromMessage(msg, toolNameMap = new Map()) {
       }
     }
   } else if (msg.role === ROLE.ASSISTANT) {
+    // OpenAI-compatible vendors (GLM, Qwen, DeepSeek, Kimi, …) surface the
+    // model's chain-of-thought as a top-level `reasoning_content` string on
+    // historical assistant messages. Claude represents that as a `thinking`
+    // block that must precede the text/tool_use blocks, so round-trip it
+    // instead of silently dropping the reasoning when replaying context.
+    if (typeof msg.reasoning_content === "string" && msg.reasoning_content) {
+      blocks.push({ type: CLAUDE_BLOCK.THINKING, thinking: msg.reasoning_content });
+    }
     if (Array.isArray(msg.content)) {
       for (const part of msg.content) {
         if (part.type === OPENAI_BLOCK.TEXT && part.text) {

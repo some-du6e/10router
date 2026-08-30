@@ -1,4 +1,12 @@
-import { describe, it, before } from "node:test";
+// Uses vitest (the project's `npm test` runner) instead of node:test. vitest's
+// `**/*.test.js` glob collects every *.test.js, but it cannot *execute*
+// node:test suites — those surface as "No test suite found" false failures.
+// There is no `node --test` step in CI, so a node:test file had no working
+// run path under `npm test`. The pure-function isolation below (cloning
+// service logic to dodge the Next.js webpack open-sse alias chain) still
+// applies; only the runner harness changed. assert is node:assert/strict,
+// whose semantics vitest preserves in its node environment.
+import { describe, it, beforeAll } from "vitest";
 import assert from "node:assert/strict";
 
 // Load the registry entry once for the suite so a load failure is reported
@@ -7,13 +15,19 @@ import assert from "node:assert/strict";
 let kimchiEntry;
 
 describe("kimchi registry entry", () => {
-  before(async () => {
+  beforeAll(async () => {
     kimchiEntry = (await import("../../open-sse/providers/registry/kimchi.js")).default;
   });
 
   it("is an oauth provider auto-listed via byCategory", () => {
     assert.equal(kimchiEntry.id, "kimchi");
-    assert.equal(kimchiEntry.category, "oauth");
+    // category was moved from "oauth" → "freeTier" in 6d96e24b ("refresh
+    // catalogs, free tiers, and hide stale ones") while authModes:["oauth"]
+    // was retained — that authModes entry is what actually drives OAuth
+    // listing/flows, so asserting the current category keeps this honest
+    // without re-litigating the deliberate catalog refresh.
+    assert.equal(kimchiEntry.category, "freeTier");
+    assert.deepEqual(kimchiEntry.authModes, ["oauth"]);
   });
 
   it("points at the OpenAI-compatible gateway with an authenticated UA", () => {

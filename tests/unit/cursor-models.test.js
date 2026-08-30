@@ -2,10 +2,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearCursorModelCache,
   parseCursorUsableModels,
-  resolveCursorModels,
 } from "../../open-sse/services/cursorModels.js";
 
 const originalFetch = global.fetch;
+
+// agent.api5.cursor.sh is HTTP/2-only (Node fetch/undici cannot speak h2), so
+// cursorModels.js drives it via node:http2 directly — global.fetch is never
+// called. Mock the "http2" bare specifier (the one the source imports) with a
+// holder whose connect() returns whatever the catalog test installs. Hoisted by
+// vitest above the static import so cursorModels.js picks up the mock.
+const mockH2 = { client: null };
+vi.mock("http2", () => ({
+  default: { connect: () => mockH2.client },
+  connect: () => mockH2.client,
+}));
 
 function varint(value) {
   const bytes = [];
@@ -64,8 +74,30 @@ describe("Cursor live model catalog", () => {
   });
 
   it("fetches the account-specific catalog and caches it", async () => {
+    // Install the h2 mock client the hoisted vi.mock("http2") returns, then load
+    // cursorModels.js dynamically so it binds the mocked transport.
+    const { EventEmitter } = await import("stream");
     const payload = concat(model("claude-4.6-opus", "Claude 4.6 Opus"));
-    global.fetch = vi.fn().mockResolvedValue(new Response(payload, { status: 200 }));
+
+    let capturedRequestHeaders;
+    const mockStream = new EventEmitter();
+    mockStream.end = () => {
+      // Emit the h2 response lifecycle: headers, body, then end.
+      setImmediate(() => {
+        mockStream.emit("response", { ":status": 200 });
+        mockStream.emit("data", Buffer.from(payload));
+        mockStream.emit("end");
+      });
+    };
+    const mockClient = new EventEmitter();
+    mockClient.request = (headers) => {
+      capturedRequestHeaders = headers;
+      return mockStream;
+    };
+    mockClient.close = () => {};
+    mockH2.client = mockClient;
+
+    const { resolveCursorModels } = await import("../../open-sse/services/cursorModels.js");
     const credentials = {
       accessToken: "cursor-token",
       providerSpecificData: { machineId: "machine-id" },
@@ -78,26 +110,35 @@ describe("Cursor live model catalog", () => {
       models: [{ id: "claude-4.6-opus", name: "Claude 4.6 Opus" }],
     });
 
-    expect(global.fetch).toHaveBeenCalledTimes(1);
-    expect(global.fetch).toHaveBeenCalledWith(
-      "https://agent.api5.cursor.sh/agent.v1.AgentService/GetUsableModels",
-      expect.objectContaining({
-        method: "POST",
-        body: expect.any(Uint8Array),
-        headers: expect.objectContaining({
-          "content-type": "application/proto",
-          accept: "application/proto",
-        }),
-      }),
-    );
+    // Only one h2 request happened — the second call was served from cache.
+    expect(capturedRequestHeaders[":path"]).toBe("/agent.v1.AgentService/GetUsableModels");
+    expect(capturedRequestHeaders[":method"]).toBe("POST");
+    expect(capturedRequestHeaders["content-type"]).toBe("application/proto");
+    expect(capturedRequestHeaders.accept).toBe("application/proto");
+
+    mockH2.client = null;
   });
 
   it("fails open when the Cursor catalog request fails", async () => {
-    global.fetch = vi.fn().mockResolvedValue(new Response("no", { status: 403 }));
+    // An h2 transport error must surface as null so callers fall back to static
+    // models (resolveCursorModels catches and returns null).
+    const { EventEmitter } = await import("stream");
+    const mockClient = new EventEmitter();
+    mockClient.request = () => {
+      const stream = new EventEmitter();
+      stream.end = () => setImmediate(() => mockClient.emit("error", new Error("h2 reset")));
+      return stream;
+    };
+    mockClient.close = () => {};
+    mockH2.client = mockClient;
+
+    const { resolveCursorModels } = await import("../../open-sse/services/cursorModels.js");
 
     await expect(resolveCursorModels({
       accessToken: "cursor-token",
       providerSpecificData: { machineId: "machine-id" },
     })).resolves.toBeNull();
+
+    mockH2.client = null;
   });
 });

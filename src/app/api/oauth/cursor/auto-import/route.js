@@ -2,10 +2,6 @@ import { NextResponse } from "next/server";
 import { access, constants } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
-import { execFile } from "child_process";
-import { promisify } from "util";
-
-const execFileAsync = promisify(execFile);
 
 const ACCESS_TOKEN_KEYS = ["cursorAuth/accessToken", "cursorAuth/token"];
 const MACHINE_ID_KEYS = [
@@ -14,55 +10,32 @@ const MACHINE_ID_KEYS = [
   "telemetry.machineId",
 ];
 
-/** Get candidate db paths by platform */
+const LINUX_NOT_FOUND =
+  "Cursor database not found. Make sure Cursor IDE is installed and you are logged in.";
+const MACOS_NOT_FOUND =
+  "Cursor database not found in known macOS locations. Make sure Cursor IDE is installed and opened at least once.";
+const LOGIN_PROMPT = "Please login to Cursor IDE first, then retry auto-import.";
+
+/** Get candidate db paths by platform (linux uses a single hardcoded path). */
 function getCandidatePaths(platform) {
   const home = homedir();
 
   if (platform === "darwin") {
     return [
-      join(
-        home,
-        "Library/Application Support/Cursor/User/globalStorage/state.vscdb",
-      ),
-      join(
-        home,
-        "Library/Application Support/Cursor - Insiders/User/globalStorage/state.vscdb",
-      ),
+      join(home, "Library/Application Support/Cursor/User/globalStorage/state.vscdb"),
+      join(home, "Library/Application Support/Cursor - Insiders/User/globalStorage/state.vscdb"),
     ];
   }
 
-  if (platform === "win32") {
-    const appData = process.env.APPDATA || join(home, "AppData", "Roaming");
-    const localAppData =
-      process.env.LOCALAPPDATA || join(home, "AppData", "Local");
-    return [
-      join(appData, "Cursor", "User", "globalStorage", "state.vscdb"),
-      join(
-        appData,
-        "Cursor - Insiders",
-        "User",
-        "globalStorage",
-        "state.vscdb",
-      ),
-      join(localAppData, "Cursor", "User", "globalStorage", "state.vscdb"),
-      join(
-        localAppData,
-        "Programs",
-        "Cursor",
-        "User",
-        "globalStorage",
-        "state.vscdb",
-      ),
-    ];
+  if (platform === "linux") {
+    return [join(home, ".config/Cursor/User/globalStorage/state.vscdb")];
   }
 
-  return [
-    join(home, ".config/Cursor/User/globalStorage/state.vscdb"),
-    join(home, ".config/cursor/User/globalStorage/state.vscdb"),
-  ];
+  return null;
 }
 
-const normalize = (value) => {
+/** Unwrap a JSON-encoded string value: '"foo"' → 'foo'. Non-strings pass through. */
+function normalizeValue(value) {
   if (typeof value !== "string") return value;
   try {
     const parsed = JSON.parse(value);
@@ -70,189 +43,173 @@ const normalize = (value) => {
   } catch {
     return value;
   }
-};
-
-/**
- * Extract tokens via better-sqlite3 (bundled dependency).
- * This is the preferred strategy — no external CLI required.
- */
-function extractTokensViaBetterSqlite(dbPath) {
-  // Dynamic require so the route stays importable even if native bindings fail
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const Database = require("better-sqlite3");
-  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
-
-  const query = (key) => {
-    const row = db.prepare("SELECT value FROM itemTable WHERE key=? LIMIT 1").get(key);
-    return row?.value || null;
-  };
-
-  const normalize = (value) => {
-    if (typeof value !== "string") return value;
-    try {
-      const parsed = JSON.parse(value);
-      return typeof parsed === "string" ? parsed : value;
-    } catch {
-      return value;
-    }
-  };
-
-  let accessToken = null;
-  for (const key of ACCESS_TOKEN_KEYS) {
-    const raw = query(key);
-    if (raw) { accessToken = normalize(raw); break; }
-  }
-
-  let machineId = null;
-  for (const key of MACHINE_ID_KEYS) {
-    const raw = query(key);
-    if (raw) { machineId = normalize(raw); break; }
-  }
-
-  db.close();
-  return { accessToken, machineId };
 }
 
 /**
- * Extract tokens via sqlite3 CLI.
- * Fallback when better-sqlite3 native bindings are unavailable.
+ * Extract tokens via better-sqlite3 (bundled dependency).
+ * Tries exact key lookups first, then a fuzzy LIKE fallback for renamed keys.
+ * Dynamic import keeps the route importable even if native bindings fail.
+ * @returns {Promise<{accessToken:string|null, machineId:string|null}>}
  */
-async function extractTokensViaCLI(dbPath) {
-  const normalize = (raw) => {
-    const value = raw.trim();
-    try {
-      const parsed = JSON.parse(value);
-      return typeof parsed === "string" ? parsed : value;
-    } catch {
-      return value;
-    }
-  };
+async function extractTokensViaBetterSqlite(dbPath) {
+  const mod = await import("better-sqlite3");
+  const Database = mod.default || mod;
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
 
-  const query = async (sql) => {
-    const { stdout } = await execFileAsync("sqlite3", [dbPath, sql], {
-      timeout: 10000,
-    });
-    return stdout.trim();
-  };
+  try {
+    // Exact-key query: select all candidate rows in one statement.
+    const placeholders = [...ACCESS_TOKEN_KEYS, ...MACHINE_ID_KEYS]
+      .map((k) => `'${k.replace(/'/g, "''")}'`)
+      .join(", ");
+    const exactRows = db
+      .prepare(`SELECT key, value FROM itemTable WHERE key IN (${placeholders})`)
+      .all();
 
-  // Try each key in priority order
-  let accessToken = null;
-  for (const key of ACCESS_TOKEN_KEYS) {
-    try {
-      const raw = await query(
-        `SELECT value FROM itemTable WHERE key='${key}' LIMIT 1`,
-      );
-      if (raw) {
-        accessToken = normalize(raw);
-        break;
+    let accessToken = null;
+    let machineId = null;
+    for (const row of exactRows) {
+      if (accessToken === null && ACCESS_TOKEN_KEYS.includes(row.key)) {
+        accessToken = normalizeValue(row.value);
+      } else if (machineId === null && MACHINE_ID_KEYS.includes(row.key)) {
+        machineId = normalizeValue(row.value);
       }
-    } catch {
-      /* try next */
     }
-  }
 
-  let machineId = null;
-  for (const key of MACHINE_ID_KEYS) {
-    try {
-      const raw = await query(
-        `SELECT value FROM itemTable WHERE key='${key}' LIMIT 1`,
-      );
-      if (raw) {
-        machineId = normalize(raw);
-        break;
+    // Fuzzy fallback: when exact keys are missing (renamed across Cursor
+    // versions), match by substring so a fresh install still imports. The query
+    // has no inherent row order, so rank candidates deterministically: an
+    // access-token key beats a generic token key, and a Cursor-namespaced key
+    // (cursorAuth/cursor) beats an unrelated app's key. Crucially, within the
+    // access-token tier a Cursor-namespaced key must beat an unscoped one —
+    // otherwise `someOtherApp/accessToken` and `cursorAuth/renamedAccessToken`
+    // tie at the top rank and the first row wins, which can hand back an
+    // unrelated app's token. The SQL ORDER BY asks SQLite for that order, and
+    // the in-JS ranking below re-applies it so the result is correct even if
+    // the driver returns rows in another order — an unrelated app's `…token…`
+    // row must never be returned as Cursor's accessToken when a renamed Cursor
+    // access-token key is present.
+    if (!accessToken || !machineId) {
+      const fuzzyRows = db
+        .prepare(
+          `SELECT key, value FROM itemTable
+             WHERE key LIKE '%Token%' OR key LIKE '%achineId%'
+             ORDER BY
+               CASE
+                 WHEN lower(key) LIKE '%cursorauth%' AND lower(key) LIKE '%accesstoken%' THEN 0
+                 WHEN lower(key) LIKE '%cursor%'    AND lower(key) LIKE '%accesstoken%' THEN 1
+                 WHEN lower(key) LIKE '%accesstoken%'                                      THEN 2
+                 WHEN lower(key) LIKE '%cursorauth%' AND lower(key) LIKE '%token%'       THEN 3
+                 WHEN lower(key) LIKE '%cursor%'    AND lower(key) LIKE '%token%'        THEN 4
+                 WHEN lower(key) LIKE '%token%'                                          THEN 5
+                 WHEN lower(key) LIKE '%machineid%' AND lower(key) LIKE '%cursor%'       THEN 6
+                 WHEN lower(key) LIKE '%machineid%'                                      THEN 7
+                 ELSE 9
+               END`,
+        )
+        .all();
+
+      // Collect the best candidate per slot by rank (lower rank = better),
+      // rather than first-match-wins, so row order can't change the outcome.
+      // Rank tiers mirror the SQL ORDER BY exactly (see above) so an
+      // unscoped `…accessToken…` key can never tie a Cursor-namespaced one.
+      let bestAccessToken = null, bestAccessTokenRank = Infinity;
+      let bestMachineId = null, bestMachineIdRank = Infinity;
+      const rank = (key) => {
+        const k = key.toLowerCase();
+        if (k.includes("cursorauth") && k.includes("accesstoken")) return 0;
+        if (k.includes("cursor") && k.includes("accesstoken")) return 1;
+        if (k.includes("accesstoken")) return 2;
+        if (k.includes("cursorauth") && k.includes("token")) return 3;
+        if (k.includes("cursor") && k.includes("token")) return 4;
+        if (k.includes("token")) return 5;
+        if (k.includes("machineid") && k.includes("cursor")) return 6;
+        if (k.includes("machineid")) return 7;
+        return 9;
+      };
+      for (const row of fuzzyRows) {
+        const key = String(row.key || "");
+        const r = rank(key);
+        if (!accessToken && r < bestAccessTokenRank && key.toLowerCase().includes("token")) {
+          bestAccessToken = normalizeValue(row.value);
+          bestAccessTokenRank = r;
+        } else if (!machineId && r < bestMachineIdRank && key.toLowerCase().includes("machineid")) {
+          bestMachineId = normalizeValue(row.value);
+          bestMachineIdRank = r;
+        }
       }
-    } catch {
-      /* try next */
+      if (!accessToken) accessToken = bestAccessToken;
+      if (!machineId) machineId = bestMachineId;
     }
-  }
 
-  return { accessToken, machineId };
+    return { accessToken, machineId };
+  } finally {
+    db.close();
+  }
 }
 
 /**
  * GET /api/oauth/cursor/auto-import
- * Auto-detect and extract Cursor tokens from local SQLite database.
- * Strategy: better-sqlite3 → sqlite3 CLI → manual fallback
+ * Auto-detect and extract Cursor tokens from the local SQLite database.
+ * macOS probes several known db locations; Linux uses a single hardcoded path
+ * (no filesystem probing); other platforms are unsupported.
  */
 export async function GET() {
-  try {
-    const platform = process.platform;
-    const candidates = getCandidatePaths(platform);
+  const platform = process.platform;
 
-    let dbPath = null;
+  if (platform !== "darwin" && platform !== "linux") {
+    return NextResponse.json(
+      { found: false, error: "Unsupported platform" },
+      { status: 400 },
+    );
+  }
+
+  const candidates = getCandidatePaths(platform);
+  let dbPath = null;
+
+  // macOS: probe candidate paths for readability.
+  if (platform === "darwin") {
     for (const candidate of candidates) {
       try {
         await access(candidate, constants.R_OK);
         dbPath = candidate;
         break;
       } catch {
-        // Try next candidate
+        // try next candidate
       }
     }
-
     if (!dbPath) {
-      return NextResponse.json({
-        found: false,
-        error: `Cursor database not found. Checked locations:\n${candidates.join("\n")}\n\nMake sure Cursor IDE is installed and opened at least once.`,
-      });
+      return NextResponse.json({ found: false, error: MACOS_NOT_FOUND });
     }
-
-    // On Linux, verify Cursor is actually installed (not just leftover config)
-    if (platform === "linux") {
-      let cursorInstalled = false;
-      try {
-        await execFileAsync("which", ["cursor"], { timeout: 5000 });
-        cursorInstalled = true;
-      } catch {
-        try {
-          const desktopFile = join(homedir(), ".local/share/applications/cursor.desktop");
-          await access(desktopFile, constants.R_OK);
-          cursorInstalled = true;
-        } catch { /* not found */ }
-      }
-      if (!cursorInstalled) {
-        return NextResponse.json({
-          found: false,
-          error: "Cursor config files found but Cursor IDE does not appear to be installed. Skipping auto-import.",
-        });
-      }
-    }
-
-    // Strategy 1: better-sqlite3 (bundled — no external tools required)
-    try {
-      const tokens = extractTokensViaBetterSqlite(dbPath);
-      if (tokens.accessToken && tokens.machineId) {
-        return NextResponse.json({
-          found: true,
-          accessToken: tokens.accessToken,
-          machineId: tokens.machineId,
-        });
-      }
-    } catch {
-      // Native bindings unavailable — try CLI fallback
-    }
-
-    // Strategy 2: sqlite3 CLI
-    try {
-      const tokens = await extractTokensViaCLI(dbPath);
-      if (tokens.accessToken && tokens.machineId) {
-        return NextResponse.json({
-          found: true,
-          accessToken: tokens.accessToken,
-          machineId: tokens.machineId,
-        });
-      }
-    } catch {
-      // sqlite3 CLI not available either
-    }
-
-    // Strategy 3: ask user to paste manually
-    return NextResponse.json({ found: false, windowsManual: true, dbPath });
-  } catch (error) {
-    console.log("Cursor auto-import error:", error);
-    return NextResponse.json(
-      { found: false, error: error.message },
-      { status: 500 },
-    );
+  } else {
+    // Linux: single hardcoded path — skip filesystem probing (backward compat).
+    dbPath = candidates[0];
   }
+
+  // Open the db and extract tokens.
+  let tokens;
+  try {
+    tokens = await extractTokensViaBetterSqlite(dbPath);
+  } catch (error) {
+    if (platform === "linux") {
+      // Backward-compatible generic message for the single-path platform.
+      return NextResponse.json({ found: false, error: LINUX_NOT_FOUND });
+    }
+    // macOS: surface a descriptive "could not open" error including the raw code.
+    const code = error?.code || error?.message || "unknown";
+    return NextResponse.json({
+      found: false,
+      error: `Found Cursor database at ${dbPath} but could not open it (${code}).`,
+    });
+  }
+
+  if (tokens.accessToken && tokens.machineId) {
+    return NextResponse.json({
+      found: true,
+      accessToken: tokens.accessToken,
+      machineId: tokens.machineId,
+    });
+  }
+
+  // Tokens missing even after the fuzzy fallback — prompt the user to log in.
+  return NextResponse.json({ found: false, error: LOGIN_PROMPT });
 }

@@ -4,8 +4,12 @@ import { FORMATS } from "../translator/formats.js";
 export function parseSSELine(line, format = null) {
   if (!line) return null;
 
-  // NDJSON format (Ollama): raw JSON lines without "data:" prefix
-  if (format === FORMATS.OLLAMA) {
+  // NDJSON / raw JSON: providers (e.g. Ollama, gpt-oss) stream raw JSON lines
+  // without a "data:" prefix. Detect a leading '{' regardless of the format
+  // hint — the OLLAMA hint just makes this explicit, but raw-JSON lines arrive
+  // from other providers too.
+  const firstChar = line.charCodeAt(0);
+  if (firstChar === 123 /* '{' */ || format === FORMATS.OLLAMA) {
     const trimmed = line.trim();
     if (trimmed.startsWith("{")) {
       try {
@@ -18,7 +22,7 @@ export function parseSSELine(line, format = null) {
   }
 
   // Standard SSE format: "data: {...}"
-  if (line.charCodeAt(0) !== 100) return null; // 'd' = 100
+  if (firstChar !== 100) return null; // 'd' = 100
 
   const data = line.slice(5).trim();
   if (data === "[DONE]") return { done: true };

@@ -161,11 +161,14 @@ describe("decodeCompletionChunk", () => {
 });
 
 describe("WindsurfExecutor class", () => {
-  it("constructor wires config from PROVIDERS.windsurf", () => {
+  it("constructor wires config (PROVIDERS.windsurf when registered, else fallback)", () => {
     const ex = new WindsurfExecutor();
     expect(ex.provider).toBe("windsurf");
     expect(ex.config).toBeDefined();
-    expect(ex.config.baseUrl).toContain("server.self-serve.windsurf.com");
+    // Windsurf is currently hidden from the active registry (no tool-calling
+    // support), so the executor falls back to its built-in Codeium chat URL.
+    const expected = "https://server.codeium.com/exa.language_server_pb.LanguageServerService/GetChatMessage";
+    expect(ex.config.baseUrl).toBe(expected);
     expect(typeof ex.execute).toBe("function");
   });
 
@@ -187,12 +190,12 @@ describe("WindsurfExecutor class", () => {
 
   it("buildUrl returns the GetChatMessage endpoint", () => {
     const ex = new WindsurfExecutor();
-    expect(ex.buildUrl()).toBe("https://server.self-serve.windsurf.com/exa.language_server_pb.LanguageServerService/GetChatMessage");
+    expect(ex.buildUrl()).toBe("https://server.codeium.com/exa.language_server_pb.LanguageServerService/GetChatMessage");
   });
 
-  it("PROVIDERS.windsurf baseUrl is the chat endpoint (registry in sync)", () => {
-    expect(PROVIDERS.windsurf.baseUrl).toBe(
-      "https://server.self-serve.windsurf.com/exa.language_server_pb.LanguageServerService/GetChatMessage"
-    );
+  it("PROVIDERS.windsurf is hidden from the active registry (no tool-calling support)", () => {
+    // Windsurf is deliberately unregistered — re-enabling would break the
+    // providers baseline gate and re-expose a provider that skips ToolCallChunk.
+    expect(PROVIDERS.windsurf).toBeUndefined();
   });
 });

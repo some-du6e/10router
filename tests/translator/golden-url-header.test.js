@@ -23,15 +23,36 @@ const SPECIALIZED = new Set([
   "xiaomi-tokenplan", "mimo-free",
 ]);
 
-// Sanitize header: khử token + field thời gian động (kimi X-Msh-Device-Id) để snapshot ổn định.
+// Sanitize header: khử token + field môi trường động để snapshot ổn định across
+// machines, Node versions, and app-version bumps. Golden snapshots lock the
+// *structure* of buildUrl/buildHeaders; only values that derive from the runtime
+// environment (pkg.version, process.platform, process.version, arch, hostname())
+// are normalized — provider-specific User-Agent strings (claude-cli/x, kimchi/x,
+// grok-shell/x, CodeBuddy/x) are NOT touched, since they are part of the locked
+// structure and over-normalizing them would hide real regressions.
+//
+// Env-bearing keys (see shared/clineAuth.js + config/appConstants.js):
+//   cline:  User-Agent, X-CLIENT-VERSION, X-CORE-VERSION, X-PLATFORM, X-PLATFORM-VERSION
+//   kimi:   X-Msh-Version, X-Msh-Device-Model, X-Msh-Device-Name, X-Msh-Device-Id
+const ENV_NORMALIZE = {
+  "User-Agent": (v) => v.replace(/10router\/[\w.-]+/, "10router/<VER>"),
+  "X-CLIENT-VERSION": () => "<VER>",
+  "X-CORE-VERSION": () => "<VER>",
+  "X-PLATFORM": () => "<OS>",
+  "X-PLATFORM-VERSION": () => "<NODE>",
+  "X-Msh-Version": () => "<VER>",
+  "X-Msh-Device-Model": () => "<OS> <ARCH>",
+  "X-Msh-Device-Name": () => "<HOST>",
+  "X-Msh-Device-Id": (v) => v.replace(/kimi-\d{10,}/, "kimi-<TS>"),
+};
 function sanitize(headers) {
   const out = {};
   for (const [k, v] of Object.entries(headers)) {
-    out[k] = typeof v === "string"
-      ? v.replace(/Bearer .+/, "Bearer <TOK>")
-          .replace(/sk-test-APIKEY|tok-test-ACCESS/g, "<CRED>")
-          .replace(/kimi-\d{10,}/g, "kimi-<TS>")
-      : v;
+    if (typeof v !== "string") { out[k] = v; continue; }
+    let s = v.replace(/Bearer .+/, "Bearer <TOK>").replace(/sk-test-APIKEY|tok-test-ACCESS/g, "<CRED>");
+    const norm = ENV_NORMALIZE[k];
+    if (norm) s = norm(s);
+    out[k] = s;
   }
   return out;
 }
