@@ -1,6 +1,11 @@
 // Re-export from open-sse with localDb integration
 import { getModelAliases, getComboByName, getProviderNodes } from "@/lib/localDb";
-import { parseModel as parseModelCore, resolveModelAliasFromMap, getModelInfoCore } from "open-sse/services/model.js";
+import {
+  parseModel as parseModelCore,
+  resolveModelAliasFromMap,
+  getModelInfoCore,
+  stripContextWindowSuffix,
+} from "open-sse/services/model.js";
 import REGISTRY from "open-sse/providers/registry/index.js";
 
 // Local provider alias overrides (HMR-friendly, applied on top of open-sse map)
@@ -79,6 +84,13 @@ export async function getModelInfo(modelStr) {
 }
 
 /**
+ * Normalize a client model id to the name combos are stored under.
+ */
+export function comboLookupName(modelStr) {
+  return stripContextWindowSuffix(modelStr).model;
+}
+
+/**
  * Check if model is a combo and get models list
  * @returns {Promise<string[]|null>} Array of models or null if not a combo
  */
@@ -86,7 +98,11 @@ export async function getComboModels(modelStr) {
   // Only check if it's not in provider/model format
   if (modelStr.includes("/")) return null;
 
-  const combo = await getComboByName(modelStr);
+  // Combos are stored under a bare name, so a client-supplied context-window
+  // selector ("claude-opus-5[1m]") must come off before the lookup. getModelInfo
+  // already strips it and will report the combo; without the same strip here the
+  // handler's second lookup misses and the request dies as "Invalid model format".
+  const combo = await getComboByName(comboLookupName(modelStr));
   if (combo && combo.models && combo.models.length > 0) {
     return combo.models;
   }

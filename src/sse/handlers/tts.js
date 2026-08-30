@@ -3,7 +3,7 @@ import {
   getProviderCredentials, markAccountUnavailable,
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
-import { getModelInfo, getComboModels } from "../services/model.js";
+import { getModelInfo, getComboModels, comboLookupName } from "../services/model.js";
 import { handleTtsCore } from "open-sse/handlers/ttsCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
@@ -47,16 +47,18 @@ export async function handleTts(request) {
   // Combo expansion: model may be a combo name → run fallback/round-robin across models
   const comboModels = await getComboModels(modelStr);
   if (comboModels) {
+    // Combos are configured and rotation-tracked under the bare name.
+    const comboKey = comboLookupName(modelStr);
     const comboStrategies = settings.comboStrategies || {};
-    const comboStrategy = comboStrategies[modelStr]?.fallbackStrategy || settings.comboStrategy || "fallback";
+    const comboStrategy = comboStrategies[comboKey]?.fallbackStrategy || settings.comboStrategy || "fallback";
     const comboStickyLimit = settings.comboStickyRoundRobinLimit;
-    log.info("TTS", `Combo "${modelStr}" with ${comboModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+    log.info("TTS", `Combo "${comboKey}" with ${comboModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
     return handleComboChat({
       body,
       models: comboModels,
       handleSingleModel: (b, m) => handleSingleModelTts(b, m, responseFormat, language, style),
       log,
-      comboName: modelStr,
+      comboName: comboKey,
       comboStrategy,
       comboStickyLimit,
     });
