@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
 import { setDashboardAuthCookie } from "@/lib/auth/dashboardSession";
 import { isOidcConfigured } from "@/lib/auth/oidc";
+import { isSamlConfigured } from "@/lib/auth/saml.js";
 import { checkLock, recordFail, recordSuccess, getClientIp } from "@/lib/auth/loginLimiter";
 import { getAuthBootstrapState, getBootstrapSecret } from "@/lib/auth/setupState";
 
@@ -38,8 +39,18 @@ export async function POST(request) {
 
     const storedHash = settings.password;
 
-    if (settings.authMode === "oidc" && isOidcConfigured(settings)) {
-      return NextResponse.json({ error: "Password login is disabled. Use OIDC sign in." }, { status: 403 });
+    if (settings.authMode === "sso" || settings.authMode === "saml" || settings.authMode === "oidc") {
+      // authMode can name the protocol directly ("saml"/"oidc"); honour it
+      // ahead of ssoType, whose repo default is "oidc" and would otherwise
+      // mask an operator who set authMode:"saml" without also flipping ssoType
+      // — leaving password login enabled against their intent.
+      const ssoType = settings.authMode === "saml" ? "saml" : settings.ssoType || "oidc";
+      if (ssoType === "saml" && isSamlConfigured(settings)) {
+        return NextResponse.json({ error: "Password login is disabled. Use SAML SSO sign in." }, { status: 403 });
+      }
+      if (ssoType === "oidc" && isOidcConfigured(settings)) {
+        return NextResponse.json({ error: "Password login is disabled. Use OIDC sign in." }, { status: 403 });
+      }
     }
 
     const bootstrapState = await getAuthBootstrapState(settings);
