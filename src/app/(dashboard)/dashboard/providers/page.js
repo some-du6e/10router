@@ -8,6 +8,7 @@ import {
   Badge,
   Button,
   Toggle,
+  SegmentedControl,
 } from "@/shared/components";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import { getProviderIconSrc } from "@/shared/utils/providerIcon";
@@ -23,7 +24,14 @@ import Link from "next/link";
 import { getErrorCode, getRelativeTime } from "@/shared/utils";
 import { useNotificationStore } from "@/store/notificationStore";
 import { useHeaderSearchStore } from "@/store/headerSearchStore";
+import {
+  VENDORS,
+  VENDOR_BY_ROUTE,
+  rankScore,
+  vendorRankScore,
+} from "@/shared/constants/providerVendors";
 import ModelAvailabilityBadge from "./components/ModelAvailabilityBadge";
+import VendorProviderCard from "./components/VendorProviderCard";
 import AddCompatibleModal from "./components/AddCompatibleModal";
 
 function getStatusDisplay(connected, error, errorCode) {
@@ -95,11 +103,26 @@ function getConnectionErrorTag(connection) {
 
 const APIKEY_INITIAL_VISIBLE = 20;
 
+const VIEW_OPTIONS = [
+  { value: "vendor", label: "By vendor", icon: "workspaces" },
+  { value: "classic", label: "Classic", icon: "grid_view" },
+];
+
+const AUTH_FILTERS = [
+  { value: "all", label: "All" },
+  { value: "oauth", label: "OAuth" },
+  { value: "apikey", label: "API Key" },
+  { value: "free", label: "Free" },
+];
+
 export default function ProvidersPage() {
   const [connections, setConnections] = useState([]);
   const [providerNodes, setProviderNodes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAllApikey, setShowAllApikey] = useState(false);
+  const [view, setView] = useState("vendor");
+  const [authFilter, setAuthFilter] = useState("all");
+  const [connectedOnly, setConnectedOnly] = useState(false);
   const [showAddCompatibleModal, setShowAddCompatibleModal] = useState(false);
   const [showAddAnthropicCompatibleModal, setShowAddAnthropicCompatibleModal] =
     useState(false);
@@ -337,6 +360,90 @@ export default function ProvidersPage() {
       if (ca !== cb) return ca - cb;
       return (a.name || "").localeCompare(b.name || "");
     });
+  // --- "By vendor" view -----------------------------------------------------
+  // One card per real-world vendor, ranked by capability. Everything comes from
+  // the same *_PROVIDERS maps and getProviderStats as the classic view, so the
+  // two views can never disagree about connection counts.
+  const allProviderEntries = {
+    ...FREE_PROVIDERS,
+    ...FREE_TIER_PROVIDERS,
+    ...OAUTH_PROVIDERS,
+    ...APIKEY_PROVIDERS,
+  };
+
+  // Which filter chip an endpoint belongs to. noAuth providers are free to use
+  // regardless of the registry bucket they sit in.
+  const authGroupOf = (key, info) => {
+    if (info.noAuth) return "free";
+    if (key in FREE_PROVIDERS || key in FREE_TIER_PROVIDERS) return "free";
+    if (key in OAUTH_PROVIDERS) return "oauth";
+    return "apikey";
+  };
+
+  const buildRoute = (key, label) => {
+    const info = allProviderEntries[key];
+    if (!info || info.hidden) return null;
+    const stats = getProviderStats(key, dualAuthTypes(info, key));
+    return {
+      id: key,
+      label: label ?? info.name,
+      name: info.name,
+      info,
+      href: `/dashboard/providers/${key}`,
+      authGroup: authGroupOf(key, info),
+      isReady: !!info.noAuth,
+      ...stats,
+    };
+  };
+
+  const matchesFilters = (route) => {
+    if (authFilter !== "all" && route.authGroup !== authFilter) return false;
+    if (connectedOnly && !(route.connected > 0 || route.isReady)) return false;
+    return true;
+  };
+
+  const vendorCards = VENDORS.map((vendor) => {
+    const routes = vendor.routes
+      .map(([id, label]) => buildRoute(id, label))
+      .filter(Boolean);
+    if (routes.length === 0) return null;
+    // Search matches the vendor name or any of its endpoint names, so typing
+    // "codex" still surfaces the OpenAI card.
+    const searchable = [vendor.name, ...routes.map((r) => r.name)];
+    if (!searchable.some((n) => matchSearch(n))) return null;
+    const kept = routes.filter(matchesFilters);
+    if (kept.length === 0) return null;
+    return {
+      kind: "vendor",
+      key: `vendor:${vendor.id}`,
+      vendor,
+      routes: kept,
+      score: vendorRankScore(vendor),
+    };
+  }).filter(Boolean);
+
+  const singleCards = Object.entries(allProviderEntries)
+    .filter(([key, info]) => {
+      if (info.hidden || VENDOR_BY_ROUTE[key]) return false;
+      return (info.serviceKinds ?? ["llm"]).includes("llm") || !!info.noAuth;
+    })
+    .map(([key]) => buildRoute(key))
+    .filter((route) => route && matchSearch(route.name) && matchesFilters(route))
+    .map((route) => ({
+      kind: "single",
+      key: `single:${route.id}`,
+      route,
+      score: rankScore(route.id),
+    }));
+
+  const rankedCards = [...vendorCards, ...singleCards].sort(
+    (a, b) =>
+      b.score - a.score ||
+      (a.vendor?.name || a.route?.name || "").localeCompare(
+        b.vendor?.name || b.route?.name || "",
+      ),
+  );
+
   const isApikeySearching = !!searchQuery.trim();
   const visibleApikeyEntries =
     isApikeySearching || showAllApikey
@@ -361,8 +468,97 @@ export default function ProvidersPage() {
     compatibleProviders.length > 0 ||
     anthropicCompatibleProviders.length > 0;
 
+  const viewTabs = (
+    <div className="flex min-w-0 flex-col gap-3">
+      <SegmentedControl
+        size="sm"
+        options={VIEW_OPTIONS}
+        value={view}
+        onChange={setView}
+        className="w-max max-w-full"
+      />
+      {view === "vendor" && (
+        <div className="flex flex-wrap items-center gap-2">
+          {AUTH_FILTERS.map((f) => (
+            <button
+              key={f.value}
+              onClick={() => setAuthFilter(f.value)}
+              aria-pressed={authFilter === f.value}
+              className={`flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors ${
+                authFilter === f.value
+                  ? "border-primary/45 bg-primary/10 text-primary font-semibold"
+                  : "border-border bg-surface text-text-muted hover:border-primary/40 hover:text-text-main"
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+          <button
+            onClick={() => setConnectedOnly((v) => !v)}
+            aria-pressed={connectedOnly}
+            className={`ml-auto flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors ${
+              connectedOnly
+                ? "border-primary/45 bg-primary/10 text-primary font-semibold"
+                : "border-border bg-surface text-text-muted hover:border-primary/40 hover:text-text-main"
+            }`}
+          >
+            <span className="material-symbols-outlined text-[14px]">link</span>
+            Connected only
+          </button>
+        </div>
+      )}
+    </div>
+  );
+
+  if (view === "vendor") {
+    return (
+      <div className="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
+        {viewTabs}
+        {rankedCards.length === 0 ? (
+          <div className="text-center py-8 border border-dashed border-border rounded-xl">
+            <span className="material-symbols-outlined text-[32px] text-text-muted mb-2">
+              search_off
+            </span>
+            <p className="text-text-muted text-sm">
+              No providers match your search
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">
+            {rankedCards.map((card) =>
+              card.kind === "vendor" ? (
+                <VendorProviderCard
+                  key={card.key}
+                  vendor={card.vendor}
+                  routes={card.routes}
+                />
+              ) : (
+                <ApiKeyProviderCard
+                  key={card.key}
+                  providerId={card.route.id}
+                  provider={card.route.info}
+                  stats={card.route}
+                  authType={card.route.authGroup}
+                  onToggle={(active) =>
+                    handleToggleProvider(
+                      card.route.id,
+                      dualAuthTypes(card.route.info, card.route.id),
+                      active,
+                    )
+                  }
+                  className="min-h-[104px]"
+                />
+              ),
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
+      {viewTabs}
       {!hasAnyResult && (
         <div className="text-center py-8 border border-dashed border-border rounded-xl">
           <span className="material-symbols-outlined text-[32px] text-text-muted mb-2">
@@ -769,6 +965,7 @@ function ApiKeyProviderCard({
   stats,
   authType,
   onToggle,
+  className = "",
 }) {
   const { connected, error, errorCode, errorTime, allDisabled } = stats;
   const isCompatible = providerId.startsWith(OPENAI_COMPATIBLE_PREFIX);
@@ -802,7 +999,7 @@ function ApiKeyProviderCard({
     <Link href={`/dashboard/providers/${providerId}`} className="group min-w-0">
       <Card
         padding="xs"
-        className={`h-full hover:bg-black/[0.01] dark:hover:bg-white/[0.01] transition-colors cursor-pointer ${allDisabled ? "opacity-50" : ""}`}
+        className={`flex h-full flex-col justify-center hover:bg-black/[0.01] dark:hover:bg-white/[0.01] transition-colors cursor-pointer ${allDisabled ? "opacity-50" : ""} ${className}`}
       >
         <div className="flex min-w-0 items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3">
@@ -900,6 +1097,7 @@ ApiKeyProviderCard.propTypes = {
   }).isRequired,
   authType: PropTypes.string,
   onToggle: PropTypes.func,
+  className: PropTypes.string,
 };
 
 function ProviderTestResultsView({ results }) {
