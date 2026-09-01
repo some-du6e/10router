@@ -115,6 +115,9 @@ const AUTH_FILTERS = [
   { value: "free", label: "Free" },
 ];
 
+// Endpoints the user added themselves outrank anything we shipped a score for.
+const CUSTOM_PROVIDER_SCORE = 1000;
+
 export default function ProvidersPage() {
   const [connections, setConnections] = useState([]);
   const [providerNodes, setProviderNodes] = useState([]);
@@ -380,6 +383,20 @@ export default function ProvidersPage() {
     return "apikey";
   };
 
+  // A provider can answer to more than one chip: several OAuth-category
+  // endpoints (qoder, kimi, codebuddy, clinepass…) also take an API key, and
+  // their stats already count those connections via dualAuthTypes. Filtering on
+  // the registry bucket alone would hide them behind the "API Key" chip.
+  const authGroupsOf = (key, info) => {
+    const primary = authGroupOf(key, info);
+    const groups = new Set([primary]);
+    if (primary !== "free" && dualAuthTypes(info, key) !== "oauth") {
+      groups.add("apikey");
+      if (key in OAUTH_PROVIDERS) groups.add("oauth");
+    }
+    return groups;
+  };
+
   const buildRoute = (key, label) => {
     const info = allProviderEntries[key];
     if (!info || info.hidden) return null;
@@ -391,13 +408,14 @@ export default function ProvidersPage() {
       info,
       href: `/dashboard/providers/${key}`,
       authGroup: authGroupOf(key, info),
+      authGroups: authGroupsOf(key, info),
       isReady: !!info.noAuth,
       ...stats,
     };
   };
 
   const matchesFilters = (route) => {
-    if (authFilter !== "all" && route.authGroup !== authFilter) return false;
+    if (authFilter !== "all" && !route.authGroups.has(authFilter)) return false;
     if (connectedOnly && !(route.connected > 0 || route.isReady)) return false;
     return true;
   };
@@ -436,7 +454,30 @@ export default function ProvidersPage() {
       score: rankScore(route.id),
     }));
 
-  const rankedCards = [...vendorCards, ...singleCards].sort(
+  // User-added OpenAI/Anthropic-compatible endpoints. They aren't in the
+  // registry, so they can't be ranked or grouped — but they are the user's own
+  // providers, so they sort to the top rather than being dropped from the view.
+  const customCards = [...compatibleProviders, ...anthropicCompatibleProviders]
+    .filter(
+      () => authFilter === "all" || authFilter === "apikey",
+    )
+    .map((info) => ({
+      kind: "single",
+      key: `single:${info.id}`,
+      route: {
+        id: info.id,
+        name: info.name,
+        info,
+        authGroup: "compatible",
+        toggleAuth: "apikey",
+        isReady: false,
+        ...getProviderStats(info.id, "apikey"),
+      },
+      score: CUSTOM_PROVIDER_SCORE,
+    }))
+    .filter((card) => !connectedOnly || card.route.connected > 0);
+
+  const rankedCards = [...vendorCards, ...singleCards, ...customCards].sort(
     (a, b) =>
       b.score - a.score ||
       (a.vendor?.name || a.route?.name || "").localeCompare(
@@ -542,7 +583,8 @@ export default function ProvidersPage() {
                   onToggle={(active) =>
                     handleToggleProvider(
                       card.route.id,
-                      dualAuthTypes(card.route.info, card.route.id),
+                      card.route.toggleAuth ??
+                        dualAuthTypes(card.route.info, card.route.id),
                       active,
                     )
                   }

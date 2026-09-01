@@ -3,6 +3,7 @@
 import { useState } from "react";
 import PropTypes from "prop-types";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Card, Badge } from "@/shared/components";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import { getProviderIconSrc } from "@/shared/utils/providerIcon";
@@ -74,6 +75,7 @@ EndpointPill.propTypes = {
  * straight to that endpoint's detail page.
  */
 export default function VendorProviderCard({ vendor, routes }) {
+  const router = useRouter();
   const [expanded, setExpanded] = useState(false);
 
   const activeCount = routes.filter((r) => r.connected > 0 || r.isReady).length;
@@ -81,10 +83,21 @@ export default function VendorProviderCard({ vendor, routes }) {
   const hiddenCount = routes.length - visible.length;
   const aaii = AAII_SCORES[vendor.id];
 
+  // The card navigates on click, but is not itself a <Link>: it contains the
+  // endpoint pills (links) and the +N button, and nesting interactive elements
+  // inside an anchor is invalid HTML. The vendor name below is the real link,
+  // so keyboard and screen-reader users still get a proper target.
+  const goToVendor = (e) => {
+    // Let a pill or the +N button handle its own click.
+    if (e.target.closest("a, button")) return;
+    router.push(routes[0].href);
+  };
+
   return (
-    <Link href={routes[0].href} className="group/card min-w-0">
+    <div className="group/card min-w-0">
       <Card
         padding="xs"
+        onClick={goToVendor}
         className="flex h-full min-h-[104px] min-w-0 flex-col justify-center overflow-hidden transition-colors hover:bg-black/[0.01] dark:hover:bg-white/[0.01] cursor-pointer"
       >
         <div className="flex min-w-0 items-center justify-between gap-3">
@@ -92,7 +105,11 @@ export default function VendorProviderCard({ vendor, routes }) {
             <div
               className="size-8 shrink-0 rounded-lg flex items-center justify-center"
               style={{
-                backgroundColor: `${vendor.color?.length > 7 ? vendor.color : vendor.color + "15"}`,
+                backgroundColor: vendor.color
+                  ? vendor.color.length > 7
+                    ? vendor.color
+                    : `${vendor.color}15`
+                  : undefined,
               }}
             >
               <ProviderIcon
@@ -106,7 +123,9 @@ export default function VendorProviderCard({ vendor, routes }) {
             </div>
             <div className="min-w-0">
               <h3 className="flex min-w-0 items-center gap-1.5 font-semibold">
-                <span className="truncate">{vendor.name}</span>
+                <Link href={routes[0].href} className="truncate hover:underline">
+                  {vendor.name}
+                </Link>
                 {aaii && (
                   <span
                     title={`Artificial Analysis Intelligence Index ${AAII_INDEX_VERSION} — ${aaii.model}`}
@@ -150,7 +169,7 @@ export default function VendorProviderCard({ vendor, routes }) {
           )}
         </div>
       </Card>
-    </Link>
+    </div>
   );
 }
 
