@@ -18,11 +18,11 @@ Dashboard/gateway (run from repo root):
 ```bash
 cp .env.example .env
 npm install
-PORT=20128 NEXT_PUBLIC_BASE_URL=http://localhost:20128 npm run dev   # dev (turbopack); `npm run dev:webpack` for webpack
-npm run build && PORT=20128 HOSTNAME=0.0.0.0 npm run start           # production
+NEXT_PUBLIC_BASE_URL=http://localhost:20127 npm run dev   # dev (turbopack); `npm run dev:webpack` for webpack
+npm run build && HOSTNAME=0.0.0.0 npm run start           # production
 ```
 - Bun variants: `npm run dev:bun` / `build:bun` / `start:bun`.
-- Ports: `next dev` / `next start` hardcode **20127**; the shipped runtime (CLI launcher, `.env.example`) defaults to **20128**. Dashboard at `/dashboard`, API at `/v1`.
+- Ports: `next dev` / `next start` pass `--port 20127` explicitly, and that flag beats `$PORT` — setting `PORT` in front of those scripts does nothing. The shipped runtime (CLI launcher, `.env.example`) defaults to **20128**. Match `NEXT_PUBLIC_BASE_URL` to whichever port actually serves. Dashboard at `/dashboard`, API at `/v1`.
 - Lint: `npx eslint .` (config `eslint.config.mjs`, extends `eslint-config-next`).
 
 CLI package (`cli/`):
