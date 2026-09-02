@@ -18,11 +18,11 @@ Dashboard/gateway (run from repo root):
 ```bash
 cp .env.example .env
 npm install
-PORT=20128 NEXT_PUBLIC_BASE_URL=http://localhost:20128 npm run dev   # dev (webpack, port 20127 by default via next dev)
+PORT=20128 NEXT_PUBLIC_BASE_URL=http://localhost:20128 npm run dev   # dev (turbopack); `npm run dev:webpack` for webpack
 npm run build && PORT=20128 HOSTNAME=0.0.0.0 npm run start           # production
 ```
 - Bun variants: `npm run dev:bun` / `build:bun` / `start:bun`.
-- Default runtime port is **20128** (dashboard at `/dashboard`, API at `/v1`).
+- Ports: `next dev` / `next start` hardcode **20127**; the shipped runtime (CLI launcher, `.env.example`) defaults to **20128**. Dashboard at `/dashboard`, API at `/v1`.
 - Lint: `npx eslint .` (config `eslint.config.mjs`, extends `eslint-config-next`).
 
 CLI package (`cli/`):
@@ -41,7 +41,7 @@ npx vitest run unit/capabilities.test.js   # single file (path relative to tests
 > The committed `tests/package.json` `test` script hardcodes Unix paths (`NODE_PATH=/tmp/node_modules …`) — a shared-install workaround from upstream. On Windows (or anywhere), ignore it and use the `npx vitest` form above; `vitest.config.js` resolves the `open-sse`/`@/` aliases from the repo root regardless of where vitest lives.
 >
 > **The suite is NOT expected to be all-green on a plain checkout.** ~938 pass, ~64 fail. Judge regressions with `tests/__baseline__/verify-no-regression.mjs`, not a raw run. Expected red:
-> - 26 catalogued in `tests/__baseline__/known-fails.txt` (rtk, oauth-cursor-auto-import, translator-request-normalization, …).
+> - the cases catalogued in `tests/__baseline__/known-fails.txt` (rtk, oauth-cursor-auto-import, translator-request-normalization, …).
 > - `unit/embeddings.cloud.test.js` imports `cloud/src/handlers/embeddings.js` — the `cloud/` worker dir is **not in this repo**, so it always fails here.
 > - `unit/xai-oauth-service.test.js` times out (5s) when the xAI endpoint-discovery fetch isn't reachable/mocked.
 > - `real/*.real.test.js` make live provider calls — need credentials, skip otherwise.
@@ -53,6 +53,8 @@ npx vitest run unit/capabilities.test.js   # single file (path relative to tests
 Two authoritative docs already exist — read them before working in these areas rather than re-deriving:
 - `docs/ARCHITECTURE.md` — full system: request lifecycle, combo/account fallback, OAuth + token refresh, cloud sync, data model.
 - `open-sse/AGENTS.md` — the routing/translation engine's own conventions and "how to add a provider/executor/translator". **Read this before editing anything under `open-sse/`.**
+
+`docs/superpowers/{plans,specs}/` holds dated design docs for individual features (e.g. the GPT-5.6 Codex reasoning overrides). Historical intent, not current-state reference — check the code before trusting one.
 
 ### Request flow (the thing to understand first)
 `src/app/api/v1/*` route (Next rewrite maps `/v1/*` → `/api/v1/*` in `next.config.mjs`)
