@@ -21,6 +21,8 @@ export const CLAUDE_BLOCK = {
   THINKING: "thinking",
   REDACTED_THINKING: "redacted_thinking",
   WEB_SEARCH_TOOL: "web_search_20250305",
+  SERVER_TOOL_USE: "server_tool_use",
+  WEB_SEARCH_TOOL_RESULT: "web_search_tool_result",
 };
 
 // OpenAI Responses API item types.
