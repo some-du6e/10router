@@ -72,6 +72,15 @@ describe("Responses namespace tools → OpenAI Chat", () => {
     expect(out._toolNamespaces.deferred).toBeUndefined();
   });
 
+  it("skips a top-level defer_loading tool declared outside any namespace", () => {
+    const out = translate([
+      { type: "function", name: "plain", description: "p", parameters: { type: "object", properties: {} } },
+      { type: "function", name: "top_deferred", parameters: { type: "object", properties: {} }, defer_loading: true },
+    ]);
+
+    expect(out.tools.map((t) => t.function.name)).toEqual(["plain"]);
+  });
+
   it("leaves plain function tools untouched", () => {
     const out = translate([
       { type: "function", name: "plain", description: "p", parameters: { type: "object", properties: {} } },

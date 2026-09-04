@@ -269,13 +269,14 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
  * call, not as a `namespace.name` prefix — and are recorded in `namespaces` so the
  * response hop can re-attach it.
  *
- * `defer_loading: true` tools are skipped: they are delivered on demand via tool_search
- * and are not part of the initial callable set.
+ * `defer_loading: true` tools are skipped at either level: they are delivered on
+ * demand via tool_search and are not part of the initial callable set.
  */
 function flattenNamespaceTools(tools, namespaces) {
   const flat = [];
   for (const tool of tools) {
     if (!tool || typeof tool !== "object") continue;
+    if (tool.defer_loading === true) continue;
     if (tool.type !== RESPONSES_ITEM.NAMESPACE) {
       flat.push(tool);
       continue;
