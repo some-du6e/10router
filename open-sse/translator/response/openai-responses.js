@@ -262,6 +262,12 @@ function isCustomTool(state, name) {
   return !!name && state.customToolNames?.has(name);
 }
 
+// Responses clients resolve a namespaced tool by the `namespace` field on the call,
+// not by a qualified name — without it they reject the call as unsupported.
+function toolNamespace(state, name) {
+  return (name && state.toolNamespaces?.get(name)) || null;
+}
+
 function extractCustomToolInput(argumentsText) {
   if (typeof argumentsText !== "string") return "";
   try {
@@ -286,6 +292,7 @@ function emitToolCall(state, emit, tc) {
   if (!state.funcItemAdded[tcIdx] && callId && state.funcNames[tcIdx]) {
     state.funcItemAdded[tcIdx] = true;
     const custom = isCustomTool(state, state.funcNames[tcIdx]);
+    const ns = toolNamespace(state, state.funcNames[tcIdx]);
 
     emit("response.output_item.added", {
       type: "response.output_item.added",
@@ -295,7 +302,8 @@ function emitToolCall(state, emit, tc) {
         type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,
         ...(custom ? { input: "" } : { arguments: "" }),
         call_id: callId,
-        name: state.funcNames[tcIdx] || ""
+        name: state.funcNames[tcIdx] || "",
+        ...(ns ? { namespace: ns } : {})
       }
     });
   }
@@ -348,6 +356,7 @@ function closeToolCall(state, emit, idx) {
       });
     }
 
+    const ns = toolNamespace(state, state.funcNames[idx]);
     emit("response.output_item.done", {
       type: "response.output_item.done",
       output_index: parseInt(idx),
@@ -356,7 +365,8 @@ function closeToolCall(state, emit, idx) {
         type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,
         ...(custom ? { input: extractCustomToolInput(args) } : { arguments: args }),
         call_id: callId,
-        name: state.funcNames[idx] || ""
+        name: state.funcNames[idx] || "",
+        ...(ns ? { namespace: ns } : {})
       }
     });
 

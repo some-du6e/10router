@@ -34,6 +34,8 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
   let pendingReasoningEncrypted = "";
   const additionalTools = [];
   const customToolNames = new Set();
+  // name → namespace, so the response hop can re-attach the namespace the client expects
+  const toolNamespaces = new Map();
 
   const inputItems = normalizeResponsesInput(body.input);
   if (!inputItems) return body;
@@ -111,12 +113,16 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
       // Skip items with empty/missing name — Codex/OpenAI reject nameless tool calls (#444)
       if (!item.name || typeof item.name !== "string" || item.name.trim() === "") continue;
       if (itemType === RESPONSES_ITEM.CUSTOM_TOOL_CALL) customToolNames.add(item.name);
+      // A prior turn's call carries its namespace; keep it so the next hop can restore it
+      if (typeof item.namespace === "string" && item.namespace) toolNamespaces.set(item.name, item.namespace);
       const toolInput = itemType === RESPONSES_ITEM.CUSTOM_TOOL_CALL
         ? { input: typeof item.input === "string" ? item.input : JSON.stringify(item.input ?? "") }
         : item.arguments;
+      if (typeof item.namespace === "string" && item.namespace) toolNamespaces.set(item.name, item.namespace);
       currentAssistantMsg.tool_calls.push({
         id: item.call_id,
         type: OPENAI_BLOCK.FUNCTION,
+        namespace: item.namespace || undefined,
         function: {
           name: item.name,
           arguments: typeof toolInput === "string" ? toolInput : JSON.stringify(toolInput ?? {})
@@ -175,10 +181,13 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
   // explicit `name` field and cannot be represented as Chat Completions function declarations.
   // Filter them out to avoid sending nameless functionDeclarations to downstream providers
   // such as Gemini, which strictly validates function names.
-  const responseTools = [
-    ...(Array.isArray(body.tools) ? body.tools : []),
-    ...additionalTools,
-  ];
+  const responseTools = flattenNamespaceTools(
+    [
+      ...(Array.isArray(body.tools) ? body.tools : []),
+      ...additionalTools,
+    ],
+    toolNamespaces
+  );
   if (responseTools.length > 0) {
     result.tools = responseTools
       .map(tool => {
@@ -227,6 +236,7 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
       .filter(Boolean);
   }
   if (customToolNames.size > 0) result._customToolNames = [...customToolNames];
+  if (toolNamespaces.size > 0) result._toolNamespaces = Object.fromEntries(toolNamespaces);
 
   // Cleanup Responses API specific fields
   // Map Responses-only max_output_tokens to Chat max_tokens (avoid leaking unknown field upstream)
@@ -247,6 +257,39 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
   delete result.client_metadata;
 
   return result;
+}
+
+/**
+ * Flatten Responses `namespace` container tools into their nested function tools.
+ *
+ * Chat Completions has no namespace concept, so a container like
+ * `{ type: "namespace", name: "functions", tools: [...] }` must be unwrapped or every
+ * tool inside it is lost (the container itself has no callable schema). Names stay
+ * unqualified — the Responses API carries the namespace as a separate field on the
+ * call, not as a `namespace.name` prefix — and are recorded in `namespaces` so the
+ * response hop can re-attach it.
+ *
+ * `defer_loading: true` tools are skipped at either level: they are delivered on
+ * demand via tool_search and are not part of the initial callable set.
+ */
+function flattenNamespaceTools(tools, namespaces) {
+  const flat = [];
+  for (const tool of tools) {
+    if (!tool || typeof tool !== "object") continue;
+    if (tool.defer_loading === true) continue;
+    if (tool.type !== RESPONSES_ITEM.NAMESPACE) {
+      flat.push(tool);
+      continue;
+    }
+    const ns = typeof tool.name === "string" ? tool.name : "";
+    for (const nested of Array.isArray(tool.tools) ? tool.tools : []) {
+      if (!nested || typeof nested !== "object") continue;
+      if (nested.defer_loading === true) continue;
+      if (ns && typeof nested.name === "string" && nested.name) namespaces.set(nested.name, ns);
+      flat.push(nested);
+    }
+  }
+  return flat;
 }
 
 /**
@@ -373,6 +416,8 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
           type: RESPONSES_ITEM.FUNCTION_CALL,
           call_id: clampCallId(tc.id),
           name: tc.function?.name || "_unknown",
+          // Responses rejects a namespaced call replayed without its namespace
+          ...(tc.namespace ? { namespace: tc.namespace } : {}),
           arguments: tc.function?.arguments || "{}"
         });
       }
