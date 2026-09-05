@@ -135,8 +135,10 @@ export const MODEL_CAPABILITIES = {
 
 const KIRO_GPT_5_6_CAPABILITIES = { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 272000, maxOutput: 128000 };
 
-// Codex OAuth (ChatGPT backend) — per-model context window reported by upstream
-// (lower than OpenAI API's 1.05M). Sol differs from Terra/Luna. #2720
+// Codex OAuth uses smaller context windows than the OpenAI API catalog.
+// Astra exposes 272k, of which Codex reserves 5% and reports about 258k usable.
+const CODEX_GPT_6_ASTRA_CAPS = { vision: true, reasoning: true, search: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 272000, maxOutput: 128000 };
+// GPT-5.6 Codex context windows also differ from the OpenAI API. #2720
 const CODEX_GPT_56_SOL_CAPS  = { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 372000, maxOutput: 128000 };
 const CODEX_GPT_56_DEFAULT_CAPS = { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 272000, maxOutput: 128000 };
 
@@ -154,6 +156,7 @@ export const PROVIDER_CAPABILITIES = {
     "deepseek-ai/deepseek-v4-flash": { reasoning: true, thinkingFormat: "openai", contextWindow: 1000000, maxOutput: 65536 },
   },
   "codex": {
+    "gpt-6-astra":               CODEX_GPT_6_ASTRA_CAPS,
     "gpt-5.6-sol":               CODEX_GPT_56_SOL_CAPS,
     "gpt-5.6-sol-review":        CODEX_GPT_56_SOL_CAPS,
     "gpt-5.6-terra":             CODEX_GPT_56_DEFAULT_CAPS,

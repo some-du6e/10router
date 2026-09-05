@@ -20,6 +20,18 @@ describe("getCapabilitiesForModel", () => {
     search: true,
   };
 
+  it("reports Codex GPT 6 Astra with its Codex capabilities", () => {
+    expect(getCapabilitiesForModel("codex", "gpt-6-astra")).toMatchObject({
+      contextWindow: 272000,
+      maxOutput: 128000,
+      thinkingFormat: "openai",
+      thinkingCanDisable: false,
+      reasoning: true,
+      vision: true,
+      search: true,
+    });
+  });
+
   it("reports Kiro Claude Opus 5 variants as 1M adaptive-thinking models", () => {
     for (const model of [
       "claude-opus-5",
