@@ -29,7 +29,7 @@
  * @property {Record<string,unknown>} [providerSpecificData]
  */
 
-import { assertPublicUrl } from "../../../src/shared/utils/ssrfGuard.js";
+import { assertPublicUrl } from "../../utils/ssrfGuard.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 

@@ -210,11 +210,16 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
         });
       },
       onRequestSuccess: async () => {
-        await clearAccountError(credentials.connectionId, credentials);
+        await clearAccountError(credentials.connectionId, credentials, searchLockKey);
       }
     });
 
-    if (result.success) return result.response;
+    if (result.success) {
+      // Search cores do not own account state, so clear the capability-scoped
+      // lock here after the provider succeeds.
+      await clearAccountError(credentials.connectionId, credentials, searchLockKey);
+      return result.response;
+    }
 
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, credentialProviderId, searchLockKey);
 

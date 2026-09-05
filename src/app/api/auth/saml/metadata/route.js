@@ -1,5 +1,5 @@
 import { getSettings } from "@/lib/localDb";
-import { generateSamlMetadata } from "@/lib/auth/saml";
+import { generateSamlMetadata } from "@/lib/auth/saml.js";
 
 export async function GET(request) {
   try {

@@ -10,7 +10,7 @@
 import { buildSearchRequest } from "./callers.js";
 import { normalizeSearchResponse } from "./normalizers.js";
 import { handleChatSearch } from "./chatSearch.js";
-import { fetchPublic } from "../../../src/shared/utils/ssrfGuard.js";
+import { fetchPublic } from "../../utils/ssrfGuard.js";
 
 const GLOBAL_TIMEOUT_MS = 15000;
 const NON_RETRIABLE = new Set([400, 401, 403, 404]);
