@@ -49,6 +49,10 @@ function stripContentTypes(body, stripList = []) {
 }
 
 // Translate request: source -> openai -> target
+// Translator-only fields: set by a source translator, read by the response hop,
+// stripped in chatCore before dispatch. They must survive the openai pivot.
+const TRANSLATOR_METADATA_KEYS = ["_toolNamespaces", "_customToolNames"];
+
 export function translateRequest(sourceFormat, targetFormat, model, body, stream = true, credentials = null, provider = null, reqLogger = null, stripList = [], connectionId = null, clientTool = null) {
   ensureInitialized();
   let result = body;
@@ -102,7 +106,15 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
       if (targetFormat !== FORMATS.OPENAI) {
         const fromOpenAI = requestRegistry.get(`${FORMATS.OPENAI}:${targetFormat}`);
         if (fromOpenAI) {
+          // Target translators build a fresh body field-by-field, so translator-only
+          // metadata set by step 1 (leading `_`, never sent upstream) would be dropped
+          // on the pivot. Carry it across so the response hop can still read it.
+          const carried = TRANSLATOR_METADATA_KEYS.filter((k) => result[k] !== undefined)
+            .map((k) => [k, result[k]]);
           result = fromOpenAI(model, result, stream, credentials);
+          for (const [k, v] of carried) {
+            if (result && result[k] === undefined) result[k] = v;
+          }
         }
       }
     }
