@@ -33,6 +33,7 @@
 // 2.0+, Grok, Perplexity). Verify with: curl -s https://models.dev/api.json
 
 import { matchPattern } from "./pricing.js";
+import { resolveProviderAlias } from "../services/model.js";
 import { looksLikeVisionModel } from "./visionPatterns.js";
 
 /**
@@ -418,7 +419,8 @@ export function getCapabilitiesForModel(provider, model) {
 
   // 1. Provider-specific override
   if (provider) {
-    const providerCaps = PROVIDER_CAPABILITIES[provider];
+    const providerCaps = PROVIDER_CAPABILITIES[provider]
+      || PROVIDER_CAPABILITIES[resolveProviderAlias(provider)];
     if (providerCaps?.[model]) return { ...DEFAULT_CAPABILITIES, ...providerCaps[model] };
     if (providerCaps?.[baseModel]) return { ...DEFAULT_CAPABILITIES, ...providerCaps[baseModel] };
   }
