@@ -4,7 +4,7 @@ import {
   openaiToOpenAIResponsesRequest,
 } from "../../open-sse/translator/request/openai-responses.js";
 import { openaiToOpenAIResponsesResponse } from "../../open-sse/translator/response/openai-responses.js";
-import { initState } from "../../open-sse/translator/index.js";
+import { initState, translateRequest, translateResponse } from "../../open-sse/translator/index.js";
 import { FORMATS } from "../../open-sse/translator/formats.js";
 
 const NAMESPACE_TOOLS = {
@@ -169,5 +169,61 @@ describe("Responses namespace tools ← streamed tool call", () => {
 
   it("omits the namespace for tools declared outside one", () => {
     for (const e of streamCall({})) expect(e.data.item.namespace).toBeUndefined();
+  });
+});
+
+describe("namespace survives the full openai-responses → claude → client chain", () => {
+  const REQUEST = {
+    model: "claude-opus-5",
+    stream: true,
+    input: [
+      { type: "additional_tools", role: "developer", tools: [NAMESPACE_TOOLS] },
+      { type: "message", role: "user", content: [{ type: "input_text", text: "run pwd" }] },
+    ],
+  };
+
+  // openaiToClaudeRequest builds a fresh body field-by-field, so translator-only
+  // metadata set on the OpenAI intermediate is dropped unless translateRequest
+  // carries it across the pivot. Without that the client gets a namespaced tool
+  // call with no namespace and rejects it.
+  it("carries _toolNamespaces through the openai pivot to the claude body", () => {
+    const out = translateRequest(
+      FORMATS.OPENAI_RESPONSES, FORMATS.CLAUDE, "claude-opus-5",
+      structuredClone(REQUEST), true, {}, "claude", null, [], null, null,
+    );
+
+    expect(out.tools.map((t) => t.name)).toEqual(["exec_ide", "read_file"]);
+    expect(out._toolNamespaces).toEqual({ exec_ide: "functions", read_file: "functions" });
+  });
+
+  it("emits the namespace on a tool call translated back from claude SSE", () => {
+    const req = translateRequest(
+      FORMATS.OPENAI_RESPONSES, FORMATS.CLAUDE, "claude-opus-5",
+      structuredClone(REQUEST), true, {}, "claude", null, [], null, null,
+    );
+    // Mirrors how chatCore seeds the response state from the translated request.
+    const state = {
+      ...initState(FORMATS.OPENAI_RESPONSES),
+      customToolNames: new Set(req._customToolNames || []),
+      toolNamespaces: new Map(Object.entries(req._toolNamespaces || {})),
+    };
+
+    const chunks = [
+      { type: "message_start", message: { id: "m1", model: "claude-opus-5", usage: { input_tokens: 1, output_tokens: 0 } } },
+      { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_1", name: "exec_ide", input: {} } },
+      { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{\"cmd\":\"pwd\"}" } },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 3 } },
+      { type: "message_stop" },
+    ];
+    const events = [];
+    for (const c of chunks) events.push(...(translateResponse(FORMATS.CLAUDE, FORMATS.OPENAI_RESPONSES, c, state) || []));
+
+    const items = events.filter((e) => String(e.event || "").includes("output_item"));
+    expect(items.length).toBeGreaterThan(0);
+    for (const e of items) {
+      expect(e.data.item.name).toBe("exec_ide");
+      expect(e.data.item.namespace).toBe("functions");
+    }
   });
 });
