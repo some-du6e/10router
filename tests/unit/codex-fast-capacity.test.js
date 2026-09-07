@@ -72,6 +72,8 @@ describe("Codex fast tier and capacity handling", () => {
 
 describe("Codex reasoning normalization", () => {
   it.each([
+    ["gpt-6-astra", "max", "max"],
+    ["gpt-6-astra", "ultra", "max"],
     ["gpt-5.6-sol", "max", "max"],
     ["gpt-5.6-sol", "ultra", "ultra"],
     ["gpt-5.6-terra", "max", "max"],
