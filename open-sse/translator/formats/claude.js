@@ -8,6 +8,11 @@ import { isValidClaudeSignature } from "../../utils/claudeSignature.js";
 import { PROVIDERS } from "../../providers/index.js";
 import { getCapabilitiesForModel } from "../../providers/capabilities.js";
 import { DEFAULT_MAX_TOKENS } from "../../config/runtimeConfig.js";
+import {
+  CLAUDE_INTERRUPTED_TOOL_RESULT_TEXT,
+  CLAUDE_PREFILL_CONTINUATION_TEXT,
+  supportsClaudeAssistantPrefill,
+} from "../../config/claudeMessageCompat.js";
 
 const CACHE_CONTROL_5M = { type: "ephemeral" };
 const CACHE_CONTROL_1H = { type: "ephemeral", ttl: "1h" };
@@ -96,6 +101,30 @@ export function fixToolUseOrdering(messages) {
   }
 
   return merged;
+}
+
+// Opus 5 removed assistant-prefill support. Preserve the assistant turn as history,
+// then add the user-side continuation Anthropic requires. A dangling tool_use needs
+// matching tool_result blocks first or Anthropic rejects the repaired sequence too.
+export function repairUnsupportedAssistantPrefill(messages, model = "") {
+  if (!Array.isArray(messages) || supportsClaudeAssistantPrefill(model)) return messages;
+
+  const last = messages[messages.length - 1];
+  if (last?.role !== ROLE.ASSISTANT) return messages;
+
+  const toolUses = Array.isArray(last.content)
+    ? last.content.filter(block => block?.type === CLAUDE_BLOCK.TOOL_USE && block.id)
+    : [];
+  const content = toolUses.length > 0
+    ? toolUses.map(block => ({
+      type: CLAUDE_BLOCK.TOOL_RESULT,
+      tool_use_id: block.id,
+      content: CLAUDE_INTERRUPTED_TOOL_RESULT_TEXT,
+      is_error: true,
+    }))
+    : [{ type: CLAUDE_BLOCK.TEXT, text: CLAUDE_PREFILL_CONTINUATION_TEXT }];
+
+  return [...messages, { role: ROLE.USER, content }];
 }
 
 // Models that reject thinking.type "adaptive" + output_config.effort (Opus 4.5+/Sonnet 4.6+ only)
@@ -376,9 +405,12 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
         }
       }
 
-      // Keep final assistant even if empty, otherwise check valid content
-      const isFinalAssistant = i === len - 1 && msg.role === "assistant";
-      if (isFinalAssistant || hasValidContent(msg)) {
+      // Keep an empty final assistant only when the model supports using it as a prefill.
+      const isSupportedFinalAssistantPrefill =
+        i === len - 1 &&
+        msg.role === ROLE.ASSISTANT &&
+        supportsClaudeAssistantPrefill(body.model);
+      if (isSupportedFinalAssistantPrefill || hasValidContent(msg)) {
         filtered.push(msg);
       }
     }
@@ -386,6 +418,7 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
     // Pass 1.5: Fix tool_use/tool_result ordering
     // Each tool_use must have tool_result in the NEXT message (not same message with other content)
     filtered = fixToolUseOrdering(filtered);
+    filtered = repairUnsupportedAssistantPrefill(filtered, body.model);
 
     body.messages = filtered;
 
