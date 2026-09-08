@@ -1,6 +1,13 @@
 /* source() sets scan base to src/ for both webpack + Turbopack; auto-detection still skips binaries + gitignore */
 @import "tailwindcss" source("../../");
 
+/* The vendor sheet pins .material-symbols-outlined to font-size:24px. Imported
+   bare (it used to be a plain import in layout.js) it lands unlayered, and
+   unlayered CSS beats every layered rule regardless of specificity — so it ate
+   the text-[14px] etc. that ~440 icon call sites pass and rendered every icon
+   at 24px. layer(base) puts it where Tailwind utilities can win. */
+@import "material-symbols/outlined.css" layer(base);
+
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* Hide icon ligature text until font is ready */
@@ -328,26 +335,30 @@ input, textarea {
 .traffic-light.yellow { background: #FFBD2E; }
 .traffic-light.green { background: #27C93F; }
 
-/* Material Symbols */
-.material-symbols-outlined {
-  font-family: 'Material Symbols Outlined', sans-serif;
-  font-weight: normal;
-  font-style: normal;
-  font-size: 24px;
-  line-height: 1;
-  letter-spacing: normal;
-  text-transform: none;
-  display: inline-block;
-  white-space: nowrap;
-  word-wrap: normal;
-  direction: ltr;
-  font-feature-settings: 'liga';
-  -webkit-font-feature-settings: 'liga';
-  -webkit-font-smoothing: antialiased;
-  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
-}
-.material-symbols-outlined.fill-1 {
-  font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+/* Material Symbols — our overrides on top of the vendor sheet. Layered for the
+   same reason as the import above: unlayered, the font-size wins over the
+   text-[14px] the call sites pass. */
+@layer base {
+  .material-symbols-outlined {
+    font-family: 'Material Symbols Outlined', sans-serif;
+    font-weight: normal;
+    font-style: normal;
+    font-size: 24px;
+    line-height: 1;
+    letter-spacing: normal;
+    text-transform: none;
+    display: inline-block;
+    white-space: nowrap;
+    overflow-wrap: normal;
+    direction: ltr;
+    font-feature-settings: 'liga';
+    -webkit-font-feature-settings: 'liga';
+    -webkit-font-smoothing: antialiased;
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  }
+  .material-symbols-outlined.fill-1 {
+    font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  }
 }
 
 /* Disable text selection on buttons */
