@@ -85,6 +85,32 @@ describe("Claude Opus 5 assistant-prefill compatibility", () => {
     }]);
   });
 
+  it("generates an ID before repairing a dangling ID-less Claude tool_use", () => {
+    const out = translateRequest(
+      FORMATS.CLAUDE,
+      FORMATS.CLAUDE,
+      "claude-opus-5",
+      {
+        model: "claude-opus-5",
+        messages: [
+          { role: "user", content: [{ type: "text", text: "run it" }] },
+          { role: "assistant", content: [{ type: "tool_use", name: "exec_ide", input: {} }] },
+        ],
+      },
+      true,
+      null,
+      "claude"
+    );
+
+    const toolUse = out.messages.at(-2).content[0];
+    expect(toolUse.id).toMatch(/^call_msg1_tc0_exec_ide$/);
+    expect(out.messages.at(-1).content).toEqual([expect.objectContaining({
+      type: "tool_result",
+      tool_use_id: toolUse.id,
+      is_error: true,
+    })]);
+  });
+
   it("matches vendor-prefixed Opus 5 model ids", () => {
     const out = T("anthropic/claude-opus-5-thinking", [userMessage, assistantMessage]);
 

@@ -129,6 +129,9 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
 
   // Final step: prepare request for Claude format endpoints
   if (targetFormat === FORMATS.CLAUDE) {
+    // Source translators may create Claude tool_use blocks after the initial
+    // normalization pass, so validate their IDs again before repairing history.
+    ensureToolCallIds(result);
     const apiKey = credentials?.accessToken || credentials?.apiKey || null;
     result = prepareClaudeRequest(result, provider, apiKey, connectionId, credentials?.rawHeaders, clientSessionId);
   }

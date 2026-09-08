@@ -55,7 +55,7 @@ export function ensureToolCallIds(body) {
     if (Array.isArray(msg.content)) {
       for (let k = 0; k < msg.content.length; k++) {
         const block = msg.content[k];
-        if (block.type === "tool_use" && block.id && !TOOL_ID_PATTERN.test(block.id)) {
+        if (block.type === "tool_use" && (!block.id || !TOOL_ID_PATTERN.test(block.id))) {
           const sanitized = sanitizeToolId(block.id);
           block.id = sanitized || generateToolCallId(i, k, block.name);
         }
