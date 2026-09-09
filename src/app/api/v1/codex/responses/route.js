@@ -9,6 +9,7 @@
 import { POST as responsesPost } from "../../responses/route.js";
 import { getPooledCodexRateLimitHeaders } from "@/sse/services/codexPooledUsage";
 import { getModelAliases, getComboByName } from "@/lib/localDb";
+import { stripContextWindowSuffix } from "open-sse/services/model.js";
 
 export { OPTIONS } from "../../responses/route.js";
 
@@ -37,9 +38,17 @@ async function withCodexFallback(request) {
   const model = body?.model;
   if (typeof model !== "string" || !model || model.includes("/")) return request;
 
+  // A client-side context selector ("claude-opus-5[1m]") is not part of any
+  // stored name, so it has to come off before the alias/combo lookup — the same
+  // way handleChat strips it before routing. Without this, the plain id matches
+  // its combo and routes to Claude while the [1m] variant misses, falls through
+  // to `cx/`, and dies upstream as "model is not supported ... with a ChatGPT
+  // account". The marker stays on the forwarded body; handleChat strips it.
+  const { model: bareModel } = stripContextWindowSuffix(model);
+
   const aliases = await getModelAliases();
-  if (aliases?.[model]) return request;
-  if (await getComboByName(model)) return request;
+  if (aliases?.[bareModel]) return request;
+  if (await getComboByName(bareModel)) return request;
 
   return new Request(request.url, {
     method: request.method,

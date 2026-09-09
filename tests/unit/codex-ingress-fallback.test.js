@@ -64,6 +64,28 @@ describe("Codex ingress model fallback", () => {
     expect(seen.body.model).toBe("my-combo");
   });
 
+  it("matches a combo through a [1m] context selector", async () => {
+    // Regression: t3 code / Claude Code append `[1m]` when the 1M-context beta
+    // is on. The selector is not part of the stored combo name, so an unstripped
+    // lookup missed, the id fell through to `cx/`, and Codex answered 400
+    // "The 'claude-opus-5' model is not supported ... with a ChatGPT account" —
+    // while the same combo without the selector routed to Claude fine.
+    combos.value = { "claude-opus-5": { name: "claude-opus-5" } };
+    await post({ model: "claude-opus-5[1m]", input: [] });
+    expect(seen.body.model).toBe("claude-opus-5[1m]");
+  });
+
+  it("matches an alias through a [1m] context selector", async () => {
+    aliases.value = { "claude-opus-5": "cc/claude-opus-5" };
+    await post({ model: "claude-opus-5[1M]", input: [] });
+    expect(seen.body.model).toBe("claude-opus-5[1M]");
+  });
+
+  it("still falls back to Codex for an unknown model with a selector", async () => {
+    await post({ model: "gpt-5.6-luna[1m]", input: [] });
+    expect(seen.body.model).toBe("cx/gpt-5.6-luna[1m]");
+  });
+
   it("passes a bodyless or non-JSON request straight through", async () => {
     const response = await POST(new Request("http://local/backend-api/codex/responses", {
       method: "POST",
