@@ -321,20 +321,6 @@ input, textarea {
   background: rgba(38, 38, 38, 0.72);
 }
 
-/* macOS Traffic Lights */
-.traffic-lights {
-  display: flex;
-  gap: 8px;
-}
-.traffic-light {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-}
-.traffic-light.red { background: #FF5F56; }
-.traffic-light.yellow { background: #FFBD2E; }
-.traffic-light.green { background: #27C93F; }
-
 /* Material Symbols — our overrides on top of the vendor sheet. Layered for the
    same reason as the import above: unlayered, the font-size wins over the
    text-[14px] the call sites pass. */
