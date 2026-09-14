@@ -42,6 +42,16 @@ export function readPxpipeEvents({ sinceMs = null, limit = null } = {}) {
   return limit ? events.slice(-limit) : events;
 }
 
+// Day key in LOCAL time. The timeline buckets start at local midnight, so the
+// key must be local too — toISOString() is UTC and would drop every event in
+// the UTC-offset window into a bucket that does not exist.
+function localDayKey(ts) {
+  const d = new Date(ts);
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${month}-${day}`;
+}
+
 function emptyTotals() {
   return {
     requests: 0, compressed: 0, bypassed: 0, errors: 0,
@@ -93,8 +103,12 @@ export function getPxpipeStats({ timelineDays = 30, recentLimit = 100 } = {}) {
 
   const timeline = new Map();
   for (let i = timelineDays - 1; i >= 0; i--) {
-    const day = new Date(startOfToday - i * DAY_MS);
-    timeline.set(day.toISOString().slice(0, 10), { date: day.toISOString().slice(0, 10), tokensSavedEst: 0, compressed: 0, requests: 0 });
+    // Calendar arithmetic, not startOfToday - i * DAY_MS: a DST shift makes the
+    // fixed-24h subtraction land on the wrong local day.
+    const day = new Date(startOfToday);
+    day.setDate(day.getDate() - i);
+    const key = localDayKey(day.getTime());
+    timeline.set(key, { date: key, tokensSavedEst: 0, compressed: 0, requests: 0 });
   }
 
   for (const ev of events) {
@@ -104,7 +118,7 @@ export function getPxpipeStats({ timelineDays = 30, recentLimit = 100 } = {}) {
     if (ev.ts >= now - 7 * DAY_MS) accumulate(windows.last7d, ev);
     if (ev.ts >= now - 30 * DAY_MS) accumulate(windows.last30d, ev);
 
-    const key = new Date(ev.ts).toISOString().slice(0, 10);
+    const key = localDayKey(ev.ts);
     const bucket = timeline.get(key);
     if (bucket) {
       bucket.requests++;
