@@ -41,8 +41,14 @@ export function promptToMarkdown(request) {
     }).join("\n\n");
   }
 
+  const sections = [];
+  if (typeof request?.instructions === "string" && request.instructions.trim()) {
+    sections.push(`## Instructions\n\n${request.instructions}`);
+  }
   const input = request?.input ?? request?.prompt ?? request?.contents;
-  return contentToMarkdown(input);
+  const inputMarkdown = contentToMarkdown(input);
+  if (inputMarkdown) sections.push(inputMarkdown);
+  return sections.join("\n\n");
 }
 
 export function renderPromptMarkdown(markdown) {

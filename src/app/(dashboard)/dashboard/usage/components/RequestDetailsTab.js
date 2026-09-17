@@ -100,6 +100,26 @@ function getInputTokens(tokens) {
   return prompt < cache ? cache : prompt;
 }
 
+function isTruncatedPayload(value) {
+  return value && typeof value === "object" && value._truncated === true;
+}
+
+function formatPayload(value, emptyLabel = "[No data]") {
+  if (isTruncatedPayload(value)) {
+    const size = Number.isFinite(value._originalSize)
+      ? ` (${Math.ceil(value._originalSize / 1024)} KB before truncation)`
+      : "";
+    return `[Payload truncated${size}. New entries keep a larger preview.]\n\n${value._preview || "[No preview available]"}`;
+  }
+  if (typeof value === "string") return value || emptyLabel;
+  if (value === undefined || value === null) return emptyLabel;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return "[Payload could not be displayed]";
+  }
+}
+
 export default function RequestDetailsTab() {
   const [details, setDetails] = useState([]);
   const [pagination, setPagination] = useState({
@@ -190,6 +210,8 @@ export default function RequestDetailsTab() {
   const handleClearFilters = () => {
     setFilters({ provider: "", startDate: "", endDate: "" });
   };
+
+  const requestIsTruncated = isTruncatedPayload(selectedDetail?.request);
 
   return (
     <div className="flex min-w-0 flex-col gap-6">
@@ -487,7 +509,7 @@ export default function RequestDetailsTab() {
                       icon="article"
                       aria-pressed={requestView === "markdown"}
                       onClick={() => setRequestView("markdown")}
-                      disabled={selectedDetail.request?.redacted === true}
+                      disabled={selectedDetail.request?.redacted === true || requestIsTruncated}
                     >
                       Markdown preview
                     </Button>
@@ -497,6 +519,10 @@ export default function RequestDetailsTab() {
                   <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
                     Turn on &quot;Show full request details&quot; in Settings to preview this prompt.
                   </p>
+                ) : requestIsTruncated ? (
+                  <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-amber-200 bg-amber-50 p-3 font-mono text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100 sm:p-4">
+                    {formatPayload(selectedDetail.request)}
+                  </pre>
                 ) : requestView === "markdown" ? (
                   <div
                     className="request-markdown-body max-h-[420px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 text-sm text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4"
@@ -504,7 +530,7 @@ export default function RequestDetailsTab() {
                   />
                 ) : (
                   <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
-                    {JSON.stringify(selectedDetail.request, null, 2)}
+                    {formatPayload(selectedDetail.request)}
                   </pre>
                 )}
               </CollapsibleSection>
@@ -512,7 +538,7 @@ export default function RequestDetailsTab() {
               {selectedDetail.providerRequest && (
                 <CollapsibleSection title="2. Provider Request (Translated)" icon="translate">
                   <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
-                    {JSON.stringify(selectedDetail.providerRequest, null, 2)}
+                    {formatPayload(selectedDetail.providerRequest)}
                   </pre>
                 </CollapsibleSection>
               )}
@@ -520,10 +546,7 @@ export default function RequestDetailsTab() {
               {selectedDetail.providerResponse && (
                 <CollapsibleSection title="3. Provider Response (Raw)" icon="data_object">
                   <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
-                    {typeof selectedDetail.providerResponse === 'object'
-                      ? JSON.stringify(selectedDetail.providerResponse, null, 2)
-                      : selectedDetail.providerResponse
-                    }
+                    {formatPayload(selectedDetail.providerResponse)}
                   </pre>
                 </CollapsibleSection>
               )}
@@ -545,8 +568,17 @@ export default function RequestDetailsTab() {
                   Content
                 </h4>
                 <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
-                  {selectedDetail.response?.content || "[No content]"}
+                  {selectedDetail.response?.content
+                    ? formatPayload(selectedDetail.response.content)
+                    : (selectedDetail.response?.tool_calls?.length
+                      ? "[Tool call response]"
+                      : "[No content]")}
                 </pre>
+                {selectedDetail.response?.tool_calls?.length > 0 && (
+                  <pre className="mt-3 max-h-[260px] max-w-full overflow-auto rounded-lg border border-blue-200 bg-blue-50 p-3 font-mono text-xs text-blue-950 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-100 sm:p-4">
+                    {formatPayload(selectedDetail.response.tool_calls)}
+                  </pre>
+                )}
               </CollapsibleSection>
             </div>
           </div>

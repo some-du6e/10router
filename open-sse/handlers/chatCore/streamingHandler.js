@@ -118,7 +118,8 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
       ttft: ttftAt ? ttftAt - requestStartTime : Date.now() - requestStartTime,
       total: Date.now() - requestStartTime
     };
-    const safeContent = contentObj?.content || "[Empty streaming response]";
+    const toolCalls = Array.isArray(contentObj?.toolCalls) ? contentObj.toolCalls : [];
+    const safeContent = contentObj?.content || (toolCalls.length > 0 ? "" : "[Empty streaming response]");
     const safeThinking = contentObj?.thinking || null;
 
     saveRequestDetail(buildRequestDetail({
@@ -127,8 +128,8 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
       tokens: usage || { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
       providerRequest: finalBody || translatedBody || null,
-      providerResponse: safeContent,
-      response: { content: safeContent, thinking: safeThinking, type: "streaming" },
+      providerResponse: { content: safeContent, thinking: safeThinking, tool_calls: toolCalls, type: "streaming" },
+      response: { content: safeContent, thinking: safeThinking, tool_calls: toolCalls, type: "streaming" },
       pxpipe,
       status: "success"
     }, { id: streamDetailId })).catch(err => {

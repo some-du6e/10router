@@ -22,7 +22,7 @@ beforeAll(async () => {
   vi.resetModules();
   db = await import("@/lib/db/index.js");
   await db.initDb();
-  await db.updateSettings({ enableObservability2: true, observabilityBatchSize: 1 });
+  await db.updateSettings({ enableObservability: true, observabilityBatchSize: 1 });
 
   const { getAdapter } = await import("@/lib/db/driver.js");
   adapter = await getAdapter();
@@ -83,7 +83,7 @@ describe("request details — tab crash-risk cases", () => {
   });
 
   it("oversized field → stored truncated + reparseable (no circular)", async () => {
-    const huge = "x".repeat(20 * 1024);
+    const huge = "x".repeat(160 * 1024);
     await saveDetail({
       id: "trunc-1", provider: "openai", model: "gpt-4",
       status: "ok", tokens: {},

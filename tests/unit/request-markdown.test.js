@@ -18,6 +18,20 @@ describe("request markdown preview", () => {
     expect(markdown).toContain("**Hello**");
   });
 
+  it("renders Responses API input and instructions", () => {
+    const markdown = promptToMarkdown({
+      instructions: "Use short sentences.",
+      input: [{
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "Summarize this" }],
+      }],
+    });
+
+    expect(markdown).toContain("Use short sentences.");
+    expect(markdown).toContain("Summarize this");
+  });
+
   it("renders markdown while dropping raw HTML and unsafe links", () => {
     const html = renderPromptMarkdown(
       "# Prompt\n\n<script>alert(1)</script>\n\n[x](javascript:alert(1))"

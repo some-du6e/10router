@@ -9,6 +9,7 @@ import {
   validateNewPassword,
   clearLegacyGrace,
 } from "@/lib/auth/setupState";
+import { verifyDashboardPassword } from "@/lib/auth/dashboardSession";
 import { clearSetupToken } from "@/lib/auth/setupToken";
 
 export const dynamic = "force-dynamic";
@@ -45,11 +46,25 @@ export async function GET() {
 export async function PATCH(request) {
   try {
     const body = await request.json();
+    const currentPassword = body.currentPassword;
+    delete body.currentPassword;
 
     // Strip protected secrets before any internal handling sets them
     for (const key of PROTECTED_SETTING_KEYS) delete body[key];
 
     let passwordChanged = false;
+
+    // Full request details contain prompts and provider payloads, so enabling
+    // their retention requires a fresh dashboard password confirmation.
+    if (body.showSensitiveRequestDetails === true) {
+      const settings = await getSettings();
+      if (
+        settings.showSensitiveRequestDetails !== true &&
+        !(await verifyDashboardPassword(currentPassword))
+      ) {
+        return NextResponse.json({ error: "Current password required" }, { status: 401 });
+      }
+    }
 
     // If updating password, hash it
     if (body.newPassword) {
@@ -63,10 +78,10 @@ export async function PATCH(request) {
 
       // Verify current password if it exists
       if (currentHash) {
-        if (!body.currentPassword) {
+        if (!currentPassword) {
           return NextResponse.json({ error: "Current password required" }, { status: 400 });
         }
-        const isValid = await bcrypt.compare(body.currentPassword, currentHash);
+        const isValid = await bcrypt.compare(currentPassword, currentHash);
         if (!isValid) {
           return NextResponse.json({ error: "Invalid current password" }, { status: 401 });
         }
@@ -83,7 +98,7 @@ export async function PATCH(request) {
         // First time setting a password: the session already proves the caller
         // knew the bootstrap secret, so an empty current password is accepted.
         const secret = await getBootstrapSecret(settings);
-        if (body.currentPassword && body.currentPassword !== secret) {
+        if (currentPassword && currentPassword !== secret) {
           return NextResponse.json({ error: "Invalid current password" }, { status: 401 });
         }
       }
@@ -91,7 +106,6 @@ export async function PATCH(request) {
       const salt = await bcrypt.genSalt(10);
       body.password = await bcrypt.hash(body.newPassword, salt);
       delete body.newPassword;
-      delete body.currentPassword;
       passwordChanged = true;
     }
 

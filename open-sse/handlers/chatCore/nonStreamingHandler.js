@@ -382,6 +382,14 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   reqLogger.logConvertedResponse(translatedResponse);
 
   const totalLatency = Date.now() - requestStartTime;
+  const responseMessage = translatedResponse?.choices?.[0]?.message;
+  const responseOutputText = (translatedResponse?.output || [])
+    .flatMap((item) => item?.content || [])
+    .filter((part) => part?.type === "output_text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("\n");
+  const responseToolCalls = responseMessage?.tool_calls
+    || (translatedResponse?.output || []).filter((item) => item?.type === "function_call");
   saveRequestDetail(buildRequestDetail({
     provider, model, connectionId,
     latency: { ttft: totalLatency, total: totalLatency },
@@ -390,8 +398,9 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     providerRequest: finalBody || translatedBody || null,
     providerResponse: responseBody || null,
     response: {
-      content: translatedResponse?.choices?.[0]?.message?.content || translatedResponse?.content || null,
+      content: responseMessage?.content || translatedResponse?.content || responseOutputText || null,
       thinking: translatedResponse?.choices?.[0]?.message?.reasoning_content || translatedResponse?.reasoning_content || null,
+      tool_calls: responseToolCalls,
       finish_reason: translatedResponse?.choices?.[0]?.finish_reason || "unknown"
     },
     pxpipe,
