@@ -51,6 +51,9 @@ const DEFAULT_SETTINGS = {
   samlAttributeEmail: "email",
   samlAttributeName: "name",
   enableObservability: false,
+  // Request bodies can contain prompts, tool calls, and provider responses.
+  // Keep them hidden from the dashboard unless the user explicitly opts in.
+  showSensitiveRequestDetails: false,
   observabilityMaxRecords: 1000,
   observabilityBatchSize: 20,
   observabilityFlushIntervalMs: 5000,

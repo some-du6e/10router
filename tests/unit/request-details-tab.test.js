@@ -249,4 +249,42 @@ describe("API route contract — validation boundary", () => {
     expect(Array.isArray(body.details)).toBe(true);
     expect(body.pagination).toMatchObject({ page: 1, pageSize: 20 });
   });
+
+  it("redacts payloads by default", async () => {
+    adapter.run(
+      `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "route-redacted-1",
+        new Date().toISOString(),
+        "openai",
+        "gpt-4",
+        null,
+        "success",
+        JSON.stringify({
+          id: "route-redacted-1",
+          request: { messages: [{ role: "user", content: "secret" }] },
+          response: { content: "answer" },
+        }),
+      ]
+    );
+    await db.updateSettings({ showSensitiveRequestDetails: false });
+
+    const res = await GET(makeReq("page=1&pageSize=100"));
+    const body = await res.json();
+    const detail = body.details.find((item) => item.id === "route-redacted-1");
+    expect(detail.request).toEqual({ redacted: true });
+    expect(detail.response).toEqual({ redacted: true });
+  });
+
+  it("returns payloads when full request details are enabled", async () => {
+    await db.updateSettings({ showSensitiveRequestDetails: true });
+
+    const res = await GET(makeReq("page=1&pageSize=100"));
+    const body = await res.json();
+    const detail = body.details.find((item) => item.id === "route-redacted-1");
+    expect(detail.request.messages[0].content).toBe("secret");
+    expect(detail.response.content).toBe("answer");
+
+    await db.updateSettings({ showSensitiveRequestDetails: false });
+  });
 });
