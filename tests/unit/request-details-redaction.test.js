@@ -1,17 +1,8 @@
 import { describe, it, expect } from "vitest";
+import { redactRequestDetails } from "@/app/api/usage/request-details/route.js";
 
-// Mirror the redaction logic from src/app/api/usage/request-details/route.js
-// so we can test it in isolation.
 function redactDetails(details) {
-  return (details || []).map((d) => {
-    const redacted = { ...d };
-    for (const key of ["request", "providerRequest", "providerResponse", "response"]) {
-      if (redacted[key] !== undefined) {
-        redacted[key] = { redacted: true };
-      }
-    }
-    return redacted;
-  });
+  return redactRequestDetails(details);
 }
 
 describe("request-details redaction", () => {

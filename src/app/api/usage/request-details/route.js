@@ -1,5 +1,20 @@
 import { NextResponse } from "next/server";
 import { getRequestDetails } from "@/lib/usageDb";
+import { getSettings } from "@/lib/localDb";
+
+const SENSITIVE_DETAIL_KEYS = ["request", "providerRequest", "providerResponse", "response"];
+
+export function redactRequestDetails(details) {
+  return (details || []).map((detail) => {
+    const redacted = { ...detail };
+    for (const key of SENSITIVE_DETAIL_KEYS) {
+      if (redacted[key] !== undefined) {
+        redacted[key] = { redacted: true };
+      }
+    }
+    return redacted;
+  });
+}
 
 /**
  * GET /api/usage/request-details
@@ -47,23 +62,12 @@ export async function GET(request) {
     if (endDate) filter.endDate = endDate;
     
     const result = await getRequestDetails(filter);
+    const settings = await getSettings();
+    const details = settings.showSensitiveRequestDetails === true
+      ? result.details
+      : redactRequestDetails(result.details);
 
-    // Redact conversation payloads: the stored details include full request
-    // bodies (user prompts, tool calls) and provider responses. Returning them
-    // wholesale lets any dashboard-authenticated user (or, if requireLogin is
-    // disabled, anyone) read every user's conversation history. Keep the
-    // metadata (model, tokens, latency, status) but drop message content.
-    const redactedDetails = (result.details || []).map((d) => {
-      const redacted = { ...d };
-      for (const key of ["request", "providerRequest", "providerResponse", "response"]) {
-        if (redacted[key] !== undefined) {
-          redacted[key] = { redacted: true };
-        }
-      }
-      return redacted;
-    });
-
-    return NextResponse.json({ ...result, details: redactedDetails });
+    return NextResponse.json({ ...result, details });
   } catch (error) {
     console.error("[API] Failed to get request details:", error);
     return NextResponse.json(

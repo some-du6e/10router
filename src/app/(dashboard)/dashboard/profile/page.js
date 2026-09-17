@@ -643,6 +643,21 @@ export default function ProfilePage() {
     }
   };
 
+  const updateShowSensitiveRequestDetails = async (enabled) => {
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ showSensitiveRequestDetails: enabled }),
+      });
+      if (res.ok) {
+        setSettings((prev) => ({ ...prev, showSensitiveRequestDetails: enabled }));
+      }
+    } catch (err) {
+      console.error("Failed to update showSensitiveRequestDetails:", err);
+    }
+  };
+
   const reloadSettings = async () => {
     try {
       const res = await fetch("/api/settings");
@@ -734,6 +749,7 @@ export default function ProfilePage() {
   };
 
   const observabilityEnabled = settings.enableObservability === true;
+  const showSensitiveRequestDetails = settings.showSensitiveRequestDetails === true;
 
   const handleShutdown = async () => {
     setIsShuttingDown(true);
@@ -1610,6 +1626,19 @@ export default function ProfilePage() {
             <Toggle
               checked={observabilityEnabled}
               onChange={updateObservabilityEnabled}
+              disabled={loading}
+            />
+          </div>
+          <div className="mt-4 flex items-start sm:items-center justify-between gap-4 border-t border-border/50 pt-4">
+            <div className="flex-1 min-w-0">
+              <p className="font-medium text-sm sm:text-base">Show full request details</p>
+              <p className="text-xs sm:text-sm text-text-muted">
+                Show prompts and provider payloads in the logs view
+              </p>
+            </div>
+            <Toggle
+              checked={showSensitiveRequestDetails}
+              onChange={updateShowSensitiveRequestDetails}
               disabled={loading}
             />
           </div>
