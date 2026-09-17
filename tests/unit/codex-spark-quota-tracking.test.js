@@ -34,4 +34,20 @@ describe("Codex Spark Quota Tracking (#3431)", () => {
     expect(weekly).toBeDefined();
     expect(weekly.used).toBe(40);
   });
+
+  it("labels the primary free-plan quota as monthly", () => {
+    const parsed = parseQuotaData("codex", {
+      plan: "free",
+      quotas: {
+        session: { used: 1, total: 100, remaining: 99, resetAt: "2026-09-30T00:00:00.000Z" },
+      },
+    });
+
+    expect(parsed[0]).toMatchObject({
+      name: "Monthly",
+      used: 1,
+      total: 100,
+      remaining: 99,
+    });
+  });
 });
