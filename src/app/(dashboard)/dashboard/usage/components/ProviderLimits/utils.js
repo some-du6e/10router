@@ -398,11 +398,14 @@ export function parseQuotaData(provider, data) {
 
       case "codex":
         if (data.quotas) {
+          const plan = String(data.plan || "").toLowerCase();
+          const isFreePlan = plan === "free" || plan === "chatgpt_free";
+
           Object.entries(data.quotas).forEach(([quotaType, quota]) => {
             let displayName = quotaType;
             if (quotaType === "spark_session") displayName = "Spark (5h)";
             else if (quotaType === "spark_weekly") displayName = "Spark (Weekly)";
-            else if (quotaType === "session") displayName = "5h";
+            else if (quotaType === "session") displayName = isFreePlan ? "Monthly" : "5h";
             else if (quotaType === "weekly") displayName = "Weekly";
             else if (quotaType === "review_session") displayName = "Review (5h)";
             else if (quotaType === "review_weekly") displayName = "Review (Weekly)";
