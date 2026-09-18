@@ -1,4 +1,4 @@
-import { describe, it, before } from "node:test";
+import { describe, it, beforeAll } from "vitest";
 import assert from "node:assert/strict";
 
 // Load the registry entry once for the suite so a load failure is reported
@@ -7,13 +7,15 @@ import assert from "node:assert/strict";
 let kimchiEntry;
 
 describe("kimchi registry entry", () => {
-  before(async () => {
+  beforeAll(async () => {
     kimchiEntry = (await import("../../open-sse/providers/registry/kimchi.js")).default;
   });
 
-  it("is an oauth provider auto-listed via byCategory", () => {
+  it("is a free-tier provider with OAuth authentication", () => {
     assert.equal(kimchiEntry.id, "kimchi");
-    assert.equal(kimchiEntry.category, "oauth");
+    assert.equal(kimchiEntry.category, "freeTier");
+    assert.equal(kimchiEntry.hasOAuth, true);
+    assert.ok(kimchiEntry.authModes.includes("oauth"));
   });
 
   it("points at the OpenAI-compatible gateway with an authenticated UA", () => {
@@ -48,9 +50,8 @@ describe("kimchi registry entry", () => {
   });
 });
 
-// ── Pure-function clones of the service logic (tested in isolation so
-//     node --test works without resolving the Next.js Webpack "open-sse"
-//     alias that src/lib/oauth/services/kimchi.js's dependency imports). ──
+// Keep the pure mapping and decision cases isolated from the service's network
+// and OAuth dependencies so they remain fast and deterministic.
 
 function buildKimchiAuthUrl(callbackUrl, state) {
   const params = new URLSearchParams({ callback: callbackUrl, state });
@@ -99,8 +100,7 @@ describe("kimchi oauth", () => {
 
 // ── kimchiModels service (pure mapping logic, tested in isolation) ──
 
-// Clone of the metadata→model mapper so node --test resolves without the
-// open-sse/Webpack alias chain the real module imports.
+// Keep metadata mapping independent from the service's HTTP client.
 function mapKimchiMetadata(raw) {
   if (!Array.isArray(raw)) return [];
   return raw.map((m) => ({
@@ -146,8 +146,8 @@ describe("kimchiModels", () => {
 
 // ── validateToken logic (pure decision over a status code) ──
 
-// Mirrors the decision in KimchiService.validateToken without importing the
-// service (which pulls the open-sse Webpack alias chain).
+// The decision is pure; importing the service would also initialize its HTTP
+// client and OAuth dependencies.
 function decideValidity(status) {
   if (status === 200) return { valid: true };
   if (status === 401) return { valid: false, error: "Kimchi token invalid or expired" };
@@ -175,9 +175,7 @@ describe("kimchi validateToken", () => {
   });
 });
 
-// ── OAuth dedup logic (pure clone of connectionsRepo matcher) ──
-// Mimics the find() predicate in createProviderConnection for OAuth
-// connections, so we can test the IdP-collision fix in isolation.
+// Keep the OAuth matching cases independent from database setup.
 function findExistingOAuth(all, incoming) {
   const incomingEmail = incoming.email;
   const incomingUsername = incoming.providerSpecificData?.username;
