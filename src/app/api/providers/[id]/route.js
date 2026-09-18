@@ -98,6 +98,7 @@ export async function PUT(request, { params }) {
       testStatus,
       lastError,
       lastErrorAt,
+      errorCode,
       monthlyCost,
       providerSpecificData
     } = body;
@@ -127,6 +128,7 @@ export async function PUT(request, { params }) {
     if (testStatus !== undefined) updateData.testStatus = testStatus;
     if (lastError !== undefined) updateData.lastError = lastError;
     if (lastErrorAt !== undefined) updateData.lastErrorAt = lastErrorAt;
+    if (errorCode !== undefined) updateData.errorCode = errorCode;
     // Subscription price for the API-value badge. null clears it (hides the
     // comparison); anything non-numeric or negative is rejected rather than
     // silently stored, since it would divide the value ratio.
