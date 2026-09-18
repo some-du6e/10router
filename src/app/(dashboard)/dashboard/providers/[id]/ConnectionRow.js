@@ -8,7 +8,7 @@ import { Badge, Toggle, Tooltip } from "@/shared/components";
 import { useBlurEmails } from "@/shared/hooks/useBlurEmails";
 import CooldownTimer from "./CooldownTimer";
 
-export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete, oneByOneStatus = null, autoPing = null }) {
+export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onReauth, onDelete, oneByOneStatus = null, autoPing = null }) {
   const { blurClass } = useBlurEmails();
   const [showProxyDropdown, setShowProxyDropdown] = useState(false);
   const [updatingProxy, setUpdatingProxy] = useState(false);
@@ -81,6 +81,10 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
     || connection.email?.trim()
     || connection.displayName?.trim()
     || (isOAuthConnection ? "OAuth Account" : isCookieConnection ? "Cookie Account" : "API Key");
+  const needsReauth = isOAuthConnection && (
+    Number(connection.errorCode) === 401
+    || /(?:token.*(?:invalid|revoked|expired)|(?:invalid|revoked|expired).*token)/i.test(connection.lastError || "")
+  );
   const secondaryDisplayName = connection.name?.trim() && connection.email?.trim() && connection.name.trim() !== connection.email.trim()
     ? connection.email.trim()
     : connection.name?.trim() && connection.displayName?.trim() && connection.name.trim() !== connection.displayName.trim()
@@ -269,6 +273,17 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
               </button>
             </Tooltip>
           )}
+          {needsReauth && (
+            <button
+              onClick={onReauth}
+              aria-label="Re-authenticate this connection"
+              className="flex w-full flex-col items-center rounded px-2 py-1 text-primary hover:bg-primary/10"
+              title="Re-authenticate this connection"
+            >
+              <span className="material-symbols-outlined text-[18px]">lock_open</span>
+              <span className="text-[10px] leading-tight">Re-auth</span>
+            </button>
+          )}
           <button onClick={onEdit} className="flex flex-col items-center rounded px-2 py-1 text-text-muted hover:bg-black/5 hover:text-primary dark:hover:bg-white/5">
             <span className="material-symbols-outlined text-[18px]">edit</span>
             <span className="text-[10px] leading-tight">Edit</span>
@@ -317,6 +332,7 @@ ConnectionRow.propTypes = {
   onToggleActive: PropTypes.func.isRequired,
   onUpdateProxy: PropTypes.func,
   onEdit: PropTypes.func.isRequired,
+  onReauth: PropTypes.func.isRequired,
   onDelete: PropTypes.func.isRequired,
   oneByOneStatus: PropTypes.shape({
     state: PropTypes.string,

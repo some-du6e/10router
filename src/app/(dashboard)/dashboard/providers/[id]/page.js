@@ -74,6 +74,7 @@ export default function ProviderDetailPage() {
   const [disabledModelIds, setDisabledModelIds] = useState([]);
   const [confirmState, setConfirmState] = useState(null);
   const [showAgRiskModal, setShowAgRiskModal] = useState(false);
+  const [reauthConnectionId, setReauthConnectionId] = useState(null);
   const [oneByOneRunning, setOneByOneRunning] = useState(false);
   const [oneByOneStopping, setOneByOneStopping] = useState(false);
   const [oneByOneCurrentConnectionId, setOneByOneCurrentConnectionId] = useState(null);
@@ -111,11 +112,22 @@ export default function ProviderDetailPage() {
   };
 
   const triggerAddConnection = () => {
+    setReauthConnectionId(null);
     if (isOAuth) {
       triggerOAuthConnection();
       return;
     }
     triggerApiKeyConnection();
+  };
+
+  const handleReauth = (connection) => {
+    setReauthConnectionId(connection.id);
+    triggerOAuthConnection();
+  };
+
+  const handleOAuthClose = () => {
+    setShowOAuthModal(false);
+    setReauthConnectionId(null);
   };
 
   const handleAgRiskConfirm = () => {
@@ -749,9 +761,35 @@ export default function ProviderDetailPage() {
     });
   };
 
-  const handleOAuthSuccess = () => {
-    fetchConnections();
+  const handleOAuthSuccess = async () => {
+    if (reauthConnectionId) {
+      try {
+        const res = await fetch(`/api/providers/${reauthConnectionId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ testStatus: "active", lastError: null, lastErrorAt: null, errorCode: null }),
+        });
+        if (!res.ok) {
+          let message = "Failed to clear the previous connection error";
+          try {
+            const data = await res.json();
+            if (data?.error) message = data.error;
+          } catch {
+            // Keep the fallback message when the API does not return JSON.
+          }
+          throw new Error(message);
+        }
+      } catch (error) {
+        console.log("Error clearing re-auth status:", error);
+        if (typeof window !== "undefined") {
+          window.alert(`Re-authentication completed, but the connection status could not be cleared. ${error.message}`);
+        }
+        return;
+      }
+    }
+    await fetchConnections();
     setShowOAuthModal(false);
+    setReauthConnectionId(null);
   };
 
   const handleIFlowCookieSuccess = () => {
@@ -992,6 +1030,7 @@ export default function ProviderDetailPage() {
                   setSelectedConnection(conn);
                   setShowEditModal(true);
                 }}
+                onReauth={() => handleReauth(conn)}
                 onDelete={() => handleDelete(conn.id)}
                 oneByOneStatus={oneByOneResults[conn.id] || null}
               />
@@ -1710,20 +1749,20 @@ export default function ProviderDetailPage() {
           isOpen={showOAuthModal}
           providerInfo={providerInfo}
           onSuccess={handleOAuthSuccess}
-          onClose={() => setShowOAuthModal(false)}
+          onClose={handleOAuthClose}
         />
       ) : providerId === "cursor" ? (
         <CursorAuthModal
           isOpen={showOAuthModal}
           onSuccess={handleOAuthSuccess}
-          onClose={() => setShowOAuthModal(false)}
+          onClose={handleOAuthClose}
         />
       ) : providerId === "gitlab" ? (
         <GitLabAuthModal
           isOpen={showOAuthModal}
           providerInfo={providerInfo}
           onSuccess={handleOAuthSuccess}
-          onClose={() => setShowOAuthModal(false)}
+          onClose={handleOAuthClose}
         />
       ) : (
         <OAuthModal
@@ -1731,7 +1770,7 @@ export default function ProviderDetailPage() {
           provider={providerId}
           providerInfo={providerInfo}
           onSuccess={handleOAuthSuccess}
-          onClose={() => setShowOAuthModal(false)}
+          onClose={handleOAuthClose}
         />
       )}
       {providerId === "iflow" && (
