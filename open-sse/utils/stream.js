@@ -66,6 +66,9 @@ export function createSSEStream(options = {}) {
   let totalContentLength = 0;
   let accumulatedContent = "";
   let accumulatedThinking = "";
+  const accumulatedToolCalls = [];
+  let responsesTextSeen = false;
+  let responsesThinkingSeen = false;
   let ttftAt = null;
   let sseLineCount = 0;
   let sseEmittedCount = 0;
@@ -77,6 +80,43 @@ export function createSSEStream(options = {}) {
   let openAIResponsesDoneSent = false;
   let streamDoneSent = false;  // track duplicate [DONE] across transform + flush
   let finalized = false;
+
+  const collectResponsesContent = (parsed, eventName) => {
+    const type = eventName || parsed?.type;
+    if (type === "response.output_text.delta" && typeof parsed?.delta === "string") {
+      accumulatedContent += parsed.delta;
+      totalContentLength += parsed.delta.length;
+      responsesTextSeen = true;
+    } else if (type === "response.reasoning_summary_text.delta" && typeof parsed?.delta === "string") {
+      accumulatedThinking += parsed.delta;
+      totalContentLength += parsed.delta.length;
+      responsesThinkingSeen = true;
+    } else if (type === "response.output_text.done" && !responsesTextSeen && typeof parsed?.text === "string") {
+      accumulatedContent += parsed.text;
+      totalContentLength += parsed.text.length;
+      responsesTextSeen = true;
+    } else if (type === "response.reasoning_summary_text.done" && !responsesThinkingSeen && typeof parsed?.text === "string") {
+      accumulatedThinking += parsed.text;
+      totalContentLength += parsed.text.length;
+      responsesThinkingSeen = true;
+    } else if (type === "response.output_item.done" && parsed?.item?.type === "function_call") {
+      accumulatedToolCalls.push({
+        type: "function_call",
+        call_id: parsed.item.call_id || parsed.item.id,
+        name: parsed.item.name || "",
+        arguments: parsed.item.arguments || "",
+      });
+    } else if ((type === "response.completed" || type === "response.done") && !responsesTextSeen) {
+      for (const output of parsed.response?.output || []) {
+        for (const part of output.content || []) {
+          if (part?.type === "output_text" && typeof part.text === "string") {
+            accumulatedContent += part.text;
+            totalContentLength += part.text.length;
+          }
+        }
+      }
+    }
+  };
 
   // Usage/logging tail, callable from transform() as well as flush(): a client that
   // closes right after the terminal event cancels the reader, and flush() never runs.
@@ -101,7 +141,8 @@ export function createSSEStream(options = {}) {
     if (onStreamComplete) {
       onStreamComplete({
         content: accumulatedContent,
-        thinking: accumulatedThinking
+        thinking: accumulatedThinking,
+        toolCalls: accumulatedToolCalls,
       }, finalUsage, ttftAt);
     }
   };
@@ -126,8 +167,8 @@ export function createSSEStream(options = {}) {
           }
         }
 
-        // Capture Responses API event name to preserve framing in same-format passthrough
-        if (mode === STREAM_MODE.TRANSLATE && targetFormat === FORMATS.OPENAI_RESPONSES && trimmed.startsWith("event:")) {
+        // Capture Responses API event names for framing and log extraction.
+        if (targetFormat === FORMATS.OPENAI_RESPONSES && trimmed.startsWith("event:")) {
           currentOpenAIResponsesEvent = trimmed.slice(6).trim();
         }
 
@@ -138,8 +179,11 @@ export function createSSEStream(options = {}) {
           let responsesTerminal = false;
 
           if (trimmed.startsWith("data:") && trimmed.slice(5).trim() !== "[DONE]") {
+            const responseEventName = currentOpenAIResponsesEvent;
+            currentOpenAIResponsesEvent = null;
             try {
               const parsed = JSON.parse(trimmed.slice(5).trim());
+              collectResponsesContent(parsed, responseEventName);
 
               const idFixed = fixInvalidId(parsed);
 
@@ -199,7 +243,7 @@ export function createSSEStream(options = {}) {
                 usage = mergeUsage(usage, extracted);
               }
 
-              responsesTerminal = isOpenAIResponsesTerminalEvent(currentOpenAIResponsesEvent, parsed);
+              responsesTerminal = isOpenAIResponsesTerminalEvent(responseEventName, parsed);
 
               const isFinishChunk = parsed.choices?.[0]?.finish_reason;
               if (isFinishChunk && !hasValidUsage(parsed.usage)) {
@@ -245,6 +289,7 @@ export function createSSEStream(options = {}) {
 
         const parsed = parseSSELine(trimmed, targetFormat);
         if (!parsed) continue;
+        collectResponsesContent(parsed, currentOpenAIResponsesEvent);
 
         // Responses API same-format passthrough: preserve event framing + track terminal state
         const isOpenAIResponsesStream = targetFormat === FORMATS.OPENAI_RESPONSES;
@@ -419,6 +464,7 @@ export function createSSEStream(options = {}) {
           // counts — so it has to go through.
           const isDoneSentinel = parsed?.done && targetFormat !== FORMATS.OLLAMA;
           if (parsed && !isDoneSentinel) {
+            collectResponsesContent(parsed, currentOpenAIResponsesEvent);
             // Same accumulation the transform loop does, so finalizeStream() can
             // log a tail chunk's tokens instead of falling back to null.
             const extracted = extractUsage(parsed);

@@ -57,6 +57,7 @@ const DEFAULT_SETTINGS = {
   observabilityMaxRecords: 1000,
   observabilityBatchSize: 20,
   observabilityFlushIntervalMs: 5000,
+  // Full prompt/provider payload retention is opt-in through the setting below.
   observabilityMaxJsonSize: 5,
   outboundProxyEnabled: false,
   outboundProxyUrl: "",

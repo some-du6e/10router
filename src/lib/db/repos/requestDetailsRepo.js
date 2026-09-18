@@ -4,11 +4,26 @@ import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 const DEFAULT_MAX_RECORDS = 200;
 const DEFAULT_BATCH_SIZE = 20;
 const DEFAULT_FLUSH_INTERVAL_MS = 5000;
-const DEFAULT_MAX_JSON_SIZE = 5 * 1024;
+const DEFAULT_MAX_JSON_SIZE_KB = 5;
+const FULL_DETAIL_MAX_JSON_SIZE_KB = 128;
 const CONFIG_CACHE_TTL_MS = 5000;
 
 let cachedConfig = null;
 let cachedConfigTs = 0;
+
+function getMaxJsonSize(settings) {
+  const envValue = Number.parseInt(process.env.OBSERVABILITY_MAX_JSON_SIZE || "", 10);
+  if (Number.isFinite(envValue) && envValue > 0) return envValue * 1024;
+
+  const settingValue = Number(settings.observabilityMaxJsonSize);
+  const configuredKb = Number.isFinite(settingValue) && settingValue > 0
+    ? settingValue
+    : DEFAULT_MAX_JSON_SIZE_KB;
+  const maxKb = settings.showSensitiveRequestDetails === true && configuredKb === DEFAULT_MAX_JSON_SIZE_KB
+    ? FULL_DETAIL_MAX_JSON_SIZE_KB
+    : configuredKb;
+  return maxKb * 1024;
+}
 
 async function getObservabilityConfig() {
   if (cachedConfig && (Date.now() - cachedConfigTs) < CONFIG_CACHE_TTL_MS) return cachedConfig;
@@ -23,7 +38,7 @@ async function getObservabilityConfig() {
         maxRecords: settings.observabilityMaxRecords || parseInt(process.env.OBSERVABILITY_MAX_RECORDS || String(DEFAULT_MAX_RECORDS), 10),
         batchSize: settings.observabilityBatchSize || parseInt(process.env.OBSERVABILITY_BATCH_SIZE || String(DEFAULT_BATCH_SIZE), 10),
         flushIntervalMs: settings.observabilityFlushIntervalMs || parseInt(process.env.OBSERVABILITY_FLUSH_INTERVAL_MS || String(DEFAULT_FLUSH_INTERVAL_MS), 10),
-        maxJsonSize: (settings.observabilityMaxJsonSize || parseInt(process.env.OBSERVABILITY_MAX_JSON_SIZE || "5", 10)) * 1024,
+        maxJsonSize: getMaxJsonSize(settings),
       };
       cachedConfigTs = Date.now();
       return cachedConfig;
@@ -39,7 +54,7 @@ async function getObservabilityConfig() {
       maxRecords: settings.observabilityMaxRecords || parseInt(process.env.OBSERVABILITY_MAX_RECORDS || String(DEFAULT_MAX_RECORDS), 10),
       batchSize: settings.observabilityBatchSize || parseInt(process.env.OBSERVABILITY_BATCH_SIZE || String(DEFAULT_BATCH_SIZE), 10),
       flushIntervalMs: settings.observabilityFlushIntervalMs || parseInt(process.env.OBSERVABILITY_FLUSH_INTERVAL_MS || String(DEFAULT_FLUSH_INTERVAL_MS), 10),
-      maxJsonSize: (settings.observabilityMaxJsonSize || parseInt(process.env.OBSERVABILITY_MAX_JSON_SIZE || "5", 10)) * 1024,
+      maxJsonSize: getMaxJsonSize(settings),
     };
   } catch {
     cachedConfig = {
@@ -47,7 +62,7 @@ async function getObservabilityConfig() {
       maxRecords: DEFAULT_MAX_RECORDS,
       batchSize: DEFAULT_BATCH_SIZE,
       flushIntervalMs: DEFAULT_FLUSH_INTERVAL_MS,
-      maxJsonSize: DEFAULT_MAX_JSON_SIZE,
+      maxJsonSize: DEFAULT_MAX_JSON_SIZE_KB * 1024,
     };
   }
   cachedConfigTs = Date.now();
@@ -68,7 +83,7 @@ function sanitizeHeaders(headers) {
   return sanitized;
 }
 
-export const __test__ = { sanitizeHeaders };
+export const __test__ = { sanitizeHeaders, getMaxJsonSize };
 
 function generateDetailId(model) {
   const timestamp = new Date().toISOString();
@@ -78,11 +93,23 @@ function generateDetailId(model) {
 }
 
 function truncateField(obj, maxSize) {
-  const str = JSON.stringify(obj || {});
-  if (str.length > maxSize) {
-    return { _truncated: true, _originalSize: str.length, _preview: str.substring(0, 200) };
+  if (obj === undefined || obj === null) return {};
+  let str;
+  try {
+    str = JSON.stringify(obj);
+  } catch {
+    return { _truncated: true, _originalSize: null, _preview: "[Payload could not be serialized]" };
   }
-  return obj || {};
+  if (str.length > maxSize) {
+    const preview = JSON.stringify(obj, null, 2);
+    return {
+      _truncated: true,
+      _originalSize: str.length,
+      _omittedSize: str.length - maxSize,
+      _preview: preview.substring(0, 2000),
+    };
+  }
+  return obj;
 }
 
 async function flushToDatabase() {

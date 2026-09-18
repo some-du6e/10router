@@ -33,6 +33,12 @@ export default function ProfilePage() {
   const [dbLoading, setDbLoading] = useState(false);
   const [dbStatus, setDbStatus] = useState({ type: "", message: "" });
   const [dbAuth, setDbAuth] = useState({ open: false, mode: "", password: "" });
+  const [sensitiveDetailsAuth, setSensitiveDetailsAuth] = useState({
+    open: false,
+    password: "",
+    error: "",
+    loading: false,
+  });
   const pendingImportRef = useRef(null);
   const [oidcForm, setOidcForm] = useState({
     authMode: "password",
@@ -643,18 +649,49 @@ export default function ProfilePage() {
     }
   };
 
-  const updateShowSensitiveRequestDetails = async (enabled) => {
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ showSensitiveRequestDetails: enabled }),
+  const updateShowSensitiveRequestDetails = async (enabled, currentPassword = "") => {
+    const body = { showSensitiveRequestDetails: enabled };
+    if (enabled) body.currentPassword = currentPassword;
+
+    const res = await fetch("/api/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "Failed to update request detail visibility");
+
+    setSettings((prev) => ({ ...prev, ...data, showSensitiveRequestDetails: enabled }));
+    return true;
+  };
+
+  const handleShowSensitiveRequestDetailsChange = (enabled) => {
+    if (!enabled) {
+      updateShowSensitiveRequestDetails(false).catch((err) => {
+        console.error("Failed to update showSensitiveRequestDetails:", err);
       });
-      if (res.ok) {
-        setSettings((prev) => ({ ...prev, showSensitiveRequestDetails: enabled }));
-      }
+      return;
+    }
+
+    setSensitiveDetailsAuth({ open: true, password: "", error: "", loading: false });
+  };
+
+  const closeSensitiveDetailsAuth = () => {
+    if (sensitiveDetailsAuth.loading) return;
+    setSensitiveDetailsAuth({ open: false, password: "", error: "", loading: false });
+  };
+
+  const handleSensitiveDetailsAuth = async () => {
+    setSensitiveDetailsAuth((prev) => ({ ...prev, loading: true, error: "" }));
+    try {
+      await updateShowSensitiveRequestDetails(true, sensitiveDetailsAuth.password);
+      setSensitiveDetailsAuth({ open: false, password: "", error: "", loading: false });
     } catch (err) {
-      console.error("Failed to update showSensitiveRequestDetails:", err);
+      setSensitiveDetailsAuth((prev) => ({
+        ...prev,
+        loading: false,
+        error: err.message || "Failed to enable full request details",
+      }));
     }
   };
 
@@ -1633,12 +1670,12 @@ export default function ProfilePage() {
             <div className="flex-1 min-w-0">
               <p className="font-medium text-sm sm:text-base">Show full request details</p>
               <p className="text-xs sm:text-sm text-text-muted">
-                Show prompts and provider payloads in the logs view
+                Opt in to full prompts and provider payloads for new log entries
               </p>
             </div>
             <Toggle
               checked={showSensitiveRequestDetails}
-              onChange={updateShowSensitiveRequestDetails}
+              onChange={handleShowSensitiveRequestDetailsChange}
               disabled={loading}
             />
           </div>
@@ -1717,6 +1754,43 @@ export default function ProfilePage() {
           onChange={(e) => setDbAuth((s) => ({ ...s, password: e.target.value }))}
           onKeyDown={(e) => { if (e.key === "Enter" && dbAuth.password) handleDbAuthConfirm(); }}
           placeholder="Current password"
+          autoFocus
+        />
+      </Modal>
+
+      <Modal
+        isOpen={sensitiveDetailsAuth.open}
+        onClose={closeSensitiveDetailsAuth}
+        title="Enable full request details"
+        size="sm"
+        footer={
+          <>
+            <Button variant="ghost" onClick={closeSensitiveDetailsAuth} disabled={sensitiveDetailsAuth.loading}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              onClick={handleSensitiveDetailsAuth}
+              loading={sensitiveDetailsAuth.loading}
+              disabled={!sensitiveDetailsAuth.password}
+            >
+              Enable full details
+            </Button>
+          </>
+        }
+      >
+        <p className="text-text-muted mb-3 text-sm">
+          This stores prompts and provider payloads in new log entries. Enter your current dashboard password to continue.
+        </p>
+        <Input
+          type="password"
+          value={sensitiveDetailsAuth.password}
+          onChange={(e) => setSensitiveDetailsAuth((prev) => ({ ...prev, password: e.target.value, error: "" }))}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && sensitiveDetailsAuth.password) handleSensitiveDetailsAuth();
+          }}
+          placeholder="Current password"
+          error={sensitiveDetailsAuth.error}
           autoFocus
         />
       </Modal>
