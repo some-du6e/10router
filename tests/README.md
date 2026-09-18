@@ -1,52 +1,32 @@
-# 10router Embeddings Tests
+# 10router tests
 
-Unit tests for the `/v1/embeddings` endpoint implementation.
+The test package covers the dashboard, gateway, translators, providers, auth, persistence, and CLI helpers.
 
 ## Setup
 
-Install test dependencies from the `tests/` directory:
+Install root dependencies first, then the test runner:
 
 ```bash
-cd tests/ && npm install
+npm install
+cd tests && npm install
 ```
 
-## Running Tests
+## Commands
 
-From the `tests/` directory:
+Run the deterministic Vitest suite from `tests/`:
 
 ```bash
 npm test
 ```
 
-Or run vitest directly with npx:
+Other suites are opt-in:
 
 ```bash
-npx vitest run --reporter=verbose --config ./vitest.config.js
+npm run test:live       # provider/network checks; requires credentials
+npm run test:e2e        # running local server and E2E credentials
+npm run test:benchmark  # DB benchmark
+npm run test:stress     # DB concurrency and stress checks
+npm run test:cloud      # cloud-worker tests; requires the cloud sources
 ```
 
-## Test Files
-
-| File | What it tests |
-|------|--------------|
-| `unit/embeddingsCore.test.js` | `open-sse/handlers/embeddingsCore.js` — core logic: body builder, URL router, headers, handler flow |
-| `unit/embeddings.cloud.test.js` | `cloud/src/handlers/embeddings.js` — cloud worker handler: auth, validation, rate limits, CORS |
-
-## Coverage Summary (59 tests)
-
-### `embeddingsCore.test.js` (36 tests)
-- `buildEmbeddingsBody`: single string, array, encoding_format, default float
-- `buildEmbeddingsUrl`: openai, openrouter, openai-compatible-*, unsupported providers
-- `buildEmbeddingsHeaders`: per-provider header sets, fallback to accessToken
-- `handleEmbeddingsCore` input validation: missing, wrong type, null, empty
-- `handleEmbeddingsCore` success: response format, CORS, Content-Type, callbacks
-- `handleEmbeddingsCore` errors: 400/429/500, network error, invalid JSON
-- `handleEmbeddingsCore` token refresh: 401 retry, graceful fallback
-
-### `embeddings.cloud.test.js` (23 tests)
-- CORS OPTIONS: 200 response, empty body, correct headers
-- Authentication: missing key, bad format, old-format key, wrong key value, valid key
-- Body validation: invalid JSON, missing model, missing input, bad model
-- Happy path: single string, array, correct delegation, CORS header, machineId override
-- Rate limiting: all accounts rate-limited → 503 + Retry-After, no credentials → 400
-- Error propagation: non-fallback errors passed through, 429 exhausts accounts
-- machineId override: validates key, rejects wrong key
+The default suite excludes live provider calls, E2E tests, benchmarks, stress tests, and cloud-worker tests. The live MiMo checks require `RUN_MIMO_FREE_LIVE_TESTS=1`; `test:live` sets it automatically.
