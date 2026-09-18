@@ -8,7 +8,7 @@ import { Badge, Toggle, Tooltip } from "@/shared/components";
 import { useBlurEmails } from "@/shared/hooks/useBlurEmails";
 import CooldownTimer from "./CooldownTimer";
 
-export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete, oneByOneStatus = null, autoPing = null }) {
+export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onReauth, onDelete, oneByOneStatus = null, autoPing = null }) {
   const { blurClass } = useBlurEmails();
   const [showProxyDropdown, setShowProxyDropdown] = useState(false);
   const [updatingProxy, setUpdatingProxy] = useState(false);
@@ -81,7 +81,10 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
     || connection.email?.trim()
     || connection.displayName?.trim()
     || (isOAuthConnection ? "OAuth Account" : isCookieConnection ? "Cookie Account" : "API Key");
-  const needsReauth = isOAuthConnection && /(?:token.*(?:invalid|revoked|expired)|(?:invalid|revoked|expired).*token)/i.test(connection.lastError || "");
+  const needsReauth = isOAuthConnection && (
+    Number(connection.errorCode) === 401
+    || /(?:token.*(?:invalid|revoked|expired)|(?:invalid|revoked|expired).*token)/i.test(connection.lastError || "")
+  );
   const secondaryDisplayName = connection.name?.trim() && connection.email?.trim() && connection.name.trim() !== connection.email.trim()
     ? connection.email.trim()
     : connection.name?.trim() && connection.displayName?.trim() && connection.name.trim() !== connection.displayName.trim()

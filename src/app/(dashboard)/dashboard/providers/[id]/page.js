@@ -764,13 +764,27 @@ export default function ProviderDetailPage() {
   const handleOAuthSuccess = async () => {
     if (reauthConnectionId) {
       try {
-        await fetch(`/api/providers/${reauthConnectionId}`, {
+        const res = await fetch(`/api/providers/${reauthConnectionId}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ testStatus: "active", lastError: null, lastErrorAt: null, errorCode: null }),
         });
+        if (!res.ok) {
+          let message = "Failed to clear the previous connection error";
+          try {
+            const data = await res.json();
+            if (data?.error) message = data.error;
+          } catch {
+            // Keep the fallback message when the API does not return JSON.
+          }
+          throw new Error(message);
+        }
       } catch (error) {
         console.log("Error clearing re-auth status:", error);
+        if (typeof window !== "undefined") {
+          window.alert(`Re-authentication completed, but the connection status could not be cleared. ${error.message}`);
+        }
+        return;
       }
     }
     await fetchConnections();
