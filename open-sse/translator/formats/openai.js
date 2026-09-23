@@ -53,8 +53,14 @@ export function filterToOpenAIFormat(body, opts = {}) {
       if (filteredContent.length === 0) {
         filteredContent.push({ type: OPENAI_BLOCK.TEXT, text: "" });
       }
+
+      const canCollapseText = filteredContent.every((block) => block.type === OPENAI_BLOCK.TEXT)
+        && (!keepCache || !filteredContent.some((block) => block.cache_control));
+      const content = canCollapseText
+        ? filteredContent.map((block) => block.text || "").join("\n")
+        : filteredContent;
       
-      return { ...msg, content: filteredContent };
+      return { ...msg, content };
     }
     
     return msg;
@@ -131,4 +137,3 @@ export function filterToOpenAIFormat(body, opts = {}) {
 
   return body;
 }
-

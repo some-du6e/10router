@@ -6,6 +6,7 @@ import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
 import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
+import { SEARCH_CAPABILITY, SEARCH_TOOL_TYPES } from "../config/appConstants.js";
 
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
@@ -180,11 +181,9 @@ export function detectRequiredCapabilities(body) {
 
   // Search is request-wide because tools are not tied to one message turn.
   if (Array.isArray(body.tools) && body.tools.some((tool) =>
-    tool?.type === "web_search"
-    || tool?.type === "web_search_preview"
-    || tool?.type === "google_search"
+    SEARCH_TOOL_TYPES.has(tool?.type)
   )) {
-    required.add("search");
+    required.add(SEARCH_CAPABILITY);
   }
 
   return required;

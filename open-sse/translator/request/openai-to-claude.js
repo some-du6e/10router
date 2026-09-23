@@ -253,6 +253,11 @@ function getContentBlocksFromMessage(msg, toolNameMap = new Map()) {
       }
     }
   } else if (msg.role === ROLE.ASSISTANT) {
+    const reasoning = msg.reasoning_content || msg.reasoning;
+    if (typeof reasoning === "string" && reasoning.trim()) {
+      blocks.push({ type: CLAUDE_BLOCK.THINKING, thinking: reasoning });
+    }
+
     if (Array.isArray(msg.content)) {
       for (const part of msg.content) {
         if (part.type === OPENAI_BLOCK.TEXT && part.text) {
@@ -380,4 +385,3 @@ export { openaiToClaudeRequestForAntigravity };
 
 // Register
 register(FORMATS.OPENAI, FORMATS.CLAUDE, openaiToClaudeRequest, null);
-

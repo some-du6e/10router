@@ -121,6 +121,8 @@ describe("Cursor live model catalog", () => {
       ":path": "/agent.v1.AgentService/GetUsableModels",
       accept: "application/proto",
       "content-type": "application/proto",
+      authorization: "Bearer cursor-token",
+      "x-cursor-checksum": expect.stringMatching(/machine-id$/),
     }));
   });
 
