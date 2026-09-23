@@ -1,7 +1,12 @@
 import { describe, it, expect } from "vitest";
 
 import { CursorExecutor } from "../../open-sse/executors/cursor.js";
-import { encodeField, wrapConnectRPCFrame } from "../../open-sse/utils/cursorProtobuf.js";
+import {
+  decodeMessage,
+  encodeField,
+  parseConnectRPCFrame,
+  wrapConnectRPCFrame,
+} from "../../open-sse/utils/cursorProtobuf.js";
 
 const LEN = 2;
 
@@ -48,12 +53,12 @@ function parseSSE(text) {
     .map((data) => JSON.parse(data));
 }
 
-async function runAgent({ frames, stream }) {
+async function runAgent({ frames, stream, messages = [{ role: "user", content: "hi" }] }) {
   const executor = new CursorExecutor();
   const written = stubAgentSession(executor, frames);
   const result = await executor.executeAgent({
     model: "gpt-5.2",
-    body: { messages: [{ role: "user", content: "hi" }] },
+    body: { messages },
     stream,
     credentials,
   });
@@ -68,9 +73,37 @@ describe("CursorExecutor AgentService exec_request handling", () => {
     });
 
     expect(written.length).toBe(2); // run frame + request-context reply
+    const reply = decodeMessage(parseConnectRPCFrame(written[1]).payload);
+    const execClientMessage = decodeMessage(reply.get(2)[0].value);
+    expect(execClientMessage.has(10)).toBe(true);
     const events = parseSSE(await result.response.text());
     const content = events.map((e) => e.choices?.[0]?.delta?.content || "").join("");
     expect(content).toBe("hello");
+  });
+
+  it("sends the current AgentService run frame through the public executor API", async () => {
+    const { written } = await runAgent({
+      frames: [],
+      stream: false,
+      messages: [
+        { role: "system", content: "be brief" },
+        { role: "user", content: "first" },
+        { role: "assistant", content: "earlier answer" },
+        { role: "user", content: "current" },
+      ],
+    });
+    const clientMessage = decodeMessage(parseConnectRPCFrame(written[0]).payload);
+    const runRequest = decodeMessage(clientMessage.get(1)[0].value);
+    const action = decodeMessage(runRequest.get(2)[0].value);
+    const userAction = decodeMessage(action.get(1)[0].value);
+    const userMessage = decodeMessage(userAction.get(1)[0].value);
+    const model = decodeMessage(runRequest.get(9)[0].value);
+
+    expect(runRequest.has(8)).toBe(true);
+    expect(Buffer.from(runRequest.get(8)[0].value).toString("utf8")).toBe("be brief");
+    expect(Buffer.from(model.get(1)[0].value).toString("utf8")).toBe("gpt-5.2");
+    expect(Buffer.from(userMessage.get(1)[0].value).toString("utf8")).toBe("current");
+    expect(decodeMessage(userAction.get(7)[0].value).get(1)).toHaveLength(2);
   });
 
   it("does not render an unsupported exec request as assistant content", async () => {

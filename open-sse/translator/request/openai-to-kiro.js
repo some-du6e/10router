@@ -394,6 +394,7 @@ export function openaiToKiroRequest(model, body, stream, credentials) {
   const replayCurrent = canonical.currentMessage.userInputMessage;
 
   const payload = {
+    systemPrompt,
     conversationState: {
       chatTriggerType: "MANUAL",
       conversationId,

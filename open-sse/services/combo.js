@@ -178,7 +178,14 @@ export function detectRequiredCapabilities(body) {
   const contents = body.contents || body.request?.contents;                      // gemini / antigravity
   for (const c of trailingUserItems(contents)) scanContent(c.parts);
 
-  // search: temporarily disabled in auto-switch (feature not wired yet).
+  // Search is request-wide because tools are not tied to one message turn.
+  if (Array.isArray(body.tools) && body.tools.some((tool) =>
+    tool?.type === "web_search"
+    || tool?.type === "web_search_preview"
+    || tool?.type === "google_search"
+  )) {
+    required.add("search");
+  }
 
   return required;
 }
