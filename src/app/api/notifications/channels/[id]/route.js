@@ -18,6 +18,17 @@ function configureScheduler(channels) {
     .catch((error) => console.warn("[Notifications] scheduler config failed:", error.message));
 }
 
+export async function GET(request, { params }) {
+  try {
+    const { id } = await params;
+    const channel = await getNotificationChannelById(id);
+    if (!channel) return NextResponse.json({ error: "Notification channel not found" }, { status: 404 });
+    return NextResponse.json({ channel: redactNotificationChannel(channel) });
+  } catch (error) {
+    return NextResponse.json({ error: error.message }, { status: 400 });
+  }
+}
+
 export async function PUT(request, { params }) {
   try {
     const { id } = await params;

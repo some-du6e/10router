@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { Badge, Button, Card, CardSkeleton, ConfirmModal, Input, Modal, Select, Toggle } from "@/shared/components";
 import { useNotificationStore } from "@/store/notificationStore";
 import { NOTIFICATION_EVENTS, NOTIFICATION_TYPE_OPTIONS } from "@/lib/notifications/constants";
@@ -339,11 +340,33 @@ export default function NotificationChannelsPage() {
               const type = TYPE_META[channel.type] || { label: channel.type, icon: "notifications" };
               return (
                 <div key={channel.id} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="flex min-w-0 items-start gap-3">
-                    <div className="flex size-10 shrink-0 items-center justify-center rounded-[10px] bg-primary/10 text-primary">
-                      <span className="material-symbols-outlined">{type.icon}</span>
-                    </div>
-                    <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
+                    {channel.type === "slack" ? (
+                      <Link
+                        href={`/dashboard/notifications/slack/${encodeURIComponent(channel.id)}`}
+                        className="group flex min-w-0 items-start gap-3 rounded-[10px] outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                        aria-label={`Customize Slack message for ${channel.name}`}
+                      >
+                        <div className="flex size-10 shrink-0 items-center justify-center rounded-[10px] bg-primary/10 text-primary transition-colors group-hover:bg-primary/15">
+                          <span className="material-symbols-outlined">{type.icon}</span>
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h2 className="truncate text-sm font-semibold text-text-main group-hover:text-primary">{channel.name}</h2>
+                            <Badge size="sm">{type.label}</Badge>
+                            <Badge size="sm" variant={channel.isActive ? "success" : "default"}>{channel.isActive ? "active" : "inactive"}</Badge>
+                          </div>
+                          <p className="mt-1 text-xs text-text-muted">
+                            {(channel.events || []).map((event) => event === NOTIFICATION_EVENTS.QUOTA_EXHAUSTED ? "Quota exhausted" : "Quota reset").join(" · ")}
+                          </p>
+                        </div>
+                      </Link>
+                    ) : (
+                      <div className="flex min-w-0 items-start gap-3">
+                        <div className="flex size-10 shrink-0 items-center justify-center rounded-[10px] bg-primary/10 text-primary">
+                          <span className="material-symbols-outlined">{type.icon}</span>
+                        </div>
+                        <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <h2 className="truncate text-sm font-semibold text-text-main">{channel.name}</h2>
                         <Badge size="sm">{type.label}</Badge>
@@ -352,6 +375,9 @@ export default function NotificationChannelsPage() {
                       <p className="mt-1 text-xs text-text-muted">
                         {(channel.events || []).map((event) => event === NOTIFICATION_EVENTS.QUOTA_EXHAUSTED ? "Quota exhausted" : "Quota reset").join(" · ")}
                       </p>
+                        </div>
+                      </div>
+                    )}
                       {testErrors[channel.id] && (
                         <div className="mt-2 rounded-[8px] border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs leading-relaxed text-red-600 dark:text-red-300">
                           <p className="font-semibold">Could not send test</p>
@@ -359,7 +385,6 @@ export default function NotificationChannelsPage() {
                         </div>
                       )}
                     </div>
-                  </div>
                   <div className="flex items-center justify-end gap-1">
                     <Toggle size="sm" checked={channel.isActive} onChange={() => toggleActive(channel)} />
                     <button type="button" onClick={() => testChannel(channel.id)} disabled={testingId === channel.id} title="Send test" aria-label={`Send test notification for ${channel.name}`} className="p-2 text-text-muted hover:text-primary disabled:opacity-50">

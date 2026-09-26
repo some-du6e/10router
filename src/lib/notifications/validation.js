@@ -4,6 +4,7 @@ import {
   NOTIFICATION_TYPES,
   SECRET_CONFIG_FIELDS,
 } from "./constants.js";
+import { normalizeSlackLayout } from "./slackLayout.js";
 
 const TYPE_VALUES = new Set(Object.values(NOTIFICATION_TYPES));
 const EVENT_VALUES = new Set([
@@ -56,6 +57,7 @@ function normalizeConfig(type, config = {}) {
       break;
     case NOTIFICATION_TYPES.SLACK:
       next.webhookUrl = stringValue(config.webhookUrl);
+      if (config.slackLayout !== undefined) next.slackLayout = normalizeSlackLayout(config.slackLayout);
       break;
     case NOTIFICATION_TYPES.WEBHOOK:
       next.url = stringValue(config.url);
