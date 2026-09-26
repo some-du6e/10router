@@ -27,7 +27,13 @@ export default {
     baseUrl: "https://api.openai.com/v1/chat/completions",
     forceStream: true,
   },
+  transports: [
+    { format: "openai-responses", baseUrl: "https://api.openai.com/v1/responses", auth: { combined: true, header: "Authorization", scheme: "bearer" } },
+  ],
   models: [
+    { id: "gpt-6-astra", name: "GPT-6 Astra", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
+    { id: "gpt-6-sol", name: "GPT-6 Sol", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
+    { id: "gpt-6-luna", name: "GPT-6 Luna", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-5.4", name: "GPT-5.4" },
     { id: "gpt-5.4-mini", name: "GPT-5.4 Mini" },
     { id: "gpt-5.4-nano", name: "GPT-5.4 Nano" },

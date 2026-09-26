@@ -2,6 +2,25 @@ import { describe, expect, it } from "vitest";
 import { getCapabilitiesForModel } from "../../open-sse/providers/capabilities.js";
 
 describe("getCapabilitiesForModel", () => {
+  it.each(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])("reports %s API context and reasoning support", (model) => {
+    expect(getCapabilitiesForModel("openai", model)).toMatchObject({
+      contextWindow: 1050000,
+      maxOutput: 128000,
+      vision: true,
+      reasoning: true,
+      thinkingFormat: "openai",
+    });
+  });
+
+  it.each(["anthropic", "claude", "cc"])("reports Opus 5.5 always-on adaptive thinking for %s", (provider) => {
+    expect(getCapabilitiesForModel(provider, "claude-opus-5-5")).toMatchObject({
+      contextWindow: 1000000,
+      maxOutput: 128000,
+      thinkingFormat: "claude-adaptive",
+      thinkingCanDisable: false,
+    });
+  });
+
   const claudeSonnet5Expected = {
     contextWindow: 1000000,
     maxOutput: 128000,

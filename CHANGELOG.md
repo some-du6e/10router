@@ -1,6 +1,7 @@
 # Unreleased
 
 ## Features
+- **Model catalog**: add GPT-6 Sol and Luna, Claude Opus 5.5, and the current OpenAI and Anthropic API models with pricing, context limits, and reasoning levels. GPT-6 API requests use the Responses endpoint.
 - **Codex models**: add GPT-6 Astra with its Codex context window, pricing, and reasoning levels.
 - **Codex session affinity**: a Codex conversation can now be pinned to a single
   account for as long as it stays warm. The Codex executor already derives a
