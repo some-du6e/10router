@@ -24,6 +24,15 @@ const oauthCooldown = new Map();
 const USAGE_CACHE_TTL_MS = 300000;
 const usageCache = new Map(); // token -> { promise } | { result, expiresAt }
 
+const CLAUDE_USAGE_STATUS = {
+  SUBSCRIPTION_INACTIVE: "subscription_inactive",
+  UNAVAILABLE: "unavailable",
+};
+
+function usageUnavailable(message, status = CLAUDE_USAGE_STATUS.UNAVAILABLE) {
+  return { status, message };
+}
+
 export async function getClaudeUsage(accessToken, proxyOptions = null, options = {}) {
   const force = options?.force === true;
 
@@ -122,11 +131,21 @@ async function fetchClaudeUsageRaw(accessToken, proxyOptions = null) {
       oauthCooldown.set(accessToken, Date.now() + OAUTH_429_COOLDOWN_MS);
     }
 
+    // A rejected OAuth usage request is the strongest signal available that
+    // the subscription no longer grants Claude Code quota access. Do not
+    // downgrade this into the misleading "connected" fallback message.
+    if (oauthResponse.status === 401 || oauthResponse.status === 403) {
+      return usageUnavailable(
+        "Claude subscription is inactive or this token no longer has Claude Code usage access.",
+        CLAUDE_USAGE_STATUS.SUBSCRIPTION_INACTIVE,
+      );
+    }
+
     // Fallback: legacy settings + org usage endpoint
     console.warn(`[Claude Usage] OAuth endpoint returned ${oauthResponse.status}, falling back to legacy`);
     return await getClaudeUsageLegacy(accessToken, proxyOptions);
   } catch (error) {
-    return { message: `Claude connected. Unable to fetch usage: ${error.message}` };
+    return usageUnavailable(`Claude usage unavailable: ${error.message}`);
   }
 }
 
@@ -172,12 +191,18 @@ async function getClaudeUsageLegacy(accessToken, proxyOptions = null) {
       return {
         plan: settings.plan || "Unknown",
         organization: settings.organization_name,
-        message: "Claude connected. Usage details require admin access.",
+        ...usageUnavailable("Claude usage details require organization admin access."),
       };
     }
 
-    return { message: "Claude connected. Usage API requires admin permissions." };
+    if (settingsResponse.status === 401 || settingsResponse.status === 403) {
+      return usageUnavailable(
+        "Claude usage is unavailable. The account may be inactive or this token may lack the required permissions.",
+      );
+    }
+
+    return usageUnavailable(`Claude usage request failed (${settingsResponse.status}).`);
   } catch (error) {
-    return { message: `Claude connected. Unable to fetch usage: ${error.message}` };
+    return usageUnavailable(`Claude usage unavailable: ${error.message}`);
   }
 }
