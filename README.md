@@ -12,8 +12,6 @@ API formats and falling back across models and accounts.
 [![Docker Pulls](https://img.shields.io/docker/pulls/some-du6e/10router.svg?logo=docker&label=Docker%20pulls)](https://hub.docker.com/r/some-du6e/10router)
 [![License](https://img.shields.io/npm/l/10router.svg)](https://github.com/some-du6e/10router/blob/main/LICENSE)
 
-_A fork of [decolua/9router](https://github.com/decolua/9router), rebranded as 10router._
-
 ## What it does
 
 - **One endpoint** — point any OpenAI-compatible client at `http://localhost:20128/v1`.
@@ -24,6 +22,55 @@ _A fork of [decolua/9router](https://github.com/decolua/9router), rebranded as 1
 - **Quota and usage tracking** — per provider and model, with reset countdowns.
 - **Token savers** — optional request/response compression (see below).
 - **Deployment** — localhost, VPS, Docker, or Cloudflare Workers.
+
+## What this fork adds
+
+These are the parts of 10router that grew after the 9router fork:
+
+- **A first-class Codex gateway.** Serve Codex's native Responses API, model catalog,
+  compact endpoint, and WebSocket transport from the same local gateway. The CLI tool
+  can configure the native Codex endpoint for you.
+- **Codex account intelligence.** Keep a conversation on one account while it is warm
+  so prompt caching can work, pool usage across accounts, and skip accounts that cannot
+  serve the requested model or plan.
+- **Claude web search through your router.** Claude's built-in web-search tool keeps
+  working when Claude Code is routed to another model. Results come through the configured
+  10router search provider instead of silently disappearing.
+- **Quota alerts.** Send quota-exhausted and quota-reset notifications to Slack, ntfy,
+  Telegram, generic webhooks, or an Apprise server. Channels can be tested and configured
+  independently from the dashboard.
+- **Rate-limit recovery.** Wait through temporary provider rate limits when it is safe,
+  then continue with the same request or move through the configured fallback chain.
+
+## Compatibility
+
+This is the short list of behavior existing clients and installs can rely on. It is a
+practical promise, not a claim that upstream providers will never change their APIs.
+
+### Client endpoints
+
+- OpenAI-compatible clients use `http://localhost:20128/v1`.
+- Chat clients call `POST /v1/chat/completions`.
+- Anthropic-shaped clients call `POST /v1/messages`.
+- Model discovery uses `GET /v1/models`.
+- Codex-native clients can use `http://localhost:20128/backend-api/codex`, including
+  `/responses`, `/responses/compact`, and `/models`.
+
+### Auth and models
+
+- Send the dashboard API key as `Authorization: Bearer <key>`.
+- Use provider-prefixed model IDs such as `cc/claude-opus-4-7` or `cx/gpt-5.5`.
+- Combo names are accepted anywhere a model ID is accepted and preserve their ordered
+  fallback behavior.
+
+### Upgrades
+
+- Existing data stays under `~/.9router` unless `DATA_DIR` is set.
+- SQLite migrations run when the server starts, with backups created before migrations.
+- Existing 9router data paths and supported legacy environment variable names remain
+  compatible where the project documents them.
+- Changes to endpoints, model ID formats, environment variables, or stored data will be
+  called out in the changelog with upgrade instructions.
 
 ## Request flow
 

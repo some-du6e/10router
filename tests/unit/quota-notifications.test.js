@@ -11,6 +11,7 @@ import { dispatchNotificationEvent, sendNotificationChannel } from "../../src/li
 import { createPinnedLookup, notificationFetch } from "../../src/lib/notifications/http.js";
 import { NOTIFICATION_EVENTS } from "../../src/lib/notifications/constants.js";
 import { normalizeNotificationChannelInput, redactNotificationChannel } from "../../src/lib/notifications/validation.js";
+import { buildSlackPayload, normalizeSlackLayout } from "../../src/lib/notifications/slackLayout.js";
 
 describe("quota notification transitions", () => {
   it("does not alert on the first quota observation", () => {
@@ -120,6 +121,47 @@ describe("notification channels", () => {
       redirect: "manual",
       body: expect.stringContaining("codex Quota exhausted"),
     }));
+  });
+
+  it("normalizes bounded Slack field layouts and keeps dynamic templates", () => {
+    const layout = normalizeSlackLayout({
+      fields: [
+        { id: "provider", label: "Service", value: "{{provider}}" },
+        { id: "provider", label: "Account", value: "{{account}}" },
+        { id: "empty", label: "", value: "ignored" },
+      ],
+    });
+
+    expect(layout.fields).toEqual([
+      { id: "provider", label: "Service", value: "{{provider}}" },
+      { id: "provider-2", label: "Account", value: "{{account}}" },
+    ]);
+  });
+
+  it("builds a Slack attachment using the saved field order", () => {
+    const slackPayload = buildSlackPayload({
+      config: {
+        slackLayout: {
+          fields: [
+            { id: "account", label: "Routing account", value: "{{account}}" },
+            { id: "provider", label: "Provider", value: "{{provider}}" },
+          ],
+        },
+      },
+    }, {
+      title: "codex Quota exhausted",
+    }, {
+      event: NOTIFICATION_EVENTS.QUOTA_EXHAUSTED,
+      provider: "codex",
+      connection: { name: "Main" },
+      quota: { name: "weekly", remainingPercentage: 0, resetAt: "2026-01-02T00:00:00Z" },
+    });
+
+    const fieldBlock = slackPayload.attachments[0].blocks.find((block) => block.fields);
+    expect(fieldBlock.fields.map((field) => field.text)).toEqual([
+      "*Routing account*\nMain",
+      "*Provider*\ncodex",
+    ]);
   });
 
   it("pins the validated destination address for the outbound request", async () => {

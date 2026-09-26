@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>10router Slack editor</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Lato:wght@400;700;900&family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20,500,0,0&display=swap');
+    :root{--bg:#0f0d11;--panel:#1b161c;--line:#392c3a;--text:#f3eef3;--muted:#aa9eab;--pink:#f12c8b;--blue:#1d9bd1;--slack:#1a1d21}
+    *{box-sizing:border-box}
+    body{margin:0;min-height:100vh;color:var(--text);font:14px/1.4 ui-sans-serif,system-ui,sans-serif;background:var(--bg)}
+    button{font:inherit;color:inherit}.shell{display:grid;grid-template-columns:210px 1fr;min-height:100vh}.side{padding:24px 16px;border-right:1px solid #251d26;background:#151117}.logo{margin-bottom:35px;font-weight:800}.nav{padding:11px 12px;border-radius:9px;color:#fff;background:#f12c8b22}.main{padding:38px}.page{max-width:950px;margin:auto}.head{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:24px}.head h1{margin:0 0 5px;font-size:25px}.head p{margin:0;color:var(--muted)}.actions{display:flex;gap:8px}.button{height:38px;padding:0 14px;border:1px solid var(--line);border-radius:9px;background:#211922;cursor:pointer}.button.primary{border-color:var(--pink);background:var(--pink)}.list{border:1px solid var(--line);border-radius:12px;background:var(--panel)}.row{display:flex;align-items:center;width:100%;padding:17px 22px;border:0;text-align:left;background:transparent;cursor:pointer}.hash{display:grid;place-items:center;width:42px;height:42px;margin-right:13px;border-radius:11px;color:var(--pink);font-size:25px;background:#f12c8b1b}.row small{display:block;margin-top:4px;color:var(--muted)}.pill{margin-left:8px;padding:3px 7px;border-radius:5px;color:#c8bcc9;font-size:10px;background:#302631}.pill.active{color:#54ec8c;background:#20c66a22}.crumb{margin-bottom:12px;padding:0;border:0;color:var(--muted);background:none;cursor:pointer}.editor{overflow:hidden;border:1px solid var(--line);border-radius:13px;background:var(--panel)}.editor-bar{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:14px 16px;border-bottom:1px solid var(--line)}.tabs,.mode-switch{display:flex;gap:4px;padding:4px;border-radius:9px;background:#120f13}.tab,.mode{padding:8px 13px;border:0;border-radius:7px;color:var(--muted);font-weight:700;background:transparent;cursor:pointer}.tab.active,.mode.active{color:#fff;background:#312632;box-shadow:0 0 0 1px #49364a}.editor-tools{display:flex;align-items:center;gap:12px}.hint{color:var(--muted);font-size:12px}
+    .canvas{padding:0;background:var(--slack)}
+    .message{max-width:760px;padding:16px 20px 20px;color:#d1d2d3;font:15px/1.46668 Slack-Lato,Slack-Fractions,appleLogo,Lato,sans-serif;background:var(--slack)}
+    .meta{display:flex;align-items:baseline;gap:5px;height:22px;font-weight:900}.meta .app-name{color:#f8f8f8}.meta .stamp{color:#ababad;font-size:12px;font-weight:400}.fallback{margin:0 0 8px}.p-rich_text_section{white-space:pre-wrap;word-break:break-word}.attachment{max-width:700px;margin-top:4px;padding:4px 0 0 12px;border-left:4px solid var(--rail);border-radius:2px}.eyeline{margin-bottom:8px;color:#d1d2d3;font-size:13px;font-weight:700}.attachment h3,.attachment p{margin:0;font-size:15px}.attachment h3{font-weight:900}.facts{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:32px;row-gap:8px;margin-top:12px}.fact{position:relative;min-height:44px;padding:2px 20px 2px 4px;border:1px solid transparent;border-radius:4px;cursor:default;transform-origin:center}.fact:hover,.fact:focus-within{border-color:#56585c;background:#222529}.fact small,.fact strong{display:block;min-width:20px;outline:0;cursor:text}.fact small{font-size:15px;font-weight:900;line-height:1.46668}.fact strong{font-size:15px;font-weight:400;line-height:1.46668}.grip,.remove{position:absolute;border:0;color:#ababad;background:transparent;opacity:0;transition:opacity .1s}.fact:hover .grip,.fact:hover .remove,.fact:focus-within .grip,.fact:focus-within .remove,.editor.arranging .grip,.editor.arranging .remove{opacity:1}.grip{left:50%;top:-8px;width:36px;height:14px;padding:0;display:grid;place-items:center;transform:translateX(-50%);font-size:0;cursor:grab;touch-action:none}.grip::before{content:"";width:21px;height:10px;background:radial-gradient(circle,#ababad 1.5px,transparent 1.7px) 0 0/7px 5px}.grip:active{cursor:grabbing}.remove{right:2px;top:1px;font-size:16px;cursor:pointer}.drag-placeholder{opacity:.14;border-color:#7d7f83!important;background:#2a2d31!important}.drag-ghost{position:fixed;z-index:9999;margin:0;border-color:#7d7f83!important;color:#d1d2d3;background:#222529!important;box-shadow:0 14px 34px #0009;pointer-events:none;transform:scale(1.02) rotate(2deg)}.drag-ghost .grip,.drag-ghost .remove{display:none}.drop-pop{animation:drop-pop .22s cubic-bezier(.2,.8,.2,1)}.editor.previewing .fact{border-color:transparent;background:transparent}.editor.previewing .grip,.editor.previewing .remove,.editor.previewing .add{display:none}.editor.previewing [contenteditable]:hover,.editor.previewing [contenteditable]:focus{background:transparent;box-shadow:none}.footer{margin-top:8px;color:#ababad;font-size:13px}.c-link{color:#1d9bd1;text-decoration:none}.c-link:hover{text-decoration:underline}[contenteditable]{border-radius:3px;outline:0}[contenteditable]:hover{background:#ffffff08;box-shadow:0 0 0 2px #ffffff08}[contenteditable]:focus{background:#1d9bd112;box-shadow:0 0 0 2px #1d9bd140}.add{height:28px;margin-top:8px;padding:0 10px;border:1px solid #565856;border-radius:4px;color:#d1d2d3;background:transparent;font:700 13px Slack-Lato,Slack-Fractions,appleLogo,Lato,sans-serif;cursor:pointer}.add:hover{background:#222529}.empty{display:none;margin-top:10px;padding:10px;border:1px dashed #56585c;border-radius:4px;color:#ababad;text-align:center}.facts:empty+.empty{display:block}@keyframes drop-pop{0%{transform:scale(1.08)}60%{transform:scale(.99)}100%{transform:scale(1)}}@media(prefers-reduced-motion:reduce){.drop-pop{animation:none}}
+    .grip:hover,.grip:focus-visible{border:1px solid #7d7f83;border-radius:7px;background:#2a2d31;box-shadow:0 4px 12px #0008;transform:translateX(-50%) translateY(-1px) scale(1.06)}.grip:focus-visible{outline:2px solid #1d9bd1;outline-offset:2px}.grip:active{background:#34373b;transform:translateX(-50%) scale(.97)}
+    .variable-bin{display:flex;align-items:center;gap:14px;padding:12px 16px;border-bottom:1px solid var(--line);background:#171319}.variable-bin-copy{min-width:118px}.variable-bin-copy strong{display:block;font-size:12px}.variable-bin-copy span{color:var(--muted);font-size:10px}.variable-chips{display:flex;flex-wrap:wrap;align-items:center;gap:7px}.variable-chip,.inline-variable-chip{display:inline-flex;align-items:center;justify-content:center;gap:.38em;box-sizing:border-box;border:1px solid var(--chip-border);border-radius:6px;color:var(--chip-text);background:var(--chip-bg);font-weight:700;line-height:1.2;vertical-align:middle;white-space:nowrap;user-select:none}.variable-chip{min-height:30px;padding:5px 10px;font-size:12px;cursor:grab}.variable-chip:hover,.variable-chip:focus-visible{border-color:var(--chip-hover-border);background:var(--chip-hover-bg);outline:0;box-shadow:0 0 0 3px var(--chip-ring)}.variable-chip:active{cursor:grabbing;transform:scale(.97)}.variable-icon{display:inline-flex;width:1.15em;height:1.15em;flex:none;align-items:center;justify-content:center;overflow:visible;font-family:'Material Symbols Outlined',sans-serif;font-size:1.15em;font-style:normal;font-weight:normal;line-height:1;letter-spacing:normal;text-transform:none;white-space:nowrap;word-wrap:normal;direction:ltr;font-feature-settings:'liga';font-variation-settings:'FILL' 0,'wght' 500,'GRAD' 0,'opsz' 20;opacity:.9}.inline-variable-chip{position:relative;min-height:1.55em;max-width:100%;margin:0 .1em;padding:.12em .52em .14em;font-size:.86em;line-height:1.12;vertical-align:-.18em}.inline-variable-chip .variable-icon{width:1.12em;height:1.12em;font-size:1.12em}.inline-variable-chip span:last-child{display:block;overflow:visible;line-height:1.12;white-space:nowrap}.editor.previewing .variable-bin{display:none}.variable-feedback{margin-left:auto;color:var(--muted);font-size:11px;white-space:nowrap}
+    dialog{width:min(470px,calc(100vw - 28px));padding:0;border:1px solid #49384a;border-radius:14px;color:var(--text);background:#1b161c;box-shadow:0 24px 80px #000b}dialog::backdrop{background:#080609b8;backdrop-filter:blur(5px)}.webhook-modal{display:grid;gap:18px;padding:22px}.webhook-modal h2{margin:0 0 5px;font-size:19px}.webhook-modal p{margin:0;color:var(--muted)}.webhook-field{display:grid;gap:7px}.webhook-field label{font-size:12px;font-weight:700}.webhook-field input{width:100%;height:42px;padding:0 12px;border:1px solid #49384a;border-radius:8px;outline:0;color:#f3eef3;background:#261f27;font:13px ui-monospace,SFMono-Regular,Consolas,monospace}.webhook-field input:focus{border-color:var(--pink);box-shadow:0 0 0 3px #f12c8b22}.webhook-note{font-size:12px}.webhook-actions{display:flex;justify-content:flex-end;gap:8px}.send-status{min-height:20px;color:#ababad;font-size:12px}.send-status.success{color:#54ec8c}.send-status.error{color:#ff6b7a}.button[disabled]{cursor:wait;opacity:.55}
+    @media(max-width:760px){.shell{grid-template-columns:1fr}.side{display:none}.main{padding:20px 14px}.head{flex-direction:column}.editor-bar{align-items:flex-start;flex-direction:column}.editor-tools{width:100%;justify-content:space-between}.variable-bin{align-items:flex-start;flex-direction:column}.variable-feedback{margin-left:0}.facts{grid-template-columns:1fr}.message{padding:16px}}
+    @media(max-width:430px){.actions{width:100%}.actions .button{flex:1}.tabs{width:100%}.tab{flex:1;padding-inline:7px}.hint{display:none}}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="side"><div class="logo">10router</div><div class="nav">Notifications</div></aside>
+    <main class="main">
+      <section class="page" id="list">
+        <header class="head"><div><h1>Notifications</h1><p>Send alerts when provider quotas change.</p></div><button class="button primary">Add Channel</button></header>
+        <div class="list"><button class="row" id="open"><span class="hash">#</span><span><strong>tests</strong><span class="pill">Slack</span><span class="pill active">active</span><small>Limit reached · Limit reset</small></span></button></div>
+      </section>
+
+      <section class="page" id="editorPage" hidden>
+        <button class="crumb" id="back">Notifications / tests</button>
+        <header class="head"><div><h1>Slack messages</h1><p>Edit everything directly inside the message.</p></div><div class="actions"><button class="button" id="sendSlack">Send to Slack</button><button class="button primary">Save changes</button></div></header>
+        <section class="editor arranging" id="slackEditor">
+          <div class="editor-bar">
+            <div class="tabs" role="tablist" aria-label="Notification type">
+              <button class="tab active" data-tab="reached" role="tab">Limit reached</button>
+              <button class="tab" data-tab="reset" role="tab">Limit reset</button>
+            </div>
+            <div class="editor-tools"><span class="hint">Grab a field; the others preview its new position</span><div class="mode-switch" role="tablist" aria-label="Editor mode"><button class="mode active" data-mode="edit" role="tab">Edit</button><button class="mode" data-mode="preview" role="tab">Preview</button></div></div>
+          </div>
+          <div class="variable-bin" id="variableBin"><div class="variable-bin-copy"><strong>Variables</strong><span>Click or drag into text</span></div><div class="variable-chips" id="variableChips"></div><span class="variable-feedback" id="variableFeedback">Select some text first</span></div>
+          <div class="canvas">
+            <article class="message" id="message">
+              <div class="meta"><span class="app-name" contenteditable data-global="appName" data-single-line></span><span class="stamp">APP · 8:51 PM</span></div>
+              <div class="fallback p-rich_text_section" contenteditable data-bind="fallback" data-single-line></div>
+              <div class="attachment" id="attachment">
+                <div class="eyeline" contenteditable data-bind="eyeline" data-single-line></div>
+                <h3 contenteditable data-bind="title" data-single-line></h3>
+                <div class="p-rich_text_section" contenteditable data-bind="body"></div>
+                <div class="facts" id="facts"></div>
+                <div class="empty">No fields yet. Add one below.</div>
+                <button class="add" id="add">+ Add field</button>
+                <div class="footer"><span class="p-rich_text_section" contenteditable data-bind="summary" data-single-line></span><br>Added by <span class="c-link app-name" contenteditable data-global="appName" data-single-line></span></div>
+              </div>
+            </article>
+          </div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="slackDialog">
+    <form class="webhook-modal" id="slackForm">
+      <div><h2>Send this message to Slack</h2><p>The currently selected message and field order will be sent.</p></div>
+      <div class="webhook-field"><label for="webhookUrl">Incoming webhook URL</label><input id="webhookUrl" type="password" inputmode="url" autocomplete="off" placeholder="https://hooks.slack.com/services/..." required></div>
+      <p class="webhook-note">The webhook is used once for this test. This page does not store it.</p>
+      <div class="send-status" id="sendStatus" aria-live="polite"></div>
+      <div class="webhook-actions"><button class="button" type="button" id="cancelSend">Cancel</button><button class="button primary" type="submit" id="confirmSend">Send message</button></div>
+    </form>
+  </dialog>
+
+  <script>
+    const variableDefinitions = [
+      {token:"title",label:"Title",icon:"title",colors:["#f0abfc","#d946ef40","#d946ef1f","#e879f980","#d946ef30","#d946ef1a"]},
+      {token:"provider",label:"Provider",icon:"hub",colors:["#67e8f9","#06b6d440","#06b6d41f","#22d3ee80","#06b6d430","#06b6d41a"]},
+      {token:"account",label:"Account",icon:"person",colors:["#fcd34d","#f59e0b40","#f59e0b1f","#fbbf2480","#f59e0b30","#f59e0b1a"]},
+      {token:"limit",label:"Limit",icon:"speed",colors:["#fb7185","#f43f5e40","#f43f5e1f","#fb718580","#f43f5e30","#f43f5e1a"]},
+      {token:"resetAt",label:"Reset time",icon:"schedule",colors:["#86efac","#22c55e40","#22c55e1f","#4ade8080","#22c55e30","#22c55e1a"]},
+      {token:"remaining",label:"Remaining",icon:"data_usage",colors:["#c4b5fd","#8b5cf640","#8b5cf61f","#a78bfa80","#8b5cf630","#8b5cf61a"]}
+    ];
+    function variableStyle(definition) {
+      const [text,border,bg,hoverBorder,hoverBg,ring] = definition.colors;
+      return `--chip-text:${text};--chip-border:${border};--chip-bg:${bg};--chip-hover-border:${hoverBorder};--chip-hover-bg:${hoverBg};--chip-ring:${ring}`;
+    }
+
+    function variableIcon(definition) {
+      return `<span class="variable-icon" aria-hidden="true">${escapeHtml(definition.icon)}</span>`;
+    }
+    const layouts = {
+      reached: {
+        rail: "#e98300",
+        fallback: "{{provider}} limit reached",
+        eyeline: "LIMIT REACHED · 10router",
+        title: "{{title}}",
+        body: "{{account}} reached its {{limit}}. Requests will use the next available account.",
+        summary: "Resets {{resetAt}} · {{remaining}} remaining",
+        fields: [
+          {id:"provider",label:"Provider",value:"{{provider}}"},
+          {id:"account",label:"Account",value:"{{account}}"},
+          {id:"limit",label:"Limit",value:"{{limit}}"},
+          {id:"resets",label:"Resets",value:"{{resetAt}}"}
+        ]
+      },
+      reset: {
+        rail: "#2eb67d",
+        fallback: "{{provider}} limit reset",
+        eyeline: "LIMIT RESET · 10router",
+        title: "{{title}}",
+        body: "{{account}} can accept requests again and has returned to the routing pool.",
+        summary: "{{remaining}} remaining · reset {{resetAt}}",
+        fields: [
+          {id:"provider",label:"Provider",value:"{{provider}}"},
+          {id:"account",label:"Account",value:"{{account}}"},
+          {id:"limit",label:"Limit",value:"{{limit}}"},
+          {id:"resetAt",label:"Reset at",value:"{{resetAt}}"}
+        ]
+      }
+    };
+
+    let active = "reached";
+    let appName = "10router";
+    let editing = true;
+    let dragState = null;
+    const facts = document.getElementById("facts");
+    const slackEditor = document.getElementById("slackEditor");
+    const slackDialog = document.getElementById("slackDialog");
+    const slackForm = document.getElementById("slackForm");
+    const webhookUrl = document.getElementById("webhookUrl");
+    const sendStatus = document.getElementById("sendStatus");
+    const confirmSend = document.getElementById("confirmSend");
+    const variableChips = document.getElementById("variableChips");
+    const variableFeedback = document.getElementById("variableFeedback");
+    let lastEditable = null;
+
+    function samplesForActiveLayout() {
+      return {
+        title:active === "reached" ? "Claude usage limit reached" : "Claude usage limit reset",
+        provider:"Anthropic",
+        account:"work@acme.dev",
+        limit:"5-hour usage limit",
+        resetAt:"Today at 10:00 PM",
+        remaining:active === "reached" ? "0%" : "100%"
+      };
+    }
+
+    function resolveVariables(value) {
+      const samples = samplesForActiveLayout();
+      return String(value ?? "").replace(/\{\{([A-Za-z0-9_]+)\}\}/g, (match, token) => samples[token] ?? match);
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+    }
+
+    function createInlineVariable(token) {
+      const definition = variableDefinitions.find(item => item.token === token);
+      if (!definition) return document.createTextNode(`{{${token}}}`);
+      const chip = document.createElement("span");
+      chip.className = "inline-variable-chip";
+      chip.contentEditable = "false";
+      chip.dataset.variable = token;
+      chip.style.cssText = variableStyle(definition);
+      chip.innerHTML = `${variableIcon(definition)}<span>${escapeHtml(definition.label)}</span>`;
+      return chip;
+    }
+
+    function renderTemplate(node, value) {
+      if (!editing) {
+        node.textContent = resolveVariables(value);
+        return;
+      }
+      node.replaceChildren();
+      const source = String(value ?? "");
+      const pattern = /\{\{([A-Za-z0-9_]+)\}\}/g;
+      let cursor = 0;
+      let match;
+      while ((match = pattern.exec(source))) {
+        if (match.index > cursor) node.append(document.createTextNode(source.slice(cursor, match.index)));
+        node.append(createInlineVariable(match[1]));
+        cursor = match.index + match[0].length;
+      }
+      if (cursor < source.length) node.append(document.createTextNode(source.slice(cursor)));
+      if (!source.length) node.append(document.createTextNode(""));
+    }
+
+    function serializeEditable(node) {
+      function serialize(current) {
+        if (current.nodeType === Node.TEXT_NODE) return current.textContent.replaceAll("\u200B", "");
+        if (current.nodeType !== Node.ELEMENT_NODE) return "";
+        if (current.dataset?.variable) return `{{${current.dataset.variable}}}`;
+        if (current.tagName === "BR") return "\n";
+        return [...current.childNodes].map(serialize).join("");
+      }
+      return [...node.childNodes].map(serialize).join("");
+    }
+
+    function renderFields() {
+      facts.innerHTML = layouts[active].fields.map((field, index) => `
+        <div class="fact" data-id="${escapeHtml(field.id)}" data-field-index="${index}">
+          <button class="grip" title="Drag field" aria-label="Drag field">⠿</button>
+          <button class="remove" title="Remove field" aria-label="Remove field">×</button>
+          <small contenteditable data-key="label" data-single-line></small>
+          <strong contenteditable data-key="value" data-single-line></strong>
+        </div>`).join("");
+      facts.querySelectorAll(".fact").forEach((node, index) => {
+        const field = layouts[active].fields[index];
+        renderTemplate(node.querySelector("small"), field.label);
+        renderTemplate(node.querySelector("strong"), field.value);
+      });
+      applyMode();
+    }
+
+    function applyMode() {
+      slackEditor.classList.toggle("arranging", editing);
+      slackEditor.classList.toggle("previewing", !editing);
+      document.querySelectorAll("#message [data-bind],#message [data-key],#message [data-global]").forEach(node => node.setAttribute("contenteditable", editing ? "true" : "false"));
+      document.querySelectorAll(".mode").forEach(button => {
+        const selected = button.dataset.mode === (editing ? "edit" : "preview");
+        button.classList.toggle("active", selected);
+        button.setAttribute("aria-selected", selected);
+      });
+    }
+
+    function renderMessage() {
+      lastEditable = null;
+      lastRange = null;
+      const layout = layouts[active];
+      document.querySelectorAll("[data-bind]").forEach(node => renderTemplate(node, layout[node.dataset.bind]));
+      document.querySelectorAll("[data-global='appName']").forEach(node => node.textContent = appName);
+      document.getElementById("attachment").style.setProperty("--rail", layout.rail);
+      document.querySelectorAll(".tab").forEach(tab => {
+        const selected = tab.dataset.tab === active;
+        tab.classList.toggle("active", selected);
+        tab.setAttribute("aria-selected", selected);
+      });
+      renderFields();
+    }
+
+    document.getElementById("message").addEventListener("input", event => {
+      const binding = event.target.dataset.bind;
+      if (binding) layouts[active][binding] = serializeEditable(event.target);
+      if (event.target.dataset.global === "appName") {
+        appName = event.target.textContent;
+        document.querySelectorAll("[data-global='appName']").forEach(node => {
+          if (node !== event.target) node.textContent = appName;
+        });
+      }
+      const fieldBox = event.target.closest(".fact");
+      if (fieldBox && event.target.dataset.key) {
+        const field = layouts[active].fields.find(item => item.id === fieldBox.dataset.id);
+        field[event.target.dataset.key] = serializeEditable(event.target);
+      }
+    });
+
+    document.getElementById("message").addEventListener("keydown", event => {
+      if (event.key === "Enter" && event.target.matches("[data-single-line]")) {
+        event.preventDefault();
+        event.target.blur();
+      }
+    });
+
+    facts.addEventListener("click", event => {
+      const remove = event.target.closest(".remove");
+      if (!editing || !remove) return;
+      const id = remove.closest(".fact").dataset.id;
+      layouts[active].fields.splice(layouts[active].fields.findIndex(field => field.id === id), 1);
+      renderFields();
+    });
+
+    function animateReflow(nodes, before) {
+      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+      nodes.forEach(node => {
+        const first = before.get(node);
+        const last = node.getBoundingClientRect();
+        const x = first.left - last.left;
+        const y = first.top - last.top;
+        if (!x && !y) return;
+        node.animate([{transform:`translate(${x}px, ${y}px)`},{transform:"translate(0, 0)"}], {duration:150,easing:"ease-in-out"});
+      });
+    }
+
+    function movePlaceholder(clientX, clientY, deltaX, deltaY) {
+      const target = document.elementFromPoint(clientX, clientY)?.closest(".fact");
+      if (!target || target === dragState.source || !facts.contains(target)) return;
+      const rect = target.getBoundingClientRect();
+      const sourceRect = dragState.source.getBoundingClientRect();
+      const sameRow = Math.abs(sourceRect.top - rect.top) < Math.min(sourceRect.height, rect.height) / 2;
+      const movement = sameRow ? deltaX : deltaY;
+      if (Math.abs(movement) < .75) return;
+      const threshold = .2;
+      const crossed = movement > 0
+        ? (sameRow ? clientX >= rect.left + rect.width * threshold : clientY >= rect.top + rect.height * threshold)
+        : (sameRow ? clientX <= rect.right - rect.width * threshold : clientY <= rect.bottom - rect.height * threshold);
+      if (!crossed) return;
+      const nodes = [...facts.children].filter(node => node !== dragState.source);
+      nodes.forEach(node => node.getAnimations().forEach(animation => animation.cancel()));
+      const before = new Map(nodes.map(node => [node, node.getBoundingClientRect()]));
+      const oldOrder = [...facts.children].map(node => node.dataset.id).join("|");
+      if (movement > 0) target.after(dragState.source);
+      else target.before(dragState.source);
+      if ([...facts.children].map(node => node.dataset.id).join("|") === oldOrder) return;
+      animateReflow(nodes, before);
+    }
+
+    function moveGhost(clientX, clientY) {
+      dragState.ghost.style.left = `${clientX - dragState.offsetX}px`;
+      dragState.ghost.style.top = `${clientY - dragState.offsetY}px`;
+    }
+
+    function onPointerMove(event) {
+      if (!dragState || event.pointerId !== dragState.pointerId) return;
+      const deltaX = event.clientX - dragState.lastX;
+      const deltaY = event.clientY - dragState.lastY;
+      moveGhost(event.clientX, event.clientY);
+      movePlaceholder(event.clientX, event.clientY, deltaX, deltaY);
+      dragState.lastX = event.clientX;
+      dragState.lastY = event.clientY;
+    }
+
+    function finishDrag(event) {
+      if (!dragState || (event?.pointerId != null && event.pointerId !== dragState.pointerId)) return;
+      const {source, ghost} = dragState;
+      const byId = new Map(layouts[active].fields.map(field => [field.id, field]));
+      layouts[active].fields = [...facts.children].map(node => byId.get(node.dataset.id)).filter(Boolean);
+      ghost.remove();
+      source.classList.remove("drag-placeholder");
+      source.classList.add("drop-pop");
+      setTimeout(() => source.classList.remove("drop-pop"), 200);
+      document.removeEventListener("pointermove", onPointerMove);
+      document.removeEventListener("pointerup", finishDrag);
+      document.removeEventListener("pointercancel", finishDrag);
+      dragState = null;
+    }
+
+    facts.addEventListener("pointerdown", event => {
+      const grip = event.target.closest(".grip");
+      if (!editing || !grip || dragState) return;
+      event.preventDefault();
+      const source = grip.closest(".fact");
+      const rect = source.getBoundingClientRect();
+      const ghost = source.cloneNode(true);
+      ghost.classList.add("drag-ghost");
+      ghost.style.width = `${rect.width}px`;
+      ghost.style.height = `${rect.height}px`;
+      document.body.appendChild(ghost);
+      source.classList.add("drag-placeholder");
+      dragState = {
+        source,
+        ghost,
+        pointerId:event.pointerId,
+        offsetX:event.clientX - rect.left,
+        offsetY:event.clientY - rect.top,
+        lastX:event.clientX,
+        lastY:event.clientY
+      };
+      moveGhost(event.clientX, event.clientY);
+      document.addEventListener("pointermove", onPointerMove);
+      document.addEventListener("pointerup", finishDrag);
+      document.addEventListener("pointercancel", finishDrag);
+    });
+
+    document.getElementById("add").addEventListener("click", () => {
+      if (!editing) return;
+      layouts[active].fields.push({id:`field-${Date.now()}`,label:"New field",value:"Click to edit"});
+      renderFields();
+      facts.lastElementChild?.querySelector("small")?.focus();
+    });
+
+    document.querySelector(".mode-switch").addEventListener("click", event => {
+      const mode = event.target.closest(".mode")?.dataset.mode;
+      if (!mode) return;
+      if (dragState) finishDrag();
+      editing = mode === "edit";
+      lastEditable = null;
+      renderMessage();
+    });
+
+    function renderVariableTray() {
+      variableChips.innerHTML = variableDefinitions.map(variable => `<button class="variable-chip" type="button" draggable="true" data-token="${escapeHtml(variable.token)}" title="{{${escapeHtml(variable.token)}}}" style="${variableStyle(variable)}">${variableIcon(variable)}<span>${escapeHtml(variable.label)}</span></button>`).join("");
+    }
+
+    function setVariableFeedback(message) {
+      variableFeedback.textContent = message;
+    }
+
+    let lastRange = null;
+    document.getElementById("message").addEventListener("focusin", event => {
+      const editable = event.target.closest("[data-bind],[data-key]");
+      if (!editable || !editing) return;
+      lastEditable = editable;
+      setVariableFeedback("Ready to insert");
+    });
+    document.addEventListener("selectionchange", () => {
+      const selection = window.getSelection();
+      if (!lastEditable || !selection?.rangeCount) return;
+      const range = selection.getRangeAt(0);
+      if (lastEditable.contains(range.commonAncestorContainer)) lastRange = range.cloneRange();
+    });
+
+    function insertVariable(token, target = lastEditable, requestedRange = lastRange) {
+      if (!editing || !target || !document.contains(target)) {
+        setVariableFeedback("Select editable text first");
+        return;
+      }
+      target.focus();
+      const range = requestedRange?.cloneRange() || document.createRange();
+      if (!target.contains(range.commonAncestorContainer)) {
+        range.selectNodeContents(target);
+        range.collapse(false);
+      }
+      const rangeElement = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
+      const inlineChip = rangeElement?.closest?.(".inline-variable-chip");
+      if (inlineChip && target.contains(inlineChip)) {
+        range.setStartAfter(inlineChip);
+        range.collapse(true);
+      }
+      range.deleteContents();
+      const chip = createInlineVariable(token);
+      const spacer = document.createTextNode("\u200B");
+      range.insertNode(spacer);
+      range.insertNode(chip);
+      range.setStartAfter(spacer);
+      range.collapse(true);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      lastEditable = target;
+      lastRange = range.cloneRange();
+      target.dispatchEvent(new InputEvent("input", {bubbles:true,inputType:"insertText",data:`{{${token}}}`}));
+      const label = variableDefinitions.find(item => item.token === token)?.label || token;
+      setVariableFeedback(`${label} inserted`);
+    }
+
+    variableChips.addEventListener("click", event => {
+      const chip = event.target.closest(".variable-chip");
+      if (chip) insertVariable(chip.dataset.token);
+    });
+    variableChips.addEventListener("dragstart", event => {
+      const chip = event.target.closest(".variable-chip");
+      if (!chip) return;
+      event.dataTransfer.effectAllowed = "copy";
+      event.dataTransfer.setData("application/x-10router-variable", chip.dataset.token);
+      event.dataTransfer.setData("text/plain", `{{${chip.dataset.token}}}`);
+    });
+    document.getElementById("message").addEventListener("dragover", event => {
+      if (!editing || !event.target.closest("[data-bind],[data-key]")) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+    });
+    document.getElementById("message").addEventListener("drop", event => {
+      const target = event.target.closest("[data-bind],[data-key]");
+      const plainToken = event.dataTransfer.getData("text/plain").match(/^\{\{([A-Za-z0-9_]+)\}\}$/)?.[1];
+      const token = event.dataTransfer.getData("application/x-10router-variable") || plainToken;
+      if (!editing || !target || !token) return;
+      event.preventDefault();
+      const range = document.caretRangeFromPoint?.(event.clientX, event.clientY);
+      lastEditable = target;
+      insertVariable(token, target, range);
+    });
+
+    function slackText(value) {
+      return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    }
+
+    function buildSlackPayload() {
+      const layout = layouts[active];
+      const fieldsBlock = layout.fields.length ? {
+        type:"section",
+        fields:layout.fields.slice(0, 10).map(field => ({
+          type:"mrkdwn",
+          text:`*${slackText(resolveVariables(field.label))}*\n${slackText(resolveVariables(field.value))}`
+        }))
+      } : null;
+      return {
+        username:appName.trim() || "10router",
+        text:resolveVariables(layout.fallback),
+        attachments:[{
+          color:layout.rail,
+          blocks:[
+            {type:"context",elements:[{type:"mrkdwn",text:`*${slackText(resolveVariables(layout.eyeline))}*`}]},
+            {type:"section",text:{type:"mrkdwn",text:`*${slackText(resolveVariables(layout.title))}*\n${slackText(resolveVariables(layout.body))}`}},
+            fieldsBlock,
+            {type:"context",elements:[{type:"mrkdwn",text:slackText(resolveVariables(layout.summary))}]}
+          ].filter(Boolean)
+        }]
+      };
+    }
+
+    function setSendStatus(message, type = "") {
+      sendStatus.textContent = message;
+      sendStatus.className = `send-status ${type}`.trim();
+    }
+
+    document.getElementById("sendSlack").addEventListener("click", () => {
+      setSendStatus("");
+      slackDialog.showModal();
+      requestAnimationFrame(() => webhookUrl.focus());
+    });
+
+    document.getElementById("cancelSend").addEventListener("click", () => slackDialog.close());
+    slackDialog.addEventListener("click", event => {
+      if (event.target === slackDialog) slackDialog.close();
+    });
+    slackDialog.addEventListener("close", () => {
+      webhookUrl.value = "";
+      setSendStatus("");
+    });
+
+    slackForm.addEventListener("submit", async event => {
+      event.preventDefault();
+      const webhook = webhookUrl.value.trim();
+      if (!webhook) return;
+      confirmSend.disabled = true;
+      confirmSend.textContent = "Sending...";
+      setSendStatus(`Sending the ${active === "reached" ? "limit reached" : "limit reset"} message...`);
+      try {
+        const response = await fetch("/api/slack-test", {
+          method:"POST",
+          headers:{"content-type":"application/json"},
+          body:JSON.stringify({webhook,payload:buildSlackPayload()})
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.error || "Slack rejected the message.");
+        webhookUrl.value = "";
+        setSendStatus("Sent to Slack.", "success");
+      } catch (error) {
+        setSendStatus(error.message || "Could not send the message.", "error");
+      } finally {
+        confirmSend.disabled = false;
+        confirmSend.textContent = "Send message";
+      }
+    });
+
+    document.querySelector(".tabs").addEventListener("click", event => {
+      const tab = event.target.closest(".tab");
+      if (!tab) return;
+      active = tab.dataset.tab;
+      renderMessage();
+    });
+
+    document.getElementById("open").onclick = () => {
+      document.getElementById("list").hidden = true;
+      document.getElementById("editorPage").hidden = false;
+    };
+    document.getElementById("back").onclick = () => {
+      document.getElementById("editorPage").hidden = true;
+      document.getElementById("list").hidden = false;
+    };
+
+    renderVariableTray();
+    renderMessage();
+  </script>
+</body>
+</html>
