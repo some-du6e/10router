@@ -222,11 +222,12 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     if (provider === "codex") {
       const suffixThinking = {};
       applyThinking(sourceFormat, upstreamModel, suffixThinking, provider);
-      if (suffixThinking.reasoning_effort) {
+      const suffixEffort = suffixThinking.reasoning?.effort || suffixThinking.reasoning_effort;
+      if (suffixEffort) {
         const reasoning = translatedBody.reasoning;
         translatedBody.reasoning = {
           ...(reasoning && typeof reasoning === "object" && !Array.isArray(reasoning) ? reasoning : {}),
-          effort: suffixThinking.reasoning_effort,
+          effort: suffixEffort,
         };
         delete translatedBody.reasoning_effort;
       }

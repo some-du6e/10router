@@ -175,6 +175,18 @@ describe("chatCore transport selection", () => {
     expect(request.credentials.runtimeTransport).toBeUndefined();
   });
 
+  it.each(["gpt-4-turbo", "o1-mini"])("keeps %s Responses clients on the existing chat transport", async (model) => {
+    const body = { model, stream: false, input: [{ role: "user", content: "Hello" }] };
+    const options = makeOptions(body, "openai", model);
+    const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
+    await handleChatCore(options);
+
+    const request = executeMock.mock.calls[0][0];
+    expect(request.body._translatedFrom).toBe("openai-responses");
+    expect(request.body._translatedTo).toBe("openai");
+    expect(request.credentials.runtimeTransport).toBeUndefined();
+  });
+
   // Regression: https://github.com/decolua/9router/issues/3418
   it("prefers MiniMax-M3's matching OpenAI transport over its Claude target", async () => {
     const imageBlock = {

@@ -5,6 +5,7 @@
 import { getCapabilitiesForModel } from "../../providers/capabilities.js";
 import { getThinkingLevels } from "../../providers/thinkingLevels.js";
 import { PROVIDERS } from "../../providers/index.js";
+import { FORMATS } from "../formats.js";
 import { LEVEL_TO_BUDGET, budgetToLevel, effortToBudget, effortToThinkingLevel } from "./thinking.js";
 
 // Map a target wire-format to its native thinking format (when capability has none).
@@ -361,7 +362,12 @@ export function applyThinking(targetFormat, model, body, provider = null, intent
 
   const fmt = resolveFormat(targetFormat, cleanModel, provider);
   const supportedLevels = getThinkingLevels(provider, cleanModel);
+  const reasoning = body.reasoning;
   stripAll(body);
   applyFormat(fmt, body, cfg, caps, supportedLevels);
+  if ([FORMATS.OPENAI_RESPONSES, FORMATS.OPENAI_RESPONSE].includes(targetFormat) && body.reasoning_effort !== undefined) {
+    body.reasoning = { ...reasoning, effort: body.reasoning_effort };
+    delete body.reasoning_effort;
+  }
   return body;
 }
