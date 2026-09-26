@@ -23,6 +23,15 @@ describe("GPT-6 Responses request translation", () => {
     expect(out).not.toHaveProperty("reasoning_effort");
   });
 
+  it.each([
+    ["gpt-6-astra", "low"],
+    ["gpt-6-sol", "none"],
+    ["gpt-6-luna", "none"],
+  ])("uses a supported effort when disabling reasoning on %s", (model, effort) => {
+    const out = translate(model, { reasoning_effort: "none" });
+    expect(out.reasoning.effort).toBe(effort);
+  });
+
   it("preserves JSON schema constraints", () => {
     const json_schema = { name: "result", strict: true, schema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"], additionalProperties: false } };
     const out = translate("gpt-6-sol", { response_format: { type: "json_schema", json_schema } });

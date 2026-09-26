@@ -236,6 +236,10 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels) {
   switch (fmt) {
     case "openai": {
       if (none && canDisable) { body.reasoning_effort = "none"; break; }
+      if (none && supportedLevels?.length) {
+        body.reasoning_effort = supportedLevels.find(level => level !== "none");
+        break;
+      }
       const level = toLevel(eff);
       if (level) body.reasoning_effort = normalizeOpenAILevel(level, supportedLevels);
       break;
