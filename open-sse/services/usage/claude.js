@@ -22,6 +22,7 @@ const oauthCooldown = new Map();
 // Dedup + short TTL cache per access token. Many tabs / many accounts / auto-refresh
 // all funnel through here; without this each call hits Anthropic and triggers 429.
 const USAGE_CACHE_TTL_MS = 300000;
+const USAGE_STATUS_CACHE_TTL_MS = 30000;
 const usageCache = new Map(); // token -> { promise } | { result, expiresAt }
 
 const CLAUDE_USAGE_STATUS = {
@@ -55,8 +56,24 @@ export async function getClaudeUsage(accessToken, proxyOptions = null, options =
       });
       return result;
     }
-    // Soft failure (429/error): prefer the last good read over a transient error
-    if (stale) return stale;
+
+    // Never let stale quota data hide an explicit inactive status. Cache status
+    // responses briefly so polling cannot leave a resolved promise in the map.
+    if (accessToken && result?.status) {
+      usageCache.set(accessToken, {
+        result,
+        expiresAt: Date.now() + USAGE_STATUS_CACHE_TTL_MS,
+      });
+      return result;
+    }
+
+    // Soft failure (429/error): prefer the last good read for this poll only.
+    // The next poll should retry instead of retaining a resolved promise.
+    if (stale) {
+      usageCache.delete(accessToken);
+      return stale;
+    }
+    if (accessToken) usageCache.delete(accessToken);
     return result;
   })();
 

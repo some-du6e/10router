@@ -19,6 +19,7 @@ function response(status, body = {}) {
 describe("Claude usage subscription status", () => {
   beforeEach(() => {
     proxyAwareFetch.mockReset();
+    vi.useRealTimers();
   });
 
   it("reports an inactive subscription when the OAuth usage endpoint rejects access", async () => {
@@ -41,5 +42,25 @@ describe("Claude usage subscription status", () => {
     expect(result.status).toBe("unavailable");
     expect(result.message).toContain("usage is unavailable");
     expect(result.message).not.toContain("Claude connected");
+  });
+
+  it("does not let expired quota data hide a later inactive status", async () => {
+    vi.useFakeTimers();
+    proxyAwareFetch.mockResolvedValueOnce(
+      response(200, { five_hour: { utilization: 10 } }),
+    );
+
+    const first = await getClaudeUsage("claude-status-expired", null, { force: true });
+    expect(first.quotas["session (5h)"].remaining).toBe(90);
+
+    vi.advanceTimersByTime(300001);
+    proxyAwareFetch.mockResolvedValueOnce(response(403));
+
+    const inactive = await getClaudeUsage("claude-status-expired");
+    expect(inactive.status).toBe("subscription_inactive");
+
+    const cachedInactive = await getClaudeUsage("claude-status-expired");
+    expect(cachedInactive.status).toBe("subscription_inactive");
+    expect(proxyAwareFetch).toHaveBeenCalledTimes(2);
   });
 });
