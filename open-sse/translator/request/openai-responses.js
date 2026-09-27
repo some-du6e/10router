@@ -469,6 +469,16 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
   }
 
   // Pass through other relevant fields
+  if (body.response_format) {
+    const { json_schema, ...format } = body.response_format;
+    result.text = { format: { ...format, ...json_schema } };
+  }
+  if (body.tool_choice !== undefined) {
+    result.tool_choice = body.tool_choice?.type === OPENAI_BLOCK.FUNCTION
+      ? { type: OPENAI_BLOCK.FUNCTION, name: body.tool_choice.function?.name || body.tool_choice.name }
+      : body.tool_choice;
+  }
+  if (body.parallel_tool_calls !== undefined) result.parallel_tool_calls = body.parallel_tool_calls;
   if (body.temperature !== undefined) result.temperature = body.temperature;
   if (body.max_output_tokens !== undefined) {
     result.max_output_tokens = body.max_output_tokens;

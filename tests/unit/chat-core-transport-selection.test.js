@@ -1,9 +1,7 @@
 /**
- * Multi-transport providers must keep the request body and selected endpoint on
- * the same wire format. MiniMax-M3 declares a Claude target for compatibility,
- * but an OpenAI client should use MiniMax's matching OpenAI transport without
- * an OpenAI -> Claude translation.
- * Regression: https://github.com/decolua/9router/issues/3418
+ * Tests chatCore's selection of a source-matched transport, a model's target
+ * transport, or the provider default. Translation and execution are mocked;
+ * these checks do not validate translated payloads or upstream responses.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -35,6 +33,11 @@ vi.mock("../../open-sse/translator/index.js", () => ({
 
 vi.mock("../../open-sse/handlers/chatCore/nonStreamingHandler.js", () => ({
   handleNonStreamingResponse: handleNonStreamingResponseMock,
+}));
+
+vi.mock("../../open-sse/handlers/chatCore/streamingHandler.js", () => ({
+  buildOnStreamComplete: vi.fn(() => vi.fn()),
+  handleStreamingResponse: vi.fn(async () => ({ success: true })),
 }));
 
 vi.mock("../../open-sse/utils/requestLogger.js", () => ({
@@ -118,10 +121,10 @@ vi.mock("@/lib/usageDb.js", () => ({
   saveRequestDetail: vi.fn(() => Promise.resolve()),
 }));
 
-function makeOptions(body) {
+function makeOptions(body, provider, model) {
   return {
     body,
-    modelInfo: { provider: "minimax-cn", model: "MiniMax-M3" },
+    modelInfo: { provider, model },
     credentials: { apiKey: "test-api-key", providerSpecificData: {} },
     clientRawRequest: {
       endpoint: "/v1/chat/completions",
@@ -133,7 +136,7 @@ function makeOptions(body) {
   };
 }
 
-describe("MiniMax-M3 multi-transport routing", () => {
+describe("chatCore transport selection", () => {
   beforeEach(() => {
     executeMock.mockReset();
     translateRequestMock.mockClear();
@@ -143,13 +146,49 @@ describe("MiniMax-M3 multi-transport routing", () => {
         status: 200,
         headers: { "content-type": "application/json" },
       }),
-      url: "https://api.minimaxi.com/v1/chat/completions",
+      url: "https://upstream.example.test/mock",
       headers: {},
       transformedBody: {},
     });
   });
 
-  it("keeps OpenAI image blocks on the matching OpenAI transport", async () => {
+  it.each(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])("routes %s chat requests to Responses", async (model) => {
+    const body = { model, stream: false, messages: [{ role: "user", content: "Hello" }] };
+    const options = makeOptions(body, "openai", model);
+    const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
+    await handleChatCore(options);
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    const request = executeMock.mock.calls[0][0];
+    expect(request.body._translatedTo).toBe("openai-responses");
+    expect(request.credentials.runtimeTransport.baseUrl).toBe("https://api.openai.com/v1/responses");
+  });
+
+  it("keeps GPT-4o chat requests on the default transport", async () => {
+    const body = { model: "gpt-4o", stream: false, messages: [{ role: "user", content: "Hello" }] };
+    const options = makeOptions(body, "openai", "gpt-4o");
+    const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
+    await handleChatCore(options);
+
+    const request = executeMock.mock.calls[0][0];
+    expect(request.body._translatedTo).toBe("openai");
+    expect(request.credentials.runtimeTransport).toBeUndefined();
+  });
+
+  it.each(["gpt-4-turbo", "o1-mini"])("keeps %s Responses clients on the existing chat transport", async (model) => {
+    const body = { model, stream: false, input: [{ role: "user", content: "Hello" }] };
+    const options = makeOptions(body, "openai", model);
+    const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
+    await handleChatCore(options);
+
+    const request = executeMock.mock.calls[0][0];
+    expect(request.body._translatedFrom).toBe("openai-responses");
+    expect(request.body._translatedTo).toBe("openai");
+    expect(request.credentials.runtimeTransport).toBeUndefined();
+  });
+
+  // Regression: https://github.com/decolua/9router/issues/3418
+  it("prefers MiniMax-M3's matching OpenAI transport over its Claude target", async () => {
     const imageBlock = {
       type: "image_url",
       image_url: { url: "data:image/png;base64,AAAB" },
@@ -164,7 +203,7 @@ describe("MiniMax-M3 multi-transport routing", () => {
     };
 
     const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
-    await handleChatCore(makeOptions(body));
+    await handleChatCore(makeOptions(body, "minimax-cn", "MiniMax-M3"));
 
     expect(translateRequestMock).toHaveBeenCalledWith(
       "openai",

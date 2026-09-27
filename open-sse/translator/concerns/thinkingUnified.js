@@ -5,6 +5,7 @@
 import { getCapabilitiesForModel } from "../../providers/capabilities.js";
 import { getThinkingLevels } from "../../providers/thinkingLevels.js";
 import { PROVIDERS } from "../../providers/index.js";
+import { FORMATS } from "../formats.js";
 import { LEVEL_TO_BUDGET, budgetToLevel, effortToBudget, effortToThinkingLevel } from "./thinking.js";
 
 // Map a target wire-format to its native thinking format (when capability has none).
@@ -235,6 +236,10 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels) {
   switch (fmt) {
     case "openai": {
       if (none && canDisable) { body.reasoning_effort = "none"; break; }
+      if (none && supportedLevels?.length) {
+        body.reasoning_effort = supportedLevels.find(level => level !== "none");
+        break;
+      }
       const level = toLevel(eff);
       if (level) body.reasoning_effort = normalizeOpenAILevel(level, supportedLevels);
       break;
@@ -246,7 +251,7 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels) {
       if (canDisable) body.thinking = { type: "adaptive" };
       else delete body.thinking;
       const level = toLevel(eff);
-      body.output_config = { effort: level === "xhigh" ? "high" : level };
+      body.output_config = { effort: none ? "low" : level === "xhigh" ? "high" : level };
       break;
     }
     case "claude-budget": {
@@ -361,7 +366,12 @@ export function applyThinking(targetFormat, model, body, provider = null, intent
 
   const fmt = resolveFormat(targetFormat, cleanModel, provider);
   const supportedLevels = getThinkingLevels(provider, cleanModel);
+  const reasoning = body.reasoning;
   stripAll(body);
   applyFormat(fmt, body, cfg, caps, supportedLevels);
+  if ([FORMATS.OPENAI_RESPONSES, FORMATS.OPENAI_RESPONSE].includes(targetFormat) && body.reasoning_effort !== undefined) {
+    body.reasoning = { ...reasoning, effort: body.reasoning_effort };
+    delete body.reasoning_effort;
+  }
   return body;
 }
