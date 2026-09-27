@@ -1,4 +1,5 @@
 import { NOTIFICATION_EVENTS } from "./constants.js";
+import { notificationProviderName } from "./providerName.js";
 
 const MAX_FIELDS = 10;
 const MAX_LABEL_LENGTH = 75;
@@ -61,7 +62,7 @@ function formatResetAt(value) {
 function templateValues(payload) {
   const remaining = payload?.quota?.remainingPercentage;
   return {
-    provider: payload?.provider || "Not provided",
+    provider: payload?.provider ? notificationProviderName(payload.provider) : "Not provided",
     account: payload?.connection?.name || "Not provided",
     limit: payload?.quota?.name || "Not provided",
     resetAt: formatResetAt(payload?.quota?.resetAt),

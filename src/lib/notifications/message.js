@@ -2,6 +2,7 @@ import {
   NOTIFICATION_EVENT_LABELS,
   NOTIFICATION_EVENTS,
 } from "./constants.js";
+import { notificationProviderName } from "./providerName.js";
 
 function formatDate(value) {
   if (!value) return null;
@@ -17,7 +18,7 @@ function formatRemaining(value) {
 export function buildNotificationMessage(event) {
   const title = event.type === NOTIFICATION_EVENTS.TEST
     ? "10router test notification"
-    : `${event.provider || "Provider"} ${NOTIFICATION_EVENT_LABELS[event.type] || "notification"}`;
+    : `${notificationProviderName(event.provider)} ${(NOTIFICATION_EVENT_LABELS[event.type] || "notification").toLowerCase()}`;
 
   const details = [];
   if (event.connectionName) details.push(`Account: ${event.connectionName}`);
