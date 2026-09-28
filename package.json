@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "next dev --port 20127",
     "dev:webpack": "next dev --webpack --port 20127",
+    "dev:demo": "DATA_DIR=.demo-data node --experimental-loader=./scripts/resolve-src-alias.mjs scripts/seed-demo.mjs && DATA_DIR=.demo-data INITIAL_PASSWORD=demo-password NEXT_PUBLIC_BASE_URL=http://localhost:20127 npm run dev:webpack",
     "build": "next build --webpack",
     "postbuild": "node scripts/copy-standalone-assets.mjs",
     "postbuild:bun": "node scripts/copy-standalone-assets.mjs",
