@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./images/10router.png?1" alt="10router Dashboard" width="800"/>
+  <img src="./images/10router.png?2" alt="10router Dashboard" width="800"/>
 </div>
 
 # 10router
@@ -98,6 +98,14 @@ cp .env.example .env
 npm install
 PORT=20128 NEXT_PUBLIC_BASE_URL=http://localhost:20128 npm run dev
 ```
+
+To preview the dashboard with safe, fake provider data:
+
+```bash
+npm run dev:demo
+```
+
+This uses `.demo-data/` and the demo password `demo-password`; it never touches your normal `~/.9router` data.
 
 Production:
 
