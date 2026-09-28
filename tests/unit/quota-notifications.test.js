@@ -119,7 +119,7 @@ describe("notification channels", () => {
     expect(fetchMock).toHaveBeenCalledWith(expect.any(URL), expect.objectContaining({
       method: "POST",
       redirect: "manual",
-      body: expect.stringContaining("codex Quota exhausted"),
+      body: expect.stringContaining("Codex quota exhausted"),
     }));
   });
 
@@ -160,7 +160,7 @@ describe("notification channels", () => {
     const fieldBlock = slackPayload.attachments[0].blocks.find((block) => block.fields);
     expect(fieldBlock.fields.map((field) => field.text)).toEqual([
       "*Routing account*\nMain",
-      "*Provider*\ncodex",
+      "*Provider*\nCodex",
     ]);
   });
 
