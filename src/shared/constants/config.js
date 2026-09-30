@@ -2,8 +2,8 @@ import pkg from "../../../package.json" with { type: "json" };
 
 // App configuration
 export const APP_CONFIG = {
-  name: "10router Proxy",
-  description: "AI Infrastructure Management",
+  name: "10router",
+  description: "One endpoint for your AI providers",
   version: pkg.version,
   // Build commit baked in at build time (next.config.mjs). Empty when built
   // outside a git tree (e.g. installed from an npm tarball).
