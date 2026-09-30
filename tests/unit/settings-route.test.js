@@ -46,7 +46,7 @@ vi.mock("@/lib/auth/setupToken", () => ({
   clearSetupToken: mocks.clearSetupToken,
 }));
 
-const { PATCH } = await import("../../src/app/api/settings/route.js");
+const { GET, PATCH } = await import("../../src/app/api/settings/route.js");
 
 function request(body) {
   return new Request("http://localhost/api/settings", {
@@ -92,5 +92,18 @@ describe("PATCH /api/settings sensitive request details", () => {
     expect(response.status).toBe(200);
     expect(mocks.verifyDashboardPassword).not.toHaveBeenCalled();
     expect(mocks.updateSettings).toHaveBeenCalledWith({ showSensitiveRequestDetails: false });
+  });
+
+  it("redacts the usage hub key hash from settings reads and writes", async () => {
+    const settings = { usageHubEnabled: true, usageHubKeyHash: "private-hash" };
+    mocks.getSettings.mockResolvedValue(settings);
+    mocks.updateSettings.mockResolvedValue(settings);
+    expect((await GET()).body).not.toHaveProperty("usageHubKeyHash");
+    expect((await PATCH(request({}))).body).not.toHaveProperty("usageHubKeyHash");
+  });
+
+  it("prevents hub key and toggle mass assignment through generic settings", async () => {
+    await PATCH(request({ usageHubKeyHash: "attacker-hash", usageHubEnabled: true, theme: "dark" }));
+    expect(mocks.updateSettings).toHaveBeenCalledWith({ theme: "dark" });
   });
 });
