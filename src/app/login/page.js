@@ -1,9 +1,31 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Card, Button, Input } from "@/shared/components";
+import { Button } from "@/shared/components";
+import useThemeStore from "@/store/themeStore";
+import styles from "./login.module.css";
+
+function PasswordField({ id, label, ...props }) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <div className={styles.field}>
+      <label htmlFor={id}>{label}</label>
+      <div className={styles.inputWrap}>
+        <input id={id} type={visible ? "text" : "password"} {...props} />
+        <button type="button" className={styles.reveal} aria-label={visible ? "Hide password" : "Show password"} aria-pressed={visible} onClick={() => setVisible(!visible)}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+            <circle cx="12" cy="12" r="3" />
+            {visible && <path d="m3 3 18 18" />}
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function LoginPage() {
+  const toggleTheme = useThemeStore((state) => state.toggleTheme);
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [resetHint, setResetHint] = useState("");
@@ -159,140 +181,88 @@ export default function LoginPage() {
 
   const passwordAvailable = authMode === "password" || authMode === "both" || !ssoAvailable;
 
-  // Show loading state while checking password
-  if (hasPassword === null) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-bg p-4">
-        <div className="text-center">
-          <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-          <p className="text-text-muted mt-4">Loading...</p>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="min-h-screen flex items-center justify-center bg-bg p-4 relative overflow-hidden">
-      {/* Faint grid background */}
-      <div className="landing-grid absolute inset-0 pointer-events-none" aria-hidden="true" />
-      <div className="relative z-10 w-full max-w-md">
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-primary mb-2">10router</h1>
-          <p className="text-text-muted">
-            {samlAvailable
-              ? "Sign in with SAML 2.0 Single Sign-On"
-              : oidcAvailable
-              ? "Sign in with your OIDC provider to access the dashboard"
-              : "Enter your password to access the dashboard"}
-          </p>
+    <main className={styles.page}>
+      <div className={styles.atmosphere} aria-hidden="true">
+        <svg viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice">
+          <g className={styles.routes}>
+            <path d="M-80 650h290q40 0 40-40V330q0-40 40-40h160" />
+            <path d="M-50 690h320q40 0 40-40V390q0-40 40-40h100" />
+            <path d="M990 550h130q40 0 40-40V240q0-40 40-40h320" />
+            <path d="M990 610h190q40 0 40-40V300q0-40 40-40h230" />
+            <path d="M380 950V790q0-40 40-40h60" />
+            <path d="M1050-60v150q0 40-40 40h-70" />
+          </g>
+          <g className={styles.nodes}>
+            <circle cx="210" cy="650" r="4" /><circle cx="310" cy="450" r="3" />
+            <circle cx="1160" cy="360" r="4" /><circle cx="1280" cy="260" r="3" />
+            <circle cx="380" cy="850" r="3" /><circle cx="1050" cy="90" r="3" />
+          </g>
+        </svg>
+      </div>
+
+      <button type="button" className={styles.themeToggle} onClick={toggleTheme} aria-label="Toggle color theme">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+          <path d="M20.5 13A8.5 8.5 0 0 1 11 3.5 8.5 8.5 0 1 0 20.5 13Z" />
+        </svg>
+      </button>
+
+      <div className={styles.content}>
+        <div className={styles.brand}>
+          <div className={styles.mark}>
+            <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+              <path d="M16 12V6m-3 12-6 4m12-4 6 4m-9-4v8M12 14 7 10m13 4 5-4" />
+              <circle cx="16" cy="16" r="4" /><circle cx="16" cy="4" r="2" />
+              <circle cx="5" cy="9" r="2" /><circle cx="27" cy="9" r="2" />
+              <circle cx="5" cy="23" r="2" /><circle cx="27" cy="23" r="2" />
+              <circle cx="16" cy="28" r="2" />
+            </svg>
+          </div>
+          <span>10router</span>
         </div>
 
-        <Card>
-          {mustChange ? (
-            <form onSubmit={handleSetNewPassword} className="flex flex-col gap-4">
-              <p className="text-sm text-amber-600 dark:text-amber-400 text-center">
-                This instance is still on the old default password. Set a new one to continue.
-              </p>
-              <div className="flex flex-col gap-2">
-                <label className="text-sm font-medium">New password</label>
-                <Input
-                  type="password"
-                  placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  required
-                  autoFocus
-                  autoComplete="new-password"
-                />
-                {error && <p className="text-xs text-red-500">{error}</p>}
-              </div>
-              <Button
-                type="submit"
-                variant="primary"
-                className="w-full"
-                loading={loading}
-                disabled={newPassword.length < MIN_PASSWORD_LENGTH}
-              >
-                Set password
-              </Button>
+        <section className={styles.card} aria-labelledby="login-heading" aria-busy={hasPassword === null}>
+          <header className={styles.heading}>
+            <h1 id="login-heading">{mustChange ? "A fresh start." : "Welcome back."}</h1>
+            <p>{mustChange ? "Set a new password to continue." : "Sign in to your router."}</p>
+          </header>
+
+          {hasPassword === null ? (
+            <div className={styles.loading} role="status"><span />Loading your instance...</div>
+          ) : mustChange ? (
+            <form onSubmit={handleSetNewPassword} className={styles.form}>
+              <PasswordField id="new-password" label="New password" placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required autoFocus autoComplete="new-password" aria-describedby={error ? "login-error" : undefined} />
+              {error && <p id="login-error" role="alert" className={styles.error}>{error}</p>}
+              <Button type="submit" className={styles.submit} loading={loading} disabled={newPassword.length < MIN_PASSWORD_LENGTH}>Set password</Button>
             </form>
           ) : (
-          <div className="flex flex-col gap-4">
-            {samlAvailable && (
-              <Button type="button" variant="primary" className="w-full" onClick={handleSamlLogin}>
-                {samlLoginLabel}
-              </Button>
-            )}
+            <div className={styles.form}>
+              {samlAvailable && <Button type="button" className={styles.submit} onClick={handleSamlLogin}>{samlLoginLabel}</Button>}
+              {oidcAvailable && <Button type="button" className={styles.submit} onClick={handleOidcLogin}>{oidcLoginLabel}</Button>}
+              {ssoAvailable && passwordAvailable && <div className={styles.divider}><span>or use your password</span></div>}
 
-            {oidcAvailable && (
-              <Button type="button" variant="primary" className="w-full" onClick={handleOidcLogin}>
-                {oidcLoginLabel}
-              </Button>
-            )}
-
-            {ssoAvailable && passwordAvailable && <div className="h-px bg-border/60" />}
-
-            {passwordAvailable ? (
-              <form onSubmit={handleLogin} className="flex flex-col gap-4">
-                {isSsoEnabled && !ssoAvailable && (
-                  <p className="text-xs text-amber-600 dark:text-amber-400 text-center">
-                    {activeSsoType === "saml" ? "SAML SSO" : "OIDC"} login is enabled, but configuration is incomplete. Password login is still available for recovery.
-                  </p>
-                )}
-
-                {authMode === "both" && ssoAvailable && (
-                  <p className="text-xs text-text-muted text-center">
-                    Password and {activeSsoType === "saml" ? "SAML SSO" : "OIDC"} login are both enabled.
-                  </p>
-                )}
-
-                <div className="flex flex-col gap-2">
-                  <label className="text-sm font-medium">Password</label>
-                  <Input
-                    type="password"
-                    placeholder="Enter password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                    autoFocus={!oidcAvailable}
-                  />
-                  {error && <p className="text-xs text-red-500">{error}</p>}
-                  {retryAfter > 0 && (
-                    <p className="text-xs text-amber-600 dark:text-amber-400">
-                      Locked. Retry in <span className="font-mono">{retryAfter}s</span>.
-                    </p>
-                  )}
-                  {resetHint && (
-                    <p className="text-xs text-text-muted">
-                      Forgot password? Open <code className="bg-sidebar px-1 rounded">10router</code> CLI on the host → <b>Settings</b> → <b>Reset Password</b>, then finish setup with the token it prints.
-                    </p>
-                  )}
-                </div>
-
-                <Button
-                  type="submit"
-                  variant="primary"
-                  className="w-full"
-                  loading={loading}
-                  disabled={retryAfter > 0}
-                >
-                  {retryAfter > 0 ? `Wait ${retryAfter}s` : "Login"}
-                </Button>
-
-                {legacyPassword && (
-                  <p className="text-xs text-center text-amber-600 dark:text-amber-400">
-                    This install is still on the old default password. You will be asked to set a
-                    new one right after logging in.
-                  </p>
-                )}
-              </form>
-            ) : (
-              error && <p className="text-xs text-red-500">{error}</p>
-            )}
-          </div>
+              {passwordAvailable ? (
+                <form onSubmit={handleLogin} className={styles.form}>
+                  {isSsoEnabled && !ssoAvailable && <p className={styles.notice}>{activeSsoType === "saml" ? "SAML SSO" : "OIDC"} setup is incomplete. Sign in with your password to recover access.</p>}
+                  <PasswordField id="password" label="Password" placeholder="Enter your password" value={password} onChange={(e) => setPassword(e.target.value)} required autoFocus={!ssoAvailable} autoComplete="current-password" aria-invalid={!!error} aria-describedby={error ? "login-error" : undefined} />
+                  {error && <p id="login-error" role="alert" className={styles.error}>{error}</p>}
+                  {retryAfter > 0 && <p className={styles.notice} role="status">Too many attempts. Try again in {retryAfter}s.</p>}
+                  <Button type="submit" className={styles.submit} loading={loading} disabled={retryAfter > 0}>
+                    {retryAfter > 0 ? `Wait ${retryAfter}s` : "Sign in"}
+                    {!loading && retryAfter === 0 && <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5" /></svg>}
+                  </Button>
+                  {legacyPassword && <p className={styles.notice}>This instance uses the old default password. You will set a new one after signing in.</p>}
+                  <details className={styles.recovery} key={resetHint ? "reset" : "default"} open={resetHint ? true : undefined}>
+                    <summary>Forgot your password?</summary>
+                    <p>On the host, open the <code>10router</code> CLI, choose <strong>Settings</strong>, then <strong>Reset Password</strong>. Finish setup with the token it prints.</p>
+                  </details>
+                </form>
+              ) : error && <p id="login-error" role="alert" className={styles.error}>{error}</p>}
+            </div>
           )}
-        </Card>
+        </section>
+        <footer className={styles.footer}>One endpoint for your AI providers.</footer>
       </div>
-    </div>
+    </main>
   );
 }
