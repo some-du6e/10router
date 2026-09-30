@@ -84,7 +84,7 @@ export default function AccountDetailPage({ params }) {
   useEffect(() => {
     if (!data?.connection?.provider) return undefined;
     let cancelled = false;
-    fetch(`/api/usage/${id}`, { cache: "no-store" })
+    fetch(`/api/usage/${id}${refreshKey > 0 ? "?force=1" : ""}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then((raw) => {
         if (cancelled || !raw) return;
@@ -96,7 +96,7 @@ export default function AccountDetailPage({ params }) {
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [id, data?.connection?.provider]);
+  }, [id, data?.connection?.provider, refreshKey]);
 
   if (loading) return <CardSkeleton />;
 

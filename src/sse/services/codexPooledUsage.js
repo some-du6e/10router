@@ -32,8 +32,12 @@ const CACHE_TTL_MS = 60_000;
 // still guaranteeing the refresh slot frees up.
 const REFRESH_TIMEOUT_MS = 30_000;
 
-let cache = { at: 0, headers: {} };
-let inflight = null;
+// Next.js route bundles must share the cache that reset invalidates.
+const state = globalThis[Symbol.for("10router.codexPooledUsage")] ||= {
+  cache: { at: 0, headers: {} },
+  inflight: null,
+  generation: 0,
+};
 
 async function usageForConnection(connection) {
   const proxyConfig = await resolveConnectionProxyConfig(connection.providerSpecificData);
@@ -61,7 +65,7 @@ async function usageForConnection(connection) {
   }
 
   if (!accessToken) return null;
-  const usage = await getCodexUsage(accessToken, proxyOptions);
+  const usage = await getCodexUsage(accessToken, proxyOptions, connection.providerSpecificData);
   // A plain { message } payload means the usage API was unavailable, not zero usage.
   return usage?.quotas ? usage : null;
 }
@@ -89,8 +93,9 @@ async function computeHeaders() {
 }
 
 function refreshInBackground() {
-  if (inflight) return;
-  // A hung upstream call would otherwise pin `inflight` for the life of the
+  if (state.inflight) return;
+  const refreshGeneration = state.generation;
+  // A hung upstream call would otherwise pin `state.inflight` for the life of the
   // process, freezing the pooled headers at their last value with no recovery
   // short of a restart. Losing the race just means the next request retries.
   const bounded = Promise.race([
@@ -99,19 +104,29 @@ function refreshInBackground() {
       setTimeout(() => reject(new Error(`usage refresh timed out after ${REFRESH_TIMEOUT_MS}ms`)), REFRESH_TIMEOUT_MS).unref?.()
     ),
   ]);
-  inflight = bounded
+  state.inflight = bounded
     .then((headers) => {
-      cache = { at: Date.now(), headers };
+      if (state.generation !== refreshGeneration) return;
+      state.cache = { at: Date.now(), headers };
     })
     .catch((error) => {
+      if (state.generation !== refreshGeneration) return;
       console.log(`[CodexPooledUsage] refresh failed: ${error?.message || error}`);
       // Keep serving the previous value; only the timestamp moves so a failing
       // upstream doesn't turn into a refresh loop on every request.
-      cache = { ...cache, at: Date.now() };
+      state.cache = { ...state.cache, at: Date.now() };
     })
     .finally(() => {
-      inflight = null;
+      if (state.generation === refreshGeneration) state.inflight = null;
     });
+}
+
+export function invalidatePooledCodexUsage() {
+  // A pre-reset refresh must not restore the exhausted snapshot after reset.
+  state.generation += 1;
+  state.cache = { at: 0, headers: {} };
+  state.inflight = null;
+  refreshInBackground();
 }
 
 /**
@@ -120,6 +135,6 @@ function refreshInBackground() {
  * @returns {Record<string, string>}
  */
 export function getPooledCodexRateLimitHeaders() {
-  if (Date.now() - cache.at > CACHE_TTL_MS) refreshInBackground();
-  return cache.headers;
+  if (Date.now() - state.cache.at > CACHE_TTL_MS) refreshInBackground();
+  return state.cache.headers;
 }

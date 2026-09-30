@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   refreshAndUpdateCredentials: vi.fn(),
   getCodexRateLimitResetCredits: vi.fn(),
   consumeCodexRateLimitResetCredit: vi.fn(),
+  updateProviderConnection: vi.fn(),
+  invalidatePooledCodexUsage: vi.fn(),
 }));
 
 vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
@@ -17,6 +19,14 @@ vi.mock("open-sse/index.js", () => ({}));
 
 vi.mock("@/lib/localDb", () => ({
   getProviderConnectionById: mocks.getProviderConnectionById,
+}));
+
+vi.mock("@/lib/db/index.js", () => ({
+  updateProviderConnection: mocks.updateProviderConnection,
+}));
+
+vi.mock("@/sse/services/codexPooledUsage.js", () => ({
+  invalidatePooledCodexUsage: mocks.invalidatePooledCodexUsage,
 }));
 
 vi.mock("@/lib/network/connectionProxy", () => ({
@@ -35,7 +45,7 @@ vi.mock("open-sse/services/usage.js", () => ({
 describe("Codex reset credits", () => {
   beforeEach(() => {
     vi.resetModules();
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     mocks.resolveConnectionProxyConfig.mockResolvedValue({});
   });
 
@@ -193,6 +203,73 @@ describe("Codex reset credits", () => {
       "token",
       expect.any(String),
       expect.objectContaining({ strictProxy: false }),
+      {},
     );
+    expect(mocks.updateProviderConnection).not.toHaveBeenCalled();
+    expect(mocks.invalidatePooledCodexUsage).not.toHaveBeenCalled();
+  });
+
+  it("POST clears the latest model locks before reporting a successful reset", async () => {
+    const connection = {
+      id: "conn_1", provider: "codex", authType: "access_token", accessToken: "token",
+      providerSpecificData: { workspaceId: "acct_123" },
+    };
+    mocks.getProviderConnectionById.mockResolvedValueOnce(connection).mockResolvedValueOnce({
+      ...connection, modelLock_modelA: "2099-01-01T00:00:00Z", modelLock___all: "2099-01-01T00:00:00Z",
+      testStatus: "unavailable", errorCode: 429,
+    });
+    mocks.consumeCodexRateLimitResetCredit.mockResolvedValue({ ok: true, code: "reset", windowsReset: 2 });
+    const { POST } = await import("../../src/app/api/usage/[connectionId]/codex-reset-credits/route.js");
+    const response = await POST(new Request("http://localhost/reset", { method: "POST" }), {
+      params: Promise.resolve({ connectionId: "conn_1" }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ reset: true, windows_reset: 2 });
+    expect(mocks.consumeCodexRateLimitResetCredit).toHaveBeenCalledWith("token", expect.any(String), expect.any(Object), { workspaceId: "acct_123" });
+    expect(mocks.updateProviderConnection).toHaveBeenCalledWith("conn_1", {
+      modelLock_modelA: null, modelLock___all: null, testStatus: "active", lastError: null,
+      errorCode: null, lastErrorAt: null, backoffLevel: 0, rateLimitedUntil: null,
+    });
+    expect(mocks.invalidatePooledCodexUsage).toHaveBeenCalledOnce();
+  });
+
+  it("keeps redemption successful if local cleanup fails, so the user does not spend another credit", async () => {
+    mocks.getProviderConnectionById.mockResolvedValue({
+      id: "conn_1", provider: "codex", authType: "access_token", accessToken: "token",
+    });
+    mocks.consumeCodexRateLimitResetCredit.mockResolvedValue({ ok: true, code: "reset", windowsReset: 1 });
+    mocks.updateProviderConnection.mockRejectedValue(new Error("DB unavailable"));
+    const { POST } = await import("../../src/app/api/usage/[connectionId]/codex-reset-credits/route.js");
+    const response = await POST(new Request("http://localhost/reset", { method: "POST" }), {
+      params: Promise.resolve({ connectionId: "conn_1" }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ reset: true, warning: expect.stringContaining("do not use another credit") });
+    expect(mocks.consumeCodexRateLimitResetCredit).toHaveBeenCalledOnce();
+    expect(mocks.invalidatePooledCodexUsage).toHaveBeenCalledOnce();
+  });
+
+  it("does not clear locks when the upstream reset fails", async () => {
+    mocks.getProviderConnectionById.mockResolvedValue({
+      id: "conn_1", provider: "codex", authType: "access_token", accessToken: "token",
+    });
+    mocks.consumeCodexRateLimitResetCredit.mockResolvedValue({ ok: false, status: 503, code: "unavailable" });
+    const { POST } = await import("../../src/app/api/usage/[connectionId]/codex-reset-credits/route.js");
+    const response = await POST(new Request("http://localhost/reset", { method: "POST" }), {
+      params: Promise.resolve({ connectionId: "conn_1" }),
+    });
+    expect(response.status).toBe(502);
+    expect(mocks.updateProviderConnection).not.toHaveBeenCalled();
+    expect(mocks.invalidatePooledCodexUsage).not.toHaveBeenCalled();
+  });
+
+  it("targets the selected account when consuming a credit", async () => {
+    mocks.proxyAwareFetch.mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify({ code: "reset", windows_reset: 1 }) });
+    const { consumeCodexRateLimitResetCredit } = await import("../../open-sse/services/usage/codex.js");
+    expect(await consumeCodexRateLimitResetCredit("token", "redeem_1", null, { chatgptAccountId: "acct_123" })).toMatchObject({ ok: true });
+    expect(mocks.proxyAwareFetch).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      headers: expect.objectContaining({ "ChatGPT-Account-ID": "acct_123" }),
+      body: JSON.stringify({ redeem_request_id: "redeem_1" }),
+    }), null);
   });
 });
