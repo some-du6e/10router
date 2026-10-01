@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 import { getProviderNodeById } from "@/models";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider, AI_PROVIDERS } from "@/shared/constants/providers";
-import { getDefaultModel } from "open-sse/config/providerModels.js";
+import { getDefaultModel, getModelsByProviderId } from "open-sse/config/providerModels.js";
 import { resolveOllamaLocalHost, resolveXiaomiTokenplanBaseUrl, PROVIDERS } from "open-sse/config/providers.js";
 import { openaiToCommandCodeRequest } from "open-sse/translator/request/openai-to-commandcode.js";
 import { resolveQoderCredentials, resolveQoderModels } from "open-sse/services/qoderModels.js";
 import { normalizeProviderId } from "@/lib/providerNormalization";
+import { generateSessionId } from "open-sse/utils/opencodeSession.js";
+import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
 
 // Probe a webSearch/webFetch provider using its searchConfig/fetchConfig.
 // Returns true if API key is accepted (status !== 401 && !== 403).
@@ -44,13 +46,32 @@ async function probeWebProvider(provider, apiKey) {
 
 // Probe a media provider (tts/embedding/stt/image/video) using *Config.
 // Returns true if API key is accepted; null to skip (let default handler decide).
-async function probeMediaProvider(provider, apiKey) {
+async function probeMediaProvider(provider, apiKey, providerSpecificData) {
   const p = AI_PROVIDERS[provider];
   if (!p) return null;
-  const MEDIA_KINDS = new Set(["tts", "embedding", "stt", "image", "video", "music", "imageToText"]);
+  const MEDIA_KINDS = new Set(["tts", "embedding", "stt", "image", "video", "music", "imageToText", "systemone"]);
   const kinds = p.serviceKinds || ["llm"];
   const isMediaOnly = kinds.every((k) => MEDIA_KINDS.has(k));
   if (!isMediaOnly) return null;
+  if (p.systemoneConfig) {
+    const cfg = p.systemoneConfig;
+    const res = await proxyAwareFetch(cfg.baseUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+        ...(cfg.headers || {}),
+        ...(cfg.headers?.["x-opencode-client"] ? { "x-opencode-session": generateSessionId() } : {}),
+      },
+      body: JSON.stringify({
+        model: getModelsByProviderId(provider).find((model) => model.kind === "systemone")?.id,
+        state: "Payment failed",
+        questions: { probe: { type: "noul", instructions: "Is there a payment problem?" } },
+      }),
+      signal: AbortSignal.timeout(8000),
+    }, providerSpecificData);
+    return res.status !== 401 && res.status !== 403;
+  }
   const cfg = p.ttsConfig || p.sttConfig || p.embeddingConfig || p.imageConfig || p.videoConfig || p.musicConfig;
   // No probe config → best-effort accept (validate at usage time)
   if (!cfg) return true;
@@ -244,7 +265,7 @@ export async function POST(request) {
       }
 
       // Generic probe for tts/embedding providers (config-driven)
-      const mediaResult = await probeMediaProvider(provider, apiKey);
+      const mediaResult = await probeMediaProvider(provider, apiKey, providerSpecificData);
       if (mediaResult !== null) {
         return NextResponse.json({
           valid: mediaResult,

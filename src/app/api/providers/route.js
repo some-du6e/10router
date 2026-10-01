@@ -177,12 +177,14 @@ export async function POST(request) {
       authType: isWebCookieProvider ? "cookie" : "apikey",
       name: connectionName,
       apiKey: apiKey || "",
-      priority: priority || 1,
+      priority: priority || undefined,
       globalPriority: globalPriority || null,
       defaultModel: defaultModel || null,
       providerSpecificData: mergedProviderSpecificData,
       isActive: true,
       testStatus: testStatus || "unknown",
+      // Replacing a same-name API key requires an explicit opt-in.
+      allowOverwrite: body.allowOverwrite === true || body.overwrite === true,
     });
 
     // Hide sensitive fields
@@ -191,6 +193,12 @@ export async function POST(request) {
 
     return NextResponse.json({ connection: result }, { status: 201 });
   } catch (error) {
+    if (error?.code === "PROVIDER_NAME_CONFLICT") {
+      return NextResponse.json(
+        { error: error.message, code: error.code, existingId: error.existingId, existingName: error.existingName },
+        { status: 409 }
+      );
+    }
     console.log("Error creating provider:", error);
     return NextResponse.json({ error: "Failed to create provider" }, { status: 500 });
   }

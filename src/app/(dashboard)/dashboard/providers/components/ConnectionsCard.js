@@ -213,6 +213,7 @@ function AddApiKeyModal({ isOpen, provider, providerName, proxyPools, onSave, on
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   const handleValidate = async () => {
     setValidating(true);
@@ -231,6 +232,7 @@ function AddApiKeyModal({ isOpen, provider, providerName, proxyPools, onSave, on
   const handleSubmit = async () => {
     if (!provider || !formData.apiKey) return;
     setSaving(true);
+    setSaveError("");
     try {
       let isValid = false;
       try {
@@ -252,6 +254,8 @@ function AddApiKeyModal({ isOpen, provider, providerName, proxyPools, onSave, on
         proxyPoolId: formData.proxyPoolId === NONE ? null : formData.proxyPoolId,
         testStatus: isValid ? "active" : "unknown",
       });
+    } catch (error) {
+      setSaveError(error.message || "Failed to save API key");
     } finally { setSaving(false); }
   };
 
@@ -286,6 +290,7 @@ function AddApiKeyModal({ isOpen, provider, providerName, proxyPools, onSave, on
         </div>
         <Select label="Proxy Pool" value={formData.proxyPoolId} onChange={(e) => setFormData({ ...formData, proxyPoolId: e.target.value })}
           options={[{ value: NONE, label: "None" }, ...(proxyPools || []).map((p) => ({ value: p.id, label: p.name }))]} />
+        {saveError && <p role="alert" className="text-sm text-red-500">{saveError}</p>}
         <div className="flex gap-2">
           <Button onClick={handleSubmit} fullWidth disabled={!formData.name || !formData.apiKey || saving}>
             {saving ? "Saving..." : "Save"}
@@ -396,10 +401,16 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
   };
 
   const handleSaveApiKey = async (formData) => {
-    try {
-      const res = await fetch("/api/providers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: providerId, ...formData }) });
-      if (res.ok) { await fetch_(); setShowAddModal(false); }
-    } catch (e) { console.log("save apikey error:", e); }
+    const res = await fetch("/api/providers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: providerId, ...formData }) });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      if (data.code === "PROVIDER_NAME_CONFLICT") {
+        throw new Error(`A key named "${data.existingName}" already exists. Choose a different name, or edit the existing connection.`);
+      }
+      throw new Error(data.error || "Failed to save API key");
+    }
+    await fetch_();
+    setShowAddModal(false);
   };
 
   const handleUpdateConnection = async (formData) => {

@@ -111,7 +111,7 @@ export const PROVIDER_ID_TO_ALIAS = Object.fromEntries(
 );
 
 export function getModelsByProviderId(providerId) {
-  const alias = PROVIDER_ID_TO_ALIAS[providerId] || providerId;
+  const alias = PROVIDER_ID_TO_ALIAS[providerId] || OAUTH_ALIASES[providerId] || providerId;
   return PROVIDER_MODELS[alias] || [];
 }
 
