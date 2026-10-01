@@ -168,7 +168,7 @@ export default function AccountActions({ connection, resetCredits, onChanged }) 
         return;
       }
       if (detail.warning) setActionError(detail.warning);
-      await onChanged?.();
+      await onChanged?.({ forceQuota: true });
     } catch {
       setActionError("Could not reach the server.");
     } finally {

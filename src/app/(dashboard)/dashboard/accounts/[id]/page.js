@@ -55,10 +55,11 @@ export default function AccountDetailPage({ params }) {
   const [quota, setQuota] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [refreshKey, setRefreshKey] = useState(0);
+  const [refresh, setRefresh] = useState({ key: 0, forceQuota: false });
 
   // Bumped by the action panel so an edit/toggle re-reads the page's data.
-  const reload = () => setRefreshKey((k) => k + 1);
+  const reload = ({ forceQuota = false } = {}) =>
+    setRefresh((current) => ({ key: current.key + 1, forceQuota }));
 
   useEffect(() => {
     let cancelled = false;
@@ -76,7 +77,7 @@ export default function AccountDetailPage({ params }) {
       .finally(() => { if (!cancelled) setLoading(false); });
 
     return () => { cancelled = true; };
-  }, [id, refreshKey]);
+  }, [id, refresh.key]);
 
   // Live quota is a separate, slower call — the page renders without it.
   // The raw payload is provider-shaped, so it goes through the same parser the
@@ -84,7 +85,7 @@ export default function AccountDetailPage({ params }) {
   useEffect(() => {
     if (!data?.connection?.provider) return undefined;
     let cancelled = false;
-    fetch(`/api/usage/${id}${refreshKey > 0 ? "?force=1" : ""}`, { cache: "no-store" })
+    fetch(`/api/usage/${id}${refresh.forceQuota ? "?force=1" : ""}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then((raw) => {
         if (cancelled || !raw) return;
@@ -96,7 +97,7 @@ export default function AccountDetailPage({ params }) {
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [id, data?.connection?.provider, refreshKey]);
+  }, [id, data?.connection?.provider, refresh.key, refresh.forceQuota]);
 
   if (loading) return <CardSkeleton />;
 
