@@ -1,6 +1,7 @@
 # Unreleased
 
 ## Features
+- **Jev decision models**: add `/v1/systemone` with OpenCode Free, OpenCode Zen, and OpenRouter lanes, account fallback, usage tracking, and dashboard examples and model tests.
 - **T3 usage hub**: opt-in CLIProxyAPI management compatibility for Codex and Claude quotas, account listing, and Codex reset credits. Enable it in Settings and create a separate management key. An isolated demo mode supplies fake subscriptions for integration testing.
 - **Codex models**: add GPT-6.1 Sol with pricing, vision support, and reasoning levels through Max.
 - **Model catalog**: add GPT-6 Sol and Luna, Claude Opus 5.5, and the current OpenAI and Anthropic API models with pricing, context limits, and reasoning levels. GPT-6 API requests use the Responses endpoint.
@@ -65,6 +66,11 @@
   already uses.
 
 ## Fixes
+- **Codex token refresh**: refresh near access-token expiry and reread persisted tokens before refreshing stale account snapshots.
+- **Responses streams**: include finished output and real token usage in `response.completed`; bound the wait for missing usage to three seconds.
+- **Stream failures**: emit an error event when an upstream stream aborts after HTTP 200.
+- **Provider keys**: return a conflict on same-name API-key creation unless replacement is explicitly requested; append new account priorities without rewriting the pool.
+- **MCP probing**: block private addresses, DNS results, and redirects for remote callers while retaining local MCP support.
 - **Claude Code web search on routed models**: Anthropic's built-in
   `web_search_20250305` tool now uses the configured 10router web-search
   provider when Claude Code is routed to a non-Claude model. Search sources are

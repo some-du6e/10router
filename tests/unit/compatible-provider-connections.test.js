@@ -166,4 +166,23 @@ describe("compatible provider connections API", () => {
     expectCompatibleConnection(storedConnections[0], ctx.node, { apiType: "chat" });
     expectCompatibleConnection(storedConnections[1], ctx.node, { apiType: "chat" });
   });
+
+  it("returns 409 for a same-name key and only replaces it with explicit opt-in", async () => {
+    const ctx = await setupTestContext({ id: "openai-compatible-collision-test", type: "openai-compatible", name: "Collision Test", prefix: "clash", apiType: "chat", baseUrl: "https://collision.test/v1" });
+    cleanup = ctx.cleanup;
+    expect((await ctx.POST(makeRequest(ctx.node.id, "Key A"))).status).toBe(201);
+    const sendReplacement = (extra = {}) => ctx.POST(new Request("https://10router.local/api/providers", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: ctx.node.id, name: "Key A", apiKey: "replacement-key", ...extra }),
+    }));
+    const conflict = await sendReplacement({ id: "unrelated-id" });
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toMatchObject({ code: "PROVIDER_NAME_CONFLICT", existingName: "Key A" });
+    expect((await ctx.getProviderConnections({ provider: ctx.node.id }))[0].apiKey).toBe("test-key");
+    expect((await sendReplacement({ allowOverwrite: true })).status).toBe(201);
+    const connections = await ctx.getProviderConnections({ provider: ctx.node.id });
+    expect(connections).toHaveLength(1);
+    expect(connections[0].apiKey).toBe("replacement-key");
+    expect(connections[0].priority).toBe(1);
+  });
 });

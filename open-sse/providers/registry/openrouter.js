@@ -40,8 +40,13 @@ export default {
     { id: "openai/gpt-image-1", name: "GPT Image 1 (via OpenRouter)", params: ["n","size","quality","response_format"], kind: "image" },
     { id: "google/imagen-3.0-generate-002", name: "Imagen 3 (via OpenRouter)", params: ["n","size"], kind: "image" },
     { id: "black-forest-labs/FLUX.1-schnell", name: "FLUX.1 Schnell (via OpenRouter)", params: ["n","size"], kind: "image" },
+    { id: "typesafe/jev-1.13", name: "Jev 1.13", kind: "systemone" },
   ],
-  serviceKinds: ["llm","embedding","tts","imageToText"],
+  serviceKinds: ["llm","embedding","tts","imageToText","systemone"],
+  systemoneConfig: {
+    baseUrl: "https://openrouter.ai/api/v1/systemone",
+    headers: {"HTTP-Referer":"https://endpoint-proxy.local","X-Title":"Endpoint Proxy"},
+  },
   ttsConfig: {
     baseUrl: "https://openrouter.ai/api/v1/chat/completions",
     defaultModel: "openai/gpt-4o-mini-tts",
