@@ -91,7 +91,7 @@ export default function HeaderMenu({ onLogout }) {
             />
             <MenuItem
               icon="power_settings_new"
-              label="Shutdown"
+              label="Stop 10router"
               danger
               onClick={() => { close(); setShutdownOpen(true); }}
             />
@@ -110,9 +110,9 @@ export default function HeaderMenu({ onLogout }) {
         isOpen={shutdownOpen}
         onClose={() => setShutdownOpen(false)}
         onConfirm={handleShutdown}
-        title="Close Proxy"
-        message="Are you sure you want to close the proxy server?"
-        confirmText="Close"
+        title="Stop 10router"
+        message="Stop 10router? API requests will stop working until you start it again."
+        confirmText="Stop"
         cancelText="Cancel"
         variant="danger"
         loading={isShuttingDown}

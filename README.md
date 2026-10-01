@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./images/10router.png?2" alt="10router Dashboard" width="800"/>
+  <img src="./images/10router.png?3" alt="10router Dashboard" width="800"/>
 </div>
 
 # 10router
