@@ -7,38 +7,6 @@ import { UPDATER_CONFIG } from "@/shared/constants/config";
 const KILL_TIMEOUT_MS = 5000;
 const PROCESS_WAIT_MS = 1500;
 
-// Kill MITM server by PID file (MITM may run as admin/sudo)
-function killMitmByPidFile() {
-  try {
-    // "9router" / ".9router" below are the on-disk data dir, deliberately kept
-    // unchanged for backward compatibility with existing installs — not a missed rebrand.
-    const mitmPidFile = path.join(
-      process.platform === "win32"
-        ? path.join(process.env.APPDATA || "", "9router")
-        : path.join(os.homedir(), ".9router"),
-      "mitm",
-      ".mitm.pid"
-    );
-    if (!fs.existsSync(mitmPidFile)) return;
-    const pid = parseInt(fs.readFileSync(mitmPidFile, "utf8").trim(), 10);
-    if (!pid) return;
-
-    if (process.platform === "win32") {
-      // taskkill first (works if same user); fallback to PowerShell Stop-Process which can kill admin process if our token allows
-      try { execSync(`taskkill /F /T /PID ${pid}`, { stdio: "ignore", windowsHide: true, timeout: 3000 }); } catch {
-        try { execSync(`powershell -NonInteractive -WindowStyle Hidden -Command "Stop-Process -Id ${pid} -Force"`, { stdio: "ignore", windowsHide: true, timeout: 3000 }); } catch { /* best effort */ }
-      }
-    } else {
-      try {
-        execSync(`sudo -n kill -9 ${pid} 2>/dev/null`, { stdio: "ignore", timeout: 3000 });
-      } catch {
-        try { process.kill(pid, "SIGKILL"); } catch { /* best effort */ }
-      }
-    }
-    try { fs.unlinkSync(mitmPidFile); } catch { /* best effort */ }
-  } catch { /* best effort */ }
-}
-
 // Collect PIDs of all 10router-related processes (excluding current)
 function collectAppPids() {
   const pids = [];
@@ -141,7 +109,6 @@ function ensureRuntimeUpdater(bundledPath) {
 
 // Kill all app-related processes to release file locks (esp. on Windows)
 export async function killAppProcesses() {
-  killMitmByPidFile();
   const pids = collectAppPids();
   const platform = process.platform;
 

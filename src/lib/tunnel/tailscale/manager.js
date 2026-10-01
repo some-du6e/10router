@@ -2,9 +2,7 @@ import { loadState, generateShortId } from "../shared/state.js";
 import { startFunnel, stopFunnel, isTailscaleRunning, isTailscaleRunningStrict, isTailscaleLoggedIn, isTailscaleLoggedInStrict, startLogin, startDaemonWithPassword, provisionCert } from "./tailscale.js";
 import { waitForHealth } from "./healthCheck.js";
 import { getSettings, updateSettings } from "@/lib/localDb";
-import { getCachedPassword, loadEncryptedPassword, initDbHooks } from "@/mitm/manager";
-
-initDbHooks(getSettings, updateSettings);
+import { getCachedPassword } from "@/lib/tunnel/tailscale/sudo.js";
 
 const svc = {
   cancelToken: { cancelled: false },
@@ -28,7 +26,7 @@ export async function enableTailscale(localPort = 20128) {
   const token = svc.cancelToken;
 
   try {
-    const sudoPass = getCachedPassword() || await loadEncryptedPassword() || "";
+    const sudoPass = getCachedPassword() || "";
     await startDaemonWithPassword(sudoPass);
     console.log("[Tailscale] daemon ready");
     throwIfCancelled(token);

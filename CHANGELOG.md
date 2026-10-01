@@ -3,6 +3,9 @@
 ## Fixes
 - **T3 usage hub**: preserve upstream status codes for non-JSON provider errors and reject malformed settings responses without overwriting the current hub state.
 
+## Removed
+- Remove the IDE MITM proxy, certificate and DNS interception, dashboard controls, API routes, startup hooks, and CLI/Docker packaging.
+
 ## Features
 - **Jev decision models**: add `/v1/systemone` with OpenCode Free, OpenCode Zen, and OpenRouter lanes, account fallback, usage tracking, and dashboard examples and model tests.
 - **T3 usage hub**: opt-in CLIProxyAPI management compatibility for Codex and Claude quotas, account listing, and Codex reset credits. Enable it in Settings and create a separate management key. An isolated demo mode supplies fake subscriptions for integration testing.

@@ -1,3 +1,4 @@
+import { stripRetiredSettings } from "./helpers/retiredSettings.js";
 import fs from "node:fs";
 import path from "node:path";
 import { LEGACY_FILES, DB_DIR } from "./paths.js";
@@ -113,7 +114,7 @@ function importLegacyMain(adapter, data) {
   if (!data || typeof data !== "object") return;
 
   if (data.settings) {
-    adapter.run(`INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, [stringifyJson(data.settings)]);
+    adapter.run(`INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, [stringifyJson(stripRetiredSettings(data.settings))]);
   }
 
   importWithAssertion(adapter, "providerConnections", data.providerConnections || [], (c) => {
@@ -160,9 +161,6 @@ function importLegacyMain(adapter, data) {
   for (const m of data.customModels || []) {
     const k = `${m.providerAlias}|${m.id}|${m.type || "llm"}`;
     adapter.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('customModels', ?, ?)`, [k, stringifyJson(m)]);
-  }
-  for (const [tool, mappings] of Object.entries(data.mitmAlias || {})) {
-    adapter.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('mitmAlias', ?, ?)`, [tool, stringifyJson(mappings || {})]);
   }
   for (const [provider, models] of Object.entries(data.pricing || {})) {
     adapter.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('pricing', ?, ?)`, [provider, stringifyJson(models || {})]);

@@ -3,10 +3,7 @@
 import os from "os";
 import { execSync } from "child_process";
 import { installTailscale, loadState, generateShortId } from "@/lib/tunnel";
-import { getCachedPassword, loadEncryptedPassword, initDbHooks } from "@/mitm/manager";
-import { getSettings, updateSettings } from "@/lib/localDb";
-
-initDbHooks(getSettings, updateSettings);
+import { getCachedPassword, setCachedPassword } from "@/lib/tunnel/tailscale/sudo.js";
 
 const EXTENDED_PATH = `/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH || ""}`;
 
@@ -21,7 +18,7 @@ export async function POST(request) {
   const isBrew = platform === "darwin" && hasBrew();
   const needsPassword = !isWindows && !isBrew;
 
-  const sudoPassword = body.sudoPassword || getCachedPassword() || await loadEncryptedPassword() || "";
+  const sudoPassword = body.sudoPassword || getCachedPassword() || "";
 
   if (needsPassword && !sudoPassword.trim()) {
     return new Response(JSON.stringify({ error: "Sudo password is required" }), {
@@ -49,6 +46,7 @@ export async function POST(request) {
         const result = await installTailscale(sudoPassword, shortId, (msg) => {
           send("progress", { message: msg });
         });
+        setCachedPassword(sudoPassword);
         send("done", { success: true, authUrl: result?.authUrl || null });
       } catch (error) {
         console.error("Tailscale install error:", error);

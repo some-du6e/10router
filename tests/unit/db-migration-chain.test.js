@@ -25,6 +25,39 @@ afterEach(() => {
 });
 
 describe("Schema migrations", () => {
+  it("removes retired proxy settings and aliases on upgrade while preserving provider data", async () => {
+    const { getAdapter } = await import("@/lib/db/driver.js");
+    const db = await getAdapter();
+    db.run("INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data", [
+      JSON.stringify({ tunnelEnabled: true, mitmEnabled: true, mitmSudoEncrypted: "obsolete-secret", dnsToolEnabled: { kiro: true } }),
+    ]);
+    db.run("INSERT INTO kv(scope, key, value) VALUES('mitmAlias', 'kiro', '{}')");
+    db.run("INSERT INTO kv(scope, key, value) VALUES('modelAliases', 'default', '\"cx/gpt-6\"')");
+    db.run("UPDATE _meta SET value = '2' WHERE key = 'schemaVersion'");
+    db.close?.();
+
+    delete global._dbAdapter;
+    vi.resetModules();
+    const { getAdapter: restart } = await import("@/lib/db/driver.js");
+    const upgraded = await restart();
+    expect(JSON.parse(upgraded.get("SELECT data FROM settings WHERE id = 1").data)).toEqual({ tunnelEnabled: true });
+    expect(upgraded.all("SELECT * FROM kv WHERE scope = 'mitmAlias'")).toEqual([]);
+    expect(upgraded.get("SELECT value FROM kv WHERE scope = 'modelAliases' AND key = 'default'").value).toBe('"cx/gpt-6"');
+  });
+
+  it("ignores retired proxy credentials and aliases in backup imports", async () => {
+    const { importDb, exportDb } = await import("@/lib/db/index.js");
+    await importDb({
+      settings: { tunnelEnabled: true, mitmSudoEncrypted: "obsolete-secret", dnsToolEnabled: { kiro: true } },
+      mitmAlias: { kiro: { auto: "cx/gpt-6" } },
+      modelAliases: { default: "cx/gpt-6" },
+    });
+    const backup = await exportDb();
+    expect(backup.settings).toEqual({ tunnelEnabled: true });
+    expect(backup).not.toHaveProperty("mitmAlias");
+    expect(backup.modelAliases).toEqual({ default: "cx/gpt-6" });
+  });
+
   it("fresh DB → applies migrations & stamps schemaVersion", async () => {
     const { getAdapter } = await import("@/lib/db/driver.js");
     const { latestVersion } = await import("@/lib/db/migrations/index.js");

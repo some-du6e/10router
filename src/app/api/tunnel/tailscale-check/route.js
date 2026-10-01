@@ -3,7 +3,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { NextResponse } from "next/server";
 import { isTailscaleInstalled, isTailscaleLoggedIn, isSystemDaemonRunning, getTailscaleBin, TAILSCALE_SOCKET } from "@/lib/tunnel";
-import { getCachedPassword, loadEncryptedPassword } from "@/mitm/manager";
+import { getCachedPassword } from "@/lib/tunnel/tailscale/sudo.js";
 
 const execAsync = promisify(exec);
 const EXTENDED_PATH = `/usr/local/bin:/opt/homebrew/bin:/usr/sbin:/usr/bin:/bin:/snap/bin:${process.env.PATH || ""}`;
@@ -46,7 +46,7 @@ export async function GET() {
     ]);
     const daemonRunning = customDaemonRunning || systemDaemonRunning;
     const loggedIn = daemonRunning ? isTailscaleLoggedIn() : false;
-    const hasCachedPassword = !!(getCachedPassword() || await loadEncryptedPassword());
+    const hasCachedPassword = !!(getCachedPassword());
     return NextResponse.json({ installed, loggedIn, platform, brewAvailable, daemonRunning, customDaemonRunning, systemDaemonRunning, hasCachedPassword });
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });

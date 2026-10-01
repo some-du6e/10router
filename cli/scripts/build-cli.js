@@ -302,19 +302,8 @@ function buildCliPackage() {
   assertRequiredApiArtifacts(cliAppDir);
   console.log("✅ Copied complete server artifacts\n");
 
-  // Step 7: Copy MITM server files (not bundled by Next.js standalone)
-  console.log("7️⃣  Copying MITM server files...");
-  const mitmSrc = path.join(appDir, "src", "mitm");
-  const mitmDest = path.join(cliAppDir, "src", "mitm");
-  if (fs.existsSync(mitmSrc)) {
-    copyRecursive(mitmSrc, mitmDest);
-    console.log("✅ Copied MITM files\n");
-  } else {
-    console.log("⏭️  No MITM files found\n");
-  }
-
-  // Step 7b: Copy standalone updater (headless Node process for install progress)
-  console.log("7️⃣ b Copying updater files...");
+  // Step 7: Copy standalone updater (headless Node process for install progress)
+  console.log("7️⃣ Copying updater files...");
   const updaterSrc = path.join(appDir, "src", "lib", "updater");
   const updaterDest = path.join(cliAppDir, "src", "lib", "updater");
   if (fs.existsSync(updaterSrc)) {
@@ -322,16 +311,6 @@ function buildCliPackage() {
     console.log("✅ Copied updater files\n");
   } else {
     console.log("⏭️  No updater files found\n");
-  }
-
-  // Step 8: Build MITM server (config driven - see app/cli/scripts/buildMitm.js)
-  console.log("8️⃣  Building MITM server...");
-  try {
-    execSync("node scripts/buildMitm.js", { stdio: "inherit", cwd: cliDir });
-    console.log("✅ MITM server build completed\n");
-  } catch (error) {
-    console.error("❌ MITM build failed");
-    process.exit(1);
   }
 
   console.log("✨ CLI package build completed!");
