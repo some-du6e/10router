@@ -37,16 +37,33 @@ async function readAll(reader, onText = () => {}) {
   return text + decoder.decode();
 }
 
-async function pipe() {
+async function pipe(onStreamComplete = null) {
   let source;
   const input = new ReadableStream({ start(c) { source = c; } });
   const output = input.pipeThrough(
-    createSSETransformStreamWithLogger(FORMATS.OPENAI, FORMATS.OPENAI_RESPONSES, "test", null, null, "gpt-test"),
+    createSSETransformStreamWithLogger(FORMATS.OPENAI, FORMATS.OPENAI_RESPONSES, "test", null, null, "gpt-test", null, null, onStreamComplete),
   );
   return { source, reader: output.getReader() };
 }
 
 describe("pending response.completed watchdog", () => {
+  it("finalizes once when cancellation closes the controller before the watchdog", async () => {
+    vi.useFakeTimers();
+    try {
+      const onComplete = vi.fn();
+      const { source, reader } = await pipe(onComplete);
+      const reading = reader.read();
+      source.enqueue(encoder.encode(`data: ${JSON.stringify(FINISH_CHUNK)}\n\n`));
+      await reading;
+      await reader.cancel();
+      await vi.advanceTimersByTimeAsync(3020);
+      expect(onComplete).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(onComplete).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("flushes the deferred completion when the upstream stalls after finish_reason", async () => {
     vi.useFakeTimers();
     try {

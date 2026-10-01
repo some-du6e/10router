@@ -235,7 +235,9 @@ export async function checkAndRefreshToken(provider, credentials, options = {}) 
         ...creds,
         refreshToken: latest.refreshToken,
         accessToken: latest.accessToken || creds.accessToken,
-        expiresAt: latest.expiresAt || latest.tokenExpiresAt || creds.expiresAt,
+        expiresAt: latest.accessToken
+          ? (latest.expiresAt || latest.tokenExpiresAt || null)
+          : creds.expiresAt,
         lastRefreshAt: latest.lastRefreshAt || creds.lastRefreshAt,
       };
     }

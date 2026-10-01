@@ -450,7 +450,7 @@ export function createSSEStream(options = {}) {
           completionFlushTimer = setTimeout(() => {
             completionFlushTimer = null;
             if (state?.completedSent) return;
-            try { flushPendingCompletion(controller); } catch { /* controller already closed */ }
+            try { flushPendingCompletion(controller); } catch { finalizeStream(); }
           }, RESPONSES_COMPLETION_WAIT_MS);
         }
       }

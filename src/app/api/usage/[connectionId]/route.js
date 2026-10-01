@@ -10,6 +10,7 @@ import { USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
 
 // Detect auth-expired messages returned by usage providers instead of throwing
 const AUTH_EXPIRED_PATTERNS = ["expired", "authentication", "unauthorized", "401", "re-authorize"];
+class CredentialReadError extends Error {}
 function isAuthExpiredMessage(usage) {
   if (!usage?.message) return false;
   const msg = usage.message.toLowerCase();
@@ -24,7 +25,12 @@ function isAuthExpiredMessage(usage) {
 export async function refreshAndUpdateCredentials(connection, force = false, proxyOptions = null) {
   // Re-read latest tokens: OpenAI rotates the refresh token on every refresh, and
   // refreshing with a stale snapshot (reuse) revokes the whole session → account logout.
-  const latest = connection.id ? await getProviderConnectionById(connection.id) : null;
+  let latest;
+  try {
+    latest = connection.id ? await getProviderConnectionById(connection.id) : null;
+  } catch (error) {
+    throw new CredentialReadError("Unable to read current credentials. Please retry.", { cause: error });
+  }
   if (latest) connection = latest;
 
   const executor = getExecutor(connection.provider);
@@ -172,6 +178,7 @@ export async function GET(request, { params }) {
         const result = await refreshAndUpdateCredentials(connection, false, proxyOptions);
         connection = result.connection;
       } catch (refreshError) {
+        if (refreshError instanceof CredentialReadError) throw refreshError;
         console.error("[Usage API] Credential refresh failed:", refreshError);
         return Response.json({
           error: `Credential refresh failed: ${refreshError.message}`
@@ -190,6 +197,7 @@ export async function GET(request, { params }) {
         connection = retryResult.connection;
         usage = await getUsageForProvider(connection, proxyOptions, { force });
       } catch (retryError) {
+        if (retryError instanceof CredentialReadError) throw retryError;
         console.warn(`[Usage] ${connection.provider}: force refresh failed: ${retryError.message}`);
       }
     }
