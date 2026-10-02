@@ -74,6 +74,7 @@
 - **Stream failures**: emit an error event when an upstream stream aborts after HTTP 200.
 - **Provider keys**: return a conflict on same-name API-key creation unless replacement is explicitly requested; append new account priorities without rewriting the pool.
 - **MCP probing**: block private addresses, DNS results, and redirects for remote callers while retaining local MCP support.
+- **Codex reset credits**: clear saved routing cooldowns immediately after a successful reset, invalidate pooled usage headers, and refresh account quota without waiting for the next polling interval. Usage and reset requests now target the selected ChatGPT account.
 - **Claude Code web search on routed models**: Anthropic's built-in
   `web_search_20250305` tool now uses the configured 10router web-search
   provider when Claude Code is routed to a non-Claude model. Search sources are
