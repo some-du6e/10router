@@ -81,7 +81,7 @@ describe("GET /api/oauth/cursor/auto-import", () => {
     const response = await GET();
 
     expect(response.body.found).toBe(false);
-    expect(response.body.error).toContain("could not open it");
+    expect(response.body.error).toContain("could not be opened");
     expect(response.body.error).toContain("SQLITE_CANTOPEN");
   });
 
@@ -156,9 +156,9 @@ describe("GET /api/oauth/cursor/auto-import", () => {
     expect(response.body.error).toContain("Please login to Cursor IDE first");
   });
 
-  // ── Backwards-compatible: linux/win32 keep original single-path logic ─
+  // ── Linux keeps the original not-found message while probing known paths ─
 
-  it("linux uses single hardcoded path and original error message", async () => {
+  it("linux probes known paths and keeps the original error message", async () => {
     Object.defineProperty(process, "platform", { value: "linux", writable: true });
     vi.mocked(fsPromises.access).mockRejectedValue(new Error("ENOENT"));
     mockDbInstance.__throwOnConstruct = true;
@@ -169,8 +169,7 @@ describe("GET /api/oauth/cursor/auto-import", () => {
     expect(response.body.error).toBe(
       "Cursor database not found. Make sure Cursor IDE is installed and you are logged in."
     );
-    // fs/promises.access should NOT have been called (linux skips probing)
-    expect(fsPromises.access).not.toHaveBeenCalled();
+    expect(fsPromises.access).toHaveBeenCalledTimes(2);
   });
 
   it("unsupported platform returns 400", async () => {
