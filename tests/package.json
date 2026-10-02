@@ -3,10 +3,16 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Unit tests for 10router embeddings endpoint",
+  "description": "10router test suites",
   "scripts": {
-    "test": "vitest run --reporter=verbose",
-    "test:watch": "vitest --reporter=verbose"
+    "test": "vitest run --config ./vitest.config.js --reporter=verbose",
+    "test:unit": "vitest run --config ./vitest.config.js --reporter=verbose",
+    "test:watch": "vitest --config ./vitest.config.js --reporter=verbose",
+    "test:live": "RUN_REAL=1 RUN_MIMO_FREE_LIVE_TESTS=1 vitest run --config ./vitest.live.config.js --reporter=verbose",
+    "test:e2e": "RUN_E2E=1 vitest run --config ./vitest.e2e.config.js --reporter=verbose",
+    "test:benchmark": "vitest run --config ./vitest.benchmark.config.js --reporter=verbose",
+    "test:stress": "vitest run --config ./vitest.stress.config.js --reporter=verbose",
+    "test:cloud": "vitest run --config ./vitest.cloud.config.js --reporter=verbose"
   },
   "devDependencies": {
     "vitest": "^4.0.0"
