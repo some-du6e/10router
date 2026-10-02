@@ -1,5 +1,6 @@
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { stripRetiredSettings } from "../helpers/retiredSettings.js";
+import { migrateLegacyHostPassword } from "../helpers/hostCredentials.js";
 
 const migration = {
   version: 3,
@@ -8,8 +9,10 @@ const migration = {
     db.run("DELETE FROM kv WHERE scope = 'mitmAlias'");
     const row = db.get("SELECT data FROM settings WHERE id = 1");
     if (row) {
+      const settings = parseJson(row.data, {});
+      migrateLegacyHostPassword(db, settings);
       db.run("UPDATE settings SET data = ? WHERE id = 1", [
-        stringifyJson(stripRetiredSettings(parseJson(row.data, {}))),
+        stringifyJson(stripRetiredSettings(settings)),
       ]);
     }
   },

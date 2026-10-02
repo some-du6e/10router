@@ -2,7 +2,7 @@ import { loadState, generateShortId } from "../shared/state.js";
 import { startFunnel, stopFunnel, isTailscaleRunning, isTailscaleRunningStrict, isTailscaleLoggedIn, isTailscaleLoggedInStrict, startLogin, startDaemonWithPassword, provisionCert } from "./tailscale.js";
 import { waitForHealth } from "./healthCheck.js";
 import { getSettings, updateSettings } from "@/lib/localDb";
-import { getCachedPassword } from "@/lib/tunnel/tailscale/sudo.js";
+import { loadPassword, rememberPassword, validatePassword, verifyPassword } from "@/lib/tunnel/tailscale/sudo.js";
 
 const svc = {
   cancelToken: { cancelled: false },
@@ -18,7 +18,8 @@ function throwIfCancelled(token) {
   if (token.cancelled) throw new Error("tailscale cancelled");
 }
 
-export async function enableTailscale(localPort = 20128) {
+export async function enableTailscale(localPort = 20128, sudoPassword) {
+  validatePassword(sudoPassword);
   console.log(`[Tailscale] enable start (port=${localPort})`);
   svc.cancelToken = { cancelled: false };
   svc.activeLocalPort = localPort;
@@ -26,7 +27,9 @@ export async function enableTailscale(localPort = 20128) {
   const token = svc.cancelToken;
 
   try {
-    const sudoPass = getCachedPassword() || "";
+    const sudoPass = sudoPassword || await loadPassword();
+    if (sudoPassword) await rememberPassword(sudoPassword);
+    else if (sudoPass) await verifyPassword(sudoPass);
     await startDaemonWithPassword(sudoPass);
     console.log("[Tailscale] daemon ready");
     throwIfCancelled(token);

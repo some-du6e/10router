@@ -313,6 +313,11 @@ function buildCliPackage() {
     console.log("⏭️  No updater files found\n");
   }
 
+  const upgradeSrc = path.join(appDir, "src", "lib", "upgrades", "retireIdeProxy.cjs");
+  const upgradeDest = path.join(cliAppDir, "src", "lib", "upgrades", "retireIdeProxy.cjs");
+  fs.mkdirSync(path.dirname(upgradeDest), { recursive: true });
+  fs.copyFileSync(upgradeSrc, upgradeDest);
+
   console.log("✨ CLI package build completed!");
   console.log(`📁 Output: ${cliAppDir}`);
 

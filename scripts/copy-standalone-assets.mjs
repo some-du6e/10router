@@ -1,4 +1,4 @@
-import { cpSync, existsSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
@@ -14,6 +14,12 @@ export function copyStandaloneAssets({ projectRoot = process.cwd(), distDir = pr
   if (!existsSync(standaloneDir)) {
     console.log(`[standalone-assets] No standalone build found at ${standaloneDir}`);
     return;
+  }
+
+  const upgradeSource = resolve(projectRoot, "src/lib/upgrades/retireIdeProxy.cjs");
+  if (existsSync(upgradeSource)) {
+    mkdirSync(resolve(standaloneDir, "src/lib/upgrades"), { recursive: true });
+    cpSync(upgradeSource, resolve(standaloneDir, "src/lib/upgrades/retireIdeProxy.cjs"), { force: true });
   }
 
   const staticSource = resolve(buildDir, "static");

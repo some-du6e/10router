@@ -57,6 +57,7 @@ export default function APIPageClient({ machineId }) {
   const [tsInstalling, setTsInstalling] = useState(false);
   const [tsInstallLog, setTsInstallLog] = useState([]);
   const [tsSudoPassword, setTsSudoPassword] = useState("");
+  const [tsPlatform, setTsPlatform] = useState("");
   const [tsConnecting, setTsConnecting] = useState(false);
   const [showTsModal, setShowTsModal] = useState(false);
   const [showDisableTsModal, setShowDisableTsModal] = useState(false);
@@ -441,6 +442,7 @@ export default function APIPageClient({ machineId }) {
       if (res.ok) {
         const data = await res.json();
         setTsInstalled(data.installed);
+        setTsPlatform(data.platform);
         return data;
       }
     } catch { /* ignore */ }
@@ -536,7 +538,12 @@ export default function APIPageClient({ machineId }) {
     setTsProgress("Connecting...");
     clearUserAuth();
     try {
-      const res = await fetch("/api/tunnel/tailscale-enable", { method: "POST" });
+      const res = await fetch("/api/tunnel/tailscale-enable", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sudoPassword: tsSudoPassword }),
+      });
+      setTsSudoPassword("");
       const data = await res.json();
 
       if (res.ok && data.success) {
@@ -587,8 +594,10 @@ export default function APIPageClient({ machineId }) {
       }
 
       setTsStatus({ type: "error", message: data.error || "Failed to connect" });
+      setShowTsModal(true);
     } catch (error) {
       setTsStatus({ type: "error", message: error.message });
+      setShowTsModal(true);
     } finally {
       setTsLoading(false);
       setTsConnecting(false);
@@ -1300,6 +1309,19 @@ export default function APIPageClient({ machineId }) {
       >
         <div className="flex flex-col gap-4">
           {/* Checking state */}
+          {tsPlatform && tsPlatform !== "win32" && tsInstalled !== null && !tsInstalling && (
+            <Input
+              type="password"
+              label="Sudo password"
+              value={tsSudoPassword}
+              onChange={(event) => setTsSudoPassword(event.target.value)}
+              autoComplete="current-password"
+              placeholder="For Tailscale installation or privileged recovery"
+            />
+          )}
+          {tsPlatform && tsPlatform !== "win32" && tsInstalled !== null && !tsInstalling && (
+            <p className="text-xs text-text-muted">Saved encrypted on this machine so Tailscale can recover after a reboot.</p>
+          )}
           {tsInstalled === null && (
             <p className="text-sm text-text-muted flex items-center gap-2">
               <span className="material-symbols-outlined animate-spin text-sm">progress_activity</span>

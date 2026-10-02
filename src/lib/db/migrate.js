@@ -1,4 +1,5 @@
 import { stripRetiredSettings } from "./helpers/retiredSettings.js";
+import { migrateLegacyHostPassword } from "./helpers/hostCredentials.js";
 import fs from "node:fs";
 import path from "node:path";
 import { LEGACY_FILES, DB_DIR } from "./paths.js";
@@ -114,6 +115,7 @@ function importLegacyMain(adapter, data) {
   if (!data || typeof data !== "object") return;
 
   if (data.settings) {
+    migrateLegacyHostPassword(adapter, data.settings);
     adapter.run(`INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, [stringifyJson(stripRetiredSettings(data.settings))]);
   }
 

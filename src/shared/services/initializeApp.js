@@ -12,6 +12,7 @@ import {
 } from "@/lib/tunnel";
 import { killAllBridges } from "@/lib/mcp/stdioSseBridge";
 import { ensureSetupToken } from "@/lib/auth/setupBootstrap";
+import { retireIdeProxy } from "@/lib/upgrades/retireIdeProxy.js";
 
 process.setMaxListeners(20);
 
@@ -49,6 +50,7 @@ export async function initializeApp() {
     // Mint + print the one-time setup token before anything else can be served,
     // so the console banner is the first thing the operator sees on a fresh install.
     await ensureSetupToken().catch((e) => console.error("[InitApp] setup token failed:", e.message));
+    await retireIdeProxy().catch(() => {});
 
     setTunnelUnexpectedExitCallback(() => {
       safeRestartTunnel("unexpected-exit").catch(() => {});
