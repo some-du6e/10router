@@ -272,4 +272,22 @@ describe("Codex reset credits", () => {
       body: JSON.stringify({ redeem_request_id: "redeem_1" }),
     }), null);
   });
+
+  it("prefers the canonical ChatGPT account over conflicting workspace and account IDs for all quota requests", async () => {
+    mocks.proxyAwareFetch.mockResolvedValue({
+      ok: true, status: 200,
+      json: async () => ({ available_count: 1 }),
+      text: async () => JSON.stringify({ code: "reset", windows_reset: 1 }),
+    });
+    const { getCodexUsage, getCodexRateLimitResetCredits, consumeCodexRateLimitResetCredit } =
+      await import("../../open-sse/services/usage/codex.js");
+    const account = { chatgptAccountId: "canonical-account", workspaceId: "other-workspace", accountId: "other-account" };
+    await getCodexUsage("token", null, account);
+    await getCodexRateLimitResetCredits("token", null, account);
+    await consumeCodexRateLimitResetCredit("token", "redeem_1", null, account);
+    expect(mocks.proxyAwareFetch).toHaveBeenCalledTimes(3);
+    for (const [, request] of mocks.proxyAwareFetch.mock.calls) {
+      expect(request.headers["ChatGPT-Account-ID"]).toBe("canonical-account");
+    }
+  });
 });

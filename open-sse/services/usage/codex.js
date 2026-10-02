@@ -22,7 +22,7 @@ function toIsoDate(value) {
 }
 
 function getCodexAccountId(providerSpecificData) {
-  return providerSpecificData?.workspaceId || providerSpecificData?.accountId || providerSpecificData?.chatgptAccountId || null;
+  return providerSpecificData?.chatgptAccountId || providerSpecificData?.workspaceId || providerSpecificData?.accountId || null;
 }
 
 function getCodexRateLimitBody(snapshot) {
