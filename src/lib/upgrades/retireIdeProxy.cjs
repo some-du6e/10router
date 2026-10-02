@@ -96,7 +96,9 @@ async function retire({ dataDir, appRoot, hostsPath = systemHostsPath(), command
       if (!isHistoricalProxy(commandLine(pid), dataDir, appRoot)) break;
       await wait(100);
     }
-    if (isHistoricalProxy(commandLine(pid), dataDir, appRoot)) kill(pid, "SIGKILL");
+    if (isHistoricalProxy(commandLine(pid), dataDir, appRoot)) {
+      try { kill(pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+    }
   }
   // The old process may have cleaned the hosts file itself during SIGTERM.
   const latest = fs.readFileSync(hostsPath, "utf8");

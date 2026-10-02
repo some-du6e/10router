@@ -17,6 +17,7 @@ export async function POST(request) {
     return NextResponse.json(result);
   } catch (error) {
     console.error("Tailscale enable error:", error.message);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const needsSudoPassword = error.code === "TAILSCALE_SUDO_PASSWORD_REQUIRED";
+    return NextResponse.json({ error: error.message, needsSudoPassword }, { status: needsSudoPassword ? 409 : 500 });
   }
 }

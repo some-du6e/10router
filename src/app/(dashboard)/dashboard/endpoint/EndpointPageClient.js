@@ -189,7 +189,8 @@ export default function APIPageClient({ machineId }) {
       const tsEn = data.tailscale?.settingsEnabled ?? data.tailscale?.enabled ?? false;
       const tsUrlVal = data.tailscale?.tunnelUrl || "";
       setTsUrl(tsUrlVal);
-      setTsEnabled(tsEn);
+      setTsEnabled(tsEn && !data.tailscale?.needsSudoPassword);
+      if (data.tailscale?.needsSudoPassword) setTsStatus({ type: "error", message: "Tailscale needs a new sudo password. Reconnect to continue." });
       updateReachable(null, tsClientReachableRef, tsMissRef, setTsReachable, tsEverReachableRef, setTsEverReachable);
     } catch { /* ignore poll errors */ }
   };
@@ -222,7 +223,8 @@ export default function APIPageClient({ machineId }) {
         const tsEn = data.tailscale?.settingsEnabled ?? data.tailscale?.enabled ?? false;
         const tsUrlVal = data.tailscale?.tunnelUrl || "";
         setTsUrl(tsUrlVal);
-        setTsEnabled(tsEn);
+        setTsEnabled(tsEn && !data.tailscale?.needsSudoPassword);
+        if (data.tailscale?.needsSudoPassword) setTsStatus({ type: "error", message: "Tailscale needs a new sudo password. Reconnect to continue." });
         updateReachable(null, tsClientReachableRef, tsMissRef, setTsReachable, tsEverReachableRef, setTsEverReachable);
       }
     } catch (error) {

@@ -7,6 +7,16 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 let tempDir;
 const originalDataDir = process.env.DATA_DIR;
 
+async function makeLegacyPassword() {
+  const crypto = await import("node:crypto");
+  const { machineIdSync } = await import("node-machine-id");
+  const key = crypto.createHash("sha256").update(machineIdSync() + "10router-mitm-pwd").digest();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const ciphertext = Buffer.concat([cipher.update("test-sudo-password", "utf8"), cipher.final()]);
+  return `${iv.toString("hex")}:${cipher.getAuthTag().toString("hex")}:${ciphertext.toString("hex")}`;
+}
+
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "10router-mig-"));
   process.env.DATA_DIR = tempDir;
@@ -28,13 +38,7 @@ describe("Schema migrations", () => {
   it("moves a working legacy elevation credential to private cleanup and Tailscale storage", async () => {
     const { getAdapter } = await import("@/lib/db/driver.js");
     const { decryptHostPassword } = await import("@/lib/db/helpers/hostCredentials.js");
-    const crypto = await import("node:crypto");
-    const { machineIdSync } = await import("node-machine-id");
-    const key = crypto.createHash("sha256").update(machineIdSync() + "10router-mitm-pwd").digest();
-    const iv = crypto.randomBytes(12);
-    const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
-    const ciphertext = Buffer.concat([cipher.update("test-sudo-password", "utf8"), cipher.final()]);
-    const legacy = `${iv.toString("hex")}:${cipher.getAuthTag().toString("hex")}:${ciphertext.toString("hex")}`;
+    const legacy = await makeLegacyPassword();
     const db = await getAdapter();
     db.run("INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data", [JSON.stringify({ tailscaleEnabled: true, mitmSudoEncrypted: legacy })]);
     db.run("UPDATE _meta SET value = '2' WHERE key = 'schemaVersion'");
@@ -51,6 +55,14 @@ describe("Schema migrations", () => {
     expect(JSON.stringify(backup)).not.toContain("test-sudo-password");
     expect(JSON.stringify(backup)).not.toContain(legacy);
     expect(backup.settings).toEqual({ tailscaleEnabled: true });
+  });
+
+  it("restores a legacy Tailscale credential without recreating proxy cleanup state", async () => {
+    const { importDb } = await import("@/lib/db/index.js");
+    const { loadHostPassword } = await import("@/lib/hostCredentials.js");
+    await importDb({ settings: { tailscaleEnabled: true, mitmSudoEncrypted: await makeLegacyPassword() } });
+    expect(await loadHostPassword("tailscale")).toBe("test-sudo-password");
+    expect(await loadHostPassword("retiredProxy")).toBe("");
   });
 
   it("removes retired proxy settings and aliases on upgrade while preserving provider data", async () => {

@@ -49,7 +49,10 @@ export async function POST(request) {
         const result = await installTailscale(sudoPassword, shortId, (msg) => {
           send("progress", { message: msg });
         });
-        if (sudoPassword) await rememberPassword(sudoPassword);
+        if (sudoPassword) {
+          try { await rememberPassword(sudoPassword); }
+          catch (error) { send("progress", { message: `Installed, but the elevation credential was not saved: ${error.message}` }); }
+        }
         send("done", { success: true, authUrl: result?.authUrl || null });
       } catch (error) {
         console.error("Tailscale install error:", error);

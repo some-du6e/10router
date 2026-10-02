@@ -1,4 +1,5 @@
 import { stripRetiredSettings } from "./helpers/retiredSettings.js";
+import { migrateLegacyHostPassword } from "./helpers/hostCredentials.js";
 // Public API barrel — all DB functions
 import { getAdapter } from "./driver.js";
 import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
@@ -122,6 +123,7 @@ export async function importDb(payload) {
 
     // Settings
     if (payload.settings) {
+      migrateLegacyHostPassword(db, payload.settings, { cleanup: false });
       db.run(`INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, [stringifyJson(stripRetiredSettings(payload.settings))]);
     }
 

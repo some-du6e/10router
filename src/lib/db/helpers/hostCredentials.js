@@ -26,12 +26,12 @@ export function decryptHostPassword(stored, salt = CURRENT_SALT) {
   } catch { return ""; }
 }
 
-export function migrateLegacyHostPassword(db, settings) {
+export function migrateLegacyHostPassword(db, settings, { cleanup = true } = {}) {
   const password = decryptHostPassword(settings?.mitmSudoEncrypted, "10router-mitm-pwd");
   if (!password) return;
   const encrypted = JSON.stringify(encryptHostPassword(password));
   // Cleanup needs the old elevation credential only until its first successful run.
-  db.run("INSERT OR IGNORE INTO kv(scope, key, value) VALUES('hostCredentials', 'retiredProxy', ?)", [encrypted]);
+  if (cleanup) db.run("INSERT OR IGNORE INTO kv(scope, key, value) VALUES('hostCredentials', 'retiredProxy', ?)", [encrypted]);
   if (settings.tailscaleEnabled || settings.tailscaleUrl) {
     db.run("INSERT OR IGNORE INTO kv(scope, key, value) VALUES('hostCredentials', 'tailscale', ?)", [encrypted]);
   }

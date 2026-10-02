@@ -50,7 +50,7 @@ export async function initializeApp() {
     // Mint + print the one-time setup token before anything else can be served,
     // so the console banner is the first thing the operator sees on a fresh install.
     await ensureSetupToken().catch((e) => console.error("[InitApp] setup token failed:", e.message));
-    await retireIdeProxy().catch(() => {});
+    retireIdeProxy().catch(() => {});
 
     setTunnelUnexpectedExitCallback(() => {
       safeRestartTunnel("unexpected-exit").catch(() => {});
@@ -152,6 +152,7 @@ async function safeRestartTunnel(reason) {
 
 async function safeRestartTailscale(reason) {
   const svc = getTailscaleService();
+  if (svc.needsSudoPassword) return;
   const settings = await getSettings();
   if (!settings.tailscaleEnabled) return;
   if (svc.cancelToken.cancelled) return;

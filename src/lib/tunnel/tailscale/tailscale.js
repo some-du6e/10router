@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
-import { execSync, exec, spawn } from "child_process";
+import { execSync, execFileSync, exec, spawn } from "child_process";
 import { promisify } from "util";
 import { execWithPassword } from "./sudo.js";
 import { DATA_DIR } from "@/lib/dataDir.js";
@@ -511,11 +511,12 @@ async function ensureUserOwnedDir(dir) {
 }
 
 /** Check if running daemon uses TUN mode (Funnel TLS requires TUN). */
-function isDaemonTunMode() {
+export function isDaemonTunMode() {
   try {
-    const ps = execSync(`pgrep -af "tailscaled.*${TAILSCALE_SOCKET}"`, { encoding: "utf8", timeout: 2000 }).trim();
-    if (!ps) return null;
-    return !ps.includes("--tun=userspace-networking");
+    const ps = execFileSync("pgrep", ["-af", `tailscaled.*${TAILSCALE_SOCKET}`], { encoding: "utf8", timeout: 2000 }).trim();
+    const daemons = ps.split("\n").filter(line => /^\d+\s+(?:\S*\/)?tailscaled(?:\s|$)/.test(line));
+    if (!daemons.length) return null;
+    return !daemons.some(line => line.includes("--tun=userspace-networking"));
   } catch { return null; }
 }
 

@@ -52,4 +52,18 @@ describe("Retired IDE proxy cleanup", () => {
     await retire({ processes: () => [], dataDir: dir, appRoot: "/app", hostsPath, commandLine: () => "/usr/bin/node /unrelated/server.js", kill, apply: true });
     expect(kill).not.toHaveBeenCalled();
   });
+
+  it("still removes redirects if the process exits just before the final SIGKILL", async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "10router-retire-"));
+    fs.mkdirSync(path.join(dir, "mitm"));
+    fs.writeFileSync(path.join(dir, "mitm", ".mitm.pid"), "12345");
+    const hostsPath = path.join(dir, "hosts");
+    fs.writeFileSync(hostsPath, "127.0.0.1 api2.cursor.sh\n");
+    const kill = vi.fn((pid, signal) => {
+      if (signal === "SIGKILL") throw Object.assign(new Error("Process exited"), { code: "ESRCH" });
+    });
+    await retire({ dataDir: dir, appRoot: "/app", hostsPath, processes: () => [], commandLine: () => `/usr/bin/node ${dir}/runtime/mitm/server.js`, kill, wait: async () => {}, apply: true });
+    expect(fs.readFileSync(hostsPath, "utf8")).toBe("");
+    expect(fs.existsSync(path.join(dir, "mitm", ".mitm.pid"))).toBe(false);
+  });
 });

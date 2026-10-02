@@ -3,16 +3,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   execSync: vi.fn(), spawn: vi.fn(), loadHostPassword: vi.fn(), saveHostPassword: vi.fn(),
-  enableTailscale: vi.fn(), configureTunnelMonitoring: vi.fn(), getSettings: vi.fn(),
+  enableTailscale: vi.fn(), installTailscale: vi.fn(), configureTunnelMonitoring: vi.fn(), getSettings: vi.fn(),
 }));
 vi.mock("node:child_process", () => ({ execSync: mocks.execSync, spawn: mocks.spawn }));
 vi.mock("@/lib/hostCredentials.js", () => ({ loadHostPassword: mocks.loadHostPassword, saveHostPassword: mocks.saveHostPassword }));
-vi.mock("@/lib/tunnel", () => ({ enableTailscale: mocks.enableTailscale }));
+vi.mock("@/lib/tunnel", () => ({ enableTailscale: mocks.enableTailscale, installTailscale: mocks.installTailscale, loadState: () => null, generateShortId: () => "test" }));
 vi.mock("@/lib/localDb", () => ({ getSettings: mocks.getSettings }));
 vi.mock("@/shared/services/initializeApp", () => ({ configureTunnelMonitoring: mocks.configureTunnelMonitoring }));
 
 const { loadPassword, rememberPassword, setCachedPassword } = await import("../../src/lib/tunnel/tailscale/sudo.js");
 const { POST } = await import("../../src/app/api/tunnel/tailscale-enable/route.js");
+const { POST: install } = await import("../../src/app/api/tunnel/tailscale-install/route.js");
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -35,6 +36,28 @@ function authenticationResult(code) {
 }
 
 describe("Independent Tailscale elevation credentials", () => {
+  it("reports a successful install even when its credential cannot be saved", async () => {
+    authenticationResult(1);
+    mocks.installTailscale.mockResolvedValue({ authUrl: "https://login.tailscale.com/test" });
+    const response = await install(new Request("http://localhost/api/tunnel/tailscale-install", {
+      method: "POST", body: JSON.stringify({ sudoPassword: "wrong-password" }),
+    }));
+    const events = await response.text();
+    expect(events).toContain('event: done\ndata: {"success":true');
+    expect(events).toContain("credential was not saved");
+    expect(events).not.toContain("event: error");
+    expect(mocks.saveHostPassword).not.toHaveBeenCalled();
+  });
+
+  it("returns an explicit credential-recovery response after cached recovery fails", async () => {
+    const error = new Error("New sudo password required");
+    error.code = "TAILSCALE_SUDO_PASSWORD_REQUIRED";
+    mocks.enableTailscale.mockRejectedValueOnce(error);
+    const response = await POST(new Request("http://localhost/api/tunnel/tailscale-enable", { method: "POST", body: "{}" }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ needsSudoPassword: true });
+  });
+
   it("loads the stored credential after the process cache is empty", async () => {
     expect(await loadPassword()).toBe("previous-password");
     expect(mocks.loadHostPassword).toHaveBeenCalledWith("tailscale");
