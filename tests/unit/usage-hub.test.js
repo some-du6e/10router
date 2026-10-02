@@ -82,6 +82,18 @@ describe("CLIProxyAPI contract", () => {
     expect(upstream.fetch).not.toHaveBeenCalled();
   });
 
+  it.each([[429, ""], [503, "<html>Service unavailable</html>"]])("preserves upstream HTTP %i when its body is not JSON", async (status, body) => {
+    upstream.fetch.mockResolvedValueOnce(new Response(body, { status }));
+    const result = await hubApiCall({ auth_index: account.id, method: "GET", url: usageUrl });
+    expect(result).toEqual({ status_code: status, body: "null" });
+  });
+
+  it("still rejects malformed successful quota responses", async () => {
+    upstream.fetch.mockResolvedValueOnce(new Response("not JSON", { status: 200 }));
+    await expect(hubApiCall({ auth_index: account.id, method: "GET", url: usageUrl }))
+      .rejects.toMatchObject({ status: 502, message: "Provider returned an invalid quota response" });
+  });
+
   it("rejects cross-provider quota calls and inactive accounts", async () => {
     db.getProviderConnectionById.mockResolvedValue({ ...account, provider: "claude" });
     await expect(hubApiCall({ auth_index: account.id, method: "GET", url: usageUrl })).rejects.toMatchObject({ status: 403 });

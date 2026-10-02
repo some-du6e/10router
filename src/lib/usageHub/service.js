@@ -97,7 +97,10 @@ export async function hubApiCall(body) {
       response = await fetchUsage();
     }
     status = response.status;
-    try { result = await response.json(); } catch { throw new HubError("Provider returned an invalid quota response", 502); }
+    try { result = await response.json(); } catch {
+      if (response.ok) throw new HubError("Provider returned an invalid quota response", 502);
+      result = null;
+    }
   }
   if (operation === "consume" && status >= 200 && status < 300 && ["reset", "already_redeemed"].includes(result?.code)) {
     const pending = pendingResets();
