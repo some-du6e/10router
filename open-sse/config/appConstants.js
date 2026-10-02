@@ -188,6 +188,13 @@ export const LOAD_CODE_ASSIST_METADATA = {
 
 // System prompts
 export const CLAUDE_SYSTEM_PROMPT = "You are Claude Code, Anthropic's official CLI for Claude.";
+export const SEARCH_TOOL_TYPES = new Set([
+  "web_search",
+  "web_search_preview",
+  "google_search",
+]);
+export const SEARCH_CAPABILITY = "search";
+
 // Rewrite rules applied to Antigravity system prompts: competing-client branding
 // makes the backend flag the request and answer 429 Quota Exhausted.
 export const ANTIGRAVITY_PROMPT_REWRITES = [

@@ -1,4 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const { connectMock } = vi.hoisted(() => ({
+  connectMock: vi.fn(),
+}));
+
+vi.mock("node:http2", () => ({
+  connect: connectMock,
+  default: { connect: connectMock },
+}));
+
 import {
   clearCursorModelCache,
   parseCursorUsableModels,
@@ -40,14 +50,31 @@ function model(id, name) {
   return field(1, concat(field(1, text(id)), field(4, text(name))));
 }
 
+function makeEmitter() {
+  const handlers = new Map();
+  return {
+    on(event, handler) {
+      const listeners = handlers.get(event) || [];
+      listeners.push(handler);
+      handlers.set(event, listeners);
+      return this;
+    },
+    emit(event, ...args) {
+      for (const handler of handlers.get(event) || []) handler(...args);
+    },
+  };
+}
+
 describe("Cursor live model catalog", () => {
   beforeEach(() => {
     clearCursorModelCache();
+    connectMock.mockReset();
   });
 
   afterEach(() => {
     global.fetch = originalFetch;
     clearCursorModelCache();
+    connectMock.mockReset();
   });
 
   it("decodes the GetUsableModels protobuf response", () => {
@@ -65,7 +92,16 @@ describe("Cursor live model catalog", () => {
 
   it("fetches the account-specific catalog and caches it", async () => {
     const payload = concat(model("claude-4.6-opus", "Claude 4.6 Opus"));
-    global.fetch = vi.fn().mockResolvedValue(new Response(payload, { status: 200 }));
+    const client = makeEmitter();
+    const request = makeEmitter();
+    client.request = vi.fn(() => request);
+    client.close = vi.fn();
+    request.end = vi.fn(() => {
+      request.emit("response", { ":status": 200 });
+      request.emit("data", Buffer.from(payload));
+      request.emit("end");
+    });
+    connectMock.mockReturnValue(client);
     const credentials = {
       accessToken: "cursor-token",
       providerSpecificData: { machineId: "machine-id" },
@@ -78,18 +114,16 @@ describe("Cursor live model catalog", () => {
       models: [{ id: "claude-4.6-opus", name: "Claude 4.6 Opus" }],
     });
 
-    expect(global.fetch).toHaveBeenCalledTimes(1);
-    expect(global.fetch).toHaveBeenCalledWith(
-      "https://agent.api5.cursor.sh/agent.v1.AgentService/GetUsableModels",
-      expect.objectContaining({
-        method: "POST",
-        body: expect.any(Uint8Array),
-        headers: expect.objectContaining({
-          "content-type": "application/proto",
-          accept: "application/proto",
-        }),
-      }),
-    );
+    expect(connectMock).toHaveBeenCalledTimes(1);
+    expect(connectMock).toHaveBeenCalledWith("https://agent.api5.cursor.sh");
+    expect(client.request).toHaveBeenCalledWith(expect.objectContaining({
+      ":method": "POST",
+      ":path": "/agent.v1.AgentService/GetUsableModels",
+      accept: "application/proto",
+      "content-type": "application/proto",
+      authorization: "Bearer cursor-token",
+      "x-cursor-checksum": expect.stringMatching(/machine-id$/),
+    }));
   });
 
   it("fails open when the Cursor catalog request fails", async () => {
