@@ -100,6 +100,16 @@ describe("background quota reads", () => {
     expect(routing.getRoutingQuotas("codex", connections).size).toBe(0);
   });
 
+  it.each(["claude", "codex"])("preserves strict proxy policy for %s quota requests", async (provider) => {
+    const proxy = { connectionProxyEnabled: true, connectionProxyUrl: "http://proxy:8080", strictProxy: true };
+    mocks.proxy.mockResolvedValue(proxy);
+    mocks[provider].mockRejectedValue(new Error("Required proxy failed"));
+    routing.getRoutingQuotas(provider, connections);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks[provider]).toHaveBeenCalledExactlyOnceWith("token", proxy);
+    expect(routing.getRoutingQuotas(provider, connections).size).toBe(0);
+  });
+
   it("does not fetch for unsupported providers or missing tokens", () => {
     routing.getRoutingQuotas("openai", connections);
     routing.getRoutingQuotas("claude", [{ id: "a" }]);

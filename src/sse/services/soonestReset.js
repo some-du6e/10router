@@ -35,7 +35,7 @@ export function getRoutingQuotas(provider, connections) {
     let timer;
     const fetch = async () => {
       const proxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
-      return fetchUsage(connection.accessToken, { ...proxy, strictProxy: false });
+      return fetchUsage(connection.accessToken, proxy);
     };
     Promise.race([
       fetch(),
