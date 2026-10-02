@@ -20,7 +20,7 @@ const waitMaxMs = parseInt(process.env.UPDATER_WAIT_MAX_MS || "15000", 10);
 const waitCheckMs = parseInt(process.env.UPDATER_WAIT_CHECK_MS || "500", 10);
 const appPort = parseInt(process.env.UPDATER_APP_PORT || "20128", 10);
 
-// Data directory (match mitm/paths.js logic)
+// Resolve the application data directory.
 // "9router" / ".9router" below is the on-disk data dir, deliberately kept unchanged
 // for backward compatibility with existing installs — not a missed rebrand.
 function getDataDir() {

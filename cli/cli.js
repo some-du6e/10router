@@ -252,11 +252,9 @@ function killCloudflaredByAppPort(appPort) {
 function killAllAppProcesses(appPort) {
   return new Promise((resolve) => {
     try {
-      // Background: MITM + tunnel/cloudflared run on separate ports/processes —
+      // Tunnel processes run on separate ports.
       // killing them doesn't free the app port, so don't block the critical path.
-      // Server-side MITM manager has stale-lock recovery and starts deferred (~3s).
       setImmediate(() => {
-        try { killProxyByPidFile(); } catch {}
         try { killTunnelByPidFile(); } catch {}
         try { killCloudflaredByAppPort(appPort); } catch {}
       });
@@ -347,52 +345,6 @@ function killAllAppProcesses(appPort) {
 }
 
 // Sleep helper using SharedArrayBuffer wait (sync, no busy-loop)
-function sleepSync(ms) {
-  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* ignore */ }
-}
-
-// Wait until process dies or timeout reached
-function waitForExit(pid, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try { process.kill(pid, 0); } catch { return true; }
-    sleepSync(100);
-  }
-  return false;
-}
-
-// Kill MIT server by PID file (runs privileged, needs special handling)
-// Sends SIGTERM first so MIT can clean up host entries before dying.
-function killProxyByPidFile() {
-  try {
-    const pidFile = path.join(getAppDataDir(), "mitm", ".mitm.pid");
-    if (!fs.existsSync(pidFile)) return;
-    const pid = parseInt(fs.readFileSync(pidFile, "utf8").trim(), 10);
-    if (!pid) return;
-
-    if (process.platform === "win32") {
-      // Graceful first (lets server cleanup hosts), then force
-      try { execSync(`taskkill /T /PID ${pid}`, { stdio: "ignore", windowsHide: true, timeout: 2000 }); } catch { }
-      if (!waitForExit(pid, 1500)) {
-        try { execSync(`taskkill /F /T /PID ${pid}`, { stdio: "ignore", windowsHide: true, timeout: 3000 }); } catch { }
-      }
-      // Last-resort: PowerShell Stop-Process (sometimes succeeds where taskkill fails on admin processes)
-      if (!waitForExit(pid, 500)) {
-        try { execSync(`powershell -NonInteractive -WindowStyle Hidden -Command "Stop-Process -Id ${pid} -Force"`, { stdio: "ignore", windowsHide: true, timeout: 3000 }); } catch { }
-      }
-    } else {
-      // SIGTERM via cached sudo token first
-      try { execSync(`sudo -n kill -TERM ${pid} 2>/dev/null`, { stdio: "ignore", timeout: 2000 }); }
-      catch { try { process.kill(pid, "SIGTERM"); } catch { } }
-      if (!waitForExit(pid, 1500)) {
-        try { execSync(`sudo -n kill -9 ${pid} 2>/dev/null`, { stdio: "ignore", timeout: 2000 }); }
-        catch { try { process.kill(pid, "SIGKILL"); } catch { } }
-      }
-    }
-    try { fs.unlinkSync(pidFile); } catch { }
-  } catch { }
-}
-
 // Kill any process on specific port
 function killProcessOnPort(port) {
   return new Promise((resolve) => {
@@ -648,8 +600,6 @@ function startServer(updatePromise) {
         const { killTray } = require("./src/cli/tray/tray");
         killTray();
       } catch (e) { }
-      // Kill MIT server (privileged process) via PID file
-      killProxyByPidFile();
       // Kill cloudflared/tailscale via PID file (only this app's tunnel)
       killTunnelByPidFile();
       // Kill server process directly
@@ -838,17 +788,7 @@ function startServer(updatePromise) {
     if (aliveMs >= RESTART_RESET_MS) restartCount = 0;
 
     if (restartCount >= MAX_RESTARTS) {
-      console.error(`\n⚠️  Server crashed ${MAX_RESTARTS} times. Disabling MIT and restarting...`);
-      try {
-        // ".9router" / "9router" data dir retained for compatibility with existing
-        // installs — deliberately NOT renamed during the 10router rebrand.
-        const dbPath = path.join(os.homedir(), process.platform === "win32" ? path.join("AppData", "Roaming", "9router", "db.json") : path.join(".9router", "db.json"));
-        if (fs.existsSync(dbPath)) {
-          const db = JSON.parse(fs.readFileSync(dbPath, "utf-8"));
-          if (db.settings) db.settings.mitmEnabled = false;
-          fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
-        }
-      } catch { /* best effort */ }
+      console.error(`Server crashed ${MAX_RESTARTS} times. Restarting...`);
       restartCount = 0;
       server = spawnServer();
       attachServerEvents();
