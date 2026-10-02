@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Card from "./Card";
 import Button from "./Button";
 import Input from "./Input";
+import { readUsageHubResponse } from "@/shared/utils/usageHubResponse";
 
 export default function UsageHubSettings() {
   const [config, setConfig] = useState(null);
@@ -16,8 +17,7 @@ export default function UsageHubSettings() {
   useEffect(() => {
     let active = true;
     fetch("/api/settings/usage-hub").then(async (res) => {
-      if (!res.ok) throw new Error("Could not load hub settings");
-      const data = await res.json();
+      const data = await readUsageHubResponse(res, "Could not load hub settings");
       if (active) {
         setConfig(data);
         setUrl(window.location.origin);
@@ -35,8 +35,7 @@ export default function UsageHubSettings() {
         method, headers: { "Content-Type": "application/json" },
         ...(body ? { body: JSON.stringify(body) } : {}),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Could not save hub settings");
+      const data = await readUsageHubResponse(res, "Could not save hub settings");
       setConfig(data);
       if (data.managementKey) setKey(data.managementKey);
     } catch (err) { setError(err.message); }
