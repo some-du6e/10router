@@ -5,6 +5,7 @@ import Link from "next/link";
 import { getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
 import PropTypes from "prop-types";
 import { Card, Badge, Button, Modal, Select, Toggle, EditConnectionModal, ConfirmModal } from "@/shared/components";
+import { providerRoutingOptions, SOONEST_RESET_HINT } from "@/shared/constants/accountRouting";
 import { useBlurEmails } from "@/shared/hooks/useBlurEmails";
 
 // ── CooldownTimer ──────────────────────────────────────────────
@@ -350,7 +351,9 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
       const res = await fetch("/api/settings", { cache: "no-store" });
       const data = res.ok ? await res.json() : {};
       const current = data.providerStrategies || {};
-      const override = {};
+      const override = { ...current[providerId] };
+      delete override.fallbackStrategy;
+      delete override.stickyRoundRobinLimit;
       if (strategy) override.fallbackStrategy = strategy;
       if (strategy === "round-robin" && stickyLimit !== "") override.stickyRoundRobinLimit = Number(stickyLimit) || 3;
       const updated = { ...current };
@@ -428,11 +431,13 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
           <h2 className="text-lg font-semibold">Connections</h2>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-text-muted font-medium">Round Robin</span>
-            <Toggle
-              checked={providerStrategy === "round-robin"}
-              onChange={(enabled) => {
-                const strategy = enabled ? "round-robin" : null;
+            <Select
+              aria-label="Account routing"
+              options={providerRoutingOptions(providerId)}
+              value={providerStrategy || "inherit"}
+              onChange={(e) => {
+                const strategy = e.target.value === "inherit" ? null : e.target.value;
+                const enabled = strategy === "round-robin";
                 setProviderStrategy(strategy);
                 if (enabled && !providerStickyLimit) setProviderStickyLimit("1");
                 saveStrategy(strategy, enabled ? (providerStickyLimit || "1") : providerStickyLimit);
@@ -450,6 +455,7 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
             )}
           </div>
         </div>
+        {providerStrategy === "soonest-reset" && <p className="text-xs text-text-muted mb-4">{SOONEST_RESET_HINT}</p>}
 
         {connections.length === 0 ? (
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
