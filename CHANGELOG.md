@@ -4,6 +4,7 @@
 - **T3 usage hub**: preserve upstream status codes for non-JSON provider errors and reject malformed settings responses without overwriting the current hub state.
 
 ## Features
+- **Soonest-reset routing**: opt-in account strategy for Claude and Codex that spends the earliest weekly quota first, using session resets to break ties. Skips known exhausted accounts, preserves session affinity, and falls back to priority when quota data is unavailable. Configure it globally in Profile or per provider under Connections.
 - **Jev decision models**: add `/v1/systemone` with OpenCode Free, OpenCode Zen, and OpenRouter lanes, account fallback, usage tracking, and dashboard examples and model tests.
 - **T3 usage hub**: opt-in CLIProxyAPI management compatibility for Codex and Claude quotas, account listing, and Codex reset credits. Enable it in Settings and create a separate management key. An isolated demo mode supplies fake subscriptions for integration testing.
 - **Codex models**: add GPT-6.1 Sol with pricing, vision support, and reasoning levels through Max.
