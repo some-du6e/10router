@@ -19,7 +19,28 @@ describe("openaiToClaudeRequest", () => {
         { role: "user", content: "Continue" },
       ],
     }, false);
-    expect(result.messages[1].content).toEqual([expect.objectContaining({ type: "text", text: "2" })]);
+    expect(result.messages).toEqual([
+      { role: "user", content: [expect.objectContaining({ type: "text", text: "What is 1 + 1?" })] },
+      { role: "assistant", content: [expect.objectContaining({ type: "text", text: "2" })] },
+      { role: "user", content: [expect.objectContaining({ type: "text", text: "Continue" })] },
+    ]);
+  });
+
+  it("preserves explicit signed thinking and the complete conversation", () => {
+    const signature = Buffer.from([0x12, 0x01, 0x02]).toString("base64");
+    const thinking = { type: "thinking", thinking: "Signed provider history", signature };
+    const result = openaiToClaudeRequest("claude-sonnet-4-20250514", {
+      messages: [
+        { role: "user", content: "Question" },
+        { role: "assistant", content: [thinking, { type: "text", text: "Answer" }] },
+        { role: "user", content: "Follow up" },
+      ],
+    }, false);
+    expect(result.messages).toEqual([
+      { role: "user", content: [expect.objectContaining({ type: "text", text: "Question" })] },
+      { role: "assistant", content: [thinking, expect.objectContaining({ type: "text", text: "Answer" })] },
+      { role: "user", content: [expect.objectContaining({ type: "text", text: "Follow up" })] },
+    ]);
   });
 
   describe("response_format handling", () => {

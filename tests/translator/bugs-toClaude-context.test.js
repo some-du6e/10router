@@ -26,9 +26,29 @@ describe("OpenAI → Claude context mapping", () => {
       ],
     };
     const out = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, "m", body, true, null, provider);
-    const assistant = out.messages.find((m) => m.role === "assistant");
-    expect(assistant.content).toEqual([expect.objectContaining({ type: "text", text: "a" })]);
+    expect(out.messages).toEqual([
+      { role: "user", content: [expect.objectContaining({ type: "text", text: "q" })] },
+      { role: "assistant", content: [expect.objectContaining({ type: "text", text: "a" })] },
+      { role: "user", content: [expect.objectContaining({ type: "text", text: "next" })] },
+    ]);
     expect(JSON.stringify(out)).not.toContain("my hidden reasoning");
+  });
+
+  it("preserves signed history through Anthropic request preparation", () => {
+    const signature = Buffer.from([0x12, 0x01, 0x02]).toString("base64");
+    const thinking = { type: "thinking", thinking: "Signed provider history", signature };
+    const out = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, "m", {
+      messages: [
+        { role: "user", content: "Question" },
+        { role: "assistant", content: [thinking, { type: "text", text: "Answer" }] },
+        { role: "user", content: "Follow up" },
+      ],
+    }, true, null, "anthropic");
+    expect(out.messages).toEqual([
+      { role: "user", content: [expect.objectContaining({ type: "text", text: "Question" })] },
+      { role: "assistant", content: [thinking, expect.objectContaining({ type: "text", text: "Answer" })] },
+      { role: "user", content: [expect.objectContaining({ type: "text", text: "Follow up" })] },
+    ]);
   });
 
   // openai-to-claude.js:298 — tool_choice "none" mapped to {type:"auto"} (loses "do not call" intent)
