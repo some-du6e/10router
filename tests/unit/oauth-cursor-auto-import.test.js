@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as fsPromises from "fs/promises";
 
+vi.mock("child_process", () => ({
+  execFile: vi.fn((_file, _args, _options, callback) => callback(new Error("ENOENT"))),
+}));
+
 // Mock next/server
 vi.mock("next/server", () => ({
   NextResponse: {
@@ -29,12 +33,14 @@ const mockDbInstance = {
   prepare: vi.fn(),
   close: vi.fn(),
   __throwOnConstruct: false,
+  __constructError: null,
 };
 
 // Mock better-sqlite3 as a class so `new Database(...)` works
 vi.mock("better-sqlite3", () => ({
   default: class MockDatabase {
     constructor() {
+      if (mockDbInstance.__constructError) throw mockDbInstance.__constructError;
       if (mockDbInstance.__throwOnConstruct) {
         throw new Error("SQLITE_CANTOPEN");
       }
@@ -52,6 +58,7 @@ describe("GET /api/oauth/cursor/auto-import", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     mockDbInstance.__throwOnConstruct = false;
+    mockDbInstance.__constructError = null;
     // Force darwin so macOS-specific logic is exercised
     Object.defineProperty(process, "platform", { value: "darwin", writable: true });
     // Re-import to pick up fresh mocks each run
@@ -118,6 +125,30 @@ describe("GET /api/oauth/cursor/auto-import", () => {
     expect(response.body.found).toBe(true);
     expect(response.body.accessToken).toBe("json-token");
     expect(response.body.machineId).toBe("json-machine-id");
+  });
+
+  it("selects exact credential keys in declared priority order regardless of row order", async () => {
+    vi.mocked(fsPromises.access).mockResolvedValue();
+    mockDbInstance.prepare.mockReturnValue({ all: vi.fn().mockReturnValue([
+      { key: "cursorAuth/token", value: "old-token" },
+      { key: "storage.machineId", value: "old-machine" },
+      { key: "telemetry.machineId", value: "telemetry-machine" },
+      { key: "cursorAuth/accessToken", value: '"preferred-token"' },
+      { key: "storage.serviceMachineId", value: '"preferred-machine"' },
+    ]) });
+    const response = await GET();
+    expect(response.body).toEqual({ found: true, accessToken: "preferred-token", machineId: "preferred-machine" });
+    expect(mockDbInstance.close).toHaveBeenCalledOnce();
+  });
+
+  it("keeps manual recovery available when both macOS database readers fail", async () => {
+    vi.mocked(fsPromises.access).mockResolvedValue();
+    mockDbInstance.__constructError = new Error("Native bindings unavailable");
+    const response = await GET();
+    expect(response.body.found).toBe(false);
+    expect(response.body.windowsManual).toBe(true);
+    expect(response.body.dbPath).toContain("state.vscdb");
+    expect(response.body.error).toBeUndefined();
   });
 
   // ── Fuzzy fallback (macOS only) ───────────────────────────────────────

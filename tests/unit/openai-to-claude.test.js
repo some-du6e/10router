@@ -11,6 +11,17 @@ import { openaiToClaudeRequest } from "../../open-sse/translator/request/openai-
 import { openaiToClaudeResponse } from "../../open-sse/translator/response/openai-to-claude.js";
 
 describe("openaiToClaudeRequest", () => {
+  it.each(["reasoning_content", "reasoning"])("does not manufacture unsigned thinking from %s", (field) => {
+    const result = openaiToClaudeRequest("claude-sonnet-4-20250514", {
+      messages: [
+        { role: "user", content: "What is 1 + 1?" },
+        { role: "assistant", content: "2", [field]: "I should add one and one." },
+        { role: "user", content: "Continue" },
+      ],
+    }, false);
+    expect(result.messages[1].content).toEqual([expect.objectContaining({ type: "text", text: "2" })]);
+  });
+
   describe("response_format handling", () => {
     it("should inject JSON schema instructions for json_schema type", () => {
       const body = {

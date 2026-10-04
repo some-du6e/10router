@@ -127,11 +127,25 @@ describe("Cursor live model catalog", () => {
   });
 
   it("fails open when the Cursor catalog request fails", async () => {
-    global.fetch = vi.fn().mockResolvedValue(new Response("no", { status: 403 }));
+    const client = makeEmitter();
+    const request = makeEmitter();
+    client.request = vi.fn(() => request);
+    client.close = vi.fn();
+    request.end = vi.fn(() => {
+      request.emit("response", { ":status": 403 });
+      request.emit("data", Buffer.from("no"));
+      request.emit("end");
+    });
+    connectMock.mockReturnValue(client);
+    const warn = vi.fn();
 
     await expect(resolveCursorModels({
       accessToken: "cursor-token",
       providerSpecificData: { machineId: "machine-id" },
-    })).resolves.toBeNull();
+    }, { log: { warn } })).resolves.toBeNull();
+    expect(client.request).toHaveBeenCalledOnce();
+    expect(request.end).toHaveBeenCalledOnce();
+    expect(client.close).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith("CURSOR_MODELS", "Live model fetch failed: Cursor GetUsableModels returned 403");
   });
 });

@@ -1,4 +1,4 @@
-// End-to-end: a cache-bearing request flows through canonicalizeUsage →
+// Local integration: a cache-bearing request flows through canonicalizeUsage →
 // saveRequestUsage → getUsageStats, proving cached tokens are persisted,
 // aggregated, and cost is computed correctly (the bug this branch fixes).
 import fs from "node:fs";
@@ -10,6 +10,7 @@ import { canonicalizeUsage } from "../../open-sse/utils/usageTracking.js";
 const originalDataDir = process.env.DATA_DIR;
 let tempDir;
 let db;
+let adapter;
 
 beforeAll(async () => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "10router-cached-e2e-"));
@@ -17,12 +18,18 @@ beforeAll(async () => {
   vi.resetModules();
   db = await import("@/lib/db/index.js");
   await db.initDb();
+  const { getAdapter } = await import("@/lib/db/driver.js");
+  adapter = await getAdapter();
 });
 
-afterAll(() => {
-  if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
-  if (originalDataDir === undefined) delete process.env.DATA_DIR;
-  else process.env.DATA_DIR = originalDataDir;
+afterAll(async () => {
+  try {
+    await adapter?.close();
+    if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
+  } finally {
+    if (originalDataDir === undefined) delete process.env.DATA_DIR;
+    else process.env.DATA_DIR = originalDataDir;
+  }
 });
 
 describe("cached-token end-to-end (persist + aggregate + cost)", () => {

@@ -88,12 +88,11 @@ async function extractTokensViaBetterSqlite(dbPath) {
       .prepare(`SELECT key, value FROM itemTable WHERE key IN (${placeholders})`)
       .all(...desiredKeys);
 
-    const tokens = {};
-    for (const row of exactRows) {
-      const value = normalize(row.value);
-      if (!tokens.accessToken && ACCESS_TOKEN_KEYS.includes(row.key)) tokens.accessToken = value;
-      if (!tokens.machineId && MACHINE_ID_KEYS.includes(row.key)) tokens.machineId = value;
-    }
+    const valuesByKey = new Map(exactRows.map((row) => [row.key, normalize(row.value)]));
+    const tokens = {
+      accessToken: ACCESS_TOKEN_KEYS.map((key) => valuesByKey.get(key)).find(Boolean),
+      machineId: MACHINE_ID_KEYS.map((key) => valuesByKey.get(key)).find(Boolean),
+    };
 
     if (!tokens.accessToken || !tokens.machineId) {
       const fallbackRows = db.prepare(
@@ -226,8 +225,10 @@ export async function GET() {
 
     // Strategy 1: better-sqlite3 (bundled — no external tools required)
     let nativeDbError = null;
+    let databaseRead = false;
     try {
       const tokens = await extractTokensViaBetterSqlite(dbPath);
+      databaseRead = true;
       if (tokens.accessToken && tokens.machineId) {
         return NextResponse.json({
           found: true,
@@ -262,7 +263,7 @@ export async function GET() {
       });
     }
 
-    if (platform === "darwin") {
+    if (platform === "darwin" && databaseRead) {
       return NextResponse.json({
         found: false,
         error: "Please login to Cursor IDE first, then retry auto-import.",
