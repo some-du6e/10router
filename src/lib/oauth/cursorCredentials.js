@@ -3,5 +3,5 @@ export function isValidCursorAccessToken(value) {
 }
 
 export function isValidCursorMachineId(value) {
-  return typeof value === "string" && /^[a-f0-9-]{32,}$/i.test(value.replace(/-/g, ""));
+  return typeof value === "string" && /^[a-f0-9]{32,}$/i.test(value.replace(/-/g, ""));
 }
