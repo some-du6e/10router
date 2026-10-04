@@ -30,3 +30,5 @@ npm run test:cloud      # cloud-worker tests; requires the cloud sources
 ```
 
 The default suite excludes live provider calls, E2E tests, benchmarks, stress tests, and cloud-worker tests. The live MiMo checks require `RUN_MIMO_FREE_LIVE_TESTS=1`; `test:live` sets it automatically.
+
+Local cache-accounting integration tests run in the default suite. The live and E2E launchers set their environment flags through Node, so the npm commands also work with Windows's default shell.
