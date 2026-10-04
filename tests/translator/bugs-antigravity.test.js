@@ -1,4 +1,4 @@
-// Real Antigravity-MITM requests (Gemini-internal: { request: { contents, ... } }) → OpenAI.
+// Real Antigravity requests (Gemini-internal: { request: { contents, ... } }) → OpenAI.
 import { describe, it, expect } from "vitest";
 import "./registerAll.js";
 import { translateRequest, translateResponse, initState } from "../../open-sse/translator/index.js";

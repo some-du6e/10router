@@ -23,7 +23,6 @@
   },
   "dependencies": {
     "enquirer": "^2.4.1",
-    "node-forge": "^1.3.3",
     "node-machine-id": "^1.1.12",
     "react": "19.2.1",
     "react-dom": "19.2.1"
@@ -47,10 +46,6 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "esbuild": "^0.25.12",
     "nodemon": "^3.1.14"
-  },
-  "allowScripts": {
-    "esbuild@0.25.12": true
   }
 }
