@@ -4,6 +4,7 @@ import { homedir } from "os";
 import { join } from "path";
 import { execFile } from "child_process";
 import { promisify } from "util";
+import { isValidCursorAccessToken, isValidCursorMachineId } from "@/lib/oauth/cursorCredentials.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -63,12 +64,13 @@ function getCandidatePaths(platform) {
 }
 
 const normalize = (value) => {
-  if (typeof value !== "string") return value;
+  if (typeof value !== "string") return null;
   try {
     const parsed = JSON.parse(value);
-    return typeof parsed === "string" ? parsed : value;
+    if (typeof parsed === "string") return parsed.trim();
+    return typeof parsed === "number" ? value.trim() : null;
   } catch {
-    return value;
+    return value.trim();
   }
 };
 
@@ -90,8 +92,8 @@ async function extractTokensViaBetterSqlite(dbPath) {
 
     const valuesByKey = new Map(exactRows.map((row) => [row.key, normalize(row.value)]));
     const tokens = {
-      accessToken: ACCESS_TOKEN_KEYS.map((key) => valuesByKey.get(key)).find(Boolean),
-      machineId: MACHINE_ID_KEYS.map((key) => valuesByKey.get(key)).find(Boolean),
+      accessToken: ACCESS_TOKEN_KEYS.map((key) => valuesByKey.get(key)).find(isValidCursorAccessToken),
+      machineId: MACHINE_ID_KEYS.map((key) => valuesByKey.get(key)).find(isValidCursorMachineId),
     };
 
     if (!tokens.accessToken || !tokens.machineId) {
@@ -101,8 +103,8 @@ async function extractTokensViaBetterSqlite(dbPath) {
       for (const row of fallbackRows) {
         const key = String(row.key || "").toLowerCase();
         const value = normalize(row.value);
-        if (!tokens.accessToken && key.includes("accesstoken")) tokens.accessToken = value;
-        if (!tokens.machineId && key.includes("machineid")) tokens.machineId = value;
+        if (!tokens.accessToken && key.includes("accesstoken") && isValidCursorAccessToken(value)) tokens.accessToken = value;
+        if (!tokens.machineId && key.includes("machineid") && isValidCursorMachineId(value)) tokens.machineId = value;
       }
     }
 
@@ -117,20 +119,12 @@ async function extractTokensViaBetterSqlite(dbPath) {
  * Fallback when better-sqlite3 native bindings are unavailable.
  */
 async function extractTokensViaCLI(dbPath) {
-  const normalize = (raw) => {
-    const value = raw.trim();
-    try {
-      const parsed = JSON.parse(value);
-      return typeof parsed === "string" ? parsed : value;
-    } catch {
-      return value;
-    }
-  };
-
+  let databaseRead = false;
   const query = async (sql) => {
     const { stdout } = await execFileAsync("sqlite3", [dbPath, sql], {
       timeout: 10000,
     });
+    databaseRead = true;
     return stdout.trim();
   };
 
@@ -141,8 +135,9 @@ async function extractTokensViaCLI(dbPath) {
       const raw = await query(
         `SELECT value FROM itemTable WHERE key='${key}' LIMIT 1`,
       );
-      if (raw) {
-        accessToken = normalize(raw);
+      const value = normalize(raw);
+      if (isValidCursorAccessToken(value)) {
+        accessToken = value;
         break;
       }
     } catch {
@@ -156,8 +151,9 @@ async function extractTokensViaCLI(dbPath) {
       const raw = await query(
         `SELECT value FROM itemTable WHERE key='${key}' LIMIT 1`,
       );
-      if (raw) {
-        machineId = normalize(raw);
+      const value = normalize(raw);
+      if (isValidCursorMachineId(value)) {
+        machineId = value;
         break;
       }
     } catch {
@@ -165,7 +161,7 @@ async function extractTokensViaCLI(dbPath) {
     }
   }
 
-  return { accessToken, machineId };
+  return { accessToken, machineId, databaseRead };
 }
 
 /**
@@ -244,6 +240,7 @@ export async function GET() {
     // Strategy 2: sqlite3 CLI
     try {
       const tokens = await extractTokensViaCLI(dbPath);
+      databaseRead ||= tokens.databaseRead;
       if (tokens.accessToken && tokens.machineId) {
         return NextResponse.json({
           found: true,
@@ -256,7 +253,7 @@ export async function GET() {
     }
 
     // Strategy 3: ask user to paste manually
-    if (nativeDbError && /CANTOPEN|unable to open|not a database/i.test(nativeDbError.message || "")) {
+    if (!databaseRead && nativeDbError && /CANTOPEN|unable to open|not a database/i.test(nativeDbError.message || "")) {
       return NextResponse.json({
         found: false,
         error: `Cursor database could not be opened: ${nativeDbError.message}`,

@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as fsPromises from "fs/promises";
+import { execFile } from "child_process";
+
+const validToken = "a".repeat(64);
+const alternateToken = "b".repeat(64);
+const validMachineId = "a".repeat(32);
+const alternateMachineId = "b".repeat(32);
 
 vi.mock("child_process", () => ({
   execFile: vi.fn((_file, _args, _options, callback) => callback(new Error("ENOENT"))),
@@ -57,6 +63,7 @@ describe("GET /api/oauth/cursor/auto-import", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    vi.mocked(execFile).mockImplementation((_file, _args, _options, callback) => callback(new Error("ENOENT")));
     mockDbInstance.__throwOnConstruct = false;
     mockDbInstance.__constructError = null;
     // Force darwin so macOS-specific logic is exercised
@@ -98,16 +105,16 @@ describe("GET /api/oauth/cursor/auto-import", () => {
     vi.mocked(fsPromises.access).mockResolvedValue();
     mockDbInstance.prepare.mockReturnValue({
       all: vi.fn().mockReturnValue([
-        { key: "cursorAuth/accessToken", value: "test-token" },
-        { key: "storage.serviceMachineId", value: "test-machine-id" },
+        { key: "cursorAuth/accessToken", value: validToken },
+        { key: "storage.serviceMachineId", value: validMachineId },
       ]),
     });
 
     const response = await GET();
 
     expect(response.body.found).toBe(true);
-    expect(response.body.accessToken).toBe("test-token");
-    expect(response.body.machineId).toBe("test-machine-id");
+    expect(response.body.accessToken).toBe(validToken);
+    expect(response.body.machineId).toBe(validMachineId);
     expect(mockDbInstance.close).toHaveBeenCalled();
   });
 
@@ -115,29 +122,29 @@ describe("GET /api/oauth/cursor/auto-import", () => {
     vi.mocked(fsPromises.access).mockResolvedValue();
     mockDbInstance.prepare.mockReturnValue({
       all: vi.fn().mockReturnValue([
-        { key: "cursorAuth/accessToken", value: '"json-token"' },
-        { key: "storage.serviceMachineId", value: '"json-machine-id"' },
+        { key: "cursorAuth/accessToken", value: JSON.stringify(validToken) },
+        { key: "storage.serviceMachineId", value: JSON.stringify(validMachineId) },
       ]),
     });
 
     const response = await GET();
 
     expect(response.body.found).toBe(true);
-    expect(response.body.accessToken).toBe("json-token");
-    expect(response.body.machineId).toBe("json-machine-id");
+    expect(response.body.accessToken).toBe(validToken);
+    expect(response.body.machineId).toBe(validMachineId);
   });
 
   it("selects exact credential keys in declared priority order regardless of row order", async () => {
     vi.mocked(fsPromises.access).mockResolvedValue();
     mockDbInstance.prepare.mockReturnValue({ all: vi.fn().mockReturnValue([
-      { key: "cursorAuth/token", value: "old-token" },
-      { key: "storage.machineId", value: "old-machine" },
-      { key: "telemetry.machineId", value: "telemetry-machine" },
-      { key: "cursorAuth/accessToken", value: '"preferred-token"' },
-      { key: "storage.serviceMachineId", value: '"preferred-machine"' },
+      { key: "cursorAuth/token", value: alternateToken },
+      { key: "storage.machineId", value: alternateMachineId },
+      { key: "telemetry.machineId", value: "c".repeat(32) },
+      { key: "cursorAuth/accessToken", value: JSON.stringify(validToken) },
+      { key: "storage.serviceMachineId", value: JSON.stringify(validMachineId) },
     ]) });
     const response = await GET();
-    expect(response.body).toEqual({ found: true, accessToken: "preferred-token", machineId: "preferred-machine" });
+    expect(response.body).toEqual({ found: true, accessToken: validToken, machineId: validMachineId });
     expect(mockDbInstance.close).toHaveBeenCalledOnce();
   });
 
@@ -151,6 +158,52 @@ describe("GET /api/oauth/cursor/auto-import", () => {
     expect(response.body.error).toBeUndefined();
   });
 
+  it.each(["null", "   ", '{"value":"not-a-credential"}', "invalid"])("skips malformed preferred credentials: %s", async (invalid) => {
+    vi.mocked(fsPromises.access).mockResolvedValue();
+    mockDbInstance.prepare.mockReturnValue({ all: vi.fn().mockReturnValue([
+      { key: "cursorAuth/accessToken", value: invalid },
+      { key: "storage.serviceMachineId", value: invalid },
+      { key: "cursorAuth/token", value: validToken },
+      { key: "storage.machineId", value: validMachineId },
+    ]) });
+    const response = await GET();
+    expect(response.body).toEqual({ found: true, accessToken: validToken, machineId: validMachineId });
+  });
+
+  it("reports missing login credentials after a successful empty CLI read", async () => {
+    vi.mocked(fsPromises.access).mockResolvedValue();
+    mockDbInstance.__constructError = new Error("Native bindings unavailable");
+    vi.mocked(execFile).mockImplementation((_file, _args, _options, callback) => callback(null, { stdout: "" }));
+    const response = await GET();
+    expect(response.body.error).toContain("Please login to Cursor IDE first");
+    expect(response.body.windowsManual).toBeUndefined();
+    expect(execFile).toHaveBeenCalled();
+  });
+
+  it("preserves numeric-only machine IDs stored as raw strings", async () => {
+    vi.mocked(fsPromises.access).mockResolvedValue();
+    const machineId = "1".repeat(32);
+    mockDbInstance.prepare.mockReturnValue({ all: vi.fn().mockReturnValue([
+      { key: "cursorAuth/accessToken", value: validToken },
+      { key: "storage.serviceMachineId", value: machineId },
+    ]) });
+    const response = await GET();
+    expect(response.body).toEqual({ found: true, accessToken: validToken, machineId });
+  });
+
+  it("uses valid CLI alternates when preferred keys are malformed", async () => {
+    vi.mocked(fsPromises.access).mockResolvedValue();
+    mockDbInstance.__constructError = new Error("Native bindings unavailable");
+    vi.mocked(execFile).mockImplementation((_file, args, _options, callback) => {
+      const sql = args[1];
+      const value = sql.includes("'cursorAuth/token'") ? validToken
+        : sql.includes("'storage.machineId'") ? validMachineId : "null";
+      callback(null, { stdout: value });
+    });
+    const response = await GET();
+    expect(response.body).toEqual({ found: true, accessToken: validToken, machineId: validMachineId });
+  });
+
   // ── Fuzzy fallback (macOS only) ───────────────────────────────────────
 
   it("falls back to fuzzy key matching on macOS when exact keys are missing", async () => {
@@ -162,8 +215,8 @@ describe("GET /api/oauth/cursor/auto-import", () => {
       // Fuzzy LIKE query
       return {
         all: vi.fn().mockReturnValue([
-          { key: "cursorAuth/someOtherAccessTokenKey", value: "fallback-token" },
-          { key: "storage.someMachineId", value: "fallback-machine" },
+          { key: "cursorAuth/someOtherAccessTokenKey", value: validToken },
+          { key: "storage.someMachineId", value: validMachineId },
         ]),
       };
     });
@@ -171,8 +224,8 @@ describe("GET /api/oauth/cursor/auto-import", () => {
     const response = await GET();
 
     expect(response.body.found).toBe(true);
-    expect(response.body.accessToken).toBe("fallback-token");
-    expect(response.body.machineId).toBe("fallback-machine");
+    expect(response.body.accessToken).toBe(validToken);
+    expect(response.body.machineId).toBe(validMachineId);
   });
 
   it("returns login-prompt error when tokens are missing even after fallback", async () => {
