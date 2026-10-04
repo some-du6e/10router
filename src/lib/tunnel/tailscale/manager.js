@@ -31,7 +31,7 @@ export async function enableTailscale(localPort = 20128, sudoPassword) {
     const sudoPass = sudoPassword || await loadPassword();
     try {
       if (sudoPassword) await rememberPassword(sudoPassword);
-      else if (sudoPass) await verifyPassword(sudoPass);
+      else if (sudoPass && process.platform !== "win32") await verifyPassword(sudoPass);
       else if (process.platform !== "win32" && isDaemonTunMode() !== true) {
         const settings = await getSettings();
         if (settings.tailscaleEnabled || settings.tailscaleUrl) {

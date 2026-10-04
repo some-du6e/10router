@@ -56,4 +56,18 @@ describe("Tailscale privileged restart recovery", () => {
     expect(mocks.startDaemonWithPassword).toHaveBeenCalledWith("");
     expect(getTailscaleService().needsSudoPassword).toBe(false);
   });
+
+  it("starts the Windows service without verifying an unused saved sudo password", async () => {
+    vi.stubGlobal("process", new Proxy(process, {
+      get(target, key) { return key === "platform" ? "win32" : Reflect.get(target, key); },
+    }));
+    try {
+      await enableTailscale();
+      expect(mocks.verifyPassword).not.toHaveBeenCalled();
+      expect(mocks.startDaemonWithPassword).toHaveBeenCalledWith("stale-password");
+      expect(getTailscaleService().needsSudoPassword).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

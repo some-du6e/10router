@@ -7,6 +7,11 @@ import { loadHostPassword, saveHostPassword } from "@/lib/hostCredentials.js";
 const execFileAsync = promisify(execFile);
 let pending;
 
+export function quoteWindowsArgument(value) {
+  // Start-Process joins ArgumentList into a command line parsed with Windows quoting rules.
+  return `"${value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, "$1$1")}"`;
+}
+
 async function runCleanup() {
   const appRoot = process.cwd();
   const script = path.join(appRoot, "src", "lib", "upgrades", "retireIdeProxy.cjs");
@@ -24,7 +29,7 @@ async function runCleanup() {
   } catch {
     if (process.platform === "win32") {
       const quote = (value) => `'${value.replace(/'/g, "''")}'`;
-      const argumentsString = args.map((value) => `"${value}"`).join(" ");
+      const argumentsString = args.map(quoteWindowsArgument).join(" ");
       const command = `$p = Start-Process -FilePath ${quote(process.execPath)} -ArgumentList ${quote(argumentsString)} -Verb RunAs -Wait -PassThru; exit $p.ExitCode`;
       await execFileAsync("powershell", ["-NoProfile", "-NonInteractive", "-Command", command], { timeout: 60000, windowsHide: true });
     } else {

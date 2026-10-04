@@ -5,8 +5,8 @@ const require = createRequire(import.meta.url);
 const CURRENT_SALT = "10router-host-credentials";
 
 function deriveKey(salt) {
-  let identity = "";
-  try { identity = require("node-machine-id").machineIdSync(); } catch { /* Match legacy fallback on minimal hosts. */ }
+  const identity = require("node-machine-id").machineIdSync();
+  if (!identity) throw new Error("Machine identity is unavailable for host credential encryption");
   return crypto.createHash("sha256").update(identity + salt).digest();
 }
 
