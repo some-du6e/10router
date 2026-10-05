@@ -22,7 +22,7 @@ function toIsoDate(value) {
 }
 
 function getCodexAccountId(providerSpecificData) {
-  return providerSpecificData?.workspaceId || providerSpecificData?.accountId || providerSpecificData?.chatgptAccountId || null;
+  return providerSpecificData?.chatgptAccountId || providerSpecificData?.workspaceId || providerSpecificData?.accountId || null;
 }
 
 function getCodexRateLimitBody(snapshot) {
@@ -97,13 +97,16 @@ function getCodexSparkRateLimit(data) {
   }) || null;
 }
 
-export async function getCodexUsage(accessToken, proxyOptions = null) {
+export async function getCodexUsage(accessToken, proxyOptions = null, providerSpecificData = null) {
   try {
+    const accountId = getCodexAccountId(providerSpecificData);
     const response = await proxyAwareFetch(CODEX_CONFIG.usageUrl, {
       method: "GET",
+      cache: "no-store",
       headers: {
         "Authorization": `Bearer ${accessToken}`,
         "Accept": "application/json",
+        ...(accountId ? { "ChatGPT-Account-ID": accountId } : {}),
       },
     }, proxyOptions);
 
@@ -178,7 +181,7 @@ export async function getCodexRateLimitResetCredits(accessToken, proxyOptions = 
 }
 
 // Consume one Codex rate-limit reset credit (irreversible, spends 1 credit)
-export async function consumeCodexRateLimitResetCredit(accessToken, redeemRequestId, proxyOptions = null) {
+export async function consumeCodexRateLimitResetCredit(accessToken, redeemRequestId, proxyOptions = null, providerSpecificData = null) {
   if (!accessToken) {
     throw new Error("No Codex access token available. Please re-authorize the connection.");
   }
@@ -188,6 +191,7 @@ export async function consumeCodexRateLimitResetCredit(accessToken, redeemReques
 
   let response;
   let data = null;
+  const accountId = getCodexAccountId(providerSpecificData);
   try {
     response = await proxyAwareFetch(CODEX_CONFIG.resetCreditsConsumeUrl, {
       method: "POST",
@@ -195,6 +199,7 @@ export async function consumeCodexRateLimitResetCredit(accessToken, redeemReques
         "Authorization": `Bearer ${accessToken}`,
         "Accept": "application/json",
         "Content-Type": "application/json",
+        ...(accountId ? { "ChatGPT-Account-ID": accountId } : {}),
       },
       body: JSON.stringify({ redeem_request_id: redeemRequestId }),
     }, proxyOptions);

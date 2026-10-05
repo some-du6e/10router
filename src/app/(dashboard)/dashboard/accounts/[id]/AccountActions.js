@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import PropTypes from "prop-types";
 import { Button, Toggle, Tooltip, ConfirmModal, EditConnectionModal } from "@/shared/components";
@@ -36,6 +36,7 @@ export default function AccountActions({ connection, resetCredits, onChanged }) 
   // would look like it succeeded.
   const [actionError, setActionError] = useState(null);
   const [nextExpiry, setNextExpiry] = useState(null);
+  const resetInFlight = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -155,19 +156,23 @@ export default function AccountActions({ connection, resetCredits, onChanged }) 
   };
 
   const handleUseResetCredit = async () => {
+    if (resetInFlight.current) return;
+    resetInFlight.current = true;
     setBusy("reset");
     setActionError(null);
     try {
       const res = await fetch(`/api/usage/${connection.id}/codex-reset-credits`, { method: "POST" });
-      if (!res.ok) {
-        const detail = await res.json().catch(() => ({}));
-        setActionError(detail.error || `Could not use a reset credit (${res.status}).`);
+      const detail = await res.json().catch(() => ({}));
+      if (!res.ok || detail.reset !== true) {
+        setActionError(detail.error || detail.message || `Could not use a reset credit (${res.status}).`);
         return;
       }
-      await onChanged?.();
+      if (detail.warning) setActionError(detail.warning);
+      await onChanged?.({ forceQuota: true });
     } catch {
       setActionError("Could not reach the server.");
     } finally {
+      resetInFlight.current = false;
       setBusy(null);
       setConfirmReset(false);
     }
@@ -278,6 +283,7 @@ export default function AccountActions({ connection, resetCredits, onChanged }) 
         title="Use a reset credit"
         message={`Use 1 Codex reset credit for this account. This cannot be undone. Remaining: ${creditCount}.`}
         confirmText="Use credit"
+        loading={busy === "reset"}
         onConfirm={handleUseResetCredit}
         onClose={() => setConfirmReset(false)}
       />
