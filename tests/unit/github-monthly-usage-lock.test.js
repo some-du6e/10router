@@ -16,7 +16,7 @@ vi.mock("@/shared/constants/providers.js", () => ({
 }));
 vi.mock("@/sse/utils/logger.js", () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn() }));
 
-const { markAccountUnavailable } = await import("../../src/sse/services/auth.js");
+const { markAccountUnavailable, getProviderCredentials, clearAccountError } = await import("../../src/sse/services/auth.js");
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -46,6 +46,7 @@ describe("GitHub monthly usage exhaustion", () => {
         "github-a",
         expect.objectContaining({
           modelLock___all: "2026-09-01T00:00:00.000Z",
+          providerReset___all: "2026-09-01T00:00:00.000Z",
           testStatus: "unavailable",
           errorCode: 402,
           backoffLevel: 0,
@@ -82,5 +83,36 @@ describe("GitHub monthly usage exhaustion", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("provider reset metadata", () => {
+  it.each([
+    [429, "Quota exhausted", true],
+    [402, "You've reached your additional usage limit for your plan", true],
+    [503, "Upstream unavailable", false],
+  ])("classifies all-account cooldowns with a second HTTP %i account", async (status, lastError, exhausted) => {
+    const until = new Date(Date.now() + 60000).toISOString();
+    dbMocks.getProviderConnections.mockResolvedValue([
+      { id: "a", modelLock_demo: until, errorCode: 429, lastError: "Quota exhausted" },
+      { id: "b", modelLock_demo: until, errorCode: status, lastError },
+    ]);
+    expect((await getProviderCredentials("codex", null, "demo")).allLimitsExhausted).toBe(exhausted);
+  });
+
+  it("retains a real reset beyond the router's capped cooldown, including later requests", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-04T12:00:00.000Z"));
+    try {
+      await markAccountUnavailable("github-a", 429, "usage_limit_reached", "codex", "demo", Date.parse("2026-08-04T14:00:00.000Z"));
+      const update = dbMocks.updateProviderConnection.mock.calls[0][1];
+      expect(update.modelLock_demo).toBe("2026-08-04T12:30:00.000Z");
+      expect(update.providerReset_demo).toBe("2026-08-04T14:00:00.000Z");
+      dbMocks.getProviderConnections.mockResolvedValue([{ id: "github-a", ...update }]);
+      const credentials = await getProviderCredentials("codex", null, "demo");
+      expect(credentials.providerResetAtMs).toBe(Date.parse("2026-08-04T14:00:00.000Z"));
+      await clearAccountError("github-a", { ...update }, "demo");
+      expect(dbMocks.updateProviderConnection.mock.lastCall[1].providerReset_demo).toBeNull();
+    } finally { vi.useRealTimers(); }
   });
 });

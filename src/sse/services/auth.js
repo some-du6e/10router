@@ -6,6 +6,8 @@ import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.
 import { planCanServeModel } from "@/shared/utils/planCapability.js";
 import { getAntigravityQuotaCache } from "./antigravityQuota.js";
 import * as log from "../utils/logger.js";
+import { getNextAccountReset, PROVIDER_RESET_PREFIX } from "./accountFailureSummary.js";
+import { isLimitError } from "open-sse/utils/limitHold.js";
 
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
@@ -126,11 +128,19 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       const earliest = expiries.sort()[0] || null;
       if (earliest) {
         const earliestConn = lockedConns[0];
+        const eligibleConnections = connections.filter(c => planCanServeModel(providerId, c, model));
         log.warn("AUTH", `${provider} | all ${connections.length} accounts locked for ${model || "all"} (${formatRetryAfter(earliest)}) | lastError=${earliestConn?.lastError?.slice(0, 50)}`);
         return {
           allRateLimited: true,
+          allLimitsExhausted: eligibleConnections.length > 0 && eligibleConnections.every(c => {
+            const quota = antigravityQuotaCache?.get(c.id)?.[model];
+            return (quota?.remainingPercentage <= 0 && new Date(quota.resetAt).getTime() > Date.now()) ||
+              (isModelLockActive(c, model) && isLimitError(Number(c.errorCode), c.lastError));
+          }),
           retryAfter: earliest,
           retryAfterHuman: formatRetryAfter(earliest),
+          providerResetAtMs: getNextAccountReset(eligibleConnections.filter(c => isModelLockActive(c, model) ||
+            (antigravityQuotaCache?.get(c.id)?.[model]?.remainingPercentage <= 0)), model, antigravityQuotaCache),
           lastError: earliestConn?.lastError || null,
           lastErrorCode: earliestConn?.errorCode || null
         };
@@ -271,9 +281,12 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
 
   const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
   const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
+  const providerResetAtMs = githubResetAtMs || resetsAtMs;
 
   await updateProviderConnection(connectionId, {
     ...lockUpdate,
+    [`${PROVIDER_RESET_PREFIX}${githubResetAtMs ? "__all" : model || "__all"}`]:
+      Number.isFinite(providerResetAtMs) && providerResetAtMs > Date.now() ? new Date(providerResetAtMs).toISOString() : null,
     testStatus: "unavailable",
     lastError: reason,
     errorCode: status,
@@ -289,7 +302,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     console.error(`❌ ${provider} [${status}]: ${reason}`);
   }
 
-  return { shouldFallback: true, cooldownMs };
+  return { shouldFallback: true, cooldownMs, providerResetAtMs };
 }
 
 /**
@@ -327,6 +340,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
   });
 
   const clearObj = Object.fromEntries(keysToClear.map(k => [k, null]));
+  for (const key of keysToClear) clearObj[key.replace("modelLock_", PROVIDER_RESET_PREFIX)] = null;
 
   // Only reset error state if no active locks remain
   if (remainingActiveLocks.length === 0) {

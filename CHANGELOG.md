@@ -1,6 +1,8 @@
 # Unreleased
 
 ## Features
+- **Codex account limits**: automatically stop client reconnects when every usable account and fallback model has exhausted its limits. Account/model fallback and explicit rate-limit waiting still run first; temporary provider failures and interrupted streams keep normal retries.
+- Show a short account-limit message with the earliest known provider reset, stored separately from retry cooldowns. Omit unknown reset times and keep per-account details in server logs.
 - **Codex models**: add GPT-6.1 Sol with pricing, vision support, and reasoning levels through Max.
 - **Model catalog**: add GPT-6 Sol and Luna, Claude Opus 5.5, and the current OpenAI and Anthropic API models with pricing, context limits, and reasoning levels. GPT-6 API requests use the Responses endpoint.
 - **Codex models**: add GPT-6 Astra with its Codex context window, pricing, and reasoning levels.

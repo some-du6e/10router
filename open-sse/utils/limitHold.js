@@ -40,6 +40,7 @@ export function isLimitError(status, errorText = "") {
   const text = typeof errorText === "string" ? errorText.toLowerCase() : "";
   return (
     text.includes("usage_limit_reached") ||
+    text.includes("usage limit") ||
     text.includes("rate limit") ||
     text.includes("rate_limit") ||
     text.includes("quota") ||
