@@ -148,13 +148,14 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           allRateLimited: true,
           allLimitsExhausted: eligibleConnections.length > 0 && eligibleConnections.every(c => {
             const quota = antigravityQuotaCache?.get(c.id)?.[model];
-            return (quota?.remainingPercentage <= 0 && new Date(quota.resetAt).getTime() > Date.now()) ||
-              (isModelLockActive(c, model) && isLimitError(Number(c.errorCode), c.lastError));
+            const locked = isModelLockActive(c, model);
+            const limitedLock = locked && isLimitError(Number(c.errorCode), c.lastError);
+            return (!locked || limitedLock) && (limitedLock || resetStates.get(c.id).blockedUntil > Date.now() ||
+              (quota?.remainingPercentage <= 0 && new Date(quota.resetAt).getTime() > Date.now()));
           }),
           retryAfter: earliest,
           retryAfterHuman: formatRetryAfter(earliest),
-          providerResetAtMs: getNextAccountReset(eligibleConnections.filter(c => isModelLockActive(c, model) ||
-            (antigravityQuotaCache?.get(c.id)?.[model]?.remainingPercentage <= 0)), model, antigravityQuotaCache),
+          providerResetAtMs: getNextAccountReset(eligibleConnections, model, antigravityQuotaCache, resetStates),
           lastError: earliestConn?.lastError || null,
           lastErrorCode: earliestConn?.errorCode || null
         };
