@@ -5,6 +5,7 @@ import Link from "next/link";
 import { getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
 import PropTypes from "prop-types";
 import { Card, Badge, Button, Modal, Select, Toggle, EditConnectionModal, ConfirmModal } from "@/shared/components";
+import { providerRoutingOptions, SOONEST_RESET_HINT } from "@/shared/constants/accountRouting";
 import { useBlurEmails } from "@/shared/hooks/useBlurEmails";
 
 // ── CooldownTimer ──────────────────────────────────────────────
@@ -213,6 +214,7 @@ function AddApiKeyModal({ isOpen, provider, providerName, proxyPools, onSave, on
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   const handleValidate = async () => {
     setValidating(true);
@@ -231,6 +233,7 @@ function AddApiKeyModal({ isOpen, provider, providerName, proxyPools, onSave, on
   const handleSubmit = async () => {
     if (!provider || !formData.apiKey) return;
     setSaving(true);
+    setSaveError("");
     try {
       let isValid = false;
       try {
@@ -252,6 +255,8 @@ function AddApiKeyModal({ isOpen, provider, providerName, proxyPools, onSave, on
         proxyPoolId: formData.proxyPoolId === NONE ? null : formData.proxyPoolId,
         testStatus: isValid ? "active" : "unknown",
       });
+    } catch (error) {
+      setSaveError(error.message || "Failed to save API key");
     } finally { setSaving(false); }
   };
 
@@ -286,6 +291,7 @@ function AddApiKeyModal({ isOpen, provider, providerName, proxyPools, onSave, on
         </div>
         <Select label="Proxy Pool" value={formData.proxyPoolId} onChange={(e) => setFormData({ ...formData, proxyPoolId: e.target.value })}
           options={[{ value: NONE, label: "None" }, ...(proxyPools || []).map((p) => ({ value: p.id, label: p.name }))]} />
+        {saveError && <p role="alert" className="text-sm text-red-500">{saveError}</p>}
         <div className="flex gap-2">
           <Button onClick={handleSubmit} fullWidth disabled={!formData.name || !formData.apiKey || saving}>
             {saving ? "Saving..." : "Save"}
@@ -345,7 +351,9 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
       const res = await fetch("/api/settings", { cache: "no-store" });
       const data = res.ok ? await res.json() : {};
       const current = data.providerStrategies || {};
-      const override = {};
+      const override = { ...current[providerId] };
+      delete override.fallbackStrategy;
+      delete override.stickyRoundRobinLimit;
       if (strategy) override.fallbackStrategy = strategy;
       if (strategy === "round-robin" && stickyLimit !== "") override.stickyRoundRobinLimit = Number(stickyLimit) || 3;
       const updated = { ...current };
@@ -396,10 +404,16 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
   };
 
   const handleSaveApiKey = async (formData) => {
-    try {
-      const res = await fetch("/api/providers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: providerId, ...formData }) });
-      if (res.ok) { await fetch_(); setShowAddModal(false); }
-    } catch (e) { console.log("save apikey error:", e); }
+    const res = await fetch("/api/providers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: providerId, ...formData }) });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      if (data.code === "PROVIDER_NAME_CONFLICT") {
+        throw new Error(`A key named "${data.existingName}" already exists. Choose a different name, or edit the existing connection.`);
+      }
+      throw new Error(data.error || "Failed to save API key");
+    }
+    await fetch_();
+    setShowAddModal(false);
   };
 
   const handleUpdateConnection = async (formData) => {
@@ -417,11 +431,13 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
           <h2 className="text-lg font-semibold">Connections</h2>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-text-muted font-medium">Round Robin</span>
-            <Toggle
-              checked={providerStrategy === "round-robin"}
-              onChange={(enabled) => {
-                const strategy = enabled ? "round-robin" : null;
+            <Select
+              aria-label="Account routing"
+              options={providerRoutingOptions(providerId)}
+              value={providerStrategy || "inherit"}
+              onChange={(e) => {
+                const strategy = e.target.value === "inherit" ? null : e.target.value;
+                const enabled = strategy === "round-robin";
                 setProviderStrategy(strategy);
                 if (enabled && !providerStickyLimit) setProviderStickyLimit("1");
                 saveStrategy(strategy, enabled ? (providerStickyLimit || "1") : providerStickyLimit);
@@ -439,6 +455,7 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
             )}
           </div>
         </div>
+        {providerStrategy === "soonest-reset" && <p className="text-xs text-text-muted mb-4">{SOONEST_RESET_HINT}</p>}
 
         {connections.length === 0 ? (
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -472,13 +489,13 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
         )}
       </Card>
 
-      <AddApiKeyModal
+      {showAddModal && <AddApiKeyModal
         isOpen={showAddModal}
         provider={providerId}
         proxyPools={proxyPools}
         onSave={handleSaveApiKey}
         onClose={() => setShowAddModal(false)}
-      />
+      />}
       <EditConnectionModal
         isOpen={showEditModal}
         connection={selectedConnection}

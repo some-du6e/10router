@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const repoPath = (relativePath) => path.join(repoRoot, relativePath);
 
 // ============================================================
 // AUDIT-002 (#1962): API key masking in usage stats
@@ -8,7 +12,7 @@ import path from "path";
 describe("AUDIT-002: API key masking", () => {
   it("source should contain maskApiKey function", () => {
     const source = fs.readFileSync(
-      path.resolve("src/lib/db/repos/usageRepo.js"),
+      repoPath("src/lib/db/repos/usageRepo.js"),
       "utf-8"
     );
     expect(source).toContain("function maskApiKey");
@@ -16,7 +20,7 @@ describe("AUDIT-002: API key masking", () => {
 
   it("getUsageHistory should use apiKeyMasked instead of apiKey", () => {
     const source = fs.readFileSync(
-      path.resolve("src/lib/db/repos/usageRepo.js"),
+      repoPath("src/lib/db/repos/usageRepo.js"),
       "utf-8"
     );
     // The REST response should use apiKeyMasked
@@ -31,7 +35,7 @@ describe("AUDIT-002: API key masking", () => {
 
   it("getUsageStats should use apiKeyMasked in byApiKey entries", () => {
     const source = fs.readFileSync(
-      path.resolve("src/lib/db/repos/usageRepo.js"),
+      repoPath("src/lib/db/repos/usageRepo.js"),
       "utf-8"
     );
     // Both code paths (daily summary + 24h live) should use apiKeyMasked
@@ -50,7 +54,7 @@ describe("AUDIT-002: API key masking", () => {
 
   it("byApiKey object keys should use masked key, not raw key", () => {
     const source = fs.readFileSync(
-      path.resolve("src/lib/db/repos/usageRepo.js"),
+      repoPath("src/lib/db/repos/usageRepo.js"),
       "utf-8"
     );
     // The 24h path should use apiKeyMasked in the akKey template
@@ -76,7 +80,7 @@ describe("AUDIT-003: Proxy URL validation", () => {
 
   it("source should contain validateProxyUrl function", () => {
     const source = fs.readFileSync(
-      path.resolve("src/lib/network/outboundProxy.js"),
+      repoPath("src/lib/network/outboundProxy.js"),
       "utf-8"
     );
     expect(source).toContain("function validateProxyUrl");
@@ -173,7 +177,7 @@ describe("AUDIT-003: Proxy URL validation", () => {
 describe("AUDIT-018: XSS escaping in OAuth callback", () => {
   it("source should contain escapeHtml function", () => {
     const source = fs.readFileSync(
-      path.resolve("src/lib/oauth/utils/server.js"),
+      repoPath("src/lib/oauth/utils/server.js"),
       "utf-8"
     );
     expect(source).toContain("function escapeHtml");
@@ -181,7 +185,7 @@ describe("AUDIT-018: XSS escaping in OAuth callback", () => {
 
   it("should escape ampersand, angle brackets, and quotes", () => {
     const source = fs.readFileSync(
-      path.resolve("src/lib/oauth/utils/server.js"),
+      repoPath("src/lib/oauth/utils/server.js"),
       "utf-8"
     );
     expect(source).toContain("&amp;");
@@ -193,97 +197,12 @@ describe("AUDIT-018: XSS escaping in OAuth callback", () => {
 
   it("should use safeMessage in rendered HTML, not raw message", () => {
     const source = fs.readFileSync(
-      path.resolve("src/lib/oauth/utils/server.js"),
+      repoPath("src/lib/oauth/utils/server.js"),
       "utf-8"
     );
     expect(source).toContain("safeMessage");
     expect(source).toContain("${safeMessage}");
     // Should NOT use raw message in HTML body
     expect(source).not.toContain("<p>${message}</p>");
-  });
-});
-
-// ============================================================
-// AUDIT-004 (#1963): TOCTOU race - atomic lock file
-// ============================================================
-describe("AUDIT-004: Atomic lock file for MITM startup", () => {
-  it("manager.js should define LOCK_FILE constant", () => {
-    const source = fs.readFileSync(
-      path.resolve("src/mitm/manager.js"),
-      "utf-8"
-    );
-    expect(source).toContain("LOCK_FILE");
-    expect(source).toContain(".mitm.lock");
-  });
-
-  it("should use O_EXCL flag (wx) for atomic creation", () => {
-    const source = fs.readFileSync(
-      path.resolve("src/mitm/manager.js"),
-      "utf-8"
-    );
-    expect(source).toContain('"wx"');
-    expect(source).toContain("EEXIST");
-  });
-
-  it("should clean up lock file on all exit paths", () => {
-    const source = fs.readFileSync(
-      path.resolve("src/mitm/manager.js"),
-      "utf-8"
-    );
-    const matches = source.match(/unlinkSync\(LOCK_FILE\)/g);
-    expect(matches).not.toBeNull();
-    expect(matches.length).toBeGreaterThanOrEqual(4);
-  });
-});
-
-// ============================================================
-// AUDIT-001 (#1965): Race condition in retry tracking
-// ============================================================
-describe("AUDIT-001: Synchronous restart guard", () => {
-  it("mitmIsRestarting should be set before first await expression", () => {
-    const source = fs.readFileSync(
-      path.resolve("src/mitm/manager.js"),
-      "utf-8"
-    );
-
-    const funcStart = source.indexOf("async function scheduleMitmRestart");
-    expect(funcStart).toBeGreaterThan(-1);
-
-    const funcBody = source.substring(funcStart, funcStart + 2000);
-
-    const guardCheckIdx = funcBody.indexOf("if (mitmIsRestarting) return;");
-    expect(guardCheckIdx).toBeGreaterThan(-1);
-
-    const afterGuard = funcBody.substring(guardCheckIdx);
-
-    // Strip line comments to avoid matching "await" in comment text
-    const noComments = afterGuard.replace(/\/\/.*$/gm, "");
-
-    // Find the first actual await expression
-    const firstAwaitIdx = noComments.search(/\bawait\s+/);
-    expect(firstAwaitIdx).toBeGreaterThan(-1);
-
-    // Find mitmIsRestarting = true
-    const setFlagIdx = noComments.indexOf("mitmIsRestarting = true");
-
-    expect(setFlagIdx).toBeGreaterThan(-1);
-    expect(firstAwaitIdx).toBeGreaterThan(-1);
-    expect(setFlagIdx).toBeLessThan(firstAwaitIdx);
-  });
-
-  it("mitmIsRestarting should be reset on max-restarts early return", () => {
-    const source = fs.readFileSync(
-      path.resolve("src/mitm/manager.js"),
-      "utf-8"
-    );
-
-    const funcStart = source.indexOf("async function scheduleMitmRestart");
-    const funcBody = source.substring(funcStart, funcStart + 2000);
-
-    const maxRestartsIdx = funcBody.indexOf("Max restart attempts reached");
-    expect(maxRestartsIdx).toBeGreaterThan(-1);
-
-    const afterMax = funcBody.substring(maxRestartsIdx, maxRestartsIdx + 200);
-    expect(afterMax).toContain("mitmIsRestarting = false");
   });
 });

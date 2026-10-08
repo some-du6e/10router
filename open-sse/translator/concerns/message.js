@@ -1,7 +1,12 @@
 import { OPENAI_BLOCK } from "../schema/index.js";
 
-// Collapse an OpenAI content-part array: a lone text part becomes a plain string,
-// otherwise the array is returned as-is. Matches existing translator behavior.
+// Collapse text-only content-part arrays while preserving multimodal structure.
 export function collapseTextParts(parts) {
-  return parts.length === 1 && parts[0].type === OPENAI_BLOCK.TEXT ? parts[0].text : parts;
+  const canCollapse = parts.length > 0
+    && parts.every((part) => part.type === OPENAI_BLOCK.TEXT)
+    && !parts.some((part) => part.cache_control);
+
+  return canCollapse
+    ? parts.map((part) => part.text || "").join("\n")
+    : parts;
 }

@@ -2,6 +2,8 @@
 import "open-sse/index.js";
 
 import { getProviderConnectionById } from "@/lib/localDb";
+import { updateProviderConnection } from "@/lib/db/index.js";
+import { invalidatePooledCodexUsage } from "@/sse/services/codexPooledUsage.js";
 import { consumeCodexRateLimitResetCredit, getCodexRateLimitResetCredits } from "open-sse/services/usage.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { refreshAndUpdateCredentials } from "../route.js";
@@ -19,7 +21,7 @@ function isAuthExpiredError(error) {
   return isAuthExpiredResult({ message: error?.message });
 }
 
-function getResponseForConsumeResult(result, redeemRequestId) {
+function getResponseForConsumeResult(result, redeemRequestId, warning = null) {
   if (result.ok) {
     return Response.json({
       code: result.code,
@@ -27,6 +29,7 @@ function getResponseForConsumeResult(result, redeemRequestId) {
       windows_reset: result.windowsReset,
       redeemRequestId,
       credit: result.raw?.credit || null,
+      ...(warning ? { warning } : {}),
     });
   }
 
@@ -135,19 +138,46 @@ export async function POST(request, { params }) {
 
     // Server-generated redeem id prevents client-controlled replay
     const redeemRequestId = crypto.randomUUID();
-    let consumeResult = await consumeCodexRateLimitResetCredit(connection.accessToken, redeemRequestId, proxyOptions);
+    let consumeResult = await consumeCodexRateLimitResetCredit(connection.accessToken, redeemRequestId, proxyOptions, connection.providerSpecificData);
 
     if (isOAuth && isAuthExpiredResult(consumeResult) && connection.refreshToken) {
       try {
         const retryResult = await refreshAndUpdateCredentials(connection, true, proxyOptions);
         connection = retryResult.connection;
-        consumeResult = await consumeCodexRateLimitResetCredit(connection.accessToken, redeemRequestId, proxyOptions);
+        consumeResult = await consumeCodexRateLimitResetCredit(connection.accessToken, redeemRequestId, proxyOptions, connection.providerSpecificData);
       } catch (retryError) {
         console.warn(`[Codex Reset Credits] force refresh failed: ${retryError.message}`);
       }
     }
 
-    return getResponseForConsumeResult(consumeResult, redeemRequestId);
+    let warning = null;
+    if (consumeResult.ok) {
+      try {
+        const current = await getProviderConnectionById(connection.id);
+        if (!current) throw new Error("Connection no longer exists");
+        // Upstream reset restores quota; allow routing to retry this account now.
+        const locks = Object.fromEntries(
+          Object.keys(current).filter((key) => key.startsWith("modelLock_")).map((key) => [key, null]),
+        );
+        await updateProviderConnection(connection.id, {
+          ...locks,
+          testStatus: "active",
+          lastError: null,
+          errorCode: null,
+          lastErrorAt: null,
+          backoffLevel: 0,
+          rateLimitedUntil: null,
+        });
+        console.info(`[Codex Reset Credits] ${connection.id}: reset succeeded; routing cooldowns cleared`);
+      } catch (error) {
+        // The credit is already spent. Never report redemption as failed here.
+        warning = "Credit used, but local routing cooldowns could not be cleared. Refresh the account; do not use another credit.";
+        console.error(`[Codex Reset Credits] ${connection.id}: local reset cleanup failed`, error);
+      }
+      invalidatePooledCodexUsage();
+    }
+
+    return getResponseForConsumeResult(consumeResult, redeemRequestId, warning);
   } catch (error) {
     const provider = connection?.provider ?? "unknown";
     console.warn(`[Codex Reset Credits] ${provider}: ${error.message}`);

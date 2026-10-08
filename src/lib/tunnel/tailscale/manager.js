@@ -1,16 +1,15 @@
 import { loadState, generateShortId } from "../shared/state.js";
-import { startFunnel, stopFunnel, isTailscaleRunning, isTailscaleRunningStrict, isTailscaleLoggedIn, isTailscaleLoggedInStrict, startLogin, startDaemonWithPassword, provisionCert } from "./tailscale.js";
+import { startFunnel, stopFunnel, isTailscaleRunning, isTailscaleRunningStrict, isTailscaleLoggedIn, isTailscaleLoggedInStrict, startLogin, startDaemonWithPassword, isDaemonTunMode, provisionCert } from "./tailscale.js";
 import { waitForHealth } from "./healthCheck.js";
 import { getSettings, updateSettings } from "@/lib/localDb";
-import { getCachedPassword, loadEncryptedPassword, initDbHooks } from "@/mitm/manager";
-
-initDbHooks(getSettings, updateSettings);
+import { loadPassword, rememberPassword, validatePassword, verifyPassword } from "@/lib/tunnel/tailscale/sudo.js";
 
 const svc = {
   cancelToken: { cancelled: false },
   spawnInProgress: false,
   lastRestartAt: 0,
   activeLocalPort: null,
+  needsSudoPassword: false,
 };
 
 export function getTailscaleService() { return svc; }
@@ -20,7 +19,8 @@ function throwIfCancelled(token) {
   if (token.cancelled) throw new Error("tailscale cancelled");
 }
 
-export async function enableTailscale(localPort = 20128) {
+export async function enableTailscale(localPort = 20128, sudoPassword) {
+  validatePassword(sudoPassword);
   console.log(`[Tailscale] enable start (port=${localPort})`);
   svc.cancelToken = { cancelled: false };
   svc.activeLocalPort = localPort;
@@ -28,7 +28,23 @@ export async function enableTailscale(localPort = 20128) {
   const token = svc.cancelToken;
 
   try {
-    const sudoPass = getCachedPassword() || await loadEncryptedPassword() || "";
+    const sudoPass = sudoPassword || await loadPassword();
+    try {
+      if (sudoPassword) await rememberPassword(sudoPassword);
+      else if (sudoPass && process.platform !== "win32") await verifyPassword(sudoPass);
+      else if (process.platform !== "win32" && isDaemonTunMode() !== true) {
+        const settings = await getSettings();
+        if (settings.tailscaleEnabled || settings.tailscaleUrl) {
+          throw new Error("Saved Tailscale sudo password is unavailable");
+        }
+      }
+      svc.needsSudoPassword = false;
+    } catch (error) {
+      svc.needsSudoPassword = true;
+      const recoveryError = new Error("Tailscale needs a new sudo password. Open the endpoint page to reconnect.", { cause: error });
+      recoveryError.code = "TAILSCALE_SUDO_PASSWORD_REQUIRED";
+      throw recoveryError;
+    }
     await startDaemonWithPassword(sudoPass);
     console.log("[Tailscale] daemon ready");
     throwIfCancelled(token);
@@ -124,6 +140,7 @@ export async function getTailscaleStatus() {
     settingsEnabled,
     tunnelUrl,
     running,
-    loggedIn
+    loggedIn,
+    needsSudoPassword: svc.needsSudoPassword
   };
 }

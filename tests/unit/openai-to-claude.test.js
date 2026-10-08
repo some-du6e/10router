@@ -11,6 +11,38 @@ import { openaiToClaudeRequest } from "../../open-sse/translator/request/openai-
 import { openaiToClaudeResponse } from "../../open-sse/translator/response/openai-to-claude.js";
 
 describe("openaiToClaudeRequest", () => {
+  it.each(["reasoning_content", "reasoning"])("does not manufacture unsigned thinking from %s", (field) => {
+    const result = openaiToClaudeRequest("claude-sonnet-4-20250514", {
+      messages: [
+        { role: "user", content: "What is 1 + 1?" },
+        { role: "assistant", content: "2", [field]: "I should add one and one." },
+        { role: "user", content: "Continue" },
+      ],
+    }, false);
+    expect(result.messages).toEqual([
+      { role: "user", content: [expect.objectContaining({ type: "text", text: "What is 1 + 1?" })] },
+      { role: "assistant", content: [expect.objectContaining({ type: "text", text: "2" })] },
+      { role: "user", content: [expect.objectContaining({ type: "text", text: "Continue" })] },
+    ]);
+  });
+
+  it("preserves explicit signed thinking and the complete conversation", () => {
+    const signature = Buffer.from([0x12, 0x01, 0x02]).toString("base64");
+    const thinking = { type: "thinking", thinking: "Signed provider history", signature };
+    const result = openaiToClaudeRequest("claude-sonnet-4-20250514", {
+      messages: [
+        { role: "user", content: "Question" },
+        { role: "assistant", content: [thinking, { type: "text", text: "Answer" }] },
+        { role: "user", content: "Follow up" },
+      ],
+    }, false);
+    expect(result.messages).toEqual([
+      { role: "user", content: [expect.objectContaining({ type: "text", text: "Question" })] },
+      { role: "assistant", content: [thinking, expect.objectContaining({ type: "text", text: "Answer" })] },
+      { role: "user", content: [expect.objectContaining({ type: "text", text: "Follow up" })] },
+    ]);
+  });
+
   describe("response_format handling", () => {
     it("should inject JSON schema instructions for json_schema type", () => {
       const body = {
@@ -189,7 +221,8 @@ describe("openaiToClaudeResponse", () => {
               })
             }
           }]
-        }
+        },
+        finish_reason: "tool_calls"
       }]
     };
 

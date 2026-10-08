@@ -1,10 +1,11 @@
 import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools } from "@/lib/localDb";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
-import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
+import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { planCanServeModel } from "@/shared/utils/planCapability.js";
 import { getAntigravityQuotaCache } from "./antigravityQuota.js";
+import { getRoutingQuotas, getResetState, pickSoonestReset } from "./soonestReset.js";
 import * as log from "../utils/logger.js";
 import { getNextAccountReset, PROVIDER_RESET_PREFIX } from "./accountFailureSummary.js";
 import { isLimitError } from "open-sse/utils/limitHold.js";
@@ -80,6 +81,12 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
+    const settings = await getSettings();
+    const providerOverride = (settings.providerStrategies || {})[providerId] || {};
+    const strategy = providerOverride.fallbackStrategy || settings.fallbackStrategy || "fill-first";
+    const routingQuotas = strategy === "soonest-reset" ? getRoutingQuotas(providerId, connections) : new Map();
+    const resetStates = new Map(connections.map(c => [c.id, getResetState(providerId, routingQuotas.get(c.id), model)]));
+
     // Antigravity quota cache is lazy: only populated after that account returns 409/429.
     const isAntigravity = providerId === "antigravity";
     const antigravityQuotaCache = isAntigravity && model ? getAntigravityQuotaCache() : null;
@@ -88,6 +95,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
       if (isModelLockActive(c, model)) return false;
+      if (resetStates.get(c.id).blockedUntil) return false;
       // A plan that cannot serve this model would only 400 upstream.
       if (!planCanServeModel(providerId, c, model)) {
         log.debug("AUTH", `${provider} | skipping ${c.name || c.id}: plan cannot serve ${model}`);
@@ -118,7 +126,13 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     if (availableConnections.length === 0) {
       // Find earliest persistent lock or lazy Antigravity quota-cache reset for retry timing.
       const lockedConns = connections.filter(c => isModelLockActive(c, model));
-      const expiries = lockedConns.map(c => getEarliestModelLockUntil(c)).filter(Boolean);
+      const expiries = strategy === "soonest-reset"
+        ? connections.filter(c => planCanServeModel(providerId, c, model)).map(c => {
+          // An account needs both its error cooldown and exhausted quota to clear.
+          const lock = new Date(c[getModelLockKey(model)] || c[MODEL_LOCK_ALL] || 0).getTime();
+          return Math.max(Number.isFinite(lock) ? lock : 0, resetStates.get(c.id).blockedUntil);
+        }).filter(until => until > Date.now()).map(until => new Date(until).toISOString())
+        : lockedConns.map(c => getEarliestModelLockUntil(c)).filter(Boolean);
       if (isAntigravity && model && antigravityQuotaCache) {
         connections.forEach((c) => {
           const resetAt = antigravityQuotaCache.get(c.id)?.[model]?.resetAt;
@@ -149,11 +163,6 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
-    const settings = await getSettings();
-    // Per-provider strategy overrides global setting
-    const providerOverride = (settings.providerStrategies || {})[providerId] || {};
-    const strategy = providerOverride.fallbackStrategy || settings.fallbackStrategy || "fill-first";
-
     let connection;
     // Pin to preferred connection if specified and available
     if (preferredConnectionId) {
@@ -164,6 +173,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     }
     if (connection) {
       // skip strategy
+    } else if (strategy === "soonest-reset") {
+      connection = pickSoonestReset(availableConnections, resetStates);
     } else if (strategy === "round-robin") {
       const stickyLimit = providerOverride.stickyRoundRobinLimit || settings.stickyRoundRobinLimit || 3;
 

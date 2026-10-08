@@ -1,4 +1,5 @@
 import { CURSOR_CONFIG } from "../constants/oauth.js";
+import { isValidCursorAccessToken, isValidCursorMachineId } from "../cursorCredentials.js";
 
 /**
  * Cursor IDE OAuth Service
@@ -103,13 +104,12 @@ export class CursorService {
     }
 
     // Token format validation (Cursor tokens are typically long strings)
-    if (accessToken.length < 50) {
+    if (!isValidCursorAccessToken(accessToken)) {
       throw new Error("Invalid token format. Token appears too short.");
     }
 
     // Machine ID format validation (should be UUID-like)
-    const uuidRegex = /^[a-f0-9-]{32,}$/i;
-    if (!uuidRegex.test(machineId.replace(/-/g, ""))) {
+    if (!isValidCursorMachineId(machineId)) {
       throw new Error("Invalid machine ID format. Expected UUID format.");
     }
 

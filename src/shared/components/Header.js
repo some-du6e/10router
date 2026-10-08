@@ -43,7 +43,7 @@ const getPageInfo = (pathname) => {
     const kindConfig = MEDIA_PROVIDER_KINDS.find((k) => k.id === kindId);
     return {
       title: kindConfig?.label || kindId,
-      description: `Manage your ${kindConfig?.label || kindId} providers`,
+      description: "",
       icon: kindConfig?.icon || "perm_media",
       breadcrumbs: [],
     };
@@ -73,7 +73,7 @@ const getPageInfo = (pathname) => {
   if (pathname.includes("/providers") && !pathname.includes("/media-providers"))
     return {
       title: "Providers",
-      description: "Manage your AI provider connections",
+      description: "",
       icon: "dns",
       breadcrumbs: [],
     };
@@ -102,15 +102,8 @@ const getPageInfo = (pathname) => {
   if (pathname.includes("/quota"))
     return {
       title: "Quota Tracker",
-      description: "Track and manage your API quota limits",
+      description: "",
       icon: "data_usage",
-      breadcrumbs: [],
-    };
-  if (pathname.includes("/mitm"))
-    return {
-      title: "MITM Proxy",
-      description: "Intercept CLI tool traffic and route through 10router",
-      icon: "security",
       breadcrumbs: [],
     };
   if (pathname.includes("/token-saver"))
@@ -123,14 +116,14 @@ const getPageInfo = (pathname) => {
   if (pathname.includes("/cli-tools"))
     return {
       title: "CLI Tools",
-      description: "Configure CLI tools",
+      description: "",
       icon: "terminal",
       breadcrumbs: [],
     };
   if (pathname.includes("/proxy-pools"))
     return {
       title: "Proxy Pools",
-      description: "Manage your proxy pool configurations",
+      description: "",
       icon: "lan",
       breadcrumbs: [],
     };
@@ -144,14 +137,14 @@ const getPageInfo = (pathname) => {
   if (pathname.includes("/endpoint"))
     return {
       title: "Endpoint",
-      description: "API endpoint configuration",
+      description: "",
       icon: "api",
       breadcrumbs: [],
     };
   if (pathname.includes("/profile"))
     return {
       title: "Settings",
-      description: "Manage your preferences",
+      description: "",
       icon: "settings",
       breadcrumbs: [],
     };
@@ -172,7 +165,7 @@ const getPageInfo = (pathname) => {
   if (pathname === "/dashboard")
     return {
       title: "Endpoint",
-      description: "API endpoint configuration",
+      description: "",
       icon: "api",
       breadcrumbs: [],
     };

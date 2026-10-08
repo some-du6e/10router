@@ -1,29 +1,21 @@
 import { defineConfig } from "vitest/config";
-import { resolve } from "path";
-import { fileURLToPath } from "url";
+import { makeConfig } from "./vitest.shared.js";
 
-const __dirname = fileURLToPath(new URL(".", import.meta.url));
-
-export default defineConfig({
-  test: {
-    environment: "node",
-    globals: true,
-    include: ["**/*.test.js"],
-    // Don't scan into git worktrees nested under .claude/ — they carry their
-    // own copies of the test files but lack an installed node_modules (open-sse,
-    // etc.), which makes provider imports fail during collection.
-    exclude: ["**/node_modules/**", "**/.claude/**", "**/dist/**"],
-    // Allow many it.concurrent cases (real provider smoke runs ~50 providers in parallel)
-    maxConcurrency: 60,
-    // Suppress noisy console output from handlers under test
-    silent: false,
-  },
-  resolve: {
-    // Use array form so subpath aliases (e.g. "@/lib/db/index.js") resolve correctly.
-    alias: [
-      { find: /^open-sse\//, replacement: resolve(__dirname, "../open-sse") + "/" },
-      { find: "open-sse", replacement: resolve(__dirname, "../open-sse") },
-      { find: /^@\//, replacement: resolve(__dirname, "../src") + "/" },
-    ],
-  },
-});
+// The default command is deliberately boring: deterministic Vitest tests only.
+// Integration, live, benchmark, stress, and cloud suites have explicit
+// commands below in tests/package.json.
+export default defineConfig(makeConfig({
+  include: ["auth/**/*.test.js", "unit/**/*.test.js", "translator/**/*.test.js"],
+  exclude: [
+    "unit/antigravity-cache.test.js",
+    "unit/db-benchmark.test.js",
+    "unit/db-concurrent.test.js",
+    "unit/embeddings.cloud.test.js",
+    "unit/mimo-free.live.test.js",
+    "**/*.real.test.js",
+    "**/*.live.test.js",
+    "**/*e2e.test.js",
+    "**/*benchmark*.test.js",
+    "**/*stress*.test.js",
+  ],
+}));
