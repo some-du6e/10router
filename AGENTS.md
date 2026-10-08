@@ -14,10 +14,18 @@ The code lives in `src/` (Next.js app + dashboard/compat APIs), `open-sse/` (the
 
 ## Commands
 
+### Dependency installs across worktrees
+
+- Prefer `bun install` for dependencies. On Linux, Bun's shared package cache and default hardlink backend reduce duplication across worktrees when the cache and worktrees share a filesystem. Keep a separate `node_modules` in each worktree.
+- Preserve existing lockfile versions. When a package has `bun.lock` or `bun.lockb`, use `bun install --frozen-lockfile`; if it only has `package-lock.json`, use `npm ci` to preserve that lockfile without migrating it. Do not delete or regenerate locks to bypass a frozen-install failure.
+- This repo currently ignores `package-lock.json` and tracks no lockfiles. Keep that policy: do not commit generated Bun locks, change dependency versions, or start a package-manager migration as part of a local install. Without a lockfile, exact versions are not pinned.
+- Bun is the preferred installer; keep the Node runtime and the `npm run` / `npx` commands below unless the task explicitly changes runtime.
+- Next.js build caches such as `.next/cache` are separate from Bun's dependency cache. Do not blindly clear Bun's shared cache to reclaim worktree space, or symlink whole `node_modules` directories between branches with different dependencies.
+
 Dashboard/gateway (run from repo root):
 ```bash
 cp .env.example .env
-npm install
+bun install  # apply the lockfile rules above
 PORT=20128 NEXT_PUBLIC_BASE_URL=http://localhost:20128 npm run dev   # dev (webpack, port 20127 by default via next dev)
 npm run build && PORT=20128 HOSTNAME=0.0.0.0 npm run start           # production
 ```
@@ -33,8 +41,8 @@ cd cli && npm run dev  # nodemon watch
 
 Tests (vitest, in `tests/`, an **independent** ESM package — not wired into root `npm test`):
 ```bash
-npm install                             # ROOT deps first — tests import from src/ which needs `open`, `undici`, etc.
-cd tests && npm install                 # then tests' own deps (vitest) → tests/node_modules (allowed by tests/.gitignore)
+bun install                             # ROOT deps first; apply the lockfile rules above
+cd tests && bun install                 # then tests' own deps; apply the same lockfile rules here
 npx vitest run                          # all tests; auto-discovers tests/vitest.config.js
 npx vitest run unit/capabilities.test.js   # single file (path relative to tests/)
 ```
