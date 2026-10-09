@@ -30,7 +30,7 @@ vi.mock("@/lib/pxpipe/loader.js", () => ({ getTransform: vi.fn() }));
 vi.mock("@/lib/pxpipe/events.js", () => ({ appendPxpipeEvent: vi.fn() }));
 vi.mock("open-sse/services/combo.js", async (importOriginal) => ({
   handleComboChat: (await importOriginal()).handleComboChat,
-  handleFusionChat: vi.fn(),
+  handleFusionChat: (await importOriginal()).handleFusionChat,
   detectRequiredCapabilities: vi.fn(() => new Set()),
 }));
 vi.mock("open-sse/services/capacityAdapter.js", () => ({
@@ -181,6 +181,34 @@ describe("chat account failure responses", () => {
     expect(response.status).toBe(allLimited ? 400 : 500);
     expect(response.headers.get("x-should-retry")).toBe(allLimited ? "false" : null);
     expect(mocks.handleChatCore).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["timeout", "empty", "limited"])("keeps fusion %s outcomes distinct from confirmed limits", async (secondOutcome) => {
+    mocks.getSettings.mockResolvedValue({
+      comboStrategy: "fusion", comboStrategies: {
+        "opencode-go/glm-5.2": { fusionTuning: { panelHardTimeoutMs: 20 } },
+      },
+    });
+    mocks.getComboModels.mockResolvedValue(["first", "second"]);
+    mocks.getModelInfo.mockImplementation(async (model) => ({ provider: model, model: "demo" }));
+    const attempted = new Set();
+    mocks.getProviderCredentials.mockImplementation(async (provider) => {
+      if (attempted.has(provider)) return null;
+      attempted.add(provider);
+      return account(provider, provider);
+    });
+    mocks.handleChatCore.mockImplementation(async ({ modelInfo }) => {
+      if (modelInfo.provider === "second" && secondOutcome === "timeout") return new Promise(() => {});
+      if (modelInfo.provider === "second" && secondOutcome === "empty") {
+        return { success: true, response: new Response("{}", { headers: { "content-type": "application/json" } }) };
+      }
+      return { success: false, status: 429, error: "Quota exhausted" };
+    });
+    const pending = handleChat(request("codex-tui"));
+    await vi.advanceTimersByTimeAsync(30);
+    const response = await pending;
+    expect(response.status).toBe(secondOutcome === "limited" ? 400 : 503);
+    expect(response.headers.get("x-should-retry")).toBe(secondOutcome === "limited" ? "false" : null);
   });
 
 });

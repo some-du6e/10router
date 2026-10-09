@@ -21,6 +21,11 @@ Temporary outages, mixed limit/outage failures, and interrupted streams retain n
 retry behavior. Claude and other clients retain their existing HTTP status and retry
 headers. Codex request and stream retry limits are not changed.
 
+Limit classification is stored with each model's cooldown, so an error on another
+model cannot change its meaning. Existing cooldowns without this metadata keep
+normal retries until the router records a fresh result. Timed-out or empty fusion
+panel responses also remain unconfirmed and retryable.
+
 The existing **Wait out rate limits** setting and per-key hold overrides still work.
 When the existing hold path waits, this change does not turn that response into a
 terminal error. Combo routing retains its existing fallback behavior.

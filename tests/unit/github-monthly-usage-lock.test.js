@@ -95,8 +95,8 @@ describe("provider reset metadata", () => {
   ])("classifies all-account cooldowns with a second HTTP %i account", async (status, lastError, exhausted) => {
     const until = new Date(Date.now() + 60000).toISOString();
     dbMocks.getProviderConnections.mockResolvedValue([
-      { id: "a", modelLock_demo: until, errorCode: 429, lastError: "Quota exhausted" },
-      { id: "b", modelLock_demo: until, errorCode: status, lastError },
+      { id: "a", modelLock_demo: until, modelLimit_demo: true, errorCode: 429, lastError: "Quota exhausted" },
+      { id: "b", modelLock_demo: until, modelLimit_demo: exhausted, errorCode: status, lastError },
     ]);
     expect((await getProviderCredentials("codex", null, "demo")).allLimitsExhausted).toBe(exhausted);
   });
@@ -114,6 +114,25 @@ describe("provider reset metadata", () => {
       expect(credentials.providerResetAtMs).toBe(Date.parse("2026-08-04T14:00:00.000Z"));
       await clearAccountError("github-a", { ...update }, "demo");
       expect(dbMocks.updateProviderConnection.mock.lastCall[1].providerReset_demo).toBeNull();
+      expect(dbMocks.updateProviderConnection.mock.lastCall[1].modelLimit_demo).toBeNull();
     } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps each model's cause when another model overwrites the account error", async () => {
+    const connection = { id: "github-a" };
+    dbMocks.getProviderConnections.mockImplementation(async () => [{ ...connection }]);
+    dbMocks.updateProviderConnection.mockImplementation(async (_id, update) => Object.assign(connection, update));
+    await markAccountUnavailable("github-a", 503, "Upstream unavailable", "codex", "outage");
+    await markAccountUnavailable("github-a", 429, "Quota exhausted", "codex", "limited");
+    expect(connection.errorCode).toBe(429);
+    expect((await getProviderCredentials("codex", null, "outage")).allLimitsExhausted).toBe(false);
+    expect((await getProviderCredentials("codex", null, "limited")).allLimitsExhausted).toBe(true);
+  });
+
+  it("treats legacy locks without a per-model cause as unconfirmed", async () => {
+    dbMocks.getProviderConnections.mockResolvedValue([{
+      id: "a", modelLock_demo: new Date(Date.now() + 60000).toISOString(), errorCode: 429,
+    }]);
+    expect((await getProviderCredentials("codex", null, "demo")).allLimitsExhausted).toBe(false);
   });
 });

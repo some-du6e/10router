@@ -12,6 +12,7 @@ import { isLimitError } from "open-sse/utils/limitHold.js";
 
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
+const MODEL_LIMIT_PREFIX = "modelLimit_";
 
 const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit for your plan";
 
@@ -148,8 +149,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           allRateLimited: true,
           allLimitsExhausted: eligibleConnections.length > 0 && eligibleConnections.every(c => {
             const quota = antigravityQuotaCache?.get(c.id)?.[model];
+            if (quota?.circuitBreaker) return false;
             const locked = isModelLockActive(c, model);
-            const limitedLock = locked && isLimitError(Number(c.errorCode), c.lastError);
+            // The account-wide last error can belong to a different model.
+            const lockScope = c[getModelLockKey(model)] ? model || "__all" : "__all";
+            const limitedLock = locked && c[`${MODEL_LIMIT_PREFIX}${lockScope}`] === true;
             return (!locked || limitedLock) && (limitedLock || resetStates.get(c.id).blockedUntil > Date.now() ||
               (quota?.remainingPercentage <= 0 && new Date(quota.resetAt).getTime() > Date.now()));
           }),
@@ -297,6 +301,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
 
   await updateProviderConnection(connectionId, {
     ...lockUpdate,
+    [`${MODEL_LIMIT_PREFIX}${githubResetAtMs ? "__all" : model || "__all"}`]: isLimitError(status, errorText),
     [`${PROVIDER_RESET_PREFIX}${githubResetAtMs ? "__all" : model || "__all"}`]:
       Number.isFinite(providerResetAtMs) && providerResetAtMs > Date.now() ? new Date(providerResetAtMs).toISOString() : null,
     testStatus: "unavailable",
@@ -352,7 +357,10 @@ export async function clearAccountError(connectionId, currentConnection, model =
   });
 
   const clearObj = Object.fromEntries(keysToClear.map(k => [k, null]));
-  for (const key of keysToClear) clearObj[key.replace("modelLock_", PROVIDER_RESET_PREFIX)] = null;
+  for (const key of keysToClear) {
+    clearObj[key.replace("modelLock_", PROVIDER_RESET_PREFIX)] = null;
+    clearObj[key.replace("modelLock_", MODEL_LIMIT_PREFIX)] = null;
+  }
 
   // Only reset error state if no active locks remain
   if (remainingActiveLocks.length === 0) {

@@ -54,4 +54,11 @@ describe("account limit messages", () => {
   it("omits the countdown if an account's real reset is unknown", () => {
     expect(getNextAccountReset([{ providerReset_demo: new Date(Date.now() + 7200000).toISOString() }, {}], "demo")).toBeNull();
   });
+
+  it("does not present a synthetic breaker deadline as a provider reset", () => {
+    const cache = new Map([["a", { demo: {
+      remainingPercentage: 0, resetAt: new Date(Date.now() + 900000).toISOString(), circuitBreaker: true,
+    } }]]);
+    expect(getNextAccountReset([{ id: "a" }], "demo", cache)).toBeNull();
+  });
 });

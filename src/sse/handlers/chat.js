@@ -194,12 +194,13 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
  * Handle single model chat request
  */
 async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, { allowHold = true, routingFailures = [] } = {}) {
-  try {
-    return await routeSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { allowHold, routingFailures });
-  } catch (error) {
-    routingFailures.push({ limited: false });
-    throw error;
-  }
+  // An unfinished fusion panel is not proof of limit exhaustion. Successful
+  // panels with empty/unparseable content must also remain retryable.
+  const unconfirmed = { limited: false };
+  routingFailures.push(unconfirmed);
+  const response = await routeSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { allowHold, routingFailures });
+  if (!response.ok) routingFailures.splice(routingFailures.indexOf(unconfirmed), 1);
+  return response;
 }
 
 async function routeSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { allowHold, routingFailures }) {

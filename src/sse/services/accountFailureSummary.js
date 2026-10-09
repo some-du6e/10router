@@ -30,6 +30,7 @@ export const PROVIDER_RESET_PREFIX = "providerReset_";
 export function getNextAccountReset(connections, model, quotaCache = null, resetStates = null) {
   const resets = connections.map(connection => {
     const quota = quotaCache?.get(connection.id)?.[model];
+    if (quota?.circuitBreaker) return null;
     const timestamps = [connection[`${PROVIDER_RESET_PREFIX}${model || "__all"}`], connection[`${PROVIDER_RESET_PREFIX}__all`],
       quota?.remainingPercentage <= 0 ? quota.resetAt : null, resetStates?.get(connection.id)?.blockedUntil];
     const active = timestamps.map(value => value ? new Date(value).getTime() : 0).filter(time => time > Date.now());
