@@ -7,6 +7,8 @@
 - Remove the IDE MITM proxy, certificate and DNS interception, dashboard controls, API routes, startup hooks, and CLI/Docker packaging. Upgrade cleanup stops old proxy processes and removes their loopback hosts entries. Tailscale keeps independent encrypted elevation credentials for reboot recovery.
 
 ## Features
+- **Codex account limits**: automatically stop client reconnects when every usable account and fallback model has exhausted its limits. Account/model fallback and explicit rate-limit waiting still run first; temporary provider failures and interrupted streams keep normal retries.
+- Show a short account-limit message with the earliest known provider reset, stored separately from retry cooldowns. Omit unknown reset times and keep per-account details in server logs.
 - **Soonest-reset routing**: opt-in account strategy for Claude and Codex that spends the earliest weekly quota first, using session resets to break ties. Skips known exhausted accounts, preserves session affinity, and falls back to priority when quota data is unavailable. Configure it globally in Profile or per provider under Connections.
 - **Jev decision models**: add `/v1/systemone` with OpenCode Free, OpenCode Zen, and OpenRouter lanes, account fallback, usage tracking, and dashboard examples and model tests.
 - **T3 usage hub**: opt-in CLIProxyAPI management compatibility for Codex and Claude quotas, account listing, and Codex reset credits. Enable it in Settings and create a separate management key. An isolated demo mode supplies fake subscriptions for integration testing.

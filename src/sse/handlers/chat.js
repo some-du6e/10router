@@ -36,6 +36,8 @@ import {
   releaseAffinity,
 } from "open-sse/services/sessionAffinity.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
+import { finalizeRoutingError } from "../services/finalRoutingError.js";
+import { detectClientTool } from "open-sse/utils/clientDetector.js";
 
 /**
  * Handle chat completion request
@@ -106,6 +108,15 @@ export async function handleChat(request, clientRawRequest = null) {
   const bypassResponse = handleBypassRequest(body, modelStr, userAgent, !!settings.ccFilterNaming, sourceFormatOverride);
   if (bypassResponse) return bypassResponse.response || bypassResponse;
 
+  const routingFailures = [];
+  const response = await handleRoutedChat({ body, modelStr, settings, clientRawRequest, request, apiKey, routingFailures });
+  return finalizeRoutingError(response, {
+    clientTool: detectClientTool(Object.fromEntries(request.headers.entries()), body),
+    routingFailures,
+  });
+}
+
+async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, request, apiKey, routingFailures }) {
   const requiredCapabilities = detectRequiredCapabilities(body);
 
   // Check if model is a combo (has multiple models with fallback)
@@ -132,7 +143,7 @@ export async function handleChat(request, clientRawRequest = null) {
             const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
             cleanRawReq = { ...clientRawRequest, body: cleanBody };
           }
-          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false });
+          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false, routingFailures });
         },
         log,
         comboName: comboKey,
@@ -147,7 +158,7 @@ export async function handleChat(request, clientRawRequest = null) {
       body,
       models: augmentedModels,
       handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false }),
+        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures }),
         adapterAdded
       ),
       log,
@@ -167,7 +178,7 @@ export async function handleChat(request, clientRawRequest = null) {
       body,
       models: soloAugmented,
       handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false }),
+        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures }),
         adapterAdded
       ),
       log,
@@ -176,13 +187,23 @@ export async function handleChat(request, clientRawRequest = null) {
     });
   }
 
-  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey);
+  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { routingFailures });
 }
 
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, { allowHold = true } = {}) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, { allowHold = true, routingFailures = [] } = {}) {
+  // An unfinished fusion panel is not proof of limit exhaustion. Successful
+  // panels with empty/unparseable content must also remain retryable.
+  const unconfirmed = { limited: false };
+  routingFailures.push(unconfirmed);
+  const response = await routeSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { allowHold, routingFailures });
+  if (!response.ok) routingFailures.splice(routingFailures.indexOf(unconfirmed), 1);
+  return response;
+}
+
+async function routeSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { allowHold, routingFailures }) {
   // Detect source format by endpoint + body (scoped per-call; handleChat's copy is a
   // separate function and is not visible here)
   const sourceFormatOverride = request?.url
@@ -215,7 +236,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
               cleanRawReq = { ...clientRawRequest, body: cleanBody };
             }
-            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false });
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false, routingFailures });
           },
           log,
           comboName: comboKey,
@@ -230,7 +251,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         body,
         models: augmentedModels,
         handleSingleModel: withCapacityAdapterStripping(
-          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false }),
+          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures }),
           adapterAdded
         ),
         log,
@@ -239,6 +260,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         comboStickyLimit
       });
     }
+    routingFailures.push({ limited: false });
     log.warn("CHAT", "Invalid model format", { model: modelStr });
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
   }
@@ -299,11 +321,15 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         const prefixedError = accountFailures.length > 0 ? errorMsg : `[${provider}/${model}] ${errorMsg}`;
         log.warn("CHAT", `${prefixedError} (${credentials.retryAfterHuman})`);
         const retryAtMs = credentials.retryAfter ? new Date(credentials.retryAfter).getTime() : 0;
+        const limited = isLimitError(status, errorMsg);
         return {
           success: false,
           status,
           error: errorMsg,
-          limited: isLimitError(status, errorMsg),
+          limited,
+          limitsExhausted: credentials.allLimitsExhausted === true &&
+            accountFailures.every(failure => isLimitError(failure.status, failure.error)),
+          resetAtMs: credentials.providerResetAtMs,
           retryAtMs,
           response: unavailableResponse(status, prefixedError, credentials.retryAfter, credentials.retryAfterHuman),
         };
@@ -315,7 +341,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       log.warn("CHAT", "No more accounts available", { provider });
       const status = lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE;
       const errorMsg = summarizeAccountFailures(provider, model, accountFailures);
-      return { success: false, status, error: errorMsg, response: errorResponse(status, errorMsg) };
+      log.warn("CHAT", errorMsg);
+      return { success: false, status, error: errorMsg,
+        limitsExhausted: accountFailures.length > 0 && accountFailures.every(failure => isLimitError(failure.status, failure.error)),
+        response: errorResponse(status, errorMsg) };
     }
 
     // Bind before the turn runs, not after it succeeds: Codex fires side
@@ -446,6 +475,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
   const first = await runAccountLoop();
   if (first.success) return first.response;
+  routingFailures.push({ limited: first.limitsExhausted === true && !limitHold.enabled, resetAtMs: first.resetAtMs });
 
   if (!first.limited || !limitHold.enabled) return first.response;
 

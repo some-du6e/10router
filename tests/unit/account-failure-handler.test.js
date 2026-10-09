@@ -22,14 +22,15 @@ vi.mock("@/lib/localDb", () => ({ getSettings: mocks.getSettings }));
 vi.mock("@/sse/services/model.js", () => ({
   getModelInfo: mocks.getModelInfo,
   getComboModels: mocks.getComboModels,
+  comboLookupName: (model) => model,
 }));
 vi.mock("open-sse/handlers/chatCore.js", () => ({ handleChatCore: mocks.handleChatCore }));
 vi.mock("@/lib/headroom/detect", () => ({ DEFAULT_HEADROOM_URL: "http://headroom.test" }));
 vi.mock("@/lib/pxpipe/loader.js", () => ({ getTransform: vi.fn() }));
 vi.mock("@/lib/pxpipe/events.js", () => ({ appendPxpipeEvent: vi.fn() }));
-vi.mock("open-sse/services/combo.js", () => ({
-  handleComboChat: vi.fn(),
-  handleFusionChat: vi.fn(),
+vi.mock("open-sse/services/combo.js", async (importOriginal) => ({
+  handleComboChat: (await importOriginal()).handleComboChat,
+  handleFusionChat: (await importOriginal()).handleFusionChat,
   detectRequiredCapabilities: vi.fn(() => new Set()),
 }));
 vi.mock("open-sse/services/capacityAdapter.js", () => ({
@@ -55,10 +56,10 @@ vi.mock("@/sse/services/claudeBuiltinSearch.js", () => ({
 
 const { handleChat } = await import("../../src/sse/handlers/chat.js");
 
-function request() {
+function request(client = null) {
   return new Request("http://router.test/v1/messages", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(client ? { "user-agent": client } : {}) },
     body: JSON.stringify({ model: "opencode-go/glm-5.2", messages: [] }),
   });
 }
@@ -124,5 +125,90 @@ describe("chat account failure responses", () => {
     expect(body.error.message).toBe(
       "All 1 accounts unavailable for [opencode-go/glm-5.2]. Only account (HTTP 503): Upstream unavailable"
     );
+  });  it("automatically stops Codex after trying every limited account", async () => {
+    mocks.getProviderCredentials
+      .mockResolvedValueOnce(account("primary", "Primary"))
+      .mockResolvedValueOnce(account("backup", "Backup"))
+      .mockResolvedValueOnce(null);
+    mocks.handleChatCore.mockResolvedValue({ success: false, status: 429, error: "Quota exhausted" });
+    const response = await handleChat(request("codex-tui"));
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("All your accounts have hit their limits.");
+    expect(mocks.handleChatCore).toHaveBeenCalledTimes(2);
   });
+
+  it("does not stop Codex when an outage precedes a limited account", async () => {
+    mocks.getProviderCredentials
+      .mockResolvedValueOnce(account("primary", "Primary"))
+      .mockResolvedValueOnce(account("backup", "Backup"))
+      .mockResolvedValueOnce(null);
+    mocks.handleChatCore
+      .mockResolvedValueOnce({ success: false, status: 503, error: "Unavailable" })
+      .mockResolvedValueOnce({ success: false, status: 429, error: "Quota exhausted" });
+    const response = await handleChat(request("codex-tui"));
+    expect(response.status).toBe(429);
+    expect(response.headers.has("x-should-retry")).toBe(false);
+  });
+
+  it("stops Codex on confirmed cached limits", async () => {
+    mocks.getProviderCredentials.mockResolvedValueOnce({
+      allRateLimited: true, allLimitsExhausted: true, lastErrorCode: 429,
+      retryAfter: "2026-08-23T12:05:00.000Z", retryAfterHuman: "reset after 5m",
+    });
+    expect((await handleChat(request("codex-tui"))).status).toBe(400);
+    expect(mocks.handleChatCore).not.toHaveBeenCalled();
+  });
+
+  it("keeps unconfirmed cooldowns retryable for Codex", async () => {
+    mocks.getProviderCredentials.mockResolvedValueOnce({
+      allRateLimited: true, allLimitsExhausted: false, lastErrorCode: 429,
+      retryAfter: "2026-08-23T12:05:00.000Z", retryAfterHuman: "reset after 5m",
+    });
+    expect((await handleChat(request("codex-tui"))).status).toBe(429);
+  });
+
+  it.each([true, false])("checks all fallback models before stopping, all limited: %s", async (allLimited) => {
+    mocks.getComboModels.mockResolvedValue(["provider/first", "provider/second"]);
+    mocks.getProviderCredentials
+      .mockResolvedValueOnce(account("first", "First"))
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(account("second", "Second"))
+      .mockResolvedValueOnce(null);
+    mocks.handleChatCore
+      .mockResolvedValueOnce({ success: false, status: allLimited ? 429 : 500, error: allLimited ? "Quota exhausted" : "Unavailable" })
+      .mockResolvedValueOnce({ success: false, status: 429, error: "Quota exhausted" });
+    const response = await handleChat(request("codex-tui"));
+    expect(response.status).toBe(allLimited ? 400 : 500);
+    expect(response.headers.get("x-should-retry")).toBe(allLimited ? "false" : null);
+    expect(mocks.handleChatCore).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["timeout", "empty", "limited"])("keeps fusion %s outcomes distinct from confirmed limits", async (secondOutcome) => {
+    mocks.getSettings.mockResolvedValue({
+      comboStrategy: "fusion", comboStrategies: {
+        "opencode-go/glm-5.2": { fusionTuning: { panelHardTimeoutMs: 20 } },
+      },
+    });
+    mocks.getComboModels.mockResolvedValue(["first", "second"]);
+    mocks.getModelInfo.mockImplementation(async (model) => ({ provider: model, model: "demo" }));
+    const attempted = new Set();
+    mocks.getProviderCredentials.mockImplementation(async (provider) => {
+      if (attempted.has(provider)) return null;
+      attempted.add(provider);
+      return account(provider, provider);
+    });
+    mocks.handleChatCore.mockImplementation(async ({ modelInfo }) => {
+      if (modelInfo.provider === "second" && secondOutcome === "timeout") return new Promise(() => {});
+      if (modelInfo.provider === "second" && secondOutcome === "empty") {
+        return { success: true, response: new Response("{}", { headers: { "content-type": "application/json" } }) };
+      }
+      return { success: false, status: 429, error: "Quota exhausted" };
+    });
+    const pending = handleChat(request("codex-tui"));
+    await vi.advanceTimersByTimeAsync(30);
+    const response = await pending;
+    expect(response.status).toBe(secondOutcome === "limited" ? 400 : 503);
+    expect(response.headers.get("x-should-retry")).toBe(secondOutcome === "limited" ? "false" : null);
+  });
+
 });

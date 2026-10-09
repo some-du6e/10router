@@ -44,6 +44,7 @@ function applyActiveStrikeBlocks(connectionId, quotas) {
     quotas[key.slice(connectionId.length + 1)] = {
       remainingPercentage: 0,
       resetAt: new Date(until).toISOString(),
+      circuitBreaker: true,
     };
   }
   return quotas;
@@ -167,7 +168,7 @@ export async function handleAntigravityQuotaError(connectionId, status, model, a
       // this pair on subsequent requests too, not just the current retry loop
       // (the chat handler does not persist modelLock_* for this path).
       const cached = quotaCache.get(connectionId) || {};
-      cached[model] = { remainingPercentage: 0, resetAt: new Date(blockedUntil).toISOString() };
+      cached[model] = { remainingPercentage: 0, resetAt: new Date(blockedUntil).toISOString(), circuitBreaker: true };
       quotaCache.set(connectionId, cached);
       strikeBlocks.set(key, blockedUntil);
       return blockedUntil;
