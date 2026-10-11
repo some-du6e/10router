@@ -1,5 +1,6 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { structuredPreview } from "../../../shared/utils/requestConversation.js";
 
 const DEFAULT_MAX_RECORDS = 200;
 const DEFAULT_BATCH_SIZE = 20;
@@ -83,7 +84,7 @@ function sanitizeHeaders(headers) {
   return sanitized;
 }
 
-export const __test__ = { sanitizeHeaders, getMaxJsonSize };
+export const __test__ = { sanitizeHeaders, getMaxJsonSize, truncateField };
 
 function generateDetailId(model) {
   const timestamp = new Date().toISOString();
@@ -102,12 +103,19 @@ function truncateField(obj, maxSize) {
   }
   if (str.length > maxSize) {
     const preview = JSON.stringify(obj, null, 2);
-    return {
+    const truncated = {
       _truncated: true,
       _originalSize: str.length,
       _omittedSize: str.length - maxSize,
-      _preview: preview.substring(0, 2000),
+      _preview: preview.substring(0, Math.min(2000, Math.max(0, maxSize - 256))),
+      _structuredPreview: null,
     };
+    while (JSON.stringify(truncated).length > maxSize && truncated._preview.length > 0) {
+      truncated._preview = truncated._preview.slice(0, Math.floor(truncated._preview.length / 2));
+    }
+    const remaining = maxSize - JSON.stringify(truncated).length;
+    truncated._structuredPreview = structuredPreview(obj, remaining);
+    return truncated;
   }
   return obj;
 }
