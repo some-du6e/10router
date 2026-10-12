@@ -109,6 +109,10 @@ describe("launcher process ownership", () => {
 });
 
 describe("launcher output and background configuration", () => {
+  it("shows the first-run setup token without requiring --log", async () => {
+    const result = await launch({ args: ["--tray"] });
+    expect(result.stdout).toContain("setup-token-visible");
+  });
   it.each(["linux", "win32"])("preserves a local bind and custom port when hidden on %s", async (platform) => {
     const result = await launch({ platform, choice: "hide", args: ["--host", "127.0.0.1", "--port", "20200"] });
     expect(result.spawns).toHaveLength(2);

@@ -386,7 +386,8 @@ function startServer(updatePromise) {
     crashLog = [];
     const child = spawn(RUNTIME, ["--dns-result-order=ipv4first", "--max-old-space-size=6144", serverPath], {
       cwd: standaloneDir,
-      stdio: showLog ? "inherit" : ["ignore", "ignore", "pipe"],
+      // Setup tokens are printed to stdout and must remain visible without --log.
+      stdio: showLog ? "inherit" : ["ignore", "inherit", "pipe"],
       detached: true,
       windowsHide: true,
       env: {
