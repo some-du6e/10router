@@ -102,11 +102,11 @@ Pre-translate hooks that compress `tool_result` content in-place to cut tokens. 
 
 | Rule | Enforcement |
 | --- | --- |
-| Bind every OIDC ID token to the stored login nonce and every SAML response to the SP-issued request state. Missing state fails closed. | `verifyOidcIdToken` and `validateSamlResponse`; `tests/unit/oidc-token-binding.test.js` uses real signed tokens and JWKS, and `tests/unit/saml-response-binding.test.js` exercises cookieless replay. The latter prevents a repeat of the regression fixed in `98eef22e0`. |
+| Bind every OIDC ID token to the stored login nonce and every SAML response to the SP-issued request state. Missing state fails closed. | `verifyOidcIdToken` and `validateSamlResponse`; `tests/unit/oidc-token-binding.test.js` uses real signed tokens and JWKS, and `tests/unit/saml-response-binding.test.js` exercises cookieless replay. `tests/unit/saml-signed-request-binding.test.js` verifies request binding using real signed XML. The latter prevents a repeat of the regression fixed in `98eef22e0`. |
 | Resolve legacy auth modes and the SSO selector through `getActiveSsoType` in `src/lib/auth/authMode.js`. Password mode cannot enable a saved SSO configuration. | Bootstrap, OIDC runtime, SAML runtime/start/callback, password login and auth status share the resolver; `tests/unit/auth-mode-consistency.test.js`. |
 | HTTPS SAML request-state cookies must survive the IdP's cross-site POST. | SAML start uses `SameSite=None` with `Secure`; `tests/unit/saml-start-cookie.test.js`. |
 
-Run these checks with `cd tests && npx vitest run unit/oidc-token-binding.test.js unit/saml-response-binding.test.js unit/auth-mode-consistency.test.js unit/saml-start-cookie.test.js`. All four also run in the default deterministic suite.
+Run these checks with `cd tests && npx vitest run unit/oidc-token-binding.test.js unit/saml-response-binding.test.js unit/saml-signed-request-binding.test.js unit/auth-mode-consistency.test.js unit/saml-start-cookie.test.js`. All five also run in the default deterministic suite.
 
 <!-- BEGIN:nextjs-agent-rules -->
 
