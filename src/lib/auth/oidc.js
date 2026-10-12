@@ -216,12 +216,18 @@ export async function verifyOidcIdToken({
   jwksUri,
   nonce,
 }) {
+  if (typeof nonce !== "string" || !nonce) {
+    throw new Error("Missing OIDC nonce; start a new login");
+  }
   const jwks = createRemoteJWKSet(new URL(jwksUri));
   const { payload } = await jwtVerify(idToken, jwks, {
     issuer,
     audience,
-    nonce,
   });
+  // jose verifies registered JWT claims, but does not validate OIDC's nonce.
+  if (payload.nonce !== nonce) {
+    throw new Error("OIDC nonce mismatch; start a new login");
+  }
   return payload;
 }
 
