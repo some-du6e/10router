@@ -1,15 +1,15 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
 import Card from "@/shared/components/Card";
 import PricingModal from "@/shared/components/PricingModal";
+import api from "@/shared/utils/api";
 
 export default function PricingSettingsPage() {
-  const router = useRouter();
   const [showModal, setShowModal] = useState(false);
   const [currentPricing, setCurrentPricing] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     loadPricing();
@@ -17,14 +17,11 @@ export default function PricingSettingsPage() {
 
   const loadPricing = async () => {
     setLoading(true);
+    setError("");
     try {
-      const response = await fetch("/api/pricing");
-      if (response.ok) {
-        const data = await response.json();
-        setCurrentPricing(data);
-      }
+      setCurrentPricing(await api.get("/api/pricing"));
     } catch (error) {
-      console.error("Failed to load pricing:", error);
+      setError(`Failed to load pricing: ${error.message}`);
     } finally {
       setLoading(false);
     }
@@ -68,6 +65,8 @@ export default function PricingSettingsPage() {
         </button>
       </div>
 
+      {error && <p role="alert" className="text-sm text-red-500">{error}</p>}
+
       {/* Quick Stats */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card className="p-4">
@@ -90,8 +89,8 @@ export default function PricingSettingsPage() {
           <div className="text-text-muted text-sm uppercase font-semibold">
             Status
           </div>
-          <div className="text-2xl font-bold mt-1 text-success">
-            {loading ? "..." : "Active"}
+          <div className={`text-2xl font-bold mt-1 ${error ? "text-red-500" : "text-success"}`}>
+            {loading ? "..." : error ? "Unavailable" : "Active"}
           </div>
         </Card>
       </div>
