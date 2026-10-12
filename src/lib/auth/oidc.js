@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { getSettings } from "@/lib/localDb";
+import { getActiveSsoType } from "./authMode.js";
 
 export const OIDC_COOKIE_NAMES = {
   state: "oidc_state",
@@ -50,7 +51,7 @@ export function isOidcConfigured(settings) {
 
 export async function getOidcRuntimeConfig() {
   const settings = await getSettings();
-  if (!["oidc", "both"].includes(settings.authMode) || !isOidcConfigured(settings)) return null;
+  if (getActiveSsoType(settings) !== "oidc" || !isOidcConfigured(settings)) return null;
 
   const issuerUrl = trimTrailingSlashes(settings.oidcIssuerUrl);
   return {
