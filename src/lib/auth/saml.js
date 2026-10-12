@@ -88,9 +88,11 @@ export function getSamlBaseUrl(request, settings) {
   return "http://localhost:20128";
 }
 
-export function createSamlInstance(settings, origin) {
+export function createSamlInstance(settings, origin, expectedRequestId = null) {
   const cert = formatX509Certificate(settings?.samlCert || "") || DUMMY_FALLBACK_CERT;
   const callbackUrl = `${origin}/api/auth/saml/acs`;
+  // Each callback may validate only the request bound to its browser cookie.
+  const requests = expectedRequestId ? new Map([[expectedRequestId, new Date().toISOString()]]) : null;
   return new SAML({
     entryPoint: settings?.samlEntryPoint || "https://example.com/sso",
     issuer: settings?.samlIssuer || "urn:9router:sp",
@@ -99,8 +101,15 @@ export function createSamlInstance(settings, origin) {
     callbackUrl: callbackUrl,
     acceptedClockSkewMs: 60000,
     wantAssertionsSigned: true,
-    validateInResponseTo: "never",
-    requestIdExpirationMs: 28800000, // 8 hours
+    validateInResponseTo: "always",
+    requestIdExpirationPeriodMs: 10 * 60 * 1000,
+    ...(requests ? {
+      cacheProvider: {
+        async saveAsync(key, value) { requests.set(key, value); return { value, createdAt: Date.now() }; },
+        async getAsync(key) { return requests.get(key) || null; },
+        async removeAsync(key) { const value = requests.get(key) || null; requests.delete(key); return value; },
+      },
+    } : {}),
   });
 }
 
@@ -136,9 +145,6 @@ export async function validateSamlResponse(request, body, expectedRequestId, set
     throw new Error("IdP X.509 Certificate (samlCert) is missing or not configured");
   }
 
-  const origin = getSamlBaseUrl(request, settings);
-  const samlInstance = createSamlInstance(settings, origin);
-
   const container = typeof body === "object" && body !== null ? body : { SAMLResponse: body };
   const rawSamlResponse = container.SAMLResponse;
 
@@ -150,15 +156,19 @@ export async function validateSamlResponse(request, body, expectedRequestId, set
   if (typeof expectedRequestId !== "string" || !expectedRequestId) {
     throw new Error("Missing SAML request state; SP-initiated login is required");
   }
-  const xml = Buffer.from(rawSamlResponse, "base64").toString("utf8");
-  const match = xml.match(/InResponseTo=["']([^"']+)["']/i);
-  const inResponseTo = match ? match[1] : null;
-  if (!inResponseTo || inResponseTo !== expectedRequestId) {
-    throw new Error(`InResponseTo mismatch: expected ${expectedRequestId}, received ${inResponseTo || "none"}`);
-  }
-
+  const origin = getSamlBaseUrl(request, settings);
+  const samlInstance = createSamlInstance(settings, origin, expectedRequestId);
   const result = await samlInstance.validatePostResponseAsync({ SAMLResponse: rawSamlResponse });
   const profile = result?.profile || result;
+  const confirmations = profile?.getAssertion?.()?.Assertion?.Subject?.[0]?.SubjectConfirmation || [];
+  // Inspect only the assertion parsed from verified XML, never the raw envelope.
+  const boundSubject = confirmations.some(confirmation =>
+    confirmation.$?.Method === "urn:oasis:names:tc:SAML:2.0:cm:bearer" &&
+    confirmation.SubjectConfirmationData?.[0]?.$?.InResponseTo === expectedRequestId
+  );
+  if (profile?.inResponseTo !== expectedRequestId || !boundSubject) {
+    throw new Error("SAML signed SubjectConfirmation InResponseTo mismatch");
+  }
 
   return profile;
 }
