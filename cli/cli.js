@@ -65,6 +65,7 @@ function createSpinner(text) {
 const pkg = require("./package.json");
 const { ensureSqliteRuntime, buildEnvWithRuntime } = require("./hooks/sqliteRuntime");
 const { ensureTrayRuntime } = require("./hooks/trayRuntime");
+const { getBackgroundArgs } = require("./src/cli/utils/launchArgs");
 const args = process.argv.slice(2);
 
 // Subcommands (`10router xai video …`) run against an already-running gateway
@@ -462,6 +463,8 @@ function startServer(updatePromise) {
       const { initTray } = require("./src/cli/tray/tray");
       initTray({
         port,
+        host,
+        cliPath: __filename,
         onQuit: () => {
           isShuttingDown = true;
           console.log("\n👋 Shutting down from tray...");
@@ -533,7 +536,7 @@ function startServer(updatePromise) {
           // Enable auto startup on OS boot
           try {
             const { enableAutoStart } = require("./src/cli/tray/autostart");
-            enableAutoStart(__filename);
+            enableAutoStart(__filename, { port, host });
           } catch (e) { }
 
           if (process.platform === "darwin") {
@@ -554,7 +557,7 @@ function startServer(updatePromise) {
           // Windows/Linux: spawn detached bgProcess (systray works fine in child)
           console.log(`\n⏳ Starting background process... (tray icon will appear in ~3s)`);
 
-          const bgProcess = spawn(process.execPath, ["--dns-result-order=ipv4first", __filename, "--tray", "--skip-update", "-p", port.toString()], {
+          const bgProcess = spawn(process.execPath, ["--dns-result-order=ipv4first", __filename, ...getBackgroundArgs({ port, host })], {
             detached: true,
             stdio: "ignore",
             windowsHide: true,

@@ -108,3 +108,12 @@ describe("launcher process ownership", () => {
   });
 });
 
+describe("launcher output and background configuration", () => {
+  it.each(["linux", "win32"])("preserves a local bind and custom port when hidden on %s", async (platform) => {
+    const result = await launch({ platform, choice: "hide", args: ["--host", "127.0.0.1", "--port", "20200"] });
+    expect(result.spawns).toHaveLength(2);
+    const argv = result.spawns[1].argv;
+    expect(argv[argv.indexOf("--host") + 1]).toBe("127.0.0.1");
+    expect(argv[argv.indexOf("--port") + 1]).toBe("20200");
+  });
+});
