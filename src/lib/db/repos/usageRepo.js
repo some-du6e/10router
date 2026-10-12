@@ -1,4 +1,5 @@
 import { EventEmitter } from "events";
+import { createHash } from "node:crypto";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
@@ -9,9 +10,15 @@ function maskApiKey(key) {
   return key.slice(0, 8) + "***";
 }
 
+function apiKeyStatsIdentity(key) {
+  if (!key || typeof key !== "string") return "local-no-key";
+  // Display prefixes are shared by keys from the same machine, not identities.
+  return createHash("sha256").update(key).digest("hex");
+}
+
 function apiKeyStatsGroup(key, model, provider) {
-  const masked = maskApiKey(key);
-  return masked ? `${masked}|${model}|${provider || "unknown"}` : "local-no-key";
+  const identity = apiKeyStatsIdentity(key);
+  return identity === "local-no-key" ? identity : `${identity}|${model}|${provider || "unknown"}`;
 }
 
 function pendingCount(modelKey, connectionId) {
@@ -647,7 +654,7 @@ export async function getUsageStats(period = "all") {
         const keyInfo = apiKeyVal ? apiKeyMap[apiKeyVal] : null;
         const keyName = keyInfo?.name || (apiKeyVal ? apiKeyVal.slice(0, 8) + "..." : "Local (No API Key)");
         const apiKeyMasked = maskApiKey(apiKeyVal);
-        const apiKeyKey = apiKeyMasked || "local-no-key";
+        const apiKeyKey = apiKeyStatsIdentity(apiKeyVal);
         const akKey = apiKeyStatsGroup(apiKeyVal, rawModel, provider);
         if (!stats.byApiKey[akKey]) {
           stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey, lastUsed: dateKey };
@@ -767,7 +774,7 @@ export async function getUsageStats(period = "all") {
         const apiKeyMasked = maskApiKey(r.apiKey);
         const akKey = apiKeyStatsGroup(r.apiKey, r.model, r.provider);
         if (!stats.byApiKey[akKey]) {
-          stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey: apiKeyMasked, lastUsed: r.timestamp };
+          stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey: apiKeyStatsIdentity(r.apiKey), lastUsed: r.timestamp };
         }
         const ake = stats.byApiKey[akKey];
         ake.requests++; ake.promptTokens += promptTokens; ake.completionTokens += completionTokens; ake.cachedTokens += cachedTokens; ake.cost += entryCost;

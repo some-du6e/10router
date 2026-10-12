@@ -15,6 +15,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   global._dbAdapter?.instance?.close();
   delete global._dbAdapter;
   fs.rmSync(dir, { recursive: true, force: true });
@@ -35,4 +36,36 @@ it("masks API keys in daily-summary property names as well as values", async () 
   expect(entry.promptTokens).toBe(10);
   expect(entry.apiKeyMasked).toBe("sk-audit***");
   expect(entry.lastUsed).toBe(Object.values(live.byApiKey)[0].lastUsed);
+});
+
+it("keeps two real keys from the same machine separate in daily and live stats", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(2026, 9, 12, 12));
+  const { createApiKey } = await import(`${dbRoot}/repos/apiKeysRepo.js`);
+  const { saveRequestUsage, getUsageStats } = await import(`${dbRoot}/repos/usageRepo.js`);
+  const first = await createApiKey("First", "1234567890abcdef");
+  const second = await createApiKey("Second", "1234567890abcdef");
+  expect(first.key).not.toBe(second.key);
+  expect(first.key.slice(0, 8)).toBe(second.key.slice(0, 8));
+  const firstTime = new Date(Date.now() - 2000).toISOString();
+  const secondTime = new Date(Date.now() - 1000).toISOString();
+  await saveRequestUsage({ provider: "audit", model: "model", apiKey: first.key, timestamp: firstTime, tokens: { prompt_tokens: 10, completion_tokens: 3 } });
+  await saveRequestUsage({ provider: "audit", model: "model", apiKey: second.key, timestamp: secondTime, tokens: { prompt_tokens: 20, completion_tokens: 7 } });
+
+  let groups;
+  for (const period of ["7d", "all", "24h", "today"]) {
+    const stats = await getUsageStats(period);
+    expect(JSON.stringify(stats)).not.toContain(first.key);
+    expect(JSON.stringify(stats)).not.toContain(second.key);
+    const entries = Object.values(stats.byApiKey).sort((a, b) => a.keyName.localeCompare(b.keyName));
+    expect(entries.map(({ keyName, requests, promptTokens, completionTokens, lastUsed }) => ({ keyName, requests, promptTokens, completionTokens, lastUsed }))).toEqual([
+      { keyName: "First", requests: 1, promptTokens: 10, completionTokens: 3, lastUsed: firstTime },
+      { keyName: "Second", requests: 1, promptTokens: 20, completionTokens: 7, lastUsed: secondTime },
+    ]);
+    expect(entries[0].apiKeyMasked).toBe(entries[1].apiKeyMasked);
+    expect(entries[0].apiKeyKey).not.toBe(entries[1].apiKeyKey);
+    const periodGroups = Object.keys(stats.byApiKey).sort();
+    if (groups) expect(periodGroups).toEqual(groups);
+    groups = periodGroups;
+  }
 });
