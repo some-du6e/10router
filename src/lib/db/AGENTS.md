@@ -7,5 +7,7 @@
 | Keep connection pragmas active after sql.js exports. | `tests/unit/db-adapter-integrity.test.js` inserts an invalid foreign key after the save debounce. |
 | Register adapter shutdown handlers through `helpers/shutdown.js` and unregister on close. | `tests/unit/db-adapter-integrity.test.js` compares process listener counts before opening and after closing each available Node adapter. |
 | Preserve nested rollback and synchronous transaction return values across adapters. | `tests/unit/db-adapter-integrity.test.js` checks inner rollback, outer commit, and outer rollback against stored rows. |
+| Use the same masked API key grouping for daily and live usage stats. | `tests/unit/db-usage-stats-masking.test.js` checks serialized output, grouping parity, counters and precise last-used timestamps. |
+| Pending timeouts belong to an account/model bucket until its last request completes. Expiring one bucket must not erase another. | `tests/unit/db-pending-request-timeouts.test.js` exercises overlapping, separate-account, keyless and late-completion cases. |
 
 Run these checks from `tests/` with `npx vitest run unit/db-api-key-backup.test.js unit/db-legacy-import-retry.test.js unit/db-adapter-integrity.test.js`.
