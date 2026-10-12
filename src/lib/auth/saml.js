@@ -1,5 +1,6 @@
 import { SAML } from "@node-saml/node-saml";
 import { getSettings } from "../db/repos/settingsRepo.js";
+import { getActiveSsoType } from "./authMode.js";
 
 /**
  * Formats a raw Base64 string or unformatted X.509 certificate into standard PEM format.
@@ -35,7 +36,7 @@ export function isSamlConfigured(settings) {
 export async function getSamlRuntimeConfig() {
   const settings = await getSettings();
   return {
-    configured: isSamlConfigured(settings),
+    configured: getActiveSsoType(settings) === "saml" && isSamlConfigured(settings),
     settings,
   };
 }
