@@ -318,6 +318,24 @@ function isTokenExpired(connection) {
 }
 
 async function testOAuthConnection(connection, effectiveProxy = null) {
+  let newTokens = null;
+  const refresh = async () => {
+    const tokens = await refreshOAuthToken(connection);
+    if (!tokens?.accessToken) return null;
+    // Rotation can invalidate the old refresh token even when the probe fails.
+    newTokens = tokens;
+    return tokens;
+  };
+  let result;
+  try {
+    result = await probeOAuthConnection(connection, effectiveProxy, refresh);
+  } catch (err) {
+    result = { valid: false, error: err.message, refreshed: false };
+  }
+  return newTokens ? { ...result, refreshed: true, newTokens } : result;
+}
+
+async function probeOAuthConnection(connection, effectiveProxy, refresh) {
   const config = OAUTH_TEST_CONFIG[connection.provider];
   if (!config) return { valid: false, error: "Provider test not supported", refreshed: false };
   if (!connection.accessToken) return { valid: false, error: "No access token", refreshed: false };
@@ -333,7 +351,7 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
 
   const tokenExpired = isTokenExpired(connection);
   if (config.refreshable && tokenExpired && connection.refreshToken) {
-    const tokens = await refreshOAuthToken(connection);
+    const tokens = await refresh();
     if (tokens) {
       accessToken = tokens.accessToken;
       refreshed = true;
@@ -354,7 +372,7 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
     if (initial.valid) return { valid: true, error: null, refreshed, newTokens };
 
     if (initial.status === 401 && config.refreshable && !refreshed && connection.refreshToken) {
-      const tokens = await refreshOAuthToken(connection);
+      const tokens = await refresh();
       if (tokens?.accessToken) {
         const retry = await probeCloudCodeAssistAccess(connection, tokens.accessToken, effectiveProxy);
         if (retry.valid) return { valid: true, error: null, refreshed: true, newTokens: tokens };
@@ -376,11 +394,11 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
     };
 
     const initial = await tryProbe(accessToken);
-    if (initial.valid || initial.error !== "Token invalid or revoked" || !connection.refreshToken) {
+    if (initial.valid || initial.error !== "Token invalid or revoked" || !connection.refreshToken || refreshed) {
       return initial;
     }
 
-    const tokens = await refreshOAuthToken(connection);
+    const tokens = await refresh();
     if (!tokens?.accessToken) {
       return { valid: false, error: "Token invalid or revoked", refreshed: false };
     }
@@ -414,7 +432,7 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
     }
 
     if (res.status === 401 && config.refreshable && !refreshed && connection.refreshToken) {
-      const tokens = await refreshOAuthToken(connection);
+      const tokens = await refresh();
       if (tokens) {
         const retryUrl = config.buildUrl ? config.buildUrl(tokens.accessToken) : testUrl;
         const retryHeaders = config.noAuth
