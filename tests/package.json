@@ -8,6 +8,7 @@
     "test": "vitest run --config ./vitest.config.js --reporter=verbose",
     "test:unit": "vitest run --config ./vitest.config.js --reporter=verbose",
     "test:watch": "vitest --config ./vitest.config.js --reporter=verbose",
+    "test:regression": "node scripts/check-regressions.mjs",
     "test:live": "node scripts/run-suite.mjs live",
     "test:e2e": "node scripts/run-suite.mjs e2e",
     "test:benchmark": "vitest run --config ./vitest.benchmark.config.js --reporter=verbose",

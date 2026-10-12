@@ -32,6 +32,18 @@ const resultsPath = process.argv[2];
 if (!resultsPath) { console.error("Missing results.json path"); process.exit(2); }
 
 const r = JSON.parse(readFileSync(resultsPath, "utf8"));
+if (!Array.isArray(r.testResults) || !Number.isInteger(r.numTotalTests) || r.numTotalTests < 1) {
+  console.error("Invalid or empty Vitest report. Run the deterministic suite before checking regressions.");
+  process.exit(2);
+}
+const collectionFailures = r.testResults.filter(f =>
+  f.status === "failed" && !f.assertionResults.some(a => a.status === "failed")
+);
+if (collectionFailures.length) {
+  console.error("Test suites failed before producing failed assertions:");
+  collectionFailures.forEach(f => console.error(`  ${testKey(f.name)}: ${f.message || "suite setup/collection failed"}`));
+  process.exit(1);
+}
 const nowFails = r.testResults.flatMap(f =>
   f.assertionResults.filter(a => a.status === "failed")
     .map(a => testKey(f.name) + " :: " + a.fullName)
@@ -55,6 +67,10 @@ const regressions = nowFails.filter(f => !knownFails.has(f));
 if (regressions.length) {
   console.error(`\n❌ REGRESSION: ${regressions.length} test pass→fail:\n`);
   regressions.forEach(f => console.error("  - " + f));
+  process.exit(1);
+}
+if (r.success !== true && nowFails.length === 0) {
+  console.error("Vitest reported runner errors despite passing assertions. Inspect the test runner output.");
   process.exit(1);
 }
 console.log(`✅ No regression. (now fails=${nowFails.length}, baseline known=${knownFails.size}, all known)`);
