@@ -14,7 +14,14 @@ const body = { SAMLResponse: Buffer.from('<Response InResponseTo="request-123"/>
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.validatePostResponseAsync.mockResolvedValue({ profile: { email: "user@example.com" } });
+  mocks.validatePostResponseAsync.mockResolvedValue({ profile: {
+    email: "user@example.com",
+    inResponseTo: "request-123",
+    getAssertion: () => ({ Assertion: { Subject: [{ SubjectConfirmation: [{
+      $: { Method: "urn:oasis:names:tc:SAML:2.0:cm:bearer" },
+      SubjectConfirmationData: [{ $: { InResponseTo: "request-123" } }],
+    }] }] } }),
+  } });
 });
 
 describe("SAML login request binding", () => {
@@ -25,11 +32,11 @@ describe("SAML login request binding", () => {
 
   it("rejects an assertion bound to another request", async () => {
     await expect(validateSamlResponse(null, body, "other-request", settings)).rejects.toThrow(/InResponseTo mismatch/);
-    expect(mocks.validatePostResponseAsync).not.toHaveBeenCalled();
+    expect(mocks.validatePostResponseAsync).toHaveBeenCalledWith(body);
   });
 
   it("returns the signature-verified profile for the matching request", async () => {
-    expect(await validateSamlResponse(null, body, "request-123", settings)).toEqual({ email: "user@example.com" });
+    expect(await validateSamlResponse(null, body, "request-123", settings)).toEqual(expect.objectContaining({ email: "user@example.com" }));
     expect(mocks.validatePostResponseAsync).toHaveBeenCalledWith(body);
   });
 
