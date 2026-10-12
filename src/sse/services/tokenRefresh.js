@@ -175,14 +175,23 @@ export async function updateProviderCredentials(connectionId, newCredentials) {
       }
     }
     if (newCredentials.providerSpecificData) {
+      // Refresh payloads are patches. Read current metadata here so callers
+      // cannot erase account identity or overwrite newer background updates.
+      const existing = await getProviderConnectionById(connectionId);
       updates.providerSpecificData = {
         ...(newCredentials.existingProviderSpecificData || {}),
+        ...(existing?.providerSpecificData || {}),
         ...newCredentials.providerSpecificData,
       };
     }
     if (newCredentials.copilotToken || newCredentials.copilotTokenExpiresAt) {
+      const existing = updates.providerSpecificData
+        ? null
+        : await getProviderConnectionById(connectionId);
       updates.providerSpecificData = {
-        ...(updates.providerSpecificData || newCredentials.existingProviderSpecificData || {}),
+        ...(newCredentials.existingProviderSpecificData || {}),
+        ...(existing?.providerSpecificData || {}),
+        ...(updates.providerSpecificData || {}),
         ...(newCredentials.copilotToken ? { copilotToken: newCredentials.copilotToken } : {}),
         ...(newCredentials.copilotTokenExpiresAt ? { copilotTokenExpiresAt: newCredentials.copilotTokenExpiresAt } : {}),
       };
