@@ -8,6 +8,7 @@ import { restrictToVerticalAxis, restrictToParentElement } from "@dnd-kit/modifi
 import { Card, Button, Modal, Input, CardSkeleton, ModelSelectModal, ConfirmModal, CapacityBadges, Select, Toggle } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
+import api from "@/shared/utils/api";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 
 // Validate combo name: only a-z, A-Z, 0-9, -, _
@@ -104,41 +105,15 @@ export default function CombosPage() {
   };
 
   const handleCreate = async (data) => {
-    try {
-      const res = await fetch("/api/combos", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-      if (res.ok) {
-        await fetchData();
-        setShowCreateModal(false);
-      } else {
-        const err = await res.json();
-        alert(err.error || "Failed to create combo");
-      }
-    } catch (error) {
-      console.log("Error creating combo:", error);
-    }
+    await api.post("/api/combos", data);
+    await fetchData();
+    setShowCreateModal(false);
   };
 
   const handleUpdate = async (id, data) => {
-    try {
-      const res = await fetch(`/api/combos/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-      if (res.ok) {
-        await fetchData();
-        setEditingCombo(null);
-      } else {
-        const err = await res.json();
-        alert(err.error || "Failed to update combo");
-      }
-    } catch (error) {
-      console.log("Error updating combo:", error);
-    }
+    await api.put(`/api/combos/${id}`, data);
+    await fetchData();
+    setEditingCombo(null);
   };
 
   const handleDelete = async (id) => {
@@ -656,6 +631,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
   const [models, setModels] = useState(combo?.models || []);
   const [showModelSelect, setShowModelSelect] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [nameError, setNameError] = useState("");
   const [modelAliases, setModelAliases] = useState({});
 
@@ -698,7 +674,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
       setNameError("Name is required");
       return false;
     }
-    if (!VALID_NAME_REGEX.test(value)) {
+    if (!VALID_NAME_REGEX.test(value.trim())) {
       setNameError("Only letters, numbers, -, _ and . allowed");
       return false;
     }
@@ -742,10 +718,16 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
   };
 
   const handleSave = async () => {
-    if (!validateName(name)) return;
+    if (saving || !validateName(name)) return;
+    setSaveError("");
     setSaving(true);
-    await onSave({ name: name.trim(), models });
-    setSaving(false);
+    try {
+      await onSave({ name: name.trim(), models });
+    } catch (error) {
+      setSaveError(error.message || "Failed to save combo");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const isEdit = !!combo;
@@ -819,6 +801,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
           </div>
 
           {/* Actions */}
+          {saveError && <p role="alert" className="text-sm text-red-500">{saveError}</p>}
           <div className="flex flex-col gap-2 pt-1 sm:flex-row">
             <Button onClick={onClose} variant="ghost" fullWidth size="sm">
               Cancel

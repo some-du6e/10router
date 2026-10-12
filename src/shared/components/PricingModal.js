@@ -10,10 +10,6 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    if (isOpen) loadPricing();
-  }, [isOpen]);
-
   const loadPricing = async () => {
     setLoading(true);
     setLoaded(false);
@@ -27,6 +23,10 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (isOpen) loadPricing();
+  }, [isOpen]);
 
   const handlePricingChange = (provider, model, field, value) => {
     const numValue = parseFloat(value);

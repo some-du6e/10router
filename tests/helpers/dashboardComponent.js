@@ -7,7 +7,7 @@ const { transformSync } = require("next/dist/compiled/babel/core");
 
 // Exercise component handlers and hook state without installing a DOM runtime.
 // This deliberately does not simulate layout, browser events, or React scheduling.
-export function dashboardComponent(path, imports = {}) {
+export function dashboardComponent(path, imports = {}, componentName = null) {
   const source = readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
   const { code } = transformSync(source, {
     filename: path,
@@ -23,6 +23,7 @@ export function dashboardComponent(path, imports = {}) {
   let cursor = 0;
   let effects = [];
   const hooks = {
+    useCallback(callback) { return callback; },
     useState(initial) {
       const index = cursor++;
       if (!(index in state)) state[index] = typeof initial === "function" ? initial() : initial;
@@ -39,7 +40,8 @@ export function dashboardComponent(path, imports = {}) {
     },
   };
   const compiledModule = { exports: {} };
-  new Function("require", "module", "exports", "React", code)(
+  const componentCode = componentName ? `${code}\nmodule.exports.default = ${componentName};` : code;
+  new Function("require", "module", "exports", "React", componentCode)(
     (id) => id === "react" ? { ...React, ...hooks } : imports[id] || {
       __esModule: true, default: id.split("/").pop(),
     },
@@ -55,6 +57,22 @@ export function dashboardComponent(path, imports = {}) {
       return tree;
     },
   };
+}
+
+export function dashboardHandler(path, name, scope) {
+  const source = readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
+  let handler;
+  transformSync(source, {
+    filename: path, babelrc: false, configFile: false,
+    parserOpts: { plugins: ["jsx"] },
+    plugins: [() => ({ visitor: {
+      VariableDeclarator(nodePath) {
+        if (nodePath.node.id.name === name) handler = source.slice(nodePath.node.init.start, nodePath.node.init.end);
+      },
+    } })],
+  });
+  if (!handler) throw new Error(`Handler ${name} not found in ${path}`);
+  return new Function(...Object.keys(scope), `return (${handler});`)(...Object.values(scope));
 }
 
 export function elements(tree, predicate) {

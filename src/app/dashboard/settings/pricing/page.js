@@ -11,10 +11,6 @@ export default function PricingSettingsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    loadPricing();
-  }, []);
-
   const loadPricing = async () => {
     setLoading(true);
     setError("");
@@ -26,6 +22,10 @@ export default function PricingSettingsPage() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    loadPricing();
+  }, []);
 
   const handlePricingUpdated = () => {
     loadPricing();
