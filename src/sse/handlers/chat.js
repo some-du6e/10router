@@ -1,3 +1,4 @@
+import { readJsonObject } from "../utils/requestBody.js";
 import "open-sse/index.js";
 
 import {
@@ -43,13 +44,8 @@ import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
  * Format detection and translation handled by translator
  */
 export async function handleChat(request, clientRawRequest = null) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    log.warn("CHAT", "Invalid JSON body");
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
-  }
+  const { body, error } = await readJsonObject(request);
+  if (error) return error;
 
   // Build clientRawRequest for logging (if not provided)
   if (!clientRawRequest) {
@@ -92,7 +88,7 @@ export async function handleChat(request, clientRawRequest = null) {
     }
   }
 
-  if (!modelStr) {
+  if (typeof modelStr !== "string" || !modelStr.trim()) {
     log.warn("CHAT", "Missing model");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   }
