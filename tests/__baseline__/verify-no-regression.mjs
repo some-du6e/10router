@@ -32,8 +32,14 @@ const resultsPath = process.argv[2];
 if (!resultsPath) { console.error("Missing results.json path"); process.exit(2); }
 
 const r = JSON.parse(readFileSync(resultsPath, "utf8"));
-if (!Array.isArray(r.testResults) || !Number.isInteger(r.numTotalTests) || r.numTotalTests < 1) {
+if (!Array.isArray(r.testResults) || !Number.isInteger(r.numTotalTests) || r.numTotalTests < 1 ||
+    !r.testResults.every(f => Array.isArray(f.assertionResults))) {
   console.error("Invalid or empty Vitest report. Run the deterministic suite before checking regressions.");
+  process.exit(2);
+}
+const assertionCount = r.testResults.reduce((count, f) => count + f.assertionResults.length, 0);
+if (assertionCount !== r.numTotalTests) {
+  console.error("Incomplete Vitest report: declared test count does not match recorded assertions.");
   process.exit(2);
 }
 const collectionFailures = r.testResults.filter(f =>
@@ -48,6 +54,12 @@ const nowFails = r.testResults.flatMap(f =>
   f.assertionResults.filter(a => a.status === "failed")
     .map(a => testKey(f.name) + " :: " + a.fullName)
 );
+if (r.numFailedTests !== nowFails.length ||
+    !Number.isInteger(r.numFailedTestSuites) || r.numFailedTestSuites < 0 ||
+    (r.numFailedTestSuites > 0 && !r.testResults.some(f => f.status === "failed"))) {
+  console.error("Incomplete Vitest report: failure counters disagree with recorded test results.");
+  process.exit(2);
+}
 
 // A results.json whose paths don't resolve is worse than useless — every known
 // fail reads as a regression. Say so instead of printing a wall of false ones.

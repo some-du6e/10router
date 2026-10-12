@@ -52,6 +52,18 @@ describe("regression gate", () => {
     expect(check({ ...passingReport(), numTotalTests: 0, testResults: [] }).status).not.toBe(0);
   });
 
+  it("rejects a truncated report with a positive declared test count", () => {
+    expect(check({ ...passingReport(), testResults: [] }).status).not.toBe(0);
+  });
+
+  it("rejects failed-test counters that disagree with the assertions", () => {
+    expect(check({ ...passingReport(), numFailedTests: 2 }).status).not.toBe(0);
+  });
+
+  it("rejects failed suites absent from the report", () => {
+    expect(check({ ...passingReport(), numFailedTestSuites: 1 }).status).not.toBe(0);
+  });
+
   it("rejects runner errors even when all assertions pass", () => {
     expect(check({ ...passingReport(), success: false }).status).toBe(1);
   });
