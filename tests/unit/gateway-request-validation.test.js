@@ -89,7 +89,7 @@ describe.each(Object.entries(handlers))("%s JSON ingress", (_, handle) => {
 
 describe.each(Object.entries({ chat: handleChat, embeddings: handleEmbeddings, tts: handleTts, image: handleImageGeneration }))(
   "%s model validation", (_, handle) => {
-    it.each([123, {}, [], true, "   "])("rejects model %j before model resolution", async (model) => {
+    it.each([123, {}, [], true, "   "].map(model => ({ model })))("rejects model $model before model resolution", async ({ model }) => {
       const response = await handle(request(JSON.stringify({ model, input: "hello", prompt: "hello" })));
       expect(response.status).toBe(400);
       expect((await response.json()).error.message).toBe("Missing model");
@@ -100,7 +100,7 @@ describe.each(Object.entries({ chat: handleChat, embeddings: handleEmbeddings, t
 );
 
 describe("modality inputs", () => {
-  it.each([123, {}, [], true, "   "])("rejects TTS input %j without invoking synthesis", async (input) => {
+  it.each([123, {}, [], true, "   "].map(input => ({ input })))("rejects TTS input $input without invoking synthesis", async ({ input }) => {
     const response = await handleTts(request(JSON.stringify({ model: "google-tts/en", input })));
     expect(response.status).toBe(400);
     expect((await response.json()).error.message).toBe("Missing required field: input");
