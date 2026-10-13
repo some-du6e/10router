@@ -201,6 +201,7 @@ export function createSSEStream(options = {}) {
           reqLogger?.appendConvertedChunk?.(doneOutput);
           controller.enqueue(sharedEncoder.encode(doneOutput));
           streamDoneSent = true;
+          finalizeStream();
           continue;
         }
 
