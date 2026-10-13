@@ -186,6 +186,10 @@ describe("Antigravity quota-aware routing", () => {
 
       const third = await handleAntigravityQuotaError("ag-strike", 429, MODEL, "token", {});
       expect(third).toBe(Date.parse("2026-08-26T00:15:00.000Z"));
+      mocks.getProviderConnections.mockResolvedValue([{ id: "ag-strike", isActive: true }]);
+      expect(await getProviderCredentials("antigravity", null, MODEL)).toMatchObject({
+        allRateLimited: true, allLimitsExhausted: false, providerResetAtMs: null,
+      });
     } finally {
       vi.useRealTimers();
     }

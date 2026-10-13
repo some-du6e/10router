@@ -68,13 +68,14 @@ describe("rate-limit hold wiring", () => {
   it("holds the stream open instead of returning 429 when all accounts are limited", async () => {
     state.credentials = {
       allRateLimited: true,
+      allLimitsExhausted: true,
       retryAfter: new Date(Date.now() + 7_200_000).toISOString(),
       retryAfterHuman: "reset after 2h",
       lastError: "usage_limit_reached",
       lastErrorCode: 429,
     };
 
-    const res = await handleChat(makeRequest({ model: "gpt-5", stream: true, messages: [{ role: "user", content: "hi" }] }));
+    const res = await handleChat(makeRequest({ model: "gpt-5", stream: true, messages: [{ role: "user", content: "hi" }] }, { "user-agent": "codex-tui" }));
 
     expect(res.status).toBe(200);
     expect(res.headers.get("Content-Type")).toBe("text/event-stream");

@@ -152,7 +152,10 @@ describe("credential selection", () => {
     mocks.codex.mockImplementation(async (token) => ({ quotas: { weekly: quota(token === "a" ? 72 : 24, 100) } }));
     await vi.advanceTimersByTimeAsync(60_000);
     await warm();
-    expect(await getProviderCredentials("codex", null, "gpt-6")).toMatchObject({ allRateLimited: true, retryAfter: hours(24) });
+    expect(await getProviderCredentials("codex", null, "gpt-6")).toMatchObject({
+      allRateLimited: true, allLimitsExhausted: true,
+      retryAfter: hours(24), providerResetAtMs: Date.parse(hours(24)),
+    });
   });
 
   it("respects provider overrides and does not fetch for fill-first", async () => {
@@ -180,6 +183,8 @@ describe("credential selection", () => {
     mocks.codex.mockResolvedValue({ quotas: { weekly: quota(24, 100) } });
     mocks.connections.mockResolvedValue([{ id: "a", accessToken: "a", "modelLock_gpt-6": hours(1) }]);
     await warm();
-    expect(await getProviderCredentials("codex", null, "gpt-6")).toMatchObject({ retryAfter: hours(24) });
+    expect(await getProviderCredentials("codex", null, "gpt-6")).toMatchObject({
+      retryAfter: hours(24), allLimitsExhausted: false,
+    });
   });
 });

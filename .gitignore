@@ -52,6 +52,7 @@ source/*
 .cursor/*
 docs/*
 !docs/ARCHITECTURE.md
+!docs/FAST_FAIL.md
 test/*
 open-sse/test/*
 RM.vn.md
