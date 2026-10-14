@@ -71,7 +71,9 @@ export default function ProxyPoolsPage() {
       const res = await fetch("/api/proxy-pools?includeUsage=true", { cache: "no-store" });
       const data = await res.json();
       if (res.ok) {
-        setProxyPools(data.proxyPools || []);
+        const nextPools = data.proxyPools || [];
+        setProxyPools(nextPools);
+        setSelectedIds((prev) => prev.filter((id) => nextPools.some((pool) => pool.id === id)));
       }
     } catch (error) {
       console.log("Error fetching proxy pools:", error);
@@ -81,7 +83,10 @@ export default function ProxyPoolsPage() {
   }, []);
 
   useEffect(() => {
-    fetchProxyPools();
+    const timeoutId = setTimeout(() => {
+      void fetchProxyPools();
+    }, 0);
+    return () => clearTimeout(timeoutId);
   }, [fetchProxyPools]);
 
   const resetForm = () => {
@@ -326,11 +331,6 @@ export default function ProxyPoolsPage() {
       notify.success(`Health check done. Alive: ${alive}, Dead: ${deadIds.length}`);
     }
   };
-
-  // Cleanup selectedIds when pools change
-  useEffect(() => {
-    setSelectedIds((prev) => prev.filter((id) => proxyPools.some((p) => p.id === id)));
-  }, [proxyPools]);
 
   const openBatchImportModal = () => {
     setBatchImportText("");
@@ -907,7 +907,7 @@ export default function ProxyPoolsPage() {
             value={cloudflareForm.apiToken}
             onChange={(e) => setCloudflareForm((prev) => ({ ...prev, apiToken: e.target.value }))}
             placeholder="your-cloudflare-api-token"
-            hint={<>Requires "Workers Scripts: Edit" permission. <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Get token →</a></>}
+            hint={<>Requires &quot;Workers Scripts: Edit&quot; permission. <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Get token →</a></>}
             type="password"
           />
           <Input
