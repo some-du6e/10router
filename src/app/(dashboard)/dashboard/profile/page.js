@@ -1596,6 +1596,10 @@ export default function ProfilePage() {
               <div className="flex-1 min-w-0">
                 <p className="font-medium text-sm sm:text-base">Outbound Proxy</p>
                 <p className="text-xs sm:text-sm text-text-muted">Enable proxy for OAuth + provider outbound requests.</p>
+                <p className="mt-2 flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-300">
+                  <span className="material-symbols-outlined mt-px text-[16px]">warning</span>
+                  Proxying paid or subscription accounts, such as Claude Code/Claude OAuth, may violate provider terms and lead to account suspension or a ban.
+                </p>
               </div>
               <Toggle
                 checked={settings.outboundProxyEnabled === true}
