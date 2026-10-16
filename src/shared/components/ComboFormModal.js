@@ -59,6 +59,7 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
   const [models, setModels] = useState(combo?.models || []);
   const [showModelSelect, setShowModelSelect] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [nameError, setNameError] = useState("");
   const [modelAliases, setModelAliases] = useState({});
 
@@ -69,7 +70,7 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
 
   const validateName = (value) => {
     if (!value.trim()) { setNameError("Name is required"); return false; }
-    const full = forcePrefix + value;
+    const full = forcePrefix + value.trim();
     if (!VALID_NAME_REGEX.test(full)) { setNameError("Only letters, numbers, -, _ and . allowed"); return false; }
     setNameError("");
     return true;
@@ -100,10 +101,16 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
   };
 
   const handleSave = async () => {
-    if (!validateName(name)) return;
+    if (saving || !validateName(name)) return;
+    setSaveError("");
     setSaving(true);
-    await onSave({ name: forcePrefix + name.trim(), models });
-    setSaving(false);
+    try {
+      await onSave({ name: forcePrefix + name.trim(), models });
+    } catch (error) {
+      setSaveError(error.message || "Failed to save combo");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const isEdit = !!combo;
@@ -157,6 +164,7 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
             </button>
           </div>
 
+          {saveError && <p role="alert" className="text-sm text-red-500">{saveError}</p>}
           <div className="flex flex-col gap-2 pt-1 sm:flex-row">
             <Button onClick={onClose} variant="ghost" fullWidth size="sm">Cancel</Button>
             <Button onClick={handleSave} fullWidth size="sm" disabled={!name.trim() || !!nameError || saving}>

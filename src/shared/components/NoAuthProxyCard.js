@@ -5,6 +5,7 @@ import PropTypes from "prop-types";
 import Card from "./Card";
 import Select from "./Select";
 import Badge from "./Badge";
+import api from "@/shared/utils/api";
 
 const NONE_PROXY_POOL_VALUE = "__none__";
 const STRATEGIES = [
@@ -19,27 +20,35 @@ export default function NoAuthProxyCard({ providerId }) {
   const [rotateStrategy, setRotateStrategy] = useState("none");
   const [saving, setSaving] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
+  const [loadedProviderId, setLoadedProviderId] = useState(null);
+  const [error, setError] = useState("");
+  const loaded = loadedProviderId === providerId;
 
   useEffect(() => {
     let cancelled = false;
     Promise.all([
-      fetch("/api/proxy-pools?isActive=true", { cache: "no-store" }).then((r) => r.ok ? r.json() : { proxyPools: [] }),
-      fetch("/api/settings", { cache: "no-store" }).then((r) => r.ok ? r.json() : {}),
+      api.get("/api/proxy-pools?isActive=true", { cache: "no-store" }),
+      api.get("/api/settings", { cache: "no-store" }),
     ]).then(([poolData, settingsData]) => {
       if (cancelled) return;
       setProxyPools(poolData.proxyPools || []);
       const override = (settingsData.providerStrategies || {})[providerId] || {};
       setProxyPoolId(override.proxyPoolId || NONE_PROXY_POOL_VALUE);
       setRotateStrategy(override.rotateStrategy || "none");
-    }).catch(() => {});
+      setLoadedProviderId(providerId);
+      setSavedFlash(false);
+      setError("");
+    }).catch((err) => { if (!cancelled) setError(`Could not load proxy settings: ${err.message}`); });
     return () => { cancelled = true; };
   }, [providerId]);
 
   const save = useCallback(async (poolId, strategy) => {
+    if (!loaded || saving) return;
     setSaving(true);
+    setSavedFlash(false);
+    setError("");
     try {
-      const res = await fetch("/api/settings", { cache: "no-store" });
-      const data = res.ok ? await res.json() : {};
+      const data = await api.get("/api/settings", { cache: "no-store" });
       const current = data.providerStrategies || {};
       const override = { ...(current[providerId] || {}) };
       if (poolId === NONE_PROXY_POOL_VALUE) delete override.proxyPoolId;
@@ -49,28 +58,24 @@ export default function NoAuthProxyCard({ providerId }) {
       const updated = { ...current };
       if (Object.keys(override).length === 0) delete updated[providerId];
       else updated[providerId] = override;
-      await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ providerStrategies: updated }),
-      });
+      await api.patch("/api/settings", { providerStrategies: updated });
+      setProxyPoolId(poolId);
+      setRotateStrategy(strategy);
       setSavedFlash(true);
       setTimeout(() => setSavedFlash(false), 1500);
     } catch (e) {
-      console.log("Save proxy config error:", e);
+      setError(`Could not save proxy settings: ${e.message}`);
     } finally {
       setSaving(false);
     }
-  }, [providerId]);
+  }, [providerId, loaded, saving]);
 
   const handlePoolChange = (newPoolId) => {
-    setProxyPoolId(newPoolId);
-    save(newPoolId, rotateStrategy);
+    return save(newPoolId, rotateStrategy);
   };
 
   const handleStrategyChange = (newStrategy) => {
-    setRotateStrategy(newStrategy);
-    save(proxyPoolId, newStrategy);
+    return save(proxyPoolId, newStrategy);
   };
 
   const canRotate = proxyPools.length >= 2;
@@ -86,14 +91,14 @@ export default function NoAuthProxyCard({ providerId }) {
           <p className="text-sm font-medium">No authentication required</p>
           <p className="text-xs text-text-muted">This provider is ready to use. Optionally route requests through a proxy pool to bypass IP-based limits.</p>
         </div>
-        {savedFlash && <Badge variant="success" size="sm">Saved</Badge>}
+        {loaded && savedFlash && <Badge variant="success" size="sm">Saved</Badge>}
       </div>
 
       <Select
         label="Proxy Pool"
         value={proxyPoolId}
         onChange={(e) => handlePoolChange(e.target.value)}
-        disabled={saving || isRotation}
+        disabled={!loaded || saving || isRotation}
         options={[
           { value: NONE_PROXY_POOL_VALUE, label: "None (direct)" },
           ...proxyPools.map((pool) => ({ value: pool.id, label: pool.name })),
@@ -106,7 +111,7 @@ export default function NoAuthProxyCard({ providerId }) {
         <select
           value={rotateStrategy}
           onChange={(e) => handleStrategyChange(e.target.value)}
-          disabled={saving}
+          disabled={!loaded || saving}
           className="py-2 px-3 text-sm text-text-main bg-white dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-md focus:ring-1 focus:ring-primary/30 focus:border-primary/50 focus:outline-none transition-all disabled:opacity-50"
         >
           {STRATEGIES.map((s) => (
@@ -125,6 +130,7 @@ export default function NoAuthProxyCard({ providerId }) {
               : `Uses the selected pool above. Set to Round-robin or Random to rotate across all active pools.`}
         </p>
       </div>
+      {error && <p role="alert" className="mt-3 text-sm text-red-500">{error}</p>}
     </Card>
   );
 }

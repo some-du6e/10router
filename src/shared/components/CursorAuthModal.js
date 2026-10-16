@@ -79,7 +79,7 @@ export default function CursorAuthModal({ isOpen, onSuccess, onClose }) {
         throw new Error(data.error || "Import failed");
       }
 
-      onSuccess?.();
+      onSuccess?.(data);
       onClose();
     } catch (err) {
       setError(err.message);

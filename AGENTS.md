@@ -56,6 +56,12 @@ npx vitest run unit/capabilities.test.js   # single file (path relative to tests
 - `*.real.test.js` under `tests/translator/real/` make live provider calls — skip unless credentials are set.
 - Regression baselines: `tests/__baseline__/verify-*.mjs` compare against committed snapshots (providers, aliases, OAuth URLs). Run these after touching provider registry / alias logic.
 
+### Enforced dashboard rules
+
+| Rule | Enforcement |
+| --- | --- |
+| Dashboard writes must report failures, release pending state, and retain saved values until the API accepts the update. Reauthentication may clear errors only on the account that received credentials. | `tests/unit/dashboard-followups.test.js` covers combo retries, proxy read/write failures, OAuth result forwarding, and account identity checks. |
+
 ## Architecture
 
 Two authoritative docs already exist — read them before working in these areas rather than re-deriving:
@@ -100,7 +106,7 @@ Pre-translate hooks that compress `tool_result` content in-place to cut tokens. 
 
 <!-- BEGIN:nextjs-agent-rules -->
 
-# This is NOT the Next.js you know
+## This is NOT the Next.js you know
 
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
 
