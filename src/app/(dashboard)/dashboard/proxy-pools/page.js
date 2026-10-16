@@ -52,6 +52,7 @@ export default function ProxyPoolsPage() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [confirmState, setConfirmState] = useState(null);
   const relayMenuRef = useRef(null);
+  const latestFetchProxyPoolsRequestRef = useRef(0);
   const notify = useNotificationStore();
 
   useEffect(() => {
@@ -67,21 +68,30 @@ export default function ProxyPoolsPage() {
   }, [showRelayMenu]);
 
   const fetchProxyPools = useCallback(async () => {
+    const requestId = ++latestFetchProxyPoolsRequestRef.current;
     try {
       const res = await fetch("/api/proxy-pools?includeUsage=true", { cache: "no-store" });
       const data = await res.json();
       if (res.ok) {
-        setProxyPools(data.proxyPools || []);
+        if (requestId !== latestFetchProxyPoolsRequestRef.current) return;
+        const nextPools = data.proxyPools || [];
+        setProxyPools(nextPools);
+        setSelectedIds((prev) => prev.filter((id) => nextPools.some((pool) => pool.id === id)));
       }
     } catch (error) {
       console.log("Error fetching proxy pools:", error);
     } finally {
-      setLoading(false);
+      if (requestId === latestFetchProxyPoolsRequestRef.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
-    fetchProxyPools();
+    const timeoutId = setTimeout(() => {
+      void fetchProxyPools();
+    }, 0);
+    return () => clearTimeout(timeoutId);
   }, [fetchProxyPools]);
 
   const resetForm = () => {
@@ -326,11 +336,6 @@ export default function ProxyPoolsPage() {
       notify.success(`Health check done. Alive: ${alive}, Dead: ${deadIds.length}`);
     }
   };
-
-  // Cleanup selectedIds when pools change
-  useEffect(() => {
-    setSelectedIds((prev) => prev.filter((id) => proxyPools.some((p) => p.id === id)));
-  }, [proxyPools]);
 
   const openBatchImportModal = () => {
     setBatchImportText("");
@@ -577,6 +582,12 @@ export default function ProxyPoolsPage() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <h1 className="text-xl font-semibold sm:text-2xl">Proxy Pools</h1>
+          <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-800 dark:text-amber-200">
+            <span className="material-symbols-outlined mt-0.5 shrink-0 text-[18px]">warning</span>
+            <p>
+              <span className="font-semibold">Provider terms warning:</span> routing a paid or subscription account (including Claude Code/Claude OAuth) through a proxy or relay may violate its terms and can lead to throttling, suspension, or a ban. Use proxying only where the provider explicitly allows it; IP masking does not remove that risk.
+            </p>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 gap-2 sm:flex sm:items-center">
@@ -825,6 +836,9 @@ export default function ProxyPoolsPage() {
               <li>Free tier: 100GB bandwidth/month, 500K edge invocations</li>
               <li>Deploy multiple relays on different accounts for more IP diversity</li>
             </ul>
+            <p className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-800 dark:text-amber-200">
+              Routing paid or subscription accounts such as Claude Code/Claude OAuth through a relay may violate provider terms and lead to suspension or a ban. IP masking does not remove that risk.
+            </p>
           </div>
           <Input
             label="Vercel API Token"
@@ -872,6 +886,9 @@ export default function ProxyPoolsPage() {
               <li>Free tier: 100,000 requests per day</li>
               <li>Requires Cloudflare Account ID and a Workers API Token (Edit Workers permission)</li>
             </ul>
+            <p className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-800 dark:text-amber-200">
+              Routing paid or subscription accounts such as Claude Code/Claude OAuth through a relay may violate provider terms and lead to suspension or a ban. IP masking does not remove that risk.
+            </p>
             <div className="mt-2 pt-2 border-t border-orange-500/10 text-xs text-text-muted">
               <p className="font-medium text-text-main mb-1">How to generate your API Token:</p>
               <ol className="list-decimal pl-4 space-y-0.5">
@@ -895,7 +912,7 @@ export default function ProxyPoolsPage() {
             value={cloudflareForm.apiToken}
             onChange={(e) => setCloudflareForm((prev) => ({ ...prev, apiToken: e.target.value }))}
             placeholder="your-cloudflare-api-token"
-            hint={<>Requires "Workers Scripts: Edit" permission. <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Get token →</a></>}
+            hint={<>Requires &quot;Workers Scripts: Edit&quot; permission. <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Get token →</a></>}
             type="password"
           />
           <Input
@@ -938,6 +955,9 @@ export default function ProxyPoolsPage() {
               <li>Support up to 20 active apps & 50 custom domains</li>
               <li>Deploy multiple relays for maximum IP diversity</li>
             </ul>
+            <p className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-800 dark:text-amber-200">
+              Routing paid or subscription accounts such as Claude Code/Claude OAuth through a relay may violate provider terms and lead to suspension or a ban. IP masking does not remove that risk.
+            </p>
             <div className="mt-2 pt-2 border-t border-black/10 dark:border-white/10 text-xs text-text-muted">
               <p className="font-medium text-text-main mb-1">How to generate API token:</p>
               <ol className="list-decimal pl-4 space-y-0.5">
