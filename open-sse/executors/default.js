@@ -67,8 +67,26 @@ export class DefaultExecutor extends BaseExecutor {
     super(provider, PROVIDERS[provider] || PROVIDERS.openai);
   }
 
-  transformRequest(model, body) {
-    const transformed = this.applyJsonSchemaFallback(body);
+  transformRequest(model, body, _stream, credentials) {
+    let transformed = this.applyJsonSchemaFallback(body);
+
+    // Snowflake's Cortex OpenAI-compatible endpoint rejects the legacy
+    // `max_tokens` field even though the rest of the Chat Completions shape is
+    // compatible. Keep this opt-in so other OpenAI-compatible gateways retain
+    // their existing request contract.
+    if (
+      credentials?.providerSpecificData?.maxCompletionTokens === true &&
+      transformed &&
+      typeof transformed === "object" &&
+      transformed.max_completion_tokens === undefined &&
+      transformed.max_tokens !== undefined
+    ) {
+      transformed = {
+        ...transformed,
+        max_completion_tokens: transformed.max_tokens,
+      };
+      delete transformed.max_tokens;
+    }
 
     if (transformed && typeof transformed === "object") {
       // quirk: some openai-compatible providers reject Anthropic's client_metadata field
