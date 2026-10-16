@@ -14,6 +14,8 @@
 import { getSettings } from "@/lib/localDb";
 import { getMeta, setMeta } from "@/lib/db/helpers/metaStore.js";
 import { isOidcConfigured } from "@/lib/auth/oidc";
+import { isSamlConfigured } from "@/lib/auth/saml.js";
+import { getActiveSsoType } from "./authMode.js";
 
 export const MIN_PASSWORD_LENGTH = 8;
 
@@ -66,7 +68,9 @@ export async function getAuthBootstrapState(settings = null) {
     }
   }
   if (s?.password) return "configured";
-  if (s?.authMode === "oidc" && isOidcConfigured(s)) return "oidc";
+  const ssoType = getActiveSsoType(s);
+  if (ssoType === "oidc" && isOidcConfigured(s)) return "oidc";
+  if (ssoType === "saml" && isSamlConfigured(s)) return "saml";
   if (getEnvInitialPassword()) return "env";
 
   let legacy = false;
