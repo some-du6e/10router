@@ -1,6 +1,7 @@
 # Unreleased
 
 ## Fixes
+- Regression checks now reject suite import failures, runner errors, empty runs, and restored historical failures; CI runs the same deterministic checks as local development.
 - **T3 usage hub**: preserve upstream status codes for non-JSON provider errors and reject malformed settings responses without overwriting the current hub state.
 
 ## Removed
