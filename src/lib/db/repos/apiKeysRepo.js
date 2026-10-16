@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 
-function rowToKey(row) {
+export function rowToKey(row) {
   if (!row) return null;
   return {
     id: row.id,
@@ -70,7 +70,7 @@ export async function deleteApiKey(id) {
 }
 
 /** null → inherit global; anything else → explicit 0/1 */
-function toLimitHoldColumn(value) {
+export function toLimitHoldColumn(value) {
   if (value === null || value === undefined) return null;
   return value ? 1 : 0;
 }

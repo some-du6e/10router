@@ -1,0 +1,14 @@
+# Persistence checks
+
+| Rule | Enforcement |
+| --- | --- |
+| Preserve API key hold overrides in backups and legacy imports. Use `rowToKey` and `toLimitHoldColumn` from `repos/apiKeysRepo.js`. | `tests/unit/db-api-key-backup.test.js` tests true, false and inherited overrides through restore and migration. |
+| Reject failed legacy imports, retain retry eligibility across schema initialization, and clear rejected initialization promises. | `tests/unit/db-legacy-import-retry.test.js` corrects invalid legacy JSON and verifies recovery and persistence. |
+| Keep connection pragmas active after sql.js exports. | `tests/unit/db-adapter-integrity.test.js` inserts an invalid foreign key after the save debounce. |
+| Register adapter shutdown handlers through `helpers/shutdown.js` and unregister on close. | `tests/unit/db-adapter-integrity.test.js` compares process listener counts before opening and after closing each available Node adapter. |
+| Preserve nested rollback and synchronous transaction return values across adapters. | `tests/unit/db-adapter-integrity.test.js` checks inner rollback, outer commit, and outer rollback against stored rows. |
+| Always test sql.js; probe optional native bindings before enabling their integrity suites. Adapter implementation errors must still fail. | `tests/unit/db-adapter-integrity.test.js` probes native constructors separately from adapter factories. |
+| Group daily and live API key stats by a stable nonsecret identity, never by the display mask. | `tests/unit/db-usage-stats-masking.test.js` checks serialized output, grouping parity, and separate names, counters and timestamps for two real same-machine keys sharing a display prefix. |
+| Pending timeouts belong to an account/model bucket until its last request completes. Expiring one bucket must not erase another. | `tests/unit/db-pending-request-timeouts.test.js` exercises overlapping, separate-account, keyless and late-completion cases. |
+
+Run these checks from `tests/` with `npx vitest run unit/db-api-key-backup.test.js unit/db-legacy-import-retry.test.js unit/db-adapter-integrity.test.js`.

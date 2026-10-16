@@ -1,4 +1,5 @@
 import { EventEmitter } from "events";
+import { createHash } from "node:crypto";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
@@ -7,6 +8,24 @@ function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
   if (key.length <= 8) return key.charAt(0) + "***";
   return key.slice(0, 8) + "***";
+}
+
+function apiKeyStatsIdentity(key) {
+  if (!key || typeof key !== "string") return "local-no-key";
+  // Display prefixes are shared by keys from the same machine, not identities.
+  return createHash("sha256").update(key).digest("hex");
+}
+
+function apiKeyStatsGroup(key, model, provider) {
+  const identity = apiKeyStatsIdentity(key);
+  return identity === "local-no-key" ? identity : `${identity}|${model}|${provider || "unknown"}`;
+}
+
+function pendingCount(modelKey, connectionId) {
+  if (connectionId) return pendingRequests.byAccount[connectionId]?.[modelKey] || 0;
+  const accountCount = Object.values(pendingRequests.byAccount)
+    .reduce((sum, models) => sum + (models[modelKey] || 0), 0);
+  return Math.max(0, (pendingRequests.byModel[modelKey] || 0) - accountCount);
 }
 
 const PENDING_TIMEOUT_MS = 60 * 1000;
@@ -153,14 +172,15 @@ export function trackPendingRequest(model, provider, connectionId, started, erro
   const modelKey = provider ? `${model} (${provider})` : model;
   const timerKey = `${connectionId}|${modelKey}`;
 
+  const delta = started ? 1 : (pendingCount(modelKey, connectionId) > 0 ? -1 : 0);
   if (!pendingRequests.byModel[modelKey]) pendingRequests.byModel[modelKey] = 0;
-  pendingRequests.byModel[modelKey] = Math.max(0, pendingRequests.byModel[modelKey] + (started ? 1 : -1));
+  pendingRequests.byModel[modelKey] = Math.max(0, pendingRequests.byModel[modelKey] + delta);
   if (pendingRequests.byModel[modelKey] === 0) delete pendingRequests.byModel[modelKey];
 
   if (connectionId) {
     if (!pendingRequests.byAccount[connectionId]) pendingRequests.byAccount[connectionId] = {};
     if (!pendingRequests.byAccount[connectionId][modelKey]) pendingRequests.byAccount[connectionId][modelKey] = 0;
-    pendingRequests.byAccount[connectionId][modelKey] = Math.max(0, pendingRequests.byAccount[connectionId][modelKey] + (started ? 1 : -1));
+    pendingRequests.byAccount[connectionId][modelKey] = Math.max(0, pendingRequests.byAccount[connectionId][modelKey] + delta);
     if (pendingRequests.byAccount[connectionId][modelKey] === 0) {
       delete pendingRequests.byAccount[connectionId][modelKey];
       if (Object.keys(pendingRequests.byAccount[connectionId]).length === 0) {
@@ -173,13 +193,16 @@ export function trackPendingRequest(model, provider, connectionId, started, erro
     clearTimeout(pendingTimers[timerKey]);
     pendingTimers[timerKey] = setTimeout(() => {
       delete pendingTimers[timerKey];
-      if (pendingRequests.byModel[modelKey] > 0) pendingRequests.byModel[modelKey] = 0;
-      if (connectionId && pendingRequests.byAccount[connectionId]?.[modelKey] > 0) {
-        pendingRequests.byAccount[connectionId][modelKey] = 0;
+      const expired = pendingCount(modelKey, connectionId);
+      pendingRequests.byModel[modelKey] = Math.max(0, (pendingRequests.byModel[modelKey] || 0) - expired);
+      if (!pendingRequests.byModel[modelKey]) delete pendingRequests.byModel[modelKey];
+      if (connectionId && pendingRequests.byAccount[connectionId]) {
+        delete pendingRequests.byAccount[connectionId][modelKey];
+        if (!Object.keys(pendingRequests.byAccount[connectionId]).length) delete pendingRequests.byAccount[connectionId];
       }
       scheduleStatsEvent("pending");
     }, PENDING_TIMEOUT_MS);
-  } else {
+  } else if (pendingCount(modelKey, connectionId) === 0) {
     clearTimeout(pendingTimers[timerKey]);
     delete pendingTimers[timerKey];
   }
@@ -623,7 +646,7 @@ export async function getUsageStats(period = "all") {
         if (dateKey > (stats.byAccount[accountKey].lastUsed || "")) stats.byAccount[accountKey].lastUsed = dateKey;
       }
 
-      for (const [akKey, ak] of Object.entries(day.byApiKey || {})) {
+      for (const ak of Object.values(day.byApiKey || {})) {
         const rawModel = ak.rawModel || "";
         const provider = ak.provider || "";
         const providerDisplayName = providerNodeNameMap[provider] || provider;
@@ -631,7 +654,8 @@ export async function getUsageStats(period = "all") {
         const keyInfo = apiKeyVal ? apiKeyMap[apiKeyVal] : null;
         const keyName = keyInfo?.name || (apiKeyVal ? apiKeyVal.slice(0, 8) + "..." : "Local (No API Key)");
         const apiKeyMasked = maskApiKey(apiKeyVal);
-        const apiKeyKey = apiKeyMasked || "local-no-key";
+        const apiKeyKey = apiKeyStatsIdentity(apiKeyVal);
+        const akKey = apiKeyStatsGroup(apiKeyVal, rawModel, provider);
         if (!stats.byApiKey[akKey]) {
           stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey, lastUsed: dateKey };
         }
@@ -677,9 +701,7 @@ export async function getUsageStats(period = "all") {
         if (stats.byAccount[accountKey] && new Date(ts) > new Date(stats.byAccount[accountKey].lastUsed)) stats.byAccount[accountKey].lastUsed = ts;
       }
 
-      const apiKeyKey = (e.apiKey && typeof e.apiKey === "string")
-        ? `${e.apiKey}|${e.model}|${e.provider || "unknown"}`
-        : "local-no-key";
+      const apiKeyKey = apiKeyStatsGroup(e.apiKey, e.model, e.provider);
       if (stats.byApiKey[apiKeyKey] && new Date(ts) > new Date(stats.byApiKey[apiKeyKey].lastUsed)) stats.byApiKey[apiKeyKey].lastUsed = ts;
 
       const endpoint = e.endpoint || "Unknown";
@@ -750,9 +772,9 @@ export async function getUsageStats(period = "all") {
         const keyInfo = apiKeyMap[r.apiKey];
         const keyName = keyInfo?.name || r.apiKey.slice(0, 8) + "...";
         const apiKeyMasked = maskApiKey(r.apiKey);
-        const akKey = `${apiKeyMasked}|${r.model}|${r.provider || "unknown"}`;
+        const akKey = apiKeyStatsGroup(r.apiKey, r.model, r.provider);
         if (!stats.byApiKey[akKey]) {
-          stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey: apiKeyMasked, lastUsed: r.timestamp };
+          stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey: apiKeyStatsIdentity(r.apiKey), lastUsed: r.timestamp };
         }
         const ake = stats.byApiKey[akKey];
         ake.requests++; ake.promptTokens += promptTokens; ake.completionTokens += completionTokens; ake.cachedTokens += cachedTokens; ake.cost += entryCost;
