@@ -52,6 +52,7 @@ export default function ProxyPoolsPage() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [confirmState, setConfirmState] = useState(null);
   const relayMenuRef = useRef(null);
+  const latestFetchProxyPoolsRequestRef = useRef(0);
   const notify = useNotificationStore();
 
   useEffect(() => {
@@ -67,10 +68,12 @@ export default function ProxyPoolsPage() {
   }, [showRelayMenu]);
 
   const fetchProxyPools = useCallback(async () => {
+    const requestId = ++latestFetchProxyPoolsRequestRef.current;
     try {
       const res = await fetch("/api/proxy-pools?includeUsage=true", { cache: "no-store" });
       const data = await res.json();
       if (res.ok) {
+        if (requestId !== latestFetchProxyPoolsRequestRef.current) return;
         const nextPools = data.proxyPools || [];
         setProxyPools(nextPools);
         setSelectedIds((prev) => prev.filter((id) => nextPools.some((pool) => pool.id === id)));
@@ -78,7 +81,9 @@ export default function ProxyPoolsPage() {
     } catch (error) {
       console.log("Error fetching proxy pools:", error);
     } finally {
-      setLoading(false);
+      if (requestId === latestFetchProxyPoolsRequestRef.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
