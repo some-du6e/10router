@@ -92,6 +92,10 @@ Pre-translate hooks that compress `tool_result` content in-place to cut tokens. 
 
 ## Conventions & gotchas
 
+| Rule | Enforcement |
+| --- | --- |
+| Forward complete OAuth refresh results to `updateProviderCredentials`; let that function merge provider metadata with current stored state. | `tests/unit/gateway-refresh-persistence.test.js` exercises refresh persistence through image, search, fetch, and both video handlers, including expiry, identity tokens, and account metadata. |
+
 - Plain JavaScript (ESM), no TypeScript. `@/*` path alias → `src/*` (`jsconfig.json`).
 - `custom-server.js` wraps the Next standalone server to derive client IP from the TCP socket and strip attacker-controlled `X-Forwarded-For` — trusting forwarding headers only from a loopback reverse proxy. Preserve this when touching request/IP/rate-limit code.
 - Security-sensitive env: `JWT_SECRET` (session cookie), `INITIAL_PASSWORD` (optional headless bootstrap password, min 8 chars — there is **no** default password; a fresh install requires the one-time setup token printed to the server console, see `src/lib/auth/setupState.js` + `setupToken.js`), `API_KEY_SECRET`, `MACHINE_ID_SALT`. Full env contract in `.env.example` and ARCHITECTURE.md's env matrix.
