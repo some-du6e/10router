@@ -1,3 +1,4 @@
+import { readJsonObject } from "../utils/requestBody.js";
 import {
   getProviderCredentials,
   markAccountUnavailable,
@@ -21,18 +22,10 @@ import { saveRequestUsage } from "@/lib/usageDb.js";
  * @param {Request} request
  */
 export async function handleSystemone(request) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    log.warn("SYSTEMONE", "Invalid JSON body");
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
-  }
+  const { body, error } = await readJsonObject(request);
+  if (error) return error;
 
   const url = new URL(request.url);
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Request body must be an object");
-  }
   const modelStr = body.model;
 
   log.request("POST", `${url.pathname} | ${modelStr}`);
