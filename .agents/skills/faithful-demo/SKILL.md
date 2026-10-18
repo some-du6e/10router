@@ -13,22 +13,7 @@ Work in `mockups/<feature>/` in the app's repo unless the user names a place. Ma
 
 Run the app locally and open the page the feature belongs on. Screenshot it in light and dark mode at desktop width, and at phone width too if the feature touches layout. These screenshots are the reference everything gets compared against.
 
-- Give the dev server throwaway state: a fresh temp data dir, a seeded or test password, a test database. The user's real DB and credentials stay out of it. Check the repo's docs, `package.json` scripts, and `.env.example` for the variables and any existing seed script. For 10router, seed a temp dir with `scripts/seed-demo.mjs` the way `npm run dev:demo` does, then start the dev server on it. Agent shells often lose environment variables between calls, so make the dir once and put its literal path on every command:
-
-  ```sh
-  mktemp -d    # prints e.g. /tmp/tmp.AbC123
-  DATA_DIR=/tmp/tmp.AbC123 node --experimental-loader=./scripts/resolve-src-alias.mjs scripts/seed-demo.mjs
-  DATA_DIR=/tmp/tmp.AbC123 NEXT_DIST_DIR=.next-demo INITIAL_PASSWORD=demo-password npx next dev --webpack -p 20199
-  ```
-
-  The seed wipes the database `DATA_DIR` points at, and refuses to run without it. A `DATA_DIR` on the command line beats the one in `.env`; leave it off `next dev` and the server opens the real install. `NEXT_DIST_DIR` keeps this server from fighting a `npm run dev` the user already has running. Log in with a `--login` module (step 2) whose default export is:
-
-  ```js
-  export default async (page, origin) => {
-    const r = await page.request.post(`${origin}/api/auth/login`, { data: { password: "demo-password" } });
-    if (!r.ok()) throw new Error(`login ${r.status()}`);
-  };
-  ```
+- Give the dev server throwaway state: a fresh temp data dir, a seeded or test password, a test database. The user's real DB and credentials stay out of it. Check the repo's docs, `package.json` scripts, and `.env.example` for the variables and any existing seed script. For 10router, the exact seed, server, and login commands are in [references/10router.md](references/10router.md).
 - Before capturing anything, confirm the server is running on the throwaway data: the page shows only your seeded records.
 - Seed enough fake data that the page looks lived-in. An empty state is a different screen.
 - If the app can't run (missing services, no credentials, too heavy), read [references/stacks.md](references/stacks.md) "Apps you can't run" before going further.
@@ -54,9 +39,9 @@ Done when, with the dev server stopped, you've opened `captured/<page>.html` ove
 
 The captured CSS only contains classes the page already used, so new UI needs the stylesheet built by the app's own toolchain with the demo source included. How depends on the stack, read the matching section of [references/stacks.md](references/stacks.md): Tailwind, CSS modules, plain CSS/Sass, or a component library.
 
-Keep a demo-only CSS file for animations or helpers the app lacks, and keep it a few lines long. If you're writing colors, font families, or radii into it, stop and find the app's token.
+Keep a demo-only CSS file for animations or helpers the app lacks, a few lines long, with no colors, font families, or radii in it. Those come from the app's tokens.
 
-Done when the compiled stylesheet contains a class that only the demo's `src/` uses (grep for it), and the demo CSS has no color, font-family, or radius literals.
+Done when the compiled stylesheet contains a class that only the demo's `src/` uses (grep for it).
 
 ## 4. Build the new piece inside the real page
 
@@ -75,8 +60,6 @@ Put every fake upstream, API, or slow operation in one `SCENARIOS` map at the to
 
 Mark the switcher as demo-only so nobody mistakes it for a proposed control.
 
-Done when the switcher flips between at least three scenarios without a reload.
-
 ## 6. Click through it
 
 Serve `dist/` and drive it in a real browser (Playwright, the host's browser tools). Walk every scenario end to end, in light and dark, then at a phone width (compare against the phone screenshots if you took them). Watch the console and failed requests. Compare each screen against the step 1 screenshots: font, spacing, radii, colors, icon weight. Fix differences by finding what the real app does, never by eyeballing a new value.
@@ -93,7 +76,7 @@ A demo built on throwaway data publishes without asking. Before publishing, look
 
 ## Clean up
 
-- `next dev` and similar tools rewrite tracked files (Next re-adds a block to `AGENTS.md` and can rewrite version ranges in `package.json`). Run `git status` and revert anything you didn't mean to change.
+- `next dev` and similar tools rewrite tracked files (Next re-adds a block to `AGENTS.md`, can rewrite version ranges in `package.json`, and adds a custom dist dir to `tsconfig.json`). Run `git status` and revert anything you didn't mean to change.
 - Leave no stray lockfiles (`bun.lock`, `package-lock.json`) in the repo or demo folder that weren't there before.
 - Stop the dev servers and delete the temp data dirs and the `.next-demo` build dir.
 
