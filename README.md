@@ -15,32 +15,26 @@ API formats and falling back across models and accounts.
 ## What it does
 
 - **One endpoint** — point any OpenAI-compatible client at `http://localhost:20128/v1`.
-- **Format translation** — OpenAI ↔ Claude ↔ Gemini ↔ Cursor ↔ Kiro ↔ Vertex ↔ Antigravity ↔ Ollama ↔ OpenAI Responses.
+- **Format translation** — translate OpenAI-compatible requests to provider-specific APIs and back.
 - **Combo fallback** — define an ordered list of models; the router advances on quota exhaustion or error.
 - **Multi-account** — several accounts per provider, round-robin or priority.
 - **Credential management** — OAuth (PKCE) and API keys, with automatic token refresh.
 - **Quota and usage tracking** — per provider and model, with reset countdowns.
-- **Token savers** — optional request/response compression (see below).
-- **Deployment** — localhost, VPS, Docker, or Cloudflare Workers.
+- **Deployment** — designed for local use. Docker is available for self-hosting.
 
-## What this fork adds
+## What changed from 9router
 
-These are the parts of 10router that grew after the 9router fork:
+![10router vs 9router: native Codex backend, setup token instead of 123456, quota alerts](images/10router-vs-9router.png)
 
-- **A first-class Codex gateway.** Serve Codex's native Responses API, model catalog,
-  compact endpoint, and WebSocket transport from the same local gateway. The CLI tool
-  can configure the native Codex endpoint for you.
-- **Codex account intelligence.** Keep a conversation on one account while it is warm
-  so prompt caching can work, pool usage across accounts, and skip accounts that cannot
-  serve the requested model or plan.
-- **Claude web search through your router.** Claude's built-in web-search tool keeps
-  working when Claude Code is routed to another model. Results come through the configured
-  10router search provider instead of silently disappearing.
-- **Quota alerts.** Send quota-exhausted and quota-reset notifications to Slack, ntfy,
-  Telegram, generic webhooks, or an Apprise server. Channels can be tested and configured
-  independently from the dashboard.
-- **Rate-limit recovery.** Wait through temporary provider rate limits when it is safe,
-  then continue with the same request or move through the configured fallback chain.
+- Codex connects natively at `/backend-api/codex`, over HTTP or WebSocket, as if 10router
+  were ChatGPT's backend.
+- Session affinity keeps a Codex conversation on one account, so it stops re-sending about
+  21k tokens of cached prompt every turn.
+- Tools from the ChatGPT app survive translation, and `[1m]` model ids route instead of
+  returning 404.
+- A fresh install prints a one-time setup token. 9router fell back to the password `123456`.
+
+The full list is in [10router-vs-9router.md](10router-vs-9router.md).
 
 ## Compatibility
 
@@ -63,21 +57,12 @@ practical promise, not a claim that upstream providers will never change their A
 - Combo names are accepted anywhere a model ID is accepted and preserve their ordered
   fallback behavior.
 
-### Upgrades
-
-- Existing data stays under `~/.9router` unless `DATA_DIR` is set.
-- SQLite migrations run when the server starts, with backups created before migrations.
-- Existing 9router data paths and supported legacy environment variable names remain
-  compatible where the project documents them.
-- Changes to endpoints, model ID formats, environment variables, or stored data will be
-  called out in the changelog with upgrade instructions.
-
 ## Request flow
 
 ```
 client (Claude Code, Codex, Cursor, Cline, …)
   → http://localhost:20128/v1
-  → 10router: token savers → format translation → account selection
+  → 10router: format translation → account selection
   → upstream provider
   → SSE back to client
 ```
@@ -114,74 +99,7 @@ npm run build
 PORT=20128 HOSTNAME=0.0.0.0 NEXT_PUBLIC_BASE_URL=http://localhost:20128 npm run start
 ```
 
-## Client configuration
-
-```
-Endpoint: http://localhost:20128/v1
-API Key:  [generate in the dashboard]
-Model:    <provider-prefix>/<model>   e.g. cc/claude-opus-4-7
-```
-
-### Cursor
-
-```
-Settings → Models → Advanced:
-  OpenAI API Base URL: http://localhost:20128/v1
-  OpenAI API Key: [from dashboard]
-  Model: cc/claude-opus-4-7
-```
-
-### Claude Code
-
-`~/.claude/config.json`:
-
-```json
-{
-  "anthropic_api_base": "http://localhost:20128/v1",
-  "anthropic_api_key": "your-10router-api-key"
-}
-```
-
-### Codex CLI
-
-```bash
-export OPENAI_BASE_URL="http://localhost:20128"
-export OPENAI_API_KEY="your-10router-api-key"
-```
-
-### OpenClaw
-
-Dashboard → CLI Tools → OpenClaw → select model → Apply. Or edit `~/.openclaw/openclaw.json`:
-
-```json
-{
-  "agents": { "defaults": { "model": { "primary": "10router/kr/claude-sonnet-4.5" } } },
-  "models": {
-    "providers": {
-      "10router": {
-        "baseUrl": "http://127.0.0.1:20128/v1",
-        "apiKey": "sk_10router",
-        "api": "openai-completions",
-        "models": [{ "id": "kr/claude-sonnet-4.5", "name": "Claude Sonnet 4.5" }]
-      }
-    }
-  }
-}
-```
-
-OpenClaw only talks to a local 10router. Use `127.0.0.1`, not `localhost` — `localhost` can resolve to IPv6 and fail.
-
-### Cline / Continue / RooCode
-
-```
-Provider: OpenAI Compatible
-Base URL: http://localhost:20128/v1
-API Key: [from dashboard]
-```
-
-Also works with Antigravity, Copilot, OpenCode, Droid, Roo, Kilo Code, jcode, Grok Build,
-Devin CLI, DeepSeek TUI, Qwen Code, OpenDesign, and anything else that accepts a custom
-OpenAI base URL.
+For client setup, see [CLIENT-CONFIGURATION.md](CLIENT-CONFIGURATION.md).
 
 ## Providers
 
@@ -234,60 +152,6 @@ Self-hosted Embedding has **no cloud fallback by design** — a connection saved
 `api.openai.com`, which would send your input text and API key to a third party under a
 provider named "Self-hosted".
 
-## Token savers
-
-Set the header `X-10Router-Token-Saver: off` to bypass all of them for one request. The
-pre-rebrand `X-9Router-Token-Saver` is still accepted for existing clients; if both are
-present, the `10Router` one wins.
-
-### RTK (built in, default on)
-
-Compresses `tool_result` content in place before the request reaches the LLM.
-
-- Filters: `git-diff`, `git-status`, `grep`, `find`, `ls`, `tree`, `dedup-log`,
-  `smart-truncate`, `read-numbered`, `search-list`.
-- Auto-detect: peeks the first 1KB of each `tool_result` and picks a filter. No config.
-- Fail-open: if a filter throws or makes output larger, the original text is kept.
-- Runs before format translation, so it applies to every client format.
-- Toggle in Dashboard → Endpoint settings.
-
-Ported from [rtk-ai/rtk](https://github.com/rtk-ai/rtk).
-
-### Headroom (external, optional)
-
-Calls a local Headroom `/v1/compress` endpoint before routing:
-
-```
-client → 10router → Headroom /v1/compress → 10router → provider
-```
-
-```bash
-pip install "headroom-ai[proxy]"
-headroom proxy --port 8787
-```
-
-Enable in Dashboard → Endpoint → Token Saver → Headroom. Default URL
-`http://localhost:8787`; in Docker use `http://headroom:8787` (same network) or
-`http://host.docker.internal:8787` (host). Fails open if Headroom is down.
-
-### Caveman
-
-Injects a terse-output system prompt. Adapted from
-[JuliusBrussee/caveman](https://github.com/JuliusBrussee/caveman).
-
-### Ponytail
-
-Injects a "lazy senior dev" system prompt biasing toward minimal, YAGNI-first code —
-deletion over addition, stdlib over new deps, one-liners over abstractions. Three levels:
-
-- **Lite** — build what's asked, name the lazier alternative.
-- **Full** — YAGNI ladder: stdlib → native → existing deps → one-liner → minimal code.
-- **Ultra** — deletion first, ship the one-liner, challenge the rest of the requirement.
-
-Never trades away input validation, error handling that prevents data loss, security,
-accessibility, or anything explicitly requested. Adapted from
-[DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail).
-
 ## Combos
 
 A combo is a named, ordered list of models. The router tries them in order, advancing when
@@ -324,35 +188,9 @@ fast so the UI doesn't hang when cloud DNS or network is unavailable.
 
 ## Deployment
 
-### VPS
-
-```bash
-git clone https://github.com/some-du6e/10router.git
-cd 10router
-npm install
-npm run build
-
-export JWT_SECRET="your-secure-secret-change-this"
-export INITIAL_PASSWORD="your-password"   # optional; omit to use the console setup token
-export DATA_DIR="/var/lib/10router"
-export PORT="20128"
-export HOSTNAME="0.0.0.0"
-export NODE_ENV="production"
-export NEXT_PUBLIC_BASE_URL="http://localhost:20128"
-export API_KEY_SECRET="endpoint-proxy-api-key-secret"
-export MACHINE_ID_SALT="endpoint-proxy-salt"
-
-npm run start
-```
-
-With PM2:
-
-```bash
-npm install -g pm2
-pm2 start npm --name 10router -- start
-pm2 save
-pm2 startup
-```
+10router is intended to run on the same machine as the clients using it. Avoid exposing
+it from a datacenter or VPS IP: subscription providers may treat that traffic as token
+resale or abuse and suspend the account.
 
 ### Docker
 
@@ -554,12 +392,6 @@ dashboard quota tracker; add a combo fallback.
 
 - **[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)** — the original Go
   implementation this JavaScript port was based on.
-- **[RTK](https://github.com/rtk-ai/rtk)** — Rust token saver; its compression pipeline is
-  ported to JS here.
-- **[Caveman](https://github.com/JuliusBrussee/caveman)** by
-  [@JuliusBrussee](https://github.com/JuliusBrussee) — terse-output prompt.
-- **[Ponytail](https://github.com/DietrichGebert/ponytail)** by
-  [@DietrichGebert](https://github.com/DietrichGebert) — YAGNI-first prompt.
 
 ## License
 
