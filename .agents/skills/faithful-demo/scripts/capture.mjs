@@ -121,6 +121,7 @@ if (flags.setup) {
   } catch (e) {
     await fail(`setup script failed: ${e.message}`);
   }
+  if (strip(page.url()) !== strip(url)) await fail(`setup navigated to ${page.url()}. Capture that page with its own run instead.`);
 }
 
 // Stylesheets as the browser sees them, including @font-face from font
@@ -155,6 +156,27 @@ const chunks = await page.evaluate(() => {
   for (const sheet of document.styleSheets) walk(sheet, []);
   return out;
 });
+// Fetches a sheet the page can't read and inlines its @imports, each resolved
+// against the sheet that imported it. @import has to precede every rule, so
+// it can't stay in the concatenated output.
+async function fetchSheet(href, seen) {
+  if (seen.has(href)) return "";
+  seen.add(href);
+  const r = await page.request.get(href).catch(() => null);
+  if (!r?.ok()) return `/* could not fetch ${href} */`;
+  let text = await r.text();
+  const imports = [...text.matchAll(/@import\s+(?:url\(\s*)?(['"]?)([^'")\s;]+)\1\s*\)?\s*([^;]*);/g)];
+  let head = "";
+  for (const [all, , u, media] of imports) {
+    const abs = new URL(u, href).href;
+    let inner = absolutize(await fetchSheet(abs, seen), abs);
+    if (media.trim()) inner = `@media ${media.trim()} {\n${inner}\n}`;
+    head += inner + "\n";
+    text = text.replace(all, "");
+  }
+  return head + absolutize(text, href);
+}
+
 const absolutize = (text, base) => text.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g, (m, q, u) =>
   u.startsWith("data:") || u.startsWith("#") ? m : `url("${new URL(u, base).href}")`);
 let css = "";
@@ -162,8 +184,7 @@ for (const c of chunks) {
   let text = c.text;
   if (text === undefined) {
     // Cross-origin sheet (Google Fonts, a CDN): the page can't read it, Node can.
-    const r = await page.request.get(c.href).catch(() => null);
-    text = r?.ok() ? await r.text() : `/* could not fetch ${c.href} */`;
+    text = await fetchSheet(c.href, new Set());
   }
   text = `/* ${c.href || c.base} */\n` + absolutize(text, c.href || c.base);
   for (const m of [...c.media].reverse()) text = `@media ${m} {\n${text}\n}`;
@@ -181,8 +202,8 @@ const { html, refs } = await page.evaluate((cssHref) => {
   const absCss = (t) => t.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g, (m, q, u) => (u.startsWith("data:") || u.startsWith("#") ? m : `url("${abs(u)}")`));
   const doc = document.documentElement.cloneNode(true);
   doc.querySelectorAll('script, link[rel="preload"], link[rel="modulepreload"], link[rel="stylesheet"], style, nextjs-portal, vite-error-overlay').forEach((n) => n.remove());
-  for (const el of doc.querySelectorAll("[src], [poster], link[rel*='icon'], image[href]")) {
-    for (const a of ["src", "poster", "href"]) if (el.hasAttribute(a)) el.setAttribute(a, abs(el.getAttribute(a)));
+  for (const el of doc.querySelectorAll("[src], [poster], link[rel*='icon'], image[href], use")) {
+    for (const a of ["src", "poster", "href", "xlink:href"]) if (el.hasAttribute(a)) el.setAttribute(a, abs(el.getAttribute(a)));
   }
   for (const el of doc.querySelectorAll("[srcset]")) {
     el.setAttribute("srcset", el.getAttribute("srcset").split(/,\s+/).map((c) => {

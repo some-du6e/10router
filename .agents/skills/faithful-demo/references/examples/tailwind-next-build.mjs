@@ -21,7 +21,9 @@ await mkdir("dist", { recursive: true });
 // Compile the app's real stylesheet, adding this demo's sources to the scan so
 // any class used only by the new UI still gets generated.
 const globalsPath = path.join(root, "src/app/globals.css");
-const globals = (await readFile(globalsPath, "utf8")) + `\n@source "${path.join(here, "src")}";\n`;
+// Forward slashes and escaped quotes: a raw Windows path is read as CSS escapes.
+const demoSrc = path.join(here, "src").split(path.sep).join("/").replace(/"/g, '\\"');
+const globals = (await readFile(globalsPath, "utf8")) + `\n@source "${demoSrc}";\n`;
 const { css } = await postcss([tailwind({ base: root })]).process(globals, { from: globalsPath });
 
 // next/font's @font-face rules and its variable class (the one on <body>)
