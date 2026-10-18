@@ -5,6 +5,15 @@ if (!process.env.DATA_DIR) {
   process.exit(1);
 }
 
+// getDataDir() silently falls back to ~/.9router when DATA_DIR isn't writable
+// or is a Unix path on Windows. Check where it actually resolved.
+const { DATA_DIR } = await import("../src/lib/dataDir.js");
+const path = await import("node:path");
+if (path.resolve(DATA_DIR) !== path.resolve(process.env.DATA_DIR)) {
+  console.error(`seed-demo: DATA_DIR resolved to ${DATA_DIR}, not ${process.env.DATA_DIR}. Refusing to wipe it.`);
+  process.exit(1);
+}
+
 const { importDb } = await import("../src/lib/db/index.js");
 
 const now = Date.now();
