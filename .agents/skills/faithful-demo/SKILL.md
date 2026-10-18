@@ -72,6 +72,8 @@ Copy [assets/DEMO.md](assets/DEMO.md) into the demo folder and fill it in: how i
 
 Publish `dist/` with the `cf-drop` skill, if your agent has it, unless the user asked for local-only or named another host. Deploy `dist/` only, never `captured/` source or the repo.
 
+A demo built on throwaway data publishes without asking. Before publishing, look through `dist/` for anything real: names, emails, keys, account IDs, usage numbers from someone's actual install. If you find any, or can't tell where the data came from, ask the user before publishing.
+
 ## Clean up
 
 - `next dev` and similar tools rewrite tracked files (Next re-adds a block to `AGENTS.md` and can rewrite version ranges in `package.json`). Run `git status` and revert anything you didn't mean to change.
