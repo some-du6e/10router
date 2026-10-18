@@ -81,7 +81,8 @@ open-sse.old/
 graphify-out/*
 
 # Local-only working dirs (notes, vendored repos, scripts, skills)
-.claude/
+.claude/*
+!.claude/skills/
 .docs/
 .repo/
 .script/
