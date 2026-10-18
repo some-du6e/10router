@@ -7,7 +7,7 @@ description: Build an interactive demo of a change to an existing app that looks
 
 The demo has to pass as a screenshot of the real app. The user should only notice the new feature, never the frame around it. The real app is the design system. Capture it and reuse its DOM, stylesheet, components, fonts, icons, and copy. A palette or sidebar you write yourself makes the demo look like some other product.
 
-Work in `mockups/<feature>/` in the app's repo unless the user names a place. If the folder already has a `DEMO.md`, read it and continue from its decisions.
+Work in `mockups/<feature>/` in the app's repo unless the user names a place. Make sure the repo's `.gitignore` covers `mockups/`. Tailwind and similar tools scan every file that isn't ignored, so an unignored demo leaks its classes into the app's real CSS. If the folder already has a `DEMO.md`, read it and continue from its decisions.
 
 ## 1. Look at the real app
 
@@ -21,7 +21,8 @@ Run the app locally and open the page the feature belongs on. Screenshot it in l
   INITIAL_PASSWORD=demo-password npx next dev -p 20199
   ```
 
-  Login is `POST /api/auth/login` with `{"password": "demo-password"}`.
+  Login is `POST /api/auth/login` with `{"password": "demo-password"}`. The exported `DATA_DIR` beats the one in `.env`. Without the `export`, the server opens the real install's data.
+- Before capturing anything, confirm the server is running on the throwaway data: the page shows only your seeded records.
 - Seed enough fake data that the page looks lived-in. An empty state is a different screen.
 - If the app can't run (missing services, no credentials, too heavy), read [references/stacks.md](references/stacks.md) "Apps you can't run" before going further.
 
@@ -38,7 +39,9 @@ This saves the rendered DOM with scripts stripped, every loaded stylesheet with 
 
 Capture every page and overlay the demo touches: the list page, an existing modal opened by clicking, the detail page. Open the existing modal for real and capture it, because a dialog built from the real Modal markup beats any guess.
 
-Done when `captured/<page>.html` plus `captured/<page>.css` open from disk, with the dev server stopped, and look identical to the step 1 screenshot. Compare them side by side.
+Look through the capture for real data now, before any of it reaches a screenshot or `dist/`: names, emails, keys, account IDs, usage numbers from someone's actual install. If you find any, go back to step 1.
+
+Done when `captured/<page>.html` opens from disk, with the dev server stopped, and looks identical to the step 1 screenshot. Compare them side by side.
 
 ## 3. Compile the app's own styles
 
@@ -72,14 +75,13 @@ Copy [assets/DEMO.md](assets/DEMO.md) into the demo folder and fill it in: how i
 
 Publish `dist/` with the `cf-drop` skill, if your agent has it, unless the user asked for local-only or named another host. Deploy `dist/` only, never `captured/` source or the repo.
 
-A demo built on throwaway data publishes without asking. Before publishing, look through `dist/` for anything real: names, emails, keys, account IDs, usage numbers from someone's actual install. If you find any, or can't tell where the data came from, ask the user before publishing.
+A demo built on throwaway data publishes without asking. Before publishing, look through `dist/` for anything real, using the same list as step 2, plus internal URLs baked into the page. If you find any, or can't tell where the data came from, ask the user before publishing.
 
 ## Clean up
 
 - `next dev` and similar tools rewrite tracked files (Next re-adds a block to `AGENTS.md` and can rewrite version ranges in `package.json`). Run `git status` and revert anything you didn't mean to change.
 - Leave no stray lockfiles (`bun.lock`, `package-lock.json`) in the repo or demo folder that weren't there before.
 - Stop the dev servers and delete the temp data dirs.
-- Add `dist/` and `node_modules/` to the demo's `.gitignore`.
 
 ## Implementing an approved demo
 
