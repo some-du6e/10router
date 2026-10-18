@@ -22,6 +22,8 @@ API formats and falling back across models and accounts.
 - **Quota and usage tracking** — per provider and model, with reset countdowns.
 - **Deployment** — designed for local use. Docker is available for self-hosting.
 
+
+![10router vs 9router: native Codex backend, setup token instead of 123456, quota alerts](images/10router-vs-9router.png)
 ## What changed from 9router
 
 - Codex connects natively at `/backend-api/codex`, over HTTP or WebSocket, as if 10router
