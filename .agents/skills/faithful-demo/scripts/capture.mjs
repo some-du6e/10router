@@ -167,10 +167,28 @@ async function fetchSheet(href, seen) {
   let text = await r.text();
   const imports = [...text.matchAll(/@import\s+(?:url\(\s*)?(['"]?)([^'")\s;]+)\1\s*\)?\s*([^;]*);/g)];
   let head = "";
-  for (const [all, , u, media] of imports) {
+  for (const [all, , u, cond] of imports) {
     const abs = new URL(u, href).href;
-    let inner = absolutize(await fetchSheet(abs, seen), abs);
-    if (media.trim()) inner = `@media ${media.trim()} {\n${inner}\n}`;
+    // Each branch gets its own copy, so only a real cycle is cut, not a
+    // second import of the same sheet under a different condition.
+    let inner = absolutize(await fetchSheet(abs, new Set(seen)), abs);
+    // @import url(x) layer(name) supports(...) <media>: keep each wrapper.
+    let rest = cond.trim();
+    const fn = (name) => {
+      const m = rest.match(new RegExp(`^${name}(\\()?`));
+      if (!m) return null;
+      let i = m[0].length, depth = m[1] ? 1 : 0;
+      const start = i;
+      while (depth && i < rest.length) depth += rest[i] === "(" ? 1 : rest[i] === ")" ? -1 : 0, i++;
+      const arg = m[1] ? rest.slice(start, i - 1) : "";
+      rest = rest.slice(i).trim();
+      return arg;
+    };
+    const layer = fn("layer");
+    const supports = fn("supports");
+    if (rest) inner = `@media ${rest} {\n${inner}\n}`;
+    if (supports) inner = `@supports (${supports}) {\n${inner}\n}`;
+    if (layer !== null) inner = `@layer${layer ? " " + layer : ""} {\n${inner}\n}`;
     head += inner + "\n";
     text = text.replace(all, "");
   }
