@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Card from "@/shared/components/Card";
 import Button from "@/shared/components/Button";
 import Drawer from "@/shared/components/Drawer";
 import Pagination from "@/shared/components/Pagination";
 import { cn } from "@/shared/utils/cn";
-import { promptToMarkdown, renderPromptMarkdown } from "@/shared/utils/requestMarkdown";
+import ConversationInspector from "./ConversationInspector";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
 
 let providerNameCache = null;
@@ -59,17 +59,18 @@ function CollapsibleSection({ title, children, defaultOpen = false, icon = null 
     <div className="border border-black/5 dark:border-white/5 rounded-lg overflow-hidden">
       <button 
         type="button"
+        aria-expanded={isOpen}
         onClick={() => setIsOpen(!isOpen)}
         className="w-full flex items-center justify-between p-3 bg-black/[0.02] dark:bg-white/[0.02] hover:bg-black/[0.04] dark:hover:bg-white/[0.04] transition-colors"
       >
         <div className="flex items-center gap-2">
-          {icon && <span className="material-symbols-outlined text-[18px] text-text-muted">{icon}</span>}
+          {icon && <span aria-hidden="true" className="material-symbols-outlined text-[18px] text-text-muted">{icon}</span>}
           <span className="font-semibold text-sm text-text-main">{title}</span>
         </div>
         <span className={cn(
           "material-symbols-outlined text-[20px] text-text-muted transition-transform duration-200",
           isOpen ? "rotate-90" : ""
-        )}>
+        )} aria-hidden="true">
           chevron_right
         </span>
       </button>
@@ -109,7 +110,10 @@ function formatPayload(value, emptyLabel = "[No data]") {
     const size = Number.isFinite(value._originalSize)
       ? ` (${Math.ceil(value._originalSize / 1024)} KB before truncation)`
       : "";
-    return `[Payload truncated${size}. New entries keep a larger preview.]\n\n${value._preview || "[No preview available]"}`;
+    const preview = value._structuredPreview
+      ? JSON.stringify(value._structuredPreview, null, 2)
+      : value._preview || "[No preview available]";
+    return `[Payload truncated${size}. Only a preview was retained.]\n\n${preview}`;
   }
   if (typeof value === "string") return value || emptyLabel;
   if (value === undefined || value === null) return emptyLabel;
@@ -131,7 +135,7 @@ export default function RequestDetailsTab() {
   const [loading, setLoading] = useState(false);
   const [selectedDetail, setSelectedDetail] = useState(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-  const [requestView, setRequestView] = useState("raw");
+  const [requestView, setRequestView] = useState("conversation");
   const [providers, setProviders] = useState([]);
   const [providerNameCache, setProviderNameCache] = useState(null);
   const [filters, setFilters] = useState({
@@ -139,15 +143,6 @@ export default function RequestDetailsTab() {
     startDate: "",
     endDate: ""
   });
-
-  const promptMarkdown = useMemo(
-    () => promptToMarkdown(selectedDetail?.request),
-    [selectedDetail]
-  );
-  const promptMarkdownHtml = useMemo(
-    () => renderPromptMarkdown(promptMarkdown),
-    [promptMarkdown]
-  );
 
   const fetchProviders = useCallback(async () => {
     try {
@@ -195,7 +190,7 @@ export default function RequestDetailsTab() {
 
   const handleViewDetail = (detail) => {
     setSelectedDetail(detail);
-    setRequestView("raw");
+    setRequestView("conversation");
     setIsDrawerOpen(true);
   };
 
@@ -300,7 +295,7 @@ export default function RequestDetailsTab() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan="7" className="p-8 text-center text-text-muted">
+                  <td colSpan="9" className="p-8 text-center text-text-muted">
                     <div className="flex items-center justify-center gap-2">
                       <span className="material-symbols-outlined animate-spin text-[20px]">progress_activity</span>
                       Loading...
@@ -309,7 +304,7 @@ export default function RequestDetailsTab() {
                 </tr>
               ) : details.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="p-8 text-center text-text-muted">
+                  <td colSpan="9" className="p-8 text-center text-text-muted">
                     No request details found
                   </td>
                 </tr>
@@ -381,7 +376,8 @@ export default function RequestDetailsTab() {
         isOpen={isDrawerOpen}
         onClose={() => setIsDrawerOpen(false)}
         title="Request Details"
-        width="lg"
+        width="full"
+        className="max-w-[1440px]"
       >
         {selectedDetail && (
           <div className="space-y-6">
@@ -490,95 +486,37 @@ export default function RequestDetailsTab() {
             )}
 
             <div className="space-y-4">
-              <CollapsibleSection title="1. Client Request (Input)" defaultOpen={true} icon="input">
+              <CollapsibleSection title="Conversation" defaultOpen={true} icon="forum">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-xs text-text-muted">Readable conversation view</span>
+                  <span className="text-xs text-text-muted">Client messages and the assistant response</span>
                   <div className="flex gap-2">
-                    <Button
-                      variant={requestView === "raw" ? "secondary" : "ghost"}
-                      size="sm"
-                      icon="data_object"
-                      aria-pressed={requestView === "raw"}
-                      onClick={() => setRequestView("raw")}
-                    >
-                      Raw JSON
-                    </Button>
-                    <Button
-                      variant={requestView === "markdown" ? "secondary" : "ghost"}
-                      size="sm"
-                      icon="article"
-                      aria-pressed={requestView === "markdown"}
-                      onClick={() => setRequestView("markdown")}
-                      disabled={selectedDetail.request?.redacted === true || requestIsTruncated}
-                    >
-                      Markdown preview
-                    </Button>
+                    <Button variant={requestView === "conversation" ? "secondary" : "ghost"} size="sm" icon="forum" aria-pressed={requestView === "conversation"} onClick={() => setRequestView("conversation")}>Conversation</Button>
+                    <Button variant={requestView === "raw" ? "secondary" : "ghost"} size="sm" icon="data_object" aria-pressed={requestView === "raw"} onClick={() => setRequestView("raw")}>Raw JSON</Button>
                   </div>
                 </div>
-                {selectedDetail.request?.redacted === true ? (
-                  <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
-                    Turn on &quot;Show full request details&quot; in Settings to preview this prompt.
-                  </p>
-                ) : requestIsTruncated ? (
-                  <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-amber-200 bg-amber-50 p-3 font-mono text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100 sm:p-4">
-                    {formatPayload(selectedDetail.request)}
-                  </pre>
-                ) : requestView === "markdown" ? (
-                  <div
-                    className="request-markdown-body max-h-[420px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 text-sm text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4"
-                    dangerouslySetInnerHTML={{ __html: promptMarkdownHtml }}
-                  />
+                {requestView === "conversation" ? (
+                  <ConversationInspector key={selectedDetail.id} request={selectedDetail.request} response={selectedDetail.response} />
                 ) : (
-                  <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
-                    {formatPayload(selectedDetail.request)}
+                  <pre className={cn("max-h-[540px] max-w-full overflow-auto rounded-lg border p-4 font-mono text-xs text-text-main", requestIsTruncated ? "border-amber-500/20 bg-amber-500/10" : "border-border-subtle bg-surface-2")}>
+                    {selectedDetail.request?.redacted ? '[Request redacted. Enable "Show full request details" in Settings.]' : formatPayload(selectedDetail.request)}
                   </pre>
                 )}
               </CollapsibleSection>
 
-              {selectedDetail.providerRequest && (
-                <CollapsibleSection title="2. Provider Request (Translated)" icon="translate">
-                  <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
-                    {formatPayload(selectedDetail.providerRequest)}
-                  </pre>
-                </CollapsibleSection>
-              )}
-
-              {selectedDetail.providerResponse && (
-                <CollapsibleSection title="3. Provider Response (Raw)" icon="data_object">
-                  <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
-                    {formatPayload(selectedDetail.providerResponse)}
-                  </pre>
-                </CollapsibleSection>
-              )}
-              
-              <CollapsibleSection title="4. Client Response (Final)" defaultOpen={true} icon="output">
-                {selectedDetail.response?.thinking && (
-                  <div className="mb-4">
-                    <h4 className="font-semibold text-text-main mb-2 flex items-center gap-2 text-xs uppercase tracking-wide opacity-70">
-                      <span className="material-symbols-outlined text-[16px]">psychology</span>
-                      Thinking Process
-                    </h4>
-                    <pre className="max-h-[200px] max-w-full overflow-auto rounded-lg border border-amber-200 bg-amber-50 p-3 font-mono text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100 sm:p-4">
-                      {selectedDetail.response.thinking}
+              <CollapsibleSection key={selectedDetail.id} title="Debug" icon="bug_report">
+                <p className="mb-4 text-xs text-text-muted">Stored payloads for inspecting translation and provider behavior.</p>
+                {[
+                  ["Provider request", selectedDetail.providerRequest],
+                  ["Provider response", selectedDetail.providerResponse],
+                  ["Client response", selectedDetail.response],
+                ].filter(([, payload]) => payload).map(([title, payload]) => (
+                  <div key={title} className="mb-4 last:mb-0">
+                    <h4 className="mb-2 text-xs font-semibold text-text-muted">{title}</h4>
+                    <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-border-subtle bg-surface-2 p-4 font-mono text-xs text-text-main">
+                      {formatPayload(payload)}
                     </pre>
                   </div>
-                )}
-                
-                <h4 className="font-semibold text-text-main mb-2 text-xs uppercase tracking-wide opacity-70">
-                  Content
-                </h4>
-                <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
-                  {selectedDetail.response?.content
-                    ? formatPayload(selectedDetail.response.content)
-                    : (selectedDetail.response?.tool_calls?.length
-                      ? "[Tool call response]"
-                      : "[No content]")}
-                </pre>
-                {selectedDetail.response?.tool_calls?.length > 0 && (
-                  <pre className="mt-3 max-h-[260px] max-w-full overflow-auto rounded-lg border border-blue-200 bg-blue-50 p-3 font-mono text-xs text-blue-950 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-100 sm:p-4">
-                    {formatPayload(selectedDetail.response.tool_calls)}
-                  </pre>
-                )}
+                ))}
               </CollapsibleSection>
             </div>
           </div>
