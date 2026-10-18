@@ -3,6 +3,7 @@ import { buildNotificationMessage, buildWebhookPayload } from "../../src/lib/not
 import { buildSlackPayload } from "../../src/lib/notifications/slackLayout.js";
 import { NOTIFICATION_EVENTS } from "../../src/lib/notifications/constants.js";
 import { notificationProviderName } from "../../src/lib/notifications/providerName.js";
+import { maskEmails } from "../../src/lib/notifications/redact.js";
 
 describe("notification display names", () => {
   it("uses Codex quota reset in Slack text, heading, and a display name in fields", () => {
@@ -49,6 +50,11 @@ describe("notification privacy and timestamps", () => {
     expect(payload.connection.name).toBe("so••••••••••@gmail.com");
     expect(slack).not.toContain("someone.long");
     expect(slack).toContain("so••••••••••@gmail.com");
+  });
+
+  it("masks internationalized addresses too", () => {
+    expect(maskEmails("josé@example.com")).toBe("jo•••@example.com");
+    expect(maskEmails("user@exämple.de")).toBe("us•••@exämple.de");
   });
 
   it("leaves non-email account names alone", () => {
