@@ -1,4 +1,11 @@
-import { importDb } from "../src/lib/db/index.js";
+// importDb wipes every table first. Without DATA_DIR that is the real install
+// in ~/.9router, so refuse to run rather than erase someone's accounts.
+if (!process.env.DATA_DIR) {
+  console.error("seed-demo: set DATA_DIR to a throwaway directory. It wipes the database there.");
+  process.exit(1);
+}
+
+const { importDb } = await import("../src/lib/db/index.js");
 
 const now = Date.now();
 const iso = (hoursAgo = 0) => new Date(now - hoursAgo * 60 * 60 * 1000).toISOString();
