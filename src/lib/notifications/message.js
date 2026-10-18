@@ -3,6 +3,7 @@ import {
   NOTIFICATION_EVENTS,
 } from "./constants.js";
 import { notificationProviderName } from "./providerName.js";
+import { maskEmails } from "./redact.js";
 
 function formatDate(value) {
   if (!value) return null;
@@ -21,7 +22,7 @@ export function buildNotificationMessage(event) {
     : `${notificationProviderName(event.provider)} ${(NOTIFICATION_EVENT_LABELS[event.type] || "notification").toLowerCase()}`;
 
   const details = [];
-  if (event.connectionName) details.push(`Account: ${event.connectionName}`);
+  if (event.connectionName) details.push(`Account: ${maskEmails(event.connectionName)}`);
   if (event.quotaName) details.push(`Limit: ${event.quotaName}`);
   const remaining = formatRemaining(event.remainingPercentage);
   if (remaining) details.push(`Status: ${remaining}`);
@@ -47,7 +48,7 @@ export function buildWebhookPayload(event, message) {
     provider: event.provider || null,
     connection: event.connectionId ? {
       id: event.connectionId,
-      name: event.connectionName || null,
+      name: maskEmails(event.connectionName) || null,
     } : null,
     quota: event.quotaName ? {
       name: event.quotaName,
