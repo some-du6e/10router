@@ -96,11 +96,16 @@ const css = await page.evaluate(() => {
 });
 
 // Rendered DOM with scripts, preloads and Next/Vite dev artifacts removed.
-const html = await page.evaluate(() => {
+// Links the captured stylesheet so the file opens styled straight from disk.
+const html = await page.evaluate((cssHref) => {
   const doc = document.documentElement.cloneNode(true);
   doc.querySelectorAll('script, link[rel="preload"], link[rel="modulepreload"], link[rel="stylesheet"], style, nextjs-portal, vite-error-overlay').forEach((n) => n.remove());
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = cssHref;
+  doc.querySelector("head")?.appendChild(link);
   return "<!doctype html>\n" + doc.outerHTML;
-});
+}, `${name}.css`);
 
 // Fetch url() targets the page never requested (unused unicode ranges, hover
 // images) so the capture keeps working after the dev server stops.
@@ -118,11 +123,21 @@ for (const [, u] of css.matchAll(/url\("([^"]+)"\)/g)) {
   } catch {}
 }
 
+// Longest URLs first, and only at a URL boundary, so /a.png never rewrites
+// inside /icons/a.png. Query-keyed URLs (next/image) match with their query,
+// including the &amp; form that outerHTML produces.
 const rewrite = (text) => {
   let out = text;
-  for (const [abs, local] of saved) {
+  const entries = [...saved].sort((a, b) => b[0].length - a[0].length);
+  for (const [abs, local] of entries) {
     const u = new URL(abs);
-    for (const form of [abs, u.pathname + u.search, u.pathname]) out = out.split(form).join(local);
+    const forms = [abs, u.pathname + u.search];
+    if (u.search) forms.push(abs.replaceAll("&", "&amp;"), (u.pathname + u.search).replaceAll("&", "&amp;"));
+    else forms.push(u.pathname);
+    for (const form of forms) {
+      const esc = form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      out = out.replace(new RegExp(`(^|["'(\\s,=])${esc}(?=["')\\s,]|$)`, "g"), (m, pre) => pre + local);
+    }
   }
   return out;
 };

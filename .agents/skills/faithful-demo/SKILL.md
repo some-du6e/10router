@@ -13,7 +13,15 @@ Work in `mockups/<feature>/` in the app's repo unless the user names a place. If
 
 Run the app locally and open the page the feature belongs on. Screenshot it in light and dark mode at desktop width. These screenshots are the reference everything gets compared against.
 
-- Give the dev server throwaway state: a fresh temp data dir, a seeded or test password, a test database. The user's real DB and credentials stay out of it. Check the repo's docs and `.env.example` for the variables (for 10router: `DATA_DIR=$(mktemp -d) INITIAL_PASSWORD=<8+ chars> npx next dev`, login is `POST /api/auth/login`).
+- Give the dev server throwaway state: a fresh temp data dir, a seeded or test password, a test database. The user's real DB and credentials stay out of it. Check the repo's docs, `package.json` scripts, and `.env.example` for the variables and any existing seed script. For 10router, seed a temp dir with `scripts/seed-demo.mjs` the way `npm run dev:demo` does, then start the dev server on it:
+
+  ```sh
+  export DATA_DIR=$(mktemp -d)
+  node --experimental-loader=./scripts/resolve-src-alias.mjs scripts/seed-demo.mjs
+  INITIAL_PASSWORD=demo-password npx next dev -p 20199
+  ```
+
+  Login is `POST /api/auth/login` with `{"password": "demo-password"}`.
 - Seed enough fake data that the page looks lived-in. An empty state is a different screen.
 - If the app can't run (missing services, no credentials, too heavy), read [references/stacks.md](references/stacks.md) "Apps you can't run" before going further.
 
@@ -62,7 +70,7 @@ Done when every scenario is clicked through in both themes with a clean console,
 
 Copy [assets/DEMO.md](assets/DEMO.md) into the demo folder and fill it in: how it's built, what's simulated, the decisions so far, and what was checked (including what wasn't). Update it after every round of feedback.
 
-Publish `dist/` with the `cf-drop` skill unless the user asked for local-only or named another host. Deploy `dist/` only, never `captured/` source or the repo.
+Publish `dist/` with the `cf-drop` skill, if your agent has it, unless the user asked for local-only or named another host. Deploy `dist/` only, never `captured/` source or the repo.
 
 ## Clean up
 

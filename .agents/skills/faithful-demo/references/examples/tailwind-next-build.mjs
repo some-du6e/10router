@@ -40,12 +40,18 @@ for (const f of ["openrouter.png"]) await cp(path.join(root, "public/providers",
 
 // Shell: real sidebar + header from the capture, content slot swapped for the demo.
 const shell = await readFile("captured/providers.html", "utf8");
+// Fail loudly when a marker is missing from a new capture instead of slicing garbage.
+const find = (hay, needle, from = "captured/providers.html", last = false) => {
+  const at = last ? hay.lastIndexOf(needle) : hay.indexOf(needle);
+  if (at < 0) throw new Error(`${needle} not found in ${from}; update this marker for the new capture`);
+  return at;
+};
 const open = '<div class="max-w-7xl mx-auto">';
-const start = shell.indexOf(open) + open.length;
-const end = shell.lastIndexOf("</main>");
+const start = find(shell, open) + open.length;
+const end = find(shell, "</main>", undefined, true);
 // Content ends at the closing of max-w-7xl + scroll container before </main>.
 const closing = shell.slice(start, end);
-const tailIdx = closing.lastIndexOf("</div></div>");
+const tailIdx = find(closing, "</div></div>", "the content slot", true);
 const page = await readFile("src/index.html", "utf8");
 const html = shell.slice(0, start) + '<div id="demo-root"></div>' + closing.slice(tailIdx) + shell.slice(end)
   .replace("</body>", `${page}</body>`);
@@ -59,7 +65,7 @@ console.log("Built dist/ from the captured 10router shell, compiled globals.css 
 
 // Real vendor cards from the capture, so the grid below custom endpoints is the actual page.
 const gridOpen = '<div class="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">';
-const gStart = shell.indexOf(gridOpen) + gridOpen.length;
+const gStart = find(shell, gridOpen) + gridOpen.length;
 let depth = 1, i = gStart;
 const tag = /<(\/?)div\b[^>]*>/g;
 tag.lastIndex = gStart;
