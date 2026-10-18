@@ -55,6 +55,8 @@ describe("notification privacy and timestamps", () => {
   it("masks internationalized addresses too", () => {
     expect(maskEmails("josé@example.com")).toBe("jo•••@example.com");
     expect(maskEmails("user@exämple.de")).toBe("us•••@exämple.de");
+    expect(maskEmails("john!smith@example.com")).toBe("jo••••••••@example.com");
+    expect(maskEmails("o'brien#x@example.com")).toBe("o'•••••••@example.com");
   });
 
   it("leaves non-email account names alone", () => {

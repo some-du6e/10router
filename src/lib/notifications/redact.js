@@ -1,4 +1,4 @@
-const EMAIL_PATTERN = /([\p{L}\p{N}\p{M}._%+-]+)@([\p{L}\p{N}\p{M}.-]+\.[\p{L}\p{N}\p{M}]{2,})/gu;
+const EMAIL_PATTERN = /([\p{L}\p{N}\p{M}.!#$%&'*+/=?^_`{|}~-]+)@([\p{L}\p{N}\p{M}.-]+\.[\p{L}\p{N}\p{M}]{2,})/gu;
 
 // Account names are usually the OAuth email. Notifications leave this machine
 // (Slack, ntfy, webhooks), so keep the first two characters and the domain only.
