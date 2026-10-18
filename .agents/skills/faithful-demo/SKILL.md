@@ -74,7 +74,7 @@ Publish `dist/` with the `cf-drop` skill, if your agent has it, unless the user 
 
 ## Clean up
 
-- `next dev` and similar tools rewrite tracked files (Next re-adds a block to `AGENTS.md`). Run `git status` and revert anything you didn't mean to change.
+- `next dev` and similar tools rewrite tracked files (Next re-adds a block to `AGENTS.md` and can rewrite version ranges in `package.json`). Run `git status` and revert anything you didn't mean to change.
 - Leave no stray lockfiles (`bun.lock`, `package-lock.json`) in the repo or demo folder that weren't there before.
 - Stop the dev servers and delete the temp data dirs.
 - Add `dist/` and `node_modules/` to the demo's `.gitignore`.
