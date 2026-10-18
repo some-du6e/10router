@@ -7,7 +7,7 @@ One sentence on what the demo shows and which real page it sits in.
 - `captured/`: what was captured, from which route, how the dev server was run (throwaway data, no real credentials).
 - `scripts/build.mjs`: which stylesheet it compiles with which toolchain, and which slot it swaps.
 - `src/`: which real components the new UI is built from.
-- Build: `npm run build`. Serve: `npm run serve`. Publish: `<command>`.
+- Build: `node scripts/build.mjs`. Serve: `<command>`. Publish: `<command>`.
 
 ## Simulated
 

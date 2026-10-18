@@ -95,3 +95,4 @@ graphify-out/*
 
 # faithful-demo workspaces: captured pages and demo builds, kept out of the app CSS scan
 mockups/
+.next-demo/

@@ -1,6 +1,6 @@
 ---
 name: faithful-demo
-description: Build an interactive demo of a change to an existing app that looks exactly like that app, by capturing its real rendered pages and compiling its own styles. Use for mockups, previews, or prototypes of new UI in an existing product, and for implementing an approved demo.
+description: Build an interactive demo of a change to an existing app that looks exactly like that app, by capturing its real rendered pages and compiling its own styles. Use for any mockup, preview, or prototype of UI that belongs in an existing app, before building a page from scratch, and for implementing an approved demo.
 ---
 
 # Faithful demo
@@ -11,17 +11,24 @@ Work in `mockups/<feature>/` in the app's repo unless the user names a place. Ma
 
 ## 1. Look at the real app
 
-Run the app locally and open the page the feature belongs on. Screenshot it in light and dark mode at desktop width. These screenshots are the reference everything gets compared against.
+Run the app locally and open the page the feature belongs on. Screenshot it in light and dark mode at desktop width, and at phone width too if the feature touches layout. These screenshots are the reference everything gets compared against.
 
-- Give the dev server throwaway state: a fresh temp data dir, a seeded or test password, a test database. The user's real DB and credentials stay out of it. Check the repo's docs, `package.json` scripts, and `.env.example` for the variables and any existing seed script. For 10router, seed a temp dir with `scripts/seed-demo.mjs` the way `npm run dev:demo` does, then start the dev server on it:
+- Give the dev server throwaway state: a fresh temp data dir, a seeded or test password, a test database. The user's real DB and credentials stay out of it. Check the repo's docs, `package.json` scripts, and `.env.example` for the variables and any existing seed script. For 10router, seed a temp dir with `scripts/seed-demo.mjs` the way `npm run dev:demo` does, then start the dev server on it. Agent shells often lose environment variables between calls, so make the dir once and put its literal path on every command:
 
   ```sh
-  export DATA_DIR=$(mktemp -d)
-  node --experimental-loader=./scripts/resolve-src-alias.mjs scripts/seed-demo.mjs
-  INITIAL_PASSWORD=demo-password npx next dev -p 20199
+  mktemp -d    # prints e.g. /tmp/tmp.AbC123
+  DATA_DIR=/tmp/tmp.AbC123 node --experimental-loader=./scripts/resolve-src-alias.mjs scripts/seed-demo.mjs
+  DATA_DIR=/tmp/tmp.AbC123 NEXT_DIST_DIR=.next-demo INITIAL_PASSWORD=demo-password npx next dev --webpack -p 20199
   ```
 
-  Login is `POST /api/auth/login` with `{"password": "demo-password"}`. The exported `DATA_DIR` beats the one in `.env`. Without the `export`, the server opens the real install's data.
+  The seed wipes the database `DATA_DIR` points at, and refuses to run without it. A `DATA_DIR` on the command line beats the one in `.env`; leave it off `next dev` and the server opens the real install. `NEXT_DIST_DIR` keeps this server from fighting a `npm run dev` the user already has running. Log in with a `--login` module (step 2) whose default export is:
+
+  ```js
+  export default async (page, origin) => {
+    const r = await page.request.post(`${origin}/api/auth/login`, { data: { password: "demo-password" } });
+    if (!r.ok()) throw new Error(`login ${r.status()}`);
+  };
+  ```
 - Before capturing anything, confirm the server is running on the throwaway data: the page shows only your seeded records.
 - Seed enough fake data that the page looks lived-in. An empty state is a different screen.
 - If the app can't run (missing services, no credentials, too heavy), read [references/stacks.md](references/stacks.md) "Apps you can't run" before going further.
@@ -32,16 +39,16 @@ Done when you hold real screenshots of the target page and have read the source 
 
 ```sh
 node <skill-dir>/scripts/capture.mjs <page-url> mockups/<feature>/captured \
-  --name <page> [--login login.mjs] [--dark-class dark]
+  --name <page> [--login login.mjs] [--setup setup.mjs] [--dark-class dark] [--width 390]
 ```
 
-This saves the rendered DOM with scripts stripped, every loaded stylesheet with `url()`s rewritten, the fonts and images, and light/dark screenshots. `--login` takes a module exporting `async (page, origin) => {}` that signs in. Keep that module outside the repo when it holds a password, or read the password from an env var. If Playwright is missing, the script prints the one-time install command. Tell the user before you run it.
+This saves the rendered DOM with scripts stripped and linked to `<page>.css`, every stylesheet the page loaded, the fonts and images, and light/dark screenshots of the live page. It exits non-zero on a 404, a failed login, or a redirect away from the page. `--login` and `--setup` each take a module whose default export is an async function. `--login` gets `(page, origin)` and runs before the page loads. `--setup` gets `(page)` and runs after, so it can click. If Playwright is missing, the script prints the one-time install command. Tell the user before you run it.
 
-Capture every page and overlay the demo touches: the list page, an existing modal opened by clicking, the detail page. Open the existing modal for real and capture it, because a dialog built from the real Modal markup beats any guess.
+Capture every page and overlay the demo touches, each under its own `--name`: the list page, the detail page, and any existing modal. For a modal, pass a `--setup` that clicks the real trigger and waits for the dialog, because a dialog built from the real Modal markup beats any guess. Capture at `--width 390` too if the feature touches layout.
 
 Look through the capture for real data now, before any of it reaches a screenshot or `dist/`: names, emails, keys, account IDs, usage numbers from someone's actual install. If you find any, go back to step 1.
 
-Done when `captured/<page>.html` opens from disk, with the dev server stopped, and looks identical to the step 1 screenshot. Compare them side by side.
+Done when, with the dev server stopped, you've opened `captured/<page>.html` over `file://` in a browser, screenshotted it, and it matches `<page>-light.png` with fonts and icons loaded and no failed requests. The PNGs the script wrote come from the live server, so they prove nothing about the copy on disk.
 
 ## 3. Compile the app's own styles
 
@@ -49,13 +56,18 @@ The captured CSS only contains classes the page already used, so new UI needs th
 
 Keep a demo-only CSS file for animations or helpers the app lacks, and keep it a few lines long. If you're writing colors, font families, or radii into it, stop and find the app's token.
 
+Done when the compiled stylesheet contains a class that only the demo's `src/` uses (grep for it), and the demo CSS has no color, font-family, or radius literals.
+
 ## 4. Build the new piece inside the real page
 
 - Write a build script (`scripts/build.mjs`) that takes `captured/<page>.html`, finds the content slot (the element that holds the page body, inside the real sidebar and header), and swaps in the demo mount point. Keep the real neighbors: when the feature adds one card to a grid, the other cards stay captured cards.
-- Strip `<script>` tags from the captured DOM **before** injecting the demo's own script tag. Stripping afterwards deletes the demo.
+- Build one `dist/` page per captured page. Point links between captured pages at each other and every other link at `#`, since the rest of the app isn't there.
+- If you strip `<script>` tags yourself (a preview-entry build, a hand capture), do it **before** injecting the demo's own script tag. Stripping afterwards deletes the demo.
 - Build new UI from the app's real components. Either import them through a preview entry (React/Vue/Svelte, see stacks.md) or copy their exact class strings or markup from source into small helpers (`btn()`, `input()`, `badge()`). Name the source file next to each copy.
 - Copy only the icons and images the demo uses from the app's `public/` or asset folder. Reuse the app's icon font or icon set.
 - Write copy in the app's voice and terminology. Pull real product nouns from its UI strings.
+
+Done when every element the demo adds traces to a named source component or captured markup, and the content slot is the only part of the captured shell you changed.
 
 ## 5. Simulate the outside world
 
@@ -63,9 +75,11 @@ Put every fake upstream, API, or slow operation in one `SCENARIOS` map at the to
 
 Mark the switcher as demo-only so nobody mistakes it for a proposed control.
 
+Done when the switcher flips between at least three scenarios without a reload.
+
 ## 6. Click through it
 
-Serve `dist/` and drive it in a real browser (Playwright, the host's browser tools). Walk every scenario end to end, in light and dark, then at a phone width. Watch the console and failed requests. Compare each screen against the step 1 screenshots: font, spacing, radii, colors, icon weight. Fix differences by finding what the real app does, never by eyeballing a new value.
+Serve `dist/` and drive it in a real browser (Playwright, the host's browser tools). Walk every scenario end to end, in light and dark, then at a phone width (compare against the phone screenshots if you took them). Watch the console and failed requests. Compare each screen against the step 1 screenshots: font, spacing, radii, colors, icon weight. Fix differences by finding what the real app does, never by eyeballing a new value.
 
 Done when every scenario is clicked through in both themes with a clean console, and you'd confuse a screenshot of the demo shell with the real one.
 
@@ -81,7 +95,7 @@ A demo built on throwaway data publishes without asking. Before publishing, look
 
 - `next dev` and similar tools rewrite tracked files (Next re-adds a block to `AGENTS.md` and can rewrite version ranges in `package.json`). Run `git status` and revert anything you didn't mean to change.
 - Leave no stray lockfiles (`bun.lock`, `package-lock.json`) in the repo or demo folder that weren't there before.
-- Stop the dev servers and delete the temp data dirs.
+- Stop the dev servers and delete the temp data dirs and the `.next-demo` build dir.
 
 ## Implementing an approved demo
 
