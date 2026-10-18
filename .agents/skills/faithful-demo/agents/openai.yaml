@@ -1,0 +1,4 @@
+interface:
+  display_name: "Faithful Demo"
+  short_description: "Demo new UI inside a capture of the real app"
+  default_prompt: "Use $faithful-demo to run this app, capture the real page, and build an interactive demo of the change inside it."
