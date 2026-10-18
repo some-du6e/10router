@@ -46,17 +46,17 @@ describe("notification privacy and timestamps", () => {
     const payload = buildWebhookPayload(event, message);
     const slack = JSON.stringify(buildSlackPayload({}, message, payload));
 
-    expect(message.body).toContain("Account: so••••••••••@gmail.com");
-    expect(payload.connection.name).toBe("so••••••••••@gmail.com");
+    expect(message.body).toContain("Account: so••••••••••@•••");
+    expect(payload.connection.name).toBe("so••••••••••@•••");
     expect(slack).not.toContain("someone.long");
-    expect(slack).toContain("so••••••••••@gmail.com");
+    expect(slack).toContain("so••••••••••@•••");
   });
 
   it("masks internationalized addresses too", () => {
-    expect(maskEmails("josé@example.com")).toBe("jo•••@example.com");
-    expect(maskEmails("user@exämple.de")).toBe("us•••@exämple.de");
-    expect(maskEmails("john!smith@example.com")).toBe("jo••••••••@example.com");
-    expect(maskEmails("o'brien#x@example.com")).toBe("o'•••••••@example.com");
+    expect(maskEmails("josé@example.com")).toBe("jo•••@•••");
+    expect(maskEmails("user@exämple.de")).toBe("us•••@•••");
+    expect(maskEmails("john!smith@example.com")).toBe("jo••••••••@•••");
+    expect(maskEmails("o'brien#x@example.com")).toBe("o'•••••••@•••");
   });
 
   it("leaves non-email account names alone", () => {
