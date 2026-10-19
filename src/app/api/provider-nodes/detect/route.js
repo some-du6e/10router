@@ -1,30 +1,11 @@
 import { NextResponse } from "next/server";
 import { assertPublicUrlResolved } from "@/shared/utils/ssrfGuard.js";
+import { makeProbeFetch } from "@/lib/probeFetch.js";
 import { isLocalRequest } from "@/dashboardGuard";
 import { detectEndpoint, normalizeUrl } from "@/lib/endpointDetect.js";
+import { getEndpointCatalog } from "@/lib/endpointCatalog.js";
 
 export const dynamic = "force-dynamic";
-
-const MAX_REDIRECTS = 3;
-
-// fetch for probes: SSRF check on every hop for remote callers, and redirects are
-// followed only within the same origin so the key never goes to another host.
-function makeProbeFetch(checkPublic) {
-  return async (url, init) => {
-    let current = url;
-    for (let hop = 0; ; hop++) {
-      if (checkPublic) await assertPublicUrlResolved(current);
-      const res = await fetch(current, { ...init, redirect: "manual" });
-      const location = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
-      if (!location) return res;
-      const next = new URL(location, current);
-      if (next.origin !== new URL(current).origin || hop >= MAX_REDIRECTS) return res;
-      // A POST that would turn into a GET means the URL is wrong; report the redirect as-is.
-      if (init?.method === "POST" && (res.status === 301 || res.status === 302 || res.status === 303)) return res;
-      current = next.toString();
-    }
-  };
-}
 
 // POST /api/provider-nodes/detect - Work out protocol, base URL, models and auth
 // from a URL + key. Free probes only; never triggers a billed generation.
@@ -41,7 +22,7 @@ export async function POST(request) {
       catch { return NextResponse.json({ ok: false, error: "URL not allowed", steps: [] }, { status: 400 }); }
     }
 
-    const result = await detectEndpoint({ url: base, apiKey, fetchFn: makeProbeFetch(remote) });
+    const result = await detectEndpoint({ url: base, apiKey, fetchFn: makeProbeFetch(remote), catalog: await getEndpointCatalog() });
     return NextResponse.json(result);
   } catch (error) {
     console.log("Error detecting endpoint:", error?.message);

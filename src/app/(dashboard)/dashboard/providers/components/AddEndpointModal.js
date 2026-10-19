@@ -236,8 +236,8 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }) {
                   ))}
                   {detected.models.length > 8 && <span className="px-1 text-[11px] text-text-subtle">+{detected.models.length - 8} more</span>}
                 </div>
-                {detected.modelsSource === "catalog" && (
-                  <p className="text-[11px] text-text-subtle">No model list here, so we checked known models one by one.</p>
+                {(detected.modelsSource === "catalog" || detected.modelsSource === "guessed") && (
+                  <p className="text-[11px] text-text-subtle">No model list here, so we checked known models one by one. Add any we missed on the endpoint page.</p>
                 )}
               </div>
             ) : (

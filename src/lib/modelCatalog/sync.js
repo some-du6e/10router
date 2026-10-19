@@ -6,7 +6,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { CATALOG_FILE, CATALOG_RAW_FILE, invalidateCatalog, installCatalogSource } from "open-sse/providers/catalogOverride.js";
+import { CATALOG_FILE, CATALOG_RAW_FILE, CATALOG_ENDPOINTS_FILE, invalidateCatalog, installCatalogSource } from "open-sse/providers/catalogOverride.js";
 
 const CATALOG_URL = "https://models.dev/api.json";
 const FETCH_TIMEOUT_MS = 60000;
@@ -74,6 +74,17 @@ function slim(catalog) {
       };
     }
     out[providerId] = models;
+  }
+  return out;
+}
+
+// Each provider's API URL and model ids, for endpoints with no /models route:
+// "Add endpoint" matches the user's URL against `api` and probes these ids.
+function endpointIndex(catalog) {
+  const out = [];
+  for (const [id, provider] of Object.entries(catalog)) {
+    const models = Object.keys(provider?.models || {});
+    if (provider?.api && models.length) out.push({ id, name: provider.name || id, api: provider.api, models });
   }
   return out;
 }
@@ -191,6 +202,7 @@ export async function syncModelCatalog() {
 
       writeAtomic(CATALOG_FILE, serialized);
       writeAtomic(CATALOG_RAW_FILE, JSON.stringify(slim(catalog)));
+      writeAtomic(CATALOG_ENDPOINTS_FILE, JSON.stringify(endpointIndex(catalog)));
 
       state.etag = etag;
       invalidateCatalog();
@@ -235,6 +247,9 @@ export function startModelCatalogSync() {
   if (timer) return;
   if (String(process.env.MODEL_CATALOG_SYNC || "").toLowerCase() === "off") return;
   restoreEtag();
+  // Installs that synced before the endpoint index existed would wait for
+  // models.dev to change (the etag short-circuits); force one full fetch.
+  if (!fs.existsSync(CATALOG_ENDPOINTS_FILE)) state.etag = null;
 
   const schedule = (delay) => {
     timer = setTimeout(async () => {

@@ -76,20 +76,48 @@ export function makePrefix(name, taken = []) {
   for (let i = 2; ; i++) if (!used.has(`${p}${i}`)) return `${p}${i}`;
 }
 
-// Snowflake Cortex has no model list (checked 2026-10-19: /v1/models 404). It does
-// validate the model name for free, so these are confirmed one by one by probing.
-const KNOWN_CATALOGS = [
-  {
-    match: (host) => host.endsWith(".snowflakecomputing.com"),
-    name: "Snowflake",
-    anthropic: ["claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5", "claude-opus-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"],
-    openai: ["openai-gpt-5", "openai-gpt-5-mini", "openai-gpt-5-nano", "claude-haiku-4-5", "claude-sonnet-4-5", "llama4-maverick", "llama3.1-70b", "mistral-large2"],
-  },
-];
-export const catalogFor = (base) => KNOWN_CATALOGS.find((c) => c.match(new URL(base).hostname));
+// Endpoints with no model list (Snowflake Cortex: /v1/models 404) can still be
+// asked about one model at a time for free, when they reject an unknown model id
+// before anything else. Candidate ids come from the models.dev catalog, synced
+// daily: `catalog` is [{ id, name, api, models: [ids] }] (see modelCatalog/sync.js).
+
+// "https://${SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/cortex/v1" ->
+// host regex (placeholders match one label) + path.
+function apiPattern(api) {
+  const m = /^https?:\/\/([^/]+)(\/[^?#]*)?/i.exec(String(api || ""));
+  if (!m) return null;
+  const hostRe = m[1].toLowerCase().split(/\$\{[^}]*\}/)
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("[^/.]+");
+  return { host: new RegExp(`^${hostRe}$`), path: (m[2] || "").replace(/\/+$/, "") };
+}
+
+// The catalog provider whose API URL matches this base, best path match first.
+export function matchCatalogProvider(base, catalog = []) {
+  const u = new URL(base);
+  const host = u.hostname.toLowerCase();
+  const path = u.pathname.replace(/\/+$/, "");
+  let best = null;
+  for (const p of catalog) {
+    const pat = apiPattern(p.api);
+    if (!pat || !pat.host.test(host)) continue;
+    const score = path === pat.path ? 3 : path.startsWith(pat.path) || pat.path.startsWith(path) ? 2 : 1;
+    if (!best || score > best.score) best = { ...p, score };
+  }
+  return best;
+}
+
+// Model ids served by the most providers: the guess list for an unknown gateway.
+export function popularModelIds(catalog = [], limit = 40) {
+  const count = new Map();
+  for (const p of catalog) for (const id of new Set(p.models.map((m) => String(m).split("/").pop()))) count.set(id, (count.get(id) || 0) + 1);
+  return [...count.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([id]) => id);
+}
 
 // Error-body fragments that mean "your request reached a real model endpoint".
 const UNKNOWN_MODEL_RE = /unknown model|model[^"]{0,40}(not found|does not exist|not supported|invalid)|no such model|invalid model|无可用渠道/i;
+// Known to the endpoint but not usable here.
+const NOT_SERVABLE_RE = /legacy|does not support this endpoint|deprecated model/i;
 const CLIENT_GATE_RE = /unauthorized client|client (is )?not allowed|unsupported client/i;
 
 const redact = (text, key) => (key ? String(text).split(key).join("<key>") : String(text));
@@ -97,8 +125,114 @@ const redact = (text, key) => (key ? String(text).split(key).join("<key>") : Str
 const isHtml = (ct, text) => /text\/html/i.test(ct || "") || /^\s*<(!doctype|html)/i.test(text || "");
 const htmlTitle = (text) => (/<title[^>]*>([^<]{1,120})/i.exec(text || "")?.[1] || "").trim();
 
+const ANTHROPIC = { "anthropic-version": "2023-06-01" };
+
+function authHeaders(key) {
+  return {
+    bearer: key ? { authorization: `Bearer ${key}` } : {},
+    "x-api-key": key ? { "x-api-key": key } : {},
+    both: key ? { authorization: `Bearer ${key}`, "x-api-key": key } : {},
+  };
+}
+
+// Empty-body requests: a real API rejects them with 400 before running a model.
+function probeSpecs(AUTH) {
+  return {
+    anthropic: { path: "/messages", label: "POST /messages (empty)", headers: { ...AUTH.both, ...ANTHROPIC }, body: { model: "probe", max_tokens: 1, messages: [] } },
+    "openai-chat": { path: "/chat/completions", label: "POST /chat/completions (empty)", headers: AUTH.bearer, body: { model: "probe", messages: [], max_tokens: 1, stream: false } },
+    "openai-responses": { path: "/responses", label: "POST /responses (empty)", headers: AUTH.bearer, body: { model: "probe", input: [], max_output_tokens: 1, stream: false } },
+  };
+}
+
+// A 400 or 422 whose body isn't an auth complaint = path exists, key passed.
+const accepted = (r) => (r.status === 400 || r.status === 422) && !/unauthori[sz]ed|invalid (api )?key|authentication/i.test(r.text);
+const authFail = (r) => r.status === 401 || r.status === 403;
+
+// Records every request as a step (status + body preview, key redacted).
+function makeProber({ fetchFn, key, steps, timeoutMs }) {
+  return async (label, method, target, { headers = {}, body } = {}) => {
+    const step = { label, method, url: target, status: null, preview: "" };
+    try {
+      const res = await fetchFn(target, {
+        method,
+        headers: { accept: "application/json", ...(body ? { "content-type": "application/json" } : {}), ...headers },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const text = await res.text().catch(() => "");
+      step.status = res.status;
+      step.preview = redact(text, key).replace(/\s+/g, " ").slice(0, BODY_PREVIEW);
+      step.html = isHtml(res.headers?.get?.("content-type"), text);
+      steps.push(step);
+      let json = null;
+      try { json = JSON.parse(text); } catch { /* not JSON */ }
+      return { status: res.status, text, json, step };
+    } catch (e) {
+      step.status = 0;
+      step.preview = redact(e?.message || String(e), key).slice(0, BODY_PREVIEW);
+      steps.push(step);
+      return { status: 0, text: "", json: null, step };
+    }
+  };
+}
+
+const PROBE_CONCURRENCY = 6;
+
+// Model probes send only what's required, so the model name is the first thing
+// validated. The empty messages/input still means nothing can run. OpenAI-style
+// gateways can reject max_tokens first (Snowflake: "deprecated in favor of
+// max_completion_tokens"); Anthropic requires max_tokens.
+function modelBody(p, model) {
+  const { max_tokens, max_output_tokens, stream, ...rest } = p.body;
+  return p.path === "/messages" ? { ...p.body, model } : { ...rest, model };
+}
+
+// Ask about each id with an empty body. Returns the ids the endpoint knows, or
+// null when it doesn't validate model names first (then probing tells us nothing).
+async function probeModels({ probe, base, protocol, AUTH, ids }) {
+  const p = probeSpecs(AUTH)[protocol];
+  if (!p || !ids.length) return null;
+  // Canary: a made-up id must be refused as unknown, or "accepted" means nothing.
+  const canary = await probe("Check model (made-up id)", "POST", `${base}${p.path}`, { headers: p.headers, body: modelBody(p, "10router-no-such-model") });
+  if (!UNKNOWN_MODEL_RE.test(canary.text)) return null;
+  const ok = [];
+  const queue = [...new Set(ids)];
+  await Promise.all(Array.from({ length: PROBE_CONCURRENCY }, async () => {
+    for (let id; (id = queue.shift()) !== undefined;) {
+      const r = await probe(`Check model ${id}`, "POST", `${base}${p.path}`, { headers: p.headers, body: modelBody(p, id) });
+      if (accepted(r) && !UNKNOWN_MODEL_RE.test(r.text) && !NOT_SERVABLE_RE.test(r.text)) ok.push(id);
+    }
+  }));
+  // Keep catalog order, not completion order.
+  const order = new Map(ids.map((id, i) => [id, i]));
+  return ok.sort((a, b) => order.get(a) - order.get(b));
+}
+
+// Models for an already-known endpoint (the "Import models" button): /models
+// first, then the catalog probe. Free requests only.
+export async function discoverModels({ baseUrl, apiKey, protocol, fetchFn, catalog = [], timeoutMs = PROBE_TIMEOUT_MS }) {
+  const key = cleanKey(apiKey);
+  const base = String(baseUrl || "").replace(/\/+$/, "").replace(/\/messages$/, "");
+  const steps = [];
+  const probe = makeProber({ fetchFn, key, steps, timeoutMs });
+  const AUTH = authHeaders(key);
+  const styles = protocol === "anthropic" ? [["x-api-key", { ...AUTH.both, ...ANTHROPIC }]] : [["bearer", AUTH.bearer]];
+  for (const [style, h] of [["none", {}], ...styles]) {
+    const r = await probe(`GET /models (${style === "none" ? "no auth" : style})`, "GET", `${base}/models`, { headers: h });
+    if (r.status >= 200 && r.status < 300 && !r.step.html) {
+      const ids = parseModelList(r.json);
+      if (ids.length) return { models: ids, source: "models", steps };
+    }
+    if (r.status === 404 || r.status === 0) break;
+  }
+  const matched = matchCatalogProvider(base, catalog);
+  const found = await probeModels({ probe, base, protocol, AUTH, ids: matched?.models || popularModelIds(catalog) });
+  if (found?.length) return { models: found, source: matched ? "catalog" : "guessed", catalogName: matched?.name, steps };
+  return { models: [], source: "none", steps };
+}
+
 // Probe runner. `fetchFn` is injected so tests (and the SSRF-safe fetch) can supply it.
-export async function detectEndpoint({ url, apiKey, fetchFn, timeoutMs = PROBE_TIMEOUT_MS }) {
+export async function detectEndpoint({ url, apiKey, fetchFn, catalog = [], timeoutMs = PROBE_TIMEOUT_MS }) {
   const key = cleanKey(apiKey);
   const base0 = normalizeUrl(url);
   const steps = [];
@@ -129,15 +263,9 @@ export async function detectEndpoint({ url, apiKey, fetchFn, timeoutMs = PROBE_T
     }
   };
 
-  const AUTH = {
-    bearer: key ? { authorization: `Bearer ${key}` } : {},
-    "x-api-key": key ? { "x-api-key": key } : {},
-    both: key ? { authorization: `Bearer ${key}`, "x-api-key": key } : {},
-  };
-  const ANTHROPIC = { "anthropic-version": "2023-06-01" };
+  const AUTH = authHeaders(key);
+  const PROBES = probeSpecs(AUTH);
   // A 400 or 422 whose body isn't an auth complaint = path exists, key passed.
-  const accepted = (r) => (r.status === 400 || r.status === 422) && !/unauthori[sz]ed|invalid (api )?key|authentication/i.test(r.text);
-  const authFail = (r) => r.status === 401 || r.status === 403;
 
   let models = [];
   let base = base0;
@@ -164,11 +292,6 @@ export async function detectEndpoint({ url, apiKey, fetchFn, timeoutMs = PROBE_T
   // 2. Protocol: empty-body probes. Anthropic first when the host/key hints at it.
   const preferAnthropic = /anthropic|claude|cortex|snowflake/i.test(base0) || /^sk-ant-/.test(key);
   const order = preferAnthropic ? ["anthropic", "openai-chat", "openai-responses"] : ["openai-chat", "openai-responses", "anthropic"];
-  const PROBES = {
-    anthropic: { path: "/messages", label: "POST /messages (empty)", headers: { ...AUTH.both, ...ANTHROPIC }, body: { model: "probe", max_tokens: 1, messages: [] } },
-    "openai-chat": { path: "/chat/completions", label: "POST /chat/completions (empty)", headers: AUTH.bearer, body: { model: "probe", messages: [], max_tokens: 1, stream: false } },
-    "openai-responses": { path: "/responses", label: "POST /responses (empty)", headers: AUTH.bearer, body: { model: "probe", input: [], max_output_tokens: 1, stream: false } },
-  };
   const found = [];
   for (const b of models.length ? [base] : candidateBases(base0)) {
     for (const proto of order) {
@@ -207,22 +330,15 @@ export async function detectEndpoint({ url, apiKey, fetchFn, timeoutMs = PROBE_T
     keyConfirmed = authFail(r) ? "confirmed" : r.status === 400 ? "unknown" : keyConfirmed;
   }
 
-  // 4. No list? Confirm a known catalog model by model, still free.
+  // 4. No list? Ask about candidate models one at a time, still free.
   let modelsSource = models.length ? "models" : "none";
-  const catalog = catalogFor(base);
-  if (!models.length && catalog) {
-    const list = protocol === "anthropic" ? catalog.anthropic : catalog.openai;
-    const p = PROBES[protocol];
-    const ok = [];
-    for (const m of list) {
-      const r = await probe(`Check model ${m}`, "POST", `${base}${p.path}`, { headers: p.headers, body: { ...p.body, model: m } });
-      if (accepted(r) && !UNKNOWN_MODEL_RE.test(r.text) && !/legacy|does not support this endpoint/i.test(r.text)) ok.push(m);
-    }
-    models = ok;
-    modelsSource = "catalog";
+  const matched = matchCatalogProvider(base, catalog);
+  if (!models.length) {
+    const found = await probeModels({ probe, base, protocol, AUTH, ids: matched?.models || popularModelIds(catalog) });
+    if (found?.length) { models = found; modelsSource = matched ? "catalog" : "guessed"; }
   }
 
-  const name = catalog?.name || suggestName(base);
+  const name = matched?.name || suggestName(base);
   return {
     ok: true,
     protocol,
