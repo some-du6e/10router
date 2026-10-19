@@ -1,89 +1,75 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { getDefaultPricing, formatCost } from "open-sse/providers/pricing.js";
+import api from "@/shared/utils/api";
 
 export default function PricingModal({ isOpen, onClose, onSave }) {
   const [pricingData, setPricingData] = useState({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (isOpen) {
-      loadPricing();
-    }
-  }, [isOpen]);
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState("");
 
   const loadPricing = async () => {
     setLoading(true);
+    setLoaded(false);
+    setError("");
     try {
-      const response = await fetch("/api/pricing");
-      if (response.ok) {
-        const data = await response.json();
-        setPricingData(data);
-      } else {
-        // Fallback to defaults
-        const defaults = getDefaultPricing();
-        setPricingData(defaults);
-      }
+      setPricingData(await api.get("/api/pricing"));
+      setLoaded(true);
     } catch (error) {
-      console.error("Failed to load pricing:", error);
-      const defaults = getDefaultPricing();
-      setPricingData(defaults);
+      setError(`Failed to load pricing: ${error.message}`);
     } finally {
       setLoading(false);
     }
   };
 
+  useEffect(() => {
+    if (isOpen) loadPricing();
+  }, [isOpen]);
+
   const handlePricingChange = (provider, model, field, value) => {
     const numValue = parseFloat(value);
-    if (isNaN(numValue) || numValue < 0) return;
+    if (!Number.isFinite(numValue) || numValue < 0) return;
 
     setPricingData(prev => {
-      const newData = { ...prev };
-      if (!newData[provider]) newData[provider] = {};
-      if (!newData[provider][model]) newData[provider][model] = {};
-      newData[provider][model][field] = numValue;
-      return newData;
+      return {
+        ...prev,
+        [provider]: {
+          ...prev[provider],
+          [model]: { ...prev[provider]?.[model], [field]: numValue },
+        },
+      };
     });
   };
 
   const handleSave = async () => {
+    if (loading || saving || !loaded) return;
     setSaving(true);
+    setError("");
     try {
-      const response = await fetch("/api/pricing", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(pricingData)
-      });
-
-      if (response.ok) {
-        onSave?.();
-        onClose();
-      } else {
-        const error = await response.json();
-        alert(`Failed to save pricing: ${error.error}`);
-      }
+      await api.patch("/api/pricing", pricingData);
+      await onSave?.();
+      onClose();
     } catch (error) {
-      console.error("Failed to save pricing:", error);
-      alert("Failed to save pricing");
+      setError(`Failed to save pricing: ${error.message}`);
     } finally {
       setSaving(false);
     }
   };
 
   const handleReset = async () => {
+    if (loading || saving || !loaded) return;
     if (!confirm("Reset all pricing to defaults? This cannot be undone.")) return;
-
+    setSaving(true);
+    setError("");
     try {
-      const response = await fetch("/api/pricing", { method: "DELETE" });
-      if (response.ok) {
-        const defaults = getDefaultPricing();
-        setPricingData(defaults);
-      }
+      setPricingData(await api.del("/api/pricing"));
+      await onSave?.();
     } catch (error) {
-      console.error("Failed to reset pricing:", error);
-      alert("Failed to reset pricing");
+      setError(`Failed to reset pricing: ${error.message}`);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -109,6 +95,7 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
 
         {/* Content */}
         <div className="flex-1 overflow-auto p-4">
+          {error && <p role="alert" className="mb-4 text-sm text-red-500">{error}</p>}
           {loading ? (
             <div className="text-center py-8 text-text-muted">Loading pricing data...</div>
           ) : (
@@ -181,7 +168,7 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
           <button
             onClick={handleReset}
             className="px-4 py-2 text-sm text-red-500 hover:bg-red-500/10 rounded border border-red-500/20 transition-colors"
-            disabled={saving}
+            disabled={saving || loading || !loaded}
           >
             Reset to Defaults
           </button>
@@ -196,7 +183,7 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
             <button
               onClick={handleSave}
               className="px-4 py-2 text-sm bg-primary text-white rounded hover:bg-primary/90 transition-colors disabled:opacity-50"
-              disabled={saving}
+              disabled={saving || loading || !loaded}
             >
               {saving ? "Saving..." : "Save Changes"}
             </button>

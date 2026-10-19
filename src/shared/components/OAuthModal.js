@@ -89,7 +89,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       if (!res.ok) throw new Error(data.error);
 
       setStep("success");
-      onSuccess?.();
+      onSuccess?.(data);
     } catch (err) {
       setError(err.message);
       setStep("error");
@@ -108,7 +108,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       if (!res.ok) throw new Error(data.error);
 
       setStep("success");
-      onSuccess?.();
+      onSuccess?.(data);
     } catch (err) {
       setError(err.message);
       setStep("error");
@@ -155,7 +155,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           pollingAbortRef.current = true; // Stop polling immediately
           setStep("success");
           setPolling(false);
-          onSuccess?.();
+          onSuccess?.(data);
           return;
         }
 
@@ -467,7 +467,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         if (data.status === "done") {
           callbackProcessedRef.current = true;
           setStep("success");
-          onSuccess?.();
+          onSuccess?.(data);
           return;
         }
         if (data.status === "error") {
@@ -589,7 +589,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         const data = await res.json();
         if (!res.ok) throw new Error(data.error);
         setStep("success");
-        onSuccess?.();
+        onSuccess?.(data);
         return;
       }
 
@@ -605,7 +605,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         const data = await res.json();
         if (!res.ok) throw new Error(data.error);
         setStep("success");
-        onSuccess?.();
+        onSuccess?.(data);
         return;
       }
 

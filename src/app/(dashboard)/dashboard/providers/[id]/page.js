@@ -765,8 +765,9 @@ export default function ProviderDetailPage() {
     });
   };
 
-  const handleOAuthSuccess = async () => {
-    if (reauthConnectionId) {
+  const handleOAuthSuccess = async (result) => {
+    const authenticatedId = result?.connection?.id || result?.connectionId;
+    if (reauthConnectionId && authenticatedId === reauthConnectionId) {
       try {
         const res = await fetch(`/api/providers/${reauthConnectionId}`, {
           method: "PUT",
@@ -792,6 +793,9 @@ export default function ProviderDetailPage() {
       }
     }
     await fetchConnections();
+    if (reauthConnectionId && authenticatedId !== reauthConnectionId) {
+      window.alert("The selected account was not confirmed by this sign-in. Its existing error was kept. Sign in with that account to re-authenticate it.");
+    }
     setShowOAuthModal(false);
     setReauthConnectionId(null);
   };

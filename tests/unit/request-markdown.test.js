@@ -41,4 +41,23 @@ describe("request markdown preview", () => {
     expect(html).not.toContain("<script");
     expect(html).not.toContain("javascript:");
   });
+
+  it("renders allowed links through the same HTML-filtering parser", () => {
+    const html = renderPromptMarkdown("[**Docs** <img src=x onerror=alert(1)>](https://example.com)");
+    expect(html).toContain('<a href="https://example.com">');
+    expect(html).toContain("<strong>Docs</strong>");
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("onerror");
+  });
+
+  it.each(["javascript:alert(1)", "data:text/html,unsafe", "//example.com"])(
+    "filters HTML inside the label of a rejected %s link",
+    (href) => {
+      const html = renderPromptMarkdown(`[**Text** <img src=x onerror=alert(1)>](${href})`);
+      expect(html).toContain("<strong>Text</strong>");
+      expect(html).not.toContain("<a ");
+      expect(html).not.toContain("<img");
+      expect(html).not.toContain("onerror");
+    }
+  );
 });

@@ -27,9 +27,9 @@ export default function KiroOAuthWrapper({ isOpen, providerInfo, onSuccess, onCl
       // Use social login with manual callback
       setAuthMethod("social");
       setSocialProvider(config.provider);
-    } else if (method === "import" || method === "api-key") {
+    } else if (method === "import" || method === "import-cli-proxy" || method === "api-key") {
       // Import / API-key handled in KiroAuthModal, just close
-      onSuccess?.();
+      onSuccess?.(config);
     }
   }, [onSuccess]);
 
@@ -39,17 +39,17 @@ export default function KiroOAuthWrapper({ isOpen, providerInfo, onSuccess, onCl
     setIdcConfig(null);
   };
 
-  const handleSocialSuccess = () => {
+  const handleSocialSuccess = (result) => {
     setAuthMethod(null);
     setSocialProvider(null);
-    onSuccess?.();
+    onSuccess?.(result);
     onClose?.(); // Close modal after success
   };
 
-  const handleDeviceSuccess = () => {
+  const handleDeviceSuccess = (result) => {
     setAuthMethod(null);
     setIdcConfig(null);
-    onSuccess?.();
+    onSuccess?.(result);
     onClose?.(); // Close modal after success
   };
 
