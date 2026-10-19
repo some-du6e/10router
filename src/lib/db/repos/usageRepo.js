@@ -25,6 +25,8 @@ if (!global._pendingTimers) global._pendingTimers = {};
 if (!global._recentRing) global._recentRing = { items: [], initialized: false };
 if (!global._connectionMapCache) global._connectionMapCache = { map: {}, ts: 0 };
 if (!global._statsEmitTimers) global._statsEmitTimers = { pending: null, update: null };
+if (!global._usageLastUsedIndex) global._usageLastUsedIndex = new WeakMap();
+if (!global._usageStatsInFlight) global._usageStatsInFlight = new Map();
 
 const pendingRequests = global._pendingRequests;
 const lastErrorProvider = global._lastErrorProvider;
@@ -34,6 +36,40 @@ const connCache = global._connectionMapCache;
 const statsEmitTimers = global._statsEmitTimers;
 
 export const statsEmitter = global._statsEmitter;
+
+// Latest usageHistory timestamp per (provider, model, connectionId, apiKey,
+// endpoint), kept per adapter. getUsageStats used to rescan every history row
+// to find these on each call, and the usage stream calls it for every open
+// dashboard tab after every request. Timestamps are ISO strings, so string
+// order is time order.
+function lastUsedKey(r) {
+  return [r.provider, r.model, r.connectionId, r.apiKey, r.endpoint].map((v) => v ?? "").join("\u0000");
+}
+
+function getLastUsedIndex(db) {
+  let index = global._usageLastUsedIndex.get(db);
+  if (index) return index;
+  index = new Map();
+  const rows = db.all(
+    `SELECT provider, model, connectionId, apiKey, endpoint, MAX(timestamp) AS timestamp FROM usageHistory GROUP BY provider, model, connectionId, apiKey, endpoint`
+  );
+  for (const r of rows) index.set(lastUsedKey(r), r);
+  global._usageLastUsedIndex.set(db, index);
+  return index;
+}
+
+function recordLastUsed(db, entry) {
+  const index = global._usageLastUsedIndex.get(db);
+  if (!index) return;
+  const row = {
+    provider: entry.provider || null, model: entry.model || null,
+    connectionId: entry.connectionId || null, apiKey: entry.apiKey || null,
+    endpoint: entry.endpoint || null, timestamp: entry.timestamp,
+  };
+  const key = lastUsedKey(row);
+  const current = index.get(key);
+  if (!current || row.timestamp > current.timestamp) index.set(key, row);
+}
 
 function scheduleStatsEvent(event, delayMs = 150) {
   const key = event === "update" ? "update" : "pending";
@@ -277,6 +313,7 @@ export async function saveRequestUsage(entry) {
       db.run(`INSERT INTO _meta(key, value) VALUES('totalRequestsLifetime', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [String(next)]);
     });
 
+    recordLastUsed(db, entry);
     pushToRing(entry);
     scheduleStatsEvent("update", 250);
   } catch (e) {
@@ -467,6 +504,16 @@ export async function getConnectionDetail(connectionId, opts = {}) {
 }
 
 export async function getUsageStats(period = "all") {
+  // Every open dashboard tab asks for stats on the same update event; let
+  // concurrent callers share one computation.
+  const inFlight = global._usageStatsInFlight;
+  if (inFlight.has(period)) return inFlight.get(period);
+  const promise = computeUsageStats(period).finally(() => inFlight.delete(period));
+  inFlight.set(period, promise);
+  return promise;
+}
+
+async function computeUsageStats(period) {
   const db = await getAdapter();
 
   const [{ getProviderConnections }, { getApiKeys }, { getProviderNodes }] = await Promise.all([
@@ -661,12 +708,9 @@ export async function getUsageStats(period = "all") {
     }
 
     // Overlay precise lastUsed timestamps from history
-    const overlayCutoff = maxDays ? Date.now() - maxDays * 86400000 : 0;
-    const histRows = db.all(
-      `SELECT timestamp, provider, model, connectionId, apiKey, endpoint FROM usageHistory WHERE timestamp >= ?`,
-      [new Date(overlayCutoff).toISOString()]
-    );
-    for (const e of histRows) {
+    const overlayCutoff = new Date(maxDays ? Date.now() - maxDays * 86400000 : 0).toISOString();
+    for (const e of getLastUsedIndex(db).values()) {
+      if (e.timestamp < overlayCutoff) continue;
       const ts = e.timestamp;
       const modelKey = e.provider ? `${e.model} (${e.provider})` : e.model;
       if (stats.byModel[modelKey] && new Date(ts) > new Date(stats.byModel[modelKey].lastUsed)) stats.byModel[modelKey].lastUsed = ts;
