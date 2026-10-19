@@ -118,6 +118,7 @@ export function ProviderWindow({
       </div>
       <div
         className="mt-2 flex gap-1"
+        role="group"
         aria-label={`${name} ${quotaWindow.label}`}
       >
         {summary.values.map(({ account, quota, blocked }) => {

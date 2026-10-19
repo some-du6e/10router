@@ -58,10 +58,15 @@ export function buildAccount(connection, entry, error) {
     ? [priority, ...mainWindows.filter((q) => q !== priority)]
     : [];
   // Status follows the tightest window, so a low weekly bar never sits next to "Healthy".
-  const known = orderedWindows.filter((q) => q.remaining !== null);
-  const remaining = known.length
-    ? Math.min(...known.map((q) => q.remaining))
-    : null;
+  // Per-model windows ("other") only decide health when nothing else is reported,
+  // so one exhausted model does not mark an account that still routes as Depleted.
+  const known = (primary.length ? orderedWindows : [priority].filter(Boolean))
+    .filter((q) => q.remaining !== null);
+  const worstWindow = known.reduce(
+    (low, q) => (!low || q.remaining < low.remaining ? q : low),
+    null,
+  );
+  const remaining = worstWindow?.remaining ?? null;
   const health =
     remaining === null
       ? "Unknown"
@@ -84,6 +89,7 @@ export function buildAccount(connection, entry, error) {
     weeklyBlocked,
     weeklyUnknown: !!weekly && weekly.remaining === null,
     worstRemaining: remaining,
+    worstWindow,
     health,
     status: connection.isActive === false ? "Turned off" : health,
     updatedAt: entry?.updatedAt || entry?.cachedAt || null,
@@ -120,12 +126,14 @@ export function resetTimestamp(quota) {
 }
 
 export function compareAccounts(a, b, sort) {
-  const remaining =
-    (a.priority?.remaining ?? Infinity) - (b.priority?.remaining ?? Infinity);
+  // Sort on the same window that drives status; unknown readings go last either way.
+  const unknown = (a.worstRemaining === null) - (b.worstRemaining === null);
+  const remaining = unknown || (a.worstRemaining ?? 0) - (b.worstRemaining ?? 0);
   const reset = resetTimestamp(a.priority) - resetTimestamp(b.priority);
   const fallback = a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
   if (sort === "reset") return reset || remaining || fallback;
-  if (sort === "remaining-desc") return -remaining || reset || fallback;
+  if (sort === "remaining-desc")
+    return unknown || -remaining || reset || fallback;
   if (sort === "remaining") return remaining || reset || fallback;
   return a.provider.localeCompare(b.provider) || remaining || reset || fallback;
 }
@@ -145,7 +153,13 @@ export function summarizeWindow(accounts, window) {
   });
   const reported = values.filter((v) => v.quota?.remaining != null);
   const usable = reported.filter((v) => !v.blocked);
-  const counted = reported.filter((v) => v.account.isActive !== false);
+  // Weekly-blocked accounts count as empty even when their short window is unknown.
+  const counted = values.filter(
+    (v) =>
+      v.account.isActive !== false &&
+      v.quota &&
+      (v.quota.remaining != null || v.blocked),
+  );
   const usableSum = usable.reduce((sum, v) => sum + v.quota.remaining, 0);
   const resets = values
     .filter((v) => v.account.isActive !== false)
@@ -153,9 +167,10 @@ export function summarizeWindow(accounts, window) {
     .filter(Number.isFinite);
   return {
     values,
-    total: reported.length ? usableSum : null,
+    total: reported.length && counted.length ? usableSum : null,
     // Blocked accounts count as empty, so the average reflects routable quota.
-    average: reported.length ? usableSum / (counted.length || 1) : null,
+    average:
+      reported.length && counted.length ? usableSum / counted.length : null,
     averaged: counted.length > 1,
     capacity:
       values.filter((v) => v.account.isActive !== false && v.quota).length *
@@ -163,9 +178,12 @@ export function summarizeWindow(accounts, window) {
     unknown: values.filter(
       (v) =>
         v.account.isActive !== false &&
-        (!v.quota || v.quota.remaining === null),
+        !v.blocked &&
+        v.quota &&
+        v.quota.remaining === null,
     ).length,
-    stale: values.filter((v) => v.account.error).length,
+    stale: values.filter((v) => v.account.isActive !== false && v.account.error)
+      .length,
     nextReset: resets.length ? Math.min(...resets) : null,
   };
 }

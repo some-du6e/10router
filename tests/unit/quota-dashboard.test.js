@@ -61,6 +61,47 @@ describe("quota dashboard", () => {
     );
   });
 
+  it("shows no average when every reporting account is turned off", () => {
+    const off = account("off", 80, 80, { isActive: false });
+    const summary = summarizeWindow([off], off.priority);
+    expect(summary.average).toBeNull();
+    expect(summary.total).toBeNull();
+    expect(summary.stale).toBe(0);
+  });
+
+  it("counts a weekly-blocked account as empty even when its session is unknown", () => {
+    const full = account("full", 80, 80);
+    const blocked = account("blocked", null, 0);
+    const summary = summarizeWindow([full, blocked], full.priority);
+    expect(summary.average).toBe(40);
+    expect(summary.unknown).toBe(0);
+  });
+
+  it("sorts by the same window that drives status, unknown last both ways", () => {
+    const healthy = account("healthy", 50, 90);
+    const low = account("low", 64, 23);
+    const unknown = account("unknown", null, null);
+    const ids = (sort) =>
+      [unknown, healthy, low]
+        .sort((a, b) => compareAccounts(a, b, sort))
+        .map((a) => a.id);
+    expect(ids("remaining")).toEqual(["low", "healthy", "unknown"]);
+    expect(ids("remaining-desc")).toEqual(["healthy", "low", "unknown"]);
+  });
+
+  it("does not mark a per-model provider Depleted for one empty model", () => {
+    const multi = buildAccount(
+      { id: "ag", provider: "antigravity" },
+      {
+        quotas: [
+          { name: "Gemini", remainingPercentage: 90 },
+          { name: "Claude", remainingPercentage: 0 },
+        ],
+      },
+    );
+    expect(multi.status).not.toBe("Depleted");
+  });
+
   it("takes status from the tightest window", () => {
     const low = account("low", 64, 23);
     expect(low.priority.kind).toBe("session");

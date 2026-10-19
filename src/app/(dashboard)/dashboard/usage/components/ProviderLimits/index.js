@@ -159,6 +159,7 @@ export default function ProviderLimits() {
   // Tab changes slide the summary card like a deck: the old card exits as the
   // new one enters, and the deck eases between their heights. The ledger stays still.
   const deck = useRef(null);
+  const tabs = useRef(null);
   const incoming = useRef(null);
   const outgoing = useRef(null);
   const lastTab = useRef(provider);
@@ -191,10 +192,13 @@ export default function ProviderLimits() {
       [{ transform: "none" }, { transform: shift(-leaving.dir) }],
       { ...timing, fill: "forwards" },
     );
-    if (exit)
-      exit.onfinish = () =>
-        setLeaving((current) => (current === leaving ? null : current));
-    else setLeaving(null);
+    const done = () =>
+      setLeaving((current) => (current === leaving ? null : current));
+    if (!exit) return done();
+    exit.onfinish = done;
+    // Backstop: onfinish may never fire if the deck unmounts mid-slide.
+    const timer = setTimeout(done, timing.duration + 200);
+    return () => clearTimeout(timer);
   }, [leaving]);
 
   function openProvider(id, nextHealth = "all") {
@@ -327,7 +331,11 @@ export default function ProviderLimits() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => openProvider(group.id)}
+                  onClick={() => {
+                    openProvider(group.id);
+                    // The card remounts on tab change; keep focus on its tab.
+                    tabs.current?.querySelector(`[data-tab="${group.id}"]`)?.focus();
+                  }}
                 >
                   View accounts
                 </Button>
@@ -438,6 +446,7 @@ export default function ProviderLimits() {
         <>
           <div className="flex min-w-0 items-center justify-between gap-3 border-b border-border-subtle">
             <div
+              ref={tabs}
               className="flex min-w-0 gap-4 overflow-x-auto scroll-thin-x"
               role="group"
               aria-label="Provider filters"
@@ -447,6 +456,7 @@ export default function ProviderLimits() {
                   <button
                     type="button"
                     key={group.id}
+                    data-tab={group.id}
                     onClick={() => openProvider(group.id)}
                     aria-pressed={provider === group.id}
                     className={`flex shrink-0 items-center gap-2 border-b-2 px-1 pb-3 text-sm font-medium transition-colors ${provider === group.id ? "border-primary text-primary" : "border-transparent text-text-muted hover:text-text-main"}`}
@@ -513,7 +523,7 @@ export default function ProviderLimits() {
 
           {depletedGroups.map((group) => {
             const times = group.depleted
-              .map((a) => resetTimestamp(a.priority))
+              .map((a) => resetTimestamp(a.worstWindow))
               .filter(Number.isFinite);
             return (
               <div
@@ -1012,8 +1022,9 @@ export default function ProviderLimits() {
             </p>
             <p>
               The big number is the average remaining across accounts.
-              Short-window quota blocked by a weekly limit counts as empty, and
-              turned-off accounts and unknown readings are left out. Blocked
+              Short-window quota blocked by an exhausted or unknown weekly limit
+              counts as empty. Turned-off accounts and other unknown readings
+              are left out. Blocked
               percentages stay visible but faded. Failed refreshes keep the last
               reading and show when it was updated.
             </p>
