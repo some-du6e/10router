@@ -223,14 +223,18 @@ async function withComboLimitHold({ run, models, body, modelStr, request, apiKey
     // the models that do have accounts from being waited on.
     const limited = failures.some((f) => f.rateLimited) &&
       failures.every((f) => f.rateLimited || f.unconfigured);
-    const resets = failures.map((f) => f.retryAtMs).filter((t) => Number.isFinite(t) && t > 0);
+    // A limited model with no known reset could be back any moment, so it
+    // pulls the first retry down to the minimum wait rather than being skipped.
+    const resets = failures.filter((f) => f.rateLimited).map((f) => (Number.isFinite(f.retryAtMs) ? f.retryAtMs : 0));
     // The combo's own status and message come from whichever models failed
     // first and last, so they can't say whether the combo as a whole is still
     // limited. `limited` is that answer, and the hold reads it on every retry.
-    const message = await response.clone().json().then((j) => j?.error?.message || j?.error || j?.message).catch(() => null);
+    // When the hold ends on a real fault, name that fault, not whichever
+    // model happened to fail last.
+    const fault = failures.find((f) => !f.rateLimited && !f.unconfigured && f.error)?.error;
+    const message = fault || await response.clone().json().then((j) => j?.error?.message || j?.error || j?.message).catch(() => null);
     return {
       success: false,
-      combo: true,
       limited,
       status: response.status,
       error: (typeof message === "string" && message) || "request failed",
@@ -249,22 +253,30 @@ async function withComboLimitHold({ run, models, body, modelStr, request, apiKey
   // their response shapes can differ (a forceStream provider answers a client
   // that didn't ask for a stream with JSON). Narrate only when every model
   // would stream; otherwise hold silently, which is safe for either shape.
-  const infos = await leafModelInfos(models);
+  const infos = await leafModelInfos(models, { settings: await getSettings(), required: detectRequiredCapabilities(body) });
   const willStream = infos.every((info) => clientReceivesStream({ body, provider: info.provider, model: info.model || "", sourceFormat, clientRawRequest }));
   log.warn("LIMITHOLD", `combo ${modelStr}: all models rate-limited, holding`);
   return holdUntilClear({ first, attempt: pass, willStream, sourceFormat, modelStr, provider: modelStr, request });
 }
 
-/** Provider/model of every model a combo can end up calling, through nested combos. */
-async function leafModelInfos(models, seen = new Set()) {
+/**
+ * Provider/model of every model a combo can end up answering from. Follows a
+ * nested combo the way routeSingleModelChat runs it: with its capacity-adapter
+ * models added, and its judge when it is a fusion combo.
+ */
+async function leafModelInfos(models, { settings, required }, seen = new Set()) {
   const out = [];
   for (const m of models) {
     if (seen.has(m)) continue;
     seen.add(m);
     const info = await getModelInfo(m).catch(() => ({}));
     const nested = info.provider ? null : await getComboModels(m).catch(() => null);
-    if (nested) out.push(...await leafModelInfos(nested, seen));
-    else out.push(info);
+    if (!nested) { out.push(info); continue; }
+    const strategy = (settings.comboStrategies || {})[comboLookupName(m)] || {};
+    const isFusion = (strategy.fallbackStrategy || settings.comboStrategy) === "fusion";
+    const runs = isFusion ? [...nested] : augmentModelsWithCapacityAdapter(nested, required, settings);
+    if (isFusion && strategy.judgeModel?.trim()) runs.push(strategy.judgeModel.trim());
+    out.push(...await leafModelInfos(runs, { settings, required }, seen));
   }
   return out;
 }
@@ -588,8 +600,8 @@ async function routeSingleModelChat(body, modelStr, clientRawRequest, request, a
     // here instead of in allRateLimited. It is still a "come back later" — but
     // only on a real 429: isLimitError's text match would also catch permanent
     // errors like "quota project not set", which no amount of waiting fixes.
-    if (credentials.id === "noauth" && result.status === HTTP_STATUS.RATE_LIMITED) {
-      return { ...result, limited: true, retryAtMs: resetsAtMs || 0 };
+    if (credentials.id === "noauth") {
+      return { ...result, limited: result.status === HTTP_STATUS.RATE_LIMITED, retryAtMs: resetsAtMs || 0 };
     }
     return result;
   }
@@ -604,6 +616,7 @@ async function routeSingleModelChat(body, modelStr, clientRawRequest, request, a
     rateLimited: first.limited === true,
     unconfigured: first.unconfigured === true,
     retryAtMs: first.retryAtMs,
+    error: first.error,
   });
 
   if (!first.limited || !limitHold.enabled) return first.response;

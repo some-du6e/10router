@@ -50,12 +50,13 @@ export function isLimitError(status, errorText = "") {
 }
 
 /**
- * Is a retry's failure still a limit? A combo answers this itself with
- * `limited`, because its status and message come from whichever of its models
- * failed first and last; a single model's result is classified from its error.
+ * Is a retry's failure still a limit? A result that already decided says so
+ * with `limited` — a combo, whose status and message come from whichever of its
+ * models failed first and last, or a keyless provider, held only on a real 429.
+ * Anything else is classified from its error.
  */
 function stillLimited(result) {
-  return result?.combo ? result.limited === true : isLimitError(result?.status, result?.error);
+  return typeof result?.limited === "boolean" ? result.limited : isLimitError(result?.status, result?.error);
 }
 
 /** "2h 14m" / "45s" — approximate on purpose, this is a status line not a contract. */
@@ -202,6 +203,9 @@ export async function awaitLimitClear({ retryAtMs, attempt, provider, model, sig
   log?.info?.("LIMITHOLD", `${provider}/${model} holding (non-streaming), first retry in ${formatDuration(waitMs)}`);
 
   while (!signal?.aborted && Date.now() < deadline) {
+    // Never sleep past the ceiling: a reset days away would otherwise pin the
+    // connection for days before the deadline is even looked at.
+    waitMs = Math.min(waitMs, Math.max(deadline - Date.now(), 0));
     await new Promise((resolve) => {
       const timer = setTimeout(resolve, waitMs);
       signal?.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });

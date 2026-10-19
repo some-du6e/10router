@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { LIMIT_HOLD_SENTINEL } from "open-sse/utils/limitHold.js";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { LIMIT_HOLD_SENTINEL, DEFAULT_TIMING } from "open-sse/utils/limitHold.js";
 
 // Exercises the real account loop in src/sse/handlers/chat.js with the
 // provider/credential layer stubbed, so the hold wiring itself is under test.
@@ -30,8 +30,12 @@ vi.mock("@/sse/services/auth.js", async () => {
   };
 });
 vi.mock("@/sse/services/model.js", () => ({
-  // "provider/model" picks a provider; a bare name stays on codex.
-  getModelInfo: async (m) => (m.includes("/") ? { provider: m.split("/")[0], model: m.split("/")[1] } : { provider: "codex", model: m }),
+  // "provider/model" picks a provider; a combo name has none, like the real
+  // lookup; any other bare name stays on codex.
+  getModelInfo: async (m) => {
+    if (m.includes("/")) return { provider: m.split("/")[0], model: m.split("/")[1] };
+    return state.combos[m] ? { provider: null, model: m } : { provider: "codex", model: m };
+  },
   getComboModels: async (name) => state.combos[name] || null,
   comboLookupName: (name) => name,
 }));
@@ -63,7 +67,12 @@ const LIMITED = () => ({
   lastErrorCode: 429,
 });
 
+// The hold's real floors are 30s / 5m; tests that wait one out shouldn't.
+const REAL_TIMING = { ...DEFAULT_TIMING };
+afterEach(() => Object.assign(DEFAULT_TIMING, REAL_TIMING));
+
 beforeEach(() => {
+  Object.assign(DEFAULT_TIMING, { minWaitMs: 10, recheckMs: 10 });
   vi.restoreAllMocks(); // the rotation test spies on getProviderCredentials
   state.settings = { limitHoldEnabled: true, limitHoldOnPinned: false, requireApiKey: false };
   state.keyHold = null;
@@ -257,7 +266,7 @@ describe("rate-limit hold wiring", () => {
       { endpoint: "/v1/chat/completions", body: {}, headers: { accept: "application/json" } }
     );
     expect(await res.text()).toBe('{"ok":true}');
-  }, 60000);
+  });
 
   it("holds a mixed combo silently when not every model would stream", async () => {
     // glm streams a request with no stream flag; codex (forceStream) answers it
@@ -275,7 +284,7 @@ describe("rate-limit hold wiring", () => {
     const res = await handleChat(makeRequest({ model: "mixed", messages: [{ role: "user", content: "hi" }] }));
     expect(res.headers.get("Content-Type")).not.toBe("text/event-stream");
     expect(await res.text()).toBe('{"ok":true}');
-  }, 60000);
+  });
 
   it("holds a keyless provider's limit instead of returning it", async () => {
     // No account to lock or rotate to, so the limit never reaches allRateLimited.
@@ -323,13 +332,66 @@ describe("rate-limit hold wiring", () => {
 
   it("looks through a nested combo when deciding whether to narrate", async () => {
     // outer → [glm, inner]; inner → [codex]. codex answers a no-stream-flag
-    // request with JSON, so the hold must stay silent.
+    // request with JSON, so narrating would splice JSON after an SSE banner.
     state.combos = { outer: ["glm/glm-5", "inner"], inner: ["codex/gpt-5"] };
-    state.credentials = LIMITED();
+    let passes = 0;
+    const auth = await import("@/sse/services/auth.js");
+    vi.spyOn(auth, "getProviderCredentials").mockImplementation(async (provider, excluded) => {
+      if (provider === "glm") passes += 1;
+      if (passes >= 2 && provider === "codex" && excluded.size === 0) return { connectionId: "c1", connectionName: "c", accessToken: "t" };
+      return { ...LIMITED(), retryAfter: new Date(Date.now() + 10).toISOString() };
+    });
+    state.coreResults = [{ success: true, response: new Response('{"ok":true}', { headers: { "Content-Type": "application/json" } }) }];
 
-    const pending = handleChat(makeRequest({ model: "outer", messages: [{ role: "user", content: "hi" }] }));
-    const winner = await Promise.race([pending.then(() => "resolved"), new Promise((r) => setTimeout(() => r("holding"), 300))]);
-    // A narrated hold returns its SSE response at once; a silent one keeps waiting.
-    expect(winner).toBe("holding");
+    const res = await handleChat(makeRequest({ model: "outer", messages: [{ role: "user", content: "hi" }] }));
+    expect(res.headers.get("Content-Type")).not.toBe("text/event-stream");
+    expect(await res.text()).toBe('{"ok":true}');
   });
+
+  it("does not let a combo model with no account block the wait", async () => {
+    state.combos = { mix: ["nocreds/x", "opus-b"] };
+    const auth = await import("@/sse/services/auth.js");
+    vi.spyOn(auth, "getProviderCredentials").mockImplementation(async (provider) => (provider === "nocreds" ? null : LIMITED()));
+
+    const res = await handleChat(makeRequest({ model: "mix", stream: true, messages: [{ role: "user", content: "hi" }] }));
+    expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+    const reader = res.body.getReader();
+    const { value } = await reader.read();
+    expect(new TextDecoder().decode(value)).toContain(LIMIT_HOLD_SENTINEL);
+    await reader.cancel();
+  });
+
+  it("retries a combo soon when one limited model has no known reset", async () => {
+    // opus-b resets in 2h, the keyless model gave no reset at all: the first
+    // retry must not wait the 2h out.
+    state.combos = { mix: ["free/m", "opus-b"] };
+    const auth = await import("@/sse/services/auth.js");
+    vi.spyOn(auth, "getProviderCredentials").mockImplementation(async (provider) =>
+      (provider === "free" ? { id: "noauth", connectionName: "Public", accessToken: "public" } : LIMITED()));
+    state.coreResults = [
+      { success: false, status: 429, error: "slow down", response: new Response("slow", { status: 429 }) },
+      { success: true, response: new Response('{"ok":true}', { headers: { "Content-Type": "application/json" } }) },
+    ];
+
+    const res = await handleChat(
+      makeRequest({ model: "mix", messages: [{ role: "user", content: "hi" }] }),
+      { endpoint: "/v1/chat/completions", body: {}, headers: { accept: "application/json" } }
+    );
+    expect(await res.text()).toBe('{"ok":true}');
+  }, 10000);
+
+  it("ends a keyless provider's hold when a retry fails for a non-limit reason", async () => {
+    // "quota project not set" text-matches as a limit; the 403 status says it isn't.
+    state.credentials = { id: "noauth", connectionName: "Public", accessToken: "public" };
+    state.coreResults = [
+      { success: false, status: 429, error: "slow down", response: new Response("slow", { status: 429 }) },
+      { success: false, status: 403, error: "quota project not set", response: new Response("no", { status: 403 }) },
+    ];
+
+    const res = await handleChat(
+      makeRequest({ model: "gpt-5", messages: [{ role: "user", content: "hi" }] }),
+      { endpoint: "/v1/chat/completions", body: {}, headers: { accept: "application/json" } }
+    );
+    expect(res.status).toBe(403);
+  }, 10000);
 });
