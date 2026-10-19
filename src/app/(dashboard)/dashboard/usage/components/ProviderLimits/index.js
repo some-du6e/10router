@@ -1000,7 +1000,6 @@ export default function ProviderLimits() {
                     onClick={() =>
                       copy(detail.providerSpecificData.profileArn, detail.id)
                     }
-                    aria-label="Copy profile ARN"
                     className="flex w-full items-start gap-2 rounded border border-border-subtle p-2 text-left transition-colors hover:text-primary focus-visible:outline-2 focus-visible:outline-primary"
                   >
                     <span
@@ -1009,6 +1008,9 @@ export default function ProviderLimits() {
                     >
                       {copied === detail.id ? "check" : "content_copy"}
                     </span>
+                    <span className="sr-only">
+                      {copied === detail.id ? "Copied" : "Copy"} profile ARN:
+                    </span>{" "}
                     <code className="break-all font-mono">
                       {detail.providerSpecificData.profileArn}
                     </code>
