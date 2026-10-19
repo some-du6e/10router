@@ -1,102 +1,75 @@
 # AGENTS.md
 
-This file provides guidance to coding agents when working with code in this repository.
+10router (`10router-app`) is a local AI routing gateway with a Next.js dashboard. One OpenAI-compatible endpoint (`/v1/*`) routes traffic across 40+ upstream providers, with format translation, combo and multi-account fallback, OAuth/API-key credentials, token refresh, quota tracking, and optional cloud sync.
 
-## What this is
+The repo ships two independently versioned packages:
+- **Gateway + dashboard** (root `package.json`): `src/` is the Next.js app and its API routes; `open-sse/` is the provider-agnostic routing and translation engine.
+- **CLI launcher** (`cli/`, published to npm as `10router`): installs and starts the server and runs the tray. It has its own `package.json` and build.
 
-10router (`10router-app`) — a local AI routing gateway + Next.js dashboard. It exposes one OpenAI-compatible endpoint (`/v1/*`) and routes traffic across 40+ upstream providers with format translation, model-combo fallback, multi-account fallback, OAuth/API-key credential management, token refresh, quota/usage tracking, and optional cloud sync.
+Read before working in these areas:
+- `docs/ARCHITECTURE.md`: request lifecycle, fallback, OAuth refresh, cloud sync, data model. Its persistence section is stale; see [Persistence](#persistence).
+- `open-sse/AGENTS.md`: engine conventions and how to add a provider, executor, or translator. Read it before editing anything under `open-sse/`.
 
-Two published artifacts live in this one repo:
-- The **dashboard + gateway** (root `package.json`, `10router-app`) — the Next.js server that does the actual routing.
-- The **CLI launcher** (`cli/`, published to npm as `10router`) — a separate package that installs/starts the server and manages the tray. It has its own `package.json`, version, and build.
+## TypeScript migration
 
-The code lives in `src/` (Next.js app + dashboard/compat APIs), `open-sse/` (the provider-agnostic routing/translation engine), `cli/` (the launcher package), and `tests/`.
+The codebase is moving from JavaScript to TypeScript one file at a time:
+- Write new code in `src/` and `open-sse/` as `.ts`, or `.tsx` when it renders JSX.
+- When a change substantially rewrites an existing `.js` module, convert that module in the same change, provided the conversion stays contained to it.
+- Keep import specifiers ending in `.js`. Bundler resolution maps `./foo.js` to `./foo.ts`, so converting a file changes none of its importers.
+- Finish with `bun run typecheck` green. Converted files are checked under `strict`; untouched JavaScript is unchecked (`checkJs: false`).
+- Everything outside `src/` and `open-sse/` stays JavaScript: `cli/`, `tests/`, `scripts/`, `gitbook/`, and root config files. `custom-server.js` and `cli/` are CommonJS that ships uncompiled, so converting them would break publishing.
+- `scripts/generate-registry-index.mjs` only lists `.js` files in `open-sse/providers/registry/`. Update its filter before converting a registry entry, or the provider silently disappears.
 
-## Commands
+## Installing and running
 
-### Dependency installs across worktrees
+Install with `bun install` in each worktree, keeping that worktree's own `node_modules`. The repo tracks no lockfiles, deliberately: install without committing a generated `bun.lock` and without changing dependency versions. Where a package does carry a lockfile, install with `bun install --frozen-lockfile`, or `npm ci` for a `package-lock.json`, and fix the cause of any frozen-install failure while leaving the lock as it is.
 
-- Prefer `bun install` for dependencies. On Linux, Bun's shared package cache and default hardlink backend reduce duplication across worktrees when the cache and worktrees share a filesystem. Keep a separate `node_modules` in each worktree.
-- Preserve existing lockfile versions. When a package has `bun.lock` or `bun.lockb`, use `bun install --frozen-lockfile`; if it only has `package-lock.json`, use `npm ci` to preserve that lockfile without migrating it. Do not delete or regenerate locks to bypass a frozen-install failure.
-- This repo currently ignores `package-lock.json` and tracks no lockfiles. Keep that policy: do not commit generated Bun locks, change dependency versions, or start a package-manager migration as part of a local install. Without a lockfile, exact versions are not pinned.
-- Bun is the preferred installer; keep the Node runtime and the `npm run` / `npx` commands below unless the task explicitly changes runtime.
-- Next.js build caches such as `.next/cache` are separate from Bun's dependency cache. Do not blindly clear Bun's shared cache to reclaim worktree space, or symlink whole `node_modules` directories between branches with different dependencies.
+Bun is the installer; Node stays the runtime. Run the scripts in `package.json` through `npm run` (the `*:bun` variants run on Bun). The deployed port is **20128** (`/dashboard`, `/v1`). The scripts default to 20127, so pass `PORT=20128 NEXT_PUBLIC_BASE_URL=http://localhost:20128` to match production. Start from `cp .env.example .env`. Lint with `npx eslint .`.
 
-Dashboard/gateway (run from repo root):
-```bash
-cp .env.example .env
-bun install  # apply the lockfile rules above
-PORT=20128 NEXT_PUBLIC_BASE_URL=http://localhost:20128 npm run dev   # dev (webpack, port 20127 by default via next dev)
-npm run build && PORT=20128 HOSTNAME=0.0.0.0 npm run start           # production
-```
-- Bun variants: `npm run dev:bun` / `build:bun` / `start:bun`.
-- Default runtime port is **20128** (dashboard at `/dashboard`, API at `/v1`).
-- Lint: `npx eslint .` (config `eslint.config.mjs`, extends `eslint-config-next`).
+## Tests
 
-CLI package (`cli/`):
-```bash
-npm run cli:pack       # build + npm pack from root
-cd cli && npm run dev  # nodemon watch
-```
+`tests/` is a separate ESM package with vitest. Install root deps first, then `cd tests && bun install`, then `npx vitest run [file]` with paths relative to `tests/`. Ignore the `test` script in `tests/package.json`; it hardcodes `/tmp/node_modules`.
 
-Tests (vitest, in `tests/`, an **independent** ESM package — not wired into root `npm test`):
-```bash
-bun install                             # ROOT deps first; apply the lockfile rules above
-cd tests && bun install                 # then tests' own deps; apply the same lockfile rules here
-npx vitest run                          # all tests; auto-discovers tests/vitest.config.js
-npx vitest run unit/capabilities.test.js   # single file (path relative to tests/)
-```
-> The committed `tests/package.json` `test` script hardcodes Unix paths (`NODE_PATH=/tmp/node_modules …`) — a shared-install workaround from upstream. On Windows (or anywhere), ignore it and use the `npx vitest` form above; `vitest.config.js` resolves the `open-sse`/`@/` aliases from the repo root regardless of where vitest lives.
->
-> **The suite is NOT expected to be all-green on a plain checkout.** ~938 pass, ~64 fail. Judge regressions with `tests/__baseline__/verify-no-regression.mjs`, not a raw run. Expected red:
-> - 26 catalogued in `tests/__baseline__/known-fails.txt` (rtk, oauth-cursor-auto-import, translator-request-normalization, …).
-> - `unit/embeddings.cloud.test.js` imports `cloud/src/handlers/embeddings.js` — the `cloud/` worker dir is **not in this repo**, so it always fails here.
-> - `unit/xai-oauth-service.test.js` times out (5s) when the xAI endpoint-discovery fetch isn't reachable/mocked.
-> - `real/*.real.test.js` make live provider calls — need credentials, skip otherwise.
-- `*.real.test.js` under `tests/translator/real/` make live provider calls — skip unless credentials are set.
-- Regression baselines: `tests/__baseline__/verify-*.mjs` compare against committed snapshots (providers, aliases, OAuth URLs). Run these after touching provider registry / alias logic.
+The suite is **red on a clean checkout** (dozens of expected failures), so a raw run proves nothing. Judge a change with `node tests/__baseline__/verify-no-regression.mjs`. Expected failures:
+- the tests listed in `tests/__baseline__/known-fails.txt`
+- `unit/embeddings.cloud.test.js`, which needs a `cloud/` worker directory that is not in this repo
+- `unit/xai-oauth-service.test.js`, which times out without network access to xAI
+- `*.real.test.js`, which make live provider calls and need credentials
 
-## Architecture
+After touching the provider registry, aliases, or OAuth URLs, also run the matching `tests/__baseline__/verify-*.mjs` snapshot check.
 
-Two authoritative docs already exist — read them before working in these areas rather than re-deriving:
-- `docs/ARCHITECTURE.md` — full system: request lifecycle, combo/account fallback, OAuth + token refresh, cloud sync, data model.
-- `open-sse/AGENTS.md` — the routing/translation engine's own conventions and "how to add a provider/executor/translator". **Read this before editing anything under `open-sse/`.**
+## Architecture gotchas
 
-### Request flow (the thing to understand first)
-`src/app/api/v1/*` route (Next rewrite maps `/v1/*` → `/api/v1/*` in `next.config.mjs`)
-→ `src/sse/handlers/chat.js` (parse, combo expansion, account-selection loop)
-→ `open-sse/handlers/chatCore.js` (detect source format, translate request, dispatch to executor, retry/refresh, stream setup)
-→ `open-sse/executors/*` (per-provider upstream call; `default.js` handles any OpenAI-compatible provider)
-→ `open-sse/translator/*` (client format ↔ provider format)
-→ SSE back to client.
+### Request flow
+`src/app/api/v1/*` (via the `/v1/*` rewrite in `next.config.mjs`) → `src/sse/handlers/chat.js` (combo expansion, account-selection loop) → `open-sse/handlers/chatCore.js` (detect format, translate, dispatch, retry/refresh, stream) → `open-sse/executors/*` (`default.js` covers any OpenAI-compatible upstream) → SSE back to the client.
 
-`src/sse/` is the app-side entry glue; `open-sse/` is the provider-agnostic engine (also usable standalone). Cross that boundary consciously.
+`src/sse/` is the app-side glue and `open-sse/` is the engine. The boundary leaks: `chatCore.js` imports `@/lib/usageDb.js`. Put types shared across it somewhere both sides can import.
 
-### Translator engine (`open-sse/translator/`)
-- Pivots through **OpenAI as the intermediate format**. A translator registered on an exact `source:target` pair (e.g. `claude:kiro`) runs as a **direct route**, skipping the lossy double-hop. Prefer a direct route for fragile pairs (thinking blocks, tool ids, non-base64 images, `is_error`).
-- Translators **self-register** via `register(from, to, reqFn, resFn)` as an import side effect — a new translator file MUST be imported in `open-sse/translator/index.js` or it never runs.
-- Never hardcode role/block/model strings — use `open-sse/translator/schema/` and `open-sse/config/` constants. Config-driven and DRY is enforced by convention here.
+### Translators (`open-sse/translator/`)
+- Translation pivots through OpenAI format. A translator registered on an exact pair (e.g. `claude:kiro`) is a **direct route** that skips the lossy double hop; use one for fragile pairs (thinking blocks, tool ids, non-base64 images, `is_error`).
+- Translators self-register as an import side effect, so a new translator file runs only once it is imported in `open-sse/translator/index.js`.
+- Take role, block, and model strings from the constants in `open-sse/translator/schema/` and `open-sse/config/`.
+- Binary upstreams (kiro EventStream, cursor protobuf, commandcode NDJSON) are decoded inside their own executor, outside the translator.
 
-### Provider registry (`open-sse/providers/registry/*`)
-- One file per provider. `providers/registry/index.js` is an **auto-generated** static import list — regenerate it with `scripts/migrate-registry.mjs` / `injectDisplayToRegistry.mjs`, don't hand-edit.
-- Add a provider: copy `providers/REGISTRY_TEMPLATE.js`, add models to `config/providerModels.js`. Only add an executor for non-OpenAI-compatible upstreams.
+### Provider registry (`open-sse/providers/registry/`)
+One file per provider, starting from `open-sse/providers/REGISTRY_TEMPLATE.js`, with models in `open-sse/config/providerModels.js`. `index.js` is generated: rerun `scripts/generate-registry-index.mjs` after adding a file. Write an executor only for an upstream that is not OpenAI-compatible.
 
-### Persistence — IMPORTANT (ARCHITECTURE.md is stale here)
-State is **no longer `db.json`**. It's a SQLite layer under `src/lib/db/` with an adapter fallback chain (`driver.js`): `bun:sqlite` → `better-sqlite3` (optional native dep) → `node:sqlite` (Node ≥22.5) → `sql.js` (pure-JS fallback, always works). `better-sqlite3` is deliberately in `optionalDependencies` so install never fails without build tools.
-- `src/lib/localDb.js` is a **backward-compat shim** re-exporting `src/lib/db/index.js`. New code should import from `@/lib/db/index.js`; per-entity logic lives in `src/lib/db/repos/*`. Schema/migrations in `src/lib/db/migrations/`.
-- DB file location resolves via `src/lib/db/paths.js` (`DATA_DIR`, else `~/.9router/` — the `.9router` directory name is retained for compatibility with existing installs).
-- Usage/logs (`src/lib/usageDb.js`, `usage.json` + `log.txt`) still live under `~/.9router` (name retained for backward compatibility) and do **not** follow `DATA_DIR`.
+### Persistence
+State lives in SQLite under `src/lib/db/` (the old `db.json` is gone). `driver.js` picks an adapter: on Bun, `bun:sqlite` then `sql.js`; on Node, `better-sqlite3` then `node:sqlite` then `sql.js`. `better-sqlite3` is in `optionalDependencies` so installs succeed without build tools.
+- Import from `@/lib/db/index.js`. `src/lib/localDb.js` is a compatibility shim. Per-entity logic lives in `src/lib/db/repos/`, migrations in `src/lib/db/migrations/`.
+- The DB path comes from `src/lib/db/paths.js`: `DATA_DIR`, else `~/.9router/`. The directory keeps that name for existing installs.
+- Usage and logs (`src/lib/usageDb.js`) always write to `~/.9router` and ignore `DATA_DIR`.
 
 ### RTK token saver (`open-sse/rtk/`)
-Pre-translate hooks that compress `tool_result` content in-place to cut tokens. **Fail-open**: any error returns null and leaves the body untouched — never throw out of them. Skips `is_error`/`status:"error"` results to preserve traces.
+Pre-translate hooks that compress `tool_result` content in place. They are **fail-open**: on any error, return null and leave the body untouched. They leave `is_error` / `status:"error"` results intact so error traces survive.
 
-## Conventions & gotchas
+### Security
+- `custom-server.js` derives the client IP from the TCP socket and honours `X-Forwarded-For` only from a loopback proxy. Keep that guarantee in any request, IP, or rate-limit change.
+- A fresh install has no default password. It prints a one-time setup token to the console (`src/lib/auth/setupState.js`, `setupToken.js`), or takes `INITIAL_PASSWORD` (8+ chars) for headless bootstrap. The env contract lives in `.env.example`.
 
-- Plain JavaScript (ESM), no TypeScript. `@/*` path alias → `src/*` (`jsconfig.json`).
-- `custom-server.js` wraps the Next standalone server to derive client IP from the TCP socket and strip attacker-controlled `X-Forwarded-For` — trusting forwarding headers only from a loopback reverse proxy. Preserve this when touching request/IP/rate-limit code.
-- Security-sensitive env: `JWT_SECRET` (session cookie), `INITIAL_PASSWORD` (optional headless bootstrap password, min 8 chars — there is **no** default password; a fresh install requires the one-time setup token printed to the server console, see `src/lib/auth/setupState.js` + `setupToken.js`), `API_KEY_SECRET`, `MACHINE_ID_SALT`. Full env contract in `.env.example` and ARCHITECTURE.md's env matrix.
-- Binary/protobuf upstreams (kiro EventStream, cursor protobuf, commandcode NDJSON) don't round-trip through OpenAI — they're handled inside their own executor, not the translator.
-- Versioning: root and `cli/` are versioned independently; changes are logged in `CHANGELOG.md`. Commit style is Conventional Commits (`fix(translator): …`, `feat(...)`).
+## Commits
+
+Conventional Commits (`fix(translator): …`). Log user-facing changes in `CHANGELOG.md`; bump root and `cli/` versions independently.
 
 <!-- BEGIN:nextjs-agent-rules -->
 
