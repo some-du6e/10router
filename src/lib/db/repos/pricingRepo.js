@@ -11,6 +11,15 @@ function invalidate() {
   cache = { value: null, expiresAt: 0 };
 }
 
+/**
+ * Bust the cached merged pricing map. Call after any write to the `pricing`
+ * kv scope (see updatePricing/resetPricing/resetAllPricing, and importDb for
+ * the restore path) so the next read rebuilds from the DB.
+ */
+export function invalidatePricingCache() {
+  invalidate();
+}
+
 async function getUserPricing() {
   return await pricingKv.getAll();
 }
@@ -50,8 +59,13 @@ export async function getPricing() {
 
 export async function getPricingForModel(provider, model) {
   if (!model) return null;
-  const userPricing = await getUserPricing();
-  if (provider && userPricing[provider]?.[model]) return userPricing[provider][model];
+  // Read through the cached merged map (same one getPricing() builds) instead
+  // of re-running the pricing SELECT + JSON.parse on every request. A user
+  // override merged over a default still yields the default entry's reference
+  // (same merged object), and user-only providers/models are merged in as
+  // their own rows, so this matches the previous direct userPricing lookup.
+  const merged = await getPricing();
+  if (provider && merged[provider]?.[model]) return merged[provider][model];
   const { getPricingForModel: resolveConst } = await import("open-sse/providers/pricing.js");
   return resolveConst(provider, model);
 }
