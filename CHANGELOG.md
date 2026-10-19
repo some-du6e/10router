@@ -1,7 +1,8 @@
 # Unreleased
 
 ## Fixes
-- **Wait out rate limits**: combos now wait too. Once every model in a combo is rate-limited, the whole combo waits and retries, and the first model to recover answers. Before, hold never ran for combo traffic.
+- **Wait out rate limits**: combos now wait too. Once every model in a combo is rate-limited, the whole combo waits and retries, and the first model to recover answers. Fusion combos wait when no panel model could answer. Before, hold never ran for combo traffic.
+- Wait on a 429 from providers that need no login. They have no account to rotate to, so the error used to come straight back.
 - Wait when every account fails on a rate limit in the same pass, not only when their locks were already recorded.
 - Backups now keep each API key's rate-limit setting. Restoring one used to reset every key to the global default.
 - Pick a key's rate-limit mode (Default / Wait / Fail fast) from a segmented control instead of clicking an icon that cycled through modes.

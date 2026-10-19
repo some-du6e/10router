@@ -21,7 +21,11 @@ vi.mock("@/sse/services/auth.js", async () => {
     extractApiKey: () => "sk-test",
     isValidApiKey: async () => true,
     getProviderCredentials: async () => state.credentials,
-    markAccountUnavailable: async (...args) => { state.markCalls.push(args); return { shouldFallback: true, cooldownMs: 1000 }; },
+    markAccountUnavailable: async (...args) => {
+      state.markCalls.push(args);
+      // Like the real one: a keyless provider has no account to lock or rotate.
+      return args[0] ? { shouldFallback: true, cooldownMs: 1000 } : { shouldFallback: false, cooldownMs: 0 };
+    },
     clearAccountError: async () => {},
   };
 });
@@ -272,4 +276,60 @@ describe("rate-limit hold wiring", () => {
     expect(res.headers.get("Content-Type")).not.toBe("text/event-stream");
     expect(await res.text()).toBe('{"ok":true}');
   }, 60000);
+
+  it("holds a keyless provider's limit instead of returning it", async () => {
+    // No account to lock or rotate to, so the limit never reaches allRateLimited.
+    state.credentials = { id: "noauth", connectionName: "Public", accessToken: "public" };
+    state.coreResults = [{ success: false, status: 429, error: "rate limit exceeded" }];
+
+    const res = await handleChat(makeRequest({ model: "gpt-5", stream: true, messages: [{ role: "user", content: "hi" }] }));
+    expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+    const reader = res.body.getReader();
+    const { value } = await reader.read();
+    expect(new TextDecoder().decode(value)).toContain(LIMIT_HOLD_SENTINEL);
+    await reader.cancel();
+  });
+
+  it("does not hold a keyless provider's non-limit failure", async () => {
+    state.credentials = { id: "noauth", connectionName: "Public", accessToken: "public" };
+    state.coreResults = [{ success: false, status: 500, error: "internal error", response: new Response("boom", { status: 500 }) }];
+
+    const res = await handleChat(makeRequest({ model: "gpt-5", stream: true, messages: [{ role: "user", content: "hi" }] }));
+    expect(res.status).toBe(500);
+  });
+
+  it("holds a fusion combo when no panel model could answer", async () => {
+    state.settings.comboStrategies = { panel: { fallbackStrategy: "fusion" } };
+    state.combos = { panel: ["opus-a", "opus-b"] };
+    state.credentials = LIMITED();
+
+    const res = await handleChat(makeRequest({ model: "panel", stream: true, messages: [{ role: "user", content: "hi" }] }));
+    expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+    const reader = res.body.getReader();
+    const { value } = await reader.read();
+    const first = new TextDecoder().decode(value);
+    expect(first).toContain("panel limit reached");
+    expect(first).toContain(LIMIT_HOLD_SENTINEL);
+    await reader.cancel();
+  });
+
+  it("does not hold a keyless provider's permanent quota error", async () => {
+    state.credentials = { id: "noauth", connectionName: "Public", accessToken: "public" };
+    state.coreResults = [{ success: false, status: 403, error: "quota project not set", response: new Response("no", { status: 403 }) }];
+
+    const res = await handleChat(makeRequest({ model: "gpt-5", stream: true, messages: [{ role: "user", content: "hi" }] }));
+    expect(res.status).toBe(403);
+  });
+
+  it("looks through a nested combo when deciding whether to narrate", async () => {
+    // outer → [glm, inner]; inner → [codex]. codex answers a no-stream-flag
+    // request with JSON, so the hold must stay silent.
+    state.combos = { outer: ["glm/glm-5", "inner"], inner: ["codex/gpt-5"] };
+    state.credentials = LIMITED();
+
+    const pending = handleChat(makeRequest({ model: "outer", messages: [{ role: "user", content: "hi" }] }));
+    const winner = await Promise.race([pending.then(() => "resolved"), new Promise((r) => setTimeout(() => r("holding"), 300))]);
+    // A narrated hold returns its SSE response at once; a silent one keeps waiting.
+    expect(winner).toBe("holding");
+  });
 });

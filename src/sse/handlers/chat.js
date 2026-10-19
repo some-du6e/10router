@@ -134,21 +134,28 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
 
     if (comboStrategy === "fusion") {
       log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: fusion)`);
-      return handleFusionChat({
-        body,
-        models: comboModels,
-        handleSingleModel: (b, m, isPanel) => {
-          let cleanRawReq = clientRawRequest;
-          if (isPanel && clientRawRequest) {
-            const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
-            cleanRawReq = { ...clientRawRequest, body: cleanBody };
-          }
-          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false, routingFailures });
-        },
-        log,
-        comboName: comboKey,
-        judgeModel: comboStrategies[comboKey]?.judgeModel,
-        tuning: comboStrategies[comboKey]?.fusionTuning,
+      const judgeModel = comboStrategies[comboKey]?.judgeModel;
+      return withComboLimitHold({
+        run: () => handleFusionChat({
+          body,
+          models: comboModels,
+          handleSingleModel: (b, m, isPanel) => {
+            let cleanRawReq = clientRawRequest;
+            if (isPanel && clientRawRequest) {
+              const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
+              cleanRawReq = { ...clientRawRequest, body: cleanBody };
+            }
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false, routingFailures });
+          },
+          log,
+          comboName: comboKey,
+          judgeModel,
+          tuning: comboStrategies[comboKey]?.fusionTuning,
+        }),
+        // The final answer comes from a panel model or the judge, so either
+        // may be the one whose response shape the client sees.
+        models: judgeModel?.trim() ? [...comboModels, judgeModel.trim()] : comboModels,
+        body, modelStr, request, apiKey, clientRawRequest, routingFailures,
       });
     }
 
@@ -203,7 +210,8 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
  * should fall through to the next one, not wait. Only when the whole combo has
  * failed, and every model that had an account failed on a rate limit, is there
  * nothing left to fall back to. Then the whole combo waits and is re-run, so the
- * first model to come back answers, whichever one it is.
+ * first model to come back answers, whichever one it is. A fusion combo is held
+ * the same way when no panel model could answer.
  */
 async function withComboLimitHold({ run, models, body, modelStr, request, apiKey, clientRawRequest, routingFailures }) {
   const pass = async () => {
@@ -241,10 +249,24 @@ async function withComboLimitHold({ run, models, body, modelStr, request, apiKey
   // their response shapes can differ (a forceStream provider answers a client
   // that didn't ask for a stream with JSON). Narrate only when every model
   // would stream; otherwise hold silently, which is safe for either shape.
-  const infos = await Promise.all(models.map((m) => getModelInfo(m).catch(() => ({}))));
+  const infos = await leafModelInfos(models);
   const willStream = infos.every((info) => clientReceivesStream({ body, provider: info.provider, model: info.model || "", sourceFormat, clientRawRequest }));
   log.warn("LIMITHOLD", `combo ${modelStr}: all models rate-limited, holding`);
   return holdUntilClear({ first, attempt: pass, willStream, sourceFormat, modelStr, provider: modelStr, request });
+}
+
+/** Provider/model of every model a combo can end up calling, through nested combos. */
+async function leafModelInfos(models, seen = new Set()) {
+  const out = [];
+  for (const m of models) {
+    if (seen.has(m)) continue;
+    seen.add(m);
+    const info = await getModelInfo(m).catch(() => ({}));
+    const nested = info.provider ? null : await getComboModels(m).catch(() => null);
+    if (nested) out.push(...await leafModelInfos(nested, seen));
+    else out.push(info);
+  }
+  return out;
 }
 
 /** Wait out a limit: a narrated stream for streaming clients, a silent hang for JSON ones. */
@@ -562,6 +584,13 @@ async function routeSingleModelChat(body, modelStr, clientRawRequest, request, a
       continue;
     }
 
+    // A keyless provider has no account to lock or rotate to, so a limit lands
+    // here instead of in allRateLimited. It is still a "come back later" — but
+    // only on a real 429: isLimitError's text match would also catch permanent
+    // errors like "quota project not set", which no amount of waiting fixes.
+    if (credentials.id === "noauth" && result.status === HTTP_STATUS.RATE_LIMITED) {
+      return { ...result, limited: true, retryAtMs: resetsAtMs || 0 };
+    }
     return result;
   }
   };
