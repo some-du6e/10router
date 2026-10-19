@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { QUIRK_KEYS } from "@/shared/utils/nodeQuirks";
 import {
   getProviderConnections,
   createProviderConnection,
@@ -83,6 +84,16 @@ export async function GET() {
   }
 }
 
+const nodeQuirksOf = (node) => Object.fromEntries(QUIRK_KEYS.filter((k) => node[k] !== undefined).map((k) => [k, node[k]]));
+
+// Unnamed provider keys display as e.g. "pat-…7f2a".
+function maskApiKey(key) {
+  const k = String(key);
+  const dash = k.indexOf("-");
+  const head = k.slice(0, dash > 0 && dash < 6 ? dash + 1 : Math.min(4, Math.max(0, k.length - 4)));
+  return `${head}…${k.slice(-4)}`;
+}
+
 // POST /api/providers - Create new connection (API Key only, OAuth via separate flow)
 export async function POST(request) {
   try {
@@ -119,7 +130,9 @@ export async function POST(request) {
     if (!apiKey && provider !== "ollama-local") {
       return NextResponse.json({ error: `${isWebCookieProvider ? "Cookie value" : "API Key"} is required` }, { status: 400 });
     }
-    const connectionName = name || displayName || AI_PROVIDERS[provider]?.name;
+    // Key names are optional for user-added endpoints; unnamed keys show masked.
+    const isCompatibleNode = isOpenAICompatibleProvider(provider) || isAnthropicCompatibleProvider(provider);
+    const connectionName = name || displayName || AI_PROVIDERS[provider]?.name || (isCompatibleNode && apiKey ? maskApiKey(apiKey) : undefined);
     if (!connectionName) {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
     }
@@ -138,6 +151,7 @@ export async function POST(request) {
         apiType: node.apiType,
         baseUrl: node.baseUrl,
         nodeName: node.name,
+        ...nodeQuirksOf(node),
       };
     } else if (isAnthropicCompatibleProvider(provider)) {
       const node = await getProviderNodeById(provider);
@@ -148,6 +162,7 @@ export async function POST(request) {
         prefix: node.prefix,
         baseUrl: node.baseUrl,
         nodeName: node.name,
+        ...nodeQuirksOf(node),
       };
     } else if (isCustomEmbeddingProvider(provider)) {
       const node = await getProviderNodeById(provider);

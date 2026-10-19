@@ -52,6 +52,8 @@ const DEFAULT_SETTINGS = {
   samlAttributeEmail: "email",
   samlAttributeName: "name",
   enableObservability: false,
+  // Old grid layout on the providers page. Escape hatch only; will be removed.
+  legacyProvidersView: false,
   // Request bodies can contain prompts, tool calls, and provider responses.
   // Keep them hidden from the dashboard unless the user explicitly opts in.
   showSensitiveRequestDetails: false,

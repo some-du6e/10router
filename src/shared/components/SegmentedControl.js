@@ -36,7 +36,7 @@ export default function SegmentedControl({
           )}
         >
           {option.icon && (
-            <span className="material-symbols-outlined relative top-px inline-flex items-center justify-center text-[16px] leading-none">
+            <span className="material-symbols-outlined inline-flex items-center justify-center text-[16px] leading-none">
               {option.icon}
             </span>
           )}

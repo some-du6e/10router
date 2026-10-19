@@ -8,7 +8,7 @@ import {
   isValidApiKey,
 } from "../services/auth.js";
 import { handleAntigravityQuotaError, clearAntigravityStrikes } from "../services/antigravityQuota.js";
-import { getSettings } from "@/lib/localDb";
+import { getSettings, getProviderNodeById, updateProviderNode } from "@/lib/localDb";
 import { getModelInfo, getComboModels, comboLookupName } from "../services/model.js";
 import { handleChatCore, clientReceivesStream } from "open-sse/handlers/chatCore.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
@@ -401,6 +401,18 @@ async function routeSingleModelChat(body, modelStr, clientRawRequest, request, a
           existingProviderSpecificData: credentials.providerSpecificData,
           testStatus: "active"
         });
+      },
+      // Anthropic-compatible endpoint rejected some beta flags; remember them on the
+      // connection so later requests skip the failed first try.
+      onBetasRejected: async (droppedBetas) => {
+        credentials.providerSpecificData = { ...(credentials.providerSpecificData || {}), droppedBetas };
+        await updateProviderCredentials(credentials.connectionId, {
+          providerSpecificData: { droppedBetas },
+          existingProviderSpecificData: credentials.providerSpecificData,
+        });
+        // Also on the node, so the endpoint page shows them and new keys inherit them.
+        const node = await getProviderNodeById(provider).catch(() => null);
+        if (node) await updateProviderNode(provider, { droppedBetas: [...new Set([...(node.droppedBetas || []), ...droppedBetas])] });
       },
       onRequestSuccess: async () => {
         await clearAccountError(credentials.connectionId, credentials, model);

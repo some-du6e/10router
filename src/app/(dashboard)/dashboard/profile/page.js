@@ -636,6 +636,19 @@ export default function ProfilePage() {
     }
   };
 
+  const updateLegacyProvidersView = async (enabled) => {
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ legacyProvidersView: enabled }),
+      });
+      if (res.ok) setSettings(prev => ({ ...prev, legacyProvidersView: enabled }));
+    } catch (err) {
+      console.error("Failed to update legacyProvidersView:", err);
+    }
+  };
+
   const updateObservabilityEnabled = async (enabled) => {
     try {
       const res = await fetch("/api/settings", {
@@ -1689,6 +1702,21 @@ export default function ProfilePage() {
             <Toggle
               checked={showSensitiveRequestDetails}
               onChange={handleShowSensitiveRequestDetailsChange}
+              disabled={loading}
+            />
+          </div>
+        </Card>
+
+        {/* Legacy providers view */}
+        <Card>
+          <div className="flex items-start sm:items-center justify-between gap-4">
+            <div className="flex-1 min-w-0">
+              <p className="font-medium text-sm sm:text-base">Legacy providers view</p>
+              <p className="text-xs sm:text-sm text-text-muted">Old grid layout. Will be removed.</p>
+            </div>
+            <Toggle
+              checked={settings.legacyProvidersView === true}
+              onChange={updateLegacyProvidersView}
               disabled={loading}
             />
           </div>

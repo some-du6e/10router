@@ -286,6 +286,7 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
                 placeholder="Enter new API key"
                 hint="Leave blank to keep the current API key."
                 className="flex-1"
+                ignorePasswordManagers
               />
               <div className="pt-6">
                 <Button onClick={handleValidate} disabled={!formData.apiKey || validating || saving} variant="secondary">

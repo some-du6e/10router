@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createProviderNode, getProviderNodes } from "@/models";
 import { OPENAI_COMPATIBLE_PREFIX, ANTHROPIC_COMPATIBLE_PREFIX, CUSTOM_EMBEDDING_PREFIX } from "@/shared/constants/providers";
 import { generateId } from "@/shared/utils";
+import { sanitizeNodeQuirks } from "@/shared/utils/nodeQuirks";
 
 export const dynamic = "force-dynamic";
 
@@ -33,6 +34,9 @@ export async function POST(request) {
   try {
     const body = await request.json();
     const { name, prefix, apiType, baseUrl, type } = body;
+    // Optional, from "Add endpoint" detection. Older callers don't send them.
+    const quirks = sanitizeNodeQuirks(body.quirks);
+    const verified = typeof body.verified === "boolean" ? { verified: body.verified } : {};
 
     if (!name?.trim()) {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
@@ -57,6 +61,8 @@ export async function POST(request) {
         apiType,
         baseUrl: (baseUrl || OPENAI_COMPATIBLE_DEFAULTS.baseUrl).trim(),
         name: name.trim(),
+        ...quirks,
+        ...verified,
       });
       return NextResponse.json({ node }, { status: 201 });
     }
@@ -92,6 +98,8 @@ export async function POST(request) {
         prefix: prefix.trim(),
         baseUrl: sanitizedBaseUrl,
         name: name.trim(),
+        ...quirks,
+        ...verified,
       });
       return NextResponse.json({ node }, { status: 201 });
     }

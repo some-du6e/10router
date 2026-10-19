@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { sanitizeNodeQuirks, QUIRK_KEYS } from "@/shared/utils/nodeQuirks";
 import { deleteProviderConnectionsByProvider, deleteProviderNode, getProviderConnections, getProviderNodeById, updateProviderConnection, updateProviderNode } from "@/models";
 
 // PUT /api/provider-nodes/[id] - Update provider node
@@ -48,10 +49,12 @@ export async function PUT(request, { params }) {
       }
     }
 
+    const quirks = body.quirks === undefined ? {} : sanitizeNodeQuirks(body.quirks, { keepEmpty: true });
     const updates = {
       name: name.trim(),
       prefix: prefix.trim(),
       baseUrl: sanitizedBaseUrl,
+      ...quirks,
     };
 
     if (node.type === "openai-compatible") {
@@ -69,6 +72,7 @@ export async function PUT(request, { params }) {
           apiType: node.type === "openai-compatible" ? apiType : undefined,
           baseUrl: sanitizedBaseUrl,
           nodeName: updated.name,
+          ...Object.fromEntries(QUIRK_KEYS.filter((k) => k in updated).map((k) => [k, updated[k]])),
         }
       })
     )));

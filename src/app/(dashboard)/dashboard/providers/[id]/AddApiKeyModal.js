@@ -232,6 +232,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
           value={formData.name}
           onChange={(e) => setFormData({ ...formData, name: e.target.value })}
           placeholder={isOllamaLocal ? "Ollama Local" : "Production Key"}
+          hint={isCompatible ? "Optional. Unnamed keys show as the masked key." : undefined}
         />
         {isOllamaLocal && (
           <div className="flex gap-2">
@@ -258,6 +259,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
               onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
               placeholder={credentialPlaceholder}
               className="flex-1"
+              ignorePasswordManagers
             />
             <div className="pt-6">
               <Button onClick={handleValidate} disabled={!formData.apiKey || validating || saving} variant="secondary">
@@ -393,7 +395,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
         </p>
 
         <div className="flex gap-2">
-          <Button onClick={handleSubmit} fullWidth disabled={saving || (!isOllamaLocal && (!formData.name || !formData.apiKey)) || (isCompatible && !formData.defaultModel.trim()) || (isAzure && (!azureData.azureEndpoint || !azureData.deployment || !azureData.organization)) || (isCloudflareAi && !cloudflareData.accountId)}>
+          <Button onClick={handleSubmit} fullWidth disabled={saving || (!isOllamaLocal && ((!formData.name && !isCompatible) || !formData.apiKey)) || (isCompatible && !formData.defaultModel.trim()) || (isAzure && (!azureData.azureEndpoint || !azureData.deployment || !azureData.organization)) || (isCloudflareAi && !cloudflareData.accountId)}>
             {saving ? "Saving..." : "Save"}
           </Button>
           <Button onClick={onClose} variant="ghost" fullWidth>

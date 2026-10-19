@@ -21,6 +21,7 @@ import CompatibleModelsSection from "./CompatibleModelsSection";
 import ConnectionRow from "./ConnectionRow";
 import AddApiKeyModal from "./AddApiKeyModal";
 import EditCompatibleNodeModal from "./EditCompatibleNodeModal";
+import EndpointQuirksCard from "./EndpointQuirksCard";
 import AddCustomModelModal from "./AddCustomModelModal";
 import BulkImportCodexModal from "./BulkImportCodexModal";
 import BulkImportGrokCliModal from "./BulkImportGrokCliModal";
@@ -359,7 +360,7 @@ export default function ProviderDetailPage() {
     }
   }, [providerId, isCompatible]);
 
-  const handleUpdateNode = async (formData) => {
+  const handleUpdateNode = async (formData, { keepModalOpen = false } = {}) => {
     try {
       const res = await fetch(`/api/provider-nodes/${providerId}`, {
         method: "PUT",
@@ -370,7 +371,7 @@ export default function ProviderDetailPage() {
       if (res.ok) {
         setProviderNode(data.node);
         await fetchConnections();
-        setShowEditNodeModal(false);
+        if (!keepModalOpen) setShowEditNodeModal(false);
       }
     } catch (error) {
       console.log("Error updating provider node:", error);
@@ -1459,6 +1460,20 @@ export default function ProviderDetailPage() {
             </div>
           </div>
         </Card>
+      )}
+
+      {isCompatible && providerNode && (
+        <EndpointQuirksCard
+          node={providerNode}
+          isAnthropic={isAnthropicCompatible}
+          onSave={(quirks) => handleUpdateNode({
+            name: providerNode.name,
+            prefix: providerNode.prefix,
+            apiType: providerNode.apiType,
+            baseUrl: providerNode.baseUrl,
+            quirks,
+          }, { keepModalOpen: true })}
+        />
       )}
 
       {/* Connections */}

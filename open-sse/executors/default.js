@@ -7,6 +7,8 @@ import { buildClineHeaders } from "../shared/clineAuth.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
+import { filterBetaHeaders, parseRejectedBetas, splitBetas, BETA_HEADER_KEYS } from "../utils/anthropicBeta.js";
+import { HTTP_STATUS } from "../config/runtimeConfig.js";
 
 // Auth header descriptors — derived from registry transport.auth, fallback to hardcoded defaults.
 const BEARER = { combined: true, header: "Authorization", scheme: "bearer" };
@@ -191,26 +193,40 @@ export class DefaultExecutor extends BaseExecutor {
         delete headers["Anthropic-Dangerous-Direct-Browser-Access"];
         delete headers["x-app"];
         delete headers["X-App"];
-        // Strip claude-code-20250219 from Anthropic-Beta / anthropic-beta
-        for (const betaKey of ["anthropic-beta", "Anthropic-Beta"]) {
-          if (headers[betaKey]) {
-            const filtered = headers[betaKey]
-              .split(",")
-              .map(s => s.trim())
-              .filter(f => f && f !== "claude-code-20250219")
-              .join(",");
-            if (filtered) {
-              headers[betaKey] = filtered;
-            } else {
-              delete headers[betaKey];
-            }
-          }
-        }
+        // Strip claude-code-20250219, plus any flags this endpoint has rejected
+        // before (learned in execute) or every flag when the user opted in.
+        const psd = credentials?.providerSpecificData || {};
+        filterBetaHeaders(headers, { dropped: psd.droppedBetas, stripAll: psd.stripBeta === true });
       }
     }
 
     if (stream) headers["Accept"] = "text/event-stream";
     return headers;
+  }
+
+  // Anthropic-compatible gateways 400 on beta flags they don't know and name them.
+  // Drop exactly those, retry once, and report them so they're remembered.
+  async execute(args) {
+    const result = await super.execute(args);
+    if (!this.provider?.startsWith?.("anthropic-compatible-")) return result;
+    if (result.response?.status !== HTTP_STATUS.BAD_REQUEST) return result;
+    const psd = args.credentials?.providerSpecificData || {};
+    if (psd.stripBeta === true) return result;
+
+    const text = await result.response.clone().text().catch(() => "");
+    const sent = new Set(BETA_HEADER_KEYS.flatMap((k) => splitBetas(result.headers?.[k])));
+    const rejected = parseRejectedBetas(text).filter((f) => sent.has(f));
+    if (!rejected.length) return result;
+
+    const droppedBetas = [...new Set([...(psd.droppedBetas || []), ...rejected])];
+    args.log?.warn?.("BETA", `${this.provider} rejected anthropic-beta ${rejected.join(", ")}; retrying without`);
+    const credentials = { ...args.credentials, providerSpecificData: { ...psd, droppedBetas } };
+    const retry = await super.execute({ ...args, credentials });
+    if (retry.response?.ok) {
+      try { await args.onBetasRejected?.(droppedBetas); }
+      catch (e) { args.log?.warn?.("BETA", `could not save dropped flags: ${e.message}`); }
+    }
+    return { ...retry, droppedBetas };
   }
 
   // Generic OAuth refresh for the common {grant_type, refresh_token, client_id[, ...]} shape.

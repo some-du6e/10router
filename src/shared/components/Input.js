@@ -15,8 +15,13 @@ export default function Input({
   required = false,
   className,
   inputClassName,
+  // API keys and tokens aren't logins: stop 1Password/LastPass/Bitwarden autofill.
+  ignorePasswordManagers = false,
   ...props
 }) {
+  const pmIgnore = ignorePasswordManagers
+    ? { "data-1p-ignore": true, "data-lpignore": "true", "data-bwignore": true, "data-form-type": "other", autoComplete: "off" }
+    : {};
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
       {label && (
@@ -48,6 +53,7 @@ export default function Input({
             error && "ring-1 ring-red-500 focus:ring-2 focus:ring-red-500/40 border-red-500/40",
             inputClassName
           )}
+          {...pmIgnore}
           {...props}
         />
       </div>
