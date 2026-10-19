@@ -87,7 +87,7 @@ describe("rate-limit hold wiring", () => {
     const reader = res.body.getReader();
     const { value } = await reader.read();
     const first = new TextDecoder().decode(value);
-    expect(first).toContain("Rate limit hit on Codex (gpt-5)");
+    expect(first).toContain("codex limit reached");
     expect(first).toContain("2h");
     expect(first).toContain(LIMIT_HOLD_SENTINEL);
     await reader.cancel();
@@ -214,7 +214,7 @@ describe("rate-limit hold wiring", () => {
     const reader = res.body.getReader();
     const { value } = await reader.read();
     const first = new TextDecoder().decode(value);
-    expect(first).toContain('every model in the \\"free-opus\\" combo');
+    expect(first).toContain("free-opus limit reached");
     expect(first).toContain(LIMIT_HOLD_SENTINEL);
     await reader.cancel();
   });

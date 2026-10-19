@@ -37,7 +37,6 @@ import {
 } from "open-sse/services/sessionAffinity.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
 import { finalizeRoutingError } from "../services/finalRoutingError.js";
-import { notificationProviderName } from "@/lib/notifications/providerName.js";
 import { detectClientTool } from "open-sse/utils/clientDetector.js";
 
 /**
@@ -168,7 +167,6 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
         comboStrategy,
         comboStickyLimit
       }),
-      label: `every model in the "${comboKey}" combo`,
       models: augmentedModels, body, modelStr, request, apiKey, clientRawRequest, routingFailures,
     });
   }
@@ -191,7 +189,6 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
         comboName: comboLookupName(modelStr),
         comboStrategy: getActiveAdapterStrategy(requiredCapabilities, settings)
       }),
-      label: `${modelStr} and its fallback models`,
       models: soloAugmented, body, modelStr, request, apiKey, clientRawRequest, routingFailures,
     });
   }
@@ -208,7 +205,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
  * nothing left to fall back to. Then the whole combo waits and is re-run, so the
  * first model to come back answers, whichever one it is.
  */
-async function withComboLimitHold({ run, label, models, body, modelStr, request, apiKey, clientRawRequest, routingFailures }) {
+async function withComboLimitHold({ run, models, body, modelStr, request, apiKey, clientRawRequest, routingFailures }) {
   const pass = async () => {
     const mark = routingFailures.length;
     const response = await run();
@@ -247,11 +244,11 @@ async function withComboLimitHold({ run, label, models, body, modelStr, request,
   const infos = await Promise.all(models.map((m) => getModelInfo(m).catch(() => ({}))));
   const willStream = infos.every((info) => clientReceivesStream({ body, provider: info.provider, model: info.model || "", sourceFormat, clientRawRequest }));
   log.warn("LIMITHOLD", `combo ${modelStr}: all models rate-limited, holding`);
-  return holdUntilClear({ first, attempt: pass, willStream, sourceFormat, modelStr, provider: modelStr, label, request });
+  return holdUntilClear({ first, attempt: pass, willStream, sourceFormat, modelStr, provider: modelStr, request });
 }
 
 /** Wait out a limit: a narrated stream for streaming clients, a silent hang for JSON ones. */
-async function holdUntilClear({ first, attempt, willStream, sourceFormat, modelStr, provider, model, label, request }) {
+async function holdUntilClear({ first, attempt, willStream, sourceFormat, modelStr, provider, model, request }) {
   if (!willStream) {
     const abort = new AbortController();
     request?.signal?.addEventListener?.("abort", () => abort.abort(), { once: true });
@@ -270,7 +267,6 @@ async function holdUntilClear({ first, attempt, willStream, sourceFormat, modelS
     sourceFormat,
     model: modelStr,
     provider,
-    label,
     retryAtMs: first.retryAtMs,
     attempt,
     log,
@@ -598,7 +594,6 @@ async function routeSingleModelChat(body, modelStr, clientRawRequest, request, a
     modelStr,
     provider,
     model,
-    label: `${notificationProviderName(provider)} (${model})`,
     request,
   });
 }
