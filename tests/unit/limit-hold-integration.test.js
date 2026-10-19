@@ -9,6 +9,7 @@ const state = {
   credentials: null,
   coreResults: [],
   markCalls: [],
+  combos: {},
 };
 
 vi.mock("@/lib/localDb", () => ({ getSettings: async () => state.settings }));
@@ -26,7 +27,8 @@ vi.mock("@/sse/services/auth.js", async () => {
 });
 vi.mock("@/sse/services/model.js", () => ({
   getModelInfo: async (m) => ({ provider: "codex", model: m }),
-  getComboModels: async () => null,
+  getComboModels: async (name) => state.combos[name] || null,
+  comboLookupName: (name) => name,
 }));
 vi.mock("@/sse/services/tokenRefresh.js", () => ({
   checkAndRefreshToken: async (_p, c) => c,
@@ -62,6 +64,7 @@ beforeEach(() => {
   state.keyHold = null;
   state.markCalls = [];
   state.coreResults = [];
+  state.combos = {};
 });
 
 describe("rate-limit hold wiring", () => {
@@ -83,7 +86,7 @@ describe("rate-limit hold wiring", () => {
     const reader = res.body.getReader();
     const { value } = await reader.read();
     const first = new TextDecoder().decode(value);
-    expect(first).toContain("codex limit reached");
+    expect(first).toContain("Rate limit hit on Codex (gpt-5)");
     expect(first).toContain("2h");
     expect(first).toContain(LIMIT_HOLD_SENTINEL);
     await reader.cancel();
@@ -176,4 +179,78 @@ describe("rate-limit hold wiring", () => {
     expect(res.headers.get("Content-Type")).not.toBe("text/event-stream");
     expect(await res.text()).toBe('{"ok":true}');
   }, 30000);
+
+  it("holds when every account failed on a limit before any lock was recorded", async () => {
+    // The "No more accounts" path: each account is tried and fails on a limit
+    // in this same pass, so getProviderCredentials ends with null rather than
+    // allRateLimited. That used to skip the hold entirely.
+    let call = 0;
+    const auth = await import("@/sse/services/auth.js");
+    vi.spyOn(auth, "getProviderCredentials").mockImplementation(async () => {
+      call += 1;
+      return call <= 2 ? { connectionId: `c${call}`, connectionName: `acct${call}`, accessToken: "t" } : null;
+    });
+    state.coreResults = [
+      { success: false, status: 429, error: "usage_limit_reached" },
+      { success: false, status: 429, error: "usage_limit_reached" },
+    ];
+
+    const res = await handleChat(makeRequest({ model: "gpt-5", stream: true, messages: [{ role: "user", content: "hi" }] }));
+    expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+    const reader = res.body.getReader();
+    const { value } = await reader.read();
+    expect(new TextDecoder().decode(value)).toContain(LIMIT_HOLD_SENTINEL);
+    await reader.cancel();
+  });
+
+  it("holds a combo once every model in it is rate-limited", async () => {
+    state.combos = { "free-opus": ["opus-a", "opus-b"] };
+    state.credentials = LIMITED();
+
+    const res = await handleChat(makeRequest({ model: "free-opus", stream: true, messages: [{ role: "user", content: "hi" }] }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+    const reader = res.body.getReader();
+    const { value } = await reader.read();
+    const first = new TextDecoder().decode(value);
+    expect(first).toContain('every model in the \\"free-opus\\" combo');
+    expect(first).toContain(LIMIT_HOLD_SENTINEL);
+    await reader.cancel();
+  });
+
+  it("does not hold a combo whose models failed on something other than a limit", async () => {
+    state.combos = { "free-opus": ["opus-a", "opus-b"] };
+    state.credentials = { ...LIMITED(), lastError: "invalid api key", lastErrorCode: 401 };
+
+    const res = await handleChat(makeRequest({ model: "free-opus", stream: true, messages: [{ role: "user", content: "hi" }] }));
+    expect(res.headers.get("Content-Type")).not.toBe("text/event-stream");
+  });
+
+  it("a fail-fast key is not held through a combo", async () => {
+    state.keyHold = false;
+    state.combos = { "free-opus": ["opus-a", "opus-b"] };
+    state.credentials = LIMITED();
+
+    const res = await handleChat(makeRequest({ model: "free-opus", stream: true, messages: [{ role: "user", content: "hi" }] }));
+    expect(res.status).toBe(429);
+  });
+
+  it("a combo answers from whichever model recovers first", async () => {
+    state.combos = { "free-opus": ["opus-a", "opus-b"] };
+    let pass = 0;
+    const auth = await import("@/sse/services/auth.js");
+    vi.spyOn(auth, "getProviderCredentials").mockImplementation(async (_p, excluded, model) => {
+      // Pass 1: both models limited. Pass 2 (the hold's retry): opus-b has an account.
+      if (model === "opus-a") pass += 1;
+      if (pass >= 2 && model === "opus-b" && excluded.size === 0) return { connectionId: "b1", connectionName: "b", accessToken: "t" };
+      return { ...LIMITED(), retryAfter: new Date(Date.now() + 10).toISOString() };
+    });
+    state.coreResults = [{ success: true, response: new Response('{"ok":true}', { headers: { "Content-Type": "application/json" } }) }];
+
+    const res = await handleChat(
+      makeRequest({ model: "free-opus", messages: [{ role: "user", content: "hi" }] }),
+      { endpoint: "/v1/chat/completions", body: {}, headers: { accept: "application/json" } }
+    );
+    expect(await res.text()).toBe('{"ok":true}');
+  }, 60000);
 });

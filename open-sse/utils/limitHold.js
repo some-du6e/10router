@@ -63,10 +63,34 @@ export function formatDuration(ms) {
   return remHours ? `${days}d ${remHours}h` : `${days}d`;
 }
 
-export function buildBannerText({ provider, waitMs, attempt }) {
-  const when = waitMs > 0 ? `retrying in ${formatDuration(waitMs)}` : "retrying now";
-  const nth = attempt > 1 ? ` · attempt ${attempt}` : "";
-  return `\n──── ⏳ ${provider} limit reached — ${when}${nth} · ${LIMIT_HOLD_SENTINEL} ────\n`;
+/**
+ * Wall-clock time of the retry, with its zone so a server running in UTC can't
+ * pass for the reader's local time. A wait past today names the day as well.
+ */
+export function formatRetryClock(atMs, { now = Date.now(), timeZone } = {}) {
+  const at = new Date(atMs);
+  const opts = { hour: "numeric", minute: "2-digit", timeZoneName: "short", ...(timeZone ? { timeZone } : {}) };
+  const day = (d) => d.toLocaleDateString("en-US", { ...(timeZone ? { timeZone } : {}) });
+  if (day(at) !== day(new Date(now))) Object.assign(opts, { weekday: "short", month: "short", day: "numeric" });
+  return at.toLocaleString("en-US", opts);
+}
+
+/**
+ * The status line written into the assistant turn while we wait.
+ *
+ * Read by a person scrolling back through a transcript, often hours later, so it
+ * names who hit the limit, says what happens next and when in clock time, and
+ * leaves the sentinel at the end where it reads as a tag rather than prose.
+ */
+export function buildBannerText({ provider, label, waitMs, attempt, now = Date.now(), timeZone }) {
+  const who = label || provider;
+  const when = waitMs > 0
+    ? `retrying at ${formatRetryClock(now + waitMs, { now, timeZone })} (in ${formatDuration(waitMs)})`
+    : "retrying now";
+  const lead = attempt > 1
+    ? `⏳ Still rate-limited on ${who} after ${attempt - 1} ${attempt === 2 ? "retry" : "retries"}, ${when}.`
+    : `⏳ Rate limit hit on ${who}. 10router is holding this reply and ${when}; it continues here on its own.`;
+  return `\n\n> ${lead} ${LIMIT_HOLD_SENTINEL}\n\n`;
 }
 
 /**
@@ -216,13 +240,14 @@ export async function awaitLimitClear({ retryAtMs, attempt, provider, model, sig
  * @param {object} options
  * @param {string} options.sourceFormat - client's wire format
  * @param {string} options.model - model name echoed back to the client
- * @param {string} options.provider - provider name shown in the banner
+ * @param {string} options.provider - provider id, for logs
+ * @param {string} [options.label] - human name shown in the banner (defaults to provider)
  * @param {number} options.retryAtMs - epoch ms the provider says the limit resets
  * @param {function} options.attempt - re-runs the request; resolves to the account-loop result
  * @param {object} options.log
  * @returns {Response} streaming response that starts with the banner
  */
-export function createLimitHoldResponse({ sourceFormat, model, provider, retryAtMs, attempt, log, timing }) {
+export function createLimitHoldResponse({ sourceFormat, model, provider, label, retryAtMs, attempt, log, timing }) {
   const { keepaliveMs, minWaitMs, recheckMs } = { ...DEFAULT_TIMING, ...(timing || {}) };
   const encoder = new TextEncoder();
   const state = initState(sourceFormat);
@@ -254,7 +279,7 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
         }
       };
       const writeBanner = (waitMs, attemptNo) => {
-        for (const piece of renderTextChunks(sourceFormat, model, buildBannerText({ provider, waitMs, attempt: attemptNo }), state)) {
+        for (const piece of renderTextChunks(sourceFormat, model, buildBannerText({ provider, label, waitMs, attempt: attemptNo }), state)) {
           write(piece);
         }
       };
@@ -312,7 +337,7 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
           if (result && !isLimitError(result.status, result.error)) {
             // Not a limit any more — a real fault. Say so in the stream rather
             // than waiting forever on something that will never clear.
-            for (const piece of renderTextChunks(sourceFormat, model, `\n──── ✗ ${provider} error: ${result.error || "request failed"} · ${LIMIT_HOLD_SENTINEL} ────\n`, state)) {
+            for (const piece of renderTextChunks(sourceFormat, model, `\n\n> ✗ The rate limit on ${label || provider} cleared, but the retry failed: ${result.error || "request failed"} ${LIMIT_HOLD_SENTINEL}\n\n`, state)) {
               write(piece);
             }
             for (const piece of renderFinishChunks(sourceFormat, model, state, { terminate: true })) write(piece);

@@ -36,8 +36,27 @@ describe("banner", () => {
   it("carries the sentinel so the next turn can detect it", () => {
     const text = buildBannerText({ provider: "codex", waitMs: 8_040_000, attempt: 1 });
     expect(text).toContain(LIMIT_HOLD_SENTINEL);
-    expect(text).toContain("codex limit reached");
+    expect(text).toContain("Rate limit hit on codex");
     expect(text).toContain("2h 14m");
+  });
+
+  it("says when the retry happens in clock time, with the zone", () => {
+    const now = Date.UTC(2026, 9, 19, 15, 0);
+    const text = buildBannerText({ provider: "codex", label: "Codex (gpt-5)", waitMs: 2 * 3_600_000, attempt: 1, now, timeZone: "America/Denver" });
+    expect(text).toContain("Rate limit hit on Codex (gpt-5)");
+    expect(text).toContain("retrying at 11:00 AM MDT (in 2h)");
+    expect(text).toContain("continues here on its own");
+  });
+
+  it("names the day when the retry is not today", () => {
+    const now = Date.UTC(2026, 9, 19, 15, 0);
+    const text = buildBannerText({ provider: "codex", waitMs: 26 * 3_600_000, attempt: 1, now, timeZone: "UTC" });
+    expect(text).toContain("Tue, Oct 20");
+  });
+
+  it("counts retries on later attempts", () => {
+    const text = buildBannerText({ provider: "codex", waitMs: 300_000, attempt: 3 });
+    expect(text).toContain("Still rate-limited on codex after 2 retries");
   });
 });
 
@@ -221,7 +240,7 @@ describe("createLimitHoldResponse", () => {
     const reader = response.body.getReader();
     const { value } = await reader.read();
     const first = new TextDecoder().decode(value);
-    expect(first).toContain("codex limit reached");
+    expect(first).toContain("Rate limit hit on codex");
     expect(first).toContain(LIMIT_HOLD_SENTINEL);
     await reader.cancel(); // client hangs up → timers released
     expect(calls).toBe(0);
@@ -237,7 +256,7 @@ describe("createLimitHoldResponse", () => {
     });
     const reader = response.body.getReader();
     const { value } = await reader.read();
-    expect(new TextDecoder().decode(value)).toContain("codex limit reached");
+    expect(new TextDecoder().decode(value)).toContain("Rate limit hit on codex");
     await reader.cancel();
   });
 });

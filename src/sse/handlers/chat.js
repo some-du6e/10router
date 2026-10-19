@@ -37,6 +37,7 @@ import {
 } from "open-sse/services/sessionAffinity.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
 import { finalizeRoutingError } from "../services/finalRoutingError.js";
+import { notificationProviderName } from "@/lib/notifications/providerName.js";
 import { detectClientTool } from "open-sse/utils/clientDetector.js";
 
 /**
@@ -154,17 +155,21 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
 
     const comboStickyLimit = settings.comboStickyRoundRobinLimit;
     log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
-    return handleComboChat({
-      body,
-      models: augmentedModels,
-      handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures }),
-        adapterAdded
-      ),
-      log,
-      comboName: comboKey,
-      comboStrategy,
-      comboStickyLimit
+    return withComboLimitHold({
+      run: () => handleComboChat({
+        body,
+        models: augmentedModels,
+        handleSingleModel: withCapacityAdapterStripping(
+          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures }),
+          adapterAdded
+        ),
+        log,
+        comboName: comboKey,
+        comboStrategy,
+        comboStickyLimit
+      }),
+      label: `every model in the "${comboKey}" combo`,
+      models: augmentedModels, body, modelStr, request, apiKey, clientRawRequest, routingFailures,
     });
   }
 
@@ -174,20 +179,93 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
   if (soloAugmented.length > 1) {
     const adapterAdded = soloAugmented.filter((m) => m !== modelStr);
     log.info("CHAT", `Capacity adapter for [${[...requiredCapabilities].join(",")}] on "${modelStr}" → trying ${soloAugmented.join(", ")}`);
-    return handleComboChat({
-      body,
-      models: soloAugmented,
-      handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures }),
-        adapterAdded
-      ),
-      log,
-      comboName: comboLookupName(modelStr),
-      comboStrategy: getActiveAdapterStrategy(requiredCapabilities, settings)
+    return withComboLimitHold({
+      run: () => handleComboChat({
+        body,
+        models: soloAugmented,
+        handleSingleModel: withCapacityAdapterStripping(
+          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures }),
+          adapterAdded
+        ),
+        log,
+        comboName: comboLookupName(modelStr),
+        comboStrategy: getActiveAdapterStrategy(requiredCapabilities, settings)
+      }),
+      label: `${modelStr} and its fallback models`,
+      models: soloAugmented, body, modelStr, request, apiKey, clientRawRequest, routingFailures,
     });
   }
 
   return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { routingFailures });
+}
+
+/**
+ * Rate-limit hold for a combo.
+ *
+ * Each model inside a combo runs with the hold off, because a limited model
+ * should fall through to the next one, not wait. Only when the whole combo has
+ * failed, and every model that had an account failed on a rate limit, is there
+ * nothing left to fall back to. Then the whole combo waits and is re-run, so the
+ * first model to come back answers, whichever one it is.
+ */
+async function withComboLimitHold({ run, label, models, body, modelStr, request, apiKey, clientRawRequest, routingFailures }) {
+  const pass = async () => {
+    const mark = routingFailures.length;
+    const response = await run();
+    if (response.ok) return { success: true, response };
+    const failures = routingFailures.slice(mark);
+    // A model with no account configured can't be waited on, but doesn't stop
+    // the models that do have accounts from being waited on.
+    const limited = failures.some((f) => f.rateLimited) &&
+      failures.every((f) => f.rateLimited || f.unconfigured);
+    const resets = failures.map((f) => f.retryAtMs).filter((t) => Number.isFinite(t) && t > 0);
+    return {
+      success: false,
+      limited,
+      status: limited ? HTTP_STATUS.RATE_LIMITED : response.status,
+      error: limited ? "rate limited" : await response.clone().text().catch(() => "request failed"),
+      retryAtMs: resets.length ? Math.min(...resets) : 0,
+      response,
+    };
+  };
+
+  const first = await pass();
+  if (first.success || !first.limited) return first.response;
+  const limitHold = await resolveLimitHold(apiKey);
+  if (!limitHold.enabled) return first.response;
+
+  const sourceFormat = (request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null) || detectFormat(body);
+  const lead = await getModelInfo(models[0]).catch(() => ({}));
+  const willStream = clientReceivesStream({ body, provider: lead.provider, model: lead.model || "", sourceFormat, clientRawRequest });
+  log.warn("LIMITHOLD", `combo ${modelStr}: all models rate-limited, holding`);
+  return holdUntilClear({ first, attempt: pass, willStream, sourceFormat, modelStr, provider: modelStr, label, request });
+}
+
+/** Wait out a limit: a narrated stream for streaming clients, a silent hang for JSON ones. */
+async function holdUntilClear({ first, attempt, willStream, sourceFormat, modelStr, provider, model, label, request }) {
+  if (!willStream) {
+    const abort = new AbortController();
+    request?.signal?.addEventListener?.("abort", () => abort.abort(), { once: true });
+    const settled = await awaitLimitClear({
+      retryAtMs: first.retryAtMs,
+      attempt,
+      provider,
+      model: model || modelStr,
+      signal: abort.signal,
+      log,
+    });
+    return settled?.response || first.response;
+  }
+
+  return createLimitHoldResponse({
+    sourceFormat,
+    model: modelStr,
+    provider,
+    label,
+    retryAtMs: first.retryAtMs,
+    attempt,
+    log,
+  });
 }
 
 /**
@@ -260,7 +338,7 @@ async function routeSingleModelChat(body, modelStr, clientRawRequest, request, a
         comboStickyLimit
       });
     }
-    routingFailures.push({ limited: false });
+    routingFailures.push({ limited: false, unconfigured: true });
     log.warn("CHAT", "Invalid model format", { model: modelStr });
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
   }
@@ -303,6 +381,7 @@ async function routeSingleModelChat(body, modelStr, clientRawRequest, request, a
   const accountFailures = [];
   let lastError = null;
   let lastStatus = null;
+  let lockedUntil = 0;
 
   while (true) {
     // A pin is a preference, not a requirement: getProviderCredentials ignores a
@@ -336,14 +415,20 @@ async function routeSingleModelChat(body, modelStr, clientRawRequest, request, a
       }
       if (excludeConnectionIds.size === 0) {
         log.warn("AUTH", `No active credentials for provider: ${provider}`);
-        return { success: false, status: HTTP_STATUS.NOT_FOUND, error: `No active credentials for provider: ${provider}`, response: errorResponse(HTTP_STATUS.NOT_FOUND, `No active credentials for provider: ${provider}`) };
+        return { success: false, unconfigured: true, status: HTTP_STATUS.NOT_FOUND, error: `No active credentials for provider: ${provider}`, response: errorResponse(HTTP_STATUS.NOT_FOUND, `No active credentials for provider: ${provider}`) };
       }
       log.warn("CHAT", "No more accounts available", { provider });
       const status = lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE;
       const errorMsg = summarizeAccountFailures(provider, model, accountFailures);
       log.warn("CHAT", errorMsg);
+      // Every account was tried this pass and each one failed on a limit. That
+      // is the same "come back later" as allRateLimited above, reached before
+      // the accounts' locks were recorded, so it must be holdable too.
+      const allLimited = accountFailures.length > 0 && accountFailures.every(failure => isLimitError(failure.status, failure.error));
       return { success: false, status, error: errorMsg,
-        limitsExhausted: accountFailures.length > 0 && accountFailures.every(failure => isLimitError(failure.status, failure.error)),
+        limited: allLimited,
+        limitsExhausted: allLimited,
+        retryAtMs: lockedUntil,
         response: errorResponse(status, errorMsg) };
     }
 
@@ -429,6 +514,9 @@ async function routeSingleModelChat(body, modelStr, clientRawRequest, request, a
         credentials.connectionId, result.status, result.error, provider, model, resetsAtMs
       ));
     }
+    // Earliest point any account tried this pass may be usable again.
+    const unlockAt = resetsAtMs || (cooldownMs ? Date.now() + cooldownMs : 0);
+    if (unlockAt && (!lockedUntil || unlockAt < lockedUntil)) lockedUntil = unlockAt;
 
     // Hold for the pinned account rather than rotating away from it. Opt-in:
     // rotating is instant, so waiting only pays when prompt-cache continuity is
@@ -475,7 +563,14 @@ async function routeSingleModelChat(body, modelStr, clientRawRequest, request, a
 
   const first = await runAccountLoop();
   if (first.success) return first.response;
-  routingFailures.push({ limited: first.limitsExhausted === true && !limitHold.enabled, resetAtMs: first.resetAtMs });
+  routingFailures.push({
+    limited: first.limitsExhausted === true && !limitHold.enabled,
+    resetAtMs: first.resetAtMs,
+    // Read by withComboLimitHold, which decides for the combo as a whole.
+    rateLimited: first.limited === true,
+    unconfigured: first.unconfigured === true,
+    retryAtMs: first.retryAtMs,
+  });
 
   if (!first.limited || !limitHold.enabled) return first.response;
 
@@ -486,26 +581,15 @@ async function routeSingleModelChat(body, modelStr, clientRawRequest, request, a
   // SSE banner would break a request that used to return a clean error.
   const holdSourceFormat = sourceFormatOverride || detectFormat(body);
   const willStream = clientReceivesStream({ body, provider, model, sourceFormat: holdSourceFormat, clientRawRequest });
-  if (!willStream) {
-    const abort = new AbortController();
-    request?.signal?.addEventListener?.("abort", () => abort.abort(), { once: true });
-    const settled = await awaitLimitClear({
-      retryAtMs: first.retryAtMs,
-      attempt: runAccountLoop,
-      provider,
-      model,
-      signal: abort.signal,
-      log,
-    });
-    return settled?.response || first.response;
-  }
-
-  return createLimitHoldResponse({
-    sourceFormat: holdSourceFormat,
-    model: modelStr,
-    provider,
-    retryAtMs: first.retryAtMs,
+  return holdUntilClear({
+    first,
     attempt: runAccountLoop,
-    log,
+    willStream,
+    sourceFormat: holdSourceFormat,
+    modelStr,
+    provider,
+    model,
+    label: `${notificationProviderName(provider)} (${model})`,
+    request,
   });
 }
