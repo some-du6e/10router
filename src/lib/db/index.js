@@ -3,10 +3,11 @@ import { migrateLegacyHostPassword } from "./helpers/hostCredentials.js";
 // Public API barrel — all DB functions
 import { getAdapter } from "./driver.js";
 import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
+import { invalidateSettingsCache } from "./repos/settingsRepo.js";
 
 // Settings
 export {
-  getSettings, updateSettings, isCloudEnabled, getCloudUrl, exportSettings,
+  getSettings, updateSettings, isCloudEnabled, getCloudUrl, exportSettings, invalidateSettingsCache,
 } from "./repos/settingsRepo.js";
 
 // Provider connections
@@ -179,6 +180,7 @@ export async function importDb(payload) {
     }
   });
 
+  invalidateSettingsCache();
   return await exportDb();
 }
 

@@ -3,6 +3,17 @@ import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 
 const DEFAULT_HEADROOM_URL = process.env.HEADROOM_URL || "http://localhost:8787";
+const SETTINGS_CACHE_TTL_MS = 5000;
+
+let cachedSettings = null;
+let cachedSettingsTs = 0;
+
+// Called by settings mutation paths outside this module (e.g. importDb) so the
+// next getSettings() re-reads from the DB instead of serving the old snapshot.
+export function invalidateSettingsCache() {
+  cachedSettings = null;
+  cachedSettingsTs = 0;
+}
 
 const DEFAULT_SETTINGS = {
   usageHubEnabled: false,
@@ -104,8 +115,11 @@ export function mergeWithDefaults(raw) {
 }
 
 export async function getSettings() {
+  if (cachedSettings && (Date.now() - cachedSettingsTs) < SETTINGS_CACHE_TTL_MS) return cachedSettings;
   const raw = await readRaw();
-  return mergeWithDefaults(raw);
+  cachedSettings = mergeWithDefaults(raw);
+  cachedSettingsTs = Date.now();
+  return cachedSettings;
 }
 
 // Atomic read-merge-write inside transaction (prevents losing concurrent updates)
@@ -121,7 +135,10 @@ export async function updateSettings(updates) {
       [stringifyJson(next)],
     );
   });
-  return mergeWithDefaults(next);
+  // Writes are immediately visible: reseed the cache with the merged result.
+  cachedSettings = mergeWithDefaults(next);
+  cachedSettingsTs = Date.now();
+  return cachedSettings;
 }
 
 export async function isCloudEnabled() {
