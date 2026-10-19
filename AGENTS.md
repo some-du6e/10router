@@ -18,7 +18,7 @@ The code lives in `src/` (Next.js app + dashboard/compat APIs), `open-sse/` (the
 
 - Prefer `bun install` for dependencies. On Linux, Bun's shared package cache and default hardlink backend reduce duplication across worktrees when the cache and worktrees share a filesystem. Keep a separate `node_modules` in each worktree.
 - Preserve existing lockfile versions. When a package has `bun.lock` or `bun.lockb`, use `bun install --frozen-lockfile`; if it only has `package-lock.json`, use `npm ci` to preserve that lockfile without migrating it. Do not delete or regenerate locks to bypass a frozen-install failure.
-- This repo currently ignores `package-lock.json` and tracks no lockfiles. Keep that policy: do not commit generated Bun locks, change dependency versions, or start a package-manager migration as part of a local install. Without a lockfile, exact versions are not pinned.
+- Root, `cli/`, and `tests/` each track a `bun.lock`; install with `bun install --frozen-lockfile`. Commit `bun.lock` changes only when you intentionally change dependencies, and never regenerate a lock just to get past a frozen-install failure. `package-lock.json` stays ignored.
 - Bun is the preferred installer; keep the Node runtime and the `npm run` / `npx` commands below unless the task explicitly changes runtime.
 - Next.js build caches such as `.next/cache` are separate from Bun's dependency cache. Do not blindly clear Bun's shared cache to reclaim worktree space, or symlink whole `node_modules` directories between branches with different dependencies.
 
