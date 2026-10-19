@@ -107,11 +107,70 @@ export function matchCatalogProvider(base, catalog = []) {
   return best;
 }
 
-// Model ids served by the most providers: the guess list for an unknown gateway.
-export function popularModelIds(catalog = [], limit = 40) {
-  const count = new Map();
-  for (const p of catalog) for (const id of new Set(p.models.map((m) => String(m).split("/").pop()))) count.set(id, (count.get(id) || 0) + 1);
-  return [...count.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([id]) => id);
+// Generation number from a model id. Families that version in whole steps
+// (claude-opus-4-5 / 4-8, gpt-5.x) group by the whole number; families that
+// ship "3.5, 3.6, 3.7" as separate generations (qwen, glm) keep the decimal.
+// Callers pick which with `decimal`.
+export function majorVersion(id, decimal = false) {
+  const m = /(\d+)(?:[.-](\d+))?/.exec(String(id).replace(/^[a-z]+-?[a-z]*?(?=\d)/i, "").replace(/^[a-z]+(?=\d)/i, ""));
+  if (!m) return 0;
+  return decimal && m[2] !== undefined && m[2].length === 1 ? +`${m[1]}.${m[2]}` : +m[1];
+}
+
+// Ids dated or tagged as a snapshot ("-20251001", "-latest", "-preview"):
+// gateways rename these, so they only add requests.
+const SNAPSHOT_RE = /-\d{4}-?\d{2}-?\d{2}$|-\d{4}$|-\d{6}$|-latest$|-preview|-exp\b|-ga-|-character|-vision/i;
+
+// The newest `gens` major versions of every model family the labs ship, and
+// only families with a release in the last `maxAgeDays`. Old generations are
+// left out on purpose: nobody adds an endpoint for them.
+export function recentLabModels(labs = [], gens = 3, maxAgeDays = 365, now = Date.now()) {
+  const cutoff = new Date(now - maxAgeDays * 864e5).toISOString().slice(0, 10);
+  const byFamily = new Map();
+  for (const m of labs) {
+    if (SNAPSHOT_RE.test(m.id)) continue;
+    const key = `${m.lab}/${m.family}`;
+    if (!byFamily.has(key)) byFamily.set(key, []);
+    byFamily.get(key).push(m);
+  }
+  const out = [];
+  for (const models of byFamily.values()) {
+    if (!models.some((m) => m.date >= cutoff)) continue; // family went quiet
+    // Whole-number versions unless the family's whole numbers barely move
+    // (all its recent models share one major: qwen3.x, glm-5.x).
+    // Versionless ids ("qwen-max", "qwen-plus") are aliases for whatever is
+    // current, so they always stay. Everything else must be a recent generation.
+    const versioned = models.filter((m) => majorVersion(m.id) > 0);
+    const decimal = new Set(versioned.map((m) => majorVersion(m.id))).size < gens;
+    const gen = (m) => majorVersion(m.id, decimal);
+    // qwen2-5-* is "2.5", not "2-5": a single-digit dash part counts as a decimal.
+    const keep = [...new Set(versioned.map(gen))].sort((a, b) => b - a).slice(0, gens);
+    models.filter((m) => majorVersion(m.id) === 0 || keep.includes(gen(m)))
+      .sort((a, b) => b.date.localeCompare(a.date))
+      .forEach((m) => out.push(m));
+  }
+  return [...new Set(out.sort((a, b) => b.date.localeCompare(a.date)).map((m) => m.id))];
+}
+
+// Gateways often prefix a vendor's ids with its name (Snowflake: "openai-gpt-5").
+// Learn the prefixes from the matched provider's own list.
+function vendorPrefixes(models = []) {
+  const seen = new Set();
+  for (const id of models) { const m = /^(openai|anthropic|google|meta|mistral|deepseek|xai|qwen|moonshot)-/i.exec(id); if (m) seen.add(m[1].toLowerCase()); }
+  return seen;
+}
+const LAB_PREFIX = { openai: /^(gpt|o\d)/, anthropic: /^claude/, google: /^gem/, meta: /^(llama|muse)/, mistral: /^(mistral|ministral|devstral|codestral|magistral|pixtral)/, deepseek: /^deepseek/, xai: /^grok/, qwen: /^qwen/, moonshot: /^kimi/ };
+
+// What to ask about when there's no /models: the matched provider's list first,
+// then the latest generations from every lab (under the gateway's own prefixes).
+export function candidateModels(base, catalog = {}) {
+  const providers = Array.isArray(catalog) ? catalog : catalog.providers || [];
+  const matched = matchCatalogProvider(base, providers);
+  const recent = recentLabModels(catalog.labs || []);
+  const prefixes = vendorPrefixes(matched?.models);
+  const prefixed = recent.flatMap((id) => [...prefixes].filter((p) => LAB_PREFIX[p]?.test(id)).map((p) => `${p}-${id}`));
+  const ids = [...new Set([...(matched?.models || []), ...prefixed, ...recent].filter((id) => !SNAPSHOT_RE.test(id)))];
+  return { matched, ids };
 }
 
 // Error-body fragments that mean "your request reached a real model endpoint".
@@ -210,7 +269,7 @@ async function probeModels({ probe, base, protocol, AUTH, ids }) {
 
 // Models for an already-known endpoint (the "Import models" button): /models
 // first, then the catalog probe. Free requests only.
-export async function discoverModels({ baseUrl, apiKey, protocol, fetchFn, catalog = [], timeoutMs = PROBE_TIMEOUT_MS }) {
+export async function discoverModels({ baseUrl, apiKey, protocol, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS }) {
   const key = cleanKey(apiKey);
   const base = String(baseUrl || "").replace(/\/+$/, "").replace(/\/messages$/, "");
   const steps = [];
@@ -225,14 +284,14 @@ export async function discoverModels({ baseUrl, apiKey, protocol, fetchFn, catal
     }
     if (r.status === 404 || r.status === 0) break;
   }
-  const matched = matchCatalogProvider(base, catalog);
-  const found = await probeModels({ probe, base, protocol, AUTH, ids: matched?.models || popularModelIds(catalog) });
+  const { matched, ids } = candidateModels(base, catalog);
+  const found = await probeModels({ probe, base, protocol, AUTH, ids });
   if (found?.length) return { models: found, source: matched ? "catalog" : "guessed", catalogName: matched?.name, steps };
   return { models: [], source: "none", steps };
 }
 
 // Probe runner. `fetchFn` is injected so tests (and the SSRF-safe fetch) can supply it.
-export async function detectEndpoint({ url, apiKey, fetchFn, catalog = [], timeoutMs = PROBE_TIMEOUT_MS }) {
+export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS }) {
   const key = cleanKey(apiKey);
   const base0 = normalizeUrl(url);
   const steps = [];
@@ -332,9 +391,9 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = [], timeo
 
   // 4. No list? Ask about candidate models one at a time, still free.
   let modelsSource = models.length ? "models" : "none";
-  const matched = matchCatalogProvider(base, catalog);
+  const { matched, ids: candidates } = candidateModels(base, catalog);
   if (!models.length) {
-    const found = await probeModels({ probe, base, protocol, AUTH, ids: matched?.models || popularModelIds(catalog) });
+    const found = await probeModels({ probe, base, protocol, AUTH, ids: candidates });
     if (found?.length) { models = found; modelsSource = matched ? "catalog" : "guessed"; }
   }
 

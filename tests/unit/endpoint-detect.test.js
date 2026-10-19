@@ -1,14 +1,23 @@
 // "Add endpoint" detection: URL cleanup, model-list parsing, and the free-probe
 // decision table. The Snowflake fixture mirrors real responses (2026-10-19).
 import { describe, it, expect } from "vitest";
-import { normalizeUrl, cleanKey, parseModelList, makePrefix, suggestName, detectEndpoint, discoverModels, matchCatalogProvider, popularModelIds } from "@/lib/endpointDetect.js";
+import { normalizeUrl, cleanKey, parseModelList, makePrefix, suggestName, detectEndpoint, discoverModels, matchCatalogProvider, majorVersion, recentLabModels, candidateModels } from "@/lib/endpointDetect.js";
 
-// Shape of the models.dev index the catalog sync writes.
-const CATALOG = [
+// Shape of the models.dev index the catalog sync writes: providers + lab models.
+const PROVIDERS = [
   { id: "snowflake-cortex", name: "Snowflake Cortex", api: "https://${SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/cortex/v1", models: ["claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-1"] },
   { id: "openrouter", name: "OpenRouter", api: "https://openrouter.ai/api/v1", models: ["anthropic/claude-haiku-4-5", "openai/gpt-5"] },
   { id: "together", name: "Together", api: "https://api.together.xyz/v1", models: ["openai/gpt-5", "meta/llama-4"] },
 ];
+const RECENT = "2026-09-01";
+const LABS = [
+  { id: "claude-opus-5-5", lab: "anthropic", family: "claude-opus", date: RECENT },
+  { id: "claude-opus-4-8", lab: "anthropic", family: "claude-opus", date: "2026-03-01" },
+  { id: "gpt-6.1-sol", lab: "openai", family: "gpt-sol", date: RECENT },
+  { id: "gpt-6-sol", lab: "openai", family: "gpt-sol", date: "2026-07-01" },
+  { id: "kimi-k3", lab: "moonshotai", family: "kimi-k3", date: RECENT },
+];
+const CATALOG = { providers: PROVIDERS, labs: LABS };
 
 describe("normalizeUrl", () => {
   it.each([
@@ -53,13 +62,69 @@ describe("names and prefixes", () => {
 
 describe("catalog matching", () => {
   it("matches a templated API URL to the user's host", () => {
-    expect(matchCatalogProvider("https://acme-xy1.snowflakecomputing.com/api/v2/cortex/v1", CATALOG)?.id).toBe("snowflake-cortex");
-    expect(matchCatalogProvider("https://openrouter.ai/api/v1", CATALOG)?.id).toBe("openrouter");
-    expect(matchCatalogProvider("https://unknown.example.com/v1", CATALOG)).toBeNull();
+    expect(matchCatalogProvider("https://acme-xy1.snowflakecomputing.com/api/v2/cortex/v1", PROVIDERS)?.id).toBe("snowflake-cortex");
+    expect(matchCatalogProvider("https://openrouter.ai/api/v1", PROVIDERS)?.id).toBe("openrouter");
+    expect(matchCatalogProvider("https://unknown.example.com/v1", PROVIDERS)).toBeNull();
   });
-  it("ranks models by how many providers serve them", () => {
-    // gpt-5 and claude-haiku-4-5 both appear twice; vendor prefixes are ignored.
-    expect(popularModelIds(CATALOG).slice(0, 2).sort()).toEqual(["claude-haiku-4-5", "gpt-5"]);
+});
+
+describe("majorVersion", () => {
+  it.each([
+    ["claude-opus-4-8", false, 4],
+    ["claude-opus-5-5", false, 5],
+    ["gpt-6.1-sol", false, 6],
+    ["o4-mini", false, 4],
+    ["qwen3.8-max", false, 3],
+    ["qwen3.8-max", true, 3.8],
+    ["qwen2-5-72b-instruct", true, 2.5],
+    ["kimi-k2.6", false, 2],
+    ["qwen-max", false, 0],
+  ])("%s (decimal=%s) → %s", (id, decimal, out) => expect(majorVersion(id, decimal)).toBe(out));
+});
+
+describe("recentLabModels", () => {
+  const NOW = Date.parse("2026-10-19");
+  const m = (id, family, date, lab = "x") => ({ id, lab, family, date });
+
+  it("keeps the last 3 generations of a family", () => {
+    const labs = [5, 4, 3, 2, 1].map((v) => m(`claude-opus-${v}`, "claude-opus", `2026-0${v}-01`));
+    expect(recentLabModels(labs, 3, 365, NOW).sort()).toEqual(["claude-opus-3", "claude-opus-4", "claude-opus-5"]);
+  });
+
+  it("uses decimal generations when the major barely moves (qwen3.x)", () => {
+    const labs = ["qwen3.8-max", "qwen3.7-max", "qwen3.6-flash", "qwen3.5-plus", "qwen2-5-72b-instruct"].map((id) => m(id, "qwen", "2026-09-01"));
+    expect(recentLabModels(labs, 3, 365, NOW).sort()).toEqual(["qwen3.6-flash", "qwen3.7-max", "qwen3.8-max"]);
+  });
+
+  it("keeps versionless aliases, drops snapshots and stale families", () => {
+    const labs = [
+      m("qwen-max", "qwen", "2026-09-01"), m("qwen3.8-max", "qwen", "2026-09-01"),
+      m("claude-haiku-4-5-20251001", "claude-haiku", "2026-09-01"),
+      m("old-model-2", "old", "2024-01-01"),
+    ];
+    expect(recentLabModels(labs, 3, 365, NOW).sort()).toEqual(["qwen-max", "qwen3.8-max"]);
+  });
+});
+
+describe("candidateModels", () => {
+  it("adds the gateway's own vendor prefix (Snowflake: openai-*)", () => {
+    const catalog = {
+      providers: [{ id: "snowflake-cortex", name: "Snowflake Cortex", api: "https://${SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/cortex/v1", models: ["claude-haiku-4-5", "openai-gpt-5"] }],
+      labs: LABS,
+    };
+    const { matched, ids } = candidateModels("https://acme.snowflakecomputing.com/api/v2/cortex/v1", catalog);
+    expect(matched.id).toBe("snowflake-cortex");
+    expect(ids.slice(0, 2)).toEqual(["claude-haiku-4-5", "openai-gpt-5"]); // its own list first
+    expect(ids).toContain("openai-gpt-6-sol");
+    expect(ids).toContain("claude-opus-5-5");
+    expect(ids).not.toContain("openai-claude-opus-5-5");
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("an unknown gateway still gets the latest lab models", () => {
+    const { matched, ids } = candidateModels("https://gw.example.com/v1", CATALOG);
+    expect(matched).toBeNull();
+    expect(ids).toEqual(expect.arrayContaining(["claude-opus-5-5", "gpt-6.1-sol", "kimi-k3"]));
   });
 });
 

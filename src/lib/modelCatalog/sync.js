@@ -80,13 +80,28 @@ function slim(catalog) {
 
 // Each provider's API URL and model ids, for endpoints with no /models route:
 // "Add endpoint" matches the user's URL against `api` and probes these ids.
-function endpointIndex(catalog) {
-  const out = [];
+// `labs` holds the model makers' own chat models with family + release date,
+// so detection can also try the latest generations on a gateway models.dev
+// doesn't know (or knows only partly: Snowflake's entry lags its docs).
+const LABS = ["anthropic", "openai", "google", "xai", "mistral", "meta", "cohere",
+  "deepseek", "alibaba", "moonshotai", "zai", "minimax", "xiaomi", "stepfun", "volcengine"];
+
+const isChatModel = (id, m) => (m?.modalities?.output || ["text"]).every((o) => o === "text")
+  && !/embed|tts|asr|transcri|realtime|audio|image|moderation|rerank|search|translate|guard|-ocr|-mt-|^qwen-mt/i.test(id);
+
+export function buildEndpointIndex(catalog) {
+  const providers = [];
   for (const [id, provider] of Object.entries(catalog)) {
     const models = Object.keys(provider?.models || {});
-    if (provider?.api && models.length) out.push({ id, name: provider.name || id, api: provider.api, models });
+    if (provider?.api && models.length) providers.push({ id, name: provider.name || id, api: provider.api, models });
   }
-  return out;
+  const labs = [];
+  for (const lab of LABS) {
+    for (const [id, m] of Object.entries(catalog[lab]?.models || {})) {
+      if (isChatModel(id, m)) labs.push({ id, lab, family: m.family || id, date: m.release_date || "" });
+    }
+  }
+  return { v: 2, providers, labs };
 }
 
 function build(catalog, entries) {
@@ -202,7 +217,7 @@ export async function syncModelCatalog() {
 
       writeAtomic(CATALOG_FILE, serialized);
       writeAtomic(CATALOG_RAW_FILE, JSON.stringify(slim(catalog)));
-      writeAtomic(CATALOG_ENDPOINTS_FILE, JSON.stringify(endpointIndex(catalog)));
+      writeAtomic(CATALOG_ENDPOINTS_FILE, JSON.stringify(buildEndpointIndex(catalog)));
 
       state.etag = etag;
       invalidateCatalog();
@@ -249,7 +264,9 @@ export function startModelCatalogSync() {
   restoreEtag();
   // Installs that synced before the endpoint index existed would wait for
   // models.dev to change (the etag short-circuits); force one full fetch.
-  if (!fs.existsSync(CATALOG_ENDPOINTS_FILE)) state.etag = null;
+  // Same when the index predates `labs` (v1 was a bare array).
+  try { if (JSON.parse(fs.readFileSync(CATALOG_ENDPOINTS_FILE, "utf8")).v !== 2) state.etag = null; }
+  catch { state.etag = null; }
 
   const schedule = (delay) => {
     timer = setTimeout(async () => {
