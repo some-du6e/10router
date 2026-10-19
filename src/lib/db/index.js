@@ -1,5 +1,6 @@
 import { stripRetiredSettings } from "./helpers/retiredSettings.js";
 import { migrateLegacyHostPassword } from "./helpers/hostCredentials.js";
+import { invalidatePricingCache } from "./repos/pricingRepo.js";
 // Public API barrel — all DB functions
 import { getAdapter } from "./driver.js";
 import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
@@ -178,6 +179,10 @@ export async function importDb(payload) {
       db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('pricing', ?, ?)`, [provider, stringifyJson(models || {})]);
     }
   });
+
+  // The restore writes the pricing kv scope directly, so the merged pricing
+  // cache must be rebuilt before the next cost calculation.
+  invalidatePricingCache();
 
   return await exportDb();
 }
