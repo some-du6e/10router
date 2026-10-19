@@ -9,6 +9,7 @@ import { getMetaSync, setMetaSync } from "./helpers/metaStore.js";
 import { makeBackupDir, backupFile, backupDbLite, pruneOldBackups } from "./backup.js";
 import { getAppVersion } from "./version.js";
 import { stringifyJson } from "./helpers/jsonCol.js";
+import { toLimitHoldColumn } from "./repos/apiKeysRepo.js";
 
 // Marker file: prevents re-importing legacy JSON when user wipes data.sqlite.
 const MIGRATED_MARKER = path.join(DB_DIR, ".migrated-from-json");
@@ -145,8 +146,8 @@ function importLegacyMain(adapter, data) {
 
   importWithAssertion(adapter, "apiKeys", data.apiKeys || [], (k) => {
     adapter.run(
-      `INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, createdAt) VALUES(?, ?, ?, ?, ?, ?)`,
-      [k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1, k.createdAt || new Date().toISOString()]
+      `INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, limitHold, createdAt) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+      [k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1, toLimitHoldColumn(k.limitHold), k.createdAt || new Date().toISOString()]
     );
   }, (k) => ({ id: k.id ?? null, name: k.name ?? null }));
 
@@ -241,7 +242,6 @@ function stampLegacyDefaultPassword(adapter, fresh, { force = false } = {}) {
 // ─── Main entry ──────────────────────────────────────────────────────────
 export async function runMigrationOnce(adapter) {
   if (_migratedAdapters.has(adapter)) return;
-  _migratedAdapters.add(adapter);
 
   // Capture freshness BEFORE migrations stamp _meta (otherwise we'd misclassify
   // a brand-new DB as non-fresh once schemaVersion is written).
@@ -253,6 +253,17 @@ export async function runMigrationOnce(adapter) {
   // Bootstrap _meta so we can read the stored backup schema version below
   // (runVersionedMigrations also ensures this, but we need it earlier here).
   adapter.exec(buildCreateTableSql("_meta", TABLES._meta));
+
+  const alreadyImported = fs.existsSync(MIGRATED_MARKER);
+  const legacyMain = readJsonSafe(LEGACY_FILES.main);
+  const legacyUsage = readJsonSafe(LEGACY_FILES.usage);
+  const legacyDisabled = readJsonSafe(LEGACY_FILES.disabled);
+  const legacyDetails = readJsonSafe(LEGACY_FILES.details);
+  const hasLegacy = !!(legacyMain || legacyUsage || legacyDisabled || legacyDetails);
+  // Schema migrations stamp _meta before import. Preserve import eligibility
+  // across a failed attempt instead of relying on freshness at the next boot.
+  if (fresh && hasLegacy && !alreadyImported) setMetaSync(adapter, "legacyImportPending", "1");
+  const importPending = getMetaSync(adapter, "legacyImportPending", "0") === "1";
 
   // Detect a pending schema change via the central SCHEMA_VERSION const.
   // A lightweight backup is taken BEFORE any schema mutation below.
@@ -282,14 +293,7 @@ export async function runMigrationOnce(adapter) {
   stampLegacyDefaultPassword(adapter, fresh);
 
   // 3. One-time legacy JSON import (only if DB was fresh on entry)
-  const alreadyImported = fs.existsSync(MIGRATED_MARKER);
-  const legacyMain = readJsonSafe(LEGACY_FILES.main);
-  const legacyUsage = readJsonSafe(LEGACY_FILES.usage);
-  const legacyDisabled = readJsonSafe(LEGACY_FILES.disabled);
-  const legacyDetails = readJsonSafe(LEGACY_FILES.details);
-  const hasLegacy = !!(legacyMain || legacyUsage || legacyDisabled || legacyDetails);
-
-  if (fresh && hasLegacy && !alreadyImported) {
+  if (importPending && hasLegacy && !alreadyImported) {
     const t0 = Date.now();
     const backupDir = makeBackupDir("migrate-from-json");
     for (const f of Object.values(LEGACY_FILES)) backupFile(f, backupDir);
@@ -303,11 +307,11 @@ export async function runMigrationOnce(adapter) {
         setMetaSync(adapter, "appVersion", getAppVersion());
         setMetaSync(adapter, "backupSchemaVersion", SCHEMA_VERSION);
         setMetaSync(adapter, "migratedAt", new Date().toISOString());
+        setMetaSync(adapter, "legacyImportPending", "0");
       });
     } catch (err) {
       if (err instanceof MigrationAborted) {
         console.error(`[DB][migrate] aborted: ${err.message} | legacy JSON kept | backup: ${backupDir}`);
-        return;
       }
       throw err;
     }
@@ -319,6 +323,7 @@ export async function runMigrationOnce(adapter) {
     try { fs.writeFileSync(MIGRATED_MARKER, new Date().toISOString()); } catch {}
     pruneOldBackups();
     console.log(`[DB][migrate] JSON → SQLite in ${Date.now() - t0}ms | legacy JSON kept at DATA_DIR | backup: ${backupDir}`);
+    _migratedAdapters.add(adapter);
     return;
   }
 
@@ -327,4 +332,5 @@ export async function runMigrationOnce(adapter) {
   const newVer = getAppVersion();
   const oldVer = getMetaSync(adapter, "appVersion", null);
   if (oldVer !== newVer) setMetaSync(adapter, "appVersion", newVer);
+  _migratedAdapters.add(adapter);
 }
