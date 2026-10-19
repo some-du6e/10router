@@ -1,7 +1,7 @@
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS, PROVIDER_OAUTH } from "../config/providers.js";
 import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE, selectAnthropicBeta } from "../providers/shared.js";
-import { resolveOpenAICompatibleApiType } from "../services/provider.js";
+import { resolveOpenAICompatibleApiType, getTargetFormat } from "../services/provider.js";
 import { OAUTH_ENDPOINTS, buildKimiHeaders } from "../config/appConstants.js";
 import { buildClineHeaders } from "../shared/clineAuth.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
@@ -76,7 +76,11 @@ export class DefaultExecutor extends BaseExecutor {
     // `max_tokens` field even though the rest of the Chat Completions shape is
     // compatible. Keep this opt-in so other OpenAI-compatible gateways retain
     // their existing request contract.
+    // Chat Completions only: Anthropic Messages requires max_tokens, and a
+    // two-path node can route some models there.
+    const format = credentials?.runtimeTransport?.format || getTargetFormat(this.provider, credentials);
     if (
+      format === "openai" &&
       credentials?.providerSpecificData?.maxCompletionTokens === true &&
       transformed &&
       typeof transformed === "object" &&
@@ -178,8 +182,9 @@ export class DefaultExecutor extends BaseExecutor {
       headers["Anthropic-Beta"] = selectAnthropicBeta(model);
     }
 
-    // Strip first-party Claude Code identity headers for non-Anthropic anthropic-compatible upstreams
-    if (this.provider?.startsWith?.("anthropic-compatible-")) {
+    // Strip first-party Claude Code identity headers for non-Anthropic anthropic-compatible
+    // upstreams (including an openai-compatible node routing a model to its Messages path).
+    if (this.onMessagesPath(credentials)) {
       const baseUrl = credentials?.providerSpecificData?.baseUrl || "";
       const isOfficialAnthropic = baseUrl === "" || baseUrl.includes("api.anthropic.com");
       if (!isOfficialAnthropic) {
@@ -204,11 +209,19 @@ export class DefaultExecutor extends BaseExecutor {
     return headers;
   }
 
+  // Custom endpoint request going to an Anthropic Messages path: the node's own
+  // path, or a two-path route (credentials.runtimeTransport.compatibleRoute).
+  onMessagesPath(credentials) {
+    const route = credentials?.runtimeTransport?.compatibleRoute;
+    if (route) return route === "anthropic";
+    return !!this.provider?.startsWith?.("anthropic-compatible-");
+  }
+
   // Anthropic-compatible gateways 400 on beta flags they don't know and name them.
   // Drop exactly those, retry once, and report them so they're remembered.
   async execute(args) {
     const result = await super.execute(args);
-    if (!this.provider?.startsWith?.("anthropic-compatible-")) return result;
+    if (!this.onMessagesPath(args.credentials)) return result;
     if (result.response?.status !== HTTP_STATUS.BAD_REQUEST) return result;
     const psd = args.credentials?.providerSpecificData || {};
     if (psd.stripBeta === true) return result;

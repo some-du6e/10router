@@ -267,9 +267,50 @@ async function probeModels({ probe, base, protocol, AUTH, ids }) {
   return ok.sort((a, b) => order.get(a) - order.get(b));
 }
 
+// Which API path a model should use when the endpoint serves it on several.
+// Claude stays on Anthropic Messages (thinking, tool_use and cache_control pass
+// through untranslated); everything else prefers Responses, then Chat.
+export function chooseRoute(model, protocols) {
+  if (protocols.length === 1) return protocols[0];
+  if (/claude/i.test(model) && protocols.includes("anthropic")) return "anthropic";
+  return ["openai-responses", "openai-chat", "anthropic"].find((p) => protocols.includes(p)) || protocols[0];
+}
+
+// model -> route, from { protocol: [models] }. `primary` = the protocol serving
+// the most models (the node's own type); routes only list models that leave it.
+export function buildRoutes(byProtocol, fixedPrimary = null) {
+  const serving = new Map();
+  for (const [proto, ids] of Object.entries(byProtocol)) for (const id of ids || []) {
+    if (!serving.has(id)) serving.set(id, []);
+    serving.get(id).push(proto);
+  }
+  const all = {};
+  for (const [id, protos] of serving) all[id] = chooseRoute(id, protos);
+  const counts = {};
+  for (const p of Object.values(all)) counts[p] = (counts[p] || 0) + 1;
+  const primary = fixedPrimary || Object.keys(counts).sort((a, b) => counts[b] - counts[a] || (a === "anthropic" ? -1 : 1))[0] || null;
+  const routes = Object.fromEntries(Object.entries(all).filter(([, p]) => p !== primary));
+  return { primary, models: [...serving.keys()], routes, counts };
+}
+
 // Models for an already-known endpoint (the "Import models" button): /models
 // first, then the catalog probe. Free requests only.
-export async function discoverModels({ baseUrl, apiKey, protocol, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS }) {
+export async function discoverModels({ baseUrl, apiKey, protocol, protocols, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS }) {
+  // Two-path endpoint: discover on each path, then route each model.
+  if (protocols?.length > 1) {
+    const steps = [];
+    const byProtocol = {};
+    let source = "none", catalogName;
+    for (const p of protocols) {
+      const r = await discoverModels({ baseUrl, apiKey, protocol: p, fetchFn, catalog, timeoutMs });
+      steps.push(...r.steps);
+      byProtocol[p] = r.models;
+      if (r.models.length && source === "none") { source = r.source; catalogName = r.catalogName; }
+    }
+    // The node's own path is fixed here (it's already saved), so route against it.
+    const { models, routes, counts } = buildRoutes(byProtocol, protocol);
+    return { models, source, catalogName, steps, routes, counts, byProtocol };
+  }
   const key = cleanKey(apiKey);
   const base = String(baseUrl || "").replace(/\/+$/, "").replace(/\/messages$/, "");
   const steps = [];
@@ -389,19 +430,34 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
     keyConfirmed = authFail(r) ? "confirmed" : r.status === 400 ? "unknown" : keyConfirmed;
   }
 
-  // 4. No list? Ask about candidate models one at a time, still free.
+  // 4. No list? Ask about candidate models one at a time, still free. When
+  // several APIs answered, ask on each: they can serve different models.
   let modelsSource = models.length ? "models" : "none";
   const { matched, ids: candidates } = candidateModels(base, catalog);
+  let routes = {};
+  let byProtocol = null;
+  let primary = protocol;
   if (!models.length) {
-    const found = await probeModels({ probe, base, protocol, AUTH, ids: candidates });
-    if (found?.length) { models = found; modelsSource = matched ? "catalog" : "guessed"; }
+    byProtocol = {};
+    for (const proto of protocols) {
+      byProtocol[proto] = (await probeModels({ probe, base, protocol: proto, AUTH, ids: candidates })) || [];
+    }
+    const built = buildRoutes(byProtocol);
+    if (built.models.length) {
+      models = built.models;
+      routes = built.routes;
+      primary = built.primary;
+      modelsSource = matched ? "catalog" : "guessed";
+    }
   }
 
   const name = matched?.name || suggestName(base);
   return {
     ok: true,
-    protocol,
+    protocol: primary,
     protocols,
+    routes,
+    byProtocol,
     baseUrl: base,
     models,
     modelsSource,

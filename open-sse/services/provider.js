@@ -142,6 +142,34 @@ export function getTargetFormat(provider, credentials = null) {
   return config.format || "openai";
 }
 
+// Two-path custom endpoints: a node detected as anthropic-compatible (or
+// openai-compatible) can also answer on the other API. providerSpecificData
+// .modelRoutes maps model -> "anthropic" | "openai-chat" | "openai-responses";
+// when a model's route differs from the node's own path, send it there instead.
+const ROUTE_FORMATS = { anthropic: "claude", "openai-chat": "openai", "openai-responses": "openai-responses" };
+const ROUTE_PATHS = { anthropic: "/messages", "openai-chat": "/chat/completions", "openai-responses": "/responses" };
+const ANTHROPIC_VERSION = "2023-06-01";
+
+export function resolveCompatibleRoute(provider, model, credentials) {
+  if (!isOpenAICompatible(provider) && !isAnthropicCompatible(provider)) return null;
+  const psd = credentials?.providerSpecificData || {};
+  const route = psd.modelRoutes?.[model];
+  const format = ROUTE_FORMATS[route];
+  if (!format || format === getTargetFormat(provider, credentials)) return null;
+  const base = String(psd.baseUrl || "").replace(/\/+$/, "").replace(/\/(messages|chat\/completions|responses)$/, "");
+  if (!base) return null;
+  const transport = { format, baseUrl: `${base}${ROUTE_PATHS[route]}`, compatibleRoute: route };
+  if (route === "anthropic") {
+    // Same auth as the anthropic-compatible node path: x-api-key + Bearer.
+    transport.auth = { combined: true, header: "x-api-key", scheme: "raw", anthropicVersion: true };
+    transport.headers = { "anthropic-version": ANTHROPIC_VERSION };
+  } else {
+    transport.auth = { combined: true, header: "Authorization", scheme: "bearer" };
+    transport.headers = {};
+  }
+  return transport;
+}
+
 // Resolve which transport to use for a provider given the client sourceFormat.
 // Multi-endpoint providers (transport.transports[]) pick the entry matching sourceFormat
 // to avoid lossy translation; falls back to the default transport when no match.

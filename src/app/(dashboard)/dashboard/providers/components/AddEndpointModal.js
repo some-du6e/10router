@@ -22,6 +22,21 @@ function prefixFromName(name) {
   return (words.length > 1 ? words.map((w) => w[0]).join("") : (words[0] || "").slice(0, 4)).toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
+// "Both APIs work: 13 models on Anthropic Messages, 35 on OpenAI Chat. Claude
+// goes to Messages, the rest to Chat." Null unless models really split.
+const SHORT = { anthropic: "Messages", "openai-chat": "Chat", "openai-responses": "Responses" };
+function describeTwoPath(detected) {
+  const by = detected?.byProtocol;
+  const used = by ? Object.entries(by).filter(([, ids]) => ids?.length) : [];
+  if (used.length < 2) return null;
+  const counts = used.map(([p, ids]) => `${ids.length} on ${PROTOCOLS[p].label.replace(" · ", " ")}`).join(", ");
+  const others = used.map(([p]) => p).filter((p) => p !== "anthropic");
+  const rule = used.some(([p]) => p === "anthropic") && others.length
+    ? ` Claude goes to ${SHORT.anthropic}, the rest to ${SHORT[others.includes("openai-responses") ? "openai-responses" : others[0]]}.`
+    : "";
+  return `Both APIs work: ${counts}.${rule}`;
+}
+
 function guessName(raw) {
   try {
     const host = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`).hostname;
@@ -135,7 +150,9 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }) {
           type: proto.nodeType,
           ...(proto.apiType ? { apiType: proto.apiType } : {}),
           baseUrl: result?.baseUrl || url,
-          quirks,
+          // Routes are relative to the node's own path; only save them when the
+          // user kept the detected primary (a manual API-type override wins).
+          quirks: { ...quirks, ...(verified && result?.routes && protocol === result.protocol ? { modelRoutes: result.routes } : {}) },
           verified,
         }),
       });
@@ -179,6 +196,7 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }) {
   const detected = result?.ok ? result : null;
   const available = detected?.protocols?.length ? detected.protocols : Object.keys(PROTOCOLS);
   const isAnthropic = (protocol || detected?.protocol) === "anthropic";
+  const twoPath = describeTwoPath(detected);
 
   return (
     <Modal isOpen={isOpen} title="Add endpoint" onClose={close}>
@@ -242,6 +260,12 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }) {
               </div>
             ) : (
               <p className="text-xs text-text-muted">No model list found. Add model IDs below.</p>
+            )}
+            {twoPath && (
+              <p className="flex items-start gap-1 text-xs text-text-muted">
+                <span className="material-symbols-outlined text-[14px] text-primary">alt_route</span>
+                <span>{twoPath}</span>
+              </p>
             )}
             {isAnthropic && (
               <p className="flex items-start gap-1 text-xs text-text-muted">
