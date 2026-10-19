@@ -219,11 +219,16 @@ async function withComboLimitHold({ run, label, models, body, modelStr, request,
     const limited = failures.some((f) => f.rateLimited) &&
       failures.every((f) => f.rateLimited || f.unconfigured);
     const resets = failures.map((f) => f.retryAtMs).filter((t) => Number.isFinite(t) && t > 0);
+    // The combo's own status and message come from whichever models failed
+    // first and last, so they can't say whether the combo as a whole is still
+    // limited. `limited` is that answer, and the hold reads it on every retry.
+    const message = await response.clone().json().then((j) => j?.error?.message || j?.error || j?.message).catch(() => null);
     return {
       success: false,
+      combo: true,
       limited,
-      status: limited ? HTTP_STATUS.RATE_LIMITED : response.status,
-      error: limited ? "rate limited" : await response.clone().text().catch(() => "request failed"),
+      status: response.status,
+      error: (typeof message === "string" && message) || "request failed",
       retryAtMs: resets.length ? Math.min(...resets) : 0,
       response,
     };
@@ -235,8 +240,12 @@ async function withComboLimitHold({ run, label, models, body, modelStr, request,
   if (!limitHold.enabled) return first.response;
 
   const sourceFormat = (request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null) || detectFormat(body);
-  const lead = await getModelInfo(models[0]).catch(() => ({}));
-  const willStream = clientReceivesStream({ body, provider: lead.provider, model: lead.model || "", sourceFormat, clientRawRequest });
+  // Any model in the combo may be the one that answers after the wait, and
+  // their response shapes can differ (a forceStream provider answers a client
+  // that didn't ask for a stream with JSON). Narrate only when every model
+  // would stream; otherwise hold silently, which is safe for either shape.
+  const infos = await Promise.all(models.map((m) => getModelInfo(m).catch(() => ({}))));
+  const willStream = infos.every((info) => clientReceivesStream({ body, provider: info.provider, model: info.model || "", sourceFormat, clientRawRequest }));
   log.warn("LIMITHOLD", `combo ${modelStr}: all models rate-limited, holding`);
   return holdUntilClear({ first, attempt: pass, willStream, sourceFormat, modelStr, provider: modelStr, label, request });
 }

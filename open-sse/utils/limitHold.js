@@ -49,6 +49,15 @@ export function isLimitError(status, errorText = "") {
   );
 }
 
+/**
+ * Is a retry's failure still a limit? A combo answers this itself with
+ * `limited`, because its status and message come from whichever of its models
+ * failed first and last; a single model's result is classified from its error.
+ */
+function stillLimited(result) {
+  return result?.combo ? result.limited === true : isLimitError(result?.status, result?.error);
+}
+
 /** "2h 14m" / "45s" — approximate on purpose, this is a status line not a contract. */
 export function formatDuration(ms) {
   const total = Math.max(Math.round(ms / 1000), 0);
@@ -225,7 +234,7 @@ export async function awaitLimitClear({ retryAtMs, attempt, provider, model, sig
 
     last = await attempt();
     if (last?.success) return last;
-    if (last && !isLimitError(last.status, last.error)) return last;
+    if (last && !stillLimited(last)) return last;
     waitMs = Math.max((last?.retryAtMs || 0) - Date.now(), recheckMs);
   }
   if (Date.now() >= deadline) {
@@ -334,7 +343,7 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, label, 
             break;
           }
 
-          if (result && !isLimitError(result.status, result.error)) {
+          if (result && !stillLimited(result)) {
             // Not a limit any more — a real fault. Say so in the stream rather
             // than waiting forever on something that will never clear.
             for (const piece of renderTextChunks(sourceFormat, model, `\n\n> ✗ The rate limit on ${label || provider} cleared, but the retry failed: ${result.error || "request failed"} ${LIMIT_HOLD_SENTINEL}\n\n`, state)) {

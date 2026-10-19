@@ -26,7 +26,8 @@ vi.mock("@/sse/services/auth.js", async () => {
   };
 });
 vi.mock("@/sse/services/model.js", () => ({
-  getModelInfo: async (m) => ({ provider: "codex", model: m }),
+  // "provider/model" picks a provider; a bare name stays on codex.
+  getModelInfo: async (m) => (m.includes("/") ? { provider: m.split("/")[0], model: m.split("/")[1] } : { provider: "codex", model: m }),
   getComboModels: async (name) => state.combos[name] || null,
   comboLookupName: (name) => name,
 }));
@@ -251,6 +252,24 @@ describe("rate-limit hold wiring", () => {
       makeRequest({ model: "free-opus", messages: [{ role: "user", content: "hi" }] }),
       { endpoint: "/v1/chat/completions", body: {}, headers: { accept: "application/json" } }
     );
+    expect(await res.text()).toBe('{"ok":true}');
+  }, 60000);
+
+  it("holds a mixed combo silently when not every model would stream", async () => {
+    // glm streams a request with no stream flag; codex (forceStream) answers it
+    // with JSON. Narrating would put codex's JSON after an SSE banner.
+    state.combos = { mixed: ["glm/glm-5", "codex/gpt-5"] };
+    let pass = 0;
+    const auth = await import("@/sse/services/auth.js");
+    vi.spyOn(auth, "getProviderCredentials").mockImplementation(async (provider, excluded) => {
+      if (provider === "glm") pass += 1;
+      if (pass >= 2 && provider === "codex" && excluded.size === 0) return { connectionId: "c1", connectionName: "c", accessToken: "t" };
+      return { ...LIMITED(), retryAfter: new Date(Date.now() + 10).toISOString() };
+    });
+    state.coreResults = [{ success: true, response: new Response('{"ok":true}', { headers: { "Content-Type": "application/json" } }) }];
+
+    const res = await handleChat(makeRequest({ model: "mixed", messages: [{ role: "user", content: "hi" }] }));
+    expect(res.headers.get("Content-Type")).not.toBe("text/event-stream");
     expect(await res.text()).toBe('{"ok":true}');
   }, 60000);
 });
