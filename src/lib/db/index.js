@@ -9,6 +9,7 @@ import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
 export {
   getSettings, updateSettings, isCloudEnabled, getCloudUrl, exportSettings,
 } from "./repos/settingsRepo.js";
+import { invalidateSettingsCache } from "./repos/settingsRepo.js";
 
 // Provider connections
 export {
@@ -185,6 +186,8 @@ export async function importDb(payload) {
   // The restore writes the pricing kv scope directly, so the merged pricing
   // cache must be rebuilt before the next cost calculation.
   invalidatePricingCache();
+  // Settings were replaced wholesale above, bypassing updateSettings.
+  invalidateSettingsCache();
 
   return await exportDb();
 }

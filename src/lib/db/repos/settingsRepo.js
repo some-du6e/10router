@@ -4,6 +4,20 @@ import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 
 const DEFAULT_HEADROOM_URL = process.env.HEADROOM_URL || "http://localhost:8787";
 
+// getSettings() is called several times per routed request (chat handler,
+// auth account selection, limit-hold config), each of which hit the DB,
+// JSON.parse, stripRetiredSettings, and a defaults merge — one of them inside
+// the global account-selection mutex. Cache the merged result briefly.
+const SETTINGS_CACHE_TTL_MS = 5000;
+
+let cachedSettings = null;
+let cachedSettingsTs = 0;
+
+export function invalidateSettingsCache() {
+  cachedSettings = null;
+  cachedSettingsTs = 0;
+}
+
 const DEFAULT_SETTINGS = {
   usageHubEnabled: false,
   cloudEnabled: false,
@@ -104,8 +118,13 @@ export function mergeWithDefaults(raw) {
 }
 
 export async function getSettings() {
+  if (cachedSettings && (Date.now() - cachedSettingsTs) < SETTINGS_CACHE_TTL_MS) {
+    return cachedSettings;
+  }
   const raw = await readRaw();
-  return mergeWithDefaults(raw);
+  cachedSettings = mergeWithDefaults(raw);
+  cachedSettingsTs = Date.now();
+  return cachedSettings;
 }
 
 // Atomic read-merge-write inside transaction (prevents losing concurrent updates)
@@ -121,6 +140,7 @@ export async function updateSettings(updates) {
       [stringifyJson(next)],
     );
   });
+  invalidateSettingsCache();
   return mergeWithDefaults(next);
 }
 
