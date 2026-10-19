@@ -8,6 +8,7 @@ import Input from "@/shared/components/Input";
 import Select from "@/shared/components/Select";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import { useBlurEmails } from "@/shared/hooks/useBlurEmails";
+import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 import QuotaTable from "./QuotaTable";
 import SubscriptionValueBadge from "./SubscriptionValueBadge";
@@ -59,6 +60,7 @@ const statusTone = (account) =>
 export default function ProviderLimits() {
   const data = useQuotaDashboard();
   const { blurClass, isBlurred } = useBlurEmails();
+  const { copied, copy } = useCopyToClipboard();
   const [provider, setProvider] = useState("all");
   const [query, setQuery] = useState("");
   const [health, setHealth] = useState("all");
@@ -993,9 +995,24 @@ export default function ProviderLimits() {
                   {detail.providerSpecificData?.region || ""}
                 </p>
                 {detail.providerSpecificData?.profileArn && (
-                  <p className="break-all font-mono">
-                    {detail.providerSpecificData.profileArn}
-                  </p>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      copy(detail.providerSpecificData.profileArn, detail.id)
+                    }
+                    aria-label="Copy profile ARN"
+                    className="flex w-full items-start gap-2 rounded border border-border-subtle p-2 text-left transition-colors hover:text-primary focus-visible:outline-2 focus-visible:outline-primary"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="material-symbols-outlined text-[14px]"
+                    >
+                      {copied === detail.id ? "check" : "content_copy"}
+                    </span>
+                    <code className="break-all font-mono">
+                      {detail.providerSpecificData.profileArn}
+                    </code>
+                  </button>
                 )}
               </div>
             )}

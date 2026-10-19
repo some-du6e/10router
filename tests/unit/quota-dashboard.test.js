@@ -81,8 +81,11 @@ describe("quota dashboard", () => {
   it("does not let a turned-off account unlock the average", () => {
     const blocked = account("blocked", null, 0);
     const off = account("off", 60, 80, { isActive: false });
-    const alone = summarizeWindow([blocked], blocked.priority);
-    const withOff = summarizeWindow([blocked, off], blocked.priority);
+    const session = blocked.windows.find((q) => q.name === "5h");
+    const alone = summarizeWindow([blocked], session);
+    const withOff = summarizeWindow([blocked, off], session);
+    expect(alone.average).toBeNull();
+    expect(alone.total).toBeNull();
     expect(withOff.average).toBe(alone.average);
     expect(withOff.total).toBe(alone.total);
   });
