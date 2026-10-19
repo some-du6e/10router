@@ -12,8 +12,10 @@ const SETTINGS_CACHE_TTL_MS = 5000;
 
 let cachedSettings = null;
 let cachedSettingsTs = 0;
+let cacheGeneration = 0;
 
 export function invalidateSettingsCache() {
+  cacheGeneration += 1;
   cachedSettings = null;
   cachedSettingsTs = 0;
 }
@@ -118,13 +120,18 @@ export function mergeWithDefaults(raw) {
 }
 
 export async function getSettings() {
+  // Callers get a shallow copy so a stray assignment can't leak into the cache.
   if (cachedSettings && (Date.now() - cachedSettingsTs) < SETTINGS_CACHE_TTL_MS) {
-    return cachedSettings;
+    return { ...cachedSettings };
   }
-  const raw = await readRaw();
-  cachedSettings = mergeWithDefaults(raw);
-  cachedSettingsTs = Date.now();
-  return cachedSettings;
+  // A read that started before an invalidation must not cache stale settings.
+  const startGeneration = cacheGeneration;
+  const settings = mergeWithDefaults(await readRaw());
+  if (startGeneration === cacheGeneration) {
+    cachedSettings = settings;
+    cachedSettingsTs = Date.now();
+  }
+  return { ...settings };
 }
 
 // Atomic read-merge-write inside transaction (prevents losing concurrent updates)
