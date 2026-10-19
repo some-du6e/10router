@@ -7,8 +7,8 @@ The test package covers the dashboard, gateway, translators, providers, auth, pe
 Install root dependencies first, then the test runner:
 
 ```bash
-npm install
-cd tests && npm install
+bun install
+cd tests && bun install
 ```
 
 ## Commands
@@ -18,6 +18,14 @@ Run the deterministic Vitest suite from `tests/`:
 ```bash
 npm test
 ```
+
+From the repository root, run the CI regression command:
+
+```bash
+npm --prefix tests run test:regression
+```
+
+It runs the deterministic suite and checks the JSON report for failed tests, collection failures, runner errors, and empty runs. The previous known failures are fixed, so the allowlist is empty. Historical baseline reports remain as test fixtures.
 
 Other suites are opt-in:
 

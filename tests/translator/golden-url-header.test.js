@@ -2,6 +2,7 @@
 // Sinh snapshot lần đầu (baseline) → sau refactor chạy lại phải khớp y hệt.
 // Mock proxyFetch + uuid-heavy executors KHÔNG cần ở đây vì chỉ gọi buildUrl/buildHeaders (pure).
 import { describe, it, expect } from "vitest";
+import os from "node:os";
 import { PROVIDERS } from "../../open-sse/config/providers.js";
 import { DefaultExecutor } from "../../open-sse/executors/default.js";
 
@@ -27,6 +28,28 @@ const SPECIALIZED = new Set([
 function sanitize(headers) {
   const out = {};
   for (const [k, v] of Object.entries(headers)) {
+    // Check runtime identity, then snapshot its stable role rather than this host.
+    if (k === "X-PLATFORM-VERSION") {
+      expect(v).toBe(process.version);
+      out[k] = "<NODE_VERSION>";
+      continue;
+    }
+    if (k === "X-PLATFORM") {
+      expect(v).toBe(process.platform);
+      out[k] = "<PLATFORM>";
+      continue;
+    }
+    if (k === "X-Msh-Device-Name") {
+      expect(v).toBe(os.hostname() || "unknown");
+      out[k] = "<HOSTNAME>";
+      continue;
+    }
+    if (k === "X-Msh-Device-Model") {
+      const name = { darwin: "macOS", win32: "Windows", linux: "Linux" }[os.platform()] || os.platform();
+      expect(v).toBe(`${name} ${os.arch()}`);
+      out[k] = "<DEVICE_MODEL>";
+      continue;
+    }
     out[k] = typeof v === "string"
       ? v.replace(/Bearer .+/, "Bearer <TOK>")
           .replace(/sk-test-APIKEY|tok-test-ACCESS/g, "<CRED>")

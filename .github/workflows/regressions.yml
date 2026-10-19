@@ -1,0 +1,31 @@
+name: Regression Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: oven-sh/setup-bun@v2
+      - name: Install app dependencies
+        run: bun install
+      - name: Install test dependencies
+        working-directory: tests
+        run: bun install
+      - name: Run deterministic regression checks
+        run: npm --prefix tests run test:regression
+      - name: Check provider, alias, and OAuth contracts
+        run: |
+          node tests/__baseline__/verify-providers.mjs
+          node tests/__baseline__/verify-alias.mjs
+          node tests/__baseline__/verify-oauth-urls.mjs
