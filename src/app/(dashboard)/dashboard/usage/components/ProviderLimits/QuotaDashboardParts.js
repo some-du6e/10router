@@ -35,16 +35,18 @@ export function quotaTone(remaining) {
 // Compact rows put the reset beside the label to keep ledger rows short.
 export function AccountLimits({ account, now, compact = false }) {
   if (!account.mainWindows.length)
-    return <p className="text-xs text-text-muted">Quota not reported</p>;
+    return (
+      <span className="block text-xs text-text-muted">Quota not reported</span>
+    );
   return (
-    <div
-      className={`min-w-0 ${compact ? "space-y-2" : "space-y-3"}`}
+    <span
+      className={`block min-w-0 ${compact ? "space-y-2" : "space-y-3"}`}
       data-limits={account.id}
       data-i18n-skip="true"
     >
       {account.mainWindows.map((quota, index) => (
-        <div key={quota.key} data-window={quota.key}>
-          <div className="flex justify-between gap-2 text-xs">
+        <span key={quota.key} data-window={quota.key} className="block">
+          <span className="flex justify-between gap-2 text-xs">
             <span
               className={
                 index === 0 ? "font-medium text-text-main" : "text-text-muted"
@@ -63,21 +65,21 @@ export function AccountLimits({ account, now, compact = false }) {
             >
               {quota.unlimited ? "Unlimited" : formatRemaining(quota.remaining)}
             </span>
-          </div>
-          <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-surface-3">
-            <div
-              className={`h-full rounded-full ${quotaTone(quota.remaining).bar}`}
+          </span>
+          <span className="mt-1.5 block h-1.5 overflow-hidden rounded-full bg-surface-3">
+            <span
+              className={`block h-full rounded-full ${quotaTone(quota.remaining).bar}`}
               style={{ width: `${quota.remaining ?? 0}%` }}
             />
-          </div>
+          </span>
           {!compact && (
-            <p className="mt-1 text-[10px] text-text-muted">
+            <span className="mt-1 block text-[10px] text-text-muted">
               {resetLabel(quota, now)}
-            </p>
+            </span>
           )}
-        </div>
+        </span>
       ))}
-    </div>
+    </span>
   );
 }
 

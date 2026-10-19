@@ -101,7 +101,6 @@ export default function useQuotaDashboard() {
             updatedAt: hasQuota ? updatedAt : null,
           };
           if (signal.aborted) return;
-          fetchedAt.current[connection.id] = Date.now();
           lastReadings.current[connection.id] = entry;
           setQuotaData((prev) => ({ ...prev, [connection.id]: entry }));
           setErrors((prev) => ({ ...prev, [connection.id]: null }));
@@ -134,6 +133,9 @@ export default function useQuotaDashboard() {
       try {
         const list = await fetchAllConnections(signal);
         if (signal.aborted) return;
+        // Compare against the cycle start (plus slack) so request time does not
+        // push an account past the next tick and double its interval.
+        const cycleStart = Date.now() + 5000;
         setConnections(list);
         setConnectionError(null);
         setInitialLoading(false);
@@ -141,7 +143,7 @@ export default function useQuotaDashboard() {
           (connection) =>
             force ||
             initial ||
-            Date.now() - (fetchedAt.current[connection.id] || 0) >=
+            cycleStart - (fetchedAt.current[connection.id] || 0) >=
               (connection.provider === "claude"
                 ? CLAUDE_REFRESH_INTERVAL_MS
                 : REFRESH_INTERVAL_MS),

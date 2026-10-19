@@ -8,6 +8,7 @@ import {
   resetLabel,
   resetShort,
   summarizeWindow,
+  updatedLabel,
 } from "@/app/(dashboard)/dashboard/usage/components/ProviderLimits/dashboardModel.js";
 import { fetchAllConnections } from "@/app/(dashboard)/dashboard/usage/components/ProviderLimits/useQuotaDashboard.js";
 import { parseQuotaData } from "@/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.js";
@@ -100,6 +101,13 @@ describe("quota dashboard", () => {
       },
     );
     expect(multi.status).not.toBe("Depleted");
+  });
+
+  it("uses singular units in the updated label", () => {
+    const now = Date.parse("2026-10-07T02:00:00Z");
+    expect(updatedLabel(now - 60000, now)).toBe("Updated 1 minute ago");
+    expect(updatedLabel(now - 90 * 60000, now)).toBe("Updated 1 hour ago");
+    expect(updatedLabel(now - 5 * 60000, now)).toBe("Updated 5 minutes ago");
   });
 
   it("takes status from the tightest window", () => {

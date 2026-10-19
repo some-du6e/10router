@@ -238,9 +238,9 @@ export function updatedLabel(date, now = Date.now()) {
     0,
     Math.floor((now - new Date(date).getTime()) / 60000),
   );
-  return minutes === 0
-    ? "Updated just now"
-    : minutes < 60
-      ? `Updated ${minutes} minutes ago`
-      : `Updated ${Math.floor(minutes / 60)} hours ago`;
+  if (minutes === 0) return "Updated just now";
+  if (minutes < 60)
+    return `Updated ${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.floor(minutes / 60);
+  return `Updated ${hours} hour${hours === 1 ? "" : "s"} ago`;
 }

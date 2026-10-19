@@ -663,49 +663,51 @@ export default function ProviderLimits() {
                     }}
                     className={`${view === "cards" ? "grid gap-4 rounded-[14px] border border-border-subtle bg-surface p-5 text-left hover:border-primary/30" : `${LEDGER} w-full items-center gap-y-3 border-b border-border-subtle px-5 py-3 text-left transition-colors last:border-0 hover:bg-surface-2/50`} ${account.isActive === false ? "opacity-60" : ""}`}
                   >
-                    <div className="flex min-w-0 items-center gap-3">
+                    <span className="flex min-w-0 items-center gap-3">
                       <ProviderIcon
                         providerId={account.provider}
                         alt=""
                         size={28}
                         className="shrink-0 rounded object-contain"
                       />
-                      <div className="min-w-0">
-                        <p
-                          className={`truncate text-sm font-medium ${account.name === account.email ? blurClass : ""}`}
+                      <span className="block min-w-0">
+                        <span
+                          className={`block truncate text-sm font-medium ${account.name === account.email ? blurClass : ""}`}
                         >
                           {providerName(account.provider)} / {account.name}
-                        </p>
+                        </span>
                         {account.email && account.email !== account.name && (
-                          <p
-                            className={`mt-1 truncate text-xs text-text-muted ${blurClass}`}
+                          <span
+                            className={`block mt-1 truncate text-xs text-text-muted ${blurClass}`}
                           >
                             {account.email}
-                          </p>
+                          </span>
                         )}
-                        <p className="mt-1 text-[10px] text-text-muted md:hidden">
+                        <span className="block mt-1 text-[10px] text-text-muted md:hidden">
                           {account.plan}
-                        </p>
+                        </span>
                         {account.error && (
-                          <p className="mt-1 text-[10px] text-yellow-600 dark:text-yellow-500">
+                          <span className="block mt-1 text-[10px] text-yellow-600 dark:text-yellow-500">
                             Refresh failed.{" "}
                             {updatedLabel(account.updatedAt, data.now)}.
-                          </p>
+                          </span>
                         )}
                         {data.loading[account.id] && (
-                          <p className="mt-1 text-[10px] text-text-muted">
+                          <span className="block mt-1 text-[10px] text-text-muted">
                             Refreshing...
-                          </p>
+                          </span>
                         )}
-                      </div>
-                    </div>
-                    <div
+                      </span>
+                    </span>
+                    <span
                       className={
-                        view === "cards" ? "text-xs" : "hidden text-xs md:block"
+                        view === "cards"
+                          ? "block text-xs"
+                          : "hidden text-xs md:block"
                       }
                     >
                       {account.plan}
-                    </div>
+                    </span>
                     <AccountLimits
                       account={account}
                       now={data.now}

@@ -120,7 +120,7 @@ export default function LanguageSwitcher({ className = "", isOpen: controlledOpe
           disabled={isPending}
           className="flex items-center gap-2 px-3 py-2 rounded-lg text-text-muted hover:text-text-main hover:bg-surface/60 transition-colors"
           title="Language"
-          aria-label="Language"
+          aria-label={`Language: ${getLocaleInfo(locale).name}`}
           data-i18n-skip="true"
         >
           <span className="material-symbols-outlined text-[20px]">language</span>
