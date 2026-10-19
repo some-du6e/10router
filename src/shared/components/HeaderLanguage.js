@@ -28,6 +28,7 @@ export default function HeaderLanguage() {
         onClick={() => setOpen(true)}
         className="flex items-center justify-center p-2 rounded-lg text-text-muted hover:text-text-main hover:bg-black/5 dark:hover:bg-white/5 transition-all"
         title="Language"
+        aria-label="Language"
         data-i18n-skip="true"
       >
         <span className="text-lg leading-none">{LOCALE_FLAGS[locale] || "🌐"}</span>
