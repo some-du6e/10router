@@ -196,9 +196,7 @@ async function handleSingleProviderFetch(body, providerInput, request, apiKey, s
       log,
       onCredentialsRefreshed: async (newCreds) => {
         await updateProviderCredentials(credentials.connectionId, {
-          accessToken: newCreds.accessToken,
-          refreshToken: newCreds.refreshToken,
-          providerSpecificData: newCreds.providerSpecificData,
+          ...newCreds,
           testStatus: "active"
         });
       }
