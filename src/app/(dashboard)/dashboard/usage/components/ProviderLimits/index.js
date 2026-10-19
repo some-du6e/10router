@@ -717,9 +717,12 @@ export default function ProviderLimits() {
                     />
                     <span
                       className="whitespace-nowrap text-xs text-text-muted"
-                      title={account.priority?.label}
+                      title={(account.worstWindow || account.priority)?.label}
                     >
-                      {resetShort(account.priority, data.now) ?? "—"}
+                      {resetShort(
+                        account.worstWindow || account.priority,
+                        data.now,
+                      ) ?? "—"}
                     </span>
                     <span
                       className={`flex items-center gap-1.5 text-xs ${statusTone(account).text}`}

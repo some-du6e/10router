@@ -129,7 +129,9 @@ export function compareAccounts(a, b, sort) {
   // Sort on the same window that drives status; unknown readings go last either way.
   const unknown = (a.worstRemaining === null) - (b.worstRemaining === null);
   const remaining = unknown || (a.worstRemaining ?? 0) - (b.worstRemaining ?? 0);
-  const reset = resetTimestamp(a.priority) - resetTimestamp(b.priority);
+  const reset =
+    resetTimestamp(a.worstWindow || a.priority) -
+    resetTimestamp(b.worstWindow || b.priority);
   const fallback = a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
   if (sort === "reset") return reset || remaining || fallback;
   if (sort === "remaining-desc")

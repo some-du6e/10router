@@ -90,6 +90,13 @@ describe("quota dashboard", () => {
     expect(withOff.total).toBe(alone.total);
   });
 
+  it("sorts by the reset of the window that drives status", () => {
+    const weeklyLow = account("weeklyLow", 80, 8);
+    const sessionLow = account("sessionLow", 20, 90);
+    expect(weeklyLow.worstWindow.name).toBe("Weekly");
+    expect(compareAccounts(sessionLow, weeklyLow, "reset")).toBeLessThan(0);
+  });
+
   it("sorts by the same window that drives status, unknown last both ways", () => {
     const healthy = account("healthy", 50, 90);
     const low = account("low", 64, 23);
