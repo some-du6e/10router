@@ -161,16 +161,18 @@ export function summarizeWindow(accounts, window) {
       (v.quota.remaining != null || v.blocked),
   );
   const usableSum = usable.reduce((sum, v) => sum + v.quota.remaining, 0);
+  // Turned-off readings must not make an otherwise unreported window show 0%.
+  const hasReading =
+    counted.length > 0 && reported.some((v) => v.account.isActive !== false);
   const resets = values
     .filter((v) => v.account.isActive !== false)
     .map((v) => resetTimestamp(v.quota))
     .filter(Number.isFinite);
   return {
     values,
-    total: reported.length && counted.length ? usableSum : null,
+    total: hasReading ? usableSum : null,
     // Blocked accounts count as empty, so the average reflects routable quota.
-    average:
-      reported.length && counted.length ? usableSum / counted.length : null,
+    average: hasReading ? usableSum / counted.length : null,
     averaged: counted.length > 1,
     capacity:
       values.filter((v) => v.account.isActive !== false && v.quota).length *

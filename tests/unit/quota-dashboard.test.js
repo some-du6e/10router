@@ -78,6 +78,15 @@ describe("quota dashboard", () => {
     expect(summary.unknown).toBe(0);
   });
 
+  it("does not let a turned-off account unlock the average", () => {
+    const blocked = account("blocked", null, 0);
+    const off = account("off", 60, 80, { isActive: false });
+    const alone = summarizeWindow([blocked], blocked.priority);
+    const withOff = summarizeWindow([blocked, off], blocked.priority);
+    expect(withOff.average).toBe(alone.average);
+    expect(withOff.total).toBe(alone.total);
+  });
+
   it("sorts by the same window that drives status, unknown last both ways", () => {
     const healthy = account("healthy", 50, 90);
     const low = account("low", 64, 23);
