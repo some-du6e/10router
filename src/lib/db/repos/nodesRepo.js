@@ -1,6 +1,16 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { makeReadCache } from "../helpers/readCache.js";
+
+// Model resolution checks custom-node prefixes on every request, so keep the
+// (small) node list in memory. Filtering by type happens on the cached rows.
+const nodesCache = makeReadCache("providerNodes", (db) => db.all(`SELECT * FROM providerNodes`).map(rowToNode));
+
+/** Bust the cached node list. Call after any write to `providerNodes`. */
+export function invalidateProviderNodesCache() {
+  nodesCache.invalidate();
+}
 
 function rowToNode(row) {
   if (!row) return null;
@@ -39,12 +49,10 @@ function upsert(db, n) {
 }
 
 export async function getProviderNodes(filter = {}) {
-  const db = await getAdapter();
-  const where = [];
-  const params = [];
-  if (filter.type) { where.push("type = ?"); params.push(filter.type); }
-  const sql = `SELECT * FROM providerNodes${where.length ? ` WHERE ${where.join(" AND ")}` : ""}`;
-  return db.all(sql, params).map(rowToNode);
+  const nodes = await nodesCache.get();
+  const matched = filter.type ? nodes.filter((n) => n.type === filter.type) : nodes;
+  // Copy so a caller editing a node can't change the cached one.
+  return matched.map((n) => ({ ...n }));
 }
 
 export async function getProviderNodeById(id) {
@@ -66,6 +74,7 @@ export async function createProviderNode(data) {
     updatedAt: now,
   };
   upsert(db, node);
+  nodesCache.invalidate();
   return node;
 }
 
@@ -79,6 +88,7 @@ export async function updateProviderNode(id, data) {
     upsert(db, merged);
     result = merged;
   });
+  nodesCache.invalidate();
   return result;
 }
 
@@ -91,5 +101,6 @@ export async function deleteProviderNode(id) {
     removed = rowToNode(row);
     db.run(`DELETE FROM providerNodes WHERE id = ?`, [id]);
   });
+  nodesCache.invalidate();
   return removed;
 }
