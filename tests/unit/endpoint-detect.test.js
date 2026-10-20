@@ -96,13 +96,13 @@ describe("recentLabModels", () => {
     expect(recentLabModels(labs, 3, 365, NOW).sort()).toEqual(["qwen3.6-flash", "qwen3.7-max", "qwen3.8-max"]);
   });
 
-  it("keeps versionless aliases, drops snapshots and stale families", () => {
+  it("keeps versionless aliases, drops snapshots that have an alias, and stale families", () => {
     const labs = [
       m("qwen-max", "qwen", "2026-09-01"), m("qwen3.8-max", "qwen", "2026-09-01"),
-      m("claude-haiku-4-5-20251001", "claude-haiku", "2026-09-01"),
+      m("claude-haiku-4-5", "claude-haiku", "2026-09-01"), m("claude-haiku-4-5-20251001", "claude-haiku", "2026-09-01"),
       m("old-model-2", "old", "2024-01-01"),
     ];
-    expect(recentLabModels(labs, 3, 365, NOW).sort()).toEqual(["qwen-max", "qwen3.8-max"]);
+    expect(recentLabModels(labs, 3, 365, NOW).sort()).toEqual(["claude-haiku-4-5", "qwen-max", "qwen3.8-max"]);
   });
 });
 

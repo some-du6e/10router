@@ -55,8 +55,12 @@ export async function GET(request, { params }) {
     });
     // A path that errored mid-probe would drop its models from the routes, so
     // only replace saved routes when every path finished.
-    if (result.routes && result.allComplete) await saveRoutes(connection.provider, protocol, result.routes);
-    return NextResponse.json({ models: result.models.map((m) => ({ id: m })), source: result.source, catalogName: result.catalogName, routes: result.routes, steps: result.steps });
+    // A stopped run (key refused, rate-limited) is partial too: never save then.
+    if (result.routes && result.allComplete && !result.partial) await saveRoutes(connection.provider, protocol, result.routes);
+    return NextResponse.json({
+      models: result.models.map((m) => ({ id: m })), source: result.source, catalogName: result.catalogName, routes: result.routes, steps: result.steps,
+      partial: !!result.partial, partialReason: result.partialReason || null, authRejected: !!result.authRejected,
+    });
   } catch (error) {
     console.log("Error discovering models:", error?.message);
     return NextResponse.json({ error: "Failed to discover models" }, { status: 500 });
