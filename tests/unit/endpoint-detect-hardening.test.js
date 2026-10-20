@@ -305,3 +305,193 @@ describe("9. probeFetch pins the checked address (DNS rebinding)", () => {
     }
   });
 });
+
+describe("13. catch-all comparison ignores volatile fields and matches the probe", () => {
+  it("a catch-all that echoes a fresh request_id on every path is still a catch-all", async () => {
+    let n = 0;
+    const { fetchFn } = upstream((m, path, body) => m === "POST"
+      ? [400, { error: { message: "Bad Request", type: "invalid_request_error", request_id: `req_${(++n).toString(36)}abcdef${n}` }, id: `id-${n}`, created: 1760000000 + n, model: body?.model }]
+      : undefined);
+    const r = await detectEndpoint({ url: "https://echo-id.example.com/v1", apiKey: KEY, fetchFn, sleep: noSleep });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/answers every request the same way/);
+  });
+  it("the control uses the protocol probe's model and auth headers", async () => {
+    const { fetchFn, calls } = upstream((m, path) => path === "/v1/messages"
+      ? [400, { type: "error", error: { type: "invalid_request_error", message: "messages: at least one message is required" } }]
+      : m === "POST" ? [400, { message: "Bad Request" }] : undefined);
+    await detectEndpoint({ url: "https://ctl.example.com/v1", apiKey: KEY, fetchFn, sleep: noSleep });
+    const ctl = calls.filter((c) => c.pathname === "/v1/10router-no-such-path");
+    const probe = calls.find((c) => c.pathname === "/v1/messages");
+    expect(ctl.some((c) => c.headers["x-api-key"] === KEY && c.headers["anthropic-version"] && c.body.model === probe.body.model)).toBe(true);
+  });
+});
+
+describe("14. a model-access 401/403 is about that model, not the key", () => {
+  // LiteLLM with a key restricted to one model.
+  const litellm = (allowed) => (m, path, body) => {
+    if (path === "/v1/models") return [404, "Not Found"];
+    if (path !== "/v1/chat/completions") return;
+    if (allowed.has(body.model)) return [400, oaiErr("messages: list should have at least 1 item")];
+    return [403, { error: { message: `key not allowed to access model. This key can only access models=${JSON.stringify([...allowed])}. Tried to access ${body.model}`, type: "auth_error", code: "403" } }];
+  };
+  it("LiteLLM: protocol probe gets 'not allowed to access model', the allowed model is found", async () => {
+    const { fetchFn } = upstream(litellm(new Set(["qwen3.8-max"])));
+    const r = await detectEndpoint({ url: "https://litellm.example.com/v1", apiKey: KEY, fetchFn, catalog: CATALOG, sleep: noSleep });
+    expect(r.ok).toBe(true);
+    expect(r.protocols).toContain("openai-chat");
+    expect(r.authRejected).toBe(false);
+    expect(r.models).toEqual(["qwen3.8-max"]);
+  });
+  it("one 403 naming a model marks it not served and keeps going", async () => {
+    const { fetchFn } = upstream((m, path, body) => {
+      if (path !== "/v1/chat/completions") return;
+      if (body.model === "probe" || body.model === "10router-no-such-model") return body.model === "probe" ? [400, oaiErr("messages empty")] : [404, oaiErr(`model ${body.model} not found`)];
+      if (body.model === "claude-opus-5-5") return [403, oaiErr(`no access to ${body.model}`)];
+      return [400, oaiErr("messages empty")];
+    });
+    const r = await detectEndpoint({ url: "https://teams.example.com/v1", apiKey: KEY, fetchFn, catalog: CATALOG, sleep: noSleep });
+    expect(r.authRejected).toBe(false);
+    expect(r.partial).toBe(false);
+    expect(r.models.sort()).toEqual(["gpt-6.1-sol", "llama-4-scout", "qwen3.8-max"]);
+  });
+  it("the same generic refusal across several models stops with authRejected", async () => {
+    const { fetchFn, calls } = upstream((m, path, body) => {
+      if (path !== "/v1/chat/completions") return;
+      if (body.model === "probe") return [400, oaiErr("messages empty")];
+      if (body.model === "10router-no-such-model") return [404, oaiErr(`model ${body.model} not found`)];
+      return [403, { error: { message: `Forbidden: ${body.model}`, type: "forbidden" } }];
+    });
+    const big = { providers: [], labs: Array.from({ length: 30 }, (_, i) => ({ id: `fam${i}-model-1`, lab: "x", family: `fam${i}`, date: RECENT })) };
+    const r = await detectEndpoint({ url: "https://forbid.example.com/v1", apiKey: KEY, fetchFn, catalog: big, sleep: noSleep });
+    expect(r.ok).toBe(true);
+    expect(r.authRejected).toBe(true);
+    expect(calls.filter((c) => /^fam/.test(c.body?.model || "")).length).toBeLessThan(8);
+  });
+});
+
+describe("15. x-api-key-only servers", () => {
+  it("a Bearer /models 401 isn't a rejected key when x-api-key works", async () => {
+    const { fetchFn } = upstream((m, path, body, headers) => {
+      const good = headers["x-api-key"] === KEY;
+      if (path === "/v1/models") return headers.authorization && !headers["x-api-key"] ? [401, { type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } }] : headers["x-api-key"] ? [404, "Not Found"] : [401, { type: "error", error: { type: "authentication_error", message: "missing x-api-key" } }];
+      if (path === "/v1/messages") return good ? [400, { type: "error", error: { type: "invalid_request_error", message: "messages: at least one message is required" } }] : [401, { type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } }];
+    });
+    const r = await detectEndpoint({ url: "https://xak.example.com/v1", apiKey: KEY, fetchFn, sleep: noSleep });
+    expect(r.ok).toBe(true);
+    expect(r.protocol).toBe("anthropic");
+    expect(r.keyConfirmed).toBe("confirmed");
+    expect(r.authRejected).toBe(false);
+  });
+});
+
+describe("16. a streamed 2xx counts as generated", () => {
+  it("SSE gateway: a served model streams, so probing stops and generatesOnEmpty is set", async () => {
+    const sse = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n";
+    const { fetchFn, calls } = upstream((m, path, body) => {
+      if (path !== "/v1/chat/completions") return;
+      if (body.model === "probe") return [400, oaiErr("messages must not be empty")];
+      if (body.model === "10router-no-such-model") return [404, oaiErr(`The model ${body.model} does not exist`, "model_not_found")];
+      return [200, sse, { "content-type": "text/event-stream" }];
+    });
+    const r = await detectEndpoint({ url: "https://sse.example.com/v1", apiKey: KEY, fetchFn, catalog: CATALOG, sleep: noSleep });
+    expect(r.ok).toBe(true);
+    expect(r.quirks.generatesOnEmpty).toBe(true);
+    expect(r.partial).toBe(true);
+    expect(r.partialReason).toMatch(/ran a model/);
+    expect(r.models.length).toBeGreaterThan(0);
+    // Stopped after the first streamed answers (at most one per worker).
+    const modelPosts = calls.filter((c) => c.pathname === "/v1/chat/completions" && !["probe", "10router-no-such-model"].includes(c.body.model));
+    expect(modelPosts.length).toBeLessThanOrEqual(3);
+    // stream:false is sent on every chat probe, protocol and model alike.
+    for (const c of calls.filter((x) => x.pathname === "/v1/chat/completions")) expect(c.body.stream).toBe(false);
+  });
+  it("a plain 2xx with no error on a model probe is also generated", async () => {
+    const { fetchFn } = upstream((m, path, body) => {
+      if (path !== "/v1/messages") return;
+      if (body.model === "10router-no-such-model") return [400, { message: `unknown model "${body.model}"` }];
+      return [200, { ok: true }];
+    });
+    const r = await discoverModels({ baseUrl: "https://okay.example.com/v1", apiKey: KEY, protocol: "anthropic", fetchFn, catalog: CATALOG, sleep: noSleep });
+    expect(r.partial).toBe(true);
+    expect(r.partialReason).toMatch(/ran a model/);
+  });
+});
+
+describe("17. deadline, failure stop and cancel", () => {
+  const big = { providers: [], labs: Array.from({ length: 40 }, (_, i) => ({ id: `fam${i}-model-1`, lab: "x", family: `fam${i}`, date: RECENT })) };
+  it("stops a path after repeated 5xx and reports partial", async () => {
+    const { fetchFn, calls } = upstream((m, path, body) => {
+      if (path !== "/v1/messages") return;
+      if (body.model === "10router-no-such-model") return [400, { message: `unknown model "${body.model}"` }];
+      return [502, { error: { message: "bad gateway" } }];
+    });
+    const r = await discoverModels({ baseUrl: "https://flaky.example.com/v1", apiKey: KEY, protocol: "anthropic", fetchFn, catalog: big, sleep: noSleep });
+    expect(r.partial).toBe(true);
+    expect(r.partialReason).toMatch(/kept failing/);
+    expect(calls.filter((c) => c.method === "POST").length).toBeLessThanOrEqual(1 + 6 + 2);
+  });
+  it("returns partial with a reason when the overall deadline passes", async () => {
+    const slow = upstream((m, path, body) => {
+      if (path !== "/v1/chat/completions") return;
+      if (body.model === "probe") return [400, oaiErr("messages empty")];
+      if (body.model === "10router-no-such-model") return [404, oaiErr(`model ${body.model} not found`)];
+      return [400, oaiErr("messages empty")];
+    });
+    const fetchFn = async (url, init) => { await new Promise((r) => setTimeout(r, 15)); return slow.fetchFn(url, init); };
+    const r = await detectEndpoint({ url: "https://slow.example.com/v1", apiKey: KEY, fetchFn, catalog: big, sleep: noSleep, deadlineMs: 250 });
+    expect(r.ok).toBe(true);
+    expect(r.partial).toBe(true);
+    expect(r.partialReason).toMatch(/ran out of time/);
+    expect(slow.calls.length).toBeLessThan(40);
+  });
+  it("a client abort reaches every probe fetch and stops probing", async () => {
+    const ac = new AbortController();
+    const signals = [];
+    const base = upstream((m, path, body) => {
+      if (path !== "/v1/messages") return;
+      if (body.model === "10router-no-such-model") return [400, { message: `unknown model "${body.model}"` }];
+      return [400, { message: "'messages' must not be empty" }];
+    });
+    const fetchFn = async (url, init) => {
+      signals.push(init.signal);
+      if (signals.length === 3) ac.abort();
+      return base.fetchFn(url, init);
+    };
+    const r = await discoverModels({ baseUrl: "https://abort.example.com/v1", apiKey: KEY, protocol: "anthropic", fetchFn, catalog: big, sleep: noSleep, signal: ac.signal });
+    expect(signals.every((s) => s.aborted)).toBe(true); // the combined signal follows the client's
+    expect(signals.length).toBeLessThanOrEqual(3 + 2);
+    expect(r.partial).toBe(true);
+    expect(r.partialReason).toMatch(/cancelled/);
+  });
+  it("probeFetch refuses to start once the signal is aborted", async () => {
+    const fetchImpl = vi.fn();
+    const ac = new AbortController();
+    ac.abort();
+    await expect(makeProbeFetch(false, { fetchImpl })("http://x.example.com/v1/models", { method: "GET", signal: ac.signal })).rejects.toThrow();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("18. redaction covers encoded forms of the key", () => {
+  it("JSON-escaped, URL-encoded and base64 forms are redacted", () => {
+    const key = "sk-ab/cd+ef=gh/0123456789";
+    const red = makeRedactor(key);
+    const b64 = Buffer.from(key).toString("base64");
+    const out = red(`raw ${key} json ${key.replace(/\//g, "\\/")} url ${encodeURIComponent(key)} b64 ${b64} b64url ${Buffer.from(key).toString("base64url")}`);
+    expect(out).not.toContain(key);
+    expect(out).not.toContain(encodeURIComponent(key));
+    expect(out).not.toContain(b64.replace(/=+$/, ""));
+    expect(out).not.toContain(Buffer.from(key).toString("base64url"));
+    expect(out).not.toContain("sk-ab\\/cd");
+    expect(out.match(/<key>/g).length).toBe(5);
+  });
+  it("evidence from a server echoing the key JSON-escaped stays clean", async () => {
+    const key = "sk-slash/key/0123456789";
+    // Echoed without "Bearer ", so only the key-form redaction can catch it.
+    const { fetchFn } = upstream((m, path, body, headers) => [400, `{"error":{"message":"bad key ${String(headers.authorization || "").replace(/^Bearer /, "").replace(/\//g, "\\/")}"}}`]);
+    const r = await detectEndpoint({ url: "https://esc.example.com/v1", apiKey: key, fetchFn, sleep: noSleep });
+    expect(r.steps.some((st) => st.preview.includes("bad key <key>"))).toBe(true);
+    expect(JSON.stringify(r.steps)).not.toContain("0123456789");
+  });
+});

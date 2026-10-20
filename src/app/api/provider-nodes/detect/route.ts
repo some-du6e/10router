@@ -22,7 +22,8 @@ export async function POST(request: Request) {
       catch { return NextResponse.json({ ok: false, error: "URL not allowed", steps: [] }, { status: 400 }); }
     }
 
-    const result = await detectEndpoint({ url: base, apiKey, fetchFn: makeProbeFetch(remote), catalog: await getEndpointCatalog() });
+    // request.signal: a client that gives up stops the probing too.
+    const result = await detectEndpoint({ url: base, apiKey, fetchFn: makeProbeFetch(remote), catalog: await getEndpointCatalog(), signal: request.signal });
     return NextResponse.json(result);
   } catch (error) {
     console.log("Error detecting endpoint:", error instanceof Error ? error.message : undefined);

@@ -34,6 +34,9 @@ export function makeProbeFetch(checkPublic: boolean, { fetchImpl }: { fetchImpl?
   return async (url, init) => {
     let current = url;
     for (let hop = 0; ; hop++) {
+      // init.signal (timeout + client abort) goes to the fetch below; check it
+      // here too so a cancelled probe doesn't resolve DNS or follow a redirect.
+      init?.signal?.throwIfAborted();
       let dispatcher: Agent | null = null;
       if (checkPublic) {
         await assertPublicUrlResolved(current);

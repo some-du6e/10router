@@ -59,6 +59,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       protocols,
       fetchFn: makeProbeFetch(remote),
       catalog: await getEndpointCatalog(),
+      signal: request.signal, // a client that gives up stops the probing too
     });
     // A path that errored mid-probe would drop its models from the routes, so
     // only replace saved routes when every path finished.
