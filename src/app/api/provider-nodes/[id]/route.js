@@ -19,12 +19,14 @@ export async function PUT(request, { params }) {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
     }
 
-    if (!prefix?.trim()) {
-      return NextResponse.json({ error: "Prefix is required" }, { status: 400 });
+    if (typeof prefix !== "string" || !prefix.trim()) {
+      return NextResponse.json({ error: "Prefix is required", field: "prefix" }, { status: 400 });
     }
 
-    // Keeping the prefix it already has is always fine (older nodes may predate this check).
-    if (prefix.trim().toLowerCase() !== String(node.prefix || "").toLowerCase()) {
+    // Keeping the exact prefix it already has is always fine: older nodes may
+    // predate the format and reserved-name checks. Any other value, including a
+    // case-only change, must pass them.
+    if (prefix.trim() !== String(node.prefix || "").trim()) {
       const problem = prefixProblem(prefix, { nodes: await getProviderNodes(), selfId: id });
       if (problem) return NextResponse.json({ error: problem, field: "prefix" }, { status: 400 });
     }

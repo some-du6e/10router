@@ -3,7 +3,7 @@ import { createProviderNode, getProviderNodes } from "@/models";
 import { OPENAI_COMPATIBLE_PREFIX, ANTHROPIC_COMPATIBLE_PREFIX, CUSTOM_EMBEDDING_PREFIX } from "@/shared/constants/providers";
 import { generateId } from "@/shared/utils";
 import { sanitizeNodeQuirks } from "@/shared/utils/nodeQuirks";
-import { prefixProblem } from "@/shared/utils/reservedPrefixes";
+import { prefixFormatProblem, prefixProblem } from "@/shared/utils/reservedPrefixes";
 
 export const dynamic = "force-dynamic";
 
@@ -46,8 +46,12 @@ export async function POST(request) {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
     }
 
-    if (!prefix?.trim()) {
-      return NextResponse.json({ error: "Prefix is required" }, { status: 400 });
+    if (typeof prefix !== "string" || !prefix.trim()) {
+      return NextResponse.json({ error: "Prefix is required", field: "prefix" }, { status: 400 });
+    }
+    const formatProblem = prefixFormatProblem(prefix);
+    if (formatProblem) {
+      return NextResponse.json({ error: formatProblem, field: "prefix" }, { status: 400 });
     }
 
     // Determine type
@@ -57,7 +61,7 @@ export async function POST(request) {
     // the same type + prefix + base URL is the same endpoint, so return it.
     const nodes = await getProviderNodes();
     const sameEndpoint = nodes.find((n) => n.type === nodeType
-      && String(n.prefix || "").toLowerCase() === prefix.trim().toLowerCase()
+      && String(n.prefix || "").trim().toLowerCase() === prefix.trim().toLowerCase()
       && trimUrl(n.baseUrl) === trimUrl(baseUrl)
       && (nodeType !== "openai-compatible" || n.apiType === apiType));
     if (sameEndpoint && baseUrl) {

@@ -5,7 +5,7 @@ import type { ChangeEvent, ComponentType, ReactNode } from "react";
 import * as Shared from "@/shared/components";
 import { makePrefix, suggestName, normalizeUrl, cleanKey } from "@/lib/endpointDetect.js";
 import type { Protocol, DetectStep, DetectQuirks, DetectResult } from "@/lib/endpointDetect.js";
-import { RESERVED_PREFIXES, isReservedPrefix } from "@/shared/utils/reservedPrefixes.js";
+import { RESERVED_PREFIXES, PREFIX_MAX_LENGTH, isReservedPrefix, prefixFormatProblem } from "@/shared/utils/reservedPrefixes.js";
 
 // The shared components are untyped JS, so their inferred props mark every
 // option as required. Re-type the ones used here with the props we pass.
@@ -150,6 +150,8 @@ function ProbeList({ steps }: ProbeListProps) {
 }
 
 const DETECT_TIMEOUT_MS = 60_000;
+// Matches MAX_BULK in src/app/api/models/custom/route.js.
+const MODELS_PER_REQUEST = 1000;
 interface ModalQuirks extends DetectQuirks {
   stripBeta: boolean;
   maxCompletionTokens: boolean;
@@ -214,8 +216,6 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }: Ad
   // The detection in flight: a newer one (or a close/edit) aborts it, and a stale
   // response is dropped by id even if it already arrived.
   const detectRef = useRef<DetectInFlight>({ id: 0, controller: null, timer: null });
-  // The node made by a save whose later steps failed, so a retry doesn't make another.
-  const createdRef = useRef<CreatedNode | null>(null);
 
   // Built-in provider names are taken too: routing sends `kimi/…` to Kimi.
   const taken = useMemo<string[]>(() => [...takenPrefixes, ...RESERVED_PREFIXES], [takenPrefixes]);
@@ -223,6 +223,8 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }: Ad
   const prefixIssue = (p: string): string => {
     const v = String(p || "").trim().toLowerCase();
     if (!v) return "";
+    const format = prefixFormatProblem(v);
+    if (format) return format;
     if (isReservedPrefix(v)) return `"${v}" is a built-in provider's name, so ${v}/… would go there. Pick another prefix.`;
     if (takenPrefixes.some((t) => String(t).toLowerCase() === v)) return `"${v}" is already used by another endpoint.`;
     return "";
@@ -244,7 +246,6 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }: Ad
     if (!nameEdited) setName("");
     if (!prefixEdited) setPrefix("");
     setError(""); setPrefixError("");
-    createdRef.current = null;
   };
 
   const reset = () => {
@@ -252,7 +253,6 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }: Ad
     setUrl(""); setApiKey(""); setPhase("idle"); setResult(null); setName(""); setNameEdited(false); setPrefix("");
     setPrefixEdited(false); setProtocol(null); setQuirks(DEFAULT_QUIRKS);
     setManualModels(""); setError(""); setPrefixError(""); setElapsed(0);
-    createdRef.current = null;
   };
   const close = () => { reset(); onClose(); };
 
@@ -279,7 +279,6 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }: Ad
     const live = () => detectRef.current.id === id;
 
     setPhase("detecting"); setElapsed(0); setError(""); setPrefixError(""); setResult(null);
-    createdRef.current = null;
     try {
       const res = await fetch("/api/provider-nodes/detect", {
         method: "POST",
@@ -336,18 +335,28 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }: Ad
     const chosen = protocol || result?.protocol || "openai-chat";
     const proto = PROTOCOLS[chosen];
     const found = phase === "found" && !!result?.ok;
+    // A refused key means detection didn't really check this endpoint: save it
+    // unverified, like any other unconfirmed endpoint.
+    const refused = !!result?.authRejected || keyRefused(result);
     // Verified only when the API type we save is one detection actually saw work.
-    const verified = found && (result!.protocols?.length ? result!.protocols : [result!.protocol]).includes(chosen);
+    const verified = found && !refused && (result!.protocols?.length ? result!.protocols : [result!.protocol]).includes(chosen);
+    // Overriding the API type away from the detected primary drops the routes,
+    // so only the models seen on the chosen API can be served.
+    const detectedModels: string[] = !found
+      ? []
+      : chosen !== result!.protocol && result!.byProtocol
+        ? result!.byProtocol[chosen] || []
+        : result!.models || [];
     const models: string[] = found && result!.models?.length
-      ? result!.models
+      ? detectedModels
       : manualModels.split(/[\s,]+/).map((m) => m.trim()).filter(Boolean);
     if (!name.trim() || !prefix.trim()) { setError("Name and prefix are required."); return; }
     const issue = prefixIssue(prefix);
-    if (issue && !createdRef.current) { setPrefixError(issue); return; }
+    if (issue) { setPrefixError(issue); return; }
     setSaving(true); setError(""); setPrefixError("");
-    let node = createdRef.current;
     try {
-      if (!node) {
+      let node: CreatedNode;
+      try {
         // The server returns the existing node when the same endpoint was already
         // saved, so a retry after a lost response doesn't add a duplicate.
         const nodeRes = await fetch("/api/provider-nodes", {
@@ -366,62 +375,64 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }: Ad
           }),
         });
         const nodeData: SaveNodeResponse = await nodeRes.json().catch(() => ({}));
-        if (!nodeRes.ok) {
+        if (!nodeRes.ok || !nodeData.node) {
+          // e.g. a prefix taken since the list was loaded: the user can fix it and retry.
           if (nodeData.field === "prefix") setPrefixError(nodeData.error ?? "");
           else setError(nodeData.error || "Couldn't save the endpoint.");
           return;
         }
-        node = nodeData.node ?? null;
-        createdRef.current = node;
+        node = nodeData.node;
+      } catch {
+        setError("Network error. Nothing was saved; try again.");
+        return;
       }
-    } catch {
-      setError("Network error. Nothing was saved; try again.");
-      setSaving(false);
-      return;
-    }
 
-    // The node exists from here on, so always finish and close; the page reports
-    // what didn't save.
-    let keyError: string | null = null;
-    if (apiKey.trim()) {
-      try {
-        const connRes = await fetch("/api/providers", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            provider: node!.id,
-            apiKey: cleanKey(apiKey),
-            defaultModel: models[0] || null,
-            testStatus: verified ? "active" : "unknown",
-          }),
-        });
-        if (!connRes.ok) {
-          const d: { error?: string } = await connRes.json().catch(() => ({}));
-          keyError = d.error || `HTTP ${connRes.status}`;
+      // The node exists from here on, so always finish and close; the page reports
+      // what didn't save.
+      let keyError: string | null = null;
+      if (apiKey.trim()) {
+        try {
+          const connRes = await fetch("/api/providers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              provider: node.id,
+              apiKey: cleanKey(apiKey),
+              defaultModel: models[0] || null,
+              testStatus: verified ? "active" : "unknown",
+            }),
+          });
+          if (!connRes.ok) {
+            const d: { error?: string } = await connRes.json().catch(() => ({}));
+            keyError = d.error || `HTTP ${connRes.status}`;
+          }
+        } catch {
+          keyError = "network error";
         }
-      } catch {
-        keyError = "network error";
       }
-    }
 
-    let modelsFailed = 0;
-    if (models.length) {
-      try {
-        const res = await fetch("/api/models/custom", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ providerAlias: node!.id, type: "llm", models }),
-        });
-        const d: { failed?: unknown } = await res.json().catch(() => ({}));
-        modelsFailed = Array.isArray(d.failed) ? d.failed.length : res.ok ? 0 : models.length;
-      } catch {
-        modelsFailed = models.length;
+      // The bulk route takes at most MODELS_PER_REQUEST at a time.
+      let modelsFailed = 0;
+      for (let i = 0; i < models.length; i += MODELS_PER_REQUEST) {
+        const chunk = models.slice(i, i + MODELS_PER_REQUEST);
+        try {
+          const res = await fetch("/api/models/custom", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ providerAlias: node.id, type: "llm", models: chunk }),
+          });
+          const d: { failed?: unknown } = await res.json().catch(() => ({}));
+          modelsFailed += Array.isArray(d.failed) ? d.failed.length : res.ok ? 0 : chunk.length;
+        } catch {
+          modelsFailed += chunk.length;
+        }
       }
+      if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("customModelChanged"));
+      onCreated(node, { keyError, modelsFailed, modelsTotal: models.length });
+      reset();
+    } finally {
+      setSaving(false);
     }
-    if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("customModelChanged"));
-    setSaving(false);
-    onCreated(node!, { keyError, modelsFailed, modelsTotal: models.length });
-    reset();
   };
 
   const detected = result?.ok ? result : null;
@@ -541,7 +552,7 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }: Ad
                 label="Prefix"
                 value={prefix}
                 onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                  const v = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "");
+                  const v = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, PREFIX_MAX_LENGTH);
                   setPrefix(v); setPrefixEdited(true); setPrefixError(prefixIssue(v));
                 }}
                 placeholder="ep"

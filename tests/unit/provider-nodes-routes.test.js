@@ -36,7 +36,7 @@ vi.mock("@/models", () => ({
 const nodesRoute = await import("../../src/app/api/provider-nodes/route.js");
 const nodeRoute = await import("../../src/app/api/provider-nodes/[id]/route.js");
 const customRoute = await import("../../src/app/api/models/custom/route.js");
-const { isReservedPrefix, RESERVED_PREFIXES, prefixProblem } = await import("../../src/shared/utils/reservedPrefixes.js");
+const { isReservedPrefix, RESERVED_PREFIXES, prefixProblem, prefixFormatProblem, PREFIX_MAX_LENGTH } = await import("../../src/shared/utils/reservedPrefixes.js");
 const { makePrefix } = await import("../../src/lib/endpointDetect.js");
 
 const req = (body) => ({ json: async () => body });
@@ -51,6 +51,30 @@ describe("reserved prefixes", () => {
     for (const p of ["kimi", "groq", "openai", "kmc", "xmtp"]) expect(isReservedPrefix(p)).toBe(true);
     expect(isReservedPrefix("Kimi")).toBe(true);
     expect(isReservedPrefix("my-ep")).toBe(false);
+  });
+
+  it("matches routing's reserved set: uiAlias-only names stay usable", async () => {
+    const { default: REGISTRY } = await import("../../open-sse/providers/registry/index.js");
+    const routed = new Set(["xmtp", "xiaomi-tokenplan"]);
+    for (const e of REGISTRY) {
+      routed.add(e.id);
+      if (e.alias) routed.add(e.alias);
+      for (const a of e.aliases || []) routed.add(a);
+    }
+    expect(RESERVED_PREFIXES).toEqual([...routed].map((n) => n.toLowerCase()).sort());
+    // perplexity-agent's uiAlias "pa" and voyage-ai's "voyage" aren't routed.
+    expect(isReservedPrefix("pa")).toBe(false);
+    expect(isReservedPrefix("voyage")).toBe(false);
+    // Routed aliases stay reserved.
+    for (const p of ["ag", "bb", "cf"]) expect(isReservedPrefix(p)).toBe(true);
+  });
+
+  it("checks prefix format", () => {
+    expect(prefixFormatProblem("my-ep2")).toBeNull();
+    expect(prefixFormatProblem("My_Ep")).toMatch(/lowercase/);
+    expect(prefixFormatProblem("a/b")).toMatch(/lowercase/);
+    expect(prefixFormatProblem("a".repeat(PREFIX_MAX_LENGTH + 1))).toMatch(/at most/);
+    expect(prefixProblem("Bad Prefix")).toMatch(/lowercase/);
   });
 
   it("makePrefix avoids them when passed as taken", () => {
@@ -83,6 +107,20 @@ describe("POST /api/provider-nodes", () => {
     expect(again.status).toBe(200);
     expect(again.body.node.id).toBe(first.body.node.id);
     expect(db.nodes).toHaveLength(1);
+  });
+
+  it.each([["My-EP"], ["my ep"], ["a/b"], ["x".repeat(40)]])("rejects malformed prefix %s with field prefix", async (prefix) => {
+    const res = await nodesRoute.POST(req({ ...body, prefix }));
+    expect(res.status).toBe(400);
+    expect(res.body.field).toBe("prefix");
+    expect(db.nodes).toHaveLength(0);
+  });
+
+  it("compares prefixes case-insensitively against legacy nodes", async () => {
+    db.nodes = [{ id: "old", type: "openai-compatible", apiType: "chat", prefix: "MK", name: "Old", baseUrl: "https://old.example/v1" }];
+    const res = await nodesRoute.POST(req({ ...body, prefix: "mk" }));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/already used by Old/);
   });
 
   it("rejects a prefix another endpoint already uses", async () => {
@@ -131,7 +169,41 @@ describe("PUT /api/provider-nodes/[id]", () => {
   });
 });
 
+describe("PUT prefix format", () => {
+  const legacy = { id: "openai-compatible-chat-1", type: "openai-compatible", apiType: "chat", name: "Legacy", prefix: "My_Legacy", baseUrl: "https://x.example/v1" };
+  const base = { name: "Legacy", apiType: "chat", baseUrl: "https://x.example/v1" };
+  beforeEach(() => { db.nodes = [{ ...legacy }]; });
+
+  it("lets a legacy node keep a prefix that predates the format rule", async () => {
+    const res = await nodeRoute.PUT(req({ ...base, prefix: "My_Legacy" }), params(legacy.id));
+    expect(res.status).toBe(200);
+    expect(db.nodes[0].prefix).toBe("My_Legacy");
+  });
+
+  it("rejects changing to a malformed prefix", async () => {
+    const res = await nodeRoute.PUT(req({ ...base, prefix: "Other_One" }), params(legacy.id));
+    expect(res.status).toBe(400);
+    expect(res.body.field).toBe("prefix");
+  });
+
+  it("allows moving a legacy prefix to a valid one", async () => {
+    const res = await nodeRoute.PUT(req({ ...base, prefix: "my-legacy" }), params(legacy.id));
+    expect(res.status).toBe(200);
+    expect(db.nodes[0].prefix).toBe("my-legacy");
+  });
+});
+
 describe("POST /api/models/custom (bulk)", () => {
+  it("accepts exactly 1000 models and rejects 1001 (the modal chunks at 1000)", async () => {
+    const ids = Array.from({ length: 1001 }, (_, i) => `m${i}`);
+    const over = await customRoute.POST(req({ providerAlias: "n1", models: ids }));
+    expect(over.status).toBe(400);
+    expect(db.models).toHaveLength(0);
+    const ok = await customRoute.POST(req({ providerAlias: "n1", models: ids.slice(0, 1000) }));
+    expect(ok.status).toBe(200);
+    expect(ok.body.added).toHaveLength(1000);
+  });
+
   it("adds many and reports failures", async () => {
     db.failIds.add("bad");
     const res = await customRoute.POST(req({ providerAlias: "n1", models: ["a", { id: "b" }, "bad", ""] }));

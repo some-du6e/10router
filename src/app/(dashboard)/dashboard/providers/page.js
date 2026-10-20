@@ -919,7 +919,8 @@ export default function ProvidersPage() {
         isOpen={showAddCompatibleModal}
         onClose={() => setShowAddCompatibleModal(false)}
         onCreated={(node) => {
-          setProviderNodes((prev) => [...prev, node]);
+          // POST hands back the existing node for a duplicate save.
+          setProviderNodes((prev) => (prev.some((n) => n.id === node.id) ? prev : [...prev, node]));
           setShowAddCompatibleModal(false);
         }}
       />
@@ -928,7 +929,8 @@ export default function ProvidersPage() {
         isOpen={showAddAnthropicCompatibleModal}
         onClose={() => setShowAddAnthropicCompatibleModal(false)}
         onCreated={(node) => {
-          setProviderNodes((prev) => [...prev, node]);
+          // POST hands back the existing node for a duplicate save.
+          setProviderNodes((prev) => (prev.some((n) => n.id === node.id) ? prev : [...prev, node]));
           setShowAddAnthropicCompatibleModal(false);
         }}
       />
