@@ -9,7 +9,7 @@ import { createRequestLogger } from "../utils/requestLogger.js";
 import { getModelTargetFormat, getModelSupportedFormats, getModelStrip, getModelUpstreamId, getModelType, PROVIDER_ID_TO_ALIAS } from "../config/providerModels.js";
 import { PROVIDERS } from "../config/providers.js";
 import { createErrorResult, parseUpstreamError, formatProviderError } from "../utils/error.js";
-import { classifyError } from "../utils/errorClass.js";
+import { classifyError, errorText } from "../utils/errorClass.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { handleBypassRequest } from "../utils/bypassHandler.js";
 import { injectLimitHoldNotice } from "../utils/limitHoldNotice.js";
@@ -397,7 +397,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       providerRequest: error?.transformedBody || executor.finalizeBody?.(translatedBody, null, credentials) || translatedBody || null,
       response: { error: error.message || String(error), status: failStatus, thinking: null },
       status: "error",
-      errorClass: classifyError(failStatus, error.message)
+      errorClass: classifyError(failStatus, errorText(error))
     })).catch(() => { });
 
     if (error.name === "AbortError") {

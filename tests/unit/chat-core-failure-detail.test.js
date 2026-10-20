@@ -94,10 +94,10 @@ describe("chatCore failure request details", () => {
     expect(savedErrorRow().errorClass).toBe("upstream_5xx");
   });
 
-  it("records auth_locked on a 401", async () => {
+  it("records auth_error on a 401", async () => {
     respondAfterDelay(401, { error: { message: "invalid api key" } });
     await run();
-    expect(savedErrorRow().errorClass).toBe("auth_locked");
+    expect(savedErrorRow().errorClass).toBe("auth_error");
   });
 
   it("records timeout with ttft 0 when the upstream never answered", async () => {
@@ -107,5 +107,18 @@ describe("chatCore failure request details", () => {
     expect(row.errorClass).toBe("timeout");
     expect(row.latency.ttft).toBe(0);
     expect(row.response.status).toBe(502);
+  });
+
+  it("records timeout when undici reports it only in the error cause", async () => {
+    const cause = Object.assign(new Error("Connect Timeout Error"), { code: "UND_ERR_CONNECT_TIMEOUT" });
+    executeMock.mockRejectedValue(new TypeError("fetch failed", { cause }));
+    await run();
+    expect(savedErrorRow().errorClass).toBe("timeout");
+  });
+
+  it("records rate_limited, not auth_error, for a quota error sent as 403", async () => {
+    respondAfterDelay(403, { error: { message: "You exceeded your current quota" } });
+    await run();
+    expect(savedErrorRow().errorClass).toBe("rate_limited");
   });
 });
