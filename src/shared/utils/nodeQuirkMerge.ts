@@ -30,8 +30,12 @@ export function mergeConnectionData(
 ): QuirkHolder {
   const fromNode = Object.fromEntries(QUIRK_KEYS.filter((k) => node[k] !== undefined).map((k) => [k, node[k]]));
   const next: QuirkHolder = { ...psd, ...connectionFields, ...fromNode };
-  if (psd.droppedBetas || node.droppedBetas) {
-    next.droppedBetas = [...new Set([...(node.droppedBetas || []), ...(psd.droppedBetas || [])])].filter((f) => !removed.has(f));
+  // A key on its own endpoint URL keeps only the flags its endpoint rejected.
+  const nodeBetas = psd.ownBaseUrl ? [] : node.droppedBetas || [];
+  if (psd.droppedBetas || nodeBetas.length) {
+    next.droppedBetas = [...new Set([...nodeBetas, ...(psd.droppedBetas || [])])].filter((f) => !removed.has(f));
+  } else {
+    delete next.droppedBetas;
   }
   return next;
 }

@@ -152,4 +152,48 @@ describe("upstream answers a stream request with JSON", () => {
     expect(handleStreamingResponse).toHaveBeenCalledTimes(1);
     expect(handleNonStreamingResponse).not.toHaveBeenCalled();
   });
+
+  it("replays a JSON reply as SSE when the client asked to stream", async () => {
+    const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
+    const { handleNonStreamingResponse } = await import("../../open-sse/handlers/chatCore/nonStreamingHandler.js");
+    const reply = { id: "x", object: "chat.completion", created: 1, model: "m", choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }] };
+    vi.mocked(handleNonStreamingResponse).mockResolvedValueOnce({ success: true, response: new Response(JSON.stringify(reply), { headers: { "content-type": "application/json" } }) });
+    executeMock.mockResolvedValue(upstream("application/json"));
+    const o = opts(); o.body.stream = true;
+    const result = await handleChatCore(o);
+    expect(result.response.headers.get("content-type")).toBe("text/event-stream");
+    const text = await result.response.text();
+    expect(text).toContain('"content":"hello"');
+    expect(text.trim().endsWith("data: [DONE]")).toBe(true);
+  });
+
+  it("keeps JSON when the client left stream out", async () => {
+    const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
+    executeMock.mockResolvedValue(upstream("application/json"));
+    const result = await handleChatCore(opts());
+    expect(result.response.headers.get("content-type")).toBe("application/json");
+  });
+});
+
+describe("jsonReplyToSse", () => {
+  it("replays a Claude message with text and a tool call", async () => {
+    const { jsonReplyToSse } = await import("../../open-sse/handlers/chatCore/jsonToSse.js");
+    const out = jsonReplyToSse({ id: "m", type: "message", role: "assistant", model: "c", content: [{ type: "text", text: "hi" }, { type: "tool_use", id: "t1", name: "f", input: { a: 1 } }], stop_reason: "tool_use", usage: { input_tokens: 3, output_tokens: 4 } }, "claude");
+    expect(out).toContain("event: message_start");
+    expect(out).toContain('"partial_json":"{\\"a\\":1}"');
+    expect(out).toContain('"stop_reason":"tool_use"');
+    expect(out.trim().endsWith('data: {"type":"message_stop"}')).toBe(true);
+  });
+
+  it("replays a Responses reply and ends with response.completed", async () => {
+    const { jsonReplyToSse } = await import("../../open-sse/handlers/chatCore/jsonToSse.js");
+    const out = jsonReplyToSse({ id: "r", object: "response", status: "completed", output: [{ type: "message", id: "i", role: "assistant", content: [{ type: "output_text", text: "yo" }] }] }, "openai-responses");
+    expect(out).toContain("event: response.output_text.delta");
+    expect(out).toContain("event: response.completed");
+  });
+
+  it("returns null for formats it does not know", async () => {
+    const { jsonReplyToSse } = await import("../../open-sse/handlers/chatCore/jsonToSse.js");
+    expect(jsonReplyToSse({ candidates: [] }, "gemini")).toBeNull();
+  });
 });

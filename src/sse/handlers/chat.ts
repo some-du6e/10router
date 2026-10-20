@@ -478,6 +478,8 @@ export async function saveDroppedBetas(credentials: Credentials, provider: strin
       await updateProviderConnection(id, { providerSpecificData: { ...psd, droppedBetas: union(psd.droppedBetas, droppedBetas) } });
     });
   }
+  // A key on its own endpoint URL learned this about that endpoint, not the node's.
+  if (credentials.providerSpecificData?.ownBaseUrl) return;
   await serialize(`node:${provider}`, async () => {
     const node = await getProviderNodeById(provider).catch(() => null);
     if (node) await updateProviderNode(provider, { droppedBetas: union(node.droppedBetas, droppedBetas) });

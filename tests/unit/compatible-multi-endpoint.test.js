@@ -230,3 +230,13 @@ describe("validating a key at its own URL", () => {
     }
   });
 });
+
+describe("node edits and a key's learned beta flags", () => {
+  it("does not copy the node's flags onto a key with its own endpoint", async () => {
+    const { mergeConnectionData } = await import("../../src/shared/utils/nodeQuirkMerge.ts");
+    const node = { droppedBetas: ["node-1"], stripBeta: false };
+    expect(mergeConnectionData({ ownBaseUrl: true, droppedBetas: ["own-1"] }, node).droppedBetas).toEqual(["own-1"]);
+    expect(mergeConnectionData({ ownBaseUrl: true }, node).droppedBetas).toBeUndefined();
+    expect(mergeConnectionData({ droppedBetas: ["k-1"] }, node).droppedBetas.sort()).toEqual(["k-1", "node-1"]);
+  });
+});

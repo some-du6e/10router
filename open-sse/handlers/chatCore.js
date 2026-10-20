@@ -18,6 +18,8 @@ import { supportsGrokCliReasoningEffort } from "../config/grokCli.js";
 import { buildRequestDetail, extractRequestConfig } from "./chatCore/requestDetail.js";
 import { handleForcedSSEToJson } from "./chatCore/sseToJsonHandler.js";
 import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
+import { jsonReplyToSse } from "./chatCore/jsonToSse.js";
+import { SSE_HEADERS_CORS } from "../utils/sseConstants.js";
 import { handleStreamingResponse, buildOnStreamComplete } from "./chatCore/streamingHandler.js";
 import { detectClientTool, isNativePassthrough } from "../utils/clientDetector.js";
 import { dedupeTools } from "../utils/toolDeduper.js";
@@ -523,6 +525,11 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   if (!stream || upstreamSentJson) {
     const result = await handleNonStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, reqLogger, toolNameMap, customToolNames, toolNamespaces, trackDone, appendLog });
     streamController.handleComplete();
+    // The client asked to stream: replay the finished reply as its own SSE.
+    if (clientRequestedStreaming && result?.success) {
+      const replay = jsonReplyToSse(await result.response.clone().json().catch(() => null), sourceFormat);
+      if (replay) return { success: true, response: new Response(replay, { headers: SSE_HEADERS_CORS }) };
+    }
     return result;
   }
 

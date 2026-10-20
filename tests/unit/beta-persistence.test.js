@@ -90,3 +90,13 @@ describe("saveDroppedBetas sanitizing", () => {
     expect(db.conns.c2.providerSpecificData.droppedBetas).toHaveLength(50);
   });
 });
+
+describe("saveDroppedBetas on a key with its own endpoint", () => {
+  it("keeps the learned flags on that key only", async () => {
+    db.conns.c3 = { id: "c3", providerSpecificData: { baseUrl: "https://other/v1", ownBaseUrl: true } };
+    db.nodes.n3 = { id: "n3", droppedBetas: ["node-1"] };
+    await saveDroppedBetas({ connectionId: "c3", providerSpecificData: { baseUrl: "https://other/v1", ownBaseUrl: true } }, "n3", ["own-1"]);
+    expect(db.conns.c3.providerSpecificData.droppedBetas).toEqual(["own-1"]);
+    expect(db.nodes.n3.droppedBetas).toEqual(["node-1"]);
+  });
+});
