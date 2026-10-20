@@ -56,3 +56,12 @@ export function withKeyBaseUrl<T extends Record<string, unknown>>(psd: T, result
   else delete next.ownBaseUrl;
   return next as T;
 }
+
+// Drop the per-key URL fields from client-sent providerSpecificData, so the
+// only way to set them is the checked baseUrl field (resolveKeyBaseUrl).
+// Otherwise a remote caller could store an internal URL and skip the SSRF guard.
+export function withoutKeyBaseUrl<T>(psd: T): T {
+  if (!psd || typeof psd !== "object" || Array.isArray(psd)) return psd;
+  const { baseUrl: _baseUrl, ownBaseUrl: _own, ...rest } = psd as Record<string, unknown>;
+  return rest as T;
+}

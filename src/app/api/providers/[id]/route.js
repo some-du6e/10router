@@ -6,8 +6,8 @@ import {
   updateProviderConnection,
   deleteProviderConnection,
 } from "@/models";
-import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
-import { resolveKeyBaseUrl, withKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
+import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
+import { resolveKeyBaseUrl, withKeyBaseUrl, withoutKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
 import { isLocalRequest } from "@/dashboardGuard";
 
 function normalizeProxyConfig(body = {}) {
@@ -104,13 +104,20 @@ export async function PUT(request, { params }) {
       lastErrorAt,
       errorCode,
       monthlyCost,
-      providerSpecificData
     } = body;
 
     const existing = await getProviderConnectionById(id);
     if (!existing) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
     }
+
+    // On node-backed keys, psd.baseUrl is the endpoint the key is sent to. It
+    // comes from the node, or for compatible keys from the checked baseUrl
+    // field below; never from client-sent providerSpecificData.
+    const isCompatibleKey = isOpenAICompatibleProvider(existing.provider) || isAnthropicCompatibleProvider(existing.provider);
+    const providerSpecificData = isCompatibleKey || isCustomEmbeddingProvider(existing.provider)
+      ? withoutKeyBaseUrl(body.providerSpecificData)
+      : body.providerSpecificData;
 
     const proxyConfig = normalizeProxyConfig(body);
     if (proxyConfig.error) {
@@ -199,7 +206,6 @@ export async function PUT(request, { params }) {
 
     // Per-key endpoint URL on compatible nodes. A string changes it; empty or
     // null goes back to the provider's URL.
-    const isCompatibleKey = isOpenAICompatibleProvider(existing.provider) || isAnthropicCompatibleProvider(existing.provider);
     if (isCompatibleKey && body.baseUrl !== undefined) {
       if (body.baseUrl !== null && typeof body.baseUrl !== "string") {
         return NextResponse.json({ error: "Invalid baseUrl", field: "baseUrl" }, { status: 400 });

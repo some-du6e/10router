@@ -8,7 +8,11 @@ const db = vi.hoisted(() => ({ nodes: [], connections: [], local: true }));
 const mocks = vi.hoisted(() => ({
   json: vi.fn((body, init) => ({ status: init?.status || 200, body })),
   upstream: vi.fn(),
+  probeFetch: vi.fn(),
+  makeProbeFetch: vi.fn(),
 }));
+
+vi.mock("@/lib/probeFetch.js", () => ({ makeProbeFetch: mocks.makeProbeFetch }));
 
 vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
   default: mocks.upstream,
@@ -47,6 +51,7 @@ vi.mock("@/models", () => ({
 const providersRoute = await import("../../src/app/api/providers/route.js");
 const connectionRoute = await import("../../src/app/api/providers/[id]/route.js");
 const nodeRoute = await import("../../src/app/api/provider-nodes/[id]/route.js");
+const validateRoute = await import("../../src/app/api/providers/validate/route.js");
 const { getExecutor } = await import("../../open-sse/executors/index.js");
 const { normalizeEndpointUrl } = await import("../../src/shared/utils/connectionBaseUrl.js");
 
@@ -58,6 +63,8 @@ const req = (body) => ({ json: async () => body, headers: new Headers() });
 const params = (id) => ({ params: Promise.resolve({ id }) });
 
 beforeEach(() => {
+  mocks.probeFetch.mockReset();
+  mocks.makeProbeFetch.mockReset().mockReturnValue(mocks.probeFetch);
   db.local = true;
   db.connections = [];
   db.nodes = [{ id: NODE_ID, type: "openai-compatible", prefix: "snow", apiType: "chat", baseUrl: URL_A, name: "Snowflake", stripBeta: false }];
@@ -96,6 +103,24 @@ describe("per-key endpoint URL", () => {
     const put = await connectionRoute.PUT(req({ baseUrl: "http://127.0.0.1:8080/v1" }), params("conn-1"));
     expect(put.status).toBe(400);
     expect(db.connections[0].providerSpecificData.baseUrl).toBe(URL_A);
+  });
+
+  it("providerSpecificData can't set the key's URL", async () => {
+    db.local = false;
+    await providersRoute.POST(req({ provider: NODE_ID, apiKey: "sk-a", name: "A", providerSpecificData: { baseUrl: "http://169.254.169.254/latest", ownBaseUrl: true } }));
+    expect(db.connections[0].providerSpecificData.baseUrl).toBe(URL_A);
+    expect(db.connections[0].providerSpecificData.ownBaseUrl).toBeUndefined();
+
+    const put = await connectionRoute.PUT(req({ providerSpecificData: { baseUrl: "http://169.254.169.254/latest", ownBaseUrl: true, region: "eu" } }), params("conn-1"));
+    expect(put.status).toBe(200);
+    expect(db.connections[0].providerSpecificData).toMatchObject({ baseUrl: URL_A, prefix: "snow", region: "eu" });
+    expect(db.connections[0].providerSpecificData.ownBaseUrl).toBeUndefined();
+  });
+
+  it("providerSpecificData can't clear a key's own URL flag either", async () => {
+    await providersRoute.POST(req({ provider: NODE_ID, apiKey: "sk-b", name: "B", baseUrl: URL_B }));
+    await connectionRoute.PUT(req({ providerSpecificData: { baseUrl: "http://127.0.0.1/v1" } }), params("conn-1"));
+    expect(db.connections[0].providerSpecificData).toMatchObject({ baseUrl: URL_B, ownBaseUrl: true });
   });
 
   it("rejects a non-http URL", async () => {
@@ -160,5 +185,48 @@ describe("failover across endpoints", () => {
     expect(hits[0]).toBe(`${URL_A}/chat/completions`);
     expect(hits.at(-1)).toBe(`${URL_B}/chat/completions`);
     expect(last.response.status).toBe(200);
+  });
+});
+
+describe("validating a key at its own URL", () => {
+  // A literal public IP: the SSRF check needs no DNS.
+  const PUBLIC_URL = "https://8.8.8.8/v1";
+  const okRes = () => ({ ok: true, status: 200, json: async () => ({}), text: async () => "" });
+
+  it("a remote caller's own URL goes through the pinned probe fetch", async () => {
+    db.local = false;
+    mocks.probeFetch.mockResolvedValue(okRes());
+    const res = await validateRoute.POST(req({ provider: NODE_ID, apiKey: "sk-b", baseUrl: PUBLIC_URL }));
+    expect(res.body.valid).toBe(true);
+    expect(mocks.makeProbeFetch).toHaveBeenCalledWith(true);
+    expect(mocks.probeFetch).toHaveBeenCalledWith(`${PUBLIC_URL}/models`, expect.objectContaining({ headers: { Authorization: "Bearer sk-b" } }));
+  });
+
+  it("an anthropic-compatible key does too", async () => {
+    db.local = false;
+    db.nodes.push({ id: "anthropic-compatible-x", type: "anthropic-compatible", prefix: "ax", baseUrl: "https://api.example.com", name: "X" });
+    mocks.probeFetch.mockResolvedValue({ ...okRes(), ok: false, status: 400 });
+    const res = await validateRoute.POST(req({ provider: "anthropic-compatible-x", apiKey: "sk-x", baseUrl: PUBLIC_URL }));
+    expect(res.body.valid).toBe(true);
+    expect(mocks.probeFetch).toHaveBeenCalledWith(`${PUBLIC_URL}/v1/messages`, expect.objectContaining({ method: "POST" }));
+  });
+
+  it("an internal URL from a remote caller is refused before any request", async () => {
+    db.local = false;
+    const res = await validateRoute.POST(req({ provider: NODE_ID, apiKey: "sk-b", baseUrl: "http://169.254.169.254/latest" }));
+    expect(res.status).toBe(400);
+    expect(mocks.probeFetch).not.toHaveBeenCalled();
+  });
+
+  it("a local caller keeps the plain fetch", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(okRes());
+    try {
+      const res = await validateRoute.POST(req({ provider: NODE_ID, apiKey: "sk-b", baseUrl: "http://127.0.0.1:8080/v1" }));
+      expect(res.body.valid).toBe(true);
+      expect(spy).toHaveBeenCalledWith("http://127.0.0.1:8080/v1/models", expect.anything());
+      expect(mocks.makeProbeFetch).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
