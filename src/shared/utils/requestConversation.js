@@ -225,11 +225,11 @@ function measurePreviewSizes(value, limits, maxSize) {
       return;
     }
     const proto = item && typeof item === "object" ? Object.getPrototypeOf(item) : undefined;
-    if (proto !== Object.prototype && proto !== null) { unsupported = true; return; }
+    // An own toJSON (even a method, which isOmitted would drop) changes what gets serialized.
+    if ((proto !== Object.prototype && proto !== null) || Object.hasOwn(item, "toJSON")) { unsupported = true; return; }
     const entries = Object.entries(item).filter(([, child]) => !isOmitted(child));
     addAll(2 + Math.max(0, entries.length - 1));
     for (const [k, child] of entries) {
-      if (k === "toJSON") { unsupported = true; return; }
       addAll(JSON.stringify(k).length + 1);
       walk(child, k);
     }

@@ -203,4 +203,10 @@ describe("requestDetails truncateField", () => {
     expect(preview).not.toBeNull();
     expect(large).toBe(1);
   });
+
+  it("falls back for an own toJSON method instead of measuring raw fields", () => {
+    const value = { x: { a: Array.from({ length: 2000 }, (_, i) => `y${i}`), toJSON() { return 1; } }, b: "q" };
+    expect(measurePreviewSizes(value, [8192, 32], 1000)).toBeUndefined();
+    expect(JSON.stringify(structuredPreview(value, 1000))).toBe(JSON.stringify(legacyStructuredPreview(value, 1000)));
+  });
 });
