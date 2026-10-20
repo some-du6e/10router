@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { sanitizeNodeQuirks, QUIRK_KEYS } from "@/shared/utils/nodeQuirks";
-import { deleteProviderConnectionsByProvider, deleteProviderNode, getProviderConnections, getProviderNodeById, updateProviderConnection, updateProviderNode } from "@/models";
+import { mergeQuirks, mergeConnectionData } from "@/shared/utils/nodeQuirkMerge";
+import { prefixProblem } from "@/shared/utils/reservedPrefixes";
+import { deleteProviderConnectionsByProvider, deleteProviderNode, getProviderConnections, getProviderNodeById, getProviderNodes, updateProviderConnection, updateProviderNode } from "@/models";
 
 // PUT /api/provider-nodes/[id] - Update provider node
 export async function PUT(request, { params }) {
@@ -20,6 +21,12 @@ export async function PUT(request, { params }) {
 
     if (!prefix?.trim()) {
       return NextResponse.json({ error: "Prefix is required" }, { status: 400 });
+    }
+
+    // Keeping the prefix it already has is always fine (older nodes may predate this check).
+    if (prefix.trim().toLowerCase() !== String(node.prefix || "").toLowerCase()) {
+      const problem = prefixProblem(prefix, { nodes: await getProviderNodes(), selfId: id });
+      if (problem) return NextResponse.json({ error: problem, field: "prefix" }, { status: 400 });
     }
 
     // Only validate apiType for OpenAI Compatible nodes
@@ -49,7 +56,7 @@ export async function PUT(request, { params }) {
       }
     }
 
-    const quirks = body.quirks === undefined ? {} : sanitizeNodeQuirks(body.quirks, { keepEmpty: true });
+    const { quirks, removed } = mergeQuirks(node, body);
     const updates = {
       name: name.trim(),
       prefix: prefix.trim(),
@@ -66,14 +73,15 @@ export async function PUT(request, { params }) {
     const connections = await getProviderConnections({ provider: id });
     await Promise.all(connections.map((connection) => (
       updateProviderConnection(connection.id, {
-        providerSpecificData: {
-          ...(connection.providerSpecificData || {}),
-          prefix: prefix.trim(),
-          apiType: node.type === "openai-compatible" ? apiType : undefined,
-          baseUrl: sanitizedBaseUrl,
-          nodeName: updated.name,
-          ...Object.fromEntries(QUIRK_KEYS.filter((k) => k in updated).map((k) => [k, updated[k]])),
-        }
+        providerSpecificData: mergeConnectionData(connection.providerSpecificData || {}, updated, {
+          removed,
+          connectionFields: {
+            prefix: prefix.trim(),
+            apiType: node.type === "openai-compatible" ? apiType : undefined,
+            baseUrl: sanitizedBaseUrl,
+            nodeName: updated.name,
+          },
+        }),
       })
     )));
 

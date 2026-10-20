@@ -579,12 +579,17 @@ export default function ProvidersPage() {
       isOpen={showAddEndpointModal}
       onClose={() => setShowAddEndpointModal(false)}
       takenPrefixes={providerNodes.map((n) => n.prefix).filter(Boolean)}
-      onCreated={(node, { keyError } = {}) => {
-        setProviderNodes((prev) => [...prev, node]);
+      onCreated={(node, { keyError, modelsFailed = 0, modelsTotal = 0 } = {}) => {
+        // A retried save can hand back a node that's already in the list.
+        setProviderNodes((prev) => (prev.some((n) => n.id === node.id) ? prev : [...prev, node]));
         setShowAddEndpointModal(false);
         // Pick up the key the modal just created so the card shows it connected.
         fetch("/api/providers").then((r) => r.json()).then((d) => d.connections && setConnections(d.connections)).catch(() => {});
-        if (keyError) notify.warning(`${node.name} added, but its key wasn't saved: ${keyError}. Add it on the endpoint page.`);
+        const problems = [
+          keyError && `its key wasn't saved (${keyError})`,
+          modelsFailed > 0 && `${modelsFailed} of ${modelsTotal} model${modelsTotal === 1 ? "" : "s"} weren't saved`,
+        ].filter(Boolean);
+        if (problems.length) notify.warning(`${node.name} added, but ${problems.join(" and ")}. Fix it on the endpoint page.`);
         else notify.success(`${node.name} added`);
       }}
     />
@@ -641,6 +646,7 @@ export default function ProvidersPage() {
 
   return (
     <div className="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
+      {addEndpointModal}
       {viewTabs}
       <div className="flex items-center justify-end">
         <select
@@ -677,6 +683,15 @@ export default function ProvidersPage() {
           <div className="grid grid-cols-1 gap-2 sm:flex sm:w-auto">
             <Button
               size="sm"
+              icon="bolt"
+              onClick={() => setShowAddEndpointModal(true)}
+              className="w-full sm:w-auto"
+            >
+              Add endpoint
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
               icon="add"
               onClick={() => setShowAddAnthropicCompatibleModal(true)}
               className="w-full sm:w-auto"

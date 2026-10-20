@@ -367,14 +367,18 @@ export default function ProviderDetailPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(formData),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
         setProviderNode(data.node);
         await fetchConnections();
         if (!keepModalOpen) setShowEditNodeModal(false);
+      } else {
+        // e.g. a prefix that belongs to a built-in provider.
+        alert(data.error || "Couldn't save the endpoint.");
       }
     } catch (error) {
       console.log("Error updating provider node:", error);
+      alert("Couldn't save the endpoint: network error.");
     }
   };
 
@@ -1466,12 +1470,14 @@ export default function ProviderDetailPage() {
         <EndpointQuirksCard
           node={providerNode}
           isAnthropic={isAnthropicCompatible}
-          onSave={(quirks) => handleUpdateNode({
+          onSave={(quirks, extra = {}) => handleUpdateNode({
             name: providerNode.name,
             prefix: providerNode.prefix,
             apiType: providerNode.apiType,
             baseUrl: providerNode.baseUrl,
+            // Only the changed keys; the server merges them into the stored ones.
             quirks,
+            ...extra,
           }, { keepModalOpen: true })}
         />
       )}

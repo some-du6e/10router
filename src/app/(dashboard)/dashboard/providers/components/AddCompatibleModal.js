@@ -49,6 +49,7 @@ function AddCompatibleModal({ variant, isOpen, onClose, onCreated }) {
   const [checkModelId, setCheckModelId] = useState("");
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
+  const [saveError, setSaveError] = useState(null);
 
   // openai: reset baseUrl when apiType changes; anthropic: reset checks when opened
   useEffect(() => {
@@ -64,6 +65,7 @@ function AddCompatibleModal({ variant, isOpen, onClose, onCreated }) {
   const handleSubmit = async () => {
     if (!formData.name.trim() || !formData.prefix.trim() || !formData.baseUrl.trim()) return;
     setSubmitting(true);
+    setSaveError(null);
     try {
       const res = await fetch("/api/provider-nodes", {
         method: "POST",
@@ -82,9 +84,12 @@ function AddCompatibleModal({ variant, isOpen, onClose, onCreated }) {
         setFormData(initialFormData());
         setCheckKey("");
         setValidationResult(null);
+      } else {
+        setSaveError({ field: data.field, message: data.error || "Couldn't save this endpoint" });
       }
     } catch (error) {
       console.log(`Error creating ${config.errorLabel} node:`, error);
+      setSaveError({ message: "Network error" });
     } finally {
       setSubmitting(false);
     }
@@ -146,7 +151,8 @@ function AddCompatibleModal({ variant, isOpen, onClose, onCreated }) {
         <Input
           label="Prefix"
           value={formData.prefix}
-          onChange={(e) => setFormData({ ...formData, prefix: e.target.value })}
+          onChange={(e) => { setFormData({ ...formData, prefix: e.target.value }); setSaveError(null); }}
+          error={saveError?.field === "prefix" ? saveError.message : undefined}
           placeholder={config.prefixPlaceholder}
           hint="Required. Used as the provider prefix for model IDs."
         />
@@ -189,6 +195,9 @@ function AddCompatibleModal({ variant, isOpen, onClose, onCreated }) {
           </Button>
           {renderValidationResult()}
         </div>
+        {saveError && saveError.field !== "prefix" && (
+          <p role="alert" className="text-sm text-red-500">{saveError.message}</p>
+        )}
         <div className="flex flex-col gap-2 sm:flex-row">
           <Button
             onClick={handleSubmit}

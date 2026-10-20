@@ -3,6 +3,7 @@ import { createProviderNode, getProviderNodes } from "@/models";
 import { OPENAI_COMPATIBLE_PREFIX, ANTHROPIC_COMPATIBLE_PREFIX, CUSTOM_EMBEDDING_PREFIX } from "@/shared/constants/providers";
 import { generateId } from "@/shared/utils";
 import { sanitizeNodeQuirks } from "@/shared/utils/nodeQuirks";
+import { prefixProblem } from "@/shared/utils/reservedPrefixes";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,9 @@ const ANTHROPIC_COMPATIBLE_DEFAULTS = {
 const CUSTOM_EMBEDDING_DEFAULTS = {
   baseUrl: "https://api.openai.com/v1",
 };
+
+// Compare base URLs the way the POST below stores them.
+const trimUrl = (u) => String(u || "").trim().replace(/\/+$/, "").replace(/\/(messages|embeddings)$/, "");
 
 // GET /api/provider-nodes - List all provider nodes
 export async function GET() {
@@ -48,6 +52,23 @@ export async function POST(request) {
 
     // Determine type
     const nodeType = type || "openai-compatible";
+
+    // A retried save (the first response was lost) must not make a second node:
+    // the same type + prefix + base URL is the same endpoint, so return it.
+    const nodes = await getProviderNodes();
+    const sameEndpoint = nodes.find((n) => n.type === nodeType
+      && String(n.prefix || "").toLowerCase() === prefix.trim().toLowerCase()
+      && trimUrl(n.baseUrl) === trimUrl(baseUrl)
+      && (nodeType !== "openai-compatible" || n.apiType === apiType));
+    if (sameEndpoint && baseUrl) {
+      return NextResponse.json({ node: sameEndpoint, existing: true }, { status: 200 });
+    }
+
+    // Built-in provider names win at routing time, and two nodes can't share one.
+    const problem = prefixProblem(prefix, { nodes });
+    if (problem) {
+      return NextResponse.json({ error: problem, field: "prefix" }, { status: 400 });
+    }
 
     if (nodeType === "openai-compatible") {
       if (!apiType || !["chat", "responses"].includes(apiType)) {
