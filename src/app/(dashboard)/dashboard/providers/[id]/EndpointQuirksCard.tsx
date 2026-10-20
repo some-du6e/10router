@@ -1,14 +1,50 @@
 "use client";
 
 import { useState } from "react";
-import PropTypes from "prop-types";
-import { Card, Toggle } from "@/shared/components";
+import type { ComponentType, ReactNode } from "react";
+import * as Shared from "@/shared/components";
+
+// The shared components are untyped JS, so their inferred props mark every
+// option as required. Re-type the ones used here with the props we pass.
+interface CardProps {
+  children?: ReactNode;
+}
+interface ToggleProps {
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (v: boolean) => void;
+}
+const Card = Shared.Card as unknown as ComponentType<CardProps>;
+const Toggle = Shared.Toggle as ComponentType<ToggleProps>;
 
 // Compatibility fixes for a user-added endpoint. Saved on the node; the node PUT
 // copies them onto every key so the executor applies them. `onSave(quirks, extra)`
 // sends only what changed: the server merges, so learned fields (droppedBetas,
 // modelRoutes) survive a toggle.
-export default function EndpointQuirksCard({ node, isAnthropic, onSave }) {
+// The node fields this card reads.
+interface QuirksNode {
+  stripBeta?: boolean;
+  maxCompletionTokens?: boolean;
+  droppedBetas?: string[];
+  modelRoutes?: Record<string, string>;
+}
+
+interface QuirksPatch {
+  stripBeta?: boolean;
+  maxCompletionTokens?: boolean;
+}
+
+interface QuirksExtra {
+  removeDroppedBetas?: string[];
+}
+
+interface EndpointQuirksCardProps {
+  node: QuirksNode;
+  isAnthropic?: boolean;
+  onSave: (quirks: QuirksPatch, extra?: QuirksExtra) => unknown;
+}
+
+export default function EndpointQuirksCard({ node, isAnthropic, onSave }: EndpointQuirksCardProps) {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const dropped = node.droppedBetas || [];
@@ -19,7 +55,7 @@ export default function EndpointQuirksCard({ node, isAnthropic, onSave }) {
   const twoPath = isAnthropic ? showMaxTokens : showBeta;
   const active = [node.stripBeta && "strip beta", dropped.length && `${dropped.length} dropped flag${dropped.length === 1 ? "" : "s"}`, node.maxCompletionTokens && "max_completion_tokens"].filter(Boolean);
 
-  const save = async (quirks, extra) => {
+  const save = async (quirks: QuirksPatch, extra?: QuirksExtra) => {
     setSaving(true);
     try { await onSave(quirks, extra); }
     finally { setSaving(false); }
@@ -42,7 +78,7 @@ export default function EndpointQuirksCard({ node, isAnthropic, onSave }) {
                   <p className="text-sm font-medium text-text-main">Strip all beta flags{twoPath && <span className="ml-1 text-xs font-normal text-text-subtle">· Messages API</span>}</p>
                   <p className="text-xs text-text-muted">Off: drop only the <code className="font-mono">anthropic-beta</code> flags this endpoint rejects (learned automatically). On: send none.</p>
                 </div>
-                <Toggle checked={!!node.stripBeta} disabled={saving} onChange={(v) => save({ stripBeta: v })} />
+                <Toggle checked={!!node.stripBeta} disabled={saving} onChange={(v: boolean) => save({ stripBeta: v })} />
               </div>
               {dropped.length > 0 && (
                 <div className="flex flex-col gap-1.5">
@@ -65,7 +101,7 @@ export default function EndpointQuirksCard({ node, isAnthropic, onSave }) {
                 <p className="text-sm font-medium text-text-main">Send <code className="font-mono">max_completion_tokens</code>{twoPath && <span className="ml-1 text-xs font-normal text-text-subtle">· Chat Completions</span>}</p>
                 <p className="text-xs text-text-muted">Rename <code className="font-mono">max_tokens</code> for endpoints that reject it.</p>
               </div>
-              <Toggle checked={!!node.maxCompletionTokens} disabled={saving} onChange={(v) => save({ maxCompletionTokens: v })} />
+              <Toggle checked={!!node.maxCompletionTokens} disabled={saving} onChange={(v: boolean) => save({ maxCompletionTokens: v })} />
             </div>
           )}
         </div>
@@ -73,9 +109,3 @@ export default function EndpointQuirksCard({ node, isAnthropic, onSave }) {
     </Card>
   );
 }
-
-EndpointQuirksCard.propTypes = {
-  node: PropTypes.object.isRequired,
-  isAnthropic: PropTypes.bool,
-  onSave: PropTypes.func.isRequired,
-};

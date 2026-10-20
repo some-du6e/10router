@@ -1,14 +1,18 @@
 import dns from "node:dns";
-import { isIP } from "node:net";
+import { isIP, type LookupFunction } from "node:net";
 import { Agent, fetch as undiciFetch } from "undici";
 import { assertPublicUrl, assertPublicUrlResolved } from "@/shared/utils/ssrfGuard.js";
 
 const MAX_REDIRECTS = 3;
 
+// The fetch shape probes use. Matches the global fetch; undici's own fetch is
+// adapted to it at the call site.
+export type ProbeFetch = (url: string, init?: RequestInit) => Promise<Response>;
+
 // Resolve once, check the addresses, and hand back a dispatcher whose connect
 // uses exactly those addresses. Without the pin, a DNS-rebinding host could
 // answer the check with a public IP and the connect with 127.0.0.1.
-async function pinnedDispatcher(target) {
+async function pinnedDispatcher(target: string): Promise<Agent | null> {
   const { hostname } = new URL(target);
   const host = hostname.replace(/^\[|\]$/g, "");
   if (isIP(host)) { assertPublicUrl(target); return null; } // literal: nothing to rebind
@@ -18,7 +22,7 @@ async function pinnedDispatcher(target) {
     assertPublicUrl(`http://${family === 6 ? `[${address}]` : address}/`);
   }
   if (!addresses.length) throw new Error("Host did not resolve");
-  const lookup = (_h, opts, cb) => (opts?.all ? cb(null, addresses) : cb(null, addresses[0].address, addresses[0].family));
+  const lookup: LookupFunction = (_h, opts, cb) => (opts?.all ? cb(null, addresses) : cb(null, addresses[0].address, addresses[0].family));
   return new Agent({ connect: { lookup } });
 }
 
@@ -26,18 +30,18 @@ async function pinnedDispatcher(target) {
 // connection pinned to the checked IPs), and redirects are followed only within
 // the same origin so the key never goes to another host.
 // Local callers may probe private hosts by design (ollama, LM Studio, vLLM).
-export function makeProbeFetch(checkPublic, { fetchImpl } = {}) {
+export function makeProbeFetch(checkPublic: boolean, { fetchImpl }: { fetchImpl?: ProbeFetch } = {}): ProbeFetch {
   return async (url, init) => {
     let current = url;
     for (let hop = 0; ; hop++) {
-      let dispatcher = null;
+      let dispatcher: Agent | null = null;
       if (checkPublic) {
         await assertPublicUrlResolved(current);
         dispatcher = await pinnedDispatcher(current);
       }
       // undici's own fetch: the dispatcher must come from the same undici.
-      const doFetch = fetchImpl || (dispatcher ? undiciFetch : fetch);
-      let res;
+      const doFetch = (fetchImpl || (dispatcher ? undiciFetch : fetch)) as (url: string, init: RequestInit & { dispatcher?: Agent }) => Promise<Response>;
+      let res: Response;
       try {
         res = await doFetch(current, { ...init, redirect: "manual", ...(dispatcher ? { dispatcher } : {}) });
       } finally {

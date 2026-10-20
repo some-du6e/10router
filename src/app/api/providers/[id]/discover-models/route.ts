@@ -9,23 +9,30 @@ import { makeProbeFetch } from "@/lib/probeFetch.js";
 
 export const dynamic = "force-dynamic";
 
+type ProviderSpecificData = Record<string, unknown> & {
+  baseUrl?: string;
+  apiType?: string;
+  modelRoutes?: Record<string, string>;
+};
+type Connection = { id: string; provider: string; apiKey?: string; providerSpecificData?: ProviderSpecificData | null };
+
 // Routes are relative to the node's own path: drop entries that point back at it.
-async function saveRoutes(nodeId, ownProtocol, routes) {
+async function saveRoutes(nodeId: string, ownProtocol: string, routes: Record<string, string>) {
   const modelRoutes = Object.fromEntries(Object.entries(routes).filter(([, p]) => p !== ownProtocol));
   const node = await getProviderNodeById(nodeId);
   if (!node) return;
   await updateProviderNode(nodeId, { modelRoutes });
-  const connections = await getProviderConnections({ provider: nodeId });
+  const connections = (await getProviderConnections({ provider: nodeId })) as Connection[];
   await Promise.all(connections.map((c) => updateProviderConnection(c.id, { providerSpecificData: { ...(c.providerSpecificData || {}), modelRoutes } })));
 }
 
 // GET /api/providers/[id]/discover-models - Model ids for a user-added endpoint.
 // Uses /models when it exists; otherwise asks about catalog models one at a time
 // with empty-body requests (free). Never sends a billed generation.
-export async function GET(request, { params }) {
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
-    const connection = await getProviderConnectionById(id);
+    const connection = (await getProviderConnectionById(id)) as Connection | null;
     if (!connection) return NextResponse.json({ error: "Connection not found" }, { status: 404 });
 
     const anthropic = isAnthropicCompatibleProvider(connection.provider);
@@ -44,7 +51,7 @@ export async function GET(request, { params }) {
     const protocol = anthropic ? "anthropic" : connection.providerSpecificData?.apiType === "responses" ? "openai-responses" : "openai-chat";
     // Two-path nodes: probe every path this endpoint already routes to.
     const existing = connection.providerSpecificData?.modelRoutes || {};
-    const protocols = [...new Set([protocol, ...Object.values(existing)])];
+    const protocols: string[] = [...new Set([protocol, ...Object.values(existing)])];
     const result = await discoverModels({
       baseUrl,
       apiKey: connection.apiKey,
@@ -58,11 +65,11 @@ export async function GET(request, { params }) {
     // A stopped run (key refused, rate-limited) is partial too: never save then.
     if (result.routes && result.allComplete && !result.partial) await saveRoutes(connection.provider, protocol, result.routes);
     return NextResponse.json({
-      models: result.models.map((m) => ({ id: m })), source: result.source, catalogName: result.catalogName, routes: result.routes, steps: result.steps,
+      models: result.models.map((m: string) => ({ id: m })), source: result.source, catalogName: result.catalogName, routes: result.routes, steps: result.steps,
       partial: !!result.partial, partialReason: result.partialReason || null, authRejected: !!result.authRejected,
     });
   } catch (error) {
-    console.log("Error discovering models:", error?.message);
+    console.log("Error discovering models:", error instanceof Error ? error.message : undefined);
     return NextResponse.json({ error: "Failed to discover models" }, { status: 500 });
   }
 }

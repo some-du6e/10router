@@ -14,13 +14,16 @@ export const BETA_HEADER_KEYS = ["anthropic-beta", "Anthropic-Beta"];
 // Never sent to non-Anthropic hosts: it marks the request as first-party Claude Code.
 const ALWAYS_STRIPPED = ["claude-code-20250219"];
 
-export const splitBetas = (value) =>
+export const splitBetas = (value: unknown): string[] =>
   String(value || "").split(",").map((s) => s.trim()).filter(Boolean);
 
 // Rewrite the beta header(s) in place: drop ALWAYS_STRIPPED + `dropped`, or
 // everything when `stripAll`. Removes the header when nothing is left.
-export function filterBetaHeaders(headers, { dropped = [], stripAll = false } = {}) {
-  const drop = new Set([...ALWAYS_STRIPPED, ...dropped]);
+export function filterBetaHeaders(
+  headers: Record<string, unknown>,
+  { dropped = [], stripAll = false }: { dropped?: readonly string[]; stripAll?: boolean } = {},
+): Record<string, unknown> {
+  const drop = new Set<string>([...ALWAYS_STRIPPED, ...dropped]);
   for (const key of BETA_HEADER_KEYS) {
     if (!(key in headers)) continue;
     const kept = stripAll ? [] : splitBetas(headers[key]).filter((f) => !drop.has(f));
@@ -34,7 +37,7 @@ const REJECTED_RE = /Unexpected value\(s\)\s+(.+?)\s+for the\s+`?anthropic-beta`
 
 // Flags a 400 body says it rejected, or [] when the body isn't that error.
 // Only flags the error names in backticks; never guesses.
-export function parseRejectedBetas(bodyText) {
+export function parseRejectedBetas(bodyText: unknown): string[] {
   const m = REJECTED_RE.exec(String(bodyText || ""));
   if (!m) return [];
   return [...m[1].matchAll(/`([^`]+)`/g)].map((x) => x[1].trim()).filter(Boolean);

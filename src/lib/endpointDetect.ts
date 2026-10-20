@@ -9,6 +9,96 @@
 //
 // Imported by the dashboard too: no node:* imports in this file.
 
+import type { CatalogLabModel, CatalogProvider, EndpointCatalog } from "./endpointCatalog.js";
+
+// ---- Types -------------------------------------------------------------------
+
+export type Protocol = "anthropic" | "openai-chat" | "openai-responses";
+export type KeyConfirmed = "confirmed" | "likely" | "unknown";
+export type ModelsSource = "models" | "catalog" | "guessed" | "none";
+type StopReason = "auth" | "rate" | "generated";
+type ErrorShape = "anthropic" | "openai" | "generic";
+export type Classification = "network" | "rate" | "server" | "generated" | "html" | "ok" | "gated" | "auth" | "other" | "missing" | "unknown-model" | "accepted";
+
+// One probe, as shown to the user (secrets redacted).
+export interface DetectStep {
+  label: string;
+  method: string;
+  url: string;
+  status: number;           // 0 = network error
+  preview: string;
+  html?: boolean;
+  retried?: boolean;
+}
+
+// Quirks read off the free probes' error bodies.
+export interface DetectQuirks {
+  maxCompletionTokens?: boolean;
+  generatesOnEmpty?: boolean;
+  apiKeyHeader?: boolean;
+}
+
+// What detectEndpoint returns. `ok: false` carries `error` (and maybe
+// clientGated / authRejected / rateLimited); `ok: true` carries the rest.
+export interface DetectResult {
+  ok: boolean;
+  error?: string;
+  baseUrl?: string;
+  steps: DetectStep[];
+  protocol?: Protocol;
+  protocols?: Protocol[];
+  routes?: Record<string, Protocol>;
+  byProtocol?: Partial<Record<Protocol, string[]>> | null;
+  models?: string[];
+  modelsSource?: ModelsSource;
+  keyConfirmed?: KeyConfirmed;
+  quirks?: DetectQuirks;
+  partial?: boolean;
+  partialReason?: string | null;
+  authRejected?: boolean;
+  rateLimited?: boolean;
+  clientGated?: boolean;
+  suggestedName?: string;
+  suggestedPrefix?: string;
+}
+
+// What discoverModels returns. The routing fields are only set when it was
+// asked about several protocols; `complete` is then per protocol.
+export interface DiscoverResult {
+  models: string[];
+  source: ModelsSource;
+  catalogName?: string;
+  steps: DetectStep[];
+  complete: boolean | Record<string, boolean>;
+  partial: boolean;
+  partialReason: string | null;
+  authRejected: boolean;
+  routes?: Record<string, string>;
+  counts?: Record<string, number>;
+  byProtocol?: Record<string, string[]>;
+  allComplete?: boolean;
+}
+
+// The catalog as synced (see endpointCatalog.js), or a bare provider list.
+export type CatalogInput = CatalogProvider[] | Partial<EndpointCatalog>;
+type MatchedProvider = CatalogProvider & { score: number };
+
+type HeaderMap = Record<string, string>;
+// The subset of fetch the probes use; tests inject a fake.
+export interface ProbeResponse {
+  status: number;
+  text(): Promise<string>;
+  headers?: { get?(name: string): string | null } | null;
+}
+export type DetectFetch = (url: string, init: { method: string; headers: HeaderMap; body?: string; signal: AbortSignal }) => Promise<ProbeResponse>;
+type Sleep = (ms: number) => Promise<unknown>;
+interface ProbeResult { status: number; text: string; json: unknown; step: DetectStep }
+type Prober = (label: string, method: string, target: string, opts?: { headers?: HeaderMap; body?: Record<string, unknown> }) => Promise<ProbeResult>;
+interface AuthHeaders { bearer: HeaderMap; "x-api-key": HeaderMap; "api-key": HeaderMap; both: HeaderMap }
+interface ProbeSpec { path: string; label: string; headers: HeaderMap; body: Record<string, unknown> }
+// Parsed JSON, read defensively: any property may be anything.
+type Json = Record<string, unknown>;
+
 const PROBE_TIMEOUT_MS = 8000;
 const BODY_PREVIEW = 300;
 const PROBE_CONCURRENCY = 3;     // model probes in flight per path
@@ -19,14 +109,14 @@ const MAX_RETRY_WAIT_MS = 10_000;
 const MAX_MODEL_PAGES = 10;      // /models pagination cap
 const CANARY = "10router-no-such-model";
 const CONTROL_PATH = "/10router-no-such-path";
-const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // Paths users paste that aren't part of the base URL.
 const TRAILING_PATHS = ["/chat/completions", "/messages", "/responses", "/models", "/embeddings", "/completions"];
 
 // Hosts on the user's own network: no scheme typed means http, not https.
 const LAN_HOST_RE = /^(localhost|.+\.localhost|.+\.local|.+\.lan|.+\.internal|.+\.home\.arpa|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|169\.254\.\d+\.\d+|0\.0\.0\.0|\[(::1?|f[cd][0-9a-f:]*|fe80[0-9a-f:]*)\])$/i;
-export function isLanHost(host) {
+export function isLanHost(host: unknown): boolean {
   const h = String(host || "").toLowerCase().replace(/\.+$/, "");
   if (!h) return false;
   // Single-label names are docker/compose service names ("ollama", "vllm").
@@ -34,13 +124,13 @@ export function isLanHost(host) {
 }
 
 // Host part of a URL typed without a scheme: "user@ollama:11434/v1" -> "ollama".
-function bareHost(s) {
+function bareHost(s: string): string {
   const authority = s.split(/[/?#]/)[0].replace(/^[^@]*@/, "");
   return authority.startsWith("[") ? authority.replace(/\].*$/, "]") : authority.replace(/:\d*$/, "");
 }
 
 // Cut a pasted URL down to its base. Keeps query params (Azure api-version).
-export function normalizeUrl(raw) {
+export function normalizeUrl(raw: unknown): string | null {
   let s = String(raw || "").trim().replace(/^["'<`“‘]+|["'>`”’]+$/g, "");
   if (!s) return null;
   if (!/^https?:\/\//i.test(s)) s = (isLanHost(bareHost(s)) ? "http://" : "https://") + s.replace(/^\/+/, "");
@@ -57,15 +147,15 @@ export function normalizeUrl(raw) {
 }
 
 // base + path, keeping the base's query string (Azure ?api-version=) after the path.
-export function joinUrl(base, path = "", params = null) {
+export function joinUrl(base: string, path = "", params: Record<string, unknown> | null = null): string {
   const u = new URL(base);
   u.pathname = u.pathname.replace(/\/+$/, "") + path;
-  if (params) for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
+  if (params) for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v as string);
   return u.toString();
 }
 
 // Azure OpenAI / AI Foundry: keys go in an `api-key` header, not Bearer.
-export function isAzureHost(base) {
+export function isAzureHost(base: string): boolean {
   try {
     const u = new URL(base);
     return /\.(openai\.azure\.com|cognitiveservices\.azure\.com|services\.ai\.azure\.com|azure-api\.net)$/i.test(u.hostname) || u.searchParams.has("api-version");
@@ -76,9 +166,9 @@ export function isAzureHost(base) {
 // a header name, "Bearer ", whitespace and line breaks.
 const QUOTES = "\"'`“”‘’«»‹›";
 const EDGE_QUOTES_RE = new RegExp(`^[${QUOTES}]+|[${QUOTES}]+$`, "g");
-export function cleanKey(raw) {
+export function cleanKey(raw: unknown): string {
   let s = String(raw || "").replace(/[​-‍⁠﻿­]/g, "");
-  for (let prev = null; prev !== s;) {
+  for (let prev: string | null = null; prev !== s;) {
     prev = s;
     s = s.trim().replace(EDGE_QUOTES_RE, "").trim()
       .replace(/^(authorization|x-api-key|api-key)\s*[:=]\s*/i, "")
@@ -92,8 +182,8 @@ export function cleanKey(raw) {
 // key doesn't turn every word containing it into "<key>".
 const SECRET_PARAM_RE = /([?&](?:key|api[_-]?key|token|access_token|auth|sig|signature|code)=)[^&#\s"']*/gi;
 const BEARER_TOKEN_RE = /(bearer\s+)[A-Za-z0-9._~+/=-]{4,}/gi;
-const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-export function makeRedactor(key) {
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+export function makeRedactor(key: string): (text: unknown) => string {
   const short = key && key.length < 12 ? new RegExp(`(^|[^A-Za-z0-9_-])${escapeRe(key)}(?![A-Za-z0-9_-])`, "g") : null;
   return (text) => {
     let s = String(text ?? "");
@@ -103,7 +193,7 @@ export function makeRedactor(key) {
 }
 
 // Candidate bases to probe: as given, plus `/v1` when the user stopped short of it.
-export function candidateBases(base) {
+export function candidateBases(base: string): string[] {
   const out = [base];
   const u = new URL(base);
   if (!/\/v\d+(beta)?$/i.test(u.pathname)) out.push(`${u.origin}${u.pathname.replace(/\/+$/, "")}/v1${u.search}`);
@@ -111,24 +201,26 @@ export function candidateBases(base) {
 }
 
 // Raw entries of every model-list shape we've seen.
-function modelEntries(json) {
+function modelEntries(json: unknown): unknown[] | null {
+  const j = json as Json | null | undefined;
   return Array.isArray(json) ? json
-    : Array.isArray(json?.data) ? json.data
-    : Array.isArray(json?.models) ? json.models
-    : Array.isArray(json?.result) ? json.result
+    : Array.isArray(j?.data) ? j.data
+    : Array.isArray(j?.models) ? j.models
+    : Array.isArray(j?.result) ? j.result
     : null;
 }
-const entryId = (m) => String(typeof m === "string" ? m : (m?.id || m?.name || m?.model || "")).replace(/^models\//, "").trim();
+const entryId = (m: unknown) => String(typeof m === "string" ? m : ((m as Json | null)?.id || (m as Json | null)?.name || (m as Json | null)?.model || "")).replace(/^models\//, "").trim();
 
 // Not chat models: embeddings, speech, transcription, image generation, rerankers.
 const NON_CHAT_ID_RE = /embed|whisper|dall-e|gpt-image|imagen|stable-diffusion|sdxl|moderation|rerank|transcribe|(^|[-_/.])tts([-_.]|$)|text-to-speech|(^|[-_/])speech([-_]|$)/i;
-function isChatEntry(m, id) {
+function isChatEntry(m: unknown, id: string): boolean {
   if (m && typeof m === "object") {
-    const methods = m.supportedGenerationMethods || m.supported_generation_methods;
-    if (Array.isArray(methods) && methods.length && !methods.some((x) => /generateContent|chat|complet/i.test(x))) return false;
-    const type = String(m.type || m.task || m.model_type || "").toLowerCase();
+    const o = m as Json;
+    const methods = o.supportedGenerationMethods || o.supported_generation_methods;
+    if (Array.isArray(methods) && methods.length && !methods.some((x) => /generateContent|chat|complet/i.test(x as string))) return false;
+    const type = String(o.type || o.task || o.model_type || "").toLowerCase();
     if (/embed|image|audio|speech|tts|rerank|moderation|transcri/.test(type)) return false;
-    const outMods = m.architecture?.output_modalities || m.output_modalities;
+    const outMods = (o.architecture as Json | null | undefined)?.output_modalities || o.output_modalities;
     if (Array.isArray(outMods) && outMods.length && !outMods.includes("text")) return false;
   }
   return !NON_CHAT_ID_RE.test(id);
@@ -136,38 +228,39 @@ function isChatEntry(m, id) {
 
 // Model ids from a list, deduped, in order. Non-chat models are dropped unless
 // that would leave nothing (a dedicated embeddings server is still a list).
-export function parseModelList(json, { chatOnly = true } = {}) {
+export function parseModelList(json: unknown, { chatOnly = true }: { chatOnly?: boolean } = {}): string[] {
   const arr = modelEntries(json);
   if (!arr) return [];
-  const all = arr.map((m) => [m, entryId(m)]).filter(([, id]) => id);
+  const all = arr.map((m): [unknown, string] => [m, entryId(m)]).filter(([, id]) => id);
   const chat = chatOnly ? all.filter(([m, id]) => isChatEntry(m, id)) : all;
   return [...new Set((chat.length ? chat : all).map(([, id]) => id))];
 }
 
 // The next page of a model list, or null. Same origin only: the key goes with it.
-export function nextModelPage(json, url) {
+export function nextModelPage(json: unknown, url: string): string | null {
   if (!json || typeof json !== "object" || Array.isArray(json)) return null;
-  let next = null;
-  if (json.has_more && json.last_id) next = joinUrl(url.replace(/[?&]after_id=[^&]*/, ""), "", { after_id: json.last_id });
-  const link = json.next || json.next_page_url || json.links?.next || json.pagination?.next;
+  const j = json as Json;
+  let next: string | null = null;
+  if (j.has_more && j.last_id) next = joinUrl(url.replace(/[?&]after_id=[^&]*/, ""), "", { after_id: j.last_id });
+  const link = j.next || j.next_page_url || (j.links as Json | null | undefined)?.next || (j.pagination as Json | null | undefined)?.next;
   if (!next && typeof link === "string" && link) next = new URL(link, url).toString();
-  const token = json.nextPageToken || json.next_page_token;
+  const token = j.nextPageToken || j.next_page_token;
   if (!next && token) next = joinUrl(url, "", { pageToken: token });
   if (!next) return null;
   try { return new URL(next).origin === new URL(url).origin ? next : null; } catch { return null; }
 }
 
 // Decode one punycode label ("xn--mnchen-3ya" -> "münchen"), RFC 3492.
-function punyDecode(input) {
+function punyDecode(input: string): string {
   const base = 36, tMin = 1, tMax = 26;
-  const adapt = (delta, points, first) => {
+  const adapt = (delta: number, points: number, first: boolean) => {
     delta = first ? Math.floor(delta / 700) : delta >> 1;
     delta += Math.floor(delta / points);
     let k = 0;
     for (; delta > ((base - tMin) * tMax) >> 1; k += base) delta = Math.floor(delta / (base - tMin));
     return Math.floor(k + ((base - tMin + 1) * delta) / (delta + 38));
   };
-  const out = [];
+  const out: number[] = [];
   const b = Math.max(input.lastIndexOf("-"), 0);
   for (let j = 0; j < b; j++) out.push(input.charCodeAt(j));
   let n = 128, i = 0, bias = 72;
@@ -190,19 +283,19 @@ function punyDecode(input) {
   }
   return String.fromCodePoint(...out);
 }
-const decodeHost = (host) => host.split(".").map((l) => { if (!/^xn--/i.test(l)) return l; try { return punyDecode(l.slice(4)); } catch { return l; } }).join(".");
+const decodeHost = (host: string) => host.split(".").map((l) => { if (!/^xn--/i.test(l)) return l; try { return punyDecode(l.slice(4)); } catch { return l; } }).join(".");
 
 // Name, prefix and icon from the host. Prefix: initials of a multi-part name,
 // else its first 4 letters; [a-z0-9] only.
 const HOST_SKIP = new Set(["api", "gateway", "llm", "ai", "www", "inference", "openai", "v1", "app"]);
 // Second-level labels under a country TLD: api.foo.co.uk -> "foo".
 const SECOND_LEVEL = new Set(["co", "com", "net", "org", "ac", "gov", "edu", "or", "ne", "go", "gob", "mil", "ltd", "plc", "nic", "info", "biz"]);
-export function suggestName(base) {
+export function suggestName(base: string): string {
   const { hostname } = new URL(base);
   if (isLanHost(hostname) || /^\d+\.\d+\.\d+\.\d+$|^\[/.test(hostname)) return "Local endpoint";
   const labels = decodeHost(hostname.toLowerCase().replace(/\.+$/, "")).split(".").filter(Boolean);
   if (labels.length > 1) {
-    const tld = labels.pop();
+    const tld = labels.pop()!;
     if (tld.length === 2 && labels.length > 1 && SECOND_LEVEL.has(labels[labels.length - 1])) labels.pop();
   }
   const parts = labels.filter((p) => !HOST_SKIP.has(p));
@@ -210,7 +303,7 @@ export function suggestName(base) {
   const brand = label.replace(/computing$/, "").replace(/-.*$/, "") || label;
   return brand.charAt(0).toUpperCase() + brand.slice(1);
 }
-export function makePrefix(name, taken = []) {
+export function makePrefix(name: unknown, taken: readonly unknown[] = []): string {
   const plain = String(name || "").normalize("NFD").replace(/[̀-ͯ]/g, "");
   const words = plain.replace(/([a-z])([A-Z])/g, "$1 $2").split(/[^A-Za-z0-9]+/).filter(Boolean);
   let p = (words.length > 1 ? words.map((w) => w[0]).join("") : (words[0] || "ep").slice(0, 4)).toLowerCase().replace(/[^a-z0-9]/g, "") || "ep";
@@ -226,7 +319,7 @@ export function makePrefix(name, taken = []) {
 
 // "https://${SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/cortex/v1" ->
 // host regex (placeholders match one label) + path.
-function apiPattern(api) {
+function apiPattern(api: unknown): { host: RegExp; path: string } | null {
   const m = /^https?:\/\/([^/]+)(\/[^?#]*)?/i.exec(String(api || ""));
   if (!m) return null;
   const hostRe = m[1].toLowerCase().split(/\$\{[^}]*\}/)
@@ -236,11 +329,11 @@ function apiPattern(api) {
 }
 
 // The catalog provider whose API URL matches this base, best path match first.
-export function matchCatalogProvider(base, catalog = []) {
+export function matchCatalogProvider(base: string, catalog: CatalogProvider[] = []): MatchedProvider | null {
   const u = new URL(base);
   const host = u.hostname.toLowerCase();
   const path = u.pathname.replace(/\/+$/, "");
-  let best = null;
+  let best: MatchedProvider | null = null;
   for (const p of catalog) {
     const pat = apiPattern(p.api);
     if (!pat || !pat.host.test(host)) continue;
@@ -254,7 +347,7 @@ export function matchCatalogProvider(base, catalog = []) {
 // (claude-opus-4-5 / 4-8, gpt-5.x) group by the whole number; families that
 // ship "3.5, 3.6, 3.7" as separate generations (qwen, glm) keep the decimal.
 // Callers pick which with `decimal`.
-export function majorVersion(id, decimal = false) {
+export function majorVersion(id: unknown, decimal = false): number {
   const m = /(\d+)(?:[.-](\d+))?/.exec(String(id).replace(/^[a-z]+-?[a-z]*?(?=\d)/i, "").replace(/^[a-z]+(?=\d)/i, ""));
   if (!m) return 0;
   return decimal && m[2] !== undefined && m[2].length === 1 ? +`${m[1]}.${m[2]}` : +m[1];
@@ -265,12 +358,12 @@ export function majorVersion(id, decimal = false) {
 // the undated alias, so a snapshot is only dropped when its alias is also a
 // candidate; a catalog id that only exists dated is kept.
 const SNAPSHOT_SUFFIX_RE = /(-\d{4}-?\d{2}-?\d{2}|-\d{6}|-\d{4}|-latest|-preview(-[\w.]+)?|-exp(-[\w.]+)?)$/i;
-export function snapshotAlias(id) {
+export function snapshotAlias(id: unknown): string | null {
   let s = String(id);
-  for (let prev = null; prev !== s;) { prev = s; s = s.replace(SNAPSHOT_SUFFIX_RE, ""); }
+  for (let prev: string | null = null; prev !== s;) { prev = s; s = s.replace(SNAPSHOT_SUFFIX_RE, ""); }
   return s !== id && s ? s : null;
 }
-export function dropSnapshots(ids) {
+export function dropSnapshots(ids: string[]): string[] {
   const set = new Set(ids.map((x) => String(x).toLowerCase()));
   return ids.filter((id) => { const alias = snapshotAlias(id); return !alias || !set.has(alias.toLowerCase()); });
 }
@@ -278,17 +371,17 @@ export function dropSnapshots(ids) {
 // The newest `gens` major versions of every model family the labs ship, and
 // only families with a release in the last `maxAgeDays`. Old generations are
 // left out on purpose: nobody adds an endpoint for them.
-export function recentLabModels(labs = [], gens = 3, maxAgeDays = 365, now = Date.now()) {
+export function recentLabModels(labs: CatalogLabModel[] = [], gens = 3, maxAgeDays = 365, now = Date.now()): string[] {
   const cutoff = new Date(now - maxAgeDays * 864e5).toISOString().slice(0, 10);
   const kept = new Set(dropSnapshots(labs.map((m) => m.id)));
-  const byFamily = new Map();
+  const byFamily = new Map<string, CatalogLabModel[]>();
   for (const m of labs) {
     if (!kept.has(m.id)) continue;
     const key = `${m.lab}/${m.family}`;
     if (!byFamily.has(key)) byFamily.set(key, []);
-    byFamily.get(key).push(m);
+    byFamily.get(key)!.push(m);
   }
-  const out = [];
+  const out: CatalogLabModel[] = [];
   for (const models of byFamily.values()) {
     if (!models.some((m) => m.date >= cutoff)) continue; // family went quiet
     // Whole-number versions unless the family's whole numbers barely move
@@ -297,7 +390,7 @@ export function recentLabModels(labs = [], gens = 3, maxAgeDays = 365, now = Dat
     // current, so they always stay. Everything else must be a recent generation.
     const versioned = models.filter((m) => majorVersion(m.id) > 0);
     const decimal = new Set(versioned.map((m) => majorVersion(m.id))).size < gens;
-    const gen = (m) => majorVersion(m.id, decimal);
+    const gen = (m: CatalogLabModel) => majorVersion(m.id, decimal);
     const keep = [...new Set(versioned.map(gen))].sort((a, b) => b - a).slice(0, gens);
     models.filter((m) => majorVersion(m.id) === 0 || keep.includes(gen(m)))
       .sort((a, b) => b.date.localeCompare(a.date))
@@ -308,23 +401,23 @@ export function recentLabModels(labs = [], gens = 3, maxAgeDays = 365, now = Dat
 
 // Gateways often prefix a vendor's ids with its name (Snowflake: "openai-gpt-5").
 // Learn the prefixes from the matched provider's own list.
-function vendorPrefixes(models = []) {
-  const seen = new Set();
+function vendorPrefixes(models: string[] = []): Set<string> {
+  const seen = new Set<string>();
   for (const id of models) { const m = /^(openai|anthropic|google|meta|mistral|deepseek|xai|qwen|moonshot)-/i.exec(id); if (m) seen.add(m[1].toLowerCase()); }
   return seen;
 }
-const LAB_PREFIX = { openai: /^(gpt|o\d)/, anthropic: /^claude/, google: /^gem/, meta: /^(llama|muse)/, mistral: /^(mistral|ministral|devstral|codestral|magistral|pixtral)/, deepseek: /^deepseek/, xai: /^grok/, qwen: /^qwen/, moonshot: /^kimi/ };
+const LAB_PREFIX: Record<string, RegExp> = { openai: /^(gpt|o\d)/, anthropic: /^claude/, google: /^gem/, meta: /^(llama|muse)/, mistral: /^(mistral|ministral|devstral|codestral|magistral|pixtral)/, deepseek: /^deepseek/, xai: /^grok/, qwen: /^qwen/, moonshot: /^kimi/ };
 
 // Case-insensitive dedupe, first spelling wins.
-const dedupe = (ids) => { const seen = new Set(); return ids.filter((id) => { const k = String(id).toLowerCase(); if (!id || seen.has(k)) return false; seen.add(k); return true; }); };
+const dedupe = (ids: string[]): string[] => { const seen = new Set<string>(); return ids.filter((id) => { const k = String(id).toLowerCase(); if (!id || seen.has(k)) return false; seen.add(k); return true; }); };
 
 // What to ask about when there's no /models: the matched provider's list first,
 // then the latest generations from every lab (under the gateway's own prefixes).
 // Capped: every id is one request per path.
-export function candidateModels(base, catalog = {}) {
+export function candidateModels(base: string, catalog: CatalogInput = {}): { matched: MatchedProvider | null; ids: string[] } {
   const providers = Array.isArray(catalog) ? catalog : catalog.providers || [];
   const matched = matchCatalogProvider(base, providers);
-  const recent = recentLabModels(catalog.labs || []);
+  const recent = recentLabModels((catalog as Partial<EndpointCatalog>).labs || []);
   const prefixes = vendorPrefixes(matched?.models);
   const prefixed = recent.flatMap((id) => [...prefixes].filter((p) => LAB_PREFIX[p]?.test(id)).map((p) => `${p}-${id}`));
   const own = dedupe(dropSnapshots((matched?.models || []).filter((id) => !NON_CHAT_ID_RE.test(id))));
@@ -344,35 +437,38 @@ const CLIENT_GATE_RE = /unauthorized client|client (is )?not allowed|unsupported
 const AUTH_MSG_RE = /unauthori[sz]ed|invalid[ _-](api[ _-]?)?key|api[ _-]?key[^"]{0,20}(not valid|invalid|expired|revoked|missing|required)|incorrect api key|API_KEY_INVALID|authentication|invalid[_ ]token|access token|permission[_ ]denied|forbidden/i;
 const KEY_IN_400_RE = /API_KEY_INVALID|api key not valid|invalid[ _-]api[ _-]?key|incorrect api key|api key (expired|revoked)/i;
 
-const isHtml = (ct, text) => /text\/html/i.test(ct || "") || /^\s*<(!doctype|html|head|body)/i.test(text || "");
-const htmlTitle = (text) => (/<title[^>]*>([^<]{1,120})/i.exec(text || "")?.[1] || "").trim();
+const isHtml = (ct: string | null | undefined, text: string) => /text\/html/i.test(ct || "") || /^\s*<(!doctype|html|head|body)/i.test(text || "");
+const htmlTitle = (text: string) => (/<title[^>]*>([^<]{1,120})/i.exec(text || "")?.[1] || "").trim();
 
 // An error body an API wrote: anthropic {type:"error",error:{type}}, openai
 // {error:{message}} / {error:"..."}, gemini [{error:{...}}], plain {message|detail}.
-function apiErrorShape(json) {
-  const j = Array.isArray(json) ? json[0] : json;
-  if (!j || typeof j !== "object") return null;
-  if (j.type === "error" && j.error && typeof j.error === "object" && j.error.type) return "anthropic";
-  if (j.error && typeof j.error === "object" && (j.error.message || j.error.code || j.error.type)) return "openai";
+function apiErrorShape(json: unknown): ErrorShape | null {
+  const j0: unknown = Array.isArray(json) ? json[0] : json;
+  if (!j0 || typeof j0 !== "object") return null;
+  const j = j0 as Json;
+  const err = j.error as Json;
+  if (j.type === "error" && j.error && typeof j.error === "object" && err.type) return "anthropic";
+  if (j.error && typeof j.error === "object" && (err.message || err.code || err.type)) return "openai";
   if (typeof j.error === "string" && j.error) return "openai";
   if (typeof j.message === "string" || typeof j.detail === "string" || Array.isArray(j.detail) || Array.isArray(j.errors)) return "generic";
   return null;
 }
 // A 404 that means "no such route" rather than "no such model".
-function isRouteMissing(r) {
+function isRouteMissing(r: ProbeResult): boolean {
   if (r.status === 405) return true;
   if (r.status !== 404) return false;
   if (UNKNOWN_MODEL_RE.test(r.text)) return false;
   if (r.step.html || !r.json) return true;
-  const msg = String(r.json?.detail ?? r.json?.error?.message ?? r.json?.error ?? r.json?.message ?? "").trim();
+  const j = r.json as Json | null;
+  const msg = String(j?.detail ?? (j?.error as Json | null | undefined)?.message ?? j?.error ?? j?.message ?? "").trim();
   return !msg || /^(404[: ]*)?(not found|page not found|route .* not found|no route|cannot (post|get) .*|invalid url.*)\.?$/i.test(msg);
 }
 // A 2xx carrying generated output: the empty body didn't stop it.
-const generated = (r) => r.status >= 200 && r.status < 300 && !r.step.html && !!r.json
-  && (Array.isArray(r.json.choices) || Array.isArray(r.json.content) || Array.isArray(r.json.output) || r.json.type === "message" || r.json.object === "response");
+const generated = (r: ProbeResult): boolean => r.status >= 200 && r.status < 300 && !r.step.html && !!r.json
+  && (Array.isArray((r.json as Json).choices) || Array.isArray((r.json as Json).content) || Array.isArray((r.json as Json).output) || (r.json as Json).type === "message" || (r.json as Json).object === "response");
 
 // One label per response, so every caller reads statuses the same way.
-export function classify(r) {
+export function classify(r: ProbeResult): Classification {
   if (r.status === 0) return "network";
   if (r.status === 429) return "rate";
   if (r.status >= 500) return "server";
@@ -392,7 +488,7 @@ export function classify(r) {
 
 const ANTHROPIC = { "anthropic-version": "2023-06-01" };
 
-function authHeaders(key) {
+function authHeaders(key: string): AuthHeaders {
   return {
     bearer: key ? { authorization: `Bearer ${key}` } : {},
     "x-api-key": key ? { "x-api-key": key } : {},
@@ -403,7 +499,7 @@ function authHeaders(key) {
 
 // Empty-body requests: a real API rejects them with 400 before running a model.
 // Each still carries the smallest output cap the API allows (Responses: 16).
-function probeSpecs(AUTH, openaiAuth = AUTH.bearer) {
+function probeSpecs(AUTH: AuthHeaders, openaiAuth: HeaderMap = AUTH.bearer): Record<Protocol, ProbeSpec> {
   return {
     anthropic: { path: "/messages", label: "POST /messages (empty)", headers: { ...AUTH.both, ...ANTHROPIC }, body: { model: "probe", max_tokens: 1, messages: [] } },
     "openai-chat": { path: "/chat/completions", label: "POST /chat/completions (empty)", headers: openaiAuth, body: { model: "probe", messages: [], max_tokens: 1, stream: false } },
@@ -413,12 +509,13 @@ function probeSpecs(AUTH, openaiAuth = AUTH.bearer) {
 
 // Records every request as a step (status + body preview, secrets redacted).
 // Retries 429s a few times, honouring Retry-After (capped).
-function makeProber({ fetchFn, key, steps, timeoutMs, sleep = defaultSleep }) {
+function makeProber({ fetchFn, key, steps, timeoutMs, sleep = defaultSleep }: { fetchFn: DetectFetch; key: string; steps: DetectStep[]; timeoutMs: number; sleep?: Sleep }): Prober {
   const redact = makeRedactor(key);
   return async (label, method, target, { headers = {}, body } = {}) => {
     for (let attempt = 0; ; attempt++) {
-      const step = { label, method, url: redact(target), status: null, preview: "" };
-      let res = null;
+      // status is set below before the step is recorded.
+      const step: Omit<DetectStep, "status"> & { status: number | null } = { label, method, url: redact(target), status: null, preview: "" };
+      let res: ProbeResponse | null = null;
       try {
         res = await fetchFn(target, {
           method,
@@ -428,24 +525,24 @@ function makeProber({ fetchFn, key, steps, timeoutMs, sleep = defaultSleep }) {
         });
       } catch (e) {
         step.status = 0;
-        step.preview = redact(e?.message || String(e)).slice(0, BODY_PREVIEW);
-        steps.push(step);
-        return { status: 0, text: "", json: null, step };
+        step.preview = redact((e as Error | null)?.message || String(e)).slice(0, BODY_PREVIEW);
+        steps.push(step as DetectStep);
+        return { status: 0, text: "", json: null, step: step as DetectStep };
       }
       const text = await res.text().catch(() => "");
       step.status = res.status;
       step.preview = redact(text).replace(/\s+/g, " ").slice(0, BODY_PREVIEW);
       step.html = isHtml(res.headers?.get?.("content-type"), text);
-      steps.push(step);
+      steps.push(step as DetectStep);
       if (res.status === 429 && attempt < MAX_RATE_RETRIES) {
         const ra = res.headers?.get?.("retry-after");
         const secs = ra && /^\d+(\.\d+)?$/.test(ra.trim()) ? +ra : ra ? (Date.parse(ra) - Date.now()) / 1000 : NaN;
         const wait = Number.isFinite(secs) && secs >= 0 ? secs * 1000 : 500 * 2 ** attempt;
         if (wait <= MAX_RETRY_WAIT_MS) { step.retried = true; await sleep(wait); continue; }
       }
-      let json = null;
+      let json: unknown = null;
       try { json = JSON.parse(text); } catch { /* not JSON */ }
-      return { status: res.status, text, json, step };
+      return { status: res.status, text, json, step: step as DetectStep };
     }
   };
 }
@@ -454,14 +551,14 @@ function makeProber({ fetchFn, key, steps, timeoutMs, sleep = defaultSleep }) {
 // so the model name is the first thing validated. OpenAI-style gateways can
 // reject max_tokens first (Snowflake: "deprecated in favor of
 // max_completion_tokens"): then the cap moves to max_completion_tokens.
-function modelBody(p, model, { maxCompletionTokens = false } = {}) {
+function modelBody(p: ProbeSpec, model: string, { maxCompletionTokens = false }: DetectQuirks = {}): Record<string, unknown> {
   const { stream, max_tokens, ...rest } = p.body;
   if (p.path === "/chat/completions") return maxCompletionTokens ? { ...rest, model, max_completion_tokens: 1 } : { ...rest, model, max_tokens: 1 };
   return { ...p.body, model };
 }
 const MAX_COMPLETION_RE = /max_completion_tokens/i;
 
-const PARTIAL_REASON = {
+const PARTIAL_REASON: Record<StopReason, string> = {
   auth: "The key was rejected part-way through, so some models weren't checked.",
   rate: "The endpoint kept rate-limiting, so some models weren't checked.",
   generated: "The endpoint ran a model on an empty request, so model checks were stopped to avoid charges.",
@@ -472,9 +569,10 @@ const PARTIAL_REASON = {
 // tells us nothing). `complete` is false when a probe failed (network error,
 // 429, 5xx) so a missing id may just mean "couldn't ask"; `stopped` names why
 // probing ended early (auth | rate | generated).
-async function probeModels({ probe, base, protocol, AUTH, openaiAuth, ids, quirks = {} }) {
-  const out = { ids: null, complete: false, stopped: null };
-  const p = probeSpecs(AUTH, openaiAuth)[protocol];
+interface ProbeModelsArgs { probe: Prober; base: string; protocol: string; AUTH: AuthHeaders; openaiAuth: HeaderMap; ids: string[]; quirks?: DetectQuirks }
+async function probeModels({ probe, base, protocol, AUTH, openaiAuth, ids, quirks = {} }: ProbeModelsArgs): Promise<{ ids: string[] | null; complete: boolean; stopped: StopReason | null }> {
+  const out: { ids: string[] | null; complete: boolean; stopped: StopReason | null } = { ids: null, complete: false, stopped: null };
+  const p = (probeSpecs(AUTH, openaiAuth) as Partial<Record<string, ProbeSpec>>)[protocol];
   if (!p || !ids.length) return out;
   const url = joinUrl(base, p.path);
   // Canary: a made-up id must be refused as unknown, or "accepted" means nothing.
@@ -488,11 +586,11 @@ async function probeModels({ probe, base, protocol, AUTH, openaiAuth, ids, quirk
   if (ck === "rate") { out.stopped = "rate"; return out; }
   if (ck === "generated") { out.stopped = "generated"; out.ids = []; return out; }
   if (ck !== "unknown-model") return { ...out, complete: ck !== "network" && ck !== "server" };
-  const ok = [];
+  const ok: string[] = [];
   let failed = false;
   const queue = dedupe(ids);
   await Promise.all(Array.from({ length: PROBE_CONCURRENCY }, async () => {
-    for (let id; !out.stopped && (id = queue.shift()) !== undefined;) {
+    for (let id: string | undefined; !out.stopped && (id = queue.shift()) !== undefined;) {
       const r = await probe(`Check model ${id}`, "POST", url, { headers: p.headers, body: modelBody(p, id, quirks) });
       const k = classify(r);
       if (k === "auth" || k === "gated") out.stopped ||= "auth";              // not "not served"
@@ -505,16 +603,16 @@ async function probeModels({ probe, base, protocol, AUTH, openaiAuth, ids, quirk
   out.complete = !failed && !out.stopped;
   // Keep catalog order, not completion order.
   const order = new Map(ids.map((id, i) => [id, i]));
-  out.ids = ok.sort((a, b) => order.get(a) - order.get(b));
+  out.ids = ok.sort((a, b) => order.get(a)! - order.get(b)!);
   return out;
 }
 
 // GET /models with pagination. Returns { ids, listed, auth } where `listed`
 // means a real list answered (even an empty one).
-async function fetchModelList(probe, base, label, headers) {
-  let url = joinUrl(base, "/models");
-  const ids = [];
-  let first = null;
+async function fetchModelList(probe: Prober, base: string, label: string, headers: HeaderMap): Promise<{ ids: string[]; listed: boolean; first: ProbeResult }> {
+  let url: string | null = joinUrl(base, "/models");
+  const ids: string[] = [];
+  let first: ProbeResult | null = null;
   for (let page = 0; page < MAX_MODEL_PAGES && url; page++) {
     const r = await probe(page ? `${label} page ${page + 1}` : label, "GET", url, { headers });
     if (!first) first = r;
@@ -523,31 +621,33 @@ async function fetchModelList(probe, base, label, headers) {
     url = nextModelPage(r.json, url);
   }
   const listed = !!first && first.status >= 200 && first.status < 300 && !first.step.html && !!modelEntries(first.json);
-  return { ids: dedupe(ids), listed, first };
+  // The loop always runs at least once, so `first` is set.
+  return { ids: dedupe(ids), listed, first: first as ProbeResult };
 }
 
 // Which API path a model should use when the endpoint serves it on several.
 // Claude stays on Anthropic Messages (thinking, tool_use and cache_control pass
 // through untranslated); everything else prefers Responses, then Chat.
-export function chooseRoute(model, protocols) {
+export function chooseRoute<P extends string>(model: string, protocols: P[]): P {
   if (protocols.length === 1) return protocols[0];
-  if (/claude/i.test(model) && protocols.includes("anthropic")) return "anthropic";
-  return ["openai-responses", "openai-chat", "anthropic"].find((p) => protocols.includes(p)) || protocols[0];
+  const has = (p: string): p is P => (protocols as string[]).includes(p);
+  if (/claude/i.test(model) && has("anthropic")) return "anthropic" as P;
+  return ["openai-responses", "openai-chat", "anthropic"].find(has) || protocols[0];
 }
 
 // model -> route, from { protocol: [models] }. `primary` = the protocol serving
 // the most models (the node's own type); routes only list models that leave it.
-export function buildRoutes(byProtocol, fixedPrimary = null) {
-  const serving = new Map();
-  for (const [proto, ids] of Object.entries(byProtocol)) for (const id of ids || []) {
+export function buildRoutes<P extends string>(byProtocol: Partial<Record<P, string[]>>, fixedPrimary: P | null = null): { primary: P | null; models: string[]; routes: Record<string, P>; counts: Record<string, number> } {
+  const serving = new Map<string, P[]>();
+  for (const [proto, ids] of Object.entries(byProtocol) as [P, string[] | undefined][]) for (const id of ids || []) {
     if (!serving.has(id)) serving.set(id, []);
-    serving.get(id).push(proto);
+    serving.get(id)!.push(proto);
   }
-  const all = {};
+  const all: Record<string, P> = {};
   for (const [id, protos] of serving) all[id] = chooseRoute(id, protos);
-  const counts = {};
+  const counts: Record<string, number> = {};
   for (const p of Object.values(all)) counts[p] = (counts[p] || 0) + 1;
-  const primary = fixedPrimary || Object.keys(counts).sort((a, b) => counts[b] - counts[a] || (a === "anthropic" ? -1 : 1))[0] || null;
+  const primary = fixedPrimary || (Object.keys(counts).sort((a, b) => counts[b] - counts[a] || (a === "anthropic" ? -1 : 1))[0] as P | undefined) || null;
   const routes = Object.fromEntries(Object.entries(all).filter(([, p]) => p !== primary));
   return { primary, models: [...serving.keys()], routes, counts };
 }
@@ -556,18 +656,29 @@ export function buildRoutes(byProtocol, fixedPrimary = null) {
 // first, then the catalog probe. Free requests only.
 // Adds `partial` + `partialReason` when probing stopped early, and
 // `authRejected` when the key was refused.
-export async function discoverModels({ baseUrl, apiKey, protocol, protocols, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS, quirks = {}, sleep }) {
+export interface DiscoverOptions {
+  baseUrl?: string | null;
+  apiKey?: unknown;
+  protocol: string;
+  protocols?: string[];
+  fetchFn: DetectFetch;
+  catalog?: CatalogInput;
+  timeoutMs?: number;
+  quirks?: DetectQuirks;
+  sleep?: Sleep;
+}
+export async function discoverModels({ baseUrl, apiKey, protocol, protocols, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS, quirks = {}, sleep }: DiscoverOptions): Promise<DiscoverResult> {
   // Two-path endpoint: discover on each path, then route each model.
-  if (protocols?.length > 1) {
-    const steps = [];
-    const byProtocol = {};
-    const complete = {};
-    let source = "none", catalogName, partialReason = null, authRejected = false;
+  if (protocols && protocols.length > 1) {
+    const steps: DetectStep[] = [];
+    const byProtocol: Record<string, string[]> = {};
+    const complete: Record<string, boolean> = {};
+    let source: ModelsSource = "none", catalogName: string | undefined, partialReason: string | null = null, authRejected = false;
     for (const p of protocols) {
       const r = await discoverModels({ baseUrl, apiKey, protocol: p, fetchFn, catalog, timeoutMs, quirks, sleep });
       steps.push(...r.steps);
       byProtocol[p] = r.models;
-      complete[p] = r.complete;
+      complete[p] = r.complete as boolean; // single-path result
       partialReason ||= r.partialReason;
       authRejected ||= r.authRejected;
       if (r.models.length && source === "none") { source = r.source; catalogName = r.catalogName; }
@@ -582,14 +693,14 @@ export async function discoverModels({ baseUrl, apiKey, protocol, protocols, fet
   }
   const key = cleanKey(apiKey);
   const base = String(baseUrl || "").replace(/\/+$/, "").replace(/\/messages$/, "");
-  const steps = [];
+  const steps: DetectStep[] = [];
   const probe = makeProber({ fetchFn, key, steps, timeoutMs, sleep });
   const AUTH = authHeaders(key);
   const azure = isAzureHost(base);
   const openaiAuth = azure ? AUTH["api-key"] : AUTH.bearer;
-  const styles = protocol === "anthropic" ? [["x-api-key", { ...AUTH.both, ...ANTHROPIC }]] : [[azure ? "api-key" : "bearer", openaiAuth]];
+  const styles: [string, HeaderMap][] = protocol === "anthropic" ? [["x-api-key", { ...AUTH.both, ...ANTHROPIC }]] : [[azure ? "api-key" : "bearer", openaiAuth]];
   let sawAuth = false;
-  for (const [style, h] of [["none", {}], ...styles]) {
+  for (const [style, h] of [["none", {}], ...styles] as [string, HeaderMap][]) {
     const r = await fetchModelList(probe, base, `GET /models (${style === "none" ? "no auth" : style})`, h);
     if (r.ids.length) return { models: r.ids, source: "models", steps, complete: true, partial: false, partialReason: null, authRejected: false };
     const k = classify(r.first);
@@ -606,30 +717,38 @@ export async function discoverModels({ baseUrl, apiKey, protocol, protocols, fet
 }
 
 // Probe runner. `fetchFn` is injected so tests (and the SSRF-safe fetch) can supply it.
-export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS, sleep }) {
+export interface DetectOptions {
+  url: unknown;
+  apiKey?: unknown;
+  fetchFn: DetectFetch;
+  catalog?: CatalogInput;
+  timeoutMs?: number;
+  sleep?: Sleep;
+}
+export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS, sleep }: DetectOptions): Promise<DetectResult> {
   const key = cleanKey(apiKey);
   const base0 = normalizeUrl(url);
-  const steps = [];
+  const steps: DetectStep[] = [];
   if (!base0) return { ok: false, error: "That doesn't look like a URL.", steps };
 
   const probe = makeProber({ fetchFn, key, steps, timeoutMs, sleep });
   const AUTH = authHeaders(key);
   const azure = isAzureHost(base0);
 
-  let models = [];
+  let models: string[] = [];
   let base = base0;
-  let modelsAuth = null;
+  let modelsAuth: string | null = null;
   let sawAuthFail = false;
   let clientGated = false;
   let rateLimited = false;
-  const note = (k) => {
+  const note = (k: Classification) => {
     if (k === "auth") sawAuthFail = true;
     if (k === "gated") clientGated = true;
     if (k === "rate") rateLimited = true;
   };
 
   // 1. Model list: no auth, then each auth style, on each candidate base.
-  const listStyles = [["none", {}], ...(azure ? [["api-key", AUTH["api-key"]]] : []), ["bearer", AUTH.bearer], ["x-api-key", { ...AUTH["x-api-key"], ...ANTHROPIC }], ...(azure ? [] : [["api-key", AUTH["api-key"]]])];
+  const listStyles: [string, HeaderMap][] = [["none", {}], ...(azure ? [["api-key", AUTH["api-key"]] as [string, HeaderMap]] : []), ["bearer", AUTH.bearer], ["x-api-key", { ...AUTH["x-api-key"], ...ANTHROPIC }], ...(azure ? [] : [["api-key", AUTH["api-key"]] as [string, HeaderMap]])];
   outer:
   for (const b of candidateBases(base0)) {
     for (const [style, h] of listStyles) {
@@ -637,7 +756,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
       // api-key is only a fallback after Bearer was refused (Azure-style).
       if (style === "api-key" && !azure && !sawAuthFail) continue;
       const r = await fetchModelList(probe, b, `GET /models (${style === "none" ? "no auth" : style})`, h);
-      if (r.listed && (r.ids.length || Array.isArray(r.first.json?.data))) { models = r.ids; base = b; modelsAuth = style; break outer; }
+      if (r.listed && (r.ids.length || Array.isArray((r.first.json as Json | null)?.data))) { models = r.ids; base = b; modelsAuth = style; break outer; }
       const k = classify(r.first);
       if (style !== "none") note(k); else if (k === "gated") clientGated = true;
       if (k === "missing" || k === "network") break; // nothing at this path for any auth
@@ -650,9 +769,9 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   // Found = an API-shaped 400/422 (or an unknown-model error, vLLM/Ollama answer
   // that with 404). 5xx, HTML, plain "Not Found" and auth errors are not.
   const preferAnthropic = /anthropic|claude|cortex|snowflake/i.test(base0) || /^sk-ant-/.test(key);
-  const order = preferAnthropic ? ["anthropic", "openai-chat", "openai-responses"] : ["openai-chat", "openai-responses", "anthropic"];
-  const found = [];
-  const generatesOnEmpty = new Set();
+  const order: Protocol[] = preferAnthropic ? ["anthropic", "openai-chat", "openai-responses"] : ["openai-chat", "openai-responses", "anthropic"];
+  const found: { proto: Protocol; base: string; shape: ErrorShape | null; text: string }[] = [];
+  const generatesOnEmpty = new Set<Protocol>();
   let serverErrors = 0;
   for (const b of models.length ? [base] : candidateBases(base0)) {
     for (const proto of order) {
@@ -697,14 +816,14 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
 
   const protocol = filtered[0].proto;
   // Quirks we can read off the free probes' error bodies.
-  const quirks = {};
+  const quirks: DetectQuirks = {};
   if (steps.some((st) => /chat\/completions/.test(st.url) && MAX_COMPLETION_RE.test(st.preview))) quirks.maxCompletionTokens = true;
   if (generatesOnEmpty.size) quirks.generatesOnEmpty = true;
   if (openaiAuth === AUTH["api-key"] && key) quirks.apiKeyHeader = true;
   const protocols = [...new Set(filtered.map((f) => f.proto))];
 
   // 3. Is the key really checked? A bad key must be refused, or "works" means nothing.
-  let keyConfirmed = modelsAuth && modelsAuth !== "none" ? "likely" : "unknown";
+  let keyConfirmed: KeyConfirmed = modelsAuth && modelsAuth !== "none" ? "likely" : "unknown";
   if (key && !generatesOnEmpty.has(protocol)) {
     const p = PROBES[protocol];
     const bad = "10router-bad-key-check";
@@ -716,12 +835,12 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
 
   // 4. No list? Ask about candidate models one at a time, still free. When
   // several APIs answered, ask on each: they can serve different models.
-  let modelsSource = models.length ? "models" : "none";
+  let modelsSource: ModelsSource = models.length ? "models" : "none";
   const { matched, ids: candidates } = candidateModels(base, catalog);
-  let routes = {};
-  let byProtocol = null;
-  let primary = protocol;
-  let partialReason = null;
+  let routes: Record<string, Protocol> = {};
+  let byProtocol: Partial<Record<Protocol, string[]>> | null = null;
+  let primary: Protocol = protocol;
+  let partialReason: string | null = null;
   if (!models.length) {
     byProtocol = {};
     for (const proto of protocols) {
@@ -735,7 +854,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
     if (built.models.length) {
       models = built.models;
       routes = built.routes;
-      primary = built.primary;
+      primary = built.primary as Protocol; // set: there are models
       modelsSource = matched ? "catalog" : "guessed";
     }
   }

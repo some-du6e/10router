@@ -9,9 +9,9 @@ export const dynamic = "force-dynamic";
 
 // POST /api/provider-nodes/detect - Work out protocol, base URL, models and auth
 // from a URL + key. Free probes only; never triggers a billed generation.
-export async function POST(request) {
+export async function POST(request: Request) {
   try {
-    const { url, apiKey } = await request.json();
+    const { url, apiKey } = (await request.json()) as { url?: string; apiKey?: string };
     const base = normalizeUrl(url);
     if (!base) return NextResponse.json({ ok: false, error: "That doesn't look like a URL.", steps: [] }, { status: 400 });
 
@@ -25,7 +25,7 @@ export async function POST(request) {
     const result = await detectEndpoint({ url: base, apiKey, fetchFn: makeProbeFetch(remote), catalog: await getEndpointCatalog() });
     return NextResponse.json(result);
   } catch (error) {
-    console.log("Error detecting endpoint:", error?.message);
+    console.log("Error detecting endpoint:", error instanceof Error ? error.message : undefined);
     return NextResponse.json({ ok: false, error: "Detection failed", steps: [] }, { status: 500 });
   }
 }
