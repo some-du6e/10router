@@ -189,7 +189,10 @@ describe("jsonReplyToSse", () => {
     const { jsonReplyToSse } = await import("../../open-sse/handlers/chatCore/jsonToSse.js");
     const out = jsonReplyToSse({ id: "r", object: "response", status: "completed", output: [{ type: "message", id: "i", role: "assistant", content: [{ type: "output_text", text: "yo" }] }] }, "openai-responses");
     expect(out).toContain("event: response.output_text.delta");
+    expect(out).toContain("event: response.content_part.added");
     expect(out).toContain("event: response.completed");
+    const added = out.split("\n\n").find((e) => e.startsWith("event: response.output_item.added"));
+    expect(JSON.parse(added.split("data: ")[1]).item.content).toEqual([]);
   });
 
   it("returns null for formats it does not know", async () => {

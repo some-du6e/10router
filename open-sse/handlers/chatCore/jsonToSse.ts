@@ -2,6 +2,7 @@
 // a client that asked to stream when the upstream answered with plain JSON.
 // Returns null for formats it cannot replay; the caller then sends the JSON.
 import { FORMATS } from "../../translator/formats.js";
+import { CLAUDE_BLOCK, RESPONSES_ITEM, ROLE } from "../../translator/schema/index.js";
 
 type Json = Record<string, any>;
 
@@ -13,7 +14,7 @@ function openAIEvents(body: Json): string {
   const out: string[] = [];
   for (const choice of body.choices || []) {
     const msg = choice.message || {};
-    const delta: Json = { role: msg.role || "assistant" };
+    const delta: Json = { role: msg.role || ROLE.ASSISTANT };
     if (msg.reasoning_content) delta.reasoning_content = msg.reasoning_content;
     if (msg.content != null) delta.content = msg.content;
     if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
@@ -32,14 +33,14 @@ function claudeEvents(body: Json): string {
   const usage = body.usage || {};
   const out = [ev({ type: "message_start", message: { ...body, content: [], stop_reason: null, stop_sequence: null, usage: { ...usage, output_tokens: 0 } } })];
   (body.content || []).forEach((block: Json, index: number) => {
-    if (block.type === "text") {
-      out.push(ev({ type: "content_block_start", index, content_block: { type: "text", text: "" } }));
+    if (block.type === CLAUDE_BLOCK.TEXT) {
+      out.push(ev({ type: "content_block_start", index, content_block: { type: CLAUDE_BLOCK.TEXT, text: "" } }));
       out.push(ev({ type: "content_block_delta", index, delta: { type: "text_delta", text: block.text || "" } }));
-    } else if (block.type === "thinking") {
-      out.push(ev({ type: "content_block_start", index, content_block: { type: "thinking", thinking: "" } }));
+    } else if (block.type === CLAUDE_BLOCK.THINKING) {
+      out.push(ev({ type: "content_block_start", index, content_block: { type: CLAUDE_BLOCK.THINKING, thinking: "" } }));
       out.push(ev({ type: "content_block_delta", index, delta: { type: "thinking_delta", thinking: block.thinking || "" } }));
       if (block.signature) out.push(ev({ type: "content_block_delta", index, delta: { type: "signature_delta", signature: block.signature } }));
-    } else if (block.type === "tool_use") {
+    } else if (block.type === CLAUDE_BLOCK.TOOL_USE) {
       out.push(ev({ type: "content_block_start", index, content_block: { ...block, input: {} } }));
       out.push(ev({ type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input ?? {}) } }));
     } else {
@@ -60,16 +61,30 @@ function responsesEvents(body: Json): string {
     ev({ type: "response.in_progress", response: { ...body, status: "in_progress", output: [] } }),
   ];
   (body.output || []).forEach((item: Json, output_index: number) => {
-    out.push(ev({ type: "response.output_item.added", output_index, item }));
-    if (item.type === "message") {
+    // Each item opens empty and fills through deltas, so a client that
+    // accumulates deltas onto the added item doesn't see the text twice.
+    if (item.type === RESPONSES_ITEM.MESSAGE) {
+      out.push(ev({ type: "response.output_item.added", output_index, item: { ...item, status: "in_progress", content: [] } }));
       (item.content || []).forEach((part: Json, content_index: number) => {
-        if (part.type !== "output_text") return;
-        out.push(ev({ type: "response.output_text.delta", item_id: item.id, output_index, content_index, delta: part.text || "" }));
-        out.push(ev({ type: "response.output_text.done", item_id: item.id, output_index, content_index, text: part.text || "" }));
+        const at = { item_id: item.id, output_index, content_index };
+        if (part.type !== RESPONSES_ITEM.OUTPUT_TEXT) {
+          out.push(ev({ type: "response.content_part.added", ...at, part }));
+          out.push(ev({ type: "response.content_part.done", ...at, part }));
+          return;
+        }
+        const text = part.text || "";
+        out.push(ev({ type: "response.content_part.added", ...at, part: { ...part, text: "" } }));
+        out.push(ev({ type: "response.output_text.delta", ...at, delta: text }));
+        out.push(ev({ type: "response.output_text.done", ...at, text }));
+        out.push(ev({ type: "response.content_part.done", ...at, part }));
       });
-    } else if (item.type === "function_call") {
-      out.push(ev({ type: "response.function_call_arguments.delta", item_id: item.id, output_index, delta: item.arguments || "" }));
-      out.push(ev({ type: "response.function_call_arguments.done", item_id: item.id, output_index, arguments: item.arguments || "" }));
+    } else if (item.type === RESPONSES_ITEM.FUNCTION_CALL) {
+      const args = item.arguments || "";
+      out.push(ev({ type: "response.output_item.added", output_index, item: { ...item, status: "in_progress", arguments: "" } }));
+      out.push(ev({ type: "response.function_call_arguments.delta", item_id: item.id, output_index, delta: args }));
+      out.push(ev({ type: "response.function_call_arguments.done", item_id: item.id, output_index, arguments: args }));
+    } else {
+      out.push(ev({ type: "response.output_item.added", output_index, item }));
     }
     out.push(ev({ type: "response.output_item.done", output_index, item }));
   });
