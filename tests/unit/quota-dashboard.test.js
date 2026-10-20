@@ -122,6 +122,78 @@ describe("quota dashboard", () => {
     expect(multi.status).not.toBe("Depleted");
   });
 
+  it("follows the fullest per-model pool regardless of listing order", () => {
+    const build = (quotas) =>
+      buildAccount({ id: "ag", provider: "antigravity" }, { quotas });
+    const gemini = { name: "Gemini", remainingPercentage: 90 };
+    const claude = { name: "Claude", remainingPercentage: 0 };
+    expect(build([gemini, claude]).status).toBe("Healthy");
+    expect(build([claude, gemini]).status).toBe("Healthy");
+    expect(build([claude]).status).toBe("Depleted");
+  });
+
+  it("takes a pooled provider's status from each pool's tightest window", () => {
+    const mm = buildAccount(
+      { id: "mm", provider: "minimax" },
+      {
+        quotas: [
+          { name: "MiniMax-M2 (5h)", remainingPercentage: 80 },
+          { name: "MiniMax-M2 (7d)", remainingPercentage: 10 },
+        ],
+      },
+    );
+    expect(mm.worstRemaining).toBe(10);
+    expect(mm.status).toBe("Low quota");
+  });
+
+  it("never lets an unlimited row decide status", () => {
+    const vercel = buildAccount(
+      { id: "v", provider: "vercel-ai-gateway" },
+      {
+        quotas: [
+          { name: "Used (USD)", unlimited: true, remainingPercentage: 100 },
+          { name: "Remaining (USD)", remainingPercentage: 0 },
+        ],
+      },
+    );
+    expect(vercel.status).toBe("Depleted");
+  });
+
+  it("recognises rolling, numbered session and provider-named weekly windows", () => {
+    const status = (provider, quotas) =>
+      buildAccount({ id: provider, provider }, { quotas }).status;
+    expect(
+      status("opencode-go", [
+        { name: "Rolling", remainingPercentage: 0 },
+        { name: "Weekly", remainingPercentage: 90 },
+      ]),
+    ).toBe("Depleted");
+    expect(
+      status("glm", [
+        { name: "Session (5h)", remainingPercentage: 5 },
+        { name: "Weekly (7d)", remainingPercentage: 90 },
+      ]),
+    ).toBe("Low quota");
+    expect(
+      status("grok-cli", [
+        { name: "Monthly included", remainingPercentage: 90 },
+        { name: "Weekly SuperGrok", remainingPercentage: 0 },
+      ]),
+    ).toBe("Depleted");
+  });
+
+  it("keeps Copilot's unlimited flag so paid plans are not Unknown", () => {
+    const quotas = parseQuotaData("github", {
+      quotas: {
+        chat: { used: 0, total: 0, remaining: 0, unlimited: true },
+        premium_interactions: { used: 50, total: 300, remaining: 250 },
+      },
+    });
+    const copilot = buildAccount({ id: "gh", provider: "github" }, { quotas });
+    expect(copilot.status).toBe("Healthy");
+    expect(Math.round(copilot.worstRemaining)).toBe(83);
+  });
+
   it("uses singular units in the updated label", () => {
     const now = Date.parse("2026-10-07T02:00:00Z");
     expect(updatedLabel(now - 60000, now)).toBe("Updated 1 minute ago");

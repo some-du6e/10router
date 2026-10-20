@@ -57,6 +57,43 @@ const statusTone = (account) =>
     ? quotaTone(null)
     : quotaTone(account.worstRemaining);
 
+// Hidden rows leave the ledger and cards too; the detail table can bring them back.
+function withVisibleQuotas(provider, entry, quotaVisibility) {
+  if (!entry?.quotas) return entry;
+  return {
+    ...entry,
+    quotas: filterQuotasByVisibility(provider, entry.quotas, quotaVisibility),
+  };
+}
+
+// Values come from the Kiro connect flows: builder-id/idc (device code),
+// google/github (social), imported (refresh-token paste), api_key (headless).
+const KIRO_METHOD_LABELS = {
+  "builder-id": "AWS Builder ID",
+  idc: "IAM Identity Center",
+  google: "Google",
+  github: "GitHub",
+  imported: "Imported Token",
+  api_key: "API Key",
+};
+
+function kiroMethodLabel(account) {
+  const method = account.providerSpecificData?.authMethod;
+  return (
+    KIRO_METHOD_LABELS[method] ||
+    (account.authType === "api_key" ? "API Key" : "OAuth")
+  );
+}
+
+// Social and imported flows omit the region; fall back to the profile ARN's
+// region segment (arn:aws:codewhisperer:<region>:...).
+function kiroRegion(account) {
+  const { region, profileArn } = account.providerSpecificData || {};
+  return (
+    region || (typeof profileArn === "string" ? profileArn.split(":")[3] : "")
+  );
+}
+
 export default function ProviderLimits() {
   const data = useQuotaDashboard();
   const { blurClass, isBlurred } = useBlurEmails();
@@ -100,11 +137,15 @@ export default function ProviderLimits() {
       data.connections.map((connection) =>
         buildAccount(
           connection,
-          data.quotaData[connection.id],
+          withVisibleQuotas(
+            connection.provider,
+            data.quotaData[connection.id],
+            quotaVisibility,
+          ),
           data.errors[connection.id],
         ),
       ),
-    [data.connections, data.quotaData, data.errors],
+    [data.connections, data.quotaData, data.errors, quotaVisibility],
   );
   const groups = useMemo(() => {
     const result = new Map();
@@ -162,6 +203,7 @@ export default function ProviderLimits() {
   // new one enters, and the deck eases between their heights. The ledger stays still.
   const deck = useRef(null);
   const tabs = useRef(null);
+  const search = useRef(null);
   const incoming = useRef(null);
   const outgoing = useRef(null);
   const lastTab = useRef(provider);
@@ -583,6 +625,7 @@ export default function ProviderLimits() {
               </div>
             </div>
             <div className="flex flex-wrap gap-3">
+              <div ref={search} className="min-w-0 flex-1 basis-52">
               <Input
                 aria-label="Search accounts"
                 icon="search"
@@ -592,8 +635,8 @@ export default function ProviderLimits() {
                   setQuery(e.target.value);
                   setPage(1);
                 }}
-                className="min-w-0 flex-1 basis-52"
               />
+              </div>
               <Select
                 aria-label="Filter by status"
                 value={health}
@@ -622,7 +665,14 @@ export default function ProviderLimits() {
                 ]}
               />
               {(query || health !== "all" || provider !== "all") && (
-                <Button variant="ghost" onClick={() => openProvider("all")}>
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    openProvider("all");
+                    // The button unmounts once filters clear; keep focus nearby.
+                    search.current?.querySelector("input")?.focus();
+                  }}
+                >
                   Clear
                 </Button>
               )}
@@ -862,6 +912,7 @@ export default function ProviderLimits() {
         <QuotaDialog
           title={<span className={detail.name === detail.email ? blurClass : ""}>{providerName(detail.provider)} / {detail.name}</span>}
           onClose={() => setDetailId(null)}
+          fallbackFocus={search}
           footer={
             <>
               <Link
@@ -924,7 +975,15 @@ export default function ProviderLimits() {
               </p>
             )}
             {detail.message && (
-              <p className="text-xs text-text-muted">{detail.message}</p>
+              <p
+                className={`text-xs ${
+                  detail.quotaStatus === "subscription_inactive"
+                    ? "text-red-600 dark:text-red-400"
+                    : "text-text-muted"
+                }`}
+              >
+                {detail.message}
+              </p>
             )}
             {actionError && (
               <p role="alert" className="text-xs text-red-500">
@@ -957,8 +1016,7 @@ export default function ProviderLimits() {
                 All limits and visibility
               </summary>
               <p className="mt-3 text-xs text-text-muted">
-                Hidden rows only affect this detailed table. Summary bars still
-                include limits that can block an account.
+                Hidden rows are left out of status, bars and summaries.
               </p>
               <div
                 className={`mt-3 ${visibilityBusy ? "pointer-events-none opacity-60" : ""}`}
@@ -994,8 +1052,9 @@ export default function ProviderLimits() {
             {detail.provider === "kiro" && (
               <div className="space-y-2 border-t border-border-subtle pt-3 text-xs text-text-muted">
                 <p>
-                  {detail.providerSpecificData?.authMethod || detail.authType}{" "}
-                  {detail.providerSpecificData?.region || ""}
+                  {kiroMethodLabel(detail)}
+                  {kiroRegion(detail) ? ` · ${kiroRegion(detail)}` : ""}
+                  {detail.testStatus ? ` · Last test: ${detail.testStatus}` : ""}
                 </p>
                 {detail.providerSpecificData?.profileArn && (
                   <button

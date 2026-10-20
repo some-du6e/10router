@@ -21,11 +21,19 @@ function windowIdentity(provider, quota) {
   const lower = name.toLowerCase();
   if (
     (provider === "codex" && key === "session" && lower !== "monthly") ||
-    /^(session(?: \(5h\))?|5h|5-hour|session \(5h\))$/i.test(name)
+    /^(session(?: \(\d+h\))?|5h|5-hour)$/i.test(name)
   ) {
     return { key: "session", kind: "session", label: "5-hour limit" };
   }
-  if (/^(weekly(?: \(7d\))?|7-day|weekly \(7d\))$/i.test(name)) {
+  // OpenCode Go does not report its rolling window length.
+  if (lower === "rolling")
+    return { key: "session", kind: "session", label: "Rolling limit" };
+  // Grok names its account-wide weekly pool after the plan; other "weekly <model>"
+  // rows (Claude's Sonnet limit) stay per-model.
+  if (
+    /^(weekly(?: \(7d\))?|7-day)$/i.test(name) ||
+    (provider === "grok-cli" && lower === "weekly supergrok")
+  ) {
     return {
       key: "weekly",
       kind: "weekly",
@@ -40,6 +48,33 @@ function windowIdentity(provider, quota) {
   return { key, kind: "other", label: name };
 }
 
+// Unlimited rows (e.g. Vercel's spend counter) never decide status while a capped one reports.
+function capped(windows) {
+  const known = windows.filter((q) => q.remaining !== null);
+  const limited = known.filter((q) => !q.unlimited);
+  return limited.length ? limited : known;
+}
+
+function lowest(windows) {
+  return windows.reduce(
+    (low, q) => (!low || q.remaining < low.remaining ? q : low),
+    null,
+  );
+}
+
+// Per-model windows ("Gemini", "MiniMax-M2 (5h)") are separate pools: the account
+// still routes while any pool has quota, so status follows the best pool's tightest window.
+function bestPool(windows) {
+  const pools = new Map();
+  for (const q of windows) {
+    const pool = q.label.replace(/\s*\((?:\d+[hd]|weekly|session)\)$/i, "");
+    pools.set(pool, [...(pools.get(pool) || []), q]);
+  }
+  return [...pools.values()]
+    .map(lowest)
+    .reduce((best, q) => (!best || q.remaining > best.remaining ? q : best), null);
+}
+
 export function buildAccount(connection, entry, error) {
   const windows = (entry?.quotas || [])
     .filter((q) => !q.message)
@@ -51,21 +86,20 @@ export function buildAccount(connection, entry, error) {
   const weekly = windows.find((q) => q.kind === "weekly");
   const session = windows.find((q) => q.kind === "session");
   const primary = windows.filter((q) => q.kind !== "other");
-  const mainWindows = primary.length ? primary : windows;
   const weeklyBlocked = weekly?.remaining === 0;
-  const priority = weeklyBlocked ? weekly : session || weekly || mainWindows[0];
-  const orderedWindows = priority
-    ? [priority, ...mainWindows.filter((q) => q !== priority)]
-    : [];
   // Status follows the tightest window, so a low weekly bar never sits next to "Healthy".
   // Per-model windows ("other") only decide health when nothing else is reported,
   // so one exhausted model does not mark an account that still routes as Depleted.
-  const known = (primary.length ? orderedWindows : [priority].filter(Boolean))
-    .filter((q) => q.remaining !== null);
-  const worstWindow = known.reduce(
-    (low, q) => (!low || q.remaining < low.remaining ? q : low),
-    null,
-  );
+  const worstWindow = primary.length
+    ? lowest(capped(primary))
+    : bestPool(capped(windows));
+  const priority = weeklyBlocked
+    ? weekly
+    : session || weekly || worstWindow || windows[0];
+  const mainWindows = primary.length ? primary : windows;
+  const orderedWindows = priority
+    ? [priority, ...mainWindows.filter((q) => q !== priority)]
+    : [];
   const remaining = worstWindow?.remaining ?? null;
   const health =
     remaining === null
@@ -95,6 +129,7 @@ export function buildAccount(connection, entry, error) {
     updatedAt: entry?.updatedAt || entry?.cachedAt || null,
     error: error || null,
     message: entry?.message || null,
+    quotaStatus: entry?.status || null,
   };
 }
 

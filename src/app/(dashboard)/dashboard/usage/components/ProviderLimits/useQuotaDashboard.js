@@ -21,7 +21,7 @@ export async function fetchAllConnections(signal) {
     );
     if (!response.ok)
       throw new Error(
-        "Could not load accounts. Your last readings are still shown.",
+        "Could not load accounts. Any earlier readings are still shown.",
       );
     const data = await response.json();
     for (const connection of data.connections || [])
@@ -55,15 +55,18 @@ export default function useQuotaDashboard() {
   const fetchedAt = useRef({});
   const lastReadings = useRef({});
   const inFlight = useRef(new Map());
+  // Toggles that a slower in-flight account list must not undo.
+  const activeOverrides = useRef({});
 
   const fetchQuota = useCallback(
-    async (connection, { force = false, signal } = {}) => {
+    async (connection, { force = false, signal, startedAt } = {}) => {
       if (!signal || signal.aborted) return;
       const previous = inFlight.current.get(connection.id);
       if (previous && !previous.signal.aborted) return previous.promise;
       const task = (async () => {
-        // Failed attempts must also respect the provider's polling interval.
-        fetchedAt.current[connection.id] = Date.now();
+        // Failed attempts must also respect the provider's polling interval. Stamp
+        // the cycle start, not the fetch start, so late pool slots keep their cadence.
+        fetchedAt.current[connection.id] = startedAt ?? Date.now();
         setLoading((prev) => ({ ...prev, [connection.id]: true }));
         try {
           const response = await fetch(
@@ -84,8 +87,11 @@ export default function useQuotaDashboard() {
                 q.remaining != null ||
                 q.unlimited),
           );
+          // A dead subscription is a reading, not a failed refresh: drop the old numbers.
+          const inactive = data.status === "subscription_inactive";
           if (
             !hasQuota &&
+            !inactive &&
             lastReadings.current[connection.id]?.quotas?.length
           ) {
             throw new Error(
@@ -135,8 +141,20 @@ export default function useQuotaDashboard() {
         if (signal.aborted) return;
         // Compare against the cycle start (plus slack) so request time does not
         // push an account past the next tick and double its interval.
-        const cycleStart = Date.now() + 5000;
-        setConnections(list);
+        const startedAt = Date.now();
+        const cycleStart = startedAt + 5000;
+        const overrides = activeOverrides.current;
+        setConnections(
+          list.map((connection) => {
+            if (!(connection.id in overrides)) return connection;
+            if (connection.isActive === overrides[connection.id])
+              delete overrides[connection.id];
+            return {
+              ...connection,
+              isActive: overrides[connection.id] ?? connection.isActive,
+            };
+          }),
+        );
         setConnectionError(null);
         setInitialLoading(false);
         const due = list.filter(
@@ -150,7 +168,8 @@ export default function useQuotaDashboard() {
         );
         await runPool(
           due,
-          (connection) => fetchQuota(connection, { force, signal }),
+          // Bulk refreshes keep the server's Claude cache; only the per-account button bypasses it.
+          (connection) => fetchQuota(connection, { signal, startedAt }),
           signal,
         );
       } catch (error) {
@@ -213,6 +232,7 @@ export default function useQuotaDashboard() {
     });
     if (!response.ok)
       throw new Error("Could not change account status. Please retry.");
+    activeOverrides.current[id] = isActive;
     setConnections((prev) =>
       prev.map((connection) =>
         connection.id === id ? { ...connection, isActive } : connection,

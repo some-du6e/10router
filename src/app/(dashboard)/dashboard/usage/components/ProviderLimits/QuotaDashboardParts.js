@@ -179,12 +179,15 @@ export function ProviderWindow({
 }
 
 // Native dialogs trap focus. Restore the trigger explicitly when React unmounts.
-export function QuotaDialog({ title, onClose, children, footer }) {
+// fallbackFocus receives focus when the trigger is gone, e.g. a row filtered out
+// after its account was turned off from the dialog.
+export function QuotaDialog({ title, onClose, children, footer, fallbackFocus }) {
   const ref = useRef(null);
   const titleId = useId();
   useEffect(() => {
     const dialog = ref.current;
     const trigger = document.activeElement;
+    const fallback = fallbackFocus?.current;
     const previousOverflow = document.body.style.overflow;
     dialog.showModal();
     document.body.style.overflow = "hidden";
@@ -192,8 +195,9 @@ export function QuotaDialog({ title, onClose, children, footer }) {
       dialog.close();
       document.body.style.overflow = previousOverflow;
       if (trigger?.isConnected) trigger.focus();
+      else fallback?.querySelector("input")?.focus();
     };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   return createPortal(
     <dialog
       data-i18n-skip="true"
