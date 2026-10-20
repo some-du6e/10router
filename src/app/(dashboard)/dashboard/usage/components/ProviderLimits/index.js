@@ -1,54 +1,71 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import Card from "@/shared/components/Card";
+import Button from "@/shared/components/Button";
+import Input from "@/shared/components/Input";
+import Select from "@/shared/components/Select";
 import ProviderIcon from "@/shared/components/ProviderIcon";
+import { useBlurEmails } from "@/shared/hooks/useBlurEmails";
+import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import { AI_PROVIDERS } from "@/shared/constants/providers";
 import QuotaTable from "./QuotaTable";
 import SubscriptionValueBadge from "./SubscriptionValueBadge";
-import Toggle from "@/shared/components/Toggle";
-import Tooltip from "@/shared/components/Tooltip";
-import { useBlurEmails } from "@/shared/hooks/useBlurEmails";
+import useQuotaDashboard from "./useQuotaDashboard";
 import {
-  parseQuotaData,
-  calculatePercentage,
+  AccountLimits,
+  Icon,
+  ProviderWindow,
+  QuotaDialog,
+  quotaTone,
+} from "./QuotaDashboardParts";
+import {
+  buildAccount,
+  compareAccounts,
+  compareBarAccounts,
+  providerWindows,
+  resetLabel,
+  resetShort,
+  resetTimestamp,
+  updatedLabel,
+} from "./dashboardModel";
+import {
   filterQuotasByVisibility,
   getHiddenQuotaRows,
   getQuotaVisibilityKey,
-  getConnectionLabel,
-  getConnectionQuotaRemaining,
-  sortVisibleConnections,
-  buildLoadingState,
-  filterQuotaStateByConnections,
-  getConnectionsEmptyMessage,
-  getPageSizeLabel,
-  getConnectionsPaginationSummary,
-  getSafePagination,
-  getSafeTotals,
-  shouldResetPage,
-  getPaginationPageValue,
-  getProviderOptions,
-  reconcileConnectionsPage,
-  getQuotaCache,
-  setQuotaCache,
-  QUOTA_CACHE_KEY,
-  REFRESH_INTERVAL_MS,
-  CLAUDE_REFRESH_INTERVAL_MS,
-  DEPLETED_QUOTA_THRESHOLD,
-  AUTO_REFRESH_STORAGE_KEY,
-  CONNECTIONS_PAGE_SIZE,
-  ACCOUNT_PAGE_SIZE_OPTIONS,
-  ACCOUNT_PAGE_SIZE_MAX,
-  ACCOUNT_FILTER_OPTIONS,
-  QUOTA_SORT_OPTIONS,
-  SUB_VALUE_DEFAULT_WINDOW,
   readSubValueWindow,
   writeSubValueWindow,
+  ACCOUNT_PAGE_SIZE_OPTIONS,
+  ACCOUNT_PAGE_SIZE_MAX,
 } from "./utils";
-import Card from "@/shared/components/Card";
-import { USAGE_SUPPORTED_PROVIDERS } from "@/shared/constants/providers";
-import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 
-// Maps the stored providerSpecificData.authMethod to a human label for Kiro.
+const LEDGER =
+  "grid grid-cols-2 gap-x-4 md:grid-cols-[minmax(160px,1.4fr)_minmax(65px,.6fr)_minmax(110px,1fr)_90px_80px]";
+const STATUSES = ["Healthy", "Low quota", "Depleted", "Unknown", "Turned off"];
+const PROVIDER_NAMES = {
+  claude: "Claude",
+  codex: "Codex",
+  xai: "xAI",
+  kimi: "Kimi",
+};
+const reducedMotion = () =>
+  window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const providerName = (id) => PROVIDER_NAMES[id] || AI_PROVIDERS[id]?.name || id;
+const statusTone = (account) =>
+  account.isActive === false
+    ? quotaTone(null)
+    : quotaTone(account.worstRemaining);
+
+// Hidden rows leave the ledger and cards too; the detail table can bring them back.
+function withVisibleQuotas(provider, entry, quotaVisibility) {
+  if (!entry?.quotas) return entry;
+  return {
+    ...entry,
+    quotas: filterQuotasByVisibility(provider, entry.quotas, quotaVisibility),
+  };
+}
+
 // Values come from the Kiro connect flows: builder-id/idc (device code),
 // google/github (social), imported (refresh-token paste), api_key (headless).
 const KIRO_METHOD_LABELS = {
@@ -60,1111 +77,1051 @@ const KIRO_METHOD_LABELS = {
   api_key: "API Key",
 };
 
-function kiroMethodLabel(conn) {
-  const m = conn.providerSpecificData?.authMethod;
-  if (m && KIRO_METHOD_LABELS[m]) return KIRO_METHOD_LABELS[m];
-  return conn.authType === "api_key" ? "API Key" : "OAuth";
+function kiroMethodLabel(account) {
+  const method = account.providerSpecificData?.authMethod;
+  return (
+    KIRO_METHOD_LABELS[method] ||
+    (account.authType === "api_key" ? "API Key" : "OAuth")
+  );
 }
 
-function getConnectionSecondaryLabel(connection) {
-  if (connection.name?.trim() && connection.email?.trim() && connection.name.trim() !== connection.email.trim()) {
-    return connection.email.trim();
-  }
-
-  if (connection.name?.trim() && connection.displayName?.trim() && connection.name.trim() !== connection.displayName.trim()) {
-    return connection.displayName.trim();
-  }
-
-  return null;
-}
-
-// Only the label that actually is the email address should be blurred
-function isConnectionEmail(connection, label) {
-  const email = connection.email?.trim();
-  return !!email && label === email;
-}
-
-// Region is stored for builder-id/idc/api_key flows; social and imported flows
-// omit it, so fall back to the region segment of the profileArn
-// (arn:aws:codewhisperer:<region>:...).
-function kiroRegion(conn) {
-  const r = conn.providerSpecificData?.region;
-  if (r) return r;
-  const arn = conn.providerSpecificData?.profileArn;
-  const seg = typeof arn === "string" ? arn.split(":")[3] : "";
-  return seg || "";
+// Social and imported flows omit the region; fall back to the profile ARN's
+// region segment (arn:aws:codewhisperer:<region>:...).
+function kiroRegion(account) {
+  const { region, profileArn } = account.providerSpecificData || {};
+  return (
+    region || (typeof profileArn === "string" ? profileArn.split(":")[3] : "")
+  );
 }
 
 export default function ProviderLimits() {
+  const data = useQuotaDashboard();
+  const { blurClass, isBlurred } = useBlurEmails();
   const { copied, copy } = useCopyToClipboard();
-  const { blurClass } = useBlurEmails();
-  const [connections, setConnections] = useState([]);
-  const [quotaData, setQuotaData] = useState({});
-  const [loading, setLoading] = useState({});
-  const [errors, setErrors] = useState({});
-  const [autoRefresh, setAutoRefresh] = useState(true);
-  const [lastUpdated, setLastUpdated] = useState(null);
-  const [hasHydratedAutoRefresh, setHasHydratedAutoRefresh] = useState(false);
-  const [refreshingAll, setRefreshingAll] = useState(false);
-  const [countdown, setCountdown] = useState(60);
-  const [connectionsLoading, setConnectionsLoading] = useState(true);
-  const [togglingId, setTogglingId] = useState(null);
-  const [connectionValues, setConnectionValues] = useState({});
-  const [valueWindow, setValueWindow] = useState(SUB_VALUE_DEFAULT_WINDOW);
-  const [providerFilter, setProviderFilter] = useState("all");
-  const [providerOptions, setProviderOptions] = useState([]);
-  const [accountFilter, setAccountFilter] = useState("all");
-  const [quotaSortMode, setQuotaSortMode] = useState("default");
-  const [quotaVisibility, setQuotaVisibility] = useState({});
-  const [expiringFirst, setExpiringFirst] = useState(false);
-  const [providerMenuOpen, setProviderMenuOpen] = useState(false);
-  const [bulkToggling, setBulkToggling] = useState(false);
+  const [provider, setProvider] = useState("all");
+  const [query, setQuery] = useState("");
+  const [health, setHealth] = useState("all");
+  const [sort, setSort] = useState("provider");
+  const [view, setView] = useState("ledger");
+  const [detailId, setDetailId] = useState(null);
+  const [help, setHelp] = useState(false);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(CONNECTIONS_PAGE_SIZE);
-  const [customPageSizeInput, setCustomPageSizeInput] = useState(
-    String(CONNECTIONS_PAGE_SIZE),
-  );
-  const [pagination, setPagination] = useState({
-    page: 1,
-    pageSize: CONNECTIONS_PAGE_SIZE,
-    total: 0,
-    totalPages: 1,
-  });
-  const [totals, setTotals] = useState({
-    eligibleConnections: 0,
-    providerFilteredConnections: 0,
-  });
-
-  const intervalRef = useRef(null);
-  const countdownRef = useRef(null);
-  const tickCountRef = useRef(0);
-
-  const fetchConnections = useCallback(
-    async (targetPage = page) => {
-      try {
-        const params = new URLSearchParams({
-          page: String(targetPage),
-          pageSize: String(pageSize),
-          accountStatus: accountFilter,
-          sort: "priority",
-        });
-
-        if (providerFilter !== "all") {
-          params.set("provider", providerFilter);
-        }
-
-        const response = await fetch(
-          `/api/providers/client?${params.toString()}`,
-        );
-        if (!response.ok) throw new Error("Failed to fetch connections");
-
-        const data = await response.json();
-        const connectionList = data.connections || [];
-        const nextPagination = getSafePagination(data.pagination, pageSize);
-        const nextTotals = getSafeTotals(data.totals, connectionList.length);
-
-        setConnections(connectionList);
-        setProviderOptions(getProviderOptions(data.providerOptions));
-        setPagination(nextPagination);
-        setTotals(nextTotals);
-        setPage(getPaginationPageValue(data.pagination, targetPage));
-        return connectionList;
-      } catch (error) {
-        console.error("Error fetching connections:", error);
-        setConnections([]);
-        setProviderOptions([]);
-        setPagination({ page: 1, pageSize, total: 0, totalPages: 1 });
-        setTotals({ eligibleConnections: 0, providerFilteredConnections: 0 });
-        return [];
-      }
-    },
-    [accountFilter, expiringFirst, page, pageSize, providerFilter],
-  );
-
-  // Fetch quota for a specific connection
-  const fetchQuota = useCallback(async (connectionId, provider, { force = false } = {}) => {
-    setLoading((prev) => ({ ...prev, [connectionId]: true }));
-    setErrors((prev) => ({ ...prev, [connectionId]: null }));
-
-    try {
-      console.log(
-        `[ProviderLimits] Fetching quota for ${provider} (${connectionId})`,
-      );
-      const url = `/api/usage/${connectionId}${force ? "?force=1" : ""}`;
-      const response = await fetch(url);
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        const errorMsg = errorData.error || response.statusText;
-
-        // Handle different error types gracefully
-        if (response.status === 404) {
-          // Connection not found - skip silently
-          console.warn(
-            `[ProviderLimits] Connection not found for ${provider}, skipping`,
-          );
-          return;
-        }
-
-        if (response.status === 401) {
-          // Auth error - show message instead of throwing
-          console.warn(
-            `[ProviderLimits] Auth error for ${provider}:`,
-            errorMsg,
-          );
-          const quotaEntry = {
-            quotas: [],
-            message: errorMsg,
-          };
-          setQuotaData((prev) => ({
-            ...prev,
-            [connectionId]: quotaEntry,
-          }));
-          setQuotaCache(connectionId, quotaEntry);
-          return;
-        }
-
-        throw new Error(`HTTP ${response.status}: ${errorMsg}`);
-      }
-
-      const data = await response.json();
-      console.log(`[ProviderLimits] Got quota for ${provider}:`, data);
-
-      // Parse quota data using provider-specific parser
-      const parsedQuotas = parseQuotaData(provider, data);
-
-      const quotaEntry = {
-        quotas: parsedQuotas,
-        plan: data.plan || null,
-        status: data.status || null,
-        message: data.message || null,
-        raw: data,
-      };
-
-      setQuotaData((prev) => ({
-        ...prev,
-        [connectionId]: quotaEntry,
-      }));
-      setQuotaCache(connectionId, quotaEntry);
-    } catch (error) {
-      console.error(
-        `[ProviderLimits] Error fetching quota for ${provider} (${connectionId}):`,
-        error,
-      );
-      setErrors((prev) => ({
-        ...prev,
-        [connectionId]: error.message || "Failed to fetch quota",
-      }));
-    } finally {
-      setLoading((prev) => ({ ...prev, [connectionId]: false }));
-    }
-  }, []);
-
-  // Refresh quota for a specific provider
-  const refreshProvider = useCallback(
-    async (connectionId, provider) => {
-      await fetchQuota(connectionId, provider, { force: true });
-      setLastUpdated(new Date());
-    },
-    [fetchQuota],
-  );
-
-  const refreshAll = useCallback(async (force = false) => {
-    if (refreshingAll) return;
-
-    setRefreshingAll(true);
-    setCountdown(60);
-
-    // Throttle Claude: poll its quota every Nth auto-tick (manual force bypasses)
-    const tick = (tickCountRef.current += 1);
-    const claudeEvery = Math.round(CLAUDE_REFRESH_INTERVAL_MS / REFRESH_INTERVAL_MS);
-    const shouldFetch = (conn) =>
-      force || conn.provider !== "claude" || tick % claudeEvery === 0;
-
-    try {
-      const visibleConnections = await fetchConnections(page);
-
-      setLoading(buildLoadingState(visibleConnections));
-      setErrors((prev) =>
-        filterQuotaStateByConnections(prev, visibleConnections),
-      );
-      setQuotaData((prev) =>
-        filterQuotaStateByConnections(prev, visibleConnections),
-      );
-
-      await Promise.all(
-        visibleConnections
-          .filter(shouldFetch)
-          .map((conn) => fetchQuota(conn.id, conn.provider)),
-      );
-
-      setLastUpdated(new Date());
-    } catch (error) {
-      console.error("Error refreshing all providers:", error);
-    } finally {
-      setRefreshingAll(false);
-    }
-  }, [refreshingAll, fetchConnections, fetchQuota, page]);
-
-  const handleToggleConnectionActive = useCallback(
-    async (id, isActive) => {
-      setTogglingId(id);
-      try {
-        const res = await fetch(`/api/providers/${id}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ isActive }),
-        });
-        if (res.ok) {
-          await reconcileConnectionsPage(fetchConnections, page);
-        }
-      } catch (error) {
-        console.error("Error updating connection status:", error);
-      } finally {
-        setTogglingId(null);
-      }
-    },
-    [fetchConnections, page],
-  );
-
-  const fetchConnectionValues = useCallback(async () => {
-    try {
-      const res = await fetch("/api/usage/connection-value", { cache: "no-store" });
-      if (!res.ok) return;
-      const data = await res.json();
-      if (data?.connections) setConnectionValues(data.connections);
-    } catch {
-      // The badge is supplementary — a failed fetch just leaves it hidden.
-    }
-  }, []);
+  const [pageSize, setPageSize] = useState(20);
+  const [customSize, setCustomSize] = useState("20");
+  const [quotaVisibility, setQuotaVisibility] = useState({});
+  const [visibilityBusy, setVisibilityBusy] = useState(false);
+  const [actionError, setActionError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [connectionValues, setConnectionValues] = useState({});
+  const [valueWindow, setValueWindow] = useState(readSubValueWindow);
 
   useEffect(() => {
-    setValueWindow(readSubValueWindow());
-    fetchConnectionValues();
-  }, [fetchConnectionValues]);
-
-  const handleToggleValueWindow = useCallback(() => {
-    setValueWindow((prev) => {
-      const next = prev === "lifetime" ? "month" : "lifetime";
-      writeSubValueWindow(next);
-      return next;
-    });
+    const controller = new AbortController();
+    fetch("/api/settings", { signal: controller.signal })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((settings) => {
+        if (settings) setQuotaVisibility(settings.quotaVisibility || {});
+      })
+      .catch(() => {});
+    fetch("/api/usage/connection-value", { signal: controller.signal })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((values) => {
+        if (values) setConnectionValues(values.connections || {});
+      })
+      .catch(() => {});
+    return () => controller.abort();
   }, []);
 
-  useEffect(() => {
-    const initializeData = async () => {
-      setConnectionsLoading(true);
-      const visibleConnections = await fetchConnections(page);
-      setConnectionsLoading(false);
+  const accounts = useMemo(
+    () =>
+      data.connections.map((connection) =>
+        buildAccount(
+          connection,
+          withVisibleQuotas(
+            connection.provider,
+            data.quotaData[connection.id],
+            quotaVisibility,
+          ),
+          data.errors[connection.id],
+        ),
+      ),
+    [data.connections, data.quotaData, data.errors, quotaVisibility],
+  );
+  const groups = useMemo(() => {
+    const result = new Map();
+    for (const account of accounts) {
+      if (!result.has(account.provider)) result.set(account.provider, []);
+      result.get(account.provider).push(account);
+    }
+    return [...result].map(([id, group]) => ({
+      id,
+      name: providerName(id),
+      accounts: group.sort(compareBarAccounts),
+    }));
+  }, [accounts]);
+  const rows = useMemo(
+    () =>
+      accounts
+        .filter(
+          (account) =>
+            (provider === "all" || account.provider === provider) &&
+            (health === "all" ||
+              account.status === health ||
+              (health === "active" && account.isActive !== false)) &&
+            `${account.name} ${account.email || ""} ${account.displayName || ""} ${providerName(account.provider)} ${account.plan}`
+              .toLowerCase()
+              .includes(query.trim().toLowerCase()),
+        )
+        .sort((a, b) => compareAccounts(a, b, sort)),
+    [accounts, provider, health, query, sort],
+  );
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const pageRows = rows.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize,
+  );
+  const visibleGroups = groups.filter(
+    (group) => provider === "all" || group.id === provider,
+  );
+  const detail = accounts.find((account) => account.id === detailId);
+  const updatedAt = accounts.reduce(
+    (latest, account) =>
+      account.updatedAt && (!latest || account.updatedAt > latest)
+        ? account.updatedAt
+        : latest,
+    null,
+  );
+  const depletedGroups = visibleGroups
+    .map((group) => ({
+      ...group,
+      depleted: group.accounts.filter((a) => a.status === "Depleted"),
+    }))
+    .filter((group) => group.depleted.length);
 
-      // Always fetch fresh quota on mount, no cache display
-      setLoading(buildLoadingState(visibleConnections));
-      setErrors((prev) =>
-        filterQuotaStateByConnections(prev, visibleConnections),
+  // Tab changes slide the summary card like a deck: the old card exits as the
+  // new one enters, and the deck eases between their heights. The ledger stays still.
+  const deck = useRef(null);
+  const tabs = useRef(null);
+  const search = useRef(null);
+  const incoming = useRef(null);
+  const outgoing = useRef(null);
+  const lastTab = useRef(provider);
+  const [leaving, setLeaving] = useState(null);
+  useLayoutEffect(() => {
+    const tabs = ["all", ...groups.map((group) => group.id)];
+    const from = tabs.indexOf(lastTab.current);
+    const to = tabs.indexOf(provider);
+    const previous = lastTab.current;
+    lastTab.current = provider;
+    if (from === to || from < 0 || reducedMotion()) return;
+    setLeaving({ id: previous, dir: to > from ? 1 : -1, key: performance.now() });
+  }, [provider]); // eslint-disable-line react-hooks/exhaustive-deps
+  useLayoutEffect(() => {
+    if (!leaving) return;
+    const shift = (n) => `translateX(calc(${n * 100}% + ${n * 24}px))`;
+    const timing = { duration: 420, easing: "cubic-bezier(.65,0,.35,1)" };
+    const fromHeight = outgoing.current?.offsetHeight;
+    const toHeight = incoming.current?.offsetHeight;
+    if (fromHeight && toHeight && fromHeight !== toHeight)
+      deck.current?.animate(
+        [{ height: `${fromHeight}px` }, { height: `${toHeight}px` }],
+        timing,
       );
-      setQuotaData((prev) =>
-        filterQuotaStateByConnections(prev, visibleConnections),
-      );
+    incoming.current?.animate(
+      [{ transform: shift(leaving.dir) }, { transform: "none" }],
+      timing,
+    );
+    const exit = outgoing.current?.animate(
+      [{ transform: "none" }, { transform: shift(-leaving.dir) }],
+      { ...timing, fill: "forwards" },
+    );
+    const done = () =>
+      setLeaving((current) => (current === leaving ? null : current));
+    if (!exit) return done();
+    exit.onfinish = done;
+    // Backstop: onfinish may never fire if the deck unmounts mid-slide.
+    const timer = setTimeout(done, timing.duration + 200);
+    return () => clearTimeout(timer);
+  }, [leaving]);
 
-      await Promise.all(
-        visibleConnections.map((conn) => fetchQuota(conn.id, conn.provider)),
-      );
-      setLastUpdated(new Date());
+  function openProvider(id, nextHealth = "all") {
+    setProvider(id);
+    setHealth(nextHealth);
+    setQuery("");
+    setPage(1);
+  }
+
+  async function setActive(targets, active) {
+    if (busy) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      // Keep bulk changes scoped to the accounts visible on the current page.
+      for (const account of targets)
+        await data.setAccountActive(account.id, active);
+    } catch (error) {
+      setActionError(error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changeVisibility(account, quota, hide) {
+    if (visibilityBusy) return;
+    const hidden = new Set(quotaVisibility[account.provider]?.hidden || []);
+    if (hide) hidden.add(getQuotaVisibilityKey(quota));
+    else hidden.delete(getQuotaVisibilityKey(quota));
+    const next = {
+      ...quotaVisibility,
+      [account.provider]: {
+        ...quotaVisibility[account.provider],
+        hidden: [...hidden],
+      },
     };
-
-    initializeData();
-  }, [fetchConnections, fetchQuota, page]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const stored = window.localStorage.getItem(AUTO_REFRESH_STORAGE_KEY);
-    setAutoRefresh(stored === null ? true : stored === "true");
-    setHasHydratedAutoRefresh(true);
-  }, []);
-
-  // Persist auto-refresh preference
-  useEffect(() => {
-    if (typeof window === "undefined" || !hasHydratedAutoRefresh) return;
-    window.localStorage.setItem(AUTO_REFRESH_STORAGE_KEY, String(autoRefresh));
-  }, [autoRefresh, hasHydratedAutoRefresh]);
-
-  const updateQuotaVisibility = useCallback(async (nextVisibility, previousVisibility) => {
-    setQuotaVisibility(nextVisibility);
+    setVisibilityBusy(true);
+    setActionError(null);
     try {
       const response = await fetch("/api/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ quotaVisibility: nextVisibility }),
+        body: JSON.stringify({ quotaVisibility: next }),
       });
-      if (!response.ok) throw new Error("Failed to update quota visibility");
+      if (!response.ok)
+        throw new Error("Could not save quota visibility. Please retry.");
+      setQuotaVisibility(next);
     } catch (error) {
-      console.error("Error updating quota visibility:", error);
-      setQuotaVisibility(previousVisibility);
+      setActionError(error.message);
+    } finally {
+      setVisibilityBusy(false);
     }
-  }, []);
-
-  const handleHideQuota = useCallback((provider, quota) => {
-    const key = getQuotaVisibilityKey(quota);
-    if (!provider || !key) return;
-
-    const previous = quotaVisibility;
-    const providerVisibility = previous[provider] || {};
-    const hidden = new Set(providerVisibility.hidden || []);
-    hidden.add(key);
-    const next = {
-      ...previous,
-      [provider]: {
-        ...providerVisibility,
-        hidden: [...hidden],
-      },
-    };
-    updateQuotaVisibility(next, previous);
-  }, [quotaVisibility, updateQuotaVisibility]);
-
-  const handleShowQuota = useCallback((provider, quota) => {
-    const key = getQuotaVisibilityKey(quota);
-    if (!provider || !key) return;
-
-    const previous = quotaVisibility;
-    const providerVisibility = previous[provider] || {};
-    const hidden = new Set(providerVisibility.hidden || []);
-    hidden.delete(key);
-    const next = {
-      ...previous,
-      [provider]: {
-        ...providerVisibility,
-        hidden: [...hidden],
-      },
-    };
-    updateQuotaVisibility(next, previous);
-  }, [quotaVisibility, updateQuotaVisibility]);
-
-  // Auto-refresh interval
-  useEffect(() => {
-    if (!hasHydratedAutoRefresh || !autoRefresh) {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-      if (countdownRef.current) {
-        clearInterval(countdownRef.current);
-        countdownRef.current = null;
-      }
-      return;
-    }
-
-    // Main refresh interval
-    intervalRef.current = setInterval(() => {
-      refreshAll();
-    }, REFRESH_INTERVAL_MS);
-
-    // Countdown interval
-    countdownRef.current = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 1) return 60;
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      if (countdownRef.current) clearInterval(countdownRef.current);
-    };
-  }, [autoRefresh, refreshAll, hasHydratedAutoRefresh]);
-
-  // Pause auto-refresh when tab is hidden (Page Visibility API)
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.hidden) {
-        if (intervalRef.current) {
-          clearInterval(intervalRef.current);
-          intervalRef.current = null;
-        }
-        if (countdownRef.current) {
-          clearInterval(countdownRef.current);
-          countdownRef.current = null;
-        }
-      } else if (autoRefresh && hasHydratedAutoRefresh) {
-        // Resume auto-refresh when tab becomes visible
-        intervalRef.current = setInterval(() => refreshAll(), REFRESH_INTERVAL_MS);
-        countdownRef.current = setInterval(() => {
-          setCountdown((prev) => (prev <= 1 ? 60 : prev - 1));
-        }, 1000);
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [autoRefresh, refreshAll, hasHydratedAutoRefresh]);
-
-  const sortedConnections = useMemo(
-    () =>
-      sortVisibleConnections(
-        connections,
-        quotaData,
-        expiringFirst,
-        providerFilter,
-        quotaSortMode,
-      ),
-    [connections, quotaData, expiringFirst, providerFilter, quotaSortMode],
-  );
-
-  // Connection is depleted when any quota entry hit the threshold
-  const isConnectionDepleted = (conn) => {
-    const quotas = quotaData[conn.id]?.quotas;
-    if (!quotas?.length) return false;
-    return quotas.some((q) => {
-      if (!q.total || q.total <= 0) return false;
-      return calculatePercentage(q.used, q.total) <= DEPLETED_QUOTA_THRESHOLD;
-    });
-  };
-
-  const bulkSetActive = useCallback(
-    async (targetIds, isActive) => {
-      if (!targetIds.length || bulkToggling) return;
-      setBulkToggling(true);
-      try {
-        await Promise.all(
-          targetIds.map((id) =>
-            fetch(`/api/providers/${id}`, {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ isActive }),
-            }),
-          ),
-        );
-        await reconcileConnectionsPage(fetchConnections, page);
-      } catch (error) {
-        console.error("Error bulk toggling connections:", error);
-      } finally {
-        setBulkToggling(false);
-      }
-    },
-    [bulkToggling, fetchConnections, page],
-  );
-
-  const handleDisableDepleted = () => {
-    const ids = sortedConnections
-      .filter((c) => (c.isActive ?? true) && isConnectionDepleted(c))
-      .map((c) => c.id);
-    bulkSetActive(ids, false);
-  };
-
-  const handleEnableAvailable = () => {
-    const ids = sortedConnections
-      .filter((c) => !(c.isActive ?? true) && !isConnectionDepleted(c))
-      .map((c) => c.id);
-    bulkSetActive(ids, true);
-  };
-
-  const selectedProviderLabel =
-    providerFilter === "all" ? "All providers" : providerFilter;
-  const hasEligibleConnections = totals.eligibleConnections > 0;
-  const hasVisibleConnections = sortedConnections.length > 0;
-  const emptyState = getConnectionsEmptyMessage(
-    totals,
-    providerFilter,
-    accountFilter,
-  );
-  const connectionsPageSummary = getConnectionsPaginationSummary(pagination);
-  const isCustomPageSize = !ACCOUNT_PAGE_SIZE_OPTIONS.includes(pageSize);
-  const pageSizeLabel = getPageSizeLabel(pageSize, isCustomPageSize);
-
-  if (!connectionsLoading && !hasEligibleConnections) {
-    return (
-      <Card padding="lg">
-        <div className="text-center py-12">
-          <span className="material-symbols-outlined text-[64px] text-text-muted opacity-20">
-            cloud_off
-          </span>
-          <h3 className="mt-4 text-lg font-semibold text-text-primary">
-            No Providers Connected
-          </h3>
-          <p className="mt-2 text-sm text-text-muted max-w-md mx-auto">
-            Connect to providers with OAuth to track your API quota limits and
-            usage.
-          </p>
-        </div>
-      </Card>
-    );
   }
 
-  if (!connectionsLoading && !hasVisibleConnections) {
-    return (
-      <Card padding="lg">
-        <div className="text-center py-12">
-          <span className="material-symbols-outlined text-[64px] text-text-muted opacity-20">
-            {emptyState.icon}
-          </span>
-          <h3 className="mt-4 text-lg font-semibold text-text-primary">
-            {emptyState.title}
-          </h3>
-          <p className="mt-2 text-sm text-text-muted max-w-md mx-auto">
-            {emptyState.description}
-          </p>
-        </div>
-      </Card>
-    );
+  function applyPageSize(value) {
+    const parsed = Number.parseInt(value, 10);
+    const next = Number.isFinite(parsed)
+      ? Math.min(ACCOUNT_PAGE_SIZE_MAX, Math.max(1, parsed))
+      : pageSize;
+    setPageSize(next);
+    setCustomSize(String(next));
+    setPage(1);
   }
 
-  return (
-    <div className="space-y-6">
-      {/* Header Controls */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-end">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setProviderMenuOpen((prev) => !prev)}
-              className="flex h-8 items-center justify-between gap-1 rounded-lg border border-black/10 bg-black/[0.02] px-2 text-xs text-text-primary transition-colors hover:bg-black/5 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/10"
-              aria-haspopup="menu"
-              aria-expanded={providerMenuOpen}
-              title="Filter quota providers"
-            >
-              <span className="flex min-w-0 items-center gap-1.5">
-                {providerFilter === "all" ? (
-                  <span className="material-symbols-outlined text-[14px] text-text-muted">
-                    apps
-                  </span>
-                ) : (
-                  <ProviderIcon
-                    src={`/providers/${providerFilter}.png`}
-                    alt={providerFilter}
-                    size={18}
-                    className="size-[18px] rounded object-contain"
-                    fallbackText={providerFilter.slice(0, 2).toUpperCase()}
-                  />
-                )}
-                <span className="truncate capitalize hidden lg:inline">
-                  {selectedProviderLabel}
-                </span>
-              </span>
-              <span className="material-symbols-outlined text-[14px] text-text-muted">
-                expand_more
-              </span>
-            </button>
-
-            {providerMenuOpen && (
-              <>
-                <button
-                  type="button"
-                  className="fixed inset-0 z-30 bg-transparent"
-                  aria-label="Close provider filter"
-                  onClick={() => setProviderMenuOpen(false)}
-                />
-                <div className="absolute left-0 z-40 mt-2 w-64 overflow-hidden rounded-2xl border border-black/10 bg-surface/95 p-1.5 shadow-xl shadow-black/10 backdrop-blur dark:border-white/10 dark:bg-surface/95 sm:w-72">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (shouldResetPage(providerFilter, "all")) {
-                        setPage(1);
-                      }
-                      setProviderFilter("all");
-                      setProviderMenuOpen(false);
-                    }}
-                    className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors ${providerFilter === "all" ? "bg-primary/10 text-primary" : "text-text-primary hover:bg-black/5 dark:hover:bg-white/10"}`}
-                  >
-                    <span className="material-symbols-outlined text-[22px]">
-                      apps
-                    </span>
-                    <span className="font-medium">All providers</span>
-                    {providerFilter === "all" && (
-                      <span className="material-symbols-outlined ml-auto text-[20px]">
-                        check
-                      </span>
-                    )}
-                  </button>
-                  <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
-                  <div className="max-h-72 overflow-y-auto pr-1">
-                    {providerOptions.map((provider) => (
-                      <button
-                        key={provider}
-                        type="button"
-                        onClick={() => {
-                          if (shouldResetPage(providerFilter, provider)) {
-                            setPage(1);
-                          }
-                          setProviderFilter(provider);
-                          setProviderMenuOpen(false);
-                        }}
-                        className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors ${providerFilter === provider ? "bg-primary/10 text-primary" : "text-text-primary hover:bg-black/5 dark:hover:bg-white/10"}`}
-                      >
-                        <ProviderIcon
-                          src={`/providers/${provider}.png`}
-                          alt={provider}
-                          size={24}
-                          className="size-6 rounded-md object-contain"
-                          fallbackText={provider.slice(0, 2).toUpperCase()}
-                        />
-                        <span className="font-medium capitalize">
-                          {provider}
-                        </span>
-                        {providerFilter === provider && (
-                          <span className="material-symbols-outlined ml-auto text-[20px]">
-                            check
-                          </span>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
-          <select
-            value={accountFilter}
-            onChange={(event) => {
-              const nextValue = event.target.value;
-              if (shouldResetPage(accountFilter, nextValue)) {
-                setPage(1);
-              }
-              setAccountFilter(nextValue);
-            }}
-            className="h-8 rounded-lg border border-black/10 bg-black/[0.02] px-2 text-xs text-text-primary outline-none transition-colors hover:bg-black/5 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/10"
-            aria-label="Filter accounts by status"
-          >
-            {ACCOUNT_FILTER_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-
-          {providerFilter === "codex" && (
-            <select
-              value={quotaSortMode}
-              onChange={(event) => setQuotaSortMode(event.target.value)}
-              className="h-8 rounded-lg border border-black/10 bg-black/[0.02] px-2 text-xs text-text-primary outline-none transition-colors hover:bg-black/5 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/10"
-              aria-label="Sort Codex quotas by remaining"
-            >
-              {QUOTA_SORT_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          )}
-
-          <button
-            type="button"
-            onClick={() => setExpiringFirst((prev) => !prev)}
-            aria-pressed={expiringFirst}
-            className={`flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2 text-xs transition-colors ${expiringFirst ? "border-amber-500/40 bg-amber-500/10 text-amber-500" : "border-black/10 text-text-primary hover:bg-black/5 dark:border-white/10 dark:hover:bg-white/5"}`}
-            title="Sort accounts by earliest quota reset time"
-          >
-            <span className="material-symbols-outlined text-[14px]">
-              hourglass_top
-            </span>
-            <span className="hidden sm:inline">Expiring first</span>
-          </button>
-
-          {/* Bulk: disable depleted */}
-          <button
-            type="button"
-            onClick={handleDisableDepleted}
-            disabled={bulkToggling}
-            className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-red-500/30 px-2 text-xs text-red-500 transition-colors hover:bg-red-500/10 disabled:opacity-50"
-            title="Disable connections with depleted quota on the current page"
-          >
-            <span className="material-symbols-outlined text-[14px]">block</span>
-            <span className="hidden sm:inline">Turn off Empty</span>
-          </button>
-
-          {/* Bulk: enable available */}
-          <button
-            type="button"
-            onClick={handleEnableAvailable}
-            disabled={bulkToggling}
-            className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-emerald-500/30 px-2 text-xs text-emerald-500 transition-colors hover:bg-emerald-500/10 disabled:opacity-50"
-            title="Enable connections that still have quota on the current page"
-          >
-            <span className="material-symbols-outlined text-[14px]">
-              check_circle
-            </span>
-            <span className="hidden sm:inline">Turn on Available</span>
-          </button>
-
-          {/* Auto-refresh toggle */}
-          <button
-            onClick={() => setAutoRefresh((prev) => !prev)}
-            className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-black/10 px-2 text-xs transition-colors hover:bg-black/5 dark:border-white/10 dark:hover:bg-white/5"
-            title={autoRefresh ? "Disable auto-refresh" : "Enable auto-refresh"}
-          >
-            <span
-              className={`material-symbols-outlined text-[14px] ${
-                autoRefresh ? "text-primary" : "text-text-muted"
-              }`}
-            >
-              {autoRefresh ? "toggle_on" : "toggle_off"}
-            </span>
-            <span className="hidden text-text-primary sm:inline">
-              Auto-refresh
-            </span>
-            {autoRefresh && (
-              <span className="text-[10px] text-text-muted tabular-nums">
-                ({countdown}s)
-              </span>
-            )}
-          </button>
-
-
-          {/* Refresh all button */}
-          <button
-            type="button"
-            onClick={() => refreshAll(true)}
-            disabled={refreshingAll}
-            className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-black/10 px-2 text-xs text-text-primary transition-colors hover:bg-black/5 dark:border-white/10 dark:hover:bg-white/5 disabled:opacity-50"
-            title="Refresh all"
-          >
-            <span
-              className={`material-symbols-outlined text-[14px] ${refreshingAll ? "animate-spin" : ""}`}
-            >
-              refresh
-            </span>
-          </button>
-        </div>
-      </div>
-
-      {/* Provider cards: 2 columns, compact */}
-      {expiringFirst && (
-        <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-          Expiring-first currently reorders accounts inside the current page.
-          Cross-page ordering still follows backend pagination.
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {sortedConnections.map((conn) => {
-          const quota = quotaData[conn.id];
-          const isLoading = loading[conn.id];
-          const error = errors[conn.id];
-
-          // Use table layout for all providers
-          const isInactive = conn.isActive === false;
-          const rowBusy = togglingId === conn.id;
-          const rawQuotas = quota?.quotas || [];
-          const visibleQuotas = filterQuotasByVisibility(conn.provider, rawQuotas, quotaVisibility);
-          const hiddenQuotaRows = getHiddenQuotaRows(conn.provider, rawQuotas, quotaVisibility);
-
+  function summaryCard(filter) {
+    const shown = groups.filter(
+      (group) => filter === "all" || group.id === filter,
+    );
+    return (
+    <Card padding="none" className="overflow-hidden">
+      <div
+        className={`grid grid-cols-1 gap-px bg-border-subtle ${shown.length > 1 ? "sm:grid-cols-2 xl:grid-cols-4" : ""}`}
+      >
+        {shown.map((group) => {
+          const windows = providerWindows(group.accounts);
+          const disabled = group.accounts.filter(
+            (a) => a.isActive === false,
+          ).length;
           return (
-            <Card
-              key={conn.id}
-              padding="none"
-              className={`min-w-0 ${isInactive ? "opacity-60" : ""}`}
+            <section
+              key={group.id}
+              data-i18n-skip="true"
+              data-provider-summary={group.id}
+              className="flex min-w-0 flex-col bg-surface p-5"
             >
-              <div className="px-3 py-2 border-b border-black/10 dark:border-white/10">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <div className="w-8 h-8 shrink-0 rounded-md flex items-center justify-center overflow-hidden">
-                      <ProviderIcon
-                        src={`/providers/${conn.provider}.png`}
-                        alt={conn.provider}
-                        size={32}
-                        className="object-contain"
-                        fallbackText={
-                          conn.provider?.slice(0, 2).toUpperCase() || "PR"
-                        }
-                      />
-                    </div>
-                    <div className="min-w-0">
-                      <Link
-                        href={`/dashboard/accounts/${conn.id}`}
-                        className="group/link inline-flex max-w-full items-center gap-1 text-sm font-semibold text-text-primary transition-colors hover:text-primary"
-                        title="Open account detail"
-                      >
-                        <span className="capitalize truncate">{conn.provider}</span>
-                        <span className="material-symbols-outlined shrink-0 text-[16px] text-text-muted transition-transform group-hover/link:translate-x-0.5 group-hover/link:text-primary">
-                          chevron_right
-                        </span>
-                      </Link>
-                      {getConnectionLabel(conn) ? (
-                        <p className={`text-xs text-text-muted truncate ${isConnectionEmail(conn, getConnectionLabel(conn)) ? blurClass : ""}`}>
-                          {getConnectionLabel(conn)}
-                        </p>
-                      ) : null}
-                      {getConnectionSecondaryLabel(conn) ? (
-                        <p className={`text-[11px] text-text-muted/80 truncate ${isConnectionEmail(conn, getConnectionSecondaryLabel(conn)) ? blurClass : ""}`}>
-                          {getConnectionSecondaryLabel(conn)}
-                        </p>
-                      ) : null}
-                      {connectionValues[conn.id] ? (
-                        <div className="mt-1">
-                          <SubscriptionValueBadge
-                            value={connectionValues[conn.id]}
-                            window={valueWindow}
-                            onToggleWindow={handleToggleValueWindow}
-                          />
-                        </div>
-                      ) : null}
-                      {conn.provider === "kiro" && (
-                        <div className="mt-1 flex flex-wrap items-center gap-1">
-                          <span className="rounded-full bg-brand-500/10 px-2 py-0.5 text-[10px] font-semibold text-brand-600 dark:text-brand-300">
-                            {kiroMethodLabel(conn)}
-                          </span>
-                          {kiroRegion(conn) && (
-                            <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-[10px] font-semibold text-blue-600 dark:text-blue-400">
-                              {kiroRegion(conn)}
-                            </span>
-                          )}
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                              isInactive
-                                ? "bg-surface-2 text-text-muted"
-                                : conn.testStatus === "active" || conn.testStatus === "success"
-                                  ? "bg-green-500/10 text-green-600 dark:text-green-400"
-                                  : conn.testStatus === "error" || conn.testStatus === "expired" || conn.testStatus === "unavailable"
-                                    ? "bg-red-500/10 text-red-600 dark:text-red-400"
-                                    : "bg-surface-2 text-text-muted"
-                            }`}
-                          >
-                            {isInactive ? "disabled" : conn.testStatus || "unknown"}
-                          </span>
-                          {conn.providerSpecificData?.profileArn && (
-                            <button
-                              type="button"
-                              onClick={() => copy(conn.providerSpecificData.profileArn, conn.id)}
-                              title={conn.providerSpecificData.profileArn}
-                              className="inline-flex max-w-full items-center gap-1 rounded-full border border-border-subtle px-2 py-0.5 text-[10px] text-text-muted transition-colors hover:text-primary"
-                            >
-                              <span className="material-symbols-outlined text-[12px]">
-                                {copied === conn.id ? "check" : "content_copy"}
-                              </span>
-                              <code className="truncate font-mono">
-                                {conn.providerSpecificData.profileArn}
-                              </code>
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-1 shrink-0">
-                    <Tooltip text="Refresh quota">
-                      <button
-                        type="button"
-                        onClick={() => refreshProvider(conn.id, conn.provider)}
-                        disabled={isLoading || rowBusy}
-                        aria-label="Refresh quota"
-                        className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition-colors disabled:opacity-50"
-                      >
-                        <span
-                          className={`material-symbols-outlined text-[18px] text-text-muted ${isLoading ? "animate-spin" : ""}`}
-                        >
-                          refresh
-                        </span>
-                      </button>
-                    </Tooltip>
-                    <div
-                      className="inline-flex items-center pl-0.5"
-                      title={
-                        (conn.isActive ?? true)
-                          ? "Disable connection"
-                          : "Enable connection"
-                      }
-                    >
-                      <Toggle
-                        size="sm"
-                        checked={conn.isActive ?? true}
-                        disabled={rowBusy}
-                        onChange={(nextActive) =>
-                          handleToggleConnectionActive(conn.id, nextActive)
-                        }
-                      />
-                    </div>
-                  </div>
+              <div className="flex items-center gap-2">
+                <ProviderIcon
+                  providerId={group.id}
+                  alt=""
+                  size={22}
+                  className="rounded object-contain"
+                />
+                <h2 className="text-sm font-semibold">{group.name}</h2>
+                <span className="ml-auto text-xs text-text-muted">
+                  {group.accounts.length} account
+                  {group.accounts.length === 1 ? "" : "s"}
+                </span>
+              </div>
+              {windows.map((window, i) => (
+                <ProviderWindow
+                  key={window.key}
+                  name={group.name}
+                  accounts={group.accounts}
+                  quotaWindow={window}
+                  first={i === 0}
+                  onSelect={setDetailId}
+                  privateNames={isBlurred}
+                  now={data.now}
+                />
+              ))}
+              {!windows.length && (
+                <div className="mt-5">
+                  <p className="text-xs text-text-muted">
+                    Provider limit
+                  </p>
+                  <p className="mt-1 text-3xl font-semibold">—</p>
+                  <p className="mt-2 text-xs text-text-muted">
+                    {group.accounts.some((a) => data.loading[a.id])
+                      ? "Loading quotas..."
+                      : "Quota not reported"}
+                  </p>
                 </div>
+              )}
+              {disabled > 0 && (
+                <p className="mt-2 text-xs text-text-muted">
+                  {disabled} turned off, excluded from totals
+                </p>
+              )}
+              <div className="mt-auto flex justify-end pt-3">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    openProvider(group.id);
+                    // The card remounts on tab change; keep focus on its tab.
+                    tabs.current?.querySelector(`[data-tab="${group.id}"]`)?.focus();
+                  }}
+                >
+                  View accounts
+                </Button>
               </div>
-
-              <div className="px-2 py-1.5">
-                {isLoading ? (
-                  <div className="text-center py-5 text-text-muted">
-                    <span className="material-symbols-outlined text-[28px] animate-spin">
-                      progress_activity
-                    </span>
-                  </div>
-                ) : error ? (
-                  <div className="text-center py-5">
-                    <span className="material-symbols-outlined text-[28px] text-red-500">
-                      error
-                    </span>
-                    <p className="mt-1.5 text-xs text-text-muted">{error}</p>
-                  </div>
-                ) : quota?.message ? (
-                  <div className="text-center py-5">
-                    <p
-                      className={`text-xs ${
-                        quota.status === "subscription_inactive"
-                          ? "text-red-600 dark:text-red-400"
-                          : "text-text-muted"
-                      }`}
-                    >
-                      {quota.message}
-                    </p>
-                  </div>
-                ) : (
-                  <QuotaTable
-                    quotas={visibleQuotas}
-                    compact
-                    sortMode="default"
-                    showSortLabel={
-                      conn.provider === "codex" && quotaSortMode !== "default"
-                    }
-                    onHideQuota={(quotaRow) => handleHideQuota(conn.provider, quotaRow)}
-                  />
-                )}
-                {hiddenQuotaRows.length > 0 && (
-                  <div className="mt-2 flex min-w-0 items-center gap-1 border-t border-black/5 pt-2 text-[10px] text-text-muted dark:border-white/5">
-                    <span className="material-symbols-outlined shrink-0 text-[14px]">
-                      visibility_off
-                    </span>
-                    <span className="shrink-0">Hidden:</span>
-                    <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap pb-2">
-                      {hiddenQuotaRows.map((quotaRow) => (
-                        <button
-                          key={getQuotaVisibilityKey(quotaRow)}
-                          type="button"
-                          onClick={() => handleShowQuota(conn.provider, quotaRow)}
-                          className="shrink-0 rounded-md border border-black/10 px-1.5 py-0.5 transition-colors hover:bg-black/5 hover:text-text-primary dark:border-white/10 dark:hover:bg-white/5"
-                          title="Show this quota row"
-                        >
-                          {quotaRow.name}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </Card>
+            </section>
           );
         })}
       </div>
+    </Card>
+    );
+  }
 
-      <div className="rounded-xl border border-black/10 bg-black/[0.02] px-3 py-2 dark:border-white/10 dark:bg-white/[0.03]">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs text-text-muted">{connectionsPageSummary}</span>
-            <div className="flex flex-wrap items-center gap-2">
-              <select
-                value={isCustomPageSize ? "custom" : String(pageSize)}
-                onChange={(event) => {
-                  const nextValue = event.target.value;
-                  if (nextValue === "custom") return;
-                  const nextPageSize = Number.parseInt(nextValue, 10);
-                  if (Number.isFinite(nextPageSize)) {
-                    setPage(1);
-                    setPageSize(nextPageSize);
-                    setCustomPageSizeInput(String(nextPageSize));
-                  }
-                }}
-                className="h-8 rounded-lg border border-black/10 bg-black/[0.02] px-2 text-xs text-text-primary outline-none transition-colors hover:bg-black/5 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/10"
-                aria-label="Accounts per page"
-              >
-                {ACCOUNT_PAGE_SIZE_OPTIONS.map((option) => (
-                  <option key={option} value={String(option)}>
-                    {option} / page
-                  </option>
-                ))}
-                <option value="custom">Custom</option>
-              </select>
-              <input
-                type="number"
-                min="1"
-                max={String(ACCOUNT_PAGE_SIZE_MAX)}
-                inputMode="numeric"
-                value={customPageSizeInput}
-                onChange={(event) => setCustomPageSizeInput(event.target.value)}
-                onBlur={() => {
-                  const parsedValue = Number.parseInt(customPageSizeInput, 10);
-                  if (!Number.isFinite(parsedValue)) {
-                    setCustomPageSizeInput(String(pageSize));
-                    return;
-                  }
-                  const nextPageSize = Math.min(ACCOUNT_PAGE_SIZE_MAX, Math.max(1, parsedValue));
-                  setPage(1);
-                  setPageSize(nextPageSize);
-                  setCustomPageSizeInput(String(nextPageSize));
-                }}
-                onKeyDown={(event) => {
-                  if (event.key !== "Enter") return;
-                  const parsedValue = Number.parseInt(customPageSizeInput, 10);
-                  if (!Number.isFinite(parsedValue)) {
-                    setCustomPageSizeInput(String(pageSize));
-                    return;
-                  }
-                  const nextPageSize = Math.min(ACCOUNT_PAGE_SIZE_MAX, Math.max(1, parsedValue));
-                  setPage(1);
-                  setPageSize(nextPageSize);
-                  setCustomPageSizeInput(String(nextPageSize));
-                }}
-                className="h-8 w-20 rounded-lg border border-black/10 bg-black/[0.02] px-2 text-xs text-text-primary outline-none transition-colors hover:bg-black/5 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/10"
-                aria-label="Custom accounts per page"
-                placeholder="Custom"
+  if (data.initialLoading)
+    return (
+      <Card>
+        <p role="status" className="py-12 text-center text-sm text-text-muted">
+          Loading accounts...
+        </p>
+      </Card>
+    );
+
+  // Runtime translation remembers old DOM text, so live readings opt out below.
+  return (
+    <div className="min-w-0 space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm text-text-muted">
+          <span
+            className={`size-2 rounded-full ${data.connectionError ? "bg-yellow-500" : "bg-green-500"}`}
+          />
+          <span data-i18n-skip="true">
+            <strong className="font-medium text-text-main">
+              {accounts.length} accounts
+            </strong>{" "}
+            across {groups.length} providers
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-4">
+          <span data-i18n-skip="true" className="border-r border-border pr-4 text-xs text-text-muted">
+            {updatedLabel(updatedAt, data.now)}
+          </span>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={data.autoRefresh}
+            onClick={() => data.toggleAutoRefresh(!data.autoRefresh)}
+            className="flex cursor-pointer items-center gap-3 rounded text-sm font-medium focus-visible:outline-2 focus-visible:outline-primary"
+          >
+            <span>Auto-refresh</span>
+            <span
+              aria-hidden="true"
+              className={`relative h-4 w-8 rounded-full transition-colors ${data.autoRefresh ? "bg-brand-500" : "bg-surface-3"}`}
+            >
+              <span
+                className={`absolute left-0 top-0.5 size-3 rounded-full bg-white shadow-sm transition-transform ${data.autoRefresh ? "translate-x-4" : "translate-x-0.5"}`}
               />
-              <span className="text-xs text-text-muted">Page {pagination.page} / {pagination.totalPages}</span>
+            </span>
+          </button>
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            icon="refresh"
+            loading={data.refreshing}
+            onClick={() => data.refreshAll(true)}
+          >
+            Refresh all
+          </Button>
+        </div>
+      </div>
+
+      {data.connectionError && (
+        <div
+          role="alert"
+          className="flex items-center justify-between gap-3 rounded-[10px] border border-yellow-500/20 bg-yellow-500/5 p-4 text-sm"
+        >
+          <p data-i18n-skip="true">{data.connectionError}</p>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => data.refreshAll(true)}
+            disabled={data.refreshing}
+          >
+            Retry
+          </Button>
+        </div>
+      )}
+      {actionError && (
+        <p role="alert" data-i18n-skip="true" className="text-sm text-red-500">
+          {actionError}
+        </p>
+      )}
+
+      {!accounts.length && !data.connectionError ? (
+        <Card padding="lg" className="text-center">
+          <Icon className="text-4xl text-text-muted">cloud_off</Icon>
+          <h2 className="mt-4 text-lg font-semibold">No providers connected</h2>
+          <p className="mt-2 text-sm text-text-muted">
+            Connect a supported account to track its quota here.
+          </p>
+          <Link
+            className="mt-4 inline-block text-sm text-primary"
+            href="/dashboard/providers"
+          >
+            Connect a provider
+          </Link>
+        </Card>
+      ) : (
+        <>
+          <div className="flex min-w-0 items-center justify-between gap-3 border-b border-border-subtle">
+            <div
+              ref={tabs}
+              className="flex min-w-0 gap-4 overflow-x-auto scroll-thin-x"
+              role="group"
+              aria-label="Provider filters"
+            >
+              {[{ id: "all", name: "All", accounts }, ...groups].map(
+                (group) => (
+                  <button
+                    type="button"
+                    key={group.id}
+                    data-tab={group.id}
+                    onClick={() => openProvider(group.id)}
+                    aria-pressed={provider === group.id}
+                    className={`flex shrink-0 items-center gap-2 border-b-2 px-1 pb-3 text-sm font-medium transition-colors ${provider === group.id ? "border-primary text-primary" : "border-transparent text-text-muted hover:text-text-main"}`}
+                  >
+                    {group.id === "all" ? (
+                      <Icon>apps</Icon>
+                    ) : (
+                      <ProviderIcon
+                        providerId={group.id}
+                        alt=""
+                        size={18}
+                        className="rounded object-contain"
+                      />
+                    )}
+                    {group.name}
+                    <span data-i18n-skip="true" className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-muted">
+                      {group.accounts.length}
+                    </span>
+                  </button>
+                ),
+              )}
             </div>
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => setPage(1)}
-                disabled={
-                  pagination.page <= 1 || connectionsLoading || refreshingAll
-                }
-                className="flex h-8 items-center rounded-lg border border-black/10 px-3 text-xs text-text-primary transition-colors hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:hover:bg-white/5"
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="help"
+              aria-label="Explain quota bars"
+              onClick={() => setHelp(true)}
+            />
+          </div>
+
+          <div ref={deck} className="relative overflow-clip">
+            <div ref={incoming} key={provider}>
+              {summaryCard(provider)}
+            </div>
+            {leaving && (
+              <div
+                ref={outgoing}
+                key={leaving.key}
+                aria-hidden="true"
+                inert
+                className="pointer-events-none absolute inset-x-0 top-0"
               >
-                First Page
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  setPage((currentPage) => Math.max(1, currentPage - 1))
-                }
-                disabled={
-                  pagination.page <= 1 || connectionsLoading || refreshingAll
-                }
-                className="flex h-8 w-8 items-center justify-center rounded-lg border border-black/10 text-text-primary transition-colors hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:hover:bg-white/5"
-                aria-label="Previous accounts page"
-              >
-                <span className="material-symbols-outlined text-[16px]">
-                  chevron_left
+                {summaryCard(leaving.id)}
+              </div>
+            )}
+          </div>
+          <div className="flex flex-wrap justify-between gap-3 text-xs text-text-muted">
+            <span>
+              Remaining quota. Fullest on the left, blocked accounts on the
+              right.
+            </span>
+            <div className="flex flex-wrap gap-4">
+              {STATUSES.slice(0, 4).map((status, i) => (
+                <span key={status} className="flex items-center gap-1.5">
+                  <i
+                    className={`size-1.5 rounded-full ${["bg-green-500", "bg-yellow-500", "bg-red-500", "bg-text-muted"][i]}`}
+                  />
+                  {status}
                 </span>
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  setPage((currentPage) =>
-                    Math.min(pagination.totalPages, currentPage + 1),
-                  )
-                }
-                disabled={
-                  pagination.page >= pagination.totalPages ||
-                  connectionsLoading ||
-                  refreshingAll
-                }
-                className="flex h-8 w-8 items-center justify-center rounded-lg border border-black/10 text-text-primary transition-colors hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:hover:bg-white/5"
-                aria-label="Next accounts page"
-              >
-                <span className="material-symbols-outlined text-[16px]">
-                  chevron_right
-                </span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setPage(pagination.totalPages)}
-                disabled={
-                  pagination.page >= pagination.totalPages ||
-                  connectionsLoading ||
-                  refreshingAll
-                }
-                className="flex h-8 items-center rounded-lg border border-black/10 px-3 text-xs text-text-primary transition-colors hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:hover:bg-white/5"
-              >
-                Last Page
-              </button>
+              ))}
             </div>
           </div>
-        </div>
 
+          {depletedGroups.map((group) => {
+            const times = group.depleted
+              .map((a) => resetTimestamp(a.worstWindow))
+              .filter(Number.isFinite);
+            return (
+              <div
+                key={group.id}
+                className="flex items-center gap-3 rounded-[10px] border border-yellow-500/20 bg-yellow-500/5 px-4 py-3"
+              >
+                <Icon className="text-yellow-600 dark:text-yellow-500">
+                  warning
+                </Icon>
+                <p data-i18n-skip="true" className="flex-1 text-xs text-text-muted">
+                  <strong className="font-medium text-text-main">
+                    {group.depleted.length} {group.name} account
+                    {group.depleted.length === 1 ? " is" : "s are"} depleted.
+                  </strong>
+                  {times.length > 0 &&
+                    ` Next ${resetLabel(
+                      { resetAt: Math.min(...times) },
+                      data.now,
+                    )
+                      .replace(/^Resets/, "Reset")
+                      .toLowerCase()}.`}
+                </p>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => openProvider(group.id, "Depleted")}
+                >
+                  View
+                </Button>
+              </div>
+            );
+          })}
+
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-lg font-semibold">
+                Accounts{" "}
+                <span data-i18n-skip="true" className="ml-1 text-sm font-normal text-text-muted">
+                  {rows.length}
+                </span>
+              </h2>
+              <div className="flex gap-1 rounded-[10px] bg-surface-2 p-1">
+                {["ledger", "cards"].map((mode) => (
+                  <Button
+                    key={mode}
+                    variant={view === mode ? "secondary" : "ghost"}
+                    size="sm"
+                    icon={mode === "ledger" ? "view_list" : "grid_view"}
+                    aria-pressed={view === mode}
+                    onClick={() => setView(mode)}
+                  >
+                    {mode === "ledger" ? "Ledger" : "Cards"}
+                  </Button>
+                ))}
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <div ref={search} className="min-w-0 flex-1 basis-52">
+              <Input
+                aria-label="Search accounts"
+                icon="search"
+                placeholder="Search accounts..."
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setPage(1);
+                }}
+              />
+              </div>
+              <Select
+                aria-label="Filter by status"
+                value={health}
+                onChange={(e) => {
+                  setHealth(e.target.value);
+                  setPage(1);
+                }}
+                options={[
+                  { value: "all", label: "All statuses" },
+                  { value: "active", label: "Active accounts" },
+                  ...STATUSES.map((s) => ({ value: s, label: s })),
+                ]}
+              />
+              <Select
+                aria-label="Sort accounts"
+                value={sort}
+                onChange={(e) => {
+                  setSort(e.target.value);
+                  setPage(1);
+                }}
+                options={[
+                  { value: "provider", label: "Provider, then lowest" },
+                  { value: "remaining", label: "Lowest remaining" },
+                  { value: "remaining-desc", label: "Highest remaining" },
+                  { value: "reset", label: "Next reset" },
+                ]}
+              />
+              {(query || health !== "all" || provider !== "all") && (
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    openProvider("all");
+                    // The button unmounts once filters clear; keep focus nearby.
+                    search.current?.querySelector("input")?.focus();
+                  }}
+                >
+                  Clear
+                </Button>
+              )}
+            </div>
+            <Card
+              padding="none"
+              className={
+                view === "ledger"
+                  ? "overflow-hidden"
+                  : "border-0 bg-transparent shadow-none"
+              }
+            >
+              {view === "ledger" && (
+                <div
+                  className={`${LEDGER} hidden border-b border-border-subtle bg-surface-2/50 px-5 py-3 text-xs font-medium text-text-muted md:grid`}
+                >
+                  <span>Account</span>
+                  <span>Plan</span>
+                  <span>Remaining</span>
+                  <span>Next reset</span>
+                  <span>Status</span>
+                </div>
+              )}
+              <div
+                className={
+                  view === "cards"
+                    ? "grid gap-4 md:grid-cols-2 xl:grid-cols-3"
+                    : ""
+                }
+              >
+                {pageRows.map((account) => (
+                  <button
+                    type="button"
+                    key={account.id}
+                    data-account={account.id}
+                    data-i18n-skip="true"
+                    onClick={() => {
+                      setActionError(null);
+                      setDetailId(account.id);
+                    }}
+                    className={`${view === "cards" ? "grid gap-4 rounded-[14px] border border-border-subtle bg-surface p-5 text-left hover:border-primary/30" : `${LEDGER} w-full items-center gap-y-3 border-b border-border-subtle px-5 py-3 text-left transition-colors last:border-0 hover:bg-surface-2/50`} ${account.isActive === false ? "opacity-60" : ""}`}
+                  >
+                    <span className="flex min-w-0 items-center gap-3">
+                      <ProviderIcon
+                        providerId={account.provider}
+                        alt=""
+                        size={28}
+                        className="shrink-0 rounded object-contain"
+                      />
+                      <span className="block min-w-0">
+                        <span
+                          className={`block truncate text-sm font-medium ${account.name === account.email ? blurClass : ""}`}
+                        >
+                          {providerName(account.provider)} / {account.name}
+                        </span>
+                        {account.email && account.email !== account.name && (
+                          <span
+                            className={`block mt-1 truncate text-xs text-text-muted ${blurClass}`}
+                          >
+                            {account.email}
+                          </span>
+                        )}
+                        <span className="block mt-1 text-[10px] text-text-muted md:hidden">
+                          {account.plan}
+                        </span>
+                        {account.error && (
+                          <span className="block mt-1 text-[10px] text-yellow-600 dark:text-yellow-500">
+                            Refresh failed.{" "}
+                            {updatedLabel(account.updatedAt, data.now)}.
+                          </span>
+                        )}
+                        {data.loading[account.id] && (
+                          <span className="block mt-1 text-[10px] text-text-muted">
+                            Refreshing...
+                          </span>
+                        )}
+                      </span>
+                    </span>
+                    <span
+                      className={
+                        view === "cards"
+                          ? "block text-xs"
+                          : "hidden text-xs md:block"
+                      }
+                    >
+                      {account.plan}
+                    </span>
+                    <AccountLimits
+                      account={account}
+                      now={data.now}
+                      compact={view === "ledger"}
+                    />
+                    <span
+                      className="whitespace-nowrap text-xs text-text-muted"
+                      title={(account.worstWindow || account.priority)?.label}
+                    >
+                      {resetShort(
+                        account.worstWindow || account.priority,
+                        data.now,
+                      ) ?? "—"}
+                    </span>
+                    <span
+                      className={`flex items-center gap-1.5 text-xs ${statusTone(account).text}`}
+                    >
+                      <i
+                        className={`size-1.5 shrink-0 rounded-full ${statusTone(account).bar}`}
+                      />
+                      {account.status}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              {!rows.length && (
+                <p className="p-8 text-center text-sm text-text-muted">
+                  No accounts match your filters.
+                </p>
+              )}
+            </Card>
+            <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-text-muted">
+              <span data-i18n-skip="true">
+                Showing {rows.length ? (currentPage - 1) * pageSize + 1 : 0}-
+                {Math.min(currentPage * pageSize, rows.length)} of {rows.length}{" "}
+                accounts
+              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  aria-label="Accounts per page"
+                  value={
+                    ACCOUNT_PAGE_SIZE_OPTIONS.includes(pageSize)
+                      ? String(pageSize)
+                      : "custom"
+                  }
+                  onChange={(e) => {
+                    if (e.target.value !== "custom")
+                      applyPageSize(e.target.value);
+                  }}
+                  className="rounded-lg bg-surface-2 px-2 py-1.5 text-text-main"
+                >
+                  {ACCOUNT_PAGE_SIZE_OPTIONS.map((size) => (
+                    <option key={size} value={size}>
+                      {size} / page
+                    </option>
+                  ))}
+                  <option value="custom">Custom</option>
+                </select>
+                <input
+                  aria-label="Custom accounts per page"
+                  type="number"
+                  min="1"
+                  max={ACCOUNT_PAGE_SIZE_MAX}
+                  value={customSize}
+                  onChange={(e) => setCustomSize(e.target.value)}
+                  onBlur={() => applyPageSize(customSize)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") applyPageSize(customSize);
+                  }}
+                  className="w-16 rounded-lg bg-surface-2 px-2 py-1.5 text-text-main"
+                />
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Previous accounts page"
+                  disabled={currentPage === 1}
+                  onClick={() => setPage(currentPage - 1)}
+                  icon="chevron_left"
+                />
+                <span data-i18n-skip="true">
+                  Page {currentPage} / {totalPages}
+                </span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Next accounts page"
+                  disabled={currentPage === totalPages}
+                  onClick={() => setPage(currentPage + 1)}
+                  icon="chevron_right"
+                />
+              </div>
+            </div>
+            <details className="text-xs text-text-muted">
+              <summary className="w-fit cursor-pointer">
+                Account actions
+              </summary>
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <span>Current page only</span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={
+                    busy ||
+                    !pageRows.some((a) => a.status === "Depleted" && !a.error)
+                  }
+                  onClick={() =>
+                    setActive(
+                      pageRows.filter(
+                        (a) => a.status === "Depleted" && !a.error,
+                      ),
+                      false,
+                    )
+                  }
+                >
+                  Turn off empty
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={
+                    busy ||
+                    !pageRows.some(
+                      (a) =>
+                        a.isActive === false &&
+                        ["Healthy", "Low quota"].includes(a.health) &&
+                        !a.error,
+                    )
+                  }
+                  onClick={() =>
+                    setActive(
+                      pageRows.filter(
+                        (a) =>
+                          a.isActive === false &&
+                          ["Healthy", "Low quota"].includes(a.health) &&
+                          !a.error,
+                      ),
+                      true,
+                    )
+                  }
+                >
+                  Turn on available
+                </Button>
+              </div>
+            </details>
+          </div>
+        </>
+      )}
+
+      {detail && (
+        <QuotaDialog
+          title={<span className={detail.name === detail.email ? blurClass : ""}>{providerName(detail.provider)} / {detail.name}</span>}
+          onClose={() => setDetailId(null)}
+          fallbackFocus={search}
+          footer={
+            <>
+              <Link
+                href={`/dashboard/accounts/${detail.id}`}
+                className="mr-auto text-sm text-primary"
+              >
+                Manage account
+              </Link>
+              <Button variant="secondary" onClick={() => setDetailId(null)}>
+                Close
+              </Button>
+            </>
+          }
+        >
+          <div className="space-y-4">
+            {detail.email && (
+              <p className={`break-all text-sm text-text-muted ${blurClass}`}>
+                {detail.email}
+              </p>
+            )}
+            <div className="flex justify-between gap-3 border-b border-border-subtle pb-3 text-sm">
+              <span className="text-text-muted">Plan</span>
+              <span>{detail.plan}</span>
+            </div>
+            {connectionValues[detail.id] && (
+              <SubscriptionValueBadge
+                value={connectionValues[detail.id]}
+                window={valueWindow}
+                onToggleWindow={() => {
+                  const next =
+                    valueWindow === "lifetime" ? "month" : "lifetime";
+                  setValueWindow(next);
+                  writeSubValueWindow(next);
+                }}
+              />
+            )}
+            <AccountLimits account={detail} now={data.now} />
+            {detail.weeklyBlocked && (
+              <p className="text-xs text-red-500">
+                Weekly exhausted. This account cannot be used until its weekly
+                limit resets.
+              </p>
+            )}
+            {detail.isActive === false && (
+              <p className="text-xs text-text-muted">
+                Turned off. Excluded from available totals.
+              </p>
+            )}
+            <p className="text-xs text-text-muted">
+              {updatedLabel(detail.updatedAt, data.now)}. Each quota window
+              resets independently.
+            </p>
+            {detail.error && (
+              <p
+                role="alert"
+                className="text-xs text-yellow-600 dark:text-yellow-500"
+              >
+                Refresh failed: {detail.error}
+                {detail.updatedAt ? " Your last reading is shown above." : ""}
+              </p>
+            )}
+            {detail.message && (
+              <p
+                className={`text-xs ${
+                  detail.quotaStatus === "subscription_inactive"
+                    ? "text-red-600 dark:text-red-400"
+                    : "text-text-muted"
+                }`}
+              >
+                {detail.message}
+              </p>
+            )}
+            {actionError && (
+              <p role="alert" className="text-xs text-red-500">
+                {actionError}
+              </p>
+            )}
+            <div className="flex flex-wrap gap-3">
+              <Button
+                size="sm"
+                variant="secondary"
+                icon="refresh"
+                loading={data.loading[detail.id]}
+                onClick={() => data.refreshAccount(detail)}
+              >
+                {detail.error ? "Retry" : "Refresh quota"}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                onClick={() => setActive([detail], detail.isActive === false)}
+              >
+                {detail.isActive === false
+                  ? "Turn on account"
+                  : "Turn off account"}
+              </Button>
+            </div>
+            <details className="border-t border-border-subtle pt-3">
+              <summary className="cursor-pointer text-xs text-text-muted">
+                All limits and visibility
+              </summary>
+              <p className="mt-3 text-xs text-text-muted">
+                Hidden rows are left out of status, bars and summaries.
+              </p>
+              <div
+                className={`mt-3 ${visibilityBusy ? "pointer-events-none opacity-60" : ""}`}
+              >
+                <QuotaTable
+                  quotas={filterQuotasByVisibility(
+                    detail.provider,
+                    data.quotaData[detail.id]?.quotas || [],
+                    quotaVisibility,
+                  )}
+                  compact
+                  onHideQuota={(quota) => changeVisibility(detail, quota, true)}
+                />
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {getHiddenQuotaRows(
+                  detail.provider,
+                  data.quotaData[detail.id]?.quotas || [],
+                  quotaVisibility,
+                ).map((quota) => (
+                  <Button
+                    key={getQuotaVisibilityKey(quota)}
+                    size="sm"
+                    variant="ghost"
+                    disabled={visibilityBusy}
+                    onClick={() => changeVisibility(detail, quota, false)}
+                  >
+                    Show {quota.name}
+                  </Button>
+                ))}
+              </div>
+            </details>
+            {detail.provider === "kiro" && (
+              <div className="space-y-2 border-t border-border-subtle pt-3 text-xs text-text-muted">
+                <p>
+                  {kiroMethodLabel(detail)}
+                  {kiroRegion(detail) ? ` · ${kiroRegion(detail)}` : ""}
+                  {detail.testStatus ? ` · Last test: ${detail.testStatus}` : ""}
+                </p>
+                {detail.providerSpecificData?.profileArn && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      copy(detail.providerSpecificData.profileArn, detail.id)
+                    }
+                    className="flex w-full items-start gap-2 rounded border border-border-subtle p-2 text-left transition-colors hover:text-primary focus-visible:outline-2 focus-visible:outline-primary"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="material-symbols-outlined text-[14px]"
+                    >
+                      {copied === detail.id ? "check" : "content_copy"}
+                    </span>
+                    <span className="sr-only">
+                      {copied === detail.id ? "Copied" : "Copy"} profile ARN:
+                    </span>{" "}
+                    <code className="break-all font-mono">
+                      {detail.providerSpecificData.profileArn}
+                    </code>
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </QuotaDialog>
+      )}
+      {help && (
+        <QuotaDialog
+          title="Reading quota bars"
+          onClose={() => setHelp(false)}
+          footer={
+            <Button variant="secondary" onClick={() => setHelp(false)}>
+              Close
+            </Button>
+          }
+        >
+          <div className="space-y-3 text-sm text-text-muted">
+            <p>
+              Each segment is one account. The same account stays in the same
+              position in both bars. Fullest accounts are on the left, with
+              blocked and turned-off accounts on the right.
+            </p>
+            <p>
+              The 5-hour limit comes first while weekly quota remains. If weekly
+              quota is exhausted, the weekly limit and its reset come first.
+            </p>
+            <p>
+              The big number is the average remaining across accounts.
+              Short-window quota blocked by an exhausted or unknown weekly limit
+              counts as empty. Turned-off accounts and other unknown readings
+              are left out. Blocked
+              percentages stay visible but faded. Failed refreshes keep the last
+              reading and show when it was updated.
+            </p>
+            <p>
+              Plans have different allowances, so the average is not a shared
+              token balance.
+            </p>
+            <p>
+              Click any segment or account row for details and refresh controls.
+              Display order does not change routing.
+            </p>
+          </div>
+        </QuotaDialog>
+      )}
     </div>
   );
 }
