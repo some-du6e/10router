@@ -90,9 +90,12 @@ export function buildAccount(connection, entry, error) {
   // Status follows the tightest window, so a low weekly bar never sits next to "Healthy".
   // Per-model windows ("other") only decide health when nothing else is reported,
   // so one exhausted model does not mark an account that still routes as Depleted.
-  const worstWindow = primary.length
-    ? lowest(capped(primary))
-    : bestPool(capped(windows));
+  // A blocked weekly wins ties: its reset is when the account routes again.
+  const worstWindow = weeklyBlocked
+    ? weekly
+    : primary.length
+      ? lowest(capped(primary))
+      : bestPool(capped(windows));
   const priority = weeklyBlocked
     ? weekly
     : session || weekly || worstWindow || windows[0];

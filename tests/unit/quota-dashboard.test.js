@@ -146,6 +146,12 @@ describe("quota dashboard", () => {
     expect(mm.status).toBe("Low quota");
   });
 
+  it("reports the weekly reset when both windows are empty", () => {
+    const empty = account("empty", 0, 0);
+    expect(empty.worstWindow.name).toBe("Weekly");
+    expect(empty.status).toBe("Depleted");
+  });
+
   it("never lets an unlimited row decide status", () => {
     const vercel = buildAccount(
       { id: "v", provider: "vercel-ai-gateway" },
