@@ -1,10 +1,15 @@
 import { getCombos, getProviderConnections } from "@/lib/db/index.js";
 import { AI_PROVIDERS } from "@/shared/constants/providers.js";
 import { CLAUDE_BLOCK } from "open-sse/translator/schema/index.js";
+import { saveRequestDetail } from "@/lib/usageDb.js";
+import { buildRequestDetail, extractRequestConfig } from "open-sse/handlers/chatCore/requestDetail.js";
 import { handleSearch } from "../handlers/search.js";
 import { buildSideSearchMessage, getSideSearchQuery, sideSearchResponse } from "./claudeSearchShortcut.js";
 
 const enrichmentCache = new WeakMap();
+
+// Upstreams that run Anthropic's web_search server tool themselves.
+const NATIVE_SEARCH_PROVIDERS = new Set(["claude", "anthropic"]);
 
 // The search model only changes when combos or connections are edited, so a
 // short TTL saves two table reads on every search without going stale for long.
@@ -12,7 +17,7 @@ const MODEL_TTL_MS = 30_000;
 let modelCache = null;
 
 // Agents often repeat a query within a session (retries, subagents). Results
-// are kept briefly; only successful searches are cached.
+// are kept briefly; only searches that returned results are cached.
 const RESULT_TTL_MS = 5 * 60_000;
 const RESULT_CACHE_MAX = 200;
 const resultCache = new Map();
@@ -62,7 +67,8 @@ export function buildGatewaySearchBody(model, searchRequest) {
 export async function resolveBuiltinSearchModel() {
   if (modelCache && modelCache.expires > Date.now()) return modelCache.value;
   const value = await lookupBuiltinSearchModel();
-  modelCache = { value, expires: Date.now() + MODEL_TTL_MS };
+  // Not caching "none configured", so a newly added provider is used at once.
+  modelCache = value ? { value, expires: Date.now() + MODEL_TTL_MS } : null;
   return value;
 }
 
@@ -99,9 +105,13 @@ function resultCacheKey(model, searchRequest) {
 async function runGatewaySearch(args) {
   const key = resultCacheKey(args.model, args.searchRequest);
   const hit = resultCache.get(key);
-  if (hit && hit.expires > Date.now()) return hit.data;
-  const data = await fetchGatewaySearch(args);
   resultCache.delete(key);
+  if (hit && hit.expires > Date.now()) {
+    resultCache.set(key, hit);
+    return hit.data;
+  }
+  const data = await fetchGatewaySearch(args);
+  if (!data?.results?.length) return data;
   resultCache.set(key, { data, expires: Date.now() + RESULT_TTL_MS });
   if (resultCache.size > RESULT_CACHE_MAX) resultCache.delete(resultCache.keys().next().value);
   return data;
@@ -130,7 +140,7 @@ export async function enrichClaudeBuiltinSearch(body, {
   search = runGatewaySearch,
   resolveSearchModel = resolveBuiltinSearchModel,
 } = {}) {
-  if (provider === "claude") return body;
+  if (NATIVE_SEARCH_PROVIDERS.has(provider)) return body;
   const searchRequest = getBuiltinSearchRequest(body);
   if (!searchRequest) return body;
   if (enrichmentCache.has(body)) return enrichmentCache.get(body);
@@ -179,8 +189,8 @@ export async function enrichClaudeBuiltinSearch(body, {
 /**
  * Answer a Claude Code WebSearch side request from the gateway's own search
  * provider instead of sending it to a non-Claude model. Returns null when the
- * request is not one, or when no search provider is configured, so the caller
- * carries on with normal routing.
+ * request is not one, or when the search can't be run, so the caller carries on
+ * with normal routing (and a combo can still fall back).
  */
 export async function answerClaudeSideSearch(body, {
   provider,
@@ -190,8 +200,9 @@ export async function answerClaudeSideSearch(body, {
   log,
   search = runGatewaySearch,
   resolveSearchModel = resolveBuiltinSearchModel,
+  recordDetail = saveRequestDetail,
 } = {}) {
-  if (provider === "claude") return null;
+  if (NATIVE_SEARCH_PROVIDERS.has(provider)) return null;
   const query = getSideSearchQuery(body);
   if (!query) return null;
   const searchRequest = { ...getBuiltinSearchRequest(body), query };
@@ -205,14 +216,25 @@ export async function answerClaudeSideSearch(body, {
   }
   if (!searchModel) return null;
 
-  let data = null;
+  let data;
   const started = Date.now();
   try {
     data = await search({ model: searchModel, searchRequest, request, apiKey });
-    log?.info?.("SEARCH", `Answered web search side request via ${searchModel} in ${Date.now() - started}ms (${data?.results?.length || 0} results, skipped ${provider})`);
   } catch (error) {
-    log?.warn?.("SEARCH", `Web search side request failed via ${searchModel}: ${error.message}`);
+    log?.warn?.("SEARCH", `Web search side request failed via ${searchModel}, routing to ${provider}: ${error.message}`);
+    return null;
   }
+  const elapsed = Date.now() - started;
+  log?.info?.("SEARCH", `Answered web search side request via ${searchModel} in ${elapsed}ms (${data?.results?.length || 0} results, skipped ${provider})`);
+
+  const stream = body.stream === true;
   const message = buildSideSearchMessage(model || body.model, query, data);
-  return sideSearchResponse(message, body.stream === true);
+  recordDetail(buildRequestDetail({
+    provider: "search",
+    model: searchModel,
+    latency: { ttft: elapsed, total: elapsed },
+    request: extractRequestConfig(body, stream),
+    response: { content: message.content, status: 200, thinking: null },
+  }))?.catch?.(() => { });
+  return sideSearchResponse(message, stream);
 }

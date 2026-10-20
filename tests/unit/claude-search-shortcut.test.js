@@ -36,10 +36,8 @@ describe("getSideSearchQuery", () => {
     expect(getSideSearchQuery(body)).toBeNull();
   });
 
-  it("accepts a forced web_search call without the prefix", () => {
-    const body = sideRequest({ messages: [{ role: "user", content: "router news" }] });
-    expect(getSideSearchQuery(body)).toBe("router news");
-    delete body.tool_choice;
+  it("leaves forced web_search requests without the prefix to the model", () => {
+    const body = sideRequest({ messages: [{ role: "user", content: "Search for router news and summarize it" }] });
     expect(getSideSearchQuery(body)).toBeNull();
   });
 });
@@ -74,12 +72,19 @@ describe("answerClaudeSideSearch", () => {
     expect(message.content.map((b) => b.type)).toEqual(["server_tool_use", "web_search_tool_result", "text"]);
   });
 
-  it("reports a search error in the tool result instead of failing the turn", async () => {
+  it("falls through to the model when the search fails, so combos can fall back", async () => {
     const response = await answerClaudeSideSearch(sideRequest({ stream: false }), {
       provider: "codex", search: async () => { throw new Error("boom"); }, resolveSearchModel: async () => "exa",
     });
-    const message = await response.json();
-    expect(message.content[1].content).toEqual({ type: "web_search_tool_result_error", error_code: "unavailable" });
+    expect(response).toBeNull();
+  });
+
+  it("records a request detail for the answered search", async () => {
+    const recordDetail = vi.fn(async () => {});
+    await answerClaudeSideSearch(sideRequest(), {
+      provider: "codex", search: async () => results, resolveSearchModel: async () => "exa", recordDetail,
+    });
+    expect(recordDetail).toHaveBeenCalledWith(expect.objectContaining({ provider: "search", model: "exa", status: "success" }));
   });
 
   it("falls through when no search provider is configured", async () => {
@@ -104,6 +109,7 @@ describe("answerClaudeSideSearch", () => {
 
   it("leaves native Claude upstreams alone", async () => {
     expect(await answerClaudeSideSearch(sideRequest(), { provider: "claude", search: vi.fn() })).toBeNull();
+    expect(await answerClaudeSideSearch(sideRequest(), { provider: "anthropic", search: vi.fn() })).toBeNull();
   });
 });
 

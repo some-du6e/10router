@@ -18,7 +18,6 @@ type ClaudeBody = {
   stream?: boolean;
   messages?: Message[];
   tools?: Tool[];
-  tool_choice?: { type?: string; name?: string };
 };
 
 function messageText(content: Message["content"]): string {
@@ -41,10 +40,11 @@ export function getSideSearchQuery(body: ClaudeBody | null | undefined): string 
   const messages = Array.isArray(body?.messages) ? body.messages : [];
   if (messages.length !== 1 || messages[0]?.role !== "user") return null;
 
+  // Only Claude Code's own phrasing: any other search-only request may expect
+  // the model to do more with the results than list them.
   const text = messageText(messages[0].content).trim();
-  const forced = body?.tool_choice?.type === "tool" && body.tool_choice.name === "web_search";
-  if (text.startsWith(SIDE_QUERY_PREFIX)) return text.slice(SIDE_QUERY_PREFIX.length).trim() || null;
-  return forced && text ? text : null;
+  if (!text.startsWith(SIDE_QUERY_PREFIX)) return null;
+  return text.slice(SIDE_QUERY_PREFIX.length).trim() || null;
 }
 
 function resultsText(query: string, results: SearchResult[]): string {
@@ -56,8 +56,7 @@ function resultsText(query: string, results: SearchResult[]): string {
   }).join("\n\n");
 }
 
-function toolResultContent(results: SearchResult[] | null) {
-  if (!results) return { type: "web_search_tool_result_error", error_code: "unavailable" };
+function toolResultContent(results: SearchResult[]) {
   return results
     .filter((result) => result.url || result.link)
     .map((result) => ({
@@ -73,13 +72,12 @@ function toolResultContent(results: SearchResult[] | null) {
  * Build the Claude assistant message a real web_search turn would produce:
  * server_tool_use, then web_search_tool_result, then text with the snippets
  * (Claude Code passes that text on to the main model alongside the links).
- * `data` null means the search failed.
  */
-export function buildSideSearchMessage(model: string, query: string, data: SearchData | null) {
+export function buildSideSearchMessage(model: string, query: string, data: SearchData | null | undefined) {
   const id = `msg_${crypto.randomUUID().replace(/-/g, "")}`;
   const toolUseId = `srvtoolu_${crypto.randomUUID().replace(/-/g, "")}`;
-  const results = data ? (Array.isArray(data.results) ? data.results : []) : null;
-  const text = results ? resultsText(query, results) : `Web search failed for "${query}".`;
+  const results = Array.isArray(data?.results) ? data.results.filter(Boolean) : [];
+  const text = resultsText(query, results);
   return {
     id,
     type: "message",
@@ -95,7 +93,7 @@ export function buildSideSearchMessage(model: string, query: string, data: Searc
     usage: {
       input_tokens: 0,
       output_tokens: 0,
-      server_tool_use: { web_search_requests: data ? 1 : 0 },
+      server_tool_use: { web_search_requests: 1 },
     },
   };
 }
