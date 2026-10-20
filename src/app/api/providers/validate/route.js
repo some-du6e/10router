@@ -8,6 +8,15 @@ import { resolveQoderCredentials, resolveQoderModels } from "open-sse/services/q
 import { normalizeProviderId } from "@/lib/providerNormalization";
 import { generateSessionId } from "open-sse/utils/opencodeSession.js";
 import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
+import { resolveKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
+import { isLocalRequest } from "@/dashboardGuard";
+
+// A compatible key may bring its own endpoint URL (another account or region);
+// check it there, with the same SSRF rules as saving it.
+async function compatibleBaseUrl(request, body, node) {
+  if (typeof body.baseUrl !== "string" || !body.baseUrl.trim()) return { ok: true, baseUrl: node.baseUrl };
+  return resolveKeyBaseUrl(body.baseUrl, node.baseUrl, { remote: !isLocalRequest(request) });
+}
 
 // Probe a webSearch/webFetch provider using its searchConfig/fetchConfig.
 // Returns true if API key is accepted (status !== 401 && !== 403).
@@ -124,7 +133,9 @@ export async function POST(request) {
         if (!node) {
           return NextResponse.json({ error: "OpenAI Compatible node not found" }, { status: 404 });
         }
-        const modelsUrl = `${node.baseUrl?.replace(/\/$/, "")}/models`;
+        const keyUrl = await compatibleBaseUrl(request, body, node);
+        if (!keyUrl.ok) return NextResponse.json({ valid: false, error: keyUrl.error }, { status: 400 });
+        const modelsUrl = `${keyUrl.baseUrl?.replace(/\/$/, "")}/models`;
         const res = await fetch(modelsUrl, {
           headers: { "Authorization": `Bearer ${apiKey}` },
         });
@@ -172,7 +183,9 @@ export async function POST(request) {
           return NextResponse.json({ error: "Anthropic Compatible node not found" }, { status: 404 });
         }
 
-        let normalizedBase = node.baseUrl?.trim().replace(/\/$/, "") || "";
+        const keyUrl = await compatibleBaseUrl(request, body, node);
+        if (!keyUrl.ok) return NextResponse.json({ valid: false, error: keyUrl.error }, { status: 400 });
+        let normalizedBase = keyUrl.baseUrl?.trim().replace(/\/$/, "") || "";
         if (normalizedBase.endsWith("/messages")) {
           normalizedBase = normalizedBase.slice(0, -9); // remove /messages
         }

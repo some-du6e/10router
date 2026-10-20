@@ -80,7 +80,8 @@ export async function PUT(request, { params }) {
           connectionFields: {
             prefix: prefix.trim(),
             apiType: node.type === "openai-compatible" ? apiType : undefined,
-            baseUrl: sanitizedBaseUrl,
+            // A key with its own endpoint URL keeps it; only quirks follow the node.
+            baseUrl: connection.providerSpecificData?.ownBaseUrl ? connection.providerSpecificData.baseUrl : sanitizedBaseUrl,
             nodeName: updated.name,
           },
         }),

@@ -10,13 +10,16 @@ import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS
 import Select from "@/shared/components/Select";
 import { getSuggestedMonthlyCost } from "@/shared/constants/subscriptionPlans";
 
-export default function EditConnectionModal({ isOpen, connection, proxyPools, onSave, onClose }) {
+export default function EditConnectionModal({ isOpen, connection, nodeBaseUrl, proxyPools, onSave, onClose }) {
   const [formData, setFormData] = useState({
     name: "",
     priority: 1,
     apiKey: "",
     monthlyCost: "",
+    baseUrl: "",
   });
+  const [showBaseUrl, setShowBaseUrl] = useState(false);
+  const [saveError, setSaveError] = useState(null);
   const [azureData, setAzureData] = useState({
     azureEndpoint: "",
     apiVersion: "2024-10-01-preview",
@@ -59,7 +62,10 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
             : suggested != null
               ? String(suggested)
               : "",
+        baseUrl: connection.providerSpecificData?.ownBaseUrl ? (connection.providerSpecificData.baseUrl || "") : "",
       });
+      setShowBaseUrl(!!connection.providerSpecificData?.ownBaseUrl);
+      setSaveError(null);
       // Load Azure-specific data if present
       if (connection.provider === "azure" && connection.providerSpecificData) {
         setAzureData({
@@ -98,6 +104,9 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
     return undefined;
   };
 
+  // Compatible keys can point at another account or region of the same API.
+  const keyBaseUrl = () => (isCompatible && formData.baseUrl.trim() ? { baseUrl: formData.baseUrl.trim() } : {});
+
   const handleTest = async () => {
     if (!connection?.provider) return;
     setTesting(true);
@@ -127,6 +136,7 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
           ...(isAzure ? { providerSpecificData: azureData } : {}),
           ...(isCloudflareAi ? { providerSpecificData: cloudflareData } : {}),
           ...(providerRegions ? { providerSpecificData: buildRegionSpecificData() } : {}),
+          ...keyBaseUrl(),
         }),
       });
       const data = await res.json();
@@ -189,6 +199,7 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
                 ...(isAzure ? { providerSpecificData: azureData } : {}),
                 ...(isCloudflareAi ? { providerSpecificData: cloudflareData } : {}),
                 ...(providerRegions ? { providerSpecificData: buildRegionSpecificData() } : {}),
+                ...keyBaseUrl(),
               }),
             });
             const data = await res.json();
@@ -224,7 +235,15 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
         updates.providerSpecificData = buildRegionSpecificData();
       }
       
-      await onSave(updates);
+      // Sent only when it changed: empty goes back to the provider's URL.
+      const savedBaseUrl = connection.providerSpecificData?.ownBaseUrl ? (connection.providerSpecificData.baseUrl || "") : "";
+      if (isCompatible && formData.baseUrl.trim() !== savedBaseUrl) {
+        updates.baseUrl = formData.baseUrl.trim() || null;
+      }
+
+      setSaveError(null);
+      const result = await onSave(updates);
+      if (result?.error) setSaveError(result.error);
     } finally {
       setSaving(false);
     }
@@ -302,6 +321,20 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
           </>
         )}
 
+        {isCompatible && !isOAuth && (showBaseUrl ? (
+          <Input
+            label="Different endpoint URL"
+            value={formData.baseUrl}
+            onChange={(e) => setFormData({ ...formData, baseUrl: e.target.value })}
+            placeholder={nodeBaseUrl || "https://..."}
+            hint="Leave empty to use the provider's URL. Use this when this key belongs to another account or region."
+          />
+        ) : (
+          <button type="button" onClick={() => setShowBaseUrl(true)} className="self-start text-xs text-primary hover:underline">
+            Use a different endpoint URL for this key
+          </button>
+        ))}
+
         {isAzure && (
           <div className="bg-sidebar/50 p-4 rounded-lg border border-accent/20">
             <h3 className="font-semibold mb-3 text-sm">Azure OpenAI Configuration</h3>
@@ -360,6 +393,8 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
           </div>
         )}
 
+        {saveError && <p className="text-xs text-red-500 break-words">{saveError}</p>}
+
         <div className="flex gap-2">
           <Button onClick={handleSubmit} fullWidth disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
           <Button onClick={onClose} variant="ghost" fullWidth>Cancel</Button>
@@ -383,6 +418,7 @@ EditConnectionModal.propTypes = {
     plan: PropTypes.string,
     subscriptionType: PropTypes.string,
   }),
+  nodeBaseUrl: PropTypes.string,
   proxyPools: PropTypes.arrayOf(PropTypes.shape({
     id: PropTypes.string,
     name: PropTypes.string,

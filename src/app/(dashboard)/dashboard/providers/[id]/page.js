@@ -845,9 +845,13 @@ export default function ProviderDetailPage() {
       if (res.ok) {
         await fetchConnections();
         setShowEditModal(false);
+        return null;
       }
+      const data = await res.json().catch(() => null);
+      return { error: data?.error || "Failed to save connection" };
     } catch (error) {
       console.log("Error updating connection:", error);
+      return { error: "Failed to save connection" };
     }
   };
 
@@ -1813,6 +1817,7 @@ export default function ProviderDetailPage() {
         providerName={providerInfo.name}
         isCompatible={isCompatible}
         isAnthropic={isAnthropicCompatible}
+        nodeBaseUrl={providerNode?.baseUrl}
         authType={providerInfo?.authType}
         authHint={providerInfo?.authHint}
         website={providerInfo?.website}
@@ -1829,6 +1834,7 @@ export default function ProviderDetailPage() {
       <EditConnectionModal
         isOpen={showEditModal}
         connection={selectedConnection}
+        nodeBaseUrl={isCompatible ? providerNode?.baseUrl : undefined}
         proxyPools={proxyPools}
         onSave={handleUpdateConnection}
         onClose={() => setShowEditModal(false)}

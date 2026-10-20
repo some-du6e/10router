@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 import {
   getProviderConnectionById,
+  getProviderNodeById,
   getProxyPoolById,
   updateProviderConnection,
   deleteProviderConnection,
 } from "@/models";
+import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
+import { resolveKeyBaseUrl, withKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
+import { isLocalRequest } from "@/dashboardGuard";
 
 function normalizeProxyConfig(body = {}) {
   const hasAnyProxyField =
@@ -191,6 +195,23 @@ export async function PUT(request, { params }) {
           updateData.providerSpecificData.proxyPoolId = proxyPoolResult.proxyPoolId;
         }
       }
+    }
+
+    // Per-key endpoint URL on compatible nodes. A string changes it; empty or
+    // null goes back to the provider's URL.
+    const isCompatibleKey = isOpenAICompatibleProvider(existing.provider) || isAnthropicCompatibleProvider(existing.provider);
+    if (isCompatibleKey && body.baseUrl !== undefined) {
+      if (body.baseUrl !== null && typeof body.baseUrl !== "string") {
+        return NextResponse.json({ error: "Invalid baseUrl", field: "baseUrl" }, { status: 400 });
+      }
+      const node = await getProviderNodeById(existing.provider);
+      if (!node) return NextResponse.json({ error: "Provider node not found" }, { status: 404 });
+      const keyUrl = await resolveKeyBaseUrl(body.baseUrl, node.baseUrl, { remote: !isLocalRequest(request) });
+      if (!keyUrl.ok) return NextResponse.json({ error: keyUrl.error, field: "baseUrl" }, { status: 400 });
+      updateData.providerSpecificData = withKeyBaseUrl(
+        updateData.providerSpecificData || { ...(existing.providerSpecificData || {}) },
+        keyUrl,
+      );
     }
 
     const updated = await updateProviderConnection(id, updateData);
