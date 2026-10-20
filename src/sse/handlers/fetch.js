@@ -1,3 +1,4 @@
+import { readJsonObject } from "../utils/requestBody.js";
 import {
   getProviderCredentials,
   markAccountUnavailable,
@@ -22,13 +23,8 @@ import { assertPublicUrlResolved } from "@/shared/utils/ssrfGuard.js";
  * @param {Request} request
  */
 export async function handleFetch(request) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    log.warn("FETCH", "Invalid JSON body");
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
-  }
+  const { body, error } = await readJsonObject(request);
+  if (error) return error;
 
   const reqUrl = new URL(request.url);
   // Accept either `provider` or `model` (UI sends `model` since provider IS the model for webFetch)

@@ -1,3 +1,4 @@
+import { readJsonObject } from "../utils/requestBody.js";
 import {
   extractApiKey, isValidApiKey,
   getProviderCredentials, markAccountUnavailable,
@@ -19,16 +20,16 @@ const CREDENTIALED_PROVIDERS = new Set(
 );
 
 export async function handleTts(request) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
-  }
+  const { body, error } = await readJsonObject(request);
+  if (error) return error;
 
   const url = new URL(request.url);
   const modelStr = body.model;
-  const responseFormat = url.searchParams.get("response_format") || "mp3"; // mp3 (default) | json
+  // Keep the query override used by the dashboard; API clients send this in JSON.
+  const responseFormat = (url.searchParams.get("response_format") || body.response_format) ?? "mp3";
+  if (typeof responseFormat !== "string" || !responseFormat.trim()) {
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, "response_format must be a non-empty string");
+  }
   const language = body.language || ""; // Optional language hint (currently used by Gemini)
   const style = body.style || ""; // Optional style/voice instructions (e.g. Xiaomi MiMo)
   log.request("POST", `${url.pathname} | ${modelStr} | format=${responseFormat}${language ? ` | lang=${language}` : ""}`);
@@ -41,8 +42,8 @@ export async function handleTts(request) {
     if (!valid) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
   }
 
-  if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
-  if (!body.input) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: input");
+  if (typeof modelStr !== "string" || !modelStr.trim()) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
+  if (typeof body.input !== "string" || !body.input.trim()) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: input");
 
   // Combo expansion: model may be a combo name → run fallback/round-robin across models
   const comboModels = await getComboModels(modelStr);

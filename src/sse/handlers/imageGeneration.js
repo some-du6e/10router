@@ -1,3 +1,4 @@
+import { readJsonObject } from "../utils/requestBody.js";
 import {
   getProviderCredentials,
   markAccountUnavailable,
@@ -22,12 +23,8 @@ const NO_AUTH_PROVIDERS = new Set(["sdwebui", "comfyui"]);
  * @param {Request} request
  */
 export async function handleImageGeneration(request) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
-  }
+  const { body, error } = await readJsonObject(request);
+  if (error) return error;
 
   const url = new URL(request.url);
   const preferredConnectionId = request.headers.get("x-connection-id") || null;
@@ -43,7 +40,7 @@ export async function handleImageGeneration(request) {
     if (!valid) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
   }
 
-  if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
+  if (typeof modelStr !== "string" || !modelStr.trim()) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   if (!body.prompt) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: prompt");
 
   // Combo expansion: model may be a combo name → run fallback/round-robin across models
