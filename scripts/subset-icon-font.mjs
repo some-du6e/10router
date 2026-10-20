@@ -37,7 +37,7 @@ for lookup in font["GSUB"].table.LookupList.Lookup:
                 if all(g in chars for g in [first] + lig.Component):
                     print("".join(chars[g] for g in [first] + lig.Component))
 `;
-const known = new Set(execFileSync("python3", ["-I", "-c", listLigatures, source], { encoding: "utf8", maxBuffer: 16 << 20 }).split("\n").filter(Boolean));
+const known = new Set(execFileSync("python3", ["-P", "-c", listLigatures, source], { encoding: "utf8", maxBuffer: 16 << 20 }).split("\n").filter(Boolean));
 const icons = collectIconNames(root, known);
 
 const work = mkdtempSync(join(tmpdir(), "icon-subset-"));
@@ -71,10 +71,10 @@ font.save(sys.argv[3])
 `;
   const pruned = join(work, "pruned.ttf");
   writeFileSync(join(work, "icons.txt"), icons.join("\n"));
-  execFileSync("python3", ["-I", "-c", pruneLigatures, source, join(work, "icons.txt"), pruned], { stdio: "inherit" });
+  execFileSync("python3", ["-P", "-c", pruneLigatures, source, join(work, "icons.txt"), pruned], { stdio: "inherit" });
 
   const subset = join(work, "subset.woff2");
-  execFileSync("python3", ["-I", "-m", "fontTools.subset", pruned,
+  execFileSync("python3", ["-P", "-m", "fontTools.subset", pruned,
     "--unicodes=U+0020-007E",
     "--layout-features=*",
     "--flavor=woff2",
@@ -83,7 +83,7 @@ font.save(sys.argv[3])
 
   // globals.css pins wght 400 / GRAD 0 / opsz 24 and only toggles FILL, so
   // flatten the other axes; they are most of the remaining bytes.
-  execFileSync("python3", ["-I", "-m", "fontTools.varLib.instancer", subset,
+  execFileSync("python3", ["-P", "-m", "fontTools.varLib.instancer", subset,
     "wght=400", "GRAD=0", "opsz=24", "-o", output,
   ], { stdio: "inherit" });
 } finally {

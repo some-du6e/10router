@@ -20,9 +20,12 @@
   0%, 100% { opacity: .1; }
   50% { opacity: .28; }
 }
+/* A failed load keeps the square (the names would be worse) but stops it
+   pulsing, so it no longer reads as "still loading". */
 @media (prefers-reduced-motion: reduce) {
   :root:not(.fonts-loaded) .material-symbols-outlined { animation: none; opacity: .18; }
 }
+:root.fonts-failed:not(.fonts-loaded) .material-symbols-outlined { animation: none; opacity: .18; }
 
 /* ============================================================
    10router palette
