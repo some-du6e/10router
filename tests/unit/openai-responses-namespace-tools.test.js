@@ -227,34 +227,3 @@ describe("namespace survives the full openai-responses → claude → client cha
     }
   });
 });
-
-describe("duplicate tool names", () => {
-  it("keeps one declaration per name when namespaces and top-level tools overlap", () => {
-    const out = openaiResponsesToOpenAIRequest("claude-opus-5", {
-      tools: [{ type: "function", name: "exec_ide", description: "top", parameters: { type: "object", properties: {} } }],
-      input: [
-        { type: "additional_tools", role: "developer", tools: [NAMESPACE_TOOLS, { type: "namespace", name: "mcp", tools: [NAMESPACE_TOOLS.tools[1]] }] },
-        { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
-      ],
-    }, true, null);
-
-    expect(out.tools.map((t) => t.function.name)).toEqual(["exec_ide", "read_file"]);
-    expect(out.tools[0].function.description).toBe("top");
-  });
-
-  it("reaches claude with unique tool names", () => {
-    const out = translateRequest(
-      FORMATS.OPENAI_RESPONSES, FORMATS.CLAUDE, "claude-opus-5",
-      {
-        model: "claude-opus-5", stream: true,
-        tools: [NAMESPACE_TOOLS],
-        input: [
-          { type: "additional_tools", role: "developer", tools: [NAMESPACE_TOOLS] },
-          { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
-        ],
-      }, true, {}, "claude", null, [], null, null,
-    );
-    const names = out.tools.map((t) => t.name);
-    expect(new Set(names).size).toBe(names.length);
-  });
-});

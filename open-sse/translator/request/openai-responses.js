@@ -234,7 +234,6 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
         };
       })
       .filter(Boolean);
-    result.tools = dedupeToolsByName(result.tools);
   }
   if (customToolNames.size > 0) result._customToolNames = [...customToolNames];
   if (toolNamespaces.size > 0) result._toolNamespaces = Object.fromEntries(toolNamespaces);
@@ -291,24 +290,6 @@ function flattenNamespaceTools(tools, namespaces) {
     }
   }
   return flat;
-}
-
-/**
- * Keep the first declaration of each tool name.
- *
- * Flattening namespaces drops the qualifier, and Codex re-sends tools it already
- * declared (top-level and inside `additional_tools`), so one name can appear twice.
- * Anthropic rejects the whole request with "tools: Tool names must be unique."
- */
-function dedupeToolsByName(tools) {
-  const seen = new Set();
-  return tools.filter(tool => {
-    const name = tool.function?.name ?? tool.name;
-    if (typeof name !== "string" || !name) return true;
-    if (seen.has(name)) return false;
-    seen.add(name);
-    return true;
-  });
 }
 
 /**
