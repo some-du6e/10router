@@ -125,7 +125,12 @@ export function fixMissingToolResponses(body) {
 
   for (let i = 0; i < body.messages.length; i++) {
     const msg = body.messages[i];
-    const nextMsg = body.messages[i + 1];
+    // A mid-conversation system message can sit between tool_use and its
+    // result; claude-to-openai moves it after the results (other targets hoist
+    // system), so look past it.
+    let j = i + 1;
+    while (body.messages[j]?.role === "system") j++;
+    const nextMsg = body.messages[j];
 
     newMessages.push(msg);
 

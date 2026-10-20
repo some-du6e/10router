@@ -6,7 +6,8 @@
 //   maxCompletionTokens  rename max_tokens → max_completion_tokens (Snowflake chat)
 //   modelRoutes          model → API path, for endpoints that answer on both
 //                        Anthropic Messages and OpenAI (see resolveCompatibleRoute)
-export const QUIRK_KEYS = ["stripBeta", "droppedBetas", "maxCompletionTokens", "modelRoutes"];
+//   apiKeyHeader         "api-key": send the key in an api-key header, not Bearer (Azure)
+export const QUIRK_KEYS = ["stripBeta", "droppedBetas", "maxCompletionTokens", "modelRoutes", "apiKeyHeader"];
 export const ROUTE_PROTOCOLS = ["anthropic", "openai-chat", "openai-responses"];
 const MAX_ROUTES = 500;
 
@@ -21,6 +22,8 @@ export function sanitizeNodeQuirks(raw, { keepEmpty = false } = {}) {
   for (const k of ["stripBeta", "maxCompletionTokens"]) {
     if (typeof raw[k] === "boolean" && (raw[k] || keepEmpty)) out[k] = raw[k];
   }
+  if (raw.apiKeyHeader === "api-key") out.apiKeyHeader = "api-key";
+  else if (keepEmpty && raw.apiKeyHeader === null) out.apiKeyHeader = null;
   if (Array.isArray(raw.droppedBetas)) {
     const flags = [...new Set(raw.droppedBetas.map((f) => String(f).trim()).filter((f) => FLAG_RE.test(f)))].slice(0, 50);
     if (flags.length || keepEmpty) out.droppedBetas = flags;

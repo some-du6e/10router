@@ -325,12 +325,15 @@ export function createSSEStream(options = {}) {
           // A clean end of stream. Translators may finish a message the upstream
           // never closed with finish_reason, but only after this (not on a cut-off).
           state.upstreamDone = true;
-          // A direct Chat-to-Responses translation can defer response.completed
-          // while waiting for a usage trailer. [DONE] ends that opportunity even
-          // if the upstream keeps the HTTP connection open, so finish now.
-          if (targetFormat === FORMATS.OPENAI && sourceFormat === FORMATS.OPENAI_RESPONSES &&
-              state.completionPending && !state.completedSent) {
+          // A Chat Completions upstream is finished at [DONE], even if it keeps the
+          // HTTP connection open (a deferred response.completed, or a message the
+          // upstream never closed with finish_reason). Emit the final events and
+          // end the client stream now instead of waiting for the socket to close.
+          if (targetFormat === FORMATS.OPENAI && sourceFormat !== FORMATS.OPENAI) {
+            trackPendingRequest(model, provider, connectionId, false);
             flushPendingCompletion(controller);
+            controller.terminate();
+            return;
           }
 
           // Synthesize response.failed if the Responses stream never sent a terminal event

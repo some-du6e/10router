@@ -8,7 +8,7 @@ import {
   isValidApiKey,
 } from "../services/auth.js";
 import { handleAntigravityQuotaError, clearAntigravityStrikes } from "../services/antigravityQuota.js";
-import { getSettings, getProviderNodeById, updateProviderNode } from "@/lib/localDb";
+import { getSettings, getProviderNodeById, updateProviderNode, getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
 import { getModelInfo, getComboModels, comboLookupName } from "../services/model.js";
 import { handleChatCore, clientReceivesStream } from "open-sse/handlers/chatCore.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
@@ -21,6 +21,7 @@ import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "o
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
+import { isRequestError } from "open-sse/services/accountFallback.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import { detectFormat } from "open-sse/services/provider.js";
 import * as log from "../utils/logger.js";
@@ -201,6 +202,40 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   const response = await routeSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { allowHold, routingFailures });
   if (!response.ok) routingFailures.splice(routingFailures.indexOf(unconfirmed), 1);
   return response;
+}
+
+// Serialize the read-merge-write per row so concurrent requests can't lose
+// each other's flags (the repo's update replaces providerSpecificData whole).
+const betaWrites = new Map();
+function serialize(key, fn) {
+  const next = (betaWrites.get(key) || Promise.resolve()).then(fn, fn);
+  betaWrites.set(key, next.catch(() => {}));
+  return next;
+}
+const union = (a, b) => [...new Set([...(a || []), ...(b || [])])];
+
+// Anthropic-compatible endpoint rejected some beta flags; remember them on the
+// connection (so later requests skip the failed try) and on the node (so the
+// endpoint page shows them and new keys inherit them). Re-reads both rows fresh
+// and touches only droppedBetas.
+export async function saveDroppedBetas(credentials, provider, droppedBetas) {
+  credentials.providerSpecificData = {
+    ...(credentials.providerSpecificData || {}),
+    droppedBetas: union(credentials.providerSpecificData?.droppedBetas, droppedBetas),
+  };
+  const id = credentials.connectionId;
+  if (id) {
+    await serialize(`conn:${id}`, async () => {
+      const conn = await getProviderConnectionById(id);
+      if (!conn) return;
+      const psd = conn.providerSpecificData || {};
+      await updateProviderConnection(id, { providerSpecificData: { ...psd, droppedBetas: union(psd.droppedBetas, droppedBetas) } });
+    });
+  }
+  await serialize(`node:${provider}`, async () => {
+    const node = await getProviderNodeById(provider).catch(() => null);
+    if (node) await updateProviderNode(provider, { droppedBetas: union(node.droppedBetas, droppedBetas) });
+  });
 }
 
 async function routeSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { allowHold, routingFailures }) {
@@ -404,16 +439,7 @@ async function routeSingleModelChat(body, modelStr, clientRawRequest, request, a
       },
       // Anthropic-compatible endpoint rejected some beta flags; remember them on the
       // connection so later requests skip the failed first try.
-      onBetasRejected: async (droppedBetas) => {
-        credentials.providerSpecificData = { ...(credentials.providerSpecificData || {}), droppedBetas };
-        await updateProviderCredentials(credentials.connectionId, {
-          providerSpecificData: { droppedBetas },
-          existingProviderSpecificData: credentials.providerSpecificData,
-        });
-        // Also on the node, so the endpoint page shows them and new keys inherit them.
-        const node = await getProviderNodeById(provider).catch(() => null);
-        if (node) await updateProviderNode(provider, { droppedBetas: [...new Set([...(node.droppedBetas || []), ...droppedBetas])] });
-      },
+      onBetasRejected: (droppedBetas) => saveDroppedBetas(credentials, provider, droppedBetas),
       onRequestSuccess: async () => {
         await clearAccountError(credentials.connectionId, credentials, model);
         // "Consecutive" strikes: a success clears the breaker for this pair.
@@ -436,7 +462,12 @@ async function routeSingleModelChat(body, modelStr, clientRawRequest, request, a
 
     let shouldFallback = true;
     let cooldownMs = 0;
-    if (!(provider === "antigravity" && quotaResetMs)) {
+    // A request error (bad body, unknown model) still tries the next key, in case
+    // it was key-specific, but locks nothing: one bad conversation mustn't make
+    // the pool "unavailable" for everyone else.
+    if (isRequestError(result.status, result.error)) {
+      log.warn("AUTH", `${credentials.connectionName} request error [${result.status}], not locking`);
+    } else if (!(provider === "antigravity" && quotaResetMs)) {
       ({ shouldFallback, cooldownMs } = await markAccountUnavailable(
         credentials.connectionId, result.status, result.error, provider, model, resetsAtMs
       ));

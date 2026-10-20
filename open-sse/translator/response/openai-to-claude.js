@@ -1,7 +1,7 @@
 import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
-import { ROLE, CLAUDE_BLOCK, MODEL_FALLBACK, CLAUDE_STOP } from "../schema/index.js";
-import { fromOpenAIFinish } from "../concerns/finishReason.js";
+import { ROLE, CLAUDE_BLOCK, MODEL_FALLBACK, OPENAI_FINISH } from "../schema/index.js";
+import { fromOpenAIFinish, inferToolUseFinish } from "../concerns/finishReason.js";
 import { extractReasoningText } from "../concerns/reasoning.js";
 
 // Legacy "proxy_" prefix used by older request translators. Response strips it
@@ -90,15 +90,14 @@ function finishMessage(state, results, reason) {
     });
   }
 
-  // Mark finish for later usage injection in stream.js
-  state.finishReason = reason;
-  state.messageStopSent = true;
+  // Gateways that end tool-call turns with "stop" or no finish_reason still
+  // mean tool_use; "length" stays max_tokens (the call may be cut off).
+  const finish = inferToolUseFinish(reason, state.toolCalls.size > 0) || OPENAI_FINISH.STOP;
+  const stopReason = convertFinishReason(finish);
 
-  // Some OpenAI-compatible gateways end tool-call turns with "stop", "" or no
-  // finish_reason at all (Snowflake Cortex serving Claude on /chat/completions).
-  // A turn that emitted tool calls is a tool_use turn regardless, or the client
-  // treats it as finished and never runs the tool.
-  const stopReason = state.toolCalls.size > 0 ? CLAUDE_STOP.TOOL_USE : convertFinishReason(reason);
+  // Mark finish for later usage injection in stream.js
+  state.finishReason = finish;
+  state.messageStopSent = true;
 
   // Use tracked usage (will be estimated in stream.js if not valid)
   const finalUsage = state.usage || { input_tokens: 0, output_tokens: 0 };
@@ -110,6 +109,18 @@ function finishMessage(state, results, reason) {
   results.push({ type: "message_stop" });
 }
 
+// Key for a streamed tool call. Some gateways omit `index` on parallel calls;
+// then a new id starts a new call and id-less arg chunks go to the latest one.
+function toolCallKey(state, tc) {
+  if (tc.index != null) return tc.index;
+  if (tc.id) {
+    const key = `id:${tc.id}`;
+    if (!state.toolCalls.has(key)) state.lastToolCallKey = key;
+    return key;
+  }
+  return state.lastToolCallKey ?? 0;
+}
+
 // Convert OpenAI stream chunk to Claude format
 export function openaiToClaudeResponse(chunk, state) {
   // End of stream (flush). If the upstream ended cleanly ([DONE]) without ever
@@ -118,7 +129,7 @@ export function openaiToClaudeResponse(chunk, state) {
   if (chunk === null) {
     if (!state?.messageStartSent || state.messageStopSent || !state.upstreamDone) return null;
     const results = [];
-    finishMessage(state, results, state.finishReason || "stop");
+    finishMessage(state, results, state.finishReason || "");
     return results;
   }
   if (!chunk || !chunk.choices?.[0]) return null;
@@ -234,7 +245,7 @@ export function openaiToClaudeResponse(chunk, state) {
   // Tool calls
   if (delta?.tool_calls) {
     for (const tc of delta.tool_calls) {
-      const idx = tc.index ?? 0;
+      const idx = toolCallKey(state, tc);
 
       // GLM/fireworks repeats id+null-name on every arg chunk; open block once per idx
       if (tc.id && !state.toolCalls.has(idx)) {

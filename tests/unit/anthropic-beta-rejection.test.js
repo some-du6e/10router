@@ -78,13 +78,13 @@ describe("DefaultExecutor — anthropic-compatible beta rejection", () => {
     expect(sentBeta(fetchMock.mock.calls[0])).toBe("interleaved-thinking-2025-05-14");
   });
 
-  it("does not retry more than once", async () => {
+  it("stops once the 400 names nothing it still sends, but remembers what it learned", async () => {
     fetchMock.mockResolvedValue(res(400, SNOWFLAKE_400));
     const onBetasRejected = vi.fn();
     const out = await exec().execute({ model: "m", body: {}, stream: false, credentials: creds(), onBetasRejected });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(out.response.status).toBe(400);
-    expect(onBetasRejected).not.toHaveBeenCalled();
+    expect(onBetasRejected).toHaveBeenCalledWith(["oauth-2025-04-20", "redact-thinking-2026-02-12"]);
   });
 
   it("leaves other 400s alone", async () => {

@@ -1,7 +1,6 @@
 import { FORMATS } from "../../translator/formats.js";
 import { needsTranslation } from "../../translator/index.js";
-import { fromOpenAIFinish } from "../../translator/concerns/finishReason.js";
-import { CLAUDE_STOP } from "../../translator/schema/index.js";
+import { fromOpenAIFinish, inferToolUseFinish } from "../../translator/concerns/finishReason.js";
 import { ollamaBodyToOpenAI } from "../../translator/response/ollama-to-openai.js";
 import { addBufferToUsage, filterUsageForFormat } from "../../utils/usageTracking.js";
 import { createErrorResult } from "../../utils/error.js";
@@ -53,9 +52,7 @@ function openAICompletionToClaudeMessage(responseBody) {
     role: "assistant",
     model: responseBody.model || "unknown",
     content,
-    // A reply with tool calls is a tool_use turn even when the gateway says
-    // "stop" or sends no finish_reason (Snowflake Cortex, Claude on /chat/completions).
-    stop_reason: message.tool_calls?.length ? CLAUDE_STOP.TOOL_USE : fromOpenAIFinish(choice.finish_reason, FORMATS.CLAUDE),
+    stop_reason: fromOpenAIFinish(inferToolUseFinish(choice.finish_reason, !!message.tool_calls?.length), FORMATS.CLAUDE),
     stop_sequence: null,
     usage: {
       input_tokens: usage.prompt_tokens || usage.input_tokens || 0,

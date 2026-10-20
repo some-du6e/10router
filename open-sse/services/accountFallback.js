@@ -49,6 +49,19 @@ export function checkFallbackError(status, errorText, backoffLevel = 0) {
   return { shouldFallback: true, cooldownMs: TRANSIENT_COOLDOWN_MS };
 }
 
+// Statuses that describe the request, not the account: a different key sees the
+// same body, so locking the key only takes the whole pool down. Text rules (rate
+// limit, quota, ...) still win, since some gateways send those as 400.
+const REQUEST_ERROR_STATUSES = new Set([400, 404, 422]);
+
+export function isRequestError(status, errorText) {
+  if (!REQUEST_ERROR_STATUSES.has(status)) return false;
+  const lowerError = errorText
+    ? (typeof errorText === "string" ? errorText : JSON.stringify(errorText)).toLowerCase()
+    : "";
+  return !ERROR_RULES.some((rule) => rule.text && lowerError.includes(rule.text));
+}
+
 /**
  * Check if account is currently unavailable (cooldown not expired)
  */
