@@ -82,6 +82,7 @@ export function buildRequestDetail(base, overrides = {}) {
     response: base.response || {},
     pxpipe: base.pxpipe || undefined,
     status: base.status || "success",
+    errorClass: base.errorClass || undefined,
     ...overrides
   };
 }

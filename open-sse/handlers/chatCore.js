@@ -9,6 +9,7 @@ import { createRequestLogger } from "../utils/requestLogger.js";
 import { getModelTargetFormat, getModelSupportedFormats, getModelStrip, getModelUpstreamId, getModelType, PROVIDER_ID_TO_ALIAS } from "../config/providerModels.js";
 import { PROVIDERS } from "../config/providers.js";
 import { createErrorResult, parseUpstreamError, formatProviderError } from "../utils/error.js";
+import { classifyError, errorText } from "../utils/errorClass.js";
 import { HTTP_STATUS, getTokenSaverHeader } from "../config/runtimeConfig.js";
 import { handleBypassRequest } from "../utils/bypassHandler.js";
 import { injectLimitHoldNotice } from "../utils/limitHoldNotice.js";
@@ -404,8 +405,12 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Most executors return their registry format. Cursor AgentService is an
   // exception: it is decoded by the executor into OpenAI-compatible output.
   let providerResponseFormat = targetFormat;
+  // When upstream response headers arrived. Upstream-error rows report this as
+  // ttft; 0 means the upstream never answered (network error / connect timeout).
+  let upstreamRespondedAt = 0;
   try {
     const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions });
+    upstreamRespondedAt = Date.now();
     providerResponse = result.response;
     providerUrl = result.url;
     providerHeaders = result.headers;
@@ -414,16 +419,18 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody);
   } catch (error) {
     trackPendingRequest(model, provider, connectionId, false, true);
-    appendRequestLog({ model, provider, connectionId, status: `FAILED ${error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY}` }).catch(() => { });
+    const failStatus = error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY;
+    appendRequestLog({ model, provider, connectionId, status: `FAILED ${failStatus}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
       latency: { ttft: 0, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
       providerRequest: translatedBody || null,
-      response: { error: error.message || String(error), status: error.name === "AbortError" ? 499 : 502, thinking: null },
+      response: { error: error.message || String(error), status: failStatus, thinking: null },
       pxpipe: pxpipeSummary,
-      status: "error"
+      status: "error",
+      errorClass: classifyError(failStatus, errorText(error))
     })).catch(() => { });
 
     if (error.name === "AbortError") {
@@ -461,6 +468,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
         try {
           const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions });
           if (retryResult.response.ok) {
+            upstreamRespondedAt = Date.now();
             providerResponse = retryResult.response;
             providerUrl = retryResult.url;
             providerResponseFormat = retryResult.responseFormat || targetFormat;
@@ -481,13 +489,14 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${statusCode}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
-      latency: { ttft: 0, total: Date.now() - requestStartTime },
+      latency: { ttft: upstreamRespondedAt - requestStartTime, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
       providerRequest: finalBody || translatedBody || null,
       response: { error: message, status: statusCode, thinking: null },
       pxpipe: pxpipeSummary,
-      status: "error"
+      status: "error",
+      errorClass: classifyError(statusCode, message)
     })).catch(() => { });
 
     const errMsg = formatProviderError(new Error(message), provider, model, statusCode);
