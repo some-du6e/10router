@@ -110,6 +110,7 @@ details
 developer_board
 devices
 diagnosis
+dialogs
 diamond
 difference
 directions
@@ -194,7 +195,6 @@ hide
 history
 home
 host
-hourglass_top
 html
 http
 https
@@ -256,6 +256,7 @@ moving
 mp
 music_note
 navigation
+nearby
 neurology
 news
 north
@@ -430,6 +431,7 @@ translate
 travel_explore
 trip
 try
+undo
 update
 upgrade
 upload
@@ -437,6 +439,7 @@ upload_file
 uppercase
 variables
 verified
+view_list
 visibility
 visibility_off
 vpn_key
