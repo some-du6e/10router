@@ -88,6 +88,20 @@ describe("answerClaudeSideSearch", () => {
     expect(search).not.toHaveBeenCalled();
   });
 
+  it("falls through when the search model lookup throws", async () => {
+    const search = vi.fn();
+    const resolveSearchModel = async () => { throw new Error("db down"); };
+    expect(await answerClaudeSideSearch(sideRequest(), { provider: "codex", search, resolveSearchModel })).toBeNull();
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it("returns JSON when stream is omitted", async () => {
+    const response = await answerClaudeSideSearch(sideRequest({ stream: undefined }), {
+      provider: "codex", search: async () => results, resolveSearchModel: async () => "exa",
+    });
+    expect(response.headers.get("content-type")).toBe("application/json");
+  });
+
   it("leaves native Claude upstreams alone", async () => {
     expect(await answerClaudeSideSearch(sideRequest(), { provider: "claude", search: vi.fn() })).toBeNull();
   });

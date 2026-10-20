@@ -196,7 +196,13 @@ export async function answerClaudeSideSearch(body, {
   if (!query) return null;
   const searchRequest = { ...getBuiltinSearchRequest(body), query };
 
-  const searchModel = await resolveSearchModel();
+  let searchModel;
+  try {
+    searchModel = await resolveSearchModel();
+  } catch (error) {
+    log?.warn?.("SEARCH", `Web search side request skipped: model lookup failed: ${error.message}`);
+    return null;
+  }
   if (!searchModel) return null;
 
   let data = null;
@@ -208,5 +214,5 @@ export async function answerClaudeSideSearch(body, {
     log?.warn?.("SEARCH", `Web search side request failed via ${searchModel}: ${error.message}`);
   }
   const message = buildSideSearchMessage(model || body.model, query, data);
-  return sideSearchResponse(message, body.stream !== false);
+  return sideSearchResponse(message, body.stream === true);
 }
