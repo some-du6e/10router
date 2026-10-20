@@ -58,6 +58,17 @@ describe("1. model-not-found 404 (vLLM / Ollama) is not a missing route", () => 
     expect(r.ok).toBe(true);
     expect(r.models).toEqual(["qwen3.8-max"]);
   });
+  it("Snowflake: 'not eligible for this model' and 'is unavailable' are not served", async () => {
+    const { fetchFn } = upstream((m, path, body) => {
+      if (path !== "/v1/chat/completions") return;
+      if (body.model === "llama-4-scout") return [400, { message: "required field 'messages' is zero value." }];
+      if (body.model === "gpt-6.1-sol") return [400, { message: "Due to model provider requirements, this account is not eligible for this model at this time." }];
+      if (body.model === "claude-opus-5-5") return [400, { message: `Model "${body.model}-global" is unavailable` }];
+      return [400, { message: `unknown model "${body.model}"` }];
+    });
+    const r = await detectEndpoint({ url: "https://acct.snowflakecomputing.com/v1", apiKey: KEY, fetchFn, catalog: CATALOG, sleep: noSleep });
+    expect(r.models).toEqual(["llama-4-scout"]);
+  });
 });
 
 describe("2. 5xx is not 'found'", () => {

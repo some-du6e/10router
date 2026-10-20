@@ -448,7 +448,8 @@ export function candidateModels(base: string, catalog: CatalogInput = {}): { mat
 // Error-body fragments that mean "your request reached a real model endpoint".
 const UNKNOWN_MODEL_RE = /unknown model|model[^"]{0,40}(not found|does not exist|not supported|invalid|is not available|not available)|model\s+[\\]?["'`][^"'`]{1,100}[\\]?["'`]\s+(not found|does not exist|is not available)|no such model|invalid model|model_not_found|无可用渠道/i;
 // Known to the endpoint but not usable here.
-const NOT_SERVABLE_RE = /legacy|does not support this endpoint|deprecated model/i;
+// Snowflake Cortex: "not eligible for this model" (account tier), "Model ... is unavailable".
+const NOT_SERVABLE_RE = /legacy|does not support this endpoint|deprecated model|not eligible for this model|model\b.{0,120}?\bis unavailable/i;
 const CLIENT_GATE_RE = /unauthorized client|client (is )?not allowed|unsupported client/i;
 // Auth complaints, including the ones sent as 400 (Gemini: API_KEY_INVALID).
 const AUTH_MSG_RE = /unauthori[sz]ed|invalid[ _-](api[ _-]?)?key|api[ _-]?key[^"]{0,20}(not valid|invalid|expired|revoked|missing|required)|incorrect api key|API_KEY_INVALID|authentication|invalid[_ ]token|access token|permission[_ ]denied|forbidden/i;

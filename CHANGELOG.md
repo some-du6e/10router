@@ -1,6 +1,9 @@
 # Unreleased
 
 ## Fixes
+- Requests that leave out `stream` now get plain JSON back when the upstream answers with JSON (Anthropic-style APIs, Snowflake Cortex), instead of that JSON followed by a stray `data: [DONE]`.
+- Endpoint detection no longer lists models the account can't use ("not eligible for this model", "Model ... is unavailable").
+- `npm run dev` uses webpack, so TypeScript modules imported as `@/foo.js` resolve the same way they do in the build.
 - **Faster web search on non-Claude models**: Claude Code's WebSearch tool sends each search as a separate request. When that request targets a non-Claude model, 10router now answers it straight from the configured search provider instead of sending it to the model to summarize. In testing with Claude Code on `cx/gpt-5.6-luna`, that step dropped from 9–62s to under 3s. The search model lookup and repeated queries are cached for a short time, and `max_uses` is no longer read as a result count.
 - **Wait out rate limits**: combos now wait too. Once every model in a combo is rate-limited, the whole combo waits and retries, and the first model to recover answers. Fusion combos wait when no panel model could answer. Before, hold never ran for combo traffic.
 - Wait on a 429 from providers that need no login. They have no account to rotate to, so the error used to come straight back.
@@ -13,6 +16,7 @@
 - Remove the IDE MITM proxy, certificate and DNS interception, dashboard controls, API routes, startup hooks, and CLI/Docker packaging. Upgrade cleanup stops old proxy processes and removes their loopback hosts entries. Tailscale keeps independent encrypted elevation credentials for reboot recovery.
 
 ## Features
+- **Several endpoints under one custom provider**: a key on an OpenAI- or Anthropic-compatible provider can now have its own endpoint URL, for when the same models live on another account or region (two Snowflake accounts, say). Requests to `prefix/model` fail over between the keys, and so between the endpoints. Editing the provider's URL leaves those keys' URLs alone, and the key list shows each one's host.
 - **Codex account limits**: automatically stop client reconnects when every usable account and fallback model has exhausted its limits. Account/model fallback and explicit rate-limit waiting still run first; temporary provider failures and interrupted streams keep normal retries.
 - Show a short account-limit message with the earliest known provider reset, stored separately from retry cooldowns. Omit unknown reset times and keep per-account details in server logs.
 - **Request inspector**: browse system prompts, assistant messages, tool calls and results with role filters, search, tool definitions, and text/Markdown/JSON views. The recorded assistant response appears in the conversation; provider payloads live in a collapsed Debug section. Large new request logs retain a structured preview within the configured storage limit.
