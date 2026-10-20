@@ -52,7 +52,9 @@ function openAICompletionToClaudeMessage(responseBody) {
     role: "assistant",
     model: responseBody.model || "unknown",
     content,
-    stop_reason: fromOpenAIFinish(choice.finish_reason, FORMATS.CLAUDE),
+    // A reply with tool calls is a tool_use turn even when the gateway says
+    // "stop" or sends no finish_reason (Snowflake Cortex, Claude on /chat/completions).
+    stop_reason: message.tool_calls?.length ? fromOpenAIFinish("tool_calls", FORMATS.CLAUDE) : fromOpenAIFinish(choice.finish_reason, FORMATS.CLAUDE),
     stop_sequence: null,
     usage: {
       input_tokens: usage.prompt_tokens || usage.input_tokens || 0,
