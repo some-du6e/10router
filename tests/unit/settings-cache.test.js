@@ -78,6 +78,16 @@ describe("cached getSettings", () => {
     expect((await getSettings()).requireApiKey).toBe(true);
   });
 
+  it("invalidates every bundled copy of the settings repo", async () => {
+    // Next.js gives the middleware and route handlers separate module copies.
+    vi.resetModules();
+    const other = await import("../../src/lib/db/repos/settingsRepo.js");
+    await updateSettings({ requireLogin: false });
+    expect((await other.getSettings()).requireLogin).toBe(false);
+    await updateSettings({ requireLogin: true });
+    expect((await other.getSettings()).requireLogin).toBe(true);
+  });
+
   it("does not let a read started before an update cache stale settings", async () => {
     await updateSettings({ requireApiKey: false });
     const inFlight = getSettings();

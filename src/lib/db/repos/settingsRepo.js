@@ -10,14 +10,16 @@ const DEFAULT_HEADROOM_URL = process.env.HEADROOM_URL || "http://localhost:8787"
 // the global account-selection mutex. Cache the merged result briefly.
 const SETTINGS_CACHE_TTL_MS = 5000;
 
-let cachedSettings = null;
-let cachedSettingsTs = 0;
-let cacheGeneration = 0;
+// Kept on global so the middleware bundle and the route-handler bundle, which
+// each get their own copy of this module, share one cache: a save in a route
+// must reach the copy proxy.js reads requireLogin from.
+if (!global._settingsCache) global._settingsCache = { value: null, ts: 0, generation: 0 };
+const cache = global._settingsCache;
 
 export function invalidateSettingsCache() {
-  cacheGeneration += 1;
-  cachedSettings = null;
-  cachedSettingsTs = 0;
+  cache.generation += 1;
+  cache.value = null;
+  cache.ts = 0;
 }
 
 const DEFAULT_SETTINGS = {
@@ -122,15 +124,15 @@ export function mergeWithDefaults(raw) {
 export async function getSettings() {
   // Callers get a deep copy so a stray assignment, even into a nested object
   // like providerStrategies, can't leak into the cache.
-  if (cachedSettings && (Date.now() - cachedSettingsTs) < SETTINGS_CACHE_TTL_MS) {
-    return structuredClone(cachedSettings);
+  if (cache.value && (Date.now() - cache.ts) < SETTINGS_CACHE_TTL_MS) {
+    return structuredClone(cache.value);
   }
   // A read that started before an invalidation must not cache stale settings.
-  const startGeneration = cacheGeneration;
+  const startGeneration = cache.generation;
   const settings = mergeWithDefaults(await readRaw());
-  if (startGeneration === cacheGeneration) {
-    cachedSettings = settings;
-    cachedSettingsTs = Date.now();
+  if (startGeneration === cache.generation) {
+    cache.value = settings;
+    cache.ts = Date.now();
   }
   return structuredClone(settings);
 }
