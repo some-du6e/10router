@@ -62,10 +62,10 @@ export function fromOpenAIFinish(reason, format) {
   }
 }
 
-// A turn that emitted tool calls but whose finish_reason is missing, "" or
-// "stop" (Snowflake Cortex serving Claude on /chat/completions) is a tool_use
-// turn. "length" / "content_filter" are not: the call may be cut off.
+// A turn that emitted tool calls is a tool_use turn whatever the upstream calls
+// it (missing, "stop" from Snowflake Cortex, a passed-through "tool_use", legacy
+// "function_call"), except "length" / "content_filter": the call may be cut off.
 export function inferToolUseFinish(reason, hasToolCalls) {
   if (!hasToolCalls) return reason;
-  return !reason || reason === OPENAI_FINISH.STOP ? OPENAI_FINISH.TOOL_CALLS : reason;
+  return reason === OPENAI_FINISH.LENGTH || reason === OPENAI_FINISH.CONTENT_FILTER ? reason : OPENAI_FINISH.TOOL_CALLS;
 }

@@ -53,9 +53,13 @@ export function checkFallbackError(status, errorText, backoffLevel = 0) {
 // same body, so locking the key only takes the whole pool down. Text rules (rate
 // limit, quota, ...) still win, since some gateways send those as 400.
 const REQUEST_ERROR_STATUSES = new Set([400, 404, 422]);
-// ...except a bad key some upstreams report as 400 (Gemini: "API key not valid",
-// API_KEY_INVALID). That one is about the account, so it still gets locked.
-const BAD_KEY_TEXTS = ["api key not valid", "api_key_invalid", "invalid api key", "invalid_api_key", "invalid x-api-key"];
+// ...except errors about the account some upstreams send as 400: a bad key
+// (Gemini: "API key not valid", API_KEY_INVALID) or no money left (Anthropic:
+// "Your credit balance is too low"; Cursor usage limits). Those still lock.
+const BAD_KEY_TEXTS = [
+  "api key not valid", "api_key_invalid", "invalid api key", "invalid_api_key", "invalid x-api-key",
+  "credit balance", "insufficient_quota", "insufficient balance", "billing", "usage limit",
+];
 
 export function isRequestError(status, errorText) {
   if (!REQUEST_ERROR_STATUSES.has(status)) return false;

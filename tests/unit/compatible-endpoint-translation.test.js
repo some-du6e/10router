@@ -90,3 +90,18 @@ describe("claude -> openai request", () => {
     expect(after.content).toEqual([{ type: "image_url", image_url: { url: "data:image/png;base64,QUJD" } }]);
   });
 });
+
+describe("fixMissingToolResponses", async () => {
+  const { fixMissingToolResponses } = await import("../../open-sse/translator/concerns/toolCall.js");
+  const call = { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "Read", arguments: "{}" } }] };
+  it("stubs results when the conversation ends on a system message after tool calls", () => {
+    const body = { messages: [{ role: "user", content: "hi" }, call, { role: "system", content: "note" }] };
+    fixMissingToolResponses(body);
+    expect(body.messages.some((m) => m.role === "tool" && m.tool_call_id === "c1")).toBe(true);
+  });
+  it("adds nothing when the tool result follows a system message", () => {
+    const body = { messages: [call, { role: "system", content: "note" }, { role: "tool", tool_call_id: "c1", content: "ok" }] };
+    fixMissingToolResponses(body);
+    expect(body.messages.filter((m) => m.role === "tool")).toHaveLength(1);
+  });
+});

@@ -66,6 +66,13 @@ describe("openaiToClaudeResponse finish mapping", () => {
     expect(stopReason(events)).toBe("max_tokens");
   });
 
+  it("reads a passed-through tool_use or legacy function_call as tool_use", () => {
+    for (const finish_reason of ["tool_use", "function_call"]) {
+      const s = state();
+      expect(stopReason(run(s, [...TOOL_CHUNKS, chunk({}, { finish_reason })]))).toBe("tool_use");
+    }
+  });
+
   it("keeps parallel tool calls apart when deltas carry no index", () => {
     const s = state();
     const events = run(s, [

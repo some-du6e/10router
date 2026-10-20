@@ -139,7 +139,8 @@ export function fixMissingToolResponses(body) {
     if (toolCallIds.length === 0) continue;
 
     // Check if next message has tool_result
-    if (nextMsg && !hasToolResults(nextMsg, toolCallIds)) {
+    // Trailing system messages with nothing after them still need stubs.
+    if ((nextMsg || j > i + 1) && !(nextMsg && hasToolResults(nextMsg, toolCallIds))) {
       // Insert tool responses for each tool_call
       for (const id of toolCallIds) {
         // OpenAI format: role = "tool"

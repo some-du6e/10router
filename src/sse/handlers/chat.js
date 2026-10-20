@@ -591,6 +591,9 @@ async function routeSingleModelChat(body, modelStr, clientRawRequest, request, a
     // the pool "unavailable" for everyone else.
     if (isRequestError(result.status, result.error)) {
       log.warn("AUTH", `${credentials.connectionName} request error [${result.status}], not locking`);
+      // No-auth providers hand back the same virtual connection whatever is
+      // excluded, so "try the next key" would resend the same request forever.
+      if (credentials.id === "noauth") shouldFallback = false;
     } else if (!(provider === "antigravity" && quotaResetMs)) {
       ({ shouldFallback, cooldownMs } = await markAccountUnavailable(
         credentials.connectionId, result.status, result.error, provider, model, resetsAtMs
