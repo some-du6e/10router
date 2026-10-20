@@ -8,7 +8,7 @@ const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "10router-settings-cache-"
 process.env.DATA_DIR = dataDir;
 vi.resetModules();
 
-const { getSettings, updateSettings } = await import("../../src/lib/db/index.js");
+const { exportDb, getSettings, importDb, updateSettings } = await import("../../src/lib/db/index.js");
 const { getAdapter } = await import("../../src/lib/db/driver.js");
 
 // Write straight to the row, bypassing updateSettings and its invalidation.
@@ -67,6 +67,14 @@ describe("cached getSettings", () => {
     expect((await getSettings()).requireApiKey).toBe(false);
 
     vi.advanceTimersByTime(1500);
+    expect((await getSettings()).requireApiKey).toBe(true);
+  });
+
+  it("sees an importDb restore immediately", async () => {
+    await updateSettings({ requireApiKey: false });
+    await getSettings();
+    const snapshot = await exportDb();
+    await importDb({ ...snapshot, settings: { ...snapshot.settings, requireApiKey: true } });
     expect((await getSettings()).requireApiKey).toBe(true);
   });
 
