@@ -22,12 +22,12 @@ import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActi
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { isRequestError } from "open-sse/services/accountFallback.js";
-import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
+import { detectFormatByEndpoint, FORMATS } from "open-sse/translator/formats.js";
 import { detectFormat } from "open-sse/services/provider.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
-import { enrichClaudeBuiltinSearch } from "../services/claudeBuiltinSearch.js";
+import { answerClaudeSideSearch, enrichClaudeBuiltinSearch } from "../services/claudeBuiltinSearch.js";
 import { summarizeAccountFailures } from "../services/accountFailureSummary.js";
 import {
   isAffinityProvider,
@@ -418,6 +418,11 @@ async function routeSingleModelChat(body, modelStr, clientRawRequest, request, a
   }
 
   const { provider, model } = modelInfo;
+
+  if ((sourceFormatOverride || detectFormat(body)) === FORMATS.CLAUDE) {
+    const sideSearch = await answerClaudeSideSearch(body, { provider, model: body.model, request, apiKey, log });
+    if (sideSearch) return sideSearch;
+  }
 
   body = await enrichClaudeBuiltinSearch(body, { provider, request, apiKey, log });
 

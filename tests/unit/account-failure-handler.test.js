@@ -52,6 +52,7 @@ vi.mock("@/sse/services/tokenRefresh.js", () => ({
 vi.mock("open-sse/services/projectId.js", () => ({ getProjectIdForConnection: vi.fn() }));
 vi.mock("@/sse/services/claudeBuiltinSearch.js", () => ({
   enrichClaudeBuiltinSearch: vi.fn(async (body) => body),
+  answerClaudeSideSearch: vi.fn(async () => null),
 }));
 
 const { handleChat } = await import("../../src/sse/handlers/chat.js");

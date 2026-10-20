@@ -80,6 +80,12 @@ const nextConfig = {
         path: false,
       };
     }
+    // TypeScript files are imported with a .js specifier (see AGENTS.md), which
+    // webpack only maps onto the .ts source when told to.
+    config.resolve.extensionAlias = {
+      ...config.resolve.extensionAlias,
+      ".js": [".ts", ".tsx", ".js"],
+    };
     // Exclude non-source dirs from watcher to reduce inotify load
     config.watchOptions = {
       ...config.watchOptions,
