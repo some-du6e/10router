@@ -1,7 +1,9 @@
 # Unreleased
 
 ## Fixes
-- Requests that leave out `stream` now get plain JSON back when the upstream answers with JSON (Anthropic-style APIs, Snowflake Cortex), instead of that JSON followed by a stray `data: [DONE]`.
+- Requests that leave out `stream` now get plain JSON back when the upstream answers with JSON (Anthropic-style APIs, Snowflake Cortex), instead of that JSON followed by a stray `data: [DONE]`. Clients that ask to stream get the finished reply replayed as SSE in their own format (OpenAI, Claude, Responses).
+- **Tool calls no longer dropped on OpenAI-style paths**: when an upstream ends a Chat Completions stream without `finish_reason` (Snowflake serving Claude), the reply to Claude clients now closes properly and reports `tool_use`, so Claude Code runs the tool instead of seeing a cut-off turn.
+- Endpoint detection's api-key header result is now saved as the endpoint's api-key quirk.
 - Endpoint detection no longer lists models the account can't use ("not eligible for this model", "Model ... is unavailable").
 - `npm run dev` uses webpack, so TypeScript modules imported as `@/foo.js` resolve the same way they do in the build.
 - **Faster web search on non-Claude models**: Claude Code's WebSearch tool sends each search as a separate request. When that request targets a non-Claude model, 10router now answers it straight from the configured search provider instead of sending it to the model to summarize. In testing with Claude Code on `cx/gpt-5.6-luna`, that step dropped from 9–62s to under 3s. The search model lookup and repeated queries are cached for a short time, and `max_uses` is no longer read as a result count.
@@ -16,7 +18,10 @@
 - Remove the IDE MITM proxy, certificate and DNS interception, dashboard controls, API routes, startup hooks, and CLI/Docker packaging. Upgrade cleanup stops old proxy processes and removes their loopback hosts entries. Tailscale keeps independent encrypted elevation credentials for reboot recovery.
 
 ## Features
-- **Several endpoints under one custom provider**: a key on an OpenAI- or Anthropic-compatible provider can now have its own endpoint URL, for when the same models live on another account or region (two Snowflake accounts, say). Requests to `prefix/model` fail over between the keys, and so between the endpoints. Editing the provider's URL leaves those keys' URLs alone, and the key list shows each one's host.
+- **Add endpoint**: one button on the providers page adds an OpenAI- or Anthropic-compatible endpoint from a URL and key. 10router detects the API with free requests only (no generation), checks the key, and finds models from `/models` or, when there is none (Snowflake Cortex), from the models.dev catalog. Import models uses the same discovery. Custom endpoints now sit right after OpenRouter.
+- **Two-path endpoints**: an endpoint that answers on both Anthropic Messages and an OpenAI API stays one provider, and each model goes to its best API (Claude on Messages, the rest on Responses or Chat).
+- **Beta flags**: when an Anthropic-compatible endpoint rejects `anthropic-beta` values, 10router drops exactly those, retries once, and remembers them for that key and endpoint. The endpoint page's Advanced card toggles these quirks.
+- **Several endpoints under one custom provider**: a key on an OpenAI- or Anthropic-compatible provider can now have its own endpoint URL, for when the same models live on another account or region (two Snowflake accounts, say). Requests to `prefix/model` fail over between the keys, and so between the endpoints. Editing the provider's URL leaves those keys' URLs alone, and the key list shows each one's host. Per-key URLs go through the same private-network checks as the provider URL.
 - **Codex account limits**: automatically stop client reconnects when every usable account and fallback model has exhausted its limits. Account/model fallback and explicit rate-limit waiting still run first; temporary provider failures and interrupted streams keep normal retries.
 - Show a short account-limit message with the earliest known provider reset, stored separately from retry cooldowns. Omit unknown reset times and keep per-account details in server logs.
 - **Request inspector**: browse system prompts, assistant messages, tool calls and results with role filters, search, tool definitions, and text/Markdown/JSON views. The recorded assistant response appears in the conversation; provider payloads live in a collapsed Debug section. Large new request logs retain a structured preview within the configured storage limit.
