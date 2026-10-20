@@ -15,7 +15,7 @@ vi.mock("@/lib/network/connectionProxy", () => ({
 }));
 vi.mock("@/shared/constants/providers.js", () => ({
   FREE_PROVIDERS: {},
-  resolveProviderId: (provider) => provider,
+  resolveProviderId: (provider) => (provider === "kc" ? "kilocode" : provider),
 }));
 vi.mock("@/sse/utils/logger.js", () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn() }));
 
@@ -84,5 +84,48 @@ describe("account selection lock", () => {
     await expect(getProviderCredentials("openai")).rejects.toThrow("db down");
     dbMocks.getProviderConnections.mockResolvedValueOnce([{ id: "openai-b", provider: "openai", isActive: true }]);
     await expect(getProviderCredentials("openai")).resolves.toMatchObject({ connectionId: "openai-b" });
+  });
+
+  it("makes an alias share its provider's lock", async () => {
+    const viaAlias = getProviderCredentials("kc");
+    const direct = getProviderCredentials("kilocode");
+    await flush();
+    expect(gates.get("kilocode")).toHaveLength(1);
+    release("kilocode");
+    await flush();
+    release("kilocode");
+    await Promise.all([viaAlias, direct]);
+    expect(maxInside.get("kilocode")).toBe(1);
+  });
+
+  it("keeps a late caller queued behind picks that are still waiting", async () => {
+    const first = getProviderCredentials("openai");
+    const second = getProviderCredentials("openai");
+    await flush();
+    release("openai");
+    await first;
+    // second now holds the lock; a caller arriving now must wait for it
+    const third = getProviderCredentials("openai");
+    await flush();
+    expect(gates.get("openai")).toHaveLength(1);
+    release("openai");
+    await second;
+    await flush();
+    release("openai");
+    await third;
+    expect(maxInside.get("openai")).toBe(1);
+  });
+
+  it("releases a caller queued behind a pick that throws", async () => {
+    let fail;
+    dbMocks.getProviderConnections.mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }));
+    const failing = getProviderCredentials("openai");
+    const queued = getProviderCredentials("openai");
+    await flush();
+    fail(new Error("db down"));
+    await expect(failing).rejects.toThrow("db down");
+    await flush();
+    release("openai");
+    await expect(queued).resolves.toMatchObject({ connectionId: "openai-a" });
   });
 });
