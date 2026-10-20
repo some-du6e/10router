@@ -163,36 +163,98 @@ export function getConversation(request, response) {
   return conversation;
 }
 
+const PREVIEW_PRESERVE_KEYS = new Set([
+  "role",
+  "type",
+  "name",
+  "id",
+  "call_id",
+  "tool_call_id",
+  "tool_use_id",
+]);
+const TRUNCATED_SUFFIX = "\n[Content truncated]";
+
+function shortenPreview(item, limit, key = "") {
+  if (typeof item === "string")
+    return PREVIEW_PRESERVE_KEYS.has(key) || item.length <= limit
+      ? item
+      : `${item.slice(0, limit)}${TRUNCATED_SUFFIX}`;
+  if (Array.isArray(item)) return item.map((child) => shortenPreview(child, limit));
+  if (item && typeof item === "object")
+    return Object.fromEntries(
+      Object.entries(item).map(([k, child]) => [k, shortenPreview(child, limit, k)]),
+    );
+  return item;
+}
+
+function isOmitted(value) {
+  return value === undefined || typeof value === "function" || typeof value === "symbol";
+}
+
+// Serialized length of shortenPreview(value, limit) for every limit in one walk,
+// without building the copies. Returns null (fully over budget), the sizes
+// array, or undefined when the value holds something only the slow path handles.
+export function measurePreviewSizes(value, limits, maxSize) {
+  const sizes = new Array(limits.length).fill(0);
+  let unsupported = false;
+  const addAll = (n) => { for (let k = 0; k < sizes.length; k++) sizes[k] += n; };
+  const overBudget = () => sizes.every((size) => size > maxSize);
+  const walk = (item, key) => {
+    if (unsupported || overBudget()) return;
+    if (typeof item === "string") {
+      if (PREVIEW_PRESERVE_KEYS.has(key)) return addAll(JSON.stringify(item).length);
+      let full = -1;
+      for (let k = 0; k < limits.length; k++) {
+        if (item.length <= limits[k]) {
+          if (full < 0) full = JSON.stringify(item).length;
+          sizes[k] += full;
+        } else {
+          sizes[k] += JSON.stringify(`${item.slice(0, limits[k])}${TRUNCATED_SUFFIX}`).length;
+        }
+      }
+      return;
+    }
+    if (item === null || typeof item === "number" || typeof item === "boolean")
+      return addAll(JSON.stringify(item).length);
+    if (Array.isArray(item)) {
+      addAll(2 + Math.max(0, item.length - 1));
+      for (let i = 0; i < item.length; i++) {
+        if (isOmitted(item[i])) addAll(4);
+        else walk(item[i], "");
+      }
+      return;
+    }
+    const proto = item && typeof item === "object" ? Object.getPrototypeOf(item) : undefined;
+    if (proto !== Object.prototype && proto !== null) { unsupported = true; return; }
+    const entries = Object.entries(item).filter(([, child]) => !isOmitted(child));
+    addAll(2 + Math.max(0, entries.length - 1));
+    for (const [k, child] of entries) {
+      if (k === "toJSON") { unsupported = true; return; }
+      addAll(JSON.stringify(k).length + 1);
+      walk(child, k);
+    }
+  };
+  walk(value, "");
+  if (unsupported) return undefined;
+  return overBudget() ? null : sizes;
+}
+
 // Retain JSON structure within the existing storage budget, instead of cutting
 // a JSON string mid-message. Small identity fields stay intact for navigation.
 export function structuredPreview(value, maxSize) {
-  const preserve = new Set([
-    "role",
-    "type",
-    "name",
-    "id",
-    "call_id",
-    "tool_call_id",
-    "tool_use_id",
-  ]);
-  const shorten = (item, limit, key = "") => {
-    if (typeof item === "string")
-      return preserve.has(key) || item.length <= limit
-        ? item
-        : `${item.slice(0, limit)}\n[Content truncated]`;
-    if (Array.isArray(item)) return item.map((child) => shorten(child, limit));
-    if (item && typeof item === "object")
-      return Object.fromEntries(
-        Object.entries(item).map(([k, child]) => [k, shorten(child, limit, k)]),
-      );
-    return item;
-  };
-  for (
-    let limit = Math.min(maxSize, 8192);
-    limit >= 32;
-    limit = Math.floor(limit / 2)
-  ) {
-    const preview = shorten(value, limit);
+  const limits = [];
+  for (let limit = Math.min(maxSize, 8192); limit >= 32; limit = Math.floor(limit / 2))
+    limits.push(limit);
+  // Measure first so large bodies are not deep-copied and re-serialized once per limit.
+  const sizes = measurePreviewSizes(value, limits, maxSize);
+  if (sizes === null) return null;
+  if (sizes) {
+    const k = sizes.findIndex((size) => size <= maxSize);
+    const preview = shortenPreview(value, limits[k]);
+    if (JSON.stringify(preview).length === sizes[k]) return preview;
+  }
+  for (const limit of limits) {
+    const preview = shortenPreview(value, limit);
     if (JSON.stringify(preview).length <= maxSize) return preview;
   }
   return null;
