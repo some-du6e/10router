@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { __test__ } from "../../src/lib/db/repos/requestDetailsRepo.js";
-import { measurePreviewSizes, structuredPreview } from "../../src/shared/utils/requestConversation.js";
+import { __test__ as conversationTest, structuredPreview } from "../../src/shared/utils/requestConversation.js";
 
 const { truncateField, prettyJsonPrefix } = __test__;
+const { measurePreviewSizes } = conversationTest;
 
 // The implementation before the single-stringify change, kept as the reference output.
 function legacyStructuredPreview(value, maxSize) {
@@ -172,5 +173,34 @@ describe("requestDetails truncateField", () => {
     expect(stored._truncated).toBe(true);
     expect(onBody).toBe(1);
     expect(fullSize).toBe(1);
+  });
+
+  it("measures strings exactly at each limit and one either side", () => {
+    const limits = [8192, 4096, 1024, 256, 32];
+    for (const limit of limits) {
+      for (const len of [limit - 1, limit, limit + 1]) {
+        const value = { messages: [{ role: "user", content: "z".repeat(len) }] };
+        expect(measurePreviewSizes(value, limits, Infinity)).toEqual(
+          limits.map((l) => JSON.stringify(legacyShorten(value, l)).length),
+        );
+      }
+    }
+  });
+
+  it("builds one candidate preview, not one per limit", () => {
+    // Few huge strings: fits only at a small limit, so the old loop tried several.
+    const body = { model: "m", messages: Array.from({ length: 4 }, (_, i) => ({ role: "user", content: `${i}`.repeat(75e3) })) };
+    const real = JSON.stringify;
+    let large = 0;
+    vi.spyOn(JSON, "stringify").mockImplementation(function (value, ...rest) {
+      const out = real.call(JSON, value, ...rest);
+      // Count whole candidate previews, not the per-string measuring calls.
+      if (value && typeof value === "object" && !Array.isArray(value) && "messages" in value) large++;
+      return out;
+    });
+    const preview = structuredPreview(body, 5 * 1024);
+    JSON.stringify.mockRestore();
+    expect(preview).not.toBeNull();
+    expect(large).toBe(1);
   });
 });

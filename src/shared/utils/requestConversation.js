@@ -194,7 +194,7 @@ function isOmitted(value) {
 // Serialized length of shortenPreview(value, limit) for every limit in one walk,
 // without building the copies. Returns null (fully over budget), the sizes
 // array, or undefined when the value holds something only the slow path handles.
-export function measurePreviewSizes(value, limits, maxSize) {
+function measurePreviewSizes(value, limits, maxSize) {
   const sizes = new Array(limits.length).fill(0);
   let unsupported = false;
   const addAll = (n) => { for (let k = 0; k < sizes.length; k++) sizes[k] += n; };
@@ -259,3 +259,5 @@ export function structuredPreview(value, maxSize) {
   }
   return null;
 }
+
+export const __test__ = { measurePreviewSizes };
