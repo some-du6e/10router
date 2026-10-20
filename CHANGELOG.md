@@ -1,6 +1,7 @@
 # Unreleased
 
 ## Fixes
+- **Faster web search on non-Claude models**: Claude Code's WebSearch tool sends each search as a separate request. When that request targets a non-Claude model, 10router now answers it straight from the configured search provider instead of sending it to the model to summarize. In testing with Claude Code on `cx/gpt-5.6-luna`, that step dropped from 9–62s to under 3s. The search model lookup and repeated queries are cached for a short time, and `max_uses` is no longer read as a result count.
 - **Wait out rate limits**: combos now wait too. Once every model in a combo is rate-limited, the whole combo waits and retries, and the first model to recover answers. Fusion combos wait when no panel model could answer. Before, hold never ran for combo traffic.
 - Wait on a 429 from providers that need no login. They have no account to rotate to, so the error used to come straight back.
 - Wait when every account fails on a rate limit in the same pass, not only when their locks were already recorded.
