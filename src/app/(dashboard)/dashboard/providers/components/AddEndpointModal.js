@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import PropTypes from "prop-types";
 import { Badge, Button, Input, Modal, Toggle } from "@/shared/components";
-import { makePrefix, suggestName, normalizeUrl } from "@/lib/endpointDetect.js";
+import { makePrefix, suggestName, normalizeUrl, cleanKey } from "@/lib/endpointDetect.js";
 import { RESERVED_PREFIXES, isReservedPrefix } from "@/shared/utils/reservedPrefixes.js";
 
 const PROTOCOLS = {
@@ -280,7 +280,7 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             provider: node.id,
-            apiKey: apiKey.trim().replace(/^Bearer\s+/i, ""),
+            apiKey: cleanKey(apiKey),
             defaultModel: models[0] || null,
             testStatus: verified ? "active" : "unknown",
           }),

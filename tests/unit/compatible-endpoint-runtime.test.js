@@ -136,4 +136,8 @@ describe("isRequestError", () => {
     expect(isRequestError(403, "")).toBe(false);
     expect(isRequestError(429, "")).toBe(false);
   });
+  it("still locks a key the upstream reports as invalid with a 400 (Gemini)", () => {
+    expect(isRequestError(400, '{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT","details":[{"reason":"API_KEY_INVALID"}]}}')).toBe(false);
+    expect(isRequestError(400, { error: { code: "invalid_api_key" } })).toBe(false);
+  });
 });

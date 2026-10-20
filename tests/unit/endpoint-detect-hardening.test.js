@@ -6,6 +6,13 @@ import dns from "node:dns";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { normalizeUrl, cleanKey, makeRedactor, joinUrl, parseModelList, suggestName, detectEndpoint, discoverModels, candidateModels, recentLabModels } from "@/lib/endpointDetect.js";
 import { makeProbeFetch } from "@/lib/probeFetch.js";
+import * as guard from "@/shared/utils/ssrfGuard.js";
+
+// Real guard by default; the pinning test lets one fake public host through.
+vi.mock("@/shared/utils/ssrfGuard.js", async (importActual) => {
+  const real = await importActual();
+  return { ...real, assertPublicUrl: vi.fn(real.assertPublicUrl), assertPublicUrlResolved: vi.fn(real.assertPublicUrlResolved) };
+});
 
 const KEY = "sk-test-0123456789abcdef";
 const noSleep = async () => {};
@@ -281,16 +288,20 @@ describe("9. probeFetch pins the checked address (DNS rebinding)", () => {
     const server = http.createServer((req, res) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ host: req.headers.host })); });
     await new Promise((r) => server.listen(0, "127.0.0.1", r));
     const { port } = server.address();
+    // pinned.invalid can never resolve for real, so reaching the server proves
+    // the connect used the pinned lookup. The guard is waved through because the
+    // only server a test can reach is on loopback.
+    guard.assertPublicUrl.mockImplementation(() => {});
+    guard.assertPublicUrlResolved.mockImplementation(async () => {});
     try {
-      // Checked as public; pinned lookup then hands the connect the same list.
-      // We can only connect locally, so the "public" answer is the loopback server and the guard is stubbed.
-      const guard = await import("@/shared/utils/ssrfGuard.js");
-      expect(typeof guard.assertPublicUrl).toBe("function");
       const lookups = vi.spyOn(dns.promises, "lookup").mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
-      // Local caller (no guard) path still works end to end against a real socket.
-      const res = await makeProbeFetch(false)(`http://127.0.0.1:${port}/v1/models`, { method: "GET" });
-      expect((await res.json()).host).toBe(`127.0.0.1:${port}`);
-      expect(lookups).not.toHaveBeenCalled();
-    } finally { server.close(); }
+      const res = await makeProbeFetch(true)(`http://pinned.invalid:${port}/v1/models`, { method: "GET" });
+      expect((await res.json()).host).toBe(`pinned.invalid:${port}`);
+      expect(lookups).toHaveBeenCalledWith("pinned.invalid", { all: true, verbatim: true });
+    } finally {
+      guard.assertPublicUrl.mockReset();
+      guard.assertPublicUrlResolved.mockReset();
+      server.close();
+    }
   });
 });
