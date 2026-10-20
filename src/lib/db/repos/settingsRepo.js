@@ -120,9 +120,10 @@ export function mergeWithDefaults(raw) {
 }
 
 export async function getSettings() {
-  // Callers get a shallow copy so a stray assignment can't leak into the cache.
+  // Callers get a deep copy so a stray assignment, even into a nested object
+  // like providerStrategies, can't leak into the cache.
   if (cachedSettings && (Date.now() - cachedSettingsTs) < SETTINGS_CACHE_TTL_MS) {
-    return { ...cachedSettings };
+    return structuredClone(cachedSettings);
   }
   // A read that started before an invalidation must not cache stale settings.
   const startGeneration = cacheGeneration;
@@ -131,7 +132,7 @@ export async function getSettings() {
     cachedSettings = settings;
     cachedSettingsTs = Date.now();
   }
-  return { ...settings };
+  return structuredClone(settings);
 }
 
 // Atomic read-merge-write inside transaction (prevents losing concurrent updates)
