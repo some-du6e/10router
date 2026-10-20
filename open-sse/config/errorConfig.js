@@ -83,3 +83,14 @@ export const COOLDOWN_MS = {
   transient: TRANSIENT_COOLDOWN_MS,
   requestNotAllowed: COOLDOWN.short,
 };
+
+// Failure buckets recorded on requestDetails rows (errorClass) so failures can be
+// told apart from the DB without parsing provider error text.
+export const ERROR_CLASS = {
+  AUTH_LOCKED: "auth_locked",
+  RATE_LIMITED: "rate_limited",
+  UPSTREAM_5XX: "upstream_5xx",
+  TIMEOUT: "timeout",
+  CLIENT_ERROR: "client_error",
+  OTHER: "other",
+};
