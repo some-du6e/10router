@@ -86,12 +86,18 @@ export async function GET() {
 
 const nodeQuirksOf = (node) => Object.fromEntries(QUIRK_KEYS.filter((k) => node[k] !== undefined).map((k) => [k, node[k]]));
 
-// Unnamed provider keys display as e.g. "pat-…7f2a".
+// Unnamed provider keys display as e.g. "pat-…7f2a". The masked value is shown
+// in the dashboard, so it never reveals more than a third of the key: short
+// keys (self-hosted vLLM, LM Studio) show only a recognisable prefix like "sk-".
 function maskApiKey(key) {
   const k = String(key);
   const dash = k.indexOf("-");
-  const head = k.slice(0, dash > 0 && dash < 6 ? dash + 1 : Math.min(4, Math.max(0, k.length - 4)));
-  return `${head}…${k.slice(-4)}`;
+  const head = dash > 0 && dash < 5 ? k.slice(0, dash + 1) : "";
+  if (k.length < 12) return `${head || "key"}…`;
+  // A 4-char tail, plus the head only while both stay within a third of the key.
+  const tail = k.slice(-4);
+  const shown = head && head.length + tail.length <= k.length / 3 ? head : "key";
+  return `${shown}…${tail}`;
 }
 
 // POST /api/providers - Create new connection (API Key only, OAuth via separate flow)

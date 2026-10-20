@@ -53,7 +53,9 @@ export async function GET(request, { params }) {
       fetchFn: makeProbeFetch(remote),
       catalog: await getEndpointCatalog(),
     });
-    if (result.routes) await saveRoutes(connection.provider, protocol, result.routes);
+    // A path that errored mid-probe would drop its models from the routes, so
+    // only replace saved routes when every path finished.
+    if (result.routes && result.allComplete) await saveRoutes(connection.provider, protocol, result.routes);
     return NextResponse.json({ models: result.models.map((m) => ({ id: m })), source: result.source, catalogName: result.catalogName, routes: result.routes, steps: result.steps });
   } catch (error) {
     console.log("Error discovering models:", error?.message);

@@ -1,6 +1,6 @@
 import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
-import { ROLE, CLAUDE_BLOCK, MODEL_FALLBACK } from "../schema/index.js";
+import { ROLE, CLAUDE_BLOCK, MODEL_FALLBACK, CLAUDE_STOP } from "../schema/index.js";
 import { fromOpenAIFinish } from "../concerns/finishReason.js";
 import { extractReasoningText } from "../concerns/reasoning.js";
 
@@ -98,7 +98,7 @@ function finishMessage(state, results, reason) {
   // finish_reason at all (Snowflake Cortex serving Claude on /chat/completions).
   // A turn that emitted tool calls is a tool_use turn regardless, or the client
   // treats it as finished and never runs the tool.
-  const stopReason = state.toolCalls.size > 0 ? fromOpenAIFinish("tool_calls", "claude") : convertFinishReason(reason);
+  const stopReason = state.toolCalls.size > 0 ? CLAUDE_STOP.TOOL_USE : convertFinishReason(reason);
 
   // Use tracked usage (will be estimated in stream.js if not valid)
   const finalUsage = state.usage || { input_tokens: 0, output_tokens: 0 };
@@ -112,10 +112,11 @@ function finishMessage(state, results, reason) {
 
 // Convert OpenAI stream chunk to Claude format
 export function openaiToClaudeResponse(chunk, state) {
-  // End of stream (flush). If the upstream never sent finish_reason, finish the
-  // message here so the client doesn't see a truncated stream.
+  // End of stream (flush). If the upstream ended cleanly ([DONE]) without ever
+  // sending finish_reason, finish the message here. A stream cut off before
+  // [DONE] stays unfinished, so a partial reply doesn't look complete.
   if (chunk === null) {
-    if (!state?.messageStartSent || state.messageStopSent) return null;
+    if (!state?.messageStartSent || state.messageStopSent || !state.upstreamDone) return null;
     const results = [];
     finishMessage(state, results, state.finishReason || "stop");
     return results;
@@ -280,7 +281,7 @@ export function openaiToClaudeResponse(chunk, state) {
   return results.length > 0 ? results : null;
 }
 
-const convertFinishReason = (reason) => fromOpenAIFinish(reason, "claude");
+const convertFinishReason = (reason) => fromOpenAIFinish(reason, FORMATS.CLAUDE);
 
 // Register
 register(FORMATS.OPENAI, FORMATS.CLAUDE, null, openaiToClaudeResponse);

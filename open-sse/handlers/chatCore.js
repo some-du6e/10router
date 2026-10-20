@@ -134,7 +134,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // upstream default (use the transport), preserving behavior for glm/deepseek/...
   const sourceTransport = (!modelSupportedFormats || modelSupportedFormats.includes(sourceFormat)) ? runtimeTransport : null;
   // Two-path custom endpoints route each model to the API that serves it best.
-  const useTransport = resolveCompatibleRoute(provider, model, credentials)
+  // modelRoutes holds plain ids, so drop the dashboard's "(level)" suffix first.
+  const useTransport = resolveCompatibleRoute(provider, stripThinkingSuffix(getModelUpstreamId(alias, model)), credentials)
     || sourceTransport || (modelTargetFormat ? resolveTransport(provider, modelTargetFormat) : null);
   // A source-format-matched endpoint keeps the request lossless. Prefer it
   // over a model-level targetFormat, which is only the fallback for clients

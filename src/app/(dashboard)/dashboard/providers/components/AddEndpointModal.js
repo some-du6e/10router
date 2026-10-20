@@ -3,6 +3,7 @@
 import { useState } from "react";
 import PropTypes from "prop-types";
 import { Badge, Button, Input, Modal, Toggle } from "@/shared/components";
+import { makePrefix, suggestName, normalizeUrl } from "@/lib/endpointDetect.js";
 
 const PROTOCOLS = {
   anthropic: { label: "Anthropic · Messages", nodeType: "anthropic-compatible" },
@@ -16,11 +17,6 @@ const KEY_STATUS = {
   unknown: "Couldn't confirm the key. It will be checked on the first request.",
 };
 
-// Initials of a multi-part name, else its first 4 letters (matches detection).
-function prefixFromName(name) {
-  const words = String(name || "").replace(/([a-z])([A-Z])/g, "$1 $2").split(/[^A-Za-z0-9]+/).filter(Boolean);
-  return (words.length > 1 ? words.map((w) => w[0]).join("") : (words[0] || "").slice(0, 4)).toLowerCase().replace(/[^a-z0-9]/g, "");
-}
 
 // "Both APIs work: 13 models on Anthropic Messages, 35 on OpenAI Chat. Claude
 // goes to Messages, the rest to Chat." Null unless models really split.
@@ -37,15 +33,6 @@ function describeTwoPath(detected) {
   return `Both APIs work: ${counts}.${rule}`;
 }
 
-function guessName(raw) {
-  try {
-    const host = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`).hostname;
-    const parts = host.split(".").filter((p) => !["api", "gateway", "llm", "www", "inference"].includes(p));
-    const label = parts.length > 1 ? parts[parts.length - 2] : parts[0];
-    const brand = (label || "").replace(/computing$/, "").replace(/-.*$/, "");
-    return brand ? brand.charAt(0).toUpperCase() + brand.slice(1) : "";
-  } catch { return ""; }
-}
 
 function ProbeList({ steps }) {
   if (!steps?.length) return null;
@@ -92,11 +79,6 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }) {
   };
   const close = () => { reset(); onClose(); };
 
-  const uniquePrefix = (p) => {
-    const used = new Set(takenPrefixes.map((t) => String(t).toLowerCase()));
-    if (!p || !used.has(p)) return p;
-    for (let i = 2; ; i++) if (!used.has(`${p}${i}`)) return `${p}${i}`;
-  };
 
   const detect = async () => {
     setPhase("detecting"); setError("");
@@ -111,14 +93,15 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }) {
       if (data.ok) {
         setProtocol(data.protocol);
         setName(data.suggestedName || "");
-        setPrefix(uniquePrefix(data.suggestedPrefix || prefixFromName(data.suggestedName)));
+        setPrefix(makePrefix(data.suggestedName, takenPrefixes));
         setPrefixEdited(false);
         setQuirks((q) => ({ ...q, ...(data.quirks || {}) }));
         setPhase("found");
       } else {
         // Still offer a name from the host, so "Save anyway" is one click.
-        const guess = guessName(data.baseUrl || url);
-        if (!name && guess) { setName(guess); setPrefix(uniquePrefix(prefixFromName(guess))); }
+        const base = data.baseUrl || normalizeUrl(url);
+        const guess = base ? suggestName(base) : "";
+        if (!name && guess) { setName(guess); setPrefix(makePrefix(guess, takenPrefixes)); }
         setPhase("failed");
       }
     } catch {
@@ -129,7 +112,7 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }) {
 
   const onNameChange = (v) => {
     setName(v);
-    if (!prefixEdited) setPrefix(uniquePrefix(prefixFromName(v)));
+    if (!prefixEdited) setPrefix(makePrefix(v, takenPrefixes));
   };
 
   const save = async () => {
@@ -160,6 +143,7 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }) {
       if (!nodeRes.ok) { setError(nodeData.error || "Couldn't save the endpoint."); return; }
       const node = nodeData.node;
 
+      let keyError = null;
       if (apiKey.trim()) {
         const connRes = await fetch("/api/providers", {
           method: "POST",
@@ -173,7 +157,7 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }) {
         });
         if (!connRes.ok) {
           const d = await connRes.json().catch(() => ({}));
-          setError(`Endpoint saved, but the key wasn't: ${d.error || connRes.status}`);
+          keyError = d.error || `HTTP ${connRes.status}`;
         }
       }
       for (const id of models) {
@@ -184,7 +168,8 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }) {
         }).catch(() => {});
       }
       if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("customModelChanged"));
-      onCreated(node);
+      // The node exists either way, so close; the page reports a failed key save.
+      onCreated(node, { keyError });
       reset();
     } catch {
       setError("Network error");

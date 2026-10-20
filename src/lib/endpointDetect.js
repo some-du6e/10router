@@ -248,20 +248,26 @@ function modelBody(p, model) {
 
 // Ask about each id with an empty body. Returns the ids the endpoint knows, or
 // null when it doesn't validate model names first (then probing tells us nothing).
-async function probeModels({ probe, base, protocol, AUTH, ids }) {
+// `out.complete` is false when a probe failed (network error, 429, 5xx), so a
+// missing id may just mean "couldn't ask", not "not served".
+async function probeModels({ probe, base, protocol, AUTH, ids, out = {} }) {
+  out.complete = false;
   const p = probeSpecs(AUTH)[protocol];
   if (!p || !ids.length) return null;
   // Canary: a made-up id must be refused as unknown, or "accepted" means nothing.
   const canary = await probe("Check model (made-up id)", "POST", `${base}${p.path}`, { headers: p.headers, body: modelBody(p, "10router-no-such-model") });
   if (!UNKNOWN_MODEL_RE.test(canary.text)) return null;
   const ok = [];
+  let failed = false;
   const queue = [...new Set(ids)];
   await Promise.all(Array.from({ length: PROBE_CONCURRENCY }, async () => {
     for (let id; (id = queue.shift()) !== undefined;) {
       const r = await probe(`Check model ${id}`, "POST", `${base}${p.path}`, { headers: p.headers, body: modelBody(p, id) });
-      if (accepted(r) && !UNKNOWN_MODEL_RE.test(r.text) && !NOT_SERVABLE_RE.test(r.text)) ok.push(id);
+      if (r.status === 0 || r.status === 429 || r.status >= 500) failed = true;
+      else if (accepted(r) && !UNKNOWN_MODEL_RE.test(r.text) && !NOT_SERVABLE_RE.test(r.text)) ok.push(id);
     }
   }));
+  out.complete = !failed;
   // Keep catalog order, not completion order.
   const order = new Map(ids.map((id, i) => [id, i]));
   return ok.sort((a, b) => order.get(a) - order.get(b));
@@ -300,16 +306,20 @@ export async function discoverModels({ baseUrl, apiKey, protocol, protocols, fet
   if (protocols?.length > 1) {
     const steps = [];
     const byProtocol = {};
+    const complete = {};
     let source = "none", catalogName;
     for (const p of protocols) {
       const r = await discoverModels({ baseUrl, apiKey, protocol: p, fetchFn, catalog, timeoutMs });
       steps.push(...r.steps);
       byProtocol[p] = r.models;
+      complete[p] = r.complete;
       if (r.models.length && source === "none") { source = r.source; catalogName = r.catalogName; }
     }
     // The node's own path is fixed here (it's already saved), so route against it.
     const { models, routes, counts } = buildRoutes(byProtocol, protocol);
-    return { models, source, catalogName, steps, routes, counts, byProtocol };
+    // Routes are only trustworthy when every path was asked about every model.
+    const allComplete = protocols.every((p) => complete[p]);
+    return { models, source, catalogName, steps, routes, counts, byProtocol, complete, allComplete };
   }
   const key = cleanKey(apiKey);
   const base = String(baseUrl || "").replace(/\/+$/, "").replace(/\/messages$/, "");
@@ -321,14 +331,15 @@ export async function discoverModels({ baseUrl, apiKey, protocol, protocols, fet
     const r = await probe(`GET /models (${style === "none" ? "no auth" : style})`, "GET", `${base}/models`, { headers: h });
     if (r.status >= 200 && r.status < 300 && !r.step.html) {
       const ids = parseModelList(r.json);
-      if (ids.length) return { models: ids, source: "models", steps };
+      if (ids.length) return { models: ids, source: "models", steps, complete: true };
     }
     if (r.status === 404 || r.status === 0) break;
   }
   const { matched, ids } = candidateModels(base, catalog);
-  const found = await probeModels({ probe, base, protocol, AUTH, ids });
-  if (found?.length) return { models: found, source: matched ? "catalog" : "guessed", catalogName: matched?.name, steps };
-  return { models: [], source: "none", steps };
+  const out = {};
+  const found = await probeModels({ probe, base, protocol, AUTH, ids, out });
+  if (found?.length) return { models: found, source: matched ? "catalog" : "guessed", catalogName: matched?.name, steps, complete: out.complete };
+  return { models: [], source: "none", steps, complete: out.complete };
 }
 
 // Probe runner. `fetchFn` is injected so tests (and the SSRF-safe fetch) can supply it.
@@ -338,30 +349,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   const steps = [];
   if (!base0) return { ok: false, error: "That doesn't look like a URL.", steps };
 
-  const probe = async (label, method, target, { headers = {}, body } = {}) => {
-    const step = { label, method, url: target, status: null, preview: "" };
-    try {
-      const res = await fetchFn(target, {
-        method,
-        headers: { accept: "application/json", ...(body ? { "content-type": "application/json" } : {}), ...headers },
-        body: body ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      const text = await res.text().catch(() => "");
-      step.status = res.status;
-      step.preview = redact(text, key).replace(/\s+/g, " ").slice(0, BODY_PREVIEW);
-      step.html = isHtml(res.headers?.get?.("content-type"), text);
-      steps.push(step);
-      let json = null;
-      try { json = JSON.parse(text); } catch { /* not JSON */ }
-      return { status: res.status, text, json, step };
-    } catch (e) {
-      step.status = 0;
-      step.preview = redact(e?.message || String(e), key).slice(0, BODY_PREVIEW);
-      steps.push(step);
-      return { status: 0, text: "", json: null, step };
-    }
-  };
+  const probe = makeProber({ fetchFn, key, steps, timeoutMs });
 
   const AUTH = authHeaders(key);
   const PROBES = probeSpecs(AUTH);

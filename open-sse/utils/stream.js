@@ -322,6 +322,9 @@ export function createSSEStream(options = {}) {
         // For Ollama: done=true is the final chunk with finish_reason/usage, must translate
         // For other formats: done=true is the [DONE] sentinel, skip
         if (parsed && parsed.done && targetFormat !== FORMATS.OLLAMA) {
+          // A clean end of stream. Translators may finish a message the upstream
+          // never closed with finish_reason, but only after this (not on a cut-off).
+          state.upstreamDone = true;
           // A direct Chat-to-Responses translation can defer response.completed
           // while waiting for a usage trailer. [DONE] ends that opportunity even
           // if the upstream keeps the HTTP connection open, so finish now.
@@ -500,6 +503,7 @@ export function createSSEStream(options = {}) {
           // but it is the real final chunk — it holds finish_reason and the token
           // counts — so it has to go through.
           const isDoneSentinel = parsed?.done && targetFormat !== FORMATS.OLLAMA;
+          if (isDoneSentinel) state.upstreamDone = true;
           if (parsed && !isDoneSentinel) {
             collectResponsesContent(parsed, currentOpenAIResponsesEvent);
             // Same accumulation the transform loop does, so finalizeStream() can

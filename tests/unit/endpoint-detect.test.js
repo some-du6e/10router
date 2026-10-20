@@ -243,4 +243,22 @@ describe("discoverModels (Import models button)", () => {
     expect(r).toMatchObject({ models: ["claude-haiku-4-5"], source: "catalog", catalogName: "Snowflake Cortex" });
     for (const c of calls.filter((x) => x.method === "POST")) expect(c.body.messages).toEqual([]);
   });
+
+
+  it("marks two-path discovery incomplete when a path errors mid-probe, so routes aren't saved", async () => {
+    const msg = ({ body }) => body.model === "claude-haiku-4-5" ? [400, { message: "'messages' must not be empty" }] : [400, { message: `unknown model "${body.model}"` }];
+    const chatDown = ({ body }) => body.model === "10router-no-such-model" ? [400, { message: `unknown model "${body.model}"` }] : [503, { message: "upstream busy" }];
+    const { fetchFn } = upstream({ "POST /api/v2/cortex/v1/messages": msg, "POST /api/v2/cortex/v1/chat/completions": chatDown });
+    const r = await discoverModels({ baseUrl: "https://acme.snowflakecomputing.com/api/v2/cortex/v1", apiKey: GOOD, protocol: "anthropic", protocols: ["anthropic", "openai-chat"], fetchFn, catalog: CATALOG });
+    expect(r.complete).toEqual({ anthropic: true, "openai-chat": false });
+    expect(r.allComplete).toBe(false);
+  });
+
+  it("counts an empty but finished path as complete", async () => {
+    const unknown = ({ body }) => [400, { message: `unknown model "${body.model}"` }];
+    const { fetchFn } = upstream({ "POST /api/v2/cortex/v1/messages": unknown, "POST /api/v2/cortex/v1/chat/completions": unknown });
+    const r = await discoverModels({ baseUrl: "https://acme.snowflakecomputing.com/api/v2/cortex/v1", apiKey: GOOD, protocol: "anthropic", protocols: ["anthropic", "openai-chat"], fetchFn, catalog: CATALOG });
+    expect(r.allComplete).toBe(true);
+    expect(r.models).toEqual([]);
+  });
 });

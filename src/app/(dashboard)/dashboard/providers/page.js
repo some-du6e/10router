@@ -579,12 +579,13 @@ export default function ProvidersPage() {
       isOpen={showAddEndpointModal}
       onClose={() => setShowAddEndpointModal(false)}
       takenPrefixes={providerNodes.map((n) => n.prefix).filter(Boolean)}
-      onCreated={(node) => {
+      onCreated={(node, { keyError } = {}) => {
         setProviderNodes((prev) => [...prev, node]);
         setShowAddEndpointModal(false);
         // Pick up the key the modal just created so the card shows it connected.
         fetch("/api/providers").then((r) => r.json()).then((d) => d.connections && setConnections(d.connections)).catch(() => {});
-        notify.success(`${node.name} added`);
+        if (keyError) notify.warning(`${node.name} added, but its key wasn't saved: ${keyError}. Add it on the endpoint page.`);
+        else notify.success(`${node.name} added`);
       }}
     />
   );
