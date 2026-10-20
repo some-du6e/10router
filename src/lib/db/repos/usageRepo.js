@@ -53,8 +53,8 @@ function getLastUsedIndex(db) {
   const rows = db.all(
     `SELECT provider, model, connectionId, apiKey, endpoint, MAX(timestamp) AS timestamp FROM usageHistory GROUP BY provider, model, connectionId, apiKey, endpoint`
   );
-  for (const r of rows) index.set(lastUsedKey(r), r);
   global._usageLastUsedIndex.set(db, index);
+  for (const r of rows) recordLastUsed(db, r);
   return index;
 }
 

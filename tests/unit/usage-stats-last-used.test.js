@@ -42,6 +42,31 @@ describe("getUsageStats lastUsed", () => {
     expect(stats.byEndpoint["/v1/chat/completions|gpt-x|openai"].lastUsed).toBe(newer);
   });
 
+  it("keeps a separate lastUsed per endpoint", async () => {
+    const chatAt = new Date(Date.now() - 2 * 3600000).toISOString();
+    const messagesAt = new Date(Date.now() - 1800000).toISOString();
+    await saveRequestUsage(entry(chatAt, { model: "gpt-ep" }));
+    await saveRequestUsage(entry(messagesAt, { model: "gpt-ep", endpoint: "/v1/messages" }));
+
+    const stats = await getUsageStats("all");
+    expect(stats.byEndpoint["/v1/chat/completions|gpt-ep|openai"].lastUsed).toBe(chatAt);
+    expect(stats.byEndpoint["/v1/messages|gpt-ep|openai"].lastUsed).toBe(messagesAt);
+  });
+
+  it("keeps a separate lastUsed per account", async () => {
+    const aAt = new Date(Date.now() - 2 * 3600000).toISOString();
+    const bAt = new Date(Date.now() - 1800000).toISOString();
+    await saveRequestUsage(entry(aAt, { model: "gpt-acct", connectionId: "conn-a" }));
+    await saveRequestUsage(entry(bAt, { model: "gpt-acct", connectionId: "conn-b" }));
+
+    const stats = await getUsageStats("all");
+    const lastUsed = Object.entries(stats.byAccount)
+      .filter(([k]) => k.startsWith("gpt-acct "))
+      .map(([, v]) => v.lastUsed)
+      .sort();
+    expect(lastUsed).toEqual([aAt, bAt]);
+  });
+
   it("picks up requests saved after the first stats call", async () => {
     await getUsageStats("all");
     const latest = new Date(Date.now() - 60000).toISOString();
