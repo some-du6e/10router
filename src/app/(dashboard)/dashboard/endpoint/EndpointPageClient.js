@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import PropTypes from "prop-types";
-import { Card, Button, Input, Modal, CardSkeleton, Toggle, ConfirmModal } from "@/shared/components";
+import { Card, Button, Input, Modal, CardSkeleton, Toggle, ConfirmModal, SegmentedControl } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import {
   TUNNEL_BENEFITS,
@@ -277,7 +277,7 @@ export default function APIPageClient({ machineId }) {
     }
   };
 
-  // Cycles inherit → hold → fail-fast. null means "follow the global setting".
+  // null means "follow the global setting"; true/false override it for this key.
   const handleKeyLimitHold = async (id, next) => {
     try {
       const res = await fetch(`/api/keys/${id}`, {
@@ -1086,9 +1086,9 @@ export default function APIPageClient({ machineId }) {
             {keys.map((key) => (
               <div
                 key={key.id}
-                className={`group flex items-center justify-between py-3 border-b border-black/[0.03] dark:border-white/[0.03] last:border-b-0 ${key.isActive === false ? "opacity-60" : ""}`}
+                className={`group flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3 border-b border-black/[0.03] dark:border-white/[0.03] last:border-b-0 ${key.isActive === false ? "opacity-60" : ""}`}
               >
-                <div className="flex-1 min-w-0">
+                <div className="flex-1 min-w-[14rem]">
                   <p className="text-sm font-medium">{key.name}</p>
                   <div className="flex items-center gap-2 mt-1">
                     <code className="text-xs text-text-muted font-mono">
@@ -1119,28 +1119,18 @@ export default function APIPageClient({ machineId }) {
                     <p className="text-xs text-orange-500 mt-1">Paused</p>
                   )}
                 </div>
-                <div className="flex items-center gap-2">
-                  {(() => {
-                    // null → inherit global, true → always wait, false → always fail fast
-                    const mode = key.limitHold === null || key.limitHold === undefined ? "inherit" : (key.limitHold ? "hold" : "fast");
-                    const next = { inherit: true, hold: false, fast: null }[mode];
-                    const label = {
-                      inherit: `Rate limits: follows global (${limitHoldEnabled ? "wait" : "fail fast"})`,
-                      hold: "Rate limits: always wait",
-                      fast: "Rate limits: always fail fast",
-                    }[mode];
-                    const icon = { inherit: "hourglass_disabled", hold: "hourglass_top", fast: "bolt" }[mode];
-                    const tone = { inherit: "text-text-muted", hold: "text-primary", fast: "text-orange-500" }[mode];
-                    return (
-                      <button
-                        onClick={() => handleKeyLimitHold(key.id, next)}
-                        className={`p-2 rounded hover:bg-black/5 dark:hover:bg-white/5 transition-all ${tone}`}
-                        title={`${label} — click to change`}
-                      >
-                        <span className="material-symbols-outlined text-[18px]">{icon}</span>
-                      </button>
-                    );
-                  })()}
+                <div className="flex items-center gap-2 ml-auto">
+                  <SegmentedControl
+                    size="sm"
+                    className="[&>button]:px-3"
+                    value={key.limitHold === null || key.limitHold === undefined ? "inherit" : (key.limitHold ? "hold" : "fast")}
+                    onChange={(mode) => handleKeyLimitHold(key.id, { inherit: null, hold: true, fast: false }[mode])}
+                    options={[
+                      { value: "inherit", label: "Default", title: `Follow “Wait out rate limits” above (currently ${limitHoldEnabled ? "wait" : "fail fast"})` },
+                      { value: "hold", label: "Wait", title: "Always keep the response open and retry when the limit resets" },
+                      { value: "fast", label: "Fail fast", title: "Always return the rate-limit error right away. Good for CI and scripts" },
+                    ]}
+                  />
                   <Toggle
                     size="sm"
                     checked={key.isActive ?? true}

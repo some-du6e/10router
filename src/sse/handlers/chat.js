@@ -134,37 +134,47 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
 
     if (comboStrategy === "fusion") {
       log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: fusion)`);
-      return handleFusionChat({
-        body,
-        models: comboModels,
-        handleSingleModel: (b, m, isPanel) => {
-          let cleanRawReq = clientRawRequest;
-          if (isPanel && clientRawRequest) {
-            const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
-            cleanRawReq = { ...clientRawRequest, body: cleanBody };
-          }
-          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false, routingFailures });
-        },
-        log,
-        comboName: comboKey,
-        judgeModel: comboStrategies[comboKey]?.judgeModel,
-        tuning: comboStrategies[comboKey]?.fusionTuning,
+      const judgeModel = comboStrategies[comboKey]?.judgeModel;
+      return withComboLimitHold({
+        run: () => handleFusionChat({
+          body,
+          models: comboModels,
+          handleSingleModel: (b, m, isPanel) => {
+            let cleanRawReq = clientRawRequest;
+            if (isPanel && clientRawRequest) {
+              const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
+              cleanRawReq = { ...clientRawRequest, body: cleanBody };
+            }
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false, routingFailures });
+          },
+          log,
+          comboName: comboKey,
+          judgeModel,
+          tuning: comboStrategies[comboKey]?.fusionTuning,
+        }),
+        // The final answer comes from a panel model or the judge, so either
+        // may be the one whose response shape the client sees.
+        models: judgeModel?.trim() ? [...comboModels, judgeModel.trim()] : comboModels,
+        body, modelStr, request, apiKey, clientRawRequest, routingFailures,
       });
     }
 
     const comboStickyLimit = settings.comboStickyRoundRobinLimit;
     log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
-    return handleComboChat({
-      body,
-      models: augmentedModels,
-      handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures }),
-        adapterAdded
-      ),
-      log,
-      comboName: comboKey,
-      comboStrategy,
-      comboStickyLimit
+    return withComboLimitHold({
+      run: () => handleComboChat({
+        body,
+        models: augmentedModels,
+        handleSingleModel: withCapacityAdapterStripping(
+          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures }),
+          adapterAdded
+        ),
+        log,
+        comboName: comboKey,
+        comboStrategy,
+        comboStickyLimit
+      }),
+      models: augmentedModels, body, modelStr, request, apiKey, clientRawRequest, routingFailures,
     });
   }
 
@@ -174,20 +184,127 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
   if (soloAugmented.length > 1) {
     const adapterAdded = soloAugmented.filter((m) => m !== modelStr);
     log.info("CHAT", `Capacity adapter for [${[...requiredCapabilities].join(",")}] on "${modelStr}" → trying ${soloAugmented.join(", ")}`);
-    return handleComboChat({
-      body,
-      models: soloAugmented,
-      handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures }),
-        adapterAdded
-      ),
-      log,
-      comboName: comboLookupName(modelStr),
-      comboStrategy: getActiveAdapterStrategy(requiredCapabilities, settings)
+    return withComboLimitHold({
+      run: () => handleComboChat({
+        body,
+        models: soloAugmented,
+        handleSingleModel: withCapacityAdapterStripping(
+          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures }),
+          adapterAdded
+        ),
+        log,
+        comboName: comboLookupName(modelStr),
+        comboStrategy: getActiveAdapterStrategy(requiredCapabilities, settings)
+      }),
+      models: soloAugmented, body, modelStr, request, apiKey, clientRawRequest, routingFailures,
     });
   }
 
   return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { routingFailures });
+}
+
+/**
+ * Rate-limit hold for a combo.
+ *
+ * Each model inside a combo runs with the hold off, because a limited model
+ * should fall through to the next one, not wait. Only when the whole combo has
+ * failed, and every model that had an account failed on a rate limit, is there
+ * nothing left to fall back to. Then the whole combo waits and is re-run, so the
+ * first model to come back answers, whichever one it is. A fusion combo is held
+ * the same way when no panel model could answer.
+ */
+async function withComboLimitHold({ run, models, body, modelStr, request, apiKey, clientRawRequest, routingFailures }) {
+  const pass = async () => {
+    const mark = routingFailures.length;
+    const response = await run();
+    if (response.ok) return { success: true, response };
+    const failures = routingFailures.slice(mark);
+    // A model with no account configured can't be waited on, but doesn't stop
+    // the models that do have accounts from being waited on.
+    const limited = failures.some((f) => f.rateLimited) &&
+      failures.every((f) => f.rateLimited || f.unconfigured);
+    // A limited model with no known reset could be back any moment, so it
+    // pulls the first retry down to the minimum wait rather than being skipped.
+    const resets = failures.filter((f) => f.rateLimited).map((f) => (Number.isFinite(f.retryAtMs) ? f.retryAtMs : 0));
+    // The combo's own status and message come from whichever models failed
+    // first and last, so they can't say whether the combo as a whole is still
+    // limited. `limited` is that answer, and the hold reads it on every retry.
+    // When the hold ends on a real fault, name that fault, not whichever
+    // model happened to fail last.
+    const fault = failures.find((f) => !f.rateLimited && !f.unconfigured && f.error)?.error;
+    const message = fault || await response.clone().json().then((j) => j?.error?.message || j?.error || j?.message).catch(() => null);
+    return {
+      success: false,
+      limited,
+      status: response.status,
+      error: (typeof message === "string" && message) || "request failed",
+      retryAtMs: resets.length ? Math.min(...resets) : 0,
+      response,
+    };
+  };
+
+  const first = await pass();
+  if (first.success || !first.limited) return first.response;
+  const limitHold = await resolveLimitHold(apiKey);
+  if (!limitHold.enabled) return first.response;
+
+  const sourceFormat = (request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null) || detectFormat(body);
+  // Any model in the combo may be the one that answers after the wait, and
+  // their response shapes can differ (a forceStream provider answers a client
+  // that didn't ask for a stream with JSON). Narrate only when every model
+  // would stream; otherwise hold silently, which is safe for either shape.
+  const infos = await leafModelInfos(models, { settings: await getSettings(), required: detectRequiredCapabilities(body) });
+  const willStream = infos.every((info) => clientReceivesStream({ body, provider: info.provider, model: info.model || "", sourceFormat, clientRawRequest }));
+  log.warn("LIMITHOLD", `combo ${modelStr}: all models rate-limited, holding`);
+  return holdUntilClear({ first, attempt: pass, willStream, sourceFormat, modelStr, provider: modelStr, request });
+}
+
+/**
+ * Provider/model of every model a combo can end up answering from. Follows a
+ * nested combo the way routeSingleModelChat runs it: with its capacity-adapter
+ * models added, and its judge when it is a fusion combo.
+ */
+async function leafModelInfos(models, { settings, required }, seen = new Set()) {
+  const out = [];
+  for (const m of models) {
+    if (seen.has(m)) continue;
+    seen.add(m);
+    const info = await getModelInfo(m).catch(() => ({}));
+    const nested = info.provider ? null : await getComboModels(m).catch(() => null);
+    if (!nested) { out.push(info); continue; }
+    const strategy = (settings.comboStrategies || {})[comboLookupName(m)] || {};
+    const isFusion = (strategy.fallbackStrategy || settings.comboStrategy) === "fusion";
+    const runs = isFusion ? [...nested] : augmentModelsWithCapacityAdapter(nested, required, settings);
+    if (isFusion && strategy.judgeModel?.trim()) runs.push(strategy.judgeModel.trim());
+    out.push(...await leafModelInfos(runs, { settings, required }, seen));
+  }
+  return out;
+}
+
+/** Wait out a limit: a narrated stream for streaming clients, a silent hang for JSON ones. */
+async function holdUntilClear({ first, attempt, willStream, sourceFormat, modelStr, provider, model, request }) {
+  if (!willStream) {
+    const abort = new AbortController();
+    request?.signal?.addEventListener?.("abort", () => abort.abort(), { once: true });
+    const settled = await awaitLimitClear({
+      retryAtMs: first.retryAtMs,
+      attempt,
+      provider,
+      model: model || modelStr,
+      signal: abort.signal,
+      log,
+    });
+    return settled?.response || first.response;
+  }
+
+  return createLimitHoldResponse({
+    sourceFormat,
+    model: modelStr,
+    provider,
+    retryAtMs: first.retryAtMs,
+    attempt,
+    log,
+  });
 }
 
 /**
@@ -260,7 +377,7 @@ async function routeSingleModelChat(body, modelStr, clientRawRequest, request, a
         comboStickyLimit
       });
     }
-    routingFailures.push({ limited: false });
+    routingFailures.push({ limited: false, unconfigured: true });
     log.warn("CHAT", "Invalid model format", { model: modelStr });
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
   }
@@ -303,6 +420,7 @@ async function routeSingleModelChat(body, modelStr, clientRawRequest, request, a
   const accountFailures = [];
   let lastError = null;
   let lastStatus = null;
+  let lockedUntil = 0;
 
   while (true) {
     // A pin is a preference, not a requirement: getProviderCredentials ignores a
@@ -336,14 +454,20 @@ async function routeSingleModelChat(body, modelStr, clientRawRequest, request, a
       }
       if (excludeConnectionIds.size === 0) {
         log.warn("AUTH", `No active credentials for provider: ${provider}`);
-        return { success: false, status: HTTP_STATUS.NOT_FOUND, error: `No active credentials for provider: ${provider}`, response: errorResponse(HTTP_STATUS.NOT_FOUND, `No active credentials for provider: ${provider}`) };
+        return { success: false, unconfigured: true, status: HTTP_STATUS.NOT_FOUND, error: `No active credentials for provider: ${provider}`, response: errorResponse(HTTP_STATUS.NOT_FOUND, `No active credentials for provider: ${provider}`) };
       }
       log.warn("CHAT", "No more accounts available", { provider });
       const status = lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE;
       const errorMsg = summarizeAccountFailures(provider, model, accountFailures);
       log.warn("CHAT", errorMsg);
+      // Every account was tried this pass and each one failed on a limit. That
+      // is the same "come back later" as allRateLimited above, reached before
+      // the accounts' locks were recorded, so it must be holdable too.
+      const allLimited = accountFailures.length > 0 && accountFailures.every(failure => isLimitError(failure.status, failure.error));
       return { success: false, status, error: errorMsg,
-        limitsExhausted: accountFailures.length > 0 && accountFailures.every(failure => isLimitError(failure.status, failure.error)),
+        limited: allLimited,
+        limitsExhausted: allLimited,
+        retryAtMs: lockedUntil,
         response: errorResponse(status, errorMsg) };
     }
 
@@ -429,6 +553,9 @@ async function routeSingleModelChat(body, modelStr, clientRawRequest, request, a
         credentials.connectionId, result.status, result.error, provider, model, resetsAtMs
       ));
     }
+    // Earliest point any account tried this pass may be usable again.
+    const unlockAt = resetsAtMs || (cooldownMs ? Date.now() + cooldownMs : 0);
+    if (unlockAt && (!lockedUntil || unlockAt < lockedUntil)) lockedUntil = unlockAt;
 
     // Hold for the pinned account rather than rotating away from it. Opt-in:
     // rotating is instant, so waiting only pays when prompt-cache continuity is
@@ -469,13 +596,28 @@ async function routeSingleModelChat(body, modelStr, clientRawRequest, request, a
       continue;
     }
 
+    // A keyless provider has no account to lock or rotate to, so a limit lands
+    // here instead of in allRateLimited. It is still a "come back later" — but
+    // only on a real 429: isLimitError's text match would also catch permanent
+    // errors like "quota project not set", which no amount of waiting fixes.
+    if (credentials.id === "noauth") {
+      return { ...result, limited: result.status === HTTP_STATUS.RATE_LIMITED, retryAtMs: resetsAtMs || 0 };
+    }
     return result;
   }
   };
 
   const first = await runAccountLoop();
   if (first.success) return first.response;
-  routingFailures.push({ limited: first.limitsExhausted === true && !limitHold.enabled, resetAtMs: first.resetAtMs });
+  routingFailures.push({
+    limited: first.limitsExhausted === true && !limitHold.enabled,
+    resetAtMs: first.resetAtMs,
+    // Read by withComboLimitHold, which decides for the combo as a whole.
+    rateLimited: first.limited === true,
+    unconfigured: first.unconfigured === true,
+    retryAtMs: first.retryAtMs,
+    error: first.error,
+  });
 
   if (!first.limited || !limitHold.enabled) return first.response;
 
@@ -486,26 +628,14 @@ async function routeSingleModelChat(body, modelStr, clientRawRequest, request, a
   // SSE banner would break a request that used to return a clean error.
   const holdSourceFormat = sourceFormatOverride || detectFormat(body);
   const willStream = clientReceivesStream({ body, provider, model, sourceFormat: holdSourceFormat, clientRawRequest });
-  if (!willStream) {
-    const abort = new AbortController();
-    request?.signal?.addEventListener?.("abort", () => abort.abort(), { once: true });
-    const settled = await awaitLimitClear({
-      retryAtMs: first.retryAtMs,
-      attempt: runAccountLoop,
-      provider,
-      model,
-      signal: abort.signal,
-      log,
-    });
-    return settled?.response || first.response;
-  }
-
-  return createLimitHoldResponse({
-    sourceFormat: holdSourceFormat,
-    model: modelStr,
-    provider,
-    retryAtMs: first.retryAtMs,
+  return holdUntilClear({
+    first,
     attempt: runAccountLoop,
-    log,
+    willStream,
+    sourceFormat: holdSourceFormat,
+    modelStr,
+    provider,
+    model,
+    request,
   });
 }
