@@ -1,6 +1,11 @@
 # Unreleased
 
 ## Fixes
+- **Wait out rate limits**: combos now wait too. Once every model in a combo is rate-limited, the whole combo waits and retries, and the first model to recover answers. Fusion combos wait when no panel model could answer. Before, hold never ran for combo traffic.
+- Wait on a 429 from providers that need no login. They have no account to rotate to, so the error used to come straight back.
+- Wait when every account fails on a rate limit in the same pass, not only when their locks were already recorded.
+- Backups now keep each API key's rate-limit setting. Restoring one used to reset every key to the global default.
+- Pick a key's rate-limit mode (Default / Wait / Fail fast) from a segmented control instead of clicking an icon that cycled through modes.
 - **T3 usage hub**: preserve upstream status codes for non-JSON provider errors and reject malformed settings responses without overwriting the current hub state.
 
 ## Removed
@@ -11,6 +16,7 @@
 - Show a short account-limit message with the earliest known provider reset, stored separately from retry cooldowns. Omit unknown reset times and keep per-account details in server logs.
 - **Request inspector**: browse system prompts, assistant messages, tool calls and results with role filters, search, tool definitions, and text/Markdown/JSON views. The recorded assistant response appears in the conversation; provider payloads live in a collapsed Debug section. Large new request logs retain a structured preview within the configured storage limit.
 - **Soonest-reset routing**: opt-in account strategy for Claude and Codex that spends the earliest weekly quota first, using session resets to break ties. Skips known exhausted accounts, preserves session affinity, and falls back to priority when quota data is unavailable. Configure it globally in Profile or per provider under Connections.
+- **Quota tracker**: add provider summary bars, account search, ledger and card views, and quota details. Summaries show the average remaining per window instead of summed percentages. Status follows the tightest 5-hour, weekly or monthly window; providers with per-model pools follow their fullest pool, and unlimited rows never decide it. Hidden quota rows also leave status and summaries. The summary card slides between provider tabs. Align accounts across quota windows, count weekly-blocked capacity as empty, and retain the last reading when refresh fails. Replaces the "% quota" and "Expiring first" sorts and server-side filtering with client-side search, status filters and sorts.
 - **Jev decision models**: add `/v1/systemone` with OpenCode Free, OpenCode Zen, and OpenRouter lanes, account fallback, usage tracking, and dashboard examples and model tests.
 - **T3 usage hub**: opt-in CLIProxyAPI management compatibility for Codex and Claude quotas, account listing, and Codex reset credits. Enable it in Settings and create a separate management key. An isolated demo mode supplies fake subscriptions for integration testing.
 - **Codex models**: add GPT-6.1 Sol with pricing, vision support, and reasoning levels through Max.

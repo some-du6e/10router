@@ -369,6 +369,8 @@ export function parseQuotaData(provider, data) {
   try {
     switch (provider.toLowerCase()) {
       case "github":
+        // Paid plans report chat/completions as unlimited. `remaining` is a
+        // request count here, not a percentage, so it is left out.
         if (data.quotas) {
           Object.entries(data.quotas).forEach(([name, quota]) => {
             normalizedQuotas.push({
@@ -376,6 +378,7 @@ export function parseQuotaData(provider, data) {
               used: quota.used || 0,
               total: quota.total || 0,
               resetAt: quota.resetAt || null,
+              unlimited: quota.unlimited === true,
             });
           });
         }

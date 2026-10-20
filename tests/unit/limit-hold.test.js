@@ -39,6 +39,7 @@ describe("banner", () => {
     expect(text).toContain("codex limit reached");
     expect(text).toContain("2h 14m");
   });
+
 });
 
 describe("banner detection", () => {
@@ -164,6 +165,46 @@ describe("multi-byte splice", () => {
 });
 
 describe("awaitLimitClear", () => {
+  it("never sleeps past its ceiling, however far away the reset is", async () => {
+    const { awaitLimitClear } = await import("open-sse/utils/limitHold.js");
+    const started = Date.now();
+    await awaitLimitClear({
+      retryAtMs: Date.now() + 5 * 24 * 3_600_000,
+      attempt: async () => ({ success: false, status: 429, error: "usage_limit_reached" }),
+      provider: "codex", model: "gpt-5",
+      timing: { minWaitMs: 1, recheckMs: 1, maxHoldMs: 50 },
+    });
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it("keeps holding a combo on its own verdict, whatever status its models report", async () => {
+    // A combo's status and message come from whichever models failed first and
+    // last; 401 + a non-limit message must not end the hold while it's limited.
+    const { awaitLimitClear } = await import("open-sse/utils/limitHold.js");
+    const results = [
+      { success: false, limited: true, status: 401, error: "invalid api key" },
+      { success: true, response: "ok" },
+    ];
+    const last = await awaitLimitClear({
+      retryAtMs: Date.now(), attempt: async () => results.shift(), provider: "combo", model: "c",
+      timing: { minWaitMs: 1, recheckMs: 1, maxHoldMs: 5000 },
+    });
+    expect(last.success).toBe(true);
+  });
+
+  it("ends a combo hold once the combo says it is no longer limited", async () => {
+    const { awaitLimitClear } = await import("open-sse/utils/limitHold.js");
+    let calls = 0;
+    const last = await awaitLimitClear({
+      retryAtMs: Date.now(),
+      attempt: async () => { calls += 1; return { success: false, limited: false, status: 429, error: "rate limit" }; },
+      provider: "combo", model: "c",
+      timing: { minWaitMs: 1, recheckMs: 1, maxHoldMs: 5000 },
+    });
+    expect(calls).toBe(1);
+    expect(last.limited).toBe(false);
+  });
+
   it("gives up at the deadline instead of retrying forever", async () => {
     const { awaitLimitClear } = await import("open-sse/utils/limitHold.js");
     let calls = 0;
