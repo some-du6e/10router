@@ -367,7 +367,7 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }: Ad
             prefix: prefix.trim(),
             type: proto.nodeType,
             ...(proto.apiType ? { apiType: proto.apiType } : {}),
-            baseUrl: result?.baseUrl || url,
+            baseUrl: result?.baseUrl || normalizeUrl(url) || url,
             // Routes are relative to the node's own path; only save them when the
             // user kept the detected primary (a manual API-type override wins).
             quirks: { ...quirks, ...(found && result?.routes && chosen === result.protocol ? { modelRoutes: result.routes } : {}) },

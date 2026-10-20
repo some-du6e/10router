@@ -841,7 +841,8 @@ export async function discoverModels({ baseUrl, apiKey, protocol, protocols, fet
   const steps: DetectStep[] = [];
   const probe = makeProber({ fetchFn, key, steps, timeoutMs, sleep, signal, deadlineAt });
   const AUTH = authHeaders(key);
-  const azure = isAzureHost(base);
+  // Azure, or a node detection saw accept only the `api-key` header.
+  const azure = isAzureHost(base) || !!quirks.apiKeyHeader;
   const openaiAuth = azure ? AUTH["api-key"] : AUTH.bearer;
   const styles: [string, HeaderMap][] = protocol === "anthropic" ? [["x-api-key", { ...AUTH.both, ...ANTHROPIC }]] : [[azure ? "api-key" : "bearer", openaiAuth]];
   let sawAuth = false;

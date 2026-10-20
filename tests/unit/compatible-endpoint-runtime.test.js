@@ -138,6 +138,9 @@ describe("isRequestError", () => {
   });
   it("still locks an account that is out of credit (Anthropic 400)", () => {
     expect(isRequestError(400, '{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}')).toBe(false);
+    // Broad words alone (a prompt echoed in the error) don't lock the key.
+    expect(isRequestError(400, '{"error":{"message":"Invalid field in: summarize my billing history and usage limits"}}')).toBe(true);
+    expect(isRequestError(400, '{"error":{"code":"billing_hard_limit_reached"}}')).toBe(false);
   });
   it("still locks a key the upstream reports as invalid with a 400 (Gemini)", () => {
     expect(isRequestError(400, '{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT","details":[{"reason":"API_KEY_INVALID"}]}}')).toBe(false);

@@ -16,7 +16,8 @@ vi.mock("@/shared/utils/ssrfGuard.js", async (importActual) => {
 
 const KEY = "sk-test-0123456789abcdef";
 const noSleep = async () => {};
-const RECENT = "2026-09-01";
+// A month ago, so the 365-day "still active" cutoff never ages these out.
+const RECENT = new Date(Date.now() - 30 * 86400e3).toISOString().slice(0, 10);
 const CATALOG = { providers: [], labs: [
   { id: "llama-4-scout", lab: "meta", family: "llama", date: RECENT },
   { id: "qwen3.8-max", lab: "qwen", family: "qwen", date: RECENT },

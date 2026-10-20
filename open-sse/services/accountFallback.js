@@ -58,7 +58,8 @@ const REQUEST_ERROR_STATUSES = new Set([400, 404, 422]);
 // "Your credit balance is too low"; Cursor usage limits). Those still lock.
 const BAD_KEY_TEXTS = [
   "api key not valid", "api_key_invalid", "invalid api key", "invalid_api_key", "invalid x-api-key",
-  "credit balance", "insufficient_quota", "insufficient balance", "billing", "usage limit",
+  "credit balance", "insufficient_quota", "insufficient balance", "billing_hard_limit_reached",
+  "billing account", "billing details", "usage limit reached", "usage limit exceeded",
 ];
 
 export function isRequestError(status, errorText) {

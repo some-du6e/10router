@@ -78,3 +78,15 @@ describe("saveDroppedBetas", () => {
     expect(db.nodes.n1.droppedBetas.sort()).toEqual(["a-1", "b-2", "old-1"]);
   });
 });
+
+describe("saveDroppedBetas sanitizing", () => {
+  it("drops malformed flags and caps the list at 50", async () => {
+    db.conns.c2 = { id: "c2", providerSpecificData: {} };
+    db.nodes.n2 = { id: "n2" };
+    const many = Array.from({ length: 60 }, (_, i) => `flag-${i}`);
+    await saveDroppedBetas({ connectionId: "c2", providerSpecificData: {} }, "n2", ["bad flag!", ...many]);
+    expect(db.nodes.n2.droppedBetas).toHaveLength(50);
+    expect(db.nodes.n2.droppedBetas).not.toContain("bad flag!");
+    expect(db.conns.c2.providerSpecificData.droppedBetas).toHaveLength(50);
+  });
+});

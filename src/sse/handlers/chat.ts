@@ -39,6 +39,7 @@ import {
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
 import { finalizeRoutingError } from "../services/finalRoutingError.js";
 import { detectClientTool } from "open-sse/utils/clientDetector.js";
+import { sanitizeNodeQuirks } from "@/shared/utils/nodeQuirks.js";
 
 // ---- Types -------------------------------------------------------------------
 
@@ -455,7 +456,9 @@ function serialize(key: string, fn: () => Promise<void>): Promise<void> {
   betaWrites.set(key, next.catch(() => {}));
   return next;
 }
-const union = (a?: string[] | null, b?: string[] | null): string[] => [...new Set([...(a || []), ...(b || [])])];
+// Same rules as a saved node quirk: valid flag names only, at most 50.
+const union = (a?: string[] | null, b?: string[] | null): string[] =>
+  sanitizeNodeQuirks({ droppedBetas: [...(a || []), ...(b || [])] }, { keepEmpty: true }).droppedBetas || [];
 
 // Anthropic-compatible endpoint rejected some beta flags; remember them on the
 // connection (so later requests skip the failed try) and on the node (so the

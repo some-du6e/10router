@@ -13,6 +13,9 @@ type ProviderSpecificData = Record<string, unknown> & {
   baseUrl?: string;
   apiType?: string;
   modelRoutes?: Record<string, string>;
+  ownBaseUrl?: boolean;
+  apiKeyHeader?: string | boolean;
+  maxCompletionTokens?: boolean;
 };
 type Connection = { id: string; provider: string; apiKey?: string; providerSpecificData?: ProviderSpecificData | null };
 
@@ -58,13 +61,21 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       protocol,
       protocols,
       fetchFn: makeProbeFetch(remote),
+      // Saved quirks: the `api-key` header style and the max_completion_tokens cap.
+      quirks: {
+        ...(connection.providerSpecificData?.apiKeyHeader ? { apiKeyHeader: true } : {}),
+        ...(connection.providerSpecificData?.maxCompletionTokens ? { maxCompletionTokens: true } : {}),
+      },
       catalog: await getEndpointCatalog(),
       signal: request.signal, // a client that gives up stops the probing too
     });
     // A path that errored mid-probe would drop its models from the routes, so
     // only replace saved routes when every path finished.
     // A stopped run (key refused, rate-limited) is partial too: never save then.
-    if (result.routes && result.allComplete && !result.partial) await saveRoutes(connection.provider, protocol, result.routes);
+    // A key with its own endpoint URL may sit on another account with other
+    // models, so what it sees must not rewrite routes for the node's other keys.
+    const ownEndpoint = !!connection.providerSpecificData?.ownBaseUrl;
+    if (result.routes && result.allComplete && !result.partial && !ownEndpoint) await saveRoutes(connection.provider, protocol, result.routes);
     return NextResponse.json({
       models: result.models.map((m: string) => ({ id: m })), source: result.source, catalogName: result.catalogName, routes: result.routes, steps: result.steps,
       partial: !!result.partial, partialReason: result.partialReason || null, authRejected: !!result.authRejected,

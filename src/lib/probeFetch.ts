@@ -57,6 +57,8 @@ export function makeProbeFetch(checkPublic: boolean, { fetchImpl }: { fetchImpl?
       if (next.origin !== new URL(current).origin || hop >= MAX_REDIRECTS) return res;
       // A POST that would turn into a GET means the URL is wrong; report the redirect as-is.
       if (init?.method === "POST" && (res.status === 301 || res.status === 302 || res.status === 303)) return res;
+      // Following: drop this hop's body so its pinned agent can close.
+      await res.body?.cancel().catch(() => {});
       current = next.toString();
     }
   };
