@@ -87,10 +87,11 @@ export const COOLDOWN_MS = {
 // Failure buckets recorded on requestDetails rows (errorClass) so failures can be
 // told apart from the DB without parsing provider error text.
 export const ERROR_CLASS = {
-  AUTH_LOCKED: "auth_locked",
+  AUTH_ERROR: "auth_error",
   RATE_LIMITED: "rate_limited",
   UPSTREAM_5XX: "upstream_5xx",
   TIMEOUT: "timeout",
   CLIENT_ERROR: "client_error",
+  ABORTED: "aborted",
   OTHER: "other",
 };
