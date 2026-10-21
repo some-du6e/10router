@@ -47,6 +47,10 @@ const DEFAULT_SETTINGS = {
   comboStrategy: "fallback",
   comboStickyRoundRobinLimit: 1,
   comboStrategies: {},
+  // Billing sets auto combos skip (see AUTO_COMBO_BILLING_SETS in sse/services/autoCombo.ts).
+  autoComboBlockedBilling: ["payg", "freeTier", "custom"],
+  // Provider prefixes (e.g. "sfff") that auto combos never route to.
+  autoComboExcludedProviders: [],
   capacityAdapter: {
     vision: { enabled: true, roundRobin: false, models: [] },
     pdf: { enabled: false, roundRobin: false, models: [] },

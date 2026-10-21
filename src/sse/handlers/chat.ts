@@ -10,6 +10,9 @@ import {
 import { handleAntigravityQuotaError, clearAntigravityStrikes } from "../services/antigravityQuota.js";
 import { getSettings, getProviderNodeById, updateProviderNode, getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
 import { getModelInfo, getComboModels, comboLookupName } from "../services/model.js";
+import { resolveAutoCombo, blockedBillingSets, connectionBilling, billingPolicyApplies } from "../services/autoCombo.js";
+import type { BillingSet } from "../services/autoCombo.js";
+import { BUILTIN_MODEL_ALIASES } from "open-sse/services/model.js";
 import { handleChatCore, clientReceivesStream } from "open-sse/handlers/chatCore.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
 import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
@@ -124,6 +127,8 @@ interface PassResult {
 interface SingleModelOptions {
   allowHold?: boolean;
   routingFailures?: RoutingFailure[];
+  // Set inside an auto combo: connections billed this way are never used.
+  blockedBilling?: Set<BillingSet> | null;
 }
 
 interface RoutedChatArgs {
@@ -238,16 +243,23 @@ export async function handleChat(request: Request, clientRawRequest: ClientRawRe
 async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, request, apiKey, routingFailures }: RoutedChatArgs): Promise<Response> {
   const requiredCapabilities = detectRequiredCapabilities(body);
 
-  // Check if model is a combo (has multiple models with fallback)
-  const comboModels = await getComboModels(modelStr);
+  // Check if model is a combo (has multiple models with fallback). A bare id
+  // with no combo or alias falls back across every provider serving it.
+  const userComboModels = await getComboModels(modelStr);
+  const comboModels = userComboModels ?? (await resolveAutoCombo(modelStr, BUILTIN_MODEL_ALIASES, settings));
   if (comboModels) {
+    // An auto combo picked its providers by billing; every account it reaches,
+    // including fallbacks within a provider, has to pass the same check.
+    const blockedBilling = userComboModels ? null : blockedBillingSets(settings);
     // Combos are configured and rotation-tracked under the bare name, so a
     // context-window selector must not fragment either.
     const comboKey = comboLookupName(modelStr);
     // Check for combo-specific strategy first, fallback to global
     const comboStrategies: Record<string, ComboStrategyConfig> = settings.comboStrategies || {};
     const comboSpecificStrategy = comboStrategies[comboKey]?.fallbackStrategy;
-    const comboStrategy = comboSpecificStrategy || settings.comboStrategy || "fallback";
+    // Rotating providers per turn would throw away prompt caches, so the global
+    // strategy only covers combos the user made.
+    const comboStrategy = comboSpecificStrategy || (blockedBilling ? "fallback" : settings.comboStrategy) || "fallback";
     const augmentedModels = augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, settings);
     const adapterAdded = augmentedModels.filter((m: string) => !comboModels.includes(m));
 
@@ -264,7 +276,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
               cleanRawReq = { ...clientRawRequest, body: cleanBody };
             }
-            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false, routingFailures });
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false, routingFailures, blockedBilling });
           },
           log,
           comboName: comboKey,
@@ -285,7 +297,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
         body,
         models: augmentedModels,
         handleSingleModel: withCapacityAdapterStripping(
-          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures }),
+          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures, blockedBilling }),
           adapterAdded
         ),
         log,
@@ -296,6 +308,9 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
       models: augmentedModels, body, modelStr, request, apiKey, clientRawRequest, routingFailures,
     });
   }
+
+  // A bare id that formed no auto combo still may not reach a blocked account.
+  const soloBlockedBilling = (await billingPolicyApplies(modelStr, BUILTIN_MODEL_ALIASES)) ? blockedBillingSets(settings) : null;
 
   // Single model request — may still switch to a capacity-adapter model if the
   // target lacks a capability the request needs (e.g. no vision, request has an image).
@@ -308,7 +323,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
         body,
         models: soloAugmented,
         handleSingleModel: withCapacityAdapterStripping(
-          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures }),
+          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures, blockedBilling: soloBlockedBilling }),
           adapterAdded
         ),
         log,
@@ -319,7 +334,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
     });
   }
 
-  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { routingFailures });
+  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { routingFailures, blockedBilling: soloBlockedBilling });
 }
 
 /**
@@ -440,13 +455,13 @@ async function handleSingleModelChat(
   clientRawRequest: ClientRawRequest | null = null,
   request: Request | null = null,
   apiKey: string | null = null,
-  { allowHold = true, routingFailures = [] }: SingleModelOptions = {},
+  { allowHold = true, routingFailures = [], blockedBilling = null }: SingleModelOptions = {},
 ): Promise<Response> {
   // An unfinished fusion panel is not proof of limit exhaustion. Successful
   // panels with empty/unparseable content must also remain retryable.
   const unconfirmed: RoutingFailure = { limited: false };
   routingFailures.push(unconfirmed);
-  const response = await routeSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { allowHold, routingFailures });
+  const response = await routeSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { allowHold, routingFailures, blockedBilling });
   if (!response.ok) routingFailures.splice(routingFailures.indexOf(unconfirmed), 1);
   return response;
 }
@@ -503,7 +518,7 @@ async function routeSingleModelChat(
   clientRawRequest: ClientRawRequest | null,
   request: Request | null,
   apiKey: string | null,
-  { allowHold, routingFailures }: { allowHold: boolean; routingFailures: RoutingFailure[] },
+  { allowHold, routingFailures, blockedBilling = null }: { allowHold: boolean; routingFailures: RoutingFailure[]; blockedBilling?: Set<BillingSet> | null },
 ): Promise<Response> {
   // Detect source format by endpoint + body (scoped per-call; handleChat's copy is a
   // separate function and is not visible here)
@@ -569,11 +584,11 @@ async function routeSingleModelChat(
   const { provider, model } = modelInfo as Required<ModelInfo>;
 
   if ((sourceFormatOverride || detectFormat(body)) === FORMATS.CLAUDE) {
-    const sideSearch = await answerClaudeSideSearch(body, { provider, model: body.model, request, apiKey, log } as Parameters<typeof answerClaudeSideSearch>[1]);
+    const sideSearch = await answerClaudeSideSearch(body, { provider, model: body.model, request, apiKey, log, blockedBilling } as Parameters<typeof answerClaudeSideSearch>[1]);
     if (sideSearch) return sideSearch;
   }
 
-  body = await enrichClaudeBuiltinSearch(body, { provider, request, apiKey, log } as Parameters<typeof enrichClaudeBuiltinSearch>[1]);
+  body = await enrichClaudeBuiltinSearch(body, { provider, request, apiKey, log, blockedBilling } as Parameters<typeof enrichClaudeBuiltinSearch>[1]);
 
   // Routing shown in the unified "▶" line (client model → provider/model)
 
@@ -618,7 +633,10 @@ async function routeSingleModelChat(
     // the configured strategy, so a dead pinned account never wedges a session.
     const preferredConnectionId = affinityKey ? getAffinity(affinityKey) : null;
     // connectionId is always set on a selected account (real or the "noauth" virtual one).
-    const credentials = (await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId })) as (Credentials & { connectionId: string } & Record<string, any>) | null;
+    const credentials = (await getProviderCredentials(provider, excludeConnectionIds, model, {
+      preferredConnectionId,
+      connectionFilter: blockedBilling ? (c: { provider: string; authType?: string }) => !blockedBilling.has(connectionBilling(c)) : null,
+    })) as (Credentials & { connectionId: string } & Record<string, any>) | null;
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
@@ -644,8 +662,11 @@ async function routeSingleModelChat(
         };
       }
       if (excludeConnectionIds.size === 0) {
-        log.warn("AUTH", `No active credentials for provider: ${provider}`);
-        return { success: false, unconfigured: true, status: HTTP_STATUS.NOT_FOUND, error: `No active credentials for provider: ${provider}`, response: errorResponse(HTTP_STATUS.NOT_FOUND, `No active credentials for provider: ${provider}`) };
+        const error = blockedBilling
+          ? `No allowed account for ${provider}/${model}: bare model ids skip ${[...blockedBilling].join(", ")} billing. Allow it under Profile → Auto Combos, or ask for a provider/model id.`
+          : `No active credentials for provider: ${provider}`;
+        log.warn("AUTH", error);
+        return { success: false, unconfigured: true, status: HTTP_STATUS.NOT_FOUND, error, response: errorResponse(HTTP_STATUS.NOT_FOUND, error) };
       }
       log.warn("CHAT", "No more accounts available", { provider });
       const status = lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE;

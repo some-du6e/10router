@@ -21,6 +21,16 @@ function getLocaleFromCookie() {
   return normalizeLocale(value);
 }
 
+// Mirrors DEFAULT_AUTO_COMBO_BLOCKED_BILLING in sse/services/autoCombo.ts.
+const DEFAULT_BLOCKED_BILLING = ["payg", "freeTier", "custom"];
+const AUTO_COMBO_BILLING_OPTIONS = [
+  { set: "subscription", label: "Subscriptions", hint: "Flat-rate plans you log in to: Claude Code, Codex, Copilot" },
+  { set: "free", label: "Free", hint: "No billing at all: Kiro, Gemini CLI, OpenCode" },
+  { set: "custom", label: "Custom endpoints", hint: "Endpoints you added yourself. Off by default since most bill per token" },
+  { set: "freeTier", label: "Free tiers", hint: "Free up to a limit, then paid: OpenRouter, Gemini API" },
+  { set: "payg", label: "Pay per token", hint: "API keys billed by usage: OpenAI, Anthropic, Groq" },
+];
+
 export default function ProfilePage() {
   const { theme, setTheme, isDark } = useTheme();
   const [locale, setLocale] = useState(() => getLocaleFromCookie());
@@ -309,6 +319,57 @@ export default function ProfilePage() {
       }
     } catch (err) {
       console.error("Failed to update sticky limit:", err);
+    }
+  };
+
+  const [autoComboExcludedDraft, setAutoComboExcludedDraft] = useState(null);
+  const [excludedError, setExcludedError] = useState("");
+
+  // Until settings load (or if they fail to) show the server's defaults and
+  // keep the toggles locked, so a click can't save a list that unblocks paid sets.
+  const billingLoaded = Array.isArray(settings.autoComboBlockedBilling);
+  const blockedBilling = billingLoaded ? settings.autoComboBlockedBilling : DEFAULT_BLOCKED_BILLING;
+  const [savingBilling, setSavingBilling] = useState(false);
+  const [billingError, setBillingError] = useState("");
+
+  const toggleAutoComboBilling = async (set) => {
+    const next = blockedBilling.includes(set)
+      ? blockedBilling.filter((s) => s !== set)
+      : [...blockedBilling, set];
+    setSavingBilling(true);
+    setBillingError("");
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoComboBlockedBilling: next }),
+      });
+      if (res.ok) setSettings(prev => ({ ...prev, autoComboBlockedBilling: next }));
+      else setBillingError("Couldn't save. Try again.");
+    } catch (err) {
+      console.error("Failed to update auto combo billing sets:", err);
+      setBillingError("Couldn't save. Try again.");
+    } finally {
+      setSavingBilling(false);
+    }
+  };
+
+  const updateAutoComboExcluded = async (text) => {
+    const providers = Array.from(new Set(text.split(/[\s,]+/).map((p) => p.trim()).filter(Boolean)));
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoComboExcludedProviders: providers }),
+      });
+      if (res.ok) {
+        setSettings(prev => ({ ...prev, autoComboExcludedProviders: providers }));
+        setAutoComboExcludedDraft(null);
+        setExcludedError("");
+      } else setExcludedError("Couldn't save. Try again.");
+    } catch (err) {
+      console.error("Failed to update auto combo exclusions:", err);
+      setExcludedError("Couldn't save. Try again.");
     }
   };
 
@@ -1582,6 +1643,53 @@ export default function ProfilePage() {
                 />
               </div>
             )}
+
+            {/* Auto combo billing sets */}
+            <div className="pt-4 border-t border-border/50">
+              <p className="font-medium text-sm sm:text-base">Auto Combos</p>
+              <p className="text-xs sm:text-sm text-text-muted mb-3">
+                A bare model id like claude-opus-5-5 falls back across every provider serving it. Turn off the kinds of provider it may use.
+              </p>
+              <div className="flex flex-col gap-2">
+                {AUTO_COMBO_BILLING_OPTIONS.map(({ set, label, hint }) => (
+                  <div key={set} className="flex items-center justify-between gap-4">
+                    <div className="min-w-0">
+                      <p className="text-sm">{label}</p>
+                      <p className="text-xs text-text-muted">{hint}</p>
+                    </div>
+                    <Toggle
+                      checked={!blockedBilling.includes(set)}
+                      onChange={() => toggleAutoComboBilling(set)}
+                      disabled={loading || savingBilling || !billingLoaded}
+                    />
+                  </div>
+                ))}
+              </div>
+              {billingLoaded && AUTO_COMBO_BILLING_OPTIONS.every(({ set }) => blockedBilling.includes(set)) && (
+                <p className="text-xs text-amber-500 mt-2">Every kind is off, so bare model ids can&apos;t use any account. Ask for provider/model ids instead.</p>
+              )}
+              {billingError && <p className="text-xs text-red-500 mt-2">{billingError}</p>}
+            </div>
+
+            {/* Auto combo exclusions */}
+            <div className="flex items-start sm:items-center justify-between gap-4 pt-4 border-t border-border/50">
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-sm sm:text-base">Auto Combo Exclusions</p>
+                <p className="text-xs sm:text-sm text-text-muted">
+                  Providers to leave out on top of the kinds above, by prefix (cc, sfff) or id (claude).
+                </p>
+              </div>
+              <Input
+                value={autoComboExcludedDraft ?? (settings.autoComboExcludedProviders || []).join(", ")}
+                onChange={(e) => setAutoComboExcludedDraft(e.target.value)}
+                onBlur={(e) => autoComboExcludedDraft !== null && updateAutoComboExcluded(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                placeholder="sfff, openrouter"
+                disabled={loading}
+                className="w-40 sm:w-56 shrink-0"
+              />
+            </div>
+            {excludedError && <p className="text-xs text-red-500 -mt-2">{excludedError}</p>}
 
             <p className="text-xs text-text-muted italic pt-2 border-t border-border/50">
               {settings.fallbackStrategy === "round-robin"

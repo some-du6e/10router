@@ -10,6 +10,8 @@ import { POST as responsesPost } from "../../responses/route.js";
 import { getPooledCodexRateLimitHeaders } from "@/sse/services/codexPooledUsage";
 import { getModelAliases, getComboByName } from "@/lib/localDb";
 import { stripContextWindowSuffix } from "open-sse/services/model.js";
+import { BUILTIN_MODEL_ALIASES } from "open-sse/services/model.js";
+import { getAutoComboProviders, resolveAutoCombo } from "@/sse/services/autoCombo.js";
 
 export { OPTIONS } from "../../responses/route.js";
 
@@ -49,6 +51,12 @@ async function withCodexFallback(request) {
   const aliases = await getModelAliases();
   if (aliases?.[bareModel]) return request;
   if (await getComboByName(bareModel)) return request;
+  // Codex keeps its own accounts first. Only a model no Codex account serves
+  // is left for handleChat to route across the providers that do.
+  // resolveAutoCombo waits out a cold catalog, so ask it before checking Codex.
+  if ((await resolveAutoCombo(bareModel, BUILTIN_MODEL_ALIASES)) && !getAutoComboProviders(bareModel).includes("codex")) {
+    return request;
+  }
 
   return new Request(request.url, {
     method: request.method,

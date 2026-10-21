@@ -39,6 +39,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     ? excludeConnectionIds
     : (excludeConnectionIds ? new Set([excludeConnectionIds]) : new Set());
   const preferredConnectionId = options?.preferredConnectionId || null;
+  // Drops connections the caller may not use at all (auto combos skip blocked
+  // billing), as if they were not connected.
+  const connectionFilter = typeof options?.connectionFilter === "function" ? options.connectionFilter : null;
   // Resolve alias to provider ID (e.g., "kc" -> "kilocode") so aliases share a lock
   const providerId = resolveProviderId(provider);
 
@@ -53,6 +56,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
     // Inject a virtual connection for no-auth free providers (with optional proxy pool from settings)
     if (FREE_PROVIDERS[providerId]?.noAuth) {
+      if (connectionFilter && !connectionFilter({ provider: providerId })) return null;
       const settings = await getSettings();
       const override = (settings.providerStrategies || {})[providerId] || {};
       const strategy = override.rotateStrategy || "none";
@@ -78,7 +82,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       };
     }
 
-    const connections = await getProviderConnections({ provider: providerId, isActive: true });
+    const allConnections = await getProviderConnections({ provider: providerId, isActive: true });
+    const connections = connectionFilter ? allConnections.filter(c => connectionFilter(c)) : allConnections;
     log.debug("AUTH", `${provider} | total connections: ${connections.length}, excludeIds: ${excludeSet.size > 0 ? [...excludeSet].join(",") : "none"}, model: ${model || "any"}`);
 
     if (connections.length === 0) {

@@ -66,4 +66,11 @@ describe("Claude built-in web search on non-Claude providers", () => {
     expect(await enrichClaudeBuiltinSearch(body, { provider: "claude", search })).toBe(body);
     expect(search).not.toHaveBeenCalled();
   });
+
+  it("passes an auto combo's blocked billing to the search model lookup", async () => {
+    const resolveSearchModel = vi.fn(async () => null);
+    const blockedBilling = new Set(["payg"]);
+    await enrichClaudeBuiltinSearch(requestBody(), { provider: "kiro", search: vi.fn(), resolveSearchModel, blockedBilling });
+    expect(resolveSearchModel).toHaveBeenCalledWith(blockedBilling);
+  });
 });
