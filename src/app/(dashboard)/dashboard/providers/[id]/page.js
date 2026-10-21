@@ -368,14 +368,15 @@ export default function ProviderDetailPage() {
       if (res.ok) {
         setProviderNode(data.node);
         await fetchConnections();
-      } else {
-        // e.g. a prefix that belongs to a built-in provider.
-        alert(data.error || "Couldn't save the endpoint.");
+        return true;
       }
+      // e.g. a prefix that belongs to a built-in provider.
+      alert(data.error || "Couldn't save the endpoint.");
     } catch (error) {
       console.log("Error updating provider node:", error);
       alert("Couldn't save the endpoint: network error.");
     }
+    return false;
   };
 
   const saveProviderStrategy = async (strategy, stickyLimit) => {
@@ -554,13 +555,15 @@ export default function ProviderDetailPage() {
       if (res.ok) {
         await fetchCustomModels();
         if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("customModelChanged"));
-      } else {
-        const data = await res.json();
-        alert(data.error || "Failed to add custom model");
+        return true;
       }
+      const data = await res.json().catch(() => ({}));
+      alert(data.error || "Failed to add custom model");
     } catch (error) {
       console.log("Error adding custom model:", error);
+      alert("Failed to add custom model: network error.");
     }
+    return false;
   };
 
   const handleDeleteCustomModel = async (modelId, type = "llm", providerAliasOverride = providerStorageAlias) => {
@@ -1438,10 +1441,12 @@ export default function ProviderDetailPage() {
           disabledIds={disabledModelIds}
           onToggleModel={(id, on) => (on ? handleEnableModel(id) : handleDisableModel(id))}
           onAddModel={(id) => handleAddCustomModel(id, "llm", providerStorageAlias)}
+          onDeleteModel={(id) => handleDeleteCustomModel(id, "llm", providerStorageAlias)}
+          onEditNode={(fields) => handleUpdateNode({ ...fields, apiType: providerNode.apiType })}
           onSaveNode={(quirks, extra = {}) => handleUpdateNode({
             name: providerNode.name,
             prefix: providerNode.prefix,
-            apiType: providerNode.apiType,
+            apiType: extra.protocol === "openai-responses" ? "responses" : extra.protocol === "openai-chat" ? "chat" : providerNode.apiType,
             baseUrl: providerNode.baseUrl,
             // Only the changed keys; the server merges them into the stored ones.
             quirks,

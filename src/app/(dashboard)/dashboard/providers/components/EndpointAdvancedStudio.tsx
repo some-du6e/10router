@@ -54,6 +54,8 @@ export default function EndpointAdvancedStudio({ node, onSave, model, apiKey, de
   // Raw fields typed here. The server drops what it can't use yet (half-typed
   // JSON, a partial proxy URL), so its copy must not overwrite what's on screen.
   const typed = useRef<Set<keyof RawOverrides>>(new Set());
+  const nodeRef = useRef(node);
+  useEffect(() => { nodeRef.current = node; }, [node]);
   useEffect(() => {
     if (timer.current) return;
     setDraft((d) => {
@@ -69,9 +71,15 @@ export default function EndpointAdvancedStudio({ node, onSave, model, apiKey, de
     pending.current = {};
     if (!Object.keys(patch).length) return;
     setSaving(true);
-    try { await onSave(patch); } finally { setSaving(false); }
+    try {
+      // A failed save puts the server's copy back, so the screen doesn't claim a change that didn't stick.
+      if ((await onSave(patch)) === false) { typed.current.clear(); setDraft(nodeRef.current); }
+    } finally { setSaving(false); }
   };
-  useEffect(() => () => { if (timer.current) { clearTimeout(timer.current); void flush(); } }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // The cleanup runs once, so it must reach the latest flush (and its onSave), not the first render's.
+  const flushRef = useRef(flush);
+  useEffect(() => { flushRef.current = flush; });
+  useEffect(() => () => { if (timer.current) { clearTimeout(timer.current); void flushRef.current(); } }, []);
 
   const change = (patch: Partial<NodeQuirks>, { debounce = false } = {}) => {
     setDraft((d) => ({ ...d, ...patch }));
@@ -117,7 +125,9 @@ export default function EndpointAdvancedStudio({ node, onSave, model, apiKey, de
                     label="Protocol" size="md" wrap
                     options={PROTO_OPTS}
                     value={proto as ProtoChoice}
-                    disabled={(v) => (v === proto ? null : !canChangeProtocol || v === "auto" ? "Fixed when the endpoint was added" : null)}
+                    disabled={(v) => (v === proto ? null
+                      : !canChangeProtocol || v === "auto" ? "Fixed when the endpoint was added"
+                      : (v === "anthropic") !== (proto === "anthropic") ? "Switching between OpenAI and Anthropic needs a new endpoint" : null)}
                     onChange={(v) => { if (v !== "auto" && v !== proto) void onSave({}, { protocol: v }); }}
                   />
                   <p className="text-xs text-text-muted">Detected: <span className="font-medium text-text-main">{PROTOCOL_LABELS[detected || proto]}</span></p>

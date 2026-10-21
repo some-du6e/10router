@@ -286,6 +286,8 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }: Ad
     runRef.current.timer = setTimeout(() => { timedOut = true; run.controller.abort(); }, DETECT_TIMEOUT_MS);
     setPhase("detecting"); setSteps([]); setRequests(0); setNotice(""); setFail(null); setAnswered([]); setResult(null);
     setPartial(null); setSaveError(""); setSlots(false); setDetailsOpen(false); setPathOpen(null); setBetaCheck({}); setPrefixError("");
+    // A new run may find another URL or API, so an endpoint saved before it is not this one.
+    setSavedNode(null); setKeySaved(false);
     let data: DetectResponse;
     try {
       const res = await fetch("/api/provider-nodes/detect", {
@@ -353,7 +355,7 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }: Ad
 
   const editKey = () => {
     stopRun();
-    setPhase("idle"); setApiKey(""); setFail(null);
+    setPhase("idle"); setApiKey(""); setFail(null); setKeySaved(false);
     setNotice("Paste a working key, then connect again.");
     setTimeout(() => keyRef.current?.querySelector("input")?.focus(), 30);
   };
@@ -361,6 +363,7 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }: Ad
   const onUrlOrKeyEdit = () => {
     if (phase === "detecting" || phase === "idle") return;
     stopRun(); setPhase("idle"); setResult(null); setFail(null); setPartial(null); setSaveError("");
+    setSavedNode(null); setKeySaved(false);
   };
 
   // ---- check the rest ----

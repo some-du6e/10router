@@ -106,6 +106,9 @@ interface Props {
   disabledIds: string[];
   onToggleModel: (id: string, on: boolean) => Promise<unknown> | unknown;
   onAddModel: (id: string) => Promise<unknown> | unknown;
+  onDeleteModel: (id: string) => Promise<unknown> | unknown;
+  // Name, prefix and URL; resolves false when the save failed.
+  onEditNode: (fields: { name: string; prefix: string; baseUrl: string }) => Promise<boolean>;
   onSaveNode: (quirks: Partial<NodeQuirks>, extra?: StudioExtra) => Promise<unknown> | unknown;
   onReload: () => Promise<unknown> | unknown;
   onAddKey: () => void;
@@ -128,6 +131,7 @@ export default function CustomEndpointPage(p: Props) {
   const who = mimic ? MIMIC_LABELS[mimic] : null;
   const proto = protoOf(node);
   const [iconOpen, setIconOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
 
   return (
     <div className="flex flex-col gap-8">
@@ -141,6 +145,7 @@ export default function CustomEndpointPage(p: Props) {
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="truncate text-3xl font-semibold tracking-tight">{node.name}</h1>
+              <button type="button" onClick={() => setEditOpen(true)} aria-label="Edit name, prefix and URL" title="Edit name, prefix and URL" className="material-symbols-outlined rounded p-1 text-[18px] text-text-muted hover:bg-surface-2 hover:text-text-main">edit</button>
             </div>
             <p className="text-text-muted">{connections.length} key{connections.length === 1 ? "" : "s"} · {models.length} model{models.length === 1 ? "" : "s"}</p>
           </div>
@@ -151,9 +156,10 @@ export default function CustomEndpointPage(p: Props) {
       <KeysCard {...p} />
       <ModelsCard {...p} />
       {/* Advanced (lane dialog-advanced): mounted last, as in the mockup. */}
-      <EndpointAdvancedStudio node={node} onSave={p.onSaveNode} model={models[0]} detected={proto} />
+      <EndpointAdvancedStudio node={node} onSave={p.onSaveNode} model={models[0]} detected={proto} canChangeProtocol={proto !== "anthropic"} />
 
       {iconOpen && <IconModal node={node} onClose={() => setIconOpen(false)} onSaved={p.onNodeChanged} />}
+      {editOpen && <EditModal node={node} onClose={() => setEditOpen(false)} onSave={p.onEditNode} />}
     </div>
   );
 }
@@ -192,7 +198,7 @@ function EndpointCard({ node, connections, models, proto, onReload, onDelete, on
     try {
       const res = await fetch(`/api/providers/${node.id}/requests`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
       const d = (await res.json()) as { ok?: boolean; error?: string | null; requests?: EndpointRequestEntry[] };
-      if (!d.ok && !d.requests?.length) setTestError(d.error || "Test failed");
+      if (!d.ok) setTestError(d.error || "Test failed");
       await load();
     } catch { setTestError("Network error"); }
     finally { setTesting(false); }
@@ -273,7 +279,7 @@ function LogRow({ l, fresh }: { l: EndpointRequestEntry; fresh: boolean }) {
 
 // What Re-detect found, as changes to tick and apply.
 function RedetectBox({ node, diff, onClose, onApplied }: { node: EndpointNode; diff: RedetectDiff & { usedKey?: boolean }; onClose: () => void; onApplied: (n: EndpointNode | null) => Promise<void> }) {
-  const [pick, setPick] = useState({ protocol: !!diff.protocol?.applicable, baseUrl: !!diff.baseUrl, add: true, remove: false, quirks: true });
+  const [pick, setPick] = useState({ protocol: !!diff.protocol?.applicable, baseUrl: !!diff.baseUrl, add: !!diff.ok && diff.addModels.length > 0, remove: false, quirks: true });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   if (!diff.ok) {
@@ -287,19 +293,24 @@ function RedetectBox({ node, diff, onClose, onApplied }: { node: EndpointNode; d
   }
   const q = diff.quirks;
   const qList = [q.maxCompletionTokens && "send max_completion_tokens", q.apiKeyHeader && "send the key in an api-key header", q.modelRoutes && Object.keys(q.modelRoutes).length > 0 && "route some models to another API"].filter(Boolean) as string[];
+  // Ticked rows that exist; a lone "needs a new endpoint" note has nothing to apply.
+  const applicable = (pick.protocol && !!diff.protocol?.applicable) || (pick.baseUrl && !!diff.baseUrl) || (pick.add && diff.addModels.length > 0) || (pick.remove && diff.removeModels.length > 0) || (pick.quirks && qList.length > 0);
   const apply = async () => {
     setSaving(true); setErr("");
     try {
-      const body: Record<string, unknown> = { modelsNote: diff.modelsNote || undefined };
+      const body: Record<string, unknown> = {};
+      // The note describes the import, so it only changes when the models do.
+      if (pick.add && diff.addModels.length && diff.modelsNote) body.modelsNote = diff.modelsNote;
       if (pick.protocol && diff.protocol?.applicable) body.apiType = diff.protocol.to === "openai-responses" ? "responses" : "chat";
       if (pick.baseUrl && diff.baseUrl) body.baseUrl = diff.baseUrl.to;
       if (pick.add && diff.addModels.length) body.addModels = diff.addModels;
       if (pick.remove && diff.removeModels.length) body.removeModels = diff.removeModels;
       if (pick.quirks && qList.length) body.quirks = q;
       const res = await fetch(`/api/providers/${node.id}/redetect`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      const d = (await res.json().catch(() => ({}))) as { node?: EndpointNode; error?: string };
+      const d = (await res.json().catch(() => ({}))) as { node?: EndpointNode; error?: string; failed?: number };
       if (!res.ok) { setErr(d.error || `HTTP ${res.status}`); return; }
       if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("customModelChanged"));
+      if (d.failed) { setErr(`Applied, but ${d.failed} model change${d.failed === 1 ? "" : "s"} failed. Re-detect again to retry them.`); return; }
       await onApplied(d.node || null);
     } catch { setErr("Network error"); }
     finally { setSaving(false); }
@@ -331,7 +342,7 @@ function RedetectBox({ node, diff, onClose, onApplied }: { node: EndpointNode; d
           {diff.removeModels.length > 0 && row("remove", <>Remove {diff.removeModels.length} model{diff.removeModels.length === 1 ? "" : "s"} its /models no longer lists{chips(diff.removeModels)}</>)}
           {qList.length > 0 && row("quirks", <>Fixes: {qList.join(", ")}</>)}
           {err && <p role="alert" className="text-xs text-red-600 dark:text-red-400">{err}</p>}
-          <div className="flex gap-2 pt-1"><Btn icon="check" busy={saving} disabled={saving || !Object.values(pick).some(Boolean)} onClick={apply}>Apply</Btn><Btn variant="ghost" onClick={onClose}>Keep as is</Btn></div>
+          <div className="flex gap-2 pt-1"><Btn icon="check" busy={saving} disabled={saving || !applicable} onClick={apply}>Apply</Btn><Btn variant="ghost" onClick={onClose}>Keep as is</Btn></div>
         </div>
       )}
     </div>
@@ -410,7 +421,7 @@ function KeysCard({ connections, onAddKey, onEditKey, onDeleteKey, onToggleKey, 
 
 // ---- Models ------------------------------------------------------------------------
 
-function ModelsCard({ node, models, disabledIds, onToggleModel, onAddModel }: Props) {
+function ModelsCard({ node, models, disabledIds, onToggleModel, onAddModel, onDeleteModel }: Props) {
   const [adding, setAdding] = useState(false);
   const [newId, setNewId] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
@@ -435,14 +446,17 @@ function ModelsCard({ node, models, disabledIds, onToggleModel, onAddModel }: Pr
             : <span className="flex size-7 shrink-0 items-center justify-center rounded-[8px] bg-surface-2 text-[11px] font-semibold text-text-muted">{(m.split("/").pop() || m)[0].toUpperCase()}</span>}
           <div className="min-w-0"><p className="truncate text-sm font-medium text-text-main">{prettyModel(m)}</p><code className="block truncate font-mono text-[11px] text-text-subtle">{prefix}/{m}</code></div>
         </div>
-        <span className="text-xs text-text-subtle"><Toggle on={on} disabled={busy === m} label={`${on ? "Turn off" : "Turn on"} ${prettyModel(m)}`} onChange={async (v) => { setBusy(m); try { await onToggleModel(m, v); } finally { setBusy(null); } }} /></span>
+        <span className="flex items-center gap-2 text-xs text-text-subtle">
+          <button type="button" disabled={busy === m} aria-label={`Remove ${prettyModel(m)}`} title="Remove" onClick={async () => { setBusy(m); try { await onDeleteModel(m); } finally { setBusy(null); } }} className="material-symbols-outlined rounded p-0.5 text-[16px] text-text-subtle hover:bg-surface-2 hover:text-red-500 disabled:opacity-50">delete</button>
+          <Toggle on={on} disabled={busy === m} label={`${on ? "Turn off" : "Turn on"} ${prettyModel(m)}`} onChange={async (v) => { setBusy(m); try { await onToggleModel(m, v); } finally { setBusy(null); } }} />
+        </span>
       </div>
     );
   };
   const add = async () => {
     const id = newId.trim();
     if (!id) return;
-    setBusy("__add"); try { await onAddModel(id); setNewId(""); setAdding(false); } finally { setBusy(null); }
+    setBusy("__add"); try { if ((await onAddModel(id)) !== false) { setNewId(""); setAdding(false); } } finally { setBusy(null); }
   };
   return (
     <Card>
@@ -472,6 +486,32 @@ function ModelsCard({ node, models, disabledIds, onToggleModel, onAddModel }: Pr
             ))}
       </div>
     </Card>
+  );
+}
+
+// ---- Name, prefix and URL ---------------------------------------------------------
+
+function EditModal({ node, onClose, onSave }: { node: EndpointNode; onClose: () => void; onSave: Props["onEditNode"] }) {
+  const [name, setName] = useState(node.name);
+  const [prefix, setPrefix] = useState(node.prefix || "");
+  const [baseUrl, setBaseUrl] = useState(node.baseUrl || "");
+  const [busy, setBusy] = useState(false);
+  const ready = name.trim() && prefix.trim() && baseUrl.trim();
+  const save = async () => {
+    if (!ready || busy) return;
+    setBusy(true);
+    try { if (await onSave({ name: name.trim(), prefix: prefix.trim(), baseUrl: baseUrl.trim() })) onClose(); } finally { setBusy(false); }
+  };
+  const enter = (e: React.KeyboardEvent<HTMLInputElement>) => { if (e.key === "Enter") void save(); };
+  return (
+    <Modal isOpen title="Edit endpoint" onClose={onClose}>
+      <div className="flex flex-col gap-4">
+        <Input id="ep-edit-name" label="Name" value={name} autoFocus onChange={(e) => setName(e.target.value)} onKeyDown={enter} />
+        <Input id="ep-edit-prefix" label="Prefix" value={prefix} hint={<>Models are called as <Code>{prefix || "prefix"}/model</Code>. Changing it breaks clients using the old one.</>} onChange={(e) => setPrefix(e.target.value)} onKeyDown={enter} />
+        <Input id="ep-edit-url" label="Base URL" value={baseUrl} placeholder="https://…/v1" onChange={(e) => setBaseUrl(e.target.value)} onKeyDown={enter} />
+        <div className="flex justify-end gap-2"><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn icon="check" busy={busy} disabled={!ready || busy} onClick={save}>Save</Btn></div>
+      </div>
+    </Modal>
   );
 }
 
