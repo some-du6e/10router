@@ -3,6 +3,7 @@
 ## Fixes
 - Requests that leave out `stream` now get plain JSON back when the upstream answers with JSON (Anthropic-style APIs, Snowflake Cortex), instead of that JSON followed by a stray `data: [DONE]`. Clients that ask to stream get the finished reply replayed as SSE in their own format (OpenAI, Claude, Responses).
 - **Tool calls no longer dropped on OpenAI-style paths**: when an upstream ends a Chat Completions stream without `finish_reason` (Snowflake serving Claude), the reply to Claude clients now closes properly and reports `tool_use`, so Claude Code runs the tool instead of seeing a cut-off turn.
+- On custom endpoints, a 400/404/422 caused by the request (bad body, unknown model) tries the next key without locking any key. Built-in providers keep their short locks.
 - Endpoint detection's api-key header result is now saved as the endpoint's api-key quirk.
 - Endpoint detection no longer lists models the account can't use ("not eligible for this model", "Model ... is unavailable").
 - `npm run dev` uses webpack, so TypeScript modules imported as `@/foo.js` resolve the same way they do in the build.

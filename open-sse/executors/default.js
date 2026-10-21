@@ -211,11 +211,12 @@ export class DefaultExecutor extends BaseExecutor {
         delete headers["Anthropic-Dangerous-Direct-Browser-Access"];
         delete headers["x-app"];
         delete headers["X-App"];
-        // Strip claude-code-20250219, plus any flags this endpoint has rejected
-        // before (learned in execute) or every flag when the user opted in.
-        const psd = credentials?.providerSpecificData || {};
-        filterBetaHeaders(headers, { dropped: psd.droppedBetas, stripAll: psd.stripBeta === true });
       }
+      // Strip claude-code-20250219, plus any flags this endpoint has rejected
+      // before (learned in execute) or every flag when the user opted in. Runs
+      // for official hosts too, so execute's retry actually drops what it learned.
+      const psd = credentials?.providerSpecificData || {};
+      filterBetaHeaders(headers, { dropped: psd.droppedBetas, stripAll: psd.stripBeta === true });
     }
 
     if (stream) headers["Accept"] = "text/event-stream";

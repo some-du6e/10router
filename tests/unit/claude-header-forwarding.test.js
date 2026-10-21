@@ -279,3 +279,21 @@ describe("proxyAwareFetch — api.anthropic.com routing", () => {
     expect(gotScrapingMock).not.toHaveBeenCalled();
   });
 });
+
+describe("DefaultExecutor.buildHeaders() — learned beta flags on an official host", () => {
+  it("drops learned and claude-code flags for api.anthropic.com too", async () => {
+    vi.resetModules();
+    const { DefaultExecutor } = await import("open-sse/executors/default.js");
+    const executor = new DefaultExecutor("anthropic-compatible-official");
+    const headers = executor.buildHeaders({
+      apiKey: "sk-test",
+      rawHeaders: { "anthropic-beta": "claude-code-20250219,bad-flag-1,good-flag-2" },
+      providerSpecificData: { baseUrl: "https://api.anthropic.com/v1", droppedBetas: ["bad-flag-1"] },
+    }, true);
+    const key = Object.keys(headers).find((k) => k.toLowerCase() === "anthropic-beta");
+    const flags = headers[key].split(",");
+    expect(flags).toContain("good-flag-2");
+    expect(flags).not.toContain("bad-flag-1");
+    expect(flags).not.toContain("claude-code-20250219");
+  });
+});

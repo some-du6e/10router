@@ -40,6 +40,7 @@ import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
 import { finalizeRoutingError } from "../services/finalRoutingError.js";
 import { detectClientTool } from "open-sse/utils/clientDetector.js";
 import { sanitizeNodeQuirks } from "@/shared/utils/nodeQuirks.js";
+import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers.js";
 
 // ---- Types -------------------------------------------------------------------
 
@@ -730,10 +731,11 @@ async function routeSingleModelChat(
 
     let shouldFallback = true;
     let cooldownMs = 0;
-    // A request error (bad body, unknown model) still tries the next key, in case
-    // it was key-specific, but locks nothing: one bad conversation mustn't make
-    // the pool "unavailable" for everyone else.
-    if (isRequestError(result.status, result.error)) {
+    // On a custom endpoint, a request error (bad body, unknown model) still tries
+    // the next key, in case it was key-specific, but locks nothing: one bad
+    // conversation mustn't make the pool "unavailable" for everyone else.
+    // Built-in providers keep their usual short locks.
+    if ((isOpenAICompatibleProvider(provider) || isAnthropicCompatibleProvider(provider)) && isRequestError(result.status, result.error)) {
       log.warn("AUTH", `${credentials.connectionName} request error [${result.status}], not locking`);
       // No-auth providers hand back the same virtual connection whatever is
       // excluded, so "try the next key" would resend the same request forever.
