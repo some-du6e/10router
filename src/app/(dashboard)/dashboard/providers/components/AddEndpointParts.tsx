@@ -5,7 +5,7 @@
 // class strings follow the approved mockup (mockups/provider-setup/src/app.js).
 
 import type { ReactNode, MouseEvent } from "react";
-import type { Classification, DetectStep, ModelCheck, Protocol, StopReason } from "@/lib/endpointDetect.js";
+import type { Classification, DetectProgress, DetectStep, ModelCheck, Protocol, StopReason } from "@/lib/endpointDetect.js";
 
 export const EASE = "cubic-bezier(0.22, 1, 0.36, 1)";
 export const reduceMotion = () => typeof window !== "undefined" && !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
@@ -440,3 +440,28 @@ export const STOP_WHY: Record<StopReason, string> = {
   deadline: "Detection ran out of time.",
   aborted: "Detection was cancelled.",
 };
+
+// Read an NDJSON response line by line. Returns the { type: "result" } object.
+export async function readNdjson<T>(res: Response, onEvent: (e: DetectProgress) => void): Promise<T> {
+  if (!res.body || !/ndjson/.test(res.headers.get("content-type") || "")) return res.json() as Promise<T>;
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  let result: T | null = null;
+  const line = (l: string) => {
+    if (!l.trim()) return;
+    const e = JSON.parse(l) as { type: string };
+    if (e.type === "result") result = e as unknown as T;
+    else onEvent(e as DetectProgress);
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf("\n")) >= 0) { line(buf.slice(0, i)); buf = buf.slice(i + 1); }
+  }
+  line(buf);
+  if (!result) throw new Error("No result");
+  return result;
+}

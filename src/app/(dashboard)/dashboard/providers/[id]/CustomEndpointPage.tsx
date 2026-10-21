@@ -16,7 +16,8 @@ import { MIMIC_LABELS } from "@/shared/utils/nodeQuirks.js";
 import type { Mimic, NodeQuirks, RouteProtocol } from "@/shared/utils/nodeQuirks.js";
 import type { EndpointRequestEntry } from "@/lib/endpointRequestLog.js";
 import type { RedetectDiff } from "@/app/api/providers/[id]/redetect/diff.js";
-import { prettyModel } from "../components/AddEndpointParts";
+import { PROTOCOL_NAME, prettyModel, readNdjson } from "../components/AddEndpointParts";
+import type { DetectProgress } from "@/lib/endpointDetect.js";
 import { shrinkIcon } from "../components/shrinkIcon.js";
 import EndpointAdvancedStudio from "../components/EndpointAdvancedStudio";
 import EndpointIcon, { TILE_BG } from "@/shared/components/EndpointIcon";
@@ -181,7 +182,11 @@ function EndpointCard({ node, connections, models, proto, onReload, onDelete, on
   const [testError, setTestError] = useState("");
   const [redetect, setRedetect] = useState<(RedetectDiff & { usedKey?: boolean; steps?: unknown[] }) | null>(null);
   const [detecting, setDetecting] = useState(false);
+  const [live, setLive] = useState<RedetectLive>(LIVE0);
+  const stopRef = useRef<AbortController | null>(null);
   const seen = useRef<Set<string> | null>(null);
+  // Leaving the page stops the run, so the server stops probing too.
+  useEffect(() => () => stopRef.current?.abort(), []);
 
   const load = useCallback(async () => {
     try {
@@ -213,12 +218,15 @@ function EndpointCard({ node, connections, models, proto, onReload, onDelete, on
   };
 
   const runRedetect = async () => {
-    setDetecting(true); setRedetect(null);
+    const stop = new AbortController();
+    stopRef.current = stop;
+    setDetecting(true); setRedetect(null); setLive({ ...LIVE0, startedAt: Date.now() });
+    const failed = (error: string): RedetectDiff => ({ ok: false, error, protocol: null, baseUrl: null, addModels: [], removeModels: [], outdatedModels: [], quirks: {}, modelsNote: null, changes: 0 });
     try {
-      const res = await fetch(`/api/providers/${node.id}/redetect`, { method: "POST" });
-      setRedetect(await res.json());
-    } catch { setRedetect({ ok: false, error: "Network error", protocol: null, baseUrl: null, addModels: [], removeModels: [], outdatedModels: [], quirks: {}, modelsNote: null, changes: 0 }); }
-    finally { setDetecting(false); }
+      const res = await fetch(`/api/providers/${node.id}/redetect`, { method: "POST", headers: { Accept: "application/x-ndjson" }, signal: stop.signal });
+      setRedetect(await readNdjson<RedetectDiff>(res, (e) => setLive((l) => nextLive(l, e))));
+    } catch { setRedetect(stop.signal.aborted ? null : failed("Network error")); }
+    finally { setDetecting(false); stopRef.current = null; }
   };
 
   const url = (node.baseUrl || "").replace(/\/+$/, "");
@@ -236,6 +244,7 @@ function EndpointCard({ node, connections, models, proto, onReload, onDelete, on
             <Btn icon="delete" variant="secondary" onClick={onDelete}>Delete</Btn>
           </div>
         </div>
+        {detecting && <RedetectStatus live={live} onStop={() => stopRef.current?.abort()} />}
         {(!connections.length || !models.length) && <p className="mt-3 text-xs text-text-muted">{!connections.length ? "Add a key to send a test message." : "Add a model to send a test message."}</p>}
         {testError && <p role="alert" className="ep-in mt-3 text-xs text-red-600 dark:text-red-400">{testError}</p>}
         {redetect && <RedetectBox node={node} diff={redetect} onClose={() => setRedetect(null)} onApplied={async (n) => { if (n) onNodeChanged(n); setRedetect(null); await onReload(); }} />}
@@ -282,6 +291,44 @@ function LogRow({ l, fresh }: { l: EndpointRequestEntry; fresh: boolean }) {
         </div>
       </details>
     </li>
+  );
+}
+
+// Live progress while Re-detect runs, in plain words.
+interface RedetectLive { startedAt: number; doing: string; sent: number; checked: number; total: number; found: number; waitUntil: number }
+const LIVE0: RedetectLive = { startedAt: 0, doing: "Connecting to the endpoint", sent: 0, checked: 0, total: 0, found: 0, waitUntil: 0 };
+function nextLive(l: RedetectLive, e: DetectProgress): RedetectLive {
+  const sent = "sent" in e && typeof e.sent === "number" ? Math.max(l.sent, e.sent) : l.sent;
+  switch (e.type) {
+    case "request": {
+      const doing = /models/i.test(e.label) && e.method === "GET" ? "Asking for its model list"
+        : /bad-key/i.test(e.label) ? "Making sure it really checks the key"
+        : /made-up|control/i.test(e.label) ? "Double-checking what it answered"
+        : "Checking which APIs it speaks";
+      return { ...l, sent: Math.max(sent, l.sent + 1), doing, checked: 0, total: 0, found: 0 };
+    }
+    case "throttled": return { ...l, sent, waitUntil: Date.now() + e.waitMs };
+    case "models-start": return { ...l, sent, doing: `Checking models on ${PROTOCOL_NAME[e.protocol as keyof typeof PROTOCOL_NAME] || e.protocol}`, checked: 0, total: e.total, found: 0 };
+    case "models-done": return { ...l, sent, total: 0 };
+    case "probe-result": return { ...l, sent, checked: l.checked + (e.skipped ? 0 : 1), found: l.found + (e.known ? 1 : 0) };
+    default: return { ...l, sent };
+  }
+}
+
+function RedetectStatus({ live, onStop }: { live: RedetectLive; onStop: () => void }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 500); return () => clearInterval(t); }, []);
+  const secs = Math.max(0, Math.round((now - live.startedAt) / 1000));
+  const wait = Math.ceil((live.waitUntil - now) / 1000);
+  return (
+    <div className="ep-in mt-4 flex items-start gap-2 rounded-[10px] border border-border-subtle bg-surface-2 px-3 py-2.5 text-xs">
+      <span aria-hidden="true" className="material-symbols-outlined ep-spin text-[16px] text-brand-500">progress_activity</span>
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <p role="status" aria-live="polite" className="font-medium text-text-main">{live.doing}{live.total > 0 && `: ${live.checked} of ${live.total}, ${live.found} work`}</p>
+        <p className="text-text-muted">{wait > 0 ? `Rate-limited, waiting ${wait}s · ` : ""}{live.sent} request{live.sent === 1 ? "" : "s"} · {secs}s · uses free checks where it can</p>
+      </div>
+      <Btn variant="ghost" onClick={onStop}>Stop</Btn>
+    </div>
   );
 }
 
