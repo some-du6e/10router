@@ -162,6 +162,9 @@ export const TABLES = {
       connectionId: "TEXT",
       status: "TEXT",
       data: "TEXT NOT NULL",
+      // Gzipped, base64 JSON of the untruncated payloads. Only set when a
+      // payload exceeded the preview limit, and only for recent rows.
+      fullData: "TEXT",
     },
     indexes: [
       "CREATE INDEX IF NOT EXISTS idx_rd_ts ON requestDetails(timestamp DESC)",

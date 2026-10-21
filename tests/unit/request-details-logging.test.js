@@ -42,6 +42,19 @@ describe("request detail logging", () => {
     })).toBe(128 * 1024);
   });
 
+  it("keeps the untruncated payload alongside a truncated preview", () => {
+    const big = { messages: [{ role: "system", content: "x".repeat(20000) }] };
+    const record = {
+      request: requestDetailsTest.truncateField(big, 5 * 1024),
+      response: requestDetailsTest.truncateField({ ok: true }, 5 * 1024),
+    };
+    expect(record.request._truncated).toBe(true);
+    const packed = requestDetailsTest.packFullData({ request: big, response: { ok: true } }, record);
+    expect(requestDetailsTest.unpackFullData(packed)).toEqual({ request: big });
+    expect(requestDetailsTest.packFullData({ response: { ok: true } }, { response: { ok: true } })).toBeNull();
+    expect(requestDetailsTest.unpackFullData("not gzip")).toBeNull();
+  });
+
   it("keeps Responses API input instead of replacing it with empty messages", () => {
     const input = [{
       type: "message",

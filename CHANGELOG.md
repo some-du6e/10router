@@ -20,6 +20,7 @@
 - Remove the IDE MITM proxy, certificate and DNS interception, dashboard controls, API routes, startup hooks, and CLI/Docker packaging. Upgrade cleanup stops old proxy processes and removes their loopback hosts entries. Tailscale keeps independent encrypted elevation credentials for reboot recovery.
 
 ## Features
+- **Load full request**: when a stored request shows `[Content truncated]`, a button on the banner loads the whole payload. The newest 25 requests keep their full payload (compressed), only while sensitive request details are enabled.
 - **Add endpoint**: one button on the providers page adds an OpenAI- or Anthropic-compatible endpoint from a URL and key. 10router detects the API with free requests only (no generation), checks the key, and finds models from `/models` or, when there is none (Snowflake Cortex), from the models.dev catalog. Import models uses the same discovery. Custom endpoints now sit right after OpenRouter.
 - **Two-path endpoints**: an endpoint that answers on both Anthropic Messages and an OpenAI API stays one provider, and each model goes to its best API (Claude on Messages, the rest on Responses or Chat).
 - **Beta flags**: when an Anthropic-compatible endpoint rejects `anthropic-beta` values, 10router drops exactly those, retries once, and remembers them for that key and endpoint. The endpoint page's Advanced card toggles these quirks.

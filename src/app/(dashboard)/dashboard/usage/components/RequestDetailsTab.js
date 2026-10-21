@@ -136,6 +136,7 @@ export default function RequestDetailsTab() {
   const [selectedDetail, setSelectedDetail] = useState(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [requestView, setRequestView] = useState("conversation");
+  const [fullState, setFullState] = useState({ loading: false, error: "" });
   const [providers, setProviders] = useState([]);
   const [providerNameCache, setProviderNameCache] = useState(null);
   const [filters, setFilters] = useState({
@@ -190,6 +191,7 @@ export default function RequestDetailsTab() {
 
   const handleViewDetail = (detail) => {
     setSelectedDetail(detail);
+    setFullState({ loading: false, error: "" });
     setRequestView("conversation");
     setIsDrawerOpen(true);
   };
@@ -207,6 +209,29 @@ export default function RequestDetailsTab() {
   };
 
   const requestIsTruncated = isTruncatedPayload(selectedDetail?.request);
+
+  // Swap the stored previews for the untruncated payloads kept server-side.
+  const loadFullPayload = async () => {
+    const id = selectedDetail?.id;
+    if (!id) return;
+    setFullState({ loading: true, error: "" });
+    try {
+      const res = await fetch(`/api/usage/request-details/${encodeURIComponent(id)}/full`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load full payload");
+      const merge = (detail) => (detail.id === id ? { ...detail, ...data, hasFullData: false } : detail);
+      setSelectedDetail(prev => (prev ? merge(prev) : prev));
+      setDetails(prev => prev.map(merge));
+      setFullState({ loading: false, error: "" });
+    } catch (error) {
+      setFullState({ loading: false, error: error.message });
+    }
+  };
+  const fullPayload = selectedDetail
+    ? { available: selectedDetail.hasFullData === true, load: loadFullPayload, ...fullState }
+    : null;
+  const anyPayloadTruncated = ["request", "providerRequest", "providerResponse", "response"]
+    .some((key) => isTruncatedPayload(selectedDetail?.[key]));
 
   return (
     <div className="flex min-w-0 flex-col gap-6">
@@ -495,7 +520,7 @@ export default function RequestDetailsTab() {
                   </div>
                 </div>
                 {requestView === "conversation" ? (
-                  <ConversationInspector key={selectedDetail.id} request={selectedDetail.request} response={selectedDetail.response} />
+                  <ConversationInspector key={selectedDetail.id} request={selectedDetail.request} response={selectedDetail.response} fullPayload={fullPayload} />
                 ) : (
                   <pre className={cn("max-h-[540px] max-w-full overflow-auto rounded-lg border p-4 font-mono text-xs text-text-main", requestIsTruncated ? "border-amber-500/20 bg-amber-500/10" : "border-border-subtle bg-surface-2")}>
                     {selectedDetail.request?.redacted ? '[Request redacted. Enable "Show full request details" in Settings.]' : formatPayload(selectedDetail.request)}
@@ -505,6 +530,12 @@ export default function RequestDetailsTab() {
 
               <CollapsibleSection key={selectedDetail.id} title="Debug" icon="bug_report">
                 <p className="mb-4 text-xs text-text-muted">Stored payloads for inspecting translation and provider behavior.</p>
+                {anyPayloadTruncated && fullPayload.available && (
+                  <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
+                    <Button size="sm" variant="outline" icon="expand" loading={fullPayload.loading} onClick={loadFullPayload}>Load full payloads</Button>
+                    {fullPayload.error && <span className="text-red-600">{fullPayload.error}</span>}
+                  </div>
+                )}
                 {[
                   ["Provider request", selectedDetail.providerRequest],
                   ["Provider response", selectedDetail.providerResponse],

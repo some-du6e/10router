@@ -1,3 +1,4 @@
+import { gzipSync, gunzipSync } from "node:zlib";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { structuredPreview } from "../../../shared/utils/requestConversation.js";
@@ -8,6 +9,11 @@ const DEFAULT_FLUSH_INTERVAL_MS = 5000;
 const DEFAULT_MAX_JSON_SIZE_KB = 5;
 const FULL_DETAIL_MAX_JSON_SIZE_KB = 128;
 const CONFIG_CACHE_TTL_MS = 5000;
+// Full copies of oversized payloads are kept only for the newest rows, and
+// only when "Show full request details" is on, so the DB can't balloon.
+const FULL_DATA_KEEP_ROWS = 25;
+const FULL_DATA_MAX_BYTES = 16 * 1024 * 1024;
+const PAYLOAD_KEYS = ["request", "providerRequest", "providerResponse", "response"];
 
 let cachedConfig = null;
 let cachedConfigTs = 0;
@@ -40,6 +46,7 @@ async function getObservabilityConfig() {
         batchSize: settings.observabilityBatchSize || parseInt(process.env.OBSERVABILITY_BATCH_SIZE || String(DEFAULT_BATCH_SIZE), 10),
         flushIntervalMs: settings.observabilityFlushIntervalMs || parseInt(process.env.OBSERVABILITY_FLUSH_INTERVAL_MS || String(DEFAULT_FLUSH_INTERVAL_MS), 10),
         maxJsonSize: getMaxJsonSize(settings),
+        keepFullData: settings.showSensitiveRequestDetails === true,
       };
       cachedConfigTs = Date.now();
       return cachedConfig;
@@ -56,6 +63,7 @@ async function getObservabilityConfig() {
       batchSize: settings.observabilityBatchSize || parseInt(process.env.OBSERVABILITY_BATCH_SIZE || String(DEFAULT_BATCH_SIZE), 10),
       flushIntervalMs: settings.observabilityFlushIntervalMs || parseInt(process.env.OBSERVABILITY_FLUSH_INTERVAL_MS || String(DEFAULT_FLUSH_INTERVAL_MS), 10),
       maxJsonSize: getMaxJsonSize(settings),
+      keepFullData: settings.showSensitiveRequestDetails === true,
     };
   } catch {
     cachedConfig = {
@@ -84,7 +92,32 @@ function sanitizeHeaders(headers) {
   return sanitized;
 }
 
-export const __test__ = { sanitizeHeaders, getMaxJsonSize, truncateField };
+// Returns the untruncated payloads that truncateField cut, gzipped, or null.
+function packFullData(item, record) {
+  const full = {};
+  for (const key of PAYLOAD_KEYS) {
+    if (record[key]?._truncated === true && item[key] != null) full[key] = item[key];
+  }
+  if (!Object.keys(full).length) return null;
+  try {
+    const json = JSON.stringify(full);
+    if (json.length > FULL_DATA_MAX_BYTES) return null;
+    return gzipSync(json).toString("base64");
+  } catch {
+    return null;
+  }
+}
+
+function unpackFullData(value) {
+  if (!value) return null;
+  try {
+    return JSON.parse(gunzipSync(Buffer.from(value, "base64")).toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+export const __test__ = { sanitizeHeaders, getMaxJsonSize, truncateField, packFullData, unpackFullData };
 
 function generateDetailId(model) {
   const timestamp = new Date().toISOString();
@@ -153,11 +186,18 @@ async function flushToDatabase() {
             pxpipe: item.pxpipe || undefined,
           };
 
+          const fullData = config.keepFullData ? packFullData(item, record) : null;
+
           db.run(
-            `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp, provider = excluded.provider, model = excluded.model, connectionId = excluded.connectionId, status = excluded.status, data = excluded.data`,
-            [record.id, record.timestamp, record.provider, record.model, record.connectionId, record.status, stringifyJson(record)]
+            `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data, fullData) VALUES(?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp, provider = excluded.provider, model = excluded.model, connectionId = excluded.connectionId, status = excluded.status, data = excluded.data, fullData = excluded.fullData`,
+            [record.id, record.timestamp, record.provider, record.model, record.connectionId, record.status, stringifyJson(record), fullData]
           );
         }
+
+        db.run(
+          `UPDATE requestDetails SET fullData = NULL WHERE fullData IS NOT NULL AND id NOT IN (SELECT id FROM requestDetails WHERE fullData IS NOT NULL ORDER BY timestamp DESC LIMIT ?)`,
+          [FULL_DATA_KEEP_ROWS]
+        );
 
         const cnt = db.get(`SELECT COUNT(*) as c FROM requestDetails`);
         if (cnt && cnt.c > config.maxRecords) {
@@ -216,10 +256,14 @@ export async function getRequestDetails(filter = {}) {
   const offset = (page - 1) * pageSize;
 
   const rows = db.all(
-    `SELECT data FROM requestDetails ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+    `SELECT data, fullData IS NOT NULL AS hasFullData FROM requestDetails ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
     [...params, pageSize, offset]
   );
-  const details = rows.map((r) => parseJson(r.data, {}));
+  const details = rows.map((r) => {
+    const detail = parseJson(r.data, {});
+    if (r.hasFullData) detail.hasFullData = true;
+    return detail;
+  });
 
   return {
     details,
@@ -237,6 +281,13 @@ export async function getRequestDetailById(id) {
   const db = await getAdapter();
   const row = db.get(`SELECT data FROM requestDetails WHERE id = ?`, [id]);
   return row ? parseJson(row.data, null) : null;
+}
+
+// Untruncated payloads for a row, keyed like the record (only the cut ones).
+export async function getRequestDetailFullData(id) {
+  const db = await getAdapter();
+  const row = db.get(`SELECT fullData FROM requestDetails WHERE id = ?`, [id]);
+  return unpackFullData(row?.fullData);
 }
 
 const _shutdownHandler = async () => {

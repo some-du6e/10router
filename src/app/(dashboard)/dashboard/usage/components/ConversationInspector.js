@@ -28,7 +28,35 @@ function Role({ role }) {
   );
 }
 
-export default function ConversationInspector({ request, response }) {
+function FullPayloadNotice({ fullPayload, className = "mt-2" }) {
+  if (!fullPayload) return null;
+  if (!fullPayload.available)
+    return (
+      <span className={`${className} block`}>
+        The full payload isn&apos;t stored for this request. Only the newest 25
+        large requests keep one, while &quot;Show full request details&quot; is
+        on.
+      </span>
+    );
+  return (
+    <span className={`${className} flex flex-wrap items-center gap-2`}>
+      <Button
+        size="sm"
+        variant="outline"
+        icon="expand"
+        loading={fullPayload.loading}
+        onClick={fullPayload.load}
+      >
+        Load full request
+      </Button>
+      {fullPayload.error && (
+        <span className="text-red-600">{fullPayload.error}</span>
+      )}
+    </span>
+  );
+}
+
+export default function ConversationInspector({ request, response, fullPayload }) {
   const { messages, tools } = useMemo(
     () => getConversation(request, response),
     [request, response],
@@ -98,6 +126,7 @@ export default function ConversationInspector({ request, response }) {
         {request?._truncated
           ? "This request only has a raw preview. New large requests retain a structured preview when it fits the storage limit."
           : "No conversation messages or tool definitions were recorded."}
+        {request?._truncated && <FullPayloadNotice fullPayload={fullPayload} />}
       </p>
     );
 
@@ -140,10 +169,13 @@ export default function ConversationInspector({ request, response }) {
         </div>
       </div>
       {request?._truncated && (
-        <p className="border-b border-border-subtle bg-amber-500/10 px-4 py-2 text-xs text-text-muted">
-          Stored preview of a large request. Content marked [Content truncated]
-          is incomplete.
-        </p>
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border-subtle bg-amber-500/10 px-4 py-2 text-xs text-text-muted">
+          <span>
+            Stored preview of a large request. Content marked [Content
+            truncated] is incomplete.
+          </span>
+          <FullPayloadNotice fullPayload={fullPayload} className="ml-auto" />
+        </div>
       )}
       <div className="grid min-w-0 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
         <div className="min-w-0 border-b border-border-subtle md:border-b-0 md:border-r">

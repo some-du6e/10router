@@ -72,7 +72,7 @@ export {
 
 // Request details
 export {
-  saveRequestDetail, getRequestDetails, getRequestDetailById, getDistinctProviders,
+  saveRequestDetail, getRequestDetails, getRequestDetailById, getRequestDetailFullData, getDistinctProviders,
 } from "./repos/requestDetailsRepo.js";
 
 // Quota notification state
