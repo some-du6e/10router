@@ -209,4 +209,40 @@ describe("requestDetails truncateField", () => {
     expect(measurePreviewSizes(value, [8192, 32], 1000)).toBeUndefined();
     expect(JSON.stringify(structuredPreview(value, 1000))).toBe(JSON.stringify(legacyStructuredPreview(value, 1000)));
   });
+
+  it("matches the legacy preview when the budget is exactly a candidate's size, or one off", () => {
+    const limits = [8192, 4096, 2048, 1024, 512, 256, 128, 64, 32];
+    // Strings exactly at, one under and one over every limit.
+    const body = { messages: limits.flatMap((l) => [l - 1, l, l + 1].map((n) => ({ role: "user", content: "x".repeat(n) }))) };
+    for (const limit of limits) {
+      const size = JSON.stringify(legacyShorten(body, limit)).length;
+      for (const maxSize of [size - 1, size, size + 1]) {
+        expect(JSON.stringify(structuredPreview(body, maxSize))).toBe(JSON.stringify(legacyStructuredPreview(body, maxSize)));
+      }
+    }
+  });
+
+  it("matches the legacy preview at every small budget", () => {
+    // Small budgets put the shortest candidate right at the budget, where an
+    // off-by-one in the over-budget check would drop a preview that fits.
+    const body = { messages: [{ role: "user", content: "x".repeat(600) }, { role: "assistant", content: "y".repeat(80) }] };
+    for (let maxSize = 1; maxSize <= 800; maxSize++) {
+      expect(JSON.stringify(structuredPreview(body, maxSize))).toBe(JSON.stringify(legacyStructuredPreview(body, maxSize)));
+    }
+  });
+
+  it("stores a body exactly at the size limit untouched, and truncates one byte over", () => {
+    const body = { content: "" };
+    const overhead = JSON.stringify(body).length;
+    for (const max of [1024, 5 * 1024]) {
+      body.content = "x".repeat(max - overhead);
+      expect(truncateField(body, max)).toBe(body);
+      expect(truncateField(body, max - 1)._truncated).toBe(true);
+      expect(JSON.stringify(truncateField(body, max - 1))).toBe(JSON.stringify(legacyTruncateField(body, max - 1)));
+    }
+  });
+
+  it("does not measure values with an inherited toJSON (Dates)", () => {
+    expect(measurePreviewSizes({ at: new Date(0) }, [8192, 32], 1000)).toBeUndefined();
+  });
 });
