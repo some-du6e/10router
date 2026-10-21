@@ -2,8 +2,6 @@ import { stripRetiredSettings } from "../helpers/retiredSettings.js";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 
-const DEFAULT_HEADROOM_URL = process.env.HEADROOM_URL || "http://localhost:8787";
-
 // getSettings() is called several times per routed request (chat handler,
 // auth account selection, limit-hold config), each of which hit the DB,
 // JSON.parse, stripRetiredSettings, and a defaults merge — one of them inside
@@ -87,17 +85,6 @@ const DEFAULT_SETTINGS = {
   outboundProxyEnabled: false,
   outboundProxyUrl: "",
   outboundNoProxy: "",
-  rtkEnabled: true,
-  headroomEnabled: false,
-  headroomUrl: DEFAULT_HEADROOM_URL,
-  headroomCompressUserMessages: false,
-  headroomTimeoutMs: 3000,
-  ponytailEnabled: false,
-  ponytailLevel: "full",
-  pxpipeEnabled: false,
-  pxpipeAutoInstall: true,
-  pxpipeMinChars: 25000,
-  pxpipeTimeoutMs: 15000,
 };
 
 async function readRaw() {

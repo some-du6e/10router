@@ -31,7 +31,7 @@
 - **T3 usage hub**: preserve upstream status codes for non-JSON provider errors and reject malformed settings responses without overwriting the current hub state.
 
 ## Removed
-- **Caveman**: the token saver no longer has a "Compress LLM output" option. It rewrote the system prompt that clients and providers tune, and the change could invalidate prompt caches. If you want it, install the caveman skill in your own client. The `cavemanEnabled` and `cavemanLevel` settings are now ignored.
+- **Token Saver tab**: removed, with everything on it: RTK tool-output compression, Headroom, Ponytail, Caveman, and PXPIPE. On real traffic, about 94% of input tokens were already prompt-cache reads, and RTK made requests only 2.9% smaller. It also hid search results from the model: one grep returned 99 matches and the model was shown 69, with no warning. Requests now go upstream exactly as the client sent them. Saved token-saver settings are deleted on upgrade. The `x-10router-token-saver` header is ignored, and the CLI no longer has its RTK and Headroom toggles. Docker Compose no longer starts a Headroom sidecar. If you want any of these tools, install them in your own client.
 - Remove the IDE MITM proxy, certificate and DNS interception, dashboard controls, API routes, startup hooks, and CLI/Docker packaging. Upgrade cleanup stops old proxy processes and removes their loopback hosts entries. Tailscale keeps independent encrypted elevation credentials for reboot recovery.
 
 ## Features

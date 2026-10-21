@@ -106,13 +106,6 @@ const getPageInfo = (pathname) => {
       icon: "data_usage",
       breadcrumbs: [],
     };
-  if (pathname.includes("/token-saver"))
-    return {
-      title: "Token Saver",
-      description: "Compress prompts and outputs to save tokens",
-      icon: "savings",
-      breadcrumbs: [],
-    };
   if (pathname.includes("/cli-tools"))
     return {
       title: "CLI Tools",
