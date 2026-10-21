@@ -1307,7 +1307,7 @@ export default function APIPageClient({ machineId }) {
               label="Sudo password"
               value={tsSudoPassword}
               onChange={(event) => setTsSudoPassword(event.target.value)}
-              autoComplete="current-password"
+              ignorePasswordManagers
               placeholder="For Tailscale installation or privileged recovery"
             />
           )}

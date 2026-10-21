@@ -1,6 +1,8 @@
 # Unreleased
 
 ## Fixes
+- Custom endpoint cards on the providers page now match the other provider cards: a letter badge instead of a borrowed OpenAI/Anthropic logo, a key count, and one pill per API the endpoint answers on. Existing endpoints switch over automatically.
+- Chrome no longer offers saved Google passwords on API key and token fields (the URL field in Add endpoint was being treated as a username). Key fields are masked text boxes now, so Chrome sees no login form. Real login password fields are unchanged.
 - Requests that leave out `stream` now get plain JSON back when the upstream answers with JSON (Anthropic-style APIs, Snowflake Cortex), instead of that JSON followed by a stray `data: [DONE]`. Clients that ask to stream get the finished reply replayed as SSE in their own format (OpenAI, Claude, Responses).
 - **Tool calls no longer dropped on OpenAI-style paths**: when an upstream ends a Chat Completions stream without `finish_reason` (Snowflake serving Claude), the reply to Claude clients now closes properly and reports `tool_use`, so Claude Code runs the tool instead of seeing a cut-off turn.
 - On custom endpoints, a 400/404/422 caused by the request (bad body, unknown model) tries the next key without locking any key. Built-in providers keep their short locks.

@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { Card } from "@/shared/components";
+import { SECRET_INPUT_PROPS } from "@/shared/components/Input";
 import { getProviderAlias, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
@@ -158,7 +159,7 @@ export function EmbeddingExampleCard({ providerId, customAlias }) {
         {/* API Key */}
         <Row label="API Key">
           <input
-            type="password"
+            {...SECRET_INPUT_PROPS}
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             placeholder="sk-..."

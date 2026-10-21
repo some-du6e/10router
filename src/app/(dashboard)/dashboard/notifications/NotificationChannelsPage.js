@@ -40,6 +40,7 @@ function SecretInput({ label, field, form, setConfig, placeholder }) {
       value={form.config[field] || ""}
       onChange={(event) => setConfig(field, event.target.value)}
       placeholder={configured ? "Saved — leave blank to keep" : placeholder}
+      ignorePasswordManagers
     />
   );
 }

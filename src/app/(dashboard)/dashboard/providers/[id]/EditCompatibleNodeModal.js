@@ -114,6 +114,7 @@ export default function EditCompatibleNodeModal({ isOpen, node, onSave, onClose,
             value={checkKey}
             onChange={(e) => setCheckKey(e.target.value)}
             className="flex-1"
+            ignorePasswordManagers
           />
           <div className="pt-6">
             <Button onClick={handleValidate} disabled={!checkKey || validating || !formData.baseUrl.trim()} variant="secondary">
