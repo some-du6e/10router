@@ -1256,10 +1256,40 @@ export async function checkModels({ baseUrl, apiKey, protocol, ids, fetchFn, qui
 export interface SiteResponse {
   status: number;
   headers: { get(name: string): string | null };
-  text(): Promise<string>;
+  body?: ReadableStream<Uint8Array> | null;
   arrayBuffer(): Promise<ArrayBuffer>;
 }
 export type SiteFetch = (url: string, init: { method: string; headers: HeaderMap; signal: AbortSignal; redirect?: "manual" }) => Promise<SiteResponse>;
+
+// Read at most `max` bytes of a body, then cancel the rest, so a huge or
+// endless (chunked, no content-length) response can't be buffered whole.
+// `over` is true when the body had more than `max` bytes.
+export async function readCapped(res: { body?: ReadableStream<Uint8Array> | null; arrayBuffer?: () => Promise<ArrayBuffer> }, max: number): Promise<{ bytes: Uint8Array; over: boolean }> {
+  if (!res.body) {
+    const all = res.arrayBuffer ? new Uint8Array(await res.arrayBuffer()) : new Uint8Array(0);
+    return { bytes: all.subarray(0, max), over: all.length > max };
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0, over = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (size + value.length > max) { chunks.push(value.subarray(0, max - size)); size = max; over = true; break; }
+      chunks.push(value); size += value.length;
+    }
+  } finally {
+    if (over) reader.cancel().catch(() => {}); else reader.releaseLock();
+  }
+  const bytes = new Uint8Array(size);
+  let off = 0;
+  for (const c of chunks) { bytes.set(c, off); off += c.length; }
+  return { bytes, over };
+}
+
+// Drop a body we won't read (a redirect, an error page) so its connection is freed.
+export const discardBody = (res: { body?: ReadableStream<Uint8Array> | null }) => { res.body?.cancel().catch(() => {}); };
 
 const SITE_TIMEOUT_MS = 4000;
 const SITE_HTML_MAX = 512 * 1024;
@@ -1377,7 +1407,12 @@ export async function fetchSiteInfo(base: string, fetchFn: SiteFetch, { signal =
     for (let hop = 0; hop < 4; hop++) {
       const res = await fetchFn(current, { method: "GET", headers: { accept, "user-agent": SITE_UA }, signal: sig, redirect: "manual" });
       const loc = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
-      if (!loc) return res.status >= 200 && res.status < 300 ? { res, url: current } : null;
+      if (!loc) {
+        if (res.status >= 200 && res.status < 300) return { res, url: current };
+        discardBody(res);
+        return null;
+      }
+      discardBody(res);
       const next = new URL(loc, current);
       if (next.protocol !== "https:" && next.protocol !== "http:") return null;
       current = next.toString();
@@ -1389,9 +1424,9 @@ export async function fetchSiteInfo(base: string, fetchFn: SiteFetch, { signal =
       const r = await get(url, "image/*");
       if (!r) return null;
       const len = Number(r.res.headers.get("content-length") || 0);
-      if (len > ICON_MAX_BYTES) return null;
-      const bytes = new Uint8Array(await r.res.arrayBuffer());
-      if (!bytes.length || bytes.length > ICON_MAX_BYTES) return null;
+      if (len > ICON_MAX_BYTES) { discardBody(r.res); return null; }
+      const { bytes, over } = await readCapped(r.res, ICON_MAX_BYTES);
+      if (!bytes.length || over) return null;
       const ct = (r.res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
       const svg = ct === "image/svg+xml" || (/^\s*(<\?xml[^>]*>\s*)?<svg\b/i.test(new TextDecoder().decode(bytes.subarray(0, 200))));
       const type = svg ? "image/svg+xml" : sniffImage(bytes);
@@ -1410,7 +1445,8 @@ export async function fetchSiteInfo(base: string, fetchFn: SiteFetch, { signal =
     try {
       const r = await get(`${root}/`, "text/html,application/xhtml+xml");
       const ct = r?.res.headers.get("content-type") || "";
-      if (r && /html/i.test(ct)) { page = r.url; info = parseSiteHtml((await r.res.text()).slice(0, SITE_HTML_MAX), r.url); }
+      if (r && /html/i.test(ct)) { page = r.url; info = parseSiteHtml(new TextDecoder().decode((await readCapped(r.res, SITE_HTML_MAX)).bytes), r.url); }
+      else if (r) discardBody(r.res);
     } catch { /* unreachable root: try the next */ }
     if (!name && info.name) { name = info.name; host ||= new URL(page).hostname.replace(/^www\./, ""); }
     if (!icon) {

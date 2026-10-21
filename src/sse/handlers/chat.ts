@@ -593,6 +593,8 @@ async function routeSingleModelChat(
   // One full pass over the available accounts. Returns a structured result so a
   // limit can be retried later by the hold, rather than being burned into a
   // Response the caller can no longer act on.
+  // The hold below needs the endpoint's settings ("Streaming: Always").
+  let lastCredentials: Credentials | null = null;
   const runAccountLoop = async (): Promise<PassResult> => {
   // Fresh per pass: a retry after the reset must reconsider every account, not
   // inherit exclusions from the pass that ran hours ago.
@@ -609,6 +611,7 @@ async function routeSingleModelChat(
     const preferredConnectionId = affinityKey ? getAffinity(affinityKey) : null;
     // connectionId is always set on a selected account (real or the "noauth" virtual one).
     const credentials = (await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId })) as (Credentials & { connectionId: string } & Record<string, any>) | null;
+    if (credentials) lastCredentials = credentials;
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
@@ -822,7 +825,7 @@ async function routeSingleModelChat(
   // deepseek-tui resolves to JSON without ever setting it, and handing those an
   // SSE banner would break a request that used to return a clean error.
   const holdSourceFormat = sourceFormatOverride || detectFormat(body);
-  const willStream = clientReceivesStream({ body, provider, model, sourceFormat: holdSourceFormat, clientRawRequest });
+  const willStream = clientReceivesStream({ body, provider, model, sourceFormat: holdSourceFormat, clientRawRequest, credentials: lastCredentials });
   return holdUntilClear({
     first,
     attempt: runAccountLoop,

@@ -2,7 +2,7 @@
 // unasked ids, "Check the rest", the opt-in test message (beta-flag drop and
 // retry), and the site name/icon reader. All upstreams are scripted.
 import { describe, it, expect } from "vitest";
-import { detectEndpoint, checkModels, sendTestMessage, fetchSiteInfo, parseSiteHtml, cleanSiteName, siteRoots, imageSize } from "@/lib/endpointDetect.js";
+import { detectEndpoint, checkModels, sendTestMessage, fetchSiteInfo, parseSiteHtml, cleanSiteName, siteRoots, imageSize, readCapped } from "@/lib/endpointDetect.js";
 import { parseRejectedBetas } from "../../open-sse/utils/anthropicBeta.js";
 
 const GOOD = "pat-real-key-123456";
@@ -210,5 +210,49 @@ describe("site name and icon", () => {
     });
     const r = await fetchSiteInfo("https://acme.dev/v1", fetchFn);
     expect(r).toMatchObject({ name: "Acme", icon: null });
+  });
+
+  // A body with no content-length, streamed in chunks; counts what was pulled.
+  const chunked = (chunk, times) => {
+    const state = { pulled: 0, cancelled: false };
+    const body = new ReadableStream({
+      pull(c) { if (state.pulled >= times) return c.close(); state.pulled++; c.enqueue(chunk); },
+      cancel() { state.cancelled = true; },
+    });
+    return { state, body };
+  };
+
+  it("reads a body up to a byte cap, then cancels the rest", async () => {
+    const { state, body } = chunked(new Uint8Array(1000), 1000);
+    const r = await readCapped(new Response(body), 2500);
+    expect(r).toMatchObject({ over: true });
+    expect(r.bytes.length).toBe(2500);
+    expect(state.cancelled).toBe(true);
+    expect(state.pulled).toBeLessThan(10);
+    const small = await readCapped(new Response("hello"), 100);
+    expect(small).toMatchObject({ over: false });
+    expect(new TextDecoder().decode(small.bytes)).toBe("hello");
+  });
+
+  it("drops a chunked icon over 256 KB without buffering it all", async () => {
+    const { state, body } = chunked(new Uint8Array(64 * 1024), 100);
+    const fetchFn = site({
+      "https://acme.dev/": { body: "<title>Acme</title>", headers: { "content-type": "text/html" } },
+      "https://acme.dev/favicon.ico": { body, headers: { "content-type": "image/x-icon" } },
+    });
+    const r = await fetchSiteInfo("https://acme.dev/v1", fetchFn);
+    expect(r).toMatchObject({ name: "Acme", icon: null });
+    expect(state.cancelled).toBe(true);
+    expect(state.pulled).toBeLessThan(10);
+  });
+
+  it("cancels redirect bodies before following them", async () => {
+    const { state, body } = chunked(new Uint8Array(10), 5);
+    const fetchFn = site({
+      "https://api.acme.ai/": { body, status: 301, headers: { location: "https://acme.ai/" } },
+      "https://acme.ai/": { body: "<title>Acme</title>", headers: { "content-type": "text/html" } },
+    });
+    expect((await fetchSiteInfo("https://api.acme.ai/v1", fetchFn)).name).toBe("Acme");
+    expect(state.cancelled).toBe(true);
   });
 });

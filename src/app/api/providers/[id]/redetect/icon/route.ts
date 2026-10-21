@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { makeProbeFetch } from "@/lib/probeFetch.js";
-import { fetchSiteInfo, imageSize, normalizeUrl } from "@/lib/endpointDetect.js";
+import { discardBody, fetchSiteInfo, imageSize, normalizeUrl, readCapped } from "@/lib/endpointDetect.js";
 import type { SiteFetch } from "@/lib/endpointDetect.js";
 import { getProviderNodeById, updateProviderNode } from "@/lib/localDb";
 import { isCustomEndpoint } from "@/lib/endpointRequestLog.js";
@@ -48,10 +48,10 @@ export async function POST(request: Request, { params }: Ctx) {
   if (url.protocol !== "https:" && url.protocol !== "http:") return NextResponse.json({ error: "That isn't a URL" }, { status: 400 });
   try {
     const res = await makeProbeFetch(true)(url.toString(), { method: "GET", headers: { accept: "image/*" }, signal: AbortSignal.timeout(6000) });
-    if (!res.ok) return NextResponse.json({ error: `The image answered ${res.status}` }, { status: 400 });
-    if (Number(res.headers.get("content-length") || 0) > ICON_MAX_BYTES) return NextResponse.json({ error: "Images up to 256 KB" }, { status: 400 });
-    const bytes = new Uint8Array(await res.arrayBuffer());
-    if (!bytes.length || bytes.length > ICON_MAX_BYTES) return NextResponse.json({ error: "Images up to 256 KB" }, { status: 400 });
+    if (!res.ok) { discardBody(res); return NextResponse.json({ error: `The image answered ${res.status}` }, { status: 400 }); }
+    if (Number(res.headers.get("content-length") || 0) > ICON_MAX_BYTES) { discardBody(res); return NextResponse.json({ error: "Images up to 256 KB" }, { status: 400 }); }
+    const { bytes, over } = await readCapped(res, ICON_MAX_BYTES);
+    if (!bytes.length || over) return NextResponse.json({ error: "Images up to 256 KB" }, { status: 400 });
     const ct = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
     // SVG can carry script; only raster formats are accepted from a URL.
     const type = sniffImage(bytes);

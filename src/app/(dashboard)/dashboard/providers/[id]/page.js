@@ -17,10 +17,8 @@ import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
 import { getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
 import ModelRow from "./ModelRow";
 import PassthroughModelsSection from "./PassthroughModelsSection";
-import CompatibleModelsSection from "./CompatibleModelsSection";
 import ConnectionRow from "./ConnectionRow";
 import AddApiKeyModal from "./AddApiKeyModal";
-import EditCompatibleNodeModal from "./EditCompatibleNodeModal";
 import CustomEndpointPage from "./CustomEndpointPage";
 import AddCustomModelModal from "./AddCustomModelModal";
 import BulkImportCodexModal from "./BulkImportCodexModal";
@@ -53,7 +51,6 @@ export default function ProviderDetailPage() {
   const [showBulkImportCodex, setShowBulkImportCodex] = useState(false);
   const [showBulkImportGrokCli, setShowBulkImportGrokCli] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
-  const [showEditNodeModal, setShowEditNodeModal] = useState(false);
   const [showBulkProxyModal, setShowBulkProxyModal] = useState(false);
   const [selectedConnection, setSelectedConnection] = useState(null);
   const [modelAliases, setModelAliases] = useState({});
@@ -360,7 +357,7 @@ export default function ProviderDetailPage() {
     }
   }, [providerId, isCompatible]);
 
-  const handleUpdateNode = async (formData, { keepModalOpen = false } = {}) => {
+  const handleUpdateNode = async (formData) => {
     try {
       const res = await fetch(`/api/provider-nodes/${providerId}`, {
         method: "PUT",
@@ -371,7 +368,6 @@ export default function ProviderDetailPage() {
       if (res.ok) {
         setProviderNode(data.node);
         await fetchConnections();
-        if (!keepModalOpen) setShowEditNodeModal(false);
       } else {
         // e.g. a prefix that belongs to a built-in provider.
         alert(data.error || "Couldn't save the endpoint.");
@@ -1125,24 +1121,6 @@ export default function ProviderDetailPage() {
   };
 
   const renderModelsSection = () => {
-    if (isCompatible) {
-      return (
-        <CompatibleModelsSection
-          providerStorageAlias={providerStorageAlias}
-          providerDisplayAlias={providerDisplayAlias}
-          modelAliases={modelAliases}
-          customModels={customModels}
-          copied={copied}
-          onCopy={copy}
-          onSetAlias={handleSetAlias}
-          onDeleteAlias={handleDeleteAlias}
-          onAddCustomModel={(modelId) => handleAddCustomModel(modelId, "llm", providerStorageAlias)}
-          onDeleteCustomModel={(modelId) => handleDeleteCustomModel(modelId, "llm", providerStorageAlias)}
-          connections={connections}
-          isAnthropic={isAnthropicCompatible}
-        />
-      );
-    }
     // Combine hardcoded models with Kilo free models (deduplicated)
     // Exclude non-llm models (embedding, tts, etc.) — they have dedicated pages under media-providers
     const allModels = [
@@ -1365,26 +1343,28 @@ export default function ProviderDetailPage() {
             onClose={() => setShowIFlowCookieModal(false)}
           />
         )}
-        <AddApiKeyModal
-          isOpen={showAddApiKeyModal}
-          provider={providerId}
-          providerName={providerInfo.name}
-          isCompatible={isCompatible}
-          isAnthropic={isAnthropicCompatible}
-          nodeBaseUrl={providerNode?.baseUrl}
-          authType={providerInfo?.authType}
-          authHint={providerInfo?.authHint}
-          website={providerInfo?.website}
-          proxyPools={proxyPools}
-          error={addConnectionError}
-          existingNames={connections.map((c) => c.name).filter(Boolean)}
-          onSave={handleSaveApiKey}
-          onBulkDone={fetchConnections}
-          onClose={() => {
-            setAddConnectionError("");
-            setShowAddApiKeyModal(false);
-          }}
-        />
+        {showAddApiKeyModal && (
+          <AddApiKeyModal
+            isOpen={showAddApiKeyModal}
+            provider={providerId}
+            providerName={providerInfo.name}
+            isCompatible={isCompatible}
+            isAnthropic={isAnthropicCompatible}
+            nodeBaseUrl={providerNode?.baseUrl}
+            authType={providerInfo?.authType}
+            authHint={providerInfo?.authHint}
+            website={providerInfo?.website}
+            proxyPools={proxyPools}
+            error={addConnectionError}
+            existingNames={connections.map((c) => c.name).filter(Boolean)}
+            onSave={handleSaveApiKey}
+            onBulkDone={fetchConnections}
+            onClose={() => {
+              setAddConnectionError("");
+              setShowAddApiKeyModal(false);
+            }}
+          />
+        )}
         <EditConnectionModal
           isOpen={showEditModal}
           connection={selectedConnection}
@@ -1393,15 +1373,6 @@ export default function ProviderDetailPage() {
           onSave={handleUpdateConnection}
           onClose={() => setShowEditModal(false)}
         />
-        {isCompatible && (
-          <EditCompatibleNodeModal
-            isOpen={showEditNodeModal}
-            node={providerNode}
-            onSave={handleUpdateNode}
-            onClose={() => setShowEditNodeModal(false)}
-            isAnthropic={isAnthropicCompatible}
-          />
-        )}
         {!isCompatible && (
           <AddCustomModelModal
             isOpen={showAddCustomModel}
@@ -1475,7 +1446,7 @@ export default function ProviderDetailPage() {
             // Only the changed keys; the server merges them into the stored ones.
             quirks,
             ...(extra.removeDroppedBetas ? { removeDroppedBetas: extra.removeDroppedBetas } : {}),
-          }, { keepModalOpen: true })}
+          })}
           onReload={async () => { await Promise.all([fetchConnections(), fetchCustomModels(), fetchDisabledModels()]); }}
           onNodeChanged={setProviderNode}
           onAddKey={() => { setAddConnectionError(""); setShowAddApiKeyModal(true); }}
@@ -1584,66 +1555,6 @@ export default function ProviderDetailPage() {
         </div>
       )}
 
-      {isCompatible && providerNode && (
-        <Card>
-          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div className="min-w-0">
-              <h2 className="text-lg font-semibold">{isAnthropicCompatible ? "Anthropic Compatible Details" : "OpenAI Compatible Details"}</h2>
-              <p className="break-all text-sm text-text-muted">
-                {isAnthropicCompatible ? "Messages API" : (providerNode.apiType === "responses" ? "Responses API" : "Chat Completions")} · {(providerNode.baseUrl || "").replace(/\/$/, "")}/
-                {isAnthropicCompatible ? "messages" : (providerNode.apiType === "responses" ? "responses" : "chat/completions")}
-              </p>
-            </div>
-            <div className="grid grid-cols-1 gap-2 sm:flex sm:items-center">
-              <Button
-                size="sm"
-                icon="add"
-                onClick={() => {
-                  setAddConnectionError("");
-                  setShowAddApiKeyModal(true);
-                }}
-                className="w-full sm:w-auto"
-              >
-                Add API Key
-              </Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                icon="edit"
-                onClick={() => setShowEditNodeModal(true)}
-                className="w-full sm:w-auto"
-              >
-                Edit
-              </Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                icon="delete"
-                onClick={async () => {
-                  setConfirmState({
-                    title: "Delete Compatible Node",
-                    message: `Delete this ${isAnthropicCompatible ? "Anthropic" : "OpenAI"} Compatible node?`,
-                    onConfirm: async () => {
-                      setConfirmState(null);
-                      try {
-                        const res = await fetch(`/api/provider-nodes/${providerId}`, { method: "DELETE" });
-                        if (res.ok) {
-                          router.push("/dashboard/providers");
-                        }
-                      } catch (error) {
-                        console.log("Error deleting provider node:", error);
-                      }
-                    }
-                  });
-                }}
-                className="w-full sm:w-auto"
-              >
-                Delete
-              </Button>
-            </div>
-          </div>
-        </Card>
-      )}
 
 
       {/* Connections */}
@@ -1751,7 +1662,7 @@ export default function ProviderDetailPage() {
                   </>
                 ) : (
                   <>
-                    {!isCompatible && providerId === "iflow" && (
+                    {providerId === "iflow" && (
                       <Button size="sm" icon="cookie" variant="secondary" onClick={() => setShowIFlowCookieModal(true)}>
                         Cookie
                       </Button>
@@ -1771,7 +1682,7 @@ export default function ProviderDetailPage() {
                       icon="add"
                       onClick={triggerAddConnection}
                     >
-                      {isCompatible ? "Add API Key" : (providerId === "iflow" ? "OAuth" : "Add Connection")}
+                      {providerId === "iflow" ? "OAuth" : "Add Connection"}
                     </Button>
                   </>
                 )}
@@ -1809,76 +1720,74 @@ export default function ProviderDetailPage() {
                 </div>
               )}
               {connectionsList}
-              {!isCompatible && (
-                <div className="mt-4 grid grid-cols-1 gap-2 sm:flex">
-                  {providerId === "iflow" && (
+              <div className="mt-4 grid grid-cols-1 gap-2 sm:flex">
+                {providerId === "iflow" && (
+                  <Button
+                    size="sm"
+                    icon="cookie"
+                    variant="secondary"
+                    onClick={() => setShowIFlowCookieModal(true)}
+                    title="Add connection using browser cookie"
+                    className="w-full sm:w-auto"
+                  >
+                    Cookie
+                  </Button>
+                )}
+                {providerId === "codex" && (
+                  <Button
+                    size="sm"
+                    icon="playlist_add"
+                    variant="secondary"
+                    onClick={() => setShowBulkImportCodex(true)}
+                    title={translate("Bulk import codex accounts from JSON")}
+                    className="w-full sm:w-auto"
+                  >
+                    {translate("Bulk Add")}
+                  </Button>
+                )}
+                {providerId === "grok-cli" && (
+                  <Button
+                    size="sm"
+                    icon="playlist_add"
+                    variant="secondary"
+                    onClick={() => setShowBulkImportGrokCli(true)}
+                    title={translate("Bulk import Grok CLI accounts from JSON")}
+                    className="w-full sm:w-auto"
+                  >
+                    {translate("Bulk Add")}
+                  </Button>
+                )}
+                {hasDualAuthModes ? (
+                  <>
                     <Button
                       size="sm"
-                      icon="cookie"
+                      icon="lock"
                       variant="secondary"
-                      onClick={() => setShowIFlowCookieModal(true)}
-                      title="Add connection using browser cookie"
+                      onClick={triggerOAuthConnection}
                       className="w-full sm:w-auto"
                     >
-                      Cookie
+                      {oauthConnectionLabel}
                     </Button>
-                  )}
-                  {providerId === "codex" && (
                     <Button
                       size="sm"
-                      icon="playlist_add"
-                      variant="secondary"
-                      onClick={() => setShowBulkImportCodex(true)}
-                      title={translate("Bulk import codex accounts from JSON")}
+                      icon="key"
+                      onClick={triggerApiKeyConnection}
                       className="w-full sm:w-auto"
                     >
-                      {translate("Bulk Add")}
+                      {apiKeyConnectionLabel}
                     </Button>
-                  )}
-                  {providerId === "grok-cli" && (
-                    <Button
-                      size="sm"
-                      icon="playlist_add"
-                      variant="secondary"
-                      onClick={() => setShowBulkImportGrokCli(true)}
-                      title={translate("Bulk import Grok CLI accounts from JSON")}
-                      className="w-full sm:w-auto"
-                    >
-                      {translate("Bulk Add")}
-                    </Button>
-                  )}
-                  {hasDualAuthModes ? (
-                    <>
-                      <Button
-                        size="sm"
-                        icon="lock"
-                        variant="secondary"
-                        onClick={triggerOAuthConnection}
-                        className="w-full sm:w-auto"
-                      >
-                        {oauthConnectionLabel}
-                      </Button>
-                      <Button
-                        size="sm"
-                        icon="key"
-                        onClick={triggerApiKeyConnection}
-                        className="w-full sm:w-auto"
-                      >
-                        {apiKeyConnectionLabel}
-                      </Button>
-                    </>
-                  ) : (
-                    <Button
-                      size="sm"
-                      icon="add"
-                      onClick={triggerAddConnection}
-                      className="w-full sm:w-auto"
-                    >
-                      Add
-                    </Button>
-                  )}
-                </div>
-              )}
+                  </>
+                ) : (
+                  <Button
+                    size="sm"
+                    icon="add"
+                    onClick={triggerAddConnection}
+                    className="w-full sm:w-auto"
+                  >
+                    Add
+                  </Button>
+                )}
+              </div>
             </>
           )}
         </Card>
@@ -1904,7 +1813,7 @@ export default function ProviderDetailPage() {
               </select>
             )}
           </div>
-          {!isCompatible && (() => {
+          {(() => {
             const allIds = [
               ...models,
               ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),

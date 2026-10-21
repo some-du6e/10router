@@ -71,7 +71,7 @@ export function stripContinuityFields(body) {
  * because the rate-limit hold can only write a status banner into a response
  * that really is a stream — handing SSE to a JSON client breaks it.
  */
-export function clientReceivesStream({ body, provider, model, sourceFormat, clientRawRequest }) {
+export function clientReceivesStream({ body, provider, model, sourceFormat, clientRawRequest, credentials = null }) {
   // What the CLIENT gets, which is not always what we ask upstream for. A
   // forceStream provider is fetched over SSE even for a JSON client, because
   // handleForcedSSEToJson converts the stream back down — so `forceStream` says
@@ -81,6 +81,9 @@ export function clientReceivesStream({ body, provider, model, sourceFormat, clie
     || sourceFormat === FORMATS.GEMINI
     || sourceFormat === FORMATS.GEMINI_CLI;
   if (PROVIDERS[provider]?.forceStream === true && !clientRequestedStreaming) return false;
+  // "Streaming: Always" on a custom endpoint acts like forceStream. "Never" still
+  // replays the JSON as SSE for a streaming client, so it changes nothing here.
+  if (streamOverride(provider, credentials) === "always" && !clientRequestedStreaming) return false;
 
   const alias = PROVIDER_ID_TO_ALIAS[provider] || provider;
   const modelType = getModelType(alias, model);

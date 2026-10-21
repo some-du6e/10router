@@ -1,11 +1,12 @@
 // Recent requests on a custom endpoint's page (src/lib/endpointRequestLog.ts):
-// captured from undici's diagnostics channels around a routed request.
+// captured at the engine's fetch (open-sse/utils/proxyFetch.js) around a routed request.
 import http from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   recordEndpointRequests, getEndpointRequests, clearEndpointRequests, pushEndpointRequest,
   maskKey, lastPrompt, outputTokens, replyText, errorMessage, MAX_PER_ENDPOINT,
 } from "../../src/lib/endpointRequestLog.ts";
+import { proxyAwareFetch } from "../../open-sse/utils/proxyFetch.js";
 import { pickTestModel } from "../../src/app/api/providers/[id]/requests/pick.ts";
 
 const KEY = "pat-ZXlKcmFXUWlPaUl4TWpNME5UWTNPRGt3SW4w7f2a";
@@ -30,7 +31,7 @@ beforeAll(async () => {
 });
 afterAll(() => server?.close());
 
-const post = (beta) => fetch(`${base}/messages`, {
+const post = (beta) => proxyAwareFetch(`${base}/messages`, {
   method: "POST",
   headers: { "content-type": "application/json", "x-api-key": KEY, authorization: `Bearer ${KEY}`, ...(beta ? { "anthropic-beta": beta } : {}) },
   body: JSON.stringify({ model: "claude-haiku-4-5", max_tokens: 1, messages: [{ role: "user", content: "hi" }] }),
@@ -45,7 +46,7 @@ describe("endpoint request log", () => {
       await post("oauth-2025-04-20,interleaved-thinking-2025-05-14");
       await post("interleaved-thinking-2025-05-14");
     });
-    // Channels fire on the response stream; give the last event a tick.
+    // The response clone is read after the caller's; give it a tick.
     await new Promise((r) => setTimeout(r, 20));
     const log = getEndpointRequests(EP);
     expect(log.map((l) => l.kind)).toEqual(["request", "fix", "request"]);

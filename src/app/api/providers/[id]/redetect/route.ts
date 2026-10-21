@@ -1,13 +1,14 @@
 import { NextResponse } from "next/server";
 import { makeProbeFetch } from "@/lib/probeFetch.js";
 import { detectEndpoint, normalizeUrl } from "@/lib/endpointDetect.js";
-import type { DetectProgress, DetectResult } from "@/lib/endpointDetect.js";
+import type { DetectProgress, DetectResult, Protocol } from "@/lib/endpointDetect.js";
 import { getEndpointCatalog } from "@/lib/endpointCatalog.js";
+import { retryAsClient } from "@/lib/endpointImpersonate.js";
 import { addCustomModel, deleteCustomModel, getCustomModels, getProviderConnections, getProviderNodeById, updateProviderConnection, updateProviderNode } from "@/lib/localDb";
 import { mergeConnectionData, mergeQuirks } from "@/shared/utils/nodeQuirkMerge.js";
 import { isCustomEndpoint } from "@/lib/endpointRequestLog.js";
 import { guardTarget, respond } from "@/app/api/provider-nodes/detect/ndjson.js";
-import { redetectDiff } from "./diff.js";
+import { redetectDiff, savedProtocol, savedSettingsFetch } from "./diff.js";
 import type { SavedEndpoint } from "./diff.js";
 
 export const dynamic = "force-dynamic";
@@ -36,11 +37,44 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const current = ((await getCustomModels()) as CustomModel[])
     .filter((m) => m.providerAlias === id && (m.kind || m.type || "llm") === "llm" && m.id)
     .map((m) => m.id as string);
-  const fetchFn = makeProbeFetch(guard.remote);
+  const apiKey = conn?.apiKey || "";
+  const rawFetch = makeProbeFetch(guard.remote);
+  // Probe with the endpoint's saved identity and auth style, as requests go out.
+  const fetchFn = savedSettingsFetch(rawFetch, node, apiKey);
   return respond(request, "re-detecting endpoint", async (signal, send) => {
-    const result: DetectResult = await detectEndpoint({ url: base, apiKey: conn?.apiKey || "", fetchFn, catalog: await getEndpointCatalog(), signal, onProgress: (e: DetectProgress) => send(e) });
-    return { ...redetectDiff(node, current, result), steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!conn };
+    const catalog = await getEndpointCatalog();
+    // As in the detect route: the client-identity retry is a second run whose
+    // request numbers restart at 1, so shift them past the first run's.
+    let maxN = 0, offset = 0, sentBase = 0, maxSent = 0;
+    const onProgress = (e: DetectProgress) => {
+      const ev = { ...e } as DetectProgress & { n?: number; sent?: number };
+      if (typeof ev.n === "number") { ev.n += offset; maxN = Math.max(maxN, ev.n); }
+      if (typeof ev.sent === "number") { ev.sent += sentBase; maxSent = Math.max(maxSent, ev.sent); }
+      send(ev);
+    };
+    const first = await detectEndpoint({ url: base, apiKey, fetchFn, catalog, signal, onProgress });
+    // Still client-gated (no saved identity, or it stopped working): try the
+    // known clients, as Add endpoint does. Their headers replace the saved ones.
+    const result: DetectResult & { gate?: unknown } = await retryAsClient(first, {
+      url: base, apiKey, fetchFn: savedSettingsFetch(rawFetch, node, apiKey, { identity: false }), signal,
+      detect: (f) => { offset = maxN; sentBase = maxSent; return detectEndpoint({ url: base, apiKey, fetchFn: f, catalog, signal, onProgress }); },
+    });
+    return { ...redetectDiff(node, current, result), steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!conn, ...(result.gate ? { gate: result.gate } : {}) };
   }, { ok: false, error: "Re-detect failed", steps: [] });
+}
+
+// The API the node answers on after this PUT.
+const finalProtocol = (node: { type?: string; apiType?: string }, apiType: unknown): Protocol =>
+  savedProtocol({ type: node.type, apiType: typeof apiType === "string" ? apiType : node.apiType });
+
+// Re-detect offers modelRoutes as a full model -> API map; stored routes list
+// only the models that leave the node's own API, so drop the rest. Done
+// before sanitizing so its route cap counts only real routes.
+function ownRoutesOnly(quirks: unknown, own: Protocol): unknown {
+  if (!quirks || typeof quirks !== "object" || Array.isArray(quirks)) return quirks;
+  const q = quirks as { modelRoutes?: unknown };
+  if (!q.modelRoutes || typeof q.modelRoutes !== "object" || Array.isArray(q.modelRoutes)) return quirks;
+  return { ...q, modelRoutes: Object.fromEntries(Object.entries(q.modelRoutes as Record<string, unknown>).filter(([, p]) => p !== own)) };
 }
 
 // PUT /api/providers/[id]/redetect - apply what the user accepted from a
@@ -68,7 +102,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     updates.apiType = body.apiType;
   }
   if (typeof body.modelsNote === "string") updates.modelsNote = body.modelsNote.slice(0, 200);
-  const { quirks, removed } = mergeQuirks(node, { quirks: body.quirks });
+  const { quirks, removed } = mergeQuirks(node, { quirks: ownRoutesOnly(body.quirks, finalProtocol(node, updates.apiType)) });
   Object.assign(updates, quirks);
   const updated = (await updateProviderNode(id, updates)) as unknown as Record<string, unknown> & { baseUrl?: string; apiType?: string; prefix?: string; name?: string };
 

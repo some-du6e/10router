@@ -51,7 +51,17 @@ export default function EndpointAdvancedStudio({ node, onSave, model, apiKey, de
   const [saving, setSaving] = useState(false);
   const pending = useRef<Partial<NodeQuirks>>({});
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => { if (!timer.current) setDraft(node); }, [node]);
+  // Raw fields typed here. The server drops what it can't use yet (half-typed
+  // JSON, a partial proxy URL), so its copy must not overwrite what's on screen.
+  const typed = useRef<Set<keyof RawOverrides>>(new Set());
+  useEffect(() => {
+    if (timer.current) return;
+    setDraft((d) => {
+      const keep: Partial<RawOverrides> = {};
+      for (const k of typed.current) (keep as Record<string, unknown>)[k] = d.overrides?.[k];
+      return typed.current.size ? { ...node, overrides: { ...node.overrides, ...keep } } : node;
+    });
+  }, [node]);
 
   const flush = async () => {
     if (timer.current) { clearTimeout(timer.current); timer.current = null; }
@@ -71,7 +81,10 @@ export default function EndpointAdvancedStudio({ node, onSave, model, apiKey, de
     else void flush();
   };
   const raw = draft.overrides || {};
-  const setRaw = (k: keyof RawOverrides, v: string) => change({ overrides: { ...raw, [k]: v } }, { debounce: true });
+  const setRaw = (k: keyof RawOverrides, v: string) => {
+    typed.current.add(k);
+    change({ overrides: { ...raw, [k]: v } }, { debounce: true });
+  };
   const ph = rawPlaceholders(proto, model);
   const f = (k: string) => `${id}-raw-${k}`;
   const routed = new Set(Object.values(draft.modelRoutes || {}));
@@ -94,7 +107,7 @@ export default function EndpointAdvancedStudio({ node, onSave, model, apiKey, de
         <div className="mt-5 flex flex-col gap-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs text-text-muted">Auto-detected. Only change these if something&apos;s off.</p>
-            <SmallButton icon="restart_alt" onClick={() => change({ authHeader: null, stripBeta: false, maxCompletionTokens: false, mimic: "none", customHeaders: "", overrides: {}, blockForeignTools: false, stripReasoning: false })}>Reset all</SmallButton>
+            <SmallButton icon="restart_alt" onClick={() => { typed.current.clear(); change({ authHeader: null, stripBeta: false, maxCompletionTokens: false, mimic: "none", customHeaders: "", overrides: {}, blockForeignTools: false, stripReasoning: false }); }}>Reset all</SmallButton>
           </div>
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,380px)]">
             <div className="ep-blocks grid content-start gap-3 md:grid-cols-2 lg:grid-cols-1">

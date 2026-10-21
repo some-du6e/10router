@@ -18,6 +18,7 @@ import type { EndpointRequestEntry } from "@/lib/endpointRequestLog.js";
 import type { RedetectDiff } from "@/app/api/providers/[id]/redetect/diff.js";
 import { prettyModel } from "../components/AddEndpointParts";
 import EndpointAdvancedStudio from "../components/EndpointAdvancedStudio";
+import EndpointIcon, { TILE_BG } from "@/shared/components/EndpointIcon";
 import type { StudioExtra } from "../components/EndpointAdvancedStudio";
 
 interface ModalProps { isOpen: boolean; title: string; onClose: () => void; size?: string; children?: ReactNode }
@@ -64,40 +65,6 @@ const Card = ({ children, className = "p-6" }: { children: ReactNode; className?
   <div className={`bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-soft)] ${className}`}>{children}</div>
 );
 const Code = ({ children }: { children: ReactNode }) => <code className="font-mono">{children}</code>;
-
-// ---- App icon (iOS home-screen tile) ---------------------------------------------
-
-export const TILE_BG = ["#0ea5e9", "#8b5cf6", "#f43f5e", "#f59e0b", "#10b981", "#64748b"];
-export function AppIcon({ icon, name, tint, size = 40 }: { icon?: string | null; name: string; tint?: string | null; size?: number }) {
-  const style = { width: size, height: size, borderRadius: Math.round(size * 0.225) };
-  if (icon) {
-    // A data: URL copy stored on the node; never hotlinked.
-    // eslint-disable-next-line @next/next/no-img-element
-    return <span className="app-icon relative inline-flex shrink-0 overflow-hidden" style={style}><img alt="" src={icon} className="block size-full object-cover" /></span>;
-  }
-  const n = (name || "?").trim() || "?";
-  const bg = tint || TILE_BG[[...n].reduce((a, c) => a + c.charCodeAt(0), 0) % TILE_BG.length];
-  return (
-    <span className="app-icon relative inline-flex shrink-0 overflow-hidden" style={style}>
-      <span className="flex size-full items-center justify-center font-semibold text-white" style={{ background: `linear-gradient(160deg,${bg}cc,${bg})`, fontSize: Math.round(size * 0.42) }}>{n[0].toUpperCase()}</span>
-    </span>
-  );
-}
-const MASK = ({ className = "", style }: { className?: string; style?: React.CSSProperties }) => <span aria-hidden="true" className={`material-symbols-outlined ${className}`} style={style}>theater_comedy</span>;
-// The impersonating mark: a small mask riding on the icon's corner (the
-// mockup's chosen mark; no pill or card tint).
-function MarkedIcon({ who, size, children }: { who: string | null; size: number; children: ReactNode }) {
-  if (!who) return <>{children}</>;
-  const d = Math.round(size * 0.42);
-  return (
-    <span className="relative inline-flex shrink-0">
-      {children}
-      <span title={`Impersonating ${who}`} role="img" aria-label={`Impersonating ${who}`} className="absolute -top-1.5 -right-1.5 flex items-center justify-center rounded-full bg-yellow-400 text-yellow-950 ring-2 ring-surface" style={{ width: d, height: d }}>
-        <MASK style={{ fontSize: Math.round(d * 0.7) }} />
-      </span>
-    </span>
-  );
-}
 
 // ---- Models by maker -------------------------------------------------------------
 
@@ -168,7 +135,7 @@ export default function CustomEndpointPage(p: Props) {
         <Link href="/dashboard/providers" className="inline-flex w-max items-center gap-1 text-sm text-text-muted transition-colors hover:text-primary"><span className="material-symbols-outlined text-lg">arrow_back</span>Back to Providers</Link>
         <div className="flex items-center gap-4">
           <button type="button" onClick={() => setIconOpen(true)} aria-label="Change icon" className="group relative rounded-[14px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">
-            <MarkedIcon who={who} size={56}><AppIcon icon={node.icon} name={node.name} tint={node.tint} size={56} /></MarkedIcon>
+            <EndpointIcon icon={node.icon} name={node.name} tint={node.tint} size={56} impersonating={who} />
             <span className="absolute -bottom-1 -right-1 flex size-6 items-center justify-center rounded-full border border-border-subtle bg-surface text-text-muted shadow-sm group-hover:text-text-main"><span className="material-symbols-outlined text-[14px]">edit</span></span>
           </button>
           <div className="min-w-0">
@@ -319,7 +286,7 @@ function RedetectBox({ node, diff, onClose, onApplied }: { node: EndpointNode; d
     );
   }
   const q = diff.quirks;
-  const qList = [q.maxCompletionTokens && "send max_completion_tokens", q.apiKeyHeader && "send the key in an api-key header", q.modelRoutes && "route Claude models to Messages"].filter(Boolean) as string[];
+  const qList = [q.maxCompletionTokens && "send max_completion_tokens", q.apiKeyHeader && "send the key in an api-key header", q.modelRoutes && Object.keys(q.modelRoutes).length > 0 && "route some models to another API"].filter(Boolean) as string[];
   const apply = async () => {
     setSaving(true); setErr("");
     try {
@@ -530,27 +497,30 @@ function IconModal({ node, onClose, onSaved }: { node: EndpointNode; onClose: ()
     return () => { cancel = true; };
   }, [node.id, node.siteIcon]);
 
-  const save = async (patch: { icon?: string | null; tint?: string | null }) => {
+  // Resolves true once the icon is saved; on failure it shows the error and resolves false.
+  const save = async (patch: { icon?: string | null; tint?: string | null }): Promise<boolean> => {
     setBusy(true); setErr("");
     try {
       const res = await fetch(`/api/providers/${node.id}/redetect/icon`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...patch, ...(found && found !== node.siteIcon ? { siteIcon: found } : {}) }) });
       const d = (await res.json().catch(() => ({}))) as { node?: EndpointNode; error?: string };
-      if (!res.ok || !d.node) { setErr(d.error || "Couldn't save the icon"); return; }
+      if (!res.ok || !d.node) { setErr(d.error || "Couldn't save the icon"); return false; }
       onSaved(d.node);
-    } catch { setErr("Network error"); }
+      return true;
+    } catch { setErr("Network error"); return false; }
     finally { setBusy(false); }
   };
-  const fromUrl = async () => {
+  const fromUrl = async (): Promise<boolean> => {
     const u = url.trim();
-    if (!u) return;
+    if (!u) return false;
     setBusy(true); setErr("");
     try {
       const res = await fetch(`/api/providers/${node.id}/redetect/icon`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: u }) });
-      const d = (await res.json()) as { icon?: string; error?: string };
-      if (!d.icon) { setErr(d.error || "Couldn't use that image"); setBusy(false); return; }
-      setUrl("");
-      await save({ icon: d.icon });
-    } catch { setErr("Network error"); setBusy(false); }
+      const d = (await res.json().catch(() => ({}))) as { icon?: string; error?: string };
+      if (!res.ok || !d.icon) { setErr(d.error || "Couldn't use that image"); setBusy(false); return false; }
+      const ok = await save({ icon: d.icon });
+      if (ok) setUrl("");
+      return ok;
+    } catch { setErr("Network error"); setBusy(false); return false; }
   };
   const upload = (e: ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -571,9 +541,9 @@ function IconModal({ node, onClose, onSaved }: { node: EndpointNode; onClose: ()
       <div className="flex flex-col gap-4">
         <div className="grid grid-cols-3 gap-2">
           {found
-            ? opt("From site", <AppIcon icon={found} name={node.name} size={48} />, node.icon === found, () => void save({ icon: found }))
+            ? opt("From site", <EndpointIcon icon={found} name={node.name} size={48} />, node.icon === found, () => void save({ icon: found }))
             : opt(looking ? "Looking…" : "No site icon", <span className="flex size-12 items-center justify-center rounded-[11px] border border-dashed border-border text-text-muted"><span className={`material-symbols-outlined ${looking ? "ep-spin" : ""}`}>{looking ? "progress_activity" : "public"}</span></span>, false, () => {}, true)}
-          {opt("Letter", <AppIcon name={node.name} tint={node.tint} size={48} />, !node.icon, () => void save({ icon: null }))}
+          {opt("Letter", <EndpointIcon name={node.name} tint={node.tint} size={48} />, !node.icon, () => void save({ icon: null }))}
           <label htmlFor={`${node.id}-icon-file`} aria-disabled={busy} className={`flex cursor-pointer flex-col items-center gap-2 rounded-[12px] border p-3 text-xs transition-colors focus-within:ring-2 focus-within:ring-primary/60 ${isUpload ? "border-primary bg-primary/5 text-text-main" : "border-border-subtle text-text-muted hover:text-text-main"}`}><span className="flex size-12 items-center justify-center rounded-[11px] border border-dashed border-border text-text-muted"><span className="material-symbols-outlined">upload</span></span><span>Upload</span></label>
         </div>
         {!node.icon && (
@@ -585,7 +555,7 @@ function IconModal({ node, onClose, onSaved }: { node: EndpointNode; onClose: ()
         <p className="text-xs text-text-muted">{found ? `We fetched ${host}'s app icon automatically. Square images look best.` : looking ? `Looking for ${host}'s app icon…` : `${host} has no app icon we could use. Square images look best.`}</p>
         {err && <p role="alert" className="text-xs text-red-600 dark:text-red-400">{err}</p>}
         <input id={`${node.id}-icon-file`} type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/x-icon" className="sr-only" disabled={busy} onChange={upload} />
-        <Btn size="md" full busy={busy} onClick={() => (url.trim() ? void fromUrl().then(onClose) : onClose())}>Done</Btn>
+        <Btn size="md" full busy={busy} onClick={() => { if (!url.trim()) { onClose(); return; } void fromUrl().then((ok) => { if (ok) onClose(); }); }}>Done</Btn>
       </div>
     </Modal>
   );

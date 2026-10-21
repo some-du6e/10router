@@ -3,22 +3,19 @@
 // weird endpoint can be debugged from the dashboard. In memory only (lost on
 // restart), MAX_PER_ENDPOINT per endpoint, keys masked.
 //
-// Captured below the executors, from undici's diagnostics channels: every fetch
-// made while a request for a custom endpoint is running (recordEndpointRequests)
-// is logged, retries included. Node's own fetch publishes these events, so this
-// sees exactly what went over the wire, after every rewrite.
+// Captured where the executors call fetch: every fetch made while a request for
+// a custom endpoint is running (recordEndpointRequests) is logged, retries
+// included, after every rewrite.
 //
 // Fail-open: logging must never break a request, so every handler swallows errors.
 
-import dc from "node:diagnostics_channel";
 import { AsyncLocalStorage } from "node:async_hooks";
-import zlib from "node:zlib";
 import { parseRejectedBetas, splitBetas } from "open-sse/utils/anthropicBeta.js";
 import { makeRedactor } from "@/lib/endpointDetect.js";
 import { isAnthropicCompatibleProvider, isOpenAICompatibleProvider } from "@/shared/constants/providers.js";
 
 export const MAX_PER_ENDPOINT = 20;
-const MAX_CAPTURE_BYTES = 256 * 1024; // raw bytes kept while a request runs
+const MAX_CAPTURE_BYTES = 256 * 1024; // body bytes kept while a request runs
 const MAX_TEXT = 8000;                // characters kept per request/response
 const AUTH_HEADERS = new Set(["authorization", "x-api-key", "api-key", "x-goog-api-key", "proxy-authorization"]);
 
@@ -58,15 +55,16 @@ interface Pending {
 interface Store {
   als: AsyncLocalStorage<Ctx>;
   logs: Map<string, EndpointRequestEntry[]>;
-  pending: WeakMap<object, Pending>;
   seq: number;
 }
+
+const FETCH_TAP = Symbol.for("10router.fetchTap");
 
 // One store per process, even when Next bundles this module into several routes.
 const KEY = Symbol.for("10router.endpointRequestLog");
 const g = globalThis as unknown as Record<symbol, Store | undefined>;
 const store: Store = g[KEY] ||= (() => {
-  const s: Store = { als: new AsyncLocalStorage<Ctx>(), logs: new Map(), pending: new WeakMap(), seq: 0 };
+  const s: Store = { als: new AsyncLocalStorage<Ctx>(), logs: new Map(), seq: 0 };
   subscribe(s);
   return s;
 })();
@@ -115,66 +113,75 @@ export function maskKey(key: string): string {
 
 // ---- Capture --------------------------------------------------------------
 
-type UndiciRequest = { method?: string; origin?: string | URL; path?: string; headers?: unknown };
-type UndiciResponse = { statusCode?: number; headers?: unknown };
+// Seen through the engine's fetch tap (open-sse/utils/proxyFetch.js), which every
+// executor request goes through. Node 22's undici publishes no body events on
+// its diagnostics channels, so the tap reads the bodies itself: the request
+// from the fetch options, the response from a clone the caller never sees.
 
-function headerPairs(raw: unknown): [string, string][] {
-  const out: [string, string][] = [];
-  if (Array.isArray(raw)) {
-    for (let i = 0; i + 1 < raw.length; i += 2) out.push([String(raw[i]), String(raw[i + 1])]);
-  } else if (typeof raw === "string") {
-    for (const line of raw.split(/\r?\n/)) {
-      const at = line.indexOf(":");
-      if (at > 0) out.push([line.slice(0, at).trim(), line.slice(at + 1).trim()]);
-    }
+type HeadersLike = Headers | [string, string][] | Record<string, unknown> | undefined;
+
+function headerPairs(raw: HeadersLike): [string, string][] {
+  if (!raw) return [];
+  if (typeof (raw as Headers).forEach === "function" && !Array.isArray(raw)) {
+    const out: [string, string][] = [];
+    (raw as Headers).forEach((v, k) => out.push([k, v]));
+    return out;
   }
-  return out;
+  if (Array.isArray(raw)) return raw.map(([k, v]) => [String(k), String(v)]);
+  return Object.entries(raw).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]);
+}
+
+function bodyBytes(body: unknown): Buffer | null {
+  if (typeof body === "string") return Buffer.from(body);
+  if (body instanceof Uint8Array) return Buffer.from(body);
+  if (body instanceof ArrayBuffer) return Buffer.from(body);
+  if (body instanceof URLSearchParams) return Buffer.from(body.toString());
+  return null;
+}
+
+async function readCapped(res: Response, p: Pending) {
+  const reader = res.body?.getReader();
+  if (!reader) return;
+  try {
+    while (p.resBytes < MAX_CAPTURE_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      p.resBody.push(Buffer.from(value));
+      p.resBytes += value.length;
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
 }
 
 function subscribe(s: Store) {
-  const on = (name: string, fn: (m: Record<string, unknown>) => void) => {
-    dc.subscribe(name, (m) => { try { fn(m as Record<string, unknown>); } catch { /* fail-open */ } });
+  (globalThis as unknown as Record<symbol, unknown>)[FETCH_TAP] = {
+    start(url: string, options: { method?: string; headers?: HeadersLike; body?: unknown } = {}) {
+      try {
+        const ctx = s.als.getStore();
+        if (!ctx) return null;
+        const u = new URL(url);
+        if (ctx.origin && u.origin !== ctx.origin) return null;
+        const reqBody = bodyBytes(options.body);
+        const p: Pending = {
+          ctx, start: Date.now(), method: (options.method || "GET").toUpperCase(), url: u.href,
+          reqHeaders: headerPairs(options.headers), reqBody: reqBody ? [reqBody.subarray(0, MAX_CAPTURE_BYTES)] : [], reqBytes: reqBody?.length || 0,
+          status: 0, resHeaders: [], resBody: [], resBytes: 0, done: false,
+        };
+        return {
+          done(res: Response) {
+            try {
+              p.status = res.status;
+              p.resHeaders = headerPairs(res.headers);
+              readCapped(res.clone(), p).catch(() => {}).finally(() => finish(s, p, null));
+            } catch { /* fail-open */ }
+            return res;
+          },
+          fail(error: unknown) { try { finish(s, p, error); } catch { /* fail-open */ } },
+        };
+      } catch { return null; }
+    },
   };
-  on("undici:request:create", ({ request }) => {
-    const ctx = s.als.getStore();
-    if (!ctx || !request) return;
-    const r = request as UndiciRequest;
-    if (ctx.origin && String(r.origin || "").replace(/\/$/, "") !== ctx.origin) return;
-    s.pending.set(request as object, {
-      ctx, start: Date.now(), method: r.method || "GET", url: `${String(r.origin || "").replace(/\/$/, "")}${r.path || ""}`,
-      reqHeaders: headerPairs(r.headers), reqBody: [], reqBytes: 0,
-      status: 0, resHeaders: [], resBody: [], resBytes: 0, done: false,
-    });
-  });
-  const grab = (p: Pending, which: "req" | "res", chunk: unknown) => {
-    if (chunk == null) return;
-    const b = Buffer.isBuffer(chunk) ? chunk : typeof chunk === "string" ? Buffer.from(chunk) : chunk instanceof Uint8Array ? Buffer.from(chunk) : null;
-    if (!b) return;
-    if (which === "req") { if (p.reqBytes < MAX_CAPTURE_BYTES) { p.reqBody.push(b); p.reqBytes += b.length; } }
-    else if (p.resBytes < MAX_CAPTURE_BYTES) { p.resBody.push(b); p.resBytes += b.length; }
-  };
-  on("undici:request:bodyChunkSent", ({ request, chunk }) => { const p = s.pending.get(request as object); if (p) grab(p, "req", chunk); });
-  on("undici:request:headers", ({ request, response }) => {
-    const p = s.pending.get(request as object);
-    if (!p) return;
-    const r = response as UndiciResponse;
-    p.status = r.statusCode || 0;
-    p.resHeaders = headerPairs(r.headers);
-  });
-  on("undici:request:bodyChunkReceived", ({ request, chunk }) => { const p = s.pending.get(request as object); if (p) grab(p, "res", chunk); });
-  on("undici:request:trailers", ({ request }) => finish(s, request as object, null));
-  on("undici:request:error", ({ request, error }) => finish(s, request as object, error));
-}
-
-function decode(body: Buffer, headers: [string, string][]): string {
-  const enc = (headers.find(([k]) => k.toLowerCase() === "content-encoding")?.[1] || "").toLowerCase();
-  const opts = { finishFlush: zlib.constants.Z_SYNC_FLUSH };
-  try {
-    if (enc.includes("gzip")) return zlib.gunzipSync(body, opts).toString("utf8");
-    if (enc.includes("br")) return zlib.brotliDecompressSync(body, { finishFlush: zlib.constants.BROTLI_OPERATION_FLUSH }).toString("utf8");
-    if (enc.includes("deflate")) return zlib.inflateSync(body, opts).toString("utf8");
-  } catch { return `<${enc} body, ${body.length} bytes>`; }
-  return body.toString("utf8");
 }
 
 const cut = (t: string) => (t.length > MAX_TEXT ? `${t.slice(0, MAX_TEXT)}\n… (${t.length - MAX_TEXT} more characters)` : t);
@@ -240,11 +247,9 @@ export function errorMessage(text: string): string {
   return text.replace(/\s+/g, " ").trim().slice(0, 200);
 }
 
-function finish(s: Store, request: object, error: unknown) {
-  const p = s.pending.get(request);
-  if (!p || p.done) return;
+function finish(s: Store, p: Pending, error: unknown) {
+  if (p.done) return;
   p.done = true;
-  s.pending.delete(request);
   const { ctx } = p;
   const redact = makeRedactor(ctx.key);
   const masked = maskKey(ctx.key);
@@ -254,7 +259,7 @@ function finish(s: Store, request: object, error: unknown) {
     return `${k}: ${scheme}${masked}`;
   };
   const reqText = redact(Buffer.concat(p.reqBody).toString("utf8"));
-  const resText = redact(decode(Buffer.concat(p.resBody), p.resHeaders));
+  const resText = redact(Buffer.concat(p.resBody).toString("utf8"));
   let body: unknown = null;
   try { body = JSON.parse(reqText); } catch { /* not JSON */ }
   const model = typeof (body as { model?: unknown })?.model === "string" ? (body as { model: string }).model : "";
