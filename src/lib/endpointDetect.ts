@@ -1025,8 +1025,11 @@ export interface DetectOptions {
   deadlineMs?: number;
   // Live progress (see DetectProgress). Paths and model ids only, never the key.
   onProgress?: DetectProgressFn | null;
+  // Leave out step 4 (asking about models one by one): the endpoint page's
+  // Re-detect checks only the API, URL and fixes; models have their own check.
+  skipModels?: boolean;
 }
-export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS, sleep, signal = null, deadlineMs = DETECT_DEADLINE_MS, onProgress = null }: DetectOptions): Promise<DetectResult> {
+export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS, sleep, signal = null, deadlineMs = DETECT_DEADLINE_MS, onProgress = null, skipModels = false }: DetectOptions): Promise<DetectResult> {
   const key = cleanKey(apiKey);
   const base0 = normalizeUrl(url);
   const steps: DetectStep[] = [];
@@ -1194,7 +1197,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   let stopReason: StopReason | null = null;
   let blocked: StopReason | null = null; // a stop that applies to every path
   const checks: Partial<Record<Protocol, ModelCheck>> = {};
-  if (!models.length) {
+  if (!models.length && !skipModels) {
     byProtocol = {};
     for (const proto of protocols) {
       if (generatesOnEmpty.has(proto)) { byProtocol[proto] = []; partialReason ||= PARTIAL_REASON.generated; stopReason ||= "generated"; continue; }

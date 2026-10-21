@@ -1,6 +1,7 @@
 # Unreleased
 
 ## Fixes
+- On an endpoint page, Re-detect now only re-checks the endpoint itself (which API, the URL, fixes), and the Models card has its own refresh button that looks for new and outdated models. Before, one Re-detect button did both.
 - Re-detect on an endpoint page now says what it's doing while it runs: which step it's on, how many models it has checked and how many work, requests sent, time taken, and any rate-limit wait. A Stop button cancels it, and leaving the page cancels it too.
 - Endpoints with no model list (Snowflake Cortex) now find the newest models (Claude Opus/Sonnet/Haiku 5.5, GPT-6, Kimi K3, GLM 5.3) and stop adding releases the labs have moved on from, like Claude Opus 4.5 or GPT-4.1. Re-detect offers to remove outdated models already saved.
 - The endpoint page shows one badge per API the endpoint answers on, not just the main one.

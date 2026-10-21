@@ -25,6 +25,17 @@ describe("redetectDiff", () => {
     expect(redetectDiff(node, ["a", "b"], found({ models: ["a"], listComplete: false })).removeModels).toEqual([]);
     expect(redetectDiff(node, ["a", "B"], found({ models: ["a", "b"] })).removeModels).toEqual([]);
   });
+  it("splits into an endpoint check and a models check", () => {
+    const r = found({ protocol: "openai-responses", baseUrl: "https://api.acme.dev/v2", models: ["a", "new"], quirks: { maxCompletionTokens: true },
+      byProtocol: { "openai-responses": ["a"], anthropic: ["new"] } });
+    const ep = redetectDiff(node, ["a", "gone"], r, [], "endpoint");
+    expect(ep).toMatchObject({ addModels: [], removeModels: [], outdatedModels: [], modelsNote: null, quirks: { maxCompletionTokens: true }, changes: 3 });
+    expect(ep.protocol.to).toBe("openai-responses");
+    const ms = redetectDiff(node, ["a", "gone"], r, [], "models");
+    expect(ms).toMatchObject({ protocol: null, baseUrl: null, addModels: ["new"], removeModels: ["gone"] });
+    // Routes stay relative to the saved API: switching it is the endpoint check's call.
+    expect(ms.quirks).toEqual({ modelRoutes: { a: "openai-responses", new: "anthropic" } });
+  });
   it("offers Chat <-> Responses in place, not OpenAI <-> Anthropic", () => {
     expect(redetectDiff(node, ["a", "b"], found({ protocol: "openai-responses" })).protocol).toEqual({ from: "openai-chat", to: "openai-responses", applicable: true });
     expect(redetectDiff(node, ["a", "b"], found({ protocol: "anthropic" })).protocol.applicable).toBe(false);
