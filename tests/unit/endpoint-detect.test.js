@@ -1,7 +1,7 @@
 // "Add endpoint" detection: URL cleanup, model-list parsing, and the free-probe
 // decision table. The Snowflake fixture mirrors real responses (2026-10-19).
 import { describe, it, expect } from "vitest";
-import { normalizeUrl, cleanKey, parseModelList, makePrefix, suggestName, detectEndpoint, discoverModels, matchCatalogProvider, majorVersion, recentLabModels, candidateModels } from "@/lib/endpointDetect.js";
+import { normalizeUrl, cleanKey, parseModelList, makePrefix, suggestName, detectEndpoint, discoverModels, matchCatalogProvider, majorVersion, recentLabModels, candidateModels, outdatedModels } from "@/lib/endpointDetect.js";
 
 // Shape of the models.dev index the catalog sync writes: providers + lab models.
 const PROVIDERS = [
@@ -121,6 +121,38 @@ describe("candidateModels", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
+  it("leaves out old releases the gateway's catalog still lists, and tries new ones prefixed and bare", () => {
+    const labs = [...LABS,
+      { id: "claude-opus-5", lab: "anthropic", family: "claude-opus", date: "2026-07-01" },
+      { id: "claude-opus-4-5", lab: "anthropic", family: "claude-opus", date: "2025-11-24" },
+      { id: "gpt-4.1", lab: "openai", family: "gpt", date: "2025-04-14" },
+      { id: "gpt-5.5", lab: "openai", family: "gpt", date: "2026-04-23" },
+      { id: "gpt-5.4", lab: "openai", family: "gpt", date: "2026-03-05" },
+      { id: "gpt-5.2", lab: "openai", family: "gpt", date: "2025-12-11" },
+    ];
+    const catalog = { providers: [{ id: "snowflake-cortex", name: "Snowflake Cortex", api: "https://${SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/cortex/v1", models: ["claude-opus-4-5", "openai-gpt-4.1", "openai-gpt-5.5", "deepseek-r1", "mistral-large2"] }], labs };
+    const { ids } = candidateModels("https://acme.snowflakecomputing.com/api/v2/cortex/v1", catalog);
+    expect(ids).not.toContain("claude-opus-4-5");
+    expect(ids).not.toContain("openai-gpt-4.1");
+    expect(ids.slice(0, 3)).toEqual(["openai-gpt-5.5", "deepseek-r1", "mistral-large2"]); // not in the labs: kept
+    expect(ids).toEqual(expect.arrayContaining(["claude-opus-5-5", "openai-gpt-6.1-sol", "gpt-6.1-sol", "kimi-k3"]));
+    expect(ids).not.toContain("deepseek-kimi-k3"); // "deepseek-r1" is a model, not a prefix
+    expect(outdatedModels(["claude-opus-4-5", "openai-gpt-4.1", "claude-opus-5-5", "mistral-large2", "deepseek-r1"], catalog)).toEqual(["claude-opus-4-5", "openai-gpt-4.1"]);
+    expect(outdatedModels(["claude-opus-4-5"], {})).toEqual([]);
+  });
+
+  it("keeps dated snapshots of current models, and tries the gateway's newest models first", () => {
+    const labs = [...LABS,
+      { id: "claude-haiku-5-5", lab: "anthropic", family: "claude-haiku", date: "2026-08-01" },
+      { id: "claude-haiku-5-5-20260801", lab: "anthropic", family: "claude-haiku", date: "2026-08-01" },
+      { id: "claude-sonnet-5", lab: "anthropic", family: "claude-sonnet", date: "2026-03-01" },
+    ];
+    const catalog = { providers: [{ id: "gw", name: "GW", api: "https://gw.example.com/v1", models: ["mystery-1", "claude-sonnet-5", "claude-haiku-5-5-20260801"] }], labs };
+    expect(outdatedModels(["claude-haiku-5-5-20260801"], catalog)).toEqual([]);
+    const { ids } = candidateModels("https://gw.example.com/v1", catalog);
+    expect(ids.slice(0, 3)).toEqual(["claude-haiku-5-5-20260801", "claude-sonnet-5", "mystery-1"]);
+  });
+
   it("an unknown gateway still gets the latest lab models", () => {
     const { matched, ids } = candidateModels("https://gw.example.com/v1", CATALOG);
     expect(matched).toBeNull();
@@ -146,6 +178,24 @@ const GOOD = "pat-real-key";
 const keyOk = (auth) => auth.includes(GOOD);
 
 describe("detectEndpoint", () => {
+  it("adds the models a key sees to a keyless /models list, and flags a list cut short", async () => {
+    const { fetchFn } = upstream({
+      "GET /v1/models": ({ auth }) => [200, { data: (keyOk(auth) ? ["pub", "priv"] : ["pub"]).map((id) => ({ id })) }],
+      "POST /v1/chat/completions": () => [400, { error: { message: "messages is required" } }],
+    });
+    const r = await detectEndpoint({ url: "https://gw.example.com/v1", apiKey: GOOD, fetchFn, catalog: CATALOG });
+    expect(r.models).toEqual(["pub", "priv"]);
+    expect(r.listComplete).toBe(true);
+    // Page 2 rate-limited: what was listed is kept, but the list isn't whole.
+    let page = 0;
+    const paged = upstream({
+      "GET /v1/models": () => (page++ % 2 === 0 ? [200, { data: [{ id: "a" }], has_more: true, last_id: "a" }] : [500, {}]),
+      "POST /v1/chat/completions": () => [400, { error: { message: "messages is required" } }],
+    });
+    const r2 = await detectEndpoint({ url: "https://gw.example.com/v1", apiKey: "", fetchFn: paged.fetchFn, catalog: CATALOG });
+    expect(r2.models).toEqual(["a"]);
+    expect(r2.listComplete).toBe(false);
+  });
   it("Snowflake: no /models, Anthropic found, key confirmed, catalog models confirmed for free", async () => {
     const known = new Set(["claude-sonnet-4-5", "claude-haiku-4-5"]); // claude-opus-4-1 is in the catalog but not served
     const { fetchFn, calls } = upstream({
@@ -167,6 +217,18 @@ describe("detectEndpoint", () => {
     for (const c of calls.filter((x) => x.method === "POST")) {
       expect(c.body.messages ?? c.body.input).toEqual([]);
     }
+  });
+
+  it("skipModels checks the API and key but asks about no models", async () => {
+    const { fetchFn, calls } = upstream({
+      "POST /api/v2/cortex/v1/messages": ({ auth, body }) => !keyOk(auth) ? [401, { message: "Invalid OAuth access token. null" }]
+        : body.model === "claude-haiku-4-5" ? [400, { message: "'messages' must not be empty" }] : [400, { message: `unknown model "${body.model}"` }],
+    });
+    const r = await detectEndpoint({ url: "https://acme.snowflakecomputing.com/api/v2/cortex/v1", apiKey: GOOD, fetchFn, catalog: CATALOG, skipModels: true });
+    expect(r).toMatchObject({ ok: true, protocol: "anthropic", models: [], modelsSource: "none", keyConfirmed: "confirmed" });
+    expect(r.checks).toBeUndefined();
+    const asked = calls.filter((c) => c.method === "POST").map((c) => c.body.model);
+    expect(asked.filter((m) => m === "claude-haiku-4-5" || m === "claude-sonnet-4-5")).toEqual([]);
   });
 
   it("OpenAI-style gateway with a model list", async () => {

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCustomModels, addCustomModel, deleteCustomModel } from "@/models";
+import { getProviderNodeById, updateProviderNode } from "@/lib/db/index.js";
 import { CAPACITY_META } from "@/shared/constants/models";
 
 export const dynamic = "force-dynamic";
@@ -80,6 +81,12 @@ export async function DELETE(request) {
       return NextResponse.json({ error: "providerAlias and id required" }, { status: 400 });
     }
     await deleteCustomModel({ providerAlias, id, type });
+    // A deleted model's route would keep its API's badge on the endpoint card.
+    const node = await getProviderNodeById(providerAlias).catch(() => null);
+    if (node?.modelRoutes && id in node.modelRoutes) {
+      const { [id]: _gone, ...modelRoutes } = node.modelRoutes;
+      await updateProviderNode(providerAlias, { modelRoutes });
+    }
     return NextResponse.json({ success: true });
   } catch (error) {
     console.log("Error deleting custom model:", error);

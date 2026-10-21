@@ -53,6 +53,7 @@ export interface DetectResult {
   byProtocol?: Partial<Record<Protocol, string[]>> | null;
   models?: string[];
   modelsSource?: ModelsSource;
+  listComplete?: boolean; // false: /models stopped on a failed page or the page cap
   keyConfirmed?: KeyConfirmed;
   quirks?: DetectQuirks;
   partial?: boolean;
@@ -146,11 +147,14 @@ type Json = Record<string, unknown>;
 const PROBE_TIMEOUT_MS = 8000;
 const BODY_PREVIEW = 300;
 const PROBE_CONCURRENCY = 3;     // model probes in flight per path
-const MAX_CANDIDATES = 40;       // ids asked about per path (a matched provider's own list may go over, up to the next cap)
-const MAX_MATCHED_CANDIDATES = 80;
+const MAX_CANDIDATES = 40;       // ids asked about per path when no provider matched
+const MAX_MATCHED_CANDIDATES = 80; // a matched provider's own list, at most
+const MAX_EXTRA_CANDIDATES = 60;   // recent lab models asked about on top of a matched list
+const MODELS_PER_FAMILY = 3;     // newest releases kept per family (claude-opus: 5-5, 5, 4-8)
 const MAX_RATE_RETRIES = 3;      // per probe, on 429
 const MAX_RETRY_WAIT_MS = 10_000;
 const MAX_MODEL_PAGES = 10;      // /models pagination cap
+const PROBE_BODY_MAX = 4 * 1024 * 1024; // a probe reads at most this much
 const CANARY = "10router-no-such-model";
 const CONTROL_PATH = "/10router-no-such-path";
 const DETECT_DEADLINE_MS = 45_000; // whole detection; the UI gives up at 60s
@@ -427,10 +431,11 @@ export function dropSnapshots(ids: string[]): string[] {
   return ids.filter((id) => { const alias = snapshotAlias(id); return !alias || !set.has(alias.toLowerCase()); });
 }
 
-// The newest `gens` major versions of every model family the labs ship, and
-// only families with a release in the last `maxAgeDays`. Old generations are
-// left out on purpose: nobody adds an endpoint for them.
-export function recentLabModels(labs: CatalogLabModel[] = [], gens = 3, maxAgeDays = 365, now = Date.now()): string[] {
+// The newest `gens` major versions of every model family the labs ship, at most
+// `perFamily` releases each, and only families with a release in the last
+// `maxAgeDays`. Old generations are left out on purpose: nobody adds an
+// endpoint for them.
+export function recentLabModels(labs: CatalogLabModel[] = [], gens = 3, maxAgeDays = 365, now = Date.now(), perFamily = MODELS_PER_FAMILY): string[] {
   const cutoff = new Date(now - maxAgeDays * 864e5).toISOString().slice(0, 10);
   const kept = new Set(dropSnapshots(labs.map((m) => m.id)));
   const byFamily = new Map<string, CatalogLabModel[]>();
@@ -451,8 +456,10 @@ export function recentLabModels(labs: CatalogLabModel[] = [], gens = 3, maxAgeDa
     const decimal = new Set(versioned.map((m) => majorVersion(m.id))).size < gens;
     const gen = (m: CatalogLabModel) => majorVersion(m.id, decimal);
     const keep = [...new Set(versioned.map(gen))].sort((a, b) => b - a).slice(0, gens);
-    models.filter((m) => majorVersion(m.id) === 0 || keep.includes(gen(m)))
-      .sort((a, b) => b.date.localeCompare(a.date))
+    const versionless = models.filter((m) => majorVersion(m.id) === 0);
+    versionless.concat(versioned.filter((m) => keep.includes(gen(m)))
+      .sort((a, b) => b.date.localeCompare(a.date) || majorVersion(b.id, true) - majorVersion(a.id, true))
+      .slice(0, perFamily))
       .forEach((m) => out.push(m));
   }
   return [...new Set(out.sort((a, b) => b.date.localeCompare(a.date)).map((m) => m.id))];
@@ -460,28 +467,60 @@ export function recentLabModels(labs: CatalogLabModel[] = [], gens = 3, maxAgeDa
 
 // Gateways often prefix a vendor's ids with its name (Snowflake: "openai-gpt-5").
 // Learn the prefixes from the matched provider's own list.
+// Only a real prefix counts: "openai-gpt-5" is, "deepseek-r1" and "mistral-large2" aren't.
 function vendorPrefixes(models: string[] = []): Set<string> {
   const seen = new Set<string>();
-  for (const id of models) { const m = /^(openai|anthropic|google|meta|mistral|deepseek|xai|qwen|moonshot)-/i.exec(id); if (m) seen.add(m[1].toLowerCase()); }
+  for (const id of models) { const p = vendorPrefix(id); if (p) seen.add(p); }
   return seen;
+}
+function vendorPrefix(id: string): string | null {
+  const m = /^(openai|anthropic|google|meta|mistral|deepseek|xai|qwen|moonshot)-(.+)$/i.exec(id);
+  return m && LAB_PREFIX[m[1].toLowerCase()].test(m[2].toLowerCase()) ? m[1].toLowerCase() : null;
 }
 const LAB_PREFIX: Record<string, RegExp> = { openai: /^(gpt|o\d)/, anthropic: /^claude/, google: /^gem/, meta: /^(llama|muse)/, mistral: /^(mistral|ministral|devstral|codestral|magistral|pixtral)/, deepseek: /^deepseek/, xai: /^grok/, qwen: /^qwen/, moonshot: /^kimi/ };
 
 // Case-insensitive dedupe, first spelling wins.
 const dedupe = (ids: string[]): string[] => { const seen = new Set<string>(); return ids.filter((id) => { const k = String(id).toLowerCase(); if (!id || seen.has(k)) return false; seen.add(k); return true; }); };
 
+// True for a model the labs have moved on from: the catalog knows it (with or
+// without a gateway prefix) but it's no longer one of the recent releases.
+function outdatedTest(labs: CatalogLabModel[], recent = recentLabModels(labs)): (id: string) => boolean {
+  const current = new Set(recent.map((id) => id.toLowerCase()));
+  const known = new Set(labs.map((m) => m.id.toLowerCase()));
+  const bare = (id: string) => { const p = vendorPrefix(id); return (p ? id.slice(p.length + 1) : id).toLowerCase(); };
+  // A dated snapshot of a current model (claude-haiku-4-5-20251001) is current too.
+  return (id) => { const b = bare(id); const alias = snapshotAlias(b)?.toLowerCase(); return known.has(b) && !current.has(b) && !(alias && current.has(alias)); };
+}
+export function outdatedModels(ids: string[], catalog: CatalogInput = {}): string[] {
+  const labs = Array.isArray(catalog) ? [] : catalog.labs || [];
+  if (!labs.length) return [];
+  const stale = outdatedTest(labs);
+  return ids.filter(stale);
+}
+
 // What to ask about when there's no /models: the matched provider's list first,
-// then the latest generations from every lab (under the gateway's own prefixes).
+// then the latest generations from every lab, newest first, each under the
+// gateway's own prefixes and bare. Models the labs have moved on from are left
+// out of both (catalogs keep listing claude-opus-4-5 long after 5-5 ships).
 // Capped: every id is one request per path.
 export function candidateModels(base: string, catalog: CatalogInput = {}): { matched: MatchedProvider | null; ids: string[] } {
   const providers = Array.isArray(catalog) ? catalog : catalog.providers || [];
   const matched = matchCatalogProvider(base, providers);
-  const recent = recentLabModels((catalog as Partial<EndpointCatalog>).labs || []);
+  const labs = (catalog as Partial<EndpointCatalog>).labs || [];
+  const recent = recentLabModels(labs);
+  const stale = outdatedTest(labs, recent);
   const prefixes = vendorPrefixes(matched?.models);
-  const prefixed = recent.flatMap((id) => [...prefixes].filter((p) => LAB_PREFIX[p]?.test(id)).map((p) => `${p}-${id}`));
-  const own = dedupe(dropSnapshots((matched?.models || []).filter((id) => !NON_CHAT_ID_RE.test(id))));
-  const rest = dedupe(dropSnapshots([...own, ...prefixed, ...recent])).slice(own.length);
-  const ids = dedupe([...own.slice(0, MAX_MATCHED_CANDIDATES), ...rest]).slice(0, Math.max(MAX_CANDIDATES, Math.min(own.length, MAX_MATCHED_CANDIDATES)));
+  const variants = (id: string) => [...[...prefixes].filter((p) => LAB_PREFIX[p]?.test(id)).map((p) => `${p}-${id}`), id];
+  // Newest first, so a cut-short run still reaches them; ids the labs don't date keep their place after.
+  const dated = new Map(labs.map((m) => [m.id.toLowerCase(), m.date]));
+  const dateOf = (id: string) => { const p = vendorPrefix(id); return dated.get((p ? id.slice(p.length + 1) : id).toLowerCase()) || ""; };
+  const own = dedupe(dropSnapshots((matched?.models || []).filter((id) => !NON_CHAT_ID_RE.test(id) && !stale(id))))
+    .map((id, i) => ({ id, i, d: dateOf(id) }))
+    .sort((a, b) => (b.d && a.d ? b.d.localeCompare(a.d) : a.d ? -1 : b.d ? 1 : 0) || a.i - b.i)
+    .map((x) => x.id).slice(0, MAX_MATCHED_CANDIDATES);
+  const ownKeys = new Set(own.map((id) => id.toLowerCase()));
+  const rest = dedupe(recent.flatMap(variants)).filter((id) => !ownKeys.has(id.toLowerCase()));
+  const ids = matched ? [...own, ...rest.slice(0, MAX_EXTRA_CANDIDATES)] : rest.slice(0, MAX_CANDIDATES);
   return { matched, ids };
 }
 
@@ -705,7 +744,9 @@ function makeProber({ fetchFn, key, steps, timeoutMs, sleep = defaultSleep, sign
         if (!quiet) emit({ type: "response", n: id, status: 0, kind: "network", sent: steps.length, hint: networkHint(step.preview, timeoutMs) });
         return { status: 0, text: "", json: null, step: step as DetectStep };
       }
-      const text = await res.text().catch(() => "");
+      // Only a preview and the JSON are used: don't hold a runaway body in memory.
+      const r0 = res as Parameters<typeof readCapped>[0];
+      const text = await (r0.body || r0.arrayBuffer ? readCapped(r0, PROBE_BODY_MAX).then(({ bytes }) => new TextDecoder().decode(bytes)) : res.text()).catch(() => "");
       const contentType = res.headers?.get?.("content-type") ?? null;
       step.status = res.status;
       step.preview = redact(text).replace(/\s+/g, " ").slice(0, BODY_PREVIEW);
@@ -852,7 +893,8 @@ async function probeModels({ probe, base, protocol, AUTH, openaiAuth, ids, quirk
 
 // GET /models with pagination. Returns { ids, listed, auth } where `listed`
 // means a real list answered (even an empty one).
-async function fetchModelList(probe: Prober, base: string, label: string, headers: HeaderMap): Promise<{ ids: string[]; listed: boolean; first: ProbeResult }> {
+// `complete`: every page answered (no failed page, no page cap hit).
+async function fetchModelList(probe: Prober, base: string, label: string, headers: HeaderMap): Promise<{ ids: string[]; listed: boolean; complete: boolean; first: ProbeResult }> {
   let url: string | null = joinUrl(base, "/models");
   const ids: string[] = [];
   let first: ProbeResult | null = null;
@@ -865,7 +907,7 @@ async function fetchModelList(probe: Prober, base: string, label: string, header
   }
   const listed = !!first && first.status >= 200 && first.status < 300 && !first.step.html && !!modelEntries(first.json);
   // The loop always runs at least once, so `first` is set.
-  return { ids: dedupe(ids), listed, first: first as ProbeResult };
+  return { ids: dedupe(ids), listed, complete: listed && !url, first: first as ProbeResult };
 }
 
 // Which API path a model should use when the endpoint serves it on several.
@@ -983,8 +1025,11 @@ export interface DetectOptions {
   deadlineMs?: number;
   // Live progress (see DetectProgress). Paths and model ids only, never the key.
   onProgress?: DetectProgressFn | null;
+  // Leave out step 4 (asking about models one by one): the endpoint page's
+  // Re-detect checks only the API, URL and fixes; models have their own check.
+  skipModels?: boolean;
 }
-export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS, sleep, signal = null, deadlineMs = DETECT_DEADLINE_MS, onProgress = null }: DetectOptions): Promise<DetectResult> {
+export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS, sleep, signal = null, deadlineMs = DETECT_DEADLINE_MS, onProgress = null, skipModels = false }: DetectOptions): Promise<DetectResult> {
   const key = cleanKey(apiKey);
   const base0 = normalizeUrl(url);
   const steps: DetectStep[] = [];
@@ -998,6 +1043,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   let models: string[] = [];
   let base = base0;
   let modelsAuth: string | null = null;
+  let listComplete = false; // GET /models answered every page
   let sawAuthFail = false;
   const listRefused = new Set<string>(); // auth styles GET /models refused
   let clientGated = false;
@@ -1022,7 +1068,16 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
       // api-key is only a fallback after Bearer was refused (Azure-style).
       if (style === "api-key" && !azure && !sawAuthFail) continue;
       const r = await fetchModelList(probe, b, `GET /models (${style === "none" ? "no auth" : style})`, h);
-      if (r.listed && (r.ids.length || Array.isArray((r.first.json as Json | null)?.data))) { models = r.ids; base = b; modelsAuth = style; break outer; }
+      if (r.listed && (r.ids.length || Array.isArray((r.first.json as Json | null)?.data))) {
+        models = r.ids; base = b; modelsAuth = style; listComplete = r.complete;
+        // Without a key some gateways list only their public models: ask with it too.
+        if (style === "none" && key) {
+          const k = await fetchModelList(probe, b, "GET /models (bearer)", AUTH.bearer);
+          if (k.listed) models = dedupe([...models, ...k.ids]);
+          listComplete &&= k.listed && k.complete;
+        }
+        break outer;
+      }
       const k = classify(r.first);
       heard(k);
       if (style !== "none") note(k); else if (k === "gated") clientGated = true;
@@ -1142,7 +1197,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   let stopReason: StopReason | null = null;
   let blocked: StopReason | null = null; // a stop that applies to every path
   const checks: Partial<Record<Protocol, ModelCheck>> = {};
-  if (!models.length) {
+  if (!models.length && !skipModels) {
     byProtocol = {};
     for (const proto of protocols) {
       if (generatesOnEmpty.has(proto)) { byProtocol[proto] = []; partialReason ||= PARTIAL_REASON.generated; stopReason ||= "generated"; continue; }
@@ -1185,6 +1240,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
     baseUrl: base,
     models,
     modelsSource,
+    ...(modelsSource === "models" ? { listComplete } : {}),
     keyConfirmed,
     quirks,
     partial: !!partialReason,
@@ -1295,6 +1351,7 @@ const SITE_TIMEOUT_MS = 4000;
 const SITE_HTML_MAX = 512 * 1024;
 const ICON_MAX_BYTES = 256 * 1024;
 const ICON_MIN_PX = 32;
+const ICON_SHARP_PX = 96;   // smaller than this, try the next site root for a bigger one
 const SITE_UA = "Mozilla/5.0 (compatible; 10router endpoint setup)";
 // Titles of walls, errors and default pages: not a name.
 const JUNK_TITLE_RE = /^(just a moment|attention required|access denied|forbidden|not found|404|403|401|500|502|503|error|sign ?in|log ?in|login|welcome to nginx|nginx|apache|it works|index of|untitled|home|cloudflare|redirecting|loading)\b/i;
@@ -1363,6 +1420,17 @@ export function imageSize(b: Uint8Array): number | null {
       i += 2 + len;
     }
   }
+  // WebP: VP8X canvas, VP8 (lossy) frame or VP8L (lossless) header.
+  if (b.length > 30 && b[0] === 0x52 && b[1] === 0x49 && b[8] === 0x57 && b[9] === 0x45) {
+    const fourcc = String.fromCharCode(b[12], b[13], b[14], b[15]);
+    const u24 = (i: number) => b[i] | (b[i + 1] << 8) | (b[i + 2] << 16);
+    if (fourcc === "VP8X") return Math.min(u24(24) + 1, u24(27) + 1);
+    if (fourcc === "VP8 ") return Math.min((b[26] | (b[27] << 8)) & 0x3fff, (b[28] | (b[29] << 8)) & 0x3fff);
+    if (fourcc === "VP8L" && b[20] === 0x2f) {
+      const bits = b[21] | (b[22] << 8) | (b[23] << 16) | (b[24] << 24);
+      return Math.min((bits & 0x3fff) + 1, ((bits >>> 14) & 0x3fff) + 1);
+    }
+  }
   return null;
 }
 
@@ -1419,7 +1487,7 @@ export async function fetchSiteInfo(base: string, fetchFn: SiteFetch, { signal =
     }
     return null;
   };
-  const readIcon = async (url: string): Promise<string | null> => {
+  const readIcon = async (url: string, hint = 0): Promise<{ url: string; px: number } | null> => {
     try {
       const r = await get(url, "image/*");
       if (!r) return null;
@@ -1428,15 +1496,17 @@ export async function fetchSiteInfo(base: string, fetchFn: SiteFetch, { signal =
       const { bytes, over } = await readCapped(r.res, ICON_MAX_BYTES);
       if (!bytes.length || over) return null;
       const ct = (r.res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
-      const svg = ct === "image/svg+xml" || (/^\s*(<\?xml[^>]*>\s*)?<svg\b/i.test(new TextDecoder().decode(bytes.subarray(0, 200))));
+      const svg = ct === "image/svg+xml" || (/^\s*(?:(?:<\?xml[^>]*>|<!--[\s\S]*?-->|<!DOCTYPE[^>]*>)\s*)*<svg\b/i.test(new TextDecoder().decode(bytes.subarray(0, 1024))));
       const type = svg ? "image/svg+xml" : sniffImage(bytes);
       if (!type) return null; // not an image (an HTML 200 for a missing favicon)
-      if (!svg) { const px = imageSize(bytes); if (px !== null && px < ICON_MIN_PX) return null; }
-      return `data:${type};base64,${toBase64(bytes)}`;
+      const px = svg ? Infinity : imageSize(bytes);
+      if (px !== null && px < ICON_MIN_PX) return null;
+      // No size in the header (WebP): trust the page's <link sizes>.
+      return { url: `data:${type};base64,${toBase64(bytes)}`, px: px ?? (hint || ICON_MIN_PX) };
     } catch { return null; }
   };
   let name: string | null = null;
-  let icon: string | null = null;
+  let icon: { url: string; px: number } | null = null;
   let host = "";
   for (const root of roots) {
     if (sig.aborted) break;
@@ -1449,17 +1519,21 @@ export async function fetchSiteInfo(base: string, fetchFn: SiteFetch, { signal =
       else if (r) discardBody(r.res);
     } catch { /* unreachable root: try the next */ }
     if (!name && info.name) { name = info.name; host ||= new URL(page).hostname.replace(/^www\./, ""); }
-    if (!icon) {
-      for (const cand of [...info.icons.slice(0, 3).map((i) => i.href), `${new URL(page).origin}/favicon.ico`]) {
+    // A small icon (a 32px favicon on the API host) keeps looking: the bare
+    // domain usually has a sharp app icon. The biggest one found wins.
+    if (!icon || icon.px < ICON_SHARP_PX) {
+      for (const cand of [...info.icons.slice(0, 3), { href: `${new URL(page).origin}/favicon.ico`, size: 0 }]) {
         if (sig.aborted) break;
-        icon = await readIcon(cand);
-        if (icon) { host ||= new URL(page).hostname.replace(/^www\./, ""); break; }
+        const got = await readIcon(cand.href, cand.size);
+        if (got && (!icon || got.px > icon.px)) { icon = got; host = new URL(page).hostname.replace(/^www\./, ""); }
+        // Unsized links sort first, so a small one doesn't end the search early.
+        if (icon && icon.px >= ICON_SHARP_PX) break;
       }
     }
-    if (name && icon) break;
+    if (name && icon && icon.px >= ICON_SHARP_PX) break;
   }
   if (!name && !icon) return null;
-  return { name, icon, host: host || new URL(roots[0]).hostname };
+  return { name, icon: icon?.url ?? null, host: host || new URL(roots[0]).hostname };
 }
 
 // ---- Test message (opt-in, ~1 token) -------------------------------------------

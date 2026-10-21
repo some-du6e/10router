@@ -22,7 +22,7 @@ import type { NodeQuirks } from "@/shared/utils/nodeQuirks.js";
 import type { GatedDetectResult } from "@/lib/endpointImpersonate.js";
 import {
   AppIcon, Badge, Btn, Chip, DrawnCheck, EASE, PROTOCOL_LABEL, SHORT, STOP_WHY, Spinner, StepList, TestedBox, TwoPaths,
-  failCopy, hostOf, reduceMotion, splitPaths, stepNote, stepText,
+  failCopy, hostOf, readNdjson, reduceMotion, splitPaths, stepNote, stepText,
 } from "./AddEndpointParts";
 import type { FailCopy, LiveStep } from "./AddEndpointParts";
 
@@ -82,31 +82,6 @@ const DEFAULT_QUIRKS: ModalQuirks = { stripBeta: false, maxCompletionTokens: fal
 type Phase = "idle" | "detecting" | "gated" | "found" | "failed";
 interface Partial_ { checked: number; total: number; why: string; proto: Protocol; unchecked: string[]; running?: boolean; error?: string }
 interface BetaCheck { model?: string; picking?: boolean; state?: "running" | "done" | "failed"; dropped?: string[]; error?: string }
-
-// Read an NDJSON response line by line. Returns the { type: "result" } object.
-async function readNdjson<T>(res: Response, onEvent: (e: DetectProgress) => void): Promise<T> {
-  if (!res.body || !/ndjson/.test(res.headers.get("content-type") || "")) return res.json() as Promise<T>;
-  const reader = res.body.getReader();
-  const dec = new TextDecoder();
-  let buf = "";
-  let result: T | null = null;
-  const line = (l: string) => {
-    if (!l.trim()) return;
-    const e = JSON.parse(l) as { type: string };
-    if (e.type === "result") result = e as unknown as T;
-    else onEvent(e as DetectProgress);
-  };
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    let i;
-    while ((i = buf.indexOf("\n")) >= 0) { line(buf.slice(0, i)); buf = buf.slice(i + 1); }
-  }
-  line(buf);
-  if (!result) throw new Error("No result");
-  return result;
-}
 
 // Ease the dialog body from its old height to the new one on every change of
 // what's shown, instead of jumping. Measures from the height on screen right

@@ -1,6 +1,7 @@
 import { stripRetiredSettings } from "./helpers/retiredSettings.js";
 import { migrateLegacyHostPassword } from "./helpers/hostCredentials.js";
 import { invalidatePricingCache } from "./repos/pricingRepo.js";
+import { clearRequestDetailFullData as clearFullDataAfterImport } from "./repos/requestDetailsRepo.js";
 // Public API barrel — all DB functions
 import { getAdapter } from "./driver.js";
 import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
@@ -74,7 +75,7 @@ export {
 
 // Request details
 export {
-  saveRequestDetail, getRequestDetails, getRequestDetailById, getDistinctProviders,
+  saveRequestDetail, getRequestDetails, getRequestDetailById, getRequestDetailFullData, clearRequestDetailFullData, CorruptFullDataError, getDistinctProviders,
 } from "./repos/requestDetailsRepo.js";
 
 // Quota notification state
@@ -190,6 +191,12 @@ export async function importDb(payload) {
   // Settings were replaced wholesale above, bypassing updateSettings.
   invalidateSettingsCache();
   bumpConnectionsVersion();
+
+  // A restore can switch "Show full request details" off; drop any stored
+  // full payloads so they don't outlive the setting.
+  if (payload.settings?.showSensitiveRequestDetails !== true) {
+    await clearFullDataAfterImport();
+  }
 
   return await exportDb();
 }
