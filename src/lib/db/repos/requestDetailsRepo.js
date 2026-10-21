@@ -18,8 +18,11 @@ const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
 const PAYLOAD_KEYS = ["request", "providerRequest", "providerResponse", "response"];
 
-let cachedConfig = null;
-let cachedConfigTs = 0;
+// Kept on globalThis: bundles can load this module more than once, and every
+// copy must see the clear when "Show full request details" is turned off.
+// `generation` bumps on every clear, so a config read or a flush that started
+// before the clear can tell its "keep full payloads" answer is stale.
+const configCache = (globalThis.__requestDetailsConfigCache ??= { value: null, ts: 0, generation: 0 });
 
 function getMaxJsonSize(settings) {
   const envValue = Number.parseInt(process.env.OBSERVABILITY_MAX_JSON_SIZE || "", 10);
@@ -36,14 +39,24 @@ function getMaxJsonSize(settings) {
 }
 
 async function getObservabilityConfig() {
-  if (cachedConfig && (Date.now() - cachedConfigTs) < CONFIG_CACHE_TTL_MS) return cachedConfig;
+  if (configCache.value && (Date.now() - configCache.ts) < CONFIG_CACHE_TTL_MS) return configCache.value;
+  const generation = configCache.generation;
+  const config = await readObservabilityConfig();
+  // A clear ran while settings were read: don't cache the pre-clear answer.
+  if (generation !== configCache.generation) return { ...config, keepFullData: false };
+  configCache.value = config;
+  configCache.ts = Date.now();
+  return config;
+}
+
+async function readObservabilityConfig() {
   try {
     const { getSettings } = await import("./settingsRepo.js");
     const settings = await getSettings();
     const envRequestLogs = process.env.ENABLE_REQUEST_LOGS;
     if (envRequestLogs !== undefined) {
       const enabled = envRequestLogs.toLowerCase() === "true";
-      cachedConfig = {
+      return {
         enabled,
         maxRecords: settings.observabilityMaxRecords || parseInt(process.env.OBSERVABILITY_MAX_RECORDS || String(DEFAULT_MAX_RECORDS), 10),
         batchSize: settings.observabilityBatchSize || parseInt(process.env.OBSERVABILITY_BATCH_SIZE || String(DEFAULT_BATCH_SIZE), 10),
@@ -51,8 +64,6 @@ async function getObservabilityConfig() {
         maxJsonSize: getMaxJsonSize(settings),
         keepFullData: settings.showSensitiveRequestDetails === true,
       };
-      cachedConfigTs = Date.now();
-      return cachedConfig;
     }
     const envFallback = process.env.OBSERVABILITY_ENABLED !== "false";
     const uiFlag = typeof settings.enableObservability === "boolean";
@@ -60,7 +71,7 @@ async function getObservabilityConfig() {
       ? settings.enableObservability
       : envFallback;
 
-    cachedConfig = {
+    return {
       enabled,
       maxRecords: settings.observabilityMaxRecords || parseInt(process.env.OBSERVABILITY_MAX_RECORDS || String(DEFAULT_MAX_RECORDS), 10),
       batchSize: settings.observabilityBatchSize || parseInt(process.env.OBSERVABILITY_BATCH_SIZE || String(DEFAULT_BATCH_SIZE), 10),
@@ -69,7 +80,7 @@ async function getObservabilityConfig() {
       keepFullData: settings.showSensitiveRequestDetails === true,
     };
   } catch {
-    cachedConfig = {
+    return {
       enabled: false,
       maxRecords: DEFAULT_MAX_RECORDS,
       batchSize: DEFAULT_BATCH_SIZE,
@@ -77,8 +88,6 @@ async function getObservabilityConfig() {
       maxJsonSize: DEFAULT_MAX_JSON_SIZE_KB * 1024,
     };
   }
-  cachedConfigTs = Date.now();
-  return cachedConfig;
 }
 
 let writeBuffer = [];
@@ -161,7 +170,7 @@ function truncateField(obj, maxSize) {
   return obj;
 }
 
-async function flushToDatabase() {
+async function flushToDatabase({ skipFullData = false } = {}) {
   if (isFlushing) return;
   if (writeBuffer.length === 0) return;
   isFlushing = true;
@@ -169,11 +178,13 @@ async function flushToDatabase() {
     // Drain entire buffer (loop in case more pushed during await)
     while (writeBuffer.length > 0) {
       const items = writeBuffer.splice(0, writeBuffer.length);
+      const generation = configCache.generation;
       const db = await getAdapter();
       const config = await getObservabilityConfig();
 
       // sql.js rewrites the whole DB file on every write, so it skips full payloads.
-      const keepFull = config.keepFullData && db.driver !== "sql.js";
+      // Shutdown skips them too: gzip callbacks can't run once the process exits.
+      const keepFull = config.keepFullData && !skipFullData && db.driver !== "sql.js";
       const rows = [];
       for (const item of items) {
         if (!item.id) item.id = generateDetailId(item.model);
@@ -198,8 +209,9 @@ async function flushToDatabase() {
         rows.push({ record, fullData: keepFull ? await packFullData(item, record) : null });
       }
       // The setting may have been turned off (and stored payloads cleared)
-      // while compression was awaited.
-      if (keepFull && !(await getObservabilityConfig()).keepFullData) {
+      // while compression was awaited. Nothing awaits between this check and
+      // the transaction, so a clear can't slip in after it.
+      if (keepFull && generation !== configCache.generation) {
         for (const row of rows) row.fullData = null;
       }
 
@@ -303,11 +315,26 @@ export async function getRequestDetailById(id) {
 // Drops every stored full payload, e.g. when "Show full request details" is
 // turned off, and forgets the cached config so pending writes stop keeping them.
 export async function clearRequestDetailFullData() {
-  cachedConfig = null;
+  configCache.value = null;
+  configCache.generation += 1;
   const db = await getAdapter();
   const { changes } = db.run(`UPDATE requestDetails SET fullData = NULL WHERE fullData IS NOT NULL`);
-  // Give the freed pages back so the payloads don't linger in the file.
-  if (changes > 0) db.exec("VACUUM");
+  // Give the freed pages back so the payloads don't linger in the file. The
+  // payloads are already gone, so a failed VACUUM (full disk, busy) is logged.
+  if (changes > 0) {
+    try {
+      db.exec("VACUUM");
+    } catch (error) {
+      console.warn("[requestDetailsRepo] VACUUM after clearing full payloads failed:", error);
+    }
+  }
+}
+
+export class CorruptFullDataError extends Error {
+  constructor(id, cause) {
+    super(`Stored full payload for ${id} is corrupt: ${cause?.message}`, { cause });
+    this.name = "CorruptFullDataError";
+  }
 }
 
 // Untruncated payloads for a row, keyed like the record (only the cut ones).
@@ -317,13 +344,13 @@ export async function getRequestDetailFullData(id) {
   try {
     return await unpackFullData(row?.fullData);
   } catch (error) {
-    throw new Error(`Stored full payload for ${id} is corrupt: ${error.message}`, { cause: error });
+    throw new CorruptFullDataError(id, error);
   }
 }
 
 const _shutdownHandler = async () => {
   if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
-  if (writeBuffer.length > 0) await flushToDatabase();
+  if (writeBuffer.length > 0) await flushToDatabase({ skipFullData: true });
 };
 
 function ensureShutdownHandler() {

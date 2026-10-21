@@ -6,7 +6,7 @@ import Button from "@/shared/components/Button";
 import Drawer from "@/shared/components/Drawer";
 import Pagination from "@/shared/components/Pagination";
 import { cn } from "@/shared/utils/cn";
-import ConversationInspector from "./ConversationInspector";
+import ConversationInspector, { FullPayloadNotice } from "./ConversationInspector";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
 
 let providerNameCache = null;
@@ -229,7 +229,7 @@ export default function RequestDetailsTab() {
     setFullState({ loading: true, error: "" });
     try {
       const res = await fetch(`/api/usage/request-details/${encodeURIComponent(id)}/full`, { signal: controller.signal });
-      const data = await res.json().catch(() => ({}));
+      const data = await res.json().catch(() => null);
       if (controller.signal.aborted) return;
       if (!res.ok) {
         // Evicted or turned off: stop offering a button that can't succeed.
@@ -238,8 +238,9 @@ export default function RequestDetailsTab() {
           setSelectedDetail(prev => (prev ? unmark(prev) : prev));
           setDetails(prev => prev.map(unmark));
         }
-        throw new Error(data.error || `Failed to load full payload (${res.status})`);
+        throw new Error(data?.error || `Failed to load full payload (${res.status})`);
       }
+      if (!data || typeof data !== "object") throw new Error("The server sent an unreadable full payload");
       const merge = (detail) => (detail.id === id ? { ...detail, ...data, hasFullData: false } : detail);
       // Only the open request gets the full payload; the list keeps its previews.
       setSelectedDetail(prev => (prev ? merge(prev) : prev));
@@ -548,10 +549,9 @@ export default function RequestDetailsTab() {
                   <ConversationInspector key={selectedDetail.id} request={selectedDetail.request} response={selectedDetail.response} fullPayload={fullPayload} />
                 ) : (
                   <>
-                    {requestIsTruncated && fullPayload.available && (
+                    {requestIsTruncated && (
                       <div className="mb-3 flex flex-wrap items-center justify-end gap-2 text-xs">
-                        {fullPayload.error && <span className="text-red-600">{fullPayload.error}</span>}
-                        <Button size="sm" variant="outline" icon="expand" loading={fullPayload.loading} onClick={loadFullPayload}>Load full request</Button>
+                        <FullPayloadNotice fullPayload={fullPayload} className="text-text-muted" />
                       </div>
                     )}
                     {selectedDetail.request?.redacted ? (
@@ -565,10 +565,9 @@ export default function RequestDetailsTab() {
 
               <CollapsibleSection key={selectedDetail.id} title="Debug" icon="bug_report">
                 <p className="mb-4 text-xs text-text-muted">Stored payloads for inspecting translation and provider behavior.</p>
-                {anyPayloadTruncated && fullPayload.available && (
-                  <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
-                    <Button size="sm" variant="outline" icon="expand" loading={fullPayload.loading} onClick={loadFullPayload}>Load full payloads</Button>
-                    {fullPayload.error && <span className="text-red-600">{fullPayload.error}</span>}
+                {anyPayloadTruncated && (
+                  <div className="mb-4 text-xs text-text-muted">
+                    <FullPayloadNotice fullPayload={fullPayload} label="Load full payloads" className="" />
                   </div>
                 )}
                 {[

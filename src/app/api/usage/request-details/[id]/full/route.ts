@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getRequestDetailFullData, getSettings } from "@/lib/db/index.js";
+import { CorruptFullDataError, getRequestDetailFullData, getSettings } from "@/lib/db/index.js";
 
 export const dynamic = "force-dynamic";
 
@@ -22,7 +22,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json(full, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("[API] Failed to get full request detail:", error);
-    const corrupt = error instanceof Error && error.message.includes("corrupt");
+    const corrupt = error instanceof CorruptFullDataError;
     return NextResponse.json(
       { error: corrupt ? "The stored full payload is corrupt" : "Failed to fetch full request detail" },
       { status: 500 },

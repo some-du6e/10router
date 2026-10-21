@@ -52,9 +52,22 @@ describe("request detail full payload storage", () => {
     expect(await db.getRequestDetailFullData("full-29")).toBeNull();
   });
 
+  it("drops full payloads from a flush that a clear overtakes", async () => {
+    await db.saveRequestDetail({
+      id: "race-1", timestamp: new Date(Date.UTC(2026, 0, 2)).toISOString(),
+      provider: "openai", model: "gpt-4", status: "ok",
+      request: bigRequest("race"), response: { ok: true },
+    });
+    const flushing = repo.__test__.flush();
+    await db.clearRequestDetailFullData();
+    await flushing;
+    expect(await db.getRequestDetailFullData("race-1")).toBeNull();
+    expect((await db.getRequestDetailById("race-1")).request._truncated).toBe(true);
+  });
+
   it("reports a corrupt stored payload instead of treating it as missing", async () => {
     const { getAdapter } = await import("@/lib/db/driver.js");
     (await getAdapter()).run(`UPDATE requestDetails SET fullData = 'bm90IGd6aXA=' WHERE id = ?`, ["full-29"]);
-    await expect(db.getRequestDetailFullData("full-29")).rejects.toThrow(/corrupt/);
+    await expect(db.getRequestDetailFullData("full-29")).rejects.toBeInstanceOf(db.CorruptFullDataError);
   });
 });

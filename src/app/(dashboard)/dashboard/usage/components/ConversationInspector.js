@@ -28,7 +28,7 @@ function Role({ role }) {
   );
 }
 
-function FullPayloadNotice({ fullPayload, className = "mt-2" }) {
+export function FullPayloadNotice({ fullPayload, className = "mt-2", label = "Load full request" }) {
   if (!fullPayload) return null;
   if (!fullPayload.available)
     return (
@@ -46,7 +46,7 @@ function FullPayloadNotice({ fullPayload, className = "mt-2" }) {
         loading={fullPayload.loading}
         onClick={fullPayload.load}
       >
-        Load full request
+        {label}
       </Button>
       {fullPayload.error && (
         <span className="text-red-600">{fullPayload.error}</span>
