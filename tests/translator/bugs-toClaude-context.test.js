@@ -63,6 +63,13 @@ describe("OpenAI → Claude context mapping", () => {
     expect(claude.system[0].text).toContain("You are Claude Code");
   });
 
+  it.each([[""], ["  "], [[{ type: "text", text: "" }]], [[]]])("drops an empty Claude client system %j on a compatible provider", (system) => {
+    const out = translateRequest(FORMATS.CLAUDE, FORMATS.CLAUDE, "m", {
+      system, messages: [{ role: "user", content: "hi" }],
+    }, true, null, "anthropic-compatible-x");
+    expect(out.system).toBeUndefined();
+  });
+
   it.each(["anthropic", "anthropic-compatible-x"])("does not create unsigned thinking history for %s", (provider) => {
     const body = {
       messages: [
