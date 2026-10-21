@@ -162,6 +162,7 @@ export default function NewProviderPage() {
               error={errors.apiKey}
               hint="Your API key will be encrypted and stored securely."
               required
+              ignorePasswordManagers
             />
           )}
 

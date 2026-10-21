@@ -1,6 +1,37 @@
 "use client";
 
+import { useSyncExternalStore } from "react";
 import { cn } from "@/shared/utils/cn";
+
+// Props for a field holding an API key or token, not a login password. Chrome
+// ignores autoComplete="off" once a form has a real password field: it offers
+// saved logins and treats the field before it as the username. So render plain
+// text masked with CSS (Chrome, Safari, Firefox 114+), and opt out of the
+// third-party managers too. Spread onto a raw <input>, or pass
+// `ignorePasswordManagers` to <Input>.
+export const SECRET_INPUT_PROPS = {
+  type: "text",
+  style: { WebkitTextSecurity: "disc" },
+  spellCheck: false,
+  autoCapitalize: "off",
+  autoCorrect: "off",
+  autoComplete: "off",
+  "data-1p-ignore": true,
+  "data-lpignore": "true",
+  "data-bwignore": true,
+  "data-form-type": "other",
+};
+
+const noSubscribe = () => () => {};
+const canMaskText = () => CSS.supports("-webkit-text-security", "disc");
+
+// SECRET_INPUT_PROPS for this browser: a browser that can't mask text (Firefox
+// before 114) gets a real password field back, so the key is never shown in
+// clear. Read after hydration so the server and client render the same markup.
+export function useSecretInputProps() {
+  const maskable = useSyncExternalStore(noSubscribe, canMaskText, () => true);
+  return maskable ? SECRET_INPUT_PROPS : { ...SECRET_INPUT_PROPS, type: "password" };
+}
 
 export default function Input({
   label,
@@ -15,13 +46,18 @@ export default function Input({
   required = false,
   className,
   inputClassName,
-  // API keys and tokens aren't logins: stop 1Password/LastPass/Bitwarden autofill.
+  // API keys and tokens aren't logins: keep every password manager away (see SECRET_INPUT_PROPS).
   ignorePasswordManagers = false,
+  style,
   ...props
 }) {
-  const pmIgnore = ignorePasswordManagers
-    ? { "data-1p-ignore": true, "data-lpignore": "true", "data-bwignore": true, "data-form-type": "other", autoComplete: "off" }
-    : {};
+  const secretInput = useSecretInputProps();
+  // Only a password-type field gets masked; other fields just skip autofill.
+  const secretProps = ignorePasswordManagers
+    ? type === "password"
+      ? { ...secretInput, style: { ...style, ...secretInput.style } }
+      : { ...SECRET_INPUT_PROPS, type, style }
+    : { type, style };
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
       {label && (
@@ -37,7 +73,6 @@ export default function Input({
           </div>
         )}
         <input
-          type={type}
           placeholder={placeholder}
           value={value}
           onChange={onChange}
@@ -53,7 +88,7 @@ export default function Input({
             error && "ring-1 ring-red-500 focus:ring-2 focus:ring-red-500/40 border-red-500/40",
             inputClassName
           )}
-          {...pmIgnore}
+          {...secretProps}
           {...props}
         />
       </div>

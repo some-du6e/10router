@@ -1430,6 +1430,7 @@ export default function ProfilePage() {
                         placeholder="Leave blank to keep existing secret"
                         value={oidcClientSecret}
                         onChange={(e) => setOidcClientSecret(e.target.value)}
+                        ignorePasswordManagers
                         disabled={loading || oidcLoading}
                       />
                       <p className="text-xs sm:text-sm text-text-muted">This value is write-only after saving.</p>

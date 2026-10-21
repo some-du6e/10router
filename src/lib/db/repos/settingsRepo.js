@@ -4,6 +4,24 @@ import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 
 const DEFAULT_HEADROOM_URL = process.env.HEADROOM_URL || "http://localhost:8787";
 
+// getSettings() is called several times per routed request (chat handler,
+// auth account selection, limit-hold config), each of which hit the DB,
+// JSON.parse, stripRetiredSettings, and a defaults merge — one of them inside
+// the global account-selection mutex. Cache the merged result briefly.
+const SETTINGS_CACHE_TTL_MS = 5000;
+
+// Kept on global so the middleware bundle and the route-handler bundle, which
+// each get their own copy of this module, share one cache: a save in a route
+// must reach the copy proxy.js reads requireLogin from.
+if (!global._settingsCache) global._settingsCache = { value: null, ts: 0, generation: 0 };
+const cache = global._settingsCache;
+
+export function invalidateSettingsCache() {
+  cache.generation += 1;
+  cache.value = null;
+  cache.ts = 0;
+}
+
 const DEFAULT_SETTINGS = {
   usageHubEnabled: false,
   cloudEnabled: false,
@@ -106,8 +124,19 @@ export function mergeWithDefaults(raw) {
 }
 
 export async function getSettings() {
-  const raw = await readRaw();
-  return mergeWithDefaults(raw);
+  // Callers get a deep copy so a stray assignment, even into a nested object
+  // like providerStrategies, can't leak into the cache.
+  if (cache.value && (Date.now() - cache.ts) < SETTINGS_CACHE_TTL_MS) {
+    return structuredClone(cache.value);
+  }
+  // A read that started before an invalidation must not cache stale settings.
+  const startGeneration = cache.generation;
+  const settings = mergeWithDefaults(await readRaw());
+  if (startGeneration === cache.generation) {
+    cache.value = settings;
+    cache.ts = Date.now();
+  }
+  return structuredClone(settings);
 }
 
 // Atomic read-merge-write inside transaction (prevents losing concurrent updates)
@@ -123,6 +152,7 @@ export async function updateSettings(updates) {
       [stringifyJson(next)],
     );
   });
+  invalidateSettingsCache();
   return mergeWithDefaults(next);
 }
 

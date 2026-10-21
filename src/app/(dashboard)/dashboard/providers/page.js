@@ -31,6 +31,7 @@ import {
 } from "@/shared/constants/providerVendors";
 import ModelAvailabilityBadge from "./components/ModelAvailabilityBadge";
 import VendorProviderCard from "./components/VendorProviderCard";
+import CustomEndpointCard from "./components/CustomEndpointCard";
 import AddCompatibleModal from "./components/AddCompatibleModal";
 import AddEndpointModal from "./components/AddEndpointModal";
 import { STATUS_FILTER_OPTIONS, matchesStatusFilter } from "./utils";
@@ -302,6 +303,8 @@ export default function ProvidersPage() {
       color: "#10A37F",
       textIcon: "OC",
       apiType: node.apiType,
+      baseUrl: node.baseUrl,
+      modelRoutes: node.modelRoutes,
     }))
     .filter(
       (p) => matchSearch(p.name) && matchStatus(getProviderStats(p.id, "apikey")),
@@ -314,6 +317,8 @@ export default function ProvidersPage() {
       name: node.name || "Anthropic Compatible",
       color: "#D97757",
       textIcon: "AC",
+      baseUrl: node.baseUrl,
+      modelRoutes: node.modelRoutes,
     }))
     .filter(
       (p) => matchSearch(p.name) && matchStatus(getProviderStats(p.id, "apikey")),
@@ -491,6 +496,7 @@ export default function ProvidersPage() {
     .map((info) => ({
       kind: "single",
       key: `single:${info.id}`,
+      custom: true,
       route: {
         id: info.id,
         name: info.name,
@@ -618,6 +624,15 @@ export default function ProvidersPage() {
                   key={card.key}
                   vendor={card.vendor}
                   routes={card.routes}
+                />
+              ) : card.custom ? (
+                <CustomEndpointCard
+                  key={card.key}
+                  provider={card.route.info}
+                  stats={card.route}
+                  onToggle={(active) =>
+                    handleToggleProvider(card.route.id, "apikey", active)
+                  }
                 />
               ) : (
                 <ApiKeyProviderCard
