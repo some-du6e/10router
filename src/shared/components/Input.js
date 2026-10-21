@@ -1,5 +1,6 @@
 "use client";
 
+import { useSyncExternalStore } from "react";
 import { cn } from "@/shared/utils/cn";
 
 // Props for a field holding an API key or token, not a login password. Chrome
@@ -21,6 +22,9 @@ export const SECRET_INPUT_PROPS = {
   "data-form-type": "other",
 };
 
+const noSubscribe = () => () => {};
+const canMaskText = () => CSS.supports("-webkit-text-security", "disc");
+
 export default function Input({
   label,
   type = "text",
@@ -39,10 +43,14 @@ export default function Input({
   style,
   ...props
 }) {
+  // A browser that can't mask text (Firefox before 114) gets a real password
+  // field back, so the key is never shown in clear. Checked after mount so the
+  // server and client render the same markup.
+  const maskable = useSyncExternalStore(noSubscribe, canMaskText, () => true);
   // Only a password-type field gets masked; other fields just skip autofill.
   const secretProps = ignorePasswordManagers
     ? type === "password"
-      ? { ...SECRET_INPUT_PROPS, style: { ...SECRET_INPUT_PROPS.style, ...style } }
+      ? { ...SECRET_INPUT_PROPS, type: maskable ? "text" : "password", style: { ...style, ...SECRET_INPUT_PROPS.style } }
       : { ...SECRET_INPUT_PROPS, type, style }
     : { type, style };
   return (

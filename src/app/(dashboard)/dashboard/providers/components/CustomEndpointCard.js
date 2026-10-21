@@ -95,22 +95,29 @@ export default function CustomEndpointCard({ provider, stats, onToggle }) {
             <div className="flex min-w-0 items-center justify-between gap-2 text-xs">
               {allDisabled ? (
                 <span className="text-text-muted">Disabled</span>
-              ) : connected > 0 ? (
-                <Badge variant="success" size="sm" dot className="whitespace-nowrap">
-                  {connected === 1 ? "1 key" : `${connected} keys`}
-                </Badge>
-              ) : error > 0 ? (
-                <span title={errorCode ? `Error ${errorCode}` : undefined}>
-                  <Badge variant="error" size="sm" dot className="whitespace-nowrap">
-                    {error === 1 ? "1 key failing" : `${error} keys failing`}
-                  </Badge>
+              ) : connected > 0 || error > 0 ? (
+                <span className="flex min-w-0 items-center gap-1.5">
+                  {connected > 0 && (
+                    <Badge variant="success" size="sm" dot className="whitespace-nowrap">
+                      {connected === 1 ? "1 key" : `${connected} keys`}
+                    </Badge>
+                  )}
+                  {error > 0 && (
+                    <span title={errorCode ? `Error ${errorCode}` : undefined}>
+                      <Badge variant="error" size="sm" dot className="whitespace-nowrap">
+                        {connected > 0 ? `${error} failing` : error === 1 ? "1 key failing" : `${error} keys failing`}
+                      </Badge>
+                    </span>
+                  )}
                 </span>
               ) : (
-                <span className="text-text-muted">No keys</span>
+                <span className="text-text-muted">
+                  {total === 0 ? "No keys" : total === 1 ? "1 key, untested" : `${total} keys, untested`}
+                </span>
               )}
               {total > 0 && (
                 <div
-                  className="shrink-0 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/card:opacity-100"
+                  className="shrink-0 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/card:opacity-100 sm:focus-within:opacity-100"
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -121,7 +128,7 @@ export default function CustomEndpointCard({ provider, stats, onToggle }) {
                     size="sm"
                     checked={!allDisabled}
                     onChange={() => {}}
-                    title={allDisabled ? "Enable provider" : "Disable provider"}
+                    ariaLabel={`${allDisabled ? "Enable" : "Disable"} ${provider.name}`}
                   />
                 </div>
               )}
