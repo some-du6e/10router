@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { Card } from "@/shared/components";
-import { SECRET_INPUT_PROPS } from "@/shared/components/Input";
+import { useSecretInputProps } from "@/shared/components/Input";
 import { getProviderAlias, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
@@ -28,6 +28,7 @@ export function EmbeddingExampleCard({ providerId, customAlias }) {
   const [input, setInput] = useState("The quick brown fox jumps over the lazy dog");
   const [dimensions, setDimensions] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const secretInput = useSecretInputProps();
   const [useTunnel, setUseTunnel] = useState(false);
   const [localEndpoint, setLocalEndpoint] = useState("");
   const [tunnelEndpoint, setTunnelEndpoint] = useState("");
@@ -159,7 +160,7 @@ export function EmbeddingExampleCard({ providerId, customAlias }) {
         {/* API Key */}
         <Row label="API Key">
           <input
-            {...SECRET_INPUT_PROPS}
+            {...secretInput}
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             placeholder="sk-..."

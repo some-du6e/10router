@@ -25,6 +25,14 @@ export const SECRET_INPUT_PROPS = {
 const noSubscribe = () => () => {};
 const canMaskText = () => CSS.supports("-webkit-text-security", "disc");
 
+// SECRET_INPUT_PROPS for this browser: a browser that can't mask text (Firefox
+// before 114) gets a real password field back, so the key is never shown in
+// clear. Read after hydration so the server and client render the same markup.
+export function useSecretInputProps() {
+  const maskable = useSyncExternalStore(noSubscribe, canMaskText, () => true);
+  return maskable ? SECRET_INPUT_PROPS : { ...SECRET_INPUT_PROPS, type: "password" };
+}
+
 export default function Input({
   label,
   type = "text",
@@ -43,14 +51,11 @@ export default function Input({
   style,
   ...props
 }) {
-  // A browser that can't mask text (Firefox before 114) gets a real password
-  // field back, so the key is never shown in clear. Checked after mount so the
-  // server and client render the same markup.
-  const maskable = useSyncExternalStore(noSubscribe, canMaskText, () => true);
+  const secretInput = useSecretInputProps();
   // Only a password-type field gets masked; other fields just skip autofill.
   const secretProps = ignorePasswordManagers
     ? type === "password"
-      ? { ...SECRET_INPUT_PROPS, type: maskable ? "text" : "password", style: { ...style, ...SECRET_INPUT_PROPS.style } }
+      ? { ...secretInput, style: { ...style, ...secretInput.style } }
       : { ...SECRET_INPUT_PROPS, type, style }
     : { type, style };
   return (
