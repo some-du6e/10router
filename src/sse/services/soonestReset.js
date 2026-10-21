@@ -9,7 +9,7 @@ const TIMEOUT_MS = 15_000;
 const cache = new Map();
 
 // Requests use the last snapshot, including on a cold start. Quota endpoints
-// must never hold up account selection or its shared mutex.
+// must never hold up account selection or its per-provider mutex.
 export function getRoutingQuotas(provider, connections) {
   const fetchUsage = FETCHERS[provider];
   const snapshots = new Map();

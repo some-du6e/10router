@@ -10,8 +10,11 @@ import * as log from "../utils/logger.js";
 import { getNextAccountReset, PROVIDER_RESET_PREFIX } from "./accountFailureSummary.js";
 import { isLimitError } from "open-sse/utils/limitHold.js";
 
-// Mutex to prevent race conditions during account selection
-let selectionMutex = Promise.resolve();
+// Per-provider mutexes for account selection. Picks for the same provider stay
+// serialized (round-robin sticky counters read-then-write lastUsedAt and
+// consecutiveUseCount); picks for different providers touch disjoint state and
+// run concurrently. Kept on global so duplicated Next.js module instances share it.
+const selectionMutexes = (global._selectionMutexes ??= new Map());
 const MODEL_LIMIT_PREFIX = "modelLimit_";
 
 const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit for your plan";
@@ -36,16 +39,17 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     ? excludeConnectionIds
     : (excludeConnectionIds ? new Set([excludeConnectionIds]) : new Set());
   const preferredConnectionId = options?.preferredConnectionId || null;
-  // Acquire mutex to prevent race conditions
-  const currentMutex = selectionMutex;
+  // Resolve alias to provider ID (e.g., "kc" -> "kilocode") so aliases share a lock
+  const providerId = resolveProviderId(provider);
+
+  // Acquire this provider's mutex to prevent race conditions
+  const currentMutex = selectionMutexes.get(providerId) || Promise.resolve();
   let resolveMutex;
-  selectionMutex = new Promise(resolve => { resolveMutex = resolve; });
+  const nextMutex = new Promise(resolve => { resolveMutex = resolve; });
+  selectionMutexes.set(providerId, nextMutex);
 
   try {
     await currentMutex;
-
-    // Resolve alias to provider ID (e.g., "kc" -> "kilocode")
-    const providerId = resolveProviderId(provider);
 
     // Inject a virtual connection for no-auth free providers (with optional proxy pool from settings)
     if (FREE_PROVIDERS[providerId]?.noAuth) {
@@ -254,7 +258,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       _connection: connection
     };
   } finally {
-    if (resolveMutex) resolveMutex();
+    resolveMutex();
+    // Drop the entry once no later caller has queued behind us
+    if (selectionMutexes.get(providerId) === nextMutex) selectionMutexes.delete(providerId);
   }
 }
 
