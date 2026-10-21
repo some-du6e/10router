@@ -41,6 +41,7 @@ export async function POST(request) {
     // Optional, from "Add endpoint" detection. Older callers don't send them.
     const quirks = sanitizeNodeQuirks(body.quirks);
     const verified = typeof body.verified === "boolean" ? { verified: body.verified } : {};
+    const modelsNote = typeof body.modelsNote === "string" && body.modelsNote.trim() ? { modelsNote: body.modelsNote.trim().slice(0, 200) } : {};
 
     if (!name?.trim()) {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
@@ -88,6 +89,7 @@ export async function POST(request) {
         name: name.trim(),
         ...quirks,
         ...verified,
+        ...modelsNote,
       });
       return NextResponse.json({ node }, { status: 201 });
     }
@@ -125,6 +127,7 @@ export async function POST(request) {
         name: name.trim(),
         ...quirks,
         ...verified,
+        ...modelsNote,
       });
       return NextResponse.json({ node }, { status: 201 });
     }

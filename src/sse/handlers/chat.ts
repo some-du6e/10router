@@ -41,6 +41,7 @@ import { finalizeRoutingError } from "../services/finalRoutingError.js";
 import { detectClientTool } from "open-sse/utils/clientDetector.js";
 import { sanitizeNodeQuirks } from "@/shared/utils/nodeQuirks.js";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers.js";
+import { recordEndpointRequests } from "@/lib/endpointRequestLog.js";
 
 // ---- Types -------------------------------------------------------------------
 
@@ -672,7 +673,9 @@ async function routeSingleModelChat(
     // Use shared chatCore
     const chatSettings = (await getSettings()) as ChatSettings;
     const providerThinking = (chatSettings.providerThinking || {} as Record<string, unknown>)[provider] || null;
-    const result = await handleChatCore({
+    const pxpipeTransform = chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null;
+    // Custom endpoints: keep this request for the endpoint page's "Recent requests".
+    const result = await recordEndpointRequests(provider, refreshedCredentials as Parameters<typeof recordEndpointRequests>[1], () => handleChatCore({
       body: { ...body, model: `${provider}/${model}` },
       modelInfo: { provider, model },
       credentials: refreshedCredentials,
@@ -695,7 +698,7 @@ async function routeSingleModelChat(
       pxpipeMinChars: chatSettings.pxpipeMinChars,
       pxpipeTimeoutMs: chatSettings.pxpipeTimeoutMs,
       // Lazily warms the in-process module on first use; null when not installed (fail-open)
-      pxpipeTransform: chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null,
+      pxpipeTransform,
       onPxpipeEvent: appendPxpipeEvent,
       providerThinking,
       sourceFormatOverride,
@@ -714,7 +717,7 @@ async function routeSingleModelChat(
         // "Consecutive" strikes: a success clears the breaker for this pair.
         clearAntigravityStrikes(credentials.connectionId, model);
       }
-    } as Parameters<typeof handleChatCore>[0]) as ChatCoreResult;
+    } as Parameters<typeof handleChatCore>[0])) as ChatCoreResult;
 
     if (result.success) return result;
 

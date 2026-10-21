@@ -21,7 +21,7 @@ import CompatibleModelsSection from "./CompatibleModelsSection";
 import ConnectionRow from "./ConnectionRow";
 import AddApiKeyModal from "./AddApiKeyModal";
 import EditCompatibleNodeModal from "./EditCompatibleNodeModal";
-import EndpointQuirksCard from "./EndpointQuirksCard";
+import CustomEndpointPage from "./CustomEndpointPage";
 import AddCustomModelModal from "./AddCustomModelModal";
 import BulkImportCodexModal from "./BulkImportCodexModal";
 import BulkImportGrokCliModal from "./BulkImportGrokCliModal";
@@ -1326,6 +1326,181 @@ export default function ProviderDetailPage() {
     return getProviderIconSrc(providerInfo.id);
   };
 
+  const modalsBlock = (
+    <>
+        {/* Modals */}
+        {providerId === "kiro" ? (
+          <KiroOAuthWrapper
+            isOpen={showOAuthModal}
+            providerInfo={providerInfo}
+            onSuccess={handleOAuthSuccess}
+            onClose={handleOAuthClose}
+          />
+        ) : providerId === "cursor" ? (
+          <CursorAuthModal
+            isOpen={showOAuthModal}
+            onSuccess={handleOAuthSuccess}
+            onClose={handleOAuthClose}
+          />
+        ) : providerId === "gitlab" ? (
+          <GitLabAuthModal
+            isOpen={showOAuthModal}
+            providerInfo={providerInfo}
+            onSuccess={handleOAuthSuccess}
+            onClose={handleOAuthClose}
+          />
+        ) : (
+          <OAuthModal
+            isOpen={showOAuthModal}
+            provider={providerId}
+            providerInfo={providerInfo}
+            onSuccess={handleOAuthSuccess}
+            onClose={handleOAuthClose}
+          />
+        )}
+        {providerId === "iflow" && (
+          <IFlowCookieModal
+            isOpen={showIFlowCookieModal}
+            onSuccess={handleIFlowCookieSuccess}
+            onClose={() => setShowIFlowCookieModal(false)}
+          />
+        )}
+        <AddApiKeyModal
+          isOpen={showAddApiKeyModal}
+          provider={providerId}
+          providerName={providerInfo.name}
+          isCompatible={isCompatible}
+          isAnthropic={isAnthropicCompatible}
+          nodeBaseUrl={providerNode?.baseUrl}
+          authType={providerInfo?.authType}
+          authHint={providerInfo?.authHint}
+          website={providerInfo?.website}
+          proxyPools={proxyPools}
+          error={addConnectionError}
+          existingNames={connections.map((c) => c.name).filter(Boolean)}
+          onSave={handleSaveApiKey}
+          onBulkDone={fetchConnections}
+          onClose={() => {
+            setAddConnectionError("");
+            setShowAddApiKeyModal(false);
+          }}
+        />
+        <EditConnectionModal
+          isOpen={showEditModal}
+          connection={selectedConnection}
+          nodeBaseUrl={isCompatible ? providerNode?.baseUrl : undefined}
+          proxyPools={proxyPools}
+          onSave={handleUpdateConnection}
+          onClose={() => setShowEditModal(false)}
+        />
+        {isCompatible && (
+          <EditCompatibleNodeModal
+            isOpen={showEditNodeModal}
+            node={providerNode}
+            onSave={handleUpdateNode}
+            onClose={() => setShowEditNodeModal(false)}
+            isAnthropic={isAnthropicCompatible}
+          />
+        )}
+        {!isCompatible && (
+          <AddCustomModelModal
+            isOpen={showAddCustomModel}
+            providerAlias={providerStorageAlias}
+            providerDisplayAlias={providerDisplayAlias}
+            onSave={async (modelId, caps) => {
+              await handleAddCustomModel(modelId, "llm", providerStorageAlias, caps);
+              setShowAddCustomModel(false);
+            }}
+            onClose={() => setShowAddCustomModel(false)}
+          />
+        )}
+
+        {providerId === "codex" && (
+          <BulkImportCodexModal
+            isOpen={showBulkImportCodex}
+            onClose={() => setShowBulkImportCodex(false)}
+            onSuccess={fetchConnections}
+          />
+        )}
+
+        {providerId === "grok-cli" && (
+          <BulkImportGrokCliModal
+            isOpen={showBulkImportGrokCli}
+            onClose={() => setShowBulkImportGrokCli(false)}
+            onSuccess={fetchConnections}
+          />
+        )}
+
+        {/* AG Risk Confirmation Modal */}
+        <ConfirmModal
+          isOpen={showAgRiskModal}
+          onClose={() => setShowAgRiskModal(false)}
+          onConfirm={handleAgRiskConfirm}
+          title="Risk Notice"
+          message={providerInfo?.deprecationNotice}
+          confirmText="I Understand, Continue"
+          cancelText="Cancel"
+          variant="danger"
+        />
+
+        {/* Confirm Modal */}
+        <ConfirmModal
+          isOpen={!!confirmState}
+          onClose={() => setConfirmState(null)}
+          onConfirm={confirmState?.onConfirm}
+          title={confirmState?.title || "Confirm"}
+          message={confirmState?.message}
+          variant="danger"
+        />
+    </>
+  );
+
+  // User-added OpenAI/Anthropic-compatible endpoint: its own page (the approved mockup).
+  if (isCompatible && providerNode) {
+    const endpointModels = getProviderCustomModelRows({ customModels, modelAliases, providerAlias: providerStorageAlias, type: "llm" }).map((m) => m.id);
+    return (
+      <div className="min-w-0 px-1 sm:px-0">
+        <CustomEndpointPage
+          node={providerNode}
+          connections={connections}
+          models={endpointModels}
+          disabledIds={disabledModelIds}
+          onToggleModel={(id, on) => (on ? handleEnableModel(id) : handleDisableModel(id))}
+          onAddModel={(id) => handleAddCustomModel(id, "llm", providerStorageAlias)}
+          onSaveNode={(quirks, extra = {}) => handleUpdateNode({
+            name: providerNode.name,
+            prefix: providerNode.prefix,
+            apiType: providerNode.apiType,
+            baseUrl: providerNode.baseUrl,
+            // Only the changed keys; the server merges them into the stored ones.
+            quirks,
+            ...(extra.removeDroppedBetas ? { removeDroppedBetas: extra.removeDroppedBetas } : {}),
+          }, { keepModalOpen: true })}
+          onReload={async () => { await Promise.all([fetchConnections(), fetchCustomModels(), fetchDisabledModels()]); }}
+          onNodeChanged={setProviderNode}
+          onAddKey={() => { setAddConnectionError(""); setShowAddApiKeyModal(true); }}
+          onEditKey={(conn) => { setSelectedConnection(conn); setShowEditModal(true); }}
+          onDeleteKey={handleDelete}
+          onToggleKey={handleUpdateConnectionStatus}
+          onDelete={() => setConfirmState({
+            title: "Delete endpoint",
+            message: `Delete ${providerNode.name} and its ${connections.length} key${connections.length === 1 ? "" : "s"}?`,
+            onConfirm: async () => {
+              setConfirmState(null);
+              try {
+                const res = await fetch(`/api/provider-nodes/${providerId}`, { method: "DELETE" });
+                if (res.ok) router.push("/dashboard/providers");
+              } catch (error) {
+                console.log("Error deleting provider node:", error);
+              }
+            },
+          })}
+        />
+        {modalsBlock}
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-w-0 flex-col gap-6 px-1 sm:gap-8 sm:px-0">
       {/* Header */}
@@ -1470,21 +1645,6 @@ export default function ProviderDetailPage() {
         </Card>
       )}
 
-      {isCompatible && providerNode && (
-        <EndpointQuirksCard
-          node={providerNode}
-          isAnthropic={isAnthropicCompatible}
-          onSave={(quirks, extra = {}) => handleUpdateNode({
-            name: providerNode.name,
-            prefix: providerNode.prefix,
-            apiType: providerNode.apiType,
-            baseUrl: providerNode.baseUrl,
-            // Only the changed keys; the server merges them into the stored ones.
-            quirks,
-            ...extra,
-          }, { keepModalOpen: true })}
-        />
-      )}
 
       {/* Connections */}
       {isFreeNoAuth ? (
@@ -1774,130 +1934,7 @@ export default function ProviderDetailPage() {
 
       {bulkActionModal}
 
-      {/* Modals */}
-      {providerId === "kiro" ? (
-        <KiroOAuthWrapper
-          isOpen={showOAuthModal}
-          providerInfo={providerInfo}
-          onSuccess={handleOAuthSuccess}
-          onClose={handleOAuthClose}
-        />
-      ) : providerId === "cursor" ? (
-        <CursorAuthModal
-          isOpen={showOAuthModal}
-          onSuccess={handleOAuthSuccess}
-          onClose={handleOAuthClose}
-        />
-      ) : providerId === "gitlab" ? (
-        <GitLabAuthModal
-          isOpen={showOAuthModal}
-          providerInfo={providerInfo}
-          onSuccess={handleOAuthSuccess}
-          onClose={handleOAuthClose}
-        />
-      ) : (
-        <OAuthModal
-          isOpen={showOAuthModal}
-          provider={providerId}
-          providerInfo={providerInfo}
-          onSuccess={handleOAuthSuccess}
-          onClose={handleOAuthClose}
-        />
-      )}
-      {providerId === "iflow" && (
-        <IFlowCookieModal
-          isOpen={showIFlowCookieModal}
-          onSuccess={handleIFlowCookieSuccess}
-          onClose={() => setShowIFlowCookieModal(false)}
-        />
-      )}
-      <AddApiKeyModal
-        isOpen={showAddApiKeyModal}
-        provider={providerId}
-        providerName={providerInfo.name}
-        isCompatible={isCompatible}
-        isAnthropic={isAnthropicCompatible}
-        nodeBaseUrl={providerNode?.baseUrl}
-        authType={providerInfo?.authType}
-        authHint={providerInfo?.authHint}
-        website={providerInfo?.website}
-        proxyPools={proxyPools}
-        error={addConnectionError}
-        existingNames={connections.map((c) => c.name).filter(Boolean)}
-        onSave={handleSaveApiKey}
-        onBulkDone={fetchConnections}
-        onClose={() => {
-          setAddConnectionError("");
-          setShowAddApiKeyModal(false);
-        }}
-      />
-      <EditConnectionModal
-        isOpen={showEditModal}
-        connection={selectedConnection}
-        nodeBaseUrl={isCompatible ? providerNode?.baseUrl : undefined}
-        proxyPools={proxyPools}
-        onSave={handleUpdateConnection}
-        onClose={() => setShowEditModal(false)}
-      />
-      {isCompatible && (
-        <EditCompatibleNodeModal
-          isOpen={showEditNodeModal}
-          node={providerNode}
-          onSave={handleUpdateNode}
-          onClose={() => setShowEditNodeModal(false)}
-          isAnthropic={isAnthropicCompatible}
-        />
-      )}
-      {!isCompatible && (
-        <AddCustomModelModal
-          isOpen={showAddCustomModel}
-          providerAlias={providerStorageAlias}
-          providerDisplayAlias={providerDisplayAlias}
-          onSave={async (modelId, caps) => {
-            await handleAddCustomModel(modelId, "llm", providerStorageAlias, caps);
-            setShowAddCustomModel(false);
-          }}
-          onClose={() => setShowAddCustomModel(false)}
-        />
-      )}
-
-      {providerId === "codex" && (
-        <BulkImportCodexModal
-          isOpen={showBulkImportCodex}
-          onClose={() => setShowBulkImportCodex(false)}
-          onSuccess={fetchConnections}
-        />
-      )}
-
-      {providerId === "grok-cli" && (
-        <BulkImportGrokCliModal
-          isOpen={showBulkImportGrokCli}
-          onClose={() => setShowBulkImportGrokCli(false)}
-          onSuccess={fetchConnections}
-        />
-      )}
-
-      {/* AG Risk Confirmation Modal */}
-      <ConfirmModal
-        isOpen={showAgRiskModal}
-        onClose={() => setShowAgRiskModal(false)}
-        onConfirm={handleAgRiskConfirm}
-        title="Risk Notice"
-        message={providerInfo?.deprecationNotice}
-        confirmText="I Understand, Continue"
-        cancelText="Cancel"
-        variant="danger"
-      />
-
-      {/* Confirm Modal */}
-      <ConfirmModal
-        isOpen={!!confirmState}
-        onClose={() => setConfirmState(null)}
-        onConfirm={confirmState?.onConfirm}
-        title={confirmState?.title || "Confirm"}
-        message={confirmState?.message}
-        variant="danger"
-      />
+      {modalsBlock}
     </div>
   );
 }

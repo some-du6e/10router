@@ -16,7 +16,7 @@ import type { CatalogLabModel, CatalogProvider, EndpointCatalog } from "./endpoi
 export type Protocol = "anthropic" | "openai-chat" | "openai-responses";
 export type KeyConfirmed = "confirmed" | "likely" | "unknown";
 export type ModelsSource = "models" | "catalog" | "guessed" | "none";
-type StopReason = "auth" | "denied" | "rate" | "generated" | "failing" | "deadline" | "aborted";
+export type StopReason = "auth" | "denied" | "rate" | "generated" | "failing" | "deadline" | "aborted";
 // Stops that mean the key itself can't be used.
 const keyStop = (s: StopReason | null) => s === "auth" || s === "denied";
 type ErrorShape = "anthropic" | "openai" | "generic";
@@ -62,6 +62,31 @@ export interface DetectResult {
   clientGated?: boolean;
   suggestedName?: string;
   suggestedPrefix?: string;
+  // Which failure screen fits, when ok is false.
+  failure?: FailureKind;
+  // Why model checks stopped early, if they did.
+  stopReason?: StopReason | null;
+  // Per API that was asked about models one by one: how far it got, and the
+  // ids never asked (so "Check the rest" can ask just those).
+  checks?: Partial<Record<Protocol, ModelCheck>>;
+  // The provider's own site: name and icon (data: URL), when it had them.
+  site?: SiteInfo | null;
+}
+
+export type FailureKind = "key" | "unreachable" | "down" | "gated" | "rate" | "html" | "catch-all" | "no-api" | "timeout" | "cancelled" | "bad-url";
+
+export interface ModelCheck {
+  total: number;
+  checked: number;
+  found: number;
+  unchecked: string[];
+  stopped: StopReason | null;
+}
+
+export interface SiteInfo {
+  name: string | null;
+  icon: string | null;   // data: URL, a copy (never hotlinked)
+  host: string;          // where it came from ("acme.ai")
 }
 
 // What discoverModels returns. The routing fields are only set when it was
@@ -94,9 +119,25 @@ export interface ProbeResponse {
 }
 export type DetectFetch = (url: string, init: { method: string; headers: HeaderMap; body?: string; signal: AbortSignal }) => Promise<ProbeResponse>;
 type Sleep = (ms: number) => Promise<unknown>;
+
+// Live progress for the dashboard (the detect route streams these as NDJSON).
+// Paths, model ids and a short redacted error code ("invalid_api_key") only:
+// never the key, a header or a whole response body.
+// `path` is relative to the URL the user gave ("/v1/chat/completions").
+// `sent` is the running count of requests sent so far.
+export type DetectProgress =
+  | { type: "request"; n: number; label: string; method: string; path: string }
+  | { type: "response"; n: number; status: number; kind: Classification; retrying?: boolean; sent: number; hint?: string }
+  | { type: "throttled"; waitMs: number; sent: number }
+  | { type: "models-start"; protocol: string; path: string; total: number; lanes: number }
+  | { type: "probe"; id: string; lane: number }
+  | { type: "probe-result"; id: string; lane: number; known: boolean; skipped?: boolean; sent: number }
+  | { type: "models-done"; protocol: string; path: string; total: number; checked: number; found: number; stopped: StopReason | null };
+export type DetectProgressFn = (e: DetectProgress) => void;
 interface ProbeResult { status: number; text: string; json: unknown; step: DetectStep; contentType?: string | null; skipped?: boolean }
 // `halted()` says why probing must end (deadline or client abort), or null.
-type Prober = ((label: string, method: string, target: string, opts?: { headers?: HeaderMap; body?: Record<string, unknown> }) => Promise<ProbeResult>) & { halted(): StopReason | null };
+// `quiet`: report no request/response progress (model probes report their own).
+type Prober = ((label: string, method: string, target: string, opts?: { headers?: HeaderMap; body?: Record<string, unknown>; quiet?: boolean }) => Promise<ProbeResult>) & { halted(): StopReason | null; emit: DetectProgressFn; relPath(target: string): string; sent(): number };
 interface AuthHeaders { bearer: HeaderMap; "x-api-key": HeaderMap; "api-key": HeaderMap; both: HeaderMap }
 interface ProbeSpec { path: string; label: string; headers: HeaderMap; body: Record<string, unknown> }
 // Parsed JSON, read defensively: any property may be anything.
@@ -114,6 +155,7 @@ const CANARY = "10router-no-such-model";
 const CONTROL_PATH = "/10router-no-such-path";
 const DETECT_DEADLINE_MS = 45_000; // whole detection; the UI gives up at 60s
 const MAX_CONSECUTIVE_FAILURES = 6; // network / timeout / 5xx in a row on one path
+const UNREACHABLE_AFTER = 2;     // network failures with no answer at all = the host is unreachable
 const MODEL_DENIED_STOP = 3;     // the same model-access refusal on this many models = the key, not the model
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -591,21 +633,58 @@ function probeSpecs(AUTH: AuthHeaders, openaiAuth: HeaderMap = AUTH.bearer): Rec
   };
 }
 
+// A few words on why a request failed, for the live list: the error's code,
+// type or message ("invalid_api_key"), or the page title for HTML.
+function errorHint(json: unknown, text: string, html?: boolean): string {
+  if (html) { const t = htmlTitle(text); return t ? `HTML page "${t}"` : "HTML page"; }
+  const j0: unknown = Array.isArray(json) ? json[0] : json;
+  if (!j0 || typeof j0 !== "object") return "";
+  const j = j0 as Json;
+  const err = j.error && typeof j.error === "object" ? j.error as Json : null;
+  const pick = (...v: unknown[]) => v.find((x) => typeof x === "string" && x.trim()) as string | undefined;
+  const code = pick(err?.code, typeof j.error === "string" ? j.error : undefined, j.code);
+  if (code && /^[\w.-]{2,40}$/.test(code)) return code;
+  const msg = pick(err?.message, j.message, j.detail, code, err?.type) || "";
+  return msg.replace(/\s+/g, " ").trim();
+}
+export function networkHint(preview: string, timeoutMs = PROBE_TIMEOUT_MS): string {
+  if (/timeout|timed out|aborted/i.test(preview)) return `no answer in ${Math.round(timeoutMs / 1000)}s`;
+  if (/ECONNREFUSED|refused/i.test(preview)) return "connection refused";
+  if (/ENOTFOUND|EAI_AGAIN|getaddrinfo|did not resolve/i.test(preview)) return "host not found";
+  if (/certificate|SSL|TLS/i.test(preview)) return "TLS error";
+  if (/not allowed|private|blocked/i.test(preview)) return "address not allowed";
+  return "no answer";
+}
+
 // Records every request as a step (status + body preview, secrets redacted).
 // Retries 429s a few times, honouring Retry-After (capped). Every fetch gets the
 // per-probe timeout combined with the caller's signal, so a client that hangs up
 // stops the probing; past `deadlineAt` (or once aborted) no request is sent and
 // the probe comes back `skipped` with status 0.
-interface ProberArgs { fetchFn: DetectFetch; key: string; steps: DetectStep[]; timeoutMs: number; sleep?: Sleep; signal?: AbortSignal | null; deadlineAt?: number }
-function makeProber({ fetchFn, key, steps, timeoutMs, sleep = defaultSleep, signal = null, deadlineAt = Infinity }: ProberArgs): Prober {
+interface ProberArgs { fetchFn: DetectFetch; key: string; steps: DetectStep[]; timeoutMs: number; sleep?: Sleep; signal?: AbortSignal | null; deadlineAt?: number; onProgress?: DetectProgressFn | null; root?: string }
+function makeProber({ fetchFn, key, steps, timeoutMs, sleep = defaultSleep, signal = null, deadlineAt = Infinity, onProgress = null, root = "" }: ProberArgs): Prober {
   const redact = makeRedactor(key);
+  // A throwing listener must not break detection.
+  const emit: DetectProgressFn = (e) => { if (onProgress) try { onProgress(e); } catch { /* ignore */ } };
+  // Path relative to the URL the user gave, redacted, no query (Azure keys can sit there).
+  let rootPath = "";
+  try { rootPath = new URL(root).pathname.replace(/\/+$/, ""); } catch { /* none */ }
+  const relPath = (target: string): string => {
+    let path: string;
+    try { path = new URL(target).pathname; } catch { return ""; }
+    if (rootPath && path.startsWith(rootPath)) path = path.slice(rootPath.length) || "/";
+    return redact(path);
+  };
+  let n = 0;
   const halted = (): StopReason | null => signal?.aborted ? "aborted" : Date.now() >= deadlineAt ? "deadline" : null;
   const skipped = (label: string, method: string, target: string, why: StopReason): ProbeResult =>
     ({ status: 0, text: "", json: null, skipped: true, step: { label, method, url: redact(target), status: 0, preview: why === "aborted" ? "Cancelled" : "Skipped: out of time" } });
-  const run = async (label: string, method: string, target: string, { headers = {}, body }: { headers?: HeaderMap; body?: Record<string, unknown> } = {}): Promise<ProbeResult> => {
+  const run = async (label: string, method: string, target: string, { headers = {}, body, quiet = false }: { headers?: HeaderMap; body?: Record<string, unknown>; quiet?: boolean } = {}): Promise<ProbeResult> => {
+    const id = ++n;
     for (let attempt = 0; ; attempt++) {
       const why = halted();
       if (why) return skipped(label, method, target, why); // not recorded: nothing was sent
+      if (!quiet && attempt === 0) emit({ type: "request", n: id, label, method, path: relPath(target) });
       // status is set below before the step is recorded.
       const step: Omit<DetectStep, "status"> & { status: number | null } = { label, method, url: redact(target), status: null, preview: "" };
       let res: ProbeResponse | null = null;
@@ -623,6 +702,7 @@ function makeProber({ fetchFn, key, steps, timeoutMs, sleep = defaultSleep, sign
         step.status = 0;
         step.preview = redact((e as Error | null)?.message || String(e)).slice(0, BODY_PREVIEW);
         steps.push(step as DetectStep);
+        if (!quiet) emit({ type: "response", n: id, status: 0, kind: "network", sent: steps.length, hint: networkHint(step.preview, timeoutMs) });
         return { status: 0, text: "", json: null, step: step as DetectStep };
       }
       const text = await res.text().catch(() => "");
@@ -635,14 +715,21 @@ function makeProber({ fetchFn, key, steps, timeoutMs, sleep = defaultSleep, sign
         const ra = res.headers?.get?.("retry-after");
         const secs = ra && /^\d+(\.\d+)?$/.test(ra.trim()) ? +ra : ra ? (Date.parse(ra) - Date.now()) / 1000 : NaN;
         const wait = Number.isFinite(secs) && secs >= 0 ? secs * 1000 : 500 * 2 ** attempt;
-        if (wait <= MAX_RETRY_WAIT_MS && Date.now() + wait < deadlineAt && !signal?.aborted) { step.retried = true; await sleep(wait); continue; }
+        if (wait <= MAX_RETRY_WAIT_MS && Date.now() + wait < deadlineAt && !signal?.aborted) {
+          step.retried = true;
+          if (!quiet) emit({ type: "response", n: id, status: 429, kind: "rate", retrying: true, sent: steps.length });
+          emit({ type: "throttled", waitMs: Math.round(wait), sent: steps.length });
+          await sleep(wait); continue;
+        }
       }
       let json: unknown = null;
       try { json = JSON.parse(text); } catch { /* not JSON */ }
-      return { status: res.status, text, json, contentType, step: step as DetectStep };
+      const result: ProbeResult = { status: res.status, text, json, contentType, step: step as DetectStep };
+      if (!quiet) emit({ type: "response", n: id, status: res.status, kind: classify(result), sent: steps.length, hint: redact(errorHint(json, text, step.html)).slice(0, 60) || undefined });
+      return result;
     }
   };
-  return Object.assign(run, { halted });
+  return Object.assign(run, { halted, emit, relPath, sent: () => steps.length });
 }
 
 // Model probes carry only the model, the empty conversation and a 1-token cap,
@@ -695,9 +782,10 @@ function deniedCounter() {
 // tells us nothing). `complete` is false when a probe failed (network error,
 // 429, 5xx) so a missing id may just mean "couldn't ask"; `stopped` names why
 // probing ended early (auth | rate | generated).
-interface ProbeModelsArgs { probe: Prober; base: string; protocol: string; AUTH: AuthHeaders; openaiAuth: HeaderMap; ids: string[]; quirks?: DetectQuirks }
-async function probeModels({ probe, base, protocol, AUTH, openaiAuth, ids, quirks = {} }: ProbeModelsArgs): Promise<{ ids: string[] | null; complete: boolean; stopped: StopReason | null }> {
-  const out: { ids: string[] | null; complete: boolean; stopped: StopReason | null } = { ids: null, complete: false, stopped: null };
+interface ProbeModelsArgs { probe: Prober; base: string; protocol: string; AUTH: AuthHeaders; openaiAuth: HeaderMap; ids: string[]; quirks?: DetectQuirks; concurrency?: number }
+interface ProbeModelsOut { ids: string[] | null; complete: boolean; stopped: StopReason | null; check: ModelCheck | null }
+async function probeModels({ probe, base, protocol, AUTH, openaiAuth, ids, quirks = {}, concurrency = PROBE_CONCURRENCY }: ProbeModelsArgs): Promise<ProbeModelsOut> {
+  const out: ProbeModelsOut = { ids: null, complete: false, stopped: null, check: null };
   const p = (probeSpecs(AUTH, openaiAuth) as Partial<Record<string, ProbeSpec>>)[protocol];
   if (!p || !ids.length) return out;
   const url = joinUrl(base, p.path);
@@ -719,10 +807,17 @@ async function probeModels({ probe, base, protocol, AUTH, openaiAuth, ids, quirk
   const failing = failureCounter();
   const denied = deniedCounter();
   const queue = dedupe(ids);
-  await Promise.all(Array.from({ length: PROBE_CONCURRENCY }, async () => {
+  const total = queue.length;
+  const path = probe.relPath(url);
+  let checked = 0;
+  const unasked: string[] = []; // taken off the queue but never answered (skipped)
+  probe.emit({ type: "models-start", protocol, path, total, lanes: concurrency });
+  await Promise.all(Array.from({ length: concurrency }, async (_, lane) => {
     for (let id: string | undefined; !out.stopped && (id = queue.shift()) !== undefined;) {
-      const r = await probe(`Check model ${id}`, "POST", url, { headers: p.headers, body: modelBody(p, id, quirks) });
-      if (r.skipped) { out.stopped ||= probe.halted(); break; }
+      probe.emit({ type: "probe", id, lane });
+      const r = await probe(`Check model ${id}`, "POST", url, { headers: p.headers, body: modelBody(p, id, quirks), quiet: true });
+      if (r.skipped) { unasked.push(id); probe.emit({ type: "probe-result", id, lane, known: false, skipped: true, sent: probe.sent() }); out.stopped ||= probe.halted(); break; }
+      const before = ok.length;
       const k = classify(r, { model: id, modelProbe: true });
       if (failing(k)) out.stopped ||= "failing";
       // That model isn't served to this key: mark it and go on. A generic 401/403
@@ -736,14 +831,22 @@ async function probeModels({ probe, base, protocol, AUTH, openaiAuth, ids, quirk
       else if (k === "generated") { ok.push(id); quirks.generatesOnEmpty = true; out.stopped ||= "generated"; } // served, but stop spending
       else if (k === "network" || k === "server" || k === "html") failed = true;
       else if (k === "accepted" && !NOT_SERVABLE_RE.test(r.text)) ok.push(id);
+      // Only a served / not-served answer counts as checked; a 429, a refused
+      // key or a failure didn't tell us, so the id goes back on the "unasked" list.
+      const told = !(k === "rate" || k === "auth" || k === "gated" || k === "network" || k === "server" || k === "html");
+      if (told) checked++; else unasked.push(id);
+      probe.emit({ type: "probe-result", id, lane, known: ok.length > before, skipped: !told || undefined, sent: probe.sent() });
     }
   }));
   // Every model asked about was refused alike: the key can't use any of them.
   if (!out.stopped && !ok.length && denied.most() >= MODEL_DENIED_STOP) out.stopped = "denied";
+  probe.emit({ type: "models-done", protocol, path, total, checked, found: ok.length, stopped: out.stopped });
   out.complete = !failed && !out.stopped;
   // Keep catalog order, not completion order.
   const order = new Map(ids.map((id, i) => [id, i]));
   out.ids = ok.sort((a, b) => order.get(a)! - order.get(b)!);
+  const rest = new Set([...unasked, ...queue].map((x) => x.toLowerCase()));
+  out.check = { total, checked, found: ok.length, unchecked: dedupe(ids).filter((x) => rest.has(x.toLowerCase())), stopped: out.stopped };
   return out;
 }
 
@@ -810,8 +913,10 @@ export interface DiscoverOptions {
   signal?: AbortSignal | null;
   deadlineMs?: number;
   deadlineAt?: number;
+  // Live progress (see DetectProgress). Paths and model ids only.
+  onProgress?: DetectProgressFn | null;
 }
-export async function discoverModels({ baseUrl, apiKey, protocol, protocols, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS, quirks = {}, sleep, signal = null, deadlineMs = DETECT_DEADLINE_MS, deadlineAt = Date.now() + deadlineMs }: DiscoverOptions): Promise<DiscoverResult> {
+export async function discoverModels({ baseUrl, apiKey, protocol, protocols, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS, quirks = {}, sleep, signal = null, deadlineMs = DETECT_DEADLINE_MS, deadlineAt = Date.now() + deadlineMs, onProgress = null }: DiscoverOptions): Promise<DiscoverResult> {
   // Two-path endpoint: discover on each path, then route each model.
   if (protocols && protocols.length > 1) {
     const steps: DetectStep[] = [];
@@ -819,7 +924,7 @@ export async function discoverModels({ baseUrl, apiKey, protocol, protocols, fet
     const complete: Record<string, boolean> = {};
     let source: ModelsSource = "none", catalogName: string | undefined, partialReason: string | null = null, authRejected = false;
     for (const p of protocols) {
-      const r = await discoverModels({ baseUrl, apiKey, protocol: p, fetchFn, catalog, timeoutMs, quirks, sleep, signal, deadlineAt });
+      const r = await discoverModels({ baseUrl, apiKey, protocol: p, fetchFn, catalog, timeoutMs, quirks, sleep, signal, deadlineAt, onProgress });
       steps.push(...r.steps);
       byProtocol[p] = r.models;
       complete[p] = r.complete as boolean; // single-path result
@@ -839,7 +944,7 @@ export async function discoverModels({ baseUrl, apiKey, protocol, protocols, fet
   const key = cleanKey(apiKey);
   const base = String(baseUrl || "").replace(/\/+$/, "").replace(/\/messages$/, "");
   const steps: DetectStep[] = [];
-  const probe = makeProber({ fetchFn, key, steps, timeoutMs, sleep, signal, deadlineAt });
+  const probe = makeProber({ fetchFn, key, steps, timeoutMs, sleep, signal, deadlineAt, onProgress, root: base });
   const AUTH = authHeaders(key);
   // Azure, or a node detection saw accept only the `api-key` header.
   const azure = isAzureHost(base) || !!quirks.apiKeyHeader;
@@ -876,15 +981,17 @@ export interface DetectOptions {
   // Client hang-up: stops probing. deadlineMs: the whole detection's time budget.
   signal?: AbortSignal | null;
   deadlineMs?: number;
+  // Live progress (see DetectProgress). Paths and model ids only, never the key.
+  onProgress?: DetectProgressFn | null;
 }
-export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS, sleep, signal = null, deadlineMs = DETECT_DEADLINE_MS }: DetectOptions): Promise<DetectResult> {
+export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS, sleep, signal = null, deadlineMs = DETECT_DEADLINE_MS, onProgress = null }: DetectOptions): Promise<DetectResult> {
   const key = cleanKey(apiKey);
   const base0 = normalizeUrl(url);
   const steps: DetectStep[] = [];
   if (!base0) return { ok: false, error: "That doesn't look like a URL.", steps };
 
   const deadlineAt = Date.now() + deadlineMs;
-  const probe = makeProber({ fetchFn, key, steps, timeoutMs, sleep, signal, deadlineAt });
+  const probe = makeProber({ fetchFn, key, steps, timeoutMs, sleep, signal, deadlineAt, onProgress, root: base0 });
   const AUTH = authHeaders(key);
   const azure = isAzureHost(base0);
 
@@ -895,6 +1002,11 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   const listRefused = new Set<string>(); // auth styles GET /models refused
   let clientGated = false;
   let rateLimited = false;
+  // A host that never answers (timeouts, refused, no DNS): two such requests
+  // with nothing else heard back is enough; waiting on the rest only burns time.
+  let netFails = 0, answered = false;
+  const heard = (k: Classification) => { if (k === "network") netFails++; else answered = true; };
+  const unreachable = () => netFails >= UNREACHABLE_AFTER && !answered;
   const note = (k: Classification) => {
     if (k === "auth") sawAuthFail = true;
     if (k === "gated") clientGated = true;
@@ -912,6 +1024,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
       const r = await fetchModelList(probe, b, `GET /models (${style === "none" ? "no auth" : style})`, h);
       if (r.listed && (r.ids.length || Array.isArray((r.first.json as Json | null)?.data))) { models = r.ids; base = b; modelsAuth = style; break outer; }
       const k = classify(r.first);
+      heard(k);
       if (style !== "none") note(k); else if (k === "gated") clientGated = true;
       if (style !== "none" && k === "auth") listRefused.add(style);
       if (k === "missing" || k === "network") break; // nothing at this path for any auth
@@ -932,15 +1045,17 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   for (const b of models.length ? [base] : candidateBases(base0)) {
     for (const proto of order) {
       const p = PROBES[proto];
+      if (unreachable()) break;
       const r = await probe(p.label, "POST", joinUrl(b, p.path), { headers: p.headers, body: p.body });
       if (r.skipped) break;
       const k = classify(r, { model: String(p.body.model) });
+      heard(k);
       note(k);
       if (k === "server") serverErrors++;
       if (k === "accepted" || k === "unknown-model" || k === "model-denied") found.push({ proto, base: b, shape: apiErrorShape(r.json), sig: errorSignature(r, String(p.body.model)) });
       else if (k === "generated") { found.push({ proto, base: b, shape: null, sig: "" }); generatesOnEmpty.add(proto); }
     }
-    if (found.length || probe.halted()) { if (found.length) base = found[0].base; break; }
+    if (found.length || probe.halted() || unreachable()) { if (found.length) base = found[0].base; break; }
   }
 
   // A server that answers every path alike (a catch-all 400) isn't evidence of
@@ -973,12 +1088,15 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   const keyAccepted = !!modelsAuth && modelsAuth !== "none";
   const stop0 = probe.halted();
   if (!filtered.length && stop0) {
-    return { ok: false, error: stop0 === "aborted" ? "Detection was cancelled." : "Detection ran out of time before an API answered. Try again.", baseUrl: base0, steps, partial: true, partialReason: PARTIAL_REASON[stop0], clientGated, authRejected: false, rateLimited };
+    return { ok: false, failure: stop0 === "aborted" ? "cancelled" : "timeout", error: stop0 === "aborted" ? "Detection was cancelled." : "Detection ran out of time before an API answered. Try again.", baseUrl: base0, steps, partial: true, partialReason: PARTIAL_REASON[stop0], clientGated, authRejected: false, rateLimited };
   }
 
   if (!filtered.length) {
     const last = steps[steps.length - 1];
     const html = steps.find((s) => s.html);
+    const keyRefused = sawAuthFail && !keyAccepted;
+    const failure: FailureKind = clientGated ? "gated" : keyRefused ? "key" : rateLimited ? "rate" : found.length ? "catch-all"
+      : serverErrors ? "down" : html ? "html" : unreachable() || last?.status === 0 ? "unreachable" : "no-api";
     const error = clientGated ? "This endpoint only accepts specific clients."
       : sawAuthFail && !keyAccepted ? "The key was rejected."
       : rateLimited ? "The endpoint is rate-limiting requests. Try again in a minute."
@@ -987,7 +1105,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
       : html ? `This isn't an API response${htmlTitle(html.preview) ? ` (got "${htmlTitle(html.preview)}")` : ""}.`
       : last?.status === 0 ? `Couldn't reach it: ${last.preview}`
       : "No OpenAI or Anthropic API found at this URL.";
-    return { ok: false, error, baseUrl: base0, steps, clientGated, authRejected: sawAuthFail && !keyAccepted && !clientGated, rateLimited };
+    return { ok: false, failure, error, baseUrl: base0, steps, clientGated, authRejected: sawAuthFail && !keyAccepted && !clientGated, rateLimited };
   }
 
   const protocol = filtered[0].proto;
@@ -1021,14 +1139,23 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   // already got through with the key, and a /models refusal of one auth style
   // says nothing about the style that worked.
   let probesRefusedKey = false;
+  let stopReason: StopReason | null = null;
+  let blocked: StopReason | null = null; // a stop that applies to every path
+  const checks: Partial<Record<Protocol, ModelCheck>> = {};
   if (!models.length) {
     byProtocol = {};
     for (const proto of protocols) {
-      if (generatesOnEmpty.has(proto)) { byProtocol[proto] = []; partialReason ||= PARTIAL_REASON.generated; continue; }
+      if (generatesOnEmpty.has(proto)) { byProtocol[proto] = []; partialReason ||= PARTIAL_REASON.generated; stopReason ||= "generated"; continue; }
+      if (blocked) {
+        // Never asked on this API (same key / limiter / clock on every path).
+        checks[proto] = { total: dedupe(candidates).length, checked: 0, found: 0, unchecked: dedupe(candidates), stopped: blocked };
+        continue;
+      }
       const res = await probeModels({ probe, base, protocol: proto, AUTH, openaiAuth, ids: candidates, quirks });
       byProtocol[proto] = res.ids || [];
-      if (res.stopped) { partialReason ||= PARTIAL_REASON[res.stopped]; if (keyStop(res.stopped)) probesRefusedKey = true; }
-      if (res.stopped && res.stopped !== "generated" && res.stopped !== "failing") break; // same key / limiter / clock on every path
+      if (res.check) checks[proto] = res.check;
+      if (res.stopped) { partialReason ||= PARTIAL_REASON[res.stopped]; stopReason ||= res.stopped; if (keyStop(res.stopped)) probesRefusedKey = true; }
+      if (res.stopped && res.stopped !== "generated" && res.stopped !== "failing") blocked = res.stopped;
     }
     const built = buildRoutes(byProtocol);
     if (built.models.length) {
@@ -1039,7 +1166,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
     }
   }
   const stop1 = probe.halted();
-  if (stop1) partialReason ||= PARTIAL_REASON[stop1];
+  if (stop1) { partialReason ||= PARTIAL_REASON[stop1]; stopReason ||= stop1; }
   // The probes passed, but the key was refused while asking about models
   // (revoked key on an endpoint with no /models): say so, not "no list".
   // GET /models refusing the very style the found path uses still counts, unless
@@ -1065,6 +1192,302 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
     authRejected,
     suggestedName: name,
     suggestedPrefix: makePrefix(name),
+    stopReason,
+    ...(Object.keys(checks).length ? { checks } : {}),
     steps,
   };
+}
+
+// "Check the rest": ask about `ids` on one known API, `concurrency` at a time
+// (1 by default: the first run stopped early, often on a rate limit). Free
+// requests only, same as detection. Starts with the made-up-id canary again,
+// since a limiter or a revoked key can change the answer.
+export interface CheckModelsOptions {
+  baseUrl: string;
+  apiKey?: unknown;
+  protocol: Protocol;
+  ids: string[];
+  fetchFn: DetectFetch;
+  quirks?: DetectQuirks;
+  concurrency?: number;
+  timeoutMs?: number;
+  sleep?: Sleep;
+  signal?: AbortSignal | null;
+  deadlineMs?: number;
+  onProgress?: DetectProgressFn | null;
+}
+export interface CheckModelsResult {
+  ok: boolean;
+  error?: string;
+  models: string[];
+  check: ModelCheck;
+  partialReason: string | null;
+  steps: DetectStep[];
+}
+export const MAX_RECHECK_IDS = 200;
+export async function checkModels({ baseUrl, apiKey, protocol, ids, fetchFn, quirks = {}, concurrency = 1, timeoutMs = PROBE_TIMEOUT_MS, sleep, signal = null, deadlineMs = DETECT_DEADLINE_MS, onProgress = null }: CheckModelsOptions): Promise<CheckModelsResult> {
+  const key = cleanKey(apiKey);
+  const base = String(baseUrl || "").replace(/\/+$/, "");
+  const list = dedupe((ids || []).map((x) => String(x)).filter((x) => x && x.length <= 200)).slice(0, MAX_RECHECK_IDS);
+  const steps: DetectStep[] = [];
+  const empty: ModelCheck = { total: list.length, checked: 0, found: 0, unchecked: list, stopped: null };
+  if (!list.length) return { ok: true, models: [], check: empty, partialReason: null, steps };
+  const probe = makeProber({ fetchFn, key, steps, timeoutMs, sleep, signal, deadlineAt: Date.now() + deadlineMs, onProgress, root: base });
+  const AUTH = authHeaders(key);
+  const openaiAuth = isAzureHost(base) || quirks.apiKeyHeader ? AUTH["api-key"] : AUTH.bearer;
+  const q = { ...quirks };
+  const res = await probeModels({ probe, base, protocol, AUTH, openaiAuth, ids: list, quirks: q, concurrency: Math.max(1, Math.min(PROBE_CONCURRENCY, concurrency)) });
+  if (!res.check) {
+    const why = res.stopped || probe.halted();
+    return { ok: false, error: why ? PARTIAL_REASON[why] : "The endpoint no longer answers model checks the way it did, so nothing was asked.", models: [], check: { ...empty, stopped: why }, partialReason: why ? PARTIAL_REASON[why] : null, steps };
+  }
+  return { ok: true, models: res.ids || [], check: res.check, partialReason: res.stopped ? PARTIAL_REASON[res.stopped] : null, steps };
+}
+
+// ---- Site name + icon ---------------------------------------------------------
+// The provider's own site, fetched with no key: its root (and the bare domain
+// when the API host is api./gateway./llm.…). Name from og:site_name →
+// application-name → apple-mobile-web-app-title → <title> (tagline cut off);
+// icon from apple-touch-icon → largest <link rel=icon> → /favicon.ico, copied
+// as a data: URL (an image under 256 KB, at least 32px when the size can be
+// read). `fetchFn` is the SSRF-guarded probe fetch: redirects are followed here,
+// one hop at a time, so every hop goes through the guard again.
+
+export interface SiteResponse {
+  status: number;
+  headers: { get(name: string): string | null };
+  text(): Promise<string>;
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
+export type SiteFetch = (url: string, init: { method: string; headers: HeaderMap; signal: AbortSignal; redirect?: "manual" }) => Promise<SiteResponse>;
+
+const SITE_TIMEOUT_MS = 4000;
+const SITE_HTML_MAX = 512 * 1024;
+const ICON_MAX_BYTES = 256 * 1024;
+const ICON_MIN_PX = 32;
+const SITE_UA = "Mozilla/5.0 (compatible; 10router endpoint setup)";
+// Titles of walls, errors and default pages: not a name.
+const JUNK_TITLE_RE = /^(just a moment|attention required|access denied|forbidden|not found|404|403|401|500|502|503|error|sign ?in|log ?in|login|welcome to nginx|nginx|apache|it works|index of|untitled|home|cloudflare|redirecting|loading)\b/i;
+
+const decodeEntities = (s: string) => s
+  .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(+n))
+  .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+  .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&");
+
+function tagAttrs(tag: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const m of tag.matchAll(/([a-z_:-]+)\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/gi)) out[m[1].toLowerCase()] = decodeEntities(m[3] ?? m[4] ?? m[5] ?? "");
+  return out;
+}
+
+// Cut a tagline: "Snowflake | The AI Data Cloud" -> "Snowflake".
+export function cleanSiteName(raw: unknown): string | null {
+  let t = decodeEntities(String(raw || "")).replace(/\s+/g, " ").trim();
+  if (!t) return null;
+  t = t.split(/\s+[|·•–—-]\s+|\s*:\s+/)[0].trim();
+  if (!t || t.length > 40 || JUNK_TITLE_RE.test(t)) return null;
+  return t;
+}
+
+export interface SiteHtmlInfo { name: string | null; icons: { href: string; size: number; rank: number }[] }
+export function parseSiteHtml(html: string, pageUrl: string): SiteHtmlInfo {
+  const head = html.slice(0, SITE_HTML_MAX);
+  const metas = [...head.matchAll(/<meta\b[^>]*>/gi)].map((m) => tagAttrs(m[0]));
+  const meta = (key: string) => metas.find((a) => (a.property || a.name || "").toLowerCase() === key)?.content;
+  const title = /<title[^>]*>([^<]{1,200})/i.exec(head)?.[1];
+  const name = cleanSiteName(meta("og:site_name")) || cleanSiteName(meta("application-name")) || cleanSiteName(meta("apple-mobile-web-app-title")) || cleanSiteName(title);
+  const icons: SiteHtmlInfo["icons"] = [];
+  for (const m of head.matchAll(/<link\b[^>]*>/gi)) {
+    const a = tagAttrs(m[0]);
+    const rel = (a.rel || "").toLowerCase().split(/\s+/);
+    if (!a.href || a.href.startsWith("data:")) continue;
+    const rank = rel.includes("apple-touch-icon") || rel.includes("apple-touch-icon-precomposed") ? 0 : rel.includes("icon") ? 1 : -1;
+    if (rank < 0) continue;
+    const size = Math.max(0, ...String(a.sizes || "").split(/\s+/).map((s) => parseInt(s, 10) || 0));
+    try { icons.push({ href: new URL(a.href, pageUrl).toString(), size: /svg/i.test(a.type || a.href) ? 512 : size, rank }); } catch { /* bad href */ }
+  }
+  icons.sort((x, y) => x.rank - y.rank || y.size - x.size);
+  return { name, icons };
+}
+
+// Pixel size from the image header, when it's a format we can read (PNG, ICO,
+// GIF, JPEG). Null when unknown (SVG, WebP…): not rejected for size then.
+export function imageSize(b: Uint8Array): number | null {
+  if (b.length > 24 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) {
+    const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    return Math.min(v.getUint32(16), v.getUint32(20));
+  }
+  if (b.length > 6 && b[0] === 0 && b[1] === 0 && b[2] === 1 && b[3] === 0) {
+    const count = b[4] | (b[5] << 8);
+    let best = 0;
+    for (let i = 0; i < count && 6 + i * 16 + 1 < b.length; i++) best = Math.max(best, b[6 + i * 16] || 256);
+    return best || null;
+  }
+  if (b.length > 10 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return Math.min(b[6] | (b[7] << 8), b[8] | (b[9] << 8));
+  if (b.length > 4 && b[0] === 0xff && b[1] === 0xd8) {
+    for (let i = 2; i + 9 < b.length;) {
+      if (b[i] !== 0xff) { i++; continue; }
+      const marker = b[i + 1];
+      const len = (b[i + 2] << 8) | b[i + 3];
+      if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) return Math.min((b[i + 5] << 8) | b[i + 6], (b[i + 7] << 8) | b[i + 8]);
+      i += 2 + len;
+    }
+  }
+  return null;
+}
+
+const sniffImage = (b: Uint8Array): string | null =>
+  b[0] === 0x89 && b[1] === 0x50 ? "image/png"
+    : b[0] === 0 && b[1] === 0 && b[2] === 1 ? "image/x-icon"
+    : b[0] === 0x47 && b[1] === 0x49 ? "image/gif"
+    : b[0] === 0xff && b[1] === 0xd8 ? "image/jpeg"
+    : b[0] === 0x52 && b[1] === 0x49 && b[8] === 0x57 ? "image/webp"
+    : null;
+
+function toBase64(b: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+// The site roots to try: the API's origin, then the bare domain.
+export function siteRoots(base: string): string[] {
+  let u: URL;
+  try { u = new URL(base); } catch { return []; }
+  if (isLanHost(u.hostname) || /^\d+\.\d+\.\d+\.\d+$|^\[/.test(u.hostname)) return [];
+  const roots = [u.origin];
+  const labels = u.hostname.split(".");
+  // acme-xy12345.snowflakecomputing.com -> snowflakecomputing.com; api.x.ai -> x.ai
+  if (labels.length > 2) {
+    const tail = labels.slice(-2);
+    const keep = tail[0].length <= 3 && SECOND_LEVEL.has(tail[0]) ? labels.slice(-3) : tail;
+    roots.push(`${u.protocol}//${keep.join(".")}`);
+  }
+  return [...new Set(roots)];
+}
+
+export async function fetchSiteInfo(base: string, fetchFn: SiteFetch, { signal = null, timeoutMs = SITE_TIMEOUT_MS }: { signal?: AbortSignal | null; timeoutMs?: number } = {}): Promise<SiteInfo | null> {
+  const roots = siteRoots(base);
+  if (!roots.length) return null;
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const sig = signal ? AbortSignal.any([timeout, signal]) : timeout;
+  // GET with manual redirects (same or other host: no key is ever sent here).
+  const get = async (url: string, accept: string): Promise<{ res: SiteResponse; url: string } | null> => {
+    let current = url;
+    for (let hop = 0; hop < 4; hop++) {
+      const res = await fetchFn(current, { method: "GET", headers: { accept, "user-agent": SITE_UA }, signal: sig, redirect: "manual" });
+      const loc = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
+      if (!loc) return res.status >= 200 && res.status < 300 ? { res, url: current } : null;
+      const next = new URL(loc, current);
+      if (next.protocol !== "https:" && next.protocol !== "http:") return null;
+      current = next.toString();
+    }
+    return null;
+  };
+  const readIcon = async (url: string): Promise<string | null> => {
+    try {
+      const r = await get(url, "image/*");
+      if (!r) return null;
+      const len = Number(r.res.headers.get("content-length") || 0);
+      if (len > ICON_MAX_BYTES) return null;
+      const bytes = new Uint8Array(await r.res.arrayBuffer());
+      if (!bytes.length || bytes.length > ICON_MAX_BYTES) return null;
+      const ct = (r.res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+      const svg = ct === "image/svg+xml" || (/^\s*(<\?xml[^>]*>\s*)?<svg\b/i.test(new TextDecoder().decode(bytes.subarray(0, 200))));
+      const type = svg ? "image/svg+xml" : sniffImage(bytes);
+      if (!type) return null; // not an image (an HTML 200 for a missing favicon)
+      if (!svg) { const px = imageSize(bytes); if (px !== null && px < ICON_MIN_PX) return null; }
+      return `data:${type};base64,${toBase64(bytes)}`;
+    } catch { return null; }
+  };
+  let name: string | null = null;
+  let icon: string | null = null;
+  let host = "";
+  for (const root of roots) {
+    if (sig.aborted) break;
+    let info: SiteHtmlInfo = { name: null, icons: [] };
+    let page = root;
+    try {
+      const r = await get(`${root}/`, "text/html,application/xhtml+xml");
+      const ct = r?.res.headers.get("content-type") || "";
+      if (r && /html/i.test(ct)) { page = r.url; info = parseSiteHtml((await r.res.text()).slice(0, SITE_HTML_MAX), r.url); }
+    } catch { /* unreachable root: try the next */ }
+    if (!name && info.name) { name = info.name; host ||= new URL(page).hostname.replace(/^www\./, ""); }
+    if (!icon) {
+      for (const cand of [...info.icons.slice(0, 3).map((i) => i.href), `${new URL(page).origin}/favicon.ico`]) {
+        if (sig.aborted) break;
+        icon = await readIcon(cand);
+        if (icon) { host ||= new URL(page).hostname.replace(/^www\./, ""); break; }
+      }
+    }
+    if (name && icon) break;
+  }
+  if (!name && !icon) return null;
+  return { name, icon, host: host || new URL(roots[0]).hostname };
+}
+
+// ---- Test message (opt-in, ~1 token) -------------------------------------------
+// The one request that may cost a few tokens, and only when the user asks for it, with
+// the model they picked. Sends "hi" with a 1-token cap. On Anthropic Messages it
+// sends `betas` (Claude Code's flags); a 400 naming rejected flags drops exactly
+// those and retries once, so the dialog can say which flag the endpoint refused.
+export interface TestMessageOptions {
+  baseUrl: string;
+  apiKey?: unknown;
+  protocol: Protocol;
+  model: string;
+  fetchFn: DetectFetch;
+  betas?: string[];
+  quirks?: DetectQuirks & { stripBeta?: boolean; droppedBetas?: string[] };
+  parseRejected: (body: string) => string[];
+  timeoutMs?: number;
+  signal?: AbortSignal | null;
+}
+export interface TestMessageResult {
+  ok: boolean;
+  status: number;
+  model: string;
+  dropped: string[];
+  sentBetas: string[];
+  error?: string;
+  tokens?: number | null;
+  steps: DetectStep[];
+}
+export async function sendTestMessage({ baseUrl, apiKey, protocol, model, fetchFn, betas = [], quirks = {}, parseRejected, timeoutMs = 20_000, signal = null }: TestMessageOptions): Promise<TestMessageResult> {
+  const key = cleanKey(apiKey);
+  const base = String(baseUrl || "").replace(/\/+$/, "");
+  const steps: DetectStep[] = [];
+  const probe = makeProber({ fetchFn, key, steps, timeoutMs, signal, root: base });
+  const AUTH = authHeaders(key);
+  const openaiAuth = isAzureHost(base) || quirks.apiKeyHeader ? AUTH["api-key"] : AUTH.bearer;
+  const hi = [{ role: "user", content: "hi" }];
+  const usage = (j: unknown): number | null => {
+    const u = (j as Json | null)?.usage as Json | undefined;
+    const n = u?.output_tokens ?? u?.completion_tokens;
+    return typeof n === "number" ? n : null;
+  };
+  const fail = (r: ProbeResult, sent: string[], dropped: string[]): TestMessageResult => ({
+    ok: false, status: r.status, model, dropped, sentBetas: sent, steps,
+    error: r.status === 0 ? r.step.preview || "No answer" : `${r.status}${errorHint(r.json, r.text, r.step.html) ? ` · ${makeRedactor(key)(errorHint(r.json, r.text, r.step.html)).slice(0, 160)}` : ""}`,
+  });
+  if (protocol === "anthropic") {
+    const known = new Set(quirks.droppedBetas || []);
+    let send = quirks.stripBeta ? [] : betas.filter((b) => !known.has(b));
+    const dropped: string[] = [];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const headers = { ...AUTH.both, ...ANTHROPIC, ...(send.length ? { "anthropic-beta": send.join(",") } : {}) };
+      const r = await probe(attempt ? "Test message (without rejected beta flags)" : "Test message", "POST", joinUrl(base, "/messages"), { headers, body: { model, max_tokens: 1, messages: hi } });
+      if (r.status >= 200 && r.status < 300 && !errorIn2xx(r)) return { ok: true, status: r.status, model, dropped, sentBetas: send, tokens: usage(r.json), steps };
+      const rejected = r.status === 400 ? parseRejected(r.text).filter((b) => send.includes(b)) : [];
+      if (!rejected.length || attempt) return fail(r, send, dropped);
+      dropped.push(...rejected);
+      send = send.filter((b) => !rejected.includes(b));
+    }
+  }
+  const responses = protocol === "openai-responses";
+  const body = responses ? { model, input: "hi", max_output_tokens: 16, stream: false }
+    : quirks.maxCompletionTokens ? { model, messages: hi, max_completion_tokens: 1, stream: false } : { model, messages: hi, max_tokens: 1, stream: false };
+  const r = await probe("Test message", "POST", joinUrl(base, responses ? "/responses" : "/chat/completions"), { headers: openaiAuth, body });
+  if (r.status >= 200 && r.status < 300 && !errorIn2xx(r)) return { ok: true, status: r.status, model, dropped: [], sentBetas: [], tokens: usage(r.json), steps };
+  return fail(r, [], []);
 }

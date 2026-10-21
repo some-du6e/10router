@@ -33,6 +33,7 @@ import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
 import { defaultClaudeToolType } from "../translator/concerns/toolCall.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
+import { streamOverride } from "./chatCore/endpointOverrides.js";
 
 /**
  * Core chat handler - shared between SSE and Worker
@@ -164,7 +165,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   }
 
   const clientRequestedStreaming = body.stream === true || sourceFormat === FORMATS.ANTIGRAVITY || sourceFormat === FORMATS.GEMINI || sourceFormat === FORMATS.GEMINI_CLI;
-  const providerRequiresStreaming = PROVIDERS[provider]?.forceStream === true;
+  // A custom endpoint's "Streaming: Always / Never" setting.
+  const streamMode = streamOverride(provider, credentials);
+  const providerRequiresStreaming = PROVIDERS[provider]?.forceStream === true || streamMode === "always";
   // Upstream request shape — a forceStream provider is always fetched as SSE,
   // even when the client wants JSON (handleForcedSSEToJson converts it back).
   let stream = providerRequiresStreaming ? true : (body.stream !== false);
@@ -190,6 +193,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   if (clientPrefersJson && !clientPrefersSSE && body.stream !== true && !providerRequiresStreaming) {
     stream = false;
   }
+  if (streamMode === "never") stream = false;
 
   const reqLogger = await createRequestLogger(sourceFormat, targetFormat, model);
   if (clientRawRequest) reqLogger.logClientRawRequest(clientRawRequest.endpoint, clientRawRequest.body, clientRawRequest.headers);
