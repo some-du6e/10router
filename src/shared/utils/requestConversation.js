@@ -200,8 +200,10 @@ function measurePreviewSizes(value, limits, maxSize) {
   const addAll = (n) => { for (let k = 0; k < sizes.length; k++) sizes[k] += n; };
   const overBudget = () => sizes.every((size) => size > maxSize);
   const walk = (item, key) => {
-    if (unsupported || overBudget()) return;
+    if (unsupported) return;
+    const over = overBudget();
     if (typeof item === "string") {
+      if (over) return;
       if (PREVIEW_PRESERVE_KEYS.has(key)) return addAll(JSON.stringify(item).length);
       let full = -1;
       for (let k = 0; k < limits.length; k++) {
@@ -215,7 +217,7 @@ function measurePreviewSizes(value, limits, maxSize) {
       return;
     }
     if (item === null || typeof item === "number" || typeof item === "boolean")
-      return addAll(JSON.stringify(item).length);
+      return over ? undefined : addAll(JSON.stringify(item).length);
     if (Array.isArray(item)) {
       addAll(2 + Math.max(0, item.length - 1));
       for (let i = 0; i < item.length; i++) {

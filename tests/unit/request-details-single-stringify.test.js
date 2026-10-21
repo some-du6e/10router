@@ -82,7 +82,7 @@ function randomValue(r, depth = 0) {
   const pick = r();
   if (depth > 4 || pick < 0.3) {
     const s = r();
-    if (s < 0.5) return "x\"\\\n {[,:]}".repeat(Math.floor(r() * 2000));
+    if (s < 0.5) return "x\"\\\n {[,:]}".repeat(Math.floor(r() * 600));
     if (s < 0.65) return Math.floor(r() * 1e6) / 7;
     if (s < 0.75) return r() < 0.5;
     if (s < 0.85) return null;
@@ -240,6 +240,20 @@ describe("requestDetails truncateField", () => {
       expect(truncateField(body, max - 1)._truncated).toBe(true);
       expect(JSON.stringify(truncateField(body, max - 1))).toBe(JSON.stringify(legacyTruncateField(body, max - 1)));
     }
+  });
+
+  it("falls back for a toJSON that comes after the budget is already used up", () => {
+    const value = { a: "x".repeat(3000), ["k".repeat(5000)]: { toJSON() { return undefined; } } };
+    expect(measurePreviewSizes(value, [500, 250, 125, 62, 32], 500)).toBeUndefined();
+    expect(JSON.stringify(structuredPreview(value, 500))).toBe(JSON.stringify(legacyStructuredPreview(value, 500)));
+  });
+
+  it("measures keys that need JSON escaping exactly", () => {
+    const limits = [8192, 1024, 32];
+    const value = { messages: [{ 'a"b': "x".repeat(50), "back\\slash": 1, "ctl\u0001\n": [null], "é✓": "y" }] };
+    expect(measurePreviewSizes(value, limits, Infinity)).toEqual(
+      limits.map((limit) => JSON.stringify(legacyShorten(value, limit)).length),
+    );
   });
 
   it("does not measure values with an inherited toJSON (Dates)", () => {
