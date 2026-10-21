@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { extractRequestConfig } from "../../open-sse/handlers/chatCore/requestDetail.js";
 import { __test__ as requestDetailsTest } from "../../src/lib/db/repos/requestDetailsRepo.js";
@@ -54,6 +54,19 @@ describe("request detail logging", () => {
     expect(await requestDetailsTest.packFullData({ response: { ok: true } }, { response: { ok: true } })).toBeNull();
     expect(await requestDetailsTest.unpackFullData(null)).toBeNull();
     await expect(requestDetailsTest.unpackFullData("not gzip")).rejects.toThrow();
+  });
+
+  it("reuses the compact JSON from truncation instead of serializing the full payload again", async () => {
+    const big = { messages: [{ role: "user", content: "x".repeat(200 * 1024) }] };
+    const fieldJson = {};
+    const record = { request: requestDetailsTest.truncateField(big, 5 * 1024, fieldJson, "request") };
+    expect(fieldJson.request).toBe(JSON.stringify(big));
+    const stringify = vi.spyOn(JSON, "stringify");
+    const packed = await requestDetailsTest.packFullData({ request: big }, record, fieldJson);
+    const large = stringify.mock.calls.filter(([value]) => value === big || value?.request === big).length;
+    stringify.mockRestore();
+    expect(large).toBe(0);
+    expect(await requestDetailsTest.unpackFullData(packed)).toEqual({ request: big });
   });
 
   it("measures the full payload limit in bytes, not characters", async () => {
