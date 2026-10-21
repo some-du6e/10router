@@ -138,13 +138,53 @@ async function unpackFullData(value) {
   return JSON.parse((await gunzipAsync(Buffer.from(value, "base64"))).toString("utf8"));
 }
 
-export const __test__ = { sanitizeHeaders, getMaxJsonSize, truncateField, packFullData, unpackFullData, flush: () => flushToDatabase() };
+export const __test__ = { sanitizeHeaders, getMaxJsonSize, truncateField, prettyJsonPrefix, packFullData, unpackFullData, flush: () => flushToDatabase() };
 
 function generateDetailId(model) {
   const timestamp = new Date().toISOString();
   const random = Math.random().toString(36).substring(2, 8);
   const modelPart = model ? model.replace(/[^a-zA-Z0-9-]/g, "-") : "unknown";
   return `${timestamp}-${random}-${modelPart}`;
+}
+
+// First `limit` chars of JSON.stringify(value, null, 2), rebuilt from the compact
+// JSON text so a large body is not serialized a second time just for a preview.
+function prettyJsonPrefix(json, limit) {
+  let out = "";
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < json.length && out.length < limit; i++) {
+    const c = json[i];
+    if (inString) {
+      out += c;
+      if (escaped) escaped = false;
+      else if (c === "\\") escaped = true;
+      else if (c === '"') inString = false;
+    } else if (c === '"') {
+      inString = true;
+      out += c;
+    } else if (c === "{" || c === "[") {
+      const next = json[i + 1];
+      if (next === "}" || next === "]") {
+        out += c + next;
+        i++;
+      } else {
+        depth++;
+        out += `${c}\n${"  ".repeat(depth)}`;
+      }
+    } else if (c === "}" || c === "]") {
+      depth--;
+      out += `\n${"  ".repeat(depth)}${c}`;
+    } else if (c === ",") {
+      out += `,\n${"  ".repeat(depth)}`;
+    } else if (c === ":") {
+      out += ": ";
+    } else {
+      out += c;
+    }
+  }
+  return out.substring(0, limit);
 }
 
 function truncateField(obj, maxSize, fieldJson, key) {
@@ -157,12 +197,11 @@ function truncateField(obj, maxSize, fieldJson, key) {
   }
   if (str.length > maxSize) {
     if (fieldJson) fieldJson[key] = str;
-    const preview = JSON.stringify(obj, null, 2);
     const truncated = {
       _truncated: true,
       _originalSize: str.length,
       _omittedSize: str.length - maxSize,
-      _preview: preview.substring(0, Math.min(2000, Math.max(0, maxSize - 256))),
+      _preview: prettyJsonPrefix(str, Math.min(2000, Math.max(0, maxSize - 256))),
       _structuredPreview: null,
     };
     while (JSON.stringify(truncated).length > maxSize && truncated._preview.length > 0) {
