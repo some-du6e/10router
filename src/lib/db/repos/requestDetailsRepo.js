@@ -97,22 +97,26 @@ function sanitizeHeaders(headers) {
 
 // Returns the untruncated payloads that truncateField cut, gzipped, or null.
 // Compression runs on the libuv pool so a big payload doesn't stall streams.
-async function packFullData(item, record) {
-  const full = {};
+// `fieldJson` holds the compact JSON truncateField already built for each
+// field, so the full payload is assembled from it instead of serialized again
+// inside the synchronous flush.
+async function packFullData(item, record, fieldJson = {}) {
+  const parts = [];
   let chars = 0;
   for (const key of PAYLOAD_KEYS) {
     if (record[key]?._truncated === true && item[key] != null) {
-      full[key] = item[key];
+      parts.push([key, fieldJson[key]]);
       chars += record[key]._originalSize ?? 0;
     }
   }
-  if (!Object.keys(full).length) return null;
+  if (!parts.length) return null;
   // UTF-8 never takes fewer bytes than characters, so this skips oversized
   // payloads without serializing them a second time.
   if (chars > FULL_DATA_MAX_BYTES) return null;
   try {
-    const json = JSON.stringify(full);
-    if (Buffer.byteLength(json, "utf8") > FULL_DATA_MAX_BYTES) return null;
+    const json = `{${parts.map(([key, value]) => `${JSON.stringify(key)}:${value ?? JSON.stringify(item[key])}`).join(",")}}`;
+    // A UTF-16 code unit is at most 3 UTF-8 bytes, so only count bytes when that bound could exceed the limit.
+    if (json.length * 3 > FULL_DATA_MAX_BYTES && Buffer.byteLength(json, "utf8") > FULL_DATA_MAX_BYTES) return null;
     return (await gzipAsync(json)).toString("base64");
   } catch {
     return null;
@@ -134,7 +138,7 @@ function generateDetailId(model) {
   return `${timestamp}-${random}-${modelPart}`;
 }
 
-function truncateField(obj, maxSize) {
+function truncateField(obj, maxSize, fieldJson, key) {
   if (obj === undefined || obj === null) return {};
   let str;
   try {
@@ -143,6 +147,7 @@ function truncateField(obj, maxSize) {
     return { _truncated: true, _originalSize: null, _preview: "[Payload could not be serialized]" };
   }
   if (str.length > maxSize) {
+    if (fieldJson) fieldJson[key] = str;
     const preview = JSON.stringify(obj, null, 2);
     const truncated = {
       _truncated: true,
@@ -180,6 +185,7 @@ async function flushToDatabase() {
         if (!item.timestamp) item.timestamp = new Date().toISOString();
         if (item.request?.headers) item.request.headers = sanitizeHeaders(item.request.headers);
 
+        const fieldJson = keepFull ? {} : undefined;
         const record = {
           id: item.id,
           provider: item.provider || null,
@@ -189,13 +195,13 @@ async function flushToDatabase() {
           status: item.status || null,
           latency: item.latency || {},
           tokens: item.tokens || {},
-          request: truncateField(item.request, config.maxJsonSize),
-          providerRequest: truncateField(item.providerRequest, config.maxJsonSize),
-          providerResponse: truncateField(item.providerResponse, config.maxJsonSize),
-          response: truncateField(item.response, config.maxJsonSize),
+          request: truncateField(item.request, config.maxJsonSize, fieldJson, "request"),
+          providerRequest: truncateField(item.providerRequest, config.maxJsonSize, fieldJson, "providerRequest"),
+          providerResponse: truncateField(item.providerResponse, config.maxJsonSize, fieldJson, "providerResponse"),
+          response: truncateField(item.response, config.maxJsonSize, fieldJson, "response"),
           pxpipe: item.pxpipe || undefined,
         };
-        rows.push({ record, fullData: keepFull ? await packFullData(item, record) : null });
+        rows.push({ record, fullData: keepFull ? await packFullData(item, record, fieldJson) : null });
       }
       // The setting may have been turned off (and stored payloads cleared)
       // while compression was awaited.
