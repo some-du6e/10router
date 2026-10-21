@@ -122,11 +122,13 @@ interface Props {
 
 const protoOf = (n: EndpointNode): RouteProtocol =>
   n.type === "anthropic-compatible" ? "anthropic" : n.apiType === "responses" ? "openai-responses" : "openai-chat";
-// The main API first, then any API some of its models are routed to (Snowflake
-// serves Claude on Messages and GPT on Chat Completions from one URL).
-// Routes of deleted models don't count.
-const protosOf = (n: EndpointNode, main: RouteProtocol, models: string[]): RouteProtocol[] =>
-  [...new Set([main, ...Object.entries(n.modelRoutes || {}).filter(([m]) => models.includes(m)).map(([, p]) => p)])].filter((x): x is RouteProtocol => x in PROTO_LABEL);
+// One badge per API some model uses (Snowflake serves Claude on Messages and GPT
+// on Chat Completions from one URL). Unrouted models use the main API.
+const protosOf = (n: EndpointNode, main: RouteProtocol, models: string[]): RouteProtocol[] => {
+  const routes = n.modelRoutes || {};
+  const used = models.map((m) => (routes[m] as RouteProtocol | undefined) || main);
+  return [...new Set(used.length ? used : [main])].filter((x): x is RouteProtocol => x in PROTO_LABEL);
+};
 const PROTO_LABEL: Record<RouteProtocol, string> = { "openai-chat": "OpenAI · Chat Completions", "openai-responses": "OpenAI · Responses", anthropic: "Anthropic · Messages" };
 
 // ---- The page ----------------------------------------------------------------------
@@ -551,7 +553,7 @@ function IconModal({ node, onClose, onSaved }: { node: EndpointNode; onClose: ()
   const save = async (patch: { icon?: string | null; tint?: string | null }): Promise<boolean> => {
     setBusy(true); setErr("");
     try {
-      const small = { ...patch, ...(patch.icon && patch.icon !== found ? { icon: await shrinkIcon(patch.icon) } : {}), ...(found && found !== node.siteIcon ? { siteIcon: await shrinkIcon(found) } : {}) };
+      const small = { ...patch, ...(patch.icon && patch.icon !== found ? { icon: await shrinkIcon(patch.icon) } : {}), ...(found && found !== node.siteIcon ? { siteIcon: found } : {}) };
       const res = await fetch(`/api/providers/${node.id}/redetect/icon`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(small) });
       const d = (await res.json().catch(() => ({}))) as { node?: EndpointNode; error?: string };
       if (!res.ok || !d.node) { setErr(d.error || "Couldn't save the icon"); return false; }

@@ -111,8 +111,11 @@ export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: De
   const found = r.models || [];
   const have = new Set(currentModels);
   // Outdated but just listed or answered by the endpoint: the user may want it, keep it.
-  const old = new Set(outdated.filter((m) => !found.includes(m)));
-  const removeModels = currentModels.filter((m) => r.modelsSource === "models" && !found.includes(m));
+  const listed = new Set(found.map((m) => m.toLowerCase()));
+  const old = new Set(outdated.filter((m) => !listed.has(m.toLowerCase())));
+  // Only a full list proves a model is gone; a cut-short one just missed it.
+  const fullList = r.modelsSource === "models" && r.listComplete !== false;
+  const removeModels = currentModels.filter((m) => fullList && !listed.has(m.toLowerCase()));
   const outdatedModels = currentModels.filter((m) => old.has(m) && !removeModels.includes(m));
   const addModels = found.filter((m) => !have.has(m) && !old.has(m));
   const quirks: RedetectDiff["quirks"] = {};

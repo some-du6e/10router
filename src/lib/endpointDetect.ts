@@ -53,6 +53,7 @@ export interface DetectResult {
   byProtocol?: Partial<Record<Protocol, string[]>> | null;
   models?: string[];
   modelsSource?: ModelsSource;
+  listComplete?: boolean; // false: /models stopped on a failed page or the page cap
   keyConfirmed?: KeyConfirmed;
   quirks?: DetectQuirks;
   partial?: boolean;
@@ -153,6 +154,7 @@ const MODELS_PER_FAMILY = 3;     // newest releases kept per family (claude-opus
 const MAX_RATE_RETRIES = 3;      // per probe, on 429
 const MAX_RETRY_WAIT_MS = 10_000;
 const MAX_MODEL_PAGES = 10;      // /models pagination cap
+const PROBE_BODY_MAX = 4 * 1024 * 1024; // a probe reads at most this much
 const CANARY = "10router-no-such-model";
 const CONTROL_PATH = "/10router-no-such-path";
 const DETECT_DEADLINE_MS = 45_000; // whole detection; the UI gives up at 60s
@@ -742,7 +744,9 @@ function makeProber({ fetchFn, key, steps, timeoutMs, sleep = defaultSleep, sign
         if (!quiet) emit({ type: "response", n: id, status: 0, kind: "network", sent: steps.length, hint: networkHint(step.preview, timeoutMs) });
         return { status: 0, text: "", json: null, step: step as DetectStep };
       }
-      const text = await res.text().catch(() => "");
+      // Only a preview and the JSON are used: don't hold a runaway body in memory.
+      const r0 = res as Parameters<typeof readCapped>[0];
+      const text = await (r0.body || r0.arrayBuffer ? readCapped(r0, PROBE_BODY_MAX).then(({ bytes }) => new TextDecoder().decode(bytes)) : res.text()).catch(() => "");
       const contentType = res.headers?.get?.("content-type") ?? null;
       step.status = res.status;
       step.preview = redact(text).replace(/\s+/g, " ").slice(0, BODY_PREVIEW);
@@ -889,7 +893,8 @@ async function probeModels({ probe, base, protocol, AUTH, openaiAuth, ids, quirk
 
 // GET /models with pagination. Returns { ids, listed, auth } where `listed`
 // means a real list answered (even an empty one).
-async function fetchModelList(probe: Prober, base: string, label: string, headers: HeaderMap): Promise<{ ids: string[]; listed: boolean; first: ProbeResult }> {
+// `complete`: every page answered (no failed page, no page cap hit).
+async function fetchModelList(probe: Prober, base: string, label: string, headers: HeaderMap): Promise<{ ids: string[]; listed: boolean; complete: boolean; first: ProbeResult }> {
   let url: string | null = joinUrl(base, "/models");
   const ids: string[] = [];
   let first: ProbeResult | null = null;
@@ -902,7 +907,7 @@ async function fetchModelList(probe: Prober, base: string, label: string, header
   }
   const listed = !!first && first.status >= 200 && first.status < 300 && !first.step.html && !!modelEntries(first.json);
   // The loop always runs at least once, so `first` is set.
-  return { ids: dedupe(ids), listed, first: first as ProbeResult };
+  return { ids: dedupe(ids), listed, complete: listed && !url, first: first as ProbeResult };
 }
 
 // Which API path a model should use when the endpoint serves it on several.
@@ -1035,6 +1040,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   let models: string[] = [];
   let base = base0;
   let modelsAuth: string | null = null;
+  let listComplete = false; // GET /models answered every page
   let sawAuthFail = false;
   const listRefused = new Set<string>(); // auth styles GET /models refused
   let clientGated = false;
@@ -1059,7 +1065,16 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
       // api-key is only a fallback after Bearer was refused (Azure-style).
       if (style === "api-key" && !azure && !sawAuthFail) continue;
       const r = await fetchModelList(probe, b, `GET /models (${style === "none" ? "no auth" : style})`, h);
-      if (r.listed && (r.ids.length || Array.isArray((r.first.json as Json | null)?.data))) { models = r.ids; base = b; modelsAuth = style; break outer; }
+      if (r.listed && (r.ids.length || Array.isArray((r.first.json as Json | null)?.data))) {
+        models = r.ids; base = b; modelsAuth = style; listComplete = r.complete;
+        // Without a key some gateways list only their public models: ask with it too.
+        if (style === "none" && key) {
+          const k = await fetchModelList(probe, b, "GET /models (bearer)", AUTH.bearer);
+          if (k.listed) models = dedupe([...models, ...k.ids]);
+          listComplete &&= k.listed && k.complete;
+        }
+        break outer;
+      }
       const k = classify(r.first);
       heard(k);
       if (style !== "none") note(k); else if (k === "gated") clientGated = true;
@@ -1222,6 +1237,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
     baseUrl: base,
     models,
     modelsSource,
+    ...(modelsSource === "models" ? { listComplete } : {}),
     keyConfirmed,
     quirks,
     partial: !!partialReason,
@@ -1401,6 +1417,17 @@ export function imageSize(b: Uint8Array): number | null {
       i += 2 + len;
     }
   }
+  // WebP: VP8X canvas, VP8 (lossy) frame or VP8L (lossless) header.
+  if (b.length > 30 && b[0] === 0x52 && b[1] === 0x49 && b[8] === 0x57 && b[9] === 0x45) {
+    const fourcc = String.fromCharCode(b[12], b[13], b[14], b[15]);
+    const u24 = (i: number) => b[i] | (b[i + 1] << 8) | (b[i + 2] << 16);
+    if (fourcc === "VP8X") return Math.min(u24(24) + 1, u24(27) + 1);
+    if (fourcc === "VP8 ") return Math.min((b[26] | (b[27] << 8)) & 0x3fff, (b[28] | (b[29] << 8)) & 0x3fff);
+    if (fourcc === "VP8L" && b[20] === 0x2f) {
+      const bits = b[21] | (b[22] << 8) | (b[23] << 16) | (b[24] << 24);
+      return Math.min((bits & 0x3fff) + 1, ((bits >>> 14) & 0x3fff) + 1);
+    }
+  }
   return null;
 }
 
@@ -1466,7 +1493,7 @@ export async function fetchSiteInfo(base: string, fetchFn: SiteFetch, { signal =
       const { bytes, over } = await readCapped(r.res, ICON_MAX_BYTES);
       if (!bytes.length || over) return null;
       const ct = (r.res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
-      const svg = ct === "image/svg+xml" || (/^\s*(<\?xml[^>]*>\s*)?<svg\b/i.test(new TextDecoder().decode(bytes.subarray(0, 200))));
+      const svg = ct === "image/svg+xml" || (/^\s*(?:(?:<\?xml[^>]*>|<!--[\s\S]*?-->|<!DOCTYPE[^>]*>)\s*)*<svg\b/i.test(new TextDecoder().decode(bytes.subarray(0, 1024))));
       const type = svg ? "image/svg+xml" : sniffImage(bytes);
       if (!type) return null; // not an image (an HTML 200 for a missing favicon)
       const px = svg ? Infinity : imageSize(bytes);
@@ -1495,7 +1522,9 @@ export async function fetchSiteInfo(base: string, fetchFn: SiteFetch, { signal =
       for (const cand of [...info.icons.slice(0, 3), { href: `${new URL(page).origin}/favicon.ico`, size: 0 }]) {
         if (sig.aborted) break;
         const got = await readIcon(cand.href, cand.size);
-        if (got && (!icon || got.px > icon.px)) { icon = got; host = new URL(page).hostname.replace(/^www\./, ""); break; }
+        if (got && (!icon || got.px > icon.px)) { icon = got; host = new URL(page).hostname.replace(/^www\./, ""); }
+        // Unsized links sort first, so a small one doesn't end the search early.
+        if (icon && icon.px >= ICON_SHARP_PX) break;
       }
     }
     if (name && icon && icon.px >= ICON_SHARP_PX) break;

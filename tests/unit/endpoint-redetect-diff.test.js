@@ -21,6 +21,10 @@ describe("redetectDiff", () => {
     // Gone from /models and outdated: listed once, under the ticked row.
     expect(redetectDiff(node, ["a", "old-4"], found({ models: ["a"] }), ["old-4"])).toMatchObject({ removeModels: ["old-4"], outdatedModels: [] });
   });
+  it("never removes models a cut-short /models list missed, and matches ids ignoring case", () => {
+    expect(redetectDiff(node, ["a", "b"], found({ models: ["a"], listComplete: false })).removeModels).toEqual([]);
+    expect(redetectDiff(node, ["a", "B"], found({ models: ["a", "b"] })).removeModels).toEqual([]);
+  });
   it("offers Chat <-> Responses in place, not OpenAI <-> Anthropic", () => {
     expect(redetectDiff(node, ["a", "b"], found({ protocol: "openai-responses" })).protocol).toEqual({ from: "openai-chat", to: "openai-responses", applicable: true });
     expect(redetectDiff(node, ["a", "b"], found({ protocol: "anthropic" })).protocol.applicable).toBe(false);
@@ -39,7 +43,7 @@ describe("redetectDiff", () => {
     expect(redetectDiff(anth, ["claude-a", "claude-b", "gpt-x"], r).quirks.modelRoutes).toEqual({ "claude-a": "anthropic", "claude-b": "anthropic", "gpt-x": "openai-chat" });
     // OpenAI node, same probes: wrong-relative routes { gpt-x: openai-chat } would leave Claude on chat.
     const d = redetectDiff(node, ["claude-a", "claude-b", "gpt-x"], { ...r, protocol: "anthropic" });
-    expect(d.quirks.modelRoutes).toMatchObject({ "claude-a": "anthropic", "claude-b": "anthropic" });
+    expect(d.quirks.modelRoutes).toEqual({ "claude-a": "anthropic", "claude-b": "anthropic", "gpt-x": "openai-chat" });
     // Already saved: no change.
     expect(redetectDiff({ ...node, modelRoutes: { "claude-a": "anthropic", "claude-b": "anthropic" } }, ["claude-a", "claude-b", "gpt-x"], r).quirks.modelRoutes).toBeUndefined();
   });

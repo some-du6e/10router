@@ -178,6 +178,24 @@ const GOOD = "pat-real-key";
 const keyOk = (auth) => auth.includes(GOOD);
 
 describe("detectEndpoint", () => {
+  it("adds the models a key sees to a keyless /models list, and flags a list cut short", async () => {
+    const { fetchFn } = upstream({
+      "GET /v1/models": ({ auth }) => [200, { data: (keyOk(auth) ? ["pub", "priv"] : ["pub"]).map((id) => ({ id })) }],
+      "POST /v1/chat/completions": () => [400, { error: { message: "messages is required" } }],
+    });
+    const r = await detectEndpoint({ url: "https://gw.example.com/v1", apiKey: GOOD, fetchFn, catalog: CATALOG });
+    expect(r.models).toEqual(["pub", "priv"]);
+    expect(r.listComplete).toBe(true);
+    // Page 2 rate-limited: what was listed is kept, but the list isn't whole.
+    let page = 0;
+    const paged = upstream({
+      "GET /v1/models": () => (page++ % 2 === 0 ? [200, { data: [{ id: "a" }], has_more: true, last_id: "a" }] : [500, {}]),
+      "POST /v1/chat/completions": () => [400, { error: { message: "messages is required" } }],
+    });
+    const r2 = await detectEndpoint({ url: "https://gw.example.com/v1", apiKey: "", fetchFn: paged.fetchFn, catalog: CATALOG });
+    expect(r2.models).toEqual(["a"]);
+    expect(r2.listComplete).toBe(false);
+  });
   it("Snowflake: no /models, Anthropic found, key confirmed, catalog models confirmed for free", async () => {
     const known = new Set(["claude-sonnet-4-5", "claude-haiku-4-5"]); // claude-opus-4-1 is in the catalog but not served
     const { fetchFn, calls } = upstream({

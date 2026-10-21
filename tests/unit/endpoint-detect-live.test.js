@@ -179,6 +179,12 @@ describe("site name and icon", () => {
     return b;
   };
 
+  it("reads WebP sizes", () => {
+    const webp = (fourcc, fill) => { const b = new Uint8Array(40); b.set([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, ...[...fourcc].map((c) => c.charCodeAt(0))]); fill(b); return b; };
+    expect(imageSize(webp("VP8X", (b) => { b[24] = 191; b[27] = 191; }))).toBe(192);
+    expect(imageSize(webp("VP8 ", (b) => { b[26] = 0; b[27] = 2; b[28] = 0; b[29] = 2; }))).toBe(512);
+    expect(imageSize(webp("VP8L", (b) => { b[20] = 0x2f; const v = 255 | (255 << 14); b[21] = v & 255; b[22] = (v >> 8) & 255; b[23] = (v >> 16) & 255; b[24] = (v >>> 24) & 255; }))).toBe(256);
+  });
   it("reads PNG sizes", () => {
     expect(imageSize(png(180))).toBe(180);
     expect(imageSize(new Uint8Array([1, 2, 3]))).toBeNull();
