@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { matchPattern, getPatternRegexCacheSize, PATTERN_PRICING } from "../../open-sse/providers/pricing.js";
 import { PATTERN_CAPABILITIES, MODEL_CAPABILITIES, PROVIDER_CAPABILITIES } from "../../open-sse/providers/capabilities.js";
 
@@ -37,6 +37,16 @@ const EDGE_MODELS = [
   "a+b", "aab", "(x)", "x", "a", "b", "a|b", "^x$", "x\\y", "{1}", "deepseek-reasoner", "o3-preview",
   "gemini-3-pro", "llama-4-maverick", "totally-unknown-model", "kimi-k2", "glm-5.1", "grok-code-fast",
 ];
+
+function countRegExpConstructions(fn) {
+  const RealRegExp = globalThis.RegExp;
+  let constructed = 0;
+  globalThis.RegExp = new Proxy(RealRegExp, {
+    construct(target, args) { constructed++; return Reflect.construct(target, args); },
+  });
+  try { fn(); } finally { globalThis.RegExp = RealRegExp; }
+  return constructed;
+}
 
 describe("matchPattern regex cache", () => {
   it("matches exactly like the uncached implementation over every table pattern", () => {
@@ -82,5 +92,26 @@ describe("matchPattern regex cache", () => {
     expect(getPatternRegexCacheSize()).toBe(sizeBefore + 1);
     expect(matchPattern(pattern, "CACHE-PROBE-y-ONLY-in-this-test")).toBe(true);
     expect(matchPattern(pattern, "nope")).toBe(false);
+  });
+
+  it("compiles nothing on a repeated full-table scan", async () => {
+    vi.resetModules();
+    const { getCapabilitiesForModel } = await import("../../open-sse/providers/capabilities.js");
+    getCapabilitiesForModel("openai", "totally-unknown-model");
+    expect(countRegExpConstructions(() => {
+      for (let i = 0; i < 3; i++) getCapabilitiesForModel("openai", "totally-unknown-model");
+    })).toBe(0);
+  });
+
+  it("keeps one entry per distinct pattern, not per model", async () => {
+    vi.resetModules();
+    const fresh = await import("../../open-sse/providers/pricing.js");
+    expect(fresh.getPatternRegexCacheSize()).toBe(0);
+    fresh.matchPattern("a-*", "a-x");
+    fresh.matchPattern("a-*", "A-Y");
+    fresh.matchPattern("b-*", "b");
+    expect(fresh.getPatternRegexCacheSize()).toBe(2);
+    for (let i = 0; i < 500; i++) fresh.matchPattern("a-*", `a-${i}`);
+    expect(fresh.getPatternRegexCacheSize()).toBe(2);
   });
 });
