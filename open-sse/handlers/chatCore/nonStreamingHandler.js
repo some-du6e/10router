@@ -10,6 +10,7 @@ import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, sav
 import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { decloakToolNames } from "../../utils/claudeCloaking.js";
 import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
+import { clientToolRef } from "../../translator/concerns/toolNamespace.js";
 
 function parseToolArguments(value) {
   if (!value) return {};
@@ -107,13 +108,13 @@ function openAICompletionToResponses(responseBody, customToolNames = null, toolN
   for (const tc of message.tool_calls || []) {
     const fn = tc.function || {};
     const custom = customToolNames?.has(fn.name);
-    const ns = toolNamespaces?.[fn.name];
+    const { name, namespace } = clientToolRef(toolNamespaces, fn.name || "");
     output.push({
       type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,
       id: `${custom ? "ctc" : "fc"}_${tc.id || ""}`,
       call_id: tc.id || "",
-      name: fn.name || "",
-      ...(ns ? { namespace: ns } : {}),
+      name,
+      ...(namespace ? { namespace } : {}),
       ...(custom
         ? { input: extractCustomToolInput(fn.arguments) }
         : { arguments: typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments || {}) }),

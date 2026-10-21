@@ -1,6 +1,7 @@
 # Unreleased
 
 ## Fixes
+- **Codex on Claude endpoints works again**: Codex requests no longer fail with `tools: Tool names must be unique.` when two MCP apps both have a tool with the same short name (GitHub and Notion both have `_fetch` and `_search`). The second one is sent as `mcp__codex_apps__notion_fetch`, and Codex gets the call back under its own name and namespace. Codex tools also reach Anthropic-compatible endpoints now. They used to be removed before sending, so the model said it had no `exec_command` tool.
 - Re-detect on an endpoint page now says what it's doing while it runs: which step it's on, how many models it has checked and how many work, requests sent, time taken, and any rate-limit wait. A Stop button cancels it, and leaving the page cancels it too.
 - Endpoints with no model list (Snowflake Cortex) now find the newest models (Claude Opus/Sonnet/Haiku 5.5, GPT-6, Kimi K3, GLM 5.3) and stop adding releases the labs have moved on from, like Claude Opus 4.5 or GPT-4.1. Re-detect offers to remove outdated models already saved.
 - The endpoint page shows one badge per API the endpoint answers on, not just the main one.

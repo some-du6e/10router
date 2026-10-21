@@ -492,10 +492,11 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
   // 3. Tools: filter built-in tools for non-Anthropic providers, then handle cache_control
   if (body.tools && Array.isArray(body.tools)) {
     // Strip built-in tools (e.g. web_search_20250305) and normalize to Anthropic-native shape
-    // (drop `type` field, fold `function.{name,description,parameters}`) for non-Anthropic providers
+    // (drop `type` field, fold `function.{name,description,parameters}`) for non-Anthropic providers.
+    // `custom` is Anthropic's explicit type for a client tool, not a built-in.
     if (provider !== "claude") {
       body.tools = body.tools
-        .filter(tool => !tool.type || tool.type === "function")
+        .filter(tool => !tool.type || tool.type === "function" || tool.type === "custom")
         .map(tool => {
           if (tool.function) {
             return {
