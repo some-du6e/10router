@@ -1,7 +1,6 @@
 {
   "($/1M tokens). Example: An input rate of 2.50 means $2.50 per 1,000,000 input tokens.": "($/1M token). Contoh: Tarif masukan 2.50 berarti $2.50 per 1.000.000 token masukan.",
   "($/1M tokens). Example: Input rate of 2.50 means $2.50 per 1,000,000 input tokens.": "($/1M token). Contoh: Tarif masukan 2.50 berarti $2.50 per 1.000.000 token masukan.",
-  "(Caveman)": "(Caveman)",
   "(Headroom)": "(Headroom)",
   "(Ponytail)": "(Ponytail)",
   "(RTK)": "(RTK)",
@@ -243,7 +242,6 @@
   "Company": "Perusahaan",
   "Complete the authorization in the popup window.": "Selesaikan otorisasi di jendela popup.",
   "Completion/response tokens": "Token pelengkapan/respons",
-  "Compress LLM output": "Kompresi keluaran LLM",
   "Compress context": "Kompresi konteks",
   "Compress prompts via /v1/compress before routing to the model": "Kompresi prompt melalui /v1/compress sebelum merutekan ke model",
   "Compress tool output": "Kompresi keluaran alat",
@@ -1128,7 +1126,6 @@
   "Temperature": "Temperatur",
   "Terminal": "Terminal",
   "Terms of Service": "Ketentuan Layanan",
-  "Terse-style system prompt → ~65% fewer output tokens (up to 87%)": "Prompt sistem gaya ringkas → ~65% lebih sedikit token keluaran (hingga 87%)",
   "Test": "Uji",
   "Test Again": "Uji Lagi",
   "Test All": "Uji Semua",

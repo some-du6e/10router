@@ -19,6 +19,7 @@
 - **T3 usage hub**: preserve upstream status codes for non-JSON provider errors and reject malformed settings responses without overwriting the current hub state.
 
 ## Removed
+- **Caveman**: the token saver no longer has a "Compress LLM output" option. It rewrote the system prompt that clients and providers tune, and the change could invalidate prompt caches. If you want it, install the caveman skill in your own client. The `cavemanEnabled` and `cavemanLevel` settings are now ignored.
 - Remove the IDE MITM proxy, certificate and DNS interception, dashboard controls, API routes, startup hooks, and CLI/Docker packaging. Upgrade cleanup stops old proxy processes and removes their loopback hosts entries. Tailscale keeps independent encrypted elevation credentials for reboot recovery.
 
 ## Features

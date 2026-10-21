@@ -69,7 +69,6 @@ describe("handleChatCore Headroom diagnostics", () => {
       headroomUrl: "http://localhost:8787",
       headroomCompressUserMessages: false,
       rtkEnabled: false,
-      cavemanEnabled: false,
       ponytailEnabled: false,
       clientRawRequest: {
         endpoint: "/v1/chat/completions",
@@ -109,7 +108,6 @@ describe("handleChatCore Headroom diagnostics", () => {
       headroomUrl: "https://user:secret@example.com:8787/proxy?token=abc123",
       headroomCompressUserMessages: false,
       rtkEnabled: false,
-      cavemanEnabled: false,
       ponytailEnabled: false,
       clientRawRequest: {
         endpoint: "/v1/chat/completions",
@@ -138,7 +136,6 @@ describe("handleChatCore Headroom diagnostics", () => {
       headroomUrl: "https://user:secret@example.com:8787/proxy?token=abc123",
       headroomCompressUserMessages: false,
       rtkEnabled: false,
-      cavemanEnabled: false,
       ponytailEnabled: false,
       clientRawRequest: {
         endpoint: "/v1/chat/completions",
@@ -185,7 +182,6 @@ describe("handleChatCore Headroom diagnostics", () => {
       headroomUrl: "http://localhost:8787",
       headroomCompressUserMessages: false,
       rtkEnabled: false,
-      cavemanEnabled: false,
       ponytailEnabled: false,
       clientRawRequest: {
         endpoint: "/v1/chat/completions",
@@ -236,7 +232,6 @@ describe("handleChatCore Headroom diagnostics", () => {
       headroomUrl: "http://localhost:8787",
       headroomCompressUserMessages: false,
       rtkEnabled: false,
-      cavemanEnabled: false,
       ponytailEnabled: false,
       clientRawRequest: {
         endpoint: "/v1/chat/completions",
@@ -276,8 +271,6 @@ describe("handleChatCore Headroom diagnostics", () => {
         headroomUrl: "http://localhost:8787",
         headroomCompressUserMessages: true,
         rtkEnabled: true,
-        cavemanEnabled: true,
-        cavemanLevel: "full",
         ponytailEnabled: true,
         ponytailLevel: "full",
         pxpipeEnabled: true,

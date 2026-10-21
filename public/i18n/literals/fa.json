@@ -1,7 +1,6 @@
 {
   "($/1M tokens). Example: An input rate of 2.50 means $2.50 per 1,000,000 input tokens.": "($/۱ میلیون توکن). مثال: نرخ ورودی ۲.۵۰ به معنای ۲.۵۰ دلار به ازای هر ۱٬۰۰۰٬۰۰۰ توکن ورودی است.",
   "($/1M tokens). Example: Input rate of 2.50 means $2.50 per 1,000,000 input tokens.": "($/۱ میلیون توکن). مثال: نرخ ورودی ۲.۵۰ به معنای ۲.۵۰ دلار به ازای هر ۱٬۰۰۰٬۰۰۰ توکن ورودی است.",
-  "(Caveman)": "(Caveman)",
   "(Headroom)": "(Headroom)",
   "(Ponytail)": "(Ponytail)",
   "(RTK)": "(RTK)",
@@ -241,7 +240,6 @@
   "Company": "شرکت",
   "Complete the authorization in the popup window.": "مجوز را در پنجره بازشو تکمیل کنید.",
   "Completion/response tokens": "توکن‌های تکمیل/پاسخ",
-  "Compress LLM output": "فشرده‌سازی خروجی LLM",
   "Compress context": "فشرده‌سازی زمینه",
   "Compress prompts via /v1/compress before routing to the model": "فشرده‌سازی پرامپت‌ها از طریق /v1/compress قبل از مسیردهی به مدل",
   "Compress tool output": "فشرده‌سازی خروجی ابزار",
@@ -1120,7 +1118,6 @@
   "Temperature": "دما",
   "Terminal": "ترمینال",
   "Terms of Service": "شرایط خدمات",
-  "Terse-style system prompt → ~65% fewer output tokens (up to 87%)": "پرامپت سیستم مختصر → ~۶۵٪ توکن خروجی کمتر (تا ۸۷٪)",
   "Test": "آزمایش",
   "Test Again": "آزمایش مجدد",
   "Test All": "آزمایش همه",

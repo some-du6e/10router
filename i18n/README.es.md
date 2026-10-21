@@ -435,7 +435,6 @@ URLs por defecto:
 | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
 | 🚀 **Ahorrador de tokens RTK** ([RTK](https://github.com/rtk-ai/rtk) ⭐40K)                | Comprime las salidas de las herramientas (`git diff`, `grep`, `ls`, `tree`...) antes de enviarlas al LLM | Ahorra **20-40% de tokens de entrada** por solicitud    |
 | 🧠 **Ahorrador de tokens Headroom** ([Headroom](https://github.com/chopratejas/headroom)) | Proxy externo opcional `/v1/compress` antes del enrutamiento al proveedor                      | Ahorra más tokens de contexto sin cambiar los clientes  |
-| 🪨 **Modo cavernícola** ([Caveman](https://github.com/JuliusBrussee/caveman) ⭐52K)        | Inyecta un prompt de lenguaje cavernícola → el LLM responde de forma concisa, se conserva el contenido técnico | Ahorra **hasta un 65% de tokens de salida**  |
 | 🐴 **Ponytail** ([Ponytail](https://github.com/DietrichGebert/ponytail))                  | Inyecta un prompt de "dev sénior perezoso" → el LLM escribe código mínimo, primero YAGNI (Lite/Full/Ultra) | **Menos tokens de salida, menos refactorización**        |
 | 🎯 **Reserva inteligente de 3 niveles**                                                  | Enrutado automático: Suscripción → Económico → Gratuito                                        | Nunca dejes de programar, cero tiempos de inactividad   |
 | 📊 **Seguimiento de cuota en tiempo real**                                               | Recuento de tokens en vivo + cuenta atrás de restablecimiento                                  | Maximiza el valor de tu suscripción                     |
@@ -508,7 +507,7 @@ Sin Ponytail: código verboso, abstracciones extra, andamiaje "por si acaso"
 Con Ponytail:    diff funcional más corto, sin abstracciones no solicitadas, menos tokens
 ```
 
-Nunca sacrifica: validación de entrada, manejo de errores que evita pérdida de datos, seguridad, accesibilidad ni nada solicitado explícitamente. Actívalo en Panel de control → Endpoint → Ponytail. Se combina con Caveman (concisión de salida) y RTK (compresión de entrada).
+Nunca sacrifica: validación de entrada, manejo de errores que evita pérdida de datos, seguridad, accesibilidad ni nada solicitado explícitamente. Actívalo en Panel de control → Endpoint → Ponytail. Se combina con RTK (compresión de entrada).
 
 ### 🎯 Reserva inteligente de 3 niveles
 
@@ -1426,7 +1425,6 @@ Construido sobre los hombros de gigantes:
 
 - **[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)** — implementación original en Go que inspiró este port a JavaScript.
 - **[RTK](https://github.com/rtk-ai/rtk)** ![Stars](https://img.shields.io/github/stars/rtk-ai/rtk?style=flat&color=yellow) — ahorrador de tokens en Rust. 9Router porta su pipeline de compresión a JS → **−20-40% de tokens de entrada** en cada solicitud.
-- **[Caveman](https://github.com/JuliusBrussee/caveman)** ![Stars](https://img.shields.io/github/stars/JuliusBrussee/caveman?style=flat&color=yellow) por **[@JuliusBrussee](https://github.com/JuliusBrussee)** — viral _"why use many token when few token do trick"_. 9Router adapta su prompt → **−65% de tokens de salida**.
 - **[Ponytail](https://github.com/DietrichGebert/ponytail)** ![Stars](https://img.shields.io/github/stars/DietrichGebert/ponytail?style=flat&color=yellow) por **[@DietrichGebert](https://github.com/DietrichGebert)** — habilidad del _"dev sénior perezoso"_. 9Router inyecta su jerarquía primero-YAGNI → **menos tokens, menos código, diffs más cortos**.
 
 Un enorme agradecimiento a estos autores — sin su trabajo, las funciones de ahorro de tokens de 9Router no existirían. ¡Dales una ⭐ en GitHub!

@@ -55,9 +55,6 @@ vi.mock("../../open-sse/utils/toolDeduper.js", () => ({
   dedupeTools: vi.fn((tools) => ({ tools, stripped: [] })),
 }));
 
-vi.mock("../../open-sse/rtk/caveman.js", () => ({
-  injectCaveman: vi.fn(),
-}));
 
 vi.mock("../../open-sse/rtk/ponytail.js", () => ({
   injectPonytail: vi.fn(),
