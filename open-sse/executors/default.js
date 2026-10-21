@@ -9,6 +9,7 @@ import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
 import { filterBetaHeaders, parseRejectedBetas, splitBetas, BETA_HEADER_KEYS } from "../utils/anthropicBeta.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
+import { installEndpointOverrides } from "../handlers/chatCore/endpointOverrides.js";
 
 // Named-flag retries before the last-resort attempt with no anthropic-beta at all.
 const MAX_BETA_RETRIES = 1;
@@ -392,5 +393,8 @@ export class DefaultExecutor extends BaseExecutor {
     return null;
   }
 }
+
+// Custom endpoints' Advanced / Ultra advanced settings (no-op for other providers).
+installEndpointOverrides(DefaultExecutor);
 
 export default DefaultExecutor;

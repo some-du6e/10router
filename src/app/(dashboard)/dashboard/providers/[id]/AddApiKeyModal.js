@@ -192,6 +192,48 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
 
   if (!provider) return null;
 
+  // Custom endpoints: the mockup's keyModalBody(), key + optional name. The
+  // endpoint already knows its URL and models, so there's nothing else to ask.
+  if (isCompatible) {
+    const submitCompatible = async () => {
+      const apiKey = formData.apiKey.trim();
+      if (!apiKey || saving) return;
+      setSaving(true);
+      try {
+        await onSave({ name: formData.name.trim(), apiKey, testStatus: "unknown" });
+      } finally {
+        setSaving(false);
+      }
+    };
+    return (
+      <Modal isOpen={isOpen} title="Add key" onClose={onClose}>
+        <form className="flex flex-col gap-4" onSubmit={(e) => { e.preventDefault(); submitCompatible(); }}>
+          <Input
+            label="API key"
+            type="password"
+            icon="key"
+            value={formData.apiKey}
+            onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
+            placeholder="Paste a key"
+            ignorePasswordManagers
+            autoFocus
+          />
+          <Input
+            label={<>Name <span className="font-normal text-text-muted">(optional)</span></>}
+            value={formData.name}
+            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+            placeholder="Shown as the masked key if left blank"
+            ignorePasswordManagers
+          />
+          {error && <p role="alert" className="text-xs text-red-500 break-words">{error}</p>}
+          <Button type="submit" fullWidth disabled={saving || !formData.apiKey.trim()}>
+            {saving ? "Adding…" : "Add key"}
+          </Button>
+        </form>
+      </Modal>
+    );
+  }
+
   return (
     <Modal isOpen={isOpen} title={`Add ${providerName || provider} ${credentialLabel}`} onClose={onClose}>
       <div className="flex flex-col gap-4">

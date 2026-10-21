@@ -7,7 +7,6 @@ import { useRouter } from "next/navigation";
 import { Card, Badge } from "@/shared/components";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import { getProviderIconSrc } from "@/shared/utils/providerIcon";
-import { AAII_SCORES, AAII_INDEX_VERSION } from "@/shared/constants/providerVendors";
 
 // How many endpoint pills fit on one line before the rest collapse behind "+N".
 // The row is nowrap so a card can never grow a second line and break the grid.
@@ -81,7 +80,6 @@ export default function VendorProviderCard({ vendor, routes }) {
   const activeCount = routes.filter((r) => r.connected > 0 || r.isReady).length;
   const visible = expanded ? routes : routes.slice(0, VISIBLE_PILLS);
   const hiddenCount = routes.length - visible.length;
-  const aaii = AAII_SCORES[vendor.id];
 
   // The card navigates on click, but is not itself a <Link>: it contains the
   // endpoint pills (links) and the +N button, and nesting interactive elements
@@ -126,14 +124,6 @@ export default function VendorProviderCard({ vendor, routes }) {
                 <Link href={routes[0].href} className="truncate hover:underline">
                   {vendor.name}
                 </Link>
-                {aaii && (
-                  <span
-                    title={`Artificial Analysis Intelligence Index ${AAII_INDEX_VERSION} — ${aaii.model}`}
-                    className="shrink-0 rounded-[5px] bg-primary/15 px-1.5 py-[2px] text-[9.5px] font-bold leading-none tabular-nums text-primary"
-                  >
-                    {aaii.score}
-                  </span>
-                )}
               </h3>
               <div className="flex min-w-0 items-center gap-1.5 text-xs">
                 {activeCount > 0 ? (

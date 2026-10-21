@@ -183,7 +183,25 @@ async function getDispatcher(proxyUrl) {
   return proxyDispatchers.get(normalized);
 }
 
+// An optional observer the app installs on globalThis (the custom-endpoint
+// request log, src/lib/endpointRequestLog.ts, on runtimes whose undici lacks the
+// body diagnostics channels). Kept as a global so the engine imports nothing
+// from the app.
+const FETCH_TAP = Symbol.for("10router.fetchTap");
+
 export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
+  const tap = globalThis[FETCH_TAP];
+  const seen = tap ? tap.start(typeof url === "string" ? url : url.toString(), options) : null;
+  if (!seen) return fetchVia(url, options, proxyOptions);
+  try {
+    return seen.done(await fetchVia(url, options, proxyOptions));
+  } catch (error) {
+    seen.fail(error);
+    throw error;
+  }
+}
+
+async function fetchVia(url, options, proxyOptions) {
   const targetUrl = typeof url === "string" ? url : url.toString();
 
   // Vercel relay: forward request via relay headers

@@ -680,3 +680,33 @@ button:disabled,
     transition: none;
   }
 }
+
+/* lane: dialog-live */
+/* Add endpoint dialog (mockups/provider-setup/src/demo.css): fade-ins, the
+   drawn "It works" check, the slot machine lanes, a scroll list with no bar. */
+@keyframes ep-spin { to { transform: rotate(360deg); } }
+.ep-spin { animation: ep-spin 0.9s linear infinite; display: inline-block; }
+@keyframes ep-in { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+.ep-in { animation: ep-in 0.36s cubic-bezier(0.22, 1, 0.36, 1) both; }
+@keyframes ep-pop { from { opacity: 0; transform: scale(0.85); } to { opacity: 1; transform: none; } }
+.ep-pop { animation: ep-pop 0.28s cubic-bezier(0.22, 1, 0.36, 1) both; }
+@keyframes ep-slot-in { from { transform: translateY(22px); opacity: 0.4; } to { transform: none; opacity: 1; } }
+.ep-slot-in { animation: ep-slot-in 0.14s cubic-bezier(0.3, 0.7, 0.4, 1) both; }
+.ep-check-ring { stroke-dasharray: 60; stroke-dashoffset: 60; animation: ep-draw 0.42s cubic-bezier(0.65, 0, 0.35, 1) 0.05s forwards; }
+.ep-check-tick { stroke-dasharray: 16; stroke-dashoffset: 16; animation: ep-draw 0.26s cubic-bezier(0.65, 0, 0.35, 1) 0.38s forwards; }
+.ep-check { animation: ep-settle 0.3s cubic-bezier(0.34, 1.4, 0.64, 1) 0.6s both; }
+@keyframes ep-draw { to { stroke-dashoffset: 0; } }
+@keyframes ep-settle { 0% { transform: scale(1); } 50% { transform: scale(1.12); } 100% { transform: scale(1); } }
+.ep-noscroll { scrollbar-width: none; -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px); mask-image: linear-gradient(to bottom, transparent 0, #000 14px); }
+.ep-noscroll::-webkit-scrollbar { display: none; }
+.ep-noscroll[data-at-top] { -webkit-mask-image: none; mask-image: none; }
+@media (prefers-reduced-motion: reduce) {
+  .ep-in, .ep-pop, .ep-spin, .ep-slot-in, .ep-check, .ep-check-ring, .ep-check-tick { animation: none !important; stroke-dashoffset: 0 !important; }
+}
+
+/* lane: dialog-advanced */
+/* Endpoint page Advanced: blocks go two-up on very wide screens (mockup .demo-blocks). */
+@media (min-width: 1536px) {
+  .ep-blocks { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ep-blocks > .ep-wide { grid-column: span 2 / span 2; }
+}

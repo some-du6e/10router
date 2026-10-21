@@ -41,6 +41,7 @@ import { finalizeRoutingError } from "../services/finalRoutingError.js";
 import { detectClientTool } from "open-sse/utils/clientDetector.js";
 import { sanitizeNodeQuirks } from "@/shared/utils/nodeQuirks.js";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers.js";
+import { recordEndpointRequests } from "@/lib/endpointRequestLog.js";
 
 // ---- Types -------------------------------------------------------------------
 
@@ -372,7 +373,8 @@ async function withComboLimitHold({ run, models, body, modelStr, request, apiKey
   // that didn't ask for a stream with JSON). Narrate only when every model
   // would stream; otherwise hold silently, which is safe for either shape.
   const infos = await leafModelInfos(models, { settings: (await getSettings()) as ChatSettings, required: detectRequiredCapabilities(body) });
-  const willStream = infos.every((info) => clientReceivesStream({ body, provider: info.provider, model: info.model || "", sourceFormat, clientRawRequest }));
+  const settings = await Promise.all(infos.map((info) => nodeSettings(info.provider || "")));
+  const willStream = infos.every((info, i) => clientReceivesStream({ body, provider: info.provider, model: info.model || "", sourceFormat, clientRawRequest, credentials: settings[i] }));
   log.warn("LIMITHOLD", `combo ${modelStr}: all models rate-limited, holding`);
   return holdUntilClear({ first, attempt: pass, willStream, sourceFormat, modelStr, provider: modelStr, request });
 }
@@ -487,6 +489,14 @@ export async function saveDroppedBetas(credentials: Credentials, provider: strin
   });
 }
 
+// A custom endpoint's own settings (streaming override, model routes), shaped like
+// credentials. A limit hold decides before any account is picked, so read the node.
+async function nodeSettings(provider: string): Promise<Credentials | null> {
+  if (!isOpenAICompatibleProvider(provider) && !isAnthropicCompatibleProvider(provider)) return null;
+  const node = await getProviderNodeById(provider).catch(() => null);
+  return node ? ({ providerSpecificData: node } as unknown as Credentials) : null;
+}
+
 async function routeSingleModelChat(
   body: ChatBody,
   modelStr: string,
@@ -592,6 +602,7 @@ async function routeSingleModelChat(
   // One full pass over the available accounts. Returns a structured result so a
   // limit can be retried later by the hold, rather than being burned into a
   // Response the caller can no longer act on.
+  // The hold below needs the endpoint's settings ("Streaming: Always").
   const runAccountLoop = async (): Promise<PassResult> => {
   // Fresh per pass: a retry after the reset must reconsider every account, not
   // inherit exclusions from the pass that ran hours ago.
@@ -672,7 +683,9 @@ async function routeSingleModelChat(
     // Use shared chatCore
     const chatSettings = (await getSettings()) as ChatSettings;
     const providerThinking = (chatSettings.providerThinking || {} as Record<string, unknown>)[provider] || null;
-    const result = await handleChatCore({
+    const pxpipeTransform = chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null;
+    // Custom endpoints: keep this request for the endpoint page's "Recent requests".
+    const result = await recordEndpointRequests(provider, refreshedCredentials as Parameters<typeof recordEndpointRequests>[1], () => handleChatCore({
       body: { ...body, model: `${provider}/${model}` },
       modelInfo: { provider, model },
       credentials: refreshedCredentials,
@@ -695,7 +708,7 @@ async function routeSingleModelChat(
       pxpipeMinChars: chatSettings.pxpipeMinChars,
       pxpipeTimeoutMs: chatSettings.pxpipeTimeoutMs,
       // Lazily warms the in-process module on first use; null when not installed (fail-open)
-      pxpipeTransform: chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null,
+      pxpipeTransform,
       onPxpipeEvent: appendPxpipeEvent,
       providerThinking,
       sourceFormatOverride,
@@ -714,7 +727,7 @@ async function routeSingleModelChat(
         // "Consecutive" strikes: a success clears the breaker for this pair.
         clearAntigravityStrikes(credentials.connectionId, model);
       }
-    } as Parameters<typeof handleChatCore>[0]) as ChatCoreResult;
+    } as Parameters<typeof handleChatCore>[0])) as ChatCoreResult;
 
     if (result.success) return result;
 
@@ -819,7 +832,7 @@ async function routeSingleModelChat(
   // deepseek-tui resolves to JSON without ever setting it, and handing those an
   // SSE banner would break a request that used to return a clean error.
   const holdSourceFormat = sourceFormatOverride || detectFormat(body);
-  const willStream = clientReceivesStream({ body, provider, model, sourceFormat: holdSourceFormat, clientRawRequest });
+  const willStream = clientReceivesStream({ body, provider, model, sourceFormat: holdSourceFormat, clientRawRequest, credentials: await nodeSettings(provider) });
   return holdUntilClear({
     first,
     attempt: runAccountLoop,
