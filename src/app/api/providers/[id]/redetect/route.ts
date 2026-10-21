@@ -107,7 +107,17 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     updates.apiType = body.apiType;
   }
   if (typeof body.modelsNote === "string") updates.modelsNote = body.modelsNote.slice(0, 200);
-  const { quirks, removed } = mergeQuirks(node, { quirks: ownRoutesOnly(body.quirks, finalProtocol(node, updates.apiType)) });
+  // Switching API without a route offer (Re-detect's endpoint half): models
+  // that rode the old API implicitly keep it, as explicit routes.
+  let offered = body.quirks;
+  const oldProto = savedProtocol({ type: node.type, apiType: node.apiType });
+  const hasRoutes = !!offered && typeof offered === "object" && "modelRoutes" in (offered as object);
+  if (updates.apiType !== undefined && finalProtocol(node, updates.apiType) !== oldProto && !hasRoutes) {
+    const saved = (node.modelRoutes || {}) as Record<string, string>;
+    const mine = ((await getCustomModels()) as CustomModel[]).filter((m) => m.providerAlias === id && (m.kind || m.type || "llm") === "llm" && m.id).map((m) => m.id as string);
+    offered = { ...(offered && typeof offered === "object" ? offered : {}), modelRoutes: Object.fromEntries(mine.map((m) => [m, saved[m] || oldProto])) };
+  }
+  const { quirks, removed } = mergeQuirks(node, { quirks: ownRoutesOnly(offered, finalProtocol(node, updates.apiType)) });
   Object.assign(updates, quirks);
   const updated = (await updateProviderNode(id, updates)) as unknown as Record<string, unknown> & { baseUrl?: string; apiType?: string; prefix?: string; name?: string };
 

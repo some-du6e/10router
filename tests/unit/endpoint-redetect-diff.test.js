@@ -28,11 +28,13 @@ describe("redetectDiff", () => {
   it("splits into an endpoint check and a models check", () => {
     const r = found({ protocol: "openai-responses", baseUrl: "https://api.acme.dev/v2", models: ["a", "new"], quirks: { maxCompletionTokens: true },
       byProtocol: { "openai-responses": ["a"], anthropic: ["new"] } });
-    const ep = redetectDiff(node, ["a", "gone"], r, [], "endpoint");
+    const ep = redetectDiff(node, ["a", "gone"], r, ["a"], "endpoint");
     expect(ep).toMatchObject({ addModels: [], removeModels: [], outdatedModels: [], modelsNote: null, quirks: { maxCompletionTokens: true }, changes: 3 });
     expect(ep.protocol.to).toBe("openai-responses");
     const ms = redetectDiff(node, ["a", "gone"], r, [], "models");
     expect(ms).toMatchObject({ protocol: null, baseUrl: null, addModels: ["new"], removeModels: ["gone"] });
+    // Endpoint half alone never moves off a saved API that still answers.
+    expect(redetectDiff(node, ["a"], found({ protocol: "anthropic", protocols: ["anthropic", "openai-chat"] }), [], "endpoint").protocol).toBeNull();
     // Routes stay relative to the saved API: switching it is the endpoint check's call.
     expect(ms.quirks).toEqual({ modelRoutes: { a: "openai-responses", new: "anthropic" } });
   });

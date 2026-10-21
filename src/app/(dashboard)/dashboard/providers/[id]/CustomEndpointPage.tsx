@@ -142,6 +142,8 @@ export default function CustomEndpointPage(p: Props) {
   const proto = protoOf(node);
   const [iconOpen, setIconOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  // One check at a time: two would double the probes and race on Apply.
+  const [checking, setChecking] = useState<RedetectPart | null>(null);
 
   return (
     <div className="flex flex-col gap-8">
@@ -162,9 +164,9 @@ export default function CustomEndpointPage(p: Props) {
         </div>
       </div>
 
-      <EndpointCard {...p} proto={proto} />
+      <EndpointCard {...p} proto={proto} checking={checking} setChecking={setChecking} />
       <KeysCard {...p} />
-      <ModelsCard {...p} />
+      <ModelsCard {...p} checking={checking} setChecking={setChecking} />
       {/* Advanced (lane dialog-advanced): mounted last, as in the mockup. */}
       <EndpointAdvancedStudio node={node} onSave={p.onSaveNode} model={models[0]} detected={proto} canChangeProtocol={proto !== "anthropic"} />
 
@@ -176,12 +178,13 @@ export default function CustomEndpointPage(p: Props) {
 
 // ---- Endpoint card + Recent requests ------------------------------------------------
 
-function EndpointCard({ node, connections, models, proto, onReload, onDelete, onNodeChanged }: Props & { proto: RouteProtocol }) {
+type Checking = { checking: RedetectPart | null; setChecking: (p: RedetectPart | null) => void };
+function EndpointCard({ node, connections, models, proto, onReload, onDelete, onNodeChanged, checking, setChecking }: Props & Checking & { proto: RouteProtocol }) {
   const [log, setLog] = useState<EndpointRequestEntry[]>([]);
   const [fresh, setFresh] = useState<Set<string>>(new Set());
   const [testing, setTesting] = useState(false);
   const [testError, setTestError] = useState("");
-  const rd = useRedetect(node.id, "endpoint");
+  const rd = useRedetect(node.id, "endpoint", setChecking);
   const seen = useRef<Set<string> | null>(null);
 
   const load = useCallback(async () => {
@@ -224,7 +227,7 @@ function EndpointCard({ node, connections, models, proto, onReload, onDelete, on
           </div>
           <div className="flex flex-wrap gap-2">
             <Btn icon="send" variant="secondary" title="May cost a few tokens" busy={testing} disabled={testing || !connections.length || !models.length} onClick={test}>Send test message</Btn>
-            <Btn icon="bolt" variant="secondary" title="Re-check which API, URL and fixes it needs. Models have their own check below." busy={rd.detecting} disabled={rd.detecting} onClick={rd.run}>Re-detect</Btn>
+            <Btn icon="bolt" variant="secondary" title="Re-check which API, URL and fixes it needs. Models have their own check below." busy={rd.detecting} disabled={!!checking} onClick={rd.run}>Re-detect</Btn>
             <Btn icon="delete" variant="secondary" onClick={onDelete}>Delete</Btn>
           </div>
         </div>
@@ -280,7 +283,7 @@ function LogRow({ l, fresh }: { l: EndpointRequestEntry; fresh: boolean }) {
 
 // One run of Re-detect for one half of the page, with its live progress.
 // Leaving the page stops the run, so the server stops probing too.
-function useRedetect(nodeId: string, part: RedetectPart) {
+function useRedetect(nodeId: string, part: RedetectPart, setChecking: (p: RedetectPart | null) => void) {
   const [result, setResult] = useState<(RedetectDiff & { usedKey?: boolean }) | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [live, setLive] = useState<RedetectLive>(LIVE0);
@@ -289,15 +292,16 @@ function useRedetect(nodeId: string, part: RedetectPart) {
   const run = async () => {
     const stop = new AbortController();
     stopRef.current = stop;
-    setDetecting(true); setResult(null); setLive({ ...LIVE0, startedAt: Date.now() });
+    setDetecting(true); setChecking(part); setResult(null); setLive({ ...LIVE0, startedAt: Date.now() });
     const failed = (error: string): RedetectDiff => ({ ok: false, error, protocol: null, baseUrl: null, addModels: [], removeModels: [], outdatedModels: [], quirks: {}, modelsNote: null, changes: 0 });
     try {
       const res = await fetch(`/api/providers/${nodeId}/redetect?part=${part}`, { method: "POST", headers: { Accept: "application/x-ndjson" }, signal: stop.signal });
       setResult(await readNdjson<RedetectDiff>(res, (e) => setLive((l) => nextLive(l, e))));
     } catch { setResult(stop.signal.aborted ? null : failed("Network error")); }
-    finally { setDetecting(false); stopRef.current = null; }
+    finally { setDetecting(false); setChecking(null); stopRef.current = null; }
   };
-  return { result, detecting, live, run, stop: () => stopRef.current?.abort(), clear: () => setResult(null) };
+  const clear = useCallback(() => setResult(null), []);
+  return { result, detecting, live, run, stop: () => stopRef.current?.abort(), clear };
 }
 
 // Live progress while Re-detect runs, in plain words.
@@ -353,7 +357,7 @@ function RedetectBox({ node, part, diff, onClose, onApplied }: { node: EndpointN
     );
   }
   const q = diff.quirks;
-  const qList = [q.maxCompletionTokens && "send max_completion_tokens", q.apiKeyHeader && "send the key in an api-key header", q.modelRoutes && Object.keys(q.modelRoutes).length > 0 && "route some models to another API"].filter(Boolean) as string[];
+  const qList = [q.maxCompletionTokens && "send max_completion_tokens", q.apiKeyHeader && "send the key in an api-key header", q.modelRoutes && Object.keys(q.modelRoutes).length > 0 && "send each model to the API that answers it"].filter(Boolean) as string[];
   // Ticked rows that exist; a lone "needs a new endpoint" note has nothing to apply.
   const applicable = (pick.protocol && !!diff.protocol?.applicable) || (pick.baseUrl && !!diff.baseUrl) || (pick.add && diff.addModels.length > 0) || (pick.remove && diff.removeModels.length > 0) || (pick.outdated && diff.outdatedModels.length > 0) || (pick.quirks && qList.length > 0);
   const apply = async () => {
@@ -390,7 +394,7 @@ function RedetectBox({ node, part, diff, onClose, onApplied }: { node: EndpointN
         <span aria-hidden="true" className={`material-symbols-outlined text-[16px] ${diff.changes ? "text-brand-500" : "text-green-500"}`}>{diff.changes ? "bolt" : "check_circle"}</span>
         <div className="min-w-0 flex-1 text-xs">
           <p className="font-medium text-text-main">{diff.changes ? `Found ${diff.changes} change${diff.changes === 1 ? "" : "s"}` : "Nothing changed"}</p>
-          <p className="text-text-muted">{diff.changes ? "Pick what to apply. Free probes only, nothing was generated." : `${part === "models" ? "Same models as you have now." : part === "endpoint" ? "Same API, URL and fixes as when it was added." : "Same API, URL and models as when it was added."}${diff.usedKey === false ? " No key, so only what's public was checked." : ""}`}</p>
+          <p className="text-text-muted">{diff.changes ? "Pick what to apply. Free probes only, nothing was generated." : `${part === "models" ? "Same models as you have now." : part === "endpoint" ? "No changes to the API, URL or fixes." : "Same API, URL and models as when it was added."}${diff.usedKey === false ? " No key, so only what's public was checked." : ""}`}</p>
         </div>
         <button type="button" onClick={onClose} aria-label="Dismiss" className="material-symbols-outlined text-[16px] text-text-muted hover:text-text-main">close</button>
       </div>
@@ -484,8 +488,11 @@ function KeysCard({ connections, onAddKey, onEditKey, onDeleteKey, onToggleKey, 
 
 // ---- Models ------------------------------------------------------------------------
 
-function ModelsCard({ node, models, disabledIds, onToggleModel, onAddModel, onDeleteModel, onReload, onNodeChanged }: Props) {
-  const rd = useRedetect(node.id, "models");
+function ModelsCard({ node, models, disabledIds, onToggleModel, onAddModel, onDeleteModel, onReload, onNodeChanged, checking, setChecking }: Props & Checking) {
+  const rd = useRedetect(node.id, "models", setChecking);
+  // A result found before the API switched would route models against the old one.
+  const { clear } = rd;
+  useEffect(() => { clear(); }, [node.type, node.apiType, clear]);
   const [adding, setAdding] = useState(false);
   const [newId, setNewId] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
@@ -528,7 +535,7 @@ function ModelsCard({ node, models, disabledIds, onToggleModel, onAddModel, onDe
         <h2 className="text-lg font-semibold">Models</h2>
         <div className="flex items-center gap-3">
           <span className="text-xs text-text-muted">{node.modelsNote || "imported from /models"}</span>
-          <button type="button" onClick={rd.run} disabled={rd.detecting} aria-label="Check for new models" title="Check for new models (free checks only)" className={`material-symbols-outlined rounded p-0.5 text-[18px] text-text-muted hover:bg-surface-2 hover:text-text-main disabled:opacity-50 ${rd.detecting ? "ep-spin" : ""}`}>refresh</button>
+          <button type="button" onClick={rd.run} disabled={!!checking} aria-busy={rd.detecting} aria-label="Check for new models" title="Check for new models (free checks only)" className="flex rounded p-0.5 text-text-muted hover:bg-surface-2 hover:text-text-main disabled:opacity-50 disabled:hover:bg-transparent"><span aria-hidden="true" className={`material-symbols-outlined text-[18px] ${rd.detecting ? "ep-spin" : ""}`}>{rd.detecting ? "progress_activity" : "refresh"}</span></button>
           <button type="button" onClick={() => setAdding((v) => !v)} aria-label="Add a model by ID" title="Add a model by ID" className="material-symbols-outlined rounded p-0.5 text-[18px] text-text-muted hover:bg-surface-2 hover:text-text-main">add</button>
         </div>
       </div>
@@ -542,7 +549,7 @@ function ModelsCard({ node, models, disabledIds, onToggleModel, onAddModel, onDe
       )}
       <div className="flex flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03]">
         {models.length === 0
-          ? <p className="text-sm text-text-muted">No models yet. Check for models once the key works, or add one by ID.</p>
+          ? <p className="text-sm text-text-muted">No models yet. Once the key works, press the refresh button above to find them, or add one by ID.</p>
           : groups.size < 2
             ? models.map(row)
             : [...groups].map(([maker, g]) => (

@@ -110,7 +110,9 @@ export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: De
   if (!r.ok) return { ...empty, error: r.error || "Detection failed", keyConfirmed: r.keyConfirmed };
   const ep = part !== "models", ms = part !== "endpoint";
   const from = savedProtocol(node);
-  const to = r.protocol || from;
+  // Without per-model answers (endpoint half only) there's no evidence to move
+  // off a saved API that still answers: detection's pick is just probe order.
+  const to = part === "endpoint" && r.protocols?.includes(from) ? from : r.protocol || from;
   const switchable = to !== from && from !== "anthropic" && to !== "anthropic";
   const protocol = ep && to !== from ? { from, to, applicable: switchable } : null;
   const baseUrl = ep && r.baseUrl && trimUrl(r.baseUrl) !== trimUrl(node.baseUrl) ? { from: trimUrl(node.baseUrl), to: trimUrl(r.baseUrl) } : null;
