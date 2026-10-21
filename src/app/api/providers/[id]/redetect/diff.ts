@@ -98,7 +98,8 @@ function routesChange(node: SavedEndpoint, r: DetectResult, target: Protocol): R
   return Object.fromEntries(built.models.map((m) => [m, built.routes[m] || target]));
 }
 
-export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: DetectResult): RedetectDiff {
+// `outdated`: saved models the labs have moved on from, offered for removal too.
+export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: DetectResult, outdated: string[] = []): RedetectDiff {
   const empty: RedetectDiff = { ok: false, protocol: null, baseUrl: null, addModels: [], removeModels: [], quirks: {}, modelsNote: null, changes: 0 };
   if (!r.ok) return { ...empty, error: r.error || "Detection failed", keyConfirmed: r.keyConfirmed };
   const from = savedProtocol(node);
@@ -107,8 +108,9 @@ export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: De
   const baseUrl = r.baseUrl && trimUrl(r.baseUrl) !== trimUrl(node.baseUrl) ? { from: trimUrl(node.baseUrl), to: trimUrl(r.baseUrl) } : null;
   const found = r.models || [];
   const have = new Set(currentModels);
-  const addModels = found.filter((m) => !have.has(m));
-  const removeModels = r.modelsSource === "models" ? currentModels.filter((m) => !found.includes(m)) : [];
+  const old = new Set(outdated);
+  const removeModels = currentModels.filter((m) => old.has(m) || (r.modelsSource === "models" && !found.includes(m)));
+  const addModels = found.filter((m) => !have.has(m) && !old.has(m));
   const quirks: RedetectDiff["quirks"] = {};
   if (r.quirks?.maxCompletionTokens && !node.maxCompletionTokens) quirks.maxCompletionTokens = true;
   if (r.quirks?.apiKeyHeader && node.apiKeyHeader !== "api-key") quirks.apiKeyHeader = "api-key";

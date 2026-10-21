@@ -1,7 +1,7 @@
 // "Add endpoint" detection: URL cleanup, model-list parsing, and the free-probe
 // decision table. The Snowflake fixture mirrors real responses (2026-10-19).
 import { describe, it, expect } from "vitest";
-import { normalizeUrl, cleanKey, parseModelList, makePrefix, suggestName, detectEndpoint, discoverModels, matchCatalogProvider, majorVersion, recentLabModels, candidateModels } from "@/lib/endpointDetect.js";
+import { normalizeUrl, cleanKey, parseModelList, makePrefix, suggestName, detectEndpoint, discoverModels, matchCatalogProvider, majorVersion, recentLabModels, candidateModels, outdatedModels } from "@/lib/endpointDetect.js";
 
 // Shape of the models.dev index the catalog sync writes: providers + lab models.
 const PROVIDERS = [
@@ -119,6 +119,25 @@ describe("candidateModels", () => {
     expect(ids).toContain("claude-opus-5-5");
     expect(ids).not.toContain("openai-claude-opus-5-5");
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("leaves out old releases the gateway's catalog still lists, and tries new ones prefixed and bare", () => {
+    const labs = [...LABS,
+      { id: "claude-opus-5", lab: "anthropic", family: "claude-opus", date: "2026-07-01" },
+      { id: "claude-opus-4-5", lab: "anthropic", family: "claude-opus", date: "2025-11-24" },
+      { id: "gpt-4.1", lab: "openai", family: "gpt", date: "2025-04-14" },
+      { id: "gpt-5.5", lab: "openai", family: "gpt", date: "2026-04-23" },
+      { id: "gpt-5.4", lab: "openai", family: "gpt", date: "2026-03-05" },
+      { id: "gpt-5.2", lab: "openai", family: "gpt", date: "2025-12-11" },
+    ];
+    const catalog = { providers: [{ id: "snowflake-cortex", name: "Snowflake Cortex", api: "https://${SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/cortex/v1", models: ["claude-opus-4-5", "openai-gpt-4.1", "openai-gpt-5.5", "deepseek-r1", "mistral-large2"] }], labs };
+    const { ids } = candidateModels("https://acme.snowflakecomputing.com/api/v2/cortex/v1", catalog);
+    expect(ids).not.toContain("claude-opus-4-5");
+    expect(ids).not.toContain("openai-gpt-4.1");
+    expect(ids.slice(0, 3)).toEqual(["openai-gpt-5.5", "deepseek-r1", "mistral-large2"]); // not in the labs: kept
+    expect(ids).toEqual(expect.arrayContaining(["claude-opus-5-5", "openai-gpt-6.1-sol", "gpt-6.1-sol", "kimi-k3"]));
+    expect(ids).not.toContain("deepseek-kimi-k3"); // "deepseek-r1" is a model, not a prefix
+    expect(outdatedModels(["claude-opus-4-5", "openai-gpt-4.1", "claude-opus-5-5", "mistral-large2"], catalog)).toEqual(["claude-opus-4-5", "openai-gpt-4.1"]);
   });
 
   it("an unknown gateway still gets the latest lab models", () => {

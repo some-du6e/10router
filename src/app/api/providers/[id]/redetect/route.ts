@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { makeProbeFetch } from "@/lib/probeFetch.js";
-import { detectEndpoint, normalizeUrl } from "@/lib/endpointDetect.js";
+import { detectEndpoint, normalizeUrl, outdatedModels } from "@/lib/endpointDetect.js";
 import type { DetectProgress, DetectResult, Protocol } from "@/lib/endpointDetect.js";
 import { getEndpointCatalog } from "@/lib/endpointCatalog.js";
 import { retryAsClient } from "@/lib/endpointImpersonate.js";
@@ -59,7 +59,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       url: base, apiKey, fetchFn: savedSettingsFetch(rawFetch, node, apiKey, { identity: false }), signal,
       detect: (f) => { offset = maxN; sentBase = maxSent; return detectEndpoint({ url: base, apiKey, fetchFn: f, catalog, signal, onProgress }); },
     });
-    return { ...redetectDiff(node, current, result), steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!conn, ...(result.gate ? { gate: result.gate } : {}) };
+    return { ...redetectDiff(node, current, result, outdatedModels(current, catalog)), steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!conn, ...(result.gate ? { gate: result.gate } : {}) };
   }, { ok: false, error: "Re-detect failed", steps: [] });
 }
 

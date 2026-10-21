@@ -146,8 +146,10 @@ type Json = Record<string, unknown>;
 const PROBE_TIMEOUT_MS = 8000;
 const BODY_PREVIEW = 300;
 const PROBE_CONCURRENCY = 3;     // model probes in flight per path
-const MAX_CANDIDATES = 40;       // ids asked about per path (a matched provider's own list may go over, up to the next cap)
-const MAX_MATCHED_CANDIDATES = 80;
+const MAX_CANDIDATES = 40;       // ids asked about per path when no provider matched
+const MAX_MATCHED_CANDIDATES = 80; // a matched provider's own list, at most
+const MAX_EXTRA_CANDIDATES = 60;   // recent lab models asked about on top of a matched list
+const MODELS_PER_FAMILY = 3;     // newest releases kept per family (claude-opus: 5-5, 5, 4-8)
 const MAX_RATE_RETRIES = 3;      // per probe, on 429
 const MAX_RETRY_WAIT_MS = 10_000;
 const MAX_MODEL_PAGES = 10;      // /models pagination cap
@@ -427,10 +429,11 @@ export function dropSnapshots(ids: string[]): string[] {
   return ids.filter((id) => { const alias = snapshotAlias(id); return !alias || !set.has(alias.toLowerCase()); });
 }
 
-// The newest `gens` major versions of every model family the labs ship, and
-// only families with a release in the last `maxAgeDays`. Old generations are
-// left out on purpose: nobody adds an endpoint for them.
-export function recentLabModels(labs: CatalogLabModel[] = [], gens = 3, maxAgeDays = 365, now = Date.now()): string[] {
+// The newest `gens` major versions of every model family the labs ship, at most
+// `perFamily` releases each, and only families with a release in the last
+// `maxAgeDays`. Old generations are left out on purpose: nobody adds an
+// endpoint for them.
+export function recentLabModels(labs: CatalogLabModel[] = [], gens = 3, maxAgeDays = 365, now = Date.now(), perFamily = MODELS_PER_FAMILY): string[] {
   const cutoff = new Date(now - maxAgeDays * 864e5).toISOString().slice(0, 10);
   const kept = new Set(dropSnapshots(labs.map((m) => m.id)));
   const byFamily = new Map<string, CatalogLabModel[]>();
@@ -451,8 +454,10 @@ export function recentLabModels(labs: CatalogLabModel[] = [], gens = 3, maxAgeDa
     const decimal = new Set(versioned.map((m) => majorVersion(m.id))).size < gens;
     const gen = (m: CatalogLabModel) => majorVersion(m.id, decimal);
     const keep = [...new Set(versioned.map(gen))].sort((a, b) => b - a).slice(0, gens);
-    models.filter((m) => majorVersion(m.id) === 0 || keep.includes(gen(m)))
-      .sort((a, b) => b.date.localeCompare(a.date))
+    const versionless = models.filter((m) => majorVersion(m.id) === 0);
+    versionless.concat(versioned.filter((m) => keep.includes(gen(m)))
+      .sort((a, b) => b.date.localeCompare(a.date) || majorVersion(b.id, true) - majorVersion(a.id, true))
+      .slice(0, perFamily))
       .forEach((m) => out.push(m));
   }
   return [...new Set(out.sort((a, b) => b.date.localeCompare(a.date)).map((m) => m.id))];
@@ -460,28 +465,53 @@ export function recentLabModels(labs: CatalogLabModel[] = [], gens = 3, maxAgeDa
 
 // Gateways often prefix a vendor's ids with its name (Snowflake: "openai-gpt-5").
 // Learn the prefixes from the matched provider's own list.
+// Only a real prefix counts: "openai-gpt-5" is, "deepseek-r1" and "mistral-large2" aren't.
 function vendorPrefixes(models: string[] = []): Set<string> {
   const seen = new Set<string>();
-  for (const id of models) { const m = /^(openai|anthropic|google|meta|mistral|deepseek|xai|qwen|moonshot)-/i.exec(id); if (m) seen.add(m[1].toLowerCase()); }
+  for (const id of models) { const p = vendorPrefix(id); if (p) seen.add(p); }
   return seen;
+}
+function vendorPrefix(id: string): string | null {
+  const m = /^(openai|anthropic|google|meta|mistral|deepseek|xai|qwen|moonshot)-(.+)$/i.exec(id);
+  return m && LAB_PREFIX[m[1].toLowerCase()].test(m[2].toLowerCase()) ? m[1].toLowerCase() : null;
 }
 const LAB_PREFIX: Record<string, RegExp> = { openai: /^(gpt|o\d)/, anthropic: /^claude/, google: /^gem/, meta: /^(llama|muse)/, mistral: /^(mistral|ministral|devstral|codestral|magistral|pixtral)/, deepseek: /^deepseek/, xai: /^grok/, qwen: /^qwen/, moonshot: /^kimi/ };
 
 // Case-insensitive dedupe, first spelling wins.
 const dedupe = (ids: string[]): string[] => { const seen = new Set<string>(); return ids.filter((id) => { const k = String(id).toLowerCase(); if (!id || seen.has(k)) return false; seen.add(k); return true; }); };
 
+// True for a model the labs have moved on from: the catalog knows it (with or
+// without a gateway prefix) but it's no longer one of the recent releases.
+function outdatedTest(labs: CatalogLabModel[], recent = recentLabModels(labs)): (id: string) => boolean {
+  const current = new Set(recent.map((id) => id.toLowerCase()));
+  const known = new Set(labs.map((m) => m.id.toLowerCase()));
+  const bare = (id: string) => { const p = vendorPrefix(id); return (p ? id.slice(p.length + 1) : id).toLowerCase(); };
+  return (id) => known.has(bare(id)) && !current.has(bare(id));
+}
+export function outdatedModels(ids: string[], catalog: CatalogInput = {}): string[] {
+  const labs = Array.isArray(catalog) ? [] : catalog.labs || [];
+  if (!labs.length) return [];
+  const stale = outdatedTest(labs);
+  return ids.filter(stale);
+}
+
 // What to ask about when there's no /models: the matched provider's list first,
-// then the latest generations from every lab (under the gateway's own prefixes).
+// then the latest generations from every lab, newest first, each under the
+// gateway's own prefixes and bare. Models the labs have moved on from are left
+// out of both (catalogs keep listing claude-opus-4-5 long after 5-5 ships).
 // Capped: every id is one request per path.
 export function candidateModels(base: string, catalog: CatalogInput = {}): { matched: MatchedProvider | null; ids: string[] } {
   const providers = Array.isArray(catalog) ? catalog : catalog.providers || [];
   const matched = matchCatalogProvider(base, providers);
-  const recent = recentLabModels((catalog as Partial<EndpointCatalog>).labs || []);
+  const labs = (catalog as Partial<EndpointCatalog>).labs || [];
+  const recent = recentLabModels(labs);
+  const stale = outdatedTest(labs, recent);
   const prefixes = vendorPrefixes(matched?.models);
-  const prefixed = recent.flatMap((id) => [...prefixes].filter((p) => LAB_PREFIX[p]?.test(id)).map((p) => `${p}-${id}`));
-  const own = dedupe(dropSnapshots((matched?.models || []).filter((id) => !NON_CHAT_ID_RE.test(id))));
-  const rest = dedupe(dropSnapshots([...own, ...prefixed, ...recent])).slice(own.length);
-  const ids = dedupe([...own.slice(0, MAX_MATCHED_CANDIDATES), ...rest]).slice(0, Math.max(MAX_CANDIDATES, Math.min(own.length, MAX_MATCHED_CANDIDATES)));
+  const variants = (id: string) => [...[...prefixes].filter((p) => LAB_PREFIX[p]?.test(id)).map((p) => `${p}-${id}`), id];
+  const own = dedupe(dropSnapshots((matched?.models || []).filter((id) => !NON_CHAT_ID_RE.test(id) && !stale(id)))).slice(0, MAX_MATCHED_CANDIDATES);
+  const ownKeys = new Set(own.map((id) => id.toLowerCase()));
+  const rest = dedupe(recent.flatMap(variants)).filter((id) => !ownKeys.has(id.toLowerCase()));
+  const ids = matched ? [...own, ...rest.slice(0, MAX_EXTRA_CANDIDATES)] : rest.slice(0, MAX_CANDIDATES);
   return { matched, ids };
 }
 
@@ -1295,6 +1325,7 @@ const SITE_TIMEOUT_MS = 4000;
 const SITE_HTML_MAX = 512 * 1024;
 const ICON_MAX_BYTES = 256 * 1024;
 const ICON_MIN_PX = 32;
+const ICON_SHARP_PX = 96;   // smaller than this, try the next site root for a bigger one
 const SITE_UA = "Mozilla/5.0 (compatible; 10router endpoint setup)";
 // Titles of walls, errors and default pages: not a name.
 const JUNK_TITLE_RE = /^(just a moment|attention required|access denied|forbidden|not found|404|403|401|500|502|503|error|sign ?in|log ?in|login|welcome to nginx|nginx|apache|it works|index of|untitled|home|cloudflare|redirecting|loading)\b/i;
@@ -1419,7 +1450,7 @@ export async function fetchSiteInfo(base: string, fetchFn: SiteFetch, { signal =
     }
     return null;
   };
-  const readIcon = async (url: string): Promise<string | null> => {
+  const readIcon = async (url: string): Promise<{ url: string; px: number } | null> => {
     try {
       const r = await get(url, "image/*");
       if (!r) return null;
@@ -1431,12 +1462,13 @@ export async function fetchSiteInfo(base: string, fetchFn: SiteFetch, { signal =
       const svg = ct === "image/svg+xml" || (/^\s*(<\?xml[^>]*>\s*)?<svg\b/i.test(new TextDecoder().decode(bytes.subarray(0, 200))));
       const type = svg ? "image/svg+xml" : sniffImage(bytes);
       if (!type) return null; // not an image (an HTML 200 for a missing favicon)
-      if (!svg) { const px = imageSize(bytes); if (px !== null && px < ICON_MIN_PX) return null; }
-      return `data:${type};base64,${toBase64(bytes)}`;
+      const px = svg ? Infinity : imageSize(bytes);
+      if (px !== null && px < ICON_MIN_PX) return null;
+      return { url: `data:${type};base64,${toBase64(bytes)}`, px: px ?? ICON_MIN_PX };
     } catch { return null; }
   };
   let name: string | null = null;
-  let icon: string | null = null;
+  let icon: { url: string; px: number } | null = null;
   let host = "";
   for (const root of roots) {
     if (sig.aborted) break;
@@ -1449,17 +1481,19 @@ export async function fetchSiteInfo(base: string, fetchFn: SiteFetch, { signal =
       else if (r) discardBody(r.res);
     } catch { /* unreachable root: try the next */ }
     if (!name && info.name) { name = info.name; host ||= new URL(page).hostname.replace(/^www\./, ""); }
-    if (!icon) {
+    // A small icon (a 32px favicon on the API host) keeps looking: the bare
+    // domain usually has a sharp app icon. The biggest one found wins.
+    if (!icon || icon.px < ICON_SHARP_PX) {
       for (const cand of [...info.icons.slice(0, 3).map((i) => i.href), `${new URL(page).origin}/favicon.ico`]) {
         if (sig.aborted) break;
-        icon = await readIcon(cand);
-        if (icon) { host ||= new URL(page).hostname.replace(/^www\./, ""); break; }
+        const got = await readIcon(cand);
+        if (got && (!icon || got.px > icon.px)) { icon = got; host = new URL(page).hostname.replace(/^www\./, ""); break; }
       }
     }
-    if (name && icon) break;
+    if (name && icon && icon.px >= ICON_SHARP_PX) break;
   }
   if (!name && !icon) return null;
-  return { name, icon, host: host || new URL(roots[0]).hostname };
+  return { name, icon: icon?.url ?? null, host: host || new URL(roots[0]).hostname };
 }
 
 // ---- Test message (opt-in, ~1 token) -------------------------------------------

@@ -122,6 +122,10 @@ interface Props {
 
 const protoOf = (n: EndpointNode): RouteProtocol =>
   n.type === "anthropic-compatible" ? "anthropic" : n.apiType === "responses" ? "openai-responses" : "openai-chat";
+// The main API first, then any API some of its models are routed to (Snowflake
+// serves Claude on Messages and GPT on Chat Completions from one URL).
+const protosOf = (n: EndpointNode, main: RouteProtocol): RouteProtocol[] =>
+  [...new Set([main, ...Object.values(n.modelRoutes || {})])].filter((x): x is RouteProtocol => x in PROTO_LABEL);
 const PROTO_LABEL: Record<RouteProtocol, string> = { "openai-chat": "OpenAI · Chat Completions", "openai-responses": "OpenAI · Responses", anthropic: "Anthropic · Messages" };
 
 // ---- The page ----------------------------------------------------------------------
@@ -220,7 +224,7 @@ function EndpointCard({ node, connections, models, proto, onReload, onDelete, on
       <Card>
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
-            <div className="flex items-center gap-2"><h2 className="text-lg font-semibold">Endpoint</h2><Badge v={node.verified === false ? "warning" : "success"}>{PROTO_LABEL[proto]}</Badge></div>
+            <div className="flex flex-wrap items-center gap-2"><h2 className="text-lg font-semibold">Endpoint</h2>{protosOf(node, proto).map((pr) => <Badge key={pr} v={node.verified === false ? "warning" : "success"}>{PROTO_LABEL[pr]}</Badge>)}</div>
             <p className="mt-1 font-mono text-sm text-text-muted [overflow-wrap:anywhere]">{url.split("/").map((s, i, a) => <span key={i}>{s}{i < a.length - 1 && <>/<wbr /></>}</span>)}</p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -280,7 +284,7 @@ function LogRow({ l, fresh }: { l: EndpointRequestEntry; fresh: boolean }) {
 
 // What Re-detect found, as changes to tick and apply.
 function RedetectBox({ node, diff, onClose, onApplied }: { node: EndpointNode; diff: RedetectDiff & { usedKey?: boolean }; onClose: () => void; onApplied: (n: EndpointNode | null) => Promise<void> }) {
-  const [pick, setPick] = useState({ protocol: !!diff.protocol?.applicable, baseUrl: !!diff.baseUrl, add: !!diff.ok && diff.addModels.length > 0, remove: false, quirks: true });
+  const [pick, setPick] = useState({ protocol: !!diff.protocol?.applicable, baseUrl: !!diff.baseUrl, add: !!diff.ok && diff.addModels.length > 0, remove: !!diff.ok && diff.removeModels.length > 0, quirks: true });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   if (!diff.ok) {
@@ -340,7 +344,7 @@ function RedetectBox({ node, diff, onClose, onApplied }: { node: EndpointNode; d
             : <p className="text-xs text-text-muted">It now answers as {PROTO_LABEL[diff.protocol.to]}. Switching between OpenAI and Anthropic needs a new endpoint: add it again from Providers.</p>)}
           {diff.baseUrl && row("baseUrl", <>URL: <Code>{diff.baseUrl.from}</Code> → <Code>{diff.baseUrl.to}</Code></>)}
           {diff.addModels.length > 0 && row("add", <>Add {diff.addModels.length} new model{diff.addModels.length === 1 ? "" : "s"}{chips(diff.addModels)}</>)}
-          {diff.removeModels.length > 0 && row("remove", <>Remove {diff.removeModels.length} model{diff.removeModels.length === 1 ? "" : "s"} its /models no longer lists{chips(diff.removeModels)}</>)}
+          {diff.removeModels.length > 0 && row("remove", <>Remove {diff.removeModels.length} model{diff.removeModels.length === 1 ? "" : "s"} that {diff.removeModels.length === 1 ? "is" : "are"} outdated or no longer listed{chips(diff.removeModels)}</>)}
           {qList.length > 0 && row("quirks", <>Fixes: {qList.join(", ")}</>)}
           {err && <p role="alert" className="text-xs text-red-600 dark:text-red-400">{err}</p>}
           <div className="flex gap-2 pt-1"><Btn icon="check" busy={saving} disabled={saving || !applicable} onClick={apply}>Apply</Btn><Btn variant="ghost" onClick={onClose}>Keep as is</Btn></div>
@@ -520,15 +524,15 @@ function EditModal({ node, onClose, onSave }: { node: EndpointNode; onClose: () 
 
 function IconModal({ node, onClose, onSaved }: { node: EndpointNode; onClose: () => void; onSaved: (n: EndpointNode) => void }) {
   const [site, setSite] = useState<string | null>(node.siteIcon ?? null);
-  const [looking, setLooking] = useState(!node.siteIcon);
+  const [looking, setLooking] = useState(true);
   const [host, setHost] = useState(() => { try { return new URL(node.baseUrl || "").hostname; } catch { return node.baseUrl || ""; } });
   const [url, setUrl] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const found = site;
 
+  // Always looks again: a saved site icon may be an old 32px favicon.
   useEffect(() => {
-    if (node.siteIcon) return;
     let cancel = false;
     fetch(`/api/providers/${node.id}/redetect/icon`).then((r) => r.json()).then((d: { site?: { icon?: string | null; host?: string } | null }) => {
       if (cancel) return;
@@ -536,7 +540,7 @@ function IconModal({ node, onClose, onSaved }: { node: EndpointNode; onClose: ()
       if (d.site?.host) setHost(d.site.host);
     }).catch(() => {}).finally(() => { if (!cancel) setLooking(false); });
     return () => { cancel = true; };
-  }, [node.id, node.siteIcon]);
+  }, [node.id]);
 
   // Resolves true once the icon is saved; on failure it shows the error and resolves false.
   const save = async (patch: { icon?: string | null; tint?: string | null }): Promise<boolean> => {

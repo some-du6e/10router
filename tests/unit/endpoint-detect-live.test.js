@@ -203,6 +203,18 @@ describe("site name and icon", () => {
     expect(r.host).toBe("acme.ai");
   });
 
+  it("skips a 32px favicon on the API host for the bare domain's sharp icon", async () => {
+    const fetchFn = site({
+      "https://acme-xy1.snowcloud.com/": { body: "<title>Sign in</title>", headers: { "content-type": "text/html" } },
+      "https://acme-xy1.snowcloud.com/favicon.ico": { body: png(32), headers: { "content-type": "image/png" } },
+      "https://snowcloud.com/": { body: `<title>Snowcloud</title><link rel="apple-touch-icon" href="/touch.png">`, headers: { "content-type": "text/html" } },
+      "https://snowcloud.com/touch.png": { body: png(180), headers: { "content-type": "image/png" } },
+    });
+    const r = await fetchSiteInfo("https://acme-xy1.snowcloud.com/api/v1", fetchFn);
+    expect(r.icon).toBe(`data:image/png;base64,${Buffer.from(png(180)).toString("base64")}`);
+    expect(r.host).toBe("snowcloud.com");
+  });
+
   it("an HTML 200 for /favicon.ico is not an icon", async () => {
     const fetchFn = site({
       "https://acme.dev/": { body: "<title>Acme</title>", headers: { "content-type": "text/html" } },
