@@ -16,6 +16,7 @@ account_circle
 account_tree
 ad
 add
+add_link
 adjust
 air
 amend
@@ -38,6 +39,7 @@ asterisk
 attach_file
 attachment
 auto_awesome
+auto_fix_high
 backup
 badge
 balance
@@ -55,10 +57,12 @@ cached
 cadence
 calculate
 call
+call_split
 campaign
 cancel
 capture
 cards
+casino
 cast
 category
 change_history
@@ -79,6 +83,7 @@ cloud_queue
 cloud_sync
 cloud_upload
 code
+code_blocks
 colors
 comment
 commit
@@ -123,6 +128,7 @@ download
 downloading
 draft
 drag_indicator
+draw
 dropdown
 duo
 east
@@ -180,6 +186,7 @@ gesture
 gif
 gitlab
 glyphs
+gpp_maybe
 gradient
 graphic_eq
 grid_view
@@ -195,6 +202,7 @@ hide
 history
 home
 host
+hourglass_top
 html
 http
 https
@@ -209,6 +217,7 @@ javascript
 join
 keep
 key
+key_off
 keyboard
 keyboard_arrow_down
 keyboard_arrow_up
@@ -247,6 +256,7 @@ mic
 mimo
 mobile
 mode
+money
 monitor
 monitoring
 more
@@ -266,9 +276,9 @@ notifications
 notifications_active
 notifications_off
 numbers
+ods
 opacity
 open_in_new
-orders
 outbound
 output
 overview
@@ -318,6 +328,7 @@ psychology_alt
 public
 publish
 queue
+radio
 record_voice_over
 rectangle
 redeem
@@ -372,6 +383,7 @@ signature
 skeleton
 sleep
 smart_toy
+snowflake
 sort
 source
 spa
@@ -401,6 +413,7 @@ summarize
 support
 surfing
 surgical
+swap_horiz
 sweep
 switch
 switches
@@ -414,6 +427,7 @@ target
 task
 terminal
 text_format
+theater_comedy
 timeline
 timer
 title
@@ -431,6 +445,7 @@ translate
 travel_explore
 trip
 try
+tune
 undo
 update
 upgrade
@@ -451,8 +466,8 @@ webhook
 weight
 width
 wifi
+wifi_off
 wifi_tethering
 window
 work
 workflow
-workspaces

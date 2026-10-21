@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import PropTypes from "prop-types";
 import {
   Card,
@@ -26,8 +26,8 @@ import { useHeaderSearchStore } from "@/store/headerSearchStore";
 import {
   VENDORS,
   VENDOR_BY_ROUTE,
-  rankScore,
-  vendorRankScore,
+  rankOf,
+  CUSTOM_ENDPOINT_RANK,
 } from "@/shared/constants/providerVendors";
 import ModelAvailabilityBadge from "./components/ModelAvailabilityBadge";
 import VendorProviderCard from "./components/VendorProviderCard";
@@ -35,6 +35,7 @@ import CustomEndpointCard from "./components/CustomEndpointCard";
 import AddCompatibleModal from "./components/AddCompatibleModal";
 import AddEndpointModal from "./components/AddEndpointModal";
 import { STATUS_FILTER_OPTIONS, matchesStatusFilter } from "./utils";
+import { arrive, findArrivedCard, snapshotGrid } from "./arrive.js";
 
 function getStatusDisplay(connected, error, errorCode) {
   const parts = [];
@@ -110,20 +111,46 @@ const AUTH_FILTERS = [
   { value: "oauth", label: "OAuth" },
   { value: "apikey", label: "API Key" },
   { value: "free", label: "Free" },
+  { value: "custom", label: "Custom" },
 ];
 
-// User-added endpoints sit with the other gateways, right after OpenRouter,
-// rather than pinned to the top. Half a point below it keeps them adjacent.
-const CUSTOM_PROVIDER_SCORE = rankScore("openrouter") - 0.5;
+// What CustomEndpointCard shows beyond name and URL: verified state, site
+// icon, impersonation and beta auto-fixes, all saved on the node.
+function endpointCardFields(node) {
+  return {
+    verified: node.verified,
+    icon: node.icon,
+    iconUrl: node.iconUrl,
+    tint: node.tint,
+    mimic: node.mimic,
+    stripBeta: node.stripBeta,
+    droppedBetas: node.droppedBetas,
+    createdAt: node.createdAt,
+  };
+}
+
+// Saved custom models per endpoint id, for the "N models" pill.
+function countModels(models) {
+  const counts = {};
+  for (const m of models || []) {
+    if (m?.providerAlias && (m.type || "llm") === "llm") counts[m.providerAlias] = (counts[m.providerAlias] || 0) + 1;
+  }
+  return counts;
+}
 
 export default function ProvidersPage() {
   const [connections, setConnections] = useState([]);
   const [providerNodes, setProviderNodes] = useState([]);
+  // providerAlias -> saved model count; null until loaded.
+  const [modelCounts, setModelCounts] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showAllApikey, setShowAllApikey] = useState(false);
   // Classic is a legacy escape hatch, toggled in Settings.
   const [view, setView] = useState("vendor");
   const [showAddEndpointModal, setShowAddEndpointModal] = useState(false);
+  // A just-added endpoint waiting for its card to land: { id, before, at }.
+  const gridRef = useRef(null);
+  const arrivingRef = useRef(null);
   const [authFilter, setAuthFilter] = useState("all");
   const [connectedOnly, setConnectedOnly] = useState(false);
   const [showAddCompatibleModal, setShowAddCompatibleModal] = useState(false);
@@ -200,6 +227,17 @@ export default function ProvidersPage() {
       }
     };
     fetchData();
+  }, []);
+
+  useEffect(() => {
+    const load = () =>
+      fetch("/api/models/custom")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => d && setModelCounts(countModels(d.models)))
+        .catch(() => {});
+    load();
+    window.addEventListener("customModelChanged", load);
+    return () => window.removeEventListener("customModelChanged", load);
   }, []);
 
   const getProviderStats = (providerId, authType) => {
@@ -305,6 +343,7 @@ export default function ProvidersPage() {
       apiType: node.apiType,
       baseUrl: node.baseUrl,
       modelRoutes: node.modelRoutes,
+      ...endpointCardFields(node),
     }))
     .filter(
       (p) => matchSearch(p.name) && matchStatus(getProviderStats(p.id, "apikey")),
@@ -319,6 +358,7 @@ export default function ProvidersPage() {
       textIcon: "AC",
       baseUrl: node.baseUrl,
       modelRoutes: node.modelRoutes,
+      ...endpointCardFields(node),
     }))
     .filter(
       (p) => matchSearch(p.name) && matchStatus(getProviderStats(p.id, "apikey")),
@@ -397,7 +437,7 @@ export default function ProvidersPage() {
       return (a.name || "").localeCompare(b.name || "");
     });
   // --- "By vendor" view -----------------------------------------------------
-  // One card per real-world vendor, ranked by capability. Everything comes from
+  // One card per real-world vendor, in the user's own ranking (RANK_ORDER). Everything comes from
   // the same *_PROVIDERS maps and getProviderStats as the classic view, so the
   // two views can never disagree about connection counts.
   const allProviderEntries = {
@@ -469,7 +509,7 @@ export default function ProvidersPage() {
       key: `vendor:${vendor.id}`,
       vendor,
       routes: kept,
-      score: vendorRankScore(vendor),
+      rank: rankOf(vendor.id),
     };
   }).filter(Boolean);
 
@@ -484,14 +524,16 @@ export default function ProvidersPage() {
       kind: "single",
       key: `single:${route.id}`,
       route,
-      score: rankScore(route.id),
+      rank: rankOf(route.id),
     }));
 
   // User-added OpenAI/Anthropic-compatible endpoints. They aren't in the
-  // registry, so they can't be grouped; they rank right after OpenRouter.
+  // registry, so they can't be grouped; they land right after OpenRouter,
+  // oldest first, so a new one goes at the end of that run.
   const customCards = [...compatibleProviders, ...anthropicCompatibleProviders]
+    .sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")))
     .filter(
-      () => authFilter === "all" || authFilter === "apikey",
+      () => authFilter === "all" || authFilter === "apikey" || authFilter === "custom",
     )
     .map((info) => ({
       kind: "single",
@@ -506,16 +548,19 @@ export default function ProvidersPage() {
         isReady: false,
         ...getProviderStats(info.id, "apikey"),
       },
-      score: CUSTOM_PROVIDER_SCORE,
+      rank: CUSTOM_ENDPOINT_RANK,
     }))
     .filter((card) => !connectedOnly || card.route.connected > 0);
 
+  // Stable sort: custom endpoints keep their creation order within their slot.
   const rankedCards = [...vendorCards, ...singleCards, ...customCards].sort(
     (a, b) =>
-      b.score - a.score ||
-      (a.vendor?.name || a.route?.name || "").localeCompare(
-        b.vendor?.name || b.route?.name || "",
-      ),
+      a.rank - b.rank ||
+      (a.custom && b.custom
+        ? 0
+        : (a.vendor?.name || a.route?.name || "").localeCompare(
+            b.vendor?.name || b.route?.name || "",
+          )),
   );
 
   const isApikeySearching = !!searchQuery.trim() || statusFilter !== "all";
@@ -524,6 +569,22 @@ export default function ProvidersPage() {
       ? apikeyEntries
       : apikeyEntries.slice(0, APIKEY_INITIAL_VISIBLE);
   const hiddenApikeyCount = apikeyEntries.length - APIKEY_INITIAL_VISIBLE;
+
+  // Land a just-added endpoint once its card is in the grid. Runs before paint
+  // so the FLIP starts from the old positions. The card can show up a render
+  // late (e.g. "Connected only" waits for its key), so the wait lasts a few
+  // seconds before giving up on a card that's filtered out.
+  useLayoutEffect(() => {
+    const pending = arrivingRef.current;
+    if (!pending) return;
+    const card = findArrivedCard(gridRef.current, pending.id);
+    if (card) {
+      arrivingRef.current = null;
+      arrive(gridRef.current, card, pending.before);
+    } else if (Date.now() - pending.at > 3000) {
+      arrivingRef.current = null;
+    }
+  });
 
   if (loading) {
     return (
@@ -572,7 +633,7 @@ export default function ProvidersPage() {
             <span className="material-symbols-outlined text-[14px]">link</span>
             Connected only
           </button>
-          <Button size="sm" icon="add" onClick={() => setShowAddEndpointModal(true)}>
+          <Button icon="add_link" onClick={() => setShowAddEndpointModal(true)}>
             Add endpoint
           </Button>
         </div>
@@ -586,6 +647,7 @@ export default function ProvidersPage() {
       onClose={() => setShowAddEndpointModal(false)}
       takenPrefixes={providerNodes.map((n) => n.prefix).filter(Boolean)}
       onCreated={(node, { keyError, modelsFailed = 0, modelsTotal = 0 } = {}) => {
+        arrivingRef.current = { id: node.id, before: snapshotGrid(gridRef.current), at: Date.now() };
         // A retried save can hand back a node that's already in the list.
         setProviderNodes((prev) => (prev.some((n) => n.id === node.id) ? prev : [...prev, node]));
         setShowAddEndpointModal(false);
@@ -617,7 +679,7 @@ export default function ProvidersPage() {
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">
+          <div ref={gridRef} className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">
             {rankedCards.map((card) =>
               card.kind === "vendor" ? (
                 <VendorProviderCard
@@ -630,6 +692,7 @@ export default function ProvidersPage() {
                   key={card.key}
                   provider={card.route.info}
                   stats={card.route}
+                  modelCount={modelCounts ? modelCounts[card.route.id] || 0 : null}
                   onToggle={(active) =>
                     handleToggleProvider(card.route.id, "apikey", active)
                   }

@@ -6,25 +6,13 @@
 // and the same logo shows up in three different sections because Codex is
 // OAuth while the OpenAI API is an API key.
 //
-// VENDORS collapses those endpoints onto one card. RANK_SCORES orders the grid
-// by how capable each provider actually is rather than alphabetically.
+// VENDORS collapses those endpoints onto one card. RANK_ORDER is the order
+// the cards appear in.
 //
-// MAINTENANCE: both tables are keyed by registry id and hand-maintained. A new
-// registry entry that belongs to an existing vendor must be added to its
-// `routes` or it renders as its own card, and anything missing from
-// RANK_SCORES falls back to DEFAULT_SCORE and sorts to the bottom.
+// MAINTENANCE: both tables are hand-maintained. A new registry entry that
+// belongs to an existing vendor must be added to its `routes` or it renders as
+// its own card, and a card missing from RANK_ORDER sorts after the ranked ones.
 // `tests/unit/provider-vendors.test.js` fails on ids that no longer exist.
-
-// Peak model score per lab, Artificial Analysis Intelligence Index v4.1.1.
-// Shown as a small badge on the vendor card. Refresh when the index moves.
-export const AAII_INDEX_VERSION = "v4.1.1";
-export const AAII_SCORES = {
-  anthropic: { score: 63, model: "Claude Opus 5" },
-  openai: { score: 61, model: "GPT-5.6 Sol" },
-  xai: { score: 61, model: "Grok 4.6" },
-  moonshot: { score: 60, model: "Kimi K3" },
-  zai: { score: 60, model: "GLM-5.3" },
-};
 
 // One entry per vendor. `routes` is [registryId, shortLabel] in display order;
 // the first three fit on the card and the rest go behind a "+N" expander, so
@@ -50,46 +38,31 @@ export const VENDORS = [
   { id: "kilo", name: "Kilo", icon: "kilocode", color: "#F59E0B", routes: [["kilocode", "Kilo Code"], ["kilo-gateway", "Gateway"]] },
 ];
 
-// Higher sorts first. Frontier labs lead, ordered by AAII_SCORES; IDE and
-// subscription resellers are scored by the models they actually serve (Cursor
-// fronts Claude Opus and GPT Codex, so it outranks an open-weights-only host);
-// secondary endpoints of a vendor sit low because the card already ranks by its
-// best route.
-export const DEFAULT_SCORE = 12;
-export const RANK_SCORES = {
-  claude: 100, anthropic: 99,
-  codex: 98, openai: 97,
-  "grok-cli": 96, xai: 95,
-  kimi: 94,
-  glm: 93,
-  gemini: 92, "gemini-cli": 91, deepseek: 90, "alicode-intl": 89,
-  minimax: 88, mistral: 87, github: 86, kiro: 85, vertex: 84, azure: 83,
-  antigravity: 82, cohere: 76, nvidia: 75,
-  openrouter: 74, cursor: 73, blackbox: 72, "opencode": 71, groq: 70,
-  cerebras: 69, qoder: 68, together: 67, commandcode: 66, kilocode: 65,
-  "vercel-ai-gateway": 64, cline: 63, nebius: 62, hyperbolic: 61,
-  siliconflow: 60, chutes: 59, "cloudflare-ai": 58, huggingface: 57,
-  featherless: 55, venice: 54, tokenrouter: 53, byteplus: 52,
-  "volcengine-ark": 51, "vertex-partner": 50, ollama: 49, perplexity: 48,
-  clinepass: 47, "opencode-go": 46, "kilo-gateway": 45, "codebuddy-intl": 45,
-  "glm-cn": 44, "codebuddy-cn": 44, "minimax-cn": 43, alicode: 42,
-  "alims-intl": 41, baidu: 40, tencent: 39, kimchi: 38, "xiaomi-mimo": 37,
-  "xiaomi-tokenplan": 36, poolside: 35, morph: 34, llm7: 33, "grok-web": 32,
-  "perplexity-web": 31, "perplexity-agent": 30,
-  "api-airforce": 22, bazaarlink: 21,
-  // Self-hosted / local: useful but not ranked against hosted frontier models.
-  "ollama-local": 20, sdwebui: 20, comfyui: 20, searxng: 20, "local-device": 20,
-  "selfhosted-stt": 20, "selfhosted-tts": 20, "selfhosted-embedding": 20,
-  "edge-tts": 20,
-};
+// The user's own ranking (2026-10-18, from the "Rank vendors" picker in
+// mockups/provider-setup): labs, then gateways, coding tools, inference hosts.
+// Keys are card ids: a vendor id for a grouped card, else the registry id.
+// The second block is the "don't care" pile, by rough popularity.
+export const RANK_ORDER = [
+  "anthropic", "openai", "openrouter", "xai", "cursor", "opencode", "groq", "microsoft",
+  "zai", "cerebras", "amazon", "deepseek", "moonshot", "vercel-ai-gateway", "tokenrouter", "cloudflare-ai",
+  "nvidia", "cohere", "tencent", "google", "minimax", "bytedance", "perplexity", "alibaba",
+  "xiaomi", "mistral",
+  // "Don't care"
+  "together", "fireworks", "ollama", "cline", "kilo", "chutes", "siliconflow", "nebius",
+  "hyperbolic", "featherless", "venice", "baidu", "blackbox", "morph", "poolside", "qoder",
+  "codebuddy", "commandcode", "alitp-intl", "bazaarlink", "api-airforce", "llm7", "local-device", "searxng",
+];
+
+const RANK = new Map(RANK_ORDER.map((id, i) => [id, i]));
+
+// Position in the grid, lower first. Anything unranked goes after the list.
+export const UNRANKED = RANK_ORDER.length;
+export const rankOf = (id) => RANK.get(id) ?? UNRANKED;
+
+// User-added endpoints land with the gateways, right after OpenRouter.
+export const CUSTOM_ENDPOINT_RANK = rankOf("openrouter") + 0.5;
 
 // registryId -> vendor, for "is this endpoint already on a vendor card?"
 export const VENDOR_BY_ROUTE = Object.fromEntries(
   VENDORS.flatMap((v) => v.routes.map(([id]) => [id, v])),
 );
-
-export const rankScore = (id) => RANK_SCORES[id] ?? DEFAULT_SCORE;
-
-// A vendor card ranks by its strongest endpoint.
-export const vendorRankScore = (vendor) =>
-  Math.max(...vendor.routes.map(([id]) => rankScore(id)));
