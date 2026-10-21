@@ -129,3 +129,41 @@ describe("account selection lock", () => {
     await expect(queued).resolves.toMatchObject({ connectionId: "openai-a" });
   });
 });
+
+describe("account selection lock bookkeeping", () => {
+  it("keeps the lock map on global and empties it once picks settle", async () => {
+    const map = global._selectionMutexes;
+    expect(map).toBeInstanceOf(Map);
+    const a = getProviderCredentials("openai");
+    const b = getProviderCredentials("openai");
+    await flush();
+    expect(map.has("openai")).toBe(true);
+    release("openai");
+    await a;
+    await flush();
+    release("openai");
+    await b;
+    expect(map.has("openai")).toBe(false);
+  });
+
+  it("drops the entry after a pick throws", async () => {
+    dbMocks.getProviderConnections.mockRejectedValueOnce(new Error("db down"));
+    await expect(getProviderCredentials("anthropic")).rejects.toThrow("db down");
+    expect(global._selectionMutexes.has("anthropic")).toBe(false);
+  });
+
+  it("shares the lock with a second module instance", async () => {
+    vi.resetModules();
+    const other = await import("../../src/sse/services/auth.js");
+    const first = getProviderCredentials("openai");
+    const second = other.getProviderCredentials("openai");
+    await flush();
+    expect(gates.get("openai")).toHaveLength(1);
+    release("openai");
+    await first;
+    await flush();
+    release("openai");
+    await second;
+    expect(maxInside.get("openai")).toBe(1);
+  });
+});
