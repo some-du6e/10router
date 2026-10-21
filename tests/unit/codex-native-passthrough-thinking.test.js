@@ -51,7 +51,6 @@ async function runNativeCodexRequest(model, reasoning) {
     connectionId: "test-connection",
     rtkEnabled: false,
     headroomEnabled: false,
-    cavemanEnabled: false,
     ponytailEnabled: false,
     pxpipeEnabled: false,
     sourceFormatOverride: "openai-responses",

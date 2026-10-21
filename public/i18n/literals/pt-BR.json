@@ -1,5 +1,4 @@
 {
-  "(Caveman)": "(Caveman)",
   "(Headroom)": "(Headroom)",
   "(PXPIPE)": "(PXPIPE)",
   "(Ponytail)": "(Ponytail)",
@@ -190,7 +189,6 @@
   "Coming soon...": "Em breve...",
   "Comma-separated hostnames/domains to bypass the proxy.": "Nomes de host/domínios separados por vírgula para contornar o proxy.",
   "Company": "Empresa",
-  "Compress LLM output": "Comprimir saída do LLM",
   "Compress context": "Comprimir contexto",
   "Compress prompts and outputs to save tokens": "Comprimir prompts e saídas para economizar tokens",
   "Compress prompts as images": "Comprimir prompts como imagens",
@@ -978,7 +976,6 @@
   "Temperature": "Temperatura",
   "Terminal": "Terminal",
   "Terms of Service": "Termos de Serviço",
-  "Terse-style system prompt → ~65% fewer output tokens (up to 87%)": "Prompt de sistema conciso → ~65% menos tokens de saída (até 87%)",
   "Test Example": "Exemplo de Teste",
   "Test Results": "Resultados do Teste",
   "Test all API Key connections": "Testar todas as conexões de Chave API",

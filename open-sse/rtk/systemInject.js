@@ -1,6 +1,6 @@
 // Shared system-prompt injector: appends an instruction into the system message of
 // the final request body, dispatching by format so it works for translated and
-// native-passthrough flows. Used by caveman.js and ponytail.js.
+// native-passthrough flows. Used by ponytail.js.
 
 import { FORMATS } from "../translator/formats.js";
 import { OPENAI_BLOCK, CLAUDE_BLOCK, RESPONSES_ITEM } from "../translator/schema/blocks.js";
