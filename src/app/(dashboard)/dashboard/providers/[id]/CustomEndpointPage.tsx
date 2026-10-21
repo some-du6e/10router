@@ -17,6 +17,7 @@ import type { Mimic, NodeQuirks, RouteProtocol } from "@/shared/utils/nodeQuirks
 import type { EndpointRequestEntry } from "@/lib/endpointRequestLog.js";
 import type { RedetectDiff } from "@/app/api/providers/[id]/redetect/diff.js";
 import { prettyModel } from "../components/AddEndpointParts";
+import { shrinkIcon } from "../components/shrinkIcon.js";
 import EndpointAdvancedStudio from "../components/EndpointAdvancedStudio";
 import EndpointIcon, { TILE_BG } from "@/shared/components/EndpointIcon";
 import type { StudioExtra } from "../components/EndpointAdvancedStudio";
@@ -541,7 +542,8 @@ function IconModal({ node, onClose, onSaved }: { node: EndpointNode; onClose: ()
   const save = async (patch: { icon?: string | null; tint?: string | null }): Promise<boolean> => {
     setBusy(true); setErr("");
     try {
-      const res = await fetch(`/api/providers/${node.id}/redetect/icon`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...patch, ...(found && found !== node.siteIcon ? { siteIcon: found } : {}) }) });
+      const small = { ...patch, ...(patch.icon ? { icon: await shrinkIcon(patch.icon) } : {}), ...(found && found !== node.siteIcon ? { siteIcon: await shrinkIcon(found) } : {}) };
+      const res = await fetch(`/api/providers/${node.id}/redetect/icon`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(small) });
       const d = (await res.json().catch(() => ({}))) as { node?: EndpointNode; error?: string };
       if (!res.ok || !d.node) { setErr(d.error || "Couldn't save the icon"); return false; }
       onSaved(d.node);

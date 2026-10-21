@@ -8,6 +8,7 @@ import { isCustomEndpoint } from "@/lib/endpointRequestLog.js";
 export const dynamic = "force-dynamic";
 
 const ICON_MAX_BYTES = 256 * 1024;
+const STORED_ICON_MAX_CHARS = 96 * 1024;
 const ICON_MIN_PX = 32;
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -77,9 +78,10 @@ export async function PUT(request: Request, { params }: Ctx) {
   if (!node) return NextResponse.json({ error: "Endpoint not found" }, { status: 404 });
   let body: { icon?: unknown; siteIcon?: unknown; tint?: unknown } = {};
   try { body = await request.json(); } catch { return NextResponse.json({ error: "Bad request" }, { status: 400 }); }
-  const img = (v: unknown) => v === null || (typeof v === "string" && v.length <= ICON_MAX_BYTES * 1.4 && DATA_URL_RE.test(v));
+  // The dashboard shrinks icons to 128px first; they sit on the node, which routing reads per request.
+  const img = (v: unknown) => v === null || (typeof v === "string" && v.length <= STORED_ICON_MAX_CHARS && DATA_URL_RE.test(v));
   const updates: Record<string, unknown> = {};
-  if ("icon" in body) { if (!img(body.icon)) return NextResponse.json({ error: "Icon must be an image under 256 KB" }, { status: 400 }); updates.icon = body.icon; }
+  if ("icon" in body) { if (!img(body.icon)) return NextResponse.json({ error: "Icon too large to store; try a smaller image" }, { status: 400 }); updates.icon = body.icon; }
   if ("siteIcon" in body) { if (!img(body.siteIcon)) return NextResponse.json({ error: "Bad site icon" }, { status: 400 }); updates.siteIcon = body.siteIcon; }
   if ("tint" in body) { if (body.tint !== null && !(typeof body.tint === "string" && TINT_RE.test(body.tint))) return NextResponse.json({ error: "Bad colour" }, { status: 400 }); updates.tint = body.tint; }
   const updated = await updateProviderNode(id, updates);

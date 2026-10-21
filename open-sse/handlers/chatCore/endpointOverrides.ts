@@ -110,7 +110,7 @@ function connectionOverrides(ex: ExecutorLike, o: RawOverrides | undefined, args
   let a = args;
   if (o.proxy) a = { ...a, proxyOptions: { connectionProxyEnabled: true, connectionProxyUrl: o.proxy, connectionNoProxy: "", strictProxy: true } };
   if (o.stream === "never") a = { ...a, stream: false };
-  if (o.stream === "always") a = { ...a, stream: true };
+  // "always" is decided in chatCore (alwaysStreams), which knows whether the reply can be folded back.
   return { ex: next, args: a };
 }
 

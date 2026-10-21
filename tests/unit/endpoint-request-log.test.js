@@ -67,6 +67,8 @@ describe("endpoint request log", () => {
   it("ignores requests to other hosts and built-in providers", async () => {
     clearEndpointRequests(EP);
     await recordEndpointRequests(EP, { ...creds, providerSpecificData: { baseUrl: "https://elsewhere.example/v1" } }, () => post(""));
+    // No usable base URL: nothing to match, so nothing is logged (not every call).
+    await recordEndpointRequests(EP, { ...creds, providerSpecificData: { baseUrl: "not a url" } }, () => post(""));
     await recordEndpointRequests("anthropic", creds, () => post(""));
     await post("");
     await new Promise((r) => setTimeout(r, 20));

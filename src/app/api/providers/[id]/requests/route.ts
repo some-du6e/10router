@@ -54,7 +54,8 @@ export async function POST(request: Request, { params }: Ctx) {
     if (k) headers.Authorization = `Bearer ${k}`;
   } catch { /* no client keys: local mode */ }
   if (anthropic) headers["anthropic-version"] = "2023-06-01";
-  const port = process.env.PORT || new URL(request.url).port || UPDATER_CONFIG.appPort;
+  // Never from the request: the Host header is the caller's, and this request carries the machine token.
+  const port = process.env.PORT || UPDATER_CONFIG.appPort;
   const url = `http://127.0.0.1:${port}/api/v1/${anthropic ? "messages" : "chat/completions"}`;
   const start = Date.now();
   try {

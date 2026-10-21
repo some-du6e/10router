@@ -79,6 +79,8 @@ export function recordEndpointRequests<T>(provider: string, credentials: { apiKe
   if (!isCustomEndpoint(provider)) return fn();
   let origin = "";
   try { origin = new URL(String(credentials?.providerSpecificData?.baseUrl || "")).origin; } catch { /* keep "" */ }
+  // No host to match against: logging would catch every call the request makes.
+  if (!origin || origin === "null") return fn();
   const key = typeof credentials?.apiKey === "string" ? credentials.apiKey : "";
   return store.als.run({ provider, key, origin }, fn);
 }
@@ -161,7 +163,7 @@ function subscribe(s: Store) {
         const ctx = s.als.getStore();
         if (!ctx) return null;
         const u = new URL(url);
-        if (ctx.origin && u.origin !== ctx.origin) return null;
+        if (u.origin !== ctx.origin) return null;
         const reqBody = bodyBytes(options.body);
         const p: Pending = {
           ctx, start: Date.now(), method: (options.method || "GET").toUpperCase(), url: u.href,

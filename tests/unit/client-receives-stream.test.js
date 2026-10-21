@@ -1,6 +1,6 @@
 // What shape the client gets back, given a custom endpoint's "Streaming" override.
 import { describe, it, expect } from "vitest";
-import { clientReceivesStream } from "../../open-sse/handlers/chatCore.js";
+import { clientReceivesStream, alwaysStreams } from "../../open-sse/handlers/chatCore.js";
 
 const creds = (stream) => ({ apiKey: "sk-test-1234567890", providerSpecificData: { baseUrl: "https://gw.example.com/v1", overrides: { stream } } });
 const ask = (stream, override, provider = "openai-compatible-chat-x") => clientReceivesStream({
@@ -34,5 +34,26 @@ describe("clientReceivesStream with a streaming override", () => {
   it("ignores the override on built-in providers", () => {
     expect(ask(false, "always", "openai")).toBe(false);
     expect(ask(true, "always", "openai")).toBe(true);
+  });
+});
+
+// handleForcedSSEToJson only folds OpenAI SSE back to JSON. A Claude SSE reply
+// would come back as an empty message, so "always" must not apply there.
+describe("alwaysStreams", () => {
+  const c = (extra = {}) => ({ providerSpecificData: { baseUrl: "https://gw.example.com/v1", overrides: { stream: "always" }, ...extra } });
+  it("applies to an OpenAI upstream for an OpenAI client", () => {
+    expect(alwaysStreams("openai-compatible-chat-x", "m", "openai", c())).toBe(true);
+    expect(alwaysStreams("openai-compatible-chat-x", "m", "openai-responses", c())).toBe(true);
+  });
+  it("skips a Claude upstream", () => {
+    expect(alwaysStreams("anthropic-compatible-x", "m", "openai", c())).toBe(false);
+    expect(alwaysStreams("openai-compatible-chat-x", "claude-x", "openai", c({ modelRoutes: { "claude-x": "anthropic" } }))).toBe(false);
+  });
+  it("skips a Claude-format client", () => {
+    expect(alwaysStreams("openai-compatible-chat-x", "m", "claude", c())).toBe(false);
+  });
+  it("keeps the client's choice when it can't apply", () => {
+    const bare = { body: { model: "m", messages: [] }, provider: "anthropic-compatible-x", model: "m", sourceFormat: "openai", clientRawRequest: { headers: {} }, credentials: c() };
+    expect(clientReceivesStream(bare)).toBe(true);
   });
 });

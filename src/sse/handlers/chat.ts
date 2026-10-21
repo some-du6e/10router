@@ -373,7 +373,8 @@ async function withComboLimitHold({ run, models, body, modelStr, request, apiKey
   // that didn't ask for a stream with JSON). Narrate only when every model
   // would stream; otherwise hold silently, which is safe for either shape.
   const infos = await leafModelInfos(models, { settings: (await getSettings()) as ChatSettings, required: detectRequiredCapabilities(body) });
-  const willStream = infos.every((info) => clientReceivesStream({ body, provider: info.provider, model: info.model || "", sourceFormat, clientRawRequest }));
+  const settings = await Promise.all(infos.map((info) => nodeSettings(info.provider || "")));
+  const willStream = infos.every((info, i) => clientReceivesStream({ body, provider: info.provider, model: info.model || "", sourceFormat, clientRawRequest, credentials: settings[i] }));
   log.warn("LIMITHOLD", `combo ${modelStr}: all models rate-limited, holding`);
   return holdUntilClear({ first, attempt: pass, willStream, sourceFormat, modelStr, provider: modelStr, request });
 }
@@ -488,6 +489,14 @@ export async function saveDroppedBetas(credentials: Credentials, provider: strin
   });
 }
 
+// A custom endpoint's own settings (streaming override, model routes), shaped like
+// credentials. A limit hold decides before any account is picked, so read the node.
+async function nodeSettings(provider: string): Promise<Credentials | null> {
+  if (!isOpenAICompatibleProvider(provider) && !isAnthropicCompatibleProvider(provider)) return null;
+  const node = await getProviderNodeById(provider).catch(() => null);
+  return node ? ({ providerSpecificData: node } as unknown as Credentials) : null;
+}
+
 async function routeSingleModelChat(
   body: ChatBody,
   modelStr: string,
@@ -594,7 +603,6 @@ async function routeSingleModelChat(
   // limit can be retried later by the hold, rather than being burned into a
   // Response the caller can no longer act on.
   // The hold below needs the endpoint's settings ("Streaming: Always").
-  let lastCredentials: Credentials | null = null;
   const runAccountLoop = async (): Promise<PassResult> => {
   // Fresh per pass: a retry after the reset must reconsider every account, not
   // inherit exclusions from the pass that ran hours ago.
@@ -611,7 +619,6 @@ async function routeSingleModelChat(
     const preferredConnectionId = affinityKey ? getAffinity(affinityKey) : null;
     // connectionId is always set on a selected account (real or the "noauth" virtual one).
     const credentials = (await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId })) as (Credentials & { connectionId: string } & Record<string, any>) | null;
-    if (credentials) lastCredentials = credentials;
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
@@ -825,7 +832,7 @@ async function routeSingleModelChat(
   // deepseek-tui resolves to JSON without ever setting it, and handing those an
   // SSE banner would break a request that used to return a clean error.
   const holdSourceFormat = sourceFormatOverride || detectFormat(body);
-  const willStream = clientReceivesStream({ body, provider, model, sourceFormat: holdSourceFormat, clientRawRequest, credentials: lastCredentials });
+  const willStream = clientReceivesStream({ body, provider, model, sourceFormat: holdSourceFormat, clientRawRequest, credentials: await nodeSettings(provider) });
   return holdUntilClear({
     first,
     attempt: runAccountLoop,

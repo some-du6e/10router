@@ -15,6 +15,7 @@ import { modelsNoteFor } from "@/app/api/providers/[id]/redetect/diff.js";
 import type { Protocol, DetectStep, DetectQuirks, DetectResult, DetectProgress, ModelCheck, SiteInfo, StopReason } from "@/lib/endpointDetect.js";
 import { RESERVED_PREFIXES, PREFIX_MAX_LENGTH, isReservedPrefix, prefixFormatProblem } from "@/shared/utils/reservedPrefixes.js";
 import SlotMachine, { SlotFeed } from "./SlotMachine";
+import { shrinkIcon } from "./shrinkIcon.js";
 import EndpointAdvanced from "./EndpointAdvanced";
 import { RedFlag, mimicLabel } from "./EndpointAdvancedParts";
 import type { NodeQuirks } from "@/shared/utils/nodeQuirks.js";
@@ -475,7 +476,7 @@ function AddEndpointModal({ isOpen, onClose, onCreated, takenPrefixes = [] }: Ad
         setSavedNode(node);
         // The site icon copied during detection (a data: URL). Best effort: the
         // icon route validates it, and a failure just leaves the letter tile.
-        const icon = result?.site?.icon;
+        const icon = result?.site?.icon ? await shrinkIcon(result.site.icon) : null;
         if (icon) {
           const created = node;
           await fetch(`/api/providers/${created.id}/redetect/icon`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ icon, siteIcon: icon }) })

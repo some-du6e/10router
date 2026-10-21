@@ -62,6 +62,18 @@ export function stripContinuityFields(body) {
   return body;
 }
 
+// "Streaming: Always" only works when handleForcedSSEToJson can fold the reply back:
+// an OpenAI (Chat or Responses) upstream for an OpenAI-format client. A Claude SSE
+// reply would come back empty, so other pairs keep the client's own choice.
+export function alwaysStreams(provider, model, sourceFormat, credentials) {
+  if (streamOverride(provider, credentials) !== "always") return false;
+  const alias = PROVIDER_ID_TO_ALIAS[provider] || provider;
+  const upstream = resolveCompatibleRoute(provider, stripThinkingSuffix(getModelUpstreamId(alias, model)), credentials)?.format
+    || getTargetFormat(provider, credentials);
+  const openai = (f) => f === FORMATS.OPENAI || f === FORMATS.OPENAI_RESPONSES;
+  return openai(upstream) && openai(sourceFormat);
+}
+
 /**
  * Will the CLIENT be answered with an SSE stream?
  *
@@ -71,7 +83,7 @@ export function stripContinuityFields(body) {
  * because the rate-limit hold can only write a status banner into a response
  * that really is a stream — handing SSE to a JSON client breaks it.
  */
-export function clientReceivesStream({ body, provider, model, sourceFormat, clientRawRequest, credentials = null }) {
+export function clientReceivesStream({ body, provider, model, sourceFormat, clientRawRequest, credentials = /** @type {any} */ (null) }) {
   // What the CLIENT gets, which is not always what we ask upstream for. A
   // forceStream provider is fetched over SSE even for a JSON client, because
   // handleForcedSSEToJson converts the stream back down — so `forceStream` says
@@ -83,7 +95,7 @@ export function clientReceivesStream({ body, provider, model, sourceFormat, clie
   if (PROVIDERS[provider]?.forceStream === true && !clientRequestedStreaming) return false;
   // "Streaming: Always" on a custom endpoint acts like forceStream. "Never" still
   // replays the JSON as SSE for a streaming client, so it changes nothing here.
-  if (streamOverride(provider, credentials) === "always" && !clientRequestedStreaming) return false;
+  if (alwaysStreams(provider, model, sourceFormat, credentials) && !clientRequestedStreaming) return false;
 
   const alias = PROVIDER_ID_TO_ALIAS[provider] || provider;
   const modelType = getModelType(alias, model);
@@ -170,7 +182,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   const clientRequestedStreaming = body.stream === true || sourceFormat === FORMATS.ANTIGRAVITY || sourceFormat === FORMATS.GEMINI || sourceFormat === FORMATS.GEMINI_CLI;
   // A custom endpoint's "Streaming: Always / Never" setting.
   const streamMode = streamOverride(provider, credentials);
-  const providerRequiresStreaming = PROVIDERS[provider]?.forceStream === true || streamMode === "always";
+  const providerRequiresStreaming = PROVIDERS[provider]?.forceStream === true || (streamMode === "always" && alwaysStreams(provider, model, sourceFormat, credentials));
   // Upstream request shape — a forceStream provider is always fetched as SSE,
   // even when the client wants JSON (handleForcedSSEToJson converts it back).
   let stream = providerRequiresStreaming ? true : (body.stream !== false);
