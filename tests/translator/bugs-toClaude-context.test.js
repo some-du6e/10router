@@ -23,6 +23,35 @@ describe("OpenAI → Claude context mapping", () => {
     expect(out.system.at(-1).text).toBe("be brief");
   });
 
+  it("sends the Claude Code prompt once, as its own first block", () => {
+    const CC = "You are Claude Code, Anthropic's official CLI for Claude.";
+    const out = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, "m", {
+      messages: [{ role: "system", content: CC }, { role: "user", content: "hi" }],
+    }, true, null, "claude");
+    expect(out.system.filter((b) => b.text.includes("Claude Code"))).toHaveLength(1);
+    expect(out.system[0].text).toBe(CC);
+
+    const quoted = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, "m", {
+      messages: [{ role: "system", content: `be brief. ${CC}` }, { role: "user", content: "hi" }],
+    }, true, null, "claude");
+    expect(quoted.system[0].text).toBe(CC);
+  });
+
+  it("adds the Claude Code prompt to Claude-format requests for the Claude Code provider", () => {
+    const out = translateRequest(FORMATS.CLAUDE, FORMATS.CLAUDE, "m", {
+      system: "be brief", messages: [{ role: "user", content: "hi" }],
+    }, true, null, "claude");
+    expect(out.system[0].text).toContain("You are Claude Code");
+    expect(out.system.at(-1).text).toBe("be brief");
+  });
+
+  it("adds the Claude Code prompt for an Anthropic OAuth token on a compatible provider", () => {
+    const out = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, "m", {
+      messages: [{ role: "user", content: "hi" }],
+    }, true, { accessToken: "sk-ant-oat01-test" }, "anthropic-compatible-x");
+    expect(JSON.stringify(out.system)).toContain("You are Claude Code");
+  });
+
   it.each(["anthropic", "anthropic-compatible-x"])("does not create unsigned thinking history for %s", (provider) => {
     const body = {
       messages: [

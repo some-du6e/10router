@@ -198,6 +198,7 @@ export const SEARCH_CAPABILITY = "search";
 // Rewrite rules applied to Antigravity system prompts: competing-client branding
 // makes the backend flag the request and answer 429 Quota Exhausted.
 export const ANTIGRAVITY_PROMPT_REWRITES = [
+  { from: CLAUDE_SYSTEM_PROMPT, to: "" },
   { from: "You are a Claude agent, built on Anthropic's Claude Agent SDK.", to: "" },
   { from: /opencode/gi, to: (m) => (m === "OpenCode" ? "Antigravity" : m === "OPENCODE" ? "ANTIGRAVITY" : "antigravity") }
 ];

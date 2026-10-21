@@ -76,7 +76,7 @@ function withClaudeCodePrompt(system: unknown): SystemBlock[] {
   const blocks: SystemBlock[] = Array.isArray(system) ? system
     : typeof system === "string" && system ? [{ type: "text", text: system }]
     : [];
-  if (blocks.some((b) => b?.text?.includes(CLAUDE_SYSTEM_PROMPT))) return blocks;
+  if (blocks.some((b) => b?.text?.trim() === CLAUDE_SYSTEM_PROMPT)) return blocks;
   return [{ type: "text", text: CLAUDE_SYSTEM_PROMPT }, ...blocks];
 }
 
@@ -182,13 +182,12 @@ export function translateRequest(
     // Source translators may create Claude tool_use blocks after the initial
     // normalization pass, so validate their IDs again before repairing history.
     ensureToolCallIds(result);
-    // Claude Code OAuth expects its identity prompt as the first system block.
-    // Plain Anthropic keys and Anthropic-compatible gateways don't, so a
-    // translated request for them keeps only the client's own system prompt.
-    if (sourceFormat !== targetFormat && provider === "claude") {
+    // Anthropic OAuth tokens expect the Claude Code identity prompt as its own
+    // system block. Plain API keys and other gateways don't get it.
+    const apiKey = credentials?.accessToken || credentials?.apiKey || null;
+    if (provider === "claude" || apiKey?.includes("sk-ant-oat")) {
       result.system = withClaudeCodePrompt(result.system);
     }
-    const apiKey = credentials?.accessToken || credentials?.apiKey || null;
     result = prepareClaudeRequest(result, provider as any, apiKey as any, connectionId as any, credentials?.rawHeaders as any, clientSessionId as any);
   }
 
