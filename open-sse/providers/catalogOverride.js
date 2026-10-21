@@ -12,6 +12,8 @@ import { DATA_DIR } from "@/lib/dataDir.js";
 export const CATALOG_FILE = path.join(DATA_DIR, "model-catalog.json");
 // Trimmed upstream catalog, read by the add-models skill (not by the router).
 export const CATALOG_RAW_FILE = path.join(DATA_DIR, "model-catalog-raw.json");
+// Provider API URLs + model ids, read by "Add endpoint" for endpoints with no /models.
+export const CATALOG_ENDPOINTS_FILE = path.join(DATA_DIR, "model-catalog-endpoints.json");
 
 const EMPTY = { models: {}, providers: {} };
 let cache = EMPTY;

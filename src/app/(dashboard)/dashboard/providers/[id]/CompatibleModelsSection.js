@@ -129,7 +129,9 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
 
     setImporting(true);
     try {
-      const res = await fetch(`/api/providers/${activeConnection.id}/models`);
+      // /models when the endpoint has one; otherwise each catalog model is
+      // checked with a free request (Snowflake has no /models).
+      const res = await fetch(`/api/providers/${activeConnection.id}/discover-models`);
       const data = await res.json();
       if (!res.ok) {
         alert(data.error || "Failed to import models");
@@ -137,7 +139,7 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
       }
       const models = data.models || [];
       if (models.length === 0) {
-        alert("No models returned from /models.");
+        alert("This endpoint has no model list, and it doesn't say which model IDs it knows. Add them by hand.");
         return;
       }
       let importedCount = 0;
@@ -163,7 +165,7 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-text-muted">
-        Add {isAnthropic ? "Anthropic" : "OpenAI"}-compatible models manually or import them from the /models endpoint.
+        Add {isAnthropic ? "Anthropic" : "OpenAI"}-compatible models manually or import them. Import uses /models, or checks known models one by one when there isn&apos;t one.
       </p>
 
       <div className="flex items-end gap-2 flex-wrap">
@@ -183,7 +185,7 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
           {adding ? "Adding..." : "Add"}
         </Button>
         <Button size="sm" variant="secondary" icon="download" onClick={handleImport} disabled={!canImport || importing}>
-          {importing ? "Importing..." : "Import from /models"}
+          {importing ? "Checking models..." : "Import models"}
         </Button>
       </div>
 

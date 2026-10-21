@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
-import { deleteProviderConnectionsByProvider, deleteProviderNode, getProviderConnections, getProviderNodeById, updateProviderConnection, updateProviderNode } from "@/models";
+import { mergeQuirks, mergeConnectionData } from "@/shared/utils/nodeQuirkMerge";
+import { prefixProblem } from "@/shared/utils/reservedPrefixes";
+import { deleteProviderConnectionsByProvider, deleteProviderNode, getProviderConnections, getProviderNodeById, getProviderNodes, updateProviderConnection, updateProviderNode } from "@/models";
 
 // PUT /api/provider-nodes/[id] - Update provider node
 export async function PUT(request, { params }) {
@@ -17,8 +19,16 @@ export async function PUT(request, { params }) {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
     }
 
-    if (!prefix?.trim()) {
-      return NextResponse.json({ error: "Prefix is required" }, { status: 400 });
+    if (typeof prefix !== "string" || !prefix.trim()) {
+      return NextResponse.json({ error: "Prefix is required", field: "prefix" }, { status: 400 });
+    }
+
+    // Keeping the exact prefix it already has is always fine: older nodes may
+    // predate the format and reserved-name checks. Any other value, including a
+    // case-only change, must pass them.
+    if (prefix.trim() !== String(node.prefix || "").trim()) {
+      const problem = prefixProblem(prefix, { nodes: await getProviderNodes(), selfId: id });
+      if (problem) return NextResponse.json({ error: problem, field: "prefix" }, { status: 400 });
     }
 
     // Only validate apiType for OpenAI Compatible nodes
@@ -48,10 +58,12 @@ export async function PUT(request, { params }) {
       }
     }
 
+    const { quirks, removed } = mergeQuirks(node, body);
     const updates = {
       name: name.trim(),
       prefix: prefix.trim(),
       baseUrl: sanitizedBaseUrl,
+      ...quirks,
     };
 
     if (node.type === "openai-compatible") {
@@ -63,13 +75,16 @@ export async function PUT(request, { params }) {
     const connections = await getProviderConnections({ provider: id });
     await Promise.all(connections.map((connection) => (
       updateProviderConnection(connection.id, {
-        providerSpecificData: {
-          ...(connection.providerSpecificData || {}),
-          prefix: prefix.trim(),
-          apiType: node.type === "openai-compatible" ? apiType : undefined,
-          baseUrl: sanitizedBaseUrl,
-          nodeName: updated.name,
-        }
+        providerSpecificData: mergeConnectionData(connection.providerSpecificData || {}, updated, {
+          removed,
+          connectionFields: {
+            prefix: prefix.trim(),
+            apiType: node.type === "openai-compatible" ? apiType : undefined,
+            // A key with its own endpoint URL keeps it; only quirks follow the node.
+            baseUrl: connection.providerSpecificData?.ownBaseUrl ? connection.providerSpecificData.baseUrl : sanitizedBaseUrl,
+            nodeName: updated.name,
+          },
+        }),
       })
     )));
 

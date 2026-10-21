@@ -1,4 +1,4 @@
-import { detectFormat, getTargetFormat, resolveTransport } from "../services/provider.js";
+import { detectFormat, getTargetFormat, resolveTransport, resolveCompatibleRoute } from "../services/provider.js";
 import { translateRequest } from "../translator/index.js";
 import { applyThinking, extractThinking, stripThinkingSuffix } from "../translator/concerns/thinkingUnified.js";
 import { FORMATS } from "../translator/formats.js";
@@ -18,6 +18,8 @@ import { supportsGrokCliReasoningEffort } from "../config/grokCli.js";
 import { buildRequestDetail, extractRequestConfig } from "./chatCore/requestDetail.js";
 import { handleForcedSSEToJson } from "./chatCore/sseToJsonHandler.js";
 import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
+import { jsonReplyToSse } from "./chatCore/jsonToSse.js";
+import { SSE_HEADERS_CORS } from "../utils/sseConstants.js";
 import { handleStreamingResponse, buildOnStreamComplete } from "./chatCore/streamingHandler.js";
 import { detectClientTool, isNativePassthrough } from "../utils/clientDetector.js";
 import { dedupeTools } from "../utils/toolDeduper.js";
@@ -95,7 +97,7 @@ export function clientReceivesStream({ body, provider, model, sourceFormat, clie
   return body.stream !== false;
 }
 
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, headroomTimeoutMs, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onBetasRejected, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, headroomTimeoutMs, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -133,7 +135,10 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // differ — kimi/glm only do /chat/completions). Undeclared models keep the
   // upstream default (use the transport), preserving behavior for glm/deepseek/...
   const sourceTransport = (!modelSupportedFormats || modelSupportedFormats.includes(sourceFormat)) ? runtimeTransport : null;
-  const useTransport = sourceTransport || (modelTargetFormat ? resolveTransport(provider, modelTargetFormat) : null);
+  // Two-path custom endpoints route each model to the API that serves it best.
+  // modelRoutes holds plain ids, so drop the dashboard's "(level)" suffix first.
+  const useTransport = resolveCompatibleRoute(provider, stripThinkingSuffix(getModelUpstreamId(alias, model)), credentials)
+    || sourceTransport || (modelTargetFormat ? resolveTransport(provider, modelTargetFormat) : null);
   // A source-format-matched endpoint keeps the request lossless. Prefer it
   // over a model-level targetFormat, which is only the fallback for clients
   // whose wire format has no supported transport (for example MiniMax-M3:
@@ -194,7 +199,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Native passthrough: CLI tool and provider are the same ecosystem
   // Skip all translation/normalization — only model and Bearer are swapped
   const clientTool = detectClientTool(clientRawRequest?.headers || {}, body);
-  const passthrough = isNativePassthrough(clientTool, provider);
+  // A two-path node routes some models to its other API; those need translating.
+  const passthrough = isNativePassthrough(clientTool, provider) && (!useTransport?.compatibleRoute || targetFormat === sourceFormat);
 
   // Expose raw client headers to translators/executors for session-id resolution
   if (credentials) credentials.rawHeaders = clientRawRequest?.headers || {};
@@ -405,7 +411,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // exception: it is decoded by the executor into OpenAI-compatible output.
   let providerResponseFormat = targetFormat;
   try {
-    const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions });
+    const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onBetasRejected });
     providerResponse = result.response;
     providerUrl = result.url;
     providerHeaders = result.headers;
@@ -509,10 +515,21 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     if (result) { streamController.handleComplete(); return result; }
   }
 
-  // True non-streaming response
-  if (!stream) {
+  // True non-streaming response. Also when we wanted a stream but the upstream
+  // answered with plain JSON: a client that left `stream` out reaches us as a
+  // stream, but an upstream that defaults to JSON (Anthropic-style APIs, OpenAI
+  // when `stream` is absent) never sees that flag. Piping that JSON through the
+  // SSE transform would hand back the JSON plus a stray "data: [DONE]".
+  const upstreamType = (providerResponse.headers?.get?.("content-type") || "").toLowerCase();
+  const upstreamSentJson = upstreamType.includes("application/json") && !upstreamType.includes("text/event-stream");
+  if (!stream || upstreamSentJson) {
     const result = await handleNonStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, reqLogger, toolNameMap, customToolNames, toolNamespaces, trackDone, appendLog });
     streamController.handleComplete();
+    // The client asked to stream: replay the finished reply as its own SSE.
+    if (clientRequestedStreaming && result?.success) {
+      const replay = jsonReplyToSse(await result.response.clone().json().catch(() => null), sourceFormat);
+      if (replay) return { success: true, response: new Response(replay, { headers: SSE_HEADERS_CORS }) };
+    }
     return result;
   }
 

@@ -125,7 +125,12 @@ export function fixMissingToolResponses(body) {
 
   for (let i = 0; i < body.messages.length; i++) {
     const msg = body.messages[i];
-    const nextMsg = body.messages[i + 1];
+    // A mid-conversation system message can sit between tool_use and its
+    // result; claude-to-openai moves it after the results (other targets hoist
+    // system), so look past it.
+    let j = i + 1;
+    while (body.messages[j]?.role === "system") j++;
+    const nextMsg = body.messages[j];
 
     newMessages.push(msg);
 
@@ -134,7 +139,8 @@ export function fixMissingToolResponses(body) {
     if (toolCallIds.length === 0) continue;
 
     // Check if next message has tool_result
-    if (nextMsg && !hasToolResults(nextMsg, toolCallIds)) {
+    // Trailing system messages with nothing after them still need stubs.
+    if ((nextMsg || j > i + 1) && !(nextMsg && hasToolResults(nextMsg, toolCallIds))) {
       // Insert tool responses for each tool_call
       for (const id of toolCallIds) {
         // OpenAI format: role = "tool"

@@ -25,10 +25,38 @@ export async function GET() {
   }
 }
 
-// POST /api/models/custom - Add custom model
+const MAX_BULK = 1000;
+
+// POST /api/models/custom - Add a custom model, or many at once:
+//   { providerAlias, id, type?, name?, caps? }
+//   { providerAlias, type?, models: ["id", { id, name?, caps? }, ...] }
+// The bulk form reports per-model failures instead of stopping at the first one.
 export async function POST(request) {
   try {
-    const { providerAlias, id, type, name, caps } = await request.json();
+    const body = await request.json();
+    const { providerAlias, type } = body;
+    if (Array.isArray(body.models)) {
+      if (!providerAlias) return NextResponse.json({ error: "providerAlias required" }, { status: 400 });
+      if (body.models.length > MAX_BULK) return NextResponse.json({ error: `At most ${MAX_BULK} models at once` }, { status: 400 });
+      const added = [];
+      const failed = [];
+      for (const m of body.models) {
+        const entry = typeof m === "string" ? { id: m } : (m && typeof m === "object" ? m : {});
+        const id = typeof entry.id === "string" ? entry.id.trim() : "";
+        if (!id) { failed.push({ id: entry.id ?? null, error: "id required" }); continue; }
+        try {
+          const cleanCaps = sanitizeCaps(entry.caps);
+          await addCustomModel({ providerAlias, id, type: type || "llm", name: entry.name, ...(cleanCaps ? { caps: cleanCaps } : {}) });
+          added.push(id);
+        } catch (error) {
+          console.log("Error adding custom model:", error);
+          failed.push({ id, error: "Failed to save" });
+        }
+      }
+      return NextResponse.json({ success: failed.length === 0, added, failed }, { status: added.length || !failed.length ? 200 : 500 });
+    }
+
+    const { id, name, caps } = body;
     if (!providerAlias || !id) {
       return NextResponse.json({ error: "providerAlias and id required" }, { status: 400 });
     }

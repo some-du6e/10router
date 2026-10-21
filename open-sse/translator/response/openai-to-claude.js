@@ -1,7 +1,7 @@
 import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
-import { ROLE, CLAUDE_BLOCK, MODEL_FALLBACK } from "../schema/index.js";
-import { fromOpenAIFinish } from "../concerns/finishReason.js";
+import { ROLE, CLAUDE_BLOCK, MODEL_FALLBACK, OPENAI_FINISH } from "../schema/index.js";
+import { fromOpenAIFinish, inferToolUseFinish } from "../concerns/finishReason.js";
 import { extractReasoningText } from "../concerns/reasoning.js";
 
 // Legacy "proxy_" prefix used by older request translators. Response strips it
@@ -67,8 +67,71 @@ function stopTextBlock(state, results) {
   state.textBlockStarted = false;
 }
 
+// Close open blocks and emit message_delta + message_stop. Shared by a real
+// finish_reason and by end-of-stream when the upstream never sent one.
+function finishMessage(state, results, reason) {
+  stopThinkingBlock(state, results);
+  stopTextBlock(state, results);
+
+  for (const [idx, toolInfo] of state.toolCalls) {
+    // Emit buffered + sanitized args as single delta before stop
+    const buffered = state.toolArgBuffers?.get(idx);
+    if (buffered) {
+      const sanitized = sanitizeToolArgs(toolInfo.name, buffered);
+      results.push({
+        type: "content_block_delta",
+        index: toolInfo.blockIndex,
+        delta: { type: "input_json_delta", partial_json: sanitized }
+      });
+    }
+    results.push({
+      type: "content_block_stop",
+      index: toolInfo.blockIndex
+    });
+  }
+
+  // Gateways that end tool-call turns with "stop" or no finish_reason still
+  // mean tool_use; "length" stays max_tokens (the call may be cut off).
+  const finish = inferToolUseFinish(reason, state.toolCalls.size > 0) || OPENAI_FINISH.STOP;
+  const stopReason = convertFinishReason(finish);
+
+  // Mark finish for later usage injection in stream.js
+  state.finishReason = finish;
+  state.messageStopSent = true;
+
+  // Use tracked usage (will be estimated in stream.js if not valid)
+  const finalUsage = state.usage || { input_tokens: 0, output_tokens: 0 };
+  results.push({
+    type: "message_delta",
+    delta: { stop_reason: stopReason },
+    usage: finalUsage
+  });
+  results.push({ type: "message_stop" });
+}
+
+// Key for a streamed tool call. Some gateways omit `index` on parallel calls;
+// then a new id starts a new call and id-less arg chunks go to the latest one.
+function toolCallKey(state, tc) {
+  if (tc.index != null) return tc.index;
+  if (tc.id) {
+    const key = `id:${tc.id}`;
+    if (!state.toolCalls.has(key)) state.lastToolCallKey = key;
+    return key;
+  }
+  return state.lastToolCallKey ?? 0;
+}
+
 // Convert OpenAI stream chunk to Claude format
 export function openaiToClaudeResponse(chunk, state) {
+  // End of stream (flush). If the upstream ended cleanly ([DONE]) without ever
+  // sending finish_reason, finish the message here. A stream cut off before
+  // [DONE] stays unfinished, so a partial reply doesn't look complete.
+  if (chunk === null) {
+    if (!state?.messageStartSent || state.messageStopSent || !state.upstreamDone) return null;
+    const results = [];
+    finishMessage(state, results, state.finishReason || "");
+    return results;
+  }
   if (!chunk || !chunk.choices?.[0]) return null;
 
   const results = [];
@@ -182,7 +245,7 @@ export function openaiToClaudeResponse(chunk, state) {
   // Tool calls
   if (delta?.tool_calls) {
     for (const tc of delta.tool_calls) {
-      const idx = tc.index ?? 0;
+      const idx = toolCallKey(state, tc);
 
       // GLM/fireworks repeats id+null-name on every arg chunk; open block once per idx
       if (tc.id && !state.toolCalls.has(idx)) {
@@ -222,44 +285,14 @@ export function openaiToClaudeResponse(chunk, state) {
   }
 
   // Finish
-  if (choice.finish_reason) {
-    stopThinkingBlock(state, results);
-    stopTextBlock(state, results);
-
-    for (const [idx, toolInfo] of state.toolCalls) {
-      // Emit buffered + sanitized args as single delta before stop
-      const buffered = state.toolArgBuffers?.get(idx);
-      if (buffered) {
-        const sanitized = sanitizeToolArgs(toolInfo.name, buffered);
-        results.push({
-          type: "content_block_delta",
-          index: toolInfo.blockIndex,
-          delta: { type: "input_json_delta", partial_json: sanitized }
-        });
-      }
-      results.push({
-        type: "content_block_stop",
-        index: toolInfo.blockIndex
-      });
-    }
-
-    // Mark finish for later usage injection in stream.js
-    state.finishReason = choice.finish_reason;
-
-    // Use tracked usage (will be estimated in stream.js if not valid)
-    const finalUsage = state.usage || { input_tokens: 0, output_tokens: 0 };
-    results.push({
-      type: "message_delta",
-      delta: { stop_reason: convertFinishReason(choice.finish_reason) },
-      usage: finalUsage
-    });
-    results.push({ type: "message_stop" });
+  if (choice.finish_reason && !state.messageStopSent) {
+    finishMessage(state, results, choice.finish_reason);
   }
 
   return results.length > 0 ? results : null;
 }
 
-const convertFinishReason = (reason) => fromOpenAIFinish(reason, "claude");
+const convertFinishReason = (reason) => fromOpenAIFinish(reason, FORMATS.CLAUDE);
 
 // Register
 register(FORMATS.OPENAI, FORMATS.CLAUDE, null, openaiToClaudeResponse);

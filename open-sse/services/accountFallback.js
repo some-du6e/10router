@@ -49,6 +49,28 @@ export function checkFallbackError(status, errorText, backoffLevel = 0) {
   return { shouldFallback: true, cooldownMs: TRANSIENT_COOLDOWN_MS };
 }
 
+// Statuses that describe the request, not the account: a different key sees the
+// same body, so locking the key only takes the whole pool down. Text rules (rate
+// limit, quota, ...) still win, since some gateways send those as 400.
+const REQUEST_ERROR_STATUSES = new Set([400, 404, 422]);
+// ...except errors about the account some upstreams send as 400: a bad key
+// (Gemini: "API key not valid", API_KEY_INVALID) or no money left (Anthropic:
+// "Your credit balance is too low"; Cursor usage limits). Those still lock.
+const BAD_KEY_TEXTS = [
+  "api key not valid", "api_key_invalid", "invalid api key", "invalid_api_key", "invalid x-api-key",
+  "credit balance", "insufficient_quota", "insufficient balance", "billing_hard_limit_reached",
+  "billing account", "billing details", "usage limit reached", "usage limit exceeded",
+];
+
+export function isRequestError(status, errorText) {
+  if (!REQUEST_ERROR_STATUSES.has(status)) return false;
+  const lowerError = errorText
+    ? (typeof errorText === "string" ? errorText : JSON.stringify(errorText)).toLowerCase()
+    : "";
+  if (BAD_KEY_TEXTS.some((t) => lowerError.includes(t))) return false;
+  return !ERROR_RULES.some((rule) => rule.text && lowerError.includes(rule.text));
+}
+
 /**
  * Check if account is currently unavailable (cooldown not expired)
  */

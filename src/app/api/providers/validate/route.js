@@ -8,6 +8,23 @@ import { resolveQoderCredentials, resolveQoderModels } from "open-sse/services/q
 import { normalizeProviderId } from "@/lib/providerNormalization";
 import { generateSessionId } from "open-sse/utils/opencodeSession.js";
 import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
+import { resolveKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
+import { isLocalRequest } from "@/dashboardGuard";
+import { makeProbeFetch } from "@/lib/probeFetch.js";
+
+// A compatible key may bring its own endpoint URL (another account or region);
+// check it there, with the same SSRF rules as saving it. The result carries the
+// fetch to probe it with: for a remote caller's own URL, the probe fetch pins
+// DNS to the checked addresses and won't follow redirects off-origin, so the
+// key can't be bounced to an internal host after the check.
+async function compatibleBaseUrl(request, body, node) {
+  const plainFetch = (url, init) => fetch(url, init);
+  if (typeof body.baseUrl !== "string" || !body.baseUrl.trim()) return { ok: true, baseUrl: node.baseUrl, fetch: plainFetch };
+  const remote = !isLocalRequest(request);
+  const keyUrl = await resolveKeyBaseUrl(body.baseUrl, node.baseUrl, { remote });
+  if (!keyUrl.ok) return keyUrl;
+  return { ...keyUrl, fetch: keyUrl.own && remote ? makeProbeFetch(true) : plainFetch };
+}
 
 // Probe a webSearch/webFetch provider using its searchConfig/fetchConfig.
 // Returns true if API key is accepted (status !== 401 && !== 403).
@@ -124,8 +141,10 @@ export async function POST(request) {
         if (!node) {
           return NextResponse.json({ error: "OpenAI Compatible node not found" }, { status: 404 });
         }
-        const modelsUrl = `${node.baseUrl?.replace(/\/$/, "")}/models`;
-        const res = await fetch(modelsUrl, {
+        const keyUrl = await compatibleBaseUrl(request, body, node);
+        if (!keyUrl.ok) return NextResponse.json({ valid: false, error: keyUrl.error }, { status: 400 });
+        const modelsUrl = `${keyUrl.baseUrl?.replace(/\/$/, "")}/models`;
+        const res = await keyUrl.fetch(modelsUrl, {
           headers: { "Authorization": `Bearer ${apiKey}` },
         });
         isValid = res.ok;
@@ -172,7 +191,9 @@ export async function POST(request) {
           return NextResponse.json({ error: "Anthropic Compatible node not found" }, { status: 404 });
         }
 
-        let normalizedBase = node.baseUrl?.trim().replace(/\/$/, "") || "";
+        const keyUrl = await compatibleBaseUrl(request, body, node);
+        if (!keyUrl.ok) return NextResponse.json({ valid: false, error: keyUrl.error }, { status: 400 });
+        let normalizedBase = keyUrl.baseUrl?.trim().replace(/\/$/, "") || "";
         if (normalizedBase.endsWith("/messages")) {
           normalizedBase = normalizedBase.slice(0, -9); // remove /messages
         }
@@ -180,7 +201,7 @@ export async function POST(request) {
         const messagesUrl = `${normalizedBase}/v1/messages`;
         const model = node.defaultModel || "claude-3-haiku-20240307";
 
-        const res = await fetch(messagesUrl, {
+        const res = await keyUrl.fetch(messagesUrl, {
           method: "POST",
           headers: {
             "x-api-key": apiKey,

@@ -8,7 +8,6 @@ import {
   Badge,
   Button,
   Toggle,
-  SegmentedControl,
 } from "@/shared/components";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import { getProviderIconSrc } from "@/shared/utils/providerIcon";
@@ -33,6 +32,7 @@ import {
 import ModelAvailabilityBadge from "./components/ModelAvailabilityBadge";
 import VendorProviderCard from "./components/VendorProviderCard";
 import AddCompatibleModal from "./components/AddCompatibleModal";
+import AddEndpointModal from "./components/AddEndpointModal";
 import { STATUS_FILTER_OPTIONS, matchesStatusFilter } from "./utils";
 
 function getStatusDisplay(connected, error, errorCode) {
@@ -104,11 +104,6 @@ function getConnectionErrorTag(connection) {
 
 const APIKEY_INITIAL_VISIBLE = 20;
 
-const VIEW_OPTIONS = [
-  { value: "vendor", label: "By vendor", icon: "workspaces" },
-  { value: "classic", label: "Classic", icon: "grid_view" },
-];
-
 const AUTH_FILTERS = [
   { value: "all", label: "All" },
   { value: "oauth", label: "OAuth" },
@@ -116,15 +111,18 @@ const AUTH_FILTERS = [
   { value: "free", label: "Free" },
 ];
 
-// Endpoints the user added themselves outrank anything we shipped a score for.
-const CUSTOM_PROVIDER_SCORE = 1000;
+// User-added endpoints sit with the other gateways, right after OpenRouter,
+// rather than pinned to the top. Half a point below it keeps them adjacent.
+const CUSTOM_PROVIDER_SCORE = rankScore("openrouter") - 0.5;
 
 export default function ProvidersPage() {
   const [connections, setConnections] = useState([]);
   const [providerNodes, setProviderNodes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAllApikey, setShowAllApikey] = useState(false);
+  // Classic is a legacy escape hatch, toggled in Settings.
   const [view, setView] = useState("vendor");
+  const [showAddEndpointModal, setShowAddEndpointModal] = useState(false);
   const [authFilter, setAuthFilter] = useState("all");
   const [connectedOnly, setConnectedOnly] = useState(false);
   const [showAddCompatibleModal, setShowAddCompatibleModal] = useState(false);
@@ -174,6 +172,13 @@ export default function ProvidersPage() {
       if (ca !== cb) return cb - ca;
       return (a.name || "").localeCompare(b.name || "");
     });
+
+  useEffect(() => {
+    fetch("/api/settings")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((s) => { if (s?.legacyProvidersView === true) setView("classic"); })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -478,8 +483,7 @@ export default function ProvidersPage() {
     }));
 
   // User-added OpenAI/Anthropic-compatible endpoints. They aren't in the
-  // registry, so they can't be ranked or grouped — but they are the user's own
-  // providers, so they sort to the top rather than being dropped from the view.
+  // registry, so they can't be grouped; they rank right after OpenRouter.
   const customCards = [...compatibleProviders, ...anthropicCompatibleProviders]
     .filter(
       () => authFilter === "all" || authFilter === "apikey",
@@ -534,13 +538,6 @@ export default function ProvidersPage() {
 
   const viewTabs = (
     <div className="flex min-w-0 flex-col gap-3">
-      <SegmentedControl
-        size="sm"
-        options={VIEW_OPTIONS}
-        value={view}
-        onChange={setView}
-        className="w-max max-w-full"
-      />
       {view === "vendor" && (
         <div className="flex flex-wrap items-center gap-2">
           {AUTH_FILTERS.map((f) => (
@@ -569,14 +566,40 @@ export default function ProvidersPage() {
             <span className="material-symbols-outlined text-[14px]">link</span>
             Connected only
           </button>
+          <Button size="sm" icon="add" onClick={() => setShowAddEndpointModal(true)}>
+            Add endpoint
+          </Button>
         </div>
       )}
     </div>
   );
 
+  const addEndpointModal = (
+    <AddEndpointModal
+      isOpen={showAddEndpointModal}
+      onClose={() => setShowAddEndpointModal(false)}
+      takenPrefixes={providerNodes.map((n) => n.prefix).filter(Boolean)}
+      onCreated={(node, { keyError, modelsFailed = 0, modelsTotal = 0 } = {}) => {
+        // A retried save can hand back a node that's already in the list.
+        setProviderNodes((prev) => (prev.some((n) => n.id === node.id) ? prev : [...prev, node]));
+        setShowAddEndpointModal(false);
+        // Pick up the key the modal just created so the card shows it connected.
+        fetch("/api/providers").then((r) => r.json()).then((d) => d.connections && setConnections(d.connections)).catch(() => {});
+        const problems = [
+          keyError && `its key wasn't saved (${keyError})`,
+          modelsFailed > 0 && `${modelsFailed} of ${modelsTotal} model${modelsTotal === 1 ? "" : "s"} weren't saved`,
+        ].filter(Boolean);
+        if (problems.length) notify.warning(`${node.name} added, but ${problems.join(" and ")}. Fix it on the endpoint page.`);
+        else notify.success(`${node.name} added`);
+      }}
+    />
+  );
+
   if (view === "vendor") {
     return (
-      <div className="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
+      // Halve the layout's lg:p-10 top padding on this page only.
+      <div className="flex min-w-0 flex-col gap-6 px-1 sm:px-0 lg:-mt-5">
+        {addEndpointModal}
         {viewTabs}
         {rankedCards.length === 0 ? (
           <div className="text-center py-8 border border-dashed border-border rounded-xl">
@@ -623,6 +646,7 @@ export default function ProvidersPage() {
 
   return (
     <div className="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
+      {addEndpointModal}
       {viewTabs}
       <div className="flex items-center justify-end">
         <select
@@ -659,6 +683,15 @@ export default function ProvidersPage() {
           <div className="grid grid-cols-1 gap-2 sm:flex sm:w-auto">
             <Button
               size="sm"
+              icon="bolt"
+              onClick={() => setShowAddEndpointModal(true)}
+              className="w-full sm:w-auto"
+            >
+              Add endpoint
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
               icon="add"
               onClick={() => setShowAddAnthropicCompatibleModal(true)}
               className="w-full sm:w-auto"
@@ -886,7 +919,8 @@ export default function ProvidersPage() {
         isOpen={showAddCompatibleModal}
         onClose={() => setShowAddCompatibleModal(false)}
         onCreated={(node) => {
-          setProviderNodes((prev) => [...prev, node]);
+          // POST hands back the existing node for a duplicate save.
+          setProviderNodes((prev) => (prev.some((n) => n.id === node.id) ? prev : [...prev, node]));
           setShowAddCompatibleModal(false);
         }}
       />
@@ -895,7 +929,8 @@ export default function ProvidersPage() {
         isOpen={showAddAnthropicCompatibleModal}
         onClose={() => setShowAddAnthropicCompatibleModal(false)}
         onCreated={(node) => {
-          setProviderNodes((prev) => [...prev, node]);
+          // POST hands back the existing node for a duplicate save.
+          setProviderNodes((prev) => (prev.some((n) => n.id === node.id) ? prev : [...prev, node]));
           setShowAddAnthropicCompatibleModal(false);
         }}
       />

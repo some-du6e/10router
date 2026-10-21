@@ -21,6 +21,7 @@ import CompatibleModelsSection from "./CompatibleModelsSection";
 import ConnectionRow from "./ConnectionRow";
 import AddApiKeyModal from "./AddApiKeyModal";
 import EditCompatibleNodeModal from "./EditCompatibleNodeModal";
+import EndpointQuirksCard from "./EndpointQuirksCard";
 import AddCustomModelModal from "./AddCustomModelModal";
 import BulkImportCodexModal from "./BulkImportCodexModal";
 import BulkImportGrokCliModal from "./BulkImportGrokCliModal";
@@ -359,21 +360,25 @@ export default function ProviderDetailPage() {
     }
   }, [providerId, isCompatible]);
 
-  const handleUpdateNode = async (formData) => {
+  const handleUpdateNode = async (formData, { keepModalOpen = false } = {}) => {
     try {
       const res = await fetch(`/api/provider-nodes/${providerId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(formData),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
         setProviderNode(data.node);
         await fetchConnections();
-        setShowEditNodeModal(false);
+        if (!keepModalOpen) setShowEditNodeModal(false);
+      } else {
+        // e.g. a prefix that belongs to a built-in provider.
+        alert(data.error || "Couldn't save the endpoint.");
       }
     } catch (error) {
       console.log("Error updating provider node:", error);
+      alert("Couldn't save the endpoint: network error.");
     }
   };
 
@@ -840,9 +845,13 @@ export default function ProviderDetailPage() {
       if (res.ok) {
         await fetchConnections();
         setShowEditModal(false);
+        return null;
       }
+      const data = await res.json().catch(() => null);
+      return { error: data?.error || "Failed to save connection" };
     } catch (error) {
       console.log("Error updating connection:", error);
+      return { error: "Failed to save connection" };
     }
   };
 
@@ -1461,6 +1470,22 @@ export default function ProviderDetailPage() {
         </Card>
       )}
 
+      {isCompatible && providerNode && (
+        <EndpointQuirksCard
+          node={providerNode}
+          isAnthropic={isAnthropicCompatible}
+          onSave={(quirks, extra = {}) => handleUpdateNode({
+            name: providerNode.name,
+            prefix: providerNode.prefix,
+            apiType: providerNode.apiType,
+            baseUrl: providerNode.baseUrl,
+            // Only the changed keys; the server merges them into the stored ones.
+            quirks,
+            ...extra,
+          }, { keepModalOpen: true })}
+        />
+      )}
+
       {/* Connections */}
       {isFreeNoAuth ? (
         <NoAuthProxyCard providerId={providerId} />
@@ -1792,6 +1817,7 @@ export default function ProviderDetailPage() {
         providerName={providerInfo.name}
         isCompatible={isCompatible}
         isAnthropic={isAnthropicCompatible}
+        nodeBaseUrl={providerNode?.baseUrl}
         authType={providerInfo?.authType}
         authHint={providerInfo?.authHint}
         website={providerInfo?.website}
@@ -1808,6 +1834,7 @@ export default function ProviderDetailPage() {
       <EditConnectionModal
         isOpen={showEditModal}
         connection={selectedConnection}
+        nodeBaseUrl={isCompatible ? providerNode?.baseUrl : undefined}
         proxyPools={proxyPools}
         onSave={handleUpdateConnection}
         onClose={() => setShowEditModal(false)}

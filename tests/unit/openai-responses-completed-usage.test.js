@@ -200,7 +200,8 @@ describe("Responses response.completed reports token usage", () => {
       expect(parseEvents(output).filter((e) => e.event === "response.completed")).toHaveLength(1);
     } finally {
       clearTimeout(timer);
-      upstream.close();
+      // [DONE] ends the stream and cancels the upstream, so it may be closed already.
+      try { upstream.close(); } catch { /* already cancelled */ }
       await reader.cancel();
     }
   });

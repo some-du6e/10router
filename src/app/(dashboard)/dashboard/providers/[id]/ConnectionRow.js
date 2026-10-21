@@ -41,6 +41,11 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
     }
   }
 
+  // A key with its own endpoint URL shows that host, to tell the endpoints apart.
+  const ownEndpointHost = (() => {
+    if (!connection.providerSpecificData?.ownBaseUrl) return null;
+    try { return new URL(connection.providerSpecificData.baseUrl).host; } catch { return null; }
+  })();
   const noProxyText = boundProxyPool?.noProxy || connection.providerSpecificData?.connectionNoProxy || "";
 
   let proxyBadgeVariant = "default";
@@ -195,6 +200,11 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
             {connection.lastError && connection.isActive !== false && (
               <span className="max-w-full truncate text-xs text-red-500 sm:max-w-[300px]" title={connection.lastError}>
                 {connection.lastError}
+              </span>
+            )}
+            {ownEndpointHost && (
+              <span className="max-w-full truncate text-[11px] text-text-muted sm:max-w-[260px]" title={connection.providerSpecificData.baseUrl}>
+                {ownEndpointHost}
               </span>
             )}
             <span className="text-xs text-text-muted">#{connection.priority}</span>

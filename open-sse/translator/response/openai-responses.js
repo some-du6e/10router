@@ -530,8 +530,10 @@ function computeFinishReason(state) {
  */
 export function openaiResponsesToOpenAIResponse(chunk, state) {
   if (!chunk) {
-    // Flush: send final chunk with finish_reason
-    if (state.finishReasonSent || !state.started) return null;
+    // Flush: send final chunk with finish_reason, but only after a clean end
+    // ([DONE]). A stream cut off before response.completed stays unfinished,
+    // so a half-written tool call isn't passed off as a finished turn.
+    if (state.finishReasonSent || !state.started || !state.upstreamDone) return null;
 
     const finishReason = computeFinishReason(state);
 
@@ -649,6 +651,27 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
       return finalChunk;
     }
     return null;
+  }
+
+  // Stopped early (max_output_tokens, content filter): never a finished tool call.
+  if (eventType === "response.incomplete") {
+    if (state.finishReasonSent) return null;
+    const reason = data.response?.incomplete_details?.reason;
+    state.finishReasonSent = true;
+    state.finishReason = reason === "content_filter" ? OPENAI_FINISH.CONTENT_FILTER : OPENAI_FINISH.LENGTH;
+    const responseUsage = data.response?.usage;
+    if (responseUsage && typeof responseUsage === "object") {
+      const inputTokens = responseUsage.input_tokens || 0;
+      const outputTokens = responseUsage.output_tokens || 0;
+      state.usage = buildUsage({ promptTokens: inputTokens, completionTokens: outputTokens, totalTokens: inputTokens + outputTokens, cachedTokens: responseUsage.input_tokens_details?.cached_tokens || 0 });
+    }
+    const finalChunk = buildChunk(
+      { id: state.chatId, created: state.created, model: state.model || MODEL_FALLBACK },
+      {},
+      state.finishReason
+    );
+    if (state.usage) finalChunk.usage = state.usage;
+    return finalChunk;
   }
 
   // Error events from Responses API (e.g. model_not_found)

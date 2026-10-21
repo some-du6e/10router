@@ -3,7 +3,7 @@ import { shouldRefreshCredentials } from "../services/oauthCredentialManager.js"
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { dbg } from "../utils/debugLog.js";
 import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from "../providers/shared.js";
-import { resolveOpenAICompatibleApiType } from "../services/provider.js";
+import { appendUrlPath, resolveOpenAICompatibleApiType } from "../services/provider.js";
 
 /**
  * BaseExecutor - Base class for provider executors
@@ -30,14 +30,12 @@ export class BaseExecutor {
   buildUrl(model, stream, urlIndex = 0, credentials = null) {
     if (this.provider?.startsWith?.("openai-compatible-")) {
       const baseUrl = credentials?.providerSpecificData?.baseUrl || OPENAI_COMPAT_BASE;
-      const normalized = baseUrl.replace(/\/$/, "");
       const path = resolveOpenAICompatibleApiType(this.provider, credentials) === "responses" ? "/responses" : "/chat/completions";
-      return `${normalized}${path}`;
+      return appendUrlPath(baseUrl, path);
     }
     if (this.provider?.startsWith?.("anthropic-compatible-")) {
       const baseUrl = credentials?.providerSpecificData?.baseUrl || ANTHROPIC_COMPAT_BASE;
-      const normalized = baseUrl.replace(/\/$/, "");
-      return `${normalized}/messages`;
+      return appendUrlPath(baseUrl, "/messages");
     }
     const baseUrls = this.getBaseUrls();
     return baseUrls[urlIndex] || baseUrls[0] || this.config.baseUrl;

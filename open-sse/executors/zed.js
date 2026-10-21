@@ -142,6 +142,8 @@ function wrapZedCompletionStream(response, provider, model) {
 
   const finish = (controller) => {
     if (done) return;
+    // Zed's own end-of-stream; the Responses flush only finishes after one.
+    state.upstreamDone = true;
     const finalChunk = convertProviderEvent(provider, null, state);
     enqueueSseObject(controller, encoder, finalChunk);
     controller.enqueue(encoder.encode("data: [DONE]\n\n"));

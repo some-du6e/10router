@@ -395,3 +395,16 @@ describe("rate-limit hold wiring", () => {
     expect(res.status).toBe(403);
   }, 10000);
 });
+
+describe("request errors on keyless providers", () => {
+  it("returns a 400 from a no-auth provider instead of retrying it forever", async () => {
+    state.settings = { limitHoldEnabled: false, requireApiKey: false };
+    state.credentials = { id: "noauth", connectionName: "Public" };
+    // Five failures queued: before the fix the loop resent the same request to
+    // the same virtual connection until it ran out (then hit undefined).
+    state.coreResults = Array.from({ length: 5 }, () => ({ success: false, status: 400, error: "context too long", response: new Response("context too long", { status: 400 }) }));
+    const res = await handleChat(makeRequest({ model: "opencode/big-pickle", stream: false, messages: [{ role: "user", content: "hi" }] }));
+    expect(state.coreResults).toHaveLength(4);
+    expect(res.status).toBe(400);
+  });
+});
