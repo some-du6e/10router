@@ -101,7 +101,7 @@ function packFullData(item, record) {
   if (!Object.keys(full).length) return null;
   try {
     const json = JSON.stringify(full);
-    if (json.length > FULL_DATA_MAX_BYTES) return null;
+    if (Buffer.byteLength(json, "utf8") > FULL_DATA_MAX_BYTES) return null;
     return gzipSync(json).toString("base64");
   } catch {
     return null;
@@ -195,7 +195,7 @@ async function flushToDatabase() {
         }
 
         db.run(
-          `UPDATE requestDetails SET fullData = NULL WHERE fullData IS NOT NULL AND id NOT IN (SELECT id FROM requestDetails WHERE fullData IS NOT NULL ORDER BY timestamp DESC LIMIT ?)`,
+          `UPDATE requestDetails SET fullData = NULL WHERE fullData IS NOT NULL AND id NOT IN (SELECT id FROM requestDetails ORDER BY timestamp DESC LIMIT ?)`,
           [FULL_DATA_KEEP_ROWS]
         );
 

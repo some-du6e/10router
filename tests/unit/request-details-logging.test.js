@@ -55,6 +55,14 @@ describe("request detail logging", () => {
     expect(requestDetailsTest.unpackFullData("not gzip")).toBeNull();
   });
 
+  it("measures the full payload limit in bytes, not characters", () => {
+    // 6M three-byte chars: under 16 MB as string length, over it as UTF-8.
+    const big = { messages: [{ role: "user", content: "€".repeat(6 * 1024 * 1024) }] };
+    const record = { request: requestDetailsTest.truncateField(big, 5 * 1024) };
+    expect(record.request._truncated).toBe(true);
+    expect(requestDetailsTest.packFullData({ request: big }, record)).toBeNull();
+  });
+
   it("keeps Responses API input instead of replacing it with empty messages", () => {
     const input = [{
       type: "message",
