@@ -382,7 +382,7 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
   // cache_control, add only to last block with ttl 1h
   if (typeof body.system === "string" && !body.system.trim()) delete body.system;
   if (Array.isArray(body.system)) {
-    body.system = body.system.filter((block) => block?.type !== "text" || block.text?.trim());
+    body.system = body.system.filter((block) => block && (block.type !== "text" || block.text?.trim()));
     if (body.system.length === 0) delete body.system;
   }
   if (body.system && Array.isArray(body.system)) {
