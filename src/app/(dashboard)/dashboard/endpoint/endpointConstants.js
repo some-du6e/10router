@@ -13,9 +13,3 @@ export const REACHABLE_MISS_THRESHOLD = 5;
 export const CLIENT_PING_FAST_MS = 10000;
 export const CLIENT_PING_SLOW_MS = 60000;
 export const CLIENT_PING_TIMEOUT_MS = 5000;
-
-export const PONYTAIL_LEVELS = [
-  { id: "lite", label: "Lite", desc: "Build asked, name lazier option" },
-  { id: "full", label: "Full", desc: "Ladder enforced: stdlib/native first" },
-  { id: "ultra", label: "Ultra", desc: "YAGNI extremist, deletion first" },
-];

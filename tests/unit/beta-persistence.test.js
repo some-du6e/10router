@@ -32,9 +32,6 @@ vi.mock("@/sse/services/model.js", () => ({
   comboLookupName: (model) => model,
 }));
 vi.mock("open-sse/handlers/chatCore.js", () => ({ handleChatCore: mocks.handleChatCore }));
-vi.mock("@/lib/headroom/detect", () => ({ DEFAULT_HEADROOM_URL: "http://headroom.test" }));
-vi.mock("@/lib/pxpipe/loader.js", () => ({ getTransform: vi.fn() }));
-vi.mock("@/lib/pxpipe/events.js", () => ({ appendPxpipeEvent: vi.fn() }));
 vi.mock("open-sse/services/combo.js", async (importOriginal) => ({
   handleComboChat: (await importOriginal()).handleComboChat,
   handleFusionChat: (await importOriginal()).handleFusionChat,
