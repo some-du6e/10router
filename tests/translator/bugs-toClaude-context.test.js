@@ -52,6 +52,17 @@ describe("OpenAI → Claude context mapping", () => {
     expect(JSON.stringify(out.system)).toContain("You are Claude Code");
   });
 
+  it("sends no empty system block when the client's system prompt is empty", () => {
+    const messages = [{ role: "system", content: "" }, { role: "user", content: "hi" }];
+    const plain = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, "m", { messages }, true, null, "anthropic-compatible-x");
+    expect(plain.system).toBeUndefined();
+    const claude = translateRequest(FORMATS.CLAUDE, FORMATS.CLAUDE, "m", {
+      system: [{ type: "text", text: "" }], messages: [{ role: "user", content: "hi" }],
+    }, true, null, "claude");
+    expect(claude.system).toHaveLength(1);
+    expect(claude.system[0].text).toContain("You are Claude Code");
+  });
+
   it.each(["anthropic", "anthropic-compatible-x"])("does not create unsigned thinking history for %s", (provider) => {
     const body = {
       messages: [

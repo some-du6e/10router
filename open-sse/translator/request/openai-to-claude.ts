@@ -137,8 +137,8 @@ Respond ONLY with the JSON object, no other text.`);
   // System with cache_control. The Claude Code identity prompt is not added
   // here: only the Claude Code OAuth provider needs it, and translateRequest
   // adds it for that provider (see withClaudeCodePrompt).
-  if (systemParts.length > 0) {
-    const systemText = systemParts.join("\n");
+  const systemText = systemParts.join("\n");
+  if (systemText.trim()) {
     result.system = [
       { type: CLAUDE_BLOCK.TEXT, text: systemText, cache_control: { type: "ephemeral", ttl: "1h" } }
     ];
