@@ -67,6 +67,34 @@ describe("getUsageStats lastUsed", () => {
     expect(lastUsed).toEqual([aAt, bAt]);
   });
 
+  it("keeps a separate lastUsed per API key", async () => {
+    const aAt = new Date(Date.now() - 2 * 3600000).toISOString();
+    const bAt = new Date(Date.now() - 1800000).toISOString();
+    await saveRequestUsage(entry(aAt, { model: "gpt-key", apiKey: "sk-key-aaaaaaaaaa" }));
+    await saveRequestUsage(entry(bAt, { model: "gpt-key", apiKey: "sk-key-bbbbbbbbbb" }));
+
+    const stats = await getUsageStats("all");
+    expect(stats.byApiKey["sk-key-aaaaaaaaaa|gpt-key|openai"].lastUsed).toBe(aAt);
+    expect(stats.byApiKey["sk-key-bbbbbbbbbb|gpt-key|openai"].lastUsed).toBe(bAt);
+  });
+
+  it("does not let an older request saved later replace a newer lastUsed", async () => {
+    await getUsageStats("all");
+    const newer = new Date(Date.now() - 1800000).toISOString();
+    const older = new Date(Date.now() - 3 * 3600000).toISOString();
+    await saveRequestUsage(entry(newer, { model: "gpt-order" }));
+    await saveRequestUsage(entry(older, { model: "gpt-order" }));
+
+    expect((await getUsageStats("all")).byModel["gpt-order (openai)"].lastUsed).toBe(newer);
+  });
+
+  it("reports the precise lastUsed for bounded periods", async () => {
+    const at = new Date(Date.now() - 3600000).toISOString();
+    await saveRequestUsage(entry(at, { model: "gpt-7d" }));
+
+    expect((await getUsageStats("7d")).byModel["gpt-7d (openai)"].lastUsed).toBe(at);
+  });
+
   it("picks up requests saved after the first stats call", async () => {
     await getUsageStats("all");
     const latest = new Date(Date.now() - 60000).toISOString();
