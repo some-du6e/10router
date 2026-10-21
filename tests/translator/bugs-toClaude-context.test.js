@@ -10,11 +10,82 @@ const T = (body) =>
   translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, "m", body, true, null, "anthropic-compatible-x");
 
 describe("OpenAI → Claude context mapping", () => {
-  // openai-to-claude.js:124-134 — always injects CLAUDE_SYSTEM_PROMPT ("You are Claude Code")
-  // KNOWN BUG: pollutes requests for non-official Claude-compatible providers
-  it.fails("does not inject Claude Code system prompt for compatible providers", () => {
+  it("does not inject Claude Code system prompt for compatible providers", () => {
     const out = T({ messages: [{ role: "user", content: "hi" }] });
-    expect(JSON.stringify(out.system), "Claude Code prompt injected").not.toContain("Claude Code");
+    expect(JSON.stringify(out.system ?? null), "Claude Code prompt injected").not.toContain("Claude Code");
+  });
+
+  it("still injects the Claude Code prompt for the Claude Code OAuth provider", () => {
+    const out = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, "m", {
+      messages: [{ role: "system", content: "be brief" }, { role: "user", content: "hi" }],
+    }, true, null, "claude");
+    expect(out.system[0].text).toContain("You are Claude Code");
+    expect(out.system.at(-1).text).toBe("be brief");
+  });
+
+  it("sends the Claude Code prompt once, as its own first block", () => {
+    const CC = "You are Claude Code, Anthropic's official CLI for Claude.";
+    const out = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, "m", {
+      messages: [{ role: "system", content: CC }, { role: "user", content: "hi" }],
+    }, true, null, "claude");
+    expect(out.system.filter((b) => b.text.includes("Claude Code"))).toHaveLength(1);
+    expect(out.system[0].text).toBe(CC);
+
+    const quoted = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, "m", {
+      messages: [{ role: "system", content: `be brief. ${CC}` }, { role: "user", content: "hi" }],
+    }, true, null, "claude");
+    expect(quoted.system[0].text).toBe(CC);
+  });
+
+  it("adds the Claude Code prompt to Claude-format requests for the Claude Code provider", () => {
+    const out = translateRequest(FORMATS.CLAUDE, FORMATS.CLAUDE, "m", {
+      system: "be brief", messages: [{ role: "user", content: "hi" }],
+    }, true, null, "claude");
+    expect(out.system[0].text).toContain("You are Claude Code");
+    expect(out.system.at(-1).text).toBe("be brief");
+  });
+
+  it("adds the Claude Code prompt for an Anthropic OAuth token on a compatible provider", () => {
+    const out = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, "m", {
+      messages: [{ role: "user", content: "hi" }],
+    }, true, { accessToken: "sk-ant-oat01-test" }, "anthropic-compatible-x");
+    expect(JSON.stringify(out.system)).toContain("You are Claude Code");
+  });
+
+  it("sends no empty system block when the client's system prompt is empty", () => {
+    const messages = [{ role: "system", content: "" }, { role: "user", content: "hi" }];
+    const plain = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, "m", { messages }, true, null, "anthropic-compatible-x");
+    expect(plain.system).toBeUndefined();
+    const claude = translateRequest(FORMATS.CLAUDE, FORMATS.CLAUDE, "m", {
+      system: [{ type: "text", text: "" }], messages: [{ role: "user", content: "hi" }],
+    }, true, null, "claude");
+    expect(claude.system).toHaveLength(1);
+    expect(claude.system[0].text).toContain("You are Claude Code");
+  });
+
+  it.each([[""], ["  "], [[{ type: "text", text: "" }]], [[]]])("drops an empty Claude client system %j on a compatible provider", (system) => {
+    const out = translateRequest(FORMATS.CLAUDE, FORMATS.CLAUDE, "m", {
+      system, messages: [{ role: "user", content: "hi" }],
+    }, true, null, "anthropic-compatible-x");
+    expect(out.system).toBeUndefined();
+  });
+
+  it("keeps non-text system blocks and drops null or blank ones", () => {
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "x" } };
+    const out = translateRequest(FORMATS.CLAUDE, FORMATS.CLAUDE, "m", {
+      system: [null, { type: "text", text: " \n " }, image, { type: "text", text: "real" }],
+      messages: [{ role: "user", content: "hi" }],
+    }, true, null, "claude");
+    expect(out.system.map((b) => b.type)).toEqual(["text", "image", "text"]);
+    expect(out.system[0].text).toContain("You are Claude Code");
+    expect(out.system[2].text).toBe("real");
+  });
+
+  it("sends no system for whitespace-only OpenAI system messages", () => {
+    const out = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, "m", {
+      messages: [{ role: "system", content: "  \n " }, { role: "system", content: "" }, { role: "user", content: "hi" }],
+    }, true, null, "anthropic-compatible-x");
+    expect(out.system).toBeUndefined();
   });
 
   it.each(["anthropic", "anthropic-compatible-x"])("does not create unsigned thinking history for %s", (provider) => {
