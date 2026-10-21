@@ -237,7 +237,6 @@
   "Company": "شرکت",
   "Complete the authorization in the popup window.": "مجوز را در پنجره بازشو تکمیل کنید.",
   "Completion/response tokens": "توکن‌های تکمیل/پاسخ",
-  "Compress tool output to reduce token usage.": "خروجی ابزار را برای کاهش مصرف توکن فشرده کنید.",
   "Config path: Linux/macOS ~/.deepseek/config.toml • Windows %USERPROFILE%\\.deepseek\\config.toml": "مسیر پیکربندی: Linux/macOS ~/.deepseek/config.toml • Windows %USERPROFILE%\\.deepseek\\config.toml",
   "Config path: Linux/macOS ~/.qwen/settings.json • Windows %USERPROFILE%\\.qwen\\settings.json": "مسیر پیکربندی: Linux/macOS ~/.qwen/settings.json • Windows %USERPROFILE%\\.qwen\\settings.json",
   "Configuration": "پیکربندی",

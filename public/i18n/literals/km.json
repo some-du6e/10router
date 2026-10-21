@@ -237,7 +237,6 @@
   "Company": "ក្រុមហ៊ុន",
   "Complete the authorization in the popup window.": "បញ្ចប់ការផ្តល់សិទ្ធិនៅក្នុងផ្ទាំង popup។",
   "Completion/response tokens": "Tokens សម្រាប់ Completion/response",
-  "Compress tool output to reduce token usage.": "បង្រួម Output របស់ឧបករណ៍ ដើម្បីកាត់បន្ថយការប្រើ Token។",
   "Config path: Linux/macOS ~/.deepseek/config.toml • Windows %USERPROFILE%\\.deepseek\\config.toml": "ទីតាំង Config៖ Linux/macOS ~/.deepseek/config.toml • Windows %USERPROFILE%\\.deepseek\\config.toml",
   "Config path: Linux/macOS ~/.qwen/settings.json • Windows %USERPROFILE%\\.qwen\\settings.json": "ទីតាំង Config៖ Linux/macOS ~/.qwen/settings.json • Windows %USERPROFILE%\\.qwen\\settings.json",
   "Configuration": "ការកំណត់រចនាសម្ព័ន្ធ",
