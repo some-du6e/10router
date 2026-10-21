@@ -10,6 +10,11 @@ const OPTIONAL_FIELDS = [
   "consecutiveUseCount", "idToken", "lastRefreshAt",
 ];
 
+// Read by sse/services/autoCombo.ts to notice its model catalog is stale.
+function bumpConnectionsVersion() {
+  global._connectionsVersion = (global._connectionsVersion || 0) + 1;
+}
+
 function rowToConn(row) {
   if (!row) return null;
   const extra = parseJson(row.data, {});
@@ -225,6 +230,7 @@ export async function createProviderConnection(data) {
     result = conn;
   });
 
+  bumpConnectionsVersion();
   return result;
 }
 
@@ -240,6 +246,16 @@ export async function updateProviderConnection(id, data) {
     upsert(db, merged);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
     result = merged;
+    // Token refreshes and rate-limit stamps write here constantly; only a
+    // change to what the connection serves counts.
+    const psdBefore = existing.providerSpecificData || {};
+    const psdAfter = merged.providerSpecificData || {};
+    if (
+      existing.isActive !== merged.isActive ||
+      existing.authType !== merged.authType ||
+      psdBefore.prefix !== psdAfter.prefix ||
+      JSON.stringify(psdBefore.enabledModels) !== JSON.stringify(psdAfter.enabledModels)
+    ) bumpConnectionsVersion();
   });
   return result;
 }
@@ -253,6 +269,7 @@ export async function deleteProviderConnection(id) {
     db.run(`DELETE FROM providerConnections WHERE id = ?`, [id]);
     reorderInTx(db, row.provider);
     ok = true;
+    bumpConnectionsVersion();
   });
   return ok;
 }
@@ -261,6 +278,7 @@ export async function deleteProviderConnectionsByProvider(providerId) {
   const db = await getAdapter();
   const before = db.get(`SELECT COUNT(*) AS n FROM providerConnections WHERE provider = ?`, [providerId]);
   db.run(`DELETE FROM providerConnections WHERE provider = ?`, [providerId]);
+  bumpConnectionsVersion();
   return before?.n || 0;
 }
 

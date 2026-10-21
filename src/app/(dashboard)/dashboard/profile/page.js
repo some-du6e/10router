@@ -24,7 +24,7 @@ function getLocaleFromCookie() {
 const AUTO_COMBO_BILLING_OPTIONS = [
   { set: "subscription", label: "Subscriptions", hint: "Flat-rate plans you log in to: Claude Code, Codex, Copilot" },
   { set: "free", label: "Free", hint: "No billing at all: Kiro, Gemini CLI, OpenCode" },
-  { set: "custom", label: "Custom endpoints", hint: "Endpoints you added yourself" },
+  { set: "custom", label: "Custom endpoints", hint: "Endpoints you added yourself. Off by default since most bill per token" },
   { set: "freeTier", label: "Free tiers", hint: "Free up to a limit, then paid: OpenRouter, Gemini API" },
   { set: "payg", label: "Pay per token", hint: "API keys billed by usage: OpenAI, Anthropic, Groq" },
 ];
@@ -322,12 +322,15 @@ export default function ProfilePage() {
 
   const [autoComboExcludedDraft, setAutoComboExcludedDraft] = useState(null);
 
-  const blockedBilling = settings.autoComboBlockedBilling ?? ["payg", "freeTier"];
+  // The server always merges its defaults in, so this list is only empty until settings load.
+  const blockedBilling = settings.autoComboBlockedBilling || [];
+  const [savingBilling, setSavingBilling] = useState(false);
 
   const toggleAutoComboBilling = async (set) => {
     const next = blockedBilling.includes(set)
       ? blockedBilling.filter((s) => s !== set)
       : [...blockedBilling, set];
+    setSavingBilling(true);
     try {
       const res = await fetch("/api/settings", {
         method: "PATCH",
@@ -337,6 +340,8 @@ export default function ProfilePage() {
       if (res.ok) setSettings(prev => ({ ...prev, autoComboBlockedBilling: next }));
     } catch (err) {
       console.error("Failed to update auto combo billing sets:", err);
+    } finally {
+      setSavingBilling(false);
     }
   };
 
@@ -1644,7 +1649,7 @@ export default function ProfilePage() {
                     <Toggle
                       checked={!blockedBilling.includes(set)}
                       onChange={() => toggleAutoComboBilling(set)}
-                      disabled={loading}
+                      disabled={loading || savingBilling}
                     />
                   </div>
                 ))}
@@ -1656,13 +1661,14 @@ export default function ProfilePage() {
               <div className="flex-1 min-w-0">
                 <p className="font-medium text-sm sm:text-base">Auto Combo Exclusions</p>
                 <p className="text-xs sm:text-sm text-text-muted">
-                  Provider prefixes to leave out on top of the kinds above.
+                  Providers to leave out on top of the kinds above, by prefix (cc, sfff) or id (claude).
                 </p>
               </div>
               <Input
                 value={autoComboExcludedDraft ?? (settings.autoComboExcludedProviders || []).join(", ")}
                 onChange={(e) => setAutoComboExcludedDraft(e.target.value)}
                 onBlur={(e) => autoComboExcludedDraft !== null && updateAutoComboExcluded(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
                 placeholder="sfff, openrouter"
                 disabled={loading}
                 className="w-40 sm:w-56 shrink-0"

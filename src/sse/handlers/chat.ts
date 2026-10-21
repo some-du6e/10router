@@ -10,6 +10,8 @@ import {
 import { handleAntigravityQuotaError, clearAntigravityStrikes } from "../services/antigravityQuota.js";
 import { getSettings, getProviderNodeById, updateProviderNode, getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
 import { getModelInfo, getComboModels, comboLookupName } from "../services/model.js";
+import { resolveAutoCombo } from "../services/autoCombo.js";
+import { BUILTIN_MODEL_ALIASES } from "open-sse/services/model.js";
 import { handleChatCore, clientReceivesStream } from "open-sse/handlers/chatCore.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
 import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
@@ -238,8 +240,9 @@ export async function handleChat(request: Request, clientRawRequest: ClientRawRe
 async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, request, apiKey, routingFailures }: RoutedChatArgs): Promise<Response> {
   const requiredCapabilities = detectRequiredCapabilities(body);
 
-  // Check if model is a combo (has multiple models with fallback)
-  const comboModels = await getComboModels(modelStr);
+  // Check if model is a combo (has multiple models with fallback). A bare id
+  // with no combo or alias falls back across every provider serving it.
+  const comboModels = (await getComboModels(modelStr)) ?? (await resolveAutoCombo(modelStr, BUILTIN_MODEL_ALIASES));
   if (comboModels) {
     // Combos are configured and rotation-tracked under the bare name, so a
     // context-window selector must not fragment either.

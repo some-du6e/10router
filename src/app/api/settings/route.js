@@ -11,6 +11,7 @@ import {
 } from "@/lib/auth/setupState";
 import { verifyDashboardPassword } from "@/lib/auth/dashboardSession";
 import { clearSetupToken } from "@/lib/auth/setupToken";
+import { sanitizeAutoComboSetting } from "@/sse/services/autoCombo.js";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -113,6 +114,13 @@ export async function PATCH(request) {
       if (!body.oidcClientSecret || !String(body.oidcClientSecret).trim()) {
         delete body.oidcClientSecret;
       }
+    }
+
+    for (const key of ["autoComboBlockedBilling", "autoComboExcludedProviders"]) {
+      if (!Object.prototype.hasOwnProperty.call(body, key)) continue;
+      const clean = sanitizeAutoComboSetting(key, body[key]);
+      if (!clean) return NextResponse.json({ error: `Invalid ${key}` }, { status: 400 });
+      body[key] = clean;
     }
 
     const settings = await updateSettings(body);
