@@ -75,7 +75,7 @@ const TRANSLATOR_METADATA_KEYS = ["_toolNamespaces", "_customToolNames"];
 function withClaudeCodePrompt(system: unknown): SystemBlock[] {
   const blocks: SystemBlock[] = (Array.isArray(system) ? system
     : typeof system === "string" ? [{ type: "text", text: system }]
-    : []).filter((b: SystemBlock) => b?.type !== "text" || b.text?.trim());
+    : []).filter((b: SystemBlock | null) => b && (b.type !== "text" || b.text?.trim()));
   if (blocks.some((b) => b?.text?.trim() === CLAUDE_SYSTEM_PROMPT)) return blocks;
   return [{ type: "text", text: CLAUDE_SYSTEM_PROMPT }, ...blocks];
 }

@@ -70,6 +70,24 @@ describe("OpenAI → Claude context mapping", () => {
     expect(out.system).toBeUndefined();
   });
 
+  it("keeps non-text system blocks and drops null or blank ones", () => {
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "x" } };
+    const out = translateRequest(FORMATS.CLAUDE, FORMATS.CLAUDE, "m", {
+      system: [null, { type: "text", text: " \n " }, image, { type: "text", text: "real" }],
+      messages: [{ role: "user", content: "hi" }],
+    }, true, null, "claude");
+    expect(out.system.map((b) => b.type)).toEqual(["text", "image", "text"]);
+    expect(out.system[0].text).toContain("You are Claude Code");
+    expect(out.system[2].text).toBe("real");
+  });
+
+  it("sends no system for whitespace-only OpenAI system messages", () => {
+    const out = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, "m", {
+      messages: [{ role: "system", content: "  \n " }, { role: "system", content: "" }, { role: "user", content: "hi" }],
+    }, true, null, "anthropic-compatible-x");
+    expect(out.system).toBeUndefined();
+  });
+
   it.each(["anthropic", "anthropic-compatible-x"])("does not create unsigned thinking history for %s", (provider) => {
     const body = {
       messages: [
