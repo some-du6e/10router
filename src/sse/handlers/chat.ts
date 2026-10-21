@@ -11,9 +11,6 @@ import { handleAntigravityQuotaError, clearAntigravityStrikes } from "../service
 import { getSettings, getProviderNodeById, updateProviderNode, getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
 import { getModelInfo, getComboModels, comboLookupName } from "../services/model.js";
 import { handleChatCore, clientReceivesStream } from "open-sse/handlers/chatCore.js";
-import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
-import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
-import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { createLimitHoldResponse, awaitLimitClear, isLimitError } from "open-sse/utils/limitHold.js";
 import { resolveLimitHold } from "../services/limitHoldConfig.js";
@@ -683,7 +680,6 @@ async function routeSingleModelChat(
     // Use shared chatCore
     const chatSettings = (await getSettings()) as ChatSettings;
     const providerThinking = (chatSettings.providerThinking || {} as Record<string, unknown>)[provider] || null;
-    const pxpipeTransform = chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null;
     // Custom endpoints: keep this request for the endpoint page's "Recent requests".
     const result = await recordEndpointRequests(provider, refreshedCredentials as Parameters<typeof recordEndpointRequests>[1], () => handleChatCore({
       body: { ...body, model: `${provider}/${model}` },
@@ -695,21 +691,6 @@ async function routeSingleModelChat(
       userAgent,
       apiKey,
       ccFilterNaming: !!chatSettings.ccFilterNaming,
-      rtkEnabled: !!chatSettings.rtkEnabled,
-      headroomEnabled: !!chatSettings.headroomEnabled,
-      headroomUrl: chatSettings.headroomUrl || DEFAULT_HEADROOM_URL,
-      headroomCompressUserMessages: !!chatSettings.headroomCompressUserMessages,
-      headroomTimeoutMs: chatSettings.headroomTimeoutMs,
-      cavemanEnabled: !!chatSettings.cavemanEnabled,
-      cavemanLevel: chatSettings.cavemanLevel || "full",
-      ponytailEnabled: !!chatSettings.ponytailEnabled,
-      ponytailLevel: chatSettings.ponytailLevel || "full",
-      pxpipeEnabled: !!chatSettings.pxpipeEnabled,
-      pxpipeMinChars: chatSettings.pxpipeMinChars,
-      pxpipeTimeoutMs: chatSettings.pxpipeTimeoutMs,
-      // Lazily warms the in-process module on first use; null when not installed (fail-open)
-      pxpipeTransform,
-      onPxpipeEvent: appendPxpipeEvent,
       providerThinking,
       sourceFormatOverride,
       onCredentialsRefreshed: async (newCreds: Record<string, unknown>) => {
