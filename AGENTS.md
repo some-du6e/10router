@@ -63,6 +63,9 @@ State lives in SQLite under `src/lib/db/` (the old `db.json` is gone). `driver.j
 ### RTK token saver (`open-sse/rtk/`)
 Pre-translate hooks that compress `tool_result` content in place. They are **fail-open**: on any error, return null and leave the body untouched. They leave `is_error` / `status:"error"` results intact so error traces survive.
 
+### Icons
+The dashboard draws Material Symbols from a subset font, `src/app/fonts/material-symbols-outlined.woff2`, holding only the icons the source names (listed in the `.icons.txt` beside it). An icon outside the subset renders as its raw name, so after using a new icon name, rerun `node scripts/subset-icon-font.mjs` (needs python3 with `fonttools` and `brotli`) and commit both files; `tests/unit/icon-font-subset.test.js` goes red until you do. The font loads through `next/font/local` in `src/app/layout.js`. Importing `material-symbols/*.css` would pull the full 3.9 MB font back in. The logo is an inline SVG (`src/shared/components/LogoMark.tsx`) so it paints before the font arrives; use it rather than a `hub` icon for the brand mark.
+
 ### Security
 - `custom-server.js` derives the client IP from the TCP socket and honours `X-Forwarded-For` only from a loopback proxy. Keep that guarantee in any request, IP, or rate-limit change.
 - A fresh install has no default password. It prints a one-time setup token to the console (`src/lib/auth/setupState.js`, `setupToken.js`), or takes `INITIAL_PASSWORD` (8+ chars) for headless bootstrap. The env contract lives in `.env.example`.
@@ -73,7 +76,7 @@ Conventional Commits (`fix(translator): …`). Log user-facing changes in `CHANG
 
 <!-- BEGIN:nextjs-agent-rules -->
 
-# This is NOT the Next.js you know
+## This is NOT the Next.js you know
 
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
 

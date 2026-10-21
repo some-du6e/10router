@@ -1,5 +1,7 @@
 "use client";
 
+import LogoMark from "@/shared/components/LogoMark";
+
 export default function Footer() {
   return (
     <footer className="border-t border-[#3a2733] bg-[#100b0f] pt-16 pb-8 px-6">
@@ -9,7 +11,7 @@ export default function Footer() {
           <div className="col-span-2 lg:col-span-2">
             <div className="flex items-center gap-3 mb-6">
               <div className="size-6 rounded bg-[#ec4899] flex items-center justify-center text-white">
-                <span className="material-symbols-outlined text-[16px]">hub</span>
+                <LogoMark className="text-[16px]" />
               </div>
               <h3 className="text-white text-lg font-bold">10router</h3>
             </div>

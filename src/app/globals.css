@@ -1,18 +1,31 @@
 /* source() sets scan base to src/ for both webpack + Turbopack; auto-detection still skips binaries + gitignore */
 @import "tailwindcss" source("../../");
 
-/* The vendor sheet pins .material-symbols-outlined to font-size:24px. Imported
-   bare (it used to be a plain import in layout.js) it lands unlayered, and
-   unlayered CSS beats every layered rule regardless of specificity — so it ate
-   the text-[14px] etc. that ~440 icon call sites pass and rendered every icon
-   at 24px. layer(base) puts it where Tailwind utilities can win. */
-@import "material-symbols/outlined.css" layer(base);
-
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* Hide icon ligature text until font is ready */
-.material-symbols-outlined { opacity: 0; }
-.fonts-loaded .material-symbols-outlined { opacity: 1; transition: opacity .12s ease-out; }
+/* Until the icon font is ready an icon is its ligature text ("chevron_right").
+   Hide the text, clip it to the 1em square the glyph will occupy so nothing
+   reflows when the font lands, and pulse a rounded square, a little smaller
+   than the glyph box, in the icon's own colour there.
+   Unlayered so it beats the text-* and animate-* utilities on the icon. */
+:root:not(.fonts-loaded) .material-symbols-outlined {
+  -webkit-text-fill-color: transparent;
+  width: 1em;
+  overflow: hidden;
+  background: currentColor;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='2' y='2' width='20' height='20' rx='5'/%3E%3C/svg%3E") center / 1em 1em no-repeat;
+  animation: icon-pending 1.2s ease-in-out infinite;
+}
+@keyframes icon-pending {
+  0%, 100% { opacity: .1; }
+  50% { opacity: .28; }
+}
+/* A failed load keeps the square (the names would be worse) but stops it
+   pulsing, so it no longer reads as "still loading". */
+@media (prefers-reduced-motion: reduce) {
+  :root:not(.fonts-loaded) .material-symbols-outlined { animation: none; opacity: .18; }
+}
+:root.fonts-failed:not(.fonts-loaded) .material-symbols-outlined { animation: none; opacity: .18; }
 
 /* ============================================================
    10router palette
@@ -321,9 +334,10 @@ input, textarea {
   background: rgba(38, 38, 38, 0.72);
 }
 
-/* Material Symbols — our overrides on top of the vendor sheet. Layered for the
-   same reason as the import above: unlayered, the font-size wins over the
-   text-[14px] the call sites pass. */
+/* Material Symbols. The @font-face comes from next/font/local in layout.js
+   (a subset of the vendor font); don't import material-symbols/outlined.css,
+   which would pull the full 3.9 MB file back in. Layered so the text-[14px]
+   etc. that the icon call sites pass beat the 24px default here. */
 @layer base {
   .material-symbols-outlined {
     font-family: 'Material Symbols Outlined', sans-serif;
@@ -340,6 +354,8 @@ input, textarea {
     font-feature-settings: 'liga';
     -webkit-font-feature-settings: 'liga';
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
     font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
   }
   .material-symbols-outlined.fill-1 {
