@@ -1,4 +1,5 @@
-import { gzipSync, gunzipSync } from "node:zlib";
+import { gzip, gunzip } from "node:zlib";
+import { promisify } from "node:util";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { structuredPreview } from "../../../shared/utils/requestConversation.js";
@@ -13,6 +14,8 @@ const CONFIG_CACHE_TTL_MS = 5000;
 // only when "Show full request details" is on, so the DB can't balloon.
 const FULL_DATA_KEEP_ROWS = 25;
 const FULL_DATA_MAX_BYTES = 16 * 1024 * 1024;
+const gzipAsync = promisify(gzip);
+const gunzipAsync = promisify(gunzip);
 const PAYLOAD_KEYS = ["request", "providerRequest", "providerResponse", "response"];
 
 let cachedConfig = null;
@@ -93,28 +96,33 @@ function sanitizeHeaders(headers) {
 }
 
 // Returns the untruncated payloads that truncateField cut, gzipped, or null.
-function packFullData(item, record) {
+// Compression runs on the libuv pool so a big payload doesn't stall streams.
+async function packFullData(item, record) {
   const full = {};
+  let chars = 0;
   for (const key of PAYLOAD_KEYS) {
-    if (record[key]?._truncated === true && item[key] != null) full[key] = item[key];
+    if (record[key]?._truncated === true && item[key] != null) {
+      full[key] = item[key];
+      chars += record[key]._originalSize ?? 0;
+    }
   }
   if (!Object.keys(full).length) return null;
+  // UTF-8 never takes fewer bytes than characters, so this skips oversized
+  // payloads without serializing them a second time.
+  if (chars > FULL_DATA_MAX_BYTES) return null;
   try {
     const json = JSON.stringify(full);
     if (Buffer.byteLength(json, "utf8") > FULL_DATA_MAX_BYTES) return null;
-    return gzipSync(json).toString("base64");
+    return (await gzipAsync(json)).toString("base64");
   } catch {
     return null;
   }
 }
 
-function unpackFullData(value) {
+// Throws on a corrupt value so callers can tell it apart from a missing one.
+async function unpackFullData(value) {
   if (!value) return null;
-  try {
-    return JSON.parse(gunzipSync(Buffer.from(value, "base64")).toString("utf8"));
-  } catch {
-    return null;
-  }
+  return JSON.parse((await gunzipAsync(Buffer.from(value, "base64"))).toString("utf8"));
 }
 
 export const __test__ = { sanitizeHeaders, getMaxJsonSize, truncateField, packFullData, unpackFullData, flush: () => flushToDatabase() };
@@ -164,30 +172,39 @@ async function flushToDatabase() {
       const db = await getAdapter();
       const config = await getObservabilityConfig();
 
+      // sql.js rewrites the whole DB file on every write, so it skips full payloads.
+      const keepFull = config.keepFullData && db.driver !== "sql.js";
+      const rows = [];
+      for (const item of items) {
+        if (!item.id) item.id = generateDetailId(item.model);
+        if (!item.timestamp) item.timestamp = new Date().toISOString();
+        if (item.request?.headers) item.request.headers = sanitizeHeaders(item.request.headers);
+
+        const record = {
+          id: item.id,
+          provider: item.provider || null,
+          model: item.model || null,
+          connectionId: item.connectionId || null,
+          timestamp: item.timestamp,
+          status: item.status || null,
+          latency: item.latency || {},
+          tokens: item.tokens || {},
+          request: truncateField(item.request, config.maxJsonSize),
+          providerRequest: truncateField(item.providerRequest, config.maxJsonSize),
+          providerResponse: truncateField(item.providerResponse, config.maxJsonSize),
+          response: truncateField(item.response, config.maxJsonSize),
+          pxpipe: item.pxpipe || undefined,
+        };
+        rows.push({ record, fullData: keepFull ? await packFullData(item, record) : null });
+      }
+      // The setting may have been turned off (and stored payloads cleared)
+      // while compression was awaited.
+      if (keepFull && !(await getObservabilityConfig()).keepFullData) {
+        for (const row of rows) row.fullData = null;
+      }
+
       db.transaction(() => {
-        for (const item of items) {
-          if (!item.id) item.id = generateDetailId(item.model);
-          if (!item.timestamp) item.timestamp = new Date().toISOString();
-          if (item.request?.headers) item.request.headers = sanitizeHeaders(item.request.headers);
-
-          const record = {
-            id: item.id,
-            provider: item.provider || null,
-            model: item.model || null,
-            connectionId: item.connectionId || null,
-            timestamp: item.timestamp,
-            status: item.status || null,
-            latency: item.latency || {},
-            tokens: item.tokens || {},
-            request: truncateField(item.request, config.maxJsonSize),
-            providerRequest: truncateField(item.providerRequest, config.maxJsonSize),
-            providerResponse: truncateField(item.providerResponse, config.maxJsonSize),
-            response: truncateField(item.response, config.maxJsonSize),
-            pxpipe: item.pxpipe || undefined,
-          };
-
-          const fullData = config.keepFullData ? packFullData(item, record) : null;
-
+        for (const { record, fullData } of rows) {
           db.run(
             `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data, fullData) VALUES(?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp, provider = excluded.provider, model = excluded.model, connectionId = excluded.connectionId, status = excluded.status, data = excluded.data, fullData = excluded.fullData`,
             [record.id, record.timestamp, record.provider, record.model, record.connectionId, record.status, stringifyJson(record), fullData]
@@ -195,7 +212,7 @@ async function flushToDatabase() {
         }
 
         db.run(
-          `UPDATE requestDetails SET fullData = NULL WHERE fullData IS NOT NULL AND id NOT IN (SELECT id FROM requestDetails ORDER BY timestamp DESC LIMIT ?)`,
+          `UPDATE requestDetails SET fullData = NULL WHERE fullData IS NOT NULL AND id NOT IN (SELECT id FROM requestDetails ORDER BY timestamp DESC, id DESC LIMIT ?)`,
           [FULL_DATA_KEEP_ROWS]
         );
 
@@ -288,14 +305,20 @@ export async function getRequestDetailById(id) {
 export async function clearRequestDetailFullData() {
   cachedConfig = null;
   const db = await getAdapter();
-  db.run(`UPDATE requestDetails SET fullData = NULL WHERE fullData IS NOT NULL`);
+  const { changes } = db.run(`UPDATE requestDetails SET fullData = NULL WHERE fullData IS NOT NULL`);
+  // Give the freed pages back so the payloads don't linger in the file.
+  if (changes > 0) db.exec("VACUUM");
 }
 
 // Untruncated payloads for a row, keyed like the record (only the cut ones).
 export async function getRequestDetailFullData(id) {
   const db = await getAdapter();
   const row = db.get(`SELECT fullData FROM requestDetails WHERE id = ?`, [id]);
-  return unpackFullData(row?.fullData);
+  try {
+    return await unpackFullData(row?.fullData);
+  } catch (error) {
+    throw new Error(`Stored full payload for ${id} is corrupt: ${error.message}`, { cause: error });
+  }
 }
 
 const _shutdownHandler = async () => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo, memo } from "react";
 import Card from "@/shared/components/Card";
 import Button from "@/shared/components/Button";
 import Drawer from "@/shared/components/Drawer";
@@ -124,6 +124,13 @@ function formatPayload(value, emptyLabel = "[No data]") {
   }
 }
 
+// Pretty-printing a multi-MB payload is slow, so do it once per payload, not
+// on every drawer render.
+const PayloadPre = memo(function PayloadPre({ value, className }) {
+  const text = useMemo(() => formatPayload(value), [value]);
+  return <pre className={className}>{text}</pre>;
+});
+
 export default function RequestDetailsTab() {
   const [details, setDetails] = useState([]);
   const [pagination, setPagination] = useState({
@@ -234,8 +241,8 @@ export default function RequestDetailsTab() {
         throw new Error(data.error || `Failed to load full payload (${res.status})`);
       }
       const merge = (detail) => (detail.id === id ? { ...detail, ...data, hasFullData: false } : detail);
+      // Only the open request gets the full payload; the list keeps its previews.
       setSelectedDetail(prev => (prev ? merge(prev) : prev));
-      setDetails(prev => prev.map(merge));
       setFullState({ loading: false, error: "" });
     } catch (error) {
       if (controller.signal.aborted) return;
@@ -540,9 +547,19 @@ export default function RequestDetailsTab() {
                 {requestView === "conversation" ? (
                   <ConversationInspector key={selectedDetail.id} request={selectedDetail.request} response={selectedDetail.response} fullPayload={fullPayload} />
                 ) : (
-                  <pre className={cn("max-h-[540px] max-w-full overflow-auto rounded-lg border p-4 font-mono text-xs text-text-main", requestIsTruncated ? "border-amber-500/20 bg-amber-500/10" : "border-border-subtle bg-surface-2")}>
-                    {selectedDetail.request?.redacted ? '[Request redacted. Enable "Show full request details" in Settings.]' : formatPayload(selectedDetail.request)}
-                  </pre>
+                  <>
+                    {requestIsTruncated && fullPayload.available && (
+                      <div className="mb-3 flex flex-wrap items-center justify-end gap-2 text-xs">
+                        {fullPayload.error && <span className="text-red-600">{fullPayload.error}</span>}
+                        <Button size="sm" variant="outline" icon="expand" loading={fullPayload.loading} onClick={loadFullPayload}>Load full request</Button>
+                      </div>
+                    )}
+                    {selectedDetail.request?.redacted ? (
+                      <pre className="max-h-[540px] max-w-full overflow-auto rounded-lg border border-border-subtle bg-surface-2 p-4 font-mono text-xs text-text-main">[Request redacted. Enable &quot;Show full request details&quot; in Settings.]</pre>
+                    ) : (
+                      <PayloadPre value={selectedDetail.request} className={cn("max-h-[540px] max-w-full overflow-auto rounded-lg border p-4 font-mono text-xs text-text-main", requestIsTruncated ? "border-amber-500/20 bg-amber-500/10" : "border-border-subtle bg-surface-2")} />
+                    )}
+                  </>
                 )}
               </CollapsibleSection>
 
@@ -561,9 +578,7 @@ export default function RequestDetailsTab() {
                 ].filter(([, payload]) => payload).map(([title, payload]) => (
                   <div key={title} className="mb-4 last:mb-0">
                     <h4 className="mb-2 text-xs font-semibold text-text-muted">{title}</h4>
-                    <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-border-subtle bg-surface-2 p-4 font-mono text-xs text-text-main">
-                      {formatPayload(payload)}
-                    </pre>
+                    <PayloadPre value={payload} className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-border-subtle bg-surface-2 p-4 font-mono text-xs text-text-main" />
                   </div>
                 ))}
               </CollapsibleSection>

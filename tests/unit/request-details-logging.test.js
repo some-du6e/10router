@@ -42,25 +42,32 @@ describe("request detail logging", () => {
     })).toBe(128 * 1024);
   });
 
-  it("keeps the untruncated payload alongside a truncated preview", () => {
+  it("keeps the untruncated payload alongside a truncated preview", async () => {
     const big = { messages: [{ role: "system", content: "x".repeat(20000) }] };
     const record = {
       request: requestDetailsTest.truncateField(big, 5 * 1024),
       response: requestDetailsTest.truncateField({ ok: true }, 5 * 1024),
     };
     expect(record.request._truncated).toBe(true);
-    const packed = requestDetailsTest.packFullData({ request: big, response: { ok: true } }, record);
-    expect(requestDetailsTest.unpackFullData(packed)).toEqual({ request: big });
-    expect(requestDetailsTest.packFullData({ response: { ok: true } }, { response: { ok: true } })).toBeNull();
-    expect(requestDetailsTest.unpackFullData("not gzip")).toBeNull();
+    const packed = await requestDetailsTest.packFullData({ request: big, response: { ok: true } }, record);
+    expect(await requestDetailsTest.unpackFullData(packed)).toEqual({ request: big });
+    expect(await requestDetailsTest.packFullData({ response: { ok: true } }, { response: { ok: true } })).toBeNull();
+    expect(await requestDetailsTest.unpackFullData(null)).toBeNull();
+    await expect(requestDetailsTest.unpackFullData("not gzip")).rejects.toThrow();
   });
 
-  it("measures the full payload limit in bytes, not characters", () => {
+  it("measures the full payload limit in bytes, not characters", async () => {
     // 6M three-byte chars: under 16 MB as string length, over it as UTF-8.
     const big = { messages: [{ role: "user", content: "€".repeat(6 * 1024 * 1024) }] };
     const record = { request: requestDetailsTest.truncateField(big, 5 * 1024) };
     expect(record.request._truncated).toBe(true);
-    expect(requestDetailsTest.packFullData({ request: big }, record)).toBeNull();
+    expect(await requestDetailsTest.packFullData({ request: big }, record)).toBeNull();
+  });
+
+  it("skips payloads whose truncated size already exceeds the limit", async () => {
+    const record = { request: { _truncated: true, _originalSize: 17 * 1024 * 1024 } };
+    const item = { request: { toJSON() { throw new Error("should not serialize"); } } };
+    expect(await requestDetailsTest.packFullData(item, record)).toBeNull();
   });
 
   it("keeps Responses API input instead of replacing it with empty messages", () => {

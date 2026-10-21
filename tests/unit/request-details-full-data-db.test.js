@@ -51,4 +51,10 @@ describe("request detail full payload storage", () => {
     await db.clearRequestDetailFullData();
     expect(await db.getRequestDetailFullData("full-29")).toBeNull();
   });
+
+  it("reports a corrupt stored payload instead of treating it as missing", async () => {
+    const { getAdapter } = await import("@/lib/db/driver.js");
+    (await getAdapter()).run(`UPDATE requestDetails SET fullData = 'bm90IGd6aXA=' WHERE id = ?`, ["full-29"]);
+    await expect(db.getRequestDetailFullData("full-29")).rejects.toThrow(/corrupt/);
+  });
 });
