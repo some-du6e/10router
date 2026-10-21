@@ -248,7 +248,8 @@ describe("10. /models", () => {
     });
     const r = await detectEndpoint({ url: "https://api.anthropic.example.com/v1", apiKey: KEY, fetchFn, sleep: noSleep });
     expect(r.models).toEqual(["claude-opus-5-5", "claude-haiku-4-5"]);
-    expect(calls.filter((c) => c.pathname === "/v1/models").length).toBe(2);
+    // Two pages without the key, then the same two with it (a key may see more).
+    expect(calls.filter((c) => c.pathname === "/v1/models").length).toBe(4);
   });
   it("parseModelList excludes embedding / tts / image models", () => {
     expect(parseModelList({ data: ["gpt-6", "text-embedding-3-small", "tts-1", "gpt-image-1", "whisper-1", "dall-e-3"].map((id) => ({ id })) })).toEqual(["gpt-6"]);

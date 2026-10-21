@@ -26,6 +26,8 @@ export interface RedetectDiff {
   // Only when the endpoint listed its models itself (/models): a guessed list
   // that misses a model isn't proof the model is gone.
   removeModels: string[];
+  // Saved models the labs have moved on from; the endpoint didn't vouch for them.
+  outdatedModels: string[];
   quirks: { maxCompletionTokens?: boolean; apiKeyHeader?: "api-key" | null; modelRoutes?: Record<string, string> };
   modelsNote: string | null;
   keyConfirmed?: string;
@@ -98,8 +100,9 @@ function routesChange(node: SavedEndpoint, r: DetectResult, target: Protocol): R
   return Object.fromEntries(built.models.map((m) => [m, built.routes[m] || target]));
 }
 
-export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: DetectResult): RedetectDiff {
-  const empty: RedetectDiff = { ok: false, protocol: null, baseUrl: null, addModels: [], removeModels: [], quirks: {}, modelsNote: null, changes: 0 };
+// `outdated`: saved models the labs have moved on from, offered for removal too.
+export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: DetectResult, outdated: string[] = []): RedetectDiff {
+  const empty: RedetectDiff = { ok: false, protocol: null, baseUrl: null, addModels: [], removeModels: [], outdatedModels: [], quirks: {}, modelsNote: null, changes: 0 };
   if (!r.ok) return { ...empty, error: r.error || "Detection failed", keyConfirmed: r.keyConfirmed };
   const from = savedProtocol(node);
   const to = r.protocol || from;
@@ -107,13 +110,19 @@ export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: De
   const baseUrl = r.baseUrl && trimUrl(r.baseUrl) !== trimUrl(node.baseUrl) ? { from: trimUrl(node.baseUrl), to: trimUrl(r.baseUrl) } : null;
   const found = r.models || [];
   const have = new Set(currentModels);
-  const addModels = found.filter((m) => !have.has(m));
-  const removeModels = r.modelsSource === "models" ? currentModels.filter((m) => !found.includes(m)) : [];
+  // Outdated but just listed or answered by the endpoint: the user may want it, keep it.
+  const listed = new Set(found.map((m) => m.toLowerCase()));
+  const old = new Set(outdated.filter((m) => !listed.has(m.toLowerCase())));
+  // Only a full list proves a model is gone; a cut-short one just missed it.
+  const fullList = r.modelsSource === "models" && r.listComplete !== false;
+  const removeModels = currentModels.filter((m) => fullList && !listed.has(m.toLowerCase()));
+  const outdatedModels = currentModels.filter((m) => old.has(m) && !removeModels.includes(m));
+  const addModels = found.filter((m) => !have.has(m) && !old.has(m));
   const quirks: RedetectDiff["quirks"] = {};
   if (r.quirks?.maxCompletionTokens && !node.maxCompletionTokens) quirks.maxCompletionTokens = true;
   if (r.quirks?.apiKeyHeader && node.apiKeyHeader !== "api-key") quirks.apiKeyHeader = "api-key";
   const modelRoutes = routesChange(node, r, protocol?.applicable ? to : from);
   if (modelRoutes) quirks.modelRoutes = modelRoutes;
-  const changes = (protocol ? 1 : 0) + (baseUrl ? 1 : 0) + addModels.length + removeModels.length + Object.keys(quirks).length;
-  return { ok: true, protocol, baseUrl, addModels, removeModels, quirks, modelsNote: modelsNoteFor(r), keyConfirmed: r.keyConfirmed, changes };
+  const changes = (protocol ? 1 : 0) + (baseUrl ? 1 : 0) + addModels.length + removeModels.length + outdatedModels.length + Object.keys(quirks).length;
+  return { ok: true, protocol, baseUrl, addModels, removeModels, outdatedModels, quirks, modelsNote: modelsNoteFor(r), keyConfirmed: r.keyConfirmed, changes };
 }

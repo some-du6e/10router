@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { makeProbeFetch } from "@/lib/probeFetch.js";
-import { detectEndpoint, normalizeUrl } from "@/lib/endpointDetect.js";
+import { detectEndpoint, normalizeUrl, outdatedModels } from "@/lib/endpointDetect.js";
 import type { DetectProgress, DetectResult, Protocol } from "@/lib/endpointDetect.js";
 import { getEndpointCatalog } from "@/lib/endpointCatalog.js";
 import { retryAsClient } from "@/lib/endpointImpersonate.js";
@@ -59,7 +59,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       url: base, apiKey, fetchFn: savedSettingsFetch(rawFetch, node, apiKey, { identity: false }), signal,
       detect: (f) => { offset = maxN; sentBase = maxSent; return detectEndpoint({ url: base, apiKey, fetchFn: f, catalog, signal, onProgress }); },
     });
-    return { ...redetectDiff(node, current, result), steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!conn, ...(result.gate ? { gate: result.gate } : {}) };
+    return { ...redetectDiff(node, current, result, outdatedModels(current, catalog)), steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!conn, ...(result.gate ? { gate: result.gate } : {}) };
   }, { ok: false, error: "Re-detect failed", steps: [] });
 }
 
@@ -122,8 +122,16 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
   for (const m of ids(body.addModels)) {
     try { await addCustomModel({ providerAlias: id, id: m, type: "llm", name: undefined, caps: undefined }); added++; } catch { failed++; }
   }
-  for (const m of ids(body.removeModels)) {
+  const gone = ids(body.removeModels);
+  for (const m of gone) {
     try { await deleteCustomModel({ providerAlias: id, id: m, type: "llm" }); } catch { failed++; }
   }
-  return NextResponse.json({ node: updated, added, failed });
+  // Removed models' routes would keep their API's badge on the endpoint card.
+  let node2 = updated;
+  const routes = (updated.modelRoutes || {}) as Record<string, string>;
+  if (gone.some((m) => m in routes)) {
+    const modelRoutes = Object.fromEntries(Object.entries(routes).filter(([m]) => !gone.includes(m)));
+    node2 = (await updateProviderNode(id, { modelRoutes })) || { ...updated, modelRoutes };
+  }
+  return NextResponse.json({ node: node2, added, failed });
 }
