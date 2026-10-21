@@ -486,7 +486,8 @@ function outdatedTest(labs: CatalogLabModel[], recent = recentLabModels(labs)): 
   const current = new Set(recent.map((id) => id.toLowerCase()));
   const known = new Set(labs.map((m) => m.id.toLowerCase()));
   const bare = (id: string) => { const p = vendorPrefix(id); return (p ? id.slice(p.length + 1) : id).toLowerCase(); };
-  return (id) => known.has(bare(id)) && !current.has(bare(id));
+  // A dated snapshot of a current model (claude-haiku-4-5-20251001) is current too.
+  return (id) => { const b = bare(id); const alias = snapshotAlias(b)?.toLowerCase(); return known.has(b) && !current.has(b) && !(alias && current.has(alias)); };
 }
 export function outdatedModels(ids: string[], catalog: CatalogInput = {}): string[] {
   const labs = Array.isArray(catalog) ? [] : catalog.labs || [];
@@ -508,7 +509,13 @@ export function candidateModels(base: string, catalog: CatalogInput = {}): { mat
   const stale = outdatedTest(labs, recent);
   const prefixes = vendorPrefixes(matched?.models);
   const variants = (id: string) => [...[...prefixes].filter((p) => LAB_PREFIX[p]?.test(id)).map((p) => `${p}-${id}`), id];
-  const own = dedupe(dropSnapshots((matched?.models || []).filter((id) => !NON_CHAT_ID_RE.test(id) && !stale(id)))).slice(0, MAX_MATCHED_CANDIDATES);
+  // Newest first, so a cut-short run still reaches them; ids the labs don't date keep their place after.
+  const dated = new Map(labs.map((m) => [m.id.toLowerCase(), m.date]));
+  const dateOf = (id: string) => { const p = vendorPrefix(id); return dated.get((p ? id.slice(p.length + 1) : id).toLowerCase()) || ""; };
+  const own = dedupe(dropSnapshots((matched?.models || []).filter((id) => !NON_CHAT_ID_RE.test(id) && !stale(id))))
+    .map((id, i) => ({ id, i, d: dateOf(id) }))
+    .sort((a, b) => (b.d && a.d ? b.d.localeCompare(a.d) : a.d ? -1 : b.d ? 1 : 0) || a.i - b.i)
+    .map((x) => x.id).slice(0, MAX_MATCHED_CANDIDATES);
   const ownKeys = new Set(own.map((id) => id.toLowerCase()));
   const rest = dedupe(recent.flatMap(variants)).filter((id) => !ownKeys.has(id.toLowerCase()));
   const ids = matched ? [...own, ...rest.slice(0, MAX_EXTRA_CANDIDATES)] : rest.slice(0, MAX_CANDIDATES);
@@ -1450,7 +1457,7 @@ export async function fetchSiteInfo(base: string, fetchFn: SiteFetch, { signal =
     }
     return null;
   };
-  const readIcon = async (url: string): Promise<{ url: string; px: number } | null> => {
+  const readIcon = async (url: string, hint = 0): Promise<{ url: string; px: number } | null> => {
     try {
       const r = await get(url, "image/*");
       if (!r) return null;
@@ -1464,7 +1471,8 @@ export async function fetchSiteInfo(base: string, fetchFn: SiteFetch, { signal =
       if (!type) return null; // not an image (an HTML 200 for a missing favicon)
       const px = svg ? Infinity : imageSize(bytes);
       if (px !== null && px < ICON_MIN_PX) return null;
-      return { url: `data:${type};base64,${toBase64(bytes)}`, px: px ?? ICON_MIN_PX };
+      // No size in the header (WebP): trust the page's <link sizes>.
+      return { url: `data:${type};base64,${toBase64(bytes)}`, px: px ?? (hint || ICON_MIN_PX) };
     } catch { return null; }
   };
   let name: string | null = null;
@@ -1484,9 +1492,9 @@ export async function fetchSiteInfo(base: string, fetchFn: SiteFetch, { signal =
     // A small icon (a 32px favicon on the API host) keeps looking: the bare
     // domain usually has a sharp app icon. The biggest one found wins.
     if (!icon || icon.px < ICON_SHARP_PX) {
-      for (const cand of [...info.icons.slice(0, 3).map((i) => i.href), `${new URL(page).origin}/favicon.ico`]) {
+      for (const cand of [...info.icons.slice(0, 3), { href: `${new URL(page).origin}/favicon.ico`, size: 0 }]) {
         if (sig.aborted) break;
-        const got = await readIcon(cand);
+        const got = await readIcon(cand.href, cand.size);
         if (got && (!icon || got.px > icon.px)) { icon = got; host = new URL(page).hostname.replace(/^www\./, ""); break; }
       }
     }

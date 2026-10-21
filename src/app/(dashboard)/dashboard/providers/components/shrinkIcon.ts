@@ -1,7 +1,7 @@
 // Icons live on the endpoint's node, which the router reads on every request, so
 // they are stored small: scaled to 128px on the long side and re-encoded. Falls back to
 // the original when the browser can't decode it (some ICO files). A see-through
-// logo is padded onto a white tile.
+// logo is padded onto a white tile, or a dark one when the logo is light.
 const SIZE = 128;
 
 export async function shrinkIcon(dataUrl: string): Promise<string> {
@@ -26,7 +26,7 @@ export async function shrinkIcon(dataUrl: string): Promise<string> {
       tile.width = tile.height = side;
       const t = tile.getContext("2d");
       if (!t) return dataUrl;
-      t.fillStyle = "#fff";
+      t.fillStyle = lightLogo(ctx, canvas.width, canvas.height) ? "#18181b" : "#fff";
       t.fillRect(0, 0, side, side);
       const k = (side * 0.72) / Math.max(w, h);
       t.imageSmoothingQuality = "high";
@@ -44,3 +44,11 @@ export async function shrinkIcon(dataUrl: string): Promise<string> {
 
 const seeThroughCorners = (ctx: CanvasRenderingContext2D, w: number, h: number) =>
   [[0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1]].every(([x, y]) => ctx.getImageData(x, y, 1, 1).data[3] < 128);
+
+// Mean brightness of the opaque pixels: a white glyph would vanish on a white tile.
+function lightLogo(ctx: CanvasRenderingContext2D, w: number, h: number) {
+  const d = ctx.getImageData(0, 0, w, h).data;
+  let sum = 0, n = 0;
+  for (let i = 0; i < d.length; i += 4) if (d[i + 3] >= 128) { sum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]; n++; }
+  return n > 0 && sum / n > 200;
+}

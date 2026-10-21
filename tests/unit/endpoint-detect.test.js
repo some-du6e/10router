@@ -137,7 +137,20 @@ describe("candidateModels", () => {
     expect(ids.slice(0, 3)).toEqual(["openai-gpt-5.5", "deepseek-r1", "mistral-large2"]); // not in the labs: kept
     expect(ids).toEqual(expect.arrayContaining(["claude-opus-5-5", "openai-gpt-6.1-sol", "gpt-6.1-sol", "kimi-k3"]));
     expect(ids).not.toContain("deepseek-kimi-k3"); // "deepseek-r1" is a model, not a prefix
-    expect(outdatedModels(["claude-opus-4-5", "openai-gpt-4.1", "claude-opus-5-5", "mistral-large2"], catalog)).toEqual(["claude-opus-4-5", "openai-gpt-4.1"]);
+    expect(outdatedModels(["claude-opus-4-5", "openai-gpt-4.1", "claude-opus-5-5", "mistral-large2", "deepseek-r1"], catalog)).toEqual(["claude-opus-4-5", "openai-gpt-4.1"]);
+    expect(outdatedModels(["claude-opus-4-5"], {})).toEqual([]);
+  });
+
+  it("keeps dated snapshots of current models, and tries the gateway's newest models first", () => {
+    const labs = [...LABS,
+      { id: "claude-haiku-5-5", lab: "anthropic", family: "claude-haiku", date: "2026-08-01" },
+      { id: "claude-haiku-5-5-20260801", lab: "anthropic", family: "claude-haiku", date: "2026-08-01" },
+      { id: "claude-sonnet-5", lab: "anthropic", family: "claude-sonnet", date: "2026-03-01" },
+    ];
+    const catalog = { providers: [{ id: "gw", name: "GW", api: "https://gw.example.com/v1", models: ["mystery-1", "claude-sonnet-5", "claude-haiku-5-5-20260801"] }], labs };
+    expect(outdatedModels(["claude-haiku-5-5-20260801"], catalog)).toEqual([]);
+    const { ids } = candidateModels("https://gw.example.com/v1", catalog);
+    expect(ids.slice(0, 3)).toEqual(["claude-haiku-5-5-20260801", "claude-sonnet-5", "mystery-1"]);
   });
 
   it("an unknown gateway still gets the latest lab models", () => {
