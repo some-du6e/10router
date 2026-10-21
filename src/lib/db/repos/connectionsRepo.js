@@ -11,6 +11,8 @@ const OPTIONAL_FIELDS = [
 ];
 
 // Read by sse/services/autoCombo.ts to notice its model catalog is stale.
+// Bumped on any write that changes what /v1/models lists: connections, model
+// aliases, custom and disabled models.
 export function bumpConnectionsVersion() {
   global._connectionsVersion = (global._connectionsVersion || 0) + 1;
 }
@@ -255,6 +257,7 @@ export async function updateProviderConnection(id, data) {
       existing.isActive !== merged.isActive ||
       existing.authType !== merged.authType ||
       psdBefore.prefix !== psdAfter.prefix ||
+      psdBefore.baseUrl !== psdAfter.baseUrl ||
       JSON.stringify(psdBefore.enabledModels) !== JSON.stringify(psdAfter.enabledModels);
   });
   if (servesChanged) bumpConnectionsVersion();

@@ -83,8 +83,12 @@ interface CatalogEntry {
 // Tried first to last, so free and flat-rate plans serve before anything metered.
 const BILLING_ORDER: BillingSet[] = ["free", "subscription", "freeTier", "custom", "payg"];
 
-const CATALOG_TTL_MS = 60_000;
+// Edits that change the list bump the connections version, so the TTL only
+// has to catch upstreams adding models; each rebuild calls every /models.
+const CATALOG_TTL_MS = 5 * 60_000;
 const CATALOG_RETRY_MS = 5_000;
+// A build that timed out may still be running; give it time before another.
+const CATALOG_TIMEOUT_RETRY_MS = 60_000;
 // One slow upstream /models must not stall the refresh forever.
 const CATALOG_BUILD_TIMEOUT_MS = 30_000;
 const COLD_START_WAIT_MS = 3_000;
@@ -96,6 +100,8 @@ interface CatalogState {
   expiresAt: number;
   refreshing: Promise<void> | null;
   refreshStartedAt: number;
+  // Version the running (or last started) build reads; entries hold connectionsVersion.
+  attemptedVersion: number;
   connectionsVersion: number;
 }
 
@@ -109,8 +115,11 @@ declare global {
 const connectionsVersion = () => globalThis._connectionsVersion || 0;
 
 const catalog: CatalogState = (globalThis._autoComboCatalog ??= {
-  entries: null, expiresAt: 0, refreshing: null, refreshStartedAt: 0, connectionsVersion: -1,
+  entries: null, expiresAt: 0, refreshing: null, refreshStartedAt: 0, attemptedVersion: -1, connectionsVersion: -1,
 });
+
+// Loaded on first build; builds can overlap, so they share one import.
+let modelsRoute: Promise<typeof import("@/app/api/v1/models/route.js")> | undefined;
 
 async function buildCatalog(): Promise<CatalogEntry[]> {
   const conns = ((await getProviderConnections()) as Connection[]).filter((c) => c.isActive !== false);
@@ -127,7 +136,7 @@ async function buildCatalog(): Promise<CatalogEntry[]> {
     if (prefix) providerByPrefix.set(prefix, c.provider);
   }
 
-  const { buildModelsList } = await import("@/app/api/v1/models/route.js");
+  const { buildModelsList } = await (modelsRoute ??= import("@/app/api/v1/models/route.js"));
   const list = (await buildModelsList(["llm"])) as { id?: string; owned_by?: string }[];
   const entries: CatalogEntry[] = [];
   for (const m of list) {
@@ -142,43 +151,55 @@ async function buildCatalog(): Promise<CatalogEntry[]> {
 }
 
 function refreshCatalog(): Promise<void> {
-  if (catalog.refreshing) return catalog.refreshing;
   const version = connectionsVersion();
+  // A change made while a build runs needs a build that reads it.
+  if (catalog.refreshing && catalog.attemptedVersion === version) return catalog.refreshing;
+  catalog.attemptedVersion = version;
   catalog.refreshStartedAt = Date.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Error("catalog build timed out");
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("catalog build timed out")), CATALOG_BUILD_TIMEOUT_MS);
+    timer = setTimeout(() => reject(timedOut), CATALOG_BUILD_TIMEOUT_MS);
   });
-  catalog.refreshing = Promise.race([buildCatalog(), timeout])
-    .then((entries) => {
-      catalog.entries = entries;
-      catalog.expiresAt = Date.now() + CATALOG_TTL_MS;
-      catalog.connectionsVersion = version;
-    })
-    .catch(() => {
-      // Keep whatever list we had and try again soon.
-      catalog.expiresAt = Date.now() + CATALOG_RETRY_MS;
+  // Builds can overlap, so only one at least as new as what we hold may land,
+  // even if it finishes after timing out.
+  const build = buildCatalog().then((entries) => {
+    if (version < catalog.connectionsVersion) return;
+    catalog.entries = entries;
+    catalog.expiresAt = Date.now() + CATALOG_TTL_MS;
+    catalog.connectionsVersion = version;
+  });
+  build.catch(() => {});
+  const refreshing: Promise<void> = Promise.race([build, timeout])
+    .catch((err: unknown) => {
+      // Keep whatever list we had and try again later, unless a newer build began.
+      if (catalog.attemptedVersion === version) {
+        catalog.expiresAt = Date.now() + (err === timedOut ? CATALOG_TIMEOUT_RETRY_MS : CATALOG_RETRY_MS);
+      }
     })
     .finally(() => {
       clearTimeout(timer);
-      catalog.refreshing = null;
+      if (catalog.refreshing === refreshing) catalog.refreshing = null;
     });
-  return catalog.refreshing;
+  catalog.refreshing = refreshing;
+  return refreshing;
 }
 
 /**
  * The catalog as of the last refresh, never waiting on one. Upstream /models
  * calls can take tens of seconds, so a request finding the cache cold or stale
- * starts a background refresh and routes as if auto combos were off.
+ * starts a background refresh and routes as if auto combos were off. A build
+ * that failed for the current version is retried only once its backoff ends.
  */
 function currentCatalog(): CatalogEntry[] {
-  if (Date.now() >= catalog.expiresAt || catalog.connectionsVersion !== connectionsVersion()) void refreshCatalog();
+  if (Date.now() >= catalog.expiresAt || catalog.attemptedVersion !== connectionsVersion()) void refreshCatalog();
   return catalog.entries || [];
 }
 
 /** Fill the catalog now. Used by tests and to warm it at startup. */
 export async function warmAutoComboCatalog(): Promise<void> {
   catalog.expiresAt = 0;
+  catalog.attemptedVersion = -1;
   await refreshCatalog();
 }
 
@@ -235,12 +256,12 @@ export async function getAutoComboModels(modelStr: string, settingsIn?: AutoComb
   // Right after startup or a connection change the list is missing or stale.
   // Give that build a short head start, counted from when it began, so a slow
   // build delays requests for a few seconds in total rather than each one.
-  if (catalog.entries === null || catalog.connectionsVersion !== connectionsVersion()) {
-    const pending = refreshCatalog();
+  let entries = currentCatalog();
+  if ((catalog.entries === null || catalog.connectionsVersion !== connectionsVersion()) && catalog.refreshing) {
     const left = catalog.refreshStartedAt + COLD_START_WAIT_MS - Date.now();
-    if (left > 0) await Promise.race([pending, sleep(left)]);
+    if (left > 0) await Promise.race([catalog.refreshing, sleep(left)]);
+    entries = catalog.entries || [];
   }
-  const entries = currentCatalog();
   if (entries.length === 0) return [];
 
   const settings = await loadSettings(settingsIn);
@@ -280,6 +301,25 @@ export async function resolveAutoCombo(
     return aliases?.[bare] ? null : models;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Whether a request for this id has to stay off blocked billing sets even when
+ * no auto combo forms (every provider blocked, or the catalog still cold). A
+ * bare id without a user combo or alias would otherwise be routed by its name
+ * alone, claude-* to Anthropic, gpt-* to OpenAI, straight onto a metered key.
+ */
+export async function billingPolicyApplies(modelStr: string, builtinAliases: Record<string, unknown> = {}): Promise<boolean> {
+  const bare = stripContextWindowSuffix(modelStr).model;
+  if (!bare || bare.includes("/") || builtinAliases[bare]) return false;
+  try {
+    if (await getComboByName(bare)) return false;
+    const aliases = (await getModelAliases()) as Record<string, unknown> | null;
+    return !aliases?.[bare];
+  } catch {
+    // Unsure means the safe side: the request may only use allowed accounts.
+    return true;
   }
 }
 

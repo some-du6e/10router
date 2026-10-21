@@ -10,7 +10,7 @@ import {
 import { handleAntigravityQuotaError, clearAntigravityStrikes } from "../services/antigravityQuota.js";
 import { getSettings, getProviderNodeById, updateProviderNode, getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
 import { getModelInfo, getComboModels, comboLookupName } from "../services/model.js";
-import { resolveAutoCombo, blockedBillingSets, connectionBilling } from "../services/autoCombo.js";
+import { resolveAutoCombo, blockedBillingSets, connectionBilling, billingPolicyApplies } from "../services/autoCombo.js";
 import type { BillingSet } from "../services/autoCombo.js";
 import { BUILTIN_MODEL_ALIASES } from "open-sse/services/model.js";
 import { handleChatCore, clientReceivesStream } from "open-sse/handlers/chatCore.js";
@@ -309,6 +309,9 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
     });
   }
 
+  // A bare id that formed no auto combo still may not reach a blocked account.
+  const soloBlockedBilling = (await billingPolicyApplies(modelStr, BUILTIN_MODEL_ALIASES)) ? blockedBillingSets(settings) : null;
+
   // Single model request — may still switch to a capacity-adapter model if the
   // target lacks a capability the request needs (e.g. no vision, request has an image).
   const soloAugmented = augmentModelsWithCapacityAdapter([modelStr], requiredCapabilities, settings);
@@ -320,7 +323,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
         body,
         models: soloAugmented,
         handleSingleModel: withCapacityAdapterStripping(
-          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures }),
+          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures, blockedBilling: soloBlockedBilling }),
           adapterAdded
         ),
         log,
@@ -331,7 +334,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
     });
   }
 
-  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { routingFailures });
+  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { routingFailures, blockedBilling: soloBlockedBilling });
 }
 
 /**
@@ -581,11 +584,11 @@ async function routeSingleModelChat(
   const { provider, model } = modelInfo as Required<ModelInfo>;
 
   if ((sourceFormatOverride || detectFormat(body)) === FORMATS.CLAUDE) {
-    const sideSearch = await answerClaudeSideSearch(body, { provider, model: body.model, request, apiKey, log } as Parameters<typeof answerClaudeSideSearch>[1]);
+    const sideSearch = await answerClaudeSideSearch(body, { provider, model: body.model, request, apiKey, log, blockedBilling } as Parameters<typeof answerClaudeSideSearch>[1]);
     if (sideSearch) return sideSearch;
   }
 
-  body = await enrichClaudeBuiltinSearch(body, { provider, request, apiKey, log } as Parameters<typeof enrichClaudeBuiltinSearch>[1]);
+  body = await enrichClaudeBuiltinSearch(body, { provider, request, apiKey, log, blockedBilling } as Parameters<typeof enrichClaudeBuiltinSearch>[1]);
 
   // Routing shown in the unified "▶" line (client model → provider/model)
 
@@ -659,8 +662,11 @@ async function routeSingleModelChat(
         };
       }
       if (excludeConnectionIds.size === 0) {
-        log.warn("AUTH", `No active credentials for provider: ${provider}`);
-        return { success: false, unconfigured: true, status: HTTP_STATUS.NOT_FOUND, error: `No active credentials for provider: ${provider}`, response: errorResponse(HTTP_STATUS.NOT_FOUND, `No active credentials for provider: ${provider}`) };
+        const error = blockedBilling
+          ? `No allowed account for ${provider}/${model}: bare model ids skip ${[...blockedBilling].join(", ")} billing. Allow it under Profile → Auto Combos, or ask for a provider/model id.`
+          : `No active credentials for provider: ${provider}`;
+        log.warn("AUTH", error);
+        return { success: false, unconfigured: true, status: HTTP_STATUS.NOT_FOUND, error, response: errorResponse(HTTP_STATUS.NOT_FOUND, error) };
       }
       log.warn("CHAT", "No more accounts available", { provider });
       const status = lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE;

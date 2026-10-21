@@ -7,9 +7,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 // /v1/models lists models under each connection's output prefix; the test
 // controls that list directly and connects whichever providers it names.
-const catalog = vi.hoisted(() => ({ ids: [], hang: false }));
+const catalog = vi.hoisted(() => ({ ids: [], hang: false, builds: 0 }));
 vi.mock("@/app/api/v1/models/route.js", () => ({
   buildModelsList: async () => {
+    catalog.builds++;
     if (catalog.hang) await new Promise(() => {});
     return catalog.ids.map((id) => ({ id, object: "model", owned_by: id.split("/")[0] }));
   },
@@ -220,6 +221,69 @@ describe("auto combos", () => {
 
     await expect(ctx.resolveAutoCombo("nope-1")).resolves.toBeNull();
     await expect(ctx.resolveAutoCombo("cc/claude-opus-5-5")).resolves.toBeNull();
+  });
+
+  it("keeps a bare id on allowed accounts even when no auto combo forms", async () => {
+    const ctx = await setup(["anthropic/claude-opus-5-5"], [{ provider: "anthropic", authType: "apikey" }]);
+    // Only a blocked provider serves it, so nothing forms and routing falls to
+    // the name: claude-* goes to Anthropic. That must still skip the key.
+    await expect(ctx.resolveAutoCombo("claude-opus-5-5")).resolves.toBeNull();
+    await expect(ctx.billingPolicyApplies("claude-opus-5-5[1m]")).resolves.toBe(true);
+
+    await ctx.createCombo({ name: "claude-opus-5-5", models: ["anthropic/claude-opus-5-5"] });
+    await ctx.setModelAlias("opus", "anthropic/claude-opus-5-5");
+    await expect(ctx.billingPolicyApplies("claude-opus-5-5")).resolves.toBe(false);
+    await expect(ctx.billingPolicyApplies("opus")).resolves.toBe(false);
+    await expect(ctx.billingPolicyApplies("grok-build", { "grok-build": "gcli/grok-build" })).resolves.toBe(false);
+    await expect(ctx.billingPolicyApplies("anthropic/claude-opus-5-5")).resolves.toBe(false);
+  });
+
+  it("picks up alias and disabled-model edits without waiting out the cache", async () => {
+    const ctx = await setup(["cc/m-4"], [{ provider: "claude" }]);
+    await expect(ctx.getAutoComboModels("m-4")).resolves.toEqual(["cc/m-4"]);
+
+    catalog.ids = [];
+    const { disableModels } = await import("@/lib/db/repos/disabledModelsRepo.js");
+    await disableModels("cc", ["m-4"]);
+    await expect(ctx.getAutoComboModels("m-4")).resolves.toEqual([]);
+
+    catalog.ids = ["cc/m-4"];
+    await ctx.setModelAlias("m4", "cc/m-4");
+    await expect(ctx.getAutoComboModels("m-4")).resolves.toEqual(["cc/m-4"]);
+  });
+
+  it("backs off after a timed-out build instead of starting another per request", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    try {
+      const ctx = await setup(["cc/m-5"], [{ provider: "claude" }]);
+      catalog.hang = true;
+      catalog.builds = 0;
+      await ctx.createProviderConnection({ provider: "kiro", authType: "oauth", name: "kiro-3", accessToken: "t", isActive: true });
+      const first = ctx.getAutoComboModels("m-5");
+      await vi.advanceTimersByTimeAsync(31_000);
+      await first;
+      expect(catalog.builds).toBe(1);
+      // Timed out: the next requests serve the old list and start nothing new.
+      await ctx.getAutoComboModels("m-5");
+      await ctx.getAutoComboModels("m-5");
+      expect(catalog.builds).toBe(1);
+    } finally {
+      catalog.hang = false;
+      vi.useRealTimers();
+    }
+  });
+
+  it("starts a fresh build when connections change mid-build", async () => {
+    const ctx = await setup(["cc/m-6"], [{ provider: "claude" }]);
+    catalog.hang = true;
+    catalog.builds = 0;
+    await ctx.createProviderConnection({ provider: "codex", authType: "oauth", name: "cx-1", accessToken: "t", isActive: true });
+    void ctx.getAutoComboModels("m-6");
+    await ctx.createProviderConnection({ provider: "kiro", authType: "oauth", name: "kr-1", accessToken: "t", isActive: true });
+    catalog.hang = false;
+    catalog.ids = ["cc/m-6", "kr/m-6"];
+    await expect(ctx.getAutoComboModels("m-6")).resolves.toEqual(["kr/m-6", "cc/m-6"]);
+    expect(catalog.builds).toBe(2);
   });
 
   describe("sanitizeAutoComboSetting", () => {

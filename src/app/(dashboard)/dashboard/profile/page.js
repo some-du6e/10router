@@ -323,6 +323,7 @@ export default function ProfilePage() {
   };
 
   const [autoComboExcludedDraft, setAutoComboExcludedDraft] = useState(null);
+  const [excludedError, setExcludedError] = useState("");
 
   // Until settings load (or if they fail to) show the server's defaults and
   // keep the toggles locked, so a click can't save a list that unblocks paid sets.
@@ -364,9 +365,11 @@ export default function ProfilePage() {
       if (res.ok) {
         setSettings(prev => ({ ...prev, autoComboExcludedProviders: providers }));
         setAutoComboExcludedDraft(null);
-      }
+        setExcludedError("");
+      } else setExcludedError("Couldn't save. Try again.");
     } catch (err) {
       console.error("Failed to update auto combo exclusions:", err);
+      setExcludedError("Couldn't save. Try again.");
     }
   };
 
@@ -1662,6 +1665,9 @@ export default function ProfilePage() {
                   </div>
                 ))}
               </div>
+              {billingLoaded && AUTO_COMBO_BILLING_OPTIONS.every(({ set }) => blockedBilling.includes(set)) && (
+                <p className="text-xs text-amber-500 mt-2">Every kind is off, so bare model ids can&apos;t use any account. Ask for provider/model ids instead.</p>
+              )}
               {billingError && <p className="text-xs text-red-500 mt-2">{billingError}</p>}
             </div>
 
@@ -1683,6 +1689,7 @@ export default function ProfilePage() {
                 className="w-40 sm:w-56 shrink-0"
               />
             </div>
+            {excludedError && <p className="text-xs text-red-500 -mt-2">{excludedError}</p>}
 
             <p className="text-xs text-text-muted italic pt-2 border-t border-border/50">
               {settings.fallbackStrategy === "round-robin"
