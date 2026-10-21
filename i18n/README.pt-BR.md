@@ -521,8 +521,6 @@ terceiros por meio de um provedor chamado "Auto-hospedado".
 | 📊 **Análise de uso** | Acompanhe tokens, custos e tendências ao longo do tempo | Otimizar gastos |
 | 🌐 **Implante em qualquer lugar** | Localhost, VPS, Docker, Cloudflare Workers | Opções flexíveis de implantação |
 
-Configure `X-9Router-Token-Saver: off` para ignorar todos os economizadores de tokens para uma solicitação de chat.
-
 <details>
 <summary><b>📖 Detalhes do recurso</b></summary>
 
