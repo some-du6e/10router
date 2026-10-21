@@ -2,7 +2,7 @@
 
 ## Fixes
 - Re-detect on an endpoint page now says what it's doing while it runs: which step it's on, how many models it has checked and how many work, requests sent, time taken, and any rate-limit wait. A Stop button cancels it, and leaving the page cancels it too.
-- Endpoints with no model list (Snowflake Cortex) now find the newest models (Claude Opus/Sonnet/Haiku 5.5, GPT-6, Kimi K3, GLM 5.3) and stop adding releases the labs have moved on from, like Claude Opus 4.5 or GPT-4.1. Re-detect offers to remove outdated models already saved.
+- Endpoints with no model list (Snowflake Cortex) now find the newest models (Claude Opus/Sonnet/Haiku 5.5, GPT-6, Kimi K3, GLM 5.3) and stop adding releases the labs have moved on from, like Claude Opus 4.5 or GPT-4.1. The Models card's refresh offers to remove outdated models already saved.
 - The endpoint page shows one badge per API the endpoint answers on, not just the main one.
 - Endpoint icons come out sharp: a tiny favicon on the API host is passed over for the company's full-size app icon, and see-through logos get padding so the rounded corners don't cut them off.
 - Custom endpoint cards on the providers page now match the other provider cards: a letter badge instead of a borrowed OpenAI/Anthropic logo, a key count, and one pill per API the endpoint answers on. Existing endpoints switch over automatically.
@@ -26,6 +26,7 @@
 - Remove the IDE MITM proxy, certificate and DNS interception, dashboard controls, API routes, startup hooks, and CLI/Docker packaging. Upgrade cleanup stops old proxy processes and removes their loopback hosts entries. Tailscale keeps independent encrypted elevation credentials for reboot recovery.
 
 ## Features
+- **Separate model refresh**: on an endpoint page, Re-detect now only re-checks the endpoint itself (which API, the URL, fixes), and the Models card has its own refresh button that looks for new and outdated models. Before, one Re-detect button did both.
 - **Load full request**: when a stored request shows `[Content truncated]`, a button on the banner loads the whole payload. The newest 25 requests keep their full payload (compressed), only while sensitive request details are enabled.
 - **Add endpoint**: one button on the providers page adds an OpenAI- or Anthropic-compatible endpoint from a URL and key. 10router detects the API with free requests only (no generation), checks the key, and finds models from `/models` or, when there is none (Snowflake Cortex), from the models.dev catalog.. Custom endpoints now sit right after OpenRouter.
 - **Add endpoint, the full version**: the dialog shows each request live as it runs, spins through models like a slot machine while it checks them, and ends on a clear result. Each failure has its own screen: wrong key (with Change key), key stopped working partway, host unreachable, server down, or only works as a known client. When both APIs work, it shows the models of each, grouped by maker. It can also check models it skipped, send a 1-token test message, copy the site's name and icon, and show each save step with Retry. Advanced settings cover the auth header style, acting as Codex CLI or Claude Code, and raw request overrides with a live preview.

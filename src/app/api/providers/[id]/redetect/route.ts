@@ -9,7 +9,7 @@ import { mergeConnectionData, mergeQuirks } from "@/shared/utils/nodeQuirkMerge.
 import { isCustomEndpoint } from "@/lib/endpointRequestLog.js";
 import { guardTarget, respond } from "@/app/api/provider-nodes/detect/ndjson.js";
 import { redetectDiff, savedProtocol, savedSettingsFetch } from "./diff.js";
-import type { SavedEndpoint } from "./diff.js";
+import type { RedetectPart, SavedEndpoint } from "./diff.js";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +22,8 @@ type CustomModel = { id?: string; providerAlias?: string; type?: string; kind?: 
 // active key, and answer with what would change. Nothing is saved here; the
 // page applies the changes the user accepts through the usual routes.
 // [id] is the endpoint's node id. Streams progress as NDJSON when asked.
+// ?part=endpoint checks the API, URL and fixes without asking about models;
+// ?part=models reports only models (it still finds which APIs answer, to ask each).
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   if (!isCustomEndpoint(id)) return NextResponse.json({ ok: false, error: "Not a custom endpoint" }, { status: 400 });
@@ -41,6 +43,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const rawFetch = makeProbeFetch(guard.remote);
   // Probe with the endpoint's saved identity and auth style, as requests go out.
   const fetchFn = savedSettingsFetch(rawFetch, node, apiKey);
+  const q = new URL(request.url).searchParams.get("part");
+  const part: RedetectPart = q === "endpoint" || q === "models" ? q : "all";
+  const skipModels = part === "endpoint";
   return respond(request, "re-detecting endpoint", async (signal, send) => {
     const catalog = await getEndpointCatalog();
     // As in the detect route: the client-identity retry is a second run whose
@@ -52,14 +57,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       if (typeof ev.sent === "number") { ev.sent += sentBase; maxSent = Math.max(maxSent, ev.sent); }
       send(ev);
     };
-    const first = await detectEndpoint({ url: base, apiKey, fetchFn, catalog, signal, onProgress });
+    const first = await detectEndpoint({ url: base, apiKey, fetchFn, catalog, signal, onProgress, skipModels });
     // Still client-gated (no saved identity, or it stopped working): try the
     // known clients, as Add endpoint does. Their headers replace the saved ones.
     const result: DetectResult & { gate?: unknown } = await retryAsClient(first, {
       url: base, apiKey, fetchFn: savedSettingsFetch(rawFetch, node, apiKey, { identity: false }), signal,
-      detect: (f) => { offset = maxN; sentBase = maxSent; return detectEndpoint({ url: base, apiKey, fetchFn: f, catalog, signal, onProgress }); },
+      detect: (f) => { offset = maxN; sentBase = maxSent; return detectEndpoint({ url: base, apiKey, fetchFn: f, catalog, signal, onProgress, skipModels }); },
     });
-    return { ...redetectDiff(node, current, result, outdatedModels(current, catalog)), steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!conn, ...(result.gate ? { gate: result.gate } : {}) };
+    return { ...redetectDiff(node, current, result, outdatedModels(current, catalog), part), steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!conn, ...(result.gate ? { gate: result.gate } : {}) };
   }, { ok: false, error: "Re-detect failed", steps: [] });
 }
 
@@ -102,7 +107,17 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     updates.apiType = body.apiType;
   }
   if (typeof body.modelsNote === "string") updates.modelsNote = body.modelsNote.slice(0, 200);
-  const { quirks, removed } = mergeQuirks(node, { quirks: ownRoutesOnly(body.quirks, finalProtocol(node, updates.apiType)) });
+  // Switching API without a route offer (Re-detect's endpoint half): models
+  // that rode the old API implicitly keep it, as explicit routes.
+  let offered = body.quirks;
+  const oldProto = savedProtocol({ type: node.type, apiType: node.apiType });
+  const hasRoutes = !!offered && typeof offered === "object" && "modelRoutes" in (offered as object);
+  if (updates.apiType !== undefined && finalProtocol(node, updates.apiType) !== oldProto && !hasRoutes) {
+    const saved = (node.modelRoutes || {}) as Record<string, string>;
+    const mine = ((await getCustomModels()) as CustomModel[]).filter((m) => m.providerAlias === id && (m.kind || m.type || "llm") === "llm" && m.id).map((m) => m.id as string);
+    offered = { ...(offered && typeof offered === "object" ? offered : {}), modelRoutes: Object.fromEntries(mine.map((m) => [m, saved[m] || oldProto])) };
+  }
+  const { quirks, removed } = mergeQuirks(node, { quirks: ownRoutesOnly(offered, finalProtocol(node, updates.apiType)) });
   Object.assign(updates, quirks);
   const updated = (await updateProviderNode(id, updates)) as unknown as Record<string, unknown> & { baseUrl?: string; apiType?: string; prefix?: string; name?: string };
 
