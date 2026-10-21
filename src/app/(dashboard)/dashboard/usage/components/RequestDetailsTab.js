@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo, memo } from "react";
 import Card from "@/shared/components/Card";
 import Button from "@/shared/components/Button";
 import Drawer from "@/shared/components/Drawer";
 import Pagination from "@/shared/components/Pagination";
 import { cn } from "@/shared/utils/cn";
-import ConversationInspector from "./ConversationInspector";
+import ConversationInspector, { FullPayloadNotice } from "./ConversationInspector";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
 
 let providerNameCache = null;
@@ -124,6 +124,13 @@ function formatPayload(value, emptyLabel = "[No data]") {
   }
 }
 
+// Pretty-printing a multi-MB payload is slow, so do it once per payload, not
+// on every drawer render.
+const PayloadPre = memo(function PayloadPre({ value, className }) {
+  const text = useMemo(() => formatPayload(value), [value]);
+  return <pre className={className}>{text}</pre>;
+});
+
 export default function RequestDetailsTab() {
   const [details, setDetails] = useState([]);
   const [pagination, setPagination] = useState({
@@ -136,6 +143,8 @@ export default function RequestDetailsTab() {
   const [selectedDetail, setSelectedDetail] = useState(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [requestView, setRequestView] = useState("conversation");
+  const [fullState, setFullState] = useState({ loading: false, error: "" });
+  const [fullController, setFullController] = useState(null);
   const [providers, setProviders] = useState([]);
   const [providerNameCache, setProviderNameCache] = useState(null);
   const [filters, setFilters] = useState({
@@ -189,7 +198,9 @@ export default function RequestDetailsTab() {
   }, [fetchDetails]);
 
   const handleViewDetail = (detail) => {
+    fullController?.abort();
     setSelectedDetail(detail);
+    setFullState({ loading: false, error: "" });
     setRequestView("conversation");
     setIsDrawerOpen(true);
   };
@@ -207,6 +218,43 @@ export default function RequestDetailsTab() {
   };
 
   const requestIsTruncated = isTruncatedPayload(selectedDetail?.request);
+
+  // Swap the stored previews for the untruncated payloads kept server-side.
+  const loadFullPayload = async () => {
+    const id = selectedDetail?.id;
+    if (!id) return;
+    fullController?.abort();
+    const controller = new AbortController();
+    setFullController(controller);
+    setFullState({ loading: true, error: "" });
+    try {
+      const res = await fetch(`/api/usage/request-details/${encodeURIComponent(id)}/full`, { signal: controller.signal });
+      const data = await res.json().catch(() => null);
+      if (controller.signal.aborted) return;
+      if (!res.ok) {
+        // Evicted or turned off: stop offering a button that can't succeed.
+        if (res.status === 403 || res.status === 404) {
+          const unmark = (detail) => (detail.id === id ? { ...detail, hasFullData: false } : detail);
+          setSelectedDetail(prev => (prev ? unmark(prev) : prev));
+          setDetails(prev => prev.map(unmark));
+        }
+        throw new Error(data?.error || `Failed to load full payload (${res.status})`);
+      }
+      if (!data || typeof data !== "object") throw new Error("The server sent an unreadable full payload");
+      const merge = (detail) => (detail.id === id ? { ...detail, ...data, hasFullData: false } : detail);
+      // Only the open request gets the full payload; the list keeps its previews.
+      setSelectedDetail(prev => (prev ? merge(prev) : prev));
+      setFullState({ loading: false, error: "" });
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      setFullState({ loading: false, error: error.message });
+    }
+  };
+  const fullPayload = selectedDetail
+    ? { available: selectedDetail.hasFullData === true, load: loadFullPayload, ...fullState }
+    : null;
+  const anyPayloadTruncated = ["request", "providerRequest", "providerResponse", "response"]
+    .some((key) => isTruncatedPayload(selectedDetail?.[key]));
 
   return (
     <div className="flex min-w-0 flex-col gap-6">
@@ -374,7 +422,10 @@ export default function RequestDetailsTab() {
 
       <Drawer
         isOpen={isDrawerOpen}
-        onClose={() => setIsDrawerOpen(false)}
+        onClose={() => {
+          fullController?.abort();
+          setIsDrawerOpen(false);
+        }}
         title="Request Details"
         width="full"
         className="max-w-[1440px]"
@@ -495,16 +546,30 @@ export default function RequestDetailsTab() {
                   </div>
                 </div>
                 {requestView === "conversation" ? (
-                  <ConversationInspector key={selectedDetail.id} request={selectedDetail.request} response={selectedDetail.response} />
+                  <ConversationInspector key={selectedDetail.id} request={selectedDetail.request} response={selectedDetail.response} fullPayload={fullPayload} />
                 ) : (
-                  <pre className={cn("max-h-[540px] max-w-full overflow-auto rounded-lg border p-4 font-mono text-xs text-text-main", requestIsTruncated ? "border-amber-500/20 bg-amber-500/10" : "border-border-subtle bg-surface-2")}>
-                    {selectedDetail.request?.redacted ? '[Request redacted. Enable "Show full request details" in Settings.]' : formatPayload(selectedDetail.request)}
-                  </pre>
+                  <>
+                    {requestIsTruncated && (
+                      <div className="mb-3 flex flex-wrap items-center justify-end gap-2 text-xs">
+                        <FullPayloadNotice fullPayload={fullPayload} className="text-text-muted" />
+                      </div>
+                    )}
+                    {selectedDetail.request?.redacted ? (
+                      <pre className="max-h-[540px] max-w-full overflow-auto rounded-lg border border-border-subtle bg-surface-2 p-4 font-mono text-xs text-text-main">[Request redacted. Enable &quot;Show full request details&quot; in Settings.]</pre>
+                    ) : (
+                      <PayloadPre value={selectedDetail.request} className={cn("max-h-[540px] max-w-full overflow-auto rounded-lg border p-4 font-mono text-xs text-text-main", requestIsTruncated ? "border-amber-500/20 bg-amber-500/10" : "border-border-subtle bg-surface-2")} />
+                    )}
+                  </>
                 )}
               </CollapsibleSection>
 
               <CollapsibleSection key={selectedDetail.id} title="Debug" icon="bug_report">
                 <p className="mb-4 text-xs text-text-muted">Stored payloads for inspecting translation and provider behavior.</p>
+                {anyPayloadTruncated && (
+                  <div className="mb-4 text-xs text-text-muted">
+                    <FullPayloadNotice fullPayload={fullPayload} label="Load full payloads" className="" />
+                  </div>
+                )}
                 {[
                   ["Provider request", selectedDetail.providerRequest],
                   ["Provider response", selectedDetail.providerResponse],
@@ -512,9 +577,7 @@ export default function RequestDetailsTab() {
                 ].filter(([, payload]) => payload).map(([title, payload]) => (
                   <div key={title} className="mb-4 last:mb-0">
                     <h4 className="mb-2 text-xs font-semibold text-text-muted">{title}</h4>
-                    <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-border-subtle bg-surface-2 p-4 font-mono text-xs text-text-main">
-                      {formatPayload(payload)}
-                    </pre>
+                    <PayloadPre value={payload} className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-border-subtle bg-surface-2 p-4 font-mono text-xs text-text-main" />
                   </div>
                 ))}
               </CollapsibleSection>
