@@ -117,7 +117,7 @@ function unpackFullData(value) {
   }
 }
 
-export const __test__ = { sanitizeHeaders, getMaxJsonSize, truncateField, packFullData, unpackFullData };
+export const __test__ = { sanitizeHeaders, getMaxJsonSize, truncateField, packFullData, unpackFullData, flush: () => flushToDatabase() };
 
 function generateDetailId(model) {
   const timestamp = new Date().toISOString();
@@ -281,6 +281,14 @@ export async function getRequestDetailById(id) {
   const db = await getAdapter();
   const row = db.get(`SELECT data FROM requestDetails WHERE id = ?`, [id]);
   return row ? parseJson(row.data, null) : null;
+}
+
+// Drops every stored full payload, e.g. when "Show full request details" is
+// turned off, and forgets the cached config so pending writes stop keeping them.
+export async function clearRequestDetailFullData() {
+  cachedConfig = null;
+  const db = await getAdapter();
+  db.run(`UPDATE requestDetails SET fullData = NULL WHERE fullData IS NOT NULL`);
 }
 
 // Untruncated payloads for a row, keyed like the record (only the cut ones).

@@ -33,9 +33,8 @@ function FullPayloadNotice({ fullPayload, className = "mt-2" }) {
   if (!fullPayload.available)
     return (
       <span className={`${className} block`}>
-        The full payload isn&apos;t stored for this request. Only the newest 25
-        large requests keep one, while &quot;Show full request details&quot; is
-        on.
+        {fullPayload.error ||
+          "The full payload isn't stored for this request. Only the newest 25 requests keep one (up to 16 MB), while \"Show full request details\" is on."}
       </span>
     );
   return (

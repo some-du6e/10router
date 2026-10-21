@@ -11,6 +11,7 @@ import {
 } from "@/lib/auth/setupState";
 import { verifyDashboardPassword } from "@/lib/auth/dashboardSession";
 import { clearSetupToken } from "@/lib/auth/setupToken";
+import { clearRequestDetailFullData } from "@/lib/db/index.js";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -123,6 +124,11 @@ export async function PATCH(request) {
     if (passwordChanged) {
       await clearLegacyGrace();
       clearSetupToken();
+    }
+
+    // Stored full payloads hold prompts; turning the setting off removes them.
+    if (body.showSensitiveRequestDetails === false) {
+      await clearRequestDetailFullData();
     }
 
     // Apply outbound proxy settings immediately (no restart required)

@@ -137,6 +137,7 @@ export default function RequestDetailsTab() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [requestView, setRequestView] = useState("conversation");
   const [fullState, setFullState] = useState({ loading: false, error: "" });
+  const [fullController, setFullController] = useState(null);
   const [providers, setProviders] = useState([]);
   const [providerNameCache, setProviderNameCache] = useState(null);
   const [filters, setFilters] = useState({
@@ -190,6 +191,7 @@ export default function RequestDetailsTab() {
   }, [fetchDetails]);
 
   const handleViewDetail = (detail) => {
+    fullController?.abort();
     setSelectedDetail(detail);
     setFullState({ loading: false, error: "" });
     setRequestView("conversation");
@@ -214,16 +216,29 @@ export default function RequestDetailsTab() {
   const loadFullPayload = async () => {
     const id = selectedDetail?.id;
     if (!id) return;
+    fullController?.abort();
+    const controller = new AbortController();
+    setFullController(controller);
     setFullState({ loading: true, error: "" });
     try {
-      const res = await fetch(`/api/usage/request-details/${encodeURIComponent(id)}/full`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to load full payload");
+      const res = await fetch(`/api/usage/request-details/${encodeURIComponent(id)}/full`, { signal: controller.signal });
+      const data = await res.json().catch(() => ({}));
+      if (controller.signal.aborted) return;
+      if (!res.ok) {
+        // Evicted or turned off: stop offering a button that can't succeed.
+        if (res.status === 403 || res.status === 404) {
+          const unmark = (detail) => (detail.id === id ? { ...detail, hasFullData: false } : detail);
+          setSelectedDetail(prev => (prev ? unmark(prev) : prev));
+          setDetails(prev => prev.map(unmark));
+        }
+        throw new Error(data.error || `Failed to load full payload (${res.status})`);
+      }
       const merge = (detail) => (detail.id === id ? { ...detail, ...data, hasFullData: false } : detail);
       setSelectedDetail(prev => (prev ? merge(prev) : prev));
       setDetails(prev => prev.map(merge));
       setFullState({ loading: false, error: "" });
     } catch (error) {
+      if (controller.signal.aborted) return;
       setFullState({ loading: false, error: error.message });
     }
   };
@@ -399,7 +414,10 @@ export default function RequestDetailsTab() {
 
       <Drawer
         isOpen={isDrawerOpen}
-        onClose={() => setIsDrawerOpen(false)}
+        onClose={() => {
+          fullController?.abort();
+          setIsDrawerOpen(false);
+        }}
         title="Request Details"
         width="full"
         className="max-w-[1440px]"

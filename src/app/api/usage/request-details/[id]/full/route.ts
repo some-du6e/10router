@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getRequestDetailFullData } from "@/lib/db/index.js";
-import { getSettings } from "@/lib/localDb";
+import { getRequestDetailFullData, getSettings } from "@/lib/db/index.js";
 
 export const dynamic = "force-dynamic";
 
@@ -20,7 +19,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     if (!full) {
       return NextResponse.json({ error: "Full payload is no longer stored" }, { status: 404 });
     }
-    return NextResponse.json(full);
+    return NextResponse.json(full, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("[API] Failed to get full request detail:", error);
     return NextResponse.json({ error: "Failed to fetch full request detail" }, { status: 500 });
