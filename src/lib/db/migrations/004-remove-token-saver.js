@@ -14,12 +14,13 @@ const migration = {
       ]);
     }
 
-    const details = db.all(`SELECT id, data FROM requestDetails WHERE data LIKE '%"pxpipe"%'`);
-    for (const detail of details) {
-      const data = parseJson(detail.data, null);
+    // Load one row at a time: request details can be large.
+    const ids = db.all(`SELECT id FROM requestDetails WHERE data LIKE '%"pxpipe"%'`);
+    for (const { id } of ids) {
+      const data = parseJson(db.get("SELECT data FROM requestDetails WHERE id = ?", [id])?.data, null);
       if (!data || typeof data !== "object" || !("pxpipe" in data)) continue;
       delete data.pxpipe;
-      db.run("UPDATE requestDetails SET data = ? WHERE id = ?", [stringifyJson(data), detail.id]);
+      db.run("UPDATE requestDetails SET data = ? WHERE id = ?", [stringifyJson(data), id]);
     }
   },
 };
