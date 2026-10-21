@@ -10,6 +10,7 @@ import { POST as responsesPost } from "../../responses/route.js";
 import { getPooledCodexRateLimitHeaders } from "@/sse/services/codexPooledUsage";
 import { getModelAliases, getComboByName } from "@/lib/localDb";
 import { stripContextWindowSuffix } from "open-sse/services/model.js";
+import { getAutoComboModels } from "@/sse/services/model.js";
 
 export { OPTIONS } from "../../responses/route.js";
 
@@ -49,6 +50,10 @@ async function withCodexFallback(request) {
   const aliases = await getModelAliases();
   if (aliases?.[bareModel]) return request;
   if (await getComboByName(bareModel)) return request;
+  // Codex keeps its own accounts first. Only a model none of them serve is left
+  // for handleChat to route across the providers that do.
+  const servers = await getAutoComboModels(bareModel);
+  if (servers.length > 0 && !servers.some((id) => id.startsWith("cx/"))) return request;
 
   return new Request(request.url, {
     method: request.method,
