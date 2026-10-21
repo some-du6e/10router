@@ -847,6 +847,7 @@ export default function ProxyPoolsPage() {
             placeholder="your-vercel-api-token"
             hint={<>Token is used once for deployment and not stored. <a href="https://vercel.com/account/tokens" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Get token →</a></>}
             type="password"
+            ignorePasswordManagers
           />
           <Input
             label="Project Name"
@@ -914,6 +915,7 @@ export default function ProxyPoolsPage() {
             placeholder="your-cloudflare-api-token"
             hint={<>Requires &quot;Workers Scripts: Edit&quot; permission. <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Get token →</a></>}
             type="password"
+            ignorePasswordManagers
           />
           <Input
             label="Worker Name"
@@ -974,6 +976,7 @@ export default function ProxyPoolsPage() {
             placeholder="ddo_xxxxxxxxxxxxxxxx"
             hint={<>Token is used once for deployment, not stored. Found in Organization Settings.</>}
             type="password"
+            ignorePasswordManagers
           />
           <Input
             label="Organization Domain"

@@ -176,6 +176,7 @@ function AddCompatibleModal({ variant, isOpen, onClose, onCreated }) {
           type="password"
           value={checkKey}
           onChange={(e) => setCheckKey(e.target.value)}
+          ignorePasswordManagers
         />
         <Input
           label="Model ID (optional)"
