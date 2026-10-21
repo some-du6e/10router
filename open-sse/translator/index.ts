@@ -8,15 +8,30 @@ import { applyThinking, captureThinking } from "./concerns/thinkingUnified.js";
 import { captureSessionId } from "../utils/sessionManager.js";
 import { AntigravityExecutor } from "../executors/antigravity.js";
 import { PROVIDERS } from "../providers/index.js";
+import { CLAUDE_SYSTEM_PROMPT } from "../config/appConstants.js";
+
+// Request/response bodies are arbitrary upstream JSON; translators reshape them field by field.
+type Body = Record<string, any>;
+type RequestTranslator = (model: string, body: Body, stream: boolean, credentials: Credentials | null) => Body;
+type ResponseTranslator = (chunk: any, state: any) => any;
+type Credentials = {
+  accessToken?: string;
+  apiKey?: string;
+  rawHeaders?: Record<string, string>;
+  _clientSessionId?: string | null;
+  [key: string]: unknown;
+};
+type RequestLogger = { logOpenAIRequest?: (body: Body) => void } | null;
+type SystemBlock = { type: string; text?: string; [key: string]: unknown };
 
 // Registry for translators. Lazy-init guards against circular-import order:
 // translator modules call register() (side-effect) before this module's body runs.
 // var (not let): hoisted as undefined so register() can run during circular import (no TDZ).
-var requestRegistry;
-var responseRegistry;
+var requestRegistry: Map<string, RequestTranslator>;
+var responseRegistry: Map<string, ResponseTranslator>;
 
 // Register translator
-export function register(from, to, requestFn, responseFn) {
+export function register(from: string, to: string, requestFn: RequestTranslator | null, responseFn: ResponseTranslator | null) {
   requestRegistry ??= new Map();
   responseRegistry ??= new Map();
   const key = `${from}:${to}`;
@@ -32,20 +47,24 @@ export function register(from, to, requestFn, responseFn) {
 function ensureInitialized() {}
 
 // Strip specific content types from messages (explicit opt-in via strip[] in PROVIDER_MODELS)
-function stripContentTypes(body, stripList = []) {
+function stripContentTypes(body: Body, stripList: string[] = []) {
   if (!stripList.length || !body.messages || !Array.isArray(body.messages)) return;
   const imageTypes = new Set(["image_url", "image"]);
   const audioTypes = new Set(["audio_url", "input_audio"]);
-  const shouldStrip = (type) => {
+  const shouldStrip = (type: string) => {
     if (imageTypes.has(type)) return stripList.includes("image");
     if (audioTypes.has(type)) return stripList.includes("audio");
     return false;
   };
   for (const msg of body.messages) {
     if (!Array.isArray(msg.content)) continue;
-    msg.content = msg.content.filter(part => !shouldStrip(part.type));
+    msg.content = msg.content.filter((part: { type: string }) => !shouldStrip(part.type));
     if (msg.content.length === 0) msg.content = "";
   }
+}
+
+function providerQuirks(provider: string | null): Record<string, unknown> | undefined {
+  return provider ? (PROVIDERS as Record<string, { quirks?: Record<string, unknown> }>)[provider]?.quirks : undefined;
 }
 
 // Translate request: source -> openai -> target
@@ -53,7 +72,27 @@ function stripContentTypes(body, stripList = []) {
 // stripped in chatCore before dispatch. They must survive the openai pivot.
 const TRANSLATOR_METADATA_KEYS = ["_toolNamespaces", "_customToolNames"];
 
-export function translateRequest(sourceFormat, targetFormat, model, body, stream = true, credentials = null, provider = null, reqLogger = null, stripList = [], connectionId = null, clientTool = null) {
+function withClaudeCodePrompt(system: unknown): SystemBlock[] {
+  const blocks: SystemBlock[] = Array.isArray(system) ? system
+    : typeof system === "string" && system ? [{ type: "text", text: system }]
+    : [];
+  if (blocks.some((b) => b?.text?.includes(CLAUDE_SYSTEM_PROMPT))) return blocks;
+  return [{ type: "text", text: CLAUDE_SYSTEM_PROMPT }, ...blocks];
+}
+
+export function translateRequest(
+  sourceFormat: string,
+  targetFormat: string,
+  model: string,
+  body: Body,
+  stream = true,
+  credentials: Credentials | null = null,
+  provider: string | null = null,
+  reqLogger: RequestLogger = null,
+  stripList: string[] = [],
+  connectionId: string | null = null,
+  clientTool: string | null = null,
+): Body {
   ensureInitialized();
   let result = body;
 
@@ -128,14 +167,14 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
     targetFormat === FORMATS.KIRO &&
     (sourceFormat === FORMATS.OPENAI || sourceFormat === FORMATS.CLAUDE);
   if (!kiroThinkingMappedByTranslator) {
-    applyThinking(targetFormat, model, result, provider, thinkingIntent);
+    applyThinking(targetFormat, model, result, provider as any, thinkingIntent as any);
   }
 
   // Always normalize to clean OpenAI format when target is OpenAI
   // This handles hybrid requests (e.g., OpenAI messages + Claude tools)
   if (targetFormat === FORMATS.OPENAI) {
     result = filterToOpenAIFormat(result, {
-      preserveCacheControl: !!PROVIDERS[provider]?.quirks?.preserveCacheControl,
+      preserveCacheControl: !!providerQuirks(provider)?.preserveCacheControl,
     });
   }
 
@@ -144,18 +183,24 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
     // Source translators may create Claude tool_use blocks after the initial
     // normalization pass, so validate their IDs again before repairing history.
     ensureToolCallIds(result);
+    // Claude Code OAuth expects its identity prompt as the first system block.
+    // Plain Anthropic keys and Anthropic-compatible gateways don't, so a
+    // translated request for them keeps only the client's own system prompt.
+    if (sourceFormat !== targetFormat && provider === "claude") {
+      result.system = withClaudeCodePrompt(result.system);
+    }
     const apiKey = credentials?.accessToken || credentials?.apiKey || null;
-    result = prepareClaudeRequest(result, provider, apiKey, connectionId, credentials?.rawHeaders, clientSessionId);
+    result = prepareClaudeRequest(result, provider as any, apiKey as any, connectionId as any, credentials?.rawHeaders as any, clientSessionId as any);
   }
 
   // Claude cloaking: rename client tools with CLAUDE_TOOL_SUFFIX (anti-ban)
   // quirk: only providers flagged cloakToolsOnOAuth, and only with an OAuth token
-  if (PROVIDERS[provider]?.quirks?.cloakToolsOnOAuth) {
+  if (providerQuirks(provider)?.cloakToolsOnOAuth) {
     const apiKey = credentials?.accessToken || credentials?.apiKey || null;
     if (apiKey?.includes("sk-ant-oat")) {
       const { body: cloakedBody, toolNameMap } = cloakClaudeTools(result);
       result = cloakedBody;
-      if (toolNameMap?.size > 0) {
+      if (toolNameMap && toolNameMap.size > 0) {
         result._toolNameMap = toolNameMap;
       }
     }
@@ -174,7 +219,7 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
 }
 
 // Translate response chunk: target -> openai -> source
-export function translateResponse(targetFormat, sourceFormat, chunk, state) {
+export function translateResponse(targetFormat: string, sourceFormat: string, chunk: any, state: any): any[] & { _openaiIntermediate?: any[] } {
   ensureInitialized();
   // If same format, return as-is — except the tool name may still be cloaked:
   // translateRequest() suffixes client tools for OAuth-cloaked Claude providers
@@ -184,8 +229,8 @@ export function translateResponse(targetFormat, sourceFormat, chunk, state) {
     return [decloakStreamChunk(chunk, state?.toolNameMap)];
   }
 
-  let results = [chunk];
-  let openaiResults = null; // Store OpenAI intermediate results
+  let results: any[] & { _openaiIntermediate?: any[] } = [chunk];
+  let openaiResults: any[] | null = null; // Store OpenAI intermediate results
 
   // Direct route: if a response translator is registered for this exact
   // target:source pair, use it instead of pivoting through OpenAI. Mirrors the
@@ -214,7 +259,7 @@ export function translateResponse(targetFormat, sourceFormat, chunk, state) {
   if (sourceFormat !== FORMATS.OPENAI) {
     const fromOpenAI = responseRegistry.get(`${FORMATS.OPENAI}:${sourceFormat}`);
     if (fromOpenAI) {
-      const finalResults = [];
+      const finalResults: any[] = [];
       for (const r of results) {
         const converted = fromOpenAI(r, state);
         if (converted) {
@@ -234,12 +279,12 @@ export function translateResponse(targetFormat, sourceFormat, chunk, state) {
 }
 
 // Check if translation needed
-export function needsTranslation(sourceFormat, targetFormat) {
+export function needsTranslation(sourceFormat: string, targetFormat: string) {
   return sourceFormat !== targetFormat;
 }
 
 // Initialize state for streaming response based on format
-export function initState(sourceFormat) {
+export function initState(sourceFormat: string) {
   // Base state for all formats
   const base = {
     messageId: null,

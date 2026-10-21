@@ -47,7 +47,7 @@ After touching the provider registry, aliases, or OAuth URLs, also run the match
 
 ### Translators (`open-sse/translator/`)
 - Translation pivots through OpenAI format. A translator registered on an exact pair (e.g. `claude:kiro`) is a **direct route** that skips the lossy double hop; use one for fragile pairs (thinking blocks, tool ids, non-base64 images, `is_error`).
-- Translators self-register as an import side effect, so a new translator file runs only once it is imported in `open-sse/translator/index.js`.
+- Translators self-register as an import side effect, so a new translator file runs only once it is imported in `open-sse/translator/index.ts`.
 - Take role, block, and model strings from the constants in `open-sse/translator/schema/` and `open-sse/config/`.
 - Binary upstreams (kiro EventStream, cursor protobuf, commandcode NDJSON) are decoded inside their own executor, outside the translator.
 

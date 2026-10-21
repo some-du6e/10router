@@ -1,6 +1,7 @@
 # Unreleased
 
 ## Fixes
+- **No Claude Code prompt on API providers**: requests translated to Anthropic API keys and Anthropic-compatible gateways (e.g. MiniMax) no longer get "You are Claude Code, Anthropic's official CLI for Claude." added to the system prompt. Only the Claude Code login provider still sends it.
 - Custom endpoint cards on the providers page now match the other provider cards: a letter badge instead of a borrowed OpenAI/Anthropic logo, a key count, and one pill per API the endpoint answers on. Existing endpoints switch over automatically.
 - Chrome no longer offers saved Google passwords on API key and token fields (the URL field in Add endpoint was being treated as a username). Key fields are masked text boxes now, so Chrome sees no login form. Real login password fields are unchanged.
 - Requests that leave out `stream` now get plain JSON back when the upstream answers with JSON (Anthropic-style APIs, Snowflake Cortex), instead of that JSON followed by a stray `data: [DONE]`. Clients that ask to stream get the finished reply replayed as SSE in their own format (OpenAI, Claude, Responses).
