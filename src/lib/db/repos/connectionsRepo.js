@@ -11,7 +11,7 @@ const OPTIONAL_FIELDS = [
 ];
 
 // Read by sse/services/autoCombo.ts to notice its model catalog is stale.
-function bumpConnectionsVersion() {
+export function bumpConnectionsVersion() {
   global._connectionsVersion = (global._connectionsVersion || 0) + 1;
 }
 
@@ -238,6 +238,7 @@ export async function createProviderConnection(data) {
 export async function updateProviderConnection(id, data) {
   const db = await getAdapter();
   let result;
+  let servesChanged = false;
   db.transaction(() => {
     const row = db.get(`SELECT * FROM providerConnections WHERE id = ?`, [id]);
     if (!row) { result = null; return; }
@@ -250,13 +251,13 @@ export async function updateProviderConnection(id, data) {
     // change to what the connection serves counts.
     const psdBefore = existing.providerSpecificData || {};
     const psdAfter = merged.providerSpecificData || {};
-    if (
+    servesChanged =
       existing.isActive !== merged.isActive ||
       existing.authType !== merged.authType ||
       psdBefore.prefix !== psdAfter.prefix ||
-      JSON.stringify(psdBefore.enabledModels) !== JSON.stringify(psdAfter.enabledModels)
-    ) bumpConnectionsVersion();
+      JSON.stringify(psdBefore.enabledModels) !== JSON.stringify(psdAfter.enabledModels);
   });
+  if (servesChanged) bumpConnectionsVersion();
   return result;
 }
 
@@ -269,8 +270,8 @@ export async function deleteProviderConnection(id) {
     db.run(`DELETE FROM providerConnections WHERE id = ?`, [id]);
     reorderInTx(db, row.provider);
     ok = true;
-    bumpConnectionsVersion();
   });
+  if (ok) bumpConnectionsVersion();
   return ok;
 }
 

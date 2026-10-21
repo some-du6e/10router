@@ -53,7 +53,8 @@ async function withCodexFallback(request) {
   if (await getComboByName(bareModel)) return request;
   // Codex keeps its own accounts first. Only a model no Codex account serves
   // is left for handleChat to route across the providers that do.
-  if (!getAutoComboProviders(bareModel).includes("codex") && (await resolveAutoCombo(bareModel, BUILTIN_MODEL_ALIASES))) {
+  // resolveAutoCombo waits out a cold catalog, so ask it before checking Codex.
+  if ((await resolveAutoCombo(bareModel, BUILTIN_MODEL_ALIASES)) && !getAutoComboProviders(bareModel).includes("codex")) {
     return request;
   }
 

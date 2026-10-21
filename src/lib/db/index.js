@@ -10,6 +10,7 @@ export {
   getSettings, updateSettings, isCloudEnabled, getCloudUrl, exportSettings,
 } from "./repos/settingsRepo.js";
 import { invalidateSettingsCache } from "./repos/settingsRepo.js";
+import { bumpConnectionsVersion } from "./repos/connectionsRepo.js";
 
 // Provider connections
 export {
@@ -188,6 +189,7 @@ export async function importDb(payload) {
   invalidatePricingCache();
   // Settings were replaced wholesale above, bypassing updateSettings.
   invalidateSettingsCache();
+  bumpConnectionsVersion();
 
   return await exportDb();
 }

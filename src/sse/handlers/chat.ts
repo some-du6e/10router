@@ -10,7 +10,8 @@ import {
 import { handleAntigravityQuotaError, clearAntigravityStrikes } from "../services/antigravityQuota.js";
 import { getSettings, getProviderNodeById, updateProviderNode, getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
 import { getModelInfo, getComboModels, comboLookupName } from "../services/model.js";
-import { resolveAutoCombo } from "../services/autoCombo.js";
+import { resolveAutoCombo, blockedBillingSets, connectionBilling } from "../services/autoCombo.js";
+import type { BillingSet } from "../services/autoCombo.js";
 import { BUILTIN_MODEL_ALIASES } from "open-sse/services/model.js";
 import { handleChatCore, clientReceivesStream } from "open-sse/handlers/chatCore.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
@@ -126,6 +127,8 @@ interface PassResult {
 interface SingleModelOptions {
   allowHold?: boolean;
   routingFailures?: RoutingFailure[];
+  // Set inside an auto combo: connections billed this way are never used.
+  blockedBilling?: Set<BillingSet> | null;
 }
 
 interface RoutedChatArgs {
@@ -242,15 +245,21 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
 
   // Check if model is a combo (has multiple models with fallback). A bare id
   // with no combo or alias falls back across every provider serving it.
-  const comboModels = (await getComboModels(modelStr)) ?? (await resolveAutoCombo(modelStr, BUILTIN_MODEL_ALIASES));
+  const userComboModels = await getComboModels(modelStr);
+  const comboModels = userComboModels ?? (await resolveAutoCombo(modelStr, BUILTIN_MODEL_ALIASES, settings));
   if (comboModels) {
+    // An auto combo picked its providers by billing; every account it reaches,
+    // including fallbacks within a provider, has to pass the same check.
+    const blockedBilling = userComboModels ? null : blockedBillingSets(settings);
     // Combos are configured and rotation-tracked under the bare name, so a
     // context-window selector must not fragment either.
     const comboKey = comboLookupName(modelStr);
     // Check for combo-specific strategy first, fallback to global
     const comboStrategies: Record<string, ComboStrategyConfig> = settings.comboStrategies || {};
     const comboSpecificStrategy = comboStrategies[comboKey]?.fallbackStrategy;
-    const comboStrategy = comboSpecificStrategy || settings.comboStrategy || "fallback";
+    // Rotating providers per turn would throw away prompt caches, so the global
+    // strategy only covers combos the user made.
+    const comboStrategy = comboSpecificStrategy || (blockedBilling ? "fallback" : settings.comboStrategy) || "fallback";
     const augmentedModels = augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, settings);
     const adapterAdded = augmentedModels.filter((m: string) => !comboModels.includes(m));
 
@@ -267,7 +276,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
               cleanRawReq = { ...clientRawRequest, body: cleanBody };
             }
-            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false, routingFailures });
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false, routingFailures, blockedBilling });
           },
           log,
           comboName: comboKey,
@@ -288,7 +297,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
         body,
         models: augmentedModels,
         handleSingleModel: withCapacityAdapterStripping(
-          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures }),
+          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures, blockedBilling }),
           adapterAdded
         ),
         log,
@@ -443,13 +452,13 @@ async function handleSingleModelChat(
   clientRawRequest: ClientRawRequest | null = null,
   request: Request | null = null,
   apiKey: string | null = null,
-  { allowHold = true, routingFailures = [] }: SingleModelOptions = {},
+  { allowHold = true, routingFailures = [], blockedBilling = null }: SingleModelOptions = {},
 ): Promise<Response> {
   // An unfinished fusion panel is not proof of limit exhaustion. Successful
   // panels with empty/unparseable content must also remain retryable.
   const unconfirmed: RoutingFailure = { limited: false };
   routingFailures.push(unconfirmed);
-  const response = await routeSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { allowHold, routingFailures });
+  const response = await routeSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { allowHold, routingFailures, blockedBilling });
   if (!response.ok) routingFailures.splice(routingFailures.indexOf(unconfirmed), 1);
   return response;
 }
@@ -506,7 +515,7 @@ async function routeSingleModelChat(
   clientRawRequest: ClientRawRequest | null,
   request: Request | null,
   apiKey: string | null,
-  { allowHold, routingFailures }: { allowHold: boolean; routingFailures: RoutingFailure[] },
+  { allowHold, routingFailures, blockedBilling = null }: { allowHold: boolean; routingFailures: RoutingFailure[]; blockedBilling?: Set<BillingSet> | null },
 ): Promise<Response> {
   // Detect source format by endpoint + body (scoped per-call; handleChat's copy is a
   // separate function and is not visible here)
@@ -621,7 +630,10 @@ async function routeSingleModelChat(
     // the configured strategy, so a dead pinned account never wedges a session.
     const preferredConnectionId = affinityKey ? getAffinity(affinityKey) : null;
     // connectionId is always set on a selected account (real or the "noauth" virtual one).
-    const credentials = (await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId })) as (Credentials & { connectionId: string } & Record<string, any>) | null;
+    const credentials = (await getProviderCredentials(provider, excludeConnectionIds, model, {
+      preferredConnectionId,
+      connectionFilter: blockedBilling ? (c: { provider: string; authType?: string }) => !blockedBilling.has(connectionBilling(c)) : null,
+    })) as (Credentials & { connectionId: string } & Record<string, any>) | null;
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {

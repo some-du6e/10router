@@ -14,6 +14,13 @@ export type BillingSet = (typeof AUTO_COMBO_BILLING_SETS)[number];
 // Custom endpoints are usually metered keys, so they start blocked too.
 export const DEFAULT_AUTO_COMBO_BLOCKED_BILLING: BillingSet[] = ["payg", "freeTier", "custom"];
 
+// Registry categories that misdescribe how a provider bills: these log in
+// with OAuth but spend prepaid credits per token.
+const BILLING_OVERRIDES: Record<string, BillingSet> = {
+  cline: "payg",
+  kilocode: "payg",
+};
+
 const BILLING_BY_CATEGORY: Record<string, BillingSet> = {
   apikey: "payg",
   freeTier: "freeTier",
@@ -58,8 +65,10 @@ export function connectionBilling(conn: Connection): BillingSet {
   const entry = REGISTRY_BY_ID.get(conn.provider);
   if (!entry) return "custom";
   if (entry.noAuth) return "free";
+  if (BILLING_OVERRIDES[entry.id]) return BILLING_OVERRIDES[entry.id];
   const byCategory = BILLING_BY_CATEGORY[entry.category || ""] || "payg";
-  if (byCategory === "subscription" && conn.authType === "apikey") return "payg";
+  const authType = (conn.authType || "").toLowerCase().replace(/[-_]/g, "");
+  if (byCategory === "subscription" && authType === "apikey") return "payg";
   return byCategory;
 }
 
@@ -67,8 +76,12 @@ interface CatalogEntry {
   id: string;
   prefix: string;
   provider: string;
-  billing: BillingSet;
+  // One per connection of the provider; a request may be served by any of them.
+  billings: BillingSet[];
 }
+
+// Tried first to last, so free and flat-rate plans serve before anything metered.
+const BILLING_ORDER: BillingSet[] = ["free", "subscription", "freeTier", "custom", "payg"];
 
 const CATALOG_TTL_MS = 60_000;
 const CATALOG_RETRY_MS = 5_000;
@@ -82,16 +95,22 @@ interface CatalogState {
   entries: CatalogEntry[] | null;
   expiresAt: number;
   refreshing: Promise<void> | null;
+  refreshStartedAt: number;
   connectionsVersion: number;
 }
 
 // Bumped by the connections repo on every write; a change makes the catalog stale.
+// The catalog lives on globalThis too: instrumentation and the route handlers
+// are separate bundles, and the startup warm has to fill the copy routes read.
 declare global {
   var _connectionsVersion: number | undefined;
+  var _autoComboCatalog: CatalogState | undefined;
 }
 const connectionsVersion = () => globalThis._connectionsVersion || 0;
 
-const catalog: CatalogState = { entries: null, expiresAt: 0, refreshing: null, connectionsVersion: -1 };
+const catalog: CatalogState = (globalThis._autoComboCatalog ??= {
+  entries: null, expiresAt: 0, refreshing: null, refreshStartedAt: 0, connectionsVersion: -1,
+});
 
 async function buildCatalog(): Promise<CatalogEntry[]> {
   const conns = ((await getProviderConnections()) as Connection[]).filter((c) => c.isActive !== false);
@@ -99,11 +118,11 @@ async function buildCatalog(): Promise<CatalogEntry[]> {
   // which would build combos out of providers that have no credentials.
   if (conns.length === 0) return [];
 
-  // buildModelsList lists the first active connection of each provider.
-  const connByProvider = new Map<string, Connection>();
+  const billingsByProvider = new Map<string, Set<BillingSet>>();
   const providerByPrefix = new Map<string, string>();
   for (const c of conns) {
-    if (!connByProvider.has(c.provider)) connByProvider.set(c.provider, c);
+    if (!billingsByProvider.has(c.provider)) billingsByProvider.set(c.provider, new Set());
+    billingsByProvider.get(c.provider)!.add(connectionBilling(c));
     const prefix = c.providerSpecificData?.prefix?.trim();
     if (prefix) providerByPrefix.set(prefix, c.provider);
   }
@@ -115,8 +134,9 @@ async function buildCatalog(): Promise<CatalogEntry[]> {
     if (m.owned_by === "combo" || typeof m.id !== "string" || !m.id.includes("/")) continue;
     const prefix = m.id.slice(0, m.id.indexOf("/"));
     const provider = providerByPrefix.get(prefix) || PROVIDER_ID_BY_KEY.get(prefix) || prefix;
-    const conn = connByProvider.get(provider);
-    entries.push({ id: m.id, prefix, provider, billing: conn ? connectionBilling(conn) : "custom" });
+    // No connection: a no-auth free provider still serves; anything else is unknown.
+    const billings = billingsByProvider.get(provider) || new Set<BillingSet>([REGISTRY_BY_ID.get(provider)?.noAuth ? "free" : "custom"]);
+    entries.push({ id: m.id, prefix, provider, billings: [...billings] });
   }
   return entries;
 }
@@ -124,6 +144,7 @@ async function buildCatalog(): Promise<CatalogEntry[]> {
 function refreshCatalog(): Promise<void> {
   if (catalog.refreshing) return catalog.refreshing;
   const version = connectionsVersion();
+  catalog.refreshStartedAt = Date.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error("catalog build timed out")), CATALOG_BUILD_TIMEOUT_MS);
@@ -168,6 +189,12 @@ function modelKey(modelId: string): string {
   return modelId.toLowerCase().replace(/\./g, "-");
 }
 
+function sortByBilling(entries: CatalogEntry[], blocked: Set<string>): CatalogEntry[] {
+  const rank = (e: CatalogEntry) => Math.min(...e.billings.filter((b) => !blocked.has(b)).map((b) => BILLING_ORDER.indexOf(b)));
+  // Array.prototype.sort is stable, so /v1/models order breaks ties.
+  return [...entries].sort((a, b) => rank(a) - rank(b));
+}
+
 function stringList(value: unknown): string[] | null {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : null;
 }
@@ -175,31 +202,53 @@ function stringList(value: unknown): string[] | null {
 interface AutoComboSettings {
   autoComboBlockedBilling?: unknown;
   autoComboExcludedProviders?: unknown;
+  [key: string]: unknown;
+}
+
+async function loadSettings(settings?: AutoComboSettings): Promise<AutoComboSettings> {
+  if (settings) return settings;
+  return (await Promise.resolve().then(() => getSettings()).catch(() => ({}))) as AutoComboSettings;
+}
+
+/** Billing sets auto combos must not touch, from settings or the defaults. */
+export function blockedBillingSets(settings: AutoComboSettings): Set<BillingSet> {
+  return new Set((stringList(settings.autoComboBlockedBilling) ?? DEFAULT_AUTO_COMBO_BLOCKED_BILLING) as BillingSet[]);
+}
+
+function allowedEntries(entries: CatalogEntry[], settings: AutoComboSettings): CatalogEntry[] {
+  const blocked = blockedBillingSets(settings);
+  const excluded = new Set((stringList(settings.autoComboExcludedProviders) || []).map((p) => p.trim().toLowerCase()));
+  return entries
+    .filter((e) => e.billings.some((b) => !blocked.has(b)))
+    .filter((e) => !excluded.has(e.prefix.toLowerCase()) && !excluded.has(e.provider.toLowerCase()));
 }
 
 /**
- * Every connected provider/model serving this bare id, in /v1/models order,
- * minus blocked billing sets and excluded providers.
+ * Every connected provider/model serving this bare id, free and flat-rate
+ * first, minus blocked billing sets and excluded providers. A provider stays
+ * in if any of its connections is allowed; the request then skips the blocked
+ * ones (see blockedBillingSets).
  */
-export async function getAutoComboModels(modelStr: string): Promise<string[]> {
+export async function getAutoComboModels(modelStr: string, settingsIn?: AutoComboSettings): Promise<string[]> {
   const bare = stripContextWindowSuffix(modelStr).model;
   if (!bare || bare.includes("/")) return [];
-  // Right after startup there is no list yet. Give the first build a short
-  // head start rather than sending that request down the old inferred route.
-  if (catalog.entries === null || catalog.connectionsVersion !== connectionsVersion()) await Promise.race([refreshCatalog(), sleep(COLD_START_WAIT_MS)]);
+  // Right after startup or a connection change the list is missing or stale.
+  // Give that build a short head start, counted from when it began, so a slow
+  // build delays requests for a few seconds in total rather than each one.
+  if (catalog.entries === null || catalog.connectionsVersion !== connectionsVersion()) {
+    const pending = refreshCatalog();
+    const left = catalog.refreshStartedAt + COLD_START_WAIT_MS - Date.now();
+    if (left > 0) await Promise.race([pending, sleep(left)]);
+  }
   const entries = currentCatalog();
   if (entries.length === 0) return [];
 
-  const settings = (await Promise.resolve().then(() => getSettings()).catch(() => ({}))) as AutoComboSettings;
-  const blocked = new Set(stringList(settings.autoComboBlockedBilling) ?? DEFAULT_AUTO_COMBO_BLOCKED_BILLING);
-  const excluded = new Set((stringList(settings.autoComboExcludedProviders) || []).map((p) => p.trim().toLowerCase()));
+  const settings = await loadSettings(settingsIn);
   const key = modelKey(bare);
-  return entries
-    .filter((e) => !blocked.has(e.billing))
-    .filter((e) => !excluded.has(e.prefix.toLowerCase()) && !excluded.has(e.provider.toLowerCase()))
-    .filter((e) => modelKey(e.id.slice(e.id.lastIndexOf("/") + 1)) === key)
-    .map((e) => e.id);
+  const matching = allowedEntries(entries, settings).filter((e) => modelKey(e.id.slice(e.id.lastIndexOf("/") + 1)) === key);
+  return sortByBilling(matching, blockedBillingSets(settings)).map((e) => e.id);
 }
+
 
 /** Every catalog id serving this bare id, before any user filter. */
 export function getAutoComboProviders(modelStr: string): string[] {
@@ -216,11 +265,15 @@ export function getAutoComboProviders(modelStr: string): string[] {
  * A combo or alias by that name, user-made or built in, always wins. Auto
  * combos are optional routing, so any failure here means "route as before".
  */
-export async function resolveAutoCombo(modelStr: string, builtinAliases: Record<string, unknown> = {}): Promise<string[] | null> {
+export async function resolveAutoCombo(
+  modelStr: string,
+  builtinAliases: Record<string, unknown> = {},
+  settings?: AutoComboSettings,
+): Promise<string[] | null> {
   try {
     const bare = stripContextWindowSuffix(modelStr).model;
     if (!bare || bare.includes("/") || builtinAliases[bare]) return null;
-    const models = await getAutoComboModels(bare);
+    const models = await getAutoComboModels(bare, settings);
     if (models.length === 0) return null;
     if (await getComboByName(bare)) return null;
     const aliases = (await getModelAliases()) as Record<string, unknown> | null;

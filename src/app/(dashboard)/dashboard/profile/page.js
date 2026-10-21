@@ -21,6 +21,8 @@ function getLocaleFromCookie() {
   return normalizeLocale(value);
 }
 
+// Mirrors DEFAULT_AUTO_COMBO_BLOCKED_BILLING in sse/services/autoCombo.ts.
+const DEFAULT_BLOCKED_BILLING = ["payg", "freeTier", "custom"];
 const AUTO_COMBO_BILLING_OPTIONS = [
   { set: "subscription", label: "Subscriptions", hint: "Flat-rate plans you log in to: Claude Code, Codex, Copilot" },
   { set: "free", label: "Free", hint: "No billing at all: Kiro, Gemini CLI, OpenCode" },
@@ -322,15 +324,19 @@ export default function ProfilePage() {
 
   const [autoComboExcludedDraft, setAutoComboExcludedDraft] = useState(null);
 
-  // The server always merges its defaults in, so this list is only empty until settings load.
-  const blockedBilling = settings.autoComboBlockedBilling || [];
+  // Until settings load (or if they fail to) show the server's defaults and
+  // keep the toggles locked, so a click can't save a list that unblocks paid sets.
+  const billingLoaded = Array.isArray(settings.autoComboBlockedBilling);
+  const blockedBilling = billingLoaded ? settings.autoComboBlockedBilling : DEFAULT_BLOCKED_BILLING;
   const [savingBilling, setSavingBilling] = useState(false);
+  const [billingError, setBillingError] = useState("");
 
   const toggleAutoComboBilling = async (set) => {
     const next = blockedBilling.includes(set)
       ? blockedBilling.filter((s) => s !== set)
       : [...blockedBilling, set];
     setSavingBilling(true);
+    setBillingError("");
     try {
       const res = await fetch("/api/settings", {
         method: "PATCH",
@@ -338,8 +344,10 @@ export default function ProfilePage() {
         body: JSON.stringify({ autoComboBlockedBilling: next }),
       });
       if (res.ok) setSettings(prev => ({ ...prev, autoComboBlockedBilling: next }));
+      else setBillingError("Couldn't save. Try again.");
     } catch (err) {
       console.error("Failed to update auto combo billing sets:", err);
+      setBillingError("Couldn't save. Try again.");
     } finally {
       setSavingBilling(false);
     }
@@ -1649,11 +1657,12 @@ export default function ProfilePage() {
                     <Toggle
                       checked={!blockedBilling.includes(set)}
                       onChange={() => toggleAutoComboBilling(set)}
-                      disabled={loading || savingBilling}
+                      disabled={loading || savingBilling || !billingLoaded}
                     />
                   </div>
                 ))}
               </div>
+              {billingError && <p className="text-xs text-red-500 mt-2">{billingError}</p>}
             </div>
 
             {/* Auto combo exclusions */}
