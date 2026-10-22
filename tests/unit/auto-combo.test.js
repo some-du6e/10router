@@ -395,6 +395,47 @@ describe("auto combos", () => {
       await expect(ctx.getAutoComboModels("m-9")).resolves.toEqual(["cc/m-9", "kr/m-9"]);
     });
 
+    it("forgets a 401 once a passing test clears it, even after a later failure", async () => {
+      const ctx = await setup([...IDS, "cc/m-9", "kr/m-9"], SUBS);
+      const { markAccountUnavailable } = await import("@/sse/services/auth.js");
+      const id = await kiroId(ctx);
+      await markAccountUnavailable(id, 401, "Incorrect API key", "kiro", "m-7");
+      await ctx.updateProviderConnection(id, { testStatus: "active", lastError: null, lastErrorAt: null, errorCode: null });
+      await markAccountUnavailable(id, 500, "upstream hiccup", "kiro", "m-9");
+      await afterLocksExpire(async () => {
+        await expect(ctx.getAutoComboModels("m-9")).resolves.toEqual(["kr/m-9", "cc/m-9"]);
+        await expect(ctx.getAutoComboModels("m-7")).resolves.toEqual(["kr/m-7", "cc/m-7"]);
+      });
+    });
+
+    it("forgets a 401 whose cooldown was cleared, even after a later failure", async () => {
+      const ctx = await setup([...IDS, "cc/m-9", "kr/m-9"], SUBS);
+      const { markAccountUnavailable } = await import("@/sse/services/auth.js");
+      const { POST } = await import("@/app/api/models/availability/route.js");
+      const id = await kiroId(ctx);
+      await markAccountUnavailable(id, 401, "Incorrect API key", "kiro", "m-7");
+      const res = await POST(new Request("http://localhost/api/models/availability", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "clearCooldown", provider: "kiro", model: "m-7" }),
+      }));
+      expect(res.status).toBe(200);
+      await markAccountUnavailable(id, 429, "rate limit", "kiro", "m-9");
+      await afterLocksExpire(async () => {
+        await expect(ctx.getAutoComboModels("m-9")).resolves.toEqual(["kr/m-9", "cc/m-9"]);
+        await expect(ctx.getAutoComboModels("m-7")).resolves.toEqual(["kr/m-7", "cc/m-7"]);
+      });
+    });
+
+    it("keeps a 401 while the connection has not recovered from it", async () => {
+      const ctx = await setup([...IDS, "cc/m-9", "kr/m-9"], SUBS);
+      const { markAccountUnavailable } = await import("@/sse/services/auth.js");
+      const id = await kiroId(ctx);
+      await markAccountUnavailable(id, 401, "Incorrect API key", "kiro", "m-7");
+      await markAccountUnavailable(id, 429, "rate limit", "kiro", "m-9");
+      await afterLocksExpire(() => expect(ctx.getAutoComboModels("m-9")).resolves.toEqual(["cc/m-9", "kr/m-9"]));
+    });
+
     it("lets a 403 that is really a limit wear off with its lock", async () => {
       const ctx = await setup(IDS, SUBS);
       const { markAccountUnavailable } = await import("@/sse/services/auth.js");

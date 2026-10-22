@@ -311,8 +311,13 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
   const providerResetAtMs = githubResetAtMs || resetsAtMs;
   const lockScope = githubResetAtMs ? "__all" : model || "__all";
+  const recovered = conn && conn.testStatus !== "unavailable" && conn.testStatus !== "error";
+  const staleErrorCodes = recovered
+    ? Object.fromEntries(Object.keys(conn).filter((k) => k.startsWith(MODEL_ERROR_CODE_PREFIX)).map((k) => [k, null]))
+    : {};
 
   await updateProviderConnection(connectionId, {
+    ...staleErrorCodes,
     ...lockUpdate,
     [`${MODEL_LIMIT_PREFIX}${lockScope}`]: isLimitError(status, errorText),
     [`${MODEL_ERROR_CODE_PREFIX}${lockScope}`]: status,
