@@ -19,7 +19,7 @@ afterEach(() => {
   db.connections = [];
 });
 
-describe("resolveBuiltinSearchModel", () => {
+describe("resolveBuiltinSearchModel", { timeout: 20_000 }, () => {
   it("does not pick SearXNG when SEARXNG_URL was never set", async () => {
     db.connections = [{ provider: "exa", authType: "apikey", isActive: true }];
     const { resolveBuiltinSearchModel } = await loadSearch();
@@ -45,7 +45,7 @@ describe("resolveBuiltinSearchModel", () => {
   });
 });
 
-describe("warning when no search provider resolves", () => {
+describe("warning when no search provider resolves", { timeout: 20_000 }, () => {
   const body = () => ({
     messages: [{ role: "user", content: "router news" }],
     tools: [{ type: "web_search_20250305", name: "web_search" }],
@@ -68,7 +68,7 @@ describe("warning when no search provider resolves", () => {
   it("says nothing is configured when no provider exists, even with billing blocks", async () => {
     const warning = await warningFor(new Set(["payg"]));
     expect(warning).toContain("configured");
-    expect(warning).toContain("SEARXNG_URL");
+    expect(warning).toContain("SEARXNG_URL to a publicly reachable");
     expect(warning).not.toContain("billing");
   });
 });

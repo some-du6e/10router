@@ -106,7 +106,7 @@ async function noSearchProviderMessage(blockedBilling, resolveSearchModel) {
     return `${base} allowed by auto-combo billing (blocked: ${[...blockedBilling].join(", ")}). ` +
       "Add a Web Search combo to allow one";
   }
-  return `${base} configured (connect one, or set SEARXNG_URL)`;
+  return `${base} configured (connect one, or set SEARXNG_URL to a publicly reachable SearXNG)`;
 }
 
 function formatSearchContext(data) {
