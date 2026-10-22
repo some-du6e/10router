@@ -118,6 +118,19 @@ describe("DefaultExecutor — beta-gated body fields on Messages paths", () => {
     expect(sentBody().context_management).toEqual(CONTEXT_MANAGEMENT);
   });
 
+  it("leaves the same node's Chat Completions route alone (stripBeta, non-claude model)", async () => {
+    fetchMock.mockResolvedValueOnce(res(200));
+    const model = "gpt-6";
+    const credentials = { apiKey: "k", providerSpecificData: { ...snowflakeCreds().providerSpecificData, stripBeta: true } };
+    credentials.runtimeTransport = resolveCompatibleRoute(SNOWFLAKE, model, credentials);
+    const body = { model, messages: [{ role: "user", content: "hi" }], stream: true, context_management: CONTEXT_MANAGEMENT };
+
+    await new DefaultExecutor(SNOWFLAKE).execute({ model, body, stream: true, credentials });
+
+    expect(fetchMock.mock.calls[0][0]).toBe("https://acme.snowflakecomputing.com/api/v2/cortex/v1/chat/completions");
+    expect(sentBody().context_management).toEqual(CONTEXT_MANAGEMENT);
+  });
+
   it("does not mutate the caller's body", async () => {
     fetchMock.mockResolvedValueOnce(res(200));
     const body = claudeCodeBody();
