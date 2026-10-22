@@ -38,7 +38,7 @@ afterEach(() => {
   else process.env.DATA_DIR = originalDataDir;
 });
 
-// conns: [{ provider, authType?, prefix?, isActive? }]
+// conns: [{ provider, authType?, email?, prefix?, isActive? }]
 async function setup(ids, conns = [], settings = null) {
   catalog.ids = ids;
   const db = await import("@/lib/localDb.js");
@@ -50,6 +50,7 @@ async function setup(ids, conns = [], settings = null) {
       apiKey: "k",
       accessToken: "t",
       isActive: c.isActive ?? true,
+      ...(c.email ? { email: c.email } : {}),
       ...(c.prefix ? { providerSpecificData: { prefix: c.prefix } } : {}),
     });
   }
@@ -448,6 +449,31 @@ describe("auto combos", () => {
         await expect(ctx.getAutoComboModels("m-9")).resolves.toEqual(["kr/m-9", "cc/m-9"]);
         await expect(ctx.getAutoComboModels("m-7")).resolves.toEqual(["kr/m-7", "cc/m-7"]);
       });
+    });
+
+    it("forgets a 401 after an OAuth re-login merges into the same connection", async () => {
+      const ctx = await setup([...IDS, "cc/m-9", "kr/m-9"], [...SUBS.slice(0, 2), { provider: "kiro", email: "k@x" }]);
+      const { markAccountUnavailable } = await import("@/sse/services/auth.js");
+      const id = await kiroId(ctx);
+      await markAccountUnavailable(id, 401, "Incorrect API key", "kiro", "m-7");
+      const relogin = await ctx.createProviderConnection({ provider: "kiro", authType: "oauth", email: "k@x", accessToken: "t2", testStatus: "active" });
+      expect(relogin.id).toBe(id);
+      await markAccountUnavailable(id, 429, "rate limit", "kiro", "m-9");
+      await afterLocksExpire(async () => {
+        await expect(ctx.getAutoComboModels("m-9")).resolves.toEqual(["kr/m-9", "cc/m-9"]);
+        await expect(ctx.getAutoComboModels("m-7")).resolves.toEqual(["kr/m-7", "cc/m-7"]);
+      });
+    });
+
+    it("forgets a 401 after its API key is overwritten under the same name", async () => {
+      const ctx = await setup([...IDS, "cc/m-9", "kr/m-9"], [...SUBS.slice(0, 2), { provider: "kiro", authType: "apikey" }]);
+      const { markAccountUnavailable } = await import("@/sse/services/auth.js");
+      const id = await kiroId(ctx);
+      await markAccountUnavailable(id, 401, "Incorrect API key", "kiro", "m-7");
+      const readd = await ctx.createProviderConnection({ provider: "kiro", authType: "apikey", name: "kiro-test", apiKey: "k2", testStatus: "unknown", allowOverwrite: true });
+      expect(readd.id).toBe(id);
+      await markAccountUnavailable(id, 429, "rate limit", "kiro", "m-9");
+      await afterLocksExpire(() => expect(ctx.getAutoComboModels("m-9")).resolves.toEqual(["kr/m-9", "cc/m-9"]));
     });
 
     it("keeps a 401 through a failed dashboard test and a later failure on another model", async () => {
