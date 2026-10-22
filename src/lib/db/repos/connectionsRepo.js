@@ -17,6 +17,9 @@ export function bumpConnectionsVersion() {
   global._connectionsVersion = (global._connectionsVersion || 0) + 1;
 }
 
+const MODEL_ERROR_CODE_PREFIX = "modelErrorCode_";
+const FAILED_TEST_STATUSES = new Set(["unavailable", "error"]);
+
 function rowToConn(row) {
   if (!row) return null;
   const extra = parseJson(row.data, {});
@@ -246,6 +249,11 @@ export async function updateProviderConnection(id, data) {
     if (!row) { result = null; return; }
     const existing = rowToConn(row);
     const merged = { ...existing, ...data, updatedAt: new Date().toISOString() };
+    if (data.testStatus !== undefined && !FAILED_TEST_STATUSES.has(data.testStatus)) {
+      for (const key of Object.keys(existing)) {
+        if (key.startsWith(MODEL_ERROR_CODE_PREFIX) && !(key in data)) merged[key] = null;
+      }
+    }
     upsert(db, merged);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
     result = merged;
