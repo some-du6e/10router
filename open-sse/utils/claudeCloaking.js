@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "crypto";
 import { CLAUDE_TOOL_SUFFIX, CC_DEFAULT_TOOLS } from "../config/appConstants.js";
 import { CLAUDE_CLI_VERSION } from "../providers/shared.js";
+import { TOOL_TYPE } from "../translator/schema/index.js";
 
 const CC_ENTRYPOINT = "sdk-cli";
 
@@ -48,10 +49,11 @@ export function cloakClaudeTools(body) {
   const clientDeclarations = [];
 
   // All client tools get renamed with suffix.
-  // Built-in server tools (web_search_20250305, etc.) carry a `type` and require
-  // an exact reserved `name` — never suffix those or Claude rejects the request.
+  // Built-in server tools (web_search_20250305, etc.) carry a `type` other than
+  // "custom" and require an exact reserved `name` — never suffix those or Claude
+  // rejects the request.
   for (const tool of tools) {
-    if (tool.type) { clientDeclarations.push(tool); continue; }
+    if ((tool.type && tool.type !== TOOL_TYPE.CUSTOM) || typeof tool.name !== "string") { clientDeclarations.push(tool); continue; }
     const suffixed = suffix(tool.name);
     toolNameMap.set(suffixed, tool.name);
     clientToolNames.add(tool.name);

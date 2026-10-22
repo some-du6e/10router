@@ -5,6 +5,7 @@ import { FORMATS } from "../../translator/formats.js";
 import { PROVIDERS } from "../../config/providers.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLine } from "./requestDetail.js";
 import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
+import { clientToolRef } from "../../translator/concerns/toolNamespace.js";
 
 // Responses-API providers (e.g. codex) may emit SSE without content-type + use Responses output shape
 const isResponsesProvider = (p) => PROVIDERS[p]?.format === FORMATS.OPENAI_RESPONSES;
@@ -50,6 +51,7 @@ function extractCustomToolInput(argumentsValue) {
 }
 
 function chatCompletionToResponses(responseBody, customToolNames = null, toolNamespaces = null) {
+  const customTools = new Set(customToolNames || []);
   const choice = responseBody?.choices?.[0];
   if (!choice) return responseBody;
 
@@ -75,14 +77,14 @@ function chatCompletionToResponses(responseBody, customToolNames = null, toolNam
 
   for (const tc of message.tool_calls || []) {
     const fn = tc.function || {};
-    const custom = customToolNames?.has(fn.name);
-    const ns = toolNamespaces?.[fn.name];
+    const custom = customTools.has(fn.name);
+    const { name, namespace } = clientToolRef(toolNamespaces, fn.name || "");
     output.push({
       type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,
       id: `${custom ? "ctc" : "fc"}_${tc.id || ""}`,
       call_id: tc.id || "",
-      name: fn.name || "",
-      ...(ns ? { namespace: ns } : {}),
+      name,
+      ...(namespace ? { namespace } : {}),
       ...(custom
         ? { input: extractCustomToolInput(fn.arguments) }
         : { arguments: typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments || {}) }),

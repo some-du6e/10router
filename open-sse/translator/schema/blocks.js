@@ -41,6 +41,12 @@ export const RESPONSES_ITEM = {
   NAMESPACE: "namespace",
 };
 
+// Tool declaration `type` values for client-defined tools.
+export const TOOL_TYPE = {
+  FUNCTION: "function",
+  CUSTOM: "custom",
+};
+
 // Valid OpenAI block types (used by filterToOpenAIFormat).
 export const VALID_OPENAI_CONTENT_TYPES = [
   OPENAI_BLOCK.TEXT, OPENAI_BLOCK.IMAGE_URL, OPENAI_BLOCK.IMAGE, OPENAI_BLOCK.INPUT_AUDIO, OPENAI_BLOCK.AUDIO_URL, OPENAI_BLOCK.FILE,

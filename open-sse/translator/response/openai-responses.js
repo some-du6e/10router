@@ -7,6 +7,7 @@ import { FORMATS } from "../formats.js";
 import { buildChunk } from "../concerns/chunk.js";
 import { buildUsage } from "../concerns/usage.js";
 import { fallbackToolCallId } from "../concerns/toolCall.js";
+import { clientToolRef } from "../concerns/toolNamespace.js";
 import { reasoningDelta, extractReasoningText } from "../concerns/reasoning.js";
 import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM, OPENAI_FINISH, MODEL_FALLBACK } from "../schema/index.js";
 
@@ -336,10 +337,11 @@ function isCustomTool(state, name) {
   return !!name && state.customToolNames?.has(name);
 }
 
-// Responses clients resolve a namespaced tool by the `namespace` field on the call,
-// not by a qualified name — without it they reject the call as unsupported.
-function toolNamespace(state, name) {
-  return (name && state.toolNamespaces?.get(name)) || null;
+// Map the upstream name back to the client's `{ name, namespace }`; Responses
+// clients reject a namespaced tool's call that arrives without its namespace.
+function clientToolFields(state, wireName) {
+  const { name, namespace } = clientToolRef(state.toolNamespaces, wireName || "");
+  return { name, ...(namespace ? { namespace } : {}) };
 }
 
 function extractCustomToolInput(argumentsText) {
@@ -367,7 +369,6 @@ function emitToolCall(state, emit, tc) {
   if (!state.funcItemAdded[tcIdx] && callId && state.funcNames[tcIdx]) {
     state.funcItemAdded[tcIdx] = true;
     const custom = isCustomTool(state, state.funcNames[tcIdx]);
-    const ns = toolNamespace(state, state.funcNames[tcIdx]);
 
     emit("response.output_item.added", {
       type: "response.output_item.added",
@@ -377,8 +378,7 @@ function emitToolCall(state, emit, tc) {
         type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,
         ...(custom ? { input: "" } : { arguments: "" }),
         call_id: callId,
-        name: state.funcNames[tcIdx] || "",
-        ...(ns ? { namespace: ns } : {})
+        ...clientToolFields(state, state.funcNames[tcIdx])
       }
     });
   }
@@ -432,14 +432,12 @@ function closeToolCall(state, emit, idx) {
       });
     }
 
-    const ns = toolNamespace(state, state.funcNames[idx]);
     const item = {
       id: `${custom ? "ctc" : "fc"}_${callId}`,
       type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,
       ...(custom ? { input: extractCustomToolInput(args) } : { arguments: args }),
       call_id: callId,
-      name: state.funcNames[idx] || "",
-      ...(ns ? { namespace: ns } : {})
+      ...clientToolFields(state, state.funcNames[idx])
     };
 
     emit("response.output_item.done", {

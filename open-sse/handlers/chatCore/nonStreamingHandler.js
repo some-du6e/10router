@@ -10,6 +10,7 @@ import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, sav
 import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { decloakToolNames } from "../../utils/claudeCloaking.js";
 import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
+import { clientToolRef } from "../../translator/concerns/toolNamespace.js";
 
 function parseToolArguments(value) {
   if (!value) return {};
@@ -78,6 +79,7 @@ function extractCustomToolInput(argumentsValue) {
 }
 
 function openAICompletionToResponses(responseBody, customToolNames = null, toolNamespaces = null) {
+  const customTools = new Set(customToolNames || []);
   const choice = responseBody?.choices?.[0];
   if (!choice) return responseBody;
 
@@ -106,14 +108,14 @@ function openAICompletionToResponses(responseBody, customToolNames = null, toolN
   // tool_calls → function_call/custom_tool_call items (Responses-native tool shape).
   for (const tc of message.tool_calls || []) {
     const fn = tc.function || {};
-    const custom = customToolNames?.has(fn.name);
-    const ns = toolNamespaces?.[fn.name];
+    const custom = customTools.has(fn.name);
+    const { name, namespace } = clientToolRef(toolNamespaces, fn.name || "");
     output.push({
       type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,
       id: `${custom ? "ctc" : "fc"}_${tc.id || ""}`,
       call_id: tc.id || "",
-      name: fn.name || "",
-      ...(ns ? { namespace: ns } : {}),
+      name,
+      ...(namespace ? { namespace } : {}),
       ...(custom
         ? { input: extractCustomToolInput(fn.arguments) }
         : { arguments: typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments || {}) }),
@@ -141,9 +143,18 @@ function openAICompletionToResponses(responseBody, customToolNames = null, toolN
 }
 
 /**
- * Translate non-streaming response body from provider format → OpenAI format.
+ * Translate non-streaming response body from provider format → the client's format.
  */
 export function translateNonStreamingResponse(responseBody, targetFormat, sourceFormat, customToolNames = null, toolNamespaces = null) {
+  const translated = translateToClientBody(responseBody, targetFormat, sourceFormat, customToolNames, toolNamespaces);
+  // Claude/Gemini/Ollama bodies come back as Chat Completions; a Responses client needs `output`.
+  if (sourceFormat === FORMATS.OPENAI_RESPONSES && translated?.choices?.[0]) {
+    return openAICompletionToResponses(translated, customToolNames, toolNamespaces);
+  }
+  return translated;
+}
+
+function translateToClientBody(responseBody, targetFormat, sourceFormat, customToolNames, toolNamespaces) {
   // Trust the response shape over the configured upstream format. Some
   // Responses-compatible gateways return a Chat Completions body from
   // /responses, which still needs conversion for non-OpenAI clients.
@@ -389,7 +400,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     .map((part) => part.text)
     .join("\n");
   const responseToolCalls = responseMessage?.tool_calls
-    || (translatedResponse?.output || []).filter((item) => item?.type === "function_call");
+    || (translatedResponse?.output || []).filter((item) => item?.type === RESPONSES_ITEM.FUNCTION_CALL || item?.type === RESPONSES_ITEM.CUSTOM_TOOL_CALL);
   saveRequestDetail(buildRequestDetail({
     provider, model, connectionId,
     latency: { ttft: totalLatency, total: totalLatency },

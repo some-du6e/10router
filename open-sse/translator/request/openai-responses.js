@@ -7,7 +7,8 @@
 import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
 import { normalizeResponsesInput } from "../formats/responsesApi.js";
-import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM } from "../schema/index.js";
+import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM, TOOL_TYPE } from "../schema/index.js";
+import { qualifyToolName } from "../concerns/toolNamespace.js";
 
 // Responses API enforces max 64 chars on call_id (#393)
 const MAX_CALL_ID_LEN = 64;
@@ -118,7 +119,6 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
       const toolInput = itemType === RESPONSES_ITEM.CUSTOM_TOOL_CALL
         ? { input: typeof item.input === "string" ? item.input : JSON.stringify(item.input ?? "") }
         : item.arguments;
-      if (typeof item.namespace === "string" && item.namespace) toolNamespaces.set(item.name, item.namespace);
       currentAssistantMsg.tool_calls.push({
         id: item.call_id,
         type: OPENAI_BLOCK.FUNCTION,
@@ -181,25 +181,23 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
   // explicit `name` field and cannot be represented as Chat Completions function declarations.
   // Filter them out to avoid sending nameless functionDeclarations to downstream providers
   // such as Gemini, which strictly validates function names.
-  const responseTools = flattenNamespaceTools(
-    [
-      ...(Array.isArray(body.tools) ? body.tools : []),
-      ...additionalTools,
-    ],
-    toolNamespaces
-  );
-  if (responseTools.length > 0) {
+  const responseTools = assignWireNames(flattenNamespaceTools([
+    ...(Array.isArray(body.tools) ? body.tools : []),
+    ...additionalTools,
+  ]), toolNamespaces);
+  const wireByRef = wireNamesByRef(toolNamespaces);
+  renameNamespacedCalls(result.messages, wireByRef);
+  if (Array.isArray(body.tools) || additionalTools.length > 0) {
     result.tools = responseTools
-      .map(tool => {
+      .map(({ tool, name }) => {
+        if (!name || typeof name !== "string" || name.trim() === "") return null;
         // Already in Chat Completions format: { type: "function", function: { name, ... } }
-        if (tool.function) return tool;
+        if (tool.function) return name === tool.function.name ? tool : { ...tool, function: { ...tool.function, name } };
         // Responses API function/custom tool: { type, name, description, parameters|format }.
         // Chat Completions has no freeform custom-tool declaration, so expose custom
         // tools as functions with one raw `input` string while retaining their names
         // in translator-only metadata for the response conversion.
-        const name = tool.name;
-        if (!name || typeof name !== "string" || name.trim() === "") return null;
-        if (tool.type === "custom") {
+        if (tool.type === TOOL_TYPE.CUSTOM) {
           customToolNames.add(name);
           const formatHint = [tool.format?.syntax, tool.format?.definition].filter(Boolean).join("\n");
           return {
@@ -222,7 +220,6 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
           };
         }
         // Responses API function tool: { type: "function", name, description, parameters }
-        // Only convert when a non-empty name is present; skip hosted tools without one.
         return {
           type: OPENAI_BLOCK.FUNCTION,
           function: {
@@ -234,7 +231,13 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
         };
       })
       .filter(Boolean);
+    // Only hosted or deferred tools: upstreams reject an empty list or a choice with nothing to call.
+    if (result.tools.length === 0) {
+      delete result.tools;
+      delete result.tool_choice;
+    }
   }
+  if (result.tool_choice !== undefined) result.tool_choice = wireToolChoice(result.tool_choice, wireByRef);
   if (customToolNames.size > 0) result._customToolNames = [...customToolNames];
   if (toolNamespaces.size > 0) result._toolNamespaces = Object.fromEntries(toolNamespaces);
 
@@ -264,32 +267,99 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
  *
  * Chat Completions has no namespace concept, so a container like
  * `{ type: "namespace", name: "functions", tools: [...] }` must be unwrapped or every
- * tool inside it is lost (the container itself has no callable schema). Names stay
- * unqualified — the Responses API carries the namespace as a separate field on the
- * call, not as a `namespace.name` prefix — and are recorded in `namespaces` so the
- * response hop can re-attach it.
+ * tool inside it is lost (the container itself has no callable schema). Each entry
+ * keeps the namespace it came from so `assignWireNames` can map calls back.
  *
  * `defer_loading: true` tools are skipped at either level: they are delivered on
  * demand via tool_search and are not part of the initial callable set.
  */
-function flattenNamespaceTools(tools, namespaces) {
+function flattenNamespaceTools(tools) {
   const flat = [];
   for (const tool of tools) {
     if (!tool || typeof tool !== "object") continue;
     if (tool.defer_loading === true) continue;
     if (tool.type !== RESPONSES_ITEM.NAMESPACE) {
-      flat.push(tool);
+      flat.push({ tool, namespace: null });
       continue;
     }
-    const ns = typeof tool.name === "string" ? tool.name : "";
+    const ns = typeof tool.name === "string" && tool.name ? tool.name : null;
     for (const nested of Array.isArray(tool.tools) ? tool.tools : []) {
       if (!nested || typeof nested !== "object") continue;
       if (nested.defer_loading === true) continue;
-      if (ns && typeof nested.name === "string" && nested.name) namespaces.set(nested.name, ns);
-      flat.push(nested);
+      flat.push({ tool: nested, namespace: ns });
     }
   }
   return flat;
+}
+
+/**
+ * Pick the name each flattened tool is declared under upstream, and record in
+ * `namespaces` how to turn that name back into the client's `{ name, namespace }`.
+ * A name used by more than one tool is qualified with its namespace; unique names
+ * are sent as-is. A tool declared twice under the same namespace is kept once.
+ */
+function assignWireNames(flat, namespaces) {
+  const seen = new Map();
+  const entries = [];
+  for (const entry of flat) {
+    const name = entry.tool.function?.name ?? entry.tool.name;
+    if (typeof name === "string" && name) {
+      const ns = entry.namespace ?? "";
+      if (!seen.has(ns)) seen.set(ns, new Set());
+      if (seen.get(ns).has(name)) continue;
+      seen.get(ns).add(name);
+    }
+    entries.push({ ...entry, name });
+  }
+
+  const counts = new Map();
+  for (const { name } of entries) if (typeof name === "string" && name) counts.set(name, (counts.get(name) || 0) + 1);
+  const keepsName = ({ name, namespace }) => typeof name === "string" && !!name && (!namespace || counts.get(name) === 1);
+  const taken = new Set(entries.filter(keepsName).map((e) => e.name));
+
+  // Drop any namespace a prior turn's call recorded under a name declared now.
+  for (const { name } of entries) if (typeof name === "string") namespaces.delete(name);
+
+  return entries.map((entry) => {
+    const { name, namespace } = entry;
+    if (typeof name !== "string" || !name || !namespace) return entry;
+    if (keepsName(entry)) {
+      namespaces.set(name, namespace);
+      return entry;
+    }
+    let wire = qualifyToolName(namespace, name);
+    for (let i = 2; taken.has(wire); i++) wire = qualifyToolName(namespace, `${name}_${i}`);
+    taken.add(wire);
+    namespaces.set(wire, { namespace, name });
+    return { ...entry, name: wire };
+  });
+}
+
+// Reverse lookup from the client's (namespace, name) to the qualified wire name.
+function wireNamesByRef(namespaces) {
+  const byRef = new Map();
+  for (const [wire, entry] of namespaces) {
+    if (typeof entry === "object") byRef.set(`${entry.namespace}\u0000${entry.name}`, wire);
+  }
+  return byRef;
+}
+
+// History calls must use the same upstream names as the declarations.
+function renameNamespacedCalls(messages, byRef) {
+  if (byRef.size === 0) return;
+  for (const msg of messages) {
+    for (const tc of msg.tool_calls || []) {
+      const wire = tc.namespace && byRef.get(`${tc.namespace}\u0000${tc.function?.name}`);
+      if (wire) tc.function.name = wire;
+    }
+  }
+}
+
+// A forced `{ type: "function", name, namespace }` must name the tool as declared upstream.
+function wireToolChoice(choice, byRef) {
+  if (choice?.type !== OPENAI_BLOCK.FUNCTION || typeof choice.name !== "string" || !choice.namespace) return choice;
+  const wire = byRef.get(`${choice.namespace}\u0000${choice.name}`);
+  return wire ? { ...choice, name: wire } : choice;
 }
 
 /**

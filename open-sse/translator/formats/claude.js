@@ -1,6 +1,6 @@
 // Claude helper functions for translator
 import { DEFAULT_THINKING_CLAUDE_SIGNATURE } from "../../config/defaultThinkingSignature.js";
-import { ROLE, CLAUDE_BLOCK } from "../schema/index.js";
+import { ROLE, CLAUDE_BLOCK, TOOL_TYPE } from "../schema/index.js";
 import { adjustMaxTokens } from "./maxTokens.js";
 import { applyCloaking } from "../../utils/claudeCloaking.js";
 import { resolveSessionId } from "../../utils/sessionManager.js";
@@ -491,11 +491,12 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
 
   // 3. Tools: filter built-in tools for non-Anthropic providers, then handle cache_control
   if (body.tools && Array.isArray(body.tools)) {
-    // Strip built-in tools (e.g. web_search_20250305) and normalize to Anthropic-native shape
+    // Strip built-in tools (e.g. web_search_20250305) and custom tools with no schema, and normalize to Anthropic-native shape
     // (drop `type` field, fold `function.{name,description,parameters}`) for non-Anthropic providers
     if (provider !== "claude") {
       body.tools = body.tools
-        .filter(tool => !tool.type || tool.type === "function")
+        .filter(tool => !tool.type || tool.type === TOOL_TYPE.FUNCTION
+          || (tool.type === TOOL_TYPE.CUSTOM && typeof tool.name === "string" && !!tool.input_schema))
         .map(tool => {
           if (tool.function) {
             return {
