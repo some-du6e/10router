@@ -55,10 +55,10 @@ interface Connection {
   authType?: string;
   isActive?: boolean;
   testStatus?: string;
-  errorCode?: number | string | null;
   providerSpecificData?: { prefix?: string };
   [lockKey: `modelLock_${string}`]: unknown;
   [limitKey: `modelLimit_${string}`]: unknown;
+  [codeKey: `modelErrorCode_${string}`]: unknown;
 }
 
 /**
@@ -221,13 +221,14 @@ function sortByBilling(entries: CatalogEntry[], blocked: Set<string>): CatalogEn
   return [...entries].sort((a, b) => rank(a) - rank(b));
 }
 
-// A rejected key outlives its lock: errorCode stays until a request succeeds.
-// A 401 rejects the whole account; a 403 may only cover one model.
+// A rejected key outlives its lock: the per-model error code stays until a
+// request on that model succeeds. A 401 rejects the whole account; a 403 only
+// the model that got it.
 function keyRejected(conn: Connection, model: string): boolean {
   if (conn.testStatus !== "unavailable" && conn.testStatus !== "error") return false;
-  const code = Number(conn.errorCode);
-  if (code === 401) return true;
-  return code === 403 && conn[`modelLimit_${model}`] === false;
+  const codes = Object.keys(conn).filter((k) => k.startsWith("modelErrorCode_"));
+  if (codes.some((k) => Number(conn[k as `modelErrorCode_${string}`]) === 401)) return true;
+  return Number(conn[`modelErrorCode_${model}`]) === 403 && conn[`modelLimit_${model}`] === false;
 }
 
 function connectionFailing(conn: Connection, model: string): boolean {

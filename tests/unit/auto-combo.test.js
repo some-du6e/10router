@@ -371,6 +371,30 @@ describe("auto combos", () => {
       });
     });
 
+    it("does not demote a model for a 403 another model got after it failed", async () => {
+      const ctx = await setup([...IDS, "cc/m-9", "kr/m-9"], SUBS);
+      const { markAccountUnavailable } = await import("@/sse/services/auth.js");
+      const id = await kiroId(ctx);
+      await markAccountUnavailable(id, 500, "upstream hiccup", "kiro", "m-9");
+      await markAccountUnavailable(id, 403, "model not allowed", "kiro", "m-7");
+      await afterLocksExpire(async () => {
+        await expect(ctx.getAutoComboModels("m-9")).resolves.toEqual(["kr/m-9", "cc/m-9"]);
+        await expect(ctx.getAutoComboModels("m-7")).resolves.toEqual(["cc/m-7", "kr/m-7"]);
+      });
+    });
+
+    it("lifts a 401 once that model succeeds, while another model is still locked", async () => {
+      const ctx = await setup([...IDS, "cc/m-9", "kr/m-9"], SUBS);
+      const { markAccountUnavailable, clearAccountError } = await import("@/sse/services/auth.js");
+      const id = await kiroId(ctx);
+      await markAccountUnavailable(id, 429, "rate limit", "kiro", "m-9");
+      await markAccountUnavailable(id, 401, "Incorrect API key", "kiro", "m-7");
+      const conn = (await ctx.getProviderConnections({ provider: "kiro" }))[0];
+      await clearAccountError(id, conn, "m-7");
+      await expect(ctx.getAutoComboModels("m-7")).resolves.toEqual(["kr/m-7", "cc/m-7"]);
+      await expect(ctx.getAutoComboModels("m-9")).resolves.toEqual(["cc/m-9", "kr/m-9"]);
+    });
+
     it("lets a 403 that is really a limit wear off with its lock", async () => {
       const ctx = await setup(IDS, SUBS);
       const { markAccountUnavailable } = await import("@/sse/services/auth.js");
@@ -378,10 +402,10 @@ describe("auto combos", () => {
       await afterLocksExpire(() => expect(ctx.getAutoComboModels("m-7")).resolves.toEqual(["kr/m-7", "cc/m-7"]));
     });
 
-    it("reads errorCode by value and follows the connection's test status", async () => {
+    it("reads the error code by value and follows the connection's test status", async () => {
       const ctx = await setup(IDS, SUBS);
       const id = await kiroId(ctx);
-      await ctx.updateProviderConnection(id, { testStatus: "unavailable", errorCode: "401" });
+      await ctx.updateProviderConnection(id, { testStatus: "unavailable", "modelErrorCode_m-7": "401" });
       await expect(ctx.getAutoComboModels("m-7")).resolves.toEqual(["cc/m-7", "kr/m-7"]);
       // A failed dashboard test keeps the key rejected; a passing one lifts it.
       await ctx.updateProviderConnection(id, { testStatus: "error" });
