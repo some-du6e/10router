@@ -7,11 +7,10 @@ vi.mock("@/lib/db/index.js", () => ({
 }));
 
 // SEARXNG_URL is read once at import, so each case loads a fresh module.
-async function loadResolver(searxngUrl) {
+async function loadSearch(searxngUrl = "") {
   vi.resetModules();
-  if (searxngUrl === undefined) vi.stubEnv("SEARXNG_URL", "");
-  else vi.stubEnv("SEARXNG_URL", searxngUrl);
-  return (await import("../../src/sse/services/claudeBuiltinSearch.js")).resolveBuiltinSearchModel;
+  vi.stubEnv("SEARXNG_URL", searxngUrl);
+  return import("../../src/sse/services/claudeBuiltinSearch.js");
 }
 
 afterEach(() => {
@@ -22,22 +21,54 @@ afterEach(() => {
 
 describe("resolveBuiltinSearchModel", () => {
   it("does not pick SearXNG when SEARXNG_URL was never set", async () => {
-    // The live failure: Exa blocked as payg, so the lookup fell through to a
-    // SearXNG at the localhost default that nobody runs.
     db.connections = [{ provider: "exa", authType: "apikey", isActive: true }];
-    const resolve = await loadResolver(undefined);
-    expect(await resolve(new Set(["payg", "freeTier"]))).toBeNull();
+    const { resolveBuiltinSearchModel } = await loadSearch();
+    expect(await resolveBuiltinSearchModel(new Set(["payg", "freeTier"]))).toBeNull();
+  });
+
+  it("does not pick a SearXNG connection when SEARXNG_URL was never set", async () => {
+    db.connections = [{ provider: "searxng", authType: "none", isActive: true }];
+    const { resolveBuiltinSearchModel } = await loadSearch();
+    expect(await resolveBuiltinSearchModel()).toBeNull();
   });
 
   it("picks SearXNG when SEARXNG_URL is set", async () => {
-    const resolve = await loadResolver("http://search.example.com/search");
-    expect(await resolve(new Set(["payg"]))).toBe("searxng");
+    const { resolveBuiltinSearchModel } = await loadSearch("http://search.example.com/search");
+    expect(await resolveBuiltinSearchModel(new Set(["payg"]))).toBe("searxng");
   });
 
   it("uses a Web Search combo even when billing would block its providers", async () => {
     db.combos = [{ name: "web-search", kind: "webSearch", models: ["exa"] }];
     db.connections = [{ provider: "exa", authType: "apikey", isActive: true }];
-    const resolve = await loadResolver(undefined);
-    expect(await resolve(new Set(["payg"]))).toBe("web-search");
+    const { resolveBuiltinSearchModel } = await loadSearch();
+    expect(await resolveBuiltinSearchModel(new Set(["payg"]))).toBe("web-search");
+  });
+});
+
+describe("warning when no search provider resolves", () => {
+  const body = () => ({
+    messages: [{ role: "user", content: "router news" }],
+    tools: [{ type: "web_search_20250305", name: "web_search" }],
+  });
+
+  async function warningFor(blockedBilling) {
+    const { enrichClaudeBuiltinSearch } = await loadSearch();
+    const log = { warn: vi.fn() };
+    await enrichClaudeBuiltinSearch(body(), { provider: "ocg", log, blockedBilling });
+    return log.warn.mock.calls[0][1];
+  }
+
+  it("blames billing when a provider exists but billing blocks it", async () => {
+    db.connections = [{ provider: "exa", authType: "apikey", isActive: true }];
+    const warning = await warningFor(new Set(["payg"]));
+    expect(warning).toContain("blocked: payg");
+    expect(warning).toContain("Web Search combo");
+  });
+
+  it("says nothing is configured when no provider exists, even with billing blocks", async () => {
+    const warning = await warningFor(new Set(["payg"]));
+    expect(warning).toContain("configured");
+    expect(warning).toContain("SEARXNG_URL");
+    expect(warning).not.toContain("billing");
   });
 });
