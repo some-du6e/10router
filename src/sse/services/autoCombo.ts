@@ -58,6 +58,7 @@ interface Connection {
   errorCode?: number | string | null;
   providerSpecificData?: { prefix?: string };
   [lockKey: `modelLock_${string}`]: unknown;
+  [limitKey: `modelLimit_${string}`]: unknown;
 }
 
 /**
@@ -221,11 +222,16 @@ function sortByBilling(entries: CatalogEntry[], blocked: Set<string>): CatalogEn
 }
 
 // A rejected key outlives its lock: errorCode stays until a request succeeds.
-const AUTH_FAILURE_CODES = new Set([401, 403]);
+// A 401 rejects the whole account; a 403 may only cover one model.
+function keyRejected(conn: Connection, model: string): boolean {
+  if (conn.testStatus !== "unavailable" && conn.testStatus !== "error") return false;
+  const code = Number(conn.errorCode);
+  if (code === 401) return true;
+  return code === 403 && conn[`modelLimit_${model}`] === false;
+}
 
 function connectionFailing(conn: Connection, model: string): boolean {
-  if (isModelLockActive(conn, model)) return true;
-  return conn.testStatus === "unavailable" && AUTH_FAILURE_CODES.has(Number(conn.errorCode));
+  return isModelLockActive(conn, model) || keyRejected(conn, model);
 }
 
 /**
