@@ -6,6 +6,7 @@ import { buildRequestDetail, extractRequestConfig } from "open-sse/handlers/chat
 import { handleSearch } from "../handlers/search.js";
 import { buildSideSearchMessage, getSideSearchQuery, sideSearchResponse } from "./claudeSearchShortcut.js";
 import { connectionBilling } from "./autoCombo.js";
+import { SEARXNG_CONFIGURED } from "open-sse/config/runtimeConfig.js";
 
 const enrichmentCache = new WeakMap();
 
@@ -94,9 +95,17 @@ async function lookupBuiltinSearchModel(blockedBilling) {
   if (connection) return connection.provider;
 
   const noAuth = Object.values(AI_PROVIDERS).find(
-    (provider) => provider.noAuth && provider.serviceKinds?.includes("webSearch") && allowed({ provider: provider.id })
+    (provider) => provider.noAuth && provider.serviceKinds?.includes("webSearch") && allowed({ provider: provider.id }) &&
+      (provider.id !== "searxng" || SEARXNG_CONFIGURED)
   );
   return noAuth?.id || null;
+}
+
+function noSearchProviderMessage(blockedBilling) {
+  const base = "Claude built-in web search requested, but no web-search provider is";
+  if (!blockedBilling?.size) return `${base} configured`;
+  return `${base} allowed by auto-combo billing (blocked: ${[...blockedBilling].join(", ")}). ` +
+    "Add a Web Search combo to allow one";
 }
 
 function formatSearchContext(data) {
@@ -162,7 +171,7 @@ export async function enrichClaudeBuiltinSearch(body, {
     try {
       const model = await resolveSearchModel(blockedBilling);
       if (!model) {
-        log?.warn?.("SEARCH", "Claude built-in web search requested, but no web-search provider is configured");
+        log?.warn?.("SEARCH", noSearchProviderMessage(blockedBilling));
         return body;
       }
       const data = await search({ model, searchRequest, request, apiKey });
@@ -228,7 +237,10 @@ export async function answerClaudeSideSearch(body, {
     log?.warn?.("SEARCH", `Web search side request skipped: model lookup failed: ${error.message}`);
     return null;
   }
-  if (!searchModel) return null;
+  if (!searchModel) {
+    log?.warn?.("SEARCH", noSearchProviderMessage(blockedBilling));
+    return null;
+  }
 
   let data;
   const started = Date.now();
