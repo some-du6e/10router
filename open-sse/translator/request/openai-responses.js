@@ -187,16 +187,16 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
   ]), toolNamespaces);
   const wireByRef = wireNamesByRef(toolNamespaces);
   renameNamespacedCalls(result.messages, wireByRef);
-  if (responseTools.length > 0) {
+  if (Array.isArray(body.tools) || additionalTools.length > 0) {
     result.tools = responseTools
       .map(({ tool, name }) => {
+        if (!name || typeof name !== "string" || name.trim() === "") return null;
         // Already in Chat Completions format: { type: "function", function: { name, ... } }
         if (tool.function) return name === tool.function.name ? tool : { ...tool, function: { ...tool.function, name } };
         // Responses API function/custom tool: { type, name, description, parameters|format }.
         // Chat Completions has no freeform custom-tool declaration, so expose custom
         // tools as functions with one raw `input` string while retaining their names
         // in translator-only metadata for the response conversion.
-        if (!name || typeof name !== "string" || name.trim() === "") return null;
         if (tool.type === TOOL_TYPE.CUSTOM) {
           customToolNames.add(name);
           const formatHint = [tool.format?.syntax, tool.format?.definition].filter(Boolean).join("\n");
@@ -220,7 +220,6 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
           };
         }
         // Responses API function tool: { type: "function", name, description, parameters }
-        // Only convert when a non-empty name is present; skip hosted tools without one.
         return {
           type: OPENAI_BLOCK.FUNCTION,
           function: {
@@ -232,6 +231,11 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
         };
       })
       .filter(Boolean);
+    // Only hosted or deferred tools: upstreams reject an empty list or a choice with nothing to call.
+    if (result.tools.length === 0) {
+      delete result.tools;
+      delete result.tool_choice;
+    }
   }
   if (result.tool_choice !== undefined) result.tool_choice = wireToolChoice(result.tool_choice, wireByRef);
   if (customToolNames.size > 0) result._customToolNames = [...customToolNames];

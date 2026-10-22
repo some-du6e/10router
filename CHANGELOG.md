@@ -1,7 +1,7 @@
 # Unreleased
 
 ## Fixes
-- **Codex on Claude endpoints works again**: Codex requests no longer fail with `tools: Tool names must be unique.` when two MCP apps both have a tool with the same short name (GitHub and Notion both have `_fetch`). The second one is sent as `mcp__codex_apps__notion_fetch`, and Codex gets the call back under its own name and namespace.
+- **Codex on Claude endpoints works again**: Codex requests no longer fail with `tools: Tool names must be unique.` when two MCP apps both have a tool with the same short name (GitHub and Notion both have `_fetch`). The second one is sent as `mcp__codex_apps__notion_fetch`, and Codex gets the call back under its own name and namespace. A tool Codex declares twice is sent once.
 - Tools marked `type: "custom"` now reach Anthropic-compatible endpoints. They were being removed, so Codex sessions had no tools and the model said it had no `exec_command`.
 - Non-streaming Codex replies from Claude, Gemini or Ollama upstreams come back in Responses format instead of Chat Completions, and no longer crash when a custom tool like `apply_patch` is declared.
 - Re-detect on an endpoint page now says what it's doing while it runs: which step it's on, how many models it has checked and how many work, requests sent, time taken, and any rate-limit wait. A Stop button cancels it, and leaving the page cancels it too.

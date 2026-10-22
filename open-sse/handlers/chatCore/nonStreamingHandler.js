@@ -143,7 +143,7 @@ function openAICompletionToResponses(responseBody, customToolNames = null, toolN
 }
 
 /**
- * Translate non-streaming response body from provider format → OpenAI format.
+ * Translate non-streaming response body from provider format → the client's format.
  */
 export function translateNonStreamingResponse(responseBody, targetFormat, sourceFormat, customToolNames = null, toolNamespaces = null) {
   const translated = translateToClientBody(responseBody, targetFormat, sourceFormat, customToolNames, toolNamespaces);

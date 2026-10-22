@@ -337,8 +337,8 @@ function isCustomTool(state, name) {
   return !!name && state.customToolNames?.has(name);
 }
 
-// Responses clients resolve a namespaced tool by the `namespace` field on the call,
-// not by a qualified name — without it they reject the call as unsupported.
+// Map the upstream name back to the client's `{ name, namespace }`; Responses
+// clients reject a namespaced tool's call that arrives without its namespace.
 function clientToolFields(state, wireName) {
   const { name, namespace } = clientToolRef(state.toolNamespaces, wireName || "");
   return { name, ...(namespace ? { namespace } : {}) };

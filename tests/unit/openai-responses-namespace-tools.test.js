@@ -367,6 +367,16 @@ describe("wire names stay unique whatever the declaration shape or order", () =>
     expect(wire(out)).toEqual(["mcp__a_x", "mcp__b_x"]);
   });
 
+  it("sends no tool list when every tool is deferred or nameless", () => {
+    const out = names([
+      ns("mcp__a", [{ ...fn("_x"), defer_loading: true }]),
+      { type: "function", function: { parameters: { type: "object", properties: {} } } },
+    ], { tool_choice: "auto" });
+
+    expect(out.tools).toBeUndefined();
+    expect(out.tool_choice).toBeUndefined();
+  });
+
   it("keeps a plain tool declared twice once", () => {
     expect(wire(names([fn("shell"), fn("shell")]))).toEqual(["shell"]);
   });

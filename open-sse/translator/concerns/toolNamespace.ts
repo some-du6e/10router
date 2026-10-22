@@ -1,7 +1,9 @@
+import { CLAUDE_TOOL_SUFFIX } from "../../config/appConstants.js";
+
 // Responses clients (Codex) call tools by `{ name, namespace }`; Chat and Claude
 // upstreams see one flat list. Maps the upstream name back: to a namespace when
 // the name is unchanged, or to `{ namespace, name }` when it was qualified.
-import { CLAUDE_TOOL_SUFFIX } from "../../config/appConstants.js";
+
 export type ToolNamespaceEntry = string | { namespace: string; name: string };
 export type ToolNamespaces = Map<string, ToolNamespaceEntry> | Record<string, ToolNamespaceEntry> | null | undefined;
 
