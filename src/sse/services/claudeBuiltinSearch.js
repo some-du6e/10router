@@ -87,16 +87,26 @@ async function lookupBuiltinSearchModel(blockedBilling) {
   if (combo) return combo.name;
 
   const allowed = (conn) => !blockedBilling || !blockedBilling.has(connectionBilling(conn));
+  const searchable = (provider) => provider?.serviceKinds?.includes("webSearch") && provider.configured !== false;
   const connections = await getProviderConnections({ isActive: true });
   const connection = connections.find(({ provider }) =>
-    AI_PROVIDERS[provider]?.serviceKinds?.includes("webSearch") &&
+    searchable(AI_PROVIDERS[provider]) &&
     connections.filter((c) => c.provider === provider).every(allowed));
   if (connection) return connection.provider;
 
   const noAuth = Object.values(AI_PROVIDERS).find(
-    (provider) => provider.noAuth && provider.serviceKinds?.includes("webSearch") && allowed({ provider: provider.id })
+    (provider) => provider.noAuth && searchable(provider) && allowed({ provider: provider.id })
   );
   return noAuth?.id || null;
+}
+
+async function noSearchProviderMessage(blockedBilling, resolveSearchModel) {
+  const base = "Claude built-in web search requested, but no web-search provider is";
+  if (blockedBilling?.size && await resolveSearchModel(null)) {
+    return `${base} allowed by auto-combo billing (blocked: ${[...blockedBilling].join(", ")}). ` +
+      "Add a Web Search combo to allow one";
+  }
+  return `${base} configured (connect one, or set SEARXNG_URL to a publicly reachable SearXNG)`;
 }
 
 function formatSearchContext(data) {
@@ -162,7 +172,7 @@ export async function enrichClaudeBuiltinSearch(body, {
     try {
       const model = await resolveSearchModel(blockedBilling);
       if (!model) {
-        log?.warn?.("SEARCH", "Claude built-in web search requested, but no web-search provider is configured");
+        log?.warn?.("SEARCH", await noSearchProviderMessage(blockedBilling, resolveSearchModel));
         return body;
       }
       const data = await search({ model, searchRequest, request, apiKey });

@@ -45,8 +45,9 @@ function envUrl(name, def) {
 }
 
 // SearXNG endpoint used by the unauthenticated web-search provider.
-// Configure this for a separate Docker service or remote SearXNG instance.
+// Must resolve to a public address; fetchPublic blocks localhost and private hosts.
 export const SEARXNG_URL = envUrl("SEARXNG_URL", "http://localhost:8888/search");
+export const SEARXNG_CONFIGURED = Boolean(envUrl("SEARXNG_URL", ""));
 
 // Inter-chunk stall timeout (once tokens are flowing). Generous headroom so
 // slow reasoning models aren't aborted mid-stream. Env: STREAM_STALL_TIMEOUT_MS.
