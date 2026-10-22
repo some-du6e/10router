@@ -7,7 +7,7 @@ import { buildClineHeaders } from "../shared/clineAuth.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
-import { filterBetaHeaders, parseRejectedBetas, splitBetas, BETA_HEADER_KEYS } from "../utils/anthropicBeta.js";
+import { filterBetaHeaders, parseRejectedBetas, stripBetaBodyFields, splitBetas, BETA_HEADER_KEYS } from "../utils/anthropicBeta.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { installEndpointOverrides } from "../handlers/chatCore/endpointOverrides.js";
 
@@ -104,6 +104,10 @@ export class DefaultExecutor extends BaseExecutor {
         delete transformed.client_metadata;
       }
       stripUnsupportedParams(this.provider, model, transformed);
+      if (this.onMessagesPath(credentials)) {
+        const psd = credentials?.providerSpecificData || {};
+        transformed = stripBetaBodyFields({ ...transformed }, { dropped: psd.droppedBetas, stripAll: psd.stripBeta === true });
+      }
     }
 
     return injectReasoningContent({ provider: this.provider, model, body: transformed });

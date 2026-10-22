@@ -9,6 +9,8 @@
 // Free probes can't see this (body validation runs first), so it's learned from
 // the first real request: drop the named flags, retry once, remember them.
 
+import { CLAUDE_BETA_BODY_FIELDS } from "../config/claudeMessageCompat.js";
+
 export const BETA_HEADER_KEYS = ["anthropic-beta", "Anthropic-Beta"];
 
 // Never sent to non-Anthropic hosts: it marks the request as first-party Claude Code.
@@ -31,6 +33,21 @@ export function filterBetaHeaders(
     else delete headers[key];
   }
   return headers;
+}
+
+// Delete the body fields gated by a flag that won't be sent (`dropped`, or
+// every flag when `stripAll`). Returns the body for chaining.
+export function stripBetaBodyFields<T>(
+  body: T,
+  { dropped = [], stripAll = false }: { dropped?: readonly string[]; stripAll?: boolean } = {},
+): T {
+  if (!body || typeof body !== "object") return body;
+  const record = body as Record<string, unknown>;
+  for (const [flag, fields] of Object.entries(CLAUDE_BETA_BODY_FIELDS)) {
+    if (!stripAll && !dropped.includes(flag)) continue;
+    for (const field of fields) delete record[field];
+  }
+  return body;
 }
 
 const REJECTED_RE = /Unexpected value\(s\)\s+(.+?)\s+for the\s+`?anthropic-beta`?\s+header/i;
