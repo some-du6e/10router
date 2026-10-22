@@ -286,6 +286,72 @@ describe("auto combos", () => {
     expect(catalog.builds).toBe(2);
   });
 
+  describe("failing providers", () => {
+    const IDS = ["cc/m-7", "kr/m-7"];
+    const kiroId = async (ctx) => (await ctx.getProviderConnections({ provider: "kiro" }))[0].id;
+
+    it("keeps the billing order when nothing is failing", async () => {
+      const ctx = await setup(IDS, SUBS);
+      await expect(ctx.getAutoComboModels("m-7")).resolves.toEqual(["kr/m-7", "cc/m-7"]);
+    });
+
+    it("moves a provider whose key is rejected behind healthy ones, even after its lock expires", async () => {
+      const ctx = await setup(IDS, SUBS);
+      const { markAccountUnavailable } = await import("@/sse/services/auth.js");
+      await markAccountUnavailable(await kiroId(ctx), 401, "Incorrect API key", "kiro", "m-7");
+      await expect(ctx.getAutoComboModels("m-7")).resolves.toEqual(["cc/m-7", "kr/m-7"]);
+
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(Date.now() + 10 * 60_000);
+        await expect(ctx.getAutoComboModels("m-7")).resolves.toEqual(["cc/m-7", "kr/m-7"]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps a failing provider as the last resort", async () => {
+      const ctx = await setup(["kr/m-8"], SUBS);
+      const { markAccountUnavailable } = await import("@/sse/services/auth.js");
+      await markAccountUnavailable(await kiroId(ctx), 403, "forbidden", "kiro", "m-8");
+      await expect(ctx.getAutoComboModels("m-8")).resolves.toEqual(["kr/m-8"]);
+    });
+
+    it("demotes a provider locked for this model only while the lock lasts", async () => {
+      const ctx = await setup(IDS, SUBS);
+      const { markAccountUnavailable } = await import("@/sse/services/auth.js");
+      await markAccountUnavailable(await kiroId(ctx), 429, "rate limit", "kiro", "m-7");
+      await expect(ctx.getAutoComboModels("m-7")).resolves.toEqual(["cc/m-7", "kr/m-7"]);
+
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(Date.now() + 60 * 60_000);
+        await expect(ctx.getAutoComboModels("m-7")).resolves.toEqual(["kr/m-7", "cc/m-7"]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps a provider in place while one of its accounts still works", async () => {
+      const ctx = await setup(IDS, [...SUBS, { provider: "kiro" }]);
+      const { markAccountUnavailable } = await import("@/sse/services/auth.js");
+      await markAccountUnavailable(await kiroId(ctx), 401, "Incorrect API key", "kiro", "m-7");
+      await expect(ctx.getAutoComboModels("m-7")).resolves.toEqual(["kr/m-7", "cc/m-7"]);
+    });
+
+    it("returns to the normal order once the provider succeeds again", async () => {
+      const ctx = await setup(IDS, SUBS);
+      const { markAccountUnavailable, clearAccountError } = await import("@/sse/services/auth.js");
+      const id = await kiroId(ctx);
+      await markAccountUnavailable(id, 401, "Incorrect API key", "kiro", "m-7");
+      await expect(ctx.getAutoComboModels("m-7")).resolves.toEqual(["cc/m-7", "kr/m-7"]);
+
+      const conn = (await ctx.getProviderConnections({ provider: "kiro" }))[0];
+      await clearAccountError(id, conn, "m-7");
+      await expect(ctx.getAutoComboModels("m-7")).resolves.toEqual(["kr/m-7", "cc/m-7"]);
+    });
+  });
+
   describe("sanitizeAutoComboSetting", () => {
     it("accepts known billing sets and rejects anything else", async () => {
       const { sanitizeAutoComboSetting } = await import("@/sse/services/autoCombo.ts");

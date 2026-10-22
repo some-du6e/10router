@@ -1,5 +1,6 @@
 import REGISTRY from "open-sse/providers/registry/index.js";
 import { stripContextWindowSuffix } from "open-sse/services/model.js";
+import { isModelLockActive } from "open-sse/services/accountFallback.js";
 import { getProviderConnections, getSettings, getModelAliases, getComboByName } from "@/lib/localDb";
 
 // How a provider is paid for. Auto combos skip the sets the user blocks, so a
@@ -53,7 +54,10 @@ interface Connection {
   provider: string;
   authType?: string;
   isActive?: boolean;
+  testStatus?: string;
+  errorCode?: number | string | null;
   providerSpecificData?: { prefix?: string };
+  [lockKey: `modelLock_${string}`]: unknown;
 }
 
 /**
@@ -216,6 +220,34 @@ function sortByBilling(entries: CatalogEntry[], blocked: Set<string>): CatalogEn
   return [...entries].sort((a, b) => rank(a) - rank(b));
 }
 
+// A rejected key outlives its lock: errorCode stays until a request succeeds.
+const AUTH_FAILURE_CODES = new Set([401, 403]);
+
+function connectionFailing(conn: Connection, model: string): boolean {
+  if (isModelLockActive(conn, model)) return true;
+  return conn.testStatus === "unavailable" && AUTH_FAILURE_CODES.has(Number(conn.errorCode));
+}
+
+/**
+ * Move providers whose every usable connection is locked for the model or
+ * rejected its credentials to the back, so a dead key stops costing each
+ * request a failed attempt. They stay in as a last resort.
+ */
+async function demoteFailing(entries: CatalogEntry[], blocked: Set<string>): Promise<CatalogEntry[]> {
+  let conns: Connection[];
+  try {
+    conns = ((await getProviderConnections()) as Connection[]).filter((c) => c.isActive !== false && !blocked.has(connectionBilling(c)));
+  } catch {
+    return entries;
+  }
+  const failing = entries.map((e) => {
+    const own = conns.filter((c) => c.provider === e.provider);
+    const model = e.id.slice(e.id.indexOf("/") + 1);
+    return own.length > 0 && own.every((c) => connectionFailing(c, model));
+  });
+  return [...entries.filter((_, i) => !failing[i]), ...entries.filter((_, i) => failing[i])];
+}
+
 function stringList(value: unknown): string[] | null {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : null;
 }
@@ -246,7 +278,7 @@ function allowedEntries(entries: CatalogEntry[], settings: AutoComboSettings): C
 
 /**
  * Every connected provider/model serving this bare id, free and flat-rate
- * first, minus blocked billing sets and excluded providers. A provider stays
+ * first, failing providers last, minus blocked billing sets and excluded providers. A provider stays
  * in if any of its connections is allowed; the request then skips the blocked
  * ones (see blockedBillingSets).
  */
@@ -267,7 +299,8 @@ export async function getAutoComboModels(modelStr: string, settingsIn?: AutoComb
   const settings = await loadSettings(settingsIn);
   const key = modelKey(bare);
   const matching = allowedEntries(entries, settings).filter((e) => modelKey(e.id.slice(e.id.lastIndexOf("/") + 1)) === key);
-  return sortByBilling(matching, blockedBillingSets(settings)).map((e) => e.id);
+  const blocked = blockedBillingSets(settings);
+  return (await demoteFailing(sortByBilling(matching, blocked), blocked)).map((e) => e.id);
 }
 
 
