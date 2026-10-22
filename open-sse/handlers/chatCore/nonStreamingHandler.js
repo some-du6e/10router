@@ -79,6 +79,8 @@ function extractCustomToolInput(argumentsValue) {
 }
 
 function openAICompletionToResponses(responseBody, customToolNames = null, toolNamespaces = null) {
+  // chatCore hands over the translator metadata as an array
+  const customTools = new Set(customToolNames || []);
   const choice = responseBody?.choices?.[0];
   if (!choice) return responseBody;
 
@@ -107,7 +109,7 @@ function openAICompletionToResponses(responseBody, customToolNames = null, toolN
   // tool_calls → function_call/custom_tool_call items (Responses-native tool shape).
   for (const tc of message.tool_calls || []) {
     const fn = tc.function || {};
-    const custom = customToolNames?.has(fn.name);
+    const custom = customTools.has(fn.name);
     const { name, namespace } = clientToolRef(toolNamespaces, fn.name || "");
     output.push({
       type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,
@@ -145,6 +147,15 @@ function openAICompletionToResponses(responseBody, customToolNames = null, toolN
  * Translate non-streaming response body from provider format → OpenAI format.
  */
 export function translateNonStreamingResponse(responseBody, targetFormat, sourceFormat, customToolNames = null, toolNamespaces = null) {
+  const translated = translateToClientBody(responseBody, targetFormat, sourceFormat, customToolNames, toolNamespaces);
+  // Claude/Gemini/Ollama bodies come back as Chat Completions; a Responses client needs `output`.
+  if (sourceFormat === FORMATS.OPENAI_RESPONSES && translated?.choices?.[0]) {
+    return openAICompletionToResponses(translated, customToolNames, toolNamespaces);
+  }
+  return translated;
+}
+
+function translateToClientBody(responseBody, targetFormat, sourceFormat, customToolNames, toolNamespaces) {
   // Trust the response shape over the configured upstream format. Some
   // Responses-compatible gateways return a Chat Completions body from
   // /responses, which still needs conversion for non-OpenAI clients.

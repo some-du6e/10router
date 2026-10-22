@@ -51,6 +51,8 @@ function extractCustomToolInput(argumentsValue) {
 }
 
 function chatCompletionToResponses(responseBody, customToolNames = null, toolNamespaces = null) {
+  // chatCore hands over the translator metadata as an array
+  const customTools = new Set(customToolNames || []);
   const choice = responseBody?.choices?.[0];
   if (!choice) return responseBody;
 
@@ -76,7 +78,7 @@ function chatCompletionToResponses(responseBody, customToolNames = null, toolNam
 
   for (const tc of message.tool_calls || []) {
     const fn = tc.function || {};
-    const custom = customToolNames?.has(fn.name);
+    const custom = customTools.has(fn.name);
     const { name, namespace } = clientToolRef(toolNamespaces, fn.name || "");
     output.push({
       type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,

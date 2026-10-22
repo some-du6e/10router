@@ -5,6 +5,9 @@ import {
 } from "../../open-sse/translator/request/openai-responses.js";
 import { openaiToOpenAIResponsesResponse } from "../../open-sse/translator/response/openai-responses.js";
 import { initState, translateRequest, translateResponse } from "../../open-sse/translator/index.js";
+import { translateNonStreamingResponse } from "../../open-sse/handlers/chatCore/nonStreamingHandler.js";
+import { clientToolRef } from "../../open-sse/translator/concerns/toolNamespace.js";
+import { CLAUDE_TOOL_SUFFIX } from "../../open-sse/config/appConstants.js";
 import { FORMATS } from "../../open-sse/translator/formats.js";
 
 const NAMESPACE_TOOLS = {
@@ -289,7 +292,7 @@ describe("tool names shared across namespaces", () => {
     for (const n of names) expect(n.length).toBeLessThanOrEqual(64);
   });
 
-  it("renames a prior turn's call to the qualified name", () => {
+  it("renames a prior turn's call and forgets its bare-name namespace", () => {
     const out = openaiResponsesToOpenAIRequest("claude-opus-5", {
       tools: TOOLS,
       input: [
@@ -330,5 +333,119 @@ describe("tool names shared across namespaces", () => {
       expect(e.data.item.name).toBe("_fetch");
       expect(e.data.item.namespace).toBe("mcp__codex_apps__notion");
     }
+  });
+});
+
+describe("wire names stay unique whatever the declaration shape or order", () => {
+  const fn = (name) => ({ type: "function", name, parameters: { type: "object", properties: {} } });
+  const ns = (name, tools) => ({ type: "namespace", name, tools });
+  const names = (tools, extra = {}) => openaiResponsesToOpenAIRequest("claude-opus-5", {
+    tools,
+    input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
+    ...extra,
+  }, true, null);
+  const wire = (out) => out.tools.map((t) => t.function.name);
+
+  it("does not qualify onto a plain tool listed later with that name", () => {
+    const out = names([ns("mcp__a", [fn("_x")]), ns("mcp__b", [fn("_x")]), fn("mcp__a_x")]);
+
+    expect(new Set(wire(out)).size).toBe(3);
+    expect(wire(out)).toContain("mcp__a_x");
+    expect(clientToolRef(out._toolNamespaces, "mcp__a_x")).toEqual({ name: "mcp__a_x", namespace: null });
+  });
+
+  it("does not qualify onto a namespaced tool that keeps its bare name", () => {
+    const out = names([ns("x", [fn("y")]), ns("z", [fn("y")]), ns("w", [fn("x__y")])]);
+
+    expect(new Set(wire(out)).size).toBe(3);
+    expect(out._toolNamespaces.x__y).toBe("w");
+  });
+
+  it("applies the qualified name to chat-shaped tools inside a namespace", () => {
+    const chat = (name) => ({ type: "function", function: { name, parameters: { type: "object", properties: {} } } });
+    const out = names([ns("mcp__a", [chat("_x")]), ns("mcp__b", [chat("_x")])]);
+
+    expect(wire(out)).toEqual(["mcp__a_x", "mcp__b_x"]);
+  });
+
+  it("keeps a plain tool declared twice once", () => {
+    expect(wire(names([fn("shell"), fn("shell")]))).toEqual(["shell"]);
+  });
+
+  it("qualifies colliding custom tools and tracks them as custom", () => {
+    const custom = { type: "custom", name: "patch", format: { type: "grammar", syntax: "lark", definition: "start: /.+/" } };
+    const out = names([ns("mcp__a", [custom]), ns("mcp__b", [custom])]);
+
+    expect(wire(out)).toEqual(["mcp__a__patch", "mcp__b__patch"]);
+    expect(out._customToolNames).toEqual(["mcp__a__patch", "mcp__b__patch"]);
+  });
+
+  it("leaves room for the OAuth cloaking suffix", () => {
+    expect(CLAUDE_TOOL_SUFFIX).toBe("_ide"); // toolNamespace.ts inlines its length
+    const out = names([ns(`mcp__${"x".repeat(80)}`, [fn("_fetch")]), ns("mcp__b", [fn("_fetch")])]);
+
+    for (const n of wire(out)) expect(`${n}_ide`.length).toBeLessThanOrEqual(64);
+  });
+
+  it("drops a namespace a prior turn recorded for what is now a plain tool", () => {
+    const out = openaiResponsesToOpenAIRequest("claude-opus-5", {
+      tools: [fn("shell")],
+      input: [
+        { type: "function_call", call_id: "c1", name: "shell", namespace: "old", arguments: "{}" },
+        { type: "function_call_output", call_id: "c1", output: "ok" },
+      ],
+    }, true, null);
+
+    expect(out._toolNamespaces).toBeUndefined();
+  });
+
+  it("points a forced tool_choice at the qualified name", () => {
+    const tools = [ns("mcp__a", [fn("_x")]), ns("mcp__b", [fn("_x")])];
+
+    expect(names(tools, { tool_choice: { type: "function", name: "_x", namespace: "mcp__b" } }).tool_choice)
+      .toEqual({ type: "function", function: { name: "mcp__b_x" } });
+    expect(names([fn("shell")], { tool_choice: { type: "function", name: "shell" } }).tool_choice)
+      .toEqual({ type: "function", function: { name: "shell" } });
+  });
+});
+
+describe("clientToolRef", () => {
+  it("ignores inherited object keys", () => {
+    expect(clientToolRef({ _fetch: "ns" }, "constructor")).toEqual({ name: "constructor", namespace: null });
+  });
+});
+
+describe("non-streaming reply to a Responses client", () => {
+  const namespaces = { mcp__codex_apps__notion_fetch: { namespace: "mcp__codex_apps__notion", name: "_fetch" } };
+
+  it("turns a Claude message into a Responses body with the client's tool name", () => {
+    const out = translateNonStreamingResponse({
+      id: "msg_1", type: "message", role: "assistant", model: "claude-opus-5",
+      content: [{ type: "tool_use", id: "toolu_1", name: "mcp__codex_apps__notion_fetch", input: { id: "doc" } }],
+      stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 1 },
+    }, FORMATS.CLAUDE, FORMATS.OPENAI_RESPONSES, [], namespaces);
+    const call = out.output.find((i) => i.type === "function_call");
+
+    expect(out.object).toBe("response");
+    expect(call).toMatchObject({ name: "_fetch", namespace: "mcp__codex_apps__notion", arguments: "{\"id\":\"doc\"}" });
+  });
+
+  it("maps a Chat Completions reply the same way", () => {
+    const out = translateNonStreamingResponse({
+      id: "chatcmpl-1", object: "chat.completion", model: "m",
+      choices: [{ index: 0, finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "mcp__codex_apps__notion_fetch", arguments: "{}" } }] } }],
+    }, FORMATS.OPENAI, FORMATS.OPENAI_RESPONSES, [], namespaces);
+
+    expect(out.output.find((i) => i.type === "function_call")).toMatchObject({ name: "_fetch", namespace: "mcp__codex_apps__notion" });
+  });
+
+  it("accepts custom tool names as the array chatCore passes", () => {
+    const out = translateNonStreamingResponse({
+      id: "msg_1", type: "message", role: "assistant", model: "claude-opus-5",
+      content: [{ type: "tool_use", id: "toolu_1", name: "apply_patch", input: { input: "*** Begin Patch" } }],
+      stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 1 },
+    }, FORMATS.CLAUDE, FORMATS.OPENAI_RESPONSES, ["apply_patch"], null);
+
+    expect(out.output.find((i) => i.type === "custom_tool_call")).toMatchObject({ name: "apply_patch", input: "*** Begin Patch" });
   });
 });

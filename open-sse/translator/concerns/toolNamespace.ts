@@ -1,15 +1,11 @@
-// Responses clients (Codex) group tools into namespaces and call them by
-// `{ name, namespace }`. Chat/Claude upstreams only see a flat list of names, so
-// the request hop flattens namespaces and records how to reverse it:
-//   wire name → namespace                      (name unchanged)
-//   wire name → { namespace, name }            (name qualified to stay unique)
-// Two namespaces may both declare `_fetch`; upstreams reject duplicate names.
-
+// Responses clients (Codex) call tools by `{ name, namespace }`; Chat and Claude
+// upstreams see one flat list. Maps the upstream name back: to a namespace when
+// the name is unchanged, or to `{ namespace, name }` when it was qualified.
 export type ToolNamespaceEntry = string | { namespace: string; name: string };
 export type ToolNamespaces = Map<string, ToolNamespaceEntry> | Record<string, ToolNamespaceEntry> | null | undefined;
 
-// Anthropic caps tool names at 64 chars of [a-zA-Z0-9_-].
-const MAX_TOOL_NAME_LEN = 64;
+// Anthropic caps tool names at 64 chars of [a-zA-Z0-9_-]; OAuth cloaking appends CLAUDE_TOOL_SUFFIX.
+const MAX_TOOL_NAME_LEN = 64 - "_ide".length;
 
 // MCP namespaces end in `__server` and their tools start with `_`, so plain
 // concatenation reproduces the full MCP name (mcp__codex_apps__notion_fetch).
@@ -23,7 +19,9 @@ export function qualifyToolName(namespace: string, name: string): string {
 // The name and namespace the client declared for a tool the upstream called by `wireName`.
 export function clientToolRef(toolNamespaces: ToolNamespaces, wireName: string): { name: string; namespace: string | null } {
   if (!wireName || !toolNamespaces) return { name: wireName, namespace: null };
-  const entry = toolNamespaces instanceof Map ? toolNamespaces.get(wireName) : toolNamespaces[wireName];
+  const entry = toolNamespaces instanceof Map
+    ? toolNamespaces.get(wireName)
+    : Object.hasOwn(toolNamespaces, wireName) ? toolNamespaces[wireName] : undefined;
   if (!entry) return { name: wireName, namespace: null };
   if (typeof entry === "string") return { name: wireName, namespace: entry };
   return { name: entry.name, namespace: entry.namespace };
