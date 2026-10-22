@@ -41,7 +41,7 @@ export const RESPONSES_ITEM = {
   NAMESPACE: "namespace",
 };
 
-// Tool declaration `type` for client-defined tools (Anthropic and Responses both use "custom").
+// Tool declaration `type` values for client-defined tools.
 export const TOOL_TYPE = {
   FUNCTION: "function",
   CUSTOM: "custom",

@@ -52,7 +52,7 @@ export function cloakClaudeTools(body) {
   // Built-in server tools (web_search_20250305, etc.) carry a `type` and require
   // an exact reserved `name` — never suffix those or Claude rejects the request.
   for (const tool of tools) {
-    if (tool.type && tool.type !== TOOL_TYPE.CUSTOM) { clientDeclarations.push(tool); continue; }
+    if ((tool.type && tool.type !== TOOL_TYPE.CUSTOM) || typeof tool.name !== "string") { clientDeclarations.push(tool); continue; }
     const suffixed = suffix(tool.name);
     toolNameMap.set(suffixed, tool.name);
     clientToolNames.add(tool.name);

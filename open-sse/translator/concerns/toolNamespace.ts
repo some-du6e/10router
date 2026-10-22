@@ -1,11 +1,12 @@
 // Responses clients (Codex) call tools by `{ name, namespace }`; Chat and Claude
 // upstreams see one flat list. Maps the upstream name back: to a namespace when
 // the name is unchanged, or to `{ namespace, name }` when it was qualified.
+import { CLAUDE_TOOL_SUFFIX } from "../../config/appConstants.js";
 export type ToolNamespaceEntry = string | { namespace: string; name: string };
 export type ToolNamespaces = Map<string, ToolNamespaceEntry> | Record<string, ToolNamespaceEntry> | null | undefined;
 
 // Anthropic caps tool names at 64 chars of [a-zA-Z0-9_-]; OAuth cloaking appends CLAUDE_TOOL_SUFFIX.
-const MAX_TOOL_NAME_LEN = 64 - "_ide".length;
+const MAX_TOOL_NAME_LEN = 64 - CLAUDE_TOOL_SUFFIX.length;
 
 // MCP namespaces end in `__server` and their tools start with `_`, so plain
 // concatenation reproduces the full MCP name (mcp__codex_apps__notion_fetch).

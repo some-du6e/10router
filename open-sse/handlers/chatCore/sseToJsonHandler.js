@@ -51,7 +51,6 @@ function extractCustomToolInput(argumentsValue) {
 }
 
 function chatCompletionToResponses(responseBody, customToolNames = null, toolNamespaces = null) {
-  // chatCore hands over the translator metadata as an array
   const customTools = new Set(customToolNames || []);
   const choice = responseBody?.choices?.[0];
   if (!choice) return responseBody;

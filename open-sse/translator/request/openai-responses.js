@@ -233,7 +233,7 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
       })
       .filter(Boolean);
   }
-  if (result.tool_choice !== undefined) result.tool_choice = toChatToolChoice(result.tool_choice, result.tools, wireByRef);
+  if (result.tool_choice !== undefined) result.tool_choice = wireToolChoice(result.tool_choice, wireByRef);
   if (customToolNames.size > 0) result._customToolNames = [...customToolNames];
   if (toolNamespaces.size > 0) result._toolNamespaces = Object.fromEntries(toolNamespaces);
 
@@ -313,12 +313,12 @@ function assignWireNames(flat, namespaces) {
   const keepsName = ({ name, namespace }) => typeof name === "string" && !!name && (!namespace || counts.get(name) === 1);
   const taken = new Set(entries.filter(keepsName).map((e) => e.name));
 
+  // Drop any namespace a prior turn's call recorded under a name declared now.
+  for (const { name } of entries) if (typeof name === "string") namespaces.delete(name);
+
   return entries.map((entry) => {
     const { name, namespace } = entry;
-    if (typeof name !== "string" || !name) return entry;
-    // Drop any namespace a prior turn's call recorded under this bare name.
-    namespaces.delete(name);
-    if (!namespace) return entry;
+    if (typeof name !== "string" || !name || !namespace) return entry;
     if (keepsName(entry)) {
       namespaces.set(name, namespace);
       return entry;
@@ -351,19 +351,11 @@ function renameNamespacedCalls(messages, byRef) {
   }
 }
 
-// Responses forces a tool with `{ type: "function", name, namespace? }`; Chat wants
-// `{ type: "function", function: { name } }` naming the tool as declared upstream.
-function toChatToolChoice(choice, tools, byRef) {
-  if (choice?.type !== OPENAI_BLOCK.FUNCTION || choice.function || typeof choice.name !== "string") return choice;
-  const declared = new Set((tools || []).map((t) => t.function?.name));
-  let name = choice.name;
-  const qualified = choice.namespace && byRef.get(`${choice.namespace}\u0000${name}`);
-  if (qualified) name = qualified;
-  else if (!declared.has(name)) {
-    const matches = [...byRef].filter(([key]) => key.endsWith(`\u0000${name}`));
-    if (matches.length === 1) name = matches[0][1];
-  }
-  return { type: OPENAI_BLOCK.FUNCTION, function: { name } };
+// A forced `{ type: "function", name, namespace }` must name the tool as declared upstream.
+function wireToolChoice(choice, byRef) {
+  if (choice?.type !== OPENAI_BLOCK.FUNCTION || typeof choice.name !== "string" || !choice.namespace) return choice;
+  const wire = byRef.get(`${choice.namespace}\u0000${choice.name}`);
+  return wire ? { ...choice, name: wire } : choice;
 }
 
 /**

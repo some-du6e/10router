@@ -79,7 +79,6 @@ function extractCustomToolInput(argumentsValue) {
 }
 
 function openAICompletionToResponses(responseBody, customToolNames = null, toolNamespaces = null) {
-  // chatCore hands over the translator metadata as an array
   const customTools = new Set(customToolNames || []);
   const choice = responseBody?.choices?.[0];
   if (!choice) return responseBody;
@@ -401,7 +400,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     .map((part) => part.text)
     .join("\n");
   const responseToolCalls = responseMessage?.tool_calls
-    || (translatedResponse?.output || []).filter((item) => item?.type === "function_call");
+    || (translatedResponse?.output || []).filter((item) => item?.type === RESPONSES_ITEM.FUNCTION_CALL || item?.type === RESPONSES_ITEM.CUSTOM_TOOL_CALL);
   saveRequestDetail(buildRequestDetail({
     provider, model, connectionId,
     latency: { ttft: totalLatency, total: totalLatency },

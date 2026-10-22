@@ -28,12 +28,13 @@ describe("prepareClaudeRequest keeps explicit custom tools", () => {
     expect(out.tools.map((t) => t.name)).toEqual(["plain"]);
   });
 
-  it("drops an OpenAI-style custom tool that has no top-level name", () => {
+  it("drops OpenAI-style custom tools that lack a name or input_schema", () => {
     const out = prepareClaudeRequest({
       model: "claude-opus-5-5",
       messages: [{ role: "user", content: "hi" }],
       tools: [
         { type: "custom", custom: { name: "apply_patch", format: { type: "text" } } },
+        { type: "custom", name: "freeform", format: { type: "text" } },
         { name: "plain", description: "p", input_schema: schema },
       ],
     }, "anthropic-compatible-abc");
@@ -53,5 +54,14 @@ describe("cloakClaudeTools renames custom tools", () => {
     expect(names).toContain("Bash_ide");
     expect(new Set(names).size).toBe(names.length);
     expect(toolNameMap.get("Bash_ide")).toBe("Bash");
+  });
+
+  it("leaves a nameless tool alone", () => {
+    const { body } = cloakClaudeTools({
+      messages: [{ role: "user", content: "hi" }],
+      tools: [{ type: "custom", input_schema: schema }, { name: "Read", input_schema: schema }],
+    });
+
+    expect(body.tools.map((t) => t.name)).not.toContain("undefined_ide");
   });
 });

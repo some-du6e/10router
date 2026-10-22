@@ -496,7 +496,7 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
     if (provider !== "claude") {
       body.tools = body.tools
         .filter(tool => !tool.type || tool.type === TOOL_TYPE.FUNCTION
-          || (tool.type === TOOL_TYPE.CUSTOM && typeof tool.name === "string"))
+          || (tool.type === TOOL_TYPE.CUSTOM && typeof tool.name === "string" && !!tool.input_schema))
         .map(tool => {
           if (tool.function) {
             return {

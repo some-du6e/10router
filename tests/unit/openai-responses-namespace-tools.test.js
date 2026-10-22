@@ -7,7 +7,6 @@ import { openaiToOpenAIResponsesResponse } from "../../open-sse/translator/respo
 import { initState, translateRequest, translateResponse } from "../../open-sse/translator/index.js";
 import { translateNonStreamingResponse } from "../../open-sse/handlers/chatCore/nonStreamingHandler.js";
 import { clientToolRef } from "../../open-sse/translator/concerns/toolNamespace.js";
-import { CLAUDE_TOOL_SUFFIX } from "../../open-sse/config/appConstants.js";
 import { FORMATS } from "../../open-sse/translator/formats.js";
 
 const NAMESPACE_TOOLS = {
@@ -381,7 +380,6 @@ describe("wire names stay unique whatever the declaration shape or order", () =>
   });
 
   it("leaves room for the OAuth cloaking suffix", () => {
-    expect(CLAUDE_TOOL_SUFFIX).toBe("_ide"); // toolNamespace.ts inlines its length
     const out = names([ns(`mcp__${"x".repeat(80)}`, [fn("_fetch")]), ns("mcp__b", [fn("_fetch")])]);
 
     for (const n of wire(out)) expect(`${n}_ide`.length).toBeLessThanOrEqual(64);
@@ -403,10 +401,18 @@ describe("wire names stay unique whatever the declaration shape or order", () =>
     const tools = [ns("mcp__a", [fn("_x")]), ns("mcp__b", [fn("_x")])];
 
     expect(names(tools, { tool_choice: { type: "function", name: "_x", namespace: "mcp__b" } }).tool_choice)
-      .toEqual({ type: "function", function: { name: "mcp__b_x" } });
+      .toEqual({ type: "function", name: "mcp__b_x", namespace: "mcp__b" });
     expect(names([fn("shell")], { tool_choice: { type: "function", name: "shell" } }).tool_choice)
-      .toEqual({ type: "function", function: { name: "shell" } });
+      .toEqual({ type: "function", name: "shell" });
   });
+
+  it("keeps the mapping of a tool whose qualified name another tool declares", () => {
+    const out = names([fn("_x"), ns("a__", [fn("_x")]), ns("m__", [fn("a___x")]), ns("n__", [fn("a___x")])]);
+
+    expect(new Set(wire(out)).size).toBe(4);
+    expect(clientToolRef(out._toolNamespaces, "a___x")).toEqual({ name: "_x", namespace: "a__" });
+  });
+
 });
 
 describe("clientToolRef", () => {
