@@ -128,8 +128,15 @@ export function repairUnsupportedAssistantPrefill(messages, model = "") {
   return [...messages, { role: ROLE.USER, content }];
 }
 
-// Models that reject thinking.type "adaptive" + output_config.effort (Opus 4.5+/Sonnet 4.6+ only)
+// Models that reject thinking.type "adaptive" + output_config.effort: Haiku before 5.5
 const ADAPTIVE_THINKING_UNSUPPORTED = /haiku/i;
+
+function rejectsAdaptiveThinking(model, caps) {
+  return ADAPTIVE_THINKING_UNSUPPORTED.test(model) && caps.thinkingFormat !== "claude-adaptive";
+}
+
+// Anthropic's effort enum has no "minimal"; "xhigh" is clamped to match applyThinking.
+const BUDGET_LEVEL_TO_EFFORT = { minimal: "low", xhigh: "high" };
 
 function handlesThinkingBlocks(provider) {
   return provider === "claude" || provider?.startsWith("anthropic-compatible") || provider === "deepseek";
@@ -163,36 +170,33 @@ function hasForeignServerToolUseId(block) {
 }
 
 // Normalize a native Claude passthrough body to match Anthropic Messages API spec.
-// Newer Cowork/Claude Code clients emit beta-only shapes that OAuth endpoints reject:
-// 0. thinking.type "enabled" → rejected by adaptive-only models (Sonnet 5.5, Opus 5.5)
-// 1. thinking.type "adaptive" → unsupported on Haiku
-// 2. output_config.effort → unsupported on Haiku
+// Claude Code / Cowork clients emit thinking and beta shapes that some models or endpoints reject:
+// 0. thinking.type "enabled" → rejected by adaptive models (Sonnet/Haiku/Opus 5.5)
+// 1. thinking.type "adaptive" → unsupported on Haiku before 5.5
+// 2. output_config.effort → unsupported on Haiku before 5.5
 // 3. role "system" messages (mid-conversation-system beta) → only top-level system is allowed
 // 4. server_tool_use blocks carrying a foreign (non-srvtoolu_) id → rejected outright
 export function normalizeClaudePassthrough(body, model = "") {
   if (!body || typeof body !== "object") return body;
+  const caps = getCapabilitiesForModel(null, model);
 
-  // 0. Upgrade budget thinking for adaptive models; older clients still send it
-  if (body.thinking?.type === "enabled") {
-    const caps = getCapabilitiesForModel(null, model);
-    if (caps.thinkingFormat === "claude-adaptive") {
-      const { budget_tokens, ...rest } = body.thinking;
+  // 0. Turn budget thinking into adaptive + effort on adaptive models (keeps display)
+  if (body.thinking?.type === "enabled" && caps.thinkingFormat === "claude-adaptive") {
+    const { budget_tokens, ...rest } = body.thinking;
+    body.thinking = { ...rest, type: "adaptive" };
+    if (body.output_config?.effort == null) {
       const level = budgetToLevel(budget_tokens) || "high";
-      if (caps.thinkingCanDisable === false) delete body.thinking;
-      else body.thinking = { ...rest, type: "adaptive" };
-      if (body.output_config?.effort == null) {
-        body.output_config = { ...body.output_config, effort: level === "xhigh" ? "high" : level };
-      }
+      body.output_config = { ...body.output_config, effort: BUDGET_LEVEL_TO_EFFORT[level] || level };
     }
   }
 
   // 1. Downgrade adaptive thinking for models that don't support it
-  if (body.thinking?.type === "adaptive" && ADAPTIVE_THINKING_UNSUPPORTED.test(model)) {
+  if (body.thinking?.type === "adaptive" && rejectsAdaptiveThinking(model, caps)) {
     body.thinking = { type: "enabled", budget_tokens: 10000 };
   }
 
   // 2. Strip effort param for models that don't support it (keep other output_config fields)
-  if (ADAPTIVE_THINKING_UNSUPPORTED.test(model) && body.output_config?.effort != null) {
+  if (rejectsAdaptiveThinking(model, caps) && body.output_config?.effort != null) {
     delete body.output_config.effort;
     if (Object.keys(body.output_config).length === 0) delete body.output_config;
   }

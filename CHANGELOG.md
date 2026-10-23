@@ -1,7 +1,7 @@
 # Unreleased
 
 ## Fixes
-- Claude Sonnet 5.5 no longer fails with `400 "thinking.type.enabled" is not supported for this model` when the client sends budget thinking (Claude Code on Snowflake Cortex). On adaptive-thinking models, the passthrough now turns `thinking.budget_tokens` into an equivalent `output_config.effort`, and Sonnet 5.x is treated as adaptive.
+- Claude Sonnet 5.5 and Haiku 5.5 no longer fail with `400 "thinking.type.enabled" is not supported for this model` when the client sends budget thinking (Claude Code on Snowflake Cortex). On adaptive-thinking models (Claude 4.6+ and the 5.x line), the passthrough now turns `thinking.budget_tokens` into `thinking.type: "adaptive"` plus a matching `output_config.effort`, keeping `display`. Haiku 5.5 is no longer downgraded from adaptive to budget thinking like older Haiku.
 - Claude Code requests for Claude models on Snowflake Cortex no longer fail with `400 context_management: Extra inputs are not permitted`. When a custom endpoint's Anthropic route drops the `context-management-2025-06-27` beta (Strip beta, a flag the endpoint rejected before, or the retry after a rejection), the `context_management` field it unlocks is dropped from the body too.
 - Re-detect on an endpoint page now says what it's doing while it runs: which step it's on, how many models it has checked and how many work, requests sent, time taken, and any rate-limit wait. A Stop button cancels it, and leaving the page cancels it too.
 - Endpoints with no model list (Snowflake Cortex) now find the newest models (Claude Opus/Sonnet/Haiku 5.5, GPT-6, Kimi K3, GLM 5.3) and stop adding releases the labs have moved on from, like Claude Opus 4.5 or GPT-4.1. The Models card's refresh offers to remove outdated models already saved.
