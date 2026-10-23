@@ -44,10 +44,10 @@ const snowflakeCreds = (model) => ({
   providerSpecificData: { apiType: "chat", baseUrl: BASE, modelRoutes: { [model]: "anthropic" }, stripBeta: true },
 });
 
-async function send(provider, model, body, credentials) {
+async function send(model, body) {
   fetchMock.mockResolvedValueOnce(claudeReply());
   await handleChatCore({
-    body, modelInfo: { provider, model }, credentials,
+    body, modelInfo: { provider: SNOWFLAKE, model }, credentials: snowflakeCreds(model),
     log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn() }, connectionId: "c",
     clientRawRequest: { endpoint: "/v1/messages", body, headers: { "user-agent": CLAUDE_CODE_UA, accept: "application/json" } },
   });
@@ -59,7 +59,7 @@ beforeEach(() => fetchMock.mockReset());
 
 describe("Claude Code on an openai-compatible node's Messages route", () => {
   it.each(["claude-opus-5-5", "claude-sonnet-5-5"])("%s keeps thinking.display upstream", async (model) => {
-    const { url, sent } = await send(SNOWFLAKE, model, claudeCodeBody(model), snowflakeCreds(model));
+    const { url, sent } = await send(model, claudeCodeBody(model));
     expect(url).toBe(`${BASE}/messages`);
     expect(sent.thinking).toEqual({ type: "adaptive", display: "summarized" });
     expect(sent.output_config).toEqual({ effort: "medium" });
@@ -68,7 +68,7 @@ describe("Claude Code on an openai-compatible node's Messages route", () => {
   // #112: the node strips every beta, so its gated body fields go too.
   it("still drops context_management when the node strips betas", async () => {
     const model = "claude-opus-5-5";
-    const { sent } = await send(SNOWFLAKE, model, claudeCodeBody(model), snowflakeCreds(model));
+    const { sent } = await send(model, claudeCodeBody(model));
     expect(sent).not.toHaveProperty("context_management");
   });
 
@@ -77,7 +77,7 @@ describe("Claude Code on an openai-compatible node's Messages route", () => {
     const model = "claude-sonnet-5-5";
     const body = claudeCodeBody(model, { type: "enabled", budget_tokens: 8000, display: "summarized" });
     delete body.output_config;
-    const { sent } = await send(SNOWFLAKE, model, body, snowflakeCreds(model));
+    const { sent } = await send(model, body);
     expect(sent.thinking).toEqual({ type: "adaptive", display: "summarized" });
     expect(sent.thinking).not.toHaveProperty("budget_tokens");
   });
@@ -92,7 +92,7 @@ describe("Claude Code on an openai-compatible node's Messages route", () => {
       { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "hi" }] },
       { role: "system", content: "<system-reminder>x</system-reminder>" },
     ];
-    const { sent } = await send(SNOWFLAKE, model, body, snowflakeCreds(model));
+    const { sent } = await send(model, body);
     const assistant = sent.messages.find((m) => m.role === "assistant");
     expect(assistant.content[0]).toEqual(thinking);
     expect(sent.thinking).toEqual({ type: "adaptive", display: "summarized" });

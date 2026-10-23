@@ -43,5 +43,27 @@ describe("normalizeThinkingConfig", () => {
 
     expect(body.thinking).toBeUndefined();
   });
-});
 
+  it("still drops thinking after an OpenAI tool turn", () => {
+    const body = {
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "f", arguments: "{}" } }] },
+        { role: "tool", tool_call_id: "call_1", content: "ok" },
+      ],
+      thinking: { type: "enabled" },
+    };
+
+    normalizeThinkingConfig(body);
+
+    expect(body.thinking).toBeUndefined();
+  });
+
+  it("treats an all-system body like an empty one and keeps thinking", () => {
+    const body = { messages: [{ role: "system", content: "x" }], thinking: { type: "enabled" } };
+
+    normalizeThinkingConfig(body);
+
+    expect(body.thinking).toEqual({ type: "enabled" });
+  });
+});

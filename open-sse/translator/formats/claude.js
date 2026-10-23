@@ -9,6 +9,7 @@ import { PROVIDERS } from "../../providers/index.js";
 import { getCapabilitiesForModel } from "../../providers/capabilities.js";
 import { applyThinking } from "../concerns/thinkingUnified.js";
 import { FORMATS } from "../formats.js";
+import { isLastMessageFromUser } from "../../services/provider.js";
 import { DEFAULT_MAX_TOKENS } from "../../config/runtimeConfig.js";
 import {
   CLAUDE_INTERRUPTED_TOOL_RESULT_TEXT,
@@ -434,10 +435,7 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
 
     body.messages = filtered;
 
-    // Check if thinking is enabled AND last message is from user
-    const lastMessage = filtered[filtered.length - 1];
-    const lastMessageIsUser = lastMessage?.role === "user";
-    const thinkingEnabled = body.thinking?.type === "enabled" && lastMessageIsUser;
+    const thinkingEnabled = body.thinking?.type === "enabled" && isLastMessageFromUser({ messages: filtered });
 
     // Pass 2 (reverse): add cache_control to last assistant + handle thinking for Anthropic
     let lastAssistantProcessed = false;
