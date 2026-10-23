@@ -7,6 +7,8 @@ import { resolveSessionId } from "../../utils/sessionManager.js";
 import { isValidClaudeSignature } from "../../utils/claudeSignature.js";
 import { PROVIDERS } from "../../providers/index.js";
 import { getCapabilitiesForModel } from "../../providers/capabilities.js";
+import { applyThinking } from "../concerns/thinkingUnified.js";
+import { FORMATS } from "../formats.js";
 import { DEFAULT_MAX_TOKENS } from "../../config/runtimeConfig.js";
 import {
   CLAUDE_INTERRUPTED_TOOL_RESULT_TEXT,
@@ -127,7 +129,7 @@ export function repairUnsupportedAssistantPrefill(messages, model = "") {
   return [...messages, { role: ROLE.USER, content }];
 }
 
-// Models that reject thinking.type "adaptive" + output_config.effort (Opus 4.5+/Sonnet 4.6+ only)
+// Models that reject thinking.type "adaptive" + output_config.effort, unless capabilities mark them adaptive (Haiku 5.5)
 const ADAPTIVE_THINKING_UNSUPPORTED = /haiku/i;
 
 function handlesThinkingBlocks(provider) {
@@ -163,20 +165,28 @@ function hasForeignServerToolUseId(block) {
 
 // Normalize a native Claude passthrough body to match Anthropic Messages API spec.
 // Newer Cowork/Claude Code clients emit beta-only shapes that OAuth endpoints reject:
-// 1. thinking.type "adaptive" → unsupported on Haiku
-// 2. output_config.effort → unsupported on Haiku
+// 1. thinking.type "adaptive" → unsupported on Haiku 4.x; "enabled" → rejected by adaptive-only models
+// 2. output_config.effort → unsupported on Haiku 4.x
 // 3. role "system" messages (mid-conversation-system beta) → only top-level system is allowed
 // 4. server_tool_use blocks carrying a foreign (non-srvtoolu_) id → rejected outright
-export function normalizeClaudePassthrough(body, model = "") {
+export function normalizeClaudePassthrough(body, model = "", provider = null) {
   if (!body || typeof body !== "object") return body;
 
+  const adaptiveOnly = getCapabilitiesForModel(provider, model).thinkingFormat === "claude-adaptive";
+  const adaptiveUnsupported = !adaptiveOnly && ADAPTIVE_THINKING_UNSUPPORTED.test(model);
+
+  // 0. Upgrade budget thinking to adaptive + effort for models that reject budget_tokens
+  if (adaptiveOnly && body.thinking?.type === "enabled") {
+    applyThinking(FORMATS.CLAUDE, model, body, provider);
+  }
+
   // 1. Downgrade adaptive thinking for models that don't support it
-  if (body.thinking?.type === "adaptive" && ADAPTIVE_THINKING_UNSUPPORTED.test(model)) {
+  if (body.thinking?.type === "adaptive" && adaptiveUnsupported) {
     body.thinking = { type: "enabled", budget_tokens: 10000 };
   }
 
   // 2. Strip effort param for models that don't support it (keep other output_config fields)
-  if (ADAPTIVE_THINKING_UNSUPPORTED.test(model) && body.output_config?.effort != null) {
+  if (adaptiveUnsupported && body.output_config?.effort != null) {
     delete body.output_config.effort;
     if (Object.keys(body.output_config).length === 0) delete body.output_config;
   }
