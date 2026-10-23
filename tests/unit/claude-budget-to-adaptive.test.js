@@ -163,7 +163,7 @@ describe("budget thinking → adaptive for models that reject budget_tokens", ()
     expect(out.thinking).toEqual({ type: "disabled" });
   });
 
-  it.each(["claude-opus-4-7", "claude-opus-4-8", "claude-opus-5-5"])(
+  it.each(["claude-opus-4-7", "claude-opus-4-8", "claude-opus-5-5", "claude-opus-4.7", "claude-opus-5-5-20260901", "claude-sonnet-5-20260601", "claude-haiku-5-5-20261001"])(
     "native Claude passthrough still rewrites budget thinking on %s, which rejects it",
     (model) => {
       const out = normalizeClaudePassthrough(claudeBody({ model, thinking: { type: "enabled", budget_tokens: 24576 } }), model, "claude");
@@ -172,4 +172,16 @@ describe("budget thinking → adaptive for models that reject budget_tokens", ()
       expect(out.output_config).toEqual({ effort: "high" });
     },
   );
+
+  it("does not carry the beta-only display \"updates\" onto a rewritten body", () => {
+    const out = toClaude(FORMATS.CLAUDE, claudeBody({ thinking: { type: "enabled", budget_tokens: 8192, display: "updates" } }));
+    expect(out.thinking).toBeUndefined();
+    expect(out.output_config).toEqual({ effort: "medium" });
+  });
+
+  it.each(["claude-haiku-4-5", "claude-sonnet-4-5"])("leaves budget thinking with display alone on %s", (model) => {
+    const out = toClaude(FORMATS.CLAUDE, claudeBody({ model, thinking: { type: "enabled", budget_tokens: 24576, display: "summarized" } }));
+    expect(out.thinking?.type).toBe("enabled");
+    expect(out.thinking?.budget_tokens).toBeGreaterThan(0);
+  });
 });

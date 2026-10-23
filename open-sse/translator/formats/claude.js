@@ -165,7 +165,8 @@ function hasForeignServerToolUseId(block) {
 
 // Normalize a native Claude passthrough body to match Anthropic Messages API spec.
 // Newer Cowork/Claude Code clients emit beta-only shapes that OAuth endpoints reject:
-// 1. thinking.type "adaptive" → unsupported on Haiku 4.x; "enabled" → rejected by adaptive-only models
+// 0. thinking.type "enabled" → rejected by adaptive models that dropped budget_tokens (all but Opus/Sonnet 4.6)
+// 1. thinking.type "adaptive" → unsupported on Haiku 4.x
 // 2. output_config.effort → unsupported on Haiku 4.x
 // 3. role "system" messages (mid-conversation-system beta) → only top-level system is allowed
 // 4. server_tool_use blocks carrying a foreign (non-srvtoolu_) id → rejected outright

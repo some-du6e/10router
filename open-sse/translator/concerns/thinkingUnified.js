@@ -162,6 +162,10 @@ function toKimiReasoningEffort(cfg) {
   return null;
 }
 
+// thinking.display values that need no beta header ("updates" does, and the
+// claude executor rebuilds anthropic-beta, so it isn't carried over).
+const CLAUDE_GA_THINKING_DISPLAYS = new Set(["summarized", "omitted"]);
+
 const GEMINI_LEVEL_OUTPUT_FLOOR = {
   minimal: 4096,
   low: 8192,
@@ -370,7 +374,7 @@ export function applyThinking(targetFormat, model, body, provider = null, intent
   const display = body.thinking?.display;
   stripAll(body);
   applyFormat(fmt, body, cfg, caps, supportedLevels);
-  if (fmt === "claude-adaptive" && display && body.thinking?.type !== "disabled") {
+  if (fmt === "claude-adaptive" && CLAUDE_GA_THINKING_DISPLAYS.has(display) && body.thinking?.type !== "disabled") {
     body.thinking = { type: "adaptive", display };
   }
   if ([FORMATS.OPENAI_RESPONSES, FORMATS.OPENAI_RESPONSE].includes(targetFormat) && body.reasoning_effort !== undefined) {
