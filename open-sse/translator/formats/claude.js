@@ -172,11 +172,12 @@ function hasForeignServerToolUseId(block) {
 export function normalizeClaudePassthrough(body, model = "", provider = null) {
   if (!body || typeof body !== "object") return body;
 
-  const adaptiveOnly = getCapabilitiesForModel(provider, model).thinkingFormat === "claude-adaptive";
+  const caps = getCapabilitiesForModel(provider, model);
+  const adaptiveOnly = caps.thinkingFormat === "claude-adaptive";
   const adaptiveUnsupported = !adaptiveOnly && ADAPTIVE_THINKING_UNSUPPORTED.test(model);
 
   // 0. Upgrade budget thinking to adaptive + effort for models that reject budget_tokens
-  if (adaptiveOnly && body.thinking?.type === "enabled") {
+  if (adaptiveOnly && !caps.thinkingBudgetAccepted && body.thinking?.type === "enabled") {
     applyThinking(FORMATS.CLAUDE, model, body, provider);
   }
 
