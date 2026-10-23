@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { translateRequest } from "../../open-sse/translator/index.js";
 import { normalizeClaudePassthrough } from "../../open-sse/translator/formats/claude.js";
-import { getCapabilitiesForModel } from "../../open-sse/providers/capabilities.js";
+import { getCapabilitiesForModel, setCatalogSource } from "../../open-sse/providers/capabilities.js";
 import { FORMATS } from "../../open-sse/translator/formats.js";
 
 // An OpenAI-compatible node that sends claude-* models to its Anthropic /messages route.
@@ -148,13 +148,17 @@ describe("budget thinking → adaptive for models that reject budget_tokens", ()
     expect(out.output_config).toEqual({ effort: "high", format });
   });
 
-  it.each(["claude-sonnet-5-5", "claude-haiku-5-5"])("keeps thinking.display when rewriting budget thinking on %s", (model) => {
-    const thinking = { type: "enabled", budget_tokens: 24576, display: "summarized" };
+  it.each([
+    ["claude-sonnet-5-5", "summarized"],
+    ["claude-haiku-5-5", "summarized"],
+    ["claude-sonnet-5-5", "omitted"],
+  ])("keeps thinking.display when rewriting budget thinking on %s (%s)", (model, display) => {
+    const thinking = { type: "enabled", budget_tokens: 24576, display };
     const translated = toClaude(FORMATS.CLAUDE, claudeBody({ model, thinking: { ...thinking } }));
-    expect(translated.thinking).toEqual({ type: "adaptive", display: "summarized" });
+    expect(translated.thinking).toEqual({ type: "adaptive", display });
     expect(translated.output_config).toEqual({ effort: "high" });
     const passthrough = normalizeClaudePassthrough(claudeBody({ model, thinking: { ...thinking } }), model, "claude");
-    expect(passthrough.thinking).toEqual({ type: "adaptive", display: "summarized" });
+    expect(passthrough.thinking).toEqual({ type: "adaptive", display });
     expect(passthrough.output_config).toEqual({ effort: "high" });
   });
 
@@ -179,9 +183,19 @@ describe("budget thinking → adaptive for models that reject budget_tokens", ()
     expect(out.output_config).toEqual({ effort: "medium" });
   });
 
-  it.each(["claude-haiku-4-5", "claude-sonnet-4-5"])("leaves budget thinking with display alone on %s", (model) => {
+  it.each(["claude-haiku-4-5", "claude-sonnet-4-5"])("keeps budget thinking (not adaptive) on %s when display is sent", (model) => {
     const out = toClaude(FORMATS.CLAUDE, claudeBody({ model, thinking: { type: "enabled", budget_tokens: 24576, display: "summarized" } }));
     expect(out.thinking?.type).toBe("enabled");
     expect(out.thinking?.budget_tokens).toBeGreaterThan(0);
+    expect(out.thinking?.display).toBeUndefined();
+  });
+
+  it.each(["claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5"])("%s still takes catalog modalities such as pdf", (model) => {
+    setCatalogSource({ getModalities: () => ({ vision: true, pdf: true }), getLimits: () => null });
+    try {
+      expect(getCapabilitiesForModel(COMPAT_NODE, model).pdf).toBe(true);
+    } finally {
+      setCatalogSource(null);
+    }
   });
 });

@@ -6,6 +6,7 @@ import { getCapabilitiesForModel } from "../../providers/capabilities.js";
 import { getThinkingLevels } from "../../providers/thinkingLevels.js";
 import { PROVIDERS } from "../../providers/index.js";
 import { FORMATS } from "../formats.js";
+import { CLAUDE_GA_THINKING_DISPLAYS } from "../../config/claudeMessageCompat.js";
 import { LEVEL_TO_BUDGET, budgetToLevel, effortToBudget, effortToThinkingLevel } from "./thinking.js";
 
 // Map a target wire-format to its native thinking format (when capability has none).
@@ -161,10 +162,6 @@ function toKimiReasoningEffort(cfg) {
   if (["low", "medium", "high", "max"].includes(level)) return level;
   return null;
 }
-
-// thinking.display values that need no beta header ("updates" does, and the
-// claude executor rebuilds anthropic-beta, so it isn't carried over).
-const CLAUDE_GA_THINKING_DISPLAYS = new Set(["summarized", "omitted"]);
 
 const GEMINI_LEVEL_OUTPUT_FLOOR = {
   minimal: 4096,

@@ -17,3 +17,8 @@ export const CLAUDE_INTERRUPTED_TOOL_RESULT_TEXT =
 export const CLAUDE_BETA_BODY_FIELDS = {
   "context-management-2025-06-27": ["context_management"],
 };
+
+// thinking.display values that work without a beta flag. "updates" needs
+// thinking-display-updates-2026-08-18, which not every route forwards, so it
+// isn't carried onto a rewritten adaptive thinking block.
+export const CLAUDE_GA_THINKING_DISPLAYS = new Set(["summarized", "omitted"]);
