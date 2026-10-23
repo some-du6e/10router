@@ -6,6 +6,7 @@ import { getCapabilitiesForModel } from "../../providers/capabilities.js";
 import { getThinkingLevels } from "../../providers/thinkingLevels.js";
 import { PROVIDERS } from "../../providers/index.js";
 import { FORMATS } from "../formats.js";
+import { CLAUDE_GA_THINKING_DISPLAYS } from "../../config/claudeMessageCompat.js";
 import { LEVEL_TO_BUDGET, budgetToLevel, effortToBudget, effortToThinkingLevel } from "./thinking.js";
 
 // Map a target wire-format to its native thinking format (when capability has none).
@@ -251,7 +252,7 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels) {
       if (canDisable) body.thinking = { type: "adaptive" };
       else delete body.thinking;
       const level = toLevel(eff);
-      body.output_config = { effort: none ? "low" : level === "xhigh" ? "high" : level };
+      body.output_config = { effort: none || level === "minimal" ? "low" : level === "xhigh" ? "high" : level };
       break;
     }
     case "claude-budget": {
@@ -367,8 +368,12 @@ export function applyThinking(targetFormat, model, body, provider = null, intent
   const fmt = resolveFormat(targetFormat, cleanModel, provider);
   const supportedLevels = getThinkingLevels(provider, cleanModel);
   const reasoning = body.reasoning;
+  const display = body.thinking?.display;
   stripAll(body);
   applyFormat(fmt, body, cfg, caps, supportedLevels);
+  if (fmt === "claude-adaptive" && CLAUDE_GA_THINKING_DISPLAYS.has(display) && body.thinking?.type !== "disabled") {
+    body.thinking = { type: "adaptive", display };
+  }
   if ([FORMATS.OPENAI_RESPONSES, FORMATS.OPENAI_RESPONSE].includes(targetFormat) && body.reasoning_effort !== undefined) {
     body.reasoning = { ...reasoning, effort: body.reasoning_effort };
     delete body.reasoning_effort;
