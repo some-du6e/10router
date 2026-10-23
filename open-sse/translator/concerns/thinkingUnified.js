@@ -367,8 +367,12 @@ export function applyThinking(targetFormat, model, body, provider = null, intent
   const fmt = resolveFormat(targetFormat, cleanModel, provider);
   const supportedLevels = getThinkingLevels(provider, cleanModel);
   const reasoning = body.reasoning;
+  const display = body.thinking?.display;
   stripAll(body);
   applyFormat(fmt, body, cfg, caps, supportedLevels);
+  if (fmt === "claude-adaptive" && display && body.thinking?.type !== "disabled") {
+    body.thinking = { type: "adaptive", display };
+  }
   if ([FORMATS.OPENAI_RESPONSES, FORMATS.OPENAI_RESPONSE].includes(targetFormat) && body.reasoning_effort !== undefined) {
     body.reasoning = { ...reasoning, effort: body.reasoning_effort };
     delete body.reasoning_effort;

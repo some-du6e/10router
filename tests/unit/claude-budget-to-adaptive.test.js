@@ -124,7 +124,7 @@ describe("budget thinking → adaptive for models that reject budget_tokens", ()
     expect(out.output_config).toEqual({ effort: "high" });
   });
 
-  it.each(["claude-opus-4-6", "claude-sonnet-4-6", "claude-opus-4.6", "claude-sonnet-4.6"])(
+  it.each(["claude-opus-4-6", "claude-sonnet-4-6", "claude-opus-4.6", "claude-sonnet-4.6", "claude-opus-4.6-20260101", "claude-sonnet-4.6-20260101"])(
     "native Claude passthrough leaves budget thinking alone on %s, which still accepts it",
     (model) => {
       const format = { type: "json_schema", schema: { type: "object" } };
@@ -147,4 +147,29 @@ describe("budget thinking → adaptive for models that reject budget_tokens", ()
     expect(out.thinking).toEqual({ type: "adaptive" });
     expect(out.output_config).toEqual({ effort: "high", format });
   });
+
+  it.each(["claude-sonnet-5-5", "claude-haiku-5-5"])("keeps thinking.display when rewriting budget thinking on %s", (model) => {
+    const thinking = { type: "enabled", budget_tokens: 24576, display: "summarized" };
+    const translated = toClaude(FORMATS.CLAUDE, claudeBody({ model, thinking: { ...thinking } }));
+    expect(translated.thinking).toEqual({ type: "adaptive", display: "summarized" });
+    expect(translated.output_config).toEqual({ effort: "high" });
+    const passthrough = normalizeClaudePassthrough(claudeBody({ model, thinking: { ...thinking } }), model, "claude");
+    expect(passthrough.thinking).toEqual({ type: "adaptive", display: "summarized" });
+    expect(passthrough.output_config).toEqual({ effort: "high" });
+  });
+
+  it("does not add display to disabled thinking on Haiku 5.5", () => {
+    const out = toClaude(FORMATS.CLAUDE, claudeBody({ model: "claude-haiku-5-5", thinking: { type: "disabled", display: "summarized" } }));
+    expect(out.thinking).toEqual({ type: "disabled" });
+  });
+
+  it.each(["claude-opus-4-7", "claude-opus-4-8", "claude-opus-5-5"])(
+    "native Claude passthrough still rewrites budget thinking on %s, which rejects it",
+    (model) => {
+      const out = normalizeClaudePassthrough(claudeBody({ model, thinking: { type: "enabled", budget_tokens: 24576 } }), model, "claude");
+      expect(out.thinking?.type).not.toBe("enabled");
+      expect(out.thinking?.budget_tokens).toBeUndefined();
+      expect(out.output_config).toEqual({ effort: "high" });
+    },
+  );
 });

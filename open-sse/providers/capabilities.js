@@ -59,6 +59,7 @@ export const DEFAULT_CAPABILITIES = {
   thinkingCanDisable: true,  // false → model cannot turn thinking off (clamp to min instead of disable)
   thinkingRange: null,       // { min, max } for budget formats; null = no clamp
   thinkingEffortSupported: false, // zai format only: model accepts a reasoning_effort level (GLM-5.2+; older GLM ignores it)
+  thinkingBudgetAccepted: false,  // claude-adaptive only: model still accepts budget_tokens (Opus/Sonnet 4.6), so passthrough leaves budgets alone
   // limits (tokens)
   contextWindow: 200000,
   maxOutput: 64000,
