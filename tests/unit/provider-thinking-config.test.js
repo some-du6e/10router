@@ -44,12 +44,13 @@ describe("normalizeThinkingConfig", () => {
     expect(body.thinking).toBeUndefined();
   });
 
-  it("still drops thinking after an OpenAI tool turn", () => {
+  it("still drops thinking after an OpenAI tool turn, even with a system turn after it", () => {
     const body = {
       messages: [
         { role: "user", content: "hi" },
         { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "f", arguments: "{}" } }] },
         { role: "tool", tool_call_id: "call_1", content: "ok" },
+        { role: "system", content: "x" },
       ],
       thinking: { type: "enabled" },
     };
