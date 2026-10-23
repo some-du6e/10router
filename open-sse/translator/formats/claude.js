@@ -13,6 +13,7 @@ import {
   CLAUDE_PREFILL_CONTINUATION_TEXT,
   supportsClaudeAssistantPrefill,
 } from "../../config/claudeMessageCompat.js";
+import { budgetToLevel } from "../concerns/thinking.js";
 
 const CACHE_CONTROL_5M = { type: "ephemeral" };
 const CACHE_CONTROL_1H = { type: "ephemeral", ttl: "1h" };
@@ -163,12 +164,27 @@ function hasForeignServerToolUseId(block) {
 
 // Normalize a native Claude passthrough body to match Anthropic Messages API spec.
 // Newer Cowork/Claude Code clients emit beta-only shapes that OAuth endpoints reject:
+// 0. thinking.type "enabled" → rejected by adaptive-only models (Sonnet 5.5, Opus 5.5)
 // 1. thinking.type "adaptive" → unsupported on Haiku
 // 2. output_config.effort → unsupported on Haiku
 // 3. role "system" messages (mid-conversation-system beta) → only top-level system is allowed
 // 4. server_tool_use blocks carrying a foreign (non-srvtoolu_) id → rejected outright
 export function normalizeClaudePassthrough(body, model = "") {
   if (!body || typeof body !== "object") return body;
+
+  // 0. Upgrade budget thinking for adaptive models; older clients still send it
+  if (body.thinking?.type === "enabled") {
+    const caps = getCapabilitiesForModel(null, model);
+    if (caps.thinkingFormat === "claude-adaptive") {
+      const { budget_tokens, ...rest } = body.thinking;
+      const level = budgetToLevel(budget_tokens) || "high";
+      if (caps.thinkingCanDisable === false) delete body.thinking;
+      else body.thinking = { ...rest, type: "adaptive" };
+      if (body.output_config?.effort == null) {
+        body.output_config = { ...body.output_config, effort: level === "xhigh" ? "high" : level };
+      }
+    }
+  }
 
   // 1. Downgrade adaptive thinking for models that don't support it
   if (body.thinking?.type === "adaptive" && ADAPTIVE_THINKING_UNSUPPORTED.test(model)) {
