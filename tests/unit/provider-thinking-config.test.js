@@ -67,4 +67,10 @@ describe("normalizeThinkingConfig", () => {
 
     expect(body.thinking).toEqual({ type: "enabled" });
   });
+
+  it("does not throw on a malformed non-array messages field", () => {
+    const body = { messages: "hello", thinking: { type: "enabled" } };
+
+    expect(() => normalizeThinkingConfig(body)).not.toThrow();
+  });
 });

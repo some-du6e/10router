@@ -197,6 +197,7 @@ export function resolveTransport(provider, sourceFormat) {
 export function isLastMessageFromUser(body) {
   const messages = body.messages || body.contents;
   if (!messages?.length) return true;
+  if (!Array.isArray(messages)) return messages[messages.length - 1]?.role === ROLE.USER;
   const lastMsg = messages.findLast((m) => m?.role !== ROLE.SYSTEM);
   return !lastMsg || lastMsg.role === ROLE.USER;
 }
@@ -206,7 +207,6 @@ export function hasThinkingConfig(body) {
   return !!(body.reasoning_effort || body.thinking?.type === "enabled");
 }
 
-// Normalize provider-native thinking config based on last message role.
 // OpenAI reasoning_effort is request-level and must survive tool-result turns.
 export function normalizeThinkingConfig(body) {
   if (!isLastMessageFromUser(body)) {
