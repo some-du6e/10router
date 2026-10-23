@@ -16,6 +16,7 @@ import { isLimitError } from "open-sse/utils/limitHold.js";
 // run concurrently. Kept on global so duplicated Next.js module instances share it.
 const selectionMutexes = (global._selectionMutexes ??= new Map());
 const MODEL_LIMIT_PREFIX = "modelLimit_";
+const MODEL_ERROR_CODE_PREFIX = "modelErrorCode_";
 
 const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit for your plan";
 
@@ -309,10 +310,12 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
   const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
   const providerResetAtMs = githubResetAtMs || resetsAtMs;
+  const lockScope = githubResetAtMs ? "__all" : model || "__all";
 
   await updateProviderConnection(connectionId, {
     ...lockUpdate,
-    [`${MODEL_LIMIT_PREFIX}${githubResetAtMs ? "__all" : model || "__all"}`]: isLimitError(status, errorText),
+    [`${MODEL_LIMIT_PREFIX}${lockScope}`]: isLimitError(status, errorText),
+    [`${MODEL_ERROR_CODE_PREFIX}${lockScope}`]: status,
     [`${PROVIDER_RESET_PREFIX}${githubResetAtMs ? "__all" : model || "__all"}`]:
       Number.isFinite(providerResetAtMs) && providerResetAtMs > Date.now() ? new Date(providerResetAtMs).toISOString() : null,
     testStatus: "unavailable",
@@ -371,6 +374,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
   for (const key of keysToClear) {
     clearObj[key.replace("modelLock_", PROVIDER_RESET_PREFIX)] = null;
     clearObj[key.replace("modelLock_", MODEL_LIMIT_PREFIX)] = null;
+    clearObj[key.replace("modelLock_", MODEL_ERROR_CODE_PREFIX)] = null;
   }
 
   // Only reset error state if no active locks remain

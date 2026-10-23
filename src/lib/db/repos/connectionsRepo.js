@@ -17,6 +17,9 @@ export function bumpConnectionsVersion() {
   global._connectionsVersion = (global._connectionsVersion || 0) + 1;
 }
 
+const MODEL_ERROR_CODE_PREFIX = "modelErrorCode_";
+const FAILED_TEST_STATUSES = new Set(["unavailable", "error"]);
+
 function rowToConn(row) {
   if (!row) return null;
   const extra = parseJson(row.data, {});
@@ -117,6 +120,13 @@ function reorderInTx(db, providerId) {
   });
 }
 
+function clearModelErrorCodesOnRecovery(existing, data, merged) {
+  if (data.testStatus === undefined || FAILED_TEST_STATUSES.has(data.testStatus)) return;
+  for (const key of Object.keys(existing)) {
+    if (key.startsWith(MODEL_ERROR_CODE_PREFIX) && !(key in data)) merged[key] = null;
+  }
+}
+
 export async function createProviderConnection(data) {
   const db = await getAdapter();
   const now = new Date().toISOString();
@@ -191,6 +201,7 @@ export async function createProviderConnection(data) {
       }
       const updates = Object.fromEntries(Object.entries(data).filter(([key, value]) => key !== "allowOverwrite" && value !== undefined));
       const merged = { ...existing, ...updates, updatedAt: now };
+      clearModelErrorCodesOnRecovery(existing, updates, merged);
       upsert(db, merged);
       result = merged;
       return;
@@ -246,6 +257,7 @@ export async function updateProviderConnection(id, data) {
     if (!row) { result = null; return; }
     const existing = rowToConn(row);
     const merged = { ...existing, ...data, updatedAt: new Date().toISOString() };
+    clearModelErrorCodesOnRecovery(existing, data, merged);
     upsert(db, merged);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
     result = merged;
