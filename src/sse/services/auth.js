@@ -1,7 +1,7 @@
 import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools } from "@/lib/localDb";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL } from "open-sse/services/accountFallback.js";
-import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG } from "open-sse/config/errorConfig.js";
+import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG, ERROR_RULES } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { planCanServeModel } from "@/shared/utils/planCapability.js";
 import { getAntigravityQuotaCache } from "./antigravityQuota.js";
@@ -56,12 +56,12 @@ const SPEND_LIMIT_403 = /limit exceeded|exceeded (?:your|the|its)?\s*\w*\s*limit
 function isAuthRejection(status, errorText) {
   const code = Number(status);
   if (code === 401) return true;
-  return code === 403 && !isLimitError(code, errorText) && !SPEND_LIMIT_403.test(String(errorText || ""));
+  const text = String(errorText || "");
+  const lower = text.toLowerCase();
+  return code === 403 && !isLimitError(code, errorText) && !SPEND_LIMIT_403.test(text)
+    && !ERROR_RULES.some(r => r.backoff && r.text && lower.includes(r.text));
 }
 
-// The refusal only counts when another key of the provider served this model
-// recently: a failure every key sees (region block, proxy page, auth outage)
-// is not this key's. Web search/fetch lock keys ("websearch:x") are not models.
 const autoDisableLocks = new Map();
 async function withAutoDisableLock(provider, fn) {
   const prev = autoDisableLocks.get(provider) || Promise.resolve();
@@ -75,6 +75,9 @@ async function withAutoDisableLock(provider, fn) {
   }
 }
 
+// The refusal only counts when another key of the provider served this model
+// recently: a failure every key sees (region block, proxy page, auth outage)
+// is not this key's. Web search/fetch lock keys ("websearch:x") are not models.
 function countsTowardAuthStreak(connections, connectionId, model, status, errorText) {
   if (!model || model.includes(":") || !isAuthRejection(status, errorText)) return false;
   const since = Date.now() - AUTH_DEAD_CONFIG.minWindowMs;

@@ -189,6 +189,9 @@ describe("auth-dead keys turn off", () => {
     [403, "Your credits are exhausted"],
     [403, "Usage cap reached for this key"],
     [403, "Billing account is inactive"],
+    [403, "Model is overloaded, try again later"],
+    [403, "Not enough capacity for this request"],
+    [403, "Too many requests from this account"],
   ])("never counts %i %s", async (status, text) => {
     const dead = await addKey("a");
     const healthy = await addKey("b");
