@@ -324,7 +324,7 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
 
   // Cursor uses protobuf API - can only verify token exists, not test endpoint
   if (config.tokenExists) {
-    return { valid: true, error: null, refreshed: false, newTokens: null };
+    return { valid: true, error: null, refreshed: false, newTokens: null, localOnly: true };
   }
 
   let accessToken = connection.accessToken;
@@ -346,7 +346,7 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
   if (config.checkExpiry) {
     if (refreshed) return { valid: true, error: null, refreshed, newTokens };
     if (tokenExpired) return { valid: false, error: "Token expired", refreshed: false };
-    return { valid: true, error: null, refreshed: false, newTokens: null };
+    return { valid: true, error: null, refreshed: false, newTokens: null, localOnly: true };
   }
 
   if (connection.provider === "gemini-cli" || connection.provider === "antigravity") {
@@ -871,8 +871,9 @@ export async function testSingleConnection(id) {
   };
 
   // A key the router turned off for failing auth comes back once it passes.
-  // One the user turned off stays off.
-  if (result.valid && connection.isActive === false && connection.autoDisabledAt) updateData.isActive = true;
+  // One the user turned off stays off, and so does one whose test only checked
+  // the stored token's expiry without asking the provider.
+  if (result.valid && !result.localOnly && connection.isActive === false && connection.autoDisabledAt) updateData.isActive = true;
 
   if (result.refreshed && result.newTokens) {
     if (result.newTokens.accessToken) updateData.accessToken = result.newTokens.accessToken;

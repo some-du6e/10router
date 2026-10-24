@@ -110,6 +110,25 @@ describe("auth-dead keys turn off", () => {
     expect(conn.modelLock_m2).toBeTruthy();
   });
 
+  it("keeps one key on when the last two trip at the same moment", async () => {
+    const a = await addKey("a");
+    const b = await addKey("b");
+    const healthy = await addKey("c");
+    for (let i = 0; i < 4; i++) {
+      if (i > 0) vi.advanceTimersByTime(3 * MIN);
+      const model = i % 2 ? "m2" : "m1";
+      await succeed(healthy.id, model);
+      await failOnce(a.id, model);
+      await failOnce(b.id, model);
+    }
+    await db.updateProviderConnection(healthy.id, { isActive: false });
+    vi.advanceTimersByTime(3 * MIN);
+    await Promise.all([failOnce(a.id, "m1"), failOnce(b.id, "m1")]);
+
+    const active = [await load(a.id), await load(b.id)].filter((c) => c.isActive !== false);
+    expect(active).toHaveLength(1);
+  });
+
   it("keeps a key refused on a single model on", async () => {
     const dead = await addKey("a");
     const healthy = await addKey("b");
@@ -482,6 +501,20 @@ describe("an auto-disabled key", () => {
     expect(await runTestAll()).not.toContain(dead.id);
     expect((await testSingleConnection(dead.id)).valid).toBe(true);
     expect((await load(dead.id)).isActive).toBe(false);
+  });
+
+  it("stays off when its test only checks the stored token's expiry", async () => {
+    const oauth = await db.createProviderConnection({
+      provider: "claude", authType: "oauth", name: "oauth-dead",
+      accessToken: "test-access-token", expiresAt: new Date(Date.now() + 24 * 60 * MIN).toISOString(),
+    });
+    await db.updateProviderConnection(oauth.id, {
+      isActive: false, autoDisabledAt: new Date().toISOString(), autoDisabledReason: "401",
+    });
+    stubFetch(500);
+    expect(await testSingleConnection(oauth.id)).toMatchObject({ valid: true });
+    expect((await load(oauth.id)).isActive).toBe(false);
+    await db.deleteProviderConnection(oauth.id);
   });
 
   it("leaves a key the user turned off alone when its test passes", async () => {
