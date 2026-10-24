@@ -20,7 +20,7 @@ const AUTO_DISABLE_FIELDS = [
 function applyAutoDisableTransition(existing, merged, data) {
   // A different key pasted into a connection the router turned off fixes it.
   if (existing.autoDisabledAt && data.isActive === undefined
-    && data.apiKey !== undefined && data.apiKey !== existing.apiKey) merged.isActive = true;
+    && data.apiKey !== undefined && String(data.apiKey).trim() !== String(existing.apiKey ?? "").trim()) merged.isActive = true;
   if (existing.isActive === false && merged.isActive === true) {
     for (const f of AUTO_DISABLE_FIELDS) delete merged[f];
   } else if (data.isActive === false && data.autoDisabledAt === undefined) {

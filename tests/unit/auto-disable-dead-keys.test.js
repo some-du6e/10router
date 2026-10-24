@@ -420,6 +420,20 @@ describe("an auto-disabled key", () => {
     expect(conn.autoDisabledReason).toBeTruthy();
   });
 
+  it("stays off when the same key is saved again with stray whitespace", async () => {
+    const dead = await deadKey();
+    await db.updateProviderConnection(dead.id, editBody(" sk-test-a-0123456789 "));
+    expect((await load(dead.id)).isActive).toBe(false);
+  });
+
+  it("treats a new key saved with isActive false as a manual disable", async () => {
+    const dead = await deadKey();
+    await db.updateProviderConnection(dead.id, { ...editBody("sk-test-new"), isActive: false });
+    const conn = await load(dead.id);
+    expect(conn.isActive).toBe(false);
+    expect(conn.autoDisabledAt).toBeUndefined();
+  });
+
   it("leaves a key the user turned off alone when a new key is pasted in", async () => {
     const manual = await addKey("a", { isActive: false });
     await db.updateProviderConnection(manual.id, editBody("sk-test-new"));
