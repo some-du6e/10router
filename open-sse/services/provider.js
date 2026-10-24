@@ -1,5 +1,6 @@
 import { PROVIDERS } from "../config/providers.js";
 import { OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from "../providers/shared.js";
+import { ROLE } from "../translator/schema/roles.js";
 
 const OPENAI_COMPATIBLE_PREFIX = "openai-compatible-";
 const OPENAI_COMPATIBLE_DEFAULTS = {
@@ -191,12 +192,14 @@ export function resolveTransport(provider, sourceFormat) {
   return transports.find(t => t.format === sourceFormat) || null;
 }
 
-// Check if last message is from user
+// Check if last message is from user. Trailing system turns (Claude Code's
+// mid-conversation reminders) don't change whose turn it is.
 export function isLastMessageFromUser(body) {
   const messages = body.messages || body.contents;
   if (!messages?.length) return true;
-  const lastMsg = messages[messages.length - 1];
-  return lastMsg?.role === "user";
+  if (!Array.isArray(messages)) return messages[messages.length - 1]?.role === ROLE.USER;
+  const lastMsg = messages.findLast((m) => m?.role !== ROLE.SYSTEM);
+  return !lastMsg || lastMsg.role === ROLE.USER;
 }
 
 // Check if request has thinking config
@@ -204,7 +207,6 @@ export function hasThinkingConfig(body) {
   return !!(body.reasoning_effort || body.thinking?.type === "enabled");
 }
 
-// Normalize provider-native thinking config based on last message role.
 // OpenAI reasoning_effort is request-level and must survive tool-result turns.
 export function normalizeThinkingConfig(body) {
   if (!isLastMessageFromUser(body)) {

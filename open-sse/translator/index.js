@@ -60,7 +60,6 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
   // Strip explicit content types (opt-in via strip[] in PROVIDER_MODELS entry)
   stripContentTypes(result, stripList);
 
-  // Normalize thinking config: remove if lastMessage is not user
   normalizeThinkingConfig(result);
 
   // Always ensure tool_calls have id (some providers require it)

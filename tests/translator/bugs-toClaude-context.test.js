@@ -218,4 +218,37 @@ describe("OpenAI → Claude context mapping", () => {
     expect(assistant.content[1]).toEqual(expect.objectContaining({ type: "tool_use", id: "toolu_1" }));
     expect(assistant.content[0].signature).toBeUndefined();
   });
+
+  it("still adds the placeholder when Claude Code's trailing system reminder follows the tool_result", () => {
+    const out = prepareClaudeRequest({
+      model: "deepseek-v4-pro",
+      thinking: { type: "enabled" },
+      messages: [
+        { role: "user", content: [{ type: "text", text: "q" }] },
+        { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "Read", input: { file_path: "x" } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }] },
+        { role: "system", content: "<system-reminder>x</system-reminder>" },
+      ],
+    }, "deepseek");
+
+    const assistant = out.messages.find((m) => m.role === "assistant");
+    expect(assistant.content[0]).toEqual({ type: "thinking", thinking: "." });
+  });
+
+  it("does not add the placeholder when an assistant turn comes before the trailing system reminder", () => {
+    const out = prepareClaudeRequest({
+      model: "deepseek-v4-pro",
+      thinking: { type: "enabled" },
+      messages: [
+        { role: "user", content: [{ type: "text", text: "q" }] },
+        { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "Read", input: { file_path: "x" } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }] },
+        { role: "assistant", content: [{ type: "text", text: "partial" }] },
+        { role: "system", content: "<system-reminder>x</system-reminder>" },
+      ],
+    }, "deepseek");
+
+    const toolTurn = out.messages.find((m) => m.role === "assistant" && m.content.some((b) => b.type === "tool_use"));
+    expect(toolTurn.content[0].type).toBe("tool_use");
+  });
 });
