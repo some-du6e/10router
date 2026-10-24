@@ -870,6 +870,10 @@ export async function testSingleConnection(id) {
       : new Date().toISOString(),
   };
 
+  // A key the router turned off for failing auth comes back once it passes.
+  // One the user turned off stays off.
+  if (result.valid && connection.isActive === false && connection.autoDisabledAt) updateData.isActive = true;
+
   if (result.refreshed && result.newTokens) {
     if (result.newTokens.accessToken) updateData.accessToken = result.newTokens.accessToken;
     if (result.newTokens.refreshToken) updateData.refreshToken = result.newTokens.refreshToken;

@@ -1,7 +1,8 @@
 import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools } from "@/lib/localDb";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL } from "open-sse/services/accountFallback.js";
-import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
+import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG } from "open-sse/config/errorConfig.js";
+import { sanitizeSecrets } from "open-sse/utils/error.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { planCanServeModel } from "@/shared/utils/planCapability.js";
 import { getAntigravityQuotaCache } from "./antigravityQuota.js";
@@ -24,6 +25,52 @@ function githubMonthlyResetMs(status, errorText, provider) {
   if (!String(errorText || "").toLowerCase().includes(GITHUB_MONTHLY_USAGE_LIMIT)) return null;
   const now = new Date();
   return Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
+}
+
+const AUTH_FAIL_CLEARED = { authFailCount: null, authFailFirstAt: null, authFailModels: null, authFailUnauthorized: null };
+
+// 401, or a 403 that is not a quota/rate limit: the key itself is refused.
+function isAuthRejection(status, errorText) {
+  const code = Number(status);
+  return code === 401 || (code === 403 && !isLimitError(code, errorText));
+}
+
+function nextAuthFailStreak(conn, status, model) {
+  const models = Array.isArray(conn.authFailModels) ? conn.authFailModels : [];
+  return {
+    authFailCount: (conn.authFailCount || 0) + 1,
+    authFailFirstAt: conn.authFailFirstAt || new Date().toISOString(),
+    authFailModels: model && !models.includes(model)
+      ? [...models, model].slice(-AUTH_DEAD_CONFIG.maxTrackedModels)
+      : models,
+    authFailUnauthorized: conn.authFailUnauthorized === true || Number(status) === 401,
+  };
+}
+
+function isAuthDead(streak) {
+  return streak.authFailCount >= AUTH_DEAD_CONFIG.minFailures
+    && Date.now() - new Date(streak.authFailFirstAt).getTime() >= AUTH_DEAD_CONFIG.minWindowMs
+    && (streak.authFailUnauthorized || streak.authFailModels.length >= AUTH_DEAD_CONFIG.minModels);
+}
+
+// Upstream text arrives as "[403]: {json}" or plain text; keep just the message.
+function upstreamMessage(errorText, conn) {
+  let text = String(errorText || "").replace(/^\[\d+\]:\s*/, "");
+  try {
+    const body = JSON.parse(text);
+    const msg = body?.message || body?.error?.message || body?.error || body?.detail;
+    if (typeof msg === "string") text = msg;
+  } catch { /* not JSON */ }
+  text = sanitizeSecrets(text, conn).replace(/\s+/g, " ").trim();
+  const max = AUTH_DEAD_CONFIG.reasonMaxChars;
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function autoDisableReason(conn, status, errorText, streak) {
+  const message = upstreamMessage(errorText, conn);
+  const models = streak.authFailModels.length ? ` on ${streak.authFailModels.join(", ")}` : "";
+  const since = new Date(streak.authFailFirstAt).toTimeString().slice(0, 5);
+  return `${status}${message ? ` "${message}"` : ""}${models} since ${since}`;
 }
 
 /**
@@ -310,6 +357,19 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
   const providerResetAtMs = githubResetAtMs || resetsAtMs;
 
+  // Auth rejections build a streak that only a success clears; other errors
+  // leave it alone. A dead key is turned off unless it is the provider's last.
+  const authFailStreak = conn && isAuthRejection(status, errorText) ? nextAuthFailStreak(conn, status, model) : null;
+  let autoDisable = null;
+  if (authFailStreak && isAuthDead(authFailStreak)
+    && connections.some(c => c.id !== connectionId && c.isActive !== false)) {
+    autoDisable = {
+      isActive: false,
+      autoDisabledAt: new Date().toISOString(),
+      autoDisabledReason: autoDisableReason(conn, status, errorText, authFailStreak),
+    };
+  }
+
   await updateProviderConnection(connectionId, {
     ...lockUpdate,
     [`${MODEL_LIMIT_PREFIX}${githubResetAtMs ? "__all" : model || "__all"}`]: isLimitError(status, errorText),
@@ -319,12 +379,15 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     lastError: reason,
     errorCode: status,
     lastErrorAt: new Date().toISOString(),
-    backoffLevel: newBackoffLevel ?? backoffLevel
+    backoffLevel: newBackoffLevel ?? backoffLevel,
+    ...authFailStreak,
+    ...autoDisable,
   });
 
   const lockKey = Object.keys(lockUpdate)[0];
   const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
   log.warn("AUTH", `${connName} locked ${lockKey} for ${Math.round(cooldownMs / 1000)}s [${status}]`);
+  if (autoDisable) log.warn("AUTH", `${connName} turned off automatically: ${autoDisable.autoDisabledReason}`);
 
   if (provider && status && reason) {
     console.error(`❌ ${provider} [${status}]: ${reason}`);
@@ -348,7 +411,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
   const now = Date.now();
   const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_"));
 
-  if (!conn.testStatus && !conn.lastError && allLockKeys.length === 0) return;
+  if (!conn.testStatus && !conn.lastError && allLockKeys.length === 0 && !conn.authFailCount) return;
 
   // Keys to clear: current model's lock + all expired locks
   const keysToClear = allLockKeys.filter(k => {
@@ -358,7 +421,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
     return expiry && new Date(expiry).getTime() <= now;   // expired
   });
 
-  if (keysToClear.length === 0 && conn.testStatus !== "unavailable" && !conn.lastError) return;
+  if (keysToClear.length === 0 && conn.testStatus !== "unavailable" && !conn.lastError && !conn.authFailCount) return;
 
   // Check if any active locks remain after clearing
   const remainingActiveLocks = allLockKeys.filter(k => {
@@ -368,6 +431,8 @@ export async function clearAccountError(connectionId, currentConnection, model =
   });
 
   const clearObj = Object.fromEntries(keysToClear.map(k => [k, null]));
+  // Any success proves the key works, whatever model failed before.
+  if (conn.authFailCount) Object.assign(clearObj, AUTH_FAIL_CLEARED);
   for (const key of keysToClear) {
     clearObj[key.replace("modelLock_", PROVIDER_RESET_PREFIX)] = null;
     clearObj[key.replace("modelLock_", MODEL_LIMIT_PREFIX)] = null;

@@ -1,7 +1,9 @@
-import { createErrorResult } from "../utils/error.js";
+import { createErrorResult, sanitizeSecrets } from "../utils/error.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { refreshTokenByProvider } from "../services/tokenRefresh.js";
 import { PROVIDER_MEDIA } from "../providers/index.js";
+
+export { sanitizeSecrets };
 
 // Upstream fetch deadline for video job submission/polling (the job itself is
 // async upstream — this only bounds the HTTP round-trip, not video rendering).
@@ -15,19 +17,6 @@ export const VIDEO_ACTIONS = new Set(["generations", "edits", "extensions"]);
 
 export function getVideoConfig(provider) {
   return PROVIDER_MEDIA[provider]?.videoConfig || null;
-}
-
-/** Strip bearer tokens / obvious secrets from text destined for clients or logs. */
-export function sanitizeSecrets(text, credentials = null) {
-  if (!text) return text;
-  let out = String(text).replace(/Bearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, "Bearer [redacted]");
-  for (const key of ["accessToken", "refreshToken", "apiKey"]) {
-    const secret = credentials?.[key];
-    if (typeof secret === "string" && secret.length >= 8) {
-      out = out.split(secret).join("[redacted]");
-    }
-  }
-  return out;
 }
 
 function buildUpstreamUrl(config, action, requestId) {

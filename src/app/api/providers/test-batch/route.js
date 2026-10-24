@@ -49,7 +49,8 @@ export async function POST(request) {
       return NextResponse.json({ error: "mode is required" }, { status: 400 });
     }
 
-    const allConnections = await getProviderConnections({ isActive: true });
+    // Auto-disabled keys are tested too, so a passing one comes back on.
+    const allConnections = (await getProviderConnections()).filter((c) => c.isActive || c.autoDisabledAt);
 
     let connectionsToTest = [];
     if (mode === "provider" && providerId) {

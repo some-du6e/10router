@@ -10,6 +10,18 @@ const OPTIONAL_FIELDS = [
   "consecutiveUseCount", "idToken", "lastRefreshAt",
 ];
 
+// Written by sse/services/auth.js when a key keeps failing auth and is turned
+// off. Turning the connection back on, by any path, starts it clean.
+const AUTO_DISABLE_FIELDS = [
+  "autoDisabledAt", "autoDisabledReason",
+  "authFailCount", "authFailFirstAt", "authFailModels", "authFailUnauthorized",
+];
+
+function clearAutoDisableOnEnable(existing, merged) {
+  if (existing.isActive !== false || merged.isActive !== true) return;
+  for (const f of AUTO_DISABLE_FIELDS) delete merged[f];
+}
+
 // Read by sse/services/autoCombo.ts to notice its model catalog is stale.
 // Bumped on any write that changes what /v1/models lists: connections, model
 // aliases, custom and disabled models.
@@ -191,6 +203,9 @@ export async function createProviderConnection(data) {
       }
       const updates = Object.fromEntries(Object.entries(data).filter(([key, value]) => key !== "allowOverwrite" && value !== undefined));
       const merged = { ...existing, ...updates, updatedAt: now };
+      // Re-adding or re-logging a key the router turned off means it was fixed.
+      if (existing.autoDisabledAt && updates.isActive === undefined) merged.isActive = true;
+      clearAutoDisableOnEnable(existing, merged);
       upsert(db, merged);
       result = merged;
       return;
@@ -246,6 +261,7 @@ export async function updateProviderConnection(id, data) {
     if (!row) { result = null; return; }
     const existing = rowToConn(row);
     const merged = { ...existing, ...data, updatedAt: new Date().toISOString() };
+    clearAutoDisableOnEnable(existing, merged);
     upsert(db, merged);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
     result = merged;
