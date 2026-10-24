@@ -232,8 +232,18 @@ describe("auth-dead keys turn off", () => {
     expect((await load(dead.id)).isActive).toBe(false);
   });
 
+  it("counts two failures in the same millisecond", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await succeed(healthy.id, "m1");
+    await failOnce(dead.id, "m1");
+    await failOnce(dead.id, "m1");
+    expect((await load(dead.id)).authFailCount).toBe(2);
+  });
+
   it.each([
     [9, 3],
+    [10, 3],
     [11, 1],
   ])("after a %i-minute gap between counted failures, the streak is at %i", async (gapMinutes, count) => {
     const dead = await addKey("a");
@@ -381,6 +391,39 @@ describe("an auto-disabled key", () => {
     );
     expect(res.status).toBe(200);
     await expectBackOn(dead.id);
+  });
+
+  // What the edit dialog sends when saving a key.
+  const editBody = (apiKey) => ({ name: "a", apiKey, testStatus: "active", lastError: null, lastErrorAt: null });
+
+  it("re-enables when a new key is pasted in", async () => {
+    const dead = await deadKey();
+    await db.updateProviderConnection(dead.id, editBody("sk-test-new"));
+    await expectBackOn(dead.id);
+  });
+
+  it("re-enables when a new key is pasted in from the dashboard", async () => {
+    const dead = await deadKey();
+    const res = await putConnection(
+      new Request(`http://localhost/api/providers/${dead.id}`, { method: "PUT", body: JSON.stringify(editBody("sk-test-new")) }),
+      { params: Promise.resolve({ id: dead.id }) },
+    );
+    expect(res.status).toBe(200);
+    await expectBackOn(dead.id);
+  });
+
+  it("stays off when the same key is saved again", async () => {
+    const dead = await deadKey();
+    await db.updateProviderConnection(dead.id, editBody("sk-test-a-0123456789"));
+    const conn = await load(dead.id);
+    expect(conn.isActive).toBe(false);
+    expect(conn.autoDisabledReason).toBeTruthy();
+  });
+
+  it("leaves a key the user turned off alone when a new key is pasted in", async () => {
+    const manual = await addKey("a", { isActive: false });
+    await db.updateProviderConnection(manual.id, editBody("sk-test-new"));
+    expect((await load(manual.id)).isActive).toBe(false);
   });
 
   it("re-enables when the key is added again", async () => {
