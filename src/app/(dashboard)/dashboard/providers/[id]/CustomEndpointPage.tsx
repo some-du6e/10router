@@ -99,6 +99,8 @@ export interface EndpointConnection {
   isActive?: boolean;
   testStatus?: string;
   lastError?: string | null;
+  autoDisabledAt?: string | null;
+  autoDisabledReason?: string | null;
   priority?: number;
   providerSpecificData?: { baseUrl?: string; ownBaseUrl?: boolean };
 }
@@ -468,6 +470,7 @@ function KeysCard({ connections, onAddKey, onEditKey, onDeleteKey, onToggleKey, 
                       <Badge>API Key</Badge>
                       {own && <span className="truncate text-[11px] text-text-muted">{own}</span>}
                       {k.lastError && !off && <span className="max-w-full truncate text-xs text-red-500 sm:max-w-[300px]" title={k.lastError}>{k.lastError}</span>}
+                      {off && k.autoDisabledAt && <span className="max-w-full truncate text-xs text-red-500 sm:max-w-[360px]" title={`Turned off automatically ${new Date(k.autoDisabledAt).toLocaleString()}: ${k.autoDisabledReason || ""}`}>Turned off automatically: {k.autoDisabledReason}</span>}
                       <span className="text-xs text-text-muted">#{i + 1}</span>
                     </div>
                   </div>

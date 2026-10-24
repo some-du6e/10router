@@ -26,7 +26,7 @@ function githubMonthlyResetMs(status, errorText, provider) {
   return Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
 }
 
-const AUTH_FAIL_CLEARED = { authFailCount: null, authFailFirstAt: null, authFailModels: null };
+const AUTH_FAIL_CLEARED = { authFailCount: null, authFailFirstAt: null, authFailLastAt: null, authFailModels: null };
 const MAX_TRACKED_MODELS = 5;
 const REASON_MAX_CHARS = 80;
 const MAX_SUCCESS_ENTRIES = 5000;
@@ -48,10 +48,15 @@ function recordSuccess(connectionId, model) {
 
 const succeededSince = (key, sinceMs) => (authSuccess.get(key) ?? -Infinity) >= sinceMs;
 
-// 401, or a 403 that is not a quota/rate limit: the key itself is refused.
+// Budget and spend 403s that isLimitError doesn't know ("Key limit exceeded
+// (daily limit)", "monthly spend limit", "credits exhausted"): the key is fine.
+const SPEND_LIMIT_403 = /limit exceeded|exceeded (?:your|the|its)?\s*\w*\s*limit|spend(?:ing)? limit|credit|quota|usage cap|billing|budget|insufficient (?:funds|balance)/i;
+
+// 401, or a 403 that is not a quota/rate/spend limit: the key itself is refused.
 function isAuthRejection(status, errorText) {
   const code = Number(status);
-  return code === 401 || (code === 403 && !isLimitError(code, errorText));
+  if (code === 401) return true;
+  return code === 403 && !isLimitError(code, errorText) && !SPEND_LIMIT_403.test(String(errorText || ""));
 }
 
 // The refusal only counts when another key of the provider served this model
@@ -64,12 +69,19 @@ function countsTowardAuthStreak(connections, connectionId, model, status, errorT
 }
 
 function nextAuthFailStreak(conn, model) {
-  // A success this key's request snapshot missed (picked before the streak began) still resets it.
-  const fresh = !conn.authFailFirstAt || succeededSince(conn.id, new Date(conn.authFailFirstAt).getTime() + 1);
+  const now = Date.now();
+  const lastAt = new Date(conn.authFailLastAt || conn.authFailFirstAt || 0).getTime();
+  // Starts over when the last counted failure is old (a backup key left with
+  // an outage's leftovers), or when this key succeeded after the streak began
+  // on a request whose snapshot predates it.
+  const fresh = !conn.authFailFirstAt
+    || now - lastAt > AUTH_DEAD_CONFIG.minWindowMs
+    || succeededSince(conn.id, new Date(conn.authFailFirstAt).getTime() + 1);
   const models = !fresh && Array.isArray(conn.authFailModels) ? conn.authFailModels : [];
   return {
     authFailCount: (fresh ? 0 : conn.authFailCount || 0) + 1,
-    authFailFirstAt: fresh ? new Date().toISOString() : conn.authFailFirstAt,
+    authFailFirstAt: fresh ? new Date(now).toISOString() : conn.authFailFirstAt,
+    authFailLastAt: new Date(now).toISOString(),
     authFailModels: models.includes(model) ? models : [...models, model].slice(-MAX_TRACKED_MODELS),
   };
 }

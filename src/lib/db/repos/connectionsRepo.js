@@ -13,7 +13,9 @@ const OPTIONAL_FIELDS = [
 // Written by sse/services/auth.js when a key keeps failing auth and is turned
 // off. Turning the connection back on, by any path, starts it clean; turning it
 // off by hand makes it a manual disable that a passing test won't undo.
-const AUTO_DISABLE_FIELDS = ["autoDisabledAt", "autoDisabledReason", "authFailCount", "authFailFirstAt", "authFailModels"];
+const AUTO_DISABLE_FIELDS = [
+  "autoDisabledAt", "autoDisabledReason", "authFailCount", "authFailFirstAt", "authFailLastAt", "authFailModels",
+];
 
 function applyAutoDisableTransition(existing, merged, data) {
   if (existing.isActive === false && merged.isActive === true) {

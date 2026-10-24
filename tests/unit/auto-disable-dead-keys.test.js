@@ -163,6 +163,11 @@ describe("auth-dead keys turn off", () => {
     [402, "Payment required"],
     [400, "Bad request"],
     [403, "You exceeded your current quota"],
+    [403, '{"error":{"message":"Key limit exceeded (daily limit)","code":403}}'],
+    [403, "You have reached your monthly spend limit"],
+    [403, "Your credits are exhausted"],
+    [403, "Usage cap reached for this key"],
+    [403, "Billing account is inactive"],
   ])("never counts %i %s", async (status, text) => {
     const dead = await addKey("a");
     const healthy = await addKey("b");
@@ -203,6 +208,40 @@ describe("auth-dead keys turn off", () => {
     vi.advanceTimersByTime(3 * MIN);
     await fail(dead.id, { times: 6, models: ["m1"], peers: [healthy] });
     expect((await load(dead.id)).isActive).toBe(true);
+  });
+
+  it.each([
+    "Not authorized for this endpoint",
+    "Copilot is not enabled for this account",
+  ])("counts the 403 %s", async (text) => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 5, models: ["m1", "m2"], peers: [healthy], text });
+    expect((await load(dead.id)).isActive).toBe(false);
+  });
+
+  it("trips a dead key retried every 2 minutes after 10 minutes, not before", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 5, models: ["claude-opus-5-5", "kimi-k3"], peers: [healthy], stepMs: 2 * MIN });
+    expect((await load(dead.id)).isActive).toBe(true);
+    vi.advanceTimersByTime(2 * MIN);
+    await fail(dead.id, { times: 1, models: ["claude-opus-5-5"], peers: [healthy] });
+    expect((await load(dead.id)).isActive).toBe(false);
+  });
+
+  it("drops a streak left over from an old outage", async () => {
+    const backup = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(backup.id, { times: 4, models: ["m1", "m2"], peers: [healthy], stepMs: 2 * MIN });
+    expect((await load(backup.id)).authFailCount).toBe(4);
+
+    // Not picked again until a short blip three days later.
+    vi.advanceTimersByTime(3 * 24 * 60 * MIN);
+    await fail(backup.id, { times: 1, models: ["m1"], peers: [healthy] });
+    const conn = await load(backup.id);
+    expect(conn.isActive).toBe(true);
+    expect(conn.authFailCount).toBe(1);
   });
 });
 
@@ -263,7 +302,7 @@ describe("an auto-disabled key", () => {
   async function expectBackOn(id) {
     const conn = await load(id);
     expect(conn.isActive).toBe(true);
-    for (const field of ["autoDisabledAt", "autoDisabledReason", "authFailCount", "authFailFirstAt", "authFailModels"]) {
+    for (const field of ["autoDisabledAt", "autoDisabledReason", "authFailCount", "authFailFirstAt", "authFailLastAt", "authFailModels"]) {
       expect(conn).not.toHaveProperty(field);
     }
   }

@@ -137,6 +137,14 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
             {connection.lastError && connection.isActive !== false && (
               <span className="text-xs text-red-500 truncate max-w-[300px]" title={connection.lastError}>{connection.lastError}</span>
             )}
+            {connection.isActive === false && connection.autoDisabledAt && (
+              <span
+                className="text-xs text-red-500 truncate max-w-[360px]"
+                title={`Turned off automatically ${new Date(connection.autoDisabledAt).toLocaleString()}: ${connection.autoDisabledReason || ""}`}
+              >
+                Turned off automatically: {connection.autoDisabledReason}
+              </span>
+            )}
             <span className="text-xs text-text-muted">#{connection.priority}</span>
           </div>
           {hasAnyProxy && (
@@ -194,6 +202,8 @@ ConnectionRow.propTypes = {
     testStatus: PropTypes.string,
     isActive: PropTypes.bool,
     lastError: PropTypes.string,
+    autoDisabledAt: PropTypes.string,
+    autoDisabledReason: PropTypes.string,
     priority: PropTypes.number,
   }).isRequired,
   proxyPools: PropTypes.array,
