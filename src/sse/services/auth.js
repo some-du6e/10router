@@ -62,7 +62,7 @@ function isAuthRejection(status, errorText) {
     && !ERROR_RULES.some(r => r.backoff && r.text && lower.includes(r.text));
 }
 
-const autoDisableLocks = new Map();
+const autoDisableLocks = (global._autoDisableLocks ??= new Map());
 async function withAutoDisableLock(provider, fn) {
   const prev = autoDisableLocks.get(provider) || Promise.resolve();
   const run = prev.then(fn);
@@ -77,9 +77,10 @@ async function withAutoDisableLock(provider, fn) {
 
 // The refusal only counts when another key of the provider served this model
 // recently: a failure every key sees (region block, proxy page, auth outage)
-// is not this key's. Web search/fetch lock keys ("websearch:x") are not models.
+// is not this key's. Web search/fetch lock keys ("websearch:x") are not models;
+// ids like "x:free" are.
 function countsTowardAuthStreak(connections, connectionId, model, status, errorText) {
-  if (!model || model.includes(":") || !isAuthRejection(status, errorText)) return false;
+  if (!model || /^web(search|fetch):/.test(model) || !isAuthRejection(status, errorText)) return false;
   const since = Date.now() - AUTH_DEAD_CONFIG.minWindowMs;
   return connections.some(c => c.id !== connectionId && succeededSince(`${c.id}|${model}`, since));
 }

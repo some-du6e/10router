@@ -144,6 +144,13 @@ describe("auth-dead keys turn off", () => {
     expect(conn).not.toHaveProperty("autoDisabledAt");
   });
 
+  it("counts model ids with a colon, like openrouter's :free models", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 5, models: ["a/x:free", "b/y:free"], peers: [healthy] });
+    expect((await load(dead.id)).isActive).toBe(false);
+  });
+
   it("keeps a key refused on a single model on", async () => {
     const dead = await addKey("a");
     const healthy = await addKey("b");
@@ -521,18 +528,45 @@ describe("an auto-disabled key", () => {
     expect((await load(dead.id)).isActive).toBe(false);
   });
 
-  it("stays off when its test only checks the stored token's expiry", async () => {
-    const oauth = await db.createProviderConnection({
-      provider: "claude", authType: "oauth", name: "oauth-dead",
-      accessToken: "test-access-token", expiresAt: new Date(Date.now() + 24 * 60 * MIN).toISOString(),
-    });
-    await db.updateProviderConnection(oauth.id, {
+  // An auto-disabled connection of a real provider, outside the test's provider.
+  async function autoDisabled(fields) {
+    const conn = await db.createProviderConnection({ name: "auto-off", ...fields });
+    await db.updateProviderConnection(conn.id, {
       isActive: false, autoDisabledAt: new Date().toISOString(), autoDisabledReason: "401",
     });
-    stubFetch(500);
-    expect(await testSingleConnection(oauth.id)).toMatchObject({ valid: true });
-    expect((await load(oauth.id)).isActive).toBe(false);
-    await db.deleteProviderConnection(oauth.id);
+    return conn;
+  }
+  const dayFromNow = () => new Date(Date.now() + 24 * 60 * MIN).toISOString();
+
+  it.each([
+    ["only checks the stored token's expiry", { provider: "claude", authType: "oauth", accessToken: "test-access-token", expiresAt: dayFromNow() }, 500],
+    ["only checks a token exists", { provider: "cursor", authType: "oauth", accessToken: "test-access-token" }, 500],
+    ["counts a 403 as passing", { provider: "anthropic", authType: "apikey", apiKey: "sk-test-anthropic-0123456789" }, 403],
+    ["counts an outage as passing", { provider: "anthropic", authType: "apikey", apiKey: "sk-test-anthropic-0123456789" }, 500],
+  ])("stays off when its test %s", async (_label, fields, status) => {
+    const conn = await autoDisabled(fields);
+    stubFetch(status);
+    expect(await testSingleConnection(conn.id)).toMatchObject({ valid: true });
+    expect((await load(conn.id)).isActive).toBe(false);
+    await db.deleteProviderConnection(conn.id);
+  });
+
+  it("re-enables when an anthropic key's test gets a 200", async () => {
+    const conn = await autoDisabled({ provider: "anthropic", authType: "apikey", apiKey: "sk-test-anthropic-0123456789" });
+    stubFetch(200);
+    expect(await testSingleConnection(conn.id)).toMatchObject({ valid: true });
+    expect((await load(conn.id)).isActive).toBe(true);
+    await db.deleteProviderConnection(conn.id);
+  });
+
+  it("stays off when the user turns it off during its test", async () => {
+    const dead = await deadKey();
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      await db.updateProviderConnection(dead.id, { isActive: false });
+      return new Response("{}", { status: 200 });
+    }));
+    expect((await testSingleConnection(dead.id)).valid).toBe(true);
+    expect((await load(dead.id)).isActive).toBe(false);
   });
 
   it("leaves a key the user turned off alone when its test passes", async () => {
