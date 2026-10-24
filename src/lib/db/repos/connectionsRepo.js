@@ -10,6 +10,25 @@ const OPTIONAL_FIELDS = [
   "consecutiveUseCount", "idToken", "lastRefreshAt",
 ];
 
+// Written by sse/services/auth.js when a key keeps failing auth and is turned
+// off. Turning the connection back on, by any path, starts it clean; turning it
+// off by hand makes it a manual disable that a passing test won't undo.
+const AUTO_DISABLE_FIELDS = [
+  "autoDisabledAt", "autoDisabledReason", "authFailCount", "authFailFirstAt", "authFailLastAt", "authFailModels",
+];
+
+function applyAutoDisableTransition(existing, merged, data) {
+  // A different key pasted into a connection the router turned off fixes it.
+  if (existing.autoDisabledAt && data.isActive === undefined
+    && data.apiKey !== undefined && String(data.apiKey).trim() !== String(existing.apiKey ?? "").trim()) merged.isActive = true;
+  if (existing.isActive === false && merged.isActive === true) {
+    for (const f of AUTO_DISABLE_FIELDS) delete merged[f];
+  } else if (data.isActive === false && data.autoDisabledAt === undefined) {
+    delete merged.autoDisabledAt;
+    delete merged.autoDisabledReason;
+  }
+}
+
 // Read by sse/services/autoCombo.ts to notice its model catalog is stale.
 // Bumped on any write that changes what /v1/models lists: connections, model
 // aliases, custom and disabled models.
@@ -191,6 +210,9 @@ export async function createProviderConnection(data) {
       }
       const updates = Object.fromEntries(Object.entries(data).filter(([key, value]) => key !== "allowOverwrite" && value !== undefined));
       const merged = { ...existing, ...updates, updatedAt: now };
+      // Re-adding or re-logging a key the router turned off means it was fixed.
+      if (existing.autoDisabledAt && updates.isActive === undefined) merged.isActive = true;
+      applyAutoDisableTransition(existing, merged, updates);
       upsert(db, merged);
       result = merged;
       return;
@@ -246,6 +268,7 @@ export async function updateProviderConnection(id, data) {
     if (!row) { result = null; return; }
     const existing = rowToConn(row);
     const merged = { ...existing, ...data, updatedAt: new Date().toISOString() };
+    applyAutoDisableTransition(existing, merged, data);
     upsert(db, merged);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
     result = merged;
