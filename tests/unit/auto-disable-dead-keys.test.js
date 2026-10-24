@@ -122,7 +122,9 @@ describe("auth-dead keys turn off", () => {
     const healthy = await addKey("b");
     await fail(dead.id, { times: 4, models: ["m1", "m2"], peers: [healthy] });
     await succeed(dead.id, "m3");
-    expect((await load(dead.id)).authFailCount).toBeNull();
+    expect(await load(dead.id)).toMatchObject({
+      authFailCount: null, authFailFirstAt: null, authFailLastAt: null, authFailModels: null,
+    });
 
     vi.advanceTimersByTime(3 * MIN);
     await fail(dead.id, { times: 4, models: ["m1", "m2"], peers: [healthy] });
@@ -227,6 +229,40 @@ describe("auth-dead keys turn off", () => {
     expect((await load(dead.id)).isActive).toBe(true);
     vi.advanceTimersByTime(2 * MIN);
     await fail(dead.id, { times: 1, models: ["claude-opus-5-5"], peers: [healthy] });
+    expect((await load(dead.id)).isActive).toBe(false);
+  });
+
+  it.each([
+    [9, 3],
+    [11, 1],
+  ])("after a %i-minute gap between counted failures, the streak is at %i", async (gapMinutes, count) => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 2, models: ["m1", "m2"], peers: [healthy], stepMs: 2 * MIN });
+    vi.advanceTimersByTime(gapMinutes * MIN);
+    await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy] });
+    expect((await load(dead.id)).authFailCount).toBe(count);
+  });
+
+  it.each([
+    ["a garbage first", { authFailFirstAt: "not-a-date", authFailLastAt: -1 }],
+    ["a garbage last", { authFailFirstAt: -5, authFailLastAt: "not-a-date" }],
+    ["a future first", { authFailFirstAt: "2099-01-01T00:00:00.000Z", authFailLastAt: -1 }],
+    ["a future last", { authFailFirstAt: -5, authFailLastAt: "2099-01-01T00:00:00.000Z" }],
+  ])("starts over from %s streak timestamp and still trips", async (_label, stored) => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    // Numbers are minutes before now; strings are stored as-is.
+    const at = (v) => (typeof v === "number" ? new Date(Date.now() + v * MIN).toISOString() : v);
+    await db.updateProviderConnection(dead.id, {
+      authFailCount: 4, authFailModels: ["m1", "m2"],
+      authFailFirstAt: at(stored.authFailFirstAt), authFailLastAt: at(stored.authFailLastAt),
+    });
+    await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy] });
+    expect(await load(dead.id)).toMatchObject({ authFailCount: 1, authFailFirstAt: new Date().toISOString() });
+
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(dead.id, { times: 4, models: ["m2", "m1"], peers: [healthy] });
     expect((await load(dead.id)).isActive).toBe(false);
   });
 

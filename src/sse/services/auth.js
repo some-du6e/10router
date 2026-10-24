@@ -70,13 +70,15 @@ function countsTowardAuthStreak(connections, connectionId, model, status, errorT
 
 function nextAuthFailStreak(conn, model) {
   const now = Date.now();
-  const lastAt = new Date(conn.authFailLastAt || conn.authFailFirstAt || 0).getTime();
+  const firstAt = new Date(conn.authFailFirstAt || NaN).getTime();
+  const sinceLast = now - new Date(conn.authFailLastAt || conn.authFailFirstAt || NaN).getTime();
   // Starts over when the last counted failure is old (a backup key left with
-  // an outage's leftovers), or when this key succeeded after the streak began
-  // on a request whose snapshot predates it.
-  const fresh = !conn.authFailFirstAt
-    || now - lastAt > AUTH_DEAD_CONFIG.minWindowMs
-    || succeededSince(conn.id, new Date(conn.authFailFirstAt).getTime() + 1);
+  // an outage's leftovers), when this key succeeded after the streak began on
+  // a request whose snapshot predates it, or when a timestamp is unreadable or
+  // in the future (the negated range check is also false for NaN).
+  const fresh = !(now - firstAt >= 0)
+    || !(sinceLast >= 0 && sinceLast <= AUTH_DEAD_CONFIG.minWindowMs)
+    || succeededSince(conn.id, firstAt + 1);
   const models = !fresh && Array.isArray(conn.authFailModels) ? conn.authFailModels : [];
   return {
     authFailCount: (fresh ? 0 : conn.authFailCount || 0) + 1,
