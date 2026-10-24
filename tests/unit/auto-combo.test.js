@@ -74,6 +74,35 @@ describe("auto combos", () => {
     ]);
   });
 
+  it("matches ids a provider lists with an openai- prefix", async () => {
+    const ctx = await setup(["snow/openai-gpt-6-astra", "cx/gpt-6-astra"], [...SUBS, { provider: "openai-compatible-chat-x", prefix: "snow" }], { autoComboBlockedBilling: [] });
+
+    await expect(ctx.resolveAutoCombo("gpt-6-astra")).resolves.toEqual(["cx/gpt-6-astra", "snow/openai-gpt-6-astra"]);
+    await expect(ctx.resolveAutoCombo("openai-gpt-6-astra")).resolves.toEqual(["cx/gpt-6-astra", "snow/openai-gpt-6-astra"]);
+  });
+
+  it("tries a preferred provider's accounts first, the rest in billing order", async () => {
+    const ctx = await setup(["cc/claude-opus-5-5", "cx/claude-opus-5-5", "kr/claude-opus-5-5"], SUBS);
+
+    await expect(ctx.resolveAutoCombo("claude-opus-5-5", {}, { preferProvider: "codex" })).resolves.toEqual([
+      "cx/claude-opus-5-5",
+      "kr/claude-opus-5-5",
+      "cc/claude-opus-5-5",
+    ]);
+  });
+
+  it("does not bring back a preferred provider that billing blocks", async () => {
+    const ctx = await setup(["kr/claude-opus-5-5", "cx/claude-opus-5-5"], [{ provider: "kiro" }, { provider: "codex", authType: "apikey" }]);
+
+    await expect(ctx.resolveAutoCombo("claude-opus-5-5", {}, { preferProvider: "codex" })).resolves.toEqual(["kr/claude-opus-5-5"]);
+  });
+
+  it("strips openai- only as a prefix", async () => {
+    const ctx = await setup(["snow/gpt-openai-6", "cx/gpt-6"], [...SUBS, { provider: "openai-compatible-chat-x", prefix: "snow" }], { autoComboBlockedBilling: [] });
+
+    await expect(ctx.resolveAutoCombo("gpt-6")).resolves.toEqual(["cx/gpt-6"]);
+  });
+
   it("routes a single match through the same path", async () => {
     const ctx = await setup(["cc/claude-haiku-5-5", "kr/claude-opus-5-5"], SUBS);
 
@@ -295,5 +324,25 @@ describe("auto combos", () => {
       expect(sanitizeAutoComboSetting("autoComboExcludedProviders", ["cc", 3])).toBeNull();
       expect(sanitizeAutoComboSetting("autoComboExcludedProviders", [" cc ", ""])).toEqual(["cc"]);
     });
+  });
+});
+
+describe("auto combo options and catalog matches", () => {
+  it("applies settings handed in over the stored ones", async () => {
+    const ctx = await setup(["cc/claude-opus-5-5", "kr/claude-opus-5-5"], SUBS);
+    await expect(ctx.resolveAutoCombo("claude-opus-5-5", {}, { settings: { autoComboExcludedProviders: ["kiro"] } }))
+      .resolves.toEqual(["cc/claude-opus-5-5"]);
+  });
+
+  it("lists every catalog entry serving a bare id with its provider, ignoring auto combo settings", async () => {
+    const ctx = await setup(
+      ["cx/gpt-6-astra", "snow/openai-gpt-6.astra", "cc/claude-opus-5-5"],
+      [...SUBS, { provider: "openai-compatible-chat-x", prefix: "snow" }],
+      { autoComboExcludedProviders: ["codex"] },
+    );
+    expect(ctx.getAutoComboCatalogMatches("gpt-6-astra[1m]")).toEqual([
+      { id: "cx/gpt-6-astra", provider: "codex" },
+      { id: "snow/openai-gpt-6.astra", provider: "openai-compatible-chat-x" },
+    ]);
   });
 });

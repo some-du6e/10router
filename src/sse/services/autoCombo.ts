@@ -203,11 +203,12 @@ export async function warmAutoComboCatalog(): Promise<void> {
   await refreshCatalog();
 }
 
-// Bare ids match catalog ids by their last path segment, with dots and case
-// ignored, so "sfff/claude-opus-5.5" and "or/anthropic/claude-opus-5-5" both
-// serve "claude-opus-5-5".
+// Bare ids match catalog ids by their last path segment, with dots, case and a
+// leading "openai-" ignored, so "sfff/claude-opus-5.5" and
+// "or/anthropic/claude-opus-5-5" both serve "claude-opus-5-5", and
+// "snow/openai-gpt-6-astra" serves "gpt-6-astra".
 function modelKey(modelId: string): string {
-  return modelId.toLowerCase().replace(/\./g, "-");
+  return modelId.toLowerCase().replace(/\./g, "-").replace(/^openai-/, "");
 }
 
 function sortByBilling(entries: CatalogEntry[], blocked: Set<string>): CatalogEntry[] {
@@ -244,13 +245,19 @@ function allowedEntries(entries: CatalogEntry[], settings: AutoComboSettings): C
     .filter((e) => !excluded.has(e.prefix.toLowerCase()) && !excluded.has(e.provider.toLowerCase()));
 }
 
+interface AutoComboOptions {
+  settings?: AutoComboSettings;
+  // Provider whose entries go first, ahead of the billing order.
+  preferProvider?: string;
+}
+
 /**
  * Every connected provider/model serving this bare id, free and flat-rate
- * first, minus blocked billing sets and excluded providers. A provider stays
- * in if any of its connections is allowed; the request then skips the blocked
- * ones (see blockedBillingSets).
+ * first (or `preferProvider` first, when given), minus blocked billing sets
+ * and excluded providers. A provider stays in if any of its connections is
+ * allowed; the request then skips the blocked ones (see blockedBillingSets).
  */
-export async function getAutoComboModels(modelStr: string, settingsIn?: AutoComboSettings): Promise<string[]> {
+export async function getAutoComboModels(modelStr: string, { settings: settingsIn, preferProvider }: AutoComboOptions = {}): Promise<string[]> {
   const bare = stripContextWindowSuffix(modelStr).model;
   if (!bare || bare.includes("/")) return [];
   // Right after startup or a connection change the list is missing or stale.
@@ -267,18 +274,31 @@ export async function getAutoComboModels(modelStr: string, settingsIn?: AutoComb
   const settings = await loadSettings(settingsIn);
   const key = modelKey(bare);
   const matching = allowedEntries(entries, settings).filter((e) => modelKey(e.id.slice(e.id.lastIndexOf("/") + 1)) === key);
-  return sortByBilling(matching, blockedBillingSets(settings)).map((e) => e.id);
+  const sorted = sortByBilling(matching, blockedBillingSets(settings));
+  if (preferProvider) sorted.sort((a, b) => Number(b.provider === preferProvider) - Number(a.provider === preferProvider));
+  return sorted.map((e) => e.id);
 }
 
-
-/** Every catalog id serving this bare id, before any user filter. */
-export function getAutoComboProviders(modelStr: string): string[] {
+/** Every catalog entry serving this bare id, before any user filter. */
+export function getAutoComboCatalogMatches(modelStr: string): { id: string; provider: string }[] {
   const bare = stripContextWindowSuffix(modelStr).model;
   if (!bare || bare.includes("/")) return [];
   const key = modelKey(bare);
   return currentCatalog()
     .filter((e) => modelKey(e.id.slice(e.id.lastIndexOf("/") + 1)) === key)
-    .map((e) => e.provider);
+    .map((e) => ({ id: e.id, provider: e.provider }));
+}
+
+// An auto combo an ingress already resolved for a request, so handleChat routes
+// that exact list. Kept off the request itself so a client cannot set it.
+const requestAutoCombos = new WeakMap<Request, string[]>();
+
+export function setRequestAutoCombo(request: Request, models: string[]): void {
+  requestAutoCombos.set(request, models);
+}
+
+export function getRequestAutoCombo(request: Request | null | undefined): string[] | null {
+  return (request && requestAutoCombos.get(request)) || null;
 }
 
 /**
@@ -289,12 +309,12 @@ export function getAutoComboProviders(modelStr: string): string[] {
 export async function resolveAutoCombo(
   modelStr: string,
   builtinAliases: Record<string, unknown> = {},
-  settings?: AutoComboSettings,
+  options: AutoComboOptions = {},
 ): Promise<string[] | null> {
   try {
     const bare = stripContextWindowSuffix(modelStr).model;
     if (!bare || bare.includes("/") || builtinAliases[bare]) return null;
-    const models = await getAutoComboModels(bare, settings);
+    const models = await getAutoComboModels(bare, options);
     if (models.length === 0) return null;
     if (await getComboByName(bare)) return null;
     const aliases = (await getModelAliases()) as Record<string, unknown> | null;

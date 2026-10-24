@@ -10,7 +10,7 @@ import {
 import { handleAntigravityQuotaError, clearAntigravityStrikes } from "../services/antigravityQuota.js";
 import { getSettings, getProviderNodeById, updateProviderNode, getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
 import { getModelInfo, getComboModels, comboLookupName } from "../services/model.js";
-import { resolveAutoCombo, blockedBillingSets, connectionBilling, billingPolicyApplies } from "../services/autoCombo.js";
+import { resolveAutoCombo, blockedBillingSets, connectionBilling, billingPolicyApplies, getRequestAutoCombo } from "../services/autoCombo.js";
 import type { BillingSet } from "../services/autoCombo.js";
 import { BUILTIN_MODEL_ALIASES } from "open-sse/services/model.js";
 import { handleChatCore, clientReceivesStream } from "open-sse/handlers/chatCore.js";
@@ -246,7 +246,9 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
   // Check if model is a combo (has multiple models with fallback). A bare id
   // with no combo or alias falls back across every provider serving it.
   const userComboModels = await getComboModels(modelStr);
-  const comboModels = userComboModels ?? (await resolveAutoCombo(modelStr, BUILTIN_MODEL_ALIASES, settings));
+  const comboModels = userComboModels
+    ?? getRequestAutoCombo(request)
+    ?? (await resolveAutoCombo(modelStr, BUILTIN_MODEL_ALIASES, { settings }));
   if (comboModels) {
     // An auto combo picked its providers by billing; every account it reaches,
     // including fallbacks within a provider, has to pass the same check.
