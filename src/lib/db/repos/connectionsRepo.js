@@ -11,15 +11,17 @@ const OPTIONAL_FIELDS = [
 ];
 
 // Written by sse/services/auth.js when a key keeps failing auth and is turned
-// off. Turning the connection back on, by any path, starts it clean.
-const AUTO_DISABLE_FIELDS = [
-  "autoDisabledAt", "autoDisabledReason",
-  "authFailCount", "authFailFirstAt", "authFailModels", "authFailUnauthorized",
-];
+// off. Turning the connection back on, by any path, starts it clean; turning it
+// off by hand makes it a manual disable that a passing test won't undo.
+const AUTO_DISABLE_FIELDS = ["autoDisabledAt", "autoDisabledReason", "authFailCount", "authFailFirstAt", "authFailModels"];
 
-function clearAutoDisableOnEnable(existing, merged) {
-  if (existing.isActive !== false || merged.isActive !== true) return;
-  for (const f of AUTO_DISABLE_FIELDS) delete merged[f];
+function applyAutoDisableTransition(existing, merged, data) {
+  if (existing.isActive === false && merged.isActive === true) {
+    for (const f of AUTO_DISABLE_FIELDS) delete merged[f];
+  } else if (data.isActive === false && data.autoDisabledAt === undefined) {
+    delete merged.autoDisabledAt;
+    delete merged.autoDisabledReason;
+  }
 }
 
 // Read by sse/services/autoCombo.ts to notice its model catalog is stale.
@@ -205,7 +207,7 @@ export async function createProviderConnection(data) {
       const merged = { ...existing, ...updates, updatedAt: now };
       // Re-adding or re-logging a key the router turned off means it was fixed.
       if (existing.autoDisabledAt && updates.isActive === undefined) merged.isActive = true;
-      clearAutoDisableOnEnable(existing, merged);
+      applyAutoDisableTransition(existing, merged, updates);
       upsert(db, merged);
       result = merged;
       return;
@@ -261,7 +263,7 @@ export async function updateProviderConnection(id, data) {
     if (!row) { result = null; return; }
     const existing = rowToConn(row);
     const merged = { ...existing, ...data, updatedAt: new Date().toISOString() };
-    clearAutoDisableOnEnable(existing, merged);
+    applyAutoDisableTransition(existing, merged, data);
     upsert(db, merged);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
     result = merged;

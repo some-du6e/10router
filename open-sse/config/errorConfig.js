@@ -42,16 +42,14 @@ export const TRANSIENT_COOLDOWN_MS = 30 * 1000;
 export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 
 // A key whose auth keeps failing (401, or a 403 that isn't a limit) is turned
-// off instead of being retried every time its model lock expires. All must hold:
-// at least minFailures with no success in between, spread over minWindowMs, and
-// either a 401 or 403s on at least minModels different models (a 403 on one
-// model can be a plan restriction, not a dead key).
+// off instead of being retried every time its model lock expires. Each failure
+// counts only if another key served that model within minWindowMs. Trips at
+// minFailures with no success in between, spread over minWindowMs, on a 401 or
+// once 403s span minModels models (a 403 on one model can be a plan limit).
 export const AUTH_DEAD_CONFIG = {
   minFailures: 5,
   minWindowMs: 10 * 60 * 1000,
   minModels: 2,
-  maxTrackedModels: 5,
-  reasonMaxChars: 80,
 };
 
 // Cooldown durations (ms)

@@ -1,6 +1,7 @@
-// A key whose auth keeps failing is turned off (with a reason) instead of being
-// retried every time its per-model lock expires, and comes back on when the user
-// re-enables it or a connection test passes. Runs against the real SQLite repo.
+// A key whose auth keeps failing, on models another key of the provider is
+// serving, is turned off (with a reason) instead of being retried every time its
+// per-model lock expires. It comes back on when the user re-enables it or a
+// connection test passes. Runs against the real SQLite repo.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -19,7 +20,7 @@ const PROVIDER = "openai-compatible-chat-test-dead-keys";
 const DEAD_403 = '[403]: {"code":"003001","message":"Not authorized for this endpoint"}';
 const MIN = 60 * 1000;
 
-let db, auth, testSingleConnection, testBatch;
+let db, auth, testSingleConnection, testBatch, putConnection;
 let seq = 0;
 
 beforeAll(async () => {
@@ -27,6 +28,7 @@ beforeAll(async () => {
   auth = await import("@/sse/services/auth.js");
   ({ testSingleConnection } = await import("@/app/api/providers/[id]/test/testUtils.js"));
   ({ POST: testBatch } = await import("@/app/api/providers/test-batch/route.js"));
+  ({ PUT: putConnection } = await import("@/app/api/providers/[id]/route.js"));
 });
 
 afterAll(() => {
@@ -55,63 +57,104 @@ async function addKey(name, extra = {}) {
 }
 
 const load = (id) => db.getProviderConnectionById(id);
+const succeed = async (id, model) => auth.clearAccountError(id, await load(id), model);
+const failOnce = (id, model, status = 403, text = DEAD_403) => auth.markAccountUnavailable(id, status, text, provider, model);
 
-// One failed request every `stepMs`, cycling through `models`.
-async function fail(id, { times, models, status = 403, text = DEAD_403, stepMs = 3 * MIN }) {
+// One request every `stepMs`, cycling through `models`: each healthy peer
+// serves it, then the dead key is refused.
+async function fail(id, { times, models, peers = [], status = 403, text = DEAD_403, stepMs = 3 * MIN }) {
   for (let i = 0; i < times; i++) {
     if (i > 0) vi.advanceTimersByTime(stepMs);
-    await auth.markAccountUnavailable(id, status, text, provider, models[i % models.length]);
+    const model = models[i % models.length];
+    for (const peer of peers) await succeed(peer.id, model);
+    await failOnce(id, model, status, text);
   }
 }
 
 describe("auth-dead keys turn off", () => {
-  it("turns off a key refused on two models over 10 minutes when another key is active", async () => {
+  it("turns off a key refused on two models another key serves", async () => {
     const dead = await addKey("a");
-    await addKey("b");
-    await fail(dead.id, { times: 5, models: ["claude-opus-5-5", "kimi-k3"] });
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 5, models: ["claude-opus-5-5", "kimi-k3"], peers: [healthy] });
 
     const conn = await load(dead.id);
     expect(conn.isActive).toBe(false);
     expect(conn.autoDisabledAt).toBe(new Date().toISOString());
-    expect(conn.autoDisabledReason).toMatch(/^403 "Not authorized for this endpoint" on claude-opus-5-5, kimi-k3 since \d\d:\d\d$/);
-    expect(conn.autoDisabledReason).not.toContain("sk-test");
+    expect(conn.autoDisabledReason).toBe('403 "Not authorized for this endpoint" on claude-opus-5-5, kimi-k3');
+    expect((await load(healthy.id)).isActive).toBe(true);
   });
 
-  it("does not trip before the window has passed", async () => {
+  it("trips once the failures span 10 minutes, not at 9", async () => {
     const dead = await addKey("a");
-    await addKey("b");
-    await fail(dead.id, { times: 8, models: ["m1", "m2"], stepMs: MIN });
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 5, models: ["m1", "m2"], peers: [healthy], stepMs: 2.25 * MIN });
     expect((await load(dead.id)).isActive).toBe(true);
+
+    const other = await addKey("c");
+    await fail(other.id, { times: 5, models: ["m1", "m2"], peers: [healthy], stepMs: 2.5 * MIN });
+    expect((await load(other.id)).isActive).toBe(false);
   });
 
   it("keeps the last active key on, with only the model lock", async () => {
     const dead = await addKey("a");
-    await addKey("b", { isActive: false });
-    await fail(dead.id, { times: 6, models: ["m1", "m2"] });
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 4, models: ["m1", "m2"], peers: [healthy] });
+    // The peer served these models, then the user turned it off.
+    await db.updateProviderConnection(healthy.id, { isActive: false });
+    await fail(dead.id, { times: 2, models: ["m1", "m2"], peers: [healthy] });
 
     const conn = await load(dead.id);
     expect(conn.isActive).toBe(true);
-    expect(conn.autoDisabledAt).toBeUndefined();
+    expect(conn.authFailCount).toBe(6);
+    expect(conn).not.toHaveProperty("autoDisabledAt");
     expect(conn.modelLock_m2).toBeTruthy();
   });
 
   it("keeps a key refused on a single model on", async () => {
     const dead = await addKey("a");
-    await addKey("b");
-    await fail(dead.id, { times: 10, models: ["claude-opus-5-5"] });
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 10, models: ["claude-opus-5-5"], peers: [healthy] });
     expect((await load(dead.id)).isActive).toBe(true);
   });
 
   it("starts over after a success on any model", async () => {
     const dead = await addKey("a");
-    await addKey("b");
-    await fail(dead.id, { times: 4, models: ["m1", "m2"] });
-    await auth.clearAccountError(dead.id, await load(dead.id), "m3");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 4, models: ["m1", "m2"], peers: [healthy] });
+    await succeed(dead.id, "m3");
     expect((await load(dead.id)).authFailCount).toBeNull();
 
     vi.advanceTimersByTime(3 * MIN);
-    await fail(dead.id, { times: 4, models: ["m1", "m2"] });
+    await fail(dead.id, { times: 4, models: ["m1", "m2"], peers: [healthy] });
     expect((await load(dead.id)).isActive).toBe(true);
+  });
+
+  it.each([
+    ["no streak fields left behind", (id) => ({ id })],
+    ["an active test status", (id) => ({ id, testStatus: "active" })],
+  ])("clears an open streak on success with %s", async (_label, snapshot) => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 3, models: ["m1", "m2"], peers: [healthy] });
+    await auth.clearAccountError(dead.id, { ...snapshot(dead.id), authFailCount: 3 }, "m1");
+    expect((await load(dead.id)).authFailCount).toBeNull();
+  });
+
+  it("resets instead of tripping when the key succeeded after the streak began", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 4, models: ["m1", "m2"], peers: [healthy] });
+    // A long request picked before the streak began finishes fine: its
+    // snapshot has no streak or error, so the DB is not cleared.
+    vi.advanceTimersByTime(MIN);
+    await auth.clearAccountError(dead.id, { id: dead.id }, "m3");
+    expect((await load(dead.id)).authFailCount).toBe(4);
+
+    vi.advanceTimersByTime(2 * MIN);
+    await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy] });
+    const conn = await load(dead.id);
+    expect(conn.isActive).toBe(true);
+    expect(conn.authFailCount).toBe(1);
   });
 
   it.each([
@@ -122,43 +165,97 @@ describe("auth-dead keys turn off", () => {
     [403, "You exceeded your current quota"],
   ])("never counts %i %s", async (status, text) => {
     const dead = await addKey("a");
-    await addKey("b");
-    await fail(dead.id, { times: 8, models: ["m1", "m2"], status, text });
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 8, models: ["m1", "m2"], peers: [healthy], status, text });
 
     const conn = await load(dead.id);
     expect(conn.isActive).toBe(true);
-    expect(conn.authFailCount).toBeUndefined();
+    expect(conn).not.toHaveProperty("authFailCount");
   });
 
   it("does not reset the streak on a non-auth error in between", async () => {
     const dead = await addKey("a");
-    await addKey("b");
-    await fail(dead.id, { times: 3, models: ["m1", "m2"] });
-    await auth.markAccountUnavailable(dead.id, 429, "Too many requests", provider, "m1");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 3, models: ["m1", "m2"], peers: [healthy] });
+    await failOnce(dead.id, "m1", 429, "Too many requests");
     vi.advanceTimersByTime(3 * MIN);
-    await fail(dead.id, { times: 2, models: ["m1", "m2"] });
+    await fail(dead.id, { times: 2, models: ["m1", "m2"], peers: [healthy] });
     expect((await load(dead.id)).isActive).toBe(false);
   });
 
   it("trips on 401s for one model, still needing the count and window", async () => {
     const dead = await addKey("a");
-    await addKey("b");
-    await fail(dead.id, { times: 4, models: ["m1"], status: 401, text: "Invalid API key" });
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 4, models: ["m1"], peers: [healthy], status: 401, text: "Invalid API key" });
     expect((await load(dead.id)).isActive).toBe(true);
     vi.advanceTimersByTime(3 * MIN);
-    await auth.markAccountUnavailable(dead.id, 401, "Invalid API key", provider, "m1");
+    await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy], status: 401, text: "Invalid API key" });
 
     const conn = await load(dead.id);
     expect(conn.isActive).toBe(false);
-    expect(conn.autoDisabledReason).toMatch(/^401 "Invalid API key" on m1 since/);
+    expect(conn.autoDisabledReason).toBe('401 "Invalid API key" on m1');
+  });
+
+  it("does not let one earlier 401 skip the two-model rule for 403s", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy], status: 401, text: "Invalid API key" });
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(dead.id, { times: 6, models: ["m1"], peers: [healthy] });
+    expect((await load(dead.id)).isActive).toBe(true);
   });
 });
 
-describe("turning an auto-disabled key back on", () => {
+describe("a refusal only counts when another key serves that model", () => {
+  it("disables no key when every key is refused (region block)", async () => {
+    const keys = [await addKey("a"), await addKey("b"), await addKey("c")];
+    for (const k of keys) for (const m of ["m1", "m2"]) await succeed(k.id, m);
+    vi.advanceTimersByTime(MIN);
+    for (let i = 0; i < 12; i++) {
+      for (const k of keys) await failOnce(k.id, i % 2 ? "m2" : "m1");
+      vi.advanceTimersByTime(2.5 * MIN);
+    }
+    for (const k of keys) expect((await load(k.id)).isActive).toBe(true);
+  });
+
+  it("disables neither of two keys that die at once, even concurrently", async () => {
+    const keys = [await addKey("a"), await addKey("b")];
+    for (const k of keys) for (const m of ["m1", "m2"]) await succeed(k.id, m);
+    vi.advanceTimersByTime(MIN);
+    for (let i = 0; i < 8; i++) {
+      await Promise.all(keys.map((k) => failOnce(k.id, i % 2 ? "m2" : "m1")));
+      vi.advanceTimersByTime(2.5 * MIN);
+    }
+    for (const k of keys) expect((await load(k.id)).isActive).toBe(true);
+  });
+
+  it("keeps a key on whose 403s are on models no other key served", async () => {
+    const limited = await addKey("a");
+    const healthy = await addKey("b");
+    for (let i = 0; i < 8; i++) {
+      if (i > 0) vi.advanceTimersByTime(2.5 * MIN);
+      await succeed(healthy.id, "m-common");
+      await failOnce(limited.id, i % 2 ? "m-plan-2" : "m-plan-1");
+    }
+    expect((await load(limited.id)).isActive).toBe(true);
+    expect(await load(limited.id)).not.toHaveProperty("authFailCount");
+  });
+
+  it("never counts web search or fetch lock keys", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 8, models: [`websearch:${provider}`, `webfetch:${provider}`], peers: [healthy] });
+    const conn = await load(dead.id);
+    expect(conn.isActive).toBe(true);
+    expect(conn).not.toHaveProperty("authFailCount");
+  });
+});
+
+describe("an auto-disabled key", () => {
   async function deadKey() {
     const dead = await addKey("a");
-    await addKey("b");
-    await fail(dead.id, { times: 5, models: ["m1", "m2"] });
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 5, models: ["m1", "m2"], peers: [healthy] });
     expect((await load(dead.id)).isActive).toBe(false);
     return dead;
   }
@@ -171,9 +268,43 @@ describe("turning an auto-disabled key back on", () => {
     }
   }
 
+  const stubFetch = (status) => vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status })));
+  const runTestAll = async () => {
+    const res = await testBatch(new Request("http://localhost/api/providers/test-batch", {
+      method: "POST", body: JSON.stringify({ mode: "provider", providerId: provider }),
+    }));
+    return (await res.json()).results.map((r) => r.connectionId);
+  };
+
+  it("stays off, with its reason, through other updates and errors", async () => {
+    const dead = await deadKey();
+    const { autoDisabledAt, autoDisabledReason } = await load(dead.id);
+    vi.advanceTimersByTime(3 * MIN);
+    await db.updateProviderConnection(dead.id, { priority: 3, lastError: "something else" });
+    await failOnce(dead.id, "m1", 429, "Too many requests");
+    // A request already in flight when it tripped fails the same way.
+    const peer = (await db.getProviderConnections({ provider })).find((c) => c.id !== dead.id);
+    await succeed(peer.id, "m3");
+    await failOnce(dead.id, "m3", 401, "Invalid API key");
+    const conn = await load(dead.id);
+    expect(conn.isActive).toBe(false);
+    expect(conn.autoDisabledAt).toBe(autoDisabledAt);
+    expect(conn.autoDisabledReason).toBe(autoDisabledReason);
+  });
+
   it("clears the reason and streak when re-enabled", async () => {
     const dead = await deadKey();
     await db.updateProviderConnection(dead.id, { isActive: true });
+    await expectBackOn(dead.id);
+  });
+
+  it("clears the reason and streak when re-enabled from the dashboard", async () => {
+    const dead = await deadKey();
+    const res = await putConnection(
+      new Request(`http://localhost/api/providers/${dead.id}`, { method: "PUT", body: JSON.stringify({ isActive: true }) }),
+      { params: Promise.resolve({ id: dead.id }) },
+    );
+    expect(res.status).toBe(200);
     await expectBackOn(dead.id);
   });
 
@@ -183,38 +314,48 @@ describe("turning an auto-disabled key back on", () => {
     await expectBackOn(dead.id);
   });
 
-  it("re-enables an auto-disabled key whose connection test passes", async () => {
+  it("re-enables when its connection test passes", async () => {
     const dead = await deadKey();
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+    stubFetch(200);
     expect((await testSingleConnection(dead.id)).valid).toBe(true);
     await expectBackOn(dead.id);
   });
 
-  it("leaves an auto-disabled key off when its test fails", async () => {
+  it("stays off when its connection test fails", async () => {
     const dead = await deadKey();
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 403 })));
+    stubFetch(403);
     expect((await testSingleConnection(dead.id)).valid).toBe(false);
+    expect((await load(dead.id)).isActive).toBe(false);
+  });
+
+  it("is tested by Test all and comes back; a key the user turned off is not", async () => {
+    const dead = await deadKey();
+    const manual = await addKey("c", { isActive: false });
+    stubFetch(200);
+    const tested = await runTestAll();
+    expect(tested).toContain(dead.id);
+    expect(tested).not.toContain(manual.id);
+    await expectBackOn(dead.id);
+    expect((await load(manual.id)).isActive).toBe(false);
+  });
+
+  it("becomes a manual disable when the user also turns it off", async () => {
+    const dead = await deadKey();
+    await db.updateProviderConnection(dead.id, { isActive: false });
+    const conn = await load(dead.id);
+    expect(conn).not.toHaveProperty("autoDisabledAt");
+    expect(conn).not.toHaveProperty("autoDisabledReason");
+
+    stubFetch(200);
+    expect(await runTestAll()).not.toContain(dead.id);
+    expect((await testSingleConnection(dead.id)).valid).toBe(true);
     expect((await load(dead.id)).isActive).toBe(false);
   });
 
   it("leaves a key the user turned off alone when its test passes", async () => {
     const manual = await addKey("a", { isActive: false });
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+    stubFetch(200);
     expect((await testSingleConnection(manual.id)).valid).toBe(true);
-    expect((await load(manual.id)).isActive).toBe(false);
-  });
-
-  it("tests auto-disabled keys in a batch, but not ones the user turned off", async () => {
-    const dead = await deadKey();
-    const manual = await addKey("c", { isActive: false });
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
-    const res = await testBatch(new Request("http://localhost/api/providers/test-batch", {
-      method: "POST", body: JSON.stringify({ mode: "provider", providerId: provider }),
-    }));
-    const tested = (await res.json()).results.map((r) => r.connectionId);
-    expect(tested).toContain(dead.id);
-    expect(tested).not.toContain(manual.id);
-    await expectBackOn(dead.id);
     expect((await load(manual.id)).isActive).toBe(false);
   });
 });

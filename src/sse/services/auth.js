@@ -2,13 +2,12 @@ import { getProviderConnections, validateApiKey, updateProviderConnection, getSe
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG } from "open-sse/config/errorConfig.js";
-import { sanitizeSecrets } from "open-sse/utils/error.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { planCanServeModel } from "@/shared/utils/planCapability.js";
 import { getAntigravityQuotaCache } from "./antigravityQuota.js";
 import { getRoutingQuotas, getResetState, pickSoonestReset } from "./soonestReset.js";
 import * as log from "../utils/logger.js";
-import { getNextAccountReset, PROVIDER_RESET_PREFIX } from "./accountFailureSummary.js";
+import { getNextAccountReset, PROVIDER_RESET_PREFIX, extractProviderMessage } from "./accountFailureSummary.js";
 import { isLimitError } from "open-sse/utils/limitHold.js";
 
 // Per-provider mutexes for account selection. Picks for the same provider stay
@@ -27,7 +26,27 @@ function githubMonthlyResetMs(status, errorText, provider) {
   return Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
 }
 
-const AUTH_FAIL_CLEARED = { authFailCount: null, authFailFirstAt: null, authFailModels: null, authFailUnauthorized: null };
+const AUTH_FAIL_CLEARED = { authFailCount: null, authFailFirstAt: null, authFailModels: null };
+const MAX_TRACKED_MODELS = 5;
+const REASON_MAX_CHARS = 80;
+const MAX_SUCCESS_ENTRIES = 5000;
+
+// Last success time per connection and per `${connectionId}|${model}`. Memory
+// only, so the success path never writes the DB; after a restart it is empty
+// and keys just take longer to trip.
+const authSuccess = (global._authSuccess ??= new Map());
+
+function recordSuccess(connectionId, model) {
+  const now = Date.now();
+  if (authSuccess.size >= MAX_SUCCESS_ENTRIES) {
+    for (const [key, at] of authSuccess) if (now - at > AUTH_DEAD_CONFIG.minWindowMs) authSuccess.delete(key);
+    if (authSuccess.size >= MAX_SUCCESS_ENTRIES) authSuccess.clear();
+  }
+  authSuccess.set(connectionId, now);
+  if (model) authSuccess.set(`${connectionId}|${model}`, now);
+}
+
+const succeededSince = (key, sinceMs) => (authSuccess.get(key) ?? -Infinity) >= sinceMs;
 
 // 401, or a 403 that is not a quota/rate limit: the key itself is refused.
 function isAuthRejection(status, errorText) {
@@ -35,42 +54,36 @@ function isAuthRejection(status, errorText) {
   return code === 401 || (code === 403 && !isLimitError(code, errorText));
 }
 
-function nextAuthFailStreak(conn, status, model) {
-  const models = Array.isArray(conn.authFailModels) ? conn.authFailModels : [];
+// The refusal only counts when another key of the provider served this model
+// recently: a failure every key sees (region block, proxy page, auth outage)
+// is not this key's. Web search/fetch lock keys ("websearch:x") are not models.
+function countsTowardAuthStreak(connections, connectionId, model, status, errorText) {
+  if (!model || model.includes(":") || !isAuthRejection(status, errorText)) return false;
+  const since = Date.now() - AUTH_DEAD_CONFIG.minWindowMs;
+  return connections.some(c => c.id !== connectionId && succeededSince(`${c.id}|${model}`, since));
+}
+
+function nextAuthFailStreak(conn, model) {
+  // A success this key's request snapshot missed (picked before the streak began) still resets it.
+  const fresh = !conn.authFailFirstAt || succeededSince(conn.id, new Date(conn.authFailFirstAt).getTime() + 1);
+  const models = !fresh && Array.isArray(conn.authFailModels) ? conn.authFailModels : [];
   return {
-    authFailCount: (conn.authFailCount || 0) + 1,
-    authFailFirstAt: conn.authFailFirstAt || new Date().toISOString(),
-    authFailModels: model && !models.includes(model)
-      ? [...models, model].slice(-AUTH_DEAD_CONFIG.maxTrackedModels)
-      : models,
-    authFailUnauthorized: conn.authFailUnauthorized === true || Number(status) === 401,
+    authFailCount: (fresh ? 0 : conn.authFailCount || 0) + 1,
+    authFailFirstAt: fresh ? new Date().toISOString() : conn.authFailFirstAt,
+    authFailModels: models.includes(model) ? models : [...models, model].slice(-MAX_TRACKED_MODELS),
   };
 }
 
-function isAuthDead(streak) {
+function isAuthDead(streak, status) {
   return streak.authFailCount >= AUTH_DEAD_CONFIG.minFailures
     && Date.now() - new Date(streak.authFailFirstAt).getTime() >= AUTH_DEAD_CONFIG.minWindowMs
-    && (streak.authFailUnauthorized || streak.authFailModels.length >= AUTH_DEAD_CONFIG.minModels);
+    && (Number(status) === 401 || streak.authFailModels.length >= AUTH_DEAD_CONFIG.minModels);
 }
 
-// Upstream text arrives as "[403]: {json}" or plain text; keep just the message.
-function upstreamMessage(errorText, conn) {
-  let text = String(errorText || "").replace(/^\[\d+\]:\s*/, "");
-  try {
-    const body = JSON.parse(text);
-    const msg = body?.message || body?.error?.message || body?.error || body?.detail;
-    if (typeof msg === "string") text = msg;
-  } catch { /* not JSON */ }
-  text = sanitizeSecrets(text, conn).replace(/\s+/g, " ").trim();
-  const max = AUTH_DEAD_CONFIG.reasonMaxChars;
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
-}
-
-function autoDisableReason(conn, status, errorText, streak) {
-  const message = upstreamMessage(errorText, conn);
-  const models = streak.authFailModels.length ? ` on ${streak.authFailModels.join(", ")}` : "";
-  const since = new Date(streak.authFailFirstAt).toTimeString().slice(0, 5);
-  return `${status}${message ? ` "${message}"` : ""}${models} since ${since}`;
+function autoDisableReason(status, errorText, streak) {
+  const text = String(extractProviderMessage(errorText)).replace(/^\[\d+\]:\s*/, "").replace(/\s+/g, " ").trim();
+  const message = text.length > REASON_MAX_CHARS ? `${text.slice(0, REASON_MAX_CHARS - 1)}…` : text;
+  return `${status}${message ? ` "${message}"` : ""} on ${streak.authFailModels.join(", ")}`;
 }
 
 /**
@@ -359,14 +372,15 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
 
   // Auth rejections build a streak that only a success clears; other errors
   // leave it alone. A dead key is turned off unless it is the provider's last.
-  const authFailStreak = conn && isAuthRejection(status, errorText) ? nextAuthFailStreak(conn, status, model) : null;
+  const authFailStreak = conn && countsTowardAuthStreak(connections, connectionId, model, status, errorText)
+    ? nextAuthFailStreak(conn, model) : null;
   let autoDisable = null;
-  if (authFailStreak && isAuthDead(authFailStreak)
+  if (authFailStreak && conn.isActive !== false && isAuthDead(authFailStreak, status)
     && connections.some(c => c.id !== connectionId && c.isActive !== false)) {
     autoDisable = {
       isActive: false,
       autoDisabledAt: new Date().toISOString(),
-      autoDisabledReason: autoDisableReason(conn, status, errorText, authFailStreak),
+      autoDisabledReason: autoDisableReason(status, errorText, authFailStreak),
     };
   }
 
@@ -407,6 +421,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
  */
 export async function clearAccountError(connectionId, currentConnection, model = null) {
   if (!connectionId || connectionId === "noauth") return;
+  recordSuccess(connectionId, model);
   const conn = currentConnection._connection || currentConnection;
   const now = Date.now();
   const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_"));
