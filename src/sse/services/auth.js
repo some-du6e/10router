@@ -431,7 +431,8 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     // both see the other still on and leave the provider with none.
     autoDisable = await withAutoDisableLock(provider, async () => {
       const fresh = await getProviderConnections({ provider });
-      const keep = !fresh.some(c => c.id !== connectionId && c.isActive !== false);
+      const keep = fresh.find(c => c.id === connectionId)?.isActive === false
+        || !fresh.some(c => c.id !== connectionId && c.isActive !== false);
       await updateProviderConnection(connectionId, keep ? update : { ...update, ...autoDisable });
       return keep ? null : autoDisable;
     });

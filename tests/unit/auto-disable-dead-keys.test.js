@@ -129,6 +129,21 @@ describe("auth-dead keys turn off", () => {
     expect(active).toHaveLength(1);
   });
 
+  it("leaves a key the user turns off mid-request as a manual disable", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 4, models: ["m1", "m2"], peers: [healthy] });
+    vi.advanceTimersByTime(3 * MIN);
+    await succeed(healthy.id, "m1");
+    const pending = failOnce(dead.id, "m1");
+    await db.updateProviderConnection(dead.id, { isActive: false });
+    await pending;
+
+    const conn = await load(dead.id);
+    expect(conn.isActive).toBe(false);
+    expect(conn).not.toHaveProperty("autoDisabledAt");
+  });
+
   it("keeps a key refused on a single model on", async () => {
     const dead = await addKey("a");
     const healthy = await addKey("b");
