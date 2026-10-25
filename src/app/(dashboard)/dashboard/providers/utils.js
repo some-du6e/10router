@@ -17,3 +17,9 @@ export function matchesStatusFilter(statusFilter, stats, isNoAuth = false) {
   if (statusFilter === "all") return true;
   return getConnectionStatus(stats, isNoAuth) === statusFilter;
 }
+
+// Turning a connection on or off by hand ends an automatic turn-off; the
+// server clears autoDisabledAt and autoDisabledReason on the same write.
+export function withToggledActive(connection, isActive) {
+  return { ...connection, isActive, autoDisabledAt: null, autoDisabledReason: null };
+}

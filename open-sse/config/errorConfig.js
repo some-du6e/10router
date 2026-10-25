@@ -41,10 +41,11 @@ export const TRANSIENT_COOLDOWN_MS = 30 * 1000;
 // Hard cap for provider-reported rate limit cooldown (e.g. codex resets_at can be 5-6h)
 export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 
-// A key whose auth keeps failing (401, or a 403 that isn't a limit) is turned
-// off instead of being retried every time its model lock expires. Each failure
-// counts only if another key on the same proxy served that model since this
-// key's previous failure on it (the first: within minWindowMs). Trips at
+// An API key whose auth keeps failing (a 401 or 403 that isn't a limit, billing
+// block or refusal of one model) is turned off instead of being retried every
+// time its model lock expires. Each failure counts only if another key with the
+// same base URL and proxy served that model, and wasn't refused on it, since
+// this key's previous failure on it (the first: within minWindowMs). Trips at
 // minFailures with no success in between, spread over minWindowMs, when they
 // were all 401s or span minModels models (a 403 on one model can be a plan limit).
 export const AUTH_DEAD_CONFIG = {

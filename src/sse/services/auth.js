@@ -55,41 +55,51 @@ function recordSuccess(connectionId, model) {
 
 const succeededSince = (key, sinceMs) => (authEvents.success.get(key)?.at ?? -Infinity) >= sinceMs;
 
-// Budget and spend 403s that isLimitError doesn't know ("Key limit exceeded
-// (daily limit)", "monthly spend limit", "credits exhausted"): the key is fine.
-const SPEND_LIMIT_403 = /limit exceeded|exceeded (?:your|the|its)?\s*\w*\s*limit|spend(?:ing)? limit|credit|quota|usage cap|billing|budget|insufficient (?:funds|balance)/i;
+// Limit, billing and plan refusals isLimitError doesn't know ("Key limit
+// exceeded (daily limit)", qoder's "Queue limit" or "Upgrade required" with a
+// pricingUrl, "credits exhausted"), and refusals of one model ("does not have
+// access to model 'o3'"): the key itself is fine.
+const NOT_KEY_REFUSAL = new RegExp([
+  /\blimit|queue|upgrade|pricing|\bplans?\b|credit|quota|exhausted|usage cap|billing|budget|payment|insufficient (?:funds|balance)/,
+  /does not have access to (?:the )?model|model_not_found|\bmodel\b.{0,60}?\bnot (?:available|allowed|enabled|permitted|supported)\b/,
+].map(r => r.source).join("|"), "i");
 
-// 401, or a 403 that is not a quota/rate/spend limit: the key itself is refused.
+// A 401 or 403 that is not a limit or a refusal of one model: the key itself is refused.
 function isAuthRejection(status, errorText) {
   const code = Number(status);
-  if (code === 401) return true;
   const text = String(errorText || "");
   const lower = text.toLowerCase();
-  return code === 403 && !isLimitError(code, errorText) && !SPEND_LIMIT_403.test(text)
+  return (code === 401 || code === 403) && !isLimitError(code, errorText) && !NOT_KEY_REFUSAL.test(text)
     && !ERROR_RULES.some(r => r.backoff && r.text && lower.includes(r.text));
 }
 
-// Keys behind different proxies or relays can get different answers.
+// Keys with their own base URL, or behind different proxies or relays, can get
+// different answers.
 async function networkPath(conn) {
-  const p = await resolveConnectionProxyConfig(conn.providerSpecificData || {});
+  const psd = conn.providerSpecificData || {};
+  const p = await resolveConnectionProxyConfig(psd);
   const proxy = p.connectionProxyEnabled && p.connectionProxyUrl ? p.connectionProxyUrl : "";
-  return JSON.stringify([proxy, proxy ? p.connectionNoProxy || "" : "", p.vercelRelayUrl || ""]);
+  const baseUrl = String(psd.baseUrl || "").trim().replace(/\/+$/, "");
+  return JSON.stringify([baseUrl, proxy, proxy ? p.connectionNoProxy || "" : "", p.vercelRelayUrl || ""]);
 }
 
-// The refusal only counts when another key of the provider, on the same network
-// path, served this model after this key's previous refusal of it (or, for the
-// first one, within minWindowMs): a failure every key sees (region block, proxy
-// page, auth outage) is not this key's. Web search/fetch lock keys
-// ("websearch:x") are not models; ids like "x:free" are.
+// Only API keys count: an OAuth token or session cookie that fails to refresh
+// gets 401s while its peers' tokens work, and that isn't a dead account.
+// The refusal counts when another key of the provider, on the same network
+// path, served this model and was not refused on it since this key's previous
+// refusal of it (for the first one, within minWindowMs): a failure every key
+// sees, always or only some of the time (region block, proxy page, auth
+// outage), is not this key's. Web search/fetch lock keys ("websearch:x") are
+// not models; ids like "x:free" are.
 async function countsTowardAuthStreak(connections, conn, model, status, errorText) {
   if (!model || /^web(search|fetch):/.test(model) || !isAuthRejection(status, errorText)) return false;
   const previous = authEvents.refused.get(`${conn.id}|${model}`);
   remember(authEvents.refused, `${conn.id}|${model}`);
+  if (conn.authType !== "apikey") return false;
   const since = Date.now() - AUTH_DEAD_CONFIG.minWindowMs;
-  const peers = connections.filter((c) => {
-    const success = c.id !== conn.id && authEvents.success.get(`${c.id}|${model}`);
-    return success && (previous ? success.seq > previous.seq : success.at >= since);
-  });
+  const after = (event) => event && (previous ? event.seq > previous.seq : event.at >= since);
+  const peers = connections.filter(c => c.id !== conn.id
+    && after(authEvents.success.get(`${c.id}|${model}`)) && !after(authEvents.refused.get(`${c.id}|${model}`)));
   if (peers.length === 0) return false;
   const path = await networkPath(conn);
   for (const peer of peers) if (await networkPath(peer) === path) return true;

@@ -23,6 +23,7 @@ import CustomEndpointPage from "./CustomEndpointPage";
 import AddCustomModelModal from "./AddCustomModelModal";
 import BulkImportCodexModal from "./BulkImportCodexModal";
 import BulkImportGrokCliModal from "./BulkImportGrokCliModal";
+import { withToggledActive } from "../utils";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
 
@@ -862,7 +863,7 @@ export default function ProviderDetailPage() {
         body: JSON.stringify({ isActive }),
       });
       if (res.ok) {
-        setConnections(prev => prev.map(c => c.id === id ? { ...c, isActive } : c));
+        setConnections(prev => prev.map(c => c.id === id ? withToggledActive(c, isActive) : c));
       }
     } catch (error) {
       console.log("Error updating connection status:", error);

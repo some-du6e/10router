@@ -1,4 +1,4 @@
-// A key whose auth keeps failing, on models another key of the provider is
+// An API key whose auth keeps failing, on models another key of the provider is
 // serving, is turned off (with a reason) instead of being retried every time its
 // per-model lock expires. It comes back on when the user re-enables it or puts
 // in a new key, not when a connection test passes. Runs against the real SQLite repo.
@@ -34,7 +34,7 @@ const PROVIDER = "openai-compatible-chat-test-dead-keys";
 const DEAD_403 = '[403]: {"code":"003001","message":"Not authorized for this endpoint"}';
 const MIN = 60 * 1000;
 
-let db, auth, testSingleConnection, testBatch, putConnection;
+let db, auth, testSingleConnection, testBatch, putConnection, withToggledActive;
 let seq = 0;
 
 beforeAll(async () => {
@@ -43,6 +43,7 @@ beforeAll(async () => {
   ({ testSingleConnection } = await import("@/app/api/providers/[id]/test/testUtils.js"));
   ({ POST: testBatch } = await import("@/app/api/providers/test-batch/route.js"));
   ({ PUT: putConnection } = await import("@/app/api/providers/[id]/route.js"));
+  ({ withToggledActive } = await import("@/app/(dashboard)/dashboard/providers/utils.js"));
 });
 
 afterAll(() => {
@@ -256,6 +257,24 @@ describe("auth-dead keys turn off", () => {
     [403, "Model is overloaded, try again later"],
     [403, "Not enough capacity for this request"],
     [403, "Too many requests from this account"],
+    [403, '{"error":{"message":"Project \'proj_x\' does not have access to model \'o3\'","code":"model_not_found"}}'],
+    [403, '{"error":{"message":"Forbidden","code":"model_not_found"}}'],
+    [403, "The model m1 is not available for this key"],
+    [403, "This model is not allowed for this project"],
+    [401, "model m1 is not enabled for this key"],
+    // qoder billing and throttle blocks, as its executor turns them into a 403.
+    ...[
+      '{"code":"112","message":"Quota exhausted","pricingUrl":"https://qoder.sh/pricing"}',
+      '{"code":"10605","message":"Queue limit"}',
+      '{"message":"Upgrade required","pricingUrl":"https://..."}',
+      '{"message":"Payment required","pricingUrl":"https://..."}',
+    ].map((inner) => [403, JSON.stringify({ error: { message: inner, code: 403 } })]),
+    [403, "Your plan does not include this endpoint"],
+    // New-api style relays answer limits with a 401.
+    [401, "token quota exhausted, RemainQuota = 0"],
+    [401, "Key limit exceeded (daily limit)"],
+    [401, "Rate limit reached for requests"],
+    [401, "Model is overloaded, try again later"],
   ])("never counts %i %s", async (status, text) => {
     const dead = await addKey("a");
     const healthy = await addKey("b");
@@ -502,6 +521,62 @@ describe("a refusal only counts when another key serves that model", () => {
     expect((await load(dead.id)).isActive).toBe(false);
   });
 
+  it.each([
+    ["an OAuth account", { authType: "oauth", accessToken: "test-access-token" }],
+    ["a session cookie", { authType: "cookie" }],
+  ])("keeps %s on whose expired token keeps failing while its peer serves", async (_label, auth) => {
+    const expired = await addKey("a", auth);
+    const healthy = await addKey("b");
+    await fail(expired.id, { times: 8, models: ["m1"], peers: [healthy], status: 401, text: "OAuth token has expired." });
+    const conn = await load(expired.id);
+    expect(conn.isActive).toBe(true);
+    expect(conn).not.toHaveProperty("authFailCount");
+  });
+
+  it("keeps a key on its own base URL on while a key on the node's URL serves", async () => {
+    const own = await addKey("a", { providerSpecificData: { baseUrl: "https://own.dead-keys.test/v1", ownBaseUrl: true } });
+    const node = await addKey("b");
+    await fail(own.id, { times: 8, models: ["m1"], peers: [node], status: 401, text: "Invalid API key" });
+    const conn = await load(own.id);
+    expect(conn.isActive).toBe(true);
+    expect(conn).not.toHaveProperty("authFailCount");
+  });
+
+  it("trips a key on the same base URL as its peer, ignoring a trailing slash", async () => {
+    const dead = await addKey("a", { providerSpecificData: { baseUrl: "https://dead-keys.test/v1/" } });
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 6, models: ["m1"], peers: [healthy], status: 401, text: "Invalid API key" });
+    expect((await load(dead.id)).isActive).toBe(false);
+  });
+
+  // The provider refuses some requests on every key: B is refused on a model
+  // and then gets one through before A tries it again.
+  it("disables neither key when the provider refuses a share of every key's requests", async () => {
+    const a = await addKey("a");
+    const b = await addKey("b");
+    for (const m of ["m1", "m2"]) await succeed(b.id, m);
+    for (let i = 0; i < 12; i++) {
+      const model = i % 2 ? "m2" : "m1";
+      await failOnce(a.id, model);
+      vi.advanceTimersByTime(30 * 1000);
+      await failOnce(b.id, model);
+      vi.advanceTimersByTime(30 * 1000);
+      await succeed(b.id, model);
+      vi.advanceTimersByTime(MIN);
+    }
+    for (const k of [a, b]) expect((await load(k.id)).isActive).toBe(true);
+  });
+
+  it("does not count a first refusal when the peer was also refused on that model within 10 minutes", async () => {
+    const a = await addKey("a");
+    const b = await addKey("b");
+    await failOnce(b.id, "m1");
+    vi.advanceTimersByTime(MIN);
+    await succeed(b.id, "m1");
+    await failOnce(a.id, "m1");
+    expect(await load(a.id)).not.toHaveProperty("authFailCount");
+  });
+
   it("never counts web search or fetch lock keys", async () => {
     const dead = await addKey("a");
     const healthy = await addKey("b");
@@ -616,10 +691,18 @@ describe("an auto-disabled key", () => {
     expect((await load(manual.id)).isActive).toBe(false);
   });
 
-  it("re-enables when the key is added again", async () => {
+  it("re-enables when the key is re-added through the API with overwrite allowed", async () => {
     const dead = await deadKey();
     await db.createProviderConnection({ provider, authType: "apikey", name: "a", apiKey: "sk-test-new-0123456789" });
     await expectBackOn(dead.id);
+  });
+
+  it("stays off when the dashboard adds a key with the same name, which it refuses", async () => {
+    const dead = await deadKey();
+    await expect(db.createProviderConnection({
+      provider, authType: "apikey", name: "a", apiKey: "sk-test-new-0123456789", allowOverwrite: false,
+    })).rejects.toMatchObject({ code: "PROVIDER_NAME_CONFLICT" });
+    expect((await load(dead.id)).isActive).toBe(false);
   });
 
   it("stays off, with its reason, when its connection test passes", async () => {
@@ -664,6 +747,19 @@ describe("an auto-disabled key", () => {
     await testSingleConnection(dead.id);
     await db.updateProviderConnection(dead.id, { isActive: true });
     await expectBackOn(dead.id);
+  });
+
+  it("shows no automatic label, on the server or in the dashboard, once toggled on and off by hand", async () => {
+    const dead = await deadKey();
+    let local = await load(dead.id);
+    for (const isActive of [true, false]) {
+      await db.updateProviderConnection(dead.id, { isActive });
+      local = withToggledActive(local, isActive);
+    }
+    const label = (c) => c.isActive === false && Boolean(c.autoDisabledAt);
+    expect(label(await load(dead.id))).toBe(false);
+    expect(label(local)).toBe(false);
+    expect(local.autoDisabledReason).toBeNull();
   });
 
   it("becomes a manual disable when the user also turns it off", async () => {

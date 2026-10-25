@@ -1,6 +1,6 @@
 import {
   extractApiKey, isValidApiKey,
-  getProviderCredentials, markAccountUnavailable,
+  getProviderCredentials, markAccountUnavailable, clearAccountError,
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
@@ -74,7 +74,10 @@ export async function handleStt(request) {
 
     const result = await handleSttCore({ provider, model, formData, credentials, sttConfig: AI_PROVIDERS[provider]?.sttConfig });
 
-    if (result.success) return result.response;
+    if (result.success) {
+      await clearAccountError(credentials.connectionId, credentials, model);
+      return result.response;
+    }
 
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model);
     if (shouldFallback) {

@@ -1,6 +1,6 @@
 import {
   extractApiKey, isValidApiKey,
-  getProviderCredentials, markAccountUnavailable,
+  getProviderCredentials, markAccountUnavailable, clearAccountError,
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo, getComboModels, comboLookupName } from "../services/model.js";
@@ -103,7 +103,10 @@ async function handleSingleModelTts(body, modelStr, responseFormat, language, st
 
     const result = await handleTtsCore({ provider, model, input: body.input, credentials, responseFormat, language, style });
 
-    if (result.success) return result.response;
+    if (result.success) {
+      await clearAccountError(credentials.connectionId, credentials, model);
+      return result.response;
+    }
 
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model);
     if (shouldFallback) {

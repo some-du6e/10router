@@ -8,6 +8,7 @@ import { Card, Badge, Button, Modal, Select, Toggle, EditConnectionModal, Confir
 import { useSecretInputProps } from "@/shared/components/Input";
 import { providerRoutingOptions, SOONEST_RESET_HINT } from "@/shared/constants/accountRouting";
 import { useBlurEmails } from "@/shared/hooks/useBlurEmails";
+import { withToggledActive } from "../utils";
 
 // ── CooldownTimer ──────────────────────────────────────────────
 function CooldownTimer({ until }) {
@@ -404,7 +405,7 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
   const handleToggleActive = async (id, isActive) => {
     try {
       const res = await fetch(`/api/providers/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isActive }) });
-      if (res.ok) setConnections((prev) => prev.map((c) => c.id === id ? { ...c, isActive } : c));
+      if (res.ok) setConnections((prev) => prev.map((c) => c.id === id ? withToggledActive(c, isActive) : c));
     } catch (e) { console.log("toggle error:", e); }
   };
 
