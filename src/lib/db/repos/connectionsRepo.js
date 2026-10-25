@@ -12,7 +12,7 @@ const OPTIONAL_FIELDS = [
 
 // Written by sse/services/auth.js when a key keeps failing auth and is turned
 // off. Turning the connection back on, by any path, starts it clean; turning it
-// off by hand makes it a manual disable.
+// off again keeps its reason unless a new key came with it.
 const AUTH_STREAK_FIELDS = ["authFailCount", "authFailFirstAt", "authFailLastAt", "authFailModels", "authFailAll401"];
 const AUTO_DISABLE_FIELDS = ["autoDisabledAt", "autoDisabledReason", ...AUTH_STREAK_FIELDS];
 
@@ -22,7 +22,7 @@ function applyAutoDisableTransition(existing, merged, data) {
   if (existing.autoDisabledAt && data.isActive === undefined && keyChanged) merged.isActive = true;
   if (existing.isActive === false && merged.isActive === true) {
     for (const f of AUTO_DISABLE_FIELDS) delete merged[f];
-  } else if (data.isActive === false && data.autoDisabledAt === undefined) {
+  } else if (data.isActive === false && data.autoDisabledAt === undefined && keyChanged) {
     delete merged.autoDisabledAt;
     delete merged.autoDisabledReason;
   }

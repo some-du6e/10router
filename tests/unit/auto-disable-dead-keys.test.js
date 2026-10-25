@@ -890,8 +890,16 @@ describe("an auto-disabled key", () => {
     expect(local.autoDisabledReason).toBeNull();
   });
 
-  it("becomes a manual disable when the user also turns it off", async () => {
+  it("keeps its reason when the whole provider is turned off", async () => {
     const dead = await deadKey();
+    const { autoDisabledAt, autoDisabledReason } = await load(dead.id);
+    await db.updateProviderConnection(dead.id, { isActive: false });
+    expect(await load(dead.id)).toMatchObject({ isActive: false, autoDisabledAt, autoDisabledReason });
+  });
+
+  it("becomes a manual disable when the user turns it off after turning it back on", async () => {
+    const dead = await deadKey();
+    await db.updateProviderConnection(dead.id, { isActive: true });
     await db.updateProviderConnection(dead.id, { isActive: false });
     const conn = await load(dead.id);
     expect(conn.isActive).toBe(false);
