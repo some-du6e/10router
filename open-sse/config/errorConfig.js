@@ -42,9 +42,9 @@ export const TRANSIENT_COOLDOWN_MS = 30 * 1000;
 export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 
 // An API key whose auth keeps failing (a 401 or 403 that isn't a limit, billing
-// block or refusal of one model) is turned off instead of being retried every
-// time its model lock expires. Each failure counts only if another key with the
-// same base URL and proxy served that model, and wasn't refused on it, since
+// block or refusal of one model or operation) is turned off instead of being
+// retried every time its model lock expires. Each failure counts only if another
+// key on the same upstream and proxy served that model, and wasn't refused on it, since
 // this key's previous failure on it (the first: within minWindowMs). Trips at
 // minFailures with no success in between, spread over minWindowMs, when they
 // were all 401s or span minModels models (a 403 on one model can be a plan limit).

@@ -20,6 +20,7 @@ import type { RedetectDiff, RedetectPart } from "@/app/api/providers/[id]/redete
 import { PROTOCOL_NAME, prettyModel, readNdjson } from "../components/AddEndpointParts";
 import type { DetectProgress } from "@/lib/endpointDetect.js";
 import { shrinkIcon } from "../components/shrinkIcon.js";
+import { connectionsToTest } from "../utils.js";
 import EndpointAdvancedStudio from "../components/EndpointAdvancedStudio";
 import EndpointIcon, { TILE_BG } from "@/shared/components/EndpointIcon";
 import type { StudioExtra } from "../components/EndpointAdvancedStudio";
@@ -423,9 +424,10 @@ function RedetectBox({ node, part, diff, onClose, onApplied }: { node: EndpointN
 function KeysCard({ connections, onAddKey, onEditKey, onDeleteKey, onToggleKey, onReload }: Props) {
   const [testing, setTesting] = useState(false);
   const [results, setResults] = useState<Record<string, "testing" | "ok" | "failed">>({});
+  const testable = connectionsToTest(connections);
   const testAll = async () => {
     setTesting(true);
-    for (const c of connections) {
+    for (const c of testable) {
       setResults((r) => ({ ...r, [c.id]: "testing" }));
       try {
         const res = await fetch(`/api/providers/${c.id}/test`, { method: "POST" });
@@ -441,7 +443,7 @@ function KeysCard({ connections, onAddKey, onEditKey, onDeleteKey, onToggleKey, 
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-lg font-semibold">Keys</h2>
         <div className="flex gap-2">
-          <Btn icon="sync" variant="secondary" busy={testing} disabled={testing || !connections.length} onClick={testAll}>Test all</Btn>
+          <Btn icon="sync" variant="secondary" busy={testing} disabled={testing || !testable.length} onClick={testAll}>Test all</Btn>
           <Btn icon="add" onClick={onAddKey}>Add key</Btn>
         </div>
       </div>

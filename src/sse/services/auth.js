@@ -57,11 +57,15 @@ const succeededSince = (key, sinceMs) => (authEvents.success.get(key)?.at ?? -In
 
 // Limit, billing and plan refusals isLimitError doesn't know ("Key limit
 // exceeded (daily limit)", qoder's "Queue limit" or "Upgrade required" with a
-// pricingUrl, "credits exhausted"), and refusals of one model ("does not have
-// access to model 'o3'"): the key itself is fine.
+// pricingUrl, "credits exhausted", "account balance is insufficient",
+// AccountOverdueError), refusals of one model ("does not have access to model
+// 'o3'") and of one operation by a restricted key ("Missing scopes: ..."): the
+// key itself is fine.
 const NOT_KEY_REFUSAL = new RegExp([
-  /\blimit|queue|upgrade|pricing|\bplans?\b|credit|quota|exhausted|usage cap|billing|budget|payment|insufficient (?:funds|balance)/,
+  /\blimit|queue|upgrade|pricing|\bplans?\b|credit|quota|exhausted|usage cap|billing|budget|payment/,
+  /\bbalance\b|\bfunds\b|overdue|arrears|unpaid|recharge|top[- ]?up/,
   /does not have access to (?:the )?model|model_not_found|\bmodel\b.{0,60}?\bnot (?:available|allowed|enabled|permitted|supported)\b/,
+  /insufficient (?:permissions?|scopes?|privileges?)|missing (?:required )?(?:scopes?|permissions?)|permission denied for this operation|not (?:allowed|permitted|authorized) to perform this operation/,
 ].map(r => r.source).join("|"), "i");
 
 // A 401 or 403 that is not a limit or a refusal of one model: the key itself is refused.
@@ -73,14 +77,19 @@ function isAuthRejection(status, errorText) {
     && !ERROR_RULES.some(r => r.backoff && r.text && lower.includes(r.text));
 }
 
-// Keys with their own base URL, or behind different proxies or relays, can get
+// Per-connection fields executors build the upstream URL from: a custom base
+// URL, an Azure resource, a region or location in the host, an account or
+// project in the path.
+const UPSTREAM_FIELDS = ["baseUrl", "azureEndpoint", "region", "location", "accountId", "projectId"];
+
+// Keys on a different upstream, or behind different proxies or relays, can get
 // different answers.
 async function networkPath(conn) {
   const psd = conn.providerSpecificData || {};
   const p = await resolveConnectionProxyConfig(psd);
   const proxy = p.connectionProxyEnabled && p.connectionProxyUrl ? p.connectionProxyUrl : "";
-  const baseUrl = String(psd.baseUrl || "").trim().replace(/\/+$/, "");
-  return JSON.stringify([baseUrl, proxy, proxy ? p.connectionNoProxy || "" : "", p.vercelRelayUrl || ""]);
+  const upstream = UPSTREAM_FIELDS.map(f => String(psd[f] ?? "").trim().replace(/\/+$/, ""));
+  return JSON.stringify([...upstream, proxy, proxy ? p.connectionNoProxy || "" : "", p.vercelRelayUrl || ""]);
 }
 
 // Only API keys count: an OAuth token or session cookie that fails to refresh
@@ -392,7 +401,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
  * @param {string|null} model - The specific model that triggered the error
  * @returns {{ shouldFallback: boolean, cooldownMs: number }}
  */
-export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null) {
+export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null, requestApiKey = undefined) {
   if (!connectionId || connectionId === "noauth") return { shouldFallback: false, cooldownMs: 0 };
   const connections = await getProviderConnections({ provider });
   const conn = connections.find(c => c.id === connectionId);
@@ -445,8 +454,9 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     backoffLevel: newBackoffLevel ?? backoffLevel,
     ...authFailStreak,
   };
-  const saved = autoDisable
-    ? await updateProviderConnection(connectionId, update, { autoDisable })
+  // A key pasted in while this request was on its way isn't blamed for it.
+  const saved = authFailStreak
+    ? await updateProviderConnection(connectionId, update, { autoDisable, apiKeyUsed: requestApiKey ?? conn.apiKey })
     : await updateProviderConnection(connectionId, update);
   const turnedOff = autoDisable && saved?.isActive === false && saved.autoDisabledAt === autoDisable.autoDisabledAt;
 
@@ -476,7 +486,8 @@ export async function clearAccountError(connectionId, currentConnection, model =
   recordSuccess(connectionId, model);
   const conn = currentConnection._connection || currentConnection;
   const now = Date.now();
-  const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_"));
+  // A cleared lock stays as modelLock_<model>: null and needs no write.
+  const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_") && conn[k]);
 
   if (!conn.testStatus && !conn.lastError && allLockKeys.length === 0 && !conn.authFailCount) return;
 

@@ -23,3 +23,9 @@ export function matchesStatusFilter(statusFilter, stats, isNoAuth = false) {
 export function withToggledActive(connection, isActive) {
   return { ...connection, isActive, autoDisabledAt: null, autoDisabledReason: null };
 }
+
+// What "Test all" tests: like /api/providers/test-batch, connections that are off
+// (by hand or automatically) are skipped.
+export function connectionsToTest(connections) {
+  return connections.filter((c) => c.isActive !== false);
+}

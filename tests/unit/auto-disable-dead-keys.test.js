@@ -15,11 +15,13 @@ vi.mock("@/sse/utils/logger.js", () => ({ debug: vi.fn(), info: vi.fn(), warn: v
 // call made through localDb (auth.js), to land a write in between.
 const writeHooks = vi.hoisted(() => []);
 const beforeNextWrite = (fn) => writeHooks.push(fn);
+const localDbWrites = vi.hoisted(() => ({ count: 0 }));
 vi.mock("@/lib/localDb", async (importOriginal) => {
   const real = await importOriginal();
   return {
     ...real,
     updateProviderConnection: async (...args) => {
+      localDbWrites.count++;
       await writeHooks.shift()?.(...args);
       return real.updateProviderConnection(...args);
     },
@@ -34,7 +36,7 @@ const PROVIDER = "openai-compatible-chat-test-dead-keys";
 const DEAD_403 = '[403]: {"code":"003001","message":"Not authorized for this endpoint"}';
 const MIN = 60 * 1000;
 
-let db, auth, testSingleConnection, testBatch, putConnection, withToggledActive;
+let db, auth, testSingleConnection, testBatch, putConnection, withToggledActive, connectionsToTest;
 let seq = 0;
 
 beforeAll(async () => {
@@ -43,7 +45,7 @@ beforeAll(async () => {
   ({ testSingleConnection } = await import("@/app/api/providers/[id]/test/testUtils.js"));
   ({ POST: testBatch } = await import("@/app/api/providers/test-batch/route.js"));
   ({ PUT: putConnection } = await import("@/app/api/providers/[id]/route.js"));
-  ({ withToggledActive } = await import("@/app/(dashboard)/dashboard/providers/utils.js"));
+  ({ withToggledActive, connectionsToTest } = await import("@/app/(dashboard)/dashboard/providers/utils.js"));
 });
 
 afterAll(() => {
@@ -187,6 +189,79 @@ describe("auth-dead keys turn off", () => {
     expect(conn).not.toHaveProperty("autoDisabledAt");
   });
 
+  it("starts the streak over when a new key is pasted into a key that is still on", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 4, models: ["m1", "m2"], peers: [healthy] });
+    await db.updateProviderConnection(dead.id, { apiKey: "sk-test-new-0123456789" });
+    expect(await load(dead.id)).not.toHaveProperty("authFailCount");
+
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy] });
+    const conn = await load(dead.id);
+    expect(conn.isActive).toBe(true);
+    expect(conn.authFailCount).toBe(1);
+  });
+
+  it("keeps the streak when the same key is saved again", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 3, models: ["m1", "m2"], peers: [healthy] });
+    await db.updateProviderConnection(dead.id, { apiKey: " sk-test-a-0123456789 " });
+    expect((await load(dead.id)).authFailCount).toBe(3);
+  });
+
+  it("does not blame a newly pasted key for a failure the old key's request brings back", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 4, models: ["m1", "m2"], peers: [healthy] });
+    const oldKey = (await load(dead.id)).apiKey;
+    await db.updateProviderConnection(dead.id, { apiKey: "sk-test-new-0123456789" });
+    vi.advanceTimersByTime(3 * MIN);
+    await succeed(healthy.id, "m1");
+    await auth.markAccountUnavailable(dead.id, 403, DEAD_403, provider, "m1", null, oldKey);
+    const conn = await load(dead.id);
+    expect(conn.isActive).toBe(true);
+    expect(conn).not.toHaveProperty("authFailCount");
+  });
+
+  it("does not turn off a key pasted in between the trip decision and its write", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 4, models: ["m1", "m2"], peers: [healthy] });
+    vi.advanceTimersByTime(3 * MIN);
+    await succeed(healthy.id, "m1");
+    beforeNextWrite(() => db.updateProviderConnection(dead.id, { apiKey: "sk-test-new-0123456789" }));
+    await failOnce(dead.id, "m1");
+    const conn = await load(dead.id);
+    expect(conn.isActive).toBe(true);
+    expect(conn).not.toHaveProperty("autoDisabledAt");
+    expect(conn).not.toHaveProperty("authFailCount");
+  });
+
+  it("writes nothing on later successes once a model lock is cleared", async () => {
+    const key = await addKey("a");
+    await failOnce(key.id, "m1", 429, "Too many requests");
+    const before = localDbWrites.count;
+    await succeed(key.id, "m1");
+    expect(localDbWrites.count).toBe(before + 1);
+    expect(await load(key.id)).toMatchObject({ modelLock_m1: null, testStatus: "active" });
+
+    await succeed(key.id, "m1");
+    await succeed(key.id, "m2");
+    expect(localDbWrites.count).toBe(before + 1);
+  });
+
+  it("still clears an expired lock left on another model", async () => {
+    const key = await addKey("a");
+    await failOnce(key.id, "m1", 429, "Too many requests");
+    await failOnce(key.id, "m2", 429, "Too many requests");
+    await succeed(key.id, "m1");
+    vi.advanceTimersByTime(60 * MIN);
+    await succeed(key.id, "m3");
+    expect(await load(key.id)).toMatchObject({ modelLock_m2: null, testStatus: "active", lastError: null });
+  });
+
   it("counts model ids with a colon, like openrouter's :free models", async () => {
     const dead = await addKey("a");
     const healthy = await addKey("b");
@@ -270,6 +345,19 @@ describe("auth-dead keys turn off", () => {
       '{"message":"Payment required","pricingUrl":"https://..."}',
     ].map((inner) => [403, JSON.stringify({ error: { message: inner, code: 403 } })]),
     [403, "Your plan does not include this endpoint"],
+    // Balance and arrears blocks: SiliconFlow, Volcengine Ark / BytePlus.
+    [403, '{"code":30001,"message":"Sorry, your account balance is insufficient","data":null}'],
+    [403, '{"error":{"code":"AccountOverdueError","message":"The request failed because your account has an overdue balance."}}'],
+    [403, '{"error":{"code":"AccountOverdueError","message":"Request failed."}}'],
+    [403, "Insufficient balance"],
+    [403, "Your account is in arrears"],
+    [403, "Unpaid invoice on this account"],
+    [403, "Please recharge to continue"],
+    [403, "Please top up your account"],
+    // Restricted keys refused one operation.
+    [401, "You have insufficient permissions for this operation. Missing scopes: api.model.embeddings.request."],
+    [403, "Missing scopes: api.responses.write"],
+    [403, "Permission denied for this operation"],
     // New-api style relays answer limits with a 401.
     [401, "token quota exhausted, RemainQuota = 0"],
     [401, "Key limit exceeded (daily limit)"],
@@ -330,12 +418,18 @@ describe("auth-dead keys turn off", () => {
   });
 
   it.each([
-    "Not authorized for this endpoint",
-    "Copilot is not enabled for this account",
-  ])("counts the 403 %s", async (text) => {
+    [403, "Not authorized for this endpoint"],
+    [403, "Copilot is not enabled for this account"],
+    [401, "Invalid API key"],
+    [401, "Incorrect API key provided: sk-test-****. You can find your API key at https://platform.openai.com/account/api-keys."],
+    [403, "API key not valid. Please pass a valid API key."],
+    [401, "Your API key has been disabled"],
+    [403, "Your API key has been revoked"],
+    [403, "This account has been deactivated"],
+  ])("counts the %i %s", async (status, text) => {
     const dead = await addKey("a");
     const healthy = await addKey("b");
-    await fail(dead.id, { times: 5, models: ["m1", "m2"], peers: [healthy], text });
+    await fail(dead.id, { times: 5, models: ["m1", "m2"], peers: [healthy], status, text });
     expect((await load(dead.id)).isActive).toBe(false);
   });
 
@@ -531,6 +625,30 @@ describe("a refusal only counts when another key serves that model", () => {
     const conn = await load(expired.id);
     expect(conn.isActive).toBe(true);
     expect(conn).not.toHaveProperty("authFailCount");
+  });
+
+  it.each([
+    ["azureEndpoint", "https://a.openai.azure.test", "https://b.openai.azure.test"],
+    ["region", "eu-west-1", "us-east-1"],
+    ["location", "europe-west4", "us-central1"],
+    ["accountId", "acct-a", "acct-b"],
+    ["projectId", "proj-a", "proj-b"],
+  ])("keeps a key on while a key with a different %s serves", async (field, ownValue, peerValue) => {
+    const psd = (value) => ({ providerSpecificData: { baseUrl: "https://dead-keys.test/v1", [field]: value } });
+    const a = await addKey("a", psd(ownValue));
+    const b = await addKey("b", psd(peerValue));
+    await fail(a.id, { times: 8, models: ["m1"], peers: [b], status: 401, text: "Invalid API key" });
+    const conn = await load(a.id);
+    expect(conn.isActive).toBe(true);
+    expect(conn).not.toHaveProperty("authFailCount");
+  });
+
+  it("trips a key whose azureEndpoint matches its peer's", async () => {
+    const psd = { providerSpecificData: { azureEndpoint: "https://a.openai.azure.test/" } };
+    const dead = await addKey("a", psd);
+    const healthy = await addKey("b", { providerSpecificData: { azureEndpoint: "https://a.openai.azure.test" } });
+    await fail(dead.id, { times: 6, models: ["m1"], peers: [healthy], status: 401, text: "Invalid API key" });
+    expect((await load(dead.id)).isActive).toBe(false);
   });
 
   it("keeps a key on its own base URL on while a key on the node's URL serves", async () => {
@@ -747,6 +865,16 @@ describe("an auto-disabled key", () => {
     await testSingleConnection(dead.id);
     await db.updateProviderConnection(dead.id, { isActive: true });
     await expectBackOn(dead.id);
+  });
+
+  it("is skipped by the custom endpoint page's Test all, like a key the user turned off", async () => {
+    const dead = await deadKey();
+    const manual = await addKey("c", { isActive: false });
+    const all = await db.getProviderConnections({ provider });
+    const tested = connectionsToTest(all).map((c) => c.id);
+    expect(tested).not.toContain(dead.id);
+    expect(tested).not.toContain(manual.id);
+    expect(tested).toHaveLength(all.length - 2);
   });
 
   it("shows no automatic label, on the server or in the dashboard, once toggled on and off by hand", async () => {
