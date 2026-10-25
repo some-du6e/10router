@@ -599,10 +599,10 @@ describe("a refusal only counts when another key serves that model", () => {
     providerSpecificData: { baseUrl: "https://dead-keys.test/v1", connectionProxyEnabled: true, connectionProxyUrl: url },
   });
 
-  it("keeps a key on whose proxy is refused while a direct key serves", async () => {
+  it("keeps a key on whose proxy is refused while a direct key serves, even for over an hour", async () => {
     const proxied = await addKey("a", viaProxy("http://proxy-x.test:8080"));
     const direct = await addKey("b");
-    await fail(proxied.id, { times: 6, models: ["m1", "m2"], peers: [direct] });
+    await fail(proxied.id, { times: 22, models: ["m1", "m2"], peers: [direct] });
     const conn = await load(proxied.id);
     expect(conn.isActive).toBe(true);
     expect(conn).not.toHaveProperty("authFailCount");
@@ -633,14 +633,16 @@ describe("a refusal only counts when another key serves that model", () => {
     ["location", "europe-west4", "us-central1"],
     ["accountId", "acct-a", "acct-b"],
     ["projectId", "proj-a", "proj-b"],
-  ])("keeps a key on while a key with a different %s serves", async (field, ownValue, peerValue) => {
+  ])("needs an hour, not 10 minutes, to trip a key while only a key with a different %s serves", async (field, ownValue, peerValue) => {
     const psd = (value) => ({ providerSpecificData: { baseUrl: "https://dead-keys.test/v1", [field]: value } });
     const a = await addKey("a", psd(ownValue));
     const b = await addKey("b", psd(peerValue));
     await fail(a.id, { times: 8, models: ["m1"], peers: [b], status: 401, text: "Invalid API key" });
-    const conn = await load(a.id);
-    expect(conn.isActive).toBe(true);
-    expect(conn).not.toHaveProperty("authFailCount");
+    expect(await load(a.id)).toMatchObject({ isActive: true, authFailCount: 8, authFailSameUpstream: false });
+
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(a.id, { times: 14, models: ["m1"], peers: [b], status: 401, text: "Invalid API key" });
+    expect((await load(a.id)).isActive).toBe(false);
   });
 
   it("trips a key whose azureEndpoint matches its peer's", async () => {
@@ -651,13 +653,16 @@ describe("a refusal only counts when another key serves that model", () => {
     expect((await load(dead.id)).isActive).toBe(false);
   });
 
-  it("keeps a key on its own base URL on while a key on the node's URL serves", async () => {
+  // Its own server may be the one refusing, so it gets an hour, not 10 minutes.
+  it("keeps a key on its own base URL on through 30 minutes of refusals while a node-URL key serves, then trips", async () => {
     const own = await addKey("a", { providerSpecificData: { baseUrl: "https://own.dead-keys.test/v1", ownBaseUrl: true } });
     const node = await addKey("b");
-    await fail(own.id, { times: 8, models: ["m1"], peers: [node], status: 401, text: "Invalid API key" });
-    const conn = await load(own.id);
-    expect(conn.isActive).toBe(true);
-    expect(conn).not.toHaveProperty("authFailCount");
+    await fail(own.id, { times: 11, models: ["m1", "m2"], peers: [node] });
+    expect((await load(own.id)).isActive).toBe(true);
+
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(own.id, { times: 10, models: ["m1", "m2"], peers: [node] });
+    expect((await load(own.id)).isActive).toBe(false);
   });
 
   it("trips a key on the same base URL as its peer, ignoring a trailing slash", async () => {
@@ -699,6 +704,74 @@ describe("a refusal only counts when another key serves that model", () => {
     const dead = await addKey("a");
     const healthy = await addKey("b");
     await fail(dead.id, { times: 8, models: [`websearch:${provider}`, `webfetch:${provider}`], peers: [healthy] });
+    const conn = await load(dead.id);
+    expect(conn.isActive).toBe(true);
+    expect(conn).not.toHaveProperty("authFailCount");
+  });
+});
+
+// The live case: two keys of one custom endpoint on different Snowflake
+// accounts, each with its own base URL, behind the same proxy settings.
+describe("keys of one endpoint on different upstreams", () => {
+  const snowflake = (host, extra = {}) => ({
+    providerSpecificData: {
+      baseUrl: `https://${host}.snowflakecomputing.test/api/v2/cortex/v1`, connectionProxyEnabled: false, ...extra,
+    },
+  });
+  const models = ["claude-opus-5-5", "kimi-k3"];
+
+  it("turns off the dead key after an hour of 403s, not at 15 minutes", async () => {
+    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
+    const healthy = await addKey("b", snowflake("acct-live"));
+    await fail(dead.id, { times: 7, models, peers: [healthy], stepMs: 2.5 * MIN });
+    expect(await load(dead.id)).toMatchObject({ isActive: true, authFailCount: 7, authFailSameUpstream: false });
+
+    vi.advanceTimersByTime(2.5 * MIN);
+    await fail(dead.id, { times: 17, models, peers: [healthy], stepMs: 2.5 * MIN });
+    expect((await load(dead.id)).isActive).toBe(true);
+
+    vi.advanceTimersByTime(2.5 * MIN);
+    await fail(dead.id, { times: 1, models, peers: [healthy] });
+    const conn = await load(dead.id);
+    expect(conn.isActive).toBe(false);
+    expect(conn.autoDisabledReason).toBe('403 "Not authorized for this endpoint" on claude-opus-5-5, kimi-k3');
+  });
+
+  it("turns off the dead key within 10-12 minutes when its peer is on the same base URL", async () => {
+    const dead = await addKey("a", snowflake("acct-shared"));
+    const healthy = await addKey("b", snowflake("acct-shared"));
+    await fail(dead.id, { times: 4, models, peers: [healthy], stepMs: 2.5 * MIN });
+    expect((await load(dead.id)).isActive).toBe(true);
+    vi.advanceTimersByTime(2.5 * MIN);
+    await fail(dead.id, { times: 1, models, peers: [healthy] });
+    expect(await load(dead.id)).toMatchObject({ isActive: false, authFailSameUpstream: true });
+  });
+
+  it("needs the hour once any counted failure had only a peer on another upstream", async () => {
+    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
+    const other = await addKey("b", snowflake("acct-live"));
+    const same = await addKey("c", snowflake("acct-dead"));
+    await fail(dead.id, { times: 1, models, peers: [other] });
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(dead.id, { times: 6, models, peers: [other, same] });
+    expect(await load(dead.id)).toMatchObject({ isActive: true, authFailCount: 7, authFailSameUpstream: false });
+  });
+
+  it("starts over after a gap of more than 10 minutes, even with only a peer on another upstream", async () => {
+    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
+    const healthy = await addKey("b", snowflake("acct-live"));
+    await fail(dead.id, { times: 11, models, peers: [healthy] });
+    vi.advanceTimersByTime(11 * MIN);
+    const restartAt = new Date().toISOString();
+    await fail(dead.id, { times: 12, models, peers: [healthy] });
+    const conn = await load(dead.id);
+    expect(conn).toMatchObject({ isActive: true, authFailFirstAt: restartAt, authFailCount: 12 });
+  });
+
+  it("never counts a peer behind a different proxy, even after an hour", async () => {
+    const dead = await addKey("a", snowflake("acct-dead", { connectionProxyEnabled: true, connectionProxyUrl: "http://proxy-x.test:8080" }));
+    const healthy = await addKey("b", snowflake("acct-live", { connectionProxyEnabled: true, connectionProxyUrl: "http://proxy-y.test:8080" }));
+    await fail(dead.id, { times: 30, models, peers: [healthy], stepMs: 2.5 * MIN });
     const conn = await load(dead.id);
     expect(conn.isActive).toBe(true);
     expect(conn).not.toHaveProperty("authFailCount");

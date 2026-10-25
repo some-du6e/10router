@@ -28,6 +28,7 @@ function githubMonthlyResetMs(status, errorText, provider) {
 
 const AUTH_FAIL_CLEARED = {
   authFailCount: null, authFailFirstAt: null, authFailLastAt: null, authFailModels: null, authFailAll401: null,
+  authFailSameUpstream: null,
 };
 const MAX_TRACKED_MODELS = 5;
 const REASON_MAX_CHARS = 80;
@@ -82,40 +83,51 @@ function isAuthRejection(status, errorText) {
 // project in the path.
 const UPSTREAM_FIELDS = ["baseUrl", "azureEndpoint", "region", "location", "accountId", "projectId"];
 
-// Keys on a different upstream, or behind different proxies or relays, can get
-// different answers.
+// Where a key's requests go: the proxy or relay they leave through, and the
+// upstream they reach.
 async function networkPath(conn) {
   const psd = conn.providerSpecificData || {};
   const p = await resolveConnectionProxyConfig(psd);
   const proxy = p.connectionProxyEnabled && p.connectionProxyUrl ? p.connectionProxyUrl : "";
-  const upstream = UPSTREAM_FIELDS.map(f => String(psd[f] ?? "").trim().replace(/\/+$/, ""));
-  return JSON.stringify([...upstream, proxy, proxy ? p.connectionNoProxy || "" : "", p.vercelRelayUrl || ""]);
+  return {
+    transport: JSON.stringify([proxy, proxy ? p.connectionNoProxy || "" : "", p.vercelRelayUrl || ""]),
+    upstream: JSON.stringify(UPSTREAM_FIELDS.map(f => String(psd[f] ?? "").trim().replace(/\/+$/, ""))),
+  };
 }
 
 // Only API keys count: an OAuth token or session cookie that fails to refresh
 // gets 401s while its peers' tokens work, and that isn't a dead account.
-// The refusal counts when another key of the provider, on the same network
-// path, served this model and was not refused on it since this key's previous
+// The refusal counts when another key of the provider, behind the same proxy or
+// relay, served this model and was not refused on it since this key's previous
 // refusal of it (for the first one, within minWindowMs): a failure every key
 // sees, always or only some of the time (region block, proxy page, auth
-// outage), is not this key's. Web search/fetch lock keys ("websearch:x") are
-// not models; ids like "x:free" are.
-async function countsTowardAuthStreak(connections, conn, model, status, errorText) {
-  if (!model || /^web(search|fetch):/.test(model) || !isAuthRejection(status, errorText)) return false;
+// outage), is not this key's. Returns "same-upstream" when such a peer also
+// reaches the same upstream, "other-upstream" when only peers on another base
+// URL, account or region do (this key's own server may be the one down), or
+// null. Web search/fetch lock keys ("websearch:x") are not models; ids like
+// "x:free" are.
+async function authFailEvidence(connections, conn, model, status, errorText) {
+  if (!model || /^web(search|fetch):/.test(model) || !isAuthRejection(status, errorText)) return null;
   const previous = authEvents.refused.get(`${conn.id}|${model}`);
   remember(authEvents.refused, `${conn.id}|${model}`);
-  if (conn.authType !== "apikey") return false;
+  if (conn.authType !== "apikey") return null;
   const since = Date.now() - AUTH_DEAD_CONFIG.minWindowMs;
   const after = (event) => event && (previous ? event.seq > previous.seq : event.at >= since);
   const peers = connections.filter(c => c.id !== conn.id
     && after(authEvents.success.get(`${c.id}|${model}`)) && !after(authEvents.refused.get(`${c.id}|${model}`)));
-  if (peers.length === 0) return false;
-  const path = await networkPath(conn);
-  for (const peer of peers) if (await networkPath(peer) === path) return true;
-  return false;
+  if (peers.length === 0) return null;
+  const own = await networkPath(conn);
+  let evidence = null;
+  for (const peer of peers) {
+    const path = await networkPath(peer);
+    if (path.transport !== own.transport) continue;
+    if (path.upstream === own.upstream) return "same-upstream";
+    evidence = "other-upstream";
+  }
+  return evidence;
 }
 
-function nextAuthFailStreak(conn, model, status) {
+function nextAuthFailStreak(conn, model, status, sameUpstream) {
   const now = Date.now();
   const firstAt = new Date(conn.authFailFirstAt || NaN).getTime();
   const sinceLast = now - new Date(conn.authFailLastAt || conn.authFailFirstAt || NaN).getTime();
@@ -133,12 +145,14 @@ function nextAuthFailStreak(conn, model, status) {
     authFailLastAt: new Date(now).toISOString(),
     authFailModels: models.includes(model) ? models : [...models, model].slice(-MAX_TRACKED_MODELS),
     authFailAll401: Number(status) === 401 && (fresh || conn.authFailAll401 === true),
+    authFailSameUpstream: sameUpstream && (fresh || conn.authFailSameUpstream === true),
   };
 }
 
 function isAuthDead(streak) {
+  const windowMs = streak.authFailSameUpstream ? AUTH_DEAD_CONFIG.minWindowMs : AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
   return streak.authFailCount >= AUTH_DEAD_CONFIG.minFailures
-    && Date.now() - new Date(streak.authFailFirstAt).getTime() >= AUTH_DEAD_CONFIG.minWindowMs
+    && Date.now() - new Date(streak.authFailFirstAt).getTime() >= windowMs
     && (streak.authFailAll401 || streak.authFailModels.length >= AUTH_DEAD_CONFIG.minModels);
 }
 
@@ -434,8 +448,8 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
 
   // Auth rejections build a streak that only a success clears; other errors
   // leave it alone. A dead key is turned off unless it is the provider's last.
-  const authFailStreak = conn && await countsTowardAuthStreak(connections, conn, model, status, errorText)
-    ? nextAuthFailStreak(conn, model, status) : null;
+  const evidence = conn ? await authFailEvidence(connections, conn, model, status, errorText) : null;
+  const authFailStreak = evidence ? nextAuthFailStreak(conn, model, status, evidence === "same-upstream") : null;
   const autoDisable = authFailStreak && isAuthDead(authFailStreak) ? {
     isActive: false,
     autoDisabledAt: new Date().toISOString(),

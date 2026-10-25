@@ -44,13 +44,18 @@ export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 // An API key whose auth keeps failing (a 401 or 403 that isn't a limit, billing
 // block or refusal of one model or operation) is turned off instead of being
 // retried every time its model lock expires. Each failure counts only if another
-// key on the same upstream and proxy served that model, and wasn't refused on it, since
-// this key's previous failure on it (the first: within minWindowMs). Trips at
-// minFailures with no success in between, spread over minWindowMs, when they
-// were all 401s or span minModels models (a 403 on one model can be a plan limit).
+// key behind the same proxy served that model, and wasn't refused on it, since
+// this key's previous failure on it (the first: within minWindowMs); a gap of
+// more than minWindowMs between counted failures starts over. Trips at
+// minFailures with no success in between, when they were all 401s or span
+// minModels models (a 403 on one model can be a plan limit), spread over
+// minWindowMs if every failure had a peer on the same upstream (base URL,
+// Azure endpoint, region, account), else over crossUpstreamWindowMs, since a key
+// on its own server may be refused because that server is down.
 export const AUTH_DEAD_CONFIG = {
   minFailures: 5,
   minWindowMs: 10 * 60 * 1000,
+  crossUpstreamWindowMs: 60 * 60 * 1000,
   minModels: 2,
 };
 

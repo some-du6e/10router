@@ -13,7 +13,9 @@ const OPTIONAL_FIELDS = [
 // Written by sse/services/auth.js when a key keeps failing auth and is turned
 // off. Turning the connection back on, by any path, starts it clean; turning it
 // off again keeps its reason unless a new key came with it.
-const AUTH_STREAK_FIELDS = ["authFailCount", "authFailFirstAt", "authFailLastAt", "authFailModels", "authFailAll401"];
+const AUTH_STREAK_FIELDS = [
+  "authFailCount", "authFailFirstAt", "authFailLastAt", "authFailModels", "authFailAll401", "authFailSameUpstream",
+];
 const AUTO_DISABLE_FIELDS = ["autoDisabledAt", "autoDisabledReason", ...AUTH_STREAK_FIELDS];
 
 function applyAutoDisableTransition(existing, merged, data) {
