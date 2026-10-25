@@ -28,7 +28,7 @@ function githubMonthlyResetMs(status, errorText, provider) {
 
 const AUTH_FAIL_CLEARED = {
   authFailCount: null, authFailFirstAt: null, authFailLastAt: null, authFailModels: null, authFailAll401: null,
-  authFailSameUpstream: null,
+  authFailSameUpstream: null, authFailRunCount: null, authFailBursts: null,
 };
 const MAX_TRACKED_MODELS = 5;
 const REASON_MAX_CHARS = 80;
@@ -131,16 +131,25 @@ function nextAuthFailStreak(conn, model, status, sameUpstream) {
   const now = Date.now();
   const firstAt = new Date(conn.authFailFirstAt || NaN).getTime();
   const sinceLast = now - new Date(conn.authFailLastAt || conn.authFailFirstAt || NaN).getTime();
-  // Starts over when the last counted failure is old (a backup key left with
-  // an outage's leftovers), when this key succeeded after the streak began on
-  // a request whose snapshot predates it, or when a timestamp is unreadable or
-  // in the future (the negated range check is also false for NaN).
+  // Starts over when the last counted failure is older than the window the
+  // streak needs (a backup key left with an outage's leftovers; a streak that
+  // needs an hour survives the idle gaps of someone pausing for 10+ minutes),
+  // when this key succeeded after the streak began on a request whose snapshot
+  // predates it, or when a timestamp is unreadable or in the future (the
+  // negated range check is also false for NaN).
+  const maxGapMs = conn.authFailSameUpstream === true ? AUTH_DEAD_CONFIG.minWindowMs : AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
   const fresh = !(now - firstAt >= 0)
-    || !(sinceLast >= 0 && sinceLast <= AUTH_DEAD_CONFIG.minWindowMs)
+    || !(sinceLast >= 0 && sinceLast <= maxGapMs)
     || succeededSince(conn.id, firstAt + 1);
   const models = !fresh && Array.isArray(conn.authFailModels) ? conn.authFailModels : [];
+  // A run is the counted failures since the last gap over minWindowMs; a burst
+  // is a run of 2 or more.
+  const run = fresh || sinceLast > AUTH_DEAD_CONFIG.minWindowMs ? 1 : (conn.authFailRunCount ?? conn.authFailCount ?? 0) + 1;
+  const bursts = fresh ? 0 : conn.authFailBursts ?? ((conn.authFailCount || 0) >= 2 ? 1 : 0);
   return {
     authFailCount: (fresh ? 0 : conn.authFailCount || 0) + 1,
+    authFailRunCount: run,
+    authFailBursts: bursts + (run === 2 ? 1 : 0),
     authFailFirstAt: fresh ? new Date(now).toISOString() : conn.authFailFirstAt,
     authFailLastAt: new Date(now).toISOString(),
     authFailModels: models.includes(model) ? models : [...models, model].slice(-MAX_TRACKED_MODELS),
@@ -149,10 +158,13 @@ function nextAuthFailStreak(conn, model, status, sameUpstream) {
   };
 }
 
+// A streak broken by idle gaps needs 2 bursts, so a few refusals spread thinly
+// over an hour can't trip it.
 function isAuthDead(streak) {
   const windowMs = streak.authFailSameUpstream ? AUTH_DEAD_CONFIG.minWindowMs : AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
   return streak.authFailCount >= AUTH_DEAD_CONFIG.minFailures
     && Date.now() - new Date(streak.authFailFirstAt).getTime() >= windowMs
+    && (streak.authFailRunCount === streak.authFailCount || streak.authFailBursts >= 2)
     && (streak.authFailAll401 || streak.authFailModels.length >= AUTH_DEAD_CONFIG.minModels);
 }
 
@@ -500,8 +512,10 @@ export async function clearAccountError(connectionId, currentConnection, model =
   recordSuccess(connectionId, model);
   const conn = currentConnection._connection || currentConnection;
   const now = Date.now();
-  // A cleared lock stays as modelLock_<model>: null and needs no write.
-  const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_") && conn[k]);
+  // A cleared lock stays as modelLock_<model>: null and needs no write, unless
+  // whatever cleared it left its reset time or limit flag behind.
+  const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_")
+    && (conn[k] || conn[k.replace("modelLock_", PROVIDER_RESET_PREFIX)] || conn[k.replace("modelLock_", MODEL_LIMIT_PREFIX)]));
 
   if (!conn.testStatus && !conn.lastError && allLockKeys.length === 0 && !conn.authFailCount) return;
 
@@ -510,6 +524,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
     if (model && k === `modelLock_${model}`) return true; // succeeded model
     if (model && k === "modelLock___all") return true;    // account-level lock
     const expiry = conn[k];
+    if (!expiry) return true;                              // lock already cleared
     return expiry && new Date(expiry).getTime() <= now;   // expired
   });
 

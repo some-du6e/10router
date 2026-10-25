@@ -252,6 +252,25 @@ describe("auth-dead keys turn off", () => {
     expect(localDbWrites.count).toBe(before + 1);
   });
 
+  it.each([
+    ["the same model", "m1"],
+    ["another model", "m3"],
+  ])("clears a reset time left behind by a manual lock clear on a success on %s, then stops writing", async (_label, model) => {
+    const key = await addKey("a");
+    await auth.markAccountUnavailable(key.id, 429, "Too many requests", provider, "m1", Date.now() + 30 * MIN);
+    expect(await load(key.id)).toMatchObject({ providerReset_m1: expect.any(String), modelLimit_m1: true });
+    // What the clear-cooldown route, codex reset-credits and resetHubQuota write.
+    await db.updateProviderConnection(key.id, { modelLock_m1: null });
+
+    const before = localDbWrites.count;
+    await succeed(key.id, model);
+    expect(await load(key.id)).toMatchObject({ providerReset_m1: null, modelLimit_m1: null });
+    expect(localDbWrites.count).toBe(before + 1);
+    await succeed(key.id, model);
+    await succeed(key.id, "m2");
+    expect(localDbWrites.count).toBe(before + 1);
+  });
+
   it("still clears an expired lock left on another model", async () => {
     const key = await addKey("a");
     await failOnce(key.id, "m1", 429, "Too many requests");
@@ -757,15 +776,108 @@ describe("keys of one endpoint on different upstreams", () => {
     expect(await load(dead.id)).toMatchObject({ isActive: true, authFailCount: 7, authFailSameUpstream: false });
   });
 
-  it("starts over after a gap of more than 10 minutes, even with only a peer on another upstream", async () => {
+  // One request as the router serves it: fill-first picks the first key whose
+  // model lock has run out, and a refused key falls back to the next one.
+  async function route(model, deadIds) {
+    const tried = new Set();
+    for (;;) {
+      const creds = await auth.getProviderCredentials(provider, tried, model);
+      if (!creds?.connectionId) return null;
+      if (!deadIds.includes(creds.connectionId)) {
+        await auth.clearAccountError(creds.connectionId, creds, model);
+        return creds.connectionId;
+      }
+      await failOnce(creds.connectionId, model);
+      tried.add(creds.connectionId);
+    }
+  }
+
+  // Requests every minute while someone works, none while they're away.
+  // Returns the minutes from the dead key's first failure until it turned off.
+  async function drive(dead, { workMin, idleMin, totalMin, onMinute }) {
+    let firstFailAt = null;
+    let requests = 0;
+    for (let minute = 0; minute < totalMin; minute++) {
+      if (minute > 0) vi.advanceTimersByTime(MIN);
+      await onMinute?.(minute);
+      if (minute % (workMin + idleMin) >= workMin) continue;
+      await route(models[requests++ % 2], [dead.id]);
+      const conn = await load(dead.id);
+      firstFailAt ??= conn.lastErrorAt ? Date.now() : null;
+      if (!conn.isActive) return (Date.now() - firstFailAt) / MIN;
+    }
+    return null;
+  }
+
+  it.each([
+    [25, 15],
+    [25, 20],
+    [45, 11],
+    [45, 15],
+  ])("turns off the dead key within 60-90 minutes when someone works %i minutes and pauses %i", async (workMin, idleMin) => {
+    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
+    await addKey("b", snowflake("acct-live"));
+    const minutes = await drive(dead, { workMin, idleMin, totalMin: 6 * 60 });
+    expect(minutes).toBeGreaterThanOrEqual(60);
+    expect(minutes).toBeLessThanOrEqual(90);
+  });
+
+  it("still turns off the dead key within 60-90 minutes when the router restarts mid-streak under light traffic", async () => {
+    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
+    await addKey("b", snowflake("acct-live"));
+    const restart = (minute) => {
+      if (minute !== 30) return;
+      global._authEvents.success.clear();
+      global._authEvents.refused.clear();
+    };
+    // One request every 6 minutes.
+    const minutes = await drive(dead, { workMin: 1, idleMin: 5, totalMin: 3 * 60, onMinute: restart });
+    expect(minutes).toBeGreaterThanOrEqual(60);
+    expect(minutes).toBeLessThanOrEqual(90);
+  });
+
+  it("keeps the streak through a 15-minute idle gap, but starts over after a gap of more than an hour", async () => {
     const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
     const healthy = await addKey("b", snowflake("acct-live"));
-    await fail(dead.id, { times: 11, models, peers: [healthy] });
-    vi.advanceTimersByTime(11 * MIN);
-    const restartAt = new Date().toISOString();
-    await fail(dead.id, { times: 12, models, peers: [healthy] });
-    const conn = await load(dead.id);
-    expect(conn).toMatchObject({ isActive: true, authFailFirstAt: restartAt, authFailCount: 12 });
+    await fail(dead.id, { times: 4, models, peers: [healthy] });
+    const firstAt = (await load(dead.id)).authFailFirstAt;
+    vi.advanceTimersByTime(15 * MIN);
+    await fail(dead.id, { times: 1, models, peers: [healthy] });
+    expect(await load(dead.id)).toMatchObject({ authFailCount: 5, authFailFirstAt: firstAt, authFailBursts: 1 });
+
+    vi.advanceTimersByTime(61 * MIN);
+    await fail(dead.id, { times: 1, models, peers: [healthy] });
+    expect(await load(dead.id)).toMatchObject({ isActive: true, authFailCount: 1, authFailFirstAt: new Date().toISOString() });
+  });
+
+  it("never trips on single refusals spread thinly over more than an hour", async () => {
+    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
+    const healthy = await addKey("b", snowflake("acct-live"));
+    await fail(dead.id, { times: 8, models, peers: [healthy], stepMs: 15 * MIN });
+    expect(await load(dead.id)).toMatchObject({ isActive: true, authFailCount: 8, authFailBursts: 0 });
+  });
+
+  it("never trips on one burst followed by single refusals spread over more than an hour", async () => {
+    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
+    const healthy = await addKey("b", snowflake("acct-live"));
+    await fail(dead.id, { times: 2, models, peers: [healthy], stepMs: 2.5 * MIN });
+    vi.advanceTimersByTime(17.5 * MIN);
+    await fail(dead.id, { times: 5, models, peers: [healthy], stepMs: 15 * MIN });
+    expect(await load(dead.id)).toMatchObject({ isActive: true, authFailCount: 7, authFailBursts: 1 });
+  });
+
+  it("trips over an hour once the refusals include 2 bursts", async () => {
+    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
+    const healthy = await addKey("b", snowflake("acct-live"));
+    await fail(dead.id, { times: 2, models, peers: [healthy], stepMs: 2.5 * MIN });
+    vi.advanceTimersByTime(17.5 * MIN);
+    await fail(dead.id, { times: 2, models, peers: [healthy], stepMs: 20 * MIN });
+    vi.advanceTimersByTime(18 * MIN);
+    await fail(dead.id, { times: 1, models, peers: [healthy] });
+    expect(await load(dead.id)).toMatchObject({ isActive: true, authFailBursts: 1 });
+    vi.advanceTimersByTime(2.5 * MIN);
+    await fail(dead.id, { times: 1, models, peers: [healthy] });
+    expect(await load(dead.id)).toMatchObject({ isActive: false, authFailBursts: 2 });
   });
 
   it("never counts a peer behind a different proxy, even after an hour", async () => {
