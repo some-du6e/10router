@@ -75,11 +75,12 @@ export async function handleStt(request) {
     const result = await handleSttCore({ provider, model, formData, credentials, sttConfig: AI_PROVIDERS[provider]?.sttConfig });
 
     if (result.success) {
-      await clearAccountError(credentials.connectionId, credentials, model);
+      await clearAccountError(credentials.connectionId, credentials, model)
+        .catch((error) => log.warn("AUTH", `Could not clear ${credentials.connectionName} errors: ${error.message}`));
       return result.response;
     }
 
-    const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model);
+    const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, null, credentials.apiKey);
     if (shouldFallback) {
       excludeConnectionIds.add(credentials.connectionId);
       lastError = result.error;

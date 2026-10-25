@@ -405,7 +405,9 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
   const handleToggleActive = async (id, isActive) => {
     try {
       const res = await fetch(`/api/providers/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isActive }) });
-      if (res.ok) setConnections((prev) => prev.map((c) => c.id === id ? withToggledActive(c, isActive) : c));
+      if (!res.ok) return;
+      const { connection: saved } = await res.json();
+      setConnections((prev) => prev.map((c) => c.id === id ? withToggledActive(c, isActive, saved) : c));
     } catch (e) { console.log("toggle error:", e); }
   };
 

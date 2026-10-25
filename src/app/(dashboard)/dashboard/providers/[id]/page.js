@@ -863,7 +863,8 @@ export default function ProviderDetailPage() {
         body: JSON.stringify({ isActive }),
       });
       if (res.ok) {
-        setConnections(prev => prev.map(c => c.id === id ? withToggledActive(c, isActive) : c));
+        const { connection: saved } = await res.json();
+        setConnections(prev => prev.map(c => c.id === id ? withToggledActive(c, isActive, saved) : c));
       }
     } catch (error) {
       console.log("Error updating connection status:", error);

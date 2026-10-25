@@ -145,7 +145,7 @@ export async function handleSystemone(request) {
       return result.response;
     }
 
-    const { shouldFallback } = await markAccountUnavailable(connectionId, result.status, result.error, provider, model);
+    const { shouldFallback } = await markAccountUnavailable(connectionId, result.status, result.error, provider, model, null, credentials.apiKey);
 
     if (shouldFallback) {
       log.warn("AUTH", `Account ${credentials.connectionName} unavailable (${result.status}), trying fallback`);

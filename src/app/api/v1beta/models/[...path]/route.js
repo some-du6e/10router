@@ -312,7 +312,9 @@ async function forwardGeminiNativeRequest(request, body, model, action) {
         status,
         errorText,
         "gemini",
-        modelId
+        modelId,
+        null,
+        credentials.apiKey
       );
 
       if (shouldFallback) {
@@ -346,7 +348,9 @@ async function forwardGeminiNativeRequest(request, body, model, action) {
       upstreamResponse.status,
       errorText,
       "gemini",
-      modelId
+      modelId,
+      null,
+      credentials.apiKey
     );
 
     if (shouldFallback) {

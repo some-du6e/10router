@@ -789,6 +789,14 @@ describe("an auto-disabled key", () => {
     expect(conn.autoDisabledReason).toBeTruthy();
   });
 
+  it("stays off when a blank key is saved", async () => {
+    const dead = await deadKey();
+    await db.updateProviderConnection(dead.id, editBody("   "));
+    const conn = await load(dead.id);
+    expect(conn.isActive).toBe(false);
+    expect(conn.autoDisabledReason).toBeTruthy();
+  });
+
   it("stays off when the same key is saved again with stray whitespace", async () => {
     const dead = await deadKey();
     await db.updateProviderConnection(dead.id, editBody(" sk-test-a-0123456789 "));
@@ -881,13 +889,25 @@ describe("an auto-disabled key", () => {
     const dead = await deadKey();
     let local = await load(dead.id);
     for (const isActive of [true, false]) {
-      await db.updateProviderConnection(dead.id, { isActive });
-      local = withToggledActive(local, isActive);
+      const saved = await db.updateProviderConnection(dead.id, { isActive });
+      local = withToggledActive(local, isActive, saved);
     }
     const label = (c) => c.isActive === false && Boolean(c.autoDisabledAt);
     expect(label(await load(dead.id))).toBe(false);
     expect(label(local)).toBe(false);
     expect(local.autoDisabledReason).toBeNull();
+  });
+
+  it("shows the label in the dashboard when a row still showing on is toggled off", async () => {
+    const dead = await deadKey();
+    const stale = { ...(await load(dead.id)), isActive: true, autoDisabledAt: null, autoDisabledReason: null };
+    const res = await putConnection(
+      new Request(`http://localhost/api/providers/${dead.id}`, { method: "PUT", body: JSON.stringify({ isActive: false }) }),
+      { params: Promise.resolve({ id: dead.id }) },
+    );
+    const local = withToggledActive(stale, false, (await res.json()).connection);
+    expect(local.autoDisabledReason).toBe((await load(dead.id)).autoDisabledReason);
+    expect(local.autoDisabledAt).toBeTruthy();
   });
 
   it("keeps its reason when the whole provider is turned off", async () => {

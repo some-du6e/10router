@@ -217,6 +217,8 @@ async function handleSingleProviderFetch(body, providerInput, request, apiKey, s
       result.error,
       providerId,
       fetchLockKey,
+      null,
+      credentials.apiKey,
     );
 
     if (shouldFallback) {

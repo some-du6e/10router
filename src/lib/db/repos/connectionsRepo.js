@@ -17,7 +17,8 @@ const AUTH_STREAK_FIELDS = ["authFailCount", "authFailFirstAt", "authFailLastAt"
 const AUTO_DISABLE_FIELDS = ["autoDisabledAt", "autoDisabledReason", ...AUTH_STREAK_FIELDS];
 
 function applyAutoDisableTransition(existing, merged, data) {
-  const keyChanged = data.apiKey !== undefined && String(data.apiKey).trim() !== String(existing.apiKey ?? "").trim();
+  const newKey = String(data.apiKey ?? "").trim();
+  const keyChanged = newKey !== "" && newKey !== String(existing.apiKey ?? "").trim();
   // A different key pasted into a connection the router turned off fixes it.
   if (existing.autoDisabledAt && data.isActive === undefined && keyChanged) merged.isActive = true;
   if (existing.isActive === false && merged.isActive === true) {
