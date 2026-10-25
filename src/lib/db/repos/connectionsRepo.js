@@ -12,9 +12,10 @@ const OPTIONAL_FIELDS = [
 
 // Written by sse/services/auth.js when a key keeps failing auth and is turned
 // off. Turning the connection back on, by any path, starts it clean; turning it
-// off by hand makes it a manual disable that a passing test won't undo.
+// off by hand makes it a manual disable.
 const AUTO_DISABLE_FIELDS = [
-  "autoDisabledAt", "autoDisabledReason", "authFailCount", "authFailFirstAt", "authFailLastAt", "authFailModels",
+  "autoDisabledAt", "autoDisabledReason",
+  "authFailCount", "authFailFirstAt", "authFailLastAt", "authFailModels", "authFailAll401",
 ];
 
 function applyAutoDisableTransition(existing, merged, data) {
@@ -259,9 +260,9 @@ export async function createProviderConnection(data) {
 }
 
 // Critical: OAuth refresh token race — atomic merge inside transaction.
-// reactivateIfAutoDisabled turns the connection back on only if it is still
-// one the router turned off, checked in the same transaction as the write.
-export async function updateProviderConnection(id, data, { reactivateIfAutoDisabled = false } = {}) {
+// autoDisable fields are applied only if the connection is still on and another
+// connection of its provider is too, decided in the same transaction as the write.
+export async function updateProviderConnection(id, data, { autoDisable = null } = {}) {
   const db = await getAdapter();
   let result;
   let servesChanged = false;
@@ -270,7 +271,9 @@ export async function updateProviderConnection(id, data, { reactivateIfAutoDisab
     if (!row) { result = null; return; }
     const existing = rowToConn(row);
     const merged = { ...existing, ...data, updatedAt: new Date().toISOString() };
-    if (reactivateIfAutoDisabled && existing.isActive === false && existing.autoDisabledAt) merged.isActive = true;
+    if (autoDisable && existing.isActive && db.get(
+      `SELECT 1 FROM providerConnections WHERE provider = ? AND id != ? AND isActive = 1 LIMIT 1`, [existing.provider, id],
+    )) Object.assign(merged, autoDisable);
     applyAutoDisableTransition(existing, merged, data);
     upsert(db, merged);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);

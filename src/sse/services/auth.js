@@ -26,27 +26,34 @@ function githubMonthlyResetMs(status, errorText, provider) {
   return Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
 }
 
-const AUTH_FAIL_CLEARED = { authFailCount: null, authFailFirstAt: null, authFailLastAt: null, authFailModels: null };
+const AUTH_FAIL_CLEARED = {
+  authFailCount: null, authFailFirstAt: null, authFailLastAt: null, authFailModels: null, authFailAll401: null,
+};
 const MAX_TRACKED_MODELS = 5;
 const REASON_MAX_CHARS = 80;
-const MAX_SUCCESS_ENTRIES = 5000;
+const MAX_EVENT_ENTRIES = 5000;
 
-// Last success time per connection and per `${connectionId}|${model}`. Memory
-// only, so the success path never writes the DB; after a restart it is empty
-// and keys just take longer to trip.
-const authSuccess = (global._authSuccess ??= new Map());
+// Last success per connection and per `${connectionId}|${model}`, and last auth
+// refusal per `${connectionId}|${model}`, as { at, seq }; seq orders events in
+// the same millisecond. Memory only, so the success path never writes the DB;
+// after a restart it is empty and keys just take longer to trip.
+const authEvents = (global._authEvents ??= { seq: 0, success: new Map(), refused: new Map() });
 
-function recordSuccess(connectionId, model) {
+function remember(map, key) {
   const now = Date.now();
-  if (authSuccess.size >= MAX_SUCCESS_ENTRIES) {
-    for (const [key, at] of authSuccess) if (now - at > AUTH_DEAD_CONFIG.minWindowMs) authSuccess.delete(key);
-    if (authSuccess.size >= MAX_SUCCESS_ENTRIES) authSuccess.clear();
+  if (map.size >= MAX_EVENT_ENTRIES) {
+    for (const [k, e] of map) if (now - e.at > AUTH_DEAD_CONFIG.minWindowMs) map.delete(k);
+    if (map.size >= MAX_EVENT_ENTRIES) map.clear();
   }
-  authSuccess.set(connectionId, now);
-  if (model) authSuccess.set(`${connectionId}|${model}`, now);
+  map.set(key, { at: now, seq: ++authEvents.seq });
 }
 
-const succeededSince = (key, sinceMs) => (authSuccess.get(key) ?? -Infinity) >= sinceMs;
+function recordSuccess(connectionId, model) {
+  remember(authEvents.success, connectionId);
+  if (model) remember(authEvents.success, `${connectionId}|${model}`);
+}
+
+const succeededSince = (key, sinceMs) => (authEvents.success.get(key)?.at ?? -Infinity) >= sinceMs;
 
 // Budget and spend 403s that isLimitError doesn't know ("Key limit exceeded
 // (daily limit)", "monthly spend limit", "credits exhausted"): the key is fine.
@@ -62,30 +69,34 @@ function isAuthRejection(status, errorText) {
     && !ERROR_RULES.some(r => r.backoff && r.text && lower.includes(r.text));
 }
 
-const autoDisableLocks = (global._autoDisableLocks ??= new Map());
-async function withAutoDisableLock(provider, fn) {
-  const prev = autoDisableLocks.get(provider) || Promise.resolve();
-  const run = prev.then(fn);
-  const tail = run.catch(() => {});
-  autoDisableLocks.set(provider, tail);
-  try {
-    return await run;
-  } finally {
-    if (autoDisableLocks.get(provider) === tail) autoDisableLocks.delete(provider);
-  }
+// Keys behind different proxies or relays can get different answers.
+async function networkPath(conn) {
+  const p = await resolveConnectionProxyConfig(conn.providerSpecificData || {});
+  const proxy = p.connectionProxyEnabled && p.connectionProxyUrl ? p.connectionProxyUrl : "";
+  return JSON.stringify([proxy, proxy ? p.connectionNoProxy || "" : "", p.vercelRelayUrl || ""]);
 }
 
-// The refusal only counts when another key of the provider served this model
-// recently: a failure every key sees (region block, proxy page, auth outage)
-// is not this key's. Web search/fetch lock keys ("websearch:x") are not models;
-// ids like "x:free" are.
-function countsTowardAuthStreak(connections, connectionId, model, status, errorText) {
+// The refusal only counts when another key of the provider, on the same network
+// path, served this model after this key's previous refusal of it (or, for the
+// first one, within minWindowMs): a failure every key sees (region block, proxy
+// page, auth outage) is not this key's. Web search/fetch lock keys
+// ("websearch:x") are not models; ids like "x:free" are.
+async function countsTowardAuthStreak(connections, conn, model, status, errorText) {
   if (!model || /^web(search|fetch):/.test(model) || !isAuthRejection(status, errorText)) return false;
+  const previous = authEvents.refused.get(`${conn.id}|${model}`);
+  remember(authEvents.refused, `${conn.id}|${model}`);
   const since = Date.now() - AUTH_DEAD_CONFIG.minWindowMs;
-  return connections.some(c => c.id !== connectionId && succeededSince(`${c.id}|${model}`, since));
+  const peers = connections.filter((c) => {
+    const success = c.id !== conn.id && authEvents.success.get(`${c.id}|${model}`);
+    return success && (previous ? success.seq > previous.seq : success.at >= since);
+  });
+  if (peers.length === 0) return false;
+  const path = await networkPath(conn);
+  for (const peer of peers) if (await networkPath(peer) === path) return true;
+  return false;
 }
 
-function nextAuthFailStreak(conn, model) {
+function nextAuthFailStreak(conn, model, status) {
   const now = Date.now();
   const firstAt = new Date(conn.authFailFirstAt || NaN).getTime();
   const sinceLast = now - new Date(conn.authFailLastAt || conn.authFailFirstAt || NaN).getTime();
@@ -102,13 +113,14 @@ function nextAuthFailStreak(conn, model) {
     authFailFirstAt: fresh ? new Date(now).toISOString() : conn.authFailFirstAt,
     authFailLastAt: new Date(now).toISOString(),
     authFailModels: models.includes(model) ? models : [...models, model].slice(-MAX_TRACKED_MODELS),
+    authFailAll401: Number(status) === 401 && (fresh || conn.authFailAll401 === true),
   };
 }
 
-function isAuthDead(streak, status) {
+function isAuthDead(streak) {
   return streak.authFailCount >= AUTH_DEAD_CONFIG.minFailures
     && Date.now() - new Date(streak.authFailFirstAt).getTime() >= AUTH_DEAD_CONFIG.minWindowMs
-    && (Number(status) === 401 || streak.authFailModels.length >= AUTH_DEAD_CONFIG.minModels);
+    && (streak.authFailAll401 || streak.authFailModels.length >= AUTH_DEAD_CONFIG.minModels);
 }
 
 function autoDisableReason(status, errorText, streak) {
@@ -403,17 +415,13 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
 
   // Auth rejections build a streak that only a success clears; other errors
   // leave it alone. A dead key is turned off unless it is the provider's last.
-  const authFailStreak = conn && countsTowardAuthStreak(connections, connectionId, model, status, errorText)
-    ? nextAuthFailStreak(conn, model) : null;
-  let autoDisable = null;
-  if (authFailStreak && conn.isActive !== false && isAuthDead(authFailStreak, status)
-    && connections.some(c => c.id !== connectionId && c.isActive !== false)) {
-    autoDisable = {
-      isActive: false,
-      autoDisabledAt: new Date().toISOString(),
-      autoDisabledReason: autoDisableReason(status, errorText, authFailStreak),
-    };
-  }
+  const authFailStreak = conn && await countsTowardAuthStreak(connections, conn, model, status, errorText)
+    ? nextAuthFailStreak(conn, model, status) : null;
+  const autoDisable = authFailStreak && isAuthDead(authFailStreak) ? {
+    isActive: false,
+    autoDisabledAt: new Date().toISOString(),
+    autoDisabledReason: autoDisableReason(status, errorText, authFailStreak),
+  } : null;
 
   const update = {
     ...lockUpdate,
@@ -427,24 +435,15 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     backoffLevel: newBackoffLevel ?? backoffLevel,
     ...authFailStreak,
   };
-  if (autoDisable) {
-    // Re-checked under a per-provider lock so two keys failing at once can't
-    // both see the other still on and leave the provider with none.
-    autoDisable = await withAutoDisableLock(provider, async () => {
-      const fresh = await getProviderConnections({ provider });
-      const keep = fresh.find(c => c.id === connectionId)?.isActive === false
-        || !fresh.some(c => c.id !== connectionId && c.isActive !== false);
-      await updateProviderConnection(connectionId, keep ? update : { ...update, ...autoDisable });
-      return keep ? null : autoDisable;
-    });
-  } else {
-    await updateProviderConnection(connectionId, update);
-  }
+  const saved = autoDisable
+    ? await updateProviderConnection(connectionId, update, { autoDisable })
+    : await updateProviderConnection(connectionId, update);
+  const turnedOff = autoDisable && saved?.isActive === false && saved.autoDisabledAt === autoDisable.autoDisabledAt;
 
   const lockKey = Object.keys(lockUpdate)[0];
   const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
   log.warn("AUTH", `${connName} locked ${lockKey} for ${Math.round(cooldownMs / 1000)}s [${status}]`);
-  if (autoDisable) log.warn("AUTH", `${connName} turned off automatically: ${autoDisable.autoDisabledReason}`);
+  if (turnedOff) log.warn("AUTH", `${connName} turned off automatically: ${autoDisable.autoDisabledReason}`);
 
   if (provider && status && reason) {
     console.error(`❌ ${provider} [${status}]: ${reason}`);

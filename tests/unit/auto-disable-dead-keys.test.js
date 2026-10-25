@@ -1,7 +1,7 @@
 // A key whose auth keeps failing, on models another key of the provider is
 // serving, is turned off (with a reason) instead of being retried every time its
-// per-model lock expires. It comes back on when the user re-enables it or a
-// connection test passes. Runs against the real SQLite repo.
+// per-model lock expires. It comes back on when the user re-enables it or puts
+// in a new key, not when a connection test passes. Runs against the real SQLite repo.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,6 +11,20 @@ vi.mock("next/server", () => ({
   NextResponse: { json: (body, init = {}) => new Response(JSON.stringify(body), { status: init.status || 200 }) },
 }));
 vi.mock("@/sse/utils/logger.js", () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
+// beforeNextWrite(fn) runs fn right before the next updateProviderConnection
+// call made through localDb (auth.js), to land a write in between.
+const writeHooks = vi.hoisted(() => []);
+const beforeNextWrite = (fn) => writeHooks.push(fn);
+vi.mock("@/lib/localDb", async (importOriginal) => {
+  const real = await importOriginal();
+  return {
+    ...real,
+    updateProviderConnection: async (...args) => {
+      await writeHooks.shift()?.(...args);
+      return real.updateProviderConnection(...args);
+    },
+  };
+});
 
 const originalDataDir = process.env.DATA_DIR;
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "10router-auto-disable-"));
@@ -47,6 +61,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  writeHooks.length = 0;
 });
 
 async function addKey(name, extra = {}) {
@@ -121,12 +136,39 @@ describe("auth-dead keys turn off", () => {
       await failOnce(a.id, model);
       await failOnce(b.id, model);
     }
+    await succeed(healthy.id, "m1");
     await db.updateProviderConnection(healthy.id, { isActive: false });
     vi.advanceTimersByTime(3 * MIN);
     await Promise.all([failOnce(a.id, "m1"), failOnce(b.id, "m1")]);
 
     const active = [await load(a.id), await load(b.id)].filter((c) => c.isActive !== false);
     expect(active).toHaveLength(1);
+  });
+
+  it("leaves a key the user turns off between the trip decision and its write as a manual disable", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 4, models: ["m1", "m2"], peers: [healthy] });
+    vi.advanceTimersByTime(3 * MIN);
+    await succeed(healthy.id, "m1");
+    beforeNextWrite(() => db.updateProviderConnection(dead.id, { isActive: false }));
+    await failOnce(dead.id, "m1");
+
+    const conn = await load(dead.id);
+    expect(conn.isActive).toBe(false);
+    expect(conn).not.toHaveProperty("autoDisabledAt");
+    expect(conn).not.toHaveProperty("autoDisabledReason");
+  });
+
+  it("keeps the last active key on when its peer is turned off between the decision and the write", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 4, models: ["m1", "m2"], peers: [healthy] });
+    vi.advanceTimersByTime(3 * MIN);
+    await succeed(healthy.id, "m1");
+    beforeNextWrite(() => db.updateProviderConnection(healthy.id, { isActive: false }));
+    await failOnce(dead.id, "m1");
+    expect((await load(dead.id)).isActive).toBe(true);
   });
 
   it("leaves a key the user turns off mid-request as a manual disable", async () => {
@@ -247,6 +289,18 @@ describe("auth-dead keys turn off", () => {
     expect(conn.autoDisabledReason).toBe('401 "Invalid API key" on m1');
   });
 
+  it("does not let a final 401 skip the two-model rule for 403s", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 5, models: ["m1"], peers: [healthy] });
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy], status: 401, text: "Invalid API key" });
+
+    const conn = await load(dead.id);
+    expect(conn.authFailCount).toBe(6);
+    expect(conn.isActive).toBe(true);
+  });
+
   it("does not let one earlier 401 skip the two-model rule for 403s", async () => {
     const dead = await addKey("a");
     const healthy = await addKey("b");
@@ -276,13 +330,23 @@ describe("auth-dead keys turn off", () => {
     expect((await load(dead.id)).isActive).toBe(false);
   });
 
-  it("counts two failures in the same millisecond", async () => {
+  it("counts two failures in the same millisecond with a peer success between", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await succeed(healthy.id, "m1");
+    await failOnce(dead.id, "m1");
+    await succeed(healthy.id, "m1");
+    await failOnce(dead.id, "m1");
+    expect((await load(dead.id)).authFailCount).toBe(2);
+  });
+
+  it("does not count a second failure in the same millisecond with no peer success between", async () => {
     const dead = await addKey("a");
     const healthy = await addKey("b");
     await succeed(healthy.id, "m1");
     await failOnce(dead.id, "m1");
     await failOnce(dead.id, "m1");
-    expect((await load(dead.id)).authFailCount).toBe(2);
+    expect((await load(dead.id)).authFailCount).toBe(1);
   });
 
   it.each([
@@ -368,6 +432,74 @@ describe("a refusal only counts when another key serves that model", () => {
     }
     expect((await load(limited.id)).isActive).toBe(true);
     expect(await load(limited.id)).not.toHaveProperty("authFailCount");
+  });
+
+  it.each([
+    ["counts", 10, 1],
+    ["does not count", 11, undefined],
+  ])("%s a key's first refusal of a model a peer served %i minutes before", async (_label, minutes, count) => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await succeed(healthy.id, "m1");
+    vi.advanceTimersByTime(minutes * MIN);
+    await failOnce(dead.id, "m1");
+    expect((await load(dead.id)).authFailCount).toBe(count);
+  });
+
+  // The peers are serving. A gets a refusal, B and C serve once 20s later, then
+  // the provider refuses every key, one request every 2 minutes.
+  it.each([
+    ["three keys, 401s on one model", ["a", "b", "c"], ["m1"], 401, "Invalid API key"],
+    ["three keys, 403s on two models", ["a", "b", "c"], ["m1", "m2"], 403, DEAD_403],
+    ["two keys, 401s on one model", ["a", "b"], ["m1"], 401, "Invalid API key"],
+    ["two keys, 403s on two models", ["a", "b"], ["m1", "m2"], 403, DEAD_403],
+  ])("disables no key in an outage that starts just after one peer success (%s)", async (_label, names, models, status, text) => {
+    const [a, ...peers] = await Promise.all(names.map((n) => addKey(n)));
+    for (const peer of peers) for (const m of models) await succeed(peer.id, m);
+    vi.advanceTimersByTime(MIN);
+    await failOnce(a.id, models[0], status, text);
+    vi.advanceTimersByTime(20 * 1000);
+    for (const peer of peers) for (const m of models) await succeed(peer.id, m);
+    for (let i = 0; i < 12; i++) {
+      vi.advanceTimersByTime(2 * MIN);
+      for (const k of [a, ...peers]) await failOnce(k.id, models[i % models.length], status, text);
+    }
+    for (const k of [a, ...peers]) expect((await load(k.id)).isActive).toBe(true);
+  });
+
+  it("still trips a dead key whose peer serves each request after it fails", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    for (const m of ["m1", "m2"]) await succeed(healthy.id, m);
+    for (let i = 0; i < 6; i++) {
+      if (i > 0) vi.advanceTimersByTime(2 * MIN);
+      const model = i % 2 ? "m2" : "m1";
+      await failOnce(dead.id, model);
+      await succeed(healthy.id, model);
+    }
+    const conn = await load(dead.id);
+    expect(conn.authFailCount).toBe(6);
+    expect(conn.isActive).toBe(false);
+  });
+
+  const viaProxy = (url) => ({
+    providerSpecificData: { baseUrl: "https://dead-keys.test/v1", connectionProxyEnabled: true, connectionProxyUrl: url },
+  });
+
+  it("keeps a key on whose proxy is refused while a direct key serves", async () => {
+    const proxied = await addKey("a", viaProxy("http://proxy-x.test:8080"));
+    const direct = await addKey("b");
+    await fail(proxied.id, { times: 6, models: ["m1", "m2"], peers: [direct] });
+    const conn = await load(proxied.id);
+    expect(conn.isActive).toBe(true);
+    expect(conn).not.toHaveProperty("authFailCount");
+  });
+
+  it("trips a key refused while a key on the same proxy serves", async () => {
+    const dead = await addKey("a", viaProxy("http://proxy-x.test:8080"));
+    const healthy = await addKey("b", viaProxy("http://proxy-x.test:8080"));
+    await fail(dead.id, { times: 6, models: ["m1", "m2"], peers: [healthy] });
+    expect((await load(dead.id)).isActive).toBe(false);
   });
 
   it("never counts web search or fetch lock keys", async () => {
@@ -490,92 +622,57 @@ describe("an auto-disabled key", () => {
     await expectBackOn(dead.id);
   });
 
-  it("re-enables when its connection test passes", async () => {
+  it("stays off, with its reason, when its connection test passes", async () => {
     const dead = await deadKey();
+    const { autoDisabledReason } = await load(dead.id);
     stubFetch(200);
     expect((await testSingleConnection(dead.id)).valid).toBe(true);
-    await expectBackOn(dead.id);
+    const conn = await load(dead.id);
+    expect(conn.isActive).toBe(false);
+    expect(conn.autoDisabledReason).toBe(autoDisabledReason);
   });
 
-  it("stays off when its connection test fails", async () => {
-    const dead = await deadKey();
-    stubFetch(403);
-    expect((await testSingleConnection(dead.id)).valid).toBe(false);
-    expect((await load(dead.id)).isActive).toBe(false);
+  it("stays off when a Claude OAuth test refreshes its expired token with a 200", async () => {
+    const conn = await db.createProviderConnection({
+      provider: "claude", authType: "oauth", name: "auto-off", accessToken: "test-access-token",
+      refreshToken: "test-refresh-token", expiresAt: new Date(Date.now() - MIN).toISOString(),
+    });
+    await db.updateProviderConnection(conn.id, {
+      isActive: false, autoDisabledAt: new Date().toISOString(), autoDisabledReason: "401",
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(
+      JSON.stringify({ access_token: "test-access-token-2", expires_in: 3600 }), { status: 200 },
+    )));
+    expect(await testSingleConnection(conn.id)).toMatchObject({ valid: true, refreshed: true });
+    expect(await load(conn.id)).toMatchObject({ isActive: false, autoDisabledReason: "401" });
+    await db.deleteProviderConnection(conn.id);
   });
 
-  it("is tested by Test all and comes back; a key the user turned off is not", async () => {
+  it("is skipped by Test all, like a key the user turned off", async () => {
     const dead = await deadKey();
     const manual = await addKey("c", { isActive: false });
     stubFetch(200);
     const tested = await runTestAll();
-    expect(tested).toContain(dead.id);
+    expect(tested).not.toContain(dead.id);
     expect(tested).not.toContain(manual.id);
+    expect((await load(dead.id)).isActive).toBe(false);
+  });
+
+  it("comes back clean when toggled on after a passing test", async () => {
+    const dead = await deadKey();
+    stubFetch(200);
+    await testSingleConnection(dead.id);
+    await db.updateProviderConnection(dead.id, { isActive: true });
     await expectBackOn(dead.id);
-    expect((await load(manual.id)).isActive).toBe(false);
   });
 
   it("becomes a manual disable when the user also turns it off", async () => {
     const dead = await deadKey();
     await db.updateProviderConnection(dead.id, { isActive: false });
     const conn = await load(dead.id);
+    expect(conn.isActive).toBe(false);
     expect(conn).not.toHaveProperty("autoDisabledAt");
     expect(conn).not.toHaveProperty("autoDisabledReason");
-
-    stubFetch(200);
-    expect(await runTestAll()).not.toContain(dead.id);
-    expect((await testSingleConnection(dead.id)).valid).toBe(true);
-    expect((await load(dead.id)).isActive).toBe(false);
-  });
-
-  // An auto-disabled connection of a real provider, outside the test's provider.
-  async function autoDisabled(fields) {
-    const conn = await db.createProviderConnection({ name: "auto-off", ...fields });
-    await db.updateProviderConnection(conn.id, {
-      isActive: false, autoDisabledAt: new Date().toISOString(), autoDisabledReason: "401",
-    });
-    return conn;
-  }
-  const dayFromNow = () => new Date(Date.now() + 24 * 60 * MIN).toISOString();
-
-  it.each([
-    ["only checks the stored token's expiry", { provider: "claude", authType: "oauth", accessToken: "test-access-token", expiresAt: dayFromNow() }, 500],
-    ["only checks a token exists", { provider: "cursor", authType: "oauth", accessToken: "test-access-token" }, 500],
-    ["counts a 403 as passing", { provider: "anthropic", authType: "apikey", apiKey: "sk-test-anthropic-0123456789" }, 403],
-    ["counts an outage as passing", { provider: "anthropic", authType: "apikey", apiKey: "sk-test-anthropic-0123456789" }, 500],
-  ])("stays off when its test %s", async (_label, fields, status) => {
-    const conn = await autoDisabled(fields);
-    stubFetch(status);
-    expect(await testSingleConnection(conn.id)).toMatchObject({ valid: true });
-    expect((await load(conn.id)).isActive).toBe(false);
-    await db.deleteProviderConnection(conn.id);
-  });
-
-  it("re-enables when an anthropic key's test gets a 200", async () => {
-    const conn = await autoDisabled({ provider: "anthropic", authType: "apikey", apiKey: "sk-test-anthropic-0123456789" });
-    stubFetch(200);
-    expect(await testSingleConnection(conn.id)).toMatchObject({ valid: true });
-    expect((await load(conn.id)).isActive).toBe(true);
-    await db.deleteProviderConnection(conn.id);
-  });
-
-  it("stays off when the user turns it off during its test", async () => {
-    const dead = await deadKey();
-    vi.stubGlobal("fetch", vi.fn(async () => {
-      await db.updateProviderConnection(dead.id, { isActive: false });
-      return new Response("{}", { status: 200 });
-    }));
-    expect((await testSingleConnection(dead.id)).valid).toBe(true);
-    expect((await load(dead.id)).isActive).toBe(false);
-  });
-
-  it("only reactivates a connection that is still auto-disabled", async () => {
-    const dead = await deadKey();
-    const manual = await addKey("c", { isActive: false });
-    await db.updateProviderConnection(dead.id, {}, { reactivateIfAutoDisabled: true });
-    await db.updateProviderConnection(manual.id, {}, { reactivateIfAutoDisabled: true });
-    await expectBackOn(dead.id);
-    expect((await load(manual.id)).isActive).toBe(false);
   });
 
   it("leaves a key the user turned off alone when its test passes", async () => {

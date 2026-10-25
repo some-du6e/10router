@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { testProxyUrl } from "@/lib/network/proxyTest";
@@ -19,15 +18,6 @@ import {
   KIMCHI_CONFIG,
 } from "@/lib/oauth/constants/oauth";
 import { buildClineHeaders } from "@/shared/utils/clineAuth";
-
-// HTTP statuses the provider answered with during one connection test. Every
-// upstream call in this file goes through fetch or proxyAwareFetch below.
-const probeStatuses = new AsyncLocalStorage();
-function recordStatus(res) {
-  probeStatuses.getStore()?.push(res?.status);
-  return res;
-}
-const fetch = async (...args) => recordStatus(await globalThis.fetch(...args));
 
 // OAuth provider test endpoints
 const OAUTH_TEST_CONFIG = {
@@ -464,9 +454,9 @@ async function fetchWithConnectionProxy(url, options = {}, effectiveProxy = null
   // Vercel relay: forward via relay URL
   if (effectiveProxy?.vercelRelayUrl) {
     const { proxyAwareFetch } = await import("open-sse/utils/proxyFetch.js");
-    return recordStatus(await proxyAwareFetch(url, options, {
+    return proxyAwareFetch(url, options, {
       vercelRelayUrl: effectiveProxy.vercelRelayUrl,
-    }));
+    });
   }
 
   if (!effectiveProxy?.connectionProxyEnabled || !effectiveProxy?.connectionProxyUrl) {
@@ -474,11 +464,11 @@ async function fetchWithConnectionProxy(url, options = {}, effectiveProxy = null
   }
 
   const { proxyAwareFetch } = await import("open-sse/utils/proxyFetch.js");
-  return recordStatus(await proxyAwareFetch(url, options, {
+  return proxyAwareFetch(url, options, {
     connectionProxyEnabled: true,
     connectionProxyUrl: effectiveProxy.connectionProxyUrl,
     connectionNoProxy: effectiveProxy.connectionNoProxy || "",
-  }));
+  });
 }
 
 async function testApiKeyConnection(connection, effectiveProxy = null) {
@@ -857,12 +847,11 @@ export async function testSingleConnection(id) {
 
   const start = Date.now();
   let result;
-  const statuses = [];
 
   if (connection.authType === "apikey" || connection.authType === "cookie") {
-    result = await probeStatuses.run(statuses, () => testApiKeyConnection(connection, effectiveProxy));
+    result = await testApiKeyConnection(connection, effectiveProxy);
   } else {
-    result = await probeStatuses.run(statuses, () => testOAuthConnection(connection, effectiveProxy));
+    result = await testOAuthConnection(connection, effectiveProxy);
   }
 
   const latencyMs = Date.now() - start;
@@ -880,13 +869,6 @@ export async function testSingleConnection(id) {
         : null
       : new Date().toISOString(),
   };
-
-  // A key the router turned off for failing auth comes back once the provider
-  // accepts it: the test passed and its last answer was a 2xx. Tests that only
-  // check the stored token, or count a 403 or 5xx as passing, aren't enough.
-  // One the user turned off, even during the test, stays off.
-  const lastStatus = statuses.at(-1);
-  const reactivateIfAutoDisabled = result.valid && lastStatus >= 200 && lastStatus < 300;
 
   if (result.refreshed && result.newTokens) {
     if (result.newTokens.accessToken) updateData.accessToken = result.newTokens.accessToken;
@@ -907,7 +889,7 @@ export async function testSingleConnection(id) {
     }
   }
 
-  await updateProviderConnection(id, updateData, { reactivateIfAutoDisabled });
+  await updateProviderConnection(id, updateData);
 
   return { valid: result.valid, error: result.error, refreshed: !!result.refreshed, latencyMs, testedAt: new Date().toISOString() };
 }
