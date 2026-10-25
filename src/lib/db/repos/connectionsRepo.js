@@ -258,8 +258,10 @@ export async function createProviderConnection(data) {
   return result;
 }
 
-// Critical: OAuth refresh token race — atomic merge inside transaction
-export async function updateProviderConnection(id, data) {
+// Critical: OAuth refresh token race — atomic merge inside transaction.
+// reactivateIfAutoDisabled turns the connection back on only if it is still
+// one the router turned off, checked in the same transaction as the write.
+export async function updateProviderConnection(id, data, { reactivateIfAutoDisabled = false } = {}) {
   const db = await getAdapter();
   let result;
   let servesChanged = false;
@@ -268,6 +270,7 @@ export async function updateProviderConnection(id, data) {
     if (!row) { result = null; return; }
     const existing = rowToConn(row);
     const merged = { ...existing, ...data, updatedAt: new Date().toISOString() };
+    if (reactivateIfAutoDisabled && existing.isActive === false && existing.autoDisabledAt) merged.isActive = true;
     applyAutoDisableTransition(existing, merged, data);
     upsert(db, merged);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);

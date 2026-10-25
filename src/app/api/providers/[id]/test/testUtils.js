@@ -886,10 +886,7 @@ export async function testSingleConnection(id) {
   // check the stored token, or count a 403 or 5xx as passing, aren't enough.
   // One the user turned off, even during the test, stays off.
   const lastStatus = statuses.at(-1);
-  if (result.valid && lastStatus >= 200 && lastStatus < 300 && connection.isActive === false && connection.autoDisabledAt) {
-    const latest = await getProviderConnectionById(id);
-    if (latest?.isActive === false && latest.autoDisabledAt) updateData.isActive = true;
-  }
+  const reactivateIfAutoDisabled = result.valid && lastStatus >= 200 && lastStatus < 300;
 
   if (result.refreshed && result.newTokens) {
     if (result.newTokens.accessToken) updateData.accessToken = result.newTokens.accessToken;
@@ -910,7 +907,7 @@ export async function testSingleConnection(id) {
     }
   }
 
-  await updateProviderConnection(id, updateData);
+  await updateProviderConnection(id, updateData, { reactivateIfAutoDisabled });
 
   return { valid: result.valid, error: result.error, refreshed: !!result.refreshed, latencyMs, testedAt: new Date().toISOString() };
 }

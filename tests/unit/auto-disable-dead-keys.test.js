@@ -569,6 +569,15 @@ describe("an auto-disabled key", () => {
     expect((await load(dead.id)).isActive).toBe(false);
   });
 
+  it("only reactivates a connection that is still auto-disabled", async () => {
+    const dead = await deadKey();
+    const manual = await addKey("c", { isActive: false });
+    await db.updateProviderConnection(dead.id, {}, { reactivateIfAutoDisabled: true });
+    await db.updateProviderConnection(manual.id, {}, { reactivateIfAutoDisabled: true });
+    await expectBackOn(dead.id);
+    expect((await load(manual.id)).isActive).toBe(false);
+  });
+
   it("leaves a key the user turned off alone when its test passes", async () => {
     const manual = await addKey("a", { isActive: false });
     stubFetch(200);
