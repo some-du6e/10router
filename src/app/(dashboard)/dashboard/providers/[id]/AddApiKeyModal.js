@@ -192,15 +192,15 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
 
   if (!provider) return null;
 
-  // Custom endpoints: the mockup's keyModalBody(), key + optional name. The
-  // endpoint already knows its URL and models, so there's nothing else to ask.
+  // Custom endpoints: key, optional name, and an optional per-key URL tucked
+  // behind a toggle. The endpoint already knows its own URL and models.
   if (isCompatible) {
     const submitCompatible = async () => {
       const apiKey = formData.apiKey.trim();
       if (!apiKey || saving) return;
       setSaving(true);
       try {
-        await onSave({ name: formData.name.trim(), apiKey, testStatus: "unknown" });
+        await onSave({ name: formData.name.trim(), apiKey, testStatus: "unknown", ...keyBaseUrl() });
       } finally {
         setSaving(false);
       }
@@ -225,6 +225,20 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
             placeholder="Shown as the masked key if left blank"
             ignorePasswordManagers
           />
+          {showBaseUrl ? (
+            <Input
+              label={<>Endpoint URL <span className="font-normal text-text-muted">(optional)</span></>}
+              value={formData.baseUrl}
+              onChange={(e) => setFormData({ ...formData, baseUrl: e.target.value })}
+              placeholder={nodeBaseUrl || "https://..."}
+              hint="Leave empty to use the endpoint's URL. Use this when this key belongs to another account or region."
+              autoFocus
+            />
+          ) : (
+            <button type="button" onClick={() => setShowBaseUrl(true)} className="self-start text-xs text-primary hover:underline">
+              Use a different endpoint URL for this key
+            </button>
+          )}
           {error && <p role="alert" className="text-xs text-red-500 break-words">{error}</p>}
           <Button type="submit" fullWidth disabled={saving || !formData.apiKey.trim()}>
             {saving ? "Adding…" : "Add key"}
