@@ -10,6 +10,30 @@ const OPTIONAL_FIELDS = [
   "consecutiveUseCount", "idToken", "lastRefreshAt",
 ];
 
+// Written by sse/services/auth.js when a key keeps failing auth and is turned
+// off. Turning the connection back on, by any path, starts it clean; turning it
+// off again keeps its reason unless a new key came with it.
+const AUTH_STREAK_FIELDS = [
+  "authFailCount", "authFailFirstAt", "authFailLastAt", "authFailModels", "authFailAll401", "authFailSameUpstream",
+  "authFailRunCount", "authFailRunStartAt", "authFailBursts",
+];
+const AUTO_DISABLE_FIELDS = ["autoDisabledAt", "autoDisabledReason", ...AUTH_STREAK_FIELDS];
+
+function applyAutoDisableTransition(existing, merged, data) {
+  const newKey = String(data.apiKey ?? "").trim();
+  const keyChanged = newKey !== "" && newKey !== String(existing.apiKey ?? "").trim();
+  // A different key pasted into a connection the router turned off fixes it.
+  if (existing.autoDisabledAt && data.isActive === undefined && keyChanged) merged.isActive = true;
+  if (existing.isActive === false && merged.isActive === true) {
+    for (const f of AUTO_DISABLE_FIELDS) delete merged[f];
+  } else if (data.isActive === false && data.autoDisabledAt === undefined && keyChanged) {
+    delete merged.autoDisabledAt;
+    delete merged.autoDisabledReason;
+  }
+  // The old key's failures say nothing about the new one.
+  if (keyChanged) for (const f of AUTH_STREAK_FIELDS) delete merged[f];
+}
+
 // Read by sse/services/autoCombo.ts to notice its model catalog is stale.
 // Bumped on any write that changes what /v1/models lists: connections, model
 // aliases, custom and disabled models.
@@ -191,6 +215,9 @@ export async function createProviderConnection(data) {
       }
       const updates = Object.fromEntries(Object.entries(data).filter(([key, value]) => key !== "allowOverwrite" && value !== undefined));
       const merged = { ...existing, ...updates, updatedAt: now };
+      // Re-adding or re-logging a key the router turned off means it was fixed.
+      if (existing.autoDisabledAt && updates.isActive === undefined) merged.isActive = true;
+      applyAutoDisableTransition(existing, merged, updates);
       upsert(db, merged);
       result = merged;
       return;
@@ -236,8 +263,12 @@ export async function createProviderConnection(data) {
   return result;
 }
 
-// Critical: OAuth refresh token race — atomic merge inside transaction
-export async function updateProviderConnection(id, data) {
+// Critical: OAuth refresh token race — atomic merge inside transaction.
+// autoDisable fields are applied only if the connection is still on and another
+// connection of its provider is too, decided in the same transaction as the write.
+// apiKeyUsed is the key a failing request used: if another key has been stored
+// since, the request's auth streak fields and autoDisable are dropped.
+export async function updateProviderConnection(id, data, { autoDisable = null, apiKeyUsed } = {}) {
   const db = await getAdapter();
   let result;
   let servesChanged = false;
@@ -246,6 +277,17 @@ export async function updateProviderConnection(id, data) {
     if (!row) { result = null; return; }
     const existing = rowToConn(row);
     const merged = { ...existing, ...data, updatedAt: new Date().toISOString() };
+    const staleKey = apiKeyUsed !== undefined && existing.apiKey !== apiKeyUsed;
+    if (staleKey) {
+      for (const f of AUTH_STREAK_FIELDS) {
+        if (f in existing) merged[f] = existing[f];
+        else delete merged[f];
+      }
+    }
+    if (autoDisable && !staleKey && existing.isActive && db.get(
+      `SELECT 1 FROM providerConnections WHERE provider = ? AND id != ? AND isActive = 1 LIMIT 1`, [existing.provider, id],
+    )) Object.assign(merged, autoDisable);
+    applyAutoDisableTransition(existing, merged, data);
     upsert(db, merged);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
     result = merged;

@@ -776,7 +776,8 @@ async function routeSingleModelChat(
       if (credentials.id === "noauth") shouldFallback = false;
     } else if (!(provider === "antigravity" && quotaResetMs)) {
       ({ shouldFallback, cooldownMs } = await markAccountUnavailable(
-        credentials.connectionId, result.status as number, result.error as string, provider, model, resetsAtMs as Parameters<typeof markAccountUnavailable>[5]
+        credentials.connectionId, result.status as number, result.error as string, provider, model, resetsAtMs as Parameters<typeof markAccountUnavailable>[5],
+        credentials.apiKey,
       ));
     }
     // Earliest point any account tried this pass may be usable again.

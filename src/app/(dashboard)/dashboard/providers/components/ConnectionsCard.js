@@ -8,6 +8,7 @@ import { Card, Badge, Button, Modal, Select, Toggle, EditConnectionModal, Confir
 import { useSecretInputProps } from "@/shared/components/Input";
 import { providerRoutingOptions, SOONEST_RESET_HINT } from "@/shared/constants/accountRouting";
 import { useBlurEmails } from "@/shared/hooks/useBlurEmails";
+import { withToggledActive } from "../utils";
 
 // ── CooldownTimer ──────────────────────────────────────────────
 function CooldownTimer({ until }) {
@@ -137,6 +138,14 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
             {connection.lastError && connection.isActive !== false && (
               <span className="text-xs text-red-500 truncate max-w-[300px]" title={connection.lastError}>{connection.lastError}</span>
             )}
+            {connection.isActive === false && connection.autoDisabledAt && (
+              <span
+                className="text-xs text-red-500 truncate max-w-[360px]"
+                title={`Turned off automatically ${new Date(connection.autoDisabledAt).toLocaleString()}: ${connection.autoDisabledReason || ""}`}
+              >
+                Turned off automatically: {connection.autoDisabledReason}
+              </span>
+            )}
             <span className="text-xs text-text-muted">#{connection.priority}</span>
           </div>
           {hasAnyProxy && (
@@ -194,6 +203,8 @@ ConnectionRow.propTypes = {
     testStatus: PropTypes.string,
     isActive: PropTypes.bool,
     lastError: PropTypes.string,
+    autoDisabledAt: PropTypes.string,
+    autoDisabledReason: PropTypes.string,
     priority: PropTypes.number,
   }).isRequired,
   proxyPools: PropTypes.array,
@@ -394,7 +405,9 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
   const handleToggleActive = async (id, isActive) => {
     try {
       const res = await fetch(`/api/providers/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isActive }) });
-      if (res.ok) setConnections((prev) => prev.map((c) => c.id === id ? { ...c, isActive } : c));
+      if (!res.ok) return;
+      const { connection: saved } = await res.json();
+      setConnections((prev) => prev.map((c) => c.id === id ? withToggledActive(c, isActive, saved) : c));
     } catch (e) { console.log("toggle error:", e); }
   };
 

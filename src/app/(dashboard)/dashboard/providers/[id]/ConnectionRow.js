@@ -202,6 +202,14 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
                 {connection.lastError}
               </span>
             )}
+            {connection.isActive === false && connection.autoDisabledAt && (
+              <span
+                className="max-w-full truncate text-xs text-red-500 sm:max-w-[360px]"
+                title={`Turned off automatically ${new Date(connection.autoDisabledAt).toLocaleString()}: ${connection.autoDisabledReason || ""}`}
+              >
+                Turned off automatically: {connection.autoDisabledReason}
+              </span>
+            )}
             {ownEndpointHost && (
               <span className="max-w-full truncate text-[11px] text-text-muted sm:max-w-[260px]" title={connection.providerSpecificData.baseUrl}>
                 {ownEndpointHost}
@@ -324,6 +332,8 @@ ConnectionRow.propTypes = {
     testStatus: PropTypes.string,
     isActive: PropTypes.bool,
     lastError: PropTypes.string,
+    autoDisabledAt: PropTypes.string,
+    autoDisabledReason: PropTypes.string,
     priority: PropTypes.number,
     globalPriority: PropTypes.number,
   }).isRequired,

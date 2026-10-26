@@ -17,3 +17,15 @@ export function matchesStatusFilter(statusFilter, stats, isNoAuth = false) {
   if (statusFilter === "all") return true;
   return getConnectionStatus(stats, isNoAuth) === statusFilter;
 }
+
+// The automatic turn-off label after a toggle is whatever the server kept:
+// turning a key on clears it, turning an already auto-disabled key off keeps it.
+export function withToggledActive(connection, isActive, saved) {
+  return { ...connection, isActive, autoDisabledAt: saved?.autoDisabledAt ?? null, autoDisabledReason: saved?.autoDisabledReason ?? null };
+}
+
+// What "Test all" tests: like /api/providers/test-batch, connections that are off
+// (by hand or automatically) are skipped.
+export function connectionsToTest(connections) {
+  return connections.filter((c) => c.isActive !== false);
+}

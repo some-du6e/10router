@@ -108,6 +108,18 @@ describe("chat account failure responses", () => {
     expect(body.error.message).toContain("reset after 5m");
   });
 
+  it("tells markAccountUnavailable which key the failed request used", async () => {
+    mocks.getProviderCredentials
+      .mockResolvedValueOnce(account("only", "Only account"))
+      .mockResolvedValueOnce(null);
+    mocks.handleChatCore.mockResolvedValueOnce({ success: false, status: 401, error: "Invalid API key" });
+
+    await handleChat(request());
+
+    expect(mocks.markAccountUnavailable.mock.calls[0][0]).toBe("only");
+    expect(mocks.markAccountUnavailable.mock.calls[0][6]).toBe("only-key");
+  });
+
   it("summarizes attempted accounts when no more credentials remain", async () => {
     mocks.getProviderCredentials
       .mockResolvedValueOnce(account("only", "Only account"))
