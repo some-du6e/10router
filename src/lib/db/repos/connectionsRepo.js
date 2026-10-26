@@ -15,7 +15,7 @@ const OPTIONAL_FIELDS = [
 // off again keeps its reason unless a new key came with it.
 const AUTH_STREAK_FIELDS = [
   "authFailCount", "authFailFirstAt", "authFailLastAt", "authFailModels", "authFailAll401", "authFailSameUpstream",
-  "authFailRunCount", "authFailBursts",
+  "authFailRunCount", "authFailRunStartAt", "authFailBursts",
 ];
 const AUTO_DISABLE_FIELDS = ["autoDisabledAt", "autoDisabledReason", ...AUTH_STREAK_FIELDS];
 

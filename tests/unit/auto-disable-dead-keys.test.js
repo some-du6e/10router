@@ -271,6 +271,29 @@ describe("auth-dead keys turn off", () => {
     expect(localDbWrites.count).toBe(before + 1);
   });
 
+  it.each([
+    ["the clear-cooldown route", null],
+    ["a row with no test status", { testStatus: null }],
+  ])("clears an error code left behind by %s on the next success, then stops writing", async (_label, extra) => {
+    const key = await addKey("a", { authType: "oauth", accessToken: "test-access-token" });
+    await failOnce(key.id, "m1", 401, "Invalid token");
+    const { POST: availability } = await import("@/app/api/models/availability/route.js");
+    const res = await availability(new Request("http://localhost/api/models/availability", {
+      method: "POST", body: JSON.stringify({ action: "clearCooldown", provider, model: "m1" }),
+    }));
+    expect(res.status).toBe(200);
+    if (extra) await db.updateProviderConnection(key.id, extra);
+    expect(await load(key.id)).toMatchObject({ modelLock_m1: null, lastError: null, errorCode: 401 });
+
+    const before = localDbWrites.count;
+    await succeed(key.id, "m1");
+    expect((await load(key.id)).errorCode).toBeNull();
+    expect(localDbWrites.count).toBe(before + 1);
+    await succeed(key.id, "m1");
+    await succeed(key.id, "m2");
+    expect(localDbWrites.count).toBe(before + 1);
+  });
+
   it("still clears an expired lock left on another model", async () => {
     const key = await addKey("a");
     await failOnce(key.id, "m1", 429, "Too many requests");
@@ -792,16 +815,20 @@ describe("keys of one endpoint on different upstreams", () => {
     }
   }
 
-  // Requests every minute while someone works, none while they're away.
+  // By default, requests every minute while someone works and none while
+  // they're away; modelAt(minute, requestsSoFar) can pick any other pattern.
   // Returns the minutes from the dead key's first failure until it turned off.
-  async function drive(dead, { workMin, idleMin, totalMin, onMinute }) {
+  async function drive(dead, { workMin, idleMin, totalMin, onMinute, modelAt }) {
+    modelAt ??= (minute, i) => (minute % (workMin + idleMin) < workMin ? models[i % 2] : null);
     let firstFailAt = null;
     let requests = 0;
     for (let minute = 0; minute < totalMin; minute++) {
       if (minute > 0) vi.advanceTimersByTime(MIN);
       await onMinute?.(minute);
-      if (minute % (workMin + idleMin) >= workMin) continue;
-      await route(models[requests++ % 2], [dead.id]);
+      const model = modelAt(minute, requests);
+      if (!model) continue;
+      requests++;
+      await route(model, [dead.id]);
       const conn = await load(dead.id);
       firstFailAt ??= conn.lastErrorAt ? Date.now() : null;
       if (!conn.isActive) return (Date.now() - firstFailAt) / MIN;
@@ -836,6 +863,54 @@ describe("keys of one endpoint on different upstreams", () => {
     expect(minutes).toBeLessThanOrEqual(90);
   });
 
+  // Light steady traffic: a request every minMin-maxMin minutes, on a model
+  // picked at random, from a seeded generator so every run is the same.
+  function steadyTraffic(seed, minMin, maxMin) {
+    let state = seed;
+    const random = () => {
+      state = (state + 0x6d2b79f5) | 0;
+      let t = Math.imul(state ^ (state >>> 15), 1 | state);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const at = new Map();
+    for (let minute = 0; minute < 24 * 60; minute += minMin + Math.floor(random() * (maxMin - minMin + 1))) {
+      at.set(minute, models[random() < 0.5 ? 0 : 1]);
+    }
+    return (minute) => at.get(minute) ?? null;
+  }
+
+  async function tripMinutesBySeed(minMin, maxMin, totalMin) {
+    const bySeed = {};
+    for (let seed = 1; seed <= 40; seed++) {
+      provider = `${PROVIDER}-${++seq}`;
+      const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
+      await addKey("b", snowflake("acct-live"));
+      bySeed[seed] = await drive(dead, { totalMin, modelAt: steadyTraffic(seed, minMin, maxMin) });
+    }
+    return bySeed;
+  }
+
+  it.each([
+    [3, 8, 90],
+    [8, 10, 150],
+  ])("turns off the dead key under light steady traffic, a request every %i-%i minutes, within %i minutes", async (minMin, maxMin, limitMin) => {
+    const bySeed = await tripMinutesBySeed(minMin, maxMin, limitMin + 1);
+    const late = Object.entries(bySeed).filter(([, minutes]) => minutes === null || minutes > limitMin);
+    expect(late).toEqual([]);
+  }, 120000);
+
+  // The first session leaves one counted failure: under fill-first a model's
+  // first refusal comes before its peer serves it, so only the retry counts.
+  it("turns off the dead key when a lone early failure is followed by a pause and then steady work", async () => {
+    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
+    await addKey("b", snowflake("acct-live"));
+    const modelAt = (minute, i) => (minute < 3 || minute >= 18 ? models[i % 2] : null);
+    const minutes = await drive(dead, { totalMin: 3 * 60, modelAt });
+    expect(minutes).toBeGreaterThanOrEqual(60);
+    expect(minutes).toBeLessThanOrEqual(90);
+  }, 60000);
+
   it("keeps the streak through a 15-minute idle gap, but starts over after a gap of more than an hour", async () => {
     const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
     const healthy = await addKey("b", snowflake("acct-live"));
@@ -864,6 +939,15 @@ describe("keys of one endpoint on different upstreams", () => {
     vi.advanceTimersByTime(17.5 * MIN);
     await fail(dead.id, { times: 5, models, peers: [healthy], stepMs: 15 * MIN });
     expect(await load(dead.id)).toMatchObject({ isActive: true, authFailCount: 7, authFailBursts: 1 });
+  });
+
+  it("never trips on single refusals followed by one short burst, however long ago the first was", async () => {
+    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
+    const healthy = await addKey("b", snowflake("acct-live"));
+    await fail(dead.id, { times: 4, models, peers: [healthy], stepMs: 15 * MIN });
+    vi.advanceTimersByTime(12 * MIN);
+    await fail(dead.id, { times: 5, models, peers: [healthy], stepMs: 2.5 * MIN });
+    expect(await load(dead.id)).toMatchObject({ isActive: true, authFailCount: 9, authFailRunCount: 5, authFailBursts: 1 });
   });
 
   it("trips over an hour once the refusals include 2 bursts", async () => {

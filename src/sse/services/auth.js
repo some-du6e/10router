@@ -28,7 +28,7 @@ function githubMonthlyResetMs(status, errorText, provider) {
 
 const AUTH_FAIL_CLEARED = {
   authFailCount: null, authFailFirstAt: null, authFailLastAt: null, authFailModels: null, authFailAll401: null,
-  authFailSameUpstream: null, authFailRunCount: null, authFailBursts: null,
+  authFailSameUpstream: null, authFailRunCount: null, authFailRunStartAt: null, authFailBursts: null,
 };
 const MAX_TRACKED_MODELS = 5;
 const REASON_MAX_CHARS = 80;
@@ -149,6 +149,7 @@ function nextAuthFailStreak(conn, model, status, sameUpstream) {
   return {
     authFailCount: (fresh ? 0 : conn.authFailCount || 0) + 1,
     authFailRunCount: run,
+    authFailRunStartAt: run === 1 ? new Date(now).toISOString() : conn.authFailRunStartAt || conn.authFailFirstAt,
     authFailBursts: bursts + (run === 2 ? 1 : 0),
     authFailFirstAt: fresh ? new Date(now).toISOString() : conn.authFailFirstAt,
     authFailLastAt: new Date(now).toISOString(),
@@ -158,13 +159,15 @@ function nextAuthFailStreak(conn, model, status, sameUpstream) {
   };
 }
 
-// A streak broken by idle gaps needs 2 bursts, so a few refusals spread thinly
-// over an hour can't trip it.
+// Trips once the current run alone has minFailures over the window, or once
+// the streak has 2 bursts and spans the window: a few refusals spread thinly
+// over an hour, or one burst followed by them, can't trip it.
 function isAuthDead(streak) {
   const windowMs = streak.authFailSameUpstream ? AUTH_DEAD_CONFIG.minWindowMs : AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
-  return streak.authFailCount >= AUTH_DEAD_CONFIG.minFailures
-    && Date.now() - new Date(streak.authFailFirstAt).getTime() >= windowMs
-    && (streak.authFailRunCount === streak.authFailCount || streak.authFailBursts >= 2)
+  const spans = (at) => Date.now() - new Date(at).getTime() >= windowMs;
+  const runAlone = streak.authFailRunCount >= AUTH_DEAD_CONFIG.minFailures && spans(streak.authFailRunStartAt);
+  const bursts = streak.authFailBursts >= 2 && spans(streak.authFailFirstAt);
+  return streak.authFailCount >= AUTH_DEAD_CONFIG.minFailures && (runAlone || bursts)
     && (streak.authFailAll401 || streak.authFailModels.length >= AUTH_DEAD_CONFIG.minModels);
 }
 
@@ -517,7 +520,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
   const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_")
     && (conn[k] || conn[k.replace("modelLock_", PROVIDER_RESET_PREFIX)] || conn[k.replace("modelLock_", MODEL_LIMIT_PREFIX)]));
 
-  if (!conn.testStatus && !conn.lastError && allLockKeys.length === 0 && !conn.authFailCount) return;
+  if (!conn.testStatus && !conn.lastError && !conn.errorCode && allLockKeys.length === 0 && !conn.authFailCount) return;
 
   // Keys to clear: current model's lock + all expired locks
   const keysToClear = allLockKeys.filter(k => {
@@ -528,7 +531,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
     return expiry && new Date(expiry).getTime() <= now;   // expired
   });
 
-  if (keysToClear.length === 0 && conn.testStatus !== "unavailable" && !conn.lastError && !conn.authFailCount) return;
+  if (keysToClear.length === 0 && conn.testStatus !== "unavailable" && !conn.lastError && !conn.errorCode && !conn.authFailCount) return;
 
   // Check if any active locks remain after clearing
   const remainingActiveLocks = allLockKeys.filter(k => {

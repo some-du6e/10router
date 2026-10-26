@@ -46,14 +46,15 @@ export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 // retried every time its model lock expires. Each failure counts only if another
 // key behind the same proxy served that model, and wasn't refused on it, since
 // this key's previous failure on it (the first: within minWindowMs). Trips at
-// minFailures with no success in between, when they were all 401s or span
-// minModels models (a 403 on one model can be a plan limit), spread over
+// minFailures with no success in between, when they were all 401s or (401s or
+// 403s) span minModels models (a 403 on one model can be a plan limit), spread over
 // minWindowMs if every failure had a peer on the same upstream (base URL, Azure
 // endpoint, region, location, account, project), else over
 // crossUpstreamWindowMs, since a key on its own server may be refused because
-// that server is down. A gap longer than the streak's window starts it over; a
-// cross-upstream streak with gaps over minWindowMs also needs 2 bursts (2+
-// counted failures with no such gap between them).
+// that server is down. A gap longer than the streak's window starts it over. A
+// streak with gaps over minWindowMs trips once the failures since the last such
+// gap span the window on their own, or once it has 2 bursts (2+ counted
+// failures with no such gap between them) and spans the window.
 export const AUTH_DEAD_CONFIG = {
   minFailures: 5,
   minWindowMs: 10 * 60 * 1000,
