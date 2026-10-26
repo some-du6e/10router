@@ -149,7 +149,10 @@ function nextAuthFailStreak(conn, model, status, sameUpstream) {
   return {
     authFailCount: (fresh ? 0 : conn.authFailCount || 0) + 1,
     authFailRunCount: run,
-    authFailRunStartAt: run === 1 ? new Date(now).toISOString() : conn.authFailRunStartAt || conn.authFailFirstAt,
+    // A streak saved before runs had a start: the run is the whole streak only
+    // if it has no gap in it; otherwise start the run at its last failure.
+    authFailRunStartAt: run === 1 ? new Date(now).toISOString() : conn.authFailRunStartAt
+      || (conn.authFailRunCount == null || conn.authFailRunCount === conn.authFailCount ? conn.authFailFirstAt : conn.authFailLastAt),
     authFailBursts: bursts + (run === 2 ? 1 : 0),
     authFailFirstAt: fresh ? new Date(now).toISOString() : conn.authFailFirstAt,
     authFailLastAt: new Date(now).toISOString(),
@@ -558,6 +561,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
       backoffLevel: 0
     });
   }
+  if (Object.keys(clearObj).length === 0) return;
 
   await updateProviderConnection(connectionId, clearObj);
 }

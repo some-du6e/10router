@@ -252,6 +252,20 @@ describe("auth-dead keys turn off", () => {
     expect(localDbWrites.count).toBe(before + 1);
   });
 
+  it("writes nothing on successes while another model is still locked after a manual clear", async () => {
+    const key = await addKey("a");
+    await failOnce(key.id, "m1", 429, "Too many requests");
+    await failOnce(key.id, "m2", 429, "Too many requests");
+    // What the clear-cooldown route writes: errorCode and m2's lock stay.
+    await db.updateProviderConnection(key.id, { modelLock_m1: null, testStatus: "active", lastError: null, lastErrorAt: null, backoffLevel: 0 });
+    await succeed(key.id, "m3");
+    const before = localDbWrites.count;
+    await succeed(key.id, "m3");
+    await succeed(key.id, "m3");
+    expect(localDbWrites.count).toBe(before);
+    expect(await load(key.id)).toMatchObject({ modelLock_m2: expect.any(String) });
+  });
+
   it.each([
     ["the same model", "m1"],
     ["another model", "m3"],
@@ -923,6 +937,23 @@ describe("keys of one endpoint on different upstreams", () => {
     vi.advanceTimersByTime(61 * MIN);
     await fail(dead.id, { times: 1, models, peers: [healthy] });
     expect(await load(dead.id)).toMatchObject({ isActive: true, authFailCount: 1, authFailFirstAt: new Date().toISOString() });
+  });
+
+  it("takes the full hour for a streak saved before runs had a start", async () => {
+    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
+    const healthy = await addKey("b", snowflake("acct-live"));
+    // A lone refusal 36 minutes ago, then a run of 3 ending 6 minutes ago.
+    await db.updateProviderConnection(dead.id, {
+      authFailCount: 4, authFailRunCount: 3, authFailBursts: 1, authFailModels: models,
+      authFailAll401: false, authFailSameUpstream: false,
+      authFailFirstAt: new Date(Date.now() - 36 * MIN).toISOString(),
+      authFailLastAt: new Date(Date.now() - 6 * MIN).toISOString(),
+    });
+    await fail(dead.id, { times: 10, models, peers: [healthy], stepMs: 3 * MIN });
+    expect((await load(dead.id)).isActive).toBe(true);
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(dead.id, { times: 11, models, peers: [healthy], stepMs: 3 * MIN });
+    expect((await load(dead.id)).isActive).toBe(false);
   });
 
   it("never trips on single refusals spread thinly over more than an hour", async () => {
