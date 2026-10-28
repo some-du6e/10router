@@ -3,7 +3,7 @@ import {
   getProviderConnections,
   updateProviderConnection,
 } from "@/lib/localDb";
-import { getAuthLockKey } from "open-sse/services/accountFallback.js";
+import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey } from "open-sse/services/accountFallback.js";
 
 const MODEL_LOCK_PREFIX = "modelLock_";
 
@@ -20,6 +20,15 @@ function getActiveModelLocks(connection) {
     .filter((lock) => lock.active);
 }
 
+// Models the connection is demoted on (other keys are tried first), shown and
+// cleared like cooldowns.
+function getRunningDemotions(connection) {
+  const now = Date.now();
+  return Object.entries(connection)
+    .filter(([key, value]) => key.startsWith(AUTH_DEMOTE_PREFIX) && new Date(value?.until).getTime() > now)
+    .map(([key, value]) => ({ model: key.slice(AUTH_DEMOTE_PREFIX.length), until: value.until }));
+}
+
 export async function GET() {
   try {
     const connections = await getProviderConnections();
@@ -27,6 +36,8 @@ export async function GET() {
 
     for (const connection of connections) {
       const locks = getActiveModelLocks(connection);
+      const lockedModels = new Set(locks.map((lock) => lock.model));
+      locks.push(...getRunningDemotions(connection).filter((d) => !lockedModels.has(d.model)));
       for (const lock of locks) {
         models.push({
           provider: connection.provider,
@@ -74,16 +85,15 @@ export async function POST(request) {
 
     const connections = await getProviderConnections({ provider });
     const lockKey = `${MODEL_LOCK_PREFIX}${model}`;
-    // A long lock's level goes too, so the next refusal doesn't double it.
-    const authLockKey = getAuthLockKey(model);
+    const demoteKey = getAuthDemoteKey(model);
 
     await Promise.all(
       connections
-        .filter((connection) => connection[lockKey] || connection[authLockKey])
+        .filter((connection) => connection[lockKey] || connection[demoteKey])
         .map((connection) =>
           updateProviderConnection(connection.id, {
             [lockKey]: null,
-            [authLockKey]: null,
+            [demoteKey]: null,
             ...(connection.testStatus === "unavailable"
               ? {
                   testStatus: "active",

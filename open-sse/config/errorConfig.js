@@ -55,22 +55,16 @@ export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 // streak with gaps over minWindowMs trips once the failures since the last such
 // gap span the window on their own, or once it has 2 bursts (2+ counted
 // failures with no such gap between them) and spans the window. A streak that
-// would trip with 403s on fewer models (the key may lack only that model) locks
-// that model on the key instead: for oneModelLockMs, doubling on each refusal
-// after the lock runs out, up to maxOneModelLockMs, until the key succeeds on
-// that model, gets a new key, is switched off and on, or has that model's
-// cooldown cleared; 401s never get one. Such a streak survives gaps up to
-// crossUpstreamWindowMs (another model joining it on the same upstream keeps
-// only the failures since its last gap over minWindowMs), and a running long
-// lock the streak raised on one of its models counts as a 403 for up to
-// crossUpstreamWindowMs past the last real one.
+// would trip with 403s on one model (the key may lack only that model) demotes
+// the key on that model instead: other keys are tried first for demoteMs,
+// doubling on each refusal after it runs out, up to maxDemoteMs.
 export const AUTH_DEAD_CONFIG = {
   minFailures: 5,
   minWindowMs: 10 * 60 * 1000,
   crossUpstreamWindowMs: 60 * 60 * 1000,
   minModels: 2,
-  oneModelLockMs: 60 * 60 * 1000,
-  maxOneModelLockMs: 24 * 60 * 60 * 1000,
+  demoteMs: 60 * 60 * 1000,
+  maxDemoteMs: 24 * 60 * 60 * 1000,
 };
 
 // Cooldown durations (ms)

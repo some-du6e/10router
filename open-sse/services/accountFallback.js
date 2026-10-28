@@ -135,10 +135,10 @@ export function getModelLockKey(model) {
   return model ? `${MODEL_LOCK_PREFIX}${model}` : MODEL_LOCK_ALL;
 }
 
-// authLock_<model>: { level, until } of the long lock a key refused on that one
-// model got (sse/services/auth.js). It outlives the lock so the next one doubles.
-export const AUTH_LOCK_PREFIX = "authLock_";
-export const getAuthLockKey = (model) => `${AUTH_LOCK_PREFIX}${model}`;
+// authDemote_<model>: { level, until, at } for a key demoted on that model by
+// sse/services/auth.js; other keys are tried first until `until`.
+export const AUTH_DEMOTE_PREFIX = "authDemote_";
+export const getAuthDemoteKey = (model) => `${AUTH_DEMOTE_PREFIX}${model}`;
 
 /**
  * Check if a model lock on a connection is still active.
