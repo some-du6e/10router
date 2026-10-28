@@ -210,8 +210,10 @@ const probeMs = (level) => AUTH_DEMOTE_CONFIG.probeMs[Math.min(level, AUTH_DEMOT
 // nowMs (see AUTH_DEMOTE_CONFIG); lastCountedAt is its last refusal the turn-off
 // rule counts too. It doesn't trip while the key was refused, in a way that rule
 // counts, on another model (lastly at otherRefusalAt) within the window: that
-// rule decides then. A demoted record counts on and moves its next probe out.
-function nextDemoteRecord(record, nowMs, { sameUpstream, otherRefusalAt = -Infinity, modelScoped = false, reason }) {
+// rule decides then. A new count keeps the key's last success before it
+// (lastServedAt) as servedAt. A demoted record counts on and moves its next
+// probe out, keeping the lease of the probe just answered.
+function nextDemoteRecord(record, nowMs, { sameUpstream, otherRefusalAt = -Infinity, modelScoped = false, lastServedAt, reason }) {
   const now = new Date(nowMs).toISOString();
   const lastCountedAt = modelScoped ? record?.lastCountedAt : now;
   if (record?.demotedAt) {
@@ -225,8 +227,9 @@ function nextDemoteRecord(record, nowMs, { sameUpstream, otherRefusalAt = -Infin
   const firstAt = restart ? now : record.firstAt;
   const allSameUpstream = sameUpstream && (restart || record.sameUpstream === true);
   const windowMs = allSameUpstream ? AUTH_DEAD_CONFIG.minWindowMs : AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
+  const servedAt = restart ? (Number.isFinite(lastServedAt) ? new Date(lastServedAt).toISOString() : undefined) : record.servedAt;
   const next = {
-    count, firstAt, lastAt: now, lastCountedAt,
+    count, firstAt, lastAt: now, lastCountedAt, servedAt,
     sameUpstream: allSameUpstream, modelScoped: modelScoped || (!restart && record.modelScoped === true),
   };
   const enough = count >= AUTH_DEAD_CONFIG.minFailures && nowMs - new Date(firstAt).getTime() >= windowMs;
@@ -251,9 +254,10 @@ const demotionOf = (conn, model) => {
 };
 
 // A demotion for refusals the turn-off rule counts, with nothing served since
-// its count began.
+// minWindowMs before its count began.
 const isFirm = (conn, r) => !!r?.demotedAt && !r.modelScoped && !(conn.authDemoteOkAt >= r.firstAt)
-  && !succeededSince(conn.id, new Date(r.firstAt).getTime() + 1);
+  && !succeededSince(conn.id, new Date(r.firstAt).getTime() + 1)
+  && !(new Date(r.servedAt).getTime() >= new Date(r.firstAt).getTime() - AUTH_DEAD_CONFIG.minWindowMs);
 
 // Refused, in ways the turn-off rule counts, on 2 models with nothing served in
 // between, the key is dead (tests/unit/auto-disable-stress.test.js replays it).
@@ -289,12 +293,15 @@ async function planDemotion(connections, conn, model, status, errorText, evidenc
   // Defers to the turn-off rule only for models in its current count.
   const otherRefusalAt = modelEvidence ? -Infinity : Math.max(...records
     .filter(([m]) => m !== model && streakModels.includes(m)).map(([, r]) => new Date(r.lastCountedAt).getTime()).filter(Number.isFinite));
+  const lastServedAt = Math.max(authEvents.success.get(conn.id)?.at ?? -Infinity, new Date(conn.authDemoteOkAt || NaN).getTime() || -Infinity);
   const to = nextDemoteRecord(current, Date.now(), {
-    sameUpstream: demoteEvidence === "same-upstream", otherRefusalAt, modelScoped: !!modelEvidence, reason: refusalText(status, errorText),
+    sameUpstream: demoteEvidence === "same-upstream", otherRefusalAt, modelScoped: !!modelEvidence, lastServedAt,
+    reason: refusalText(status, errorText),
   });
   const demoting = !!to.demotedAt && !current?.demotedAt;
-  // Refused here while demoted elsewhere: probe there now, to tell a key dead
-  // on both from one that has recovered there. That includes demotions the key
+  // Refused here while demoted elsewhere: probe there now, once its last
+  // probe's lease is over, to tell a key dead on both from one that has
+  // recovered there. That includes demotions the key
   // served since: a key failing at random clears them sooner this way.
   const probeNow = evidence && !current?.demotedAt
     ? records.filter(([m, r]) => m !== model && !r.modelScoped).map(([m]) => m) : [];
@@ -308,8 +315,9 @@ async function planDemotion(connections, conn, model, status, errorText, evidenc
   };
 }
 
-// Takes the demoted key's next probe on the model, at most one across requests
-// until it is answered (a refusal moves the next one out) or its lease ends.
+// Takes the demoted key's next probe on the model: at most one per lease
+// (probeLeaseMs) across requests, and no sooner than nextProbeAt, which a
+// refused probe moves out.
 async function claimProbe(conn, model, from) {
   const now = Date.now();
   if (now < new Date(from.nextProbeAt).getTime() || now < new Date(from.leaseUntil || 0).getTime()) return false;
@@ -422,7 +430,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const preferred = usableConnections.filter(c => !demotions.get(c.id));
     let availableConnections = preferred.length > 0 ? preferred : usableConnections;
     if (preferred.length > 0) {
-      for (const c of usableConnections.filter(c => demotions.get(c.id))) {
+      // Under fill-first a key behind a usable one wouldn't be tried anyway
+      // (a backup), so only demoted keys ahead of them are probed.
+      const ahead = strategy === "fill-first" ? usableConnections.slice(0, usableConnections.indexOf(preferred[0])) : usableConnections;
+      for (const c of ahead.filter(c => demotions.get(c.id))) {
         if (await claimProbe(c, model, demotions.get(c.id))) {
           availableConnections = [c];
           break;

@@ -3,7 +3,8 @@
 // public auth calls, so the same file runs on any version of auth.js: run it
 // here and on master to compare.
 //   cd tests && npx vitest run --config ./vitest.stress.config.js unit/auto-disable-stress.test.js
-// Set STRESS_OUT=<file> to also write the results as JSON.
+// Set STRESS_OUT=<file> to also write the results as JSON, and STRESS_PIN=1 to
+// fail when they drift from the numbers this branch's PR reports.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -64,17 +65,20 @@ async function setup(names, cross = false) {
 }
 
 // One request as the router serves it: fill-first, falling back past refusals.
-// Returns the key that served it, or null.
+// refuses(id) is false to serve, true (a 403) or 429 to fail. Returns the key
+// that served it, or null.
 async function serve(model, refuses) {
   const tried = new Set();
   for (;;) {
     const creds = await auth.getProviderCredentials(provider, tried, model);
     if (!creds?.connectionId) return null;
-    if (!refuses(creds.connectionId)) {
+    const failure = refuses(creds.connectionId);
+    if (!failure) {
       await auth.clearAccountError(creds.connectionId, creds, model);
       return creds.connectionId;
     }
-    await auth.markAccountUnavailable(creds.connectionId, 403, DEAD_403, provider, model);
+    const [status, text] = failure === 429 ? [429, "Too many requests"] : [403, DEAD_403];
+    await auth.markAccountUnavailable(creds.connectionId, status, text, provider, model);
     tried.add(creds.connectionId);
   }
 }
@@ -103,6 +107,9 @@ async function run(keys, totalMin, requests) {
 }
 
 const session = (workMin, idleMin) => (m) => m % (workMin + idleMin) < workMin;
+
+// What this branch's PR reports; checked with STRESS_PIN=1.
+const PINNED = JSON.parse(fs.readFileSync(new URL("./auto-disable-stress.pinned.json", import.meta.url), "utf8"));
 const tenOnThirteenOff = session(10, 13);
 
 it("replays the dead-key scenarios", async () => {
@@ -191,6 +198,30 @@ it("replays the dead-key scenarios", async () => {
     }
   }
 
+  // E1: a key lacking opus (a 403 not saying so), flaky on sonnet, a healthy
+  // peer; requests on either model, 6 hours.
+  // E2: the same key as a backup, tried only when the primary is rate limited
+  // (on 20% of requests).
+  out.lacksOpus = {};
+  for (const [label, backup] of [["E1, main key", false], ["E2, backup key", true]]) {
+    for (const share of [0, 0.2, 0.4]) {
+      let off = 0;
+      for (let seed = 1; seed <= 30; seed++) {
+        const r = rng(seed * 17 + (backup ? 5 : 0));
+        const keys = await setup(backup ? ["primary", "k"] : ["k", "peer"]);
+        const k = keys[backup ? 1 : 0];
+        const { offAt } = await run([k], 6 * 60, () => {
+          const model = r() < 0.5 ? OPUS : SONNET;
+          const flaky = r() < share;
+          const limited = r() < 0.2;
+          return [[model, (id) => (id === k.id ? model === OPUS || flaky : backup && limited ? 429 : false)]];
+        });
+        if (offAt[k.id] !== undefined) off++;
+      }
+      out.lacksOpus[`${label}, sonnet flaky ${share * 100}%`] = `${off}/30 off`;
+    }
+  }
+
   // A key refused on opus and kimi that serves sonnet, every model each minute, 6 hours.
   const [partial] = await setup(["partial", "peer"]);
   const partialRun = await run([partial], 6 * 60, () => [OPUS, KIMI, SONNET].map((model) => [model, (id) => id === partial.id && model !== SONNET]));
@@ -201,5 +232,5 @@ it("replays the dead-key scenarios", async () => {
 
   console.log(JSON.stringify(out, null, 2));
   if (process.env.STRESS_OUT) fs.writeFileSync(process.env.STRESS_OUT, JSON.stringify(out, null, 2));
-  expect(out.lacksTwoModels.turnedOff).toBe(false);
+  if (process.env.STRESS_PIN) expect(out).toEqual(PINNED);
 }, 3600000);

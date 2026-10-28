@@ -1479,6 +1479,88 @@ describe("a key refused on only one model", () => {
     await expect(auth.markAccountUnavailable("gone", 403, NO_ACCESS, provider, "m1")).resolves.toMatchObject({ shouldFallback: true });
   });
 
+  it.each([
+    [3, true],
+    [11, false],
+  ])("treats a demotion as a sign of a dead key only if the key last served over 10 minutes before its count began (%i minutes: on is %s)", async (
+    minutesBefore, stillOn,
+  ) => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await succeed(dead.id, "m3");
+    vi.advanceTimersByTime(minutesBefore * MIN);
+    await fail(dead.id, { times: 5, models: ["m1"], peers: [healthy] });
+    expect(demoted(await load(dead.id))).toBe(true);
+    await pausedThenProbed(dead, healthy);
+    await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
+    vi.advanceTimersByTime(MIN);
+    await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy] });
+    expect((await load(dead.id)).isActive).toBe(stillOn);
+  });
+
+  it("remembers through a restart that the key served just before a count began", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
+    vi.advanceTimersByTime(MIN);
+    await succeed(dead.id, "m3");
+    expect((await load(dead.id)).authDemoteOkAt).toBe(new Date().toISOString());
+    global._authEvents.success.clear();
+    global._authEvents.refused.clear();
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(dead.id, { times: 5, models: ["m1"], peers: [healthy] });
+    expect(demoted(await load(dead.id))).toBe(true);
+    vi.advanceTimersByTime(11 * MIN);
+    await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
+    vi.advanceTimersByTime(MIN);
+    await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy] });
+    expect((await load(dead.id)).isActive).toBe(true);
+  });
+
+  it("does not probe a demoted backup key while the key ahead of it serves, as fill-first wouldn't try it", async () => {
+    const primary = await addKey("a");
+    const backup = await addKey("b");
+    await fail(backup.id, { times: 5, models: ["m1"], peers: [primary] });
+    expect(demoted(await load(backup.id))).toBe(true);
+    await atProbe(backup.id);
+    expect(await pick("m1")).toBe(primary.id);
+    expect(record(await load(backup.id))).not.toHaveProperty("probeId");
+  });
+
+  it("takes at most one probe per lease, even when another model's refusal makes it due", async () => {
+    const { dead, healthy } = await demotedKey();
+    for (let i = 0; i < 2; i++) {
+      await atProbe(dead.id);
+      expect(await pick("m1")).toBe(dead.id);
+      await succeed(healthy.id, "m1");
+      await failOnce(dead.id, "m1");
+    }
+    const { leaseUntil } = record(await load(dead.id));
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
+    vi.advanceTimersByTime(MIN);
+    expect(await pick("m1")).toBe(healthy.id);
+    vi.setSystemTime(new Date(leaseUntil));
+    expect(await pick("m1")).toBe(dead.id);
+  });
+
+  it("counts a refusal on another model exactly 10 minutes after the previous one there as the 2nd", async () => {
+    const { dead, healthy } = await demotedKey();
+    await pausedThenProbed(dead, healthy);
+    await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
+    vi.advanceTimersByTime(10 * MIN);
+    await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
+    expect((await load(dead.id)).isActive).toBe(false);
+  });
+
+  it("does not make a demotion due for a probe on a refusal of just another model", async () => {
+    const { dead, healthy } = await demotedKey();
+    const { nextProbeAt } = record(await load(dead.id));
+    vi.advanceTimersByTime(MIN);
+    await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy], text: NO_ACCESS });
+    expect(record(await load(dead.id)).nextProbeAt).toBe(nextProbeAt);
+  });
+
   it("writes the demotion message once, and lets a later error replace it", async () => {
     const { dead, healthy } = await demotedKey();
     expect((await load(dead.id)).lastError).toBe(MESSAGE);

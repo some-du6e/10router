@@ -306,8 +306,8 @@ export async function updateProviderConnection(id, data, { autoDisable = null, d
     const demoteKey = demote && getAuthDemoteKey(demote.model);
     if (demote && !staleKey && JSON.stringify(existing[demoteKey] ?? null) === JSON.stringify(demote.from ?? null)) {
       Object.assign(merged, demote.data, { [demoteKey]: demote.to });
-      // Other models' demotions to probe right away (a probe already out keeps
-      // its lease).
+      // Other models' demotions to probe right away (still no sooner than the
+      // last probe's lease ends).
       const now = new Date().toISOString();
       for (const model of demote.probeNow || []) {
         const record = existing[getAuthDemoteKey(model)];
