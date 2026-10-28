@@ -20,7 +20,8 @@ const AUTH_STREAK_FIELDS = [
 const AUTO_DISABLE_FIELDS = ["autoDisabledAt", "autoDisabledReason", ...AUTH_STREAK_FIELDS];
 
 // authDemote_<model>: sse/services/auth.js's count of a key's 403s on that
-// model, and its demotion there once they trip.
+// model, and its demotion there once they trip. authDemoteOkAt: when the key
+// last served anything while demoted somewhere (only compared with demotedAt).
 export const AUTH_DEMOTE_PREFIX = "authDemote_";
 export const getAuthDemoteKey = (model) => `${AUTH_DEMOTE_PREFIX}${model}`;
 
@@ -30,8 +31,8 @@ function applyAutoDisableTransition(existing, merged, data) {
   // A different key pasted into a connection the router turned off fixes it.
   if (existing.autoDisabledAt && data.isActive === undefined && keyChanged) merged.isActive = true;
   const reEnabled = existing.isActive === false && merged.isActive === true;
-  // So do its demotions.
   if (reEnabled || keyChanged) {
+    // A new key or turning the key back on clears its demotions too.
     for (const k of Object.keys(merged)) if (k.startsWith(AUTH_DEMOTE_PREFIX)) merged[k] = null;
   }
   if (reEnabled) {

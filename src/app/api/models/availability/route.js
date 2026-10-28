@@ -38,20 +38,22 @@ export async function GET() {
         });
       }
 
-      // Models the key is demoted on: other keys go first until it serves again.
+      // Models an active key is demoted on: other keys go first until it
+      // serves again. Past its probe time it waits for the next request.
       let demotions = 0;
       for (const [key, demotion] of Object.entries(connection)) {
-        if (!key.startsWith(AUTH_DEMOTE_PREFIX) || !demotion?.demotedAt) continue;
+        if (connection.isActive === false || !key.startsWith(AUTH_DEMOTE_PREFIX) || !demotion?.demotedAt) continue;
         const model = key.slice(AUTH_DEMOTE_PREFIX.length);
         if (locks.some((lock) => lock.model === model)) continue;
+        const probeDue = !(new Date(demotion.nextProbeAt).getTime() > Date.now());
         models.push({
           provider: connection.provider,
           model,
           status: "cooldown",
-          until: demotion.nextProbeAt,
+          until: probeDue ? null : demotion.nextProbeAt,
           connectionId: connection.id,
           connectionName: connection.name || connection.email || connection.id,
-          lastError: `Demoted after repeated ${demotion.reason}`,
+          lastError: `Demoted after repeated ${demotion.reason}${probeDue ? " (probe due)" : ""}`,
         });
         demotions++;
       }

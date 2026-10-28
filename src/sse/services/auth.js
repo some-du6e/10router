@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools } from "@/lib/localDb";
-import { getAuthDemoteKey } from "@/lib/db/index.js";
+import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey } from "@/lib/db/index.js";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG, AUTH_DEMOTE_CONFIG, ERROR_RULES } from "open-sse/config/errorConfig.js";
@@ -64,12 +64,15 @@ const succeededSince = (key, sinceMs) => (authEvents.success.get(key)?.at ?? -In
 // AccountOverdueError), refusals of one model ("does not have access to model
 // 'o3'") and of one operation by a restricted key ("Missing scopes: ..."): the
 // key itself is fine.
-const NOT_KEY_REFUSAL = new RegExp([
+const LIMIT_REFUSAL = [
   /\blimit|queue|upgrade|pricing|\bplans?\b|credit|quota|exhausted|usage cap|billing|budget|payment/,
   /\bbalance\b|\bfunds\b|overdue|arrears|unpaid|recharge|top[- ]?up/,
-  /does not have access to (?:the )?model|model_not_found|\bmodel\b.{0,60}?\bnot (?:available|allowed|enabled|permitted|supported)\b/,
-  /insufficient (?:permissions?|scopes?|privileges?)|missing (?:required )?(?:scopes?|permissions?)|permission denied for this operation|not (?:allowed|permitted|authorized) to perform this operation/,
-].map(r => r.source).join("|"), "i");
+];
+const MODEL_REFUSAL = /does not have access to (?:the )?model|model_not_found|\bmodel\b.{0,60}?\bnot (?:available|allowed|enabled|permitted|supported)\b/;
+const OPERATION_REFUSAL = /insufficient (?:permissions?|scopes?|privileges?)|missing (?:required )?(?:scopes?|permissions?)|permission denied for this operation|not (?:allowed|permitted|authorized) to perform this operation/;
+const anyOf = (patterns) => new RegExp(patterns.map(r => r.source).join("|"), "i");
+const NOT_KEY_REFUSAL = anyOf([...LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL]);
+const NOT_MODEL_REFUSAL = anyOf([...LIMIT_REFUSAL, OPERATION_REFUSAL]);
 
 // A 401 or 403 that is not a limit or a refusal of one model: the key itself is refused.
 function isAuthRejection(status, errorText) {
@@ -77,6 +80,15 @@ function isAuthRejection(status, errorText) {
   const text = String(errorText || "");
   const lower = text.toLowerCase();
   return (code === 401 || code === 403) && !isLimitError(code, errorText) && !NOT_KEY_REFUSAL.test(text)
+    && !ERROR_RULES.some(r => r.backoff && r.text && lower.includes(r.text));
+}
+
+// A 403 saying this key may not use the model, and not a limit: the key lacks
+// just that model. Never turns a key off; it can demote it there.
+function isModelRefusal(status, errorText) {
+  const text = String(errorText || "");
+  const lower = text.toLowerCase();
+  return Number(status) === 403 && !isLimitError(403, errorText) && MODEL_REFUSAL.test(text) && !NOT_MODEL_REFUSAL.test(text)
     && !ERROR_RULES.some(r => r.backoff && r.text && lower.includes(r.text));
 }
 
@@ -107,9 +119,10 @@ async function networkPath(conn) {
 // reaches the same upstream, "other-upstream" when only peers on another base
 // URL, account or region do (this key's own server may be the one down), or
 // null. Web search/fetch lock keys ("websearch:x") are not models; ids like
-// "x:free" are.
-async function authFailEvidence(connections, conn, model, status, errorText) {
-  if (!model || /^web(search|fetch):/.test(model) || !isAuthRejection(status, errorText)) return null;
+// "x:free" are. `counts` picks the refusals that count (demotion also counts
+// isModelRefusal ones).
+async function authFailEvidence(connections, conn, model, status, errorText, counts = isAuthRejection) {
+  if (!model || /^web(search|fetch):/.test(model) || !counts(status, errorText)) return null;
   const previous = authEvents.refused.get(`${conn.id}|${model}`);
   remember(authEvents.refused, `${conn.id}|${model}`);
   if (conn.authType !== "apikey") return null;
@@ -189,33 +202,61 @@ function autoDisableReason(status, errorText, streak) {
 const probeMs = (level) => AUTH_DEMOTE_CONFIG.probeMs[Math.min(level, AUTH_DEMOTE_CONFIG.probeMs.length - 1)];
 
 // A key's demotion record for a model after one more counted 403 on it at
-// nowMs (see AUTH_DEMOTE_CONFIG). It trips only while the key's auth streak
-// covers this one model: refused on 2 models, the turn-off rule decides. A
-// demoted record only keeps counting.
-export function nextDemoteRecord(record, nowMs, { sameUpstream, oneModel, reason }) {
+// nowMs (see AUTH_DEMOTE_CONFIG). It doesn't trip while the key was also
+// refused on another model (lastly at otherRefusalAt) within the window: the
+// turn-off rule decides then. A demoted record counts on and moves its next
+// probe further out.
+function nextDemoteRecord(record, nowMs, { sameUpstream, otherRefusalAt = -Infinity, modelScoped = false, reason }) {
   const now = new Date(nowMs).toISOString();
-  if (record?.demotedAt) return { ...record, count: record.count + 1, lastAt: now };
+  if (record?.demotedAt) {
+    const probeLevel = (record.probeLevel || 0) + 1;
+    return { ...record, count: record.count + 1, lastAt: now, probeLevel, nextProbeAt: new Date(nowMs + probeMs(probeLevel)).toISOString() };
+  }
   const sinceLast = nowMs - new Date(record?.lastAt).getTime();
   const restart = !(sinceLast >= 0 && sinceLast <= AUTH_DEAD_CONFIG.crossUpstreamWindowMs);
   const count = (restart ? 0 : record.count) + 1;
   const firstAt = restart ? now : record.firstAt;
   const allSameUpstream = sameUpstream && (restart || record.sameUpstream === true);
   const windowMs = allSameUpstream ? AUTH_DEAD_CONFIG.minWindowMs : AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
-  const next = { count, firstAt, lastAt: now, sameUpstream: allSameUpstream };
-  const due = oneModel && count >= AUTH_DEAD_CONFIG.minFailures && nowMs - new Date(firstAt).getTime() >= windowMs;
-  if (!due) return next;
+  const next = { count, firstAt, lastAt: now, sameUpstream: allSameUpstream, modelScoped: modelScoped || (!restart && record.modelScoped === true) };
+  const enough = count >= AUTH_DEAD_CONFIG.minFailures && nowMs - new Date(firstAt).getTime() >= windowMs;
+  const refusedElsewhere = nowMs - otherRefusalAt <= windowMs;
+  if (!enough || refusedElsewhere) return next;
   return { ...next, demotedAt: now, reason, probeLevel: 0, nextProbeAt: new Date(nowMs + probeMs(0)).toISOString() };
 }
 
-const demotionOf = (conn, model) => (model && conn[getAuthDemoteKey(model)]?.demotedAt ? conn[getAuthDemoteKey(model)] : null);
+export const __test__ = { nextDemoteRecord };
 
-// Takes the demoted key's next probe on the model, at most one per interval
-// across requests; the interval doubles with each probe taken.
+// The key's demotion records, [model, record], skipping any a success on that
+// model since the count began has lifted (one whose write the success's
+// snapshot was too old to make).
+const demoteRecords = (conn) => Object.entries(conn)
+  .filter(([k, r]) => k.startsWith(AUTH_DEMOTE_PREFIX) && r)
+  .map(([k, r]) => [k.slice(AUTH_DEMOTE_PREFIX.length), r])
+  .filter(([m, r]) => !succeededSince(`${conn.id}|${m}`, new Date(r.firstAt).getTime()));
+
+const demoteRecordOf = (conn, model) => demoteRecords(conn).find(([m]) => m === model)?.[1] ?? null;
+const demotionOf = (conn, model) => (model && demoteRecordOf(conn, model)?.demotedAt ? demoteRecordOf(conn, model) : null);
+
+// A model, other than `model`, this key is demoted on for generic refusals, was
+// refused on within that demotion's probe interval (plus minWindowMs), and
+// served nothing at all since: refused on 2 models with nothing in between, the
+// key is dead.
+function deadElsewhere(conn, model) {
+  const now = Date.now();
+  const servedSince = (at) => conn.authDemoteOkAt >= at || succeededSince(conn.id, new Date(at).getTime() + 1);
+  return demoteRecords(conn).find(([m, r]) => m !== model && r.demotedAt && !r.modelScoped
+    && now - new Date(r.lastAt).getTime() <= probeMs(r.probeLevel || 0) + AUTH_DEAD_CONFIG.minWindowMs
+    && !servedSince(r.demotedAt))?.[0] ?? null;
+}
+
+// Takes the demoted key's next probe on the model, at most one across requests
+// until it is answered (a refusal moves the next one out) or the lease ends.
 async function claimProbe(conn, model) {
   const from = demotionOf(conn, model);
   if (!from || Date.now() < new Date(from.nextProbeAt).getTime()) return false;
-  const probeLevel = (from.probeLevel || 0) + 1;
-  const to = { ...from, probeLevel, nextProbeAt: new Date(Date.now() + probeMs(probeLevel)).toISOString(), probeId: randomUUID() };
+  const lease = new Date(Date.now() + AUTH_DEMOTE_CONFIG.probeLeaseMs).toISOString();
+  const to = { ...from, nextProbeAt: lease, probeId: randomUUID() };
   const saved = await updateProviderConnection(conn.id, {}, { demote: { model, from, to } });
   return JSON.stringify(saved?.[getAuthDemoteKey(model)]) === JSON.stringify(to);
 }
@@ -322,7 +363,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const preferred = usableConnections.filter(c => !demotionOf(c, model));
     let availableConnections = preferred.length > 0 ? preferred : usableConnections;
     if (preferred.length > 0) {
-      for (const c of usableConnections) {
+      for (const c of usableConnections.filter(c => demotionOf(c, model))) {
         if (await claimProbe(c, model)) {
           availableConnections = [c];
           break;
@@ -526,18 +567,28 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     autoDisabledAt: new Date().toISOString(),
     autoDisabledReason: autoDisableReason(status, errorText, authFailStreak),
   } : null;
-  // The same refusals, 403s on this model alone, count toward demoting it.
-  const demoteFrom = model ? conn?.[getAuthDemoteKey(model)] ?? null : null;
-  const demoteTo = evidence && Number(status) === 403 ? nextDemoteRecord(demoteFrom, Date.now(), {
-    sameUpstream: evidence === "same-upstream",
-    oneModel: authFailStreak.authFailModels.length < AUTH_DEAD_CONFIG.minModels,
-    reason: refusalText(status, errorText),
+  // The same 403s, and ones refusing just this model, count on this model
+  // alone toward demoting the key on it.
+  const modelEvidence = conn && !evidence && isModelRefusal(status, errorText)
+    ? await authFailEvidence(connections, conn, model, status, errorText, isModelRefusal) : null;
+  const demoteEvidence = (Number(status) === 403 && evidence) || modelEvidence;
+  const otherRefusalAt = conn ? Math.max(...demoteRecords(conn).filter(([m]) => m !== model).map(([, r]) => new Date(r.lastAt).getTime())) : -Infinity;
+  const demoteFrom = demoteEvidence ? conn[getAuthDemoteKey(model)] ?? null : null;
+  const demoteTo = demoteEvidence ? nextDemoteRecord(demoteRecordOf(conn, model), Date.now(), {
+    sameUpstream: demoteEvidence === "same-upstream", otherRefusalAt, modelScoped: !!modelEvidence, reason: refusalText(status, errorText),
   }) : null;
-  const demoting = !!demoteTo?.demotedAt && !demoteFrom?.demotedAt;
+  const demoting = !!demoteTo?.demotedAt && !demoteRecordOf(conn, model)?.demotedAt;
   const demote = demoteTo && {
     model, from: demoteFrom, to: demoteTo,
     data: demoting ? { lastError: `${model} demoted after repeated ${demoteTo.reason}` } : null,
   };
+  // Demoted on another model, refused there lately, served nowhere since: dead.
+  const elsewhere = evidence && !autoDisable ? deadElsewhere(conn, model) : null;
+  const deadOnTwo = elsewhere ? {
+    isActive: false,
+    autoDisabledAt: new Date().toISOString(),
+    autoDisabledReason: `${refusalText(status, errorText)} on ${elsewhere}, ${model}`,
+  } : null;
 
   const update = {
     ...lockUpdate,
@@ -553,15 +604,17 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   };
   // A key pasted in while this request was on its way isn't blamed for it.
   const saved = authFailStreak
-    ? await updateProviderConnection(connectionId, update, { autoDisable, demote, apiKeyUsed: requestApiKey ?? conn.apiKey })
-    : await updateProviderConnection(connectionId, update);
-  const turnedOff = autoDisable && saved?.isActive === false && saved.autoDisabledAt === autoDisable.autoDisabledAt;
+    ? await updateProviderConnection(connectionId, update, { autoDisable: autoDisable || deadOnTwo, demote, apiKeyUsed: requestApiKey ?? conn.apiKey })
+    : demote ? await updateProviderConnection(connectionId, update, { demote, apiKeyUsed: requestApiKey ?? conn.apiKey })
+      : await updateProviderConnection(connectionId, update);
+  const disabling = autoDisable || deadOnTwo;
+  const turnedOff = disabling && saved?.isActive === false && saved.autoDisabledAt === disabling.autoDisabledAt;
   const demoted = demoting && JSON.stringify(saved?.[getAuthDemoteKey(model)]) === JSON.stringify(demoteTo);
 
   const lockKey = Object.keys(lockUpdate)[0];
   const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
   log.warn("AUTH", `${connName} locked ${lockKey} for ${Math.round(cooldownMs / 1000)}s [${status}]`);
-  if (turnedOff) log.warn("AUTH", `${connName} turned off automatically: ${autoDisable.autoDisabledReason}`);
+  if (turnedOff) log.warn("AUTH", `${connName} turned off automatically: ${disabling.autoDisabledReason}`);
   if (demoted) log.warn("AUTH", `${connName} demoted on ${model} after repeated ${status}s`);
 
   if (provider && status && reason) {
@@ -590,9 +643,12 @@ export async function clearAccountError(connectionId, currentConnection, model =
   const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_")
     && (conn[k] || conn[k.replace("modelLock_", PROVIDER_RESET_PREFIX)] || conn[k.replace("modelLock_", MODEL_LIMIT_PREFIX)]));
 
-  // The model's demotion record goes, even one written after the snapshot.
+  // The model's demotion record goes, even one written after the snapshot. A
+  // demotion on another model stays, noting the key served since it began.
   const demoteRecord = !!model && !!conn[getAuthDemoteKey(model)];
-  if (!conn.testStatus && !conn.lastError && !conn.errorCode && allLockKeys.length === 0 && !conn.authFailCount && !demoteRecord) return;
+  const servedNote = demoteRecords(conn).some(([m, r]) => m !== model && r.demotedAt && !(conn.authDemoteOkAt >= r.demotedAt));
+  const demoteWrite = demoteRecord || servedNote;
+  if (!conn.testStatus && !conn.lastError && !conn.errorCode && allLockKeys.length === 0 && !conn.authFailCount && !demoteWrite) return;
 
   // Keys to clear: current model's lock + all expired locks
   const keysToClear = allLockKeys.filter(k => {
@@ -603,7 +659,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
     return expiry && new Date(expiry).getTime() <= now;   // expired
   });
 
-  if (keysToClear.length === 0 && conn.testStatus !== "unavailable" && !conn.lastError && !conn.errorCode && !conn.authFailCount && !demoteRecord) return;
+  if (keysToClear.length === 0 && conn.testStatus !== "unavailable" && !conn.lastError && !conn.errorCode && !conn.authFailCount && !demoteWrite) return;
 
   // Check if any active locks remain after clearing
   const remainingActiveLocks = allLockKeys.filter(k => {
@@ -630,6 +686,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
       backoffLevel: 0
     });
   }
+  if (servedNote) clearObj.authDemoteOkAt = new Date(now).toISOString();
   if (Object.keys(clearObj).length === 0 && !demoteRecord) return;
 
   await updateProviderConnection(connectionId, clearObj, { liftDemote: model });

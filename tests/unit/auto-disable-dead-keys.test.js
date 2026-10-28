@@ -586,34 +586,56 @@ describe("a key refused on only one model", () => {
     return { dead, healthy };
   }
 
-  // [minutes since the first refusal, same upstream, the auth streak on one model]
-  const R = (minute, sameUpstream = true, oneModel = true) => [minute, sameUpstream, oneModel];
+  // [minute, same upstream, minute of the last refusal on another model]
+  const R = (minute, sameUpstream = true, otherAt = null) => [minute, sameUpstream, otherAt];
   const T0 = Date.parse("2026-10-23T00:00:00.000Z");
+  const at = (minute) => T0 + minute * MIN;
   it.each([
     ["4 refusals over 12 minutes", [R(0), R(4), R(8), R(12)], 4, false],
     ["5 refusals over 9 minutes", [R(0), R(2), R(4), R(6), R(9)], 5, false],
     ["5 refusals over 10 minutes", [R(0), R(2), R(4), R(6), R(10)], 5, true],
     ["5 over 59 minutes, one cross-upstream", [R(0), R(15, false), R(30), R(45), R(59)], 5, false],
     ["5 over 60 minutes, one cross-upstream", [R(0), R(15, false), R(30), R(45), R(60)], 5, true],
-    ["a 61-minute gap", [R(0), R(2), R(4), R(6), R(67)], 1, false],
     ["a 60-minute gap", [R(0), R(2), R(4), R(64), R(66)], 5, true],
-    ["10 refusals while the streak covers 2 models", Array.from({ length: 10 }, (_, i) => R(i * 3, true, false)), 10, false],
-    ["the 5th refusal once the streak is back on one model", [R(0, true, false), R(3), R(6), R(9), R(12)], 5, true],
+    ["a gap of 60 minutes and 1 ms", [R(0), R(2), R(4), R(6), R(66 + 1 / 60000)], 1, false],
+    ["0, 2, 4, 6, then 67 to 71", [R(0), R(2), R(4), R(6), R(67), R(68), R(69), R(70), R(71)], 5, false],
+    ["a refusal dated before the last one", [R(0), R(2), R(4), R(10), R(6)], 1, false],
+    ["5 over 10 minutes, another model refused at minute 5", [R(0), R(2), R(4), R(6), R(10, true, 5)], 5, false],
+    ["5 over 12 minutes, another model refused at minute 1", [R(0), R(2), R(4), R(6), R(12, true, 1)], 5, true],
+    ["5 over 60 minutes cross-upstream, another refused at minute 2", [R(0, false), R(15), R(30), R(45), R(60, true, 2)], 5, false],
+    ["5 over 62 minutes cross-upstream, another refused at minute 1", [R(0, false), R(15), R(30), R(45), R(62, true, 1)], 5, true],
   ])("counts %s as %i, demoting: %s", (_label, steps, count, isDemoted) => {
     let rec = null;
-    for (const [minute, sameUpstream, oneModel] of steps) {
-      rec = auth.nextDemoteRecord(rec, T0 + minute * MIN, { sameUpstream, oneModel, reason: "403" });
+    for (const [minute, sameUpstream, otherAt] of steps) {
+      rec = auth.__test__.nextDemoteRecord(rec, at(minute), {
+        sameUpstream, otherRefusalAt: otherAt === null ? -Infinity : at(otherAt), reason: "403",
+      });
     }
     expect(rec.count).toBe(count);
     expect(!!rec.demotedAt).toBe(isDemoted);
   });
 
-  it("keeps a demoted record's probe time as it counts more refusals", () => {
+  it("moves a demoted record's next probe out on each refusal, up to 180 minutes", () => {
     let rec = null;
-    for (const minute of [0, 3, 6, 9, 12]) rec = auth.nextDemoteRecord(rec, T0 + minute * MIN, { sameUpstream: true, oneModel: true, reason: "403" });
-    const next = auth.nextDemoteRecord(rec, T0 + 30 * MIN, { sameUpstream: false, oneModel: false, reason: "x" });
-    expect(next).toEqual({ ...rec, count: 6, lastAt: new Date(T0 + 30 * MIN).toISOString() });
-    expect(rec.nextProbeAt).toBe(new Date(T0 + 22 * MIN).toISOString());
+    for (const minute of [0, 3, 6, 9, 12]) rec = auth.__test__.nextDemoteRecord(rec, at(minute), { sameUpstream: true, reason: "403" });
+    expect(rec).toMatchObject({ demotedAt: new Date(at(12)).toISOString(), probeLevel: 0, nextProbeAt: new Date(at(22)).toISOString() });
+    const waits = [];
+    let minute = 12;
+    for (let i = 0; i < 6; i++) {
+      minute = (new Date(rec.nextProbeAt).getTime() - T0) / MIN;
+      rec = auth.__test__.nextDemoteRecord(rec, at(minute), { sameUpstream: false, otherRefusalAt: at(minute), reason: "x" });
+      waits.push((new Date(rec.nextProbeAt).getTime() - at(minute)) / MIN);
+    }
+    expect(waits).toEqual([20, 40, 90, 180, 180, 180]);
+    expect(rec).toMatchObject({ count: 11, reason: "403", demotedAt: new Date(at(12)).toISOString() });
+  });
+
+  it("keeps a count's model-scoped mark until it starts over", () => {
+    let rec = auth.__test__.nextDemoteRecord(null, at(0), { sameUpstream: true, modelScoped: true, reason: "403" });
+    rec = auth.__test__.nextDemoteRecord(rec, at(2), { sameUpstream: true, reason: "403" });
+    expect(rec.modelScoped).toBe(true);
+    rec = auth.__test__.nextDemoteRecord(rec, at(70), { sameUpstream: true, reason: "403" });
+    expect(rec.modelScoped).toBe(false);
   });
 
   it("demotes the key on that model, keeps it on, and keeps it first for other models", async () => {
@@ -691,19 +713,35 @@ describe("a key refused on only one model", () => {
     expect((await load(dead.id)).isActive).toBe(true);
   });
 
-  it("probes the demoted key 10 minutes after demotion, then after 20, 40, 90, 180 and 360 minutes", async () => {
-    const { dead } = await demotedKey();
-    const gaps = [];
-    for (let i = 0; i < 7; i++) {
-      const { demotedAt, nextProbeAt } = record(await load(dead.id));
-      const since = i === 0 ? new Date(demotedAt).getTime() : Date.now();
-      gaps.push((new Date(nextProbeAt).getTime() - since) / MIN);
-      vi.setSystemTime(new Date(nextProbeAt).getTime() - 1);
+  it("probes the demoted key 10 minutes after demotion, then 20, 40, 90 and 180 minutes after each refused probe", async () => {
+    const { dead, healthy } = await demotedKey();
+    const waits = [(new Date(record(await load(dead.id)).nextProbeAt) - new Date(record(await load(dead.id)).demotedAt)) / MIN];
+    for (let i = 0; i < 6; i++) {
+      vi.setSystemTime(new Date(record(await load(dead.id)).nextProbeAt).getTime() - 1);
       expect(await pick("m1")).not.toBe(dead.id);
       vi.advanceTimersByTime(1);
       expect(await pick("m1")).toBe(dead.id);
+      await succeed(healthy.id, "m1");
+      await failOnce(dead.id, "m1");
+      waits.push((new Date(record(await load(dead.id)).nextProbeAt).getTime() - Date.now()) / MIN);
     }
-    expect(gaps).toEqual([10, 20, 40, 90, 180, 360, 360]);
+    expect(waits).toEqual([10, 20, 40, 90, 180, 180, 180]);
+  });
+
+  it.each([
+    ["a 429", (dead) => failOnce(dead.id, "m1", 429, "Too many requests")],
+    ["a 500", (dead) => failOnce(dead.id, "m1", 500, "Internal server error")],
+    ["no answer at all", async () => {}],
+  ])("takes the probe again 10 minutes later, at the same level, after %s", async (_label, answer) => {
+    const { dead } = await demotedKey();
+    await atProbe(dead.id);
+    expect(await pick("m1")).toBe(dead.id);
+    await answer(dead);
+    expect(record(await load(dead.id))).toMatchObject({ probeLevel: 0 });
+    vi.advanceTimersByTime(10 * MIN - 1);
+    expect(await pick("m1")).not.toBe(dead.id);
+    vi.advanceTimersByTime(1);
+    expect(await pick("m1")).toBe(dead.id);
   });
 
   it("sends one probe per interval to a burst of requests", async () => {
@@ -858,9 +896,153 @@ describe("a key refused on only one model", () => {
     await atProbe(dead.id);
     const creds = await auth.getProviderCredentials(provider, null, "m1");
     expect(creds.connectionId).toBe(dead.id);
-    expect(record(await load(dead.id))).toMatchObject({ probeLevel: 0 });
+    expect(record(await load(dead.id))).not.toHaveProperty("probeId");
     await auth.clearAccountError(dead.id, creds, "m1");
     expect(record(await load(dead.id))).toBeNull();
+  });
+
+  const NO_ACCESS = '[403]: {"error":{"message":"Your organization does not have access to model claude-opus-5-5"}}';
+
+  it("demotes on 403s that refuse just that model, and never turns the key off for them", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 12, models: ["claude-opus-5-5"], peers: [healthy], text: NO_ACCESS });
+    const conn = await load(dead.id);
+    expect(conn.isActive).toBe(true);
+    expect(conn).not.toHaveProperty("authFailCount");
+    expect(record(conn, "claude-opus-5-5")).toMatchObject({ modelScoped: true, demotedAt: expect.any(String) });
+  });
+
+  it.each([
+    [403, '{"error":{"message":"Key limit exceeded for model claude-opus-5-5"}}'],
+    [403, "Your plan does not include model claude-opus-5-5: model not available"],
+    [401, "model claude-opus-5-5 is not enabled for this key"],
+    [403, '{"error":{"code":"rate_limit_exceeded","message":"model claude-opus-5-5 not available"}}'],
+    [403, "Premium requests for model claude-opus-5-5 are not allowed"],
+  ])("never counts %i %s toward a demotion", async (status, text) => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 8, models: ["claude-opus-5-5"], peers: [healthy], status, text });
+    expect(record(await load(dead.id), "claude-opus-5-5")).toBeNull();
+  });
+
+  it("does not count a 403 refusing just that model without a peer serving it", async () => {
+    const dead = await addKey("a");
+    await addKey("b");
+    await fail(dead.id, { times: 8, models: ["m1"], text: NO_ACCESS });
+    expect(record(await load(dead.id))).toBeNull();
+  });
+
+  it("turns a demoted key off when another model refuses it before it served anything", async () => {
+    const { dead, healthy } = await demotedKey();
+    vi.advanceTimersByTime(15 * MIN);
+    await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
+    expect(await load(dead.id)).toMatchObject({ isActive: false, autoDisabledReason: '403 "Not authorized for this endpoint" on m1, m2' });
+  });
+
+  it.each([
+    ["it served another model since the demotion", async (dead) => succeed(dead.id, "m3")],
+    ["it served another model since, before a restart", async (dead) => {
+      await succeed(dead.id, "m3");
+      global._authEvents.success.clear();
+      global._authEvents.refused.clear();
+    }],
+    ["its last refusal there is older than the probe interval and 10 minutes", async () => vi.advanceTimersByTime(25 * MIN)],
+  ])("keeps a demoted key on when another model refuses it but %s", async (_label, between) => {
+    const { dead, healthy } = await demotedKey();
+    await between(dead);
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
+    expect((await load(dead.id)).isActive).toBe(true);
+  });
+
+  it("keeps a demoted key on that another model refuses after a success read from a snapshot older than the demotion", async () => {
+    const { dead, healthy } = await demotedKey();
+    vi.advanceTimersByTime(MIN);
+    await auth.clearAccountError(dead.id, { id: dead.id }, "m3");
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
+    expect((await load(dead.id)).isActive).toBe(true);
+  });
+
+  it("does not demote a key refused on another model within the window", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 6, models: ["m1", "m1", "m1", "m2", "m1", "m1"], peers: [healthy] });
+    const conn = await load(dead.id);
+    expect(record(conn)).toMatchObject({ count: 5 });
+    expect(demoted(conn)).toBe(false);
+  });
+
+  it("keeps a key on that another model refuses after a demotion for refusals of just one model", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 5, models: ["m1"], peers: [healthy], text: NO_ACCESS });
+    expect(demoted(await load(dead.id))).toBe(true);
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
+    expect((await load(dead.id)).isActive).toBe(true);
+  });
+
+  it("brings a key back right away after a success on that model read from a snapshot older than the demotion, and clears it on the next", async () => {
+    const { dead } = await demotedKey();
+    vi.advanceTimersByTime(3 * MIN);
+    await auth.clearAccountError(dead.id, { id: dead.id }, "m1");
+    const creds = await auth.getProviderCredentials(provider, null, "m1");
+    expect(creds.connectionId).toBe(dead.id);
+    expect(record(await load(dead.id))).toMatchObject({ demotedAt: expect.any(String) });
+    await auth.clearAccountError(dead.id, creds, "m1");
+    expect(record(await load(dead.id))).toBeNull();
+  });
+
+  it("lifts the demotion through a success whose snapshot has no record but other errors to clear", async () => {
+    const { dead } = await demotedKey();
+    await auth.clearAccountError(dead.id, { id: dead.id, lastError: "x", testStatus: "unavailable" }, "m1");
+    expect(record(await load(dead.id))).toBeNull();
+  });
+
+  it("lifts the demotion on a success on that model when another model's rate limit leaves nothing else to clear", async () => {
+    const { dead } = await demotedKey();
+    vi.advanceTimersByTime(3 * MIN);
+    await succeed(dead.id, "m2");
+    await auth.markAccountUnavailable(dead.id, 429, "Too many requests", provider, "m2", Date.now() + 30 * MIN);
+    await succeed(dead.id, "m1");
+    expect(record(await load(dead.id))).toBeNull();
+  });
+
+  it("still tries the key first, and takes no probe, while it is only counting", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 4, models: ["m1"], peers: [healthy] });
+    vi.advanceTimersByTime(3 * MIN);
+    expect(await pick("m1")).toBe(dead.id);
+    expect(record(await load(dead.id))).not.toHaveProperty("probeId");
+    const { GET } = await import("@/app/api/models/availability/route.js");
+    expect((await (await GET()).json()).models.filter((m) => m.connectionId === dead.id && m.model === "m1")).toEqual([]);
+  });
+
+  it("takes one probe when two demoted keys are both due", async () => {
+    const a = await addKey("a");
+    const c = await addKey("c");
+    const healthy = await addKey("b");
+    for (const key of [a, c]) await fail(key.id, { times: 5, models: ["m1"], peers: [healthy] });
+    await atProbe(c.id);
+    const picked = await pick("m1");
+    expect([a.id, c.id]).toContain(picked);
+    const probes = [await load(a.id), await load(c.id)].filter((conn) => record(conn).probeId);
+    expect(probes).toHaveLength(1);
+  });
+
+  it("lists a demotion only for an active key, and marks one whose probe is due", async () => {
+    const { dead } = await demotedKey();
+    const { GET } = await import("@/app/api/models/availability/route.js");
+    const rows = async () => (await (await GET()).json()).models.filter((m) => m.connectionId === dead.id);
+    await atProbe(dead.id);
+    expect(await rows()).toEqual([expect.objectContaining({
+      model: "m1", until: null, lastError: 'Demoted after repeated 403 "Not authorized for this endpoint" (probe due)',
+    })]);
+    await db.updateProviderConnection(dead.id, { isActive: false, authDemote_m2: record(await load(dead.id)) });
+    expect((await rows()).filter((m) => m.model === "m1" || m.model === "m2")).toEqual([]);
   });
 
   it("writes the demotion message once, and lets a later error replace it", async () => {
@@ -1314,7 +1496,21 @@ describe("keys of one endpoint on different upstreams", () => {
   // the models asked for that minute, refuses(model, minute) whether the key is
   // refused on one. Returns the minutes it was refused on each model, the
   // minutes it was demoted, and who served each request.
-  async function watch(key, { modelsAt, totalMin, refuses = () => true }) {
+  async function watch(key, { modelsAt, totalMin, refuses = () => true, text = DEAD_403 }) {
+    // One request as route() serves it, refused on `key` with `text`.
+    async function serve(model, refused) {
+      const tried = new Set();
+      for (;;) {
+        const creds = await auth.getProviderCredentials(provider, tried, model);
+        if (!creds?.connectionId) return null;
+        if (!(refused && creds.connectionId === key.id)) {
+          await auth.clearAccountError(creds.connectionId, creds, model);
+          return creds.connectionId;
+        }
+        await failOnce(creds.connectionId, model, 403, text);
+        tried.add(creds.connectionId);
+      }
+    }
     const refusals = {};
     const demotions = [];
     const served = [];
@@ -1322,7 +1518,7 @@ describe("keys of one endpoint on different upstreams", () => {
       if (minute > 0) vi.advanceTimersByTime(MIN);
       for (const model of [modelsAt(minute)].flat().filter(Boolean)) {
         const before = await load(key.id);
-        const servedBy = await route(model, refuses(model, minute) ? [key.id] : []);
+        const servedBy = await serve(model, refuses(model, minute));
         served.push([minute, model, servedBy]);
         const conn = await load(key.id);
         expect(conn.isActive).toBe(true);
@@ -1385,6 +1581,60 @@ describe("keys of one endpoint on different upstreams", () => {
     const back = served.find(([minute, model, id]) => minute >= 30 && model === "m1" && id === key.id)[0];
     expect(back).toBe(42);
     expect(served.filter(([minute, model]) => model === "m1" && minute >= back).every(([, , id]) => id === key.id)).toBe(true);
+  }, 60000);
+  const SONNET = "claude-sonnet-5-5";
+  const HAIKU = "claude-haiku-5-5";
+  const inSession = (minute) => minute % 23 < 10;
+  const PATTERNS = {
+    "sonnet, then opus": (m) => (inSession(m) ? (m < 180 ? SONNET : OPUS) : null),
+    "sessions alternating sonnet and opus": (m) => (inSession(m) ? (Math.floor(m / 23) % 2 ? OPUS : SONNET) : null),
+    "opus, and sonnet every 2 hours": (m) => (m % 120 === 60 ? SONNET : inSession(m) ? OPUS : null),
+    "opus, then haiku": (m) => (inSession(m) ? (m < 180 ? OPUS : HAIKU) : null),
+  };
+  const UPSTREAMS = [["on the same account", "acct-shared", "acct-shared"], ["on another account", "acct-dead", "acct-live"]];
+  const keysOn = async (own, peer) => [
+    await addKey("a", snowflake(own, own === peer ? {} : { ownBaseUrl: true })), await addKey("b", snowflake(peer)),
+  ];
+
+  // Master turns these off; demoting each model in turn must not keep them on.
+  it.each(Object.keys(PATTERNS).flatMap((name) => UPSTREAMS.map(([where, own, peer]) => [name, where, own, peer])))(
+    "turns off a key dead on every model someone uses one at a time (%s), its peer %s",
+    async (name, _where, own, peer) => {
+      const [dead] = await keysOn(own, peer);
+      const minutes = await drive(dead, { modelAt: PATTERNS[name], totalMin: 12 * 60 });
+      expect(minutes).not.toBeNull();
+      expect(minutes).toBeLessThanOrEqual(190);
+    }, 60000,
+  );
+
+  it.each([
+    ...["sonnet, then opus", "sessions alternating sonnet and opus", "opus, and sonnet every 2 hours"].map((name) => [name, PATTERNS[name]]),
+    ["opus, then haiku, and sonnet every 2 hours", (m) => (m % 120 === 60 ? SONNET : PATTERNS["opus, then haiku"](m))],
+  ].flatMap(([name, modelsAt]) => UPSTREAMS.map(([where, own, peer]) => [name, where, own, peer, modelsAt])))(
+    "never turns off a key that lacks opus and haiku but serves sonnet (%s), its peer %s",
+    async (_name, _where, own, peer, modelsAt) => {
+      const [partial] = await keysOn(own, peer);
+      const { served } = await watch(partial, { modelsAt, totalMin: 12 * 60, refuses: (model) => model !== SONNET });
+      expect(served.filter(([, model]) => model === SONNET).every(([, , id]) => id === partial.id)).toBe(true);
+    }, 60000,
+  );
+
+  it.each(UPSTREAMS)("demotes a dead key used for opus every 12 minutes after one refusal on kimi, its peer %s", async (_where, own, peer) => {
+    const [dead] = await keysOn(own, peer);
+    const { refusals, demotions } = await watch(dead, { modelsAt: (m) => (m === 3 ? KIMI : m % 12 === 0 ? OPUS : null), totalMin: 12 * 60 });
+    expect(demotions.map(([, model]) => model)).toEqual([OPUS]);
+    expect(refusals[OPUS].length).toBeLessThanOrEqual(13);
+  }, 60000);
+
+  it.each([
+    ["on the same account", "acct-shared", "acct-shared", 11],
+    ["on another account", "acct-dead", "acct-live", 35],
+  ])("demotes a key told it has no access to opus, its peer %s", async (_where, own, peer, maxRefusals) => {
+    const [partial] = await keysOn(own, peer);
+    const text = '[403]: {"error":{"message":"Your organization does not have access to model claude-opus-5-5"}}';
+    const { refusals, demotions } = await watch(partial, { modelsAt: () => OPUS, totalMin: 3 * 60, text });
+    expect(demotions.map(([, model]) => model)).toEqual([OPUS]);
+    expect(refusals[OPUS].length).toBeLessThanOrEqual(maxRefusals);
   }, 60000);
 });
 
