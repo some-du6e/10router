@@ -602,6 +602,7 @@ describe("a key refused on only one model", () => {
     ["a refusal dated before the last one", [R(0), R(2), R(4), R(10), R(6)], 1, false],
     ["5 over 10 minutes, another model refused at minute 5", [R(0), R(2), R(4), R(6), R(10, true, 5)], 5, false],
     ["5 over 12 minutes, another model refused at minute 1", [R(0), R(2), R(4), R(6), R(12, true, 1)], 5, true],
+    ["5 over 12 minutes, another model refused at minute 2", [R(0), R(2), R(4), R(6), R(12, true, 2)], 5, false],
     ["5 over 60 minutes cross-upstream, another refused at minute 2", [R(0, false), R(15), R(30), R(45), R(60, true, 2)], 5, false],
     ["5 over 62 minutes cross-upstream, another refused at minute 1", [R(0, false), R(15), R(30), R(45), R(62, true, 1)], 5, true],
   ])("counts %s as %i, demoting: %s", (_label, steps, count, isDemoted) => {
@@ -902,6 +903,8 @@ describe("a key refused on only one model", () => {
   });
 
   const NO_ACCESS = '[403]: {"error":{"message":"Your organization does not have access to model claude-opus-5-5"}}';
+  const OPUS_M = "claude-opus-5-5";
+  const KIMI_M = "kimi-k3";
 
   it("demotes on 403s that refuse just that model, and never turns the key off for them", async () => {
     const dead = await addKey("a");
@@ -933,11 +936,79 @@ describe("a key refused on only one model", () => {
     expect(record(await load(dead.id))).toBeNull();
   });
 
-  it("turns a demoted key off when another model refuses it before it served anything", async () => {
+  // After a pause the turn-off rule's own count starts over, so only these
+  // rules can see the key refused on 2 models; then m1's probe is refused.
+  async function pausedThenProbed(dead, healthy) {
+    vi.advanceTimersByTime(11 * MIN);
+    await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy] });
+    expect(await load(dead.id)).toMatchObject({ isActive: true, authFailCount: 1 });
+  }
+
+  it("turns a demoted key off on a 2nd refusal on another model within 10 minutes, having served nothing", async () => {
+    const { warn } = await import("@/sse/utils/logger.js");
+    warn.mockClear();
+    const { dead, healthy } = await demotedKey();
+    await pausedThenProbed(dead, healthy);
+    vi.advanceTimersByTime(2 * MIN);
+    await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
+    expect((await load(dead.id)).isActive).toBe(true);
+    vi.advanceTimersByTime(2 * MIN);
+    await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
+    expect(await load(dead.id)).toMatchObject({ isActive: false, autoDisabledReason: '403 "Not authorized for this endpoint" on m1, m2' });
+    expect(warn).toHaveBeenCalledWith("AUTH", 'a turned off automatically: 403 "Not authorized for this endpoint" on m1, m2');
+  });
+
+  it.each([
+    [10, false],
+    [10 + 1 / 60000, true],
+  ])("treats a refusal on m1 %i minutes before the 2nd on m2 as recent: %s", async (minutes, stillOn) => {
+    const { dead, healthy } = await demotedKey();
+    await pausedThenProbed(dead, healthy);
+    vi.advanceTimersByTime(minutes * MIN - 2 * MIN);
+    await fail(dead.id, { times: 2, models: ["m2"], peers: [healthy], stepMs: 2 * MIN });
+    expect((await load(dead.id)).isActive).toBe(stillOn);
+  });
+
+  it.each([
+    ["refused", false, '403 "Not authorized for this endpoint" on m2, m1'],
+    ["served", true, undefined],
+  ])("probes a demoted model right after another model refuses the key, and turns it off only if the probe is %s too", async (
+    _label, recovered, reason,
+  ) => {
     const { dead, healthy } = await demotedKey();
     vi.advanceTimersByTime(15 * MIN);
     await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
+    expect((await load(dead.id)).isActive).toBe(true);
+    expect(new Date(record(await load(dead.id)).nextProbeAt).getTime()).toBeLessThanOrEqual(Date.now());
+    vi.advanceTimersByTime(MIN);
+    const probe = await auth.getProviderCredentials(provider, null, "m1");
+    expect(probe.connectionId).toBe(dead.id);
+    if (recovered) await auth.clearAccountError(dead.id, probe, "m1");
+    else {
+      await succeed(healthy.id, "m1");
+      await failOnce(dead.id, "m1");
+    }
+    const conn = await load(dead.id);
+    expect(conn.isActive).toBe(recovered);
+    expect(conn.autoDisabledReason).toBe(reason);
+  });
+
+  it("turns a key off as the refusal that demotes it on m2 comes within m1's probe interval and 10 minutes", async () => {
+    const { dead, healthy } = await demotedKey();
+    await pausedThenProbed(dead, healthy);
+    vi.advanceTimersByTime(11 * MIN);
+    await fail(dead.id, { times: 4, models: ["m2"], peers: [healthy], stepMs: 2 * MIN });
+    expect(await load(dead.id)).toMatchObject({ isActive: true, authDemote_m2: { count: 4 } });
+    vi.advanceTimersByTime(4 * MIN);
+    await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
     expect(await load(dead.id)).toMatchObject({ isActive: false, autoDisabledReason: '403 "Not authorized for this endpoint" on m1, m2' });
+  });
+
+  it("does not let 401s on another model turn a demoted key off without the turn-off rule's own count", async () => {
+    const { dead, healthy } = await demotedKey();
+    await pausedThenProbed(dead, healthy);
+    await fail(dead.id, { times: 2, models: ["m2"], peers: [healthy], status: 401, text: "Invalid API key", stepMs: 2 * MIN });
+    expect((await load(dead.id)).isActive).toBe(true);
   });
 
   it.each([
@@ -974,6 +1045,48 @@ describe("a key refused on only one model", () => {
     expect(demoted(conn)).toBe(false);
   });
 
+  it("does not count a refusal of just that model while the only peer serving it was refused there since", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await succeed(healthy.id, "m1");
+    await failOnce(healthy.id, "m1");
+    await failOnce(dead.id, "m1", 403, NO_ACCESS);
+    expect(record(await load(dead.id))).toBeNull();
+  });
+
+  it("does not treat a demotion that included refusals of just that model as a sign the key is dead", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 2, models: ["m1"], peers: [healthy], text: NO_ACCESS });
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(dead.id, { times: 3, models: ["m1"], peers: [healthy] });
+    expect(record(await load(dead.id))).toMatchObject({ modelScoped: true, demotedAt: expect.any(String) });
+    await pausedThenProbed(dead, healthy);
+    await fail(dead.id, { times: 2, models: ["m2"], peers: [healthy], stepMs: 2 * MIN });
+    expect((await load(dead.id)).isActive).toBe(true);
+  });
+
+  it("does not probe at once a demotion for refusals of just that model when another model refuses the key", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 5, models: ["m1"], peers: [healthy], text: NO_ACCESS });
+    const { nextProbeAt } = record(await load(dead.id));
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
+    expect(record(await load(dead.id)).nextProbeAt).toBe(nextProbeAt);
+  });
+
+  it("counts a success it could not write as served, so another model's refusals don't turn the key off", async () => {
+    const { dead, healthy } = await demotedKey();
+    vi.advanceTimersByTime(MIN);
+    global._authEvents.demoteKeys.clear();
+    await auth.clearAccountError(dead.id, { id: dead.id }, "m3");
+    expect((await load(dead.id)).authDemoteOkAt).toBeUndefined();
+    await pausedThenProbed(dead, healthy);
+    await fail(dead.id, { times: 2, models: ["m2"], peers: [healthy], stepMs: 2 * MIN });
+    expect((await load(dead.id)).isActive).toBe(true);
+  });
+
   it("keeps a key on that another model refuses after a demotion for refusals of just one model", async () => {
     const dead = await addKey("a");
     const healthy = await addKey("b");
@@ -984,13 +1097,22 @@ describe("a key refused on only one model", () => {
     expect((await load(dead.id)).isActive).toBe(true);
   });
 
-  it("brings a key back right away after a success on that model read from a snapshot older than the demotion, and clears it on the next", async () => {
+  it("lifts a demotion right away through a success on that model read from a snapshot older than it", async () => {
     const { dead } = await demotedKey();
     vi.advanceTimersByTime(3 * MIN);
     await auth.clearAccountError(dead.id, { id: dead.id }, "m1");
+    expect(record(await load(dead.id))).toBeNull();
+    expect(await pick("m1")).toBe(dead.id);
+  });
+
+  it("brings a key back in this process after a success on that model it could not write, and clears the record on the next", async () => {
+    const { dead } = await demotedKey();
+    vi.advanceTimersByTime(3 * MIN);
+    global._authEvents.demoteKeys.clear();
+    await auth.clearAccountError(dead.id, { id: dead.id }, "m1");
+    expect(record(await load(dead.id))).toMatchObject({ demotedAt: expect.any(String) });
     const creds = await auth.getProviderCredentials(provider, null, "m1");
     expect(creds.connectionId).toBe(dead.id);
-    expect(record(await load(dead.id))).toMatchObject({ demotedAt: expect.any(String) });
     await auth.clearAccountError(dead.id, creds, "m1");
     expect(record(await load(dead.id))).toBeNull();
   });
@@ -1043,6 +1165,127 @@ describe("a key refused on only one model", () => {
     })]);
     await db.updateProviderConnection(dead.id, { isActive: false, authDemote_m2: record(await load(dead.id)) });
     expect((await rows()).filter((m) => m.model === "m1" || m.model === "m2")).toEqual([]);
+  });
+
+  it.each([
+    ["kimi every 30 minutes", (m) => [OPUS_M, m % 30 === 29 ? KIMI_M : null]],
+  ])("demotes on opus while the key is told it has no access to %s", async (_label, modelsAt) => {
+    const dead = await addKey("a", { providerSpecificData: { baseUrl: "https://own.dead-keys.test/v1" } });
+    const healthy = await addKey("b");
+    for (let minute = 0; minute < 3 * 60; minute++) {
+      if (minute > 0) vi.advanceTimersByTime(MIN);
+      for (const model of modelsAt(minute).filter(Boolean)) {
+        await succeed(healthy.id, model);
+        if (model === KIMI_M) await failOnce(dead.id, model, 403, NO_ACCESS);
+        else if (!((await load(dead.id))[`modelLock_${model}`] > new Date().toISOString())) await failOnce(dead.id, model);
+      }
+    }
+    expect(demoted(await load(dead.id), OPUS_M)).toBe(true);
+  });
+
+  it.each([
+    ["refuse just m1 and m2", NO_ACCESS, NO_ACCESS],
+    ["refuse m1 and refuse just m2", DEAD_403, NO_ACCESS],
+  ])("demotes alternating requests to a key whose answers %s", async (_label, m1Text, m2Text) => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    for (let i = 0; i < 12; i++) {
+      if (i > 0) vi.advanceTimersByTime(3 * MIN);
+      const model = i % 2 ? "m2" : "m1";
+      await succeed(healthy.id, model);
+      await failOnce(dead.id, model, 403, model === "m1" ? m1Text : m2Text);
+    }
+    const conn = await load(dead.id);
+    expect(conn.isActive).toBe(true);
+    expect([demoted(conn, "m1"), demoted(conn, "m2")]).toEqual([true, true]);
+  });
+
+  it("counts a refusal of just the model in any letter case", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 5, models: ["m1"], peers: [healthy], text: "Model m1 is not available for this API key" });
+    expect(record(await load(dead.id))).toMatchObject({ modelScoped: true, demotedAt: expect.any(String) });
+  });
+
+  it("keeps the turn-off rule's evidence as on master after a refusal of just that model", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await succeed(healthy.id, "m1");
+    await failOnce(dead.id, "m1", 403, NO_ACCESS);
+    await failOnce(dead.id, "m1");
+    expect((await load(dead.id)).authFailCount).toBe(1);
+  });
+
+  it.each([
+    [403, "Model claude-opus-5-5 is overloaded and not available right now"],
+    [403, "The model claude-opus-5-5 is not permitted: insufficient permissions"],
+  ])("never counts %i %s toward a demotion either", async (status, text) => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 8, models: ["claude-opus-5-5"], peers: [healthy], status, text });
+    expect(record(await load(dead.id), "claude-opus-5-5")).toBeNull();
+  });
+
+  it("starts the count over after a success on that model it could not write, from a refusal another process saw", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 4, models: ["m1"], peers: [healthy] });
+    vi.advanceTimersByTime(MIN);
+    global._authEvents.demoteKeys.clear();
+    await auth.clearAccountError(dead.id, { id: dead.id }, "m1");
+    vi.advanceTimersByTime(2 * MIN);
+    await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy] });
+    expect(record(await load(dead.id))).toMatchObject({ count: 1 });
+  });
+
+  it("demotes on the 5th refusal after a success on another model it could not write", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 4, models: ["m1"], peers: [healthy] });
+    global._authEvents.demoteKeys.clear();
+    await auth.clearAccountError(dead.id, { id: dead.id }, "m2");
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy] });
+    expect(demoted(await load(dead.id))).toBe(true);
+  });
+
+  it("does not count a refusal of just that model sent with a key since replaced", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    const oldKey = (await load(dead.id)).apiKey;
+    await db.updateProviderConnection(dead.id, { apiKey: "sk-test-new-0123456789" });
+    await succeed(healthy.id, "m1");
+    await auth.markAccountUnavailable(dead.id, 403, NO_ACCESS, provider, "m1", null, oldKey);
+    expect(record(await load(dead.id))).toBeNull();
+  });
+
+  it("notes a success elsewhere once, and writes nothing on the next", async () => {
+    const { dead } = await demotedKey();
+    vi.advanceTimersByTime(3 * MIN);
+    await succeed(dead.id, "m2");
+    expect((await load(dead.id)).authDemoteOkAt).toBe(new Date().toISOString());
+    const before = localDbWrites.count;
+    await succeed(dead.id, "m2");
+    expect(localDbWrites.count).toBe(before);
+  });
+
+  it("notes a success from a snapshot older than the demotion, so after a restart another model's refusals don't turn the key off", async () => {
+    const { dead, healthy } = await demotedKey();
+    vi.advanceTimersByTime(MIN);
+    await auth.clearAccountError(dead.id, { id: dead.id }, "m3");
+    global._authEvents.success.clear();
+    global._authEvents.refused.clear();
+    await pausedThenProbed(dead, healthy);
+    await fail(dead.id, { times: 2, models: ["m2"], peers: [healthy], stepMs: 2 * MIN });
+    expect((await load(dead.id)).isActive).toBe(true);
+  });
+
+  it("lifts a demotion through a snapshot that carries only the record", async () => {
+    const { dead } = await demotedKey();
+    global._authEvents.demoteKeys.clear();
+    const rec = record(await load(dead.id));
+    await auth.clearAccountError(dead.id, { id: dead.id, authDemote_m1: rec }, "m1");
+    expect(record(await load(dead.id))).toBeNull();
   });
 
   it("writes the demotion message once, and lets a later error replace it", async () => {
@@ -1507,7 +1750,7 @@ describe("keys of one endpoint on different upstreams", () => {
           await auth.clearAccountError(creds.connectionId, creds, model);
           return creds.connectionId;
         }
-        await failOnce(creds.connectionId, model, 403, text);
+        await failOnce(creds.connectionId, model, 403, typeof text === "function" ? text(model) : text);
         tried.add(creds.connectionId);
       }
     }
@@ -1596,16 +1839,26 @@ describe("keys of one endpoint on different upstreams", () => {
     await addKey("a", snowflake(own, own === peer ? {} : { ownBaseUrl: true })), await addKey("b", snowflake(peer)),
   ];
 
-  // Master turns these off; demoting each model in turn must not keep them on.
-  it.each(Object.keys(PATTERNS).flatMap((name) => UPSTREAMS.map(([where, own, peer]) => [name, where, own, peer])))(
-    "turns off a key dead on every model someone uses one at a time (%s), its peer %s",
-    async (name, _where, own, peer) => {
-      const [dead] = await keysOn(own, peer);
-      const minutes = await drive(dead, { modelAt: PATTERNS[name], totalMin: 12 * 60 });
-      expect(minutes).not.toBeNull();
-      expect(minutes).toBeLessThanOrEqual(190);
-    }, 60000,
-  );
+  // Minutes until master turns these off: null for never. Demoting each model
+  // in turn must turn them off no later.
+  it.each([
+    ["sonnet, then opus", 0, null, 210],
+    ["sonnet, then opus", 1, 186, 186],
+    ["sessions alternating sonnet and opus", 0, null, null],
+    ["sessions alternating sonnet and opus", 1, 69, 69],
+    ["opus, and sonnet every 2 hours", 0, 190, 184],
+    ["opus, and sonnet every 2 hours", 1, 180, 180],
+    ["opus, then haiku", 0, null, 210],
+    ["opus, then haiku", 1, 186, 186],
+  ])("turns off a key dead on every model someone uses one at a time (%s), its peer %s (0 same account, 1 another), master at %s, by %s", async (
+    name, upstream, _master, byMin,
+  ) => {
+    const [, own, peer] = UPSTREAMS[upstream];
+    const [dead] = await keysOn(own, peer);
+    const minutes = await drive(dead, { modelAt: PATTERNS[name], totalMin: 12 * 60 });
+    if (byMin === null) expect(minutes).toBeNull();
+    else expect(minutes).toBeLessThanOrEqual(byMin);
+  }, 60000);
 
   it.each([
     ...["sonnet, then opus", "sessions alternating sonnet and opus", "opus, and sonnet every 2 hours"].map((name) => [name, PATTERNS[name]]),
@@ -1618,6 +1871,16 @@ describe("keys of one endpoint on different upstreams", () => {
       expect(served.filter(([, model]) => model === SONNET).every(([, , id]) => id === partial.id)).toBe(true);
     }, 60000,
   );
+
+  it("demotes a dead key on opus, its peer on another account, while kimi answers that the key has no access", async () => {
+    const [dead] = await keysOn("acct-dead", "acct-live");
+    const noAccess = '[403]: {"error":{"message":"Your organization does not have access to model kimi-k3"}}';
+    const { refusals, demotions } = await watch(dead, {
+      modelsAt: (m) => [OPUS, m % 30 === 29 ? KIMI : null], totalMin: 12 * 60, text: (model) => (model === KIMI ? noAccess : DEAD_403),
+    });
+    expect(demotions.map(([, model]) => model).sort()).toEqual([KIMI, OPUS].sort());
+    expect(refusals[OPUS].length).toBeLessThanOrEqual(40);
+  }, 60000);
 
   it.each(UPSTREAMS)("demotes a dead key used for opus every 12 minutes after one refusal on kimi, its peer %s", async (_where, own, peer) => {
     const [dead] = await keysOn(own, peer);

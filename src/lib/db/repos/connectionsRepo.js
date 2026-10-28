@@ -277,12 +277,14 @@ export async function createProviderConnection(data) {
 // Critical: OAuth refresh token race — atomic merge inside transaction.
 // autoDisable fields are applied only if the connection is still on and another
 // connection of its provider is too, decided in the same transaction as the write.
-// demote ({ model, from, to, data }) replaces the model's demotion record `from`
-// with `to`, and applies `data`, only if the record is still `from`. liftDemote
-// is a model that just succeeded: its record goes, whenever it was written.
+// demote ({ model, from, to, data, probeNow }) replaces the model's demotion
+// record `from` with `to`, applies `data`, and makes the demotions on the
+// probeNow models due, only if the record is still `from`. liftDemote
+// is a model that just succeeded: its record goes, whenever it was written; with
+// noteServed, authDemoteOkAt marks the success for the stored records.
 // apiKeyUsed is the key a failing request used: if another key has been stored
 // since, the request's auth streak fields, autoDisable and demote are dropped.
-export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, apiKeyUsed } = {}) {
+export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, noteServed = false, apiKeyUsed } = {}) {
   const db = await getAdapter();
   let result;
   let servesChanged = false;
@@ -304,8 +306,15 @@ export async function updateProviderConnection(id, data, { autoDisable = null, d
     const demoteKey = demote && getAuthDemoteKey(demote.model);
     if (demote && !staleKey && JSON.stringify(existing[demoteKey] ?? null) === JSON.stringify(demote.from ?? null)) {
       Object.assign(merged, demote.data, { [demoteKey]: demote.to });
+      // Other models' demotions to probe right away.
+      const now = new Date().toISOString();
+      for (const model of demote.probeNow || []) {
+        const record = existing[getAuthDemoteKey(model)];
+        if (record?.demotedAt && record.nextProbeAt > now) merged[getAuthDemoteKey(model)] = { ...record, nextProbeAt: now };
+      }
     }
     if (liftDemote && existing[getAuthDemoteKey(liftDemote)]) merged[getAuthDemoteKey(liftDemote)] = null;
+    if (noteServed) merged.authDemoteOkAt = new Date().toISOString();
     applyAutoDisableTransition(existing, merged, data);
     upsert(db, merged);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
