@@ -47,23 +47,26 @@ export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 // key behind the same proxy served that model, and wasn't refused on it, since
 // this key's previous failure on it (the first: within minWindowMs). Trips at
 // minFailures with no success in between, when they were all 401s or (401s or
-// 403s) span minModels models, spread over minWindowMs if every failure had a
-// peer on the same upstream (base URL, Azure endpoint, region, location,
-// account, project), else over
+// 403s) span minModels models, spread over
+// minWindowMs if every failure had a peer on the same upstream (base URL, Azure
+// endpoint, region, location, account, project), else over
 // crossUpstreamWindowMs, since a key on its own server may be refused because
 // that server is down. A gap longer than the streak's window starts it over. A
 // streak with gaps over minWindowMs trips once the failures since the last such
 // gap span the window on their own, or once it has 2 bursts (2+ counted
-// failures with no such gap between them) and spans the window. 403s on one
-// model can mean the key lacks only that model, so such a streak needs
-// oneModelMinFailures and oneModelWindowFactor times the window.
+// failures with no such gap between them) and spans the window. A streak that
+// would trip with 403s on fewer models (the key may lack only that model) locks
+// that model on the key instead: for oneModelLockMs, doubling on each refusal
+// after the lock runs out, up to maxOneModelLockMs, until the key succeeds.
+// Such a streak survives gaps up to crossUpstreamWindowMs, and any gap once a
+// model is locked.
 export const AUTH_DEAD_CONFIG = {
   minFailures: 5,
   minWindowMs: 10 * 60 * 1000,
   crossUpstreamWindowMs: 60 * 60 * 1000,
   minModels: 2,
-  oneModelMinFailures: 15,
-  oneModelWindowFactor: 2,
+  oneModelLockMs: 60 * 60 * 1000,
+  maxOneModelLockMs: 24 * 60 * 60 * 1000,
 };
 
 // Cooldown durations (ms)

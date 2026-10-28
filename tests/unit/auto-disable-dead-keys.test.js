@@ -325,61 +325,6 @@ describe("auth-dead keys turn off", () => {
     expect((await load(dead.id)).isActive).toBe(false);
   });
 
-  it("keeps a key refused on a single model on through 10 refusals over 27 minutes", async () => {
-    const dead = await addKey("a");
-    const healthy = await addKey("b");
-    await fail(dead.id, { times: 10, models: ["claude-opus-5-5"], peers: [healthy] });
-    expect((await load(dead.id)).isActive).toBe(true);
-  });
-
-  it("trips a key 403'd on a single model at 15 refusals, not 14", async () => {
-    const dead = await addKey("a");
-    const healthy = await addKey("b");
-    await fail(dead.id, { times: 14, models: ["claude-opus-5-5"], peers: [healthy], stepMs: 2 * MIN });
-    expect(await load(dead.id)).toMatchObject({ isActive: true, authFailCount: 14 });
-
-    vi.advanceTimersByTime(2 * MIN);
-    await fail(dead.id, { times: 1, models: ["claude-opus-5-5"], peers: [healthy] });
-    const conn = await load(dead.id);
-    expect(conn.isActive).toBe(false);
-    expect(conn.autoDisabledReason).toBe('403 "Not authorized for this endpoint" on claude-opus-5-5');
-  });
-
-  it("trips a key 403'd on a single model once 15 refusals span 20 minutes, not 19", async () => {
-    const dead = await addKey("a");
-    const healthy = await addKey("b");
-    await fail(dead.id, { times: 20, models: ["m1"], peers: [healthy], stepMs: MIN });
-    expect(await load(dead.id)).toMatchObject({ isActive: true, authFailCount: 20 });
-
-    vi.advanceTimersByTime(MIN);
-    await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy] });
-    expect((await load(dead.id)).isActive).toBe(false);
-  });
-
-  it("keeps the last active key on when it is 403'd on a single model", async () => {
-    const dead = await addKey("a");
-    const healthy = await addKey("b");
-    await fail(dead.id, { times: 14, models: ["m1"], peers: [healthy], stepMs: 2 * MIN });
-    await db.updateProviderConnection(healthy.id, { isActive: false });
-    await fail(dead.id, { times: 3, models: ["m1"], peers: [healthy], stepMs: 2 * MIN });
-    expect(await load(dead.id)).toMatchObject({ isActive: true, authFailCount: 17 });
-  });
-
-  it("never trips a working key that a single model sometimes 403s, through 4 hours", async () => {
-    const flaky = await addKey("a");
-    const healthy = await addKey("b");
-    let longest = 0;
-    for (let i = 0; i < 4 * 30; i++) {
-      if (i > 0) vi.advanceTimersByTime(2 * MIN);
-      await succeed(healthy.id, "m1");
-      if (i % 5 === 4) await succeed(flaky.id, "m1");
-      else await failOnce(flaky.id, "m1");
-      longest = Math.max(longest, (await load(flaky.id)).authFailCount || 0);
-    }
-    expect(longest).toBe(4);
-    expect((await load(flaky.id)).isActive).toBe(true);
-  });
-
   it("starts over after a success on any model", async () => {
     const dead = await addKey("a");
     const healthy = await addKey("b");
@@ -500,7 +445,7 @@ describe("auth-dead keys turn off", () => {
     expect(conn.autoDisabledReason).toBe('401 "Invalid API key" on m1');
   });
 
-  it("does not let a final 401 skip the one-model rule for 403s", async () => {
+  it("does not let a final 401 turn off a key 403'd on one model", async () => {
     const dead = await addKey("a");
     const healthy = await addKey("b");
     await fail(dead.id, { times: 5, models: ["m1"], peers: [healthy] });
@@ -512,7 +457,7 @@ describe("auth-dead keys turn off", () => {
     expect(conn.isActive).toBe(true);
   });
 
-  it("does not let one earlier 401 skip the one-model rule for 403s", async () => {
+  it("does not let one earlier 401 turn off a key 403'd on one model", async () => {
     const dead = await addKey("a");
     const healthy = await addKey("b");
     await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy], status: 401, text: "Invalid API key" });
@@ -613,6 +558,195 @@ describe("auth-dead keys turn off", () => {
     const conn = await load(backup.id);
     expect(conn.isActive).toBe(true);
     expect(conn.authFailCount).toBe(1);
+  });
+});
+
+// A 403 on one model may mean the key lacks only that model, so the key stays
+// on and that model gets a long lock on it.
+describe("a key refused on only one model", () => {
+  const lockedMin = (conn, model) => (new Date(conn[`modelLock_${model}`] || 0).getTime() - Date.now()) / MIN;
+
+  // After a lock runs out, the next request on that model is refused again.
+  async function refuseAfterLock(dead, healthy, model = "m1") {
+    vi.setSystemTime(new Date((await load(dead.id))[`modelLock_${model}`]).getTime() + MIN);
+    await succeed(healthy.id, model);
+    await failOnce(dead.id, model);
+    return load(dead.id);
+  }
+
+  it("locks that model for an hour instead of turning the key off, and keeps serving others", async () => {
+    const { warn } = await import("@/sse/utils/logger.js");
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 4, models: ["claude-opus-5-5"], peers: [healthy] });
+    expect(lockedMin(await load(dead.id), "claude-opus-5-5")).toBeLessThanOrEqual(2);
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(dead.id, { times: 1, models: ["claude-opus-5-5"], peers: [healthy] });
+
+    const conn = await load(dead.id);
+    expect(conn).toMatchObject({
+      isActive: true, authFailLockLevels: { "claude-opus-5-5": 1 },
+      lastError: 'claude-opus-5-5 locked for 1h after repeated 403 "Not authorized for this endpoint"',
+    });
+    expect(conn).not.toHaveProperty("autoDisabledAt");
+    expect(lockedMin(conn, "claude-opus-5-5")).toBe(60);
+    expect(warn).toHaveBeenCalledWith("AUTH", "a locked claude-opus-5-5 for 1h after repeated 403s");
+    expect((await auth.getProviderCredentials(provider, null, "kimi-k3")).connectionId).toBe(dead.id);
+    expect((await auth.getProviderCredentials(provider, null, "claude-opus-5-5")).connectionId).toBe(healthy.id);
+  });
+
+  it("locks once a run of 5 spans 10 minutes, not at 9", async () => {
+    const early = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(early.id, { times: 5, models: ["m1"], peers: [healthy], stepMs: 2.25 * MIN });
+    expect(lockedMin(await load(early.id), "m1")).toBeLessThanOrEqual(2);
+    expect((await load(early.id)).authFailLockLevels).toBeNull();
+
+    const late = await addKey("c");
+    await fail(late.id, { times: 5, models: ["m1"], peers: [healthy], stepMs: 2.5 * MIN });
+    expect(lockedMin(await load(late.id), "m1")).toBe(60);
+  });
+
+  it("needs an hour, not 10 minutes, while only a key on another upstream serves", async () => {
+    const dead = await addKey("a", { providerSpecificData: { baseUrl: "https://own.dead-keys.test/v1" } });
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 24, models: ["m1"], peers: [healthy], stepMs: 2.5 * MIN });
+    expect(lockedMin(await load(dead.id), "m1")).toBeLessThanOrEqual(2);
+    vi.advanceTimersByTime(2.5 * MIN);
+    await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy] });
+    expect(lockedMin(await load(dead.id), "m1")).toBe(60);
+  });
+
+  it("doubles the lock on each refusal after one runs out, up to 24 hours", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 5, models: ["m1"], peers: [healthy] });
+    const hours = [lockedMin(await load(dead.id), "m1") / 60];
+    for (let i = 0; i < 6; i++) {
+      const conn = await refuseAfterLock(dead, healthy);
+      // The streak outlasts the gap the lock left.
+      expect(conn.authFailCount).toBe(6 + i);
+      hours.push(lockedMin(conn, "m1") / 60);
+    }
+    expect(hours).toEqual([1, 2, 4, 8, 16, 24, 24]);
+    expect(await load(dead.id)).toMatchObject({ isActive: true, authFailLockLevels: { m1: 7 } });
+  });
+
+  it("does not cut a long lock short or raise it on a refusal from a request sent before it", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 5, models: ["m1"], peers: [healthy] });
+    const { modelLock_m1: until } = await load(dead.id);
+    vi.advanceTimersByTime(MIN);
+    await succeed(healthy.id, "m1");
+    await failOnce(dead.id, "m1");
+    expect(await load(dead.id)).toMatchObject({ modelLock_m1: until, authFailLockLevels: { m1: 1 } });
+  });
+
+  it("starts the lock over at an hour after a success on another model, keeping the current lock", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 5, models: ["m1"], peers: [healthy] });
+    await refuseAfterLock(dead, healthy);
+    const { modelLock_m1: until } = await load(dead.id);
+    await succeed(dead.id, "m2");
+    expect(await load(dead.id)).toMatchObject({ authFailLockLevels: null, authFailCount: null, modelLock_m1: until });
+
+    vi.setSystemTime(new Date(until).getTime() + MIN);
+    await fail(dead.id, { times: 4, models: ["m1"], peers: [healthy] });
+    expect(lockedMin(await load(dead.id), "m1")).toBeLessThanOrEqual(2);
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy] });
+    expect(lockedMin(await load(dead.id), "m1")).toBe(60);
+  });
+
+  it("starts the lock over when the key succeeds on a request whose snapshot predates the lock", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 5, models: ["m1"], peers: [healthy] });
+    vi.advanceTimersByTime(MIN);
+    await auth.clearAccountError(dead.id, { id: dead.id }, "m2");
+    expect((await load(dead.id)).authFailLockLevels).toEqual({ m1: 1 });
+    const conn = await refuseAfterLock(dead, healthy);
+    expect(conn).toMatchObject({ authFailCount: 1, authFailLockLevels: null });
+    expect(lockedMin(conn, "m1")).toBeLessThanOrEqual(2);
+  });
+
+  it.each([
+    ["a new key is pasted in", (id) => db.updateProviderConnection(id, { apiKey: "sk-test-new-0123456789" })],
+    ["the key is toggled off and on", async (id) => {
+      await db.updateProviderConnection(id, { isActive: false });
+      await db.updateProviderConnection(id, { isActive: true });
+    }],
+  ])("clears the lock and its level when %s", async (_label, change) => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 5, models: ["m1"], peers: [healthy] });
+    await refuseAfterLock(dead, healthy);
+    await change(dead.id);
+    const conn = await load(dead.id);
+    expect(conn.modelLock_m1).toBeNull();
+    expect(conn).not.toHaveProperty("authFailLockLevels");
+    expect((await auth.getProviderCredentials(provider, null, "m1")).connectionId).toBe(dead.id);
+  });
+
+  it("keeps only the short lock on the last active key", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 4, models: ["m1"], peers: [healthy] });
+    await db.updateProviderConnection(healthy.id, { isActive: false });
+    await fail(dead.id, { times: 3, models: ["m1"], peers: [healthy] });
+    const conn = await load(dead.id);
+    expect(conn).toMatchObject({ isActive: true, authFailCount: 7, authFailLockLevels: null });
+    expect(lockedMin(conn, "m1")).toBeLessThanOrEqual(2);
+  });
+
+  it("keeps only the short lock when the peer is turned off between the decision and the write", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 4, models: ["m1"], peers: [healthy] });
+    vi.advanceTimersByTime(3 * MIN);
+    await succeed(healthy.id, "m1");
+    beforeNextWrite(() => db.updateProviderConnection(healthy.id, { isActive: false }));
+    await failOnce(dead.id, "m1");
+    expect(lockedMin(await load(dead.id), "m1")).toBeLessThanOrEqual(2);
+  });
+
+  // Each round is 4 refusals over 10.5 minutes, one short of a lock, then a success.
+  it.each([
+    ["never locks a working key that one model refuses 4 times running", true, []],
+    ["locks the same key once the 5th refusal comes before a success", false, [60]],
+  ])("%s", async (_label, succeeds, longLocks) => {
+    const key = await addKey("a");
+    const healthy = await addKey("b");
+    const locks = [];
+    const check = async () => {
+      const minutes = lockedMin(await load(key.id), "m1");
+      if (minutes > 2) locks.push(minutes);
+    };
+    for (let round = 0; round < (succeeds ? 16 : 1); round++) {
+      await fail(key.id, { times: 4, models: ["m1"], peers: [healthy], stepMs: 3.5 * MIN });
+      await check();
+      vi.advanceTimersByTime(3.5 * MIN);
+      if (succeeds) await succeed(key.id, "m1");
+      else await fail(key.id, { times: 1, models: ["m1"], peers: [healthy] });
+      await check();
+      vi.advanceTimersByTime(MIN);
+    }
+    expect(locks).toEqual(longLocks);
+    expect((await load(key.id)).isActive).toBe(true);
+  });
+
+  it.each([
+    ["403s on two models", ["m1", "m2"], 403, DEAD_403],
+    ["401s on one model", ["m1"], 401, "Invalid API key"],
+  ])("still turns the key off, with no long lock, for %s", async (_label, models, status, text) => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 5, models, peers: [healthy], status, text });
+    const conn = await load(dead.id);
+    expect(conn).toMatchObject({ isActive: false, authFailLockLevels: null });
+    expect(lockedMin(conn, "m1")).toBeLessThanOrEqual(2);
   });
 });
 
@@ -911,53 +1045,68 @@ describe("keys of one endpoint on different upstreams", () => {
     expect(minutes).toBeLessThanOrEqual(90);
   });
 
-  // The live case of 2026-10-28: only claude-opus-5-5 in use, someone working
-  // 10 minutes and pausing 13. At 73 minutes that is 18 refusals, the last run 4.
-  it("turns off a dead key refused on the only model in use within 120-135 minutes", async () => {
-    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
-    const healthy = await addKey("b", snowflake("acct-live"));
-    let at73 = null;
-    const onMinute = async () => {
-      const conn = await load(dead.id);
-      if (!at73 && new Date(conn.authFailLastAt) - new Date(conn.authFailFirstAt) >= 73 * MIN) at73 = conn;
-    };
-    const modelAt = (minute) => (minute % 23 < 10 ? "claude-opus-5-5" : null);
-    const minutes = await drive(dead, { totalMin: 5 * 60, modelAt, onMinute });
-
-    expect(at73).toMatchObject({
-      isActive: true, authFailCount: 18, authFailRunCount: 4, authFailSameUpstream: false, authFailModels: ["claude-opus-5-5"],
-    });
-    expect(minutes).toBeGreaterThanOrEqual(120);
-    expect(minutes).toBeLessThanOrEqual(135);
-    expect((await load(dead.id)).autoDisabledReason).toBe('403 "Not authorized for this endpoint" on claude-opus-5-5');
-    expect((await load(healthy.id)).isActive).toBe(true);
-  }, 60000);
-
-  it("keeps a key on that is refused one model but serves another every 20 minutes, through 4 hours", async () => {
-    const partial = await addKey("a", snowflake("acct-shared"));
-    const healthy = await addKey("b", snowflake("acct-shared"));
-    let longest = 0;
-    for (let minute = 0; minute < 4 * 60; minute++) {
+  // Requests as the router serves them, minute by minute; `refuses(model)` says
+  // whether the dead key is refused on it. Returns the minutes the dead key was
+  // tried and refused, the long locks it got as [minute, hours], and who served.
+  async function watch(dead, { modelAt, totalMin, refuses = () => true }) {
+    const refusals = [];
+    const locks = [];
+    const served = [];
+    for (let minute = 0; minute < totalMin; minute++) {
       if (minute > 0) vi.advanceTimersByTime(MIN);
-      const model = minute % 20 === 19 ? "kimi-k3" : "claude-opus-5-5";
-      await route(model, model === "claude-opus-5-5" ? [partial.id] : []);
-      longest = Math.max(longest, (await load(partial.id)).authFailCount || 0);
+      const model = modelAt(minute);
+      if (!model) continue;
+      const before = (await load(dead.id)).lastErrorAt;
+      served.push([model, await route(model, refuses(model) ? [dead.id] : [])]);
+      const conn = await load(dead.id);
+      expect(conn.isActive).toBe(true);
+      if (conn.lastErrorAt === before) continue;
+      refusals.push(minute);
+      const lockMin = (new Date(conn[`modelLock_${model}`]).getTime() - Date.now()) / MIN;
+      if (lockMin > 2) locks.push([minute, lockMin / 60]);
     }
-    expect(longest).toBeGreaterThanOrEqual(8);
-    expect(await load(partial.id)).toMatchObject({ isActive: true });
+    return { refusals, locks, served };
+  }
+
+  const opusOnly = (workMin, idleMin) => (minute) => (minute % (workMin + idleMin) < workMin ? "claude-opus-5-5" : null);
+
+  // The live case of 2026-10-28: only claude-opus-5-5 in use, someone working
+  // 10 minutes and pausing 13, the dead key and its peer on different accounts.
+  it("long-locks a dead key refused on the only model in use within 60-75 minutes, then tries it about once per lock", async () => {
+    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
+    const healthy = await addKey("b", snowflake("acct-live"));
+    const { refusals, locks } = await watch(dead, { modelAt: opusOnly(10, 13), totalMin: 12 * 60 });
+    const [firstLockAt] = locks[0];
+    expect(firstLockAt - refusals[0]).toBeGreaterThanOrEqual(60);
+    expect(firstLockAt - refusals[0]).toBeLessThanOrEqual(75);
+    expect(locks.map(([, hours]) => hours)).toEqual([1, 2, 4, 8]);
+    expect(refusals.filter((m) => m > firstLockAt)).toHaveLength(locks.length - 1);
+    expect((await load(dead.id)).lastError).toBe('claude-opus-5-5 locked for 8h after repeated 403 "Not authorized for this endpoint"');
     expect((await load(healthy.id)).isActive).toBe(true);
   }, 60000);
 
-  it("needs two hours, not one, to trip a key refused on one model while only a key on another upstream serves", async () => {
-    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
-    const healthy = await addKey("b", snowflake("acct-live"));
-    await fail(dead.id, { times: 48, models: ["claude-opus-5-5"], peers: [healthy], stepMs: 2.5 * MIN });
-    expect(await load(dead.id)).toMatchObject({ isActive: true, authFailCount: 48, authFailSameUpstream: false });
+  it("long-locks it within 25-30 minutes when the peer is on the same account", async () => {
+    const dead = await addKey("a", snowflake("acct-shared"));
+    await addKey("b", snowflake("acct-shared"));
+    const { refusals, locks } = await watch(dead, { modelAt: opusOnly(10, 13), totalMin: 12 * 60 });
+    const [firstLockAt] = locks[0];
+    expect(firstLockAt - refusals[0]).toBeGreaterThanOrEqual(25);
+    expect(firstLockAt - refusals[0]).toBeLessThanOrEqual(30);
+    expect(locks.map(([, hours]) => hours)).toEqual([1, 2, 4, 8]);
+  }, 60000);
 
-    vi.advanceTimersByTime(2.5 * MIN);
-    await fail(dead.id, { times: 1, models: ["claude-opus-5-5"], peers: [healthy] });
-    expect((await load(dead.id)).isActive).toBe(false);
-  });
+  it("keeps serving kimi-k3 on a key that lacks claude-opus-5-5, and never turns it off", async () => {
+    const partial = await addKey("a", snowflake("acct-shared"));
+    await addKey("b", snowflake("acct-shared"));
+    const modelAt = (minute) => (minute % 20 === 19 ? "kimi-k3" : "claude-opus-5-5");
+    const { locks, served } = await watch(partial, {
+      modelAt, totalMin: 4 * 60, refuses: (model) => model === "claude-opus-5-5",
+    });
+    expect(served.filter(([model]) => model === "kimi-k3").every(([, id]) => id === partial.id)).toBe(true);
+    // Each kimi-k3 success starts the opus lock level over.
+    expect(locks.length).toBeGreaterThan(0);
+    expect(locks.every(([, hours]) => hours === 1)).toBe(true);
+  }, 60000);
 
   it("still turns off the dead key within 60-90 minutes when the router restarts mid-streak under light traffic", async () => {
     const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));

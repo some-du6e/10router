@@ -15,7 +15,7 @@ const OPTIONAL_FIELDS = [
 // off again keeps its reason unless a new key came with it.
 const AUTH_STREAK_FIELDS = [
   "authFailCount", "authFailFirstAt", "authFailLastAt", "authFailModels", "authFailAll401", "authFailSameUpstream",
-  "authFailRunCount", "authFailRunStartAt", "authFailBursts",
+  "authFailRunCount", "authFailRunStartAt", "authFailBursts", "authFailLockLevels",
 ];
 const AUTO_DISABLE_FIELDS = ["autoDisabledAt", "autoDisabledReason", ...AUTH_STREAK_FIELDS];
 
@@ -24,7 +24,12 @@ function applyAutoDisableTransition(existing, merged, data) {
   const keyChanged = newKey !== "" && newKey !== String(existing.apiKey ?? "").trim();
   // A different key pasted into a connection the router turned off fixes it.
   if (existing.autoDisabledAt && data.isActive === undefined && keyChanged) merged.isActive = true;
-  if (existing.isActive === false && merged.isActive === true) {
+  const reEnabled = existing.isActive === false && merged.isActive === true;
+  // The long locks a key refused on one model got go with its streak.
+  if (reEnabled || keyChanged) {
+    for (const model of Object.keys(existing.authFailLockLevels || {})) merged[`modelLock_${model}`] = null;
+  }
+  if (reEnabled) {
     for (const f of AUTO_DISABLE_FIELDS) delete merged[f];
   } else if (data.isActive === false && data.autoDisabledAt === undefined && keyChanged) {
     delete merged.autoDisabledAt;
