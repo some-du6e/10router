@@ -166,12 +166,14 @@ function nextAuthFailStreak(conn, model, status, sameUpstream) {
 // the streak has 2 bursts and spans the window: a few refusals spread thinly
 // over an hour, or one burst followed by them, can't trip it.
 function isAuthDead(streak) {
-  const windowMs = streak.authFailSameUpstream ? AUTH_DEAD_CONFIG.minWindowMs : AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
+  const oneModel = !streak.authFailAll401 && streak.authFailModels.length < AUTH_DEAD_CONFIG.minModels;
+  const minFailures = oneModel ? AUTH_DEAD_CONFIG.oneModelMinFailures : AUTH_DEAD_CONFIG.minFailures;
+  const windowMs = (streak.authFailSameUpstream ? AUTH_DEAD_CONFIG.minWindowMs : AUTH_DEAD_CONFIG.crossUpstreamWindowMs)
+    * (oneModel ? AUTH_DEAD_CONFIG.oneModelWindowFactor : 1);
   const spans = (at) => Date.now() - new Date(at).getTime() >= windowMs;
   const runAlone = streak.authFailRunCount >= AUTH_DEAD_CONFIG.minFailures && spans(streak.authFailRunStartAt);
   const bursts = streak.authFailBursts >= 2 && spans(streak.authFailFirstAt);
-  return streak.authFailCount >= AUTH_DEAD_CONFIG.minFailures && (runAlone || bursts)
-    && (streak.authFailAll401 || streak.authFailModels.length >= AUTH_DEAD_CONFIG.minModels);
+  return streak.authFailCount >= minFailures && (runAlone || bursts);
 }
 
 function autoDisableReason(status, errorText, streak) {
