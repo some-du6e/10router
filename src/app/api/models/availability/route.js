@@ -45,12 +45,13 @@ export async function GET() {
         if (connection.isActive === false || !key.startsWith(AUTH_DEMOTE_PREFIX) || !demotion?.demotedAt) continue;
         const model = key.slice(AUTH_DEMOTE_PREFIX.length);
         if (locks.some((lock) => lock.model === model)) continue;
-        const probeDue = !(new Date(demotion.nextProbeAt).getTime() > Date.now());
+        const nextTry = Math.max(new Date(demotion.nextProbeAt).getTime(), new Date(demotion.leaseUntil || 0).getTime());
+        const probeDue = !(nextTry > Date.now());
         models.push({
           provider: connection.provider,
           model,
           status: "cooldown",
-          until: probeDue ? null : demotion.nextProbeAt,
+          until: probeDue ? null : new Date(nextTry).toISOString(),
           connectionId: connection.id,
           connectionName: connection.name || connection.email || connection.id,
           lastError: `Demoted after repeated ${demotion.reason}${probeDue ? " (probe due)" : ""}`,

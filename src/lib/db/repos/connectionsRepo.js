@@ -21,7 +21,7 @@ const AUTO_DISABLE_FIELDS = ["autoDisabledAt", "autoDisabledReason", ...AUTH_STR
 
 // authDemote_<model>: sse/services/auth.js's count of a key's 403s on that
 // model, and its demotion there once they trip. authDemoteOkAt: when the key
-// last served anything while demoted somewhere (only compared with demotedAt).
+// last served anything while it had such a record (compared with its firstAt).
 export const AUTH_DEMOTE_PREFIX = "authDemote_";
 export const getAuthDemoteKey = (model) => `${AUTH_DEMOTE_PREFIX}${model}`;
 
@@ -306,7 +306,8 @@ export async function updateProviderConnection(id, data, { autoDisable = null, d
     const demoteKey = demote && getAuthDemoteKey(demote.model);
     if (demote && !staleKey && JSON.stringify(existing[demoteKey] ?? null) === JSON.stringify(demote.from ?? null)) {
       Object.assign(merged, demote.data, { [demoteKey]: demote.to });
-      // Other models' demotions to probe right away.
+      // Other models' demotions to probe right away (a probe already out keeps
+      // its lease).
       const now = new Date().toISOString();
       for (const model of demote.probeNow || []) {
         const record = existing[getAuthDemoteKey(model)];
