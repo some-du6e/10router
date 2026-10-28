@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { AUTH_LOCK_PREFIX, getAuthLockKey, getModelLockKey } from "open-sse/services/accountFallback.js";
 
 const OPTIONAL_FIELDS = [
   "displayName", "email", "globalPriority", "defaultModel",
@@ -15,7 +16,7 @@ const OPTIONAL_FIELDS = [
 // off again keeps its reason unless a new key came with it.
 const AUTH_STREAK_FIELDS = [
   "authFailCount", "authFailFirstAt", "authFailLastAt", "authFailModels", "authFailAll401", "authFailSameUpstream",
-  "authFailRunCount", "authFailRunStartAt", "authFailBursts", "authFailLockLevels",
+  "authFailRunCount", "authFailRunStartAt", "authFailBursts",
 ];
 const AUTO_DISABLE_FIELDS = ["autoDisabledAt", "autoDisabledReason", ...AUTH_STREAK_FIELDS];
 
@@ -25,9 +26,13 @@ function applyAutoDisableTransition(existing, merged, data) {
   // A different key pasted into a connection the router turned off fixes it.
   if (existing.autoDisabledAt && data.isActive === undefined && keyChanged) merged.isActive = true;
   const reEnabled = existing.isActive === false && merged.isActive === true;
-  // The long locks a key refused on one model got go with its streak.
+  // So do the long locks a key refused on one model got, and their levels.
   if (reEnabled || keyChanged) {
-    for (const model of Object.keys(existing.authFailLockLevels || {})) merged[`modelLock_${model}`] = null;
+    for (const k of Object.keys(existing)) {
+      if (!k.startsWith(AUTH_LOCK_PREFIX) || !existing[k]) continue;
+      merged[k] = null;
+      merged[getModelLockKey(k.slice(AUTH_LOCK_PREFIX.length))] = null;
+    }
   }
   if (reEnabled) {
     for (const f of AUTO_DISABLE_FIELDS) delete merged[f];
@@ -268,12 +273,25 @@ export async function createProviderConnection(data) {
   return result;
 }
 
+// A running long lock is not cut short, or cleared, by a write that leaves its
+// record (a short lock or a lazy clear from a request that predates it).
+function keepLongLocks(merged) {
+  const now = Date.now();
+  for (const [k, lock] of Object.entries(merged)) {
+    if (!k.startsWith(AUTH_LOCK_PREFIX) || !(new Date(lock?.until).getTime() > now)) continue;
+    const lockKey = getModelLockKey(k.slice(AUTH_LOCK_PREFIX.length));
+    if (!(new Date(merged[lockKey] || 0).getTime() >= new Date(lock.until).getTime())) merged[lockKey] = lock.until;
+  }
+}
+
 // Critical: OAuth refresh token race — atomic merge inside transaction.
-// autoDisable fields are applied only if the connection is still on and another
-// connection of its provider is too, decided in the same transaction as the write.
+// autoDisable and longLock fields are applied only if the connection is still on
+// and another connection of its provider is too, decided in the same
+// transaction as the write; longLock only once per level, when the model's
+// last long lock (if any) has run out.
 // apiKeyUsed is the key a failing request used: if another key has been stored
-// since, the request's auth streak fields and autoDisable are dropped.
-export async function updateProviderConnection(id, data, { autoDisable = null, apiKeyUsed } = {}) {
+// since, the request's auth streak fields, autoDisable and longLock are dropped.
+export async function updateProviderConnection(id, data, { autoDisable = null, longLock = null, apiKeyUsed } = {}) {
   const db = await getAdapter();
   let result;
   let servesChanged = false;
@@ -289,9 +307,15 @@ export async function updateProviderConnection(id, data, { autoDisable = null, a
         else delete merged[f];
       }
     }
-    if (autoDisable && !staleKey && existing.isActive && db.get(
+    const allowed = (autoDisable || longLock) && !staleKey && existing.isActive && db.get(
       `SELECT 1 FROM providerConnections WHERE provider = ? AND id != ? AND isActive = 1 LIMIT 1`, [existing.provider, id],
-    )) Object.assign(merged, autoDisable);
+    );
+    if (allowed && autoDisable) Object.assign(merged, autoDisable);
+    const lastLock = longLock && existing[getAuthLockKey(longLock.model)];
+    if (allowed && longLock && (lastLock?.level || 0) === longLock.level && !(new Date(lastLock?.until).getTime() > Date.now())) {
+      Object.assign(merged, longLock.fields);
+    }
+    keepLongLocks(merged);
     applyAutoDisableTransition(existing, merged, data);
     upsert(db, merged);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);

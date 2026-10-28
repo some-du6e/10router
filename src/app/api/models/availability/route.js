@@ -3,6 +3,7 @@ import {
   getProviderConnections,
   updateProviderConnection,
 } from "@/lib/localDb";
+import { getAuthLockKey } from "open-sse/services/accountFallback.js";
 
 const MODEL_LOCK_PREFIX = "modelLock_";
 
@@ -73,13 +74,16 @@ export async function POST(request) {
 
     const connections = await getProviderConnections({ provider });
     const lockKey = `${MODEL_LOCK_PREFIX}${model}`;
+    // A long lock's level goes too, so the next refusal doesn't double it.
+    const authLockKey = getAuthLockKey(model);
 
     await Promise.all(
       connections
-        .filter((connection) => connection[lockKey])
+        .filter((connection) => connection[lockKey] || connection[authLockKey])
         .map((connection) =>
           updateProviderConnection(connection.id, {
             [lockKey]: null,
+            [authLockKey]: null,
             ...(connection.testStatus === "unavailable"
               ? {
                   testStatus: "active",

@@ -1,7 +1,7 @@
 import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools } from "@/lib/localDb";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
-import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL } from "open-sse/services/accountFallback.js";
-import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG, ERROR_RULES } from "open-sse/config/errorConfig.js";
+import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL, AUTH_LOCK_PREFIX, getAuthLockKey } from "open-sse/services/accountFallback.js";
+import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG, ERROR_RULES, COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { planCanServeModel } from "@/shared/utils/planCapability.js";
 import { getAntigravityQuotaCache } from "./antigravityQuota.js";
@@ -29,7 +29,6 @@ function githubMonthlyResetMs(status, errorText, provider) {
 const AUTH_FAIL_CLEARED = {
   authFailCount: null, authFailFirstAt: null, authFailLastAt: null, authFailModels: null, authFailAll401: null,
   authFailSameUpstream: null, authFailRunCount: null, authFailRunStartAt: null, authFailBursts: null,
-  authFailLockLevels: null,
 };
 const MAX_TRACKED_MODELS = 5;
 const REASON_MAX_CHARS = 80;
@@ -41,6 +40,9 @@ const MAX_EVENT_ENTRIES = 5000;
 // the same millisecond. Memory only, so the success path never writes the DB;
 // after a restart it is empty and keys just take longer to trip.
 const authEvents = (global._authEvents ??= { seq: 0, success: new Map(), refused: new Map() });
+// `${connectionId}|${model}` long-locked since this process started, so a
+// success on a request whose snapshot predates the lock still lifts it.
+authEvents.longLocked ??= new Set();
 
 function remember(map, key) {
   const now = Date.now();
@@ -132,22 +134,25 @@ async function authFailEvidence(connections, conn, model, status, errorText) {
 function nextAuthFailStreak(conn, model, status, sameUpstream) {
   const now = Date.now();
   const firstAt = new Date(conn.authFailFirstAt || NaN).getTime();
-  const sinceLast = now - new Date(conn.authFailLastAt || conn.authFailFirstAt || NaN).getTime();
+  const lastAt = new Date(conn.authFailLastAt || conn.authFailFirstAt || NaN).getTime();
+  // A running long lock hides the key's refusals, so it counts as one for up to
+  // an hour past the last real one.
+  const lockedUntil = Math.min(now, lastAt + AUTH_DEAD_CONFIG.crossUpstreamWindowMs,
+    Math.max(...authLocks(conn).map(l => new Date(l.until).getTime()).filter(Number.isFinite)));
+  const sinceLast = now - Math.max(lastAt, lockedUntil);
   // Starts over when the last counted failure is older than the window the
   // streak needs (a backup key left with an outage's leftovers; a streak that
   // needs an hour, or that can only get a long lock on its one model, survives
-  // the idle gaps of someone pausing for 10+ minutes) and no long lock made the
-  // gap, when this key succeeded after the streak began on a request whose
-  // snapshot predates it, or when a timestamp is unreadable or in the future
-  // (the negated range check is also false for NaN).
+  // the idle gaps of someone pausing for 10+ minutes), when this key succeeded
+  // after the streak began on a request whose snapshot predates it, or when a
+  // timestamp is unreadable or in the future (the negated range check is also
+  // false for NaN).
   const sameOneModel = !conn.authFailAll401 && conn.authFailModels?.length === 1 && conn.authFailModels[0] === model;
   const maxGapMs = conn.authFailSameUpstream === true && !sameOneModel
     ? AUTH_DEAD_CONFIG.minWindowMs : AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
-  const succeeded = succeededSince(conn.id, firstAt + 1);
-  const longLocked = Object.keys(conn.authFailLockLevels || {}).length > 0;
   const fresh = !(now - firstAt >= 0)
-    || !(sinceLast >= 0 && (longLocked || sinceLast <= maxGapMs))
-    || succeeded;
+    || !(sinceLast >= 0 && sinceLast <= maxGapMs)
+    || succeededSince(conn.id, firstAt + 1);
   const models = !fresh && Array.isArray(conn.authFailModels) ? conn.authFailModels : [];
   // A run is the counted failures since the last gap over minWindowMs; a burst
   // is a run of 2 or more.
@@ -166,9 +171,10 @@ function nextAuthFailStreak(conn, model, status, sameUpstream) {
     authFailModels: models.includes(model) ? models : [...models, model].slice(-MAX_TRACKED_MODELS),
     authFailAll401: Number(status) === 401 && (fresh || conn.authFailAll401 === true),
     authFailSameUpstream: sameUpstream && (fresh || conn.authFailSameUpstream === true),
-    authFailLockLevels: fresh ? null : conn.authFailLockLevels ?? null,
   };
 }
+
+const authLocks = (conn) => Object.entries(conn).filter(([k, v]) => k.startsWith(AUTH_LOCK_PREFIX) && v).map(([, v]) => v);
 
 // Trips once the current run alone has minFailures over the window, or once
 // the streak has 2 bursts and spans the window: a few refusals spread thinly
@@ -196,17 +202,28 @@ function autoDisableReason(status, errorText, streak) {
 // The long lock for a key refused on one model: the first once the streak would
 // trip, the next as soon as a refusal follows the last one running out.
 function oneModelLock(conn, streak, model, status, errorText) {
-  const level = streak.authFailLockLevels?.[model] || 0;
-  if (!(level > 0 ? new Date(conn[getModelLockKey(model)] || 0).getTime() <= Date.now() : isAuthDead(streak))) return null;
+  const current = conn[getAuthLockKey(model)];
+  const level = current?.level || 0;
+  if (!(level > 0 ? !(new Date(current.until).getTime() > Date.now()) : isAuthDead(streak))) return null;
   const lockMs = Math.min(AUTH_DEAD_CONFIG.oneModelLockMs * 2 ** level, AUTH_DEAD_CONFIG.maxOneModelLockMs);
+  const until = new Date(Date.now() + lockMs).toISOString();
   return {
-    lockMs,
+    model, level, lockMs,
     fields: {
-      ...buildModelLockUpdate(model, lockMs),
-      authFailLockLevels: { ...streak.authFailLockLevels, [model]: level + 1 },
+      [getModelLockKey(model)]: until,
+      [getAuthLockKey(model)]: { level: level + 1, until },
       lastError: `${model} locked for ${Math.round(lockMs / HOUR_MS)}h after repeated ${refusalText(status, errorText)}`,
     },
   };
+}
+
+// A key long-locked for refusing this model is still tried, at most every
+// couple of minutes, when no other key can serve it: it may have recovered.
+function canProbe(conn, model) {
+  const lock = conn[getAuthLockKey(model)];
+  const at = (value) => new Date(value || 0).getTime();
+  return !!lock && !(at(conn[MODEL_LOCK_ALL]) > Date.now()) && !(at(conn[getModelLockKey(model)]) > at(lock.until))
+    && !(Date.now() - at(conn.lastErrorAt) < COOLDOWN_MS.unauthorized);
 }
 
 /**
@@ -285,9 +302,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const antigravityQuotaCache = isAntigravity && model ? getAntigravityQuotaCache() : null;
 
     // Filter out model-locked, excluded, and Antigravity quota-exhausted connections.
-    const availableConnections = connections.filter(c => {
+    const usable = (c, probe) => {
       if (excludeSet.has(c.id)) return false;
-      if (isModelLockActive(c, model)) return false;
+      if (isModelLockActive(c, model) && !(probe && canProbe(c, model))) return false;
       if (resetStates.get(c.id).blockedUntil) return false;
       // A plan that cannot serve this model would only 400 upstream.
       if (!planCanServeModel(providerId, c, model)) {
@@ -304,7 +321,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         }
       }
       return true;
-    });
+    };
+    let availableConnections = connections.filter(c => usable(c, false));
+    if (availableConnections.length === 0 && model) availableConnections = connections.filter(c => usable(c, true));
 
     log.debug("AUTH", `${provider} | available: ${availableConnections.length}/${connections.length}`);
     connections.forEach(c => {
@@ -492,8 +511,6 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
   const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
   const lockKey = Object.keys(lockUpdate)[0];
-  // A short lock doesn't cut short a long one written while this request ran.
-  if (conn?.authFailLockLevels?.[model] && conn[lockKey] > lockUpdate[lockKey]) delete lockUpdate[lockKey];
   const providerResetAtMs = githubResetAtMs || resetsAtMs;
 
   // Auth rejections build a streak that only a success clears; other errors
@@ -508,7 +525,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     autoDisabledAt: new Date().toISOString(),
     autoDisabledReason: autoDisableReason(status, errorText, authFailStreak),
   } : null;
-  const longLock = authFailStreak && !autoDisable && (oneModel || authFailStreak.authFailLockLevels?.[model])
+  const longLock = authFailStreak && !autoDisable && (oneModel || conn[getAuthLockKey(model)])
     ? oneModelLock(conn, authFailStreak, model, status, errorText) : null;
 
   const update = {
@@ -525,12 +542,11 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   };
   // A key pasted in while this request was on its way isn't blamed for it.
   const saved = authFailStreak
-    ? await updateProviderConnection(connectionId, update, {
-      autoDisable: autoDisable || longLock?.fields || null, apiKeyUsed: requestApiKey ?? conn.apiKey,
-    })
+    ? await updateProviderConnection(connectionId, update, { autoDisable, longLock, apiKeyUsed: requestApiKey ?? conn.apiKey })
     : await updateProviderConnection(connectionId, update);
   const turnedOff = autoDisable && saved?.isActive === false && saved.autoDisabledAt === autoDisable.autoDisabledAt;
   const longLocked = longLock && saved?.[lockKey] === longLock.fields[lockKey];
+  if (longLocked) authEvents.longLocked.add(`${connectionId}|${model}`);
 
   const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
   if (longLocked) log.warn("AUTH", `${connName} locked ${model} for ${Math.round(longLock.lockMs / HOUR_MS)}h after repeated ${status}s`);
@@ -558,13 +574,16 @@ export async function clearAccountError(connectionId, currentConnection, model =
   recordSuccess(connectionId, model);
   const conn = currentConnection._connection || currentConnection;
   const now = Date.now();
+  // A success on the long-locked model lifts its lock and starts its level over.
+  const authLockKey = model ? getAuthLockKey(model) : null;
+  const longLocked = !!model && (!!conn[authLockKey] || authEvents.longLocked.has(`${connectionId}|${model}`));
+  if (longLocked) authEvents.longLocked.delete(`${connectionId}|${model}`);
   // A cleared lock stays as modelLock_<model>: null and needs no write, unless
   // whatever cleared it left its reset time or limit flag behind.
   const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_")
     && (conn[k] || conn[k.replace("modelLock_", PROVIDER_RESET_PREFIX)] || conn[k.replace("modelLock_", MODEL_LIMIT_PREFIX)]));
 
-  const streak = conn.authFailCount || conn.authFailLockLevels;
-  if (!conn.testStatus && !conn.lastError && !conn.errorCode && allLockKeys.length === 0 && !streak) return;
+  if (!conn.testStatus && !conn.lastError && !conn.errorCode && allLockKeys.length === 0 && !conn.authFailCount && !longLocked) return;
 
   // Keys to clear: current model's lock + all expired locks
   const keysToClear = allLockKeys.filter(k => {
@@ -574,8 +593,9 @@ export async function clearAccountError(connectionId, currentConnection, model =
     if (!expiry) return true;                              // lock already cleared
     return expiry && new Date(expiry).getTime() <= now;   // expired
   });
+  if (longLocked && !keysToClear.includes(getModelLockKey(model))) keysToClear.push(getModelLockKey(model));
 
-  if (keysToClear.length === 0 && conn.testStatus !== "unavailable" && !conn.lastError && !conn.errorCode && !streak) return;
+  if (keysToClear.length === 0 && conn.testStatus !== "unavailable" && !conn.lastError && !conn.errorCode && !conn.authFailCount) return;
 
   // Check if any active locks remain after clearing
   const remainingActiveLocks = allLockKeys.filter(k => {
@@ -585,9 +605,11 @@ export async function clearAccountError(connectionId, currentConnection, model =
   });
 
   const clearObj = Object.fromEntries(keysToClear.map(k => [k, null]));
-  // Any success proves the key works, whatever model failed before; a long lock
-  // on another model it was refused stays until it runs out.
-  if (streak) Object.assign(clearObj, AUTH_FAIL_CLEARED);
+  // Any success proves the key works, whatever model failed before. A long lock
+  // on another model stays until it runs out, and its level until that model
+  // succeeds.
+  if (conn.authFailCount) Object.assign(clearObj, AUTH_FAIL_CLEARED);
+  if (longLocked) clearObj[authLockKey] = null;
   for (const key of keysToClear) {
     clearObj[key.replace("modelLock_", PROVIDER_RESET_PREFIX)] = null;
     clearObj[key.replace("modelLock_", MODEL_LIMIT_PREFIX)] = null;

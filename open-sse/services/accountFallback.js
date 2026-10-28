@@ -135,6 +135,11 @@ export function getModelLockKey(model) {
   return model ? `${MODEL_LOCK_PREFIX}${model}` : MODEL_LOCK_ALL;
 }
 
+// authLock_<model>: { level, until } of the long lock a key refused on that one
+// model got (sse/services/auth.js). It outlives the lock so the next one doubles.
+export const AUTH_LOCK_PREFIX = "authLock_";
+export const getAuthLockKey = (model) => `${AUTH_LOCK_PREFIX}${model}`;
+
 /**
  * Check if a model lock on a connection is still active.
  * Reads flat field `modelLock_${model}` (or `modelLock___all` when model=null).
