@@ -3,9 +3,8 @@ import {
   getProviderConnections,
   updateProviderConnection,
 } from "@/lib/localDb";
-import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey } from "open-sse/services/accountFallback.js";
-
-const MODEL_LOCK_PREFIX = "modelLock_";
+import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey } from "@/lib/db/index.js";
+import { MODEL_LOCK_PREFIX } from "open-sse/services/accountFallback.js";
 
 function getActiveModelLocks(connection) {
   const now = Date.now();
@@ -20,15 +19,6 @@ function getActiveModelLocks(connection) {
     .filter((lock) => lock.active);
 }
 
-// Models the connection is demoted on (other keys are tried first), shown and
-// cleared like cooldowns.
-function getRunningDemotions(connection) {
-  const now = Date.now();
-  return Object.entries(connection)
-    .filter(([key, value]) => key.startsWith(AUTH_DEMOTE_PREFIX) && new Date(value?.until).getTime() > now)
-    .map(([key, value]) => ({ model: key.slice(AUTH_DEMOTE_PREFIX.length), until: value.until }));
-}
-
 export async function GET() {
   try {
     const connections = await getProviderConnections();
@@ -36,8 +26,6 @@ export async function GET() {
 
     for (const connection of connections) {
       const locks = getActiveModelLocks(connection);
-      const lockedModels = new Set(locks.map((lock) => lock.model));
-      locks.push(...getRunningDemotions(connection).filter((d) => !lockedModels.has(d.model)));
       for (const lock of locks) {
         models.push({
           provider: connection.provider,
@@ -50,7 +38,25 @@ export async function GET() {
         });
       }
 
-      if (locks.length === 0 && connection.testStatus === "unavailable") {
+      // Models the key is demoted on: other keys go first until it serves again.
+      let demotions = 0;
+      for (const [key, demotion] of Object.entries(connection)) {
+        if (!key.startsWith(AUTH_DEMOTE_PREFIX) || !demotion?.demotedAt) continue;
+        const model = key.slice(AUTH_DEMOTE_PREFIX.length);
+        if (locks.some((lock) => lock.model === model)) continue;
+        models.push({
+          provider: connection.provider,
+          model,
+          status: "cooldown",
+          until: demotion.nextProbeAt,
+          connectionId: connection.id,
+          connectionName: connection.name || connection.email || connection.id,
+          lastError: `Demoted after repeated ${demotion.reason}`,
+        });
+        demotions++;
+      }
+
+      if (locks.length === 0 && demotions === 0 && connection.testStatus === "unavailable") {
         models.push({
           provider: connection.provider,
           model: "__all",

@@ -47,24 +47,30 @@ export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 // key behind the same proxy served that model, and wasn't refused on it, since
 // this key's previous failure on it (the first: within minWindowMs). Trips at
 // minFailures with no success in between, when they were all 401s or (401s or
-// 403s) span minModels models, spread over
+// 403s) span minModels models (a 403 on one model can be a plan limit), spread over
 // minWindowMs if every failure had a peer on the same upstream (base URL, Azure
 // endpoint, region, location, account, project), else over
 // crossUpstreamWindowMs, since a key on its own server may be refused because
 // that server is down. A gap longer than the streak's window starts it over. A
 // streak with gaps over minWindowMs trips once the failures since the last such
 // gap span the window on their own, or once it has 2 bursts (2+ counted
-// failures with no such gap between them) and spans the window. A streak that
-// would trip with 403s on one model (the key may lack only that model) demotes
-// the key on that model instead: other keys are tried first for demoteMs,
-// doubling on each refusal after it runs out, up to maxDemoteMs.
+// failures with no such gap between them) and spans the window.
 export const AUTH_DEAD_CONFIG = {
   minFailures: 5,
   minWindowMs: 10 * 60 * 1000,
   crossUpstreamWindowMs: 60 * 60 * 1000,
   minModels: 2,
-  demoteMs: 60 * 60 * 1000,
-  maxDemoteMs: 24 * 60 * 60 * 1000,
+};
+
+// An API key refused with 403s on one model, which may be all it lacks, is
+// demoted on that model instead: other keys are tried first. It counts the
+// 403s AUTH_DEAD_CONFIG would count, on that model alone: minFailures of them
+// spanning minWindowMs (crossUpstreamWindowMs if any had only a peer on another
+// upstream), a gap over crossUpstreamWindowMs starting the count over, and only
+// a success on that model clearing it. A demoted key still gets one request
+// after each of probeMs in turn (the last repeating), and comes back on a success.
+export const AUTH_DEMOTE_CONFIG = {
+  probeMs: [10, 20, 40, 90, 180, 360].map(min => min * 60 * 1000),
 };
 
 // Cooldown durations (ms)

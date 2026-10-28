@@ -135,11 +135,6 @@ export function getModelLockKey(model) {
   return model ? `${MODEL_LOCK_PREFIX}${model}` : MODEL_LOCK_ALL;
 }
 
-// authDemote_<model>: { level, until, at } for a key demoted on that model by
-// sse/services/auth.js; other keys are tried first until `until`.
-export const AUTH_DEMOTE_PREFIX = "authDemote_";
-export const getAuthDemoteKey = (model) => `${AUTH_DEMOTE_PREFIX}${model}`;
-
 /**
  * Check if a model lock on a connection is still active.
  * Reads flat field `modelLock_${model}` (or `modelLock___all` when model=null).
