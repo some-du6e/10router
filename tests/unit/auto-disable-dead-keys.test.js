@@ -742,6 +742,8 @@ describe("a key refused on only one model", () => {
   });
 
   it("keeps only the short lock on the last active key", async () => {
+    const { warn } = await import("@/sse/utils/logger.js");
+    warn.mockClear();
     const dead = await addKey("a");
     const healthy = await addKey("b");
     await fail(dead.id, { times: 4, models: ["m1"], peers: [healthy] });
@@ -751,6 +753,7 @@ describe("a key refused on only one model", () => {
     expect(conn).toMatchObject({ isActive: true, authFailCount: 7 });
     expect(lockLevel(conn, "m1")).toBe(0);
     expect(lockedMin(conn, "m1")).toBeLessThanOrEqual(2);
+    expect(warn.mock.calls.filter(([, line]) => line.includes("after repeated"))).toEqual([]);
   });
 
   it("keeps only the short lock when the peer is turned off between the decision and the write", async () => {
@@ -843,6 +846,140 @@ describe("a key refused on only one model", () => {
     }
     expect(locks).toEqual(longLocks);
     expect((await load(key.id)).isActive).toBe(true);
+  });
+
+  const LOCK_MESSAGE = 'm1 locked for 1h after repeated 403 "Not authorized for this endpoint"';
+  const takePeerAway = (healthy) => db.updateProviderConnection(healthy.id, { isActive: false });
+
+  it("does not let a lock on one model bridge a gap in a later streak on others", async () => {
+    const { dead, healthy } = await lockedKey();
+    await succeed(dead.id, "m2");
+    await fail(dead.id, { times: 3, models: ["m2"], peers: [healthy] });
+    vi.advanceTimersByTime(40 * MIN);
+    await fail(dead.id, { times: 2, models: ["m3"], peers: [healthy] });
+    expect(await load(dead.id)).toMatchObject({ isActive: true, authFailCount: 2, authFailModels: ["m3"] });
+  });
+
+  it("does not let a lock raised before the streak began bridge its gaps", async () => {
+    const { dead, healthy } = await lockedKey();
+    await succeed(dead.id, "m2");
+    vi.advanceTimersByTime(5 * MIN);
+    await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy] });
+    vi.advanceTimersByTime(25 * MIN);
+    await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
+    expect(await load(dead.id)).toMatchObject({ authFailCount: 1, authFailModels: ["m2"] });
+  });
+
+  it("keeps only the run since a gap a one-model streak outlived when another model joins", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 2, models: ["m1"], peers: [healthy] });
+    vi.advanceTimersByTime(50 * MIN);
+    await fail(dead.id, { times: 2, models: ["m1"], peers: [healthy] });
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
+    expect(await load(dead.id)).toMatchObject({ isActive: true, authFailCount: 3, authFailBursts: 1, authFailModels: ["m1", "m2"] });
+  });
+
+  it("turns a long-locked key off once it is revoked and gets 401s on that model", async () => {
+    const { dead, healthy } = await lockedKey();
+    vi.setSystemTime(new Date((await load(dead.id)).authLock_m1.until).getTime() + MIN);
+    await fail(dead.id, { times: 4, models: ["m1"], peers: [healthy], status: 401, text: "Invalid API key" });
+    expect(await load(dead.id)).toMatchObject({ isActive: true, authFailAll401: true, authLock_m1: { level: 1 } });
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy], status: 401, text: "Invalid API key" });
+    expect(await load(dead.id)).toMatchObject({ isActive: false, autoDisabledReason: '401 "Invalid API key" on m1' });
+  });
+
+  it("times the probe from that model's last failure, not an error on another model", async () => {
+    const { dead, healthy } = await lockedKey();
+    vi.advanceTimersByTime(2 * MIN);
+    await failOnce(dead.id, "m2", 429, "Too many requests");
+    await takePeerAway(healthy);
+    expect(await pick("m1")).toBe(dead.id);
+  });
+
+  it("does not probe a key held by a later rate-limit lock or an account-wide lock", async () => {
+    const { dead, healthy } = await lockedKey();
+    vi.setSystemTime(new Date((await load(dead.id)).authLock_m1.until).getTime() + MIN);
+    await takePeerAway(healthy);
+    await auth.markAccountUnavailable(dead.id, 429, "Too many requests", provider, "m1", Date.now() + 30 * MIN);
+    vi.advanceTimersByTime(3 * MIN);
+    expect(await pick("m1")).toBeUndefined();
+
+    provider = `${PROVIDER}-${++seq}`;
+    const other = await lockedKey();
+    await takePeerAway(other.healthy);
+    await db.updateProviderConnection(other.dead.id, { modelLock___all: new Date(Date.now() + 30 * MIN).toISOString() });
+    vi.advanceTimersByTime(3 * MIN);
+    expect(await pick("m1")).toBeUndefined();
+  });
+
+  it("does not cut a longer rate-limit lock down to the long lock's end", async () => {
+    const { dead } = await lockedKey();
+    vi.advanceTimersByTime(55 * MIN);
+    await auth.markAccountUnavailable(dead.id, 429, "Too many requests", provider, "m1", Date.now() + 30 * MIN);
+    expect(lockedMin(await load(dead.id), "m1")).toBe(30);
+  });
+
+  it("does not bridge a gap with a running lock past an hour after the streak's last refusal", async () => {
+    const { dead, healthy } = await lockedKey();
+    expect(lockedMin(await refuseAfterLock(dead, healthy), "m1")).toBe(120);
+    vi.advanceTimersByTime(90 * MIN);
+    await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
+    expect(await load(dead.id)).toMatchObject({ authFailCount: 1, authFailModels: ["m2"] });
+  });
+
+  it("reports the next probe, not the long lock's end, as the time to retry", async () => {
+    const { healthy } = await lockedKey();
+    await takePeerAway(healthy);
+    const result = await auth.getProviderCredentials(provider, null, "m1");
+    expect(result.allRateLimited).toBe(true);
+    expect((new Date(result.retryAfter).getTime() - Date.now()) / MIN).toBe(2);
+  });
+
+  it("keeps the lock and its message through a success on another model read before the lock", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 4, models: ["m1"], peers: [healthy] });
+    const before = await load(dead.id);
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy] });
+    vi.advanceTimersByTime(MIN);
+    await auth.clearAccountError(dead.id, before, "m2");
+    const conn = await load(dead.id);
+    expect(conn).toMatchObject({ lastError: LOCK_MESSAGE, testStatus: "unavailable", errorCode: 403 });
+    expect(lockedMin(conn, "m1")).toBe(59);
+    await takePeerAway(healthy);
+    expect(await pick("m1")).toBeUndefined();
+  });
+
+  it("keeps the lock and its message while it runs when a connection test passes", async () => {
+    const { dead } = await lockedKey();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+    expect((await testSingleConnection(dead.id)).valid).toBe(true);
+    const conn = await load(dead.id);
+    expect(conn).toMatchObject({ lastError: LOCK_MESSAGE, authLock_m1: { level: 1 } });
+    expect(lockedMin(conn, "m1")).toBe(60);
+  });
+
+  it("clears the lock's message and status when the key is toggled off and on", async () => {
+    const { dead } = await lockedKey();
+    await db.updateProviderConnection(dead.id, { isActive: false });
+    await db.updateProviderConnection(dead.id, { isActive: true });
+    expect(await load(dead.id)).toMatchObject({ lastError: null, testStatus: "active", errorCode: null, authLock_m1: null });
+  });
+
+  it("starts the level over when the cooldown is cleared after the lock ran out", async () => {
+    const { dead } = await lockedKey();
+    vi.setSystemTime(new Date((await load(dead.id)).authLock_m1.until).getTime() + MIN);
+    await succeed(dead.id, "m2");
+    expect(await load(dead.id)).toMatchObject({ modelLock_m1: null, authLock_m1: { level: 1 } });
+    const { POST: availability } = await import("@/app/api/models/availability/route.js");
+    await availability(new Request("http://localhost/api/models/availability", {
+      method: "POST", body: JSON.stringify({ action: "clearCooldown", provider, model: "m1" }),
+    }));
+    expect((await load(dead.id)).authLock_m1).toBeNull();
   });
 
   it.each([

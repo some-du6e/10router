@@ -26,10 +26,14 @@ function applyAutoDisableTransition(existing, merged, data) {
   // A different key pasted into a connection the router turned off fixes it.
   if (existing.autoDisabledAt && data.isActive === undefined && keyChanged) merged.isActive = true;
   const reEnabled = existing.isActive === false && merged.isActive === true;
-  // So do the long locks a key refused on one model got, and their levels.
+  // So do the long locks a key refused on one model got, their levels, and the
+  // error they left showing.
   if (reEnabled || keyChanged) {
     for (const k of Object.keys(existing)) {
       if (!k.startsWith(AUTH_LOCK_PREFIX) || !existing[k]) continue;
+      if (merged.lastError && merged.lastError === existing[k].message) {
+        Object.assign(merged, { lastError: null, lastErrorAt: null, errorCode: null, testStatus: "active" });
+      }
       merged[k] = null;
       merged[getModelLockKey(k.slice(AUTH_LOCK_PREFIX.length))] = null;
     }
@@ -274,13 +278,20 @@ export async function createProviderConnection(data) {
 }
 
 // A running long lock is not cut short, or cleared, by a write that leaves its
-// record (a short lock or a lazy clear from a request that predates it).
+// record (a short lock or a lazy clear from a request that predates it), and
+// its message stays up while the error is cleared (a success on another model
+// from such a request, a passing connection test).
 function keepLongLocks(merged) {
   const now = Date.now();
+  let running = null;
   for (const [k, lock] of Object.entries(merged)) {
     if (!k.startsWith(AUTH_LOCK_PREFIX) || !(new Date(lock?.until).getTime() > now)) continue;
     const lockKey = getModelLockKey(k.slice(AUTH_LOCK_PREFIX.length));
     if (!(new Date(merged[lockKey] || 0).getTime() >= new Date(lock.until).getTime())) merged[lockKey] = lock.until;
+    running = lock;
+  }
+  if (running?.message && !merged.lastError) {
+    Object.assign(merged, { lastError: running.message, lastErrorAt: running.at, testStatus: "unavailable", errorCode: running.status });
   }
 }
 

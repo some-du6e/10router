@@ -41,8 +41,10 @@ const MAX_EVENT_ENTRIES = 5000;
 // after a restart it is empty and keys just take longer to trip.
 const authEvents = (global._authEvents ??= { seq: 0, success: new Map(), refused: new Map() });
 // `${connectionId}|${model}` long-locked since this process started, so a
-// success on a request whose snapshot predates the lock still lifts it.
+// success on a request whose snapshot predates the lock still lifts it; and the
+// last failure of any kind per `${connectionId}|${model}`, to space out probes.
 authEvents.longLocked ??= new Set();
+authEvents.failed ??= new Map();
 
 function remember(map, key) {
   const now = Date.now();
@@ -135,10 +137,13 @@ function nextAuthFailStreak(conn, model, status, sameUpstream) {
   const now = Date.now();
   const firstAt = new Date(conn.authFailFirstAt || NaN).getTime();
   const lastAt = new Date(conn.authFailLastAt || conn.authFailFirstAt || NaN).getTime();
-  // A running long lock hides the key's refusals, so it counts as one for up to
-  // an hour past the last real one.
-  const lockedUntil = Math.min(now, lastAt + AUTH_DEAD_CONFIG.crossUpstreamWindowMs,
-    Math.max(...authLocks(conn).map(l => new Date(l.until).getTime()).filter(Number.isFinite)));
+  // A running long lock this streak raised hides the key's 403s on that model,
+  // so it counts as one for up to an hour past the last real one. A 401 after
+  // it (a revoked key) gets no such help, so it can start an all-401 streak.
+  const bridged = Number(status) === 401 ? [] : authLocks(conn)
+    .filter(([m, l]) => conn.authFailModels?.includes(m) && new Date(l.at).getTime() >= firstAt)
+    .map(([, l]) => new Date(l.until).getTime()).filter(Number.isFinite);
+  const lockedUntil = Math.min(now, lastAt + AUTH_DEAD_CONFIG.crossUpstreamWindowMs, Math.max(...bridged));
   const sinceLast = now - Math.max(lastAt, lockedUntil);
   // Starts over when the last counted failure is older than the window the
   // streak needs (a backup key left with an outage's leftovers; a streak that
@@ -156,17 +161,22 @@ function nextAuthFailStreak(conn, model, status, sameUpstream) {
   const models = !fresh && Array.isArray(conn.authFailModels) ? conn.authFailModels : [];
   // A run is the counted failures since the last gap over minWindowMs; a burst
   // is a run of 2 or more.
-  const run = fresh || sinceLast > AUTH_DEAD_CONFIG.minWindowMs ? 1 : (conn.authFailRunCount ?? conn.authFailCount ?? 0) + 1;
-  const bursts = fresh ? 0 : conn.authFailBursts ?? ((conn.authFailCount || 0) >= 2 ? 1 : 0);
+  const prevRun = conn.authFailRunCount ?? conn.authFailCount ?? 0;
+  const run = fresh || sinceLast > AUTH_DEAD_CONFIG.minWindowMs ? 1 : prevRun + 1;
+  // A streak saved before runs had a start: the run is the whole streak only
+  // if it has no gap in it; otherwise start the run at its last failure.
+  const runStartAt = conn.authFailRunStartAt
+    || (conn.authFailRunCount == null || conn.authFailRunCount === conn.authFailCount ? conn.authFailFirstAt : conn.authFailLastAt);
+  // Another model joining a same-upstream streak that outlived a gap only as a
+  // one-model streak keeps just the run since that gap.
+  const trimmed = !fresh && conn.authFailSameUpstream === true && !sameOneModel && prevRun < (conn.authFailCount || 0);
+  const bursts = fresh ? 0 : trimmed ? (prevRun >= 2 ? 1 : 0) : conn.authFailBursts ?? ((conn.authFailCount || 0) >= 2 ? 1 : 0);
   return {
-    authFailCount: (fresh ? 0 : conn.authFailCount || 0) + 1,
+    authFailCount: (fresh ? 0 : trimmed ? prevRun : conn.authFailCount || 0) + 1,
     authFailRunCount: run,
-    // A streak saved before runs had a start: the run is the whole streak only
-    // if it has no gap in it; otherwise start the run at its last failure.
-    authFailRunStartAt: run === 1 ? new Date(now).toISOString() : conn.authFailRunStartAt
-      || (conn.authFailRunCount == null || conn.authFailRunCount === conn.authFailCount ? conn.authFailFirstAt : conn.authFailLastAt),
+    authFailRunStartAt: run === 1 ? new Date(now).toISOString() : runStartAt,
     authFailBursts: bursts + (run === 2 ? 1 : 0),
-    authFailFirstAt: fresh ? new Date(now).toISOString() : conn.authFailFirstAt,
+    authFailFirstAt: fresh ? new Date(now).toISOString() : trimmed ? runStartAt : conn.authFailFirstAt,
     authFailLastAt: new Date(now).toISOString(),
     authFailModels: models.includes(model) ? models : [...models, model].slice(-MAX_TRACKED_MODELS),
     authFailAll401: Number(status) === 401 && (fresh || conn.authFailAll401 === true),
@@ -174,7 +184,9 @@ function nextAuthFailStreak(conn, model, status, sameUpstream) {
   };
 }
 
-const authLocks = (conn) => Object.entries(conn).filter(([k, v]) => k.startsWith(AUTH_LOCK_PREFIX) && v).map(([, v]) => v);
+// [model, { level, until, at, message, status }] for each long lock record.
+const authLocks = (conn) => Object.entries(conn)
+  .filter(([k, v]) => k.startsWith(AUTH_LOCK_PREFIX) && v).map(([k, v]) => [k.slice(AUTH_LOCK_PREFIX.length), v]);
 
 // Trips once the current run alone has minFailures over the window, or once
 // the streak has 2 bursts and spans the window: a few refusals spread thinly
@@ -206,25 +218,30 @@ function oneModelLock(conn, streak, model, status, errorText) {
   const level = current?.level || 0;
   if (!(level > 0 ? !(new Date(current.until).getTime() > Date.now()) : isAuthDead(streak))) return null;
   const lockMs = Math.min(AUTH_DEAD_CONFIG.oneModelLockMs * 2 ** level, AUTH_DEAD_CONFIG.maxOneModelLockMs);
+  const at = new Date().toISOString();
   const until = new Date(Date.now() + lockMs).toISOString();
+  const message = `${model} locked for ${Math.round(lockMs / HOUR_MS)}h after repeated ${refusalText(status, errorText)}`;
   return {
     model, level, lockMs,
     fields: {
       [getModelLockKey(model)]: until,
-      [getAuthLockKey(model)]: { level: level + 1, until },
-      lastError: `${model} locked for ${Math.round(lockMs / HOUR_MS)}h after repeated ${refusalText(status, errorText)}`,
+      [getAuthLockKey(model)]: { level: level + 1, until, at, message, status: Number(status) },
+      lastError: message,
     },
   };
 }
 
 // A key long-locked for refusing this model is still tried, at most every
-// couple of minutes, when no other key can serve it: it may have recovered.
-function canProbe(conn, model) {
+// couple of minutes after its last failure on it, when no other key can serve
+// it: it may have recovered. Null when only that long lock doesn't hold it.
+function probeAt(conn, model) {
   const lock = conn[getAuthLockKey(model)];
   const at = (value) => new Date(value || 0).getTime();
-  return !!lock && !(at(conn[MODEL_LOCK_ALL]) > Date.now()) && !(at(conn[getModelLockKey(model)]) > at(lock.until))
-    && !(Date.now() - at(conn.lastErrorAt) < COOLDOWN_MS.unauthorized);
+  if (!lock || at(conn[MODEL_LOCK_ALL]) > Date.now() || at(conn[getModelLockKey(model)]) > at(lock.until)) return null;
+  return Math.max(at(lock.at), authEvents.failed.get(`${conn.id}|${model}`)?.at ?? 0) + COOLDOWN_MS.unauthorized;
 }
+
+const canProbe = (conn, model) => (probeAt(conn, model) ?? Infinity) <= Date.now();
 
 /**
  * Get provider credentials from localDb
@@ -342,9 +359,14 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         ? connections.filter(c => planCanServeModel(providerId, c, model)).map(c => {
           // An account needs both its error cooldown and exhausted quota to clear.
           const lock = new Date(c[getModelLockKey(model)] || c[MODEL_LOCK_ALL] || 0).getTime();
-          return Math.max(Number.isFinite(lock) ? lock : 0, resetStates.get(c.id).blockedUntil);
+          const until = Math.min(Number.isFinite(lock) ? lock : 0, probeAt(c, model) ?? Infinity);
+          return Math.max(until, resetStates.get(c.id).blockedUntil);
         }).filter(until => until > Date.now()).map(until => new Date(until).toISOString())
-        : lockedConns.map(c => getEarliestModelLockUntil(c)).filter(Boolean);
+        : lockedConns.map(c => {
+          // A long-locked key is tried again at its next probe, not at the lock's end.
+          const probe = probeAt(c, model);
+          return probe ? new Date(Math.min(probe, new Date(c[getModelLockKey(model)]).getTime())).toISOString() : getEarliestModelLockUntil(c);
+        }).filter(Boolean);
       if (isAntigravity && model && antigravityQuotaCache) {
         connections.forEach((c) => {
           const resetAt = antigravityQuotaCache.get(c.id)?.[model]?.resetAt;
@@ -508,6 +530,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   }
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 
+  if (model) remember(authEvents.failed, `${connectionId}|${model}`);
   const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
   const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
   const lockKey = Object.keys(lockUpdate)[0];
@@ -525,8 +548,9 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     autoDisabledAt: new Date().toISOString(),
     autoDisabledReason: autoDisableReason(status, errorText, authFailStreak),
   } : null;
-  const longLock = authFailStreak && !autoDisable && (oneModel || conn[getAuthLockKey(model)])
-    ? oneModelLock(conn, authFailStreak, model, status, errorText) : null;
+  // A 401 is left to the turn-off rules: a revoked key isn't kept on behind locks.
+  const longLock = authFailStreak && !autoDisable && Number(status) !== 401 && !authFailStreak.authFailAll401
+    && (oneModel || conn[getAuthLockKey(model)]) ? oneModelLock(conn, authFailStreak, model, status, errorText) : null;
 
   const update = {
     ...lockUpdate,
