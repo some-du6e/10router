@@ -1080,6 +1080,7 @@ describe("a key refused on only one model", () => {
     const { dead, healthy } = await demotedKey();
     vi.advanceTimersByTime(MIN);
     global._authEvents.demoteKeys.clear();
+    global._authEvents.servedKeys.add(dead.id);
     await auth.clearAccountError(dead.id, { id: dead.id }, "m3");
     expect((await load(dead.id)).authDemoteOkAt).toBeUndefined();
     await pausedThenProbed(dead, healthy);
@@ -1109,6 +1110,7 @@ describe("a key refused on only one model", () => {
     const { dead } = await demotedKey();
     vi.advanceTimersByTime(3 * MIN);
     global._authEvents.demoteKeys.clear();
+    global._authEvents.servedKeys.add(dead.id);
     await auth.clearAccountError(dead.id, { id: dead.id }, "m1");
     expect(record(await load(dead.id))).toMatchObject({ demotedAt: expect.any(String) });
     const creds = await auth.getProviderCredentials(provider, null, "m1");
@@ -1232,6 +1234,7 @@ describe("a key refused on only one model", () => {
     await fail(dead.id, { times: 4, models: ["m1"], peers: [healthy] });
     vi.advanceTimersByTime(MIN);
     global._authEvents.demoteKeys.clear();
+    global._authEvents.servedKeys.add(dead.id);
     await auth.clearAccountError(dead.id, { id: dead.id }, "m1");
     vi.advanceTimersByTime(2 * MIN);
     await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy] });
@@ -1243,6 +1246,7 @@ describe("a key refused on only one model", () => {
     const healthy = await addKey("b");
     await fail(dead.id, { times: 4, models: ["m1"], peers: [healthy] });
     global._authEvents.demoteKeys.clear();
+    global._authEvents.servedKeys.add(dead.id);
     await auth.clearAccountError(dead.id, { id: dead.id }, "m2");
     vi.advanceTimersByTime(3 * MIN);
     await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy] });
@@ -1283,6 +1287,7 @@ describe("a key refused on only one model", () => {
   it("lifts a demotion through a snapshot that carries only the record", async () => {
     const { dead } = await demotedKey();
     global._authEvents.demoteKeys.clear();
+    global._authEvents.servedKeys.add(dead.id);
     const rec = record(await load(dead.id));
     await auth.clearAccountError(dead.id, { id: dead.id, authDemote_m1: rec }, "m1");
     expect(record(await load(dead.id))).toBeNull();
@@ -1401,6 +1406,7 @@ describe("a key refused on only one model", () => {
     const { dead } = await demotedKey();
     vi.advanceTimersByTime(3 * MIN);
     global._authEvents.demoteKeys.clear();
+    global._authEvents.servedKeys.add(dead.id);
     await succeed(dead.id, "m2");
     expect((await load(dead.id)).authDemoteOkAt).toBe(new Date().toISOString());
   });
@@ -1481,6 +1487,7 @@ describe("a key refused on only one model", () => {
 
   it.each([
     [3, true],
+    [10, true],
     [11, false],
   ])("treats a demotion as a sign of a dead key only if the key last served over 10 minutes before its count began (%i minutes: on is %s)", async (
     minutesBefore, stillOn,
@@ -1525,6 +1532,58 @@ describe("a key refused on only one model", () => {
     await atProbe(backup.id);
     expect(await pick("m1")).toBe(primary.id);
     expect(record(await load(backup.id))).not.toHaveProperty("probeId");
+  });
+
+  it("remembers a success from before a restart when a count starts soon after it", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await succeed(dead.id, "m3");
+    for (const memory of Object.values(global._authEvents)) memory.clear?.();
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(dead.id, { times: 5, models: ["m1"], peers: [healthy] });
+    expect(demoted(await load(dead.id))).toBe(true);
+    await pausedThenProbed(dead, healthy);
+    await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
+    vi.advanceTimersByTime(MIN);
+    await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy] });
+    expect((await load(dead.id)).isActive).toBe(true);
+  });
+
+  it("takes the key's last success afresh when a count starts over", async () => {
+    const dead = await addKey("a");
+    const healthy = await addKey("b");
+    await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy] });
+    vi.advanceTimersByTime(61 * MIN);
+    await succeed(dead.id, "m3");
+    vi.advanceTimersByTime(3 * MIN);
+    await fail(dead.id, { times: 5, models: ["m1"], peers: [healthy] });
+    expect(demoted(await load(dead.id))).toBe(true);
+    await pausedThenProbed(dead, healthy);
+    await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
+    vi.advanceTimersByTime(MIN);
+    await fail(dead.id, { times: 1, models: ["m1"], peers: [healthy] });
+    expect((await load(dead.id)).isActive).toBe(true);
+  });
+
+  it("still probes a demoted key behind another under round-robin, which takes turns", async () => {
+    await db.updateSettings({ providerStrategies: { [provider]: { fallbackStrategy: "round-robin" } } });
+    const first = await addKey("a");
+    const second = await addKey("b");
+    await fail(second.id, { times: 5, models: ["m1"], peers: [first] });
+    expect(demoted(await load(second.id))).toBe(true);
+    await atProbe(second.id);
+    expect(await pick("m1")).toBe(second.id);
+  });
+
+  it("does not probe a demoted key between two that serve under fill-first", async () => {
+    const first = await addKey("a");
+    const middle = await addKey("b");
+    await addKey("c");
+    await fail(middle.id, { times: 5, models: ["m1"], peers: [first] });
+    expect(demoted(await load(middle.id))).toBe(true);
+    await atProbe(middle.id);
+    expect(await pick("m1")).toBe(first.id);
+    expect(record(await load(middle.id))).not.toHaveProperty("probeId");
   });
 
   it("takes at most one probe per lease, even when another model's refusal makes it due", async () => {

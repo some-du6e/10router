@@ -42,10 +42,11 @@ const MAX_EVENT_ENTRIES = 5000;
 // after a restart it is empty and keys just take longer to trip.
 const authEvents = (global._authEvents ??= { seq: 0, success: new Map(), refused: new Map() });
 // Refusals of one model by a key (isModelRefusal), apart from `refused` so the
-// turn-off rule's evidence is untouched by them; and the keys this process
-// wrote a demotion record for.
+// turn-off rule's evidence is untouched by them; the keys this process wrote a
+// demotion record for; and the keys it has seen succeed.
 authEvents.modelRefused ??= new Map();
 authEvents.demoteKeys ??= new Set();
+authEvents.servedKeys ??= new Set();
 
 function remember(map, key) {
   const now = Date.now();
@@ -301,8 +302,8 @@ async function planDemotion(connections, conn, model, status, errorText, evidenc
   const demoting = !!to.demotedAt && !current?.demotedAt;
   // Refused here while demoted elsewhere: probe there now, once its last
   // probe's lease is over, to tell a key dead on both from one that has
-  // recovered there. That includes demotions the key
-  // served since: a key failing at random clears them sooner this way.
+  // recovered there. That includes demotions the key served since: a key
+  // failing at random clears them sooner this way.
   const probeNow = evidence && !current?.demotedAt
     ? records.filter(([m, r]) => m !== model && !r.modelScoped).map(([m]) => m) : [];
   return {
@@ -701,11 +702,16 @@ export async function clearAccountError(connectionId, currentConnection, model =
 
   // The model's demotion record goes, even one written after the snapshot. A
   // record on another model stays, and authDemoteOkAt notes the key served
-  // since its count began: once for a record in the snapshot, and once after
-  // this process last wrote a record, which the snapshot may predate.
+  // since its count began: once for a record in the snapshot, once after this
+  // process last wrote a record (which the snapshot may predate), and once on
+  // the key's first success since the process started, which a count starting
+  // soon after a restart can't otherwise see.
   const demoteRecord = !!model && !!conn[getAuthDemoteKey(model)];
   const otherRecords = Object.entries(conn).filter(([k, r]) => k.startsWith(AUTH_DEMOTE_PREFIX) && k !== getAuthDemoteKey(model) && r);
-  const noteServed = authEvents.demoteKeys.delete(connectionId) || otherRecords.some(([, r]) => !(conn.authDemoteOkAt >= r.firstAt));
+  const firstThisBoot = !authEvents.servedKeys.has(connectionId);
+  if (firstThisBoot) authEvents.servedKeys.add(connectionId);
+  const noteServed = authEvents.demoteKeys.delete(connectionId) || firstThisBoot
+    || otherRecords.some(([, r]) => !(conn.authDemoteOkAt >= r.firstAt));
   const demoteWrite = demoteRecord || noteServed;
   if (!conn.testStatus && !conn.lastError && !conn.errorCode && allLockKeys.length === 0 && !conn.authFailCount && !demoteWrite) return;
 

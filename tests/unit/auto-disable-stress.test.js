@@ -4,7 +4,8 @@
 // here and on master to compare.
 //   cd tests && npx vitest run --config ./vitest.stress.config.js unit/auto-disable-stress.test.js
 // Set STRESS_OUT=<file> to also write the results as JSON, and STRESS_PIN=1 to
-// fail when they drift from the numbers this branch's PR reports.
+// fail when they drift from the numbers PR #122 reports. To regenerate those,
+// run from tests/ with STRESS_OUT=unit/auto-disable-stress.pinned.json.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -107,9 +108,6 @@ async function run(keys, totalMin, requests) {
 }
 
 const session = (workMin, idleMin) => (m) => m % (workMin + idleMin) < workMin;
-
-// What this branch's PR reports; checked with STRESS_PIN=1.
-const PINNED = JSON.parse(fs.readFileSync(new URL("./auto-disable-stress.pinned.json", import.meta.url), "utf8"));
 const tenOnThirteenOff = session(10, 13);
 
 it("replays the dead-key scenarios", async () => {
@@ -232,5 +230,9 @@ it("replays the dead-key scenarios", async () => {
 
   console.log(JSON.stringify(out, null, 2));
   if (process.env.STRESS_OUT) fs.writeFileSync(process.env.STRESS_OUT, JSON.stringify(out, null, 2));
-  if (process.env.STRESS_PIN) expect(out).toEqual(PINNED);
+  expect(out.lacksTwoModels.turnedOff).toBe(false);
+  if (process.env.STRESS_PIN === "1") {
+    const pinned = JSON.parse(fs.readFileSync(new URL("./auto-disable-stress.pinned.json", import.meta.url), "utf8"));
+    expect(out).toEqual(pinned);
+  }
 }, 3600000);
