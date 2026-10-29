@@ -9,15 +9,30 @@
 // Free probes can't see this (body validation runs first), so it's learned from
 // the first real request: drop the named flags, retry once, remember them.
 
-import { CLAUDE_BETA_BODY_FIELDS } from "../config/claudeMessageCompat.js";
+import { CLAUDE_BETA_BODY_FIELDS, CLAUDE_FIRST_PARTY_BETA_FIELDS } from "../config/claudeMessageCompat.js";
+import { ANTHROPIC_API_HOST } from "../providers/shared.js";
 
 export const BETA_HEADER_KEYS = ["anthropic-beta", "Anthropic-Beta"];
 
 // Never sent to non-Anthropic hosts: it marks the request as first-party Claude Code.
 const ALWAYS_STRIPPED = ["claude-code-20250219"];
 
+const FIRST_PARTY_BETAS = Object.keys(CLAUDE_FIRST_PARTY_BETA_FIELDS);
+const isBetaHeader = (key: string) => key.toLowerCase() === BETA_HEADER_KEYS[0];
+
 export const splitBetas = (value: unknown): string[] =>
   String(value || "").split(",").map((s) => s.trim()).filter(Boolean);
+
+// True only for Anthropic's own API host; relays such as
+// api.anthropic.com.example.net or example.net/api.anthropic.com are not.
+// A trailing dot (fully qualified name) is the same host.
+export function isAnthropicApiUrl(url: unknown): boolean {
+  try {
+    return new URL(String(url)).hostname.replace(/\.$/, "") === ANTHROPIC_API_HOST;
+  } catch {
+    return false;
+  }
+}
 
 // Rewrite the beta header(s) in place: drop ALWAYS_STRIPPED + `dropped`, or
 // everything when `stripAll`. Removes the header when nothing is left.
@@ -48,6 +63,48 @@ export function stripBetaBodyFields<T>(
     for (const field of fields) delete record[field];
   }
   return body;
+}
+
+// Every beta flag in the headers, whatever the header name's case.
+export function sentBetas(headers: Record<string, unknown> | null | undefined): Set<string> {
+  const flags = new Set<string>();
+  for (const [key, value] of Object.entries(headers || {})) {
+    if (isBetaHeader(key)) splitBetas(value).forEach((f) => flags.add(f));
+  }
+  return flags;
+}
+
+// For a third-party host: remove the first-party flags from the beta header(s)
+// in place. A header with none of them is left exactly as it was.
+export function dropFirstPartyBetas(headers: Record<string, unknown>): Record<string, unknown> {
+  for (const key of Object.keys(headers)) {
+    if (!isBetaHeader(key)) continue;
+    const flags = splitBetas(headers[key]);
+    const kept = flags.filter((f) => !FIRST_PARTY_BETAS.includes(f));
+    if (kept.length === flags.length) continue;
+    if (kept.length) headers[key] = kept.join(",");
+    else delete headers[key];
+  }
+  return headers;
+}
+
+// A copy of body without the first-party fields whose flag isn't in `headers`
+// (none known: every one goes); the same body when nothing goes. Other
+// beta-gated fields (context_management) are left as they are.
+export function dropFirstPartyFieldsWithoutBeta<T>(body: T, headers: Record<string, unknown> | null | undefined): T {
+  const sent = sentBetas(headers);
+  const fields = Object.entries(CLAUDE_FIRST_PARTY_BETA_FIELDS)
+    .filter(([flag]) => !sent.has(flag))
+    .flatMap(([, f]) => f);
+  return withoutFields(body, fields);
+}
+
+// A copy of body without `fields`; the same body when none of them is present.
+function withoutFields<T>(body: T, fields: readonly string[]): T {
+  if (!body || typeof body !== "object" || !fields.some((f) => f in (body as object))) return body;
+  const copy = { ...(body as Record<string, unknown>) };
+  for (const f of fields) delete copy[f];
+  return copy as T;
 }
 
 const REJECTED_RE = /Unexpected value\(s\)\s+(.+?)\s+for the\s+`?anthropic-beta`?\s+header/i;

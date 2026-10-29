@@ -78,6 +78,16 @@ export class BaseExecutor {
     return body;
   }
 
+  // Last change to the body, once the outgoing headers are final (e.g. drop a
+  // field whose beta flag isn't going out). Called by execute() below, once
+  // per URL attempt, with that attempt's headers; by the Translator preview
+  // with the headers it shows; and by chatCore with headers = null for its
+  // error log. An executor that overrides execute() and sends Claude-format
+  // bodies must call it itself.
+  finalizeBody(body, headers, credentials) {
+    return body;
+  }
+
   shouldRetry(status, urlIndex) {
     return status === HTTP_STATUS.RATE_LIMITED && urlIndex + 1 < this.getFallbackCount();
   }
@@ -124,8 +134,9 @@ export class BaseExecutor {
 
     for (let urlIndex = 0; urlIndex < fallbackCount; urlIndex++) {
       const url = this.buildUrl(model, stream, urlIndex, credentials);
-      const transformedBody = this.transformRequest(model, body, stream, credentials);
+      const transformed = this.transformRequest(model, body, stream, credentials);
       const headers = this.buildHeaders(credentials, stream, url, model);
+      const transformedBody = this.finalizeBody(transformed, headers, credentials);
 
       if (!retryAttemptsByUrl[urlIndex]) retryAttemptsByUrl[urlIndex] = 0;
 
@@ -161,6 +172,11 @@ export class BaseExecutor {
         return { response, url, headers, transformedBody };
       } catch (error) {
         clearTimeout(connectTimer);
+        // Request logs keep what was (or would have been) sent, not the pre-transform body.
+        // Non-enumerable, so logging the error doesn't print the prompt.
+        if (error && typeof error === "object" && Object.isExtensible(error)) {
+          Object.defineProperty(error, "transformedBody", { value: transformedBody, enumerable: false, configurable: true, writable: true });
+        }
         lastError = error;
         const isConnectTimeout = connectCtrl.signal.aborted && error.name === "AbortError";
         dbg("FETCH", `${this.provider.toUpperCase()} ✖ ${error.name}: ${error.message}${isConnectTimeout ? " (connect timeout)" : ""}`);

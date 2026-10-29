@@ -387,7 +387,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       latency: { ttft: 0, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
-      providerRequest: translatedBody || null,
+      // Untagged error: the executor's own last edit, with the headers unknown.
+      providerRequest: error?.transformedBody || executor.finalizeBody?.(translatedBody, null, credentials) || translatedBody || null,
       response: { error: error.message || String(error), status: error.name === "AbortError" ? 499 : 502, thinking: null },
       status: "error"
     })).catch(() => { });

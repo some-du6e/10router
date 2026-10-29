@@ -1,13 +1,16 @@
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS, PROVIDER_OAUTH } from "../config/providers.js";
-import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE, selectAnthropicBeta } from "../providers/shared.js";
+import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_API_HOST, ANTHROPIC_COMPAT_BASE, selectAnthropicBeta } from "../providers/shared.js";
 import { appendUrlPath, resolveOpenAICompatibleApiType, getTargetFormat } from "../services/provider.js";
 import { OAUTH_ENDPOINTS, buildKimiHeaders } from "../config/appConstants.js";
 import { buildClineHeaders } from "../shared/clineAuth.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
-import { filterBetaHeaders, parseRejectedBetas, stripBetaBodyFields, splitBetas, BETA_HEADER_KEYS } from "../utils/anthropicBeta.js";
+import {
+  dropFirstPartyBetas, dropFirstPartyFieldsWithoutBeta, filterBetaHeaders, isAnthropicApiUrl, parseRejectedBetas, sentBetas, stripBetaBodyFields, splitBetas,
+  BETA_HEADER_KEYS,
+} from "../utils/anthropicBeta.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { installEndpointOverrides } from "../handlers/chatCore/endpointOverrides.js";
 
@@ -82,9 +85,8 @@ export class DefaultExecutor extends BaseExecutor {
     // their existing request contract.
     // Chat Completions only: Anthropic Messages requires max_tokens, and a
     // two-path node can route some models there.
-    const format = credentials?.runtimeTransport?.format || getTargetFormat(this.provider, credentials);
     if (
-      format === "openai" &&
+      this.targetFormat(credentials) === "openai" &&
       credentials?.providerSpecificData?.maxCompletionTokens === true &&
       transformed &&
       typeof transformed === "object" &&
@@ -111,6 +113,20 @@ export class DefaultExecutor extends BaseExecutor {
     }
 
     return injectReasoningContent({ provider: this.provider, model, body: transformed });
+  }
+
+  // The wire format this request goes out in.
+  targetFormat(credentials) {
+    return credentials?.runtimeTransport?.format || getTargetFormat(this.provider, credentials);
+  }
+
+  // safeguards goes out only with its beta in the outgoing header, which
+  // buildHeaders drops for third-party hosts unless an endpoint header line
+  // adds it back. Whether Anthropic 400s or ignores safeguards without the
+  // beta is unverified; the claude and anthropic providers' fixed beta lists
+  // lack it, so they never send it. headers = null (unknown) drops it.
+  finalizeBody(body, headers, credentials) {
+    return this.targetFormat(credentials) === "claude" ? dropFirstPartyFieldsWithoutBeta(body, headers) : body;
   }
 
   // Fallback json_schema → json_object for openai-compatible providers without native Structured Output.
@@ -204,7 +220,9 @@ export class DefaultExecutor extends BaseExecutor {
         headers[key] = [...new Set([...splitBetas(headers[key]), ...splitBetas(clientBeta)])].join(",");
       }
       const baseUrl = credentials?.providerSpecificData?.baseUrl || "";
-      const isOfficialAnthropic = baseUrl === "" || baseUrl.includes("api.anthropic.com");
+      // Substring match on purpose (relays keep master's auth); talksToAnthropic
+      // checks the hostname for safeguards. Unifying them is a follow-up.
+      const isOfficialAnthropic = baseUrl === "" || baseUrl.includes(ANTHROPIC_API_HOST);
       if (!isOfficialAnthropic) {
         // Some third-party Anthropic-compatible gateways require Bearer auth in
         // addition to x-api-key. Send both (x-api-key already set above) so
@@ -224,6 +242,10 @@ export class DefaultExecutor extends BaseExecutor {
       filterBetaHeaders(headers, { dropped: psd.droppedBetas, stripAll: psd.stripBeta === true });
     }
 
+    // Third-party hosts never get Anthropic-only flags; an endpoint header line
+    // (applied after this) can still add one back as a deliberate opt-in.
+    if (this.targetFormat(credentials) === "claude" && !this.talksToAnthropic(credentials)) dropFirstPartyBetas(headers);
+
     if (stream) headers["Accept"] = "text/event-stream";
     return headers;
   }
@@ -234,6 +256,14 @@ export class DefaultExecutor extends BaseExecutor {
     const route = credentials?.runtimeTransport?.compatibleRoute;
     if (route) return route === "anthropic";
     return !!this.provider?.startsWith?.("anthropic-compatible-");
+  }
+
+  // Anthropic's own API: a custom Messages endpoint on (or defaulting to)
+  // api.anthropic.com, or a registry provider whose base URL is that host.
+  // Decides where safeguards and its beta go; auth headers keep their own check.
+  talksToAnthropic(credentials) {
+    if (this.onMessagesPath(credentials)) return isAnthropicApiUrl(credentials?.providerSpecificData?.baseUrl || ANTHROPIC_COMPAT_BASE);
+    return isAnthropicApiUrl(this.config?.baseUrl);
   }
 
   // Anthropic-compatible gateways 400 on beta flags they don't know and name them,
@@ -249,7 +279,7 @@ export class DefaultExecutor extends BaseExecutor {
     let droppedBetas = psd.droppedBetas || [];
     let stripAll = false;
     for (let attempt = 0; attempt <= MAX_BETA_RETRIES && result.response?.status === HTTP_STATUS.BAD_REQUEST; attempt++) {
-      const sent = new Set(BETA_HEADER_KEYS.flatMap((k) => splitBetas(result.headers?.[k])));
+      const sent = sentBetas(result.headers);
       if (!sent.size) break;
       const text = await result.response.clone().text().catch(() => "");
       const rejected = parseRejectedBetas(text).filter((f) => sent.has(f));
