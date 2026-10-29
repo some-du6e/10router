@@ -2,9 +2,19 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { execSync } = require("child_process");
+const { getBackgroundArgs } = require("../utils/launchArgs");
 
 const APP_NAME = "10router";
 const APP_LABEL = "com.10router.autostart";
+
+function escapeXml(value) {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;").replaceAll("'", "&apos;");
+}
+
+function quoteDesktopArg(value) {
+  return `"${value.replace(/[\\"`$]/g, "\\$&")}"`;
+}
 
 /**
  * Resolve the absolute path to this package's cli.js.
@@ -44,16 +54,16 @@ function getCliJsPath(cliPath) {
  * @param {string} cliPath - Optional path to cli.js (defaults to auto-detect)
  * @returns {boolean} success
  */
-function enableAutoStart(cliPath) {
+function enableAutoStart(cliPath, options) {
   const platform = process.platform;
 
   if (!["darwin", "win32", "linux"].includes(platform)) return false;
   if (platform === "linux" && !process.env.DISPLAY) return false;
 
   try {
-    if (platform === "darwin") return enableMacOS(cliPath);
-    if (platform === "win32") return enableWindows(cliPath);
-    if (platform === "linux") return enableLinux(cliPath);
+    if (platform === "darwin") return enableMacOS(cliPath, options);
+    if (platform === "win32") return enableWindows(cliPath, options);
+    if (platform === "linux") return enableLinux(cliPath, options);
   } catch (err) {
     // Silent fail — autostart is optional
   }
@@ -138,7 +148,7 @@ function isAgentSelfMacOS() {
   }
 }
 
-function enableMacOS(cliPath) {
+function enableMacOS(cliPath, options) {
   const launchAgentsDir = path.join(os.homedir(), "Library", "LaunchAgents");
   const plistPath = path.join(launchAgentsDir, `${APP_LABEL}.plist`);
 
@@ -167,15 +177,14 @@ function enableMacOS(cliPath) {
     <string>${APP_LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${nodePath}</string>
-        <string>${routerScript}</string>
-        <string>--tray</string>
-        <string>--skip-update</string>
+        <string>${escapeXml(nodePath)}</string>
+        <string>${escapeXml(routerScript)}</string>
+${getBackgroundArgs(options).map((arg) => `        <string>${escapeXml(arg)}</string>`).join("\n")}
     </array>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>${launchPath}</string>
+        <string>${escapeXml(launchPath)}</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
@@ -236,7 +245,7 @@ function disableMacOS() {
 
 // ============ Windows ============
 
-function enableWindows(cliPath) {
+function enableWindows(cliPath, options) {
   const startupDir = path.join(process.env.APPDATA || "", "Microsoft", "Windows", "Start Menu", "Programs", "Startup");
   const vbsPath = path.join(startupDir, `${APP_NAME}.vbs`);
 
@@ -249,7 +258,7 @@ function enableWindows(cliPath) {
   // Run node + cli.js directly, hidden window. Avoids the fragile
   // `10router.cmd` lookup that depended on the npm prefix path.
   const vbsContent = `Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run """${nodePath}"" ""${routerScript}"" --tray --skip-update", 0, False
+WshShell.Run "${[nodePath, routerScript, ...getBackgroundArgs(options)].map((arg) => `""${arg.replaceAll('"', '""')}""`).join(" ")}", 0, False
 `;
   fs.writeFileSync(vbsPath, vbsContent);
   return true;
@@ -265,7 +274,7 @@ function disableWindows() {
 
 // ============ Linux ============
 
-function enableLinux(cliPath) {
+function enableLinux(cliPath, options) {
   const autostartDir = path.join(os.homedir(), ".config", "autostart");
   const desktopPath = path.join(autostartDir, `${APP_NAME}.desktop`);
 
@@ -282,7 +291,7 @@ function enableLinux(cliPath) {
 Type=Application
 Name=10router
 Comment=10router API Proxy
-Exec=${nodePath} ${routerScript} --tray --skip-update
+Exec=${[nodePath, routerScript, ...getBackgroundArgs(options)].map(quoteDesktopArg).join(" ")}
 Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
