@@ -25,6 +25,10 @@ export const CLAUDE_BETA_BODY_FIELDS = {
 // not permitted".
 export const CLAUDE_FIRST_PARTY_BODY_FIELDS = ["safeguards"];
 
+// Host of Anthropic's own API. Anything else is a third-party host, even a
+// relay that forwards to it.
+export const ANTHROPIC_API_HOST = "api.anthropic.com";
+
 // thinking.display values that work without a beta flag. "updates" needs
 // thinking-display-updates-2026-08-18, which not every route forwards, so it
 // isn't carried onto a rewritten adaptive thinking block.

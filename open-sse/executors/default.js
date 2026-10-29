@@ -7,17 +7,15 @@ import { buildClineHeaders } from "../shared/clineAuth.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
-import { filterBetaHeaders, parseRejectedBetas, stripBetaBodyFields, splitBetas, BETA_HEADER_KEYS } from "../utils/anthropicBeta.js";
-import { parseRejectedFields, rejectedFieldsFor, rememberRejectedFields, withoutFields } from "../utils/rejectedFields.js";
+import {
+  filterBetaHeaders, isAnthropicApiUrl, parseRejectedBetas, stripBetaBodyFields, stripUngatedBodyFields, splitBetas, withoutFields, BETA_HEADER_KEYS,
+} from "../utils/anthropicBeta.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { CLAUDE_FIRST_PARTY_BODY_FIELDS } from "../config/claudeMessageCompat.js";
 import { installEndpointOverrides } from "../handlers/chatCore/endpointOverrides.js";
 
 // Named-flag retries before the last-resort attempt with no anthropic-beta at all.
 const MAX_BETA_RETRIES = 1;
-
-// Providers whose upstream is Anthropic's own API.
-const ANTHROPIC_PROVIDERS = new Set(["claude", "anthropic"]);
 
 // Auth header descriptors — derived from registry transport.auth, fallback to hardcoded defaults.
 const BEARER = { combined: true, header: "Authorization", scheme: "bearer" };
@@ -114,11 +112,18 @@ export class DefaultExecutor extends BaseExecutor {
         transformed = stripBetaBodyFields({ ...transformed }, { dropped: psd.droppedBetas, stripAll: psd.stripBeta === true });
       }
       if (!this.talksToAnthropic(credentials)) {
-        transformed = withoutFields(transformed, [...CLAUDE_FIRST_PARTY_BODY_FIELDS, ...rejectedFieldsFor(this.rejectedFieldsKey(model))]);
+        transformed = withoutFields(transformed, CLAUDE_FIRST_PARTY_BODY_FIELDS);
       }
     }
 
     return injectReasoningContent({ provider: this.provider, model, body: transformed });
+  }
+
+  // A beta-gated field without its flag in the outgoing header is a 400 on
+  // Anthropic ("Extra inputs are not permitted") or ignored elsewhere, so it goes.
+  finalizeBody(body, headers, credentials) {
+    const format = credentials?.runtimeTransport?.format || getTargetFormat(this.provider, credentials);
+    return format === "claude" ? stripUngatedBodyFields(body, headers) : body;
   }
 
   // Fallback json_schema → json_object for openai-compatible providers without native Structured Output.
@@ -227,7 +232,7 @@ export class DefaultExecutor extends BaseExecutor {
       // before (learned in execute) or every flag when the user opted in. Runs
       // for official hosts too, so execute's retry actually drops what it learned.
       const psd = credentials?.providerSpecificData || {};
-      filterBetaHeaders(headers, { dropped: psd.droppedBetas, stripAll: psd.stripBeta === true });
+      filterBetaHeaders(headers, { dropped: psd.droppedBetas, stripAll: psd.stripBeta === true, thirdParty: !this.talksToAnthropic(credentials) });
     }
 
     if (stream) headers["Accept"] = "text/event-stream";
@@ -242,52 +247,17 @@ export class DefaultExecutor extends BaseExecutor {
     return !!this.provider?.startsWith?.("anthropic-compatible-");
   }
 
-  // Anthropic's own API: the claude/anthropic providers, or a custom Messages
-  // endpoint left on (or pointed at) api.anthropic.com.
+  // Anthropic's own API: a custom Messages endpoint on (or defaulting to)
+  // api.anthropic.com, or a registry provider whose base URL is that host.
   talksToAnthropic(credentials) {
-    if (ANTHROPIC_PROVIDERS.has(this.provider)) return true;
-    if (!this.onMessagesPath(credentials)) return false;
-    const baseUrl = credentials?.providerSpecificData?.baseUrl || "";
-    return baseUrl === "" || baseUrl.includes("api.anthropic.com");
-  }
-
-  rejectedFieldsKey(model) {
-    return `${this.provider}:${model}`;
-  }
-
-  // Fields of the sent body that a 400 names as not permitted.
-  async rejectedFields(result) {
-    const sent = result?.transformedBody;
-    if (result?.response?.status !== HTTP_STATUS.BAD_REQUEST || !sent || typeof sent !== "object") return [];
-    const text = await result.response.clone().text().catch(() => "");
-    return parseRejectedFields(text).filter((f) => f in sent);
-  }
-
-  // A non-Anthropic upstream that 400s on top-level fields it doesn't model
-  // gets one retry without them; they stay off for this provider + model.
-  async execute(args) {
-    const result = await this.executeWithBetaRetry(args);
-    if (this.talksToAnthropic(args.credentials)) return result;
-    const rejected = await this.rejectedFields(result);
-    if (!rejected.length) return result;
-    const key = this.rejectedFieldsKey(args.model);
-    rememberRejectedFields(key, rejected);
-    args.log?.warn?.("FIELDS", `${this.provider} rejected body field ${rejected.join(", ")}; retrying without`);
-    result.response.body?.cancel?.().catch?.(() => {});
-    const { droppedBetas } = result;
-    const credentials = droppedBetas
-      ? { ...args.credentials, providerSpecificData: { ...args.credentials?.providerSpecificData, droppedBetas } }
-      : args.credentials;
-    const retried = await this.executeWithBetaRetry({ ...args, credentials });
-    // Learn from a second rejection too, but never retry again.
-    rememberRejectedFields(key, await this.rejectedFields(retried));
-    return droppedBetas && !retried.droppedBetas ? { ...retried, droppedBetas } : retried;
+    if (this.onMessagesPath(credentials)) return isAnthropicApiUrl(credentials?.providerSpecificData?.baseUrl || ANTHROPIC_COMPAT_BASE);
+    return isAnthropicApiUrl(this.config?.baseUrl);
   }
 
   // Anthropic-compatible gateways 400 on beta flags they don't know and name them,
   // sometimes a few at a time. Drop the named ones and retry (bounded), then as a
   // last resort send no beta header at all. Report what was learned.
-  async executeWithBetaRetry(args) {
+  async execute(args) {
     let result = await super.execute(args);
     if (!this.onMessagesPath(args.credentials)) return result;
     const psd = args.credentials?.providerSpecificData || {};
