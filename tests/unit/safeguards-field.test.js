@@ -288,6 +288,21 @@ describe("Claude Code → Snowflake through chatCore (claude→claude)", () => {
     expect(detail.providerRequest.output_config).toEqual({ effort: "medium" });
   });
 
+  it("keeps an OpenAI-shaped body's own safeguards in the fallback log", async () => {
+    fetchMock.mockRejectedValueOnce(Object.freeze(abortError()));
+    const body = { model: "gpt-6", messages: [{ role: "user", content: "hi" }], stream: false, safeguards: SAFEGUARDS };
+    await handleChatCore({
+      body, modelInfo: { provider: "openai-compatible-chat-test", model: "gpt-6" },
+      credentials: { apiKey: "k", providerSpecificData: { apiType: "chat", baseUrl: "https://gateway.example.com/v1" } },
+      log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn() }, connectionId: "c",
+      clientRawRequest: { endpoint: "/v1/chat/completions", body, headers: { accept: "application/json" } },
+    });
+
+    expect(fetchMock.mock.calls[0][0]).toBe("https://gateway.example.com/v1/chat/completions");
+    expect(sentBody().safeguards).toEqual(SAFEGUARDS);
+    expect(loggedDetail().providerRequest.safeguards).toEqual(SAFEGUARDS);
+  });
+
   it("logs the body after the header check on Anthropic's host", async () => {
     fetchMock.mockRejectedValueOnce(abortError());
     await chat(claudeCodeBody({ stream: false }), {
