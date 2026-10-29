@@ -18,7 +18,7 @@ export const BETA_HEADER_KEYS = ["anthropic-beta", "Anthropic-Beta"];
 const ALWAYS_STRIPPED = ["claude-code-20250219"];
 
 const FIRST_PARTY_BETAS = Object.keys(CLAUDE_FIRST_PARTY_BETA_FIELDS);
-const isBetaHeader = (key: string) => key.toLowerCase() === "anthropic-beta";
+const isBetaHeader = (key: string) => key.toLowerCase() === BETA_HEADER_KEYS[0];
 
 export const splitBetas = (value: unknown): string[] =>
   String(value || "").split(",").map((s) => s.trim()).filter(Boolean);
