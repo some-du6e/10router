@@ -174,6 +174,24 @@ describe("third-party identity headers", () => {
     expect(sent().headers["x-app"]).toBe("cli");
     expect(sentBody()).not.toHaveProperty("safeguards");
   });
+
+  it("a node with no base URL keeps official-host auth and identity", async () => {
+    fetchMock.mockResolvedValueOnce(res(200));
+    const ex = new DefaultExecutor("anthropic-compatible-nobase");
+    ex.config = { ...ex.config, headers: { "x-app": "cli" } };
+    await ex.execute({ model: MODEL, body: claudeCodeBody(), stream: true, credentials: compatCreds(undefined) });
+    expect(sent().headers).not.toHaveProperty("Authorization");
+    expect(sent().headers["x-app"]).toBe("cli");
+  });
+
+  // master's substring check is case-sensitive; the safeguards hostname check isn't.
+  it("a mixed-case Anthropic host gets master's Bearer auth and still gets safeguards", async () => {
+    fetchMock.mockResolvedValueOnce(res(200));
+    await run("anthropic-compatible-mixed", compatCreds("https://API.Anthropic.COM/v1"));
+    expect(sent().headers.Authorization).toMatch(/^Bearer /);
+    expect(sentBody().safeguards).toEqual(SAFEGUARDS);
+    expect(sentBeta()).toBe(CLIENT_BETAS);
+  });
 });
 
 describe("non-Claude bodies", () => {
@@ -184,12 +202,20 @@ describe("non-Claude bodies", () => {
     expect(fetchMock.mock.calls[0][0]).toBe("https://gateway.example.com/v1/chat/completions");
     expect(sentBody().safeguards).toEqual(SAFEGUARDS);
   });
+
+  it("forwards a Responses body's own safeguards to a Responses node", async () => {
+    fetchMock.mockResolvedValueOnce(res(200));
+    const body = { model: "gpt-6", input: [{ role: "user", content: "hi" }], stream: true, safeguards: SAFEGUARDS };
+    await run("openai-compatible-responses-test", { apiKey: "k", providerSpecificData: { apiType: "responses", baseUrl: "https://gateway.example.com/v1" } }, body, "gpt-6");
+    expect(fetchMock.mock.calls[0][0]).toBe("https://gateway.example.com/v1/responses");
+    expect(sentBody().safeguards).toEqual(SAFEGUARDS);
+  });
 });
 
 describe("helpers", () => {
   it("isAnthropicApiUrl matches the host only", () => {
     expect(isAnthropicApiUrl("https://api.anthropic.com/v1")).toBe(true);
-    for (const u of [...RELAYS, "api.anthropic.com/v1", "", undefined]) expect(isAnthropicApiUrl(u)).toBe(false);
+    for (const u of [...RELAYS, "https://xapi.anthropic.com/v1", "api.anthropic.com/v1", "", undefined]) expect(isAnthropicApiUrl(u)).toBe(false);
   });
 
   it("stripUngatedFirstPartyFields reads the beta header in any case, copies, and only touches safeguards", () => {
