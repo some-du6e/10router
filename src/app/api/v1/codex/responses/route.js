@@ -5,68 +5,16 @@
 // Codex only serves its native model catalog and ChatGPT-style auth from a
 // `/backend-api/codex` base URL — so this mirror exists to accept that shape.
 // The body is the same OpenAI Responses payload, so it reuses the /v1/responses
-// handler untouched (see next.config.mjs for the /backend-api/codex rewrites).
+// handler once routeCodexRequest has picked where the model goes (see
+// next.config.mjs for the /backend-api/codex rewrites).
 import { POST as responsesPost } from "../../responses/route.js";
 import { getPooledCodexRateLimitHeaders } from "@/sse/services/codexPooledUsage";
-import { getModelAliases, getComboByName } from "@/lib/localDb";
-import { stripContextWindowSuffix } from "open-sse/services/model.js";
-import { BUILTIN_MODEL_ALIASES } from "open-sse/services/model.js";
-import { getAutoComboProviders, resolveAutoCombo } from "@/sse/services/autoCombo.js";
+import { routeCodexRequest } from "@/sse/services/codexIngress.js";
 
 export { OPTIONS } from "../../responses/route.js";
 
-// A bare model name reaching the shared handler is treated as an alias, and an
-// unmatched alias is guessed at by name — which lands on OpenAI for anything
-// shaped like `gpt-*`. That is the wrong default here: this door is the Codex
-// wire, and Codex asks for models of its own that we would then send to a
-// provider the user very likely has no key for.
-//
-// Codex also asks for models the user never chose. Its side requests (thread
-// titles among them) carry a small model of Codex's own picking, not the model
-// configured for the session, so the name cannot be assumed to be one the user
-// has set up.
-//
-// Only the fallback changes: an explicit `provider/model`, a model alias, or a
-// combo still resolves the way it always did, so pointing Codex at Claude or
-// anything else through this endpoint keeps working.
-async function withCodexFallback(request) {
-  let body;
-  try {
-    body = await request.clone().json();
-  } catch {
-    return request; // not JSON — let the shared handler reject it as it would
-  }
-
-  const model = body?.model;
-  if (typeof model !== "string" || !model || model.includes("/")) return request;
-
-  // A client-side context selector ("claude-opus-5[1m]") is not part of any
-  // stored name, so it has to come off before the alias/combo lookup — the same
-  // way handleChat strips it before routing. Without this, the plain id matches
-  // its combo and routes to Claude while the [1m] variant misses, falls through
-  // to `cx/`, and dies upstream as "model is not supported ... with a ChatGPT
-  // account". The marker stays on the forwarded body; handleChat strips it.
-  const { model: bareModel } = stripContextWindowSuffix(model);
-
-  const aliases = await getModelAliases();
-  if (aliases?.[bareModel]) return request;
-  if (await getComboByName(bareModel)) return request;
-  // Codex keeps its own accounts first. Only a model no Codex account serves
-  // is left for handleChat to route across the providers that do.
-  // resolveAutoCombo waits out a cold catalog, so ask it before checking Codex.
-  if ((await resolveAutoCombo(bareModel, BUILTIN_MODEL_ALIASES)) && !getAutoComboProviders(bareModel).includes("codex")) {
-    return request;
-  }
-
-  return new Request(request.url, {
-    method: request.method,
-    headers: request.headers,
-    body: JSON.stringify({ ...body, model: `cx/${model}` }),
-  });
-}
-
 export async function POST(request) {
-  const response = await responsesPost(await withCodexFallback(request));
+  const response = await responsesPost(await routeCodexRequest(request));
 
   // Codex reads its usage bar off these headers rather than from an endpoint.
   // Requests are served from all connected Codex accounts, so report the pooled
