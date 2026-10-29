@@ -82,8 +82,8 @@ export class BaseExecutor {
   // field whose beta flag isn't going out). Called by execute() below, once
   // per URL attempt, with that attempt's headers; by the Translator preview
   // with the headers it shows; and by chatCore with headers = null for its
-  // error log. An executor that overrides
-  // execute() and sends Claude-format bodies must call it itself.
+  // error log. An executor that overrides execute() and sends Claude-format
+  // bodies must call it itself.
   finalizeBody(body, headers, credentials) {
     return body;
   }
