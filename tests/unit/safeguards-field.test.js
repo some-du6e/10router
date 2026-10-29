@@ -124,6 +124,46 @@ describe("safeguards on non-Anthropic upstreams", () => {
     expect(sentFlags()).toContain("effort-2025-11-24");
     expect(sentBody()).not.toHaveProperty("safeguards");
   });
+
+  const glm = (headers) => {
+    const ex = new DefaultExecutor("glm");
+    ex.config = { ...ex.config, headers: { ...ex.config.headers, ...headers } };
+    return ex.execute({ model: "glm-5", body: claudeCodeBody({ model: "glm-5" }), stream: true, credentials: { apiKey: "k" } });
+  };
+
+  it("leaves a third-party beta header without the flag exactly as it was", async () => {
+    fetchMock.mockResolvedValueOnce(res(200));
+    const value = "effort-2025-11-24, interleaved-thinking-2025-05-14";
+    await glm({ "anthropic-beta": value });
+    expect(sent().headers["anthropic-beta"]).toBe(value);
+  });
+
+  it("drops the flag from a capitalised Anthropic-Beta header", async () => {
+    fetchMock.mockResolvedValueOnce(res(200));
+    await glm({ "Anthropic-Beta": `${DANGEROUS_BETA},effort-2025-11-24` });
+    expect(sentFlags()).not.toContain(DANGEROUS_BETA);
+    expect(sentFlags()).toContain("effort-2025-11-24");
+    expect(sentBody()).not.toHaveProperty("safeguards");
+  });
+
+  it("removes the beta header when the flag was all it had", async () => {
+    fetchMock.mockResolvedValueOnce(res(200));
+    await run("anthropic-compatible-gw", compatCreds("https://gateway.example.com/v1", DANGEROUS_BETA));
+    expect(Object.keys(sent().headers).filter((k) => /^anthropic-beta$/i.test(k))).toEqual([]);
+    expect(sentBody()).not.toHaveProperty("safeguards");
+  });
+
+  it("still learns a rejected flag from a capitalised Anthropic-Beta header", async () => {
+    const reject = "{\"message\":\"Unexpected value(s) `made-up-2099-01-01` for the `anthropic-beta` header. Please consult our documentation at platform.claude.com/docs or try again without the header.\"}";
+    fetchMock.mockResolvedValueOnce(res(400, reject)).mockResolvedValueOnce(res(200));
+    const ex = new DefaultExecutor("anthropic-compatible-gw");
+    ex.config = { ...ex.config, headers: { "Anthropic-Beta": "made-up-2099-01-01,effort-2025-11-24" } };
+    const onBetasRejected = vi.fn();
+    await ex.execute({ model: MODEL, body: claudeCodeBody(), stream: true, credentials: compatCreds("https://gateway.example.com/v1", null), onBetasRejected });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(onBetasRejected).toHaveBeenCalledWith(["made-up-2099-01-01"]);
+    expect(sentFlags(1)).toEqual(["effort-2025-11-24"]);
+  });
 });
 
 describe("opting in on a third-party endpoint (Advanced settings)", () => {
@@ -279,6 +319,7 @@ describe("helpers", () => {
 
   it("dropFirstPartyFieldsWithoutBeta reads the beta header in any case, copies, and only touches safeguards", () => {
     const body = claudeCodeBody();
+    expect(dropFirstPartyFieldsWithoutBeta(null, null)).toBe(null);
     expect(dropFirstPartyFieldsWithoutBeta(body, { "Anthropic-Beta": DANGEROUS_BETA })).toBe(body);
     const out = dropFirstPartyFieldsWithoutBeta(body, { "anthropic-beta": "effort-2025-11-24" });
     expect(out).not.toHaveProperty("safeguards");
