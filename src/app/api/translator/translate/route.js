@@ -75,9 +75,7 @@ export async function POST(request) {
         const executor = getExecutor(provider);
         const url = executor.buildUrl(model, stream, 0, credentials);
         const headers = executor.buildHeaders(credentials, stream);
-        const transformed = executor.transformRequest(model, translated, stream, credentials);
-        // The last body edit a real send makes once headers are known (e.g. safeguards without its beta).
-        const finalBody = executor.finalizeBody?.(transformed, headers, credentials) ?? transformed;
+        const finalBody = executor.transformRequest(model, translated, stream, credentials);
 
         return NextResponse.json({ success: true, result: { url, headers, body: finalBody } });
       }

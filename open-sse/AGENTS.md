@@ -27,7 +27,7 @@ Provider-agnostic SSE engine: one OpenAI-style request → any provider (LLM cha
 ## How to add
 
 - **Provider**: copy `providers/REGISTRY_TEMPLATE.js` → `providers/registry/{id}.js`; add models to `config/providerModels.js`. Generic providers need no executor (DefaultExecutor handles OpenAI-compatible APIs).
-- **Executor** (only for non-standard upstream): subclass `BaseExecutor` (override `getBaseUrls`/`buildHeaders`/`buildUrl`/`execute`), register in `executors/index.js` map. `getExecutor` falls back to `DefaultExecutor` when absent.
+- **Executor** (only for non-standard upstream): subclass `BaseExecutor` (override `getBaseUrls`/`buildHeaders`/`buildUrl`/`transformRequest`/`finalizeBody`/`execute`; `finalizeBody` runs after the final headers, and an `execute` override must call it itself), register in `executors/index.js` map. `getExecutor` falls back to `DefaultExecutor` when absent.
 - **Translator**: add `request|response/<from>-to-<to>.js` calling `register(...)`, then import it in `translator/index.ts`. Reuse `schema/` + `concerns/` — don't re-implement parsing.
 
 ## Pitfalls

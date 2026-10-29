@@ -9,18 +9,16 @@
 // Free probes can't see this (body validation runs first), so it's learned from
 // the first real request: drop the named flags, retry once, remember them.
 
-import { ANTHROPIC_API_HOST, CLAUDE_BETA_BODY_FIELDS, CLAUDE_FIRST_PARTY_BODY_FIELDS } from "../config/claudeMessageCompat.js";
+import { CLAUDE_BETA_BODY_FIELDS, CLAUDE_FIRST_PARTY_BETA_FIELDS } from "../config/claudeMessageCompat.js";
+import { ANTHROPIC_API_HOST } from "../providers/shared.js";
 
 export const BETA_HEADER_KEYS = ["anthropic-beta", "Anthropic-Beta"];
 
 // Never sent to non-Anthropic hosts: it marks the request as first-party Claude Code.
 const ALWAYS_STRIPPED = ["claude-code-20250219"];
 
-// Flags that only unlock first-party fields, which never reach a third-party
-// host, so the flag has nothing to do there.
-const FIRST_PARTY_BETAS = Object.entries(CLAUDE_BETA_BODY_FIELDS)
-  .filter(([, fields]) => fields.every((f) => CLAUDE_FIRST_PARTY_BODY_FIELDS.includes(f)))
-  .map(([flag]) => flag);
+const FIRST_PARTY_BETAS = Object.keys(CLAUDE_FIRST_PARTY_BETA_FIELDS);
+const isBetaHeader = (key: string) => key.toLowerCase() === "anthropic-beta";
 
 export const splitBetas = (value: unknown): string[] =>
   String(value || "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -36,13 +34,12 @@ export function isAnthropicApiUrl(url: unknown): boolean {
 }
 
 // Rewrite the beta header(s) in place: drop ALWAYS_STRIPPED + `dropped`, or
-// everything when `stripAll`. A `thirdParty` host also loses FIRST_PARTY_BETAS.
-// Removes the header when nothing is left.
+// everything when `stripAll`. Removes the header when nothing is left.
 export function filterBetaHeaders(
   headers: Record<string, unknown>,
-  { dropped = [], stripAll = false, thirdParty = false }: { dropped?: readonly string[]; stripAll?: boolean; thirdParty?: boolean } = {},
+  { dropped = [], stripAll = false }: { dropped?: readonly string[]; stripAll?: boolean } = {},
 ): Record<string, unknown> {
-  const drop = new Set<string>([...ALWAYS_STRIPPED, ...(thirdParty ? FIRST_PARTY_BETAS : []), ...dropped]);
+  const drop = new Set<string>([...ALWAYS_STRIPPED, ...dropped]);
   for (const key of BETA_HEADER_KEYS) {
     if (!(key in headers)) continue;
     const kept = stripAll ? [] : splitBetas(headers[key]).filter((f) => !drop.has(f));
@@ -71,21 +68,33 @@ export function stripBetaBodyFields<T>(
 export function sentBetas(headers: Record<string, unknown> | null | undefined): Set<string> {
   const flags = new Set<string>();
   for (const [key, value] of Object.entries(headers || {})) {
-    if (key.toLowerCase() === "anthropic-beta") splitBetas(value).forEach((f) => flags.add(f));
+    if (isBetaHeader(key)) splitBetas(value).forEach((f) => flags.add(f));
   }
   return flags;
 }
 
-// A copy of body without the first-party fields whose flag isn't in `headers`;
-// the same body when nothing goes. Run on the headers actually being sent.
-// Other beta-gated fields (context_management) are left as they are.
-export function stripUngatedFirstPartyFields<T>(body: T, headers: Record<string, unknown> | null | undefined): T {
-  if (!body || typeof body !== "object") return body;
+// For a third-party host: remove the first-party flags from the beta header(s)
+// in place. A header with none of them is left exactly as it was.
+export function dropFirstPartyBetas(headers: Record<string, unknown>): Record<string, unknown> {
+  for (const key of Object.keys(headers)) {
+    if (!isBetaHeader(key)) continue;
+    const flags = splitBetas(headers[key]);
+    const kept = flags.filter((f) => !FIRST_PARTY_BETAS.includes(f));
+    if (kept.length === flags.length) continue;
+    if (kept.length) headers[key] = kept.join(",");
+    else delete headers[key];
+  }
+  return headers;
+}
+
+// A copy of body without the first-party fields whose flag isn't in `headers`
+// (none known: every one goes); the same body when nothing goes. Other
+// beta-gated fields (context_management) are left as they are.
+export function dropFirstPartyFieldsWithoutBeta<T>(body: T, headers: Record<string, unknown> | null | undefined): T {
   const sent = sentBetas(headers);
-  const fields = Object.entries(CLAUDE_BETA_BODY_FIELDS)
+  const fields = Object.entries(CLAUDE_FIRST_PARTY_BETA_FIELDS)
     .filter(([flag]) => !sent.has(flag))
-    .flatMap(([, f]) => f)
-    .filter((f) => CLAUDE_FIRST_PARTY_BODY_FIELDS.includes(f));
+    .flatMap(([, f]) => f);
   return withoutFields(body, fields);
 }
 

@@ -20,7 +20,7 @@ vi.mock("@/lib/usageDb.js", () => ({
 const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
 const { DefaultExecutor } = await import("../../open-sse/executors/default.js");
 const { resolveCompatibleRoute } = await import("../../open-sse/services/provider.js");
-const { stripBetaBodyFields, stripUngatedFirstPartyFields, isAnthropicApiUrl } = await import("../../open-sse/utils/anthropicBeta.js");
+const { stripBetaBodyFields, dropFirstPartyFieldsWithoutBeta, isAnthropicApiUrl, sentBetas } = await import("../../open-sse/utils/anthropicBeta.js");
 
 const SNOWFLAKE = "openai-compatible-chat-snowflake-test";
 const BASE = "https://acme.snowflakecomputing.com/api/v2/cortex/v1";
@@ -65,7 +65,7 @@ const compatCreds = (baseUrl, clientBeta = CLIENT_BETAS) => ({
 
 const sent = (i = 0) => fetchMock.mock.calls[i][1];
 const sentBody = (i = 0) => JSON.parse(sent(i).body);
-const sentBeta = (i = 0) => sent(i).headers["anthropic-beta"] ?? sent(i).headers["Anthropic-Beta"];
+const sentFlags = (i = 0) => [...sentBetas(sent(i).headers)];
 const run = (provider, credentials, body = claudeCodeBody(), model = MODEL) =>
   new DefaultExecutor(provider).execute({ model, body, stream: true, credentials });
 
@@ -86,7 +86,8 @@ describe("safeguards on non-Anthropic upstreams", () => {
     expect(out.output_config).toEqual({ effort: "medium" });
     expect(out.thinking).toEqual({ type: "adaptive", display: "omitted" });
     expect(out.context_management).toEqual(body.context_management);
-    expect(sentBeta()).toBe("context-management-2025-06-27,effort-2025-11-24");
+    expect(sentFlags()).not.toContain(DANGEROUS_BETA);
+    expect(sentFlags()).toEqual(expect.arrayContaining(["context-management-2025-06-27", "effort-2025-11-24"]));
   });
 
   it.each([["a third-party gateway", "https://gateway.example.com/v1"], ...RELAYS.map((u) => [`relay ${u}`, u])])(
@@ -95,7 +96,8 @@ describe("safeguards on non-Anthropic upstreams", () => {
       fetchMock.mockResolvedValueOnce(res(200));
       await run("anthropic-compatible-gw", compatCreds(baseUrl));
       expect(sentBody()).not.toHaveProperty("safeguards");
-      expect(sentBeta()).toBe("effort-2025-11-24");
+      expect(sentFlags()).not.toContain(DANGEROUS_BETA);
+      expect(sentFlags()).toContain("effort-2025-11-24");
     },
   );
 
@@ -112,6 +114,42 @@ describe("safeguards on non-Anthropic upstreams", () => {
     expect(stripBetaBodyFields(claudeCodeBody(), { dropped: [DANGEROUS_BETA] })).not.toHaveProperty("safeguards");
     expect(stripBetaBodyFields(claudeCodeBody(), { dropped: ["oauth-2025-04-20"] }).safeguards).toEqual(SAFEGUARDS);
   });
+
+  it("is dropped with its beta for a built-in third-party provider that would send the beta", async () => {
+    fetchMock.mockResolvedValueOnce(res(200));
+    const ex = new DefaultExecutor("glm");
+    ex.config = { ...ex.config, headers: { ...ex.config.headers, "anthropic-beta": `${DANGEROUS_BETA},effort-2025-11-24` } };
+    await ex.execute({ model: "glm-5", body: claudeCodeBody({ model: "glm-5" }), stream: true, credentials: { apiKey: "k" } });
+    expect(sentFlags()).not.toContain(DANGEROUS_BETA);
+    expect(sentFlags()).toContain("effort-2025-11-24");
+    expect(sentBody()).not.toHaveProperty("safeguards");
+  });
+});
+
+describe("opting in on a third-party endpoint (Advanced settings)", () => {
+  const gateway = (overrides) => ({ apiKey: "k", providerSpecificData: { baseUrl: "https://gateway.example.com/v1", overrides }, rawHeaders: { "anthropic-beta": CLIENT_BETAS } });
+
+  it("a header line adding the beta sends both", async () => {
+    fetchMock.mockResolvedValueOnce(res(200));
+    await run("anthropic-compatible-gw", gateway({ headers: `anthropic-beta: ${DANGEROUS_BETA}` }));
+    expect(sentFlags()).toContain(DANGEROUS_BETA);
+    expect(sentBody().safeguards).toEqual(SAFEGUARDS);
+  });
+
+  it("a merged safeguards goes out with the beta header line", async () => {
+    fetchMock.mockResolvedValueOnce(res(200));
+    const merged = [{ type: "dangerous_tool_use", classifier_context: { v: 1, permission_mode: "merged" } }];
+    const body = claudeCodeBody();
+    delete body.safeguards;
+    await run("anthropic-compatible-gw", gateway({ headers: `anthropic-beta: ${DANGEROUS_BETA}`, body: JSON.stringify({ safeguards: merged }) }), body);
+    expect(sentBody().safeguards).toEqual(merged);
+  });
+
+  it("a merged safeguards without the beta header line is dropped", async () => {
+    fetchMock.mockResolvedValueOnce(res(200));
+    await run("anthropic-compatible-gw", gateway({ body: JSON.stringify({ safeguards: SAFEGUARDS }) }));
+    expect(sentBody()).not.toHaveProperty("safeguards");
+  });
 });
 
 describe("safeguards on Anthropic's own API", () => {
@@ -122,7 +160,7 @@ describe("safeguards on Anthropic's own API", () => {
     fetchMock.mockResolvedValueOnce(res(200));
     await run("anthropic-compatible-official", compatCreds(baseUrl));
     expect(sentBody().safeguards).toEqual(SAFEGUARDS);
-    expect(sentBeta()).toBe(CLIENT_BETAS);
+    expect(sentFlags()).toContain(DANGEROUS_BETA);
   });
 
   it("is not sent when the client's beta isn't forwarded", async () => {
@@ -143,9 +181,19 @@ describe("safeguards on Anthropic's own API", () => {
   it("is not sent by the anthropic provider; context_management still is", async () => {
     fetchMock.mockResolvedValueOnce(res(200));
     await run("anthropic", { apiKey: "k" });
-    expect(sentBeta()).toBe("claude-code-20250219,interleaved-thinking-2025-05-14");
+    expect(sentFlags()).not.toContain(DANGEROUS_BETA);
     expect(sentBody()).not.toHaveProperty("safeguards");
     expect(sentBody().context_management).toEqual(claudeCodeBody().context_management);
+  });
+
+  it("is sent by the anthropic provider when its own headers carry the beta", async () => {
+    fetchMock.mockResolvedValueOnce(res(200));
+    const ex = new DefaultExecutor("anthropic");
+    const key = Object.keys(ex.config.headers).find((k) => k.toLowerCase() === "anthropic-beta");
+    ex.config = { ...ex.config, headers: { ...ex.config.headers, [key]: `${ex.config.headers[key]},${DANGEROUS_BETA}` } };
+    await ex.execute({ model: MODEL, body: claudeCodeBody(), stream: true, credentials: { apiKey: "k" } });
+    expect(sentFlags()).toContain(DANGEROUS_BETA);
+    expect(sentBody().safeguards).toEqual(SAFEGUARDS);
   });
 
   it("leaves context_management alone on a built-in third-party provider", async () => {
@@ -190,7 +238,7 @@ describe("third-party identity headers", () => {
     await run("anthropic-compatible-mixed", compatCreds("https://API.Anthropic.COM/v1"));
     expect(sent().headers.Authorization).toMatch(/^Bearer /);
     expect(sentBody().safeguards).toEqual(SAFEGUARDS);
-    expect(sentBeta()).toBe(CLIENT_BETAS);
+    expect(sentFlags()).toContain(DANGEROUS_BETA);
   });
 });
 
@@ -199,6 +247,17 @@ describe("non-Claude bodies", () => {
     fetchMock.mockResolvedValueOnce(res(200));
     const body = { model: "gpt-6", messages: [{ role: "user", content: "hi" }], stream: true, safeguards: SAFEGUARDS };
     await run("openai-compatible-chat-test", { apiKey: "k", providerSpecificData: { apiType: "chat", baseUrl: "https://gateway.example.com/v1" } }, body, "gpt-6");
+    expect(fetchMock.mock.calls[0][0]).toBe("https://gateway.example.com/v1/chat/completions");
+    expect(sentBody().safeguards).toEqual(SAFEGUARDS);
+  });
+
+  it("forwards an OpenAI body's own safeguards on an anthropic-compatible node's chat route", async () => {
+    fetchMock.mockResolvedValueOnce(res(200));
+    const provider = "anthropic-compatible-twopath";
+    const credentials = { apiKey: "k", providerSpecificData: { baseUrl: "https://gateway.example.com/v1/messages", modelRoutes: { "gpt-6": "openai-chat" } } };
+    credentials.runtimeTransport = resolveCompatibleRoute(provider, "gpt-6", credentials);
+    const body = { model: "gpt-6", messages: [{ role: "user", content: "hi" }], stream: true, safeguards: SAFEGUARDS };
+    await run(provider, credentials, body, "gpt-6");
     expect(fetchMock.mock.calls[0][0]).toBe("https://gateway.example.com/v1/chat/completions");
     expect(sentBody().safeguards).toEqual(SAFEGUARDS);
   });
@@ -218,10 +277,10 @@ describe("helpers", () => {
     for (const u of [...RELAYS, "https://xapi.anthropic.com/v1", "api.anthropic.com/v1", "", undefined]) expect(isAnthropicApiUrl(u)).toBe(false);
   });
 
-  it("stripUngatedFirstPartyFields reads the beta header in any case, copies, and only touches safeguards", () => {
+  it("dropFirstPartyFieldsWithoutBeta reads the beta header in any case, copies, and only touches safeguards", () => {
     const body = claudeCodeBody();
-    expect(stripUngatedFirstPartyFields(body, { "Anthropic-Beta": DANGEROUS_BETA })).toBe(body);
-    const out = stripUngatedFirstPartyFields(body, { "anthropic-beta": "effort-2025-11-24" });
+    expect(dropFirstPartyFieldsWithoutBeta(body, { "Anthropic-Beta": DANGEROUS_BETA })).toBe(body);
+    const out = dropFirstPartyFieldsWithoutBeta(body, { "anthropic-beta": "effort-2025-11-24" });
     expect(out).not.toHaveProperty("safeguards");
     expect(out.context_management).toEqual(body.context_management);
     expect(body.safeguards).toEqual(SAFEGUARDS);

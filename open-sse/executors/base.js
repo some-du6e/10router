@@ -78,7 +78,11 @@ export class BaseExecutor {
     return body;
   }
 
-  // Last change to the body, once the outgoing headers are final.
+  // Last change to the body, once the outgoing headers are final (e.g. drop a
+  // field whose beta flag isn't going out). Called only by execute() below,
+  // once per URL attempt, with that attempt's headers; chatCore also calls it
+  // with headers = null for its error log. An executor that overrides
+  // execute() and sends Claude-format bodies must call it itself.
   finalizeBody(body, headers, credentials) {
     return body;
   }
