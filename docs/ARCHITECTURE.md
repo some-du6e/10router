@@ -135,7 +135,7 @@ Main flow modules:
 - Format detection/provider config: `open-sse/services/provider.js`
 - Model parse/resolve: `src/sse/services/model.js`, `open-sse/services/model.js`
 - Account fallback logic: `open-sse/services/accountFallback.js`
-- Translation registry: `open-sse/translator/index.js`
+- Translation registry: `open-sse/translator/index.ts`
 - Stream transformations: `open-sse/utils/stream.js`, `open-sse/utils/streamHandler.js`
 - Usage extraction/normalization: `open-sse/utils/usageTracking.js`
 
@@ -443,7 +443,7 @@ flowchart LR
 
 ### Translation Registry and Format Converters
 
-- `open-sse/translator/index.js`: translator registry and orchestration
+- `open-sse/translator/index.ts`: translator registry and orchestration
 - Request translators: `open-sse/translator/request/*`
 - Response translators: `open-sse/translator/response/*`
 - Format constants: `open-sse/translator/formats.js`
