@@ -17,8 +17,6 @@ const { stripBetaBodyFields } = await import("../../open-sse/utils/anthropicBeta
 const SNOWFLAKE = "openai-compatible-chat-eea96964-59c9-40ee-b64e-9e3bed15b7cb";
 const MODEL = "claude-opus-5-5";
 const CONTEXT_MANAGEMENT = { edits: [{ type: "clear_thinking_20251015", keep: "all" }] };
-// Claude Code sends context_management only alongside its beta.
-const CLIENT_BETA = { "anthropic-beta": "context-management-2025-06-27,oauth-2025-04-20" };
 const BETA_400 = "{\"message\":\"Unexpected value(s) `context-management-2025-06-27` for the `anthropic-beta` header. Please consult our documentation at platform.claude.com/docs or try again without the header.\"}";
 
 function res(status, text = "") {
@@ -109,20 +107,13 @@ describe("DefaultExecutor — beta-gated body fields on Messages paths", () => {
 
   it("keeps context_management on an anthropic-compatible node that drops no betas", async () => {
     fetchMock.mockResolvedValueOnce(res(200));
-    const credentials = { ...anthropicCompatCreds(), rawHeaders: CLIENT_BETA };
-    await new DefaultExecutor("anthropic-compatible-test").execute({ model: MODEL, body: claudeCodeBody(), stream: true, credentials });
-    expect(sentBody().context_management).toEqual(CONTEXT_MANAGEMENT);
-  });
-
-  it("drops context_management when its beta isn't sent at all", async () => {
-    fetchMock.mockResolvedValueOnce(res(200));
     await new DefaultExecutor("anthropic-compatible-test").execute({ model: MODEL, body: claudeCodeBody(), stream: true, credentials: anthropicCompatCreds() });
-    expect(sentBody()).not.toHaveProperty("context_management");
+    expect(sentBody().context_management).toEqual(CONTEXT_MANAGEMENT);
   });
 
   it("keeps context_management when only unrelated betas are dropped", async () => {
     fetchMock.mockResolvedValueOnce(res(200));
-    const credentials = { ...snowflakeCreds({ droppedBetas: ["oauth-2025-04-20", "redact-thinking-2026-02-12"] }), rawHeaders: CLIENT_BETA };
+    const credentials = snowflakeCreds({ droppedBetas: ["oauth-2025-04-20", "redact-thinking-2026-02-12"] });
     await new DefaultExecutor(SNOWFLAKE).execute({ model: MODEL, body: claudeCodeBody(), stream: true, credentials });
     expect(sentBody().context_management).toEqual(CONTEXT_MANAGEMENT);
   });

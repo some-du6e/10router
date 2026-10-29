@@ -76,14 +76,16 @@ export function sentBetas(headers: Record<string, unknown> | null | undefined): 
   return flags;
 }
 
-// A copy of body without the beta-gated fields whose flag isn't in `headers`;
+// A copy of body without the first-party fields whose flag isn't in `headers`;
 // the same body when nothing goes. Run on the headers actually being sent.
-export function stripUngatedBodyFields<T>(body: T, headers: Record<string, unknown> | null | undefined): T {
+// Other beta-gated fields (context_management) are left as they are.
+export function stripUngatedFirstPartyFields<T>(body: T, headers: Record<string, unknown> | null | undefined): T {
   if (!body || typeof body !== "object") return body;
   const sent = sentBetas(headers);
   const fields = Object.entries(CLAUDE_BETA_BODY_FIELDS)
     .filter(([flag]) => !sent.has(flag))
-    .flatMap(([, f]) => f);
+    .flatMap(([, f]) => f)
+    .filter((f) => CLAUDE_FIRST_PARTY_BODY_FIELDS.includes(f));
   return withoutFields(body, fields);
 }
 

@@ -20,7 +20,7 @@ vi.mock("@/lib/usageDb.js", () => ({
 const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
 const { DefaultExecutor } = await import("../../open-sse/executors/default.js");
 const { resolveCompatibleRoute } = await import("../../open-sse/services/provider.js");
-const { stripBetaBodyFields, stripUngatedBodyFields, isAnthropicApiUrl } = await import("../../open-sse/utils/anthropicBeta.js");
+const { stripBetaBodyFields, stripUngatedFirstPartyFields, isAnthropicApiUrl } = await import("../../open-sse/utils/anthropicBeta.js");
 
 const SNOWFLAKE = "openai-compatible-chat-eea96964-59c9-40ee-b64e-9e3bed15b7cb";
 const BASE = "https://acme.snowflakecomputing.com/api/v2/cortex/v1";
@@ -139,11 +139,19 @@ describe("safeguards on Anthropic's own API", () => {
     expect(sentBody().context_management).toEqual(claudeCodeBody().context_management);
   });
 
-  it("is not sent by the anthropic provider, nor ungated context_management", async () => {
+  // Its fixed list has no context-management beta either; that field is left as on master.
+  it("is not sent by the anthropic provider; context_management still is", async () => {
     fetchMock.mockResolvedValueOnce(res(200));
     await run("anthropic", { apiKey: "k" });
+    expect(sentBeta()).toBe("claude-code-20250219,interleaved-thinking-2025-05-14");
     expect(sentBody()).not.toHaveProperty("safeguards");
-    expect(sentBody()).not.toHaveProperty("context_management");
+    expect(sentBody().context_management).toEqual(claudeCodeBody().context_management);
+  });
+
+  it("leaves context_management alone on a built-in third-party provider", async () => {
+    fetchMock.mockResolvedValueOnce(res(200));
+    await run("glm", { apiKey: "k" }, claudeCodeBody({ model: "glm-5" }), "glm-5");
+    expect(sentBody().context_management).toEqual(claudeCodeBody().context_management);
   });
 });
 
@@ -163,10 +171,10 @@ describe("helpers", () => {
     for (const u of [...RELAYS, "api.anthropic.com/v1", "", undefined]) expect(isAnthropicApiUrl(u)).toBe(false);
   });
 
-  it("stripUngatedBodyFields reads the beta header in any case and copies", () => {
+  it("stripUngatedFirstPartyFields reads the beta header in any case, copies, and only touches safeguards", () => {
     const body = claudeCodeBody();
-    expect(stripUngatedBodyFields(body, { "Anthropic-Beta": `${DANGEROUS_BETA},context-management-2025-06-27` })).toBe(body);
-    const out = stripUngatedBodyFields(body, { "anthropic-beta": "context-management-2025-06-27" });
+    expect(stripUngatedFirstPartyFields(body, { "Anthropic-Beta": DANGEROUS_BETA })).toBe(body);
+    const out = stripUngatedFirstPartyFields(body, { "anthropic-beta": "effort-2025-11-24" });
     expect(out).not.toHaveProperty("safeguards");
     expect(out.context_management).toEqual(body.context_management);
     expect(body.safeguards).toEqual(SAFEGUARDS);

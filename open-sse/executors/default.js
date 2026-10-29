@@ -8,7 +8,7 @@ import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
 import {
-  filterBetaHeaders, isAnthropicApiUrl, parseRejectedBetas, stripBetaBodyFields, stripUngatedBodyFields, splitBetas, withoutFields, BETA_HEADER_KEYS,
+  filterBetaHeaders, isAnthropicApiUrl, parseRejectedBetas, stripBetaBodyFields, stripUngatedFirstPartyFields, splitBetas, withoutFields, BETA_HEADER_KEYS,
 } from "../utils/anthropicBeta.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { CLAUDE_FIRST_PARTY_BODY_FIELDS } from "../config/claudeMessageCompat.js";
@@ -119,11 +119,11 @@ export class DefaultExecutor extends BaseExecutor {
     return injectReasoningContent({ provider: this.provider, model, body: transformed });
   }
 
-  // A beta-gated field without its flag in the outgoing header is a 400 on
-  // Anthropic ("Extra inputs are not permitted") or ignored elsewhere, so it goes.
+  // safeguards goes out only with its beta in the outgoing header; without it
+  // Anthropic 400s ("Extra inputs are not permitted") or ignores it.
   finalizeBody(body, headers, credentials) {
     const format = credentials?.runtimeTransport?.format || getTargetFormat(this.provider, credentials);
-    return format === "claude" ? stripUngatedBodyFields(body, headers) : body;
+    return format === "claude" ? stripUngatedFirstPartyFields(body, headers) : body;
   }
 
   // Fallback json_schema → json_object for openai-compatible providers without native Structured Output.
