@@ -111,7 +111,7 @@ export class DefaultExecutor extends BaseExecutor {
         const psd = credentials?.providerSpecificData || {};
         transformed = stripBetaBodyFields({ ...transformed }, { dropped: psd.droppedBetas, stripAll: psd.stripBeta === true });
       }
-      if (!this.talksToAnthropic(credentials)) {
+      if (format === "claude" && !this.talksToAnthropic(credentials)) {
         transformed = withoutFields(transformed, CLAUDE_FIRST_PARTY_BODY_FIELDS);
       }
     }
@@ -119,8 +119,9 @@ export class DefaultExecutor extends BaseExecutor {
     return injectReasoningContent({ provider: this.provider, model, body: transformed });
   }
 
-  // safeguards goes out only with its beta in the outgoing header; without it
-  // Anthropic 400s ("Extra inputs are not permitted") or ignores it.
+  // safeguards goes out only with its beta in the outgoing header. Whether
+  // Anthropic 400s or ignores it without the beta is unverified; the claude and
+  // anthropic providers' fixed beta lists lack it, so they never send it.
   finalizeBody(body, headers, credentials) {
     const format = credentials?.runtimeTransport?.format || getTargetFormat(this.provider, credentials);
     return format === "claude" ? stripUngatedFirstPartyFields(body, headers) : body;
@@ -216,7 +217,9 @@ export class DefaultExecutor extends BaseExecutor {
         const key = BETA_HEADER_KEYS.find((k) => k in headers) || BETA_HEADER_KEYS[0];
         headers[key] = [...new Set([...splitBetas(headers[key]), ...splitBetas(clientBeta)])].join(",");
       }
-      if (!this.talksToAnthropic(credentials)) {
+      const baseUrl = credentials?.providerSpecificData?.baseUrl || "";
+      const isOfficialAnthropic = baseUrl === "" || baseUrl.includes("api.anthropic.com");
+      if (!isOfficialAnthropic) {
         // Some third-party Anthropic-compatible gateways require Bearer auth in
         // addition to x-api-key. Send both (x-api-key already set above) so
         // gateways that read either header succeed.
@@ -249,6 +252,7 @@ export class DefaultExecutor extends BaseExecutor {
 
   // Anthropic's own API: a custom Messages endpoint on (or defaulting to)
   // api.anthropic.com, or a registry provider whose base URL is that host.
+  // Decides where safeguards and its beta go; auth headers keep their own check.
   talksToAnthropic(credentials) {
     if (this.onMessagesPath(credentials)) return isAnthropicApiUrl(credentials?.providerSpecificData?.baseUrl || ANTHROPIC_COMPAT_BASE);
     return isAnthropicApiUrl(this.config?.baseUrl);

@@ -168,7 +168,10 @@ export class BaseExecutor {
       } catch (error) {
         clearTimeout(connectTimer);
         // Request logs keep what was (or would have been) sent, not the pre-transform body.
-        if (error && typeof error === "object" && Object.isExtensible(error)) error.transformedBody = transformedBody;
+        // Non-enumerable, so logging the error doesn't print the prompt.
+        if (error && typeof error === "object" && Object.isExtensible(error)) {
+          Object.defineProperty(error, "transformedBody", { value: transformedBody, enumerable: false, configurable: true, writable: true });
+        }
         lastError = error;
         const isConnectTimeout = connectCtrl.signal.aborted && error.name === "AbortError";
         dbg("FETCH", `${this.provider.toUpperCase()} ✖ ${error.name}: ${error.message}${isConnectTimeout ? " (connect timeout)" : ""}`);

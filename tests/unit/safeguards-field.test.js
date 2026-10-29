@@ -1,6 +1,6 @@
 // Claude Code 2.1.312 in auto mode adds a top-level `safeguards` field (its
 // server-side classifier input, behind dangerous-tool-use-2026-09-03). Live
-// failure (2026-10-29, Snowflake Cortex node, claude-opus-5-5 routed to /messages):
+// failure (2026-10-29 ~00:27 UTC, Snowflake Cortex node, claude-opus-5-5 routed to /messages):
 //   400 {"message":"safeguards: Extra inputs are not permitted"}
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -22,7 +22,7 @@ const { DefaultExecutor } = await import("../../open-sse/executors/default.js");
 const { resolveCompatibleRoute } = await import("../../open-sse/services/provider.js");
 const { stripBetaBodyFields, stripUngatedFirstPartyFields, isAnthropicApiUrl } = await import("../../open-sse/utils/anthropicBeta.js");
 
-const SNOWFLAKE = "openai-compatible-chat-eea96964-59c9-40ee-b64e-9e3bed15b7cb";
+const SNOWFLAKE = "openai-compatible-chat-snowflake-test";
 const BASE = "https://acme.snowflakecomputing.com/api/v2/cortex/v1";
 const MODEL = "claude-opus-5-5";
 const DANGEROUS_BETA = "dangerous-tool-use-2026-09-03";
@@ -163,6 +163,27 @@ describe("third-party identity headers", () => {
     expect(sent(0).headers.Authorization).toMatch(/^Bearer /);
     expect(sent(1).headers).not.toHaveProperty("Authorization");
   });
+
+  // Auth stays on master's substring check; only safeguards uses the hostname.
+  it.each(RELAYS)("relay %s keeps master's official-host auth and identity", async (baseUrl) => {
+    fetchMock.mockResolvedValueOnce(res(200));
+    const ex = new DefaultExecutor("anthropic-compatible-relay");
+    ex.config = { ...ex.config, headers: { "x-app": "cli" } };
+    await ex.execute({ model: MODEL, body: claudeCodeBody(), stream: true, credentials: compatCreds(baseUrl) });
+    expect(sent().headers).not.toHaveProperty("Authorization");
+    expect(sent().headers["x-app"]).toBe("cli");
+    expect(sentBody()).not.toHaveProperty("safeguards");
+  });
+});
+
+describe("non-Claude bodies", () => {
+  it("forwards a top-level safeguards from an OpenAI-shaped client as on master", async () => {
+    fetchMock.mockResolvedValueOnce(res(200));
+    const body = { model: "gpt-6", messages: [{ role: "user", content: "hi" }], stream: true, safeguards: SAFEGUARDS };
+    await run("openai-compatible-chat-test", { apiKey: "k", providerSpecificData: { apiType: "chat", baseUrl: "https://gateway.example.com/v1" } }, body, "gpt-6");
+    expect(fetchMock.mock.calls[0][0]).toBe("https://gateway.example.com/v1/chat/completions");
+    expect(sentBody().safeguards).toEqual(SAFEGUARDS);
+  });
 });
 
 describe("helpers", () => {
@@ -181,15 +202,21 @@ describe("helpers", () => {
   });
 });
 
-const chat = (body, headers = {}) => handleChatCore({
-  body, modelInfo: { provider: SNOWFLAKE, model: MODEL },
-  credentials: { apiKey: "k", providerSpecificData: { apiType: "chat", baseUrl: BASE, modelRoutes: { [MODEL]: "anthropic" } } },
+const snowflakePsd = (psd = {}) => ({ apiType: "chat", baseUrl: BASE, modelRoutes: { [MODEL]: "anthropic" }, ...psd });
+const chat = (body, { headers = {}, provider = SNOWFLAKE, psd = snowflakePsd() } = {}) => handleChatCore({
+  body, modelInfo: { provider, model: MODEL },
+  credentials: { apiKey: "k", providerSpecificData: psd },
   log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn() }, connectionId: "c",
   clientRawRequest: {
     endpoint: "/v1/messages", body,
     headers: { "user-agent": "claude-cli/2.1.312 (external, cli)", accept: "application/json", "anthropic-beta": CLIENT_BETAS, ...headers },
   },
 });
+const abortError = () => Object.assign(new Error("aborted"), { name: "AbortError" });
+const loggedDetail = () => {
+  expect(saveRequestDetail).toHaveBeenCalledTimes(1);
+  return saveRequestDetail.mock.calls[0][0];
+};
 
 describe("Claude Code → Snowflake through chatCore (claude→claude)", () => {
   it("sends no safeguards upstream", async () => {
@@ -206,12 +233,49 @@ describe("Claude Code → Snowflake through chatCore (claude→claude)", () => {
   });
 
   it("logs the stripped body when the upstream call throws", async () => {
-    fetchMock.mockRejectedValueOnce(Object.assign(new Error("aborted"), { name: "AbortError" }));
+    fetchMock.mockRejectedValueOnce(abortError());
     await chat(claudeCodeBody({ stream: false }));
 
-    expect(saveRequestDetail).toHaveBeenCalledTimes(1);
-    const { providerRequest } = saveRequestDetail.mock.calls[0][0];
+    const { providerRequest } = loggedDetail();
     expect(providerRequest.output_config).toEqual({ effort: "medium" });
     expect(providerRequest).not.toHaveProperty("safeguards");
+  });
+
+  // Only the executor's own body has context_management removed for a dropped beta.
+  it("logs the executor's body, not chatCore's, when the upstream call throws", async () => {
+    fetchMock.mockRejectedValueOnce(abortError());
+    await chat(claudeCodeBody({ stream: false }), { psd: snowflakePsd({ droppedBetas: ["context-management-2025-06-27"] }) });
+
+    const { providerRequest } = loggedDetail();
+    expect(providerRequest).not.toHaveProperty("context_management");
+    expect(providerRequest).not.toHaveProperty("safeguards");
+  });
+
+  it("still logs a stripped body when the error can't be tagged", async () => {
+    fetchMock.mockRejectedValueOnce(Object.freeze(abortError()));
+    const result = await chat(claudeCodeBody({ stream: false }));
+
+    expect(result.status).toBe(499);
+    const detail = loggedDetail();
+    expect(detail.response.status).toBe(499);
+    expect(detail.providerRequest).not.toHaveProperty("safeguards");
+    expect(detail.providerRequest.output_config).toEqual({ effort: "medium" });
+  });
+
+  it("logs the body after the header check on Anthropic's host", async () => {
+    fetchMock.mockRejectedValueOnce(abortError());
+    await chat(claudeCodeBody({ stream: false }), {
+      provider: "anthropic-compatible-official", psd: { baseUrl: "https://api.anthropic.com/v1" }, headers: { "anthropic-beta": "effort-2025-11-24" },
+    });
+
+    expect(loggedDetail().providerRequest).not.toHaveProperty("safeguards");
+  });
+
+  it("keeps the logged body off the error's enumerable properties", async () => {
+    const error = abortError();
+    fetchMock.mockRejectedValueOnce(error);
+    await chat(claudeCodeBody({ stream: false }));
+    expect(Object.keys(error)).not.toContain("transformedBody");
+    expect(error.transformedBody).not.toHaveProperty("safeguards");
   });
 });

@@ -6,7 +6,9 @@
 // installEndpointOverrides(DefaultExecutor) wraps the executor once:
 //   buildUrl         path override (primary path only) + query params
 //   buildHeaders     auth header style, client identity, raw header lines, beta rules
-//   transformRequest model renames, streaming, dropped fields, JSON merge (applied last)
+//   transformRequest model renames, streaming, dropped fields, JSON merge (last body
+//                    edit before finalizeBody, which drops a merged safeguards
+//                    unless its beta is in the headers)
 //   execute          timeout, retries, per-endpoint proxy; reply filters
 // streamOverride() tells chatCore how the upstream will answer.
 import {
