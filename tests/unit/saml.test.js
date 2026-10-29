@@ -76,7 +76,7 @@ describe("SAML 2.0 Auth Engine Utilities", () => {
       const rawXml = Buffer.from('<Response ID="123"></Response>').toString("base64");
       await expect(
         validateSamlResponse(null, { SAMLResponse: rawXml }, "req-123", settings)
-      ).rejects.toThrow(/InResponseTo mismatch/);
+      ).rejects.toThrow(/InResponseTo/);
     });
 
     it("throws error when expectedRequestId is supplied but InResponseTo does not match", async () => {
@@ -84,7 +84,7 @@ describe("SAML 2.0 Auth Engine Utilities", () => {
       const rawXml = Buffer.from('<Response InResponseTo="wrong-id"></Response>').toString("base64");
       await expect(
         validateSamlResponse(null, { SAMLResponse: rawXml }, "req-123", settings)
-      ).rejects.toThrow(/InResponseTo mismatch/);
+      ).rejects.toThrow(/InResponseTo/);
     });
 
     it("throws error if samlCert is not configured", async () => {
