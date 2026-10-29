@@ -25,9 +25,10 @@ export const splitBetas = (value: unknown): string[] =>
 
 // True only for Anthropic's own API host; relays such as
 // api.anthropic.com.example.net or example.net/api.anthropic.com are not.
+// A trailing dot (fully qualified name) is the same host.
 export function isAnthropicApiUrl(url: unknown): boolean {
   try {
-    return new URL(String(url)).hostname === ANTHROPIC_API_HOST;
+    return new URL(String(url)).hostname.replace(/\.$/, "") === ANTHROPIC_API_HOST;
   } catch {
     return false;
   }
@@ -99,7 +100,7 @@ export function dropFirstPartyFieldsWithoutBeta<T>(body: T, headers: Record<stri
 }
 
 // A copy of body without `fields`; the same body when none of them is present.
-export function withoutFields<T>(body: T, fields: readonly string[]): T {
+function withoutFields<T>(body: T, fields: readonly string[]): T {
   if (!body || typeof body !== "object" || !fields.some((f) => f in (body as object))) return body;
   const copy = { ...(body as Record<string, unknown>) };
   for (const f of fields) delete copy[f];

@@ -314,6 +314,7 @@ describe("non-Claude bodies", () => {
 describe("helpers", () => {
   it("isAnthropicApiUrl matches the host only", () => {
     expect(isAnthropicApiUrl("https://api.anthropic.com/v1")).toBe(true);
+    expect(isAnthropicApiUrl("https://api.anthropic.com./v1")).toBe(true);
     for (const u of [...RELAYS, "https://xapi.anthropic.com/v1", "api.anthropic.com/v1", "", undefined]) expect(isAnthropicApiUrl(u)).toBe(false);
   });
 
