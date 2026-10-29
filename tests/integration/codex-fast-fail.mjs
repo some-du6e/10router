@@ -130,7 +130,7 @@ try {
     await new Promise((resolveWait) => setTimeout(resolveWait, 500));
   }
   await api("/api/auth/login", { password });
-  await api("/api/settings", { requireApiKey: false, rtkEnabled: false }, "PATCH");
+  await api("/api/settings", { requireApiKey: false }, "PATCH");
   const { node } = await api("/api/provider-nodes", { name: "Retry smoke upstream", prefix: "smoke", apiType: "responses", baseUrl: upstreamUrl });
   for (const name of ["First account", "Second account"]) {
     await api("/api/providers", { provider: node.id, apiKey: `test-${name}`, name });
