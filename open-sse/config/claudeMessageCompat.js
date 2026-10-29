@@ -16,7 +16,14 @@ export const CLAUDE_INTERRUPTED_TOOL_RESULT_TEXT =
 // (Snowflake Cortex) 400 with "context_management: Extra inputs are not permitted".
 export const CLAUDE_BETA_BODY_FIELDS = {
   "context-management-2025-06-27": ["context_management"],
+  "dangerous-tool-use-2026-09-03": ["safeguards"],
 };
+
+// Top-level fields only Anthropic's own API reads, never sent to other hosts.
+// safeguards is Claude Code's auto-mode classifier input (permission rules,
+// paths, git state); strict gateways 400 with "safeguards: Extra inputs are
+// not permitted".
+export const CLAUDE_FIRST_PARTY_BODY_FIELDS = ["safeguards"];
 
 // thinking.display values that work without a beta flag. "updates" needs
 // thinking-display-updates-2026-08-18, which not every route forwards, so it

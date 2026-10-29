@@ -8,11 +8,16 @@ import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
 import { filterBetaHeaders, parseRejectedBetas, stripBetaBodyFields, splitBetas, BETA_HEADER_KEYS } from "../utils/anthropicBeta.js";
+import { parseRejectedFields, rejectedFieldsFor, rememberRejectedFields, withoutFields } from "../utils/rejectedFields.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
+import { CLAUDE_FIRST_PARTY_BODY_FIELDS } from "../config/claudeMessageCompat.js";
 import { installEndpointOverrides } from "../handlers/chatCore/endpointOverrides.js";
 
 // Named-flag retries before the last-resort attempt with no anthropic-beta at all.
 const MAX_BETA_RETRIES = 1;
+
+// Providers whose upstream is Anthropic's own API.
+const ANTHROPIC_PROVIDERS = new Set(["claude", "anthropic"]);
 
 // Auth header descriptors — derived from registry transport.auth, fallback to hardcoded defaults.
 const BEARER = { combined: true, header: "Authorization", scheme: "bearer" };
@@ -107,6 +112,9 @@ export class DefaultExecutor extends BaseExecutor {
       if (this.onMessagesPath(credentials)) {
         const psd = credentials?.providerSpecificData || {};
         transformed = stripBetaBodyFields({ ...transformed }, { dropped: psd.droppedBetas, stripAll: psd.stripBeta === true });
+      }
+      if (!this.talksToAnthropic(credentials)) {
+        transformed = withoutFields(transformed, [...CLAUDE_FIRST_PARTY_BODY_FIELDS, ...rejectedFieldsFor(this.rejectedFieldsKey(model))]);
       }
     }
 
@@ -203,9 +211,7 @@ export class DefaultExecutor extends BaseExecutor {
         const key = BETA_HEADER_KEYS.find((k) => k in headers) || BETA_HEADER_KEYS[0];
         headers[key] = [...new Set([...splitBetas(headers[key]), ...splitBetas(clientBeta)])].join(",");
       }
-      const baseUrl = credentials?.providerSpecificData?.baseUrl || "";
-      const isOfficialAnthropic = baseUrl === "" || baseUrl.includes("api.anthropic.com");
-      if (!isOfficialAnthropic) {
+      if (!this.talksToAnthropic(credentials)) {
         // Some third-party Anthropic-compatible gateways require Bearer auth in
         // addition to x-api-key. Send both (x-api-key already set above) so
         // gateways that read either header succeed.
@@ -236,10 +242,52 @@ export class DefaultExecutor extends BaseExecutor {
     return !!this.provider?.startsWith?.("anthropic-compatible-");
   }
 
+  // Anthropic's own API: the claude/anthropic providers, or a custom Messages
+  // endpoint left on (or pointed at) api.anthropic.com.
+  talksToAnthropic(credentials) {
+    if (ANTHROPIC_PROVIDERS.has(this.provider)) return true;
+    if (!this.onMessagesPath(credentials)) return false;
+    const baseUrl = credentials?.providerSpecificData?.baseUrl || "";
+    return baseUrl === "" || baseUrl.includes("api.anthropic.com");
+  }
+
+  rejectedFieldsKey(model) {
+    return `${this.provider}:${model}`;
+  }
+
+  // Fields of the sent body that a 400 names as not permitted.
+  async rejectedFields(result) {
+    const sent = result?.transformedBody;
+    if (result?.response?.status !== HTTP_STATUS.BAD_REQUEST || !sent || typeof sent !== "object") return [];
+    const text = await result.response.clone().text().catch(() => "");
+    return parseRejectedFields(text).filter((f) => f in sent);
+  }
+
+  // A non-Anthropic upstream that 400s on top-level fields it doesn't model
+  // gets one retry without them; they stay off for this provider + model.
+  async execute(args) {
+    const result = await this.executeWithBetaRetry(args);
+    if (this.talksToAnthropic(args.credentials)) return result;
+    const rejected = await this.rejectedFields(result);
+    if (!rejected.length) return result;
+    const key = this.rejectedFieldsKey(args.model);
+    rememberRejectedFields(key, rejected);
+    args.log?.warn?.("FIELDS", `${this.provider} rejected body field ${rejected.join(", ")}; retrying without`);
+    result.response.body?.cancel?.().catch?.(() => {});
+    const { droppedBetas } = result;
+    const credentials = droppedBetas
+      ? { ...args.credentials, providerSpecificData: { ...args.credentials?.providerSpecificData, droppedBetas } }
+      : args.credentials;
+    const retried = await this.executeWithBetaRetry({ ...args, credentials });
+    // Learn from a second rejection too, but never retry again.
+    rememberRejectedFields(key, await this.rejectedFields(retried));
+    return droppedBetas && !retried.droppedBetas ? { ...retried, droppedBetas } : retried;
+  }
+
   // Anthropic-compatible gateways 400 on beta flags they don't know and name them,
   // sometimes a few at a time. Drop the named ones and retry (bounded), then as a
   // last resort send no beta header at all. Report what was learned.
-  async execute(args) {
+  async executeWithBetaRetry(args) {
     let result = await super.execute(args);
     if (!this.onMessagesPath(args.credentials)) return result;
     const psd = args.credentials?.providerSpecificData || {};
