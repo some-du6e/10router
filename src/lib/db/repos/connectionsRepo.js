@@ -19,12 +19,23 @@ const AUTH_STREAK_FIELDS = [
 ];
 const AUTO_DISABLE_FIELDS = ["autoDisabledAt", "autoDisabledReason", ...AUTH_STREAK_FIELDS];
 
+// authDemote_<model>: sse/services/auth.js's count of a key's 403s on that
+// model, and its demotion there once they trip. authDemoteOkAt: when the key
+// last served anything while it had such a record (compared with its firstAt).
+export const AUTH_DEMOTE_PREFIX = "authDemote_";
+export const getAuthDemoteKey = (model) => `${AUTH_DEMOTE_PREFIX}${model}`;
+
 function applyAutoDisableTransition(existing, merged, data) {
   const newKey = String(data.apiKey ?? "").trim();
   const keyChanged = newKey !== "" && newKey !== String(existing.apiKey ?? "").trim();
   // A different key pasted into a connection the router turned off fixes it.
   if (existing.autoDisabledAt && data.isActive === undefined && keyChanged) merged.isActive = true;
-  if (existing.isActive === false && merged.isActive === true) {
+  const reEnabled = existing.isActive === false && merged.isActive === true;
+  if (reEnabled || keyChanged) {
+    // A new key or turning the key back on clears its demotions too.
+    for (const k of Object.keys(merged)) if (k.startsWith(AUTH_DEMOTE_PREFIX)) merged[k] = null;
+  }
+  if (reEnabled) {
     for (const f of AUTO_DISABLE_FIELDS) delete merged[f];
   } else if (data.isActive === false && data.autoDisabledAt === undefined && keyChanged) {
     delete merged.autoDisabledAt;
@@ -266,9 +277,14 @@ export async function createProviderConnection(data) {
 // Critical: OAuth refresh token race — atomic merge inside transaction.
 // autoDisable fields are applied only if the connection is still on and another
 // connection of its provider is too, decided in the same transaction as the write.
+// demote ({ model, from, to, data, probeNow }) replaces the model's demotion
+// record `from` with `to`, applies `data`, and makes the demotions on the
+// probeNow models due, only if the record is still `from`. liftDemote
+// is a model that just succeeded: its record goes, whenever it was written; with
+// noteServed, authDemoteOkAt marks the success for the stored records.
 // apiKeyUsed is the key a failing request used: if another key has been stored
-// since, the request's auth streak fields and autoDisable are dropped.
-export async function updateProviderConnection(id, data, { autoDisable = null, apiKeyUsed } = {}) {
+// since, the request's auth streak fields, autoDisable and demote are dropped.
+export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, noteServed = false, apiKeyUsed } = {}) {
   const db = await getAdapter();
   let result;
   let servesChanged = false;
@@ -287,6 +303,19 @@ export async function updateProviderConnection(id, data, { autoDisable = null, a
     if (autoDisable && !staleKey && existing.isActive && db.get(
       `SELECT 1 FROM providerConnections WHERE provider = ? AND id != ? AND isActive = 1 LIMIT 1`, [existing.provider, id],
     )) Object.assign(merged, autoDisable);
+    const demoteKey = demote && getAuthDemoteKey(demote.model);
+    if (demote && !staleKey && JSON.stringify(existing[demoteKey] ?? null) === JSON.stringify(demote.from ?? null)) {
+      Object.assign(merged, demote.data, { [demoteKey]: demote.to });
+      // Other models' demotions to probe right away (still no sooner than the
+      // last probe's lease ends).
+      const now = new Date().toISOString();
+      for (const model of demote.probeNow || []) {
+        const record = existing[getAuthDemoteKey(model)];
+        if (record?.demotedAt && record.nextProbeAt > now) merged[getAuthDemoteKey(model)] = { ...record, nextProbeAt: now };
+      }
+    }
+    if (liftDemote && existing[getAuthDemoteKey(liftDemote)]) merged[getAuthDemoteKey(liftDemote)] = null;
+    if (noteServed) merged.authDemoteOkAt = new Date().toISOString();
     applyAutoDisableTransition(existing, merged, data);
     upsert(db, merged);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
