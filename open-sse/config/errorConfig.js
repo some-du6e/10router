@@ -126,7 +126,39 @@ export const ERROR_CLASS = {
   RATE_LIMITED: "rate_limited",
   UPSTREAM_5XX: "upstream_5xx",
   TIMEOUT: "timeout",
+  NETWORK_ERROR: "network_error",
   CLIENT_ERROR: "client_error",
   ABORTED: "aborted",
   OTHER: "other",
 };
+
+// Limit, billing and plan refusals isLimitError doesn't know ("Key limit
+// exceeded (daily limit)", qoder's "Queue limit" or "Upgrade required" with a
+// pricingUrl, "credits exhausted", "account balance is insufficient",
+// AccountOverdueError), refusals of one model ("does not have access to model
+// 'o3'") and of one operation by a restricted key ("Missing scopes: ...").
+export const LIMIT_REFUSAL = [
+  /\blimit|queue|upgrade|pricing|\bplans?\b|credit|quota|exhausted|usage cap|billing|budget|payment/,
+  /\bbalance\b|\bfunds\b|overdue|arrears|unpaid|recharge|top[- ]?up/,
+];
+export const MODEL_REFUSAL = /does not have access to (?:the )?model|model_not_found|\bmodel\b.{0,60}?\bnot (?:available|allowed|enabled|permitted|supported)\b/i;
+export const OPERATION_REFUSAL = /insufficient (?:permissions?|scopes?|privileges?)|missing (?:required )?(?:scopes?|permissions?)|permission denied for this operation|not (?:allowed|permitted|authorized) to perform this operation/;
+
+// Account errors some upstreams send as 400: a bad key (Gemini: "API key not
+// valid", API_KEY_INVALID) or no money left (Anthropic: "Your credit balance is
+// too low"; Cursor usage limits).
+export const BAD_KEY_TEXTS = ["api key not valid", "api_key_invalid", "invalid api key", "invalid_api_key", "invalid x-api-key"];
+export const BILLING_TEXTS = [
+  "credit balance", "insufficient_quota", "insufficient balance", "billing_hard_limit_reached",
+  "billing account", "billing details", "usage limit reached", "usage limit exceeded",
+];
+
+// Error text (lowercased) meaning the upstream didn't answer in time. Whole words
+// only: "stall" must not match "install", and a 400 about a bad `timeout`
+// parameter is not a timeout. Covers undici cause codes, trae's "trae stream
+// timeout" and AbortSignal.timeout's "The operation was aborted due to timeout".
+export const TIMEOUT_PATTERN = /\b(timed out|etimedout|und_err_(connect|headers|body)_timeout|(connect|headers|read|request|stream) timeout|aborted due to timeout|stalled?)\b/;
+// Error text (lowercased, cause code included) of a fetch that never reached the upstream.
+export const NETWORK_PATTERN = /\b(enotfound|econnrefused|econnreset|econnaborted|ehostunreach|enetunreach|eai_again|epipe|und_err_socket|socket hang up|other side closed|fetch failed)\b/;
+// Only this much of an error message is classified; bodies can be megabytes.
+export const ERROR_CLASS_MAX_TEXT = 8 * 1024;

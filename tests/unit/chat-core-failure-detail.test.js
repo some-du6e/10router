@@ -91,6 +91,61 @@ describe("chatCore failure request details", () => {
     expect(savedErrorRow().errorClass).toBe("auth_error");
   });
 
+  it("measures ttft at the headers, not when the error body finished", async () => {
+    const BODY_DELAY_MS = 40;
+    executeMock.mockImplementation(async () => {
+      const body = new ReadableStream({
+        async start(controller) {
+          await new Promise((r) => setTimeout(r, BODY_DELAY_MS));
+          controller.enqueue(new TextEncoder().encode(JSON.stringify({ error: { message: "temporarily unavailable" } })));
+          controller.close();
+        },
+      });
+      return {
+        response: new Response(body, { status: 503, headers: { "content-type": "application/json" } }),
+        url: "https://upstream.example.test", headers: {}, transformedBody: {},
+      };
+    });
+    await run();
+    const row = savedErrorRow();
+    expect(row.errorClass).toBe("upstream_5xx");
+    expect(row.latency.total - row.latency.ttft).toBeGreaterThanOrEqual(BODY_DELAY_MS - 10);
+  });
+
+  it("records aborted, status 499 and ttft 0 when the client aborts", async () => {
+    executeMock.mockRejectedValue(Object.assign(new Error("This operation was aborted"), { name: "AbortError" }));
+    const result = await run();
+    const row = savedErrorRow();
+    expect(row.errorClass).toBe("aborted");
+    expect(row.response.status).toBe(499);
+    expect(row.latency.ttft).toBe(0);
+    expect(result.status).toBe(499);
+  });
+
+  it("records network_error when the connection is refused", async () => {
+    const cause = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:1"), { code: "ECONNREFUSED" });
+    executeMock.mockRejectedValue(new TypeError("fetch failed", { cause }));
+    await run();
+    const row = savedErrorRow();
+    expect(row.errorClass).toBe("network_error");
+    expect(row.response.status).toBe(502);
+  });
+
+  it("records other, not upstream_5xx, for a bug thrown inside the executor", async () => {
+    executeMock.mockRejectedValue(new TypeError("Cannot read properties of undefined (reading 'x')"));
+    await run();
+    const row = savedErrorRow();
+    expect(row.errorClass).toBe("other");
+    expect(row.response.status).toBe(502);
+  });
+
+  it("still saves the 502 row when the thrown error has a non-string message", async () => {
+    executeMock.mockRejectedValue({ name: "Error", message: Symbol("weird") });
+    const result = await run();
+    expect(result.status).toBe(502);
+    expect(savedErrorRow().errorClass).toBe("other");
+  });
+
   it("records timeout with ttft 0 when the upstream never answered", async () => {
     executeMock.mockRejectedValue(new Error("fetch connect timeout"));
     await run();

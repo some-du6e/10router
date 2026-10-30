@@ -9,7 +9,7 @@ import { createRequestLogger } from "../utils/requestLogger.js";
 import { getModelTargetFormat, getModelSupportedFormats, getModelStrip, getModelUpstreamId, getModelType, PROVIDER_ID_TO_ALIAS } from "../config/providerModels.js";
 import { PROVIDERS } from "../config/providers.js";
 import { createErrorResult, parseUpstreamError, formatProviderError } from "../utils/error.js";
-import { classifyError, errorText } from "../utils/errorClass.js";
+import { classifyError, classifyThrownError } from "../utils/errorClass.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { handleBypassRequest } from "../utils/bypassHandler.js";
 import { injectLimitHoldNotice } from "../utils/limitHoldNotice.js";
@@ -372,8 +372,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Most executors return their registry format. Cursor AgentService is an
   // exception: it is decoded by the executor into OpenAI-compatible output.
   let providerResponseFormat = targetFormat;
-  // When upstream response headers arrived. Upstream-error rows report this as
-  // ttft; 0 means the upstream never answered (network error / connect timeout).
+  // When executor.execute returned: the upstream's final response headers, after
+  // any retries and backoff sleeps inside the executor (a 503 retried 3 times with
+  // 2s sleeps records over 6s). Upstream-error rows report it as ttft.
   let upstreamRespondedAt = 0;
   try {
     const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onBetasRejected });
@@ -386,7 +387,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody);
   } catch (error) {
     trackPendingRequest(model, provider, connectionId, false, true);
-    const failStatus = error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY;
+    const failStatus = error.name === "AbortError" ? HTTP_STATUS.CLIENT_CLOSED_REQUEST : HTTP_STATUS.BAD_GATEWAY;
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${failStatus}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
@@ -397,12 +398,12 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       providerRequest: error?.transformedBody || executor.finalizeBody?.(translatedBody, null, credentials) || translatedBody || null,
       response: { error: error.message || String(error), status: failStatus, thinking: null },
       status: "error",
-      errorClass: classifyError(failStatus, errorText(error))
+      errorClass: classifyThrownError(error)
     })).catch(() => { });
 
     if (error.name === "AbortError") {
       streamController.handleError(error);
-      return createErrorResult(499, "Request aborted");
+      return createErrorResult(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
     }
     const errMsg = formatProviderError(error, provider, model, HTTP_STATUS.BAD_GATEWAY);
     if (log?.errorLine) {
@@ -435,7 +436,6 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
         try {
           const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions });
           if (retryResult.response.ok) {
-            upstreamRespondedAt = Date.now();
             providerResponse = retryResult.response;
             providerUrl = retryResult.url;
             providerResponseFormat = retryResult.responseFormat || targetFormat;
