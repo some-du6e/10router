@@ -128,10 +128,10 @@ export function unavailableResponse(statusCode, message, retryAfter, retryAfterH
   );
 }
 
-/** A thrown error's low-level cause as [code, message], keeping only string or number parts. */
+/** A thrown error's low-level cause as [code, message]: the truthy parts, stringified. */
 export function errorCauseParts(error) {
   const cause = error?.cause;
-  return [cause?.code, cause?.message].filter((p) => (typeof p === "string" && p) || typeof p === "number").map(String);
+  return [cause?.code, cause?.message].filter(Boolean).map((p) => String(p));
 }
 
 /**

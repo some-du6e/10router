@@ -146,6 +146,15 @@ describe("chatCore failure request details", () => {
     expect(savedErrorRow().errorClass).toBe("other");
   });
 
+  it.each([["null", null], ["undefined", undefined]])("still saves a row and returns 502 when the executor rejects with %s", async (_name, value) => {
+    executeMock.mockImplementation(() => Promise.reject(value));
+    const result = await run();
+    expect(result.status).toBe(502);
+    const row = savedErrorRow();
+    expect(row.errorClass).toBe("other");
+    expect(row.response.status).toBe(502);
+  });
+
   it("records timeout with ttft 0 when the upstream never answered", async () => {
     executeMock.mockRejectedValue(new Error("fetch connect timeout"));
     await run();

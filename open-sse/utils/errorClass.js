@@ -16,7 +16,22 @@ export const isBackoffText = (text) => {
 
 const LIMIT_TEXT = new RegExp(LIMIT_REFUSAL.map((r) => r.source).join("|"), "i");
 const includesAny = (text, list) => list.some((t) => text.includes(t));
-const toText = (message) => (typeof message === "string" ? message.slice(0, ERROR_CLASS_MAX_TEXT).toLowerCase() : "");
+const capped = (part) => part.slice(0, ERROR_CLASS_MAX_TEXT);
+const toText = (message) => (typeof message === "string" ? capped(message).toLowerCase() : "");
+// How many levels of error.cause are read for codes, messages and names.
+const MAX_CAUSE_DEPTH = 3;
+
+// Numbers go through as they are; anything else is parsed. NaN or a value that
+// can't be converted is 0.
+function toStatus(status) {
+  if (typeof status === "number") return Number.isNaN(status) ? 0 : status;
+  try {
+    const n = parseInt(status, 10);
+    return Number.isNaN(n) ? 0 : n;
+  } catch {
+    return 0;
+  }
+}
 
 /**
  * Bucket an upstream HTTP failure into one ERROR_CLASS value from its status and
@@ -27,14 +42,15 @@ const toText = (message) => (typeof message === "string" ? message.slice(0, ERRO
  * auth → timeout → 5xx → other 4xx. Never throws.
  */
 export function classifyError(status, message = "") {
-  const code = Number(status);
+  const code = toStatus(status);
   const text = toText(message);
   if (code === HTTP_STATUS.CLIENT_CLOSED_REQUEST) return TIMEOUT_PATTERN.test(text) ? ERROR_CLASS.TIMEOUT : ERROR_CLASS.ABORTED;
 
   const accountStatus = code === HTTP_STATUS.UNAUTHORIZED || code === HTTP_STATUS.FORBIDDEN;
+  const clientStatus = code >= HTTP_STATUS.BAD_REQUEST && code < HTTP_STATUS.SERVER_ERROR;
   // Backoff text ("capacity", "overloaded") only means a limit where a limit can
   // come from: a 400 "prompt exceeds context capacity" is the request's fault.
-  const backoffStatus = code === HTTP_STATUS.FORBIDDEN || code === HTTP_STATUS.RATE_LIMITED || code >= HTTP_STATUS.SERVER_ERROR;
+  const backoffStatus = accountStatus || code === HTTP_STATUS.RATE_LIMITED || code >= HTTP_STATUS.SERVER_ERROR;
   if (
     code === HTTP_STATUS.PAYMENT_REQUIRED
     || isLimitError(code, text)
@@ -44,36 +60,62 @@ export function classifyError(status, message = "") {
   ) return ERROR_CLASS.RATE_LIMITED;
 
   if ((code === HTTP_STATUS.FORBIDDEN || code === HTTP_STATUS.NOT_FOUND) && MODEL_REFUSAL.test(text)) return ERROR_CLASS.CLIENT_ERROR;
-  if (accountStatus || OPERATION_REFUSAL.test(text) || includesAny(text, BAD_KEY_TEXTS)) return ERROR_CLASS.AUTH_ERROR;
+  // Key wording on a 5xx is the upstream's own backend failing, not this key.
+  if (accountStatus || (clientStatus && (OPERATION_REFUSAL.test(text) || includesAny(text, BAD_KEY_TEXTS)))) return ERROR_CLASS.AUTH_ERROR;
   if (code === HTTP_STATUS.GATEWAY_TIMEOUT || code === HTTP_STATUS.REQUEST_TIMEOUT || TIMEOUT_PATTERN.test(text)) return ERROR_CLASS.TIMEOUT;
   if (code >= HTTP_STATUS.SERVER_ERROR) return ERROR_CLASS.UPSTREAM_5XX;
-  if (code >= HTTP_STATUS.BAD_REQUEST) return ERROR_CLASS.CLIENT_ERROR;
+  if (clientStatus) return ERROR_CLASS.CLIENT_ERROR;
   return ERROR_CLASS.OTHER;
 }
 
 /**
  * Bucket an error thrown by an executor (no upstream response). The local 502
  * chatCore answers with says nothing about the upstream, so it isn't used:
- * timeout text → timeout, AbortError → aborted, a connection failure → network_error,
- * anything else (a bug in our code) → other. Never throws.
+ * a TimeoutError or timeout text → timeout, AbortError → aborted, a connection
+ * failure → network_error, anything else (a bug in our code) → other. Reads the
+ * cause chain up to MAX_CAUSE_DEPTH levels. Never throws.
  */
 export function classifyThrownError(error) {
-  const text = toText(errorText(error));
-  if (TIMEOUT_PATTERN.test(text)) return ERROR_CLASS.TIMEOUT;
-  if (safeName(error) === "AbortError") return ERROR_CLASS.ABORTED;
+  const text = errorText(error).toLowerCase();
+  const names = errorNames(error);
+  if (names.includes("TimeoutError") || TIMEOUT_PATTERN.test(text)) return ERROR_CLASS.TIMEOUT;
+  if (names[0] === "AbortError") return ERROR_CLASS.ABORTED;
   if (NETWORK_PATTERN.test(text)) return ERROR_CLASS.NETWORK_ERROR;
   return ERROR_CLASS.OTHER;
 }
 
-function safeName(error) {
-  try { return typeof error?.name === "string" ? error.name : ""; } catch { return ""; }
+// The error and its causes, at most MAX_CAUSE_DEPTH levels below it, stopping at a cycle.
+function causeChain(error) {
+  const chain = [];
+  const seen = new Set();
+  let current = error;
+  for (let depth = 0; depth <= MAX_CAUSE_DEPTH && current != null && !seen.has(current); depth++) {
+    chain.push(current);
+    seen.add(current);
+    current = current.cause;
+  }
+  return chain;
 }
 
-/** Text to classify from a thrown error: its message plus its low-level cause. String parts only; never throws. */
+function errorNames(error) {
+  try {
+    return causeChain(error).map((e) => (typeof e?.name === "string" ? e.name : ""));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Text to classify from a thrown error: its message plus the code and message of
+ * each cause (up to MAX_CAUSE_DEPTH levels). Each part is capped on its own, so a
+ * huge message can't push the cause code out. Never throws.
+ */
 export function errorText(error) {
   try {
-    const message = typeof error?.message === "string" ? error.message : "";
-    return [message, ...errorCauseParts(error)].filter(Boolean).join(" ");
+    const chain = causeChain(error);
+    const parts = [typeof error?.message === "string" ? error.message : ""];
+    for (const e of chain.slice(0, MAX_CAUSE_DEPTH)) parts.push(...errorCauseParts(e));
+    return parts.filter(Boolean).map(capped).join(" ");
   } catch {
     return "";
   }

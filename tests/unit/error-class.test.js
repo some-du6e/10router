@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { classifyError, classifyThrownError, errorText, isBackoffText } from "../../open-sse/utils/errorClass.js";
+import { formatProviderError } from "../../open-sse/utils/error.js";
 
 const json = (o) => JSON.stringify(o);
 
@@ -45,12 +46,33 @@ describe("classifyError", () => {
     ["Codex 429 usage limit", 429, json({ error: { type: "usage_limit_reached", message: "The usage limit has been reached", resets_in_seconds: 3600 } }), "rate_limited"],
     ["499 mentioning a limit", 499, "Request aborted while waiting for the rate limit", "aborted"],
     ["499 from AbortSignal.timeout", 499, "The operation was aborted due to timeout", "timeout"],
+    ["500 with bad-key text", 500, "invalid api key for backend", "upstream_5xx"],
+    ["503 with missing scopes", 503, "Missing scopes: model.request", "upstream_5xx"],
+    ["400 missing scopes", 400, "Missing scopes: model.request", "auth_error"],
+    ["404 insufficient permissions", 404, "You have insufficient permissions for this operation.", "auth_error"],
+    ["401 too many requests", 401, "Too many requests", "rate_limited"],
+    ["401 connect timeout", 401, "connect timeout", "auth_error"],
   ])("%s", (_name, status, message, expected) => {
     expect(classifyError(status, message)).toBe(expected);
   });
 
-  it("only reads the start of a huge message", () => {
+  it("only reads the first 8 KB of the message", () => {
     expect(classifyError(400, "x".repeat(20000) + "rate limit")).toBe("client_error");
+    expect(classifyError(400, "x".repeat(4 * 1024) + "api key not valid")).toBe("auth_error");
+    expect(classifyError(400, "x".repeat(9 * 1024) + "api key not valid")).toBe("client_error");
+  });
+
+  it.each([
+    ["a Symbol", Symbol("s")],
+    ["an object whose valueOf throws", { valueOf() { throw new Error("boom"); }, toString() { throw new Error("boom"); } }],
+    ["NaN", NaN],
+    ["null", null],
+  ])("never throws on %s as the status", (_name, status) => {
+    expect(classifyError(status, "boom")).toBe("other");
+  });
+
+  it("parses a string status", () => {
+    expect(classifyError("429", "")).toBe("rate_limited");
   });
 
   it("treats a non-string message as empty", () => {
@@ -78,6 +100,42 @@ describe("classifyThrownError", () => {
     expect(classifyThrownError(error)).toBe(expected);
   });
 
+  it("classifies a TimeoutError as timeout whatever its text says", () => {
+    expect(classifyThrownError(Object.assign(new Error("something odd"), { name: "TimeoutError" }))).toBe("timeout");
+  });
+
+  it("classifies an AbortError whose text says due to timeout as timeout", () => {
+    expect(classifyThrownError(Object.assign(new Error("The operation was aborted due to timeout"), { name: "AbortError" }))).toBe("timeout");
+  });
+
+  it("reads the cause chain three levels deep", () => {
+    const deep = new Error("fetch failed", {
+      cause: new Error("level 1", { cause: new Error("level 2", { cause: Object.assign(new Error("level 3"), { code: "ECONNREFUSED" }) }) }),
+    });
+    expect(classifyThrownError(deep)).toBe("network_error");
+    const tooDeep = new Error("a", { cause: new Error("b", { cause: new Error("c", { cause: new Error("d", { cause: new Error("socket hang up") }) }) }) });
+    expect(classifyThrownError(tooDeep)).toBe("other");
+  });
+
+  it("finds a TimeoutError in the cause chain", () => {
+    expect(classifyThrownError(new Error("wrapped", { cause: Object.assign(new Error("x"), { name: "TimeoutError" }) }))).toBe("timeout");
+  });
+
+  it("stops at a cause cycle", () => {
+    const a = new Error("a");
+    const b = new Error("b", { cause: a });
+    a.cause = b;
+    expect(classifyThrownError(a)).toBe("other");
+    const self = new Error("self");
+    self.cause = self;
+    expect(classifyThrownError(self)).toBe("other");
+  });
+
+  it("keeps the cause code of a 10 MB message", () => {
+    const cause = Object.assign(new Error("Connect Timeout Error"), { code: "UND_ERR_CONNECT_TIMEOUT" });
+    expect(classifyThrownError(new Error("x".repeat(10 * 1024 * 1024), { cause }))).toBe("timeout");
+  });
+
   it("never throws", () => {
     const hostile = { get message() { throw new Error("boom"); }, get name() { throw new Error("boom"); } };
     expect(classifyThrownError(hostile)).toBe("other");
@@ -93,9 +151,9 @@ describe("errorText", () => {
     expect(errorText(err)).toBe("fetch failed UND_ERR_CONNECT_TIMEOUT Connect Timeout Error");
   });
 
-  it("keeps only string parts and never throws", () => {
+  it("skips a non-string message, stringifies cause parts and never throws", () => {
     expect(errorText({ message: Symbol("x") })).toBe("");
-    expect(errorText({ message: "m", cause: { code: { nested: 1 }, message: 42 } })).toBe("m 42");
+    expect(errorText({ message: "m", cause: { code: Symbol("c"), message: 42 } })).toBe("m Symbol(c) 42");
     expect(errorText({ get message() { throw new Error("boom"); } })).toBe("");
   });
 });
@@ -105,5 +163,19 @@ describe("isBackoffText", () => {
     expect(isBackoffText("Model is OVERLOADED")).toBe(true);
     expect(isBackoffText("no credentials")).toBe(false);
     expect(isBackoffText(undefined)).toBe(false);
+  });
+});
+
+describe("formatProviderError", () => {
+  it("formats causes the way master did", () => {
+    expect(formatProviderError({ message: "m", cause: { code: 0, message: "x" } }, "p", "m", 502)).toBe("[502]: m (cause: x)");
+    expect(formatProviderError({ message: "m", cause: { code: "ECONNRESET", message: "read" } }, "p", "m", 502)).toBe("[502]: m (cause: ECONNRESET: read)");
+    expect(formatProviderError({ message: "m", cause: { code: true, message: { a: 1 } } }, "p", "m", 502)).toBe("[502]: m (cause: true: [object Object])");
+    expect(formatProviderError({ message: "m", cause: { code: NaN } }, "p", "m", 502)).toBe("[502]: m");
+    expect(formatProviderError({ message: "m" }, "p", "m", 502)).toBe("[502]: m");
+  });
+
+  it("does not throw on a Symbol message", () => {
+    expect(formatProviderError({ message: Symbol("s") }, "p", "m", 502)).toBe("[502]: Symbol(s)");
   });
 });
