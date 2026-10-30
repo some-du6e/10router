@@ -3,7 +3,8 @@ import { getProviderConnections, validateApiKey, updateProviderConnection, getSe
 import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey } from "@/lib/db/index.js";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL } from "open-sse/services/accountFallback.js";
-import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG, AUTH_DEMOTE_CONFIG, ERROR_RULES } from "open-sse/config/errorConfig.js";
+import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG, AUTH_DEMOTE_CONFIG, LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL } from "open-sse/config/errorConfig.js";
+import { isBackoffText } from "open-sse/utils/errorClass.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { planCanServeModel } from "@/shared/utils/planCapability.js";
 import { getAntigravityQuotaCache } from "./antigravityQuota.js";
@@ -64,23 +65,11 @@ function recordSuccess(connectionId, model) {
 
 const succeededSince = (key, sinceMs) => (authEvents.success.get(key)?.at ?? -Infinity) >= sinceMs;
 
-// Limit, billing and plan refusals isLimitError doesn't know ("Key limit
-// exceeded (daily limit)", qoder's "Queue limit" or "Upgrade required" with a
-// pricingUrl, "credits exhausted", "account balance is insufficient",
-// AccountOverdueError), refusals of one model ("does not have access to model
-// 'o3'") and of one operation by a restricted key ("Missing scopes: ..."): the
-// key itself is fine.
-const LIMIT_REFUSAL = [
-  /\blimit|queue|upgrade|pricing|\bplans?\b|credit|quota|exhausted|usage cap|billing|budget|payment/,
-  /\bbalance\b|\bfunds\b|overdue|arrears|unpaid|recharge|top[- ]?up/,
-];
-const MODEL_REFUSAL = /does not have access to (?:the )?model|model_not_found|\bmodel\b.{0,60}?\bnot (?:available|allowed|enabled|permitted|supported)\b/i;
-const OPERATION_REFUSAL = /insufficient (?:permissions?|scopes?|privileges?)|missing (?:required )?(?:scopes?|permissions?)|permission denied for this operation|not (?:allowed|permitted|authorized) to perform this operation/;
+// LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL: a limit or a refusal of one
+// model or operation; the key itself is fine.
 const anyOf = (patterns) => new RegExp(patterns.map(r => r.source).join("|"), "i");
 const NOT_KEY_REFUSAL = anyOf([...LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL]);
 const NOT_MODEL_REFUSAL = anyOf([...LIMIT_REFUSAL, OPERATION_REFUSAL]);
-
-const isBackoffText = (text) => ERROR_RULES.some(r => r.backoff && r.text && text.toLowerCase().includes(r.text));
 
 // A 401 or 403 that is not a limit or a refusal of one model: the key itself is refused.
 function isAuthRejection(status, errorText) {

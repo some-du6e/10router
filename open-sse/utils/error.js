@@ -128,6 +128,12 @@ export function unavailableResponse(statusCode, message, retryAfter, retryAfterH
   );
 }
 
+/** A thrown error's low-level cause as [code, message]: the truthy parts, stringified. */
+export function errorCauseParts(error) {
+  const cause = error?.cause;
+  return [cause?.code, cause?.message].filter(Boolean).map((p) => String(p));
+}
+
 /**
  * Format provider error with context
  * @param {Error} error - Original error
@@ -138,10 +144,9 @@ export function unavailableResponse(statusCode, message, retryAfter, retryAfterH
  */
 export function formatProviderError(error, provider, model, statusCode) {
   const code = statusCode || error.code || "FETCH_FAILED";
-  const message = error.message || "Unknown error";
+  const message = error.message ? String(error.message) : "Unknown error";
   // Expose low-level cause (e.g. UND_ERR_SOCKET, ECONNRESET, ETIMEDOUT) for diagnosing fetch failures
-  const causeCode = error.cause?.code;
-  const causeMsg = error.cause?.message;
-  const causeStr = causeCode || causeMsg ? ` (cause: ${[causeCode, causeMsg].filter(Boolean).join(": ")})` : "";
+  const cause = errorCauseParts(error);
+  const causeStr = cause.length ? ` (cause: ${cause.join(": ")})` : "";
   return `[${code}]: ${message}${causeStr}`;
 }

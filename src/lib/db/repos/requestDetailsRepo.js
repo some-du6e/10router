@@ -249,6 +249,7 @@ async function flushToDatabase({ skipFullData = false } = {}) {
           providerRequest: truncateField(item.providerRequest, config.maxJsonSize, fieldJson, "providerRequest"),
           providerResponse: truncateField(item.providerResponse, config.maxJsonSize, fieldJson, "providerResponse"),
           response: truncateField(item.response, config.maxJsonSize, fieldJson, "response"),
+          errorClass: item.errorClass || undefined,
         };
         rows.push({ record, fullData: keepFull ? await packFullData(item, record, fieldJson) : null });
       }
