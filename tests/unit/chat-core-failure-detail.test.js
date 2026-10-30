@@ -20,15 +20,6 @@ vi.mock("../../open-sse/utils/requestLogger.js", () => ({
 vi.mock("../../open-sse/utils/streamHandler.js", () => ({
   createStreamController: vi.fn(() => ({ signal: undefined, handleComplete: vi.fn(), handleError: vi.fn() })),
 }));
-vi.mock("../../open-sse/rtk/headroom.js", () => ({
-  compressWithHeadroom: vi.fn(async () => null),
-  formatHeadroomLog: vi.fn(() => ""),
-  formatHeadroomSizeLog: vi.fn(() => ""),
-  isHeadroomPhantomSavings: vi.fn(() => false),
-}));
-vi.mock("../../open-sse/rtk/pxpipe.js", () => ({
-  compressWithPxpipe: vi.fn(async () => ({ body: null, summary: null })),
-}));
 vi.mock("../../open-sse/translator/concerns/prefetch.js", () => ({
   prefetchRemoteImages: vi.fn(async () => 0),
 }));
