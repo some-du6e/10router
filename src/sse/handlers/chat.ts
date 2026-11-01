@@ -15,7 +15,7 @@ import type { BillingSet } from "../services/autoCombo.js";
 import { BUILTIN_MODEL_ALIASES } from "open-sse/services/model.js";
 import { handleChatCore, clientReceivesStream } from "open-sse/handlers/chatCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
-import { createLimitHoldResponse, awaitLimitClear, isLimitError } from "open-sse/utils/limitHold.js";
+import { createLimitHoldResponse, awaitLimitClear, isLimitError, allLockedStatus } from "open-sse/utils/limitHold.js";
 import { resolveLimitHold } from "../services/limitHoldConfig.js";
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
@@ -641,7 +641,7 @@ async function routeSingleModelChat(
         const errorMsg = accountFailures.length > 0
           ? summarizeAccountFailures(provider, model, accountFailures)
           : (lastError || credentials.lastError || "Unavailable");
-        const status = lastStatus || Number(credentials.lastErrorCode) || HTTP_STATUS.SERVICE_UNAVAILABLE;
+        const status = allLockedStatus(lastStatus, credentials);
         const prefixedError = accountFailures.length > 0 ? errorMsg : `[${provider}/${model}] ${errorMsg}`;
         log.warn("CHAT", `${prefixedError} (${credentials.retryAfterHuman})`);
         const retryAtMs = credentials.retryAfter ? new Date(credentials.retryAfter).getTime() : 0;

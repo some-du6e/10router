@@ -2,6 +2,7 @@ import {
   extractApiKey, isValidApiKey,
   getProviderCredentials, markAccountUnavailable, clearAccountError,
 } from "../services/auth.js";
+import { allLockedStatus } from "open-sse/utils/limitHold.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo, getComboModels, comboLookupName } from "../services/model.js";
 import { handleTtsCore } from "open-sse/handlers/ttsCore.js";
@@ -92,7 +93,7 @@ async function handleSingleModelTts(body, modelStr, responseFormat, language, st
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
         const msg = lastError || credentials.lastError || "Unavailable";
-        const status = lastStatus || Number(credentials.lastErrorCode) || HTTP_STATUS.SERVICE_UNAVAILABLE;
+        const status = allLockedStatus(lastStatus, credentials);
         return unavailableResponse(status, `[${provider}/${model}] ${msg}`, credentials.retryAfter, credentials.retryAfterHuman);
       }
       if (excludeConnectionIds.size === 0) return errorResponse(HTTP_STATUS.BAD_REQUEST, `No credentials for provider: ${provider}`);

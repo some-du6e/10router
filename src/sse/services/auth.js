@@ -444,12 +444,15 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     if (availableConnections.length === 0) {
       // Find earliest persistent lock or lazy Antigravity quota-cache reset for retry timing.
       const lockedConns = connections.filter(c => isModelLockActive(c, model));
-      const expiries = strategy === "soonest-reset"
-        ? connections.filter(c => planCanServeModel(providerId, c, model)).map(c => {
-          // An account needs both its error cooldown and exhausted quota to clear.
-          return Math.max(getModelLockUntil(c, model), resetStates.get(c.id).blockedUntil);
-        }).filter(until => until > Date.now()).map(until => new Date(until).toISOString())
-        : lockedConns.map(c => getEarliestModelLockUntil(c)).filter(Boolean);
+      // Each account and when it can serve this model again; the soonest one
+      // sets both the retry time and the error reported.
+      const frees = (strategy === "soonest-reset"
+        // An account needs both its error cooldown and exhausted quota to clear.
+        ? connections.filter(c => planCanServeModel(providerId, c, model))
+          .map(c => [c, Math.max(getModelLockUntil(c, model), resetStates.get(c.id).blockedUntil)])
+        : lockedConns.map(c => [c, getModelLockUntil(c, model)]))
+        .filter(([, until]) => until > Date.now());
+      const expiries = frees.map(([, until]) => new Date(until).toISOString());
       if (isAntigravity && model && antigravityQuotaCache) {
         connections.forEach((c) => {
           const resetAt = antigravityQuotaCache.get(c.id)?.[model]?.resetAt;
@@ -458,10 +461,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       }
       const earliest = expiries.sort()[0] || null;
       if (earliest) {
-        // Report the account that frees up first: a dead key's 403 ahead of a
-        // key in a 2s rate-limit lock would turn a retryable wait into an auth failure.
-        const earliestConn = lockedConns.reduce((soonest, c) =>
-          !soonest || getModelLockUntil(c, model) < getModelLockUntil(soonest, model) ? c : soonest, null);
+        // A dead key's 403 ahead of a key in a 2s rate-limit lock would turn a
+        // retryable wait into an auth failure.
+        const earliestConn = frees.reduce((soonest, f) => !soonest || f[1] < soonest[1] ? f : soonest, null)?.[0];
         const eligibleConnections = connections.filter(c => planCanServeModel(providerId, c, model));
         log.warn("AUTH", `${provider} | all ${connections.length} accounts locked for ${model || "all"} (${formatRetryAfter(earliest)}) | lastError=${earliestConn?.lastError?.slice(0, 50)}`);
         return {

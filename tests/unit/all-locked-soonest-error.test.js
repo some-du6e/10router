@@ -26,6 +26,7 @@ vi.mock("@/sse/utils/logger.js", () => ({ debug: vi.fn(), info: vi.fn(), warn: v
 vi.spyOn(console, "error").mockImplementation(() => {});
 
 const { markAccountUnavailable, getProviderCredentials } = await import("../../src/sse/services/auth.js");
+const { allLockedStatus } = await import("../../open-sse/utils/limitHold.js");
 
 const PROVIDER = "openai-compatible-chat-test";
 const MODEL = "claude-opus-5-5";
@@ -42,6 +43,7 @@ const deadKey = () => ({
 const liveKey = () => ({ id: "live", provider: PROVIDER, name: "live", authType: "apikey", priority: 8, isActive: true, backoffLevel: 0 });
 
 beforeEach(() => {
+  dbMocks.getSettings.mockImplementation(async () => ({}));
   vi.useFakeTimers();
   vi.setSystemTime(NOW);
 });
@@ -78,5 +80,55 @@ describe("every key locked, the working one only for a moment", () => {
 
     expect(Number(creds.lastErrorCode)).toBe(403);
     expect(creds.lastError).toBe(DEMOTED);
+  });
+
+  it("counts the dead key's account-wide lock, not just its lock on the model", async () => {
+    store.rows = new Map([
+      ["dead", { ...deadKey(), [lockKey]: new Date(NOW + 1_000).toISOString(), modelLock___all: new Date(NOW + 120_000).toISOString() }],
+      ["live", liveKey()],
+    ]);
+    await markAccountUnavailable("live", 429, RATE_LIMIT, PROVIDER, MODEL);
+
+    const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
+
+    expect(Number(creds.lastErrorCode)).toBe(429);
+  });
+
+  it("takes the retry time from the model's own locks, not a lock on another model", async () => {
+    store.rows = new Map([["dead", { ...deadKey(), "modelLock_other-model": new Date(NOW + 500).toISOString() }], ["live", liveKey()]]);
+    await markAccountUnavailable("live", 429, RATE_LIMIT, PROVIDER, MODEL);
+
+    const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
+
+    expect(new Date(creds.retryAfter).getTime() - NOW).toBe(2_000);
+    expect(Number(creds.lastErrorCode)).toBe(429);
+  });
+
+  it("reports the working key's 429 under the soonest-reset strategy too", async () => {
+    dbMocks.getSettings.mockImplementation(async () => ({ fallbackStrategy: "soonest-reset" }));
+    store.rows = new Map([["dead", deadKey()], ["live", liveKey()]]);
+    await markAccountUnavailable("live", 429, RATE_LIMIT, PROVIDER, MODEL);
+
+    const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
+
+    expect(Number(creds.lastErrorCode)).toBe(429);
+    expect(new Date(creds.retryAfter).getTime() - NOW).toBe(2_000);
+  });
+});
+
+describe("status sent when every key is locked", () => {
+  it("prefers the soonest key's retryable code over a 401/403 hit earlier in the pass", () => {
+    expect(allLockedStatus(403, { lastErrorCode: 429 })).toBe(429);
+    expect(allLockedStatus(401, { lastErrorCode: 429 })).toBe(429);
+    expect(allLockedStatus(403, { lastErrorCode: 503 })).toBe(503);
+  });
+
+  it("keeps the old order otherwise", () => {
+    expect(allLockedStatus(403, { lastErrorCode: 403 })).toBe(403);
+    expect(allLockedStatus(429, { lastErrorCode: 403 })).toBe(429);
+    expect(allLockedStatus(400, { lastErrorCode: 429 })).toBe(400);
+    expect(allLockedStatus(null, { lastErrorCode: 403 })).toBe(403);
+    expect(allLockedStatus(null, { lastErrorCode: null })).toBe(503);
+    expect(allLockedStatus(null, null)).toBe(503);
   });
 });
