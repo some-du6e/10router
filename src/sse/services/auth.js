@@ -445,7 +445,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       // Find earliest persistent lock or lazy Antigravity quota-cache reset for retry timing.
       const lockedConns = connections.filter(c => isModelLockActive(c, model));
       // Each account and when it can serve this model again; the soonest one
-      // sets both the retry time and the error reported.
+      // sets the retry time.
       const frees = (strategy === "soonest-reset"
         // An account needs both its error cooldown and exhausted quota to clear.
         ? connections.filter(c => planCanServeModel(providerId, c, model))
@@ -466,17 +466,29 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         // Locked on this model for a limit: a key that serves again once it clears.
         const limitLocked = c => [[getModelLockKey(model), model || "__all"], [MODEL_LOCK_ALL, "__all"]]
           .some(([key, scope]) => new Date(c[key] || 0).getTime() > Date.now() && c[`${MODEL_LIMIT_PREFIX}${scope}`] === true);
+        // errorCode/lastError are the key's last error on any model; the limit
+        // flag on the lock is this model's. Where they disagree, the stored error
+        // came from another model.
+        const reportOf = c => {
+          const limited = limitLocked(c);
+          const authCode = c.errorCode === 401 || c.errorCode === 403;
+          if (limited && authCode && !isLimitError(c.errorCode, c.lastError)) {
+            return { code: 429, error: `Rate limited on ${model || "all models"}`, limit: true };
+          }
+          // A 429 here would have flagged this model's lock as a limit.
+          if (!limited && c.errorCode === 429 && isModelLockActive(c, model)) return { code: null, error: null, limit: false };
+          // A 401/403 that only reads like a limit (a bodyless 403 says "quota") is still a refusal.
+          return { code: c.errorCode || null, error: c.lastError || null, limit: limited && !authCode };
+        };
         const soonestOf = list => list.reduce((soonest, f) => !soonest || f[1] < soonest[1] ? f : soonest, null)?.[0];
         // A limited key beats a dead one that frees up first, and a key blocked
         // only on quota has no error of its own to report.
-        const earliestConn = soonestOf(frees.filter(([c]) => limitLocked(c)))
-          || soonestOf(frees.filter(([c]) => c.errorCode || c.lastError))
+        const earliestConn = soonestOf(frees.filter(([c]) => reportOf(c).limit))
+          || soonestOf(frees.filter(([c]) => reportOf(c).code || reportOf(c).error))
           || soonestOf(frees);
-        // errorCode is the key's last error on any model; the limit flag is this model's.
-        const limitedHere = !!earliestConn && limitLocked(earliestConn)
-          && !(earliestConn.errorCode === 429 || earliestConn.errorCode >= 500);
+        const report = earliestConn ? reportOf(earliestConn) : { code: null, error: null };
         const eligibleConnections = connections.filter(c => planCanServeModel(providerId, c, model));
-        log.warn("AUTH", `${provider} | all ${connections.length} accounts locked for ${model || "all"} (${formatRetryAfter(earliest)}) | lastError=${earliestConn?.lastError?.slice(0, 50)}`);
+        log.warn("AUTH", `${provider} | all ${connections.length} accounts locked for ${model || "all"} (${formatRetryAfter(earliest)}) | lastError=${report.error?.slice(0, 50)}`);
         return {
           allRateLimited: true,
           allLimitsExhausted: eligibleConnections.length > 0 && eligibleConnections.every(c => {
@@ -491,8 +503,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           retryAfter: earliest,
           retryAfterHuman: formatRetryAfter(earliest),
           providerResetAtMs: getNextAccountReset(eligibleConnections, model, antigravityQuotaCache, resetStates),
-          lastError: limitedHere ? `Rate limited on ${model || "all models"}` : (earliestConn?.lastError || null),
-          lastErrorCode: limitedHere ? 429 : (earliestConn?.errorCode || null)
+          lastError: report.error,
+          lastErrorCode: report.code
         };
       }
       log.warn("AUTH", `${provider} | all ${connections.length} accounts unavailable`);
