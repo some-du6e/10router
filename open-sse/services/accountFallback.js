@@ -2,7 +2,7 @@ import { ERROR_RULES, BACKOFF_CONFIG, TRANSIENT_COOLDOWN_MS, BAD_KEY_TEXTS, BILL
 
 /**
  * Calculate exponential backoff cooldown for rate limits (429)
- * Level 1: 1s, Level 2: 2s, Level 3: 4s... → max 4 min
+ * Level 1: 2s, Level 2: 4s, Level 3: 8s... → max 5 min (BACKOFF_CONFIG)
  * @param {number} backoffLevel - Current backoff level
  * @returns {number} Cooldown in milliseconds
  */
@@ -131,14 +131,19 @@ export function getModelLockKey(model) {
 }
 
 /**
- * Check if a model lock on a connection is still active.
- * Reads flat field `modelLock_${model}` (or `modelLock___all` when model=null).
+ * When a model's lock on a connection ends, in ms: the later of `modelLock_${model}`
+ * and the account-wide `modelLock___all`. 0 when neither is set or parses.
  */
+export function getModelLockUntil(connection, model) {
+  const ends = [connection?.[getModelLockKey(model)], connection?.[MODEL_LOCK_ALL]]
+    .map(until => (until ? new Date(until).getTime() : 0))
+    .filter(Number.isFinite);
+  return Math.max(0, ...ends);
+}
+
+/** Check if a model lock (its own or the account-wide one) on a connection is still active. */
 export function isModelLockActive(connection, model) {
-  const key = getModelLockKey(model);
-  const expiry = connection[key] || connection[MODEL_LOCK_ALL];
-  if (!expiry) return false;
-  return new Date(expiry).getTime() > Date.now();
+  return getModelLockUntil(connection, model) > Date.now();
 }
 
 /**

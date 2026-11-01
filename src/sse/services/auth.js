@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools } from "@/lib/localDb";
 import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey } from "@/lib/db/index.js";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
-import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL } from "open-sse/services/accountFallback.js";
+import { formatRetryAfter, checkFallbackError, getQuotaCooldown, isModelLockActive, getModelLockUntil, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG, AUTH_DEMOTE_CONFIG, LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL } from "open-sse/config/errorConfig.js";
 import { isBackoffText } from "open-sse/utils/errorClass.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
@@ -447,8 +447,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       const expiries = strategy === "soonest-reset"
         ? connections.filter(c => planCanServeModel(providerId, c, model)).map(c => {
           // An account needs both its error cooldown and exhausted quota to clear.
-          const lock = new Date(c[getModelLockKey(model)] || c[MODEL_LOCK_ALL] || 0).getTime();
-          return Math.max(Number.isFinite(lock) ? lock : 0, resetStates.get(c.id).blockedUntil);
+          return Math.max(getModelLockUntil(c, model), resetStates.get(c.id).blockedUntil);
         }).filter(until => until > Date.now()).map(until => new Date(until).toISOString())
         : lockedConns.map(c => getEarliestModelLockUntil(c)).filter(Boolean);
       if (isAntigravity && model && antigravityQuotaCache) {
@@ -468,9 +467,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
             const quota = antigravityQuotaCache?.get(c.id)?.[model];
             if (quota?.circuitBreaker) return false;
             const locked = isModelLockActive(c, model);
-            // The account-wide last error can belong to a different model.
-            const lockScope = c[getModelLockKey(model)] ? model || "__all" : "__all";
-            const limitedLock = locked && c[`${MODEL_LIMIT_PREFIX}${lockScope}`] === true;
+            // Only a lock still in force counts; the account-wide one can belong to a different model.
+            const activeScopes = [[getModelLockKey(model), model || "__all"], [MODEL_LOCK_ALL, "__all"]]
+              .filter(([key]) => new Date(c[key] || 0).getTime() > Date.now())
+              .map(([, scope]) => scope);
+            const limitedLock = locked && activeScopes.some(scope => c[`${MODEL_LIMIT_PREFIX}${scope}`] === true);
             return (!locked || limitedLock) && (limitedLock || resetStates.get(c.id).blockedUntil > Date.now() ||
               (quota?.remainingPercentage <= 0 && new Date(quota.resetAt).getTime() > Date.now()));
           }),
@@ -597,7 +598,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
 
   // Provider-specific precise cooldown (e.g. codex usage_limit_reached resets_at) overrides backoff
-  let shouldFallback, cooldownMs, newBackoffLevel;
+  let shouldFallback, cooldownMs, newBackoffLevel, inOwnLock = false;
   if (githubResetAtMs) {
     shouldFallback = true;
     cooldownMs = githubResetAtMs - Date.now();
@@ -611,12 +612,23 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     newBackoffLevel = 0;
   } else {
     ({ shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel));
+    // A rate-limit error that lands while this model is already locked came from
+    // a request sent before the lock: one burst escalates the backoff once, and
+    // the model's own lock (and its provider reset) is kept, never shortened.
+    if (newBackoffLevel != null && conn && isModelLockActive(conn, model)) {
+      newBackoffLevel = backoffLevel;
+      const ownLockUntil = new Date(conn[getModelLockKey(model)] || 0).getTime() || 0;
+      inOwnLock = ownLockUntil > Date.now();
+      cooldownMs = Math.max(ownLockUntil - Date.now(), getQuotaCooldown(backoffLevel));
+    }
   }
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 
   const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
   const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
   const providerResetAtMs = githubResetAtMs || resetsAtMs;
+  const lockScope = githubResetAtMs ? "__all" : model || "__all";
+  const limitKey = `${MODEL_LIMIT_PREFIX}${lockScope}`;
 
   // Auth rejections build a streak that only a success clears; other errors
   // leave it alone. A dead key is turned off unless it is the provider's last.
@@ -639,9 +651,12 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
 
   const update = {
     ...lockUpdate,
-    [`${MODEL_LIMIT_PREFIX}${githubResetAtMs ? "__all" : model || "__all"}`]: isLimitError(status, errorText),
-    [`${PROVIDER_RESET_PREFIX}${githubResetAtMs ? "__all" : model || "__all"}`]:
-      Number.isFinite(providerResetAtMs) && providerResetAtMs > Date.now() ? new Date(providerResetAtMs).toISOString() : null,
+    // A straggler in the model's own lock can mark it a limit, never unmark it or drop its reset time.
+    [limitKey]: (inOwnLock && conn[limitKey] === true) || isLimitError(status, errorText),
+    ...(inOwnLock ? {} : {
+      [`${PROVIDER_RESET_PREFIX}${lockScope}`]:
+        Number.isFinite(providerResetAtMs) && providerResetAtMs > Date.now() ? new Date(providerResetAtMs).toISOString() : null,
+    }),
     testStatus: "unavailable",
     lastError: reason,
     errorCode: status,
