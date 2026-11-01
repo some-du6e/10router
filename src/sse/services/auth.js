@@ -472,13 +472,14 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         const reportOf = c => {
           const limited = limitLocked(c);
           const authCode = c.errorCode === 401 || c.errorCode === 403;
-          if (limited && authCode && !isLimitError(c.errorCode, c.lastError)) {
-            return { code: 429, error: `Rate limited on ${model || "all models"}`, limit: true };
+          if (limited && (!c.errorCode || (authCode && !isLimitError(c.errorCode, c.lastError)))) {
+            return { code: 429, error: `Rate limited on ${model || "all models"}`, limit: true, own: true };
           }
-          // A 429 here would have flagged this model's lock as a limit.
-          if (!limited && c.errorCode === 429 && isModelLockActive(c, model)) return { code: null, error: null, limit: false };
+          // A 429 here would have flagged this model's lock as a limit, and a 5xx
+          // lock can't be told from a refusal's: either may be another model's.
+          const otherModel = !limited && isModelLockActive(c, model) && (c.errorCode === 429 || c.errorCode >= 500);
           // A 401/403 that only reads like a limit (a bodyless 403 says "quota") is still a refusal.
-          return { code: c.errorCode || null, error: c.lastError || null, limit: limited && !authCode };
+          return { code: c.errorCode || null, error: c.lastError || null, limit: limited && !authCode, own: !otherModel };
         };
         const soonestOf = list => list.reduce((soonest, f) => !soonest || f[1] < soonest[1] ? f : soonest, null)?.[0];
         // A limited key beats a dead one that frees up first, and a key blocked
@@ -486,7 +487,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         const earliestConn = soonestOf(frees.filter(([c]) => reportOf(c).limit))
           || soonestOf(frees.filter(([c]) => reportOf(c).code || reportOf(c).error))
           || soonestOf(frees);
-        const report = earliestConn ? reportOf(earliestConn) : { code: null, error: null };
+        const report = earliestConn ? reportOf(earliestConn) : { code: null, error: null, own: true };
         const eligibleConnections = connections.filter(c => planCanServeModel(providerId, c, model));
         log.warn("AUTH", `${provider} | all ${connections.length} accounts locked for ${model || "all"} (${formatRetryAfter(earliest)}) | lastError=${report.error?.slice(0, 50)}`);
         return {
@@ -504,7 +505,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           retryAfterHuman: formatRetryAfter(earliest),
           providerResetAtMs: getNextAccountReset(eligibleConnections, model, antigravityQuotaCache, resetStates),
           lastError: report.error,
-          lastErrorCode: report.code
+          lastErrorCode: report.code,
+          // False when the code may be another model's: it isn't proof this one will serve.
+          lastErrorOwn: report.own
         };
       }
       log.warn("AUTH", `${provider} | all ${connections.length} accounts unavailable`);

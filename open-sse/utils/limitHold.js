@@ -370,7 +370,7 @@ export function allLockedError(lastStatus, lastError, credentials, failures = []
   const soonest = Number(credentials?.lastErrorCode) || null;
   const retryable = status => status === 429 || status >= 500;
   if (lastStatus === 401 || lastStatus === 403) {
-    if (soonest && retryable(soonest)) return { status: soonest, error: credentials.lastError || null, swapped: true };
+    if (soonest && retryable(soonest) && credentials.lastErrorOwn !== false) return { status: soonest, error: credentials.lastError || null, swapped: true };
     // By status: a bodyless 403 reads "You exceeded your current quota".
     const retry = failures.find(f => retryable(f.status));
     if (retry) return { status: retry.status, error: retry.error || null, swapped: true };

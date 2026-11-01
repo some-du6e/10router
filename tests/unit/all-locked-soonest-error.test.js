@@ -134,6 +134,26 @@ describe("every key locked, the working one only for a moment", () => {
     expect(Number(creds.lastErrorCode)).toBe(429);
   });
 
+  it("does not report a 5xx from another model for a key refused on this one", async () => {
+    store.rows = new Map([["dead", deadKey()], ["refused", { ...liveKey(), id: "refused", name: "refused" }]]);
+    await markAccountUnavailable("refused", 403, "Not authorized for this endpoint", PROVIDER, MODEL);
+    store.rows.set("refused", { ...store.rows.get("refused"), [lockKey]: new Date(NOW + 10_000).toISOString(), errorCode: 503, lastError: "overloaded on other-model" });
+
+    const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
+
+    expect(allLockedError(403, "Not authorized for this endpoint", creds).status).toBe(403);
+  });
+
+  it("reports a 429 for a rate-limited key whose stored error was cleared", async () => {
+    store.rows = new Map([["dead", deadKey()], ["live", liveKey()]]);
+    await markAccountUnavailable("live", 429, RATE_LIMIT, PROVIDER, MODEL);
+    store.rows.set("live", { ...store.rows.get("live"), errorCode: null, lastError: null });
+
+    const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
+
+    expect(allLockedError(403, "Not authorized for this endpoint", creds).status).toBe(429);
+  });
+
   it("keeps a 402 plan limit's own code and message", async () => {
     const PLAN = "You've reached your additional usage limit for your plan.";
     store.rows = new Map([["a", { ...liveKey(), id: "a", name: "a" }]]);
