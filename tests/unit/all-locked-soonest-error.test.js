@@ -197,6 +197,16 @@ describe("every key locked, the working one only for a moment", () => {
     expect(Number(creds.lastErrorCode)).toBe(401);
   });
 
+  it("prefers the dead key's 403 over another model's 429 when no key was tried yet", async () => {
+    store.rows = new Map([["dead", deadKey()], ["refused", { ...liveKey(), id: "refused", name: "refused" }]]);
+    await markAccountUnavailable("refused", 403, "Not authorized for this endpoint", PROVIDER, MODEL);
+    store.rows.set("refused", { ...store.rows.get("refused"), [lockKey]: new Date(NOW + 60_000).toISOString(), errorCode: 429, lastError: "rate limited on other" });
+
+    const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
+
+    expect(allLockedError(null, null, creds).status).toBe(403);
+  });
+
   it("keeps a 402 plan limit's own code and message", async () => {
     const PLAN = "You've reached your additional usage limit for your plan.";
     store.rows = new Map([["a", { ...liveKey(), id: "a", name: "a" }]]);

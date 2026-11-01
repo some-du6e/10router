@@ -363,9 +363,9 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
 }
 
 // The status and error a request gets when every account is locked. A 401/403
-// this pass hit on one key loses to a retryable code from the key reported as
-// locked, or to a 429/5xx another key hit in the same pass, so the client
-// waits instead of reporting an auth failure.
+// this pass hit on one key loses to a retryable code the reported key got on
+// this model (lastErrorOwn), or to a 429/5xx another key hit in the same pass,
+// so the client waits instead of reporting an auth failure.
 export function allLockedError(lastStatus, lastError, credentials, failures = []) {
   const soonest = Number(credentials?.lastErrorCode) || null;
   const retryable = status => status === 429 || status >= 500;

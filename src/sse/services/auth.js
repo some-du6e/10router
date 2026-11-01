@@ -493,6 +493,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         // A limited key beats a dead one that frees up first, and a key with no
         // stored error (say one blocked only on quota) comes last.
         const earliestConn = soonestOf(frees.filter(([c]) => reportOf(c).limit))
+          || soonestOf(frees.filter(([c]) => reportOf(c).own && (reportOf(c).code || reportOf(c).error)))
           || soonestOf(frees.filter(([c]) => reportOf(c).code || reportOf(c).error))
           || soonestOf(frees);
         const report = earliestConn ? reportOf(earliestConn) : { code: null, error: null, own: true };
@@ -505,7 +506,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
             if (quota?.circuitBreaker) return false;
             const locked = isModelLockActive(c, model);
             // Only a lock still in force counts; the account-wide one can belong to a different model.
-            const limitedLock = limitLocked(c);
+            const activeScopes = [[getModelLockKey(model), model || "__all"], [MODEL_LOCK_ALL, "__all"]]
+              .filter(([key]) => new Date(c[key] || 0).getTime() > Date.now())
+              .map(([, scope]) => scope);
+            const limitedLock = locked && activeScopes.some(scope => c[`${MODEL_LIMIT_PREFIX}${scope}`] === true);
             return (!locked || limitedLock) && (limitedLock || resetStates.get(c.id).blockedUntil > Date.now() ||
               (quota?.remainingPercentage <= 0 && new Date(quota.resetAt).getTime() > Date.now()));
           }),
