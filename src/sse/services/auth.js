@@ -472,7 +472,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         const reportOf = c => {
           const limited = limitLocked(c);
           const authCode = c.errorCode === 401 || c.errorCode === 403;
-          if (limited && (!c.errorCode || (authCode && !isLimitError(c.errorCode, c.lastError)))) {
+          const retryableCode = c.errorCode === 429 || c.errorCode >= 500;
+          // A stored error that isn't a limit (an auth refusal, a 400/404) came from another model.
+          if (limited && !retryableCode && !isLimitError(c.errorCode, c.lastError)) {
             return { code: 429, error: `Rate limited on ${model || "all models"}`, limit: true, own: true };
           }
           // A 429 here would have flagged this model's lock as a limit, and a 5xx

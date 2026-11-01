@@ -154,6 +154,28 @@ describe("every key locked, the working one only for a moment", () => {
     expect(allLockedError(403, "Not authorized for this endpoint", creds).status).toBe(429);
   });
 
+  it("reports a 429 when the limited key's last error was a 400 on another model", async () => {
+    store.rows = new Map([["dead", deadKey()], ["live", liveKey()]]);
+    await markAccountUnavailable("live", 429, RATE_LIMIT, PROVIDER, MODEL);
+    store.rows.set("live", { ...store.rows.get("live"), errorCode: 400, lastError: "unsupported parameter on other-model" });
+
+    const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
+
+    expect(Number(creds.lastErrorCode)).toBe(429);
+    expect(allLockedError(403, "Not authorized for this endpoint", creds).status).toBe(429);
+  });
+
+  it("under soonest-reset, reports the dead key's 403 over a quota-only key that frees up first", async () => {
+    dbMocks.getSettings.mockImplementation(async () => ({ fallbackStrategy: "soonest-reset" }));
+    store.rows = new Map([["quota", { ...liveKey(), id: "quota", name: "quota" }], ["dead", deadKey()]]);
+    blocked.set("quota", NOW + 10_000);
+
+    const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
+
+    expect(Number(creds.lastErrorCode)).toBe(403);
+    expect(new Date(creds.retryAfter).getTime() - NOW).toBe(10_000);
+  });
+
   it("keeps a 402 plan limit's own code and message", async () => {
     const PLAN = "You've reached your additional usage limit for your plan.";
     store.rows = new Map([["a", { ...liveKey(), id: "a", name: "a" }]]);
