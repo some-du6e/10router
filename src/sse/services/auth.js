@@ -463,9 +463,15 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       if (earliest) {
         // A dead key's 403 ahead of a key in a 2s rate-limit lock would turn a
         // retryable wait into an auth failure.
-        // Locked on this model for a limit: a key that serves again once it clears.
-        const limitLocked = c => [[getModelLockKey(model), model || "__all"], [MODEL_LOCK_ALL, "__all"]]
-          .some(([key, scope]) => new Date(c[key] || 0).getTime() > Date.now() && c[`${MODEL_LIMIT_PREFIX}${scope}`] === true);
+        // Locked on this model for a limit: a key that serves again once it
+        // clears. The lock that ends last decides, so a short limit lock can't
+        // hide a longer account-wide refusal.
+        const limitLocked = c => {
+          const [scope, until] = [[getModelLockKey(model), model || "__all"], [MODEL_LOCK_ALL, "__all"]]
+            .map(([key, sc]) => [sc, new Date(c[key] || 0).getTime() || 0])
+            .reduce((a, b) => (b[1] > a[1] ? b : a));
+          return until > Date.now() && c[`${MODEL_LIMIT_PREFIX}${scope}`] === true;
+        };
         // errorCode/lastError are the key's last error on any model; the limit
         // flag on the lock is this model's. Where they disagree, the stored error
         // came from another model.
@@ -484,8 +490,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           return { code: c.errorCode || null, error: c.lastError || null, limit: limited && !authCode, own: !otherModel };
         };
         const soonestOf = list => list.reduce((soonest, f) => !soonest || f[1] < soonest[1] ? f : soonest, null)?.[0];
-        // A limited key beats a dead one that frees up first, and a key blocked
-        // only on quota has no error of its own to report.
+        // A limited key beats a dead one that frees up first, and a key with no
+        // stored error (say one blocked only on quota) comes last.
         const earliestConn = soonestOf(frees.filter(([c]) => reportOf(c).limit))
           || soonestOf(frees.filter(([c]) => reportOf(c).code || reportOf(c).error))
           || soonestOf(frees);

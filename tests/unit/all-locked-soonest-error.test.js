@@ -176,6 +176,27 @@ describe("every key locked, the working one only for a moment", () => {
     expect(new Date(creds.retryAfter).getTime() - NOW).toBe(10_000);
   });
 
+  it("keeps a limited key's stored 5xx and its message", async () => {
+    store.rows = new Map([["dead", deadKey()], ["live", liveKey()]]);
+    await markAccountUnavailable("live", 429, RATE_LIMIT, PROVIDER, MODEL);
+    store.rows.set("live", { ...store.rows.get("live"), errorCode: 503, lastError: "overloaded" });
+
+    const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
+
+    expect(Number(creds.lastErrorCode)).toBe(503);
+    expect(creds.lastError).toBe("overloaded");
+  });
+
+  it("lets a longer account-wide refusal outrank a short limit lock on the model", async () => {
+    store.rows = new Map([["a", { ...liveKey(), id: "a", name: "a" }]]);
+    await markAccountUnavailable("a", 429, RATE_LIMIT, PROVIDER, MODEL);
+    await markAccountUnavailable("a", 401, "Invalid API key provided", PROVIDER, null);
+
+    const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
+
+    expect(Number(creds.lastErrorCode)).toBe(401);
+  });
+
   it("keeps a 402 plan limit's own code and message", async () => {
     const PLAN = "You've reached your additional usage limit for your plan.";
     store.rows = new Map([["a", { ...liveKey(), id: "a", name: "a" }]]);
