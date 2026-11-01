@@ -15,7 +15,7 @@ import type { BillingSet } from "../services/autoCombo.js";
 import { BUILTIN_MODEL_ALIASES } from "open-sse/services/model.js";
 import { handleChatCore, clientReceivesStream } from "open-sse/handlers/chatCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
-import { createLimitHoldResponse, awaitLimitClear, isLimitError } from "open-sse/utils/limitHold.js";
+import { createLimitHoldResponse, awaitLimitClear, isLimitError, allLockedError } from "open-sse/utils/limitHold.js";
 import { resolveLimitHold } from "../services/limitHoldConfig.js";
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
@@ -638,11 +638,11 @@ async function routeSingleModelChat(
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
-        const errorMsg = accountFailures.length > 0
-          ? summarizeAccountFailures(provider, model, accountFailures)
-          : (lastError || credentials.lastError || "Unavailable");
-        const status = lastStatus || Number(credentials.lastErrorCode) || HTTP_STATUS.SERVICE_UNAVAILABLE;
-        const prefixedError = accountFailures.length > 0 ? errorMsg : `[${provider}/${model}] ${errorMsg}`;
+        const locked = allLockedError(lastStatus, lastError, credentials, accountFailures);
+        const { status } = locked;
+        const summarized = accountFailures.length > 0 && !(locked.swapped && locked.error);
+        const errorMsg = summarized ? summarizeAccountFailures(provider, model, accountFailures) : (locked.error || "Unavailable");
+        const prefixedError = summarized ? errorMsg : `[${provider}/${model}] ${errorMsg}`;
         log.warn("CHAT", `${prefixedError} (${credentials.retryAfterHuman})`);
         const retryAtMs = credentials.retryAfter ? new Date(credentials.retryAfter).getTime() : 0;
         const limited = isLimitError(status, errorMsg);
@@ -666,7 +666,7 @@ async function routeSingleModelChat(
         return { success: false, unconfigured: true, status: HTTP_STATUS.NOT_FOUND, error, response: errorResponse(HTTP_STATUS.NOT_FOUND, error) };
       }
       log.warn("CHAT", "No more accounts available", { provider });
-      const status = lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE;
+      const { status } = allLockedError(lastStatus, lastError, null, accountFailures);
       const errorMsg = summarizeAccountFailures(provider, model, accountFailures);
       log.warn("CHAT", errorMsg);
       // Every account was tried this pass and each one failed on a limit. That

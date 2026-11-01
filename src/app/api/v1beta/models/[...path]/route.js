@@ -6,6 +6,7 @@ import {
   markAccountUnavailable,
 } from "@/sse/services/auth.js";
 import { getSettings } from "@/lib/localDb";
+import { allLockedError } from "open-sse/utils/limitHold.js";
 import { PROVIDER_MODELS } from "@/shared/constants/models";
 import { GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS } from "open-sse/config/runtimeConfig.js";
 import { initTranslators } from "open-sse/translator/index.js";
@@ -251,11 +252,10 @@ async function forwardGeminiNativeRequest(request, body, model, action) {
   while (true) {
     const credentials = await getProviderCredentials("gemini", excludeConnectionIds, modelId);
     if (!credentials || credentials.allRateLimited) {
-      console.log(`[GEMINI_NATIVE] exhausted model=${modelId} status=${lastStatus || Number(credentials?.lastErrorCode) || 503} error=${lastError || credentials?.lastError || "No active credentials for provider: gemini"}`);
-      return Response.json(
-        { error: { message: lastError || credentials?.lastError || "No active credentials for provider: gemini" } },
-        { status: lastStatus || Number(credentials?.lastErrorCode) || 503 }
-      );
+      const { status, error } = allLockedError(lastStatus, lastError, credentials);
+      const message = error || "No active credentials for provider: gemini";
+      console.log(`[GEMINI_NATIVE] exhausted model=${modelId} status=${status} error=${message}`);
+      return Response.json({ error: { message } }, { status });
     }
 
     const authHeaders = buildGeminiNativeAuthHeaders(credentials);

@@ -361,3 +361,19 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
     },
   });
 }
+
+// The status and error a request gets when every account is locked. A 401/403
+// this pass hit on one key loses to a retryable code the reported key got on
+// this model (lastErrorOwn), or to a 429/5xx another key hit in the same pass,
+// so the client waits instead of reporting an auth failure.
+export function allLockedError(lastStatus, lastError, credentials, failures = []) {
+  const soonest = Number(credentials?.lastErrorCode) || null;
+  const retryable = status => status === 429 || status >= 500;
+  if (lastStatus === 401 || lastStatus === 403) {
+    if (soonest && retryable(soonest) && credentials.lastErrorOwn !== false) return { status: soonest, error: credentials.lastError || null, swapped: true };
+    // By status: a bodyless 403 reads "You exceeded your current quota".
+    const retry = failures.find(f => retryable(f.status));
+    if (retry) return { status: retry.status, error: retry.error || null, swapped: true };
+  }
+  return { status: lastStatus || soonest || 503, error: lastError || credentials?.lastError || null, swapped: false };
+}

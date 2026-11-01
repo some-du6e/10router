@@ -444,12 +444,15 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     if (availableConnections.length === 0) {
       // Find earliest persistent lock or lazy Antigravity quota-cache reset for retry timing.
       const lockedConns = connections.filter(c => isModelLockActive(c, model));
-      const expiries = strategy === "soonest-reset"
-        ? connections.filter(c => planCanServeModel(providerId, c, model)).map(c => {
-          // An account needs both its error cooldown and exhausted quota to clear.
-          return Math.max(getModelLockUntil(c, model), resetStates.get(c.id).blockedUntil);
-        }).filter(until => until > Date.now()).map(until => new Date(until).toISOString())
-        : lockedConns.map(c => getEarliestModelLockUntil(c)).filter(Boolean);
+      // Each account and when it can serve this model again; the soonest one
+      // sets the retry time.
+      const frees = (strategy === "soonest-reset"
+        // An account needs both its error cooldown and exhausted quota to clear.
+        ? connections.filter(c => planCanServeModel(providerId, c, model))
+          .map(c => [c, Math.max(getModelLockUntil(c, model), resetStates.get(c.id).blockedUntil)])
+        : lockedConns.map(c => [c, getModelLockUntil(c, model)]))
+        .filter(([, until]) => until > Date.now());
+      const expiries = frees.map(([, until]) => new Date(until).toISOString());
       if (isAntigravity && model && antigravityQuotaCache) {
         connections.forEach((c) => {
           const resetAt = antigravityQuotaCache.get(c.id)?.[model]?.resetAt;
@@ -458,9 +461,50 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       }
       const earliest = expiries.sort()[0] || null;
       if (earliest) {
-        const earliestConn = lockedConns[0];
+        // A dead key's 403 ahead of a key in a 2s rate-limit lock would turn a
+        // retryable wait into an auth failure.
+        // Locked on this model for a limit: a key that serves again once it
+        // clears. The lock that ends last decides, so a short limit lock can't
+        // hide a longer account-wide refusal.
+        const limitLocked = c => {
+          const [scope, until] = [[getModelLockKey(model), model || "__all"], [MODEL_LOCK_ALL, "__all"]]
+            .map(([key, sc]) => [sc, new Date(c[key] || 0).getTime() || 0])
+            .reduce((a, b) => (b[1] > a[1] ? b : a));
+          return until > Date.now() && c[`${MODEL_LIMIT_PREFIX}${scope}`] === true;
+        };
+        // errorCode/lastError are the key's last error on any model; the limit
+        // flag on the lock is this model's. Where they disagree, the stored error
+        // came from another model.
+        const reportOf = c => {
+          const limited = limitLocked(c);
+          const authCode = c.errorCode === 401 || c.errorCode === 403;
+          const retryableCode = c.errorCode === 429 || c.errorCode >= 500;
+          // A stored error that isn't a limit (an auth refusal, a 400/404) came from another model.
+          if (limited && !retryableCode && !isLimitError(c.errorCode, c.lastError)) {
+            return { code: 429, error: `Rate limited on ${model || "all models"}`, limit: true, own: true };
+          }
+          const unflagged = !limited && isModelLockActive(c, model);
+          // A 429 here would have flagged this model's lock as a limit, so it is another model's.
+          const otherModel = unflagged && c.errorCode === 429;
+          // A 5xx lock can't be told from a refusal's: it may be this model's, so it
+          // ranks as one, but it isn't proof enough to replace a 401/403.
+          const maybeOther = unflagged && c.errorCode >= 500;
+          // A 401/403 that only reads like a limit (a bodyless 403 says "quota") is still a refusal.
+          return {
+            code: c.errorCode || null, error: c.lastError || null,
+            limit: limited && !authCode, ranks: !otherModel, own: !otherModel && !maybeOther,
+          };
+        };
+        const soonestOf = list => list.reduce((soonest, f) => !soonest || f[1] < soonest[1] ? f : soonest, null)?.[0];
+        // A limited key beats a dead one that frees up first, and a key with no
+        // stored error (say one blocked only on quota) comes last.
+        const earliestConn = soonestOf(frees.filter(([c]) => reportOf(c).limit))
+          || soonestOf(frees.filter(([c]) => reportOf(c).ranks && (reportOf(c).code || reportOf(c).error)))
+          || soonestOf(frees.filter(([c]) => reportOf(c).code || reportOf(c).error))
+          || soonestOf(frees);
+        const report = earliestConn ? reportOf(earliestConn) : { code: null, error: null, own: true };
         const eligibleConnections = connections.filter(c => planCanServeModel(providerId, c, model));
-        log.warn("AUTH", `${provider} | all ${connections.length} accounts locked for ${model || "all"} (${formatRetryAfter(earliest)}) | lastError=${earliestConn?.lastError?.slice(0, 50)}`);
+        log.warn("AUTH", `${provider} | all ${connections.length} accounts locked for ${model || "all"} (${formatRetryAfter(earliest)}) | lastError=${report.error?.slice(0, 50)}`);
         return {
           allRateLimited: true,
           allLimitsExhausted: eligibleConnections.length > 0 && eligibleConnections.every(c => {
@@ -478,8 +522,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           retryAfter: earliest,
           retryAfterHuman: formatRetryAfter(earliest),
           providerResetAtMs: getNextAccountReset(eligibleConnections, model, antigravityQuotaCache, resetStates),
-          lastError: earliestConn?.lastError || null,
-          lastErrorCode: earliestConn?.errorCode || null
+          lastError: report.error,
+          lastErrorCode: report.code,
+          // False when the code may be another model's: it isn't proof this one will serve.
+          lastErrorOwn: report.own
         };
       }
       log.warn("AUTH", `${provider} | all ${connections.length} accounts unavailable`);
