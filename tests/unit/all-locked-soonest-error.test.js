@@ -207,6 +207,30 @@ describe("every key locked, the working one only for a moment", () => {
     expect(allLockedError(null, null, creds).status).toBe(403);
   });
 
+  it("reports a live key's own 503 over the dead key's 403 when no key was tried yet", async () => {
+    store.rows = new Map([["live", liveKey()], ["dead", deadKey()]]);
+    await markAccountUnavailable("live", 503, "overloaded", PROVIDER, MODEL);
+
+    const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
+
+    expect(Number(creds.lastErrorCode)).toBe(503);
+    expect(allLockedError(null, null, creds).status).toBe(503);
+  });
+
+  it("with no other error to report, keeps a refused key's stored error over a quota-only key", async () => {
+    dbMocks.getSettings.mockImplementation(async () => ({ fallbackStrategy: "soonest-reset" }));
+    store.rows = new Map([["quota", { ...liveKey(), id: "quota", name: "quota" }], ["refused", { ...liveKey(), id: "refused", name: "refused" }]]);
+    await markAccountUnavailable("refused", 403, "Not authorized for this endpoint", PROVIDER, MODEL);
+    store.rows.set("refused", { ...store.rows.get("refused"), errorCode: 429, lastError: "rate limited on other" });
+    blocked.set("quota", NOW + 10_000);
+
+    const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
+
+    expect(creds.lastError).toBe("rate limited on other");
+    expect(creds.lastErrorOwn).toBe(false);
+    expect(allLockedError(403, "Not authorized for this endpoint", creds).status).toBe(403);
+  });
+
   it("keeps a 402 plan limit's own code and message", async () => {
     const PLAN = "You've reached your additional usage limit for your plan.";
     store.rows = new Map([["a", { ...liveKey(), id: "a", name: "a" }]]);
@@ -300,6 +324,7 @@ describe("status sent when every key is locked", () => {
 
   it("keeps the old order otherwise", () => {
     expect(allLockedError(403, "demoted", { lastErrorCode: 403, lastError: "demoted" })).toEqual({ status: 403, error: "demoted", swapped: false });
+    expect(allLockedError(403, "demoted", { lastErrorCode: 429, lastError: "other model", lastErrorOwn: false })).toEqual({ status: 403, error: "demoted", swapped: false });
     expect(allLockedError(429, "limit", { lastErrorCode: 403 }).status).toBe(429);
     expect(allLockedError(400, "bad", live).status).toBe(400);
     expect(allLockedError(null, null, { lastErrorCode: 403, lastError: "demoted" })).toEqual({ status: 403, error: "demoted", swapped: false });

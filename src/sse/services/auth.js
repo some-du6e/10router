@@ -483,17 +483,23 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           if (limited && !retryableCode && !isLimitError(c.errorCode, c.lastError)) {
             return { code: 429, error: `Rate limited on ${model || "all models"}`, limit: true, own: true };
           }
-          // A 429 here would have flagged this model's lock as a limit, and a 5xx
-          // lock can't be told from a refusal's: either may be another model's.
-          const otherModel = !limited && isModelLockActive(c, model) && (c.errorCode === 429 || c.errorCode >= 500);
+          const unflagged = !limited && isModelLockActive(c, model);
+          // A 429 here would have flagged this model's lock as a limit, so it is another model's.
+          const otherModel = unflagged && c.errorCode === 429;
+          // A 5xx lock can't be told from a refusal's: it may be this model's, so it
+          // ranks as one, but it isn't proof enough to replace a 401/403.
+          const maybeOther = unflagged && c.errorCode >= 500;
           // A 401/403 that only reads like a limit (a bodyless 403 says "quota") is still a refusal.
-          return { code: c.errorCode || null, error: c.lastError || null, limit: limited && !authCode, own: !otherModel };
+          return {
+            code: c.errorCode || null, error: c.lastError || null,
+            limit: limited && !authCode, ranks: !otherModel, own: !otherModel && !maybeOther,
+          };
         };
         const soonestOf = list => list.reduce((soonest, f) => !soonest || f[1] < soonest[1] ? f : soonest, null)?.[0];
         // A limited key beats a dead one that frees up first, and a key with no
         // stored error (say one blocked only on quota) comes last.
         const earliestConn = soonestOf(frees.filter(([c]) => reportOf(c).limit))
-          || soonestOf(frees.filter(([c]) => reportOf(c).own && (reportOf(c).code || reportOf(c).error)))
+          || soonestOf(frees.filter(([c]) => reportOf(c).ranks && (reportOf(c).code || reportOf(c).error)))
           || soonestOf(frees.filter(([c]) => reportOf(c).code || reportOf(c).error))
           || soonestOf(frees);
         const report = earliestConn ? reportOf(earliestConn) : { code: null, error: null, own: true };
