@@ -174,6 +174,24 @@ describe("429 backoff under a burst of concurrent requests", () => {
     expect(store.rows.get("key-a")[`modelLimit_${MODEL}`]).toBe(true);
   });
 
+  it("doesn't inherit the limit flag or reset of an expired model lock under an account-wide lock", async () => {
+    const row = store.rows.get("key-a");
+    Object.assign(row, {
+      [`modelLock_${MODEL}`]: new Date(NOW - 60_000).toISOString(),
+      [`modelLimit_${MODEL}`]: true,
+      [`providerReset_${MODEL}`]: new Date(NOW - 60_000).toISOString(),
+      modelLock___all: new Date(NOW + 60_000).toISOString(),
+      modelLimit___all: false,
+    });
+
+    await markAccountUnavailable("key-a", 503, "upstream overloaded", PROVIDER, MODEL);
+
+    const after = store.rows.get("key-a");
+    expect(after.backoffLevel).toBe(4);
+    expect(after[`modelLimit_${MODEL}`]).toBe(false);
+    expect(after[`providerReset_${MODEL}`]).toBeNull();
+  });
+
   it("treats an account-wide lock like a model lock", async () => {
     store.rows.get("key-a").modelLock___all = new Date(NOW + 10_000).toISOString();
 

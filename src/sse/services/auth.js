@@ -598,7 +598,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
 
   // Provider-specific precise cooldown (e.g. codex usage_limit_reached resets_at) overrides backoff
-  let shouldFallback, cooldownMs, newBackoffLevel, straggler = false;
+  let shouldFallback, cooldownMs, newBackoffLevel, inOwnLock = false;
   if (githubResetAtMs) {
     shouldFallback = true;
     cooldownMs = githubResetAtMs - Date.now();
@@ -616,9 +616,9 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     // a request sent before the lock: one burst escalates the backoff once, and
     // the model's own lock (and its provider reset) is kept, never shortened.
     if (newBackoffLevel != null && conn && isModelLockActive(conn, model)) {
-      straggler = true;
       newBackoffLevel = backoffLevel;
       const ownLockUntil = new Date(conn[getModelLockKey(model)] || 0).getTime() || 0;
+      inOwnLock = ownLockUntil > Date.now();
       cooldownMs = Math.max(ownLockUntil - Date.now(), getQuotaCooldown(backoffLevel));
     }
   }
@@ -651,9 +651,9 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
 
   const update = {
     ...lockUpdate,
-    // A straggler lands in an existing lock: it can mark it a limit, never unmark it or drop its reset time.
-    [limitKey]: (straggler && conn[limitKey] === true) || isLimitError(status, errorText),
-    ...(straggler ? {} : {
+    // A straggler in the model's own lock can mark it a limit, never unmark it or drop its reset time.
+    [limitKey]: (inOwnLock && conn[limitKey] === true) || isLimitError(status, errorText),
+    ...(inOwnLock ? {} : {
       [`${PROVIDER_RESET_PREFIX}${lockScope}`]:
         Number.isFinite(providerResetAtMs) && providerResetAtMs > Date.now() ? new Date(providerResetAtMs).toISOString() : null,
     }),
