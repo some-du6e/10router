@@ -7,6 +7,7 @@ on:
       - "open-sse/services/accountFallback.js"
       - "open-sse/config/errorConfig.js"
       - "tests/unit/rate-limit-backoff-burst.test.js"
+      - "tests/unit/all-locked-soonest-error.test.js"
       - "tests/unit/rate-limit-burst-benchmark.test.js"
       - ".github/workflows/rate-limit-backoff.yml"
   workflow_dispatch:
@@ -34,6 +35,7 @@ jobs:
         run: >
           ./node_modules/.bin/vitest run
           unit/rate-limit-backoff-burst.test.js
+          unit/all-locked-soonest-error.test.js
           unit/account-failure-handler.test.js
           unit/auto-disable-dead-keys.test.js
           unit/github-monthly-usage-lock.test.js

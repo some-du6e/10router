@@ -458,7 +458,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       }
       const earliest = expiries.sort()[0] || null;
       if (earliest) {
-        const earliestConn = lockedConns[0];
+        // Report the account that frees up first: a dead key's 403 ahead of a
+        // key in a 2s rate-limit lock would turn a retryable wait into an auth failure.
+        const earliestConn = lockedConns.reduce((soonest, c) =>
+          !soonest || getModelLockUntil(c, model) < getModelLockUntil(soonest, model) ? c : soonest, null);
         const eligibleConnections = connections.filter(c => planCanServeModel(providerId, c, model));
         log.warn("AUTH", `${provider} | all ${connections.length} accounts locked for ${model || "all"} (${formatRetryAfter(earliest)}) | lastError=${earliestConn?.lastError?.slice(0, 50)}`);
         return {
