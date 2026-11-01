@@ -463,10 +463,18 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       if (earliest) {
         // A dead key's 403 ahead of a key in a 2s rate-limit lock would turn a
         // retryable wait into an auth failure.
-        // A key blocked only on quota has no error of its own to report.
-        const withError = frees.filter(([c]) => c.errorCode || c.lastError);
-        const earliestConn = (withError.length ? withError : frees)
-          .reduce((soonest, f) => !soonest || f[1] < soonest[1] ? f : soonest, null)?.[0];
+        // Locked on this model for a limit: a key that serves again once it clears.
+        const limitLocked = c => [[getModelLockKey(model), model || "__all"], [MODEL_LOCK_ALL, "__all"]]
+          .some(([key, scope]) => new Date(c[key] || 0).getTime() > Date.now() && c[`${MODEL_LIMIT_PREFIX}${scope}`] === true);
+        const soonestOf = list => list.reduce((soonest, f) => !soonest || f[1] < soonest[1] ? f : soonest, null)?.[0];
+        // A limited key beats a dead one that frees up first, and a key blocked
+        // only on quota has no error of its own to report.
+        const earliestConn = soonestOf(frees.filter(([c]) => limitLocked(c)))
+          || soonestOf(frees.filter(([c]) => c.errorCode || c.lastError))
+          || soonestOf(frees);
+        // errorCode is the key's last error on any model; the limit flag is this model's.
+        const limitedHere = !!earliestConn && limitLocked(earliestConn)
+          && !(earliestConn.errorCode === 429 || earliestConn.errorCode >= 500);
         const eligibleConnections = connections.filter(c => planCanServeModel(providerId, c, model));
         log.warn("AUTH", `${provider} | all ${connections.length} accounts locked for ${model || "all"} (${formatRetryAfter(earliest)}) | lastError=${earliestConn?.lastError?.slice(0, 50)}`);
         return {
@@ -476,18 +484,15 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
             if (quota?.circuitBreaker) return false;
             const locked = isModelLockActive(c, model);
             // Only a lock still in force counts; the account-wide one can belong to a different model.
-            const activeScopes = [[getModelLockKey(model), model || "__all"], [MODEL_LOCK_ALL, "__all"]]
-              .filter(([key]) => new Date(c[key] || 0).getTime() > Date.now())
-              .map(([, scope]) => scope);
-            const limitedLock = locked && activeScopes.some(scope => c[`${MODEL_LIMIT_PREFIX}${scope}`] === true);
+            const limitedLock = limitLocked(c);
             return (!locked || limitedLock) && (limitedLock || resetStates.get(c.id).blockedUntil > Date.now() ||
               (quota?.remainingPercentage <= 0 && new Date(quota.resetAt).getTime() > Date.now()));
           }),
           retryAfter: earliest,
           retryAfterHuman: formatRetryAfter(earliest),
           providerResetAtMs: getNextAccountReset(eligibleConnections, model, antigravityQuotaCache, resetStates),
-          lastError: earliestConn?.lastError || null,
-          lastErrorCode: earliestConn?.errorCode || null
+          lastError: limitedHere ? `Rate limited on ${model || "all models"}` : (earliestConn?.lastError || null),
+          lastErrorCode: limitedHere ? 429 : (earliestConn?.errorCode || null)
         };
       }
       log.warn("AUTH", `${provider} | all ${connections.length} accounts unavailable`);
