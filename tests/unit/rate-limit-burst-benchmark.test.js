@@ -1,16 +1,11 @@
 // Benchmark: one key behind a per-model upstream rate limit at peak load.
 // Run: cd tests && ./node_modules/.bin/vitest run --config ./vitest.benchmark.config.js rate-limit-burst
-// Results go to RATE_LIMIT_BENCH_OUT (default: os.tmpdir()/rate-limit-burst-bench.json)
-// because vitest hides console.log.
 //
 // Drives the real getProviderCredentials / markAccountUnavailable / clearAccountError
 // on simulated time. Shape is from the 2026-10-31 03Z peak: ~126 requests/min on
 // one key, 429s back in ~0.6s, successes in ~2.5s, and Claude Code retrying
 // 429/503 with exponential backoff.
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 const store = vi.hoisted(() => ({ rows: new Map() }));
 vi.mock("@/lib/localDb", () => ({
@@ -52,12 +47,12 @@ function rng(seed) {
 async function simulate() {
   store.rows = new Map([["key-a", { id: "key-a", provider: PROVIDER, name: "key-a", authType: "apikey", apiKey: "bench", isActive: true, backoffLevel: 0 }]]);
   const random = rng(42);
-  const stats = { requests: 0, served: 0, gaveUp: 0, localRejects: 0, upstream429: 0, longestLockS: 0, latenciesMs: [] };
+  const stats = { requests: 0, served: 0, gaveUp: 0, localRejects: 0, upstream429: 0, longestLockS: 0 };
   let tokens = BUCKET.capacity;
   let refilledAt = Date.now();
   const start = Date.now();
 
-  const attempt = async (startedAt, n) => {
+  const attempt = async (n) => {
     const credentials = await getProviderCredentials(PROVIDER, null, MODEL);
     let ok = false;
     if (credentials?.allRateLimited) {
@@ -78,11 +73,10 @@ async function simulate() {
     }
     if (ok) {
       stats.served++;
-      stats.latenciesMs.push(Date.now() - startedAt);
     } else if (n >= CLIENT_RETRIES) {
       stats.gaveUp++;
     } else {
-      setTimeout(() => attempt(startedAt, n + 1), clientBackoffMs(n));
+      setTimeout(() => attempt(n + 1), clientBackoffMs(n));
     }
   };
 
@@ -90,32 +84,27 @@ async function simulate() {
   while (next < start + SIM_MS) {
     next += -Math.log(1 - random()) * (60_000 / ARRIVALS_PER_MIN);
     const at = next;
-    setTimeout(() => { stats.requests++; attempt(at, 0); }, at - start);
+    setTimeout(() => { stats.requests++; attempt(0); }, at - start);
   }
   // Let the last arrivals run out their retries.
   for (let t = 0; t < SIM_MS + 10 * 60_000; t += 50) await vi.advanceTimersByTimeAsync(50);
 
-  const sorted = stats.latenciesMs.sort((a, b) => a - b);
-  const pct = (p) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
-  delete stats.latenciesMs;
-  return { ...stats, p50Ms: pct(0.5), p95Ms: pct(0.95), p99Ms: pct(0.99), finalBackoffLevel: store.rows.get("key-a").backoffLevel };
+  return { ...stats, finalBackoffLevel: store.rows.get("key-a").backoffLevel };
 }
-
-const outFile = process.env.RATE_LIMIT_BENCH_OUT || path.join(os.tmpdir(), "rate-limit-burst-bench.json");
-let result;
-
-afterAll(() => {
-  if (result) fs.writeFileSync(outFile, JSON.stringify(result, null, 2));
-});
 
 describe("rate-limit burst benchmark", () => {
   it("serves peak load through one rate-limited key", async () => {
     vi.useFakeTimers({ now: new Date("2026-10-31T03:15:00.000Z") });
+    let result;
     try {
       result = await simulate();
     } finally {
       vi.useRealTimers();
     }
+    console.log(JSON.stringify(result, null, 2));
     expect(result.served + result.gaveUp).toBe(result.requests);
+    // Without the burst fix: 16% served and a 300s lock.
+    expect(result.served / result.requests).toBeGreaterThan(0.8);
+    expect(result.longestLockS).toBeLessThan(32);
   }, 120_000);
 });

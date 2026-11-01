@@ -24,6 +24,7 @@ vi.mock("@/sse/utils/logger.js", () => ({ debug: vi.fn(), info: vi.fn(), warn: v
 vi.spyOn(console, "error").mockImplementation(() => {});
 
 const { markAccountUnavailable } = await import("../../src/sse/services/auth.js");
+const { checkFallbackError, isModelLockActive, getModelLockUntil } = await import("../../open-sse/services/accountFallback.js");
 
 const PROVIDER = "openai-compatible-chat-test";
 const MODEL = "claude-opus-5-5";
@@ -78,6 +79,77 @@ describe("429 backoff under a burst of concurrent requests", () => {
 
     expect(store.rows.get("key-a").backoffLevel).toBe(4);
     expect(lockSeconds()).toBe(16);
+  });
+
+  it("keeps a longer account-wide lock in force without copying it onto the model", async () => {
+    store.rows.get("key-a").modelLock___all = new Date(NOW + 120_000).toISOString();
+
+    await markAccountUnavailable("key-a", 429, RATE_LIMIT, PROVIDER, MODEL);
+
+    const row = store.rows.get("key-a");
+    expect(row.backoffLevel).toBe(4);
+    expect(lockSeconds()).toBe(16);
+    vi.advanceTimersByTime(30_000);
+    expect(isModelLockActive(row, MODEL)).toBe(true);
+    expect(getModelLockUntil(row, MODEL)).toBe(NOW + 120_000);
+  });
+
+  it("sees an account-wide lock behind an expired model lock", async () => {
+    const row = store.rows.get("key-a");
+    row[`modelLock_${MODEL}`] = new Date(NOW - 5_000).toISOString();
+    row.modelLock___all = new Date(NOW + 60_000).toISOString();
+    expect(isModelLockActive(row, MODEL)).toBe(true);
+
+    await markAccountUnavailable("key-a", 429, RATE_LIMIT, PROVIDER, MODEL);
+
+    expect(store.rows.get("key-a").backoffLevel).toBe(4);
+  });
+
+  it("keeps a longer lock at the top backoff level", async () => {
+    const row = store.rows.get("key-a");
+    row.backoffLevel = 15;
+    row[`modelLock_${MODEL}`] = new Date(NOW + 25 * 60_000).toISOString();
+
+    await markAccountUnavailable("key-a", 429, RATE_LIMIT, PROVIDER, MODEL);
+
+    expect(store.rows.get("key-a").backoffLevel).toBe(15);
+    expect(lockSeconds()).toBe(25 * 60);
+  });
+
+  it("keeps the provider reset time of the lock a straggler lands in", async () => {
+    const resetAt = new Date(NOW + 600_000).toISOString();
+    const row = store.rows.get("key-a");
+    row[`modelLock_${MODEL}`] = resetAt;
+    row[`providerReset_${MODEL}`] = resetAt;
+    row[`modelLimit_${MODEL}`] = true;
+
+    await markAccountUnavailable("key-a", 429, RATE_LIMIT, PROVIDER, MODEL);
+
+    const after = store.rows.get("key-a");
+    expect(after[`providerReset_${MODEL}`]).toBe(resetAt);
+    expect(after[`modelLimit_${MODEL}`]).toBe(true);
+    expect(lockSeconds()).toBe(600);
+  });
+
+  it("applies to any backoff error, like a 503 overloaded, not just 429", async () => {
+    store.rows.get("key-a")[`modelLock_${MODEL}`] = new Date(NOW + 1_000).toISOString();
+
+    await markAccountUnavailable("key-a", 503, "upstream overloaded", PROVIDER, MODEL);
+
+    expect(store.rows.get("key-a").backoffLevel).toBe(4);
+    expect(lockSeconds()).toBe(16);
+  });
+
+  it("leaves errors without backoff on their own cooldown during a lock", async () => {
+    const BAD_KEY = "invalid api key";
+    store.rows.get("key-a")[`modelLock_${MODEL}`] = new Date(NOW + 120_000).toISOString();
+    const { cooldownMs, newBackoffLevel } = checkFallbackError(401, BAD_KEY, 4);
+    expect(newBackoffLevel).toBeUndefined();
+
+    await markAccountUnavailable("key-a", 401, BAD_KEY, PROVIDER, MODEL);
+
+    expect(store.rows.get("key-a").backoffLevel).toBe(4);
+    expect(lockSeconds()).toBe(cooldownMs / 1000);
   });
 
   it("treats an account-wide lock like a model lock", async () => {

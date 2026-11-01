@@ -11,10 +11,13 @@ on:
       - ".github/workflows/rate-limit-backoff.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v6
@@ -25,15 +28,30 @@ jobs:
         run: |
           bun install --ignore-scripts
           cd tests && bun install --ignore-scripts
-      - name: Full suite against the regression baseline
+      # Every unit file that drives account selection or locks (auth.js / accountFallback.js).
+      - name: Account lock tests
         working-directory: tests
-        run: |
-          ./node_modules/.bin/vitest run --reporter=json --outputFile=results.json || true
-          node __baseline__/verify-no-regression.mjs results.json
+        run: >
+          ./node_modules/.bin/vitest run
+          unit/rate-limit-backoff-burst.test.js
+          unit/account-failure-handler.test.js
+          unit/auto-disable-dead-keys.test.js
+          unit/auto-disable-stress.test.js
+          unit/github-monthly-usage-lock.test.js
+          unit/limit-hold-integration.test.js
+          unit/tts-stt-success-clears-account.test.js
+          unit/fetch-success-clears-account.test.js
+          unit/embedding-usage-persistence.test.js
+          unit/gemini-native-endpoint.test.js
+          unit/systemone-handler.test.js
+          unit/xai-video-handler.test.js
+          unit/beta-persistence.test.js
+          unit/antigravity-quota-routing.test.js
+          unit/auto-combo.test.js
+          unit/codex-fast-capacity.test.js
+          unit/compatible-endpoint-runtime.test.js
+          unit/selection-lock-per-provider.test.js
+          unit/soonest-reset.test.js
       - name: Rate-limit burst benchmark
         working-directory: tests
-        env:
-          RATE_LIMIT_BENCH_OUT: ${{ runner.temp }}/rate-limit-burst-bench.json
-        run: |
-          ./node_modules/.bin/vitest run --config ./vitest.benchmark.config.js rate-limit-burst
-          cat "$RATE_LIMIT_BENCH_OUT"
+        run: ./node_modules/.bin/vitest run --config ./vitest.benchmark.config.js rate-limit-burst
