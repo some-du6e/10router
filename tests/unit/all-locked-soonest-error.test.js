@@ -22,11 +22,18 @@ vi.mock("@/shared/constants/providers.js", () => ({
   FREE_PROVIDERS: {},
   resolveProviderId: (provider) => provider,
 }));
+// Quota blocks per key id, for the soonest-reset strategy.
+const blocked = vi.hoisted(() => new Map());
+vi.mock("../../src/sse/services/soonestReset.js", () => ({
+  getRoutingQuotas: (_provider, connections) => new Map(connections.map(c => [c.id, c.id])),
+  getResetState: (_provider, id) => ({ blockedUntil: blocked.get(id) || 0 }),
+  pickSoonestReset: connections => connections[0],
+}));
 vi.mock("@/sse/utils/logger.js", () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn() }));
 vi.spyOn(console, "error").mockImplementation(() => {});
 
 const { markAccountUnavailable, getProviderCredentials } = await import("../../src/sse/services/auth.js");
-const { allLockedStatus } = await import("../../open-sse/utils/limitHold.js");
+const { allLockedError } = await import("../../open-sse/utils/limitHold.js");
 
 const PROVIDER = "openai-compatible-chat-test";
 const MODEL = "claude-opus-5-5";
@@ -44,6 +51,7 @@ const liveKey = () => ({ id: "live", provider: PROVIDER, name: "live", authType:
 
 beforeEach(() => {
   dbMocks.getSettings.mockImplementation(async () => ({}));
+  blocked.clear();
   vi.useFakeTimers();
   vi.setSystemTime(NOW);
 });
@@ -114,21 +122,46 @@ describe("every key locked, the working one only for a moment", () => {
     expect(Number(creds.lastErrorCode)).toBe(429);
     expect(new Date(creds.retryAfter).getTime() - NOW).toBe(2_000);
   });
+
+  it("under soonest-reset, reports a locked key's error over a key blocked only on quota", async () => {
+    dbMocks.getSettings.mockImplementation(async () => ({ fallbackStrategy: "soonest-reset" }));
+    store.rows = new Map([
+      ["quota", { ...liveKey(), id: "quota", name: "quota" }],
+      ["limited", { ...liveKey(), id: "limited", name: "limited", [lockKey]: new Date(NOW + 3_600_000).toISOString(), errorCode: 429, lastError: "rate_limit_error" }],
+    ]);
+    blocked.set("quota", NOW + 600_000);
+
+    const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
+
+    expect(creds.allRateLimited).toBe(true);
+    expect(new Date(creds.retryAfter).getTime() - NOW).toBe(600_000);
+    expect(Number(creds.lastErrorCode)).toBe(429);
+    expect(creds.lastError).toBe("rate_limit_error");
+  });
 });
 
 describe("status sent when every key is locked", () => {
-  it("prefers the soonest key's retryable code over a 401/403 hit earlier in the pass", () => {
-    expect(allLockedStatus(403, { lastErrorCode: 429 })).toBe(429);
-    expect(allLockedStatus(401, { lastErrorCode: 429 })).toBe(429);
-    expect(allLockedStatus(403, { lastErrorCode: 503 })).toBe(503);
+  const live = { lastErrorCode: 429, lastError: "rate_limit_error" };
+
+  it("prefers the soonest key's retryable code and error over a 401/403 hit earlier in the pass", () => {
+    expect(allLockedError(403, "demoted", live)).toEqual({ status: 429, error: "rate_limit_error", swapped: true });
+    expect(allLockedError(401, "bad key", live).status).toBe(429);
+    expect(allLockedError(403, "demoted", { lastErrorCode: 503, lastError: "overloaded" }).status).toBe(503);
+  });
+
+  it("falls back to a limit another key hit in the same pass", () => {
+    const failures = [{ status: 429, error: "rate_limit_error" }, { status: 403, error: "Not authorized" }];
+    expect(allLockedError(403, "Not authorized", { lastErrorCode: 403 }, failures)).toEqual({ status: 429, error: "rate_limit_error", swapped: true });
+    expect(allLockedError(403, "Not authorized", null, failures).status).toBe(429);
+    expect(allLockedError(403, "Not authorized", null, [{ status: 403, error: "quota exceeded" }]).status).toBe(429);
   });
 
   it("keeps the old order otherwise", () => {
-    expect(allLockedStatus(403, { lastErrorCode: 403 })).toBe(403);
-    expect(allLockedStatus(429, { lastErrorCode: 403 })).toBe(429);
-    expect(allLockedStatus(400, { lastErrorCode: 429 })).toBe(400);
-    expect(allLockedStatus(null, { lastErrorCode: 403 })).toBe(403);
-    expect(allLockedStatus(null, { lastErrorCode: null })).toBe(503);
-    expect(allLockedStatus(null, null)).toBe(503);
+    expect(allLockedError(403, "demoted", { lastErrorCode: 403, lastError: "demoted" })).toEqual({ status: 403, error: "demoted", swapped: false });
+    expect(allLockedError(429, "limit", { lastErrorCode: 403 }).status).toBe(429);
+    expect(allLockedError(400, "bad", live).status).toBe(400);
+    expect(allLockedError(null, null, { lastErrorCode: 403, lastError: "demoted" })).toEqual({ status: 403, error: "demoted", swapped: false });
+    expect(allLockedError(null, null, { lastErrorCode: null })).toEqual({ status: 503, error: null, swapped: false });
+    expect(allLockedError(null, null, null).status).toBe(503);
   });
 });

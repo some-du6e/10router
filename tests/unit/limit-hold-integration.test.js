@@ -217,6 +217,36 @@ describe("rate-limit hold wiring", () => {
     await reader.cancel();
   });
 
+  describe("a dead key's 403 next to a key in a short rate-limit lock", () => {
+    const seq = async (steps) => {
+      let call = 0;
+      const auth = await import("@/sse/services/auth.js");
+      vi.spyOn(auth, "getProviderCredentials").mockImplementation(async () => steps[call++] ?? null);
+    };
+    const dead = { connectionId: "dead", connectionName: "dead", accessToken: "t" };
+    const send = () => handleChat(makeRequest({ model: "gpt-5", stream: true, messages: [{ role: "user", content: "hi" }] }));
+    beforeEach(() => { state.settings = { ...state.settings, limitHoldEnabled: false }; });
+
+    it("sends the soonest key's 429 when this pass hit the dead key first", async () => {
+      await seq([dead, { allRateLimited: true, retryAfter: new Date(Date.now() + 2_000).toISOString(), retryAfterHuman: "reset after 2s", lastError: "rate_limit_error", lastErrorCode: 429 }]);
+      state.coreResults = [{ success: false, status: 403, error: "Not authorized for this endpoint" }];
+
+      const res = await send();
+      expect(res.status).toBe(429);
+      expect(await res.text()).toContain("rate_limit_error");
+    });
+
+    it("sends a 429 when the live key's limit and the dead key's 403 both hit in this pass", async () => {
+      await seq([{ connectionId: "live", connectionName: "live", accessToken: "t" }, dead, null]);
+      state.coreResults = [
+        { success: false, status: 429, error: "rate_limit_error" },
+        { success: false, status: 403, error: "Not authorized for this endpoint" },
+      ];
+
+      expect((await send()).status).toBe(429);
+    });
+  });
+
   it("holds a combo once every model in it is rate-limited", async () => {
     state.combos = { "free-opus": ["opus-a", "opus-b"] };
     state.credentials = LIMITED();

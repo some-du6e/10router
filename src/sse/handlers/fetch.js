@@ -5,7 +5,7 @@ import {
   extractApiKey,
   isValidApiKey,
 } from "../services/auth.js";
-import { allLockedStatus } from "open-sse/utils/limitHold.js";
+import { allLockedError } from "open-sse/utils/limitHold.js";
 import { getSettings, getCombos } from "@/lib/localDb";
 import { AI_PROVIDERS, resolveProviderId } from "@/shared/constants/providers.js";
 import { handleFetchCore } from "open-sse/handlers/fetch/index.js";
@@ -170,8 +170,8 @@ async function handleSingleProviderFetch(body, providerInput, request, apiKey, s
 
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
-        const errorMsg = lastError || credentials.lastError || "Unavailable";
-        const status = allLockedStatus(lastStatus, credentials);
+        const { status, error } = allLockedError(lastStatus, lastError, credentials);
+        const errorMsg = error || "Unavailable";
         log.warn("FETCH", `[${providerId}] ${errorMsg} (${credentials.retryAfterHuman})`);
         return unavailableResponse(status, `[${providerId}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman);
       }

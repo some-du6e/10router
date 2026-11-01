@@ -5,7 +5,7 @@ import {
   extractApiKey,
   isValidApiKey,
 } from "../services/auth.js";
-import { allLockedStatus } from "open-sse/utils/limitHold.js";
+import { allLockedError } from "open-sse/utils/limitHold.js";
 import { getSettings } from "@/lib/db/index.js";
 import { getModelInfo } from "../services/model.js";
 import { handleSystemoneCore } from "open-sse/handlers/systemoneCore.js";
@@ -98,8 +98,8 @@ export async function handleSystemone(request) {
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
-        const errorMsg = lastError || credentials.lastError || "Unavailable";
-        const status = allLockedStatus(lastStatus, credentials);
+        const { status, error } = allLockedError(lastStatus, lastError, credentials);
+        const errorMsg = error || "Unavailable";
         log.warn("SYSTEMONE", `[${provider}/${model}] ${errorMsg} (${credentials.retryAfterHuman})`);
         return unavailableResponse(status, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman);
       }

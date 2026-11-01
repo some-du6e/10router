@@ -362,11 +362,17 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
   });
 }
 
-// The status a request gets when every account is locked. A retryable code
-// from the account that frees up first beats a 401/403 this pass ran into on
-// another key, so the client waits instead of reporting an auth failure.
-export function allLockedStatus(lastStatus, credentials) {
+// The status and error a request gets when every account is locked. A 401/403
+// this pass hit on one key loses to a retryable code from the key that frees
+// up first, or to a limit another key hit in the same pass, so the client
+// waits instead of reporting an auth failure.
+export function allLockedError(lastStatus, lastError, credentials, failures = []) {
   const soonest = Number(credentials?.lastErrorCode) || null;
-  if (soonest && (soonest === 429 || soonest >= 500) && (lastStatus === 401 || lastStatus === 403)) return soonest;
-  return lastStatus || soonest || 503;
+  const retryable = status => status === 429 || status >= 500;
+  if (lastStatus === 401 || lastStatus === 403) {
+    if (soonest && retryable(soonest)) return { status: soonest, error: credentials.lastError || null, swapped: true };
+    const limit = failures.find(f => isLimitError(f.status, f.error));
+    if (limit) return { status: retryable(limit.status) ? limit.status : 429, error: limit.error || null, swapped: true };
+  }
+  return { status: lastStatus || soonest || 503, error: lastError || credentials?.lastError || null, swapped: false };
 }

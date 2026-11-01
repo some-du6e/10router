@@ -463,7 +463,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       if (earliest) {
         // A dead key's 403 ahead of a key in a 2s rate-limit lock would turn a
         // retryable wait into an auth failure.
-        const earliestConn = frees.reduce((soonest, f) => !soonest || f[1] < soonest[1] ? f : soonest, null)?.[0];
+        // A key blocked only on quota has no error of its own to report.
+        const withError = frees.filter(([c]) => c.errorCode || c.lastError);
+        const earliestConn = (withError.length ? withError : frees)
+          .reduce((soonest, f) => !soonest || f[1] < soonest[1] ? f : soonest, null)?.[0];
         const eligibleConnections = connections.filter(c => planCanServeModel(providerId, c, model));
         log.warn("AUTH", `${provider} | all ${connections.length} accounts locked for ${model || "all"} (${formatRetryAfter(earliest)}) | lastError=${earliestConn?.lastError?.slice(0, 50)}`);
         return {
