@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools } from "@/lib/localDb";
 import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey } from "@/lib/db/index.js";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
-import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL } from "open-sse/services/accountFallback.js";
+import { formatRetryAfter, checkFallbackError, getQuotaCooldown, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG, AUTH_DEMOTE_CONFIG, LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL } from "open-sse/config/errorConfig.js";
 import { isBackoffText } from "open-sse/utils/errorClass.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
@@ -611,6 +611,14 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     newBackoffLevel = 0;
   } else {
     ({ shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel));
+    // A 429 that lands while this model is already locked came from a request
+    // sent before the lock: one rate-limit burst escalates the backoff once.
+    if (newBackoffLevel > backoffLevel && conn && isModelLockActive(conn, model)) {
+      const lockedUntil = Math.max(...[conn[getModelLockKey(model)], conn[MODEL_LOCK_ALL]]
+        .map(until => new Date(until || 0).getTime()).filter(Number.isFinite));
+      newBackoffLevel = backoffLevel;
+      cooldownMs = Math.max(lockedUntil - Date.now(), getQuotaCooldown(backoffLevel));
+    }
   }
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 

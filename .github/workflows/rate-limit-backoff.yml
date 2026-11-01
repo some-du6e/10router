@@ -1,0 +1,39 @@
+name: Rate-limit backoff
+
+on:
+  pull_request:
+    paths:
+      - "src/sse/services/auth.js"
+      - "open-sse/services/accountFallback.js"
+      - "open-sse/config/errorConfig.js"
+      - "tests/unit/rate-limit-backoff-burst.test.js"
+      - "tests/unit/rate-limit-burst-benchmark.test.js"
+      - ".github/workflows/rate-limit-backoff.yml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Full suite against the regression baseline
+        working-directory: tests
+        run: |
+          ./node_modules/.bin/vitest run --reporter=json --outputFile=results.json || true
+          node __baseline__/verify-no-regression.mjs results.json
+      - name: Rate-limit burst benchmark
+        working-directory: tests
+        env:
+          RATE_LIMIT_BENCH_OUT: ${{ runner.temp }}/rate-limit-burst-bench.json
+        run: |
+          ./node_modules/.bin/vitest run --config ./vitest.benchmark.config.js rate-limit-burst
+          cat "$RATE_LIMIT_BENCH_OUT"
