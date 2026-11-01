@@ -101,7 +101,7 @@ describe("rate-limit burst benchmark", () => {
     } finally {
       vi.useRealTimers();
     }
-    console.log(JSON.stringify(result, null, 2));
+    process.stdout.write(`${JSON.stringify(result)}\n`);
     expect(result.served + result.gaveUp).toBe(result.requests);
     // Without the burst fix: 16% served and a 300s lock.
     expect(result.served / result.requests).toBeGreaterThan(0.8);

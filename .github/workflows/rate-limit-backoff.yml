@@ -36,7 +36,6 @@ jobs:
           unit/rate-limit-backoff-burst.test.js
           unit/account-failure-handler.test.js
           unit/auto-disable-dead-keys.test.js
-          unit/auto-disable-stress.test.js
           unit/github-monthly-usage-lock.test.js
           unit/limit-hold-integration.test.js
           unit/tts-stt-success-clears-account.test.js

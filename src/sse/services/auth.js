@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools } from "@/lib/localDb";
 import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey } from "@/lib/db/index.js";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
-import { formatRetryAfter, checkFallbackError, getQuotaCooldown, isModelLockActive, getModelLockUntil, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey } from "open-sse/services/accountFallback.js";
+import { formatRetryAfter, checkFallbackError, getQuotaCooldown, isModelLockActive, getModelLockUntil, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG, AUTH_DEMOTE_CONFIG, LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL } from "open-sse/config/errorConfig.js";
 import { isBackoffText } from "open-sse/utils/errorClass.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
@@ -467,9 +467,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
             const quota = antigravityQuotaCache?.get(c.id)?.[model];
             if (quota?.circuitBreaker) return false;
             const locked = isModelLockActive(c, model);
-            // The account-wide last error can belong to a different model.
-            const lockScope = c[getModelLockKey(model)] ? model || "__all" : "__all";
-            const limitedLock = locked && c[`${MODEL_LIMIT_PREFIX}${lockScope}`] === true;
+            // Only a lock still in force counts; the account-wide one can belong to a different model.
+            const activeScopes = [[getModelLockKey(model), model || "__all"], [MODEL_LOCK_ALL, "__all"]]
+              .filter(([key]) => new Date(c[key] || 0).getTime() > Date.now())
+              .map(([, scope]) => scope);
+            const limitedLock = locked && activeScopes.some(scope => c[`${MODEL_LIMIT_PREFIX}${scope}`] === true);
             return (!locked || limitedLock) && (limitedLock || resetStates.get(c.id).blockedUntil > Date.now() ||
               (quota?.remainingPercentage <= 0 && new Date(quota.resetAt).getTime() > Date.now()));
           }),
@@ -625,6 +627,8 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
   const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
   const providerResetAtMs = githubResetAtMs || resetsAtMs;
+  const lockScope = githubResetAtMs ? "__all" : model || "__all";
+  const limitKey = `${MODEL_LIMIT_PREFIX}${lockScope}`;
 
   // Auth rejections build a streak that only a success clears; other errors
   // leave it alone. A dead key is turned off unless it is the provider's last.
@@ -647,9 +651,10 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
 
   const update = {
     ...lockUpdate,
+    // A straggler lands in an existing lock: it can mark it a limit, never unmark it or drop its reset time.
+    [limitKey]: (straggler && conn[limitKey] === true) || isLimitError(status, errorText),
     ...(straggler ? {} : {
-      [`${MODEL_LIMIT_PREFIX}${githubResetAtMs ? "__all" : model || "__all"}`]: isLimitError(status, errorText),
-      [`${PROVIDER_RESET_PREFIX}${githubResetAtMs ? "__all" : model || "__all"}`]:
+      [`${PROVIDER_RESET_PREFIX}${lockScope}`]:
         Number.isFinite(providerResetAtMs) && providerResetAtMs > Date.now() ? new Date(providerResetAtMs).toISOString() : null,
     }),
     testStatus: "unavailable",
