@@ -19,7 +19,7 @@ export function demotedModels(connection) {
 export function demotedLabel(connection) {
   const demoted = demotedModels(connection);
   if (!demoted.length) return null;
-  const line = ({ model, reason }) => `Demoted on ${model} after repeated ${reason || "refusals"}: other keys are used first while they can serve it`;
+  const line = ({ model, reason }) => `Demoted on ${model} after repeated ${reason || "refusals"}: used after keys not demoted on ${model}, and retried there now and then`;
   return { text: `Demoted on ${demoted.map(d => d.model).join(", ")}`, title: demoted.map(line).join("\n") };
 }
 

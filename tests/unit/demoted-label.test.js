@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { DEMOTE_PREFIX, demotedLabel, demotedModels, isDemotionError } from "../../src/shared/utils/connectionStatus.js";
-import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey } from "../../src/lib/db/repos/connectionsRepo.js";
+import { demotedLabel, demotedModels, isDemotionError } from "../../src/shared/utils/connectionStatus.js";
+// Keys built the way the repo writes them.
+import { getAuthDemoteKey } from "../../src/lib/db/repos/connectionsRepo.js";
 import { withToggledActive } from "../../src/app/(dashboard)/dashboard/providers/utils.js";
 
 const OPUS = getAuthDemoteKey("claude-opus-5-5");
@@ -9,24 +10,24 @@ const REFUSED = '403 "Not authorized for this endpoint"';
 const demoted = (extra = {}) => ({ count: 37, firstAt: "2026-11-02T01:28:10.416Z", demotedAt: "2026-11-02T02:29:57.665Z", reason: REFUSED, nextProbeAt: "2026-11-02T17:33:27.858Z", ...extra });
 
 describe("demoted key label", () => {
-  it("reads the records the repo writes", () => {
-    expect(AUTH_DEMOTE_PREFIX).toBe(DEMOTE_PREFIX);
-  });
-
   it("names the model and its refusal", () => {
     const label = demotedLabel({ [OPUS]: demoted(), [KIMI]: { count: 1, firstAt: "2026-11-02T03:31:00.000Z" } });
     expect(label).toEqual({
       text: "Demoted on claude-opus-5-5",
-      title: `Demoted on claude-opus-5-5 after repeated ${REFUSED}: other keys are used first while they can serve it`,
+      title: `Demoted on claude-opus-5-5 after repeated ${REFUSED}: used after keys not demoted on claude-opus-5-5, and retried there now and then`,
     });
+  });
+
+  it("lists only models with a demotion", () => {
+    expect(demotedModels({ [OPUS]: demoted(), [KIMI]: { count: 2 } })).toEqual([{ model: "claude-opus-5-5", reason: REFUSED }]);
   });
 
   it("gives each demoted model its own refusal", () => {
     const label = demotedLabel({ [OPUS]: demoted(), [KIMI]: demoted({ reason: '403 "Forbidden"' }) });
     expect(label.text).toBe("Demoted on claude-opus-5-5, kimi-k3");
     expect(label.title.split("\n")).toEqual([
-      `Demoted on claude-opus-5-5 after repeated ${REFUSED}: other keys are used first while they can serve it`,
-      'Demoted on kimi-k3 after repeated 403 "Forbidden": other keys are used first while they can serve it',
+      `Demoted on claude-opus-5-5 after repeated ${REFUSED}: used after keys not demoted on claude-opus-5-5, and retried there now and then`,
+      'Demoted on kimi-k3 after repeated 403 "Forbidden": used after keys not demoted on kimi-k3, and retried there now and then',
     ]);
   });
 
@@ -41,7 +42,6 @@ describe("demoted key label", () => {
     expect(demotedLabel({ "modelLock_claude-opus-5-5": demoted() })).toBeNull();
     expect(demotedLabel({})).toBeNull();
     expect(demotedLabel(null)).toBeNull();
-    expect(demotedModels({ [OPUS]: demoted() }).map(d => d.model)).toEqual(["claude-opus-5-5"]);
   });
 
   it("recognises the lastError written at demotion, which the label replaces or which is stale", () => {
