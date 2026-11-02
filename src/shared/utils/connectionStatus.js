@@ -23,17 +23,21 @@ export function demotedModels(connection) {
     });
 }
 
-// The dashboard's label for demotedModels, with one hover line per model.
+// The dashboard's label for demotedModels, with one hover line per model. The
+// router still uses a demoted key when no other key can serve the model, and
+// tests it at most once per probe interval; when, depends on the strategy.
 export function demotedLabel(connection, now = Date.now()) {
   const demoted = demotedModels(connection);
   if (!demoted.length) return null;
   const line = ({ model, reason, nextTestAt }) => `Other keys go first on ${model} after repeated ${reason || "refusals"}; `
-    + (nextTestAt > now ? `not tested there again before ${new Date(nextTestAt).toLocaleString()}` : "tested on its next request for this model");
+    + (nextTestAt > now ? `not tested on ${model} again before ${new Date(nextTestAt).toLocaleString()}` : `due for a test on ${model}`);
   return { text: `Demoted on ${demoted.map(d => d.model).join(", ")}`, title: demoted.map(line).join("\n") };
 }
 
-// lastError as written when the key was demoted on one of these models: the
-// label already says it.
-export function isDemotionError(connection, lastError = connection?.lastError) {
-  return !!lastError && demotedModels(connection).some(({ model }) => String(lastError).startsWith(`${model} demoted after repeated `));
+// lastError as auth.js writes it on demotion ("<model> demoted after repeated
+// <status> …"). The label says it while the key is demoted; once the record is
+// gone (a success, or the key turned back on) the message is stale.
+const DEMOTION_ERROR = /^\S+ demoted after repeated \d{3}\b/;
+export function isDemotionError(connection) {
+  return DEMOTION_ERROR.test(String(connection?.lastError || ""));
 }
