@@ -14,7 +14,7 @@ describe("demoted key label", () => {
     const label = demotedLabel({ [OPUS]: demoted(), [KIMI]: { count: 1, firstAt: "2026-11-02T03:31:00.000Z" } });
     expect(label).toEqual({
       text: "Demoted on claude-opus-5-5",
-      title: `Demoted on claude-opus-5-5 after repeated ${REFUSED}: used after keys not demoted on claude-opus-5-5, and retried there now and then`,
+      title: `Demoted on claude-opus-5-5 after repeated ${REFUSED}: used after keys not demoted on claude-opus-5-5; a success there, or switching the key off and on, clears it`,
     });
   });
 
@@ -26,8 +26,8 @@ describe("demoted key label", () => {
     const label = demotedLabel({ [OPUS]: demoted(), [KIMI]: demoted({ reason: '403 "Forbidden"' }) });
     expect(label.text).toBe("Demoted on claude-opus-5-5, kimi-k3");
     expect(label.title.split("\n")).toEqual([
-      `Demoted on claude-opus-5-5 after repeated ${REFUSED}: used after keys not demoted on claude-opus-5-5, and retried there now and then`,
-      'Demoted on kimi-k3 after repeated 403 "Forbidden": used after keys not demoted on kimi-k3, and retried there now and then',
+      `Demoted on claude-opus-5-5 after repeated ${REFUSED}: used after keys not demoted on claude-opus-5-5; a success there, or switching the key off and on, clears it`,
+      'Demoted on kimi-k3 after repeated 403 "Forbidden": used after keys not demoted on kimi-k3; a success there, or switching the key off and on, clears it',
     ]);
   });
 
