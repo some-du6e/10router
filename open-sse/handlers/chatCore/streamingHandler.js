@@ -3,7 +3,7 @@ import { needsTranslation } from "../../translator/index.js";
 import { createSSETransformStreamWithLogger, createPassthroughStreamWithLogger } from "../../utils/stream.js";
 import { pipeWithDisconnect } from "../../utils/streamHandler.js";
 import { PROVIDERS } from "../../config/providers.js";
-import { HTTP_STATUS, STREAM_STALL_TIMEOUT_MS } from "../../config/runtimeConfig.js";
+import { HTTP_STATUS, STREAM_STALL_TIMEOUT_MS, STREAM_KEEPALIVE_MS } from "../../config/runtimeConfig.js";
 import { buildAbortedResponsesTerminalBytes } from "../../utils/responsesStreamHelpers.js";
 import { buildStreamErrorBytes } from "../../utils/streamHelpers.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLine } from "./requestDetail.js";
@@ -19,6 +19,11 @@ const CODEX_SOURCE_TO_TARGET = {
   [FORMATS.GEMINI]: FORMATS.ANTIGRAVITY,
   [FORMATS.GEMINI_CLI]: FORMATS.ANTIGRAVITY,
 };
+
+// Client formats whose SSE parsers skip comment lines (OpenAI SDK, Anthropic SDK,
+// Codex). Gemini's SDK matches `data:` at the head of its buffer and would stall
+// on one, so it gets no keepalive.
+const KEEPALIVE_FORMATS = new Set([FORMATS.OPENAI, FORMATS.CLAUDE, FORMATS.OPENAI_RESPONSES]);
 
 /**
  * Determine which SSE transform stream to use based on provider/format.
@@ -91,7 +96,8 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
     ? buildAbortedResponsesTerminalBytes
     : (message) => buildStreamErrorBytes(HTTP_STATUS.GATEWAY_TIMEOUT, message, sourceFormat);
   const stallTimeoutMs = PROVIDERS[provider]?.stallTimeoutMs || STREAM_STALL_TIMEOUT_MS;
-  const transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal, stallTimeoutMs);
+  const keepaliveMs = KEEPALIVE_FORMATS.has(sourceFormat) ? STREAM_KEEPALIVE_MS : 0;
+  const transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal, stallTimeoutMs, keepaliveMs);
 
   saveRequestDetail(buildRequestDetail({
     provider, model, connectionId,
