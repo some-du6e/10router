@@ -1,0 +1,40 @@
+name: Dashboard key status
+
+on:
+  pull_request:
+    paths:
+      - "src/shared/utils/connectionStatus.js"
+      - "src/app/(dashboard)/dashboard/providers/[[]id]/ConnectionRow.js"
+      - "src/app/(dashboard)/dashboard/providers/[[]id]/CustomEndpointPage.tsx"
+      - "tests/unit/demoted-label.test.js"
+      - ".github/workflows/dashboard-key-status.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Unit test
+        working-directory: tests
+        run: ./node_modules/.bin/vitest run unit/demoted-label.test.js
+      - name: Lint
+        run: >
+          ./node_modules/.bin/eslint
+          src/shared/utils/connectionStatus.js
+          "src/app/(dashboard)/dashboard/providers/[id]/ConnectionRow.js"
+          "src/app/(dashboard)/dashboard/providers/[id]/CustomEndpointPage.tsx"
+      - name: Type check
+        run: ./node_modules/.bin/tsc --noEmit -p . 2>&1 | grep -F "providers/[id]/CustomEndpointPage.tsx" && exit 1 || exit 0
