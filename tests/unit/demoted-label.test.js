@@ -32,7 +32,7 @@ describe("demoted key label", () => {
   });
 
   it("falls back to 'refusals' for a record with no reason", () => {
-    expect(demotedLabel({ [OPUS]: demoted({ reason: undefined }) }).title).toContain("after repeated refusals:");
+    expect(demotedLabel({ [OPUS]: demoted({ reason: undefined }) }).title).toBe("Demoted on claude-opus-5-5 after repeated refusals. Switching the key off and on clears it.");
   });
 
   it("shows nothing for a key still counting refusals, one a success cleared, or one turned off", () => {
@@ -69,6 +69,10 @@ describe("toggling a demoted key", () => {
   it("picks up a demotion the server wrote after the page loaded", () => {
     const off = withToggledActive({ id: "k", isActive: true }, false, { id: "k", isActive: false, [KIMI]: demoted() });
     expect(off[KIMI].demotedAt).toBeTruthy();
+  });
+
+  it("drops a local demotion the server row no longer has", () => {
+    expect(withToggledActive({ id: "k", isActive: false, [OPUS]: demoted() }, true, { id: "k", isActive: true })[OPUS]).toBeNull();
   });
 
   it("keeps local demotions when the server sent no row back", () => {
