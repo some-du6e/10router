@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
-import { demotedLabel, getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
+import { demotedLabel, isDemotionError, getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
 import PropTypes from "prop-types";
 import { Badge, Toggle, Tooltip } from "@/shared/components";
 import { useBlurEmails } from "@/shared/hooks/useBlurEmails";
@@ -127,7 +127,7 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
   }, [modelLockUntil]);
 
   // Determine effective status (override unavailable if cooldown expired)
-  const demoted = connection.isActive === false ? null : demotedLabel(connection);
+  const demoted = demotedLabel(connection);
   const effectiveStatus = (connection.testStatus === "unavailable" && !isCooldown)
     ? "active"  // Cooldown expired u2192 treat as active
     : connection.testStatus;
@@ -203,7 +203,7 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
                 {demoted.text}
               </span>
             )}
-            {connection.lastError && connection.isActive !== false && (
+            {connection.lastError && connection.isActive !== false && !isDemotionError(connection) && (
               <span className="max-w-full truncate text-xs text-red-500 sm:max-w-[300px]" title={connection.lastError}>
                 {connection.lastError}
               </span>

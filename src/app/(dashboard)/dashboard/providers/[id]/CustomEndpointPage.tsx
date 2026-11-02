@@ -21,7 +21,7 @@ import { PROTOCOL_NAME, prettyModel, readNdjson } from "../components/AddEndpoin
 import type { DetectProgress } from "@/lib/endpointDetect.js";
 import { shrinkIcon } from "../components/shrinkIcon.js";
 import { connectionsToTest } from "../utils.js";
-import { demotedLabel } from "@/shared/utils/connectionStatus.js";
+import { demotedLabel, isDemotionError } from "@/shared/utils/connectionStatus.js";
 import EndpointAdvancedStudio from "../components/EndpointAdvancedStudio";
 import EndpointIcon, { TILE_BG } from "@/shared/components/EndpointIcon";
 import type { StudioExtra } from "../components/EndpointAdvancedStudio";
@@ -462,7 +462,7 @@ function KeysCard({ connections, onAddKey, onEditKey, onDeleteKey, onToggleKey, 
               : <Badge v="warning" dot="bg-yellow-500">unverified</Badge>;
             const own = k.providerSpecificData?.ownBaseUrl ? (() => { try { return new URL(k.providerSpecificData!.baseUrl || "").host; } catch { return ""; } })() : "";
             const masked = /…/.test(k.name || "");
-            const demoted = off ? null : demotedLabel(k);
+            const demoted = demotedLabel(k);
             return (
               <div key={k.id} className={`group flex min-w-0 flex-col gap-3 rounded-lg p-2 transition-colors hover:bg-black/[0.02] dark:hover:bg-white/[0.02] sm:flex-row sm:items-center sm:justify-between ${off ? "opacity-60" : ""}`}>
                 <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -474,7 +474,7 @@ function KeysCard({ connections, onAddKey, onEditKey, onDeleteKey, onToggleKey, 
                       <Badge>API Key</Badge>
                       {own && <span className="truncate text-[11px] text-text-muted">{own}</span>}
                       {demoted && <span className="max-w-full truncate text-xs text-amber-600 dark:text-amber-400 sm:max-w-[260px]" title={demoted.title}>{demoted.text}</span>}
-                      {k.lastError && !off && <span className="max-w-full truncate text-xs text-red-500 sm:max-w-[300px]" title={k.lastError}>{k.lastError}</span>}
+                      {k.lastError && !off && !isDemotionError(k) && <span className="max-w-full truncate text-xs text-red-500 sm:max-w-[300px]" title={k.lastError}>{k.lastError}</span>}
                       {off && k.autoDisabledAt && <span className="max-w-full truncate text-xs text-red-500 sm:max-w-[360px]" title={`Turned off automatically ${new Date(k.autoDisabledAt).toLocaleString()}: ${k.autoDisabledReason || ""}`}>Turned off automatically: {k.autoDisabledReason}</span>}
                       <span className="text-xs text-text-muted">#{i + 1}</span>
                     </div>
