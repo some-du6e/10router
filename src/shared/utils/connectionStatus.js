@@ -5,39 +5,26 @@ export function getStatusVariant(isActive, effectiveStatus) {
   return "default";
 }
 
-// Must match AUTH_DEMOTE_PREFIX in src/lib/db/repos/connectionsRepo.js
-// (server-only, so not imported here).
+// authDemote_<model>: a key's demotion record on that model (see connectionsRepo.js).
 export const DEMOTE_PREFIX = "authDemote_";
 
-// Models an active key is demoted on after repeated 403s there: records with
-// demotedAt (a success on the model deletes its record; turning the key back
-// on deletes them all). The next test waits for both nextProbeAt and the
-// last probe's lease, like the router and /api/models/availability.
+// Models an active key is demoted on: records with demotedAt.
 export function demotedModels(connection) {
   if (!connection || connection.isActive === false) return [];
   return Object.entries(connection)
     .filter(([key, record]) => key.startsWith(DEMOTE_PREFIX) && record?.demotedAt)
-    .map(([key, record]) => {
-      const times = [record.nextProbeAt, record.leaseUntil].filter(Boolean).map(t => new Date(t).getTime()).filter(Number.isFinite);
-      return { model: key.slice(DEMOTE_PREFIX.length), reason: record.reason || null, nextTestAt: times.length ? Math.max(...times) : null };
-    });
+    .map(([key, record]) => ({ model: key.slice(DEMOTE_PREFIX.length), reason: record.reason || null }));
 }
 
-// The dashboard's label for demotedModels, with one hover line per model. The
-// router still uses a demoted key when no other key can serve the model, and
-// tests it at most once per probe interval; when, depends on the strategy.
-export function demotedLabel(connection, now = Date.now()) {
+export function demotedLabel(connection) {
   const demoted = demotedModels(connection);
   if (!demoted.length) return null;
-  const line = ({ model, reason, nextTestAt }) => `Other keys go first on ${model} after repeated ${reason || "refusals"}, `
-    + `but it still serves ${model} when none of them can; `
-    + (nextTestAt > now ? `its next test there starts no sooner than ${new Date(nextTestAt).toLocaleString()}` : `its next test there can start now`);
+  const line = ({ model, reason }) => `Demoted on ${model} after repeated ${reason || "refusals"}: other keys are used first while they can serve it`;
   return { text: `Demoted on ${demoted.map(d => d.model).join(", ")}`, title: demoted.map(line).join("\n") };
 }
 
-// lastError as auth.js writes it on demotion ("<model> demoted after repeated
-// <status> …"). The label says it while the key is demoted; once the record is
-// gone (a success, or the key turned back on) the message is stale.
+// The lastError auth.js writes on demotion: the label shows it while the key
+// is demoted, and it is stale once the record is gone.
 const DEMOTION_ERROR = /^\S+ demoted after repeated \d{3}\b/;
 export function isDemotionError(connection) {
   return DEMOTION_ERROR.test(String(connection?.lastError || ""));

@@ -24,8 +24,8 @@ export function matchesStatusFilter(statusFilter, stats, isNoAuth = false) {
 // turning a key on clears it, turning an already auto-disabled key off keeps it.
 // Demotions (authDemote_<model>) follow the server too: turning a key on drops them.
 export function withToggledActive(connection, isActive, saved) {
-  const demotions = Object.fromEntries(Object.keys({ ...connection, ...saved })
-    .filter((key) => key.startsWith(DEMOTE_PREFIX)).map((key) => [key, saved ? saved[key] ?? null : connection[key]]));
+  const demotions = saved ? Object.fromEntries(Object.keys({ ...connection, ...saved })
+    .filter((key) => key.startsWith(DEMOTE_PREFIX)).map((key) => [key, saved[key] ?? null])) : {};
   return { ...connection, ...demotions, isActive, autoDisabledAt: saved?.autoDisabledAt ?? null, autoDisabledReason: saved?.autoDisabledReason ?? null };
 }
 

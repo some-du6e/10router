@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { DEMOTE_PREFIX } from "../../../shared/utils/connectionStatus.js";
 
 const OPTIONAL_FIELDS = [
   "displayName", "email", "globalPriority", "defaultModel",
@@ -22,7 +23,7 @@ const AUTO_DISABLE_FIELDS = ["autoDisabledAt", "autoDisabledReason", ...AUTH_STR
 // authDemote_<model>: sse/services/auth.js's count of a key's 403s on that
 // model, and its demotion there once they trip. authDemoteOkAt: when the key
 // last served anything while it had such a record (compared with its firstAt).
-export const AUTH_DEMOTE_PREFIX = "authDemote_";
+export const AUTH_DEMOTE_PREFIX = DEMOTE_PREFIX;
 export const getAuthDemoteKey = (model) => `${AUTH_DEMOTE_PREFIX}${model}`;
 
 function applyAutoDisableTransition(existing, merged, data) {

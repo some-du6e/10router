@@ -126,8 +126,9 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
     };
   }, [modelLockUntil]);
 
-  // Determine effective status (override unavailable if cooldown expired)
   const demoted = demotedLabel(connection);
+
+  // Determine effective status (override unavailable if cooldown expired)
   const effectiveStatus = (connection.testStatus === "unavailable" && !isCooldown)
     ? "active"  // Cooldown expired u2192 treat as active
     : connection.testStatus;
