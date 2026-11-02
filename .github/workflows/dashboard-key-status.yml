@@ -44,7 +44,8 @@ jobs:
           "src/app/(dashboard)/dashboard/providers/[id]/CustomEndpointPage.tsx"
           "src/app/(dashboard)/dashboard/providers/components/ConnectionsCard.js"
           "src/app/(dashboard)/dashboard/providers/utils.js"
-      # The repo has type errors elsewhere; fail only on the changed .tsx file.
+      # Fails only on errors in the changed .tsx file, so unrelated type errors
+      # elsewhere don't block it.
       - name: Type check CustomEndpointPage.tsx
         run: |
           set +e

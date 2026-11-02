@@ -18,31 +18,31 @@ describe("demoted key label", () => {
   it("names the model, its refusal, and when it is next tested", () => {
     const label = demotedLabel({ [OPUS]: demoted(), [KIMI]: { count: 1, firstAt: at(-60e3) } }, NOW);
     expect(label.text).toBe("Demoted on claude-opus-5-5");
-    expect(label.title).toBe(`Other keys go first on claude-opus-5-5 after repeated ${REFUSED}; not tested on claude-opus-5-5 again before ${new Date(NOW + 3 * 3600e3).toLocaleString()}`);
+    expect(label.title).toBe(`Other keys go first on claude-opus-5-5 after repeated ${REFUSED}, but it still serves claude-opus-5-5 when none of them can; its next test there starts no sooner than ${new Date(NOW + 3 * 3600e3).toLocaleString()}`);
   });
 
   it("gives each demoted model its own refusal and test time", () => {
     const label = demotedLabel({ [OPUS]: demoted(), [KIMI]: demoted({ reason: "403 \"Forbidden\"", nextProbeAt: at(60e3) }) }, NOW);
     expect(label.text).toBe("Demoted on claude-opus-5-5, kimi-k3");
     expect(label.title.split("\n")).toEqual([
-      `Other keys go first on claude-opus-5-5 after repeated ${REFUSED}; not tested on claude-opus-5-5 again before ${new Date(NOW + 3 * 3600e3).toLocaleString()}`,
-      `Other keys go first on kimi-k3 after repeated 403 "Forbidden"; not tested on kimi-k3 again before ${new Date(NOW + 60e3).toLocaleString()}`,
+      `Other keys go first on claude-opus-5-5 after repeated ${REFUSED}, but it still serves claude-opus-5-5 when none of them can; its next test there starts no sooner than ${new Date(NOW + 3 * 3600e3).toLocaleString()}`,
+      `Other keys go first on kimi-k3 after repeated 403 "Forbidden", but it still serves kimi-k3 when none of them can; its next test there starts no sooner than ${new Date(NOW + 60e3).toLocaleString()}`,
     ]);
   });
 
   it("waits for the last probe's lease as well as nextProbeAt", () => {
     const label = demotedLabel({ [OPUS]: demoted({ nextProbeAt: at(-60e3), leaseUntil: at(5 * 60e3) }) }, NOW);
-    expect(label.title).toContain(`before ${new Date(NOW + 5 * 60e3).toLocaleString()}`);
+    expect(label.title).toContain(`no sooner than ${new Date(NOW + 5 * 60e3).toLocaleString()}`);
   });
 
-  it("says a test is due, not a time in the past", () => {
-    expect(demotedLabel({ [OPUS]: demoted({ nextProbeAt: at(-60e3) }) }, NOW).title).toMatch(/; due for a test on claude-opus-5-5$/);
-    expect(demotedLabel({ [OPUS]: demoted({ nextProbeAt: undefined }) }, NOW).title).toMatch(/; due for a test on claude-opus-5-5$/);
-    expect(demotedLabel({ [OPUS]: demoted({ nextProbeAt: "garbage", leaseUntil: at(60e3) }) }, NOW).title).toContain(`before ${new Date(NOW + 60e3).toLocaleString()}`);
+  it("says a test can start now, not a time in the past", () => {
+    expect(demotedLabel({ [OPUS]: demoted({ nextProbeAt: at(-60e3) }) }, NOW).title).toMatch(/; its next test there can start now$/);
+    expect(demotedLabel({ [OPUS]: demoted({ nextProbeAt: undefined }) }, NOW).title).toMatch(/; its next test there can start now$/);
+    expect(demotedLabel({ [OPUS]: demoted({ nextProbeAt: "garbage", leaseUntil: at(60e3) }) }, NOW).title).toContain(`no sooner than ${new Date(NOW + 60e3).toLocaleString()}`);
   });
 
   it("falls back to 'refusals' for a record with no reason", () => {
-    expect(demotedLabel({ [OPUS]: demoted({ reason: undefined }) }, NOW).title).toContain("after repeated refusals;");
+    expect(demotedLabel({ [OPUS]: demoted({ reason: undefined }) }, NOW).title).toContain("after repeated refusals,");
   });
 
   it("shows nothing for a key still counting refusals, one a success cleared, or one turned off", () => {
@@ -62,6 +62,7 @@ describe("demoted key label", () => {
     expect(isDemotionError({ [OPUS]: null, lastError: message })).toBe(true);
     expect(isDemotionError({ lastError: '[403]: {"code":"003001","message":"Not authorized for this endpoint"}' })).toBe(false);
     expect(isDemotionError({ lastError: "Request demoted after repeated retries" })).toBe(false);
+    expect(isDemotionError({ lastError: `upstream says: ${message}` })).toBe(false);
     expect(isDemotionError({})).toBe(false);
     expect(isDemotionError(null)).toBe(false);
   });

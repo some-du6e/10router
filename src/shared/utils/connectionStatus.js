@@ -29,8 +29,9 @@ export function demotedModels(connection) {
 export function demotedLabel(connection, now = Date.now()) {
   const demoted = demotedModels(connection);
   if (!demoted.length) return null;
-  const line = ({ model, reason, nextTestAt }) => `Other keys go first on ${model} after repeated ${reason || "refusals"}; `
-    + (nextTestAt > now ? `not tested on ${model} again before ${new Date(nextTestAt).toLocaleString()}` : `due for a test on ${model}`);
+  const line = ({ model, reason, nextTestAt }) => `Other keys go first on ${model} after repeated ${reason || "refusals"}, `
+    + `but it still serves ${model} when none of them can; `
+    + (nextTestAt > now ? `its next test there starts no sooner than ${new Date(nextTestAt).toLocaleString()}` : `its next test there can start now`);
   return { text: `Demoted on ${demoted.map(d => d.model).join(", ")}`, title: demoted.map(line).join("\n") };
 }
 
