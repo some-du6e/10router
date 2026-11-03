@@ -80,8 +80,7 @@ describe("stream keepalive", () => {
   });
 
   it("is a comment line every client parser skips", () => {
-    expect(SSE_KEEPALIVE.startsWith(":")).toBe(true);
-    expect(SSE_KEEPALIVE.endsWith("\n\n")).toBe(true);
+    expect(SSE_KEEPALIVE).toBe(": keepalive\n\n");
   });
 
   it("stays quiet while chunks keep flowing", async () => {
@@ -193,6 +192,13 @@ describe("STREAM_KEEPALIVE_MS", () => {
     const { STREAM_KEEPALIVE_MS, STREAM_STALL_TIMEOUT_MS } = await import("../../open-sse/config/runtimeConfig.js");
     expect(STREAM_KEEPALIVE_MS).toBe(0);
     expect(STREAM_STALL_TIMEOUT_MS).toBe(360_000);
+  });
+
+  it.each(["0.5", "abc", "-1", "15s", String(2 ** 31)])("ignores %s", async (raw) => {
+    vi.stubEnv("STREAM_KEEPALIVE_MS", raw);
+    vi.resetModules();
+    const { STREAM_KEEPALIVE_MS } = await import("../../open-sse/config/runtimeConfig.js");
+    expect(STREAM_KEEPALIVE_MS).toBe(15_000);
   });
 });
 

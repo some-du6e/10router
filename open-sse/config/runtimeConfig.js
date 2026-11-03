@@ -32,12 +32,15 @@ export const MEMORY_CONFIG = {
   maxAffinitySessions: 5000,
 };
 
-// Parse an integer env override (>= min), falling back to a default.
+// Largest delay setTimeout honours; above it the timer fires at once.
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+// Parse an integer env override (min..MAX_TIMER_MS), falling back to a default.
 function envMs(name, def, min = 1) {
-  const raw = process.env[name];
-  if (raw == null || raw === "") return def;
-  const n = parseInt(raw, 10);
-  return Number.isFinite(n) && n >= min ? n : def;
+  const raw = process.env[name]?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return def;
+  const n = Number(raw);
+  return n >= min && n <= MAX_TIMER_MS ? n : def;
 }
 
 function envUrl(name, def) {
