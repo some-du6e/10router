@@ -21,8 +21,7 @@ const CODEX_SOURCE_TO_TARGET = {
 };
 
 // Client formats whose SSE parsers skip comment lines (OpenAI SDK, Anthropic SDK,
-// Codex). Gemini's SDK matches `data:` at the head of its buffer and would stall
-// on one, so it gets no keepalive.
+// Codex). Everything else gets no keepalive until its parser is checked.
 const KEEPALIVE_FORMATS = new Set([FORMATS.OPENAI, FORMATS.CLAUDE, FORMATS.OPENAI_RESPONSES]);
 
 /**

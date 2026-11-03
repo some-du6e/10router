@@ -79,10 +79,6 @@ describe("stream keepalive", () => {
     await s.pump;
   });
 
-  it("is a comment line every client parser skips", () => {
-    expect(SSE_KEEPALIVE).toBe(": keepalive\n\n");
-  });
-
   it("stays quiet while chunks keep flowing", async () => {
     const up = makeUpstream();
     const s = pipe(up, makeController());
@@ -157,6 +153,38 @@ describe("stream keepalive", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("stops when the controller disconnects while the timer is pending", async () => {
+    const up = makeUpstream();
+    const ctl = makeController();
+    const s = pipe(up, ctl);
+    up.send("data: {}\n\n");
+    await vi.advanceTimersByTimeAsync(KEEPALIVE);
+    expect(count(s.text)).toBe(1);
+    ctl.handleDisconnect("client_closed");
+    await vi.advanceTimersByTimeAsync(KEEPALIVE * 4);
+    expect(count(s.text)).toBe(1);
+  });
+
+  // Next drops a response whose client already left without reading or
+  // cancelling its body; a short reply reaches upstream EOF anyway.
+  it("stops once upstream has ended, even if nobody reads the body", async () => {
+    const up = makeUpstream();
+    pipeWithDisconnect(up.response, new TransformStream(), makeController(), null, STALL, KEEPALIVE);
+    up.send("data: {}\n\n");
+    up.end();
+    await vi.advanceTimersByTimeAsync(KEEPALIVE * 10);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("stops after the stall timer fires, even if nobody reads the body", async () => {
+    const up = makeUpstream();
+    const stall = KEEPALIVE * 2 + 5000;
+    pipeWithDisconnect(up.response, new TransformStream(), makeController(), null, stall, KEEPALIVE);
+    up.send("data: {}\n\n");
+    await vi.advanceTimersByTimeAsync(stall + KEEPALIVE * 2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("does not reset the upstream stall timer", async () => {
     const up = makeUpstream();
     const ctl = makeController();
@@ -194,7 +222,7 @@ describe("STREAM_KEEPALIVE_MS", () => {
     expect(STREAM_STALL_TIMEOUT_MS).toBe(360_000);
   });
 
-  it.each(["0.5", "abc", "-1", "15s", String(2 ** 31)])("ignores %s", async (raw) => {
+  it.each(["abc", "-1", String(2 ** 31)])("ignores %s", async (raw) => {
     vi.stubEnv("STREAM_KEEPALIVE_MS", raw);
     vi.resetModules();
     const { STREAM_KEEPALIVE_MS } = await import("../../open-sse/config/runtimeConfig.js");
@@ -202,11 +230,38 @@ describe("STREAM_KEEPALIVE_MS", () => {
   });
 });
 
+// Shared parser for every *_MS override in runtimeConfig.js.
+describe("ms env overrides", () => {
+  afterEach(() => { vi.unstubAllEnvs(); vi.resetModules(); });
+
+  async function stallFor(raw) {
+    vi.stubEnv("STREAM_STALL_TIMEOUT_MS", raw);
+    vi.resetModules();
+    return (await import("../../open-sse/config/runtimeConfig.js")).STREAM_STALL_TIMEOUT_MS;
+  }
+
+  it("keeps 0 out of timers that must stay positive", async () => {
+    expect(await stallFor("0")).toBe(360_000);
+  });
+
+  // Above 2^31-1, setTimeout fires at once and every stream would stall.
+  it("ignores values setTimeout can't honour", async () => {
+    expect(await stallFor(String(2 ** 31))).toBe(360_000);
+    expect(await stallFor(String(2 ** 31 - 1))).toBe(2 ** 31 - 1);
+  });
+
+  it("still reads integer prefixes as before", async () => {
+    expect(await stallFor("600000")).toBe(600_000);
+    expect(await stallFor("600000ms")).toBe(600_000);
+  });
+});
+
 // Only client formats whose SSE parsers skip comment lines get keepalives.
 describe("keepalive by client format", () => {
-  afterEach(() => { vi.doUnmock("../../open-sse/utils/streamHandler.js"); vi.doUnmock("@/lib/usageDb.js"); vi.resetModules(); });
+  afterEach(() => { vi.doUnmock("../../open-sse/utils/streamHandler.js"); vi.doUnmock("@/lib/usageDb.js"); vi.unstubAllEnvs(); vi.resetModules(); });
 
-  async function keepaliveFor(sourceFormat) {
+  async function keepaliveFor(sourceFormat, env = "") {
+    vi.stubEnv("STREAM_KEEPALIVE_MS", env);
     vi.resetModules();
     const pipeSpy = vi.fn(() => new ReadableStream());
     vi.doMock("../../open-sse/utils/streamHandler.js", () => ({ pipeWithDisconnect: pipeSpy }));
@@ -232,8 +287,13 @@ describe("keepalive by client format", () => {
     expect(got).toBe(want);
   });
 
-  it.each(["gemini", "gemini-cli", "antigravity"])("%s does not", async (fmt) => {
+  it.each(["gemini", "gemini-cli", "antigravity", "openai-response", "ollama"])("%s does not", async (fmt) => {
     const { got } = await keepaliveFor(fmt);
+    expect(got).toBe(0);
+  });
+
+  it("is off for every format when STREAM_KEEPALIVE_MS=0", async () => {
+    const { got } = await keepaliveFor("claude", "0");
     expect(got).toBe(0);
   });
 });

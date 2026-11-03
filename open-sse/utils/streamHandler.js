@@ -106,8 +106,10 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
  * @param {number} [keepaliveMs] - After this long without output, write an
  * SSE comment (only between events). 0 disables. Output-side only: it never
  * touches the upstream stall timer.
+ * @param {function} [upstreamOpen] - Keepalives stop once this returns false,
+ * so a body nobody reads or cancels doesn't keep a timer alive forever.
  */
-export function createDisconnectAwareStream(transformStream, streamController, onAbortTerminal = null, keepaliveMs = 0) {
+export function createDisconnectAwareStream(transformStream, streamController, onAbortTerminal = null, keepaliveMs = 0, upstreamOpen = () => true) {
   const reader = transformStream.readable.getReader();
   const writer = transformStream.writable.getWriter();
   let terminalEmitted = false;
@@ -123,7 +125,7 @@ export function createDisconnectAwareStream(transformStream, streamController, o
     clearKeepalive();
     keepaliveTimer = setTimeout(() => {
       keepaliveTimer = null;
-      if (!streamController.isConnected()) return;
+      if (!streamController.isConnected() || !upstreamOpen()) return;
       if (trailingNewlines >= 2) {
         try { controller.enqueue(KEEPALIVE_BYTES); } catch { return; }
       }
@@ -131,7 +133,7 @@ export function createDisconnectAwareStream(transformStream, streamController, o
     }, keepaliveMs);
   };
   const trackTail = (value) => {
-    const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
+    const bytes = value;
     if (!bytes?.length) return;
     let i = bytes.length - 1;
     let nl = 0;
@@ -304,7 +306,10 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     { readable: transformedBody, writable: { getWriter: () => ({ abort: () => Promise.resolve() }) } },
     wrappedController,
     onAbortTerminal ? () => onAbortTerminal(abortMessage) : null,
-    keepaliveMs
+    keepaliveMs,
+    // The stall timer runs exactly while upstream is open: cleared at EOF, on
+    // every termination, and when it fires.
+    () => stallTimer !== null
   );
 }
 
