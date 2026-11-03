@@ -366,7 +366,7 @@ export default function RequestDetailsTab() {
             icon={live ? "pause" : "play_arrow"}
             onClick={() => setLive(value => !value)}
           >
-            {live ? "Auto-refresh on" : "Auto-refresh off"}
+            {live ? "Pause auto-refresh" : "Resume auto-refresh"}
           </Button>
         </div>
         <div className="overflow-x-auto">
