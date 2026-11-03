@@ -1,56 +1,17 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, memo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, memo } from "react";
 import Card from "@/shared/components/Card";
 import Button from "@/shared/components/Button";
 import Drawer from "@/shared/components/Drawer";
 import Pagination from "@/shared/components/Pagination";
 import { cn } from "@/shared/utils/cn";
 import ConversationInspector, { FullPayloadNotice } from "./ConversationInspector";
-import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
 
-let providerNameCache = null;
-let providerNodesCache = null;
-
-async function fetchProviderNames() {
-  if (providerNameCache && providerNodesCache) {
-    return { providerNameCache, providerNodesCache };
-  }
-
-  const nodesRes = await fetch("/api/provider-nodes");
-  const nodesData = await nodesRes.json();
-  const nodes = nodesData.nodes || [];
-  providerNodesCache = {};
-
-  for (const node of nodes) {
-    providerNodesCache[node.id] = node.name;
-  }
-
-  providerNameCache = {
-    ...AI_PROVIDERS,
-    ...providerNodesCache
-  };
-
-  return { providerNameCache, providerNodesCache };
-}
-
-function getProviderName(providerId, cache) {
-  if (!providerId) return providerId;
-  if (!cache) return providerId;
-
-  const cached = cache[providerId];
-
-  if (typeof cached === 'string') {
-    return cached;
-  }
-
-  if (cached?.name) {
-    return cached.name;
-  }
-
-  const providerConfig = getProviderByAlias(providerId) || AI_PROVIDERS[providerId];
-  return providerConfig?.name || providerId;
-}
+// Page 1 re-fetches on this interval while auto-refresh is on.
+const LIVE_REFRESH_MS = 5000;
+// A hung list fetch would otherwise hold off every later poll.
+const LIST_FETCH_TIMEOUT_MS = 15000;
 
 function CollapsibleSection({ title, children, defaultOpen = false, icon = null }) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
@@ -82,6 +43,21 @@ function CollapsibleSection({ title, children, defaultOpen = false, icon = null 
       )}
     </div>
   );
+}
+
+// The upstream key (provider connection) that served the request. A deleted
+// key keeps only its id.
+function KeyLabel({ detail }) {
+  if (detail.connectionName) return detail.connectionName;
+  if (detail.connectionId) return <span className="font-mono text-text-muted">{detail.connectionId.slice(0, 8)}</span>;
+  return <span className="text-text-muted">—</span>;
+}
+
+function StatusLabel({ detail }) {
+  if (detail.status === "error") {
+    return <span className="font-medium text-red-600" title={detail.errorClass || undefined}>Error</span>;
+  }
+  return <span className="text-green-600">OK</span>;
 }
 
 function getCachedTokens(tokens) {
@@ -145,8 +121,13 @@ export default function RequestDetailsTab() {
   const [requestView, setRequestView] = useState("conversation");
   const [fullState, setFullState] = useState({ loading: false, error: "" });
   const [fullController, setFullController] = useState(null);
+  const [detailState, setDetailState] = useState({ loading: false, error: "" });
+  const detailControllerRef = useRef(null);
+  const listRequestRef = useRef(0);
+  const listInFlightRef = useRef(0);
+  const [listError, setListError] = useState("");
+  const [live, setLive] = useState(true);
   const [providers, setProviders] = useState([]);
-  const [providerNameCache, setProviderNameCache] = useState(null);
   const [filters, setFilters] = useState({
     provider: "",
     startDate: "",
@@ -158,36 +139,52 @@ export default function RequestDetailsTab() {
       const res = await fetch("/api/usage/providers");
       const data = await res.json();
       setProviders(data.providers || []);
-
-      const cache = await fetchProviderNames();
-      setProviderNameCache(cache.providerNameCache);
     } catch (error) {
       console.error("Failed to fetch providers:", error);
     }
   }, []);
 
-  const fetchDetails = useCallback(async () => {
-    setLoading(true);
+  // A silent fetch (auto-refresh) keeps the current rows on screen instead of
+  // swapping in the loading row.
+  const fetchDetails = useCallback(async ({ silent = false } = {}) => {
+    const requestId = ++listRequestRef.current;
+    listInFlightRef.current += 1;
+    if (!silent) setLoading(true);
     try {
       const params = new URLSearchParams({
         page: pagination.page.toString(),
-        pageSize: pagination.pageSize.toString()
+        pageSize: pagination.pageSize.toString(),
+        summary: "1"
       });
       if (filters.provider) params.append("provider", filters.provider);
       if (filters.startDate) params.append("startDate", filters.startDate);
       if (filters.endDate) params.append("endDate", filters.endDate);
 
-      const res = await fetch(`/api/usage/request-details?${params}`);
-      const data = await res.json();
+      const res = await fetch(`/api/usage/request-details?${params}`, { signal: AbortSignal.timeout(LIST_FETCH_TIMEOUT_MS) });
+      const data = await res.json().catch(() => null);
+      // A newer fetch (filter change, later poll) already owns the table.
+      if (requestId !== listRequestRef.current) return;
+      if (!res.ok || !data) throw new Error(data?.error || `Failed to fetch request details (${res.status})`);
 
       setDetails(data.details || []);
       setPagination(prev => ({ ...prev, ...data.pagination }));
+      setListError("");
     } catch (error) {
+      if (requestId !== listRequestRef.current) return;
       console.error("Failed to fetch request details:", error);
+      // Rows from the old filter would sit under the new one.
+      if (!silent) {
+        setDetails([]);
+        setPagination(prev => ({ ...prev, totalItems: 0, totalPages: 0 }));
+      }
+      setListError(error.message);
     } finally {
-      setLoading(false);
+      listInFlightRef.current -= 1;
+      if (requestId === listRequestRef.current) setLoading(false);
     }
   }, [pagination.page, pagination.pageSize, filters]);
+
+  const liveActive = live && pagination.page === 1;
 
   useEffect(() => {
     fetchProviders();
@@ -197,12 +194,44 @@ export default function RequestDetailsTab() {
     fetchDetails();
   }, [fetchDetails]);
 
-  const handleViewDetail = (detail) => {
+  // Only page 1 follows new requests; deeper pages would shift under the reader.
+  useEffect(() => {
+    if (!liveActive) return;
+    // Skip a tick while a fetch is still running so slow polls don't pile up.
+    const refresh = () => {
+      if (document.visibilityState === "visible" && listInFlightRef.current === 0) fetchDetails({ silent: true });
+    };
+    refresh();
+    const timer = setInterval(refresh, LIVE_REFRESH_MS);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [liveActive, fetchDetails]);
+
+  // The list carries no payloads; fetch this request's on open.
+  const handleViewDetail = async (detail) => {
     fullController?.abort();
+    detailControllerRef.current?.abort();
+    const controller = new AbortController();
+    detailControllerRef.current = controller;
     setSelectedDetail(detail);
     setFullState({ loading: false, error: "" });
+    setDetailState({ loading: true, error: "" });
     setRequestView("conversation");
     setIsDrawerOpen(true);
+    try {
+      const res = await fetch(`/api/usage/request-details/${encodeURIComponent(detail.id)}`, { signal: controller.signal });
+      const data = await res.json().catch(() => null);
+      if (controller.signal.aborted) return;
+      if (!res.ok || !data) throw new Error(data?.error || `Failed to load request (${res.status})`);
+      setSelectedDetail(prev => (prev?.id === detail.id ? { ...prev, ...data } : prev));
+      setDetailState({ loading: false, error: "" });
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      setDetailState({ loading: false, error: error.message });
+    }
   };
 
   const handlePageChange = (newPage) => {
@@ -325,13 +354,30 @@ export default function RequestDetailsTab() {
       </Card>
 
       <Card padding="none">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-black/5 px-4 py-2 dark:border-white/5">
+          <span className="text-xs text-text-muted">
+            {pagination.totalItems.toLocaleString()} requests
+            {live && pagination.page !== 1 && " · auto-refresh follows page 1"}
+            {listError && <span className="text-red-600"> · Couldn&apos;t refresh: {listError}</span>}
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={live ? "pause" : "play_arrow"}
+            onClick={() => setLive(value => !value)}
+          >
+            {live ? "Pause auto-refresh" : "Resume auto-refresh"}
+          </Button>
+        </div>
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[880px]">
+          <table className="w-full min-w-[1080px]">
             <thead>
               <tr className="border-b border-black/5 dark:border-white/5">
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Timestamp</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Model</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Provider</th>
+                <th className="text-left p-4 text-sm font-semibold text-text-main">Key</th>
+                <th className="text-left p-4 text-sm font-semibold text-text-main">Status</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Input Tokens</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Cached</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Cache Creation</th>
@@ -343,7 +389,7 @@ export default function RequestDetailsTab() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan="9" className="p-8 text-center text-text-muted">
+                  <td colSpan="11" className="p-8 text-center text-text-muted">
                     <div className="flex items-center justify-center gap-2">
                       <span className="material-symbols-outlined animate-spin text-[20px]">progress_activity</span>
                       Loading...
@@ -352,14 +398,14 @@ export default function RequestDetailsTab() {
                 </tr>
               ) : details.length === 0 ? (
                 <tr>
-                  <td colSpan="9" className="p-8 text-center text-text-muted">
+                  <td colSpan="11" className="p-8 text-center text-text-muted">
                     No request details found
                   </td>
                 </tr>
               ) : (
                 details.map((detail, index) => (
                   <tr
-                    key={`${detail.id}-${index}`}
+                    key={detail.id ?? `row-${index}`}
                     className="border-b border-black/5 dark:border-white/5 last:border-b-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors"
                   >
                     <td className="whitespace-nowrap p-4 text-sm text-text-main">
@@ -368,11 +414,15 @@ export default function RequestDetailsTab() {
                     <td className="max-w-[260px] truncate p-4 font-mono text-sm text-text-main">
                       {detail.model}
                     </td>
-                    <td className="max-w-[180px] truncate p-4 text-sm text-text-main">
-                       <span className="font-medium">
-                         {getProviderName(detail.provider, providerNameCache)}
-                       </span>
-                     </td>
+                    <td className="max-w-[180px] truncate p-4 text-sm text-text-main" title={detail.provider}>
+                      <span className="font-medium">{detail.providerName || detail.provider}</span>
+                    </td>
+                    <td className="max-w-[160px] truncate p-4 text-sm text-text-main" title={detail.connectionId || undefined}>
+                      <KeyLabel detail={detail} />
+                    </td>
+                    <td className="p-4 text-sm">
+                      <StatusLabel detail={detail} />
+                    </td>
                     <td className="p-4 text-sm text-text-main text-right font-mono">
                       {getInputTokens(detail.tokens).toLocaleString()}
                     </td>
@@ -396,6 +446,7 @@ export default function RequestDetailsTab() {
                         variant="outline"
                         size="sm"
                         onClick={() => handleViewDetail(detail)}
+                        disabled={!detail.id}
                       >
                         Detail
                       </Button>
@@ -424,6 +475,7 @@ export default function RequestDetailsTab() {
         isOpen={isDrawerOpen}
         onClose={() => {
           fullController?.abort();
+          detailControllerRef.current?.abort();
           setIsDrawerOpen(false);
         }}
         title="Request Details"
@@ -443,8 +495,14 @@ export default function RequestDetailsTab() {
               </div>
               <div>
                  <span className="text-text-muted">Provider:</span>{" "}
-                 <span className="text-text-main font-medium">{getProviderName(selectedDetail.provider, providerNameCache)}</span>
-               </div>
+                <span className="text-text-main font-medium">{selectedDetail.providerName || selectedDetail.provider}</span>
+              </div>
+              <div>
+                <span className="text-text-muted">Key:</span>{" "}
+                <span className="text-text-main font-medium" title={selectedDetail.connectionId || undefined}>
+                  <KeyLabel detail={selectedDetail} />
+                </span>
+              </div>
               <div>
                 <span className="text-text-muted">Model:</span>{" "}
                 <span className="text-text-main font-mono">{selectedDetail.model}</span>
@@ -494,6 +552,18 @@ export default function RequestDetailsTab() {
               </div>
             </div>
 
+            {(detailState.loading || detailState.error) && (
+              <div className={cn("flex items-center gap-2 rounded-lg border border-border-subtle p-6 text-sm", detailState.error ? "text-red-600" : "text-text-muted")}>
+                {detailState.error || (
+                  <>
+                    <span className="material-symbols-outlined animate-spin text-[20px]" aria-hidden="true">progress_activity</span>
+                    Loading request...
+                  </>
+                )}
+              </div>
+            )}
+
+            {!detailState.loading && !detailState.error && (
             <div className="space-y-4">
               <CollapsibleSection title="Conversation" defaultOpen={true} icon="forum">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -540,6 +610,7 @@ export default function RequestDetailsTab() {
                 ))}
               </CollapsibleSection>
             </div>
+            )}
           </div>
         )}
       </Drawer>

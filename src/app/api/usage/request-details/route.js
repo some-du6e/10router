@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getRequestDetails } from "@/lib/usageDb";
 import { getSettings } from "@/lib/localDb";
+import { getProviderLabeler, labelRequestDetail } from "@/lib/requestDetailLabels.js";
 
 const SENSITIVE_DETAIL_KEYS = ["request", "providerRequest", "providerResponse", "response"];
 
@@ -18,7 +19,8 @@ export function redactRequestDetails(details) {
 
 /**
  * GET /api/usage/request-details
- * Query parameters: page, pageSize (1-100), provider, model, connectionId, status, startDate, endDate
+ * Query parameters: page, pageSize (1-100), provider, model, connectionId, status, startDate, endDate,
+ * summary=1 (omit the request/response payloads)
  */
 export async function GET(request) {
   try {
@@ -60,14 +62,15 @@ export async function GET(request) {
     if (status) filter.status = status;
     if (startDate) filter.startDate = startDate;
     if (endDate) filter.endDate = endDate;
+    // The list view leaves out the payloads; the drawer loads them by id.
+    if (searchParams.get("summary") === "1") filter.summary = true;
     
-    const result = await getRequestDetails(filter);
-    const settings = await getSettings();
-    const details = settings.showSensitiveRequestDetails === true
+    const [result, settings, labels] = await Promise.all([getRequestDetails(filter), getSettings(), getProviderLabeler()]);
+    const details = filter.summary || settings.showSensitiveRequestDetails === true
       ? result.details
       : redactRequestDetails(result.details);
 
-    return NextResponse.json({ ...result, details });
+    return NextResponse.json({ ...result, details: details.map((detail) => labelRequestDetail(detail, labels)) });
   } catch (error) {
     console.error("[API] Failed to get request details:", error);
     return NextResponse.json(

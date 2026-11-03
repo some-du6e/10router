@@ -1,0 +1,68 @@
+name: Request details
+
+on:
+  pull_request:
+    paths:
+      - "src/app/(dashboard)/dashboard/usage/components/RequestDetailsTab.js"
+      - "src/app/api/usage/request-details/**"
+      - "src/app/api/usage/providers/route.js"
+      - "src/lib/requestDetailLabels.ts"
+      - "src/lib/db/repos/requestDetailsRepo.js"
+      - "src/lib/db/repos/connectionsRepo.js"
+      - "src/lib/db/repos/nodesRepo.js"
+      - "src/lib/db/index.js"
+      - "src/shared/constants/providers.js"
+      - "tests/unit/request-details-*.test.js"
+      - ".github/workflows/request-details.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          # The backup test in request-details-tab opens the DB with better-sqlite3.
+          npm rebuild better-sqlite3
+          cd tests && bun install --ignore-scripts
+      - name: Unit test
+        working-directory: tests
+        run: >
+          ./node_modules/.bin/vitest run
+          unit/request-details-tab.test.js
+          unit/request-details-redaction.test.js
+          unit/request-details-full-data-db.test.js
+          unit/request-details-error-class.test.js
+      # set-state-in-effect: RequestDetailsTab.js's data-loading effects, which
+      # predate this check.
+      - name: Lint
+        run: >
+          ./node_modules/.bin/eslint --rule 'react-hooks/set-state-in-effect: off'
+          "src/app/(dashboard)/dashboard/usage/components/RequestDetailsTab.js"
+          src/app/api/usage/request-details/route.js
+          "src/app/api/usage/request-details/[id]/route.ts"
+          src/app/api/usage/providers/route.js
+          src/lib/requestDetailLabels.ts
+          src/lib/db/repos/requestDetailsRepo.js
+          tests/unit/request-details-tab.test.js
+      # Fails only on errors in the new .ts files, so unrelated type errors
+      # elsewhere don't block it.
+      - name: Type check
+        run: |
+          set +e
+          ./node_modules/.bin/tsc --noEmit -p . > tsc.log 2>&1
+          code=$?
+          set -e
+          tail -5 tsc.log
+          if [ "$code" -gt 2 ] || ! [ -x ./node_modules/.bin/tsc ]; then echo "tsc did not run (exit $code)"; exit 1; fi
+          if grep -E "requestDetailLabels\.ts|request-details/\[id\]/route\.ts" tsc.log; then exit 1; fi

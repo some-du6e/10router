@@ -308,6 +308,8 @@ export async function saveRequestDetail(detail) {
   }
 }
 
+const SUMMARY_DROPPED_KEYS = ["request", "providerRequest", "providerResponse", "response"];
+
 export async function getRequestDetails(filter = {}) {
   const db = await getAdapter();
   const conds = [];
@@ -329,12 +331,19 @@ export async function getRequestDetails(filter = {}) {
   const totalPages = Math.ceil(totalItems / pageSize);
   const offset = (page - 1) * pageSize;
 
+  // summary: strip the payloads in SQL so a polled page doesn't parse them.
+  const dataCol = filter.summary
+    ? `CASE WHEN json_valid(data) THEN json_remove(data, '$.request', '$.providerRequest', '$.providerResponse', '$.response') ELSE data END AS data`
+    : "data";
   const rows = db.all(
-    `SELECT data, fullData IS NOT NULL AS hasFullData FROM requestDetails ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+    `SELECT ${dataCol}, fullData IS NOT NULL AS hasFullData FROM requestDetails ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
     [...params, pageSize, offset]
   );
   const details = rows.map((r) => {
-    const detail = parseJson(r.data, {});
+    const detail = parseJson(r.data, {}) || {};
+    // A row SQLite's JSON parser rejects (e.g. nested past its depth limit)
+    // comes back whole; drop its payloads here.
+    if (filter.summary) for (const key of SUMMARY_DROPPED_KEYS) delete detail[key];
     if (r.hasFullData) detail.hasFullData = true;
     return detail;
   });
@@ -353,8 +362,11 @@ export async function getDistinctProviders() {
 
 export async function getRequestDetailById(id) {
   const db = await getAdapter();
-  const row = db.get(`SELECT data FROM requestDetails WHERE id = ?`, [id]);
-  return row ? parseJson(row.data, null) : null;
+  const row = db.get(`SELECT data, fullData IS NOT NULL AS hasFullData FROM requestDetails WHERE id = ?`, [id]);
+  if (!row) return null;
+  const detail = parseJson(row.data, null);
+  if (detail) detail.hasFullData = Boolean(row.hasFullData);
+  return detail;
 }
 
 // Drops every stored full payload, e.g. when "Show full request details" is
