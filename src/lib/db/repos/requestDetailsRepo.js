@@ -353,8 +353,11 @@ export async function getDistinctProviders() {
 
 export async function getRequestDetailById(id) {
   const db = await getAdapter();
-  const row = db.get(`SELECT data FROM requestDetails WHERE id = ?`, [id]);
-  return row ? parseJson(row.data, null) : null;
+  const row = db.get(`SELECT data, fullData IS NOT NULL AS hasFullData FROM requestDetails WHERE id = ?`, [id]);
+  if (!row) return null;
+  const detail = parseJson(row.data, null);
+  if (detail && row.hasFullData) detail.hasFullData = true;
+  return detail;
 }
 
 // Drops every stored full payload, e.g. when "Show full request details" is

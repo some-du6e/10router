@@ -288,3 +288,56 @@ describe("API route contract — validation boundary", () => {
     await db.updateSettings({ showSensitiveRequestDetails: false });
   });
 });
+
+describe("API route contract — labels, summary list, single request", () => {
+  let GET;
+  let GET_ONE;
+  let nodeId;
+  let connectionId;
+  beforeAll(async () => {
+    ({ GET } = await import("@/app/api/usage/request-details/route.js"));
+    ({ GET: GET_ONE } = await import("@/app/api/usage/request-details/[id]/route.ts"));
+    const node = await db.createProviderNode({ id: "openai-compatible-chat-label-test", type: "openai-compatible", name: "Snowflake", prefix: "snow", apiType: "chat", baseUrl: "https://example.test/v1" });
+    nodeId = node.id;
+    const connection = await db.createProviderConnection({ provider: nodeId, authType: "apikey", name: "key…L09w", apiKey: "sk-test" });
+    connectionId = connection.id;
+    adapter.run(
+      `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "labelled-1", new Date().toISOString(), nodeId, "claude-opus", connectionId, "success",
+        JSON.stringify({ id: "labelled-1", provider: nodeId, connectionId, request: { messages: [{ role: "user", content: "hi" }] }, response: { content: "yo" } }),
+      ]
+    );
+  });
+
+  it("names a custom endpoint and its key on every row", async () => {
+    const res = await GET(new Request(`http://localhost/api/usage/request-details?provider=${nodeId}`));
+    const [detail] = (await res.json()).details;
+    expect(detail.providerName).toBe("Snowflake");
+    expect(detail.connectionName).toBe("key…L09w");
+  });
+
+  it("summary=1 leaves out the payloads", async () => {
+    const res = await GET(new Request(`http://localhost/api/usage/request-details?summary=1&provider=${nodeId}`));
+    const [detail] = (await res.json()).details;
+    expect(detail.id).toBe("labelled-1");
+    expect(detail.request).toBeUndefined();
+    expect(detail.response).toBeUndefined();
+  });
+
+  it("serves one request by id, redacted unless full details are on", async () => {
+    const get = () => GET_ONE(new Request("http://localhost/x"), { params: Promise.resolve({ id: "labelled-1" }) });
+    await db.updateSettings({ showSensitiveRequestDetails: false });
+    let body = await (await get()).json();
+    expect(body.request).toEqual({ redacted: true });
+    expect(body.providerName).toBe("Snowflake");
+
+    await db.updateSettings({ showSensitiveRequestDetails: true });
+    body = await (await get()).json();
+    expect(body.request.messages[0].content).toBe("hi");
+    await db.updateSettings({ showSensitiveRequestDetails: false });
+
+    const missing = await GET_ONE(new Request("http://localhost/x"), { params: Promise.resolve({ id: "nope" }) });
+    expect(missing.status).toBe(404);
+  });
+});

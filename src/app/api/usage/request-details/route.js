@@ -1,8 +1,18 @@
 import { NextResponse } from "next/server";
 import { getRequestDetails } from "@/lib/usageDb";
 import { getSettings } from "@/lib/localDb";
+import { getProviderLabeler, labelRequestDetail } from "@/lib/requestDetailLabels.js";
 
 const SENSITIVE_DETAIL_KEYS = ["request", "providerRequest", "providerResponse", "response"];
+
+// The list view leaves out the payloads; the drawer loads them by id.
+export function summarizeRequestDetails(details) {
+  return (details || []).map((detail) => {
+    const summary = { ...detail };
+    for (const key of SENSITIVE_DETAIL_KEYS) delete summary[key];
+    return summary;
+  });
+}
 
 export function redactRequestDetails(details) {
   return (details || []).map((detail) => {
@@ -18,7 +28,8 @@ export function redactRequestDetails(details) {
 
 /**
  * GET /api/usage/request-details
- * Query parameters: page, pageSize (1-100), provider, model, connectionId, status, startDate, endDate
+ * Query parameters: page, pageSize (1-100), provider, model, connectionId, status, startDate, endDate,
+ * summary=1 (omit the request/response payloads)
  */
 export async function GET(request) {
   try {
@@ -61,13 +72,12 @@ export async function GET(request) {
     if (startDate) filter.startDate = startDate;
     if (endDate) filter.endDate = endDate;
     
-    const result = await getRequestDetails(filter);
-    const settings = await getSettings();
-    const details = settings.showSensitiveRequestDetails === true
-      ? result.details
-      : redactRequestDetails(result.details);
+    const [result, settings, labels] = await Promise.all([getRequestDetails(filter), getSettings(), getProviderLabeler()]);
+    let details = result.details;
+    if (searchParams.get("summary") === "1") details = summarizeRequestDetails(details);
+    else if (settings.showSensitiveRequestDetails !== true) details = redactRequestDetails(details);
 
-    return NextResponse.json({ ...result, details });
+    return NextResponse.json({ ...result, details: details.map((detail) => labelRequestDetail(detail, labels)) });
   } catch (error) {
     console.error("[API] Failed to get request details:", error);
     return NextResponse.json(
