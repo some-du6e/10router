@@ -327,6 +327,10 @@ describe("API route contract — labels, summary list, single request", () => {
       `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?)`,
       ["labelled-corrupt", new Date().toISOString(), "label-corrupt", "m", null, "success", "{not-valid-json"]
     );
+    adapter.run(
+      `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+      ["labelled-null", new Date().toISOString(), "label-null", "m", null, "success", "null"]
+    );
     // Valid JSON nested past SQLite's depth limit, so json_valid() rejects it.
     const deep = "[".repeat(1100) + "]".repeat(1100);
     adapter.run(
@@ -376,6 +380,10 @@ describe("API route contract — labels, summary list, single request", () => {
     const { details } = await res.json();
     expect(details).toHaveLength(1);
     expect(details[0].id).toBeUndefined();
+
+    const nullRow = await GET(new Request("http://localhost/api/usage/request-details?summary=1&provider=label-null"));
+    expect(nullRow.status).toBe(200);
+    expect((await nullRow.json()).details).toHaveLength(1);
   });
 
   it("summary=1 drops payloads from rows SQLite can't parse as JSON", async () => {

@@ -53,6 +53,7 @@ jobs:
           "src/app/api/usage/request-details/[id]/route.ts"
           src/app/api/usage/providers/route.js
           src/lib/requestDetailLabels.ts
+          src/lib/db/repos/requestDetailsRepo.js
           tests/unit/request-details-tab.test.js
       # Fails only on errors in the new .ts files, so unrelated type errors
       # elsewhere don't block it.
