@@ -308,6 +308,8 @@ export async function saveRequestDetail(detail) {
   }
 }
 
+const SUMMARY_DROPPED_KEYS = ["request", "providerRequest", "providerResponse", "response"];
+
 export async function getRequestDetails(filter = {}) {
   const db = await getAdapter();
   const conds = [];
@@ -338,7 +340,10 @@ export async function getRequestDetails(filter = {}) {
     [...params, pageSize, offset]
   );
   const details = rows.map((r) => {
-    const detail = parseJson(r.data, {});
+    const detail = parseJson(r.data, {}) || {};
+    // A row SQLite's JSON parser rejects (e.g. nested past its depth limit)
+    // comes back whole; drop its payloads here.
+    if (filter.summary) for (const key of SUMMARY_DROPPED_KEYS) delete detail[key];
     if (r.hasFullData) detail.hasFullData = true;
     return detail;
   });

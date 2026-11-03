@@ -10,6 +10,8 @@ import ConversationInspector, { FullPayloadNotice } from "./ConversationInspecto
 
 // Page 1 re-fetches on this interval while auto-refresh is on.
 const LIVE_REFRESH_MS = 5000;
+// A hung list fetch would otherwise hold off every later poll.
+const LIST_FETCH_TIMEOUT_MS = 15000;
 
 function CollapsibleSection({ title, children, defaultOpen = false, icon = null }) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
@@ -158,7 +160,7 @@ export default function RequestDetailsTab() {
       if (filters.startDate) params.append("startDate", filters.startDate);
       if (filters.endDate) params.append("endDate", filters.endDate);
 
-      const res = await fetch(`/api/usage/request-details?${params}`);
+      const res = await fetch(`/api/usage/request-details?${params}`, { signal: AbortSignal.timeout(LIST_FETCH_TIMEOUT_MS) });
       const data = await res.json().catch(() => null);
       // A newer fetch (filter change, later poll) already owns the table.
       if (requestId !== listRequestRef.current) return;
@@ -171,7 +173,10 @@ export default function RequestDetailsTab() {
       if (requestId !== listRequestRef.current) return;
       console.error("Failed to fetch request details:", error);
       // Rows from the old filter would sit under the new one.
-      if (!silent) setDetails([]);
+      if (!silent) {
+        setDetails([]);
+        setPagination(prev => ({ ...prev, totalItems: 0, totalPages: 0 }));
+      }
       setListError(error.message);
     } finally {
       listInFlightRef.current -= 1;

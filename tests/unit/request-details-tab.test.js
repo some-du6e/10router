@@ -296,6 +296,7 @@ describe("API route contract — labels, summary list, single request", () => {
   let nodeId;
   let connectionId;
   let oauthConnectionId;
+  let displayNameConnectionId;
   const getOne = (id) => GET_ONE(new Request("http://localhost/x"), { params: Promise.resolve({ id }) });
   const insertDetail = (id, provider, connId, extra = {}) => adapter.run(
     `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?)`,
@@ -310,6 +311,9 @@ describe("API route contract — labels, summary list, single request", () => {
     nodeId = node.id;
     connectionId = (await db.createProviderConnection({ provider: nodeId, authType: "apikey", name: "key…L09w", apiKey: "sk-test" })).id;
     oauthConnectionId = (await db.createProviderConnection({ provider: "codex", authType: "oauth", email: "someone@example.test", accessToken: "at" })).id;
+    // createProviderConnection names an OAuth account after its email; older rows may have no name.
+    adapter.run(`UPDATE providerConnections SET name = NULL WHERE id = ?`, [oauthConnectionId]);
+    displayNameConnectionId = (await db.createProviderConnection({ provider: nodeId, authType: "apikey", name: "key…AAAA", displayName: "Team key", apiKey: "sk-test-2" })).id;
     insertDetail("labelled-1", nodeId, connectionId, {
       request: { messages: [{ role: "user", content: "hi" }] },
       providerRequest: { messages: [{ role: "user", content: "hi" }] },
@@ -318,6 +322,18 @@ describe("API route contract — labels, summary list, single request", () => {
     });
     insertDetail("labelled-oauth", "codex", oauthConnectionId);
     insertDetail("labelled-deleted-key", "codex", "11111111-dead-key");
+    insertDetail("labelled-display-name", nodeId, displayNameConnectionId);
+    adapter.run(
+      `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+      ["labelled-corrupt", new Date().toISOString(), "label-corrupt", "m", null, "success", "{not-valid-json"]
+    );
+    // Valid JSON nested past SQLite's depth limit, so json_valid() rejects it.
+    const deep = "[".repeat(1100) + "]".repeat(1100);
+    adapter.run(
+      `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+      ["labelled-deep", new Date().toISOString(), "label-deep", "m", null, "success",
+        `{"id":"labelled-deep","provider":"label-deep","request":{"messages":[{"role":"user","content":"SECRET"}],"tools":${deep}}}`]
+    );
     adapter.run(`UPDATE requestDetails SET fullData = ? WHERE id = ?`, ["{}", "labelled-1"]);
   });
 
@@ -327,9 +343,11 @@ describe("API route contract — labels, summary list, single request", () => {
 
   it("names a custom endpoint and its key on every row", async () => {
     const res = await GET(new Request(`http://localhost/api/usage/request-details?provider=${nodeId}`));
-    const [detail] = (await res.json()).details;
+    const { details } = await res.json();
+    const detail = details.find((d) => d.id === "labelled-1");
     expect(detail.providerName).toBe("Snowflake");
     expect(detail.connectionName).toBe("key…L09w");
+    expect(details.find((d) => d.id === "labelled-display-name").connectionName).toBe("Team key");
   });
 
   it("names built-in providers, falls back to an OAuth account's email, and leaves a deleted key unnamed", async () => {
@@ -345,8 +363,7 @@ describe("API route contract — labels, summary list, single request", () => {
   it("summary=1 leaves out every payload, even with full details on", async () => {
     await db.updateSettings({ showSensitiveRequestDetails: true });
     const res = await GET(new Request(`http://localhost/api/usage/request-details?summary=1&provider=${nodeId}`));
-    const [detail] = (await res.json()).details;
-    expect(detail.id).toBe("labelled-1");
+    const detail = (await res.json()).details.find((d) => d.id === "labelled-1");
     expect(detail.hasFullData).toBe(true);
     for (const key of ["request", "providerRequest", "providerResponse", "response"]) {
       expect(detail[key]).toBeUndefined();
@@ -354,11 +371,18 @@ describe("API route contract — labels, summary list, single request", () => {
   });
 
   it("summary=1 survives a row whose data isn't JSON", async () => {
-    const res = await GET(new Request("http://localhost/api/usage/request-details?summary=1&provider=openai&pageSize=100"));
+    const res = await GET(new Request("http://localhost/api/usage/request-details?summary=1&provider=label-corrupt"));
     expect(res.status).toBe(200);
     const { details } = await res.json();
-    // corrupt-1 from the first describe block: kept as an empty row.
-    expect(details.some((d) => d.id === undefined)).toBe(true);
+    expect(details).toHaveLength(1);
+    expect(details[0].id).toBeUndefined();
+  });
+
+  it("summary=1 drops payloads from rows SQLite can't parse as JSON", async () => {
+    const res = await GET(new Request("http://localhost/api/usage/request-details?summary=1&provider=label-deep"));
+    const [detail] = (await res.json()).details;
+    expect(detail.id).toBe("labelled-deep");
+    expect(detail.request).toBeUndefined();
   });
 
   it("serves one request by id, redacted unless full details are on", async () => {
