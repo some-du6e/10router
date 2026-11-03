@@ -364,7 +364,6 @@ export default function RequestDetailsTab() {
             variant="ghost"
             size="sm"
             icon={live ? "pause" : "play_arrow"}
-            aria-pressed={live}
             onClick={() => setLive(value => !value)}
           >
             {live ? "Auto-refresh on" : "Auto-refresh off"}
