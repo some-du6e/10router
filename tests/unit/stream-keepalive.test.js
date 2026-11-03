@@ -292,7 +292,7 @@ describe("keepalive by client format", () => {
     expect(got).toBe(0);
   });
 
-  it("is off for every format when STREAM_KEEPALIVE_MS=0", async () => {
+  it("is off when STREAM_KEEPALIVE_MS=0", async () => {
     const { got } = await keepaliveFor("claude", "0");
     expect(got).toBe(0);
   });
