@@ -1,6 +1,9 @@
 // Shared SSE primitives (no imports → safe for executors + stream.js)
 export const SSE_DONE = "data: [DONE]\n\n";
 
+// Comment line: every SSE parser ignores it, but it counts as traffic to proxies.
+export const SSE_KEEPALIVE = ": keepalive\n\n";
+
 export const SSE_HEADERS = {
   "Content-Type": "text/event-stream",
   "Cache-Control": "no-cache",

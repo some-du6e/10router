@@ -1,6 +1,11 @@
 // Stream handler with disconnect detection - shared for all providers
 import { STREAM_STALL_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
+import { SSE_KEEPALIVE } from "./sseConstants.js";
+
+const KEEPALIVE_BYTES = new TextEncoder().encode(SSE_KEEPALIVE);
+const LF = 10;
+const CR = 13;
 
 // Get HH:MM:SS timestamp
 function getTimeString() {
@@ -98,11 +103,48 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
  *
  * @param {function} [onAbortTerminal] - Receives a human-readable abort
  * message and returns terminal SSE bytes to emit downstream.
+ * @param {number} [keepaliveMs] - After this long without output, write an
+ * SSE comment (only between events). 0 disables. Output-side only: it never
+ * touches the upstream stall timer.
+ * @param {function} [upstreamOpen] - Keepalives stop once this returns false,
+ * so a body nobody reads or cancels doesn't keep a timer alive forever.
  */
-export function createDisconnectAwareStream(transformStream, streamController, onAbortTerminal = null) {
+export function createDisconnectAwareStream(transformStream, streamController, onAbortTerminal = null, keepaliveMs = 0, upstreamOpen = () => true) {
   const reader = transformStream.readable.getReader();
   const writer = transformStream.writable.getWriter();
   let terminalEmitted = false;
+  let keepaliveTimer = null;
+  // Trailing newlines written so far; 2+ means we sit between events.
+  let trailingNewlines = 2;
+
+  const clearKeepalive = () => {
+    if (keepaliveTimer) { clearTimeout(keepaliveTimer); keepaliveTimer = null; }
+  };
+  const armKeepalive = (controller) => {
+    if (!(keepaliveMs > 0)) return;
+    clearKeepalive();
+    keepaliveTimer = setTimeout(() => {
+      keepaliveTimer = null;
+      if (!streamController.isConnected() || !upstreamOpen()) return;
+      if (trailingNewlines >= 2) {
+        try { controller.enqueue(KEEPALIVE_BYTES); } catch { return; }
+      }
+      armKeepalive(controller);
+    }, keepaliveMs);
+  };
+  const trackTail = (value) => {
+    const bytes = value;
+    if (!bytes?.length) return;
+    let i = bytes.length - 1;
+    let nl = 0;
+    while (i >= 0 && (bytes[i] === LF || bytes[i] === CR)) { if (bytes[i] === LF) nl++; i--; }
+    trailingNewlines = i < 0 ? trailingNewlines + nl : nl;
+  };
+  const write = (controller, value) => {
+    controller.enqueue(value);
+    trackTail(value);
+    armKeepalive(controller);
+  };
 
   // Emit a synthesized terminal payload (e.g. Responses response.failed + [DONE]) once
   const emitTerminal = (controller) => {
@@ -115,8 +157,13 @@ export function createDisconnectAwareStream(transformStream, streamController, o
   };
 
   return new ReadableStream({
+    start(controller) {
+      armKeepalive(controller);
+    },
+
     async pull(controller) {
       if (!streamController.isConnected()) {
+        clearKeepalive();
         emitTerminal(controller);
         controller.close();
         return;
@@ -126,12 +173,14 @@ export function createDisconnectAwareStream(transformStream, streamController, o
         const { done, value } = await reader.read();
 
         if (done) {
+          clearKeepalive();
           streamController.handleComplete();
           controller.close();
           return;
         }
-        controller.enqueue(value);
+        write(controller, value);
       } catch (error) {
+        clearKeepalive();
         const wasConnected = streamController.isConnected();
         // Controller already closed = downstream ended; not an upstream error, skip noisy log.
         const msg0 = error?.message || "";
@@ -169,6 +218,7 @@ export function createDisconnectAwareStream(transformStream, streamController, o
     },
 
     cancel(reason) {
+      clearKeepalive();
       streamController.handleDisconnect(reason || "cancelled");
       reader.cancel();
       writer.abort();
@@ -191,8 +241,9 @@ export function createDisconnectAwareStream(transformStream, streamController, o
  * @param {Response} providerResponse - Response from provider
  * @param {TransformStream} transformStream - Transform stream for SSE
  * @param {object} streamController - Stream controller from createStreamController
+ * @param {number} [keepaliveMs] - Downstream SSE keepalive interval; 0 disables
  */
-export function pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal = null, stallTimeoutMs = STREAM_STALL_TIMEOUT_MS) {
+export function pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal = null, stallTimeoutMs = STREAM_STALL_TIMEOUT_MS, keepaliveMs = 0) {
   let stallTimer = null;
   let chunkCount = 0;
   let totalBytes = 0;
@@ -254,7 +305,11 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
   return createDisconnectAwareStream(
     { readable: transformedBody, writable: { getWriter: () => ({ abort: () => Promise.resolve() }) } },
     wrappedController,
-    onAbortTerminal ? () => onAbortTerminal(abortMessage) : null
+    onAbortTerminal ? () => onAbortTerminal(abortMessage) : null,
+    keepaliveMs,
+    // The stall timer runs exactly while upstream is open: cleared at EOF, on
+    // every termination, and when it fires.
+    () => stallTimer !== null
   );
 }
 

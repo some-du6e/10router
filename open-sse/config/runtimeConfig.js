@@ -32,12 +32,15 @@ export const MEMORY_CONFIG = {
   maxAffinitySessions: 5000,
 };
 
-// Parse a positive integer env override, falling back to a default.
-function envMs(name, def) {
+// Largest delay setTimeout honours; above it the timer fires at once.
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+// Parse an integer env override (min..MAX_TIMER_MS), falling back to a default.
+function envMs(name, def, min = 1) {
   const raw = process.env[name];
   if (raw == null || raw === "") return def;
   const n = parseInt(raw, 10);
-  return Number.isFinite(n) && n > 0 ? n : def;
+  return Number.isFinite(n) && n >= min && n <= MAX_TIMER_MS ? n : def;
 }
 
 function envUrl(name, def) {
@@ -53,6 +56,11 @@ export const SEARXNG_CONFIGURED = Boolean(envUrl("SEARXNG_URL", ""));
 // Inter-chunk stall timeout (once tokens are flowing). Generous headroom so
 // slow reasoning models aren't aborted mid-stream. Env: STREAM_STALL_TIMEOUT_MS.
 export const STREAM_STALL_TIMEOUT_MS = envMs("STREAM_STALL_TIMEOUT_MS", 360 * 1000);
+
+// Write an SSE comment to the client after this long without output, so proxies
+// that drop idle connections (Cloudflare cuts at ~100s) keep the stream open.
+// Env: STREAM_KEEPALIVE_MS (0 disables).
+export const STREAM_KEEPALIVE_MS = envMs("STREAM_KEEPALIVE_MS", 15 * 1000, 0);
 
 // Wait for a Chat Completions usage trailer before completing a Responses stream.
 export const RESPONSES_COMPLETION_WAIT_MS = 3000;
