@@ -329,8 +329,12 @@ export async function getRequestDetails(filter = {}) {
   const totalPages = Math.ceil(totalItems / pageSize);
   const offset = (page - 1) * pageSize;
 
+  // summary: strip the payloads in SQL so a polled page doesn't parse them.
+  const dataCol = filter.summary
+    ? `CASE WHEN json_valid(data) THEN json_remove(data, '$.request', '$.providerRequest', '$.providerResponse', '$.response') ELSE data END AS data`
+    : "data";
   const rows = db.all(
-    `SELECT data, fullData IS NOT NULL AS hasFullData FROM requestDetails ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+    `SELECT ${dataCol}, fullData IS NOT NULL AS hasFullData FROM requestDetails ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
     [...params, pageSize, offset]
   );
   const details = rows.map((r) => {
@@ -356,7 +360,7 @@ export async function getRequestDetailById(id) {
   const row = db.get(`SELECT data, fullData IS NOT NULL AS hasFullData FROM requestDetails WHERE id = ?`, [id]);
   if (!row) return null;
   const detail = parseJson(row.data, null);
-  if (detail && row.hasFullData) detail.hasFullData = true;
+  if (detail) detail.hasFullData = Boolean(row.hasFullData);
   return detail;
 }
 

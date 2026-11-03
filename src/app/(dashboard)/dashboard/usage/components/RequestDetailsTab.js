@@ -122,6 +122,8 @@ export default function RequestDetailsTab() {
   const [detailState, setDetailState] = useState({ loading: false, error: "" });
   const detailControllerRef = useRef(null);
   const listRequestRef = useRef(0);
+  const listInFlightRef = useRef(0);
+  const [listError, setListError] = useState("");
   const [live, setLive] = useState(true);
   const [providers, setProviders] = useState([]);
   const [filters, setFilters] = useState({
@@ -144,6 +146,7 @@ export default function RequestDetailsTab() {
   // swapping in the loading row.
   const fetchDetails = useCallback(async ({ silent = false } = {}) => {
     const requestId = ++listRequestRef.current;
+    listInFlightRef.current += 1;
     if (!silent) setLoading(true);
     try {
       const params = new URLSearchParams({
@@ -156,16 +159,22 @@ export default function RequestDetailsTab() {
       if (filters.endDate) params.append("endDate", filters.endDate);
 
       const res = await fetch(`/api/usage/request-details?${params}`);
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
       // A newer fetch (filter change, later poll) already owns the table.
       if (requestId !== listRequestRef.current) return;
-      if (!res.ok) throw new Error(data?.error || `Failed to fetch request details (${res.status})`);
+      if (!res.ok || !data) throw new Error(data?.error || `Failed to fetch request details (${res.status})`);
 
       setDetails(data.details || []);
       setPagination(prev => ({ ...prev, ...data.pagination }));
+      setListError("");
     } catch (error) {
+      if (requestId !== listRequestRef.current) return;
       console.error("Failed to fetch request details:", error);
+      // Rows from the old filter would sit under the new one.
+      if (!silent) setDetails([]);
+      setListError(error.message);
     } finally {
+      listInFlightRef.current -= 1;
       if (requestId === listRequestRef.current) setLoading(false);
     }
   }, [pagination.page, pagination.pageSize, filters]);
@@ -183,9 +192,11 @@ export default function RequestDetailsTab() {
   // Only page 1 follows new requests; deeper pages would shift under the reader.
   useEffect(() => {
     if (!liveActive) return;
+    // Skip a tick while a fetch is still running so slow polls don't pile up.
     const refresh = () => {
-      if (document.visibilityState === "visible") fetchDetails({ silent: true });
+      if (document.visibilityState === "visible" && listInFlightRef.current === 0) fetchDetails({ silent: true });
     };
+    refresh();
     const timer = setInterval(refresh, LIVE_REFRESH_MS);
     document.addEventListener("visibilitychange", refresh);
     return () => {
@@ -342,6 +353,7 @@ export default function RequestDetailsTab() {
           <span className="text-xs text-text-muted">
             {pagination.totalItems.toLocaleString()} requests
             {live && pagination.page !== 1 && " · auto-refresh follows page 1"}
+            {listError && <span className="text-red-600"> · Couldn&apos;t refresh: {listError}</span>}
           </span>
           <Button
             variant="ghost"
@@ -389,7 +401,7 @@ export default function RequestDetailsTab() {
               ) : (
                 details.map((detail, index) => (
                   <tr
-                    key={`${detail.id}-${index}`}
+                    key={detail.id ?? `row-${index}`}
                     className="border-b border-black/5 dark:border-white/5 last:border-b-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors"
                   >
                     <td className="whitespace-nowrap p-4 text-sm text-text-main">
@@ -430,6 +442,7 @@ export default function RequestDetailsTab() {
                         variant="outline"
                         size="sm"
                         onClick={() => handleViewDetail(detail)}
+                        disabled={!detail.id}
                       >
                         Detail
                       </Button>
@@ -535,7 +548,7 @@ export default function RequestDetailsTab() {
               </div>
             </div>
 
-            {detailState.loading || detailState.error ? (
+            {(detailState.loading || detailState.error) && (
               <div className={cn("flex items-center gap-2 rounded-lg border border-border-subtle p-6 text-sm", detailState.error ? "text-red-600" : "text-text-muted")}>
                 {detailState.error || (
                   <>
@@ -544,53 +557,55 @@ export default function RequestDetailsTab() {
                   </>
                 )}
               </div>
-            ) : (
-              <div className="space-y-4">
-                <CollapsibleSection title="Conversation" defaultOpen={true} icon="forum">
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-xs text-text-muted">Client messages and the assistant response</span>
-                    <div className="flex gap-2">
-                      <Button variant={requestView === "conversation" ? "secondary" : "ghost"} size="sm" icon="forum" aria-pressed={requestView === "conversation"} onClick={() => setRequestView("conversation")}>Conversation</Button>
-                      <Button variant={requestView === "raw" ? "secondary" : "ghost"} size="sm" icon="data_object" aria-pressed={requestView === "raw"} onClick={() => setRequestView("raw")}>Raw JSON</Button>
-                    </div>
+            )}
+
+            {!detailState.loading && !detailState.error && (
+            <div className="space-y-4">
+              <CollapsibleSection title="Conversation" defaultOpen={true} icon="forum">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs text-text-muted">Client messages and the assistant response</span>
+                  <div className="flex gap-2">
+                    <Button variant={requestView === "conversation" ? "secondary" : "ghost"} size="sm" icon="forum" aria-pressed={requestView === "conversation"} onClick={() => setRequestView("conversation")}>Conversation</Button>
+                    <Button variant={requestView === "raw" ? "secondary" : "ghost"} size="sm" icon="data_object" aria-pressed={requestView === "raw"} onClick={() => setRequestView("raw")}>Raw JSON</Button>
                   </div>
-                  {requestView === "conversation" ? (
-                    <ConversationInspector key={selectedDetail.id} request={selectedDetail.request} response={selectedDetail.response} fullPayload={fullPayload} />
-                  ) : (
-                    <>
-                      {requestIsTruncated && (
-                        <div className="mb-3 flex flex-wrap items-center justify-end gap-2 text-xs">
-                          <FullPayloadNotice fullPayload={fullPayload} className="text-text-muted" />
-                        </div>
-                      )}
-                      {selectedDetail.request?.redacted ? (
-                        <pre className="max-h-[540px] max-w-full overflow-auto rounded-lg border border-border-subtle bg-surface-2 p-4 font-mono text-xs text-text-main">[Request redacted. Enable &quot;Show full request details&quot; in Settings.]</pre>
-                      ) : (
-                        <PayloadPre value={selectedDetail.request} className={cn("max-h-[540px] max-w-full overflow-auto rounded-lg border p-4 font-mono text-xs text-text-main", requestIsTruncated ? "border-amber-500/20 bg-amber-500/10" : "border-border-subtle bg-surface-2")} />
-                      )}
-                    </>
-                  )}
-                </CollapsibleSection>
-  
-                <CollapsibleSection key={selectedDetail.id} title="Debug" icon="bug_report">
-                  <p className="mb-4 text-xs text-text-muted">Stored payloads for inspecting translation and provider behavior.</p>
-                  {anyPayloadTruncated && (
-                    <div className="mb-4 text-xs text-text-muted">
-                      <FullPayloadNotice fullPayload={fullPayload} label="Load full payloads" className="" />
-                    </div>
-                  )}
-                  {[
-                    ["Provider request", selectedDetail.providerRequest],
-                    ["Provider response", selectedDetail.providerResponse],
-                    ["Client response", selectedDetail.response],
-                  ].filter(([, payload]) => payload).map(([title, payload]) => (
-                    <div key={title} className="mb-4 last:mb-0">
-                      <h4 className="mb-2 text-xs font-semibold text-text-muted">{title}</h4>
-                      <PayloadPre value={payload} className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-border-subtle bg-surface-2 p-4 font-mono text-xs text-text-main" />
-                    </div>
-                  ))}
-                </CollapsibleSection>
-              </div>
+                </div>
+                {requestView === "conversation" ? (
+                  <ConversationInspector key={selectedDetail.id} request={selectedDetail.request} response={selectedDetail.response} fullPayload={fullPayload} />
+                ) : (
+                  <>
+                    {requestIsTruncated && (
+                      <div className="mb-3 flex flex-wrap items-center justify-end gap-2 text-xs">
+                        <FullPayloadNotice fullPayload={fullPayload} className="text-text-muted" />
+                      </div>
+                    )}
+                    {selectedDetail.request?.redacted ? (
+                      <pre className="max-h-[540px] max-w-full overflow-auto rounded-lg border border-border-subtle bg-surface-2 p-4 font-mono text-xs text-text-main">[Request redacted. Enable &quot;Show full request details&quot; in Settings.]</pre>
+                    ) : (
+                      <PayloadPre value={selectedDetail.request} className={cn("max-h-[540px] max-w-full overflow-auto rounded-lg border p-4 font-mono text-xs text-text-main", requestIsTruncated ? "border-amber-500/20 bg-amber-500/10" : "border-border-subtle bg-surface-2")} />
+                    )}
+                  </>
+                )}
+              </CollapsibleSection>
+
+              <CollapsibleSection key={selectedDetail.id} title="Debug" icon="bug_report">
+                <p className="mb-4 text-xs text-text-muted">Stored payloads for inspecting translation and provider behavior.</p>
+                {anyPayloadTruncated && (
+                  <div className="mb-4 text-xs text-text-muted">
+                    <FullPayloadNotice fullPayload={fullPayload} label="Load full payloads" className="" />
+                  </div>
+                )}
+                {[
+                  ["Provider request", selectedDetail.providerRequest],
+                  ["Provider response", selectedDetail.providerResponse],
+                  ["Client response", selectedDetail.response],
+                ].filter(([, payload]) => payload).map(([title, payload]) => (
+                  <div key={title} className="mb-4 last:mb-0">
+                    <h4 className="mb-2 text-xs font-semibold text-text-muted">{title}</h4>
+                    <PayloadPre value={payload} className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-border-subtle bg-surface-2 p-4 font-mono text-xs text-text-main" />
+                  </div>
+                ))}
+              </CollapsibleSection>
+            </div>
             )}
           </div>
         )}

@@ -8,6 +8,10 @@ on:
       - "src/app/api/usage/providers/route.js"
       - "src/lib/requestDetailLabels.ts"
       - "src/lib/db/repos/requestDetailsRepo.js"
+      - "src/lib/db/repos/connectionsRepo.js"
+      - "src/lib/db/repos/nodesRepo.js"
+      - "src/lib/db/index.js"
+      - "src/shared/constants/providers.js"
       - "tests/unit/request-details-*.test.js"
       - ".github/workflows/request-details.yml"
   workflow_dispatch:

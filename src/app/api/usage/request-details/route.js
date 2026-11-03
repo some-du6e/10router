@@ -5,15 +5,6 @@ import { getProviderLabeler, labelRequestDetail } from "@/lib/requestDetailLabel
 
 const SENSITIVE_DETAIL_KEYS = ["request", "providerRequest", "providerResponse", "response"];
 
-// The list view leaves out the payloads; the drawer loads them by id.
-export function summarizeRequestDetails(details) {
-  return (details || []).map((detail) => {
-    const summary = { ...detail };
-    for (const key of SENSITIVE_DETAIL_KEYS) delete summary[key];
-    return summary;
-  });
-}
-
 export function redactRequestDetails(details) {
   return (details || []).map((detail) => {
     const redacted = { ...detail };
@@ -71,11 +62,13 @@ export async function GET(request) {
     if (status) filter.status = status;
     if (startDate) filter.startDate = startDate;
     if (endDate) filter.endDate = endDate;
+    // The list view leaves out the payloads; the drawer loads them by id.
+    if (searchParams.get("summary") === "1") filter.summary = true;
     
     const [result, settings, labels] = await Promise.all([getRequestDetails(filter), getSettings(), getProviderLabeler()]);
-    let details = result.details;
-    if (searchParams.get("summary") === "1") details = summarizeRequestDetails(details);
-    else if (settings.showSensitiveRequestDetails !== true) details = redactRequestDetails(details);
+    const details = filter.summary || settings.showSensitiveRequestDetails === true
+      ? result.details
+      : redactRequestDetails(result.details);
 
     return NextResponse.json({ ...result, details: details.map((detail) => labelRequestDetail(detail, labels)) });
   } catch (error) {

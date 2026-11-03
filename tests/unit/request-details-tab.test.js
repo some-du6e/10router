@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 
 const originalDataDir = process.env.DATA_DIR;
 let tempDir;
@@ -292,22 +292,37 @@ describe("API route contract — validation boundary", () => {
 describe("API route contract — labels, summary list, single request", () => {
   let GET;
   let GET_ONE;
+  let GET_PROVIDERS;
   let nodeId;
   let connectionId;
+  let oauthConnectionId;
+  const getOne = (id) => GET_ONE(new Request("http://localhost/x"), { params: Promise.resolve({ id }) });
+  const insertDetail = (id, provider, connId, extra = {}) => adapter.run(
+    `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+    [id, new Date().toISOString(), provider, "m", connId, "success", JSON.stringify({ id, provider, connectionId: connId, ...extra })]
+  );
+
   beforeAll(async () => {
     ({ GET } = await import("@/app/api/usage/request-details/route.js"));
     ({ GET: GET_ONE } = await import("@/app/api/usage/request-details/[id]/route.ts"));
+    ({ GET: GET_PROVIDERS } = await import("@/app/api/usage/providers/route.js"));
     const node = await db.createProviderNode({ id: "openai-compatible-chat-label-test", type: "openai-compatible", name: "Snowflake", prefix: "snow", apiType: "chat", baseUrl: "https://example.test/v1" });
     nodeId = node.id;
-    const connection = await db.createProviderConnection({ provider: nodeId, authType: "apikey", name: "key…L09w", apiKey: "sk-test" });
-    connectionId = connection.id;
-    adapter.run(
-      `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?)`,
-      [
-        "labelled-1", new Date().toISOString(), nodeId, "claude-opus", connectionId, "success",
-        JSON.stringify({ id: "labelled-1", provider: nodeId, connectionId, request: { messages: [{ role: "user", content: "hi" }] }, response: { content: "yo" } }),
-      ]
-    );
+    connectionId = (await db.createProviderConnection({ provider: nodeId, authType: "apikey", name: "key…L09w", apiKey: "sk-test" })).id;
+    oauthConnectionId = (await db.createProviderConnection({ provider: "codex", authType: "oauth", email: "someone@example.test", accessToken: "at" })).id;
+    insertDetail("labelled-1", nodeId, connectionId, {
+      request: { messages: [{ role: "user", content: "hi" }] },
+      providerRequest: { messages: [{ role: "user", content: "hi" }] },
+      providerResponse: { raw: "big" },
+      response: { content: "yo" },
+    });
+    insertDetail("labelled-oauth", "codex", oauthConnectionId);
+    insertDetail("labelled-deleted-key", "codex", "11111111-dead-key");
+    adapter.run(`UPDATE requestDetails SET fullData = ? WHERE id = ?`, ["{}", "labelled-1"]);
+  });
+
+  afterEach(async () => {
+    await db.updateSettings({ showSensitiveRequestDetails: false });
   });
 
   it("names a custom endpoint and its key on every row", async () => {
@@ -317,27 +332,53 @@ describe("API route contract — labels, summary list, single request", () => {
     expect(detail.connectionName).toBe("key…L09w");
   });
 
-  it("summary=1 leaves out the payloads", async () => {
+  it("names built-in providers, falls back to an OAuth account's email, and leaves a deleted key unnamed", async () => {
+    const res = await GET(new Request("http://localhost/api/usage/request-details?provider=codex&pageSize=100"));
+    const { details } = await res.json();
+    const oauth = details.find((d) => d.id === "labelled-oauth");
+    const deleted = details.find((d) => d.id === "labelled-deleted-key");
+    expect(oauth.providerName).toBe("OpenAI Codex");
+    expect(oauth.connectionName).toBe("someone@example.test");
+    expect(deleted.connectionName).toBeNull();
+  });
+
+  it("summary=1 leaves out every payload, even with full details on", async () => {
+    await db.updateSettings({ showSensitiveRequestDetails: true });
     const res = await GET(new Request(`http://localhost/api/usage/request-details?summary=1&provider=${nodeId}`));
     const [detail] = (await res.json()).details;
     expect(detail.id).toBe("labelled-1");
-    expect(detail.request).toBeUndefined();
-    expect(detail.response).toBeUndefined();
+    expect(detail.hasFullData).toBe(true);
+    for (const key of ["request", "providerRequest", "providerResponse", "response"]) {
+      expect(detail[key]).toBeUndefined();
+    }
+  });
+
+  it("summary=1 survives a row whose data isn't JSON", async () => {
+    const res = await GET(new Request("http://localhost/api/usage/request-details?summary=1&provider=openai&pageSize=100"));
+    expect(res.status).toBe(200);
+    const { details } = await res.json();
+    // corrupt-1 from the first describe block: kept as an empty row.
+    expect(details.some((d) => d.id === undefined)).toBe(true);
   });
 
   it("serves one request by id, redacted unless full details are on", async () => {
-    const get = () => GET_ONE(new Request("http://localhost/x"), { params: Promise.resolve({ id: "labelled-1" }) });
-    await db.updateSettings({ showSensitiveRequestDetails: false });
-    let body = await (await get()).json();
+    let body = await (await getOne("labelled-1")).json();
     expect(body.request).toEqual({ redacted: true });
     expect(body.providerName).toBe("Snowflake");
+    expect(body.connectionName).toBe("key…L09w");
+    expect(body.hasFullData).toBe(true);
 
     await db.updateSettings({ showSensitiveRequestDetails: true });
-    body = await (await get()).json();
+    body = await (await getOne("labelled-1")).json();
     expect(body.request.messages[0].content).toBe("hi");
-    await db.updateSettings({ showSensitiveRequestDetails: false });
 
-    const missing = await GET_ONE(new Request("http://localhost/x"), { params: Promise.resolve({ id: "nope" }) });
-    expect(missing.status).toBe(404);
+    expect((await (await getOne("labelled-oauth")).json()).hasFullData).toBe(false);
+    expect((await getOne("nope")).status).toBe(404);
+  });
+
+  it("/api/usage/providers names custom endpoints and built-in providers", async () => {
+    const { providers } = await (await GET_PROVIDERS()).json();
+    expect(providers).toContainEqual({ id: nodeId, name: "Snowflake" });
+    expect(providers).toContainEqual({ id: "codex", name: "OpenAI Codex" });
   });
 });

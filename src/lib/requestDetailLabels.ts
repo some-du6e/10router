@@ -1,7 +1,7 @@
 import { getProviderConnections, getProviderNodes } from "@/lib/db/index.js";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers.js";
 
-type NamedRow = { id?: string; name?: string | null; email?: string | null };
+type NamedRow = { id?: string; name?: string | null; displayName?: string | null; email?: string | null };
 
 export type ProviderLabeler = {
   providerName: (providerId: string | null | undefined) => string | null | undefined;
@@ -20,7 +20,7 @@ export async function getProviderLabeler(): Promise<ProviderLabeler> {
   for (const node of nodes) if (node.id && node.name) nodeNames.set(node.id, node.name);
   const connectionNames = new Map<string, string>();
   for (const c of connections) {
-    const name = c.name || c.email;
+    const name = c.displayName || c.name || c.email;
     if (c.id && name) connectionNames.set(c.id, name);
   }
 
