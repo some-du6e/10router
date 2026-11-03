@@ -28,6 +28,8 @@ jobs:
       - name: Install dependencies
         run: |
           bun install --ignore-scripts
+          # The backup test in request-details-tab opens the DB with better-sqlite3.
+          npm rebuild better-sqlite3
           cd tests && bun install --ignore-scripts
       - name: Unit test
         working-directory: tests
