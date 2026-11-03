@@ -176,7 +176,7 @@ describe("stream keepalive", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("stops after the stall timer fires, even if nobody reads the body", async () => {
+  it("stops after the stall timer disconnects a body nobody reads", async () => {
     const up = makeUpstream();
     const stall = KEEPALIVE * 2 + 5000;
     pipeWithDisconnect(up.response, new TransformStream(), makeController(), null, stall, KEEPALIVE);
