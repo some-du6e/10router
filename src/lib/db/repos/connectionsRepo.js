@@ -55,6 +55,10 @@ export function bumpConnectionsVersion() {
   global._connectionsVersion = (global._connectionsVersion || 0) + 1;
 }
 
+export function connectionsVersion() {
+  return global._connectionsVersion || 0;
+}
+
 function rowToConn(row) {
   if (!row) return null;
   const extra = parseJson(row.data, {});

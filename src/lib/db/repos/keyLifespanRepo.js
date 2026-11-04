@@ -1,5 +1,5 @@
 import { getAdapter } from "../driver.js";
-import { getProviderConnections } from "./connectionsRepo.js";
+import { connectionsVersion, getProviderConnections } from "./connectionsRepo.js";
 import { estimateKeyLifespans, LIFESPAN_RECENT_WINDOW_MS } from "../../../shared/utils/keyLifespan.js";
 
 const CACHE_TTL_MS = 60 * 1000;
@@ -51,7 +51,7 @@ export async function getKeyUsageByConnection(keys, recentSince) {
 export async function getKeyLifespans(provider, opts = {}) {
   if (!provider) return { estimate: null, keys: {} };
   const now = opts.now ?? Date.now();
-  const version = global._connectionsVersion || 0;
+  const version = connectionsVersion();
   const hit = cache.get(provider);
   if (!opts.fresh && hit && hit.version === version && now - hit.ts < CACHE_TTL_MS) return hit.value;
 

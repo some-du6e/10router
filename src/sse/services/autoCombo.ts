@@ -1,6 +1,7 @@
 import REGISTRY from "open-sse/providers/registry/index.js";
 import { stripContextWindowSuffix } from "open-sse/services/model.js";
 import { getProviderConnections, getSettings, getModelAliases, getComboByName } from "@/lib/localDb";
+import { connectionsVersion } from "@/lib/db/repos/connectionsRepo.js";
 
 // How a provider is paid for. Auto combos skip the sets the user blocks, so a
 // request for a free model never quietly falls back to a metered key.
@@ -105,14 +106,13 @@ interface CatalogState {
   connectionsVersion: number;
 }
 
-// Bumped by the connections repo on every write; a change makes the catalog stale.
-// The catalog lives on globalThis too: instrumentation and the route handlers
-// are separate bundles, and the startup warm has to fill the copy routes read.
+// connectionsVersion() is bumped by the connections repo on every write; a
+// change makes the catalog stale. The catalog lives on globalThis too:
+// instrumentation and the route handlers are separate bundles, and the startup
+// warm has to fill the copy routes read.
 declare global {
-  var _connectionsVersion: number | undefined;
   var _autoComboCatalog: CatalogState | undefined;
 }
-const connectionsVersion = () => globalThis._connectionsVersion || 0;
 
 const catalog: CatalogState = (globalThis._autoComboCatalog ??= {
   entries: null, expiresAt: 0, refreshing: null, refreshStartedAt: 0, attemptedVersion: -1, connectionsVersion: -1,

@@ -19,7 +19,7 @@ export {
   createProviderConnection, updateProviderConnection,
   deleteProviderConnection, deleteProviderConnectionsByProvider,
   reorderProviderConnections, cleanupProviderConnections,
-  AUTH_DEMOTE_PREFIX, getAuthDemoteKey,
+  AUTH_DEMOTE_PREFIX, getAuthDemoteKey, connectionsVersion,
 } from "./repos/connectionsRepo.js";
 
 // Provider nodes
