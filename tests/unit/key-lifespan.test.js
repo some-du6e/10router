@@ -419,7 +419,13 @@ describe("getKeyLifespans", () => {
     record(ids[420], { at: NOW - 2 * HOUR, cost: 2, prompt: 10 });
     record(ids[420], { at: NOW - 10 * HOUR, cost: 3 });
     record(ids[949], { at: NOW - HOUR, cost: 4 });
+    const all = vi.spyOn(adapter, "all");
     const usage = await repo.getKeyUsageByConnection(ids.map((id) => ({ id })), iso(NOW - 6 * HOUR));
+    const calls = all.mock.calls.filter(([sql]) => sql.startsWith("WITH w("));
+    all.mockRestore();
+    expect(calls.length).toBeGreaterThan(1);
+    expect(calls).toHaveLength(Math.ceil(950 / repo.WINDOW_CHUNK));
+    for (const [, params] of calls) expect(params.length).toBeLessThanOrEqual(802);
     expect(Object.keys(usage).sort()).toEqual([ids[3], ids[420], ids[949]].sort());
     expect(usage[ids[420]]).toEqual({ cost: 5, tokens: 10, firstAt: iso(NOW - 10 * HOUR), recentCost: 2, recentTokens: 10 });
     expect(usage[ids[949]].cost).toBe(4);
