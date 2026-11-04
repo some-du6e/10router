@@ -1,16 +1,36 @@
 name: Stream early headers E2E
 
 # A mock upstream that holds its response headers for 150s, behind a real
-# Cloudflare quick tunnel. master is expected to 524; this branch to answer.
+# Cloudflare quick tunnel. The "master" leg is master from before the fix
+# (pinned, so it keeps showing the 524 after the fix merges); the "pr" leg is
+# this checkout and must answer. Tool versions are pinned so a new release of
+# any of them can't turn this red on its own.
 on:
   pull_request:
     paths:
       - "open-sse/utils/earlyHeaders.js"
-      - "src/sse/handlers/chat.ts"
+      - "open-sse/utils/streamHelpers.js"
+      - "open-sse/utils/responsesStreamHelpers.js"
+      - "open-sse/utils/sseConstants.js"
+      - "open-sse/config/errorConfig.js"
+      - "open-sse/config/runtimeConfig.js"
       - "open-sse/handlers/chatCore.js"
+      - "open-sse/handlers/chatCore/jsonToSse.ts"
+      - "src/sse/handlers/chat.ts"
+      - "src/sse/services/finalRoutingError.js"
+      - "src/app/api/v1/messages/route.js"
+      - "src/app/api/v1/chat/completions/route.js"
+      - "src/app/api/v1/responses/route.js"
       - ".github/e2e/early-headers/**"
       - ".github/workflows/stream-early-headers-e2e.yml"
   workflow_dispatch:
+
+env:
+  # master just before the early-headers fix (#130's merge base).
+  PRE_FIX_SHA: fd950fed8894c3030a6dedd2992b2e02f47fbcef
+  CLOUDFLARED_VERSION: "2026.10.7"
+  CLAUDE_CODE_VERSION: "2.1.318"
+  CODEX_VERSION: "0.166.0"
 
 permissions:
   contents: read
@@ -32,7 +52,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           path: app
-          ref: ${{ matrix.leg == 'master' && 'master' || github.sha }}
+          ref: ${{ matrix.leg == 'master' && env.PRE_FIX_SHA || github.sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -47,9 +67,9 @@ jobs:
         run: npm run build
       - name: Install cloudflared, Claude Code and Codex
         run: |
-          curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          curl -fsSL -o /tmp/cloudflared.deb "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64.deb"
           sudo dpkg -i /tmp/cloudflared.deb
-          npm install -g @anthropic-ai/claude-code @openai/codex
+          npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}"
           cloudflared --version
           claude --version
           codex --version

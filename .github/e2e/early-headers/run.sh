@@ -3,7 +3,7 @@
 #   run.sh <leg>   leg = master | pr
 # Starts the mock upstream, 10router and a Cloudflare quick tunnel, then sends
 # requests whose upstream holds its headers for HOLD_MS (150s), longer than
-# Cloudflare's ~100s wait. master should 524; pr should answer.
+# Cloudflare's ~100s wait. master (pinned to before the fix) should 524; pr should answer.
 set -uo pipefail
 
 LEG="$1"
