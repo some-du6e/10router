@@ -21,8 +21,12 @@ const KEEPALIVE_BYTES = encoder.encode(SSE_KEEPALIVE);
 const EARLY = Symbol("early");
 const MAX_MESSAGE = 2000;
 
-// Would the client have retried this failure if it had come as an HTTP status?
-// The Anthropic and OpenAI SDKs (and Claude Code) retry 408, 409, 429 and 5xx.
+// Should the in-band error ask the client to retry? 408, 409, 429 and 5xx are
+// what the Anthropic and OpenAI SDKs (and so Claude Code) retry as HTTP statuses.
+// Codex over HTTP retries those too, at the turn level (codex-rs api_bridge.rs
+// maps 429 to RetryLimit, 500 to InternalServerError, and any status but 400 to
+// UnexpectedStatus, all retried in protocol/src/error.rs retry_delay); it would
+// also retry a 401/403/404 there, which in-band we make final instead.
 function isRetryableFailure(status, headers = null) {
   if (headers?.get?.(SHOULD_RETRY_HEADER) === SHOULD_RETRY_NO) return false;
   return [HTTP_STATUS.REQUEST_TIMEOUT, HTTP_STATUS.CONFLICT, HTTP_STATUS.RATE_LIMITED].includes(status) || status >= HTTP_STATUS.SERVER_ERROR;
