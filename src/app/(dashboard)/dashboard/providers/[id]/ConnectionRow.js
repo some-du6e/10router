@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { demotedLabel, isDemotionError, getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
-import { keyLifespanLabel } from "@/shared/utils/keyLifespan";
+import { lifespanLabel } from "@/shared/utils/keyLifespan";
 import PropTypes from "prop-types";
 import { Badge, Toggle, Tooltip } from "@/shared/components";
 import { useBlurEmails } from "@/shared/hooks/useBlurEmails";
@@ -128,7 +128,7 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
   }, [modelLockUntil]);
 
   const demoted = demotedLabel(connection);
-  const lifespan = keyLifespanLabel(connection);
+  const lifespan = lifespanLabel(connection);
 
   // Determine effective status (override unavailable if cooldown expired)
   const effectiveStatus = (connection.testStatus === "unavailable" && !isCooldown)

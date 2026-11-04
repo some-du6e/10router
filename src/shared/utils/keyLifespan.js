@@ -83,7 +83,6 @@ export function estimateKeyLifespans(connections, usage, opts = {}) {
       budget: estimate.median,
       low: estimate.low,
       high: estimate.high,
-      percentUsed: (used / estimate.median) * 100,
       percentLeft: Math.max(0, 100 - (used / estimate.median) * 100),
       remaining,
       ratePerHour,
@@ -108,9 +107,11 @@ export function formatDuration(hours) {
   return `~${Math.round(hours / 24)}d`;
 }
 
-// The row label for an active key, or null when there's no estimate.
-export function lifespanLabel(lifespan) {
-  if (!lifespan || !(lifespan.budget > 0)) return null;
+// The row label for a connection (its lifespan from /api/providers/lifespan),
+// or null when it's off or has no estimate.
+export function lifespanLabel(connection) {
+  const lifespan = connection?.lifespan;
+  if (connection?.isActive === false || !lifespan || !(lifespan.budget > 0)) return null;
   const { metric, used, budget, low, high, remaining, etaHours, sampleSize, excluded } = lifespan;
   const fmt = (v) => formatAmount(metric, v);
   const past = remaining <= 0;
@@ -125,8 +126,3 @@ export function lifespanLabel(lifespan) {
   return { text, title: lines.join("\n") };
 }
 
-// The label for a connection row: only keys that are on get one.
-export function keyLifespanLabel(connection) {
-  if (!connection || connection.isActive === false) return null;
-  return lifespanLabel(connection.lifespan);
-}

@@ -22,7 +22,7 @@ import type { DetectProgress } from "@/lib/endpointDetect.js";
 import { shrinkIcon } from "../components/shrinkIcon.js";
 import { connectionsToTest } from "../utils.js";
 import { demotedLabel, isDemotionError } from "@/shared/utils/connectionStatus.js";
-import { keyLifespanLabel } from "@/shared/utils/keyLifespan.js";
+import { lifespanLabel } from "@/shared/utils/keyLifespan.js";
 import EndpointAdvancedStudio from "../components/EndpointAdvancedStudio";
 import EndpointIcon, { TILE_BG } from "@/shared/components/EndpointIcon";
 import type { StudioExtra } from "../components/EndpointAdvancedStudio";
@@ -106,7 +106,7 @@ export interface EndpointConnection {
   autoDisabledReason?: string | null;
   priority?: number;
   providerSpecificData?: { baseUrl?: string; ownBaseUrl?: boolean };
-  // From /api/providers/lifespan; read through keyLifespanLabel.
+  // From /api/providers/lifespan; read through lifespanLabel.
   lifespan?: object | null;
 }
 interface Props {
@@ -466,7 +466,7 @@ function KeysCard({ connections, onAddKey, onEditKey, onDeleteKey, onToggleKey, 
             const own = k.providerSpecificData?.ownBaseUrl ? (() => { try { return new URL(k.providerSpecificData!.baseUrl || "").host; } catch { return ""; } })() : "";
             const masked = /…/.test(k.name || "");
             const demoted = demotedLabel(k);
-            const lifespan = keyLifespanLabel(k);
+            const lifespan = lifespanLabel(k);
             return (
               <div key={k.id} className={`group flex min-w-0 flex-col gap-3 rounded-lg p-2 transition-colors hover:bg-black/[0.02] dark:hover:bg-white/[0.02] sm:flex-row sm:items-center sm:justify-between ${off ? "opacity-60" : ""}`}>
                 <div className="flex min-w-0 flex-1 items-center gap-3">

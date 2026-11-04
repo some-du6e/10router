@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { demotedLabel, isDemotionError, getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
-import { keyLifespanLabel } from "@/shared/utils/keyLifespan";
+import { lifespanLabel } from "@/shared/utils/keyLifespan";
 import PropTypes from "prop-types";
 import { Card, Badge, Button, Modal, Select, Toggle, EditConnectionModal, ConfirmModal } from "@/shared/components";
 import { useSecretInputProps } from "@/shared/components/Input";
@@ -44,7 +44,7 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
   const proxyDropdownRef = useRef(null);
 
   const demoted = demotedLabel(connection);
-  const lifespan = keyLifespanLabel(connection);
+  const lifespan = lifespanLabel(connection);
   const proxyPoolMap = new Map((proxyPools || []).map((p) => [p.id, p]));
   const boundProxyPoolId = connection.providerSpecificData?.proxyPoolId || null;
   const boundProxyPool = boundProxyPoolId ? proxyPoolMap.get(boundProxyPoolId) : null;

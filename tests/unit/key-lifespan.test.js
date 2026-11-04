@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  estimateKeyLifespans, keyLifespanLabel, lifespanLabel, percentile,
+  estimateKeyLifespans, lifespanLabel, percentile,
 } from "../../src/shared/utils/keyLifespan.js";
 import { withLifespans, withToggledActive } from "../../src/app/(dashboard)/dashboard/providers/utils.js";
 
@@ -133,43 +133,43 @@ describe("lifespan label", () => {
   it("reads percent left and time at the current pace", () => {
     const { keys } = estimateKeyLifespans(...Object.values(snowflake({ cost: 230, recentCost: 36 * 6, firstAt: iso(NOW - 30 * HOUR) })), { now: NOW });
     // $36/h, $322 left: ~9h.
-    const label = lifespanLabel(keys.k);
+    const label = lifespanLabel({ lifespan: keys.k });
     expect(label.text).toBe("~58% left · ~9h at current pace");
     expect(label.title).toBe("Used $230 of a typical $552 (earlier keys lasted $454–$646).\nBased on 9 earlier keys turned off automatically, ignoring 1 that died early.");
   });
 
   it("says there's no time estimate for an idle key", () => {
     const { keys } = estimateKeyLifespans(...Object.values(snowflake()), { now: NOW });
-    expect(lifespanLabel(keys.k).text).toBe("~58% left");
-    expect(lifespanLabel(keys.k).title).toMatch(/No recent traffic, so no time estimate\.$/);
+    expect(lifespanLabel({ lifespan: keys.k }).text).toBe("~58% left");
+    expect(lifespanLabel({ lifespan: keys.k }).title).toMatch(/No recent traffic, so no time estimate\.$/);
   });
 
   it("flags a key past the typical budget", () => {
     const { keys } = estimateKeyLifespans(...Object.values(snowflake({ cost: 600, recentCost: 10 })), { now: NOW });
-    expect(lifespanLabel(keys.k).text).toBe("Past typical lifespan");
+    expect(lifespanLabel({ lifespan: keys.k }).text).toBe("Past typical lifespan");
   });
 
   it("reads <1% left rather than ~0% while some budget remains", () => {
     const { keys } = estimateKeyLifespans(...Object.values(snowflake({ cost: 550, recentCost: 6, firstAt: iso(NOW - 30 * HOUR) })), { now: NOW });
-    expect(lifespanLabel(keys.k).text).toBe("<1% left · ~2h at current pace");
+    expect(lifespanLabel({ lifespan: keys.k }).text).toBe("<1% left · ~2h at current pace");
     const almost = estimateKeyLifespans(...Object.values(snowflake({ cost: 548, firstAt: iso(NOW - 30 * HOUR) })), { now: NOW });
-    expect(lifespanLabel(almost.keys.k).text).toBe("~1% left");
+    expect(lifespanLabel({ lifespan: almost.keys.k }).text).toBe("~1% left");
   });
 
   it("formats tokens and long durations", () => {
-    const label = lifespanLabel({ metric: "tokens", used: 2.5e6, budget: 1e7, low: 8e6, high: 1.2e7, percentLeft: 75, remaining: 7.5e6, etaHours: 72, sampleSize: 3, excluded: 0 });
+    const label = lifespanLabel({ lifespan: { metric: "tokens", used: 2.5e6, budget: 1e7, low: 8e6, high: 1.2e7, percentLeft: 75, remaining: 7.5e6, etaHours: 72, sampleSize: 3, excluded: 0 } });
     expect(label.text).toBe("~75% left · ~3d at current pace");
     expect(label.title).toBe("Used 2.5M tokens of a typical 10.0M tokens (earlier keys lasted 8.0M tokens–12.0M tokens).\nBased on 3 earlier keys turned off automatically.");
   });
 
   it("shows nothing without an estimate or for a key that is off", () => {
     expect(lifespanLabel(null)).toBeNull();
-    expect(keyLifespanLabel({ id: "k", isActive: true, lifespan: null })).toBeNull();
+    expect(lifespanLabel({ id: "k", isActive: true, lifespan: null })).toBeNull();
     const { keys } = estimateKeyLifespans(...Object.values(snowflake()), { now: NOW });
     const row = withLifespans([{ id: "k", isActive: true }, { id: "other", isActive: true }], keys);
-    expect(keyLifespanLabel(row[0]).text).toBe("~58% left");
-    expect(keyLifespanLabel(row[1])).toBeNull();
-    expect(keyLifespanLabel(withToggledActive(row[0], false, { id: "k", isActive: false }))).toBeNull();
+    expect(lifespanLabel(row[0]).text).toBe("~58% left");
+    expect(lifespanLabel(row[1])).toBeNull();
+    expect(lifespanLabel(withToggledActive(row[0], false, { id: "k", isActive: false }))).toBeNull();
   });
 });
 
