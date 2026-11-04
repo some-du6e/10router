@@ -5,7 +5,12 @@
 // and down once whichever way it ends.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { executeMock, trackPendingMock } = vi.hoisted(() => ({ executeMock: vi.fn(), trackPendingMock: vi.fn() }));
+const { executeMock, trackPendingMock, appendLogMock, saveDetailMock } = vi.hoisted(() => ({
+  executeMock: vi.fn(),
+  trackPendingMock: vi.fn(),
+  appendLogMock: vi.fn(() => Promise.resolve()),
+  saveDetailMock: vi.fn(() => Promise.resolve()),
+}));
 
 vi.mock("../../open-sse/executors/index.js", () => ({
   getExecutor: vi.fn(() => ({ execute: executeMock, noAuth: true })),
@@ -20,8 +25,8 @@ vi.mock("../../open-sse/translator/concerns/prefetch.js", () => ({
 }));
 vi.mock("@/lib/usageDb.js", () => ({
   trackPendingRequest: trackPendingMock,
-  appendRequestLog: vi.fn(() => Promise.resolve()),
-  saveRequestDetail: vi.fn(() => Promise.resolve()),
+  appendRequestLog: appendLogMock,
+  saveRequestDetail: saveDetailMock,
   saveRequestUsage: vi.fn(() => Promise.resolve()),
 }));
 
@@ -64,20 +69,51 @@ const streaming = (signal) => new Response(new ReadableStream({
 
 const pendingCalls = () => trackPendingMock.mock.calls.map((c) => c[3]);
 
+// A hang-up is recorded like a disconnect: pending down without the provider
+// error flag, no FAILED log line, no error request detail, no error log.
+function expectQuietAbort(result, consoleError) {
+  expect(result).toMatchObject({ success: false, status: 499 });
+  expect(trackPendingMock.mock.calls.filter((c) => c[4] === true)).toEqual([]);
+  expect(appendLogMock.mock.calls.map((c) => c[0].status).filter((st) => /FAILED/.test(st))).toEqual([]);
+  expect(saveDetailMock.mock.calls.filter((c) => c[0]?.status === "error")).toEqual([]);
+  expect(consoleError).not.toHaveBeenCalled();
+}
+
+// A body that sends `first`, then stays open until the upstream signal aborts it.
+const stalledBody = (contentType, first) => (signal) => new Response(new ReadableStream({
+  start(c) {
+    c.enqueue(new TextEncoder().encode(first));
+    signal?.addEventListener("abort", () => c.error(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+  },
+}), { headers: { "content-type": contentType } });
+
+async function hangUpMidBody(provider) {
+  const consoleError = vi.spyOn(console, "error");
+  const client = new AbortController();
+  const pending = run(client.signal, { stream: false, provider });
+  await vi.waitFor(() => expect(executeMock).toHaveBeenCalled());
+  await new Promise((r) => setTimeout(r, 100));
+  client.abort();
+  const result = await pending;
+  return { result, consoleError };
+}
+
 describe("handleChatCore clientSignal", () => {
   beforeAll(async () => {
     ({ handleChatCore } = await import("../../open-sse/handlers/chatCore.js"));
   }, 30000);
-  beforeEach(() => { executeMock.mockReset(); trackPendingMock.mockClear(); });
+  beforeEach(() => { executeMock.mockReset(); trackPendingMock.mockClear(); appendLogMock.mockClear(); saveDetailMock.mockClear(); });
 
   it("an already-aborted signal aborts the upstream call before it starts", async () => {
     upstream(failed);
     const client = new AbortController();
     client.abort();
+    const consoleError = vi.spyOn(console, "error");
     const result = await run(client.signal);
     expect(executeMock.mock.calls[0][0].signal.aborted).toBe(true);
-    expect(result.status).toBe(499);
     expect(pendingCalls()).toEqual([true, false]);
+    expectQuietAbort(result, consoleError);
+    consoleError.mockRestore();
   });
 
   it("a hang-up during the upstream wait aborts the upstream call; pending goes down once", async () => {
@@ -89,7 +125,7 @@ describe("handleChatCore clientSignal", () => {
     expect(signal.aborted).toBe(false);
     client.abort();
     expect(signal.aborted).toBe(true);
-    expect((await pending).status).toBe(499);
+    expectQuietAbort(await pending, vi.fn());
     expect(pendingCalls()).toEqual([true, false]);
   });
 
@@ -104,22 +140,18 @@ describe("handleChatCore clientSignal", () => {
     expect(remove).toHaveBeenCalledWith("abort", add.mock.calls[0][1]);
   });
 
-  it("a hang-up while a non-stream request reads an SSE body is a quiet 499, not a throw", async () => {
-    // Half an event, then open until the upstream signal aborts it.
-    upstream((signal) => new Response(new ReadableStream({
-      start(c) {
-        c.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"h'));
-        signal?.addEventListener("abort", () => c.error(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
-      },
-    }), { headers: { "content-type": "text/event-stream" } }));
-    const client = new AbortController();
-    // groq is not forceStream, so the reply goes through the plain non-stream handler.
-    const pending = run(client.signal, { stream: false, provider: "groq" });
-    await vi.waitFor(() => expect(executeMock).toHaveBeenCalled());
-    await new Promise((r) => setTimeout(r, 100));
-    client.abort();
-    const result = await pending;
-    expect(result).toMatchObject({ success: false, status: 499 });
+  // groq is not forceStream, so its replies go through the plain non-stream
+  // handler; openai and codex are, so theirs go through the forced SSE→JSON one.
+  it.each([
+    ["an SSE body (plain non-stream handler)", "groq", "text/event-stream", 'data: {"choices":[{"delta":{"content":"h'],
+    ["a JSON body (plain non-stream handler)", "groq", "application/json", '{"choices":[{"message":{"content":"h'],
+    ["a forced SSE body (Chat Completions SSE to JSON)", "openai", "text/event-stream", 'data: {"choices":[{"delta":{"content":"h'],
+    ["a forced Responses SSE body (Responses SSE to JSON)", "codex", "text/event-stream", 'event: response.created\ndata: {"type":"response.created","response":{"id":"r"}}\n\n'],
+  ])("a hang-up while a non-stream request reads %s is a quiet 499", async (_name, provider, type, first) => {
+    upstream(stalledBody(type, first));
+    const { result, consoleError } = await hangUpMidBody(provider);
+    expectQuietAbort(result, consoleError);
+    consoleError.mockRestore();
   });
 
   it("a hang-up mid-stream is a disconnect: upstream dropped, pending down exactly once", async () => {

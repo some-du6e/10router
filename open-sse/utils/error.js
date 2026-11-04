@@ -1,4 +1,5 @@
 import { ERROR_TYPES, DEFAULT_ERROR_MESSAGES } from "../config/errorConfig.js";
+import { HTTP_STATUS } from "../config/runtimeConfig.js";
 
 /**
  * Build OpenAI-compatible error response body
@@ -103,6 +104,20 @@ export function createErrorResult(statusCode, message, resetsAtMs) {
     resetsAtMs,
     response: errorResponse(statusCode, message)
   };
+}
+
+/**
+ * Did this fail because the client hung up? An AbortError while the client's
+ * signal has fired, as opposed to a timeout, a stall, or an upstream reset.
+ * A hang-up is not an upstream failure: record it like a disconnect, not as FAILED.
+ */
+export function isClientAbort(error, clientSignal) {
+  return error?.name === "AbortError" && clientSignal?.aborted === true;
+}
+
+/** The result of an attempt the client hung up on; the account loop turns it into its client-gone result. */
+export function clientAbortResult() {
+  return createErrorResult(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
 }
 
 /**
