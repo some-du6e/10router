@@ -152,6 +152,7 @@ interface ComboLimitHoldArgs {
   apiKey: string | null;
   clientRawRequest: ClientRawRequest | null;
   routingFailures: RoutingFailure[];
+  signal?: AbortSignal | null;
 }
 
 interface HoldArgs {
@@ -163,6 +164,7 @@ interface HoldArgs {
   provider: string;
   model?: string;
   request: Request | null;
+  signal?: AbortSignal | null;
 }
 
 /**
@@ -251,8 +253,9 @@ export async function handleChat(
   // A streaming client whose upstream is slow to answer gets its headers early,
   // so a proxy waiting on them (Cloudflare) doesn't give up on the request.
   const sourceFormat = sourceFormatOverride || detectFormat(body);
-  if (!earlyHeaders || body.stream !== true || !KEEPALIVE_FORMATS.has(sourceFormat)) return route();
-  return respondWithEarlyHeaders({ run: route, sourceFormat, log });
+  // Next aborts request.signal only when the client leaves before the response ends.
+  if (!earlyHeaders || body.stream !== true || !KEEPALIVE_FORMATS.has(sourceFormat)) return route(request.signal);
+  return respondWithEarlyHeaders({ run: route, sourceFormat, signal: request.signal, log });
 }
 
 async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, request, apiKey, routingFailures, signal = null }: RoutedChatArgs): Promise<Response> {
@@ -301,7 +304,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
         // The final answer comes from a panel model or the judge, so either
         // may be the one whose response shape the client sees.
         models: judgeModel?.trim() ? [...comboModels, judgeModel.trim()] : comboModels,
-        body, modelStr, request, apiKey, clientRawRequest, routingFailures,
+        body, modelStr, request, apiKey, clientRawRequest, routingFailures, signal,
       });
     }
 
@@ -320,7 +323,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
         comboStrategy,
         comboStickyLimit
       }),
-      models: augmentedModels, body, modelStr, request, apiKey, clientRawRequest, routingFailures,
+      models: augmentedModels, body, modelStr, request, apiKey, clientRawRequest, routingFailures, signal,
     });
   }
 
@@ -345,7 +348,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
         comboName: comboLookupName(modelStr),
         comboStrategy: getActiveAdapterStrategy(requiredCapabilities, settings)
       }),
-      models: soloAugmented, body, modelStr, request, apiKey, clientRawRequest, routingFailures,
+      models: soloAugmented, body, modelStr, request, apiKey, clientRawRequest, routingFailures, signal,
     });
   }
 
@@ -362,7 +365,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
  * first model to come back answers, whichever one it is. A fusion combo is held
  * the same way when no panel model could answer.
  */
-async function withComboLimitHold({ run, models, body, modelStr, request, apiKey, clientRawRequest, routingFailures }: ComboLimitHoldArgs): Promise<Response> {
+async function withComboLimitHold({ run, models, body, modelStr, request, apiKey, clientRawRequest, routingFailures, signal = null }: ComboLimitHoldArgs): Promise<Response> {
   const pass = async (): Promise<PassResult> => {
     const mark = routingFailures.length;
     const response = await run();
@@ -406,7 +409,7 @@ async function withComboLimitHold({ run, models, body, modelStr, request, apiKey
   const settings = await Promise.all(infos.map((info) => nodeSettings(info.provider || "")));
   const willStream = infos.every((info, i) => clientReceivesStream({ body, provider: info.provider, model: info.model || "", sourceFormat, clientRawRequest, credentials: settings[i] }));
   log.warn("LIMITHOLD", `combo ${modelStr}: all models rate-limited, holding`);
-  return holdUntilClear({ first, attempt: pass, willStream, sourceFormat, modelStr, provider: modelStr, request });
+  return holdUntilClear({ first, attempt: pass, willStream, sourceFormat, modelStr, provider: modelStr, request, signal });
 }
 
 /**
@@ -436,10 +439,13 @@ async function leafModelInfos(
 }
 
 /** Wait out a limit: a narrated stream for streaming clients, a silent hang for JSON ones. */
-async function holdUntilClear({ first, attempt, willStream, sourceFormat, modelStr, provider, model, request }: HoldArgs): Promise<Response> {
+async function holdUntilClear({ first, attempt, willStream, sourceFormat, modelStr, provider, model, request, signal = null }: HoldArgs): Promise<Response> {
   if (!willStream) {
     const abort = new AbortController();
-    request?.signal?.addEventListener?.("abort", () => abort.abort(), { once: true });
+    for (const s of [request?.signal, signal]) {
+      if (s?.aborted) abort.abort();
+      else s?.addEventListener?.("abort", () => abort.abort(), { once: true });
+    }
     const settled = await awaitLimitClear({
       retryAtMs: first.retryAtMs,
       attempt,
@@ -472,6 +478,8 @@ async function handleSingleModelChat(
   apiKey: string | null = null,
   { allowHold = true, routingFailures = [], blockedBilling = null, signal = null }: SingleModelOptions = {},
 ): Promise<Response> {
+  // The client is gone: a combo's later models have no one to answer.
+  if (signal?.aborted) return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
   // An unfinished fusion panel is not proof of limit exhaustion. Successful
   // panels with empty/unparseable content must also remain retryable.
   const unconfirmed: RoutingFailure = { limited: false };
@@ -874,5 +882,6 @@ async function routeSingleModelChat(
     provider,
     model,
     request,
+    signal,
   });
 }

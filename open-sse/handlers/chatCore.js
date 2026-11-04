@@ -109,7 +109,25 @@ export function clientReceivesStream({ body, provider, model, sourceFormat, clie
   return body.stream !== false;
 }
 
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onBetasRejected, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, sourceFormatOverride, providerThinking, clientSignal = null }) {
+/**
+ * One attempt at one account. `clientSignal` aborts when the client hangs up;
+ * the attempt's upstream call is aborted with it. The listener comes off the
+ * signal (shared by every attempt of the request) once the attempt is over:
+ * on a failure or a reply that isn't a stream. A stream keeps it until it ends.
+ */
+export async function handleChatCore(args) {
+  const hangUp = { onAbort: null };
+  let result = null;
+  try {
+    result = await runChatCore(args, hangUp);
+    return result;
+  } finally {
+    const streaming = result?.success && (result.response?.headers?.get?.("content-type") || "").includes("text/event-stream");
+    if (hangUp.onAbort && !streaming) args.clientSignal?.removeEventListener?.("abort", hangUp.onAbort);
+  }
+}
+
+async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onBetasRejected, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, sourceFormatOverride, providerThinking, clientSignal = null }, hangUp) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -333,9 +351,12 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     onError: () => trackPendingRequest(model, provider, connectionId, false),
     log, provider, model, reqTag
   });
-  // The client hung up on a stream whose headers went out early: drop the upstream call.
+  // The client hung up: drop the upstream call.
   if (clientSignal?.aborted) streamController.abort();
-  else clientSignal?.addEventListener?.("abort", () => streamController.abort(), { once: true });
+  else if (clientSignal) {
+    hangUp.onAbort = () => streamController.abort();
+    clientSignal.addEventListener("abort", hangUp.onAbort, { once: true });
+  }
 
   const proxyOptions = {
     connectionProxyEnabled: credentials?.providerSpecificData?.connectionProxyEnabled === true,
