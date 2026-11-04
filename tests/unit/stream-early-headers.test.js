@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { respondWithEarlyHeaders, buildEarlyErrorBytes } from "../../open-sse/utils/earlyHeaders.js";
 import { SSE_KEEPALIVE } from "../../open-sse/utils/sseConstants.js";
 import { errorResponse } from "../../open-sse/utils/error.js";
+import { createLimitHoldResponse } from "../../open-sse/utils/limitHold.js";
 
 const state = { settings: {}, accounts: [], exhausted: null, creds: null, core: null, coreCalls: [], markCalls: [], modelLookups: [] };
 
@@ -492,6 +493,38 @@ describe("handleChat with early headers", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("a limit hold ends when the client hangs up, and retries nothing", async () => {
+    state.settings.limitHoldEnabled = true;
+    const client = new AbortController();
+    let lookups = 0;
+    state.creds = () => {
+      lookups++;
+      return {
+        allRateLimited: true,
+        allLimitsExhausted: true,
+        retryAfter: new Date(Date.now() + 60_000).toISOString(),
+        retryAfterHuman: "reset after 1m",
+        lastError: "usage_limit_reached",
+        lastErrorCode: 429,
+      };
+    };
+    const res = await request("/v1/messages", claudeBody, { earlyHeaders: true }, { signal: client.signal });
+    expect(res.status).toBe(200);
+    const out = read(res);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(out.text).toContain("limit reached");
+    const before = lookups;
+    const written = out.text;
+    client.abort();
+    // Ends now, not at the next retry 30s+ away.
+    await vi.advanceTimersByTimeAsync(100);
+    expect(out.done).toBe(true);
+    expect(out.text).toBe(written);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(lookups).toBe(before);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("without early headers too, a hang-up stops the account loop", async () => {
     const client = new AbortController();
     state.core = (args) => later(100_000, () => ok(CLAUDE_REPLY), args.clientSignal);
@@ -519,5 +552,35 @@ describe("STREAM_EARLY_HEADERS_MS", () => {
     expect(await load("-5")).toBe(30_000);
     expect(await load("soon")).toBe(30_000);
     expect(await load(String(2 ** 31))).toBe(30_000);
+  });
+});
+
+describe("createLimitHoldResponse and the client's signal", () => {
+  const hold = (signal, attempt) => createLimitHoldResponse({
+    sourceFormat: "claude", model: "m", provider: "p", retryAtMs: Date.now() + 60_000, attempt, signal,
+  });
+
+  it("a hold built after the client left ends at once, with nothing written or retried", async () => {
+    const client = new AbortController();
+    client.abort();
+    const attempt = vi.fn();
+    const out = read(hold(client.signal, attempt));
+    await out.pump;
+    expect(out.text).toBe("");
+    expect(attempt).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a hang-up during the wait ends the hold before its retry", async () => {
+    const client = new AbortController();
+    const attempt = vi.fn();
+    const out = read(hold(client.signal, attempt));
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(out.text).toContain("limit reached");
+    client.abort();
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    await out.pump;
+    expect(attempt).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

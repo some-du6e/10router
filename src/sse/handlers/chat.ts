@@ -467,6 +467,7 @@ async function holdUntilClear({ first, attempt, willStream, sourceFormat, modelS
     retryAtMs: first.retryAtMs,
     attempt,
     log,
+    signal,
   } as Parameters<typeof createLimitHoldResponse>[0]);
 }
 
