@@ -23,10 +23,11 @@ const MAX_MESSAGE = 2000;
 
 // Should the in-band error ask the client to retry? 408, 409, 429 and 5xx are
 // what the Anthropic and OpenAI SDKs (and so Claude Code) retry as HTTP statuses.
-// Codex over HTTP retries those too, at the turn level (codex-rs api_bridge.rs
-// maps 429 to RetryLimit, 500 to InternalServerError, and any status but 400 to
-// UnexpectedStatus, all retried in protocol/src/error.rs retry_delay); it would
-// also retry a 401/403/404 there, which in-band we make final instead.
+// Codex over HTTP (codex-rs api_bridge.rs; protocol/src/error.rs retry_delay)
+// retries 408, 409, 5xx and any other status but 400 at the turn level; a 429
+// becomes RetryLimit, retried only when the response carried Retry-After. In-band
+// a 429 is rate_limit_exceeded, which Codex always retries (with backoff if no
+// delay is given), and 401/403/404 are final where HTTP would have retried them.
 function isRetryableFailure(status, headers = null) {
   if (headers?.get?.(SHOULD_RETRY_HEADER) === SHOULD_RETRY_NO) return false;
   return [HTTP_STATUS.REQUEST_TIMEOUT, HTTP_STATUS.CONFLICT, HTTP_STATUS.RATE_LIMITED].includes(status) || status >= HTTP_STATUS.SERVER_ERROR;

@@ -36,16 +36,19 @@ countdown is lost (codex-rs `codex-api/src/sse/responses_error.rs`
 `parse_failed_response`; `protocol/src/error.rs`). Other failures after early
 headers get their code from the status:
 
-- 408, 409, 429 and 5xx: `rate_limit_exceeded` (429) or `server_error`, which Codex
-  retries. Sent as HTTP statuses, Codex retries these too: codex-rs
-  (`codex-api/src/api_bridge.rs`) maps a 429 to `RetryLimit`, a 500 to
-  `InternalServerError` and any other status but 400 to `UnexpectedStatus`, and
-  retries all three at the turn level (`protocol/src/error.rs` `retry_delay`). The
-  Anthropic and OpenAI SDKs and Claude Code retry the same set.
+- 408, 409, 429 and 5xx: `rate_limit_exceeded` (429) or `server_error`. Codex
+  always retries both, with backoff when no delay is given. The Anthropic and
+  OpenAI SDKs and Claude Code retry this same set of HTTP statuses.
 - Anything else, such as 400, 401, 403 or 404, and any failure marked
   `x-should-retry: false` (the limit exhaustion above): `invalid_prompt`, final.
-  Over HTTP Codex would treat a 400 as final too, but would retry a 401, 403 or
-  404 as `UnexpectedStatus`; in-band they stop it instead.
+
+Over HTTP, Codex treats these statuses a little differently (codex-rs
+`codex-api/src/api_bridge.rs`, `protocol/src/error.rs` `retry_delay`). A 400 is
+final there too, and a 408, 409 or 5xx is retried. A 429 becomes `RetryLimit`,
+which is retried only when the response carried `Retry-After`. Any other status
+(401, 403, 404, …) becomes `UnexpectedStatus` and is retried. So in-band, a 429
+without `Retry-After` is retried where over HTTP it would stop, and 401/403/404
+stop where over HTTP they would be retried.
 
 A limit exhaustion reached within the first 30s still gets the HTTP 400 above.
 
