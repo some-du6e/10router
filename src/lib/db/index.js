@@ -74,6 +74,9 @@ export {
   appendRequestLog, getRecentLogs, getConnectionValue, getConnectionDetail,
 } from "./repos/usageRepo.js";
 
+// Key lifespan estimate
+export { getKeyLifespans } from "./repos/keyLifespanRepo.js";
+
 // Request details
 export {
   saveRequestDetail, getRequestDetails, getRequestDetailById, getRequestDetailFullData, clearRequestDetailFullData, CorruptFullDataError, getDistinctProviders,

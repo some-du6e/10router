@@ -3,12 +3,13 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { demotedLabel, isDemotionError, getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
+import { keyLifespanLabel } from "@/shared/utils/keyLifespan";
 import PropTypes from "prop-types";
 import { Card, Badge, Button, Modal, Select, Toggle, EditConnectionModal, ConfirmModal } from "@/shared/components";
 import { useSecretInputProps } from "@/shared/components/Input";
 import { providerRoutingOptions, SOONEST_RESET_HINT } from "@/shared/constants/accountRouting";
 import { useBlurEmails } from "@/shared/hooks/useBlurEmails";
-import { withToggledActive } from "../utils";
+import { fetchKeyLifespans, withLifespans, withToggledActive } from "../utils";
 
 // ── CooldownTimer ──────────────────────────────────────────────
 function CooldownTimer({ until }) {
@@ -43,6 +44,7 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
   const proxyDropdownRef = useRef(null);
 
   const demoted = demotedLabel(connection);
+  const lifespan = keyLifespanLabel(connection);
   const proxyPoolMap = new Map((proxyPools || []).map((p) => [p.id, p]));
   const boundProxyPoolId = connection.providerSpecificData?.proxyPoolId || null;
   const boundProxyPool = boundProxyPoolId ? proxyPoolMap.get(boundProxyPoolId) : null;
@@ -137,6 +139,7 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
             {hasAnyProxy && <Badge variant={proxyBadgeVariant} size="sm">Proxy</Badge>}
             {isCooldown && connection.isActive !== false && <CooldownTimer until={modelLockUntil} />}
             {demoted && <span className="text-xs text-amber-600 dark:text-amber-400 truncate max-w-[260px]" title={demoted.title}>{demoted.text}</span>}
+            {lifespan && <span className="text-xs text-text-muted truncate max-w-[260px]" title={lifespan.title}>{lifespan.text}</span>}
             {connection.lastError && connection.isActive !== false && !isDemotionError(connection) && (
               <span className="text-xs text-red-500 truncate max-w-[300px]" title={connection.lastError}>{connection.lastError}</span>
             )}
@@ -342,15 +345,16 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
 
   const fetch_ = useCallback(async () => {
     try {
-      const [connRes, proxyRes, settingsRes] = await Promise.all([
+      const [connRes, proxyRes, settingsRes, lifespans] = await Promise.all([
         fetch("/api/providers", { cache: "no-store" }),
         fetch("/api/proxy-pools?isActive=true", { cache: "no-store" }),
         fetch("/api/settings", { cache: "no-store" }),
+        fetchKeyLifespans(providerId),
       ]);
       const connData = await connRes.json();
       const proxyData = await proxyRes.json();
       const settingsData = settingsRes.ok ? await settingsRes.json() : {};
-      if (connRes.ok) setConnections((connData.connections || []).filter((c) => c.provider === providerId));
+      if (connRes.ok) setConnections(withLifespans((connData.connections || []).filter((c) => c.provider === providerId), lifespans));
       if (proxyRes.ok) setProxyPools(proxyData.proxyPools || []);
       const override = (settingsData.providerStrategies || {})[providerId] || {};
       setProviderStrategy(override.fallbackStrategy || null);

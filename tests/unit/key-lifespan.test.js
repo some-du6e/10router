@@ -1,0 +1,246 @@
+// Key lifespan estimate: an active key's remaining budget, learned from what
+// earlier keys of the same provider consumed before they were turned off
+// automatically. Math first, then the repo against a temp SQLite DB.
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  estimateKeyLifespans, keyLifespanLabel, lifespanLabel, percentile,
+} from "../../src/shared/utils/keyLifespan.js";
+import { withLifespans, withToggledActive } from "../../src/app/(dashboard)/dashboard/providers/utils.js";
+
+const NOW = Date.parse("2026-11-04T12:00:00.000Z");
+const HOUR = 60 * 60 * 1000;
+const iso = (ms) => new Date(ms).toISOString();
+const dead = (id) => ({ id, isActive: false, autoDisabledAt: "2026-11-03T00:00:00.000Z" });
+const live = (id) => ({ id, isActive: true });
+
+// The Snowflake keys: nine died between $419 and $717, one died early at $42
+// (an "account locked" 401), and the live key is at $230.
+const SNOWFLAKE = [419, 419, 454, 529, 552, 565, 646, 655, 717];
+function snowflake(liveUsage = { cost: 230, tokens: 1e6, recentCost: 0, recentTokens: 0, firstAt: iso(NOW - 30 * HOUR) }) {
+  const connections = [...SNOWFLAKE.map((_, i) => dead(`d${i}`)), dead("locked"), live("k")];
+  const usage = Object.fromEntries(SNOWFLAKE.map((cost, i) => [`d${i}`, { cost, tokens: cost * 1000 }]));
+  usage.locked = { cost: 42, tokens: 42000 };
+  usage.k = liveUsage;
+  return { connections, usage };
+}
+
+describe("percentile", () => {
+  it("interpolates between neighbours", () => {
+    expect(percentile([1, 2, 3, 4], 0.5)).toBe(2.5);
+    expect(percentile([10], 0.75)).toBe(10);
+    expect(percentile([], 0.5)).toBeNull();
+  });
+});
+
+describe("estimateKeyLifespans", () => {
+  it("uses the median and p25-p75 of the dead keys, ignoring the one that died early", () => {
+    const { connections, usage } = snowflake();
+    const { estimate, keys } = estimateKeyLifespans(connections, usage, { now: NOW });
+    expect(estimate).toEqual({ metric: "cost", median: 552, low: 454, high: 646, sampleSize: 9, excluded: 1 });
+    expect(keys.k).toMatchObject({ used: 230, budget: 552, remaining: 322, low: 454, high: 646 });
+    expect(Math.round(keys.k.percentLeft)).toBe(58);
+    expect(Object.keys(keys)).toEqual(["k"]);
+  });
+
+  it("gives no estimate with fewer than 3 dead keys", () => {
+    const usage = { a: { cost: 500 }, b: { cost: 600 }, k: { cost: 10 } };
+    expect(estimateKeyLifespans([dead("a"), dead("b"), live("k")], usage, { now: NOW })).toEqual({ estimate: null, keys: {} });
+  });
+
+  it("gives no estimate when outliers leave fewer than 3 dead keys", () => {
+    const usage = { a: { cost: 500 }, b: { cost: 600 }, c: { cost: 50 }, d: { cost: 40 }, e: { cost: 700 } };
+    expect(estimateKeyLifespans(["a", "b", "c", "d", "e"].map(dead), usage, { now: NOW }).estimate)
+      .toMatchObject({ sampleSize: 3, excluded: 2, median: 600 });
+    expect(estimateKeyLifespans(["a", "b", "c", "d"].map(dead), usage, { now: NOW }).estimate).toBeNull();
+  });
+
+  it("only counts keys turned off automatically as dead", () => {
+    const connections = [{ id: "a", isActive: false }, { id: "b", isActive: false }, dead("c"), dead("d"), live("k")];
+    const usage = { a: { cost: 500 }, b: { cost: 500 }, c: { cost: 500 }, d: { cost: 500 } };
+    expect(estimateKeyLifespans(connections, usage, { now: NOW }).estimate).toBeNull();
+  });
+
+  it("falls back to tokens when a dead key has no cost", () => {
+    const usage = { a: { cost: 0, tokens: 1000 }, b: { cost: 3, tokens: 2000 }, c: { tokens: 3000 }, k: { cost: 1, tokens: 500 } };
+    const { estimate, keys } = estimateKeyLifespans([dead("a"), dead("b"), dead("c"), live("k")], usage, { now: NOW });
+    expect(estimate).toMatchObject({ metric: "tokens", median: 2000, low: 1500, high: 2500 });
+    expect(keys.k).toMatchObject({ metric: "tokens", used: 500, remaining: 1500 });
+  });
+
+  it("gives no estimate when the dead keys consumed nothing", () => {
+    const usage = { a: { cost: 0, tokens: 0 }, b: {}, c: {} };
+    expect(estimateKeyLifespans([dead("a"), dead("b"), dead("c"), live("k")], usage, { now: NOW }).estimate).toBeNull();
+  });
+
+  it("projects an ETA from the key's recent burn rate", () => {
+    // $36 over the 6h window, key in use for longer than that: $6/h.
+    const { keys } = estimateKeyLifespans(...Object.values(snowflake({ cost: 230, recentCost: 36, firstAt: iso(NOW - 30 * HOUR) })), { now: NOW });
+    expect(keys.k.ratePerHour).toBeCloseTo(6);
+    expect(keys.k.etaHours).toBeCloseTo(322 / 6);
+  });
+
+  it("measures the rate from the key's first use when that is inside the window", () => {
+    const { keys } = estimateKeyLifespans(...Object.values(snowflake({ cost: 20, recentCost: 20, firstAt: iso(NOW - 2 * HOUR) })), { now: NOW });
+    expect(keys.k.ratePerHour).toBeCloseTo(10);
+  });
+
+  it("has no ETA for an idle key", () => {
+    const { keys } = estimateKeyLifespans(...Object.values(snowflake()), { now: NOW });
+    expect(keys.k.ratePerHour).toBeNull();
+    expect(keys.k.etaHours).toBeNull();
+  });
+
+  it("estimates a key with no usage yet at 100% left", () => {
+    const { connections, usage } = snowflake();
+    delete usage.k;
+    const { keys } = estimateKeyLifespans(connections, usage, { now: NOW });
+    expect(keys.k).toMatchObject({ used: 0, percentLeft: 100, remaining: 552, etaHours: null });
+  });
+});
+
+describe("lifespan label", () => {
+  it("reads percent left and time at the current pace", () => {
+    const { keys } = estimateKeyLifespans(...Object.values(snowflake({ cost: 230, recentCost: 36 * 6, firstAt: iso(NOW - 30 * HOUR) })), { now: NOW });
+    // $36/h, $322 left: ~9h.
+    const label = lifespanLabel(keys.k);
+    expect(label.text).toBe("~58% left · ~9h at current pace");
+    expect(label.title).toBe("Used $230 of a typical $552 (earlier keys lasted $454–$646).\nBased on 9 earlier keys turned off automatically, ignoring 1 that died early.");
+  });
+
+  it("says there's no time estimate for an idle key", () => {
+    const { keys } = estimateKeyLifespans(...Object.values(snowflake()), { now: NOW });
+    expect(lifespanLabel(keys.k).text).toBe("~58% left");
+    expect(lifespanLabel(keys.k).title).toMatch(/No recent traffic, so no time estimate\.$/);
+  });
+
+  it("flags a key past the typical budget", () => {
+    const { keys } = estimateKeyLifespans(...Object.values(snowflake({ cost: 600, recentCost: 10 })), { now: NOW });
+    expect(lifespanLabel(keys.k).text).toBe("Past typical lifespan");
+  });
+
+  it("formats tokens and long durations", () => {
+    const label = lifespanLabel({ metric: "tokens", used: 2.5e6, budget: 1e7, low: 8e6, high: 1.2e7, percentLeft: 75, remaining: 7.5e6, etaHours: 72, sampleSize: 3, excluded: 0 });
+    expect(label.text).toBe("~75% left · ~3d at current pace");
+    expect(label.title).toBe("Used 2.5M tokens of a typical 10.0M tokens (earlier keys lasted 8.0M tokens–12.0M tokens).\nBased on 3 earlier keys turned off automatically.");
+  });
+
+  it("shows nothing without an estimate or for a key that is off", () => {
+    expect(lifespanLabel(null)).toBeNull();
+    expect(keyLifespanLabel({ id: "k", isActive: true, lifespan: null })).toBeNull();
+    const { keys } = estimateKeyLifespans(...Object.values(snowflake()), { now: NOW });
+    const row = withLifespans([{ id: "k", isActive: true }, { id: "other", isActive: true }], keys);
+    expect(keyLifespanLabel(row[0]).text).toBe("~58% left");
+    expect(keyLifespanLabel(row[1])).toBeNull();
+    expect(keyLifespanLabel(withToggledActive(row[0], false, { id: "k", isActive: false }))).toBeNull();
+  });
+});
+
+// ---- repo, against a real temp SQLite DB --------------------------------
+const originalDataDir = process.env.DATA_DIR;
+const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "10router-key-lifespan-"));
+
+describe("getKeyLifespans", () => {
+  let db, adapter, repo;
+  let seq = 0;
+  let provider;
+
+  beforeAll(async () => {
+    process.env.DATA_DIR = tempDir;
+    vi.resetModules();
+    db = await import("@/lib/db/index.js");
+    adapter = await (await import("@/lib/db/driver.js")).getAdapter();
+    repo = await import("@/lib/db/repos/keyLifespanRepo.js");
+  });
+
+  afterAll(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    if (originalDataDir === undefined) delete process.env.DATA_DIR;
+    else process.env.DATA_DIR = originalDataDir;
+  });
+
+  beforeEach(() => {
+    provider = `openai-compatible-chat-lifespan-${++seq}`;
+    repo.clearKeyLifespanCache();
+  });
+
+  async function addKey(name, { deadAt } = {}) {
+    const c = await db.createProviderConnection({ provider, authType: "apikey", name, apiKey: `sk-test-${name}-0123456789` });
+    if (deadAt) await db.updateProviderConnection(c.id, { isActive: false, autoDisabledAt: deadAt, autoDisabledReason: "403" });
+    return c.id;
+  }
+
+  function use(connectionId, { at, cost = 0, prompt = 0, completion = 0, status = "ok" }) {
+    adapter.run(
+      `INSERT INTO usageHistory(timestamp, provider, model, connectionId, promptTokens, completionTokens, cost, status) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+      [iso(at), provider, "m", connectionId, prompt, completion, cost, status]
+    );
+  }
+
+  it("sums only successful usage per key and estimates the active ones", async () => {
+    const deadIds = [];
+    for (const [i, cost] of [400, 500, 600].entries()) {
+      const id = await addKey(`dead${i}`, { deadAt: iso(NOW - 24 * HOUR) });
+      deadIds.push(id);
+      use(id, { at: NOW - 40 * HOUR, cost: cost / 2, prompt: 100, completion: 10 });
+      use(id, { at: NOW - 30 * HOUR, cost: cost / 2, prompt: 100, completion: 10 });
+      use(id, { at: NOW - 25 * HOUR, cost: 999, status: "error" });
+    }
+    const early = await addKey("locked", { deadAt: iso(NOW - 20 * HOUR) });
+    use(early, { at: NOW - 21 * HOUR, cost: 20 });
+    const k = await addKey("live");
+    use(k, { at: NOW - 20 * HOUR, cost: 100 });
+    use(k, { at: NOW - 2 * HOUR, cost: 30 });
+    use(k, { at: NOW - 1 * HOUR, cost: 20 });
+    use(k, { at: NOW - 1 * HOUR, cost: 500, status: "error" });
+    const idle = await addKey("idle");
+
+    const usage = await repo.getKeyUsageByConnection([...deadIds, k], iso(NOW - 6 * HOUR));
+    expect(usage[deadIds[0]]).toEqual({ cost: 400, tokens: 220, firstAt: iso(NOW - 40 * HOUR), recentCost: 0, recentTokens: 0 });
+    expect(usage[k]).toMatchObject({ cost: 150, recentCost: 50 });
+
+    const result = await repo.getKeyLifespans(provider, { now: NOW });
+    expect(result.estimate).toEqual({ metric: "cost", median: 500, low: 450, high: 550, sampleSize: 3, excluded: 1 });
+    expect(Object.keys(result.keys).sort()).toEqual([k, idle].sort());
+    expect(result.keys[k]).toMatchObject({ used: 150, remaining: 350, percentLeft: 70 });
+    expect(result.keys[k].ratePerHour).toBeCloseTo(50 / 6);
+    expect(result.keys[idle]).toMatchObject({ used: 0, etaHours: null });
+  });
+
+  it("returns only ids and numbers, never credentials", async () => {
+    for (const i of [1, 2, 3]) use(await addKey(`dead${i}`, { deadAt: iso(NOW - HOUR) }), { at: NOW - 2 * HOUR, cost: 100 });
+    await addKey("live");
+    const json = JSON.stringify(await repo.getKeyLifespans(provider, { now: NOW }));
+    expect(json).not.toMatch(/sk-test|apiKey|accessToken|refreshToken|name/);
+  });
+
+  it("gives no estimate for a provider with fewer than 3 dead keys", async () => {
+    use(await addKey("dead", { deadAt: iso(NOW - HOUR) }), { at: NOW - 2 * HOUR, cost: 100 });
+    await addKey("live");
+    expect(await repo.getKeyLifespans(provider, { now: NOW })).toEqual({ estimate: null, keys: {} });
+  });
+
+  it("caches briefly and refreshes when the provider's connections change", async () => {
+    const ids = [];
+    for (const i of [1, 2, 3]) {
+      const id = await addKey(`dead${i}`, { deadAt: iso(NOW - HOUR) });
+      ids.push(id);
+      use(id, { at: NOW - 2 * HOUR, cost: 100 });
+    }
+    const k = await addKey("live");
+    const first = await repo.getKeyLifespans(provider, { now: NOW });
+    use(k, { at: NOW - 60 * 1000, cost: 10 });
+    expect(await repo.getKeyLifespans(provider, { now: NOW + 1000 })).toBe(first);
+    expect((await repo.getKeyLifespans(provider, { now: NOW + 61 * 1000 })).keys[k].used).toBe(10);
+    await db.updateProviderConnection(k, { isActive: false, autoDisabledAt: iso(NOW), autoDisabledReason: "403" });
+    expect((await repo.getKeyLifespans(provider, { now: NOW + 62 * 1000 })).keys).toEqual({});
+  });
+
+  it("aggregates from the covering index without reading table rows", () => {
+    const plan = adapter.all(`EXPLAIN QUERY PLAN ${repo.keyUsageSql(2)}`, [iso(NOW), iso(NOW), "a", "b"]);
+    const detail = plan.map((r) => r.detail).join("\n");
+    expect(detail).toMatch(/USING COVERING INDEX idx_uh_conn_ok/);
+  });
+});

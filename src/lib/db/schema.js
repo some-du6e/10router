@@ -145,6 +145,8 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_uh_provider ON usageHistory(provider)",
       "CREATE INDEX IF NOT EXISTS idx_uh_model ON usageHistory(model)",
       "CREATE INDEX IF NOT EXISTS idx_uh_conn ON usageHistory(connectionId)",
+      // Covers the key lifespan aggregate (keyLifespanRepo.js) without touching rows.
+      "CREATE INDEX IF NOT EXISTS idx_uh_conn_ok ON usageHistory(connectionId, status, timestamp, cost, promptTokens, completionTokens)",
     ],
   },
   usageDaily: {
