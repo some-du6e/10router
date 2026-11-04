@@ -140,6 +140,13 @@ describe("lifespan label", () => {
     expect(lifespanLabel(keys.k).text).toBe("Past typical lifespan");
   });
 
+  it("reads <1% left rather than ~0% while some budget remains", () => {
+    const { keys } = estimateKeyLifespans(...Object.values(snowflake({ cost: 550, recentCost: 6, firstAt: iso(NOW - 30 * HOUR) })), { now: NOW });
+    expect(lifespanLabel(keys.k).text).toBe("<1% left · ~2h at current pace");
+    const almost = estimateKeyLifespans(...Object.values(snowflake({ cost: 548, firstAt: iso(NOW - 30 * HOUR) })), { now: NOW });
+    expect(lifespanLabel(almost.keys.k).text).toBe("~1% left");
+  });
+
   it("formats tokens and long durations", () => {
     const label = lifespanLabel({ metric: "tokens", used: 2.5e6, budget: 1e7, low: 8e6, high: 1.2e7, percentLeft: 75, remaining: 7.5e6, etaHours: 72, sampleSize: 3, excluded: 0 });
     expect(label.text).toBe("~75% left · ~3d at current pace");

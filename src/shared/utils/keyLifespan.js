@@ -116,7 +116,7 @@ export function lifespanLabel(lifespan) {
   const past = remaining <= 0;
   const text = past
     ? "Past typical lifespan"
-    : `~${Math.round(lifespan.percentLeft)}% left${etaHours ? ` · ${formatDuration(etaHours)} at current pace` : ""}`;
+    : `${lifespan.percentLeft < 0.5 ? "<1%" : `~${Math.round(lifespan.percentLeft)}%`} left${etaHours ? ` · ${formatDuration(etaHours)} at current pace` : ""}`;
   const lines = [
     `Used ${fmt(used)} of a typical ${fmt(budget)} (earlier keys lasted ${fmt(low)}–${fmt(high)}).`,
     `Based on ${sampleSize} earlier key${sampleSize === 1 ? "" : "s"} turned off automatically${excluded ? `, ignoring ${excluded} that died early` : ""}.`,
