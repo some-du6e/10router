@@ -1,5 +1,8 @@
-// Opens both provider pages logged in, checks the lifespan label and saves
+// Opens the provider pages logged in, checks the lifespan label and saves
 // full-page screenshots. Usage: node ui.mjs <baseUrl> <outDir>
+//   custom endpoint page (CustomEndpointPage.tsx): openai-compatible-e2e-alpha / -beta
+//   built-in provider page (ConnectionRow.js):      openai
+//   media provider page (ConnectionsCard.js):        tts/elevenlabs
 import { chromium } from "playwright";
 import { mkdirSync } from "node:fs";
 
@@ -20,41 +23,52 @@ check("ui: login", login.ok(), String(login.status()));
 const page = await context.newPage();
 page.on("console", (m) => { if (m.type() === "error") console.log(`[browser] ${m.text()}`); });
 
-async function open(providerId, activeName, shot) {
+async function open(pagePath, providerId, activeName, shot) {
   const lifespanResp = page.waitForResponse((r) => r.url().includes(`/api/providers/lifespan?provider=${providerId}`), { timeout: 60000 });
-  await page.goto(`/dashboard/providers/${providerId}`, { waitUntil: "domcontentloaded" });
+  await page.goto(pagePath, { waitUntil: "domcontentloaded" });
   const resp = await lifespanResp;
-  console.log(`ui: ${providerId} lifespan fetch -> ${resp.status()}`);
+  console.log(`ui: ${pagePath} lifespan fetch -> ${resp.status()}`);
   await page.getByText(activeName, { exact: true }).first().waitFor({ state: "visible", timeout: 60000 });
   await page.waitForLoadState("networkidle").catch(() => {});
-  await page.screenshot({ path: `${outDir}/${shot}`, fullPage: true });
+  await page.screenshot({ path: `${outDir}/${shot}.png`, fullPage: true });
 }
 
-await open("openai-compatible-e2e-alpha", "alpha-active", "alpha-provider.png");
-const labels = page.getByText(/% left/);
-const n = await labels.count();
-check("ui alpha: exactly one '% left' label", n === 1, String(n));
-if (n >= 1) {
-  const label = labels.first();
-  check("ui alpha: label visible", await label.isVisible());
-  const text = (await label.innerText()).trim();
-  check("ui alpha: label reads ~58% left", /^~58% left/.test(text), text);
-  const title = await label.getAttribute("title");
-  console.log(`ui alpha: label title: ${JSON.stringify(title)}`);
-  const row = await label.evaluate((el) => {
+// The lifespan label is the span whose tooltip starts "Used ".
+const labels = () => page.locator('span[title^="Used "]');
+
+async function expectLabel(tag, { activeName, deadName, text }) {
+  const n = await labels().count();
+  check(`ui ${tag}: exactly one lifespan label`, n === 1, String(n));
+  if (n < 1) return;
+  const label = labels().first();
+  check(`ui ${tag}: label visible`, await label.isVisible());
+  const got = (await label.innerText()).trim();
+  check(`ui ${tag}: label reads ${text}`, got.startsWith(text), got);
+  console.log(`ui ${tag}: label title: ${JSON.stringify(await label.getAttribute("title"))}`);
+  // Smallest ancestor that names a key: it must be the active key, not a dead one.
+  const row = await label.evaluate((el, name) => {
     let cur = el;
-    while (cur && !(cur.classList && cur.classList.contains("group"))) cur = cur.parentElement;
+    while (cur && !cur.innerText.includes(name)) cur = cur.parentElement;
     return cur ? cur.innerText : null;
-  });
-  check("ui alpha: label is in the alpha-active row", !!row && row.includes("alpha-active") && !row.includes("alpha-dead"), JSON.stringify(row));
+  }, activeName);
+  check(`ui ${tag}: label is in the ${activeName} row`, !!row && !row.includes(deadName), JSON.stringify(row));
   await label.scrollIntoViewIfNeeded();
   const box = await label.boundingBox();
-  if (box) await page.screenshot({ path: `${outDir}/alpha-label-closeup.png`, clip: { x: 0, y: Math.max(0, box.y - 150), width: 1440, height: 300 } });
+  if (box) await page.screenshot({ path: `${outDir}/${tag}-label-closeup.png`, clip: { x: 0, y: Math.max(0, box.y - 150), width: 1440, height: 300 } });
 }
 
-await open("openai-compatible-e2e-beta", "beta-active", "beta-provider.png");
-const betaCount = await page.getByText(/% left/).count();
-check("ui beta: no '% left' label", betaCount === 0, String(betaCount));
+await open("/dashboard/providers/openai-compatible-e2e-alpha", "openai-compatible-e2e-alpha", "alpha-active", "alpha-provider");
+await expectLabel("alpha", { activeName: "alpha-active", deadName: "alpha-dead", text: "~58% left" });
+
+await open("/dashboard/providers/openai-compatible-e2e-beta", "openai-compatible-e2e-beta", "beta-active", "beta-provider");
+const betaCount = await labels().count();
+check("ui beta: no lifespan label", betaCount === 0, String(betaCount));
+
+await open("/dashboard/providers/openai", "openai", "openai-active", "openai-provider");
+await expectLabel("openai", { activeName: "openai-active", deadName: "openai-dead", text: "~80% left" });
+
+await open("/dashboard/media-providers/tts/elevenlabs", "elevenlabs", "eleven-active", "elevenlabs-media-provider");
+await expectLabel("elevenlabs", { activeName: "eleven-active", deadName: "eleven-dead", text: "~50% left" });
 
 await browser.close();
 if (failed) {
