@@ -4,6 +4,22 @@ on:
   pull_request:
     paths:
       - ".github/e2e/key-lifespan/**"
+      - "src/shared/utils/keyLifespan.js"
+      - "src/lib/db/repos/keyLifespanRepo.js"
+      - "src/lib/db/repos/connectionsRepo.js"
+      - "src/lib/db/repos/usageRepo.js"
+      - "src/lib/db/schema.js"
+      - "src/lib/db/migrate.js"
+      - "src/lib/db/migrations/**"
+      - "src/lib/db/index.js"
+      - "src/sse/services/autoCombo.ts"
+      - "src/app/api/providers/lifespan/route.js"
+      - "src/app/(dashboard)/dashboard/providers/*/ConnectionRow.js"
+      - "src/app/(dashboard)/dashboard/providers/*/CustomEndpointPage.tsx"
+      - "src/app/(dashboard)/dashboard/providers/*/page.js"
+      - "src/app/(dashboard)/dashboard/providers/components/ConnectionsCard.js"
+      - "src/app/(dashboard)/dashboard/providers/utils.js"
+      - "src/app/(dashboard)/dashboard/media-providers/*/*/page.js"
       - ".github/workflows/key-lifespan-e2e.yml"
   workflow_dispatch:
 
