@@ -67,6 +67,9 @@ export function estimateKeyLifespans(connections, usage, opts = {}) {
   for (const c of connections) {
     if (c.isActive === false) continue;
     const u = of(c.id);
+    // Served tokens with no cost: its models aren't priced, so its spend is
+    // unknown and it would read ~100% left forever.
+    if (metric === "cost" && !(num(u.cost) > 0) && num(u.tokens) > 0) continue;
     const used = consumed(u);
     const recent = num(metric === "cost" ? u.recentCost : u.recentTokens);
     const firstMs = u.firstAt ? Date.parse(u.firstAt) : NaN;

@@ -75,6 +75,15 @@ describe("estimateKeyLifespans", () => {
     expect(estimateKeyLifespans([dead("a"), dead("b"), dead("c"), live("k")], usage, { now: NOW }).estimate).toBeNull();
   });
 
+  it("gives no estimate for an active key whose usage has no cost when the unit is cost", () => {
+    const { connections, usage } = snowflake({ cost: 0, tokens: 5e6, recentCost: 0, recentTokens: 1e5 });
+    const { estimate, keys } = estimateKeyLifespans([...connections, live("fresh")], usage, { now: NOW });
+    expect(estimate.metric).toBe("cost");
+    expect(keys).not.toHaveProperty("k");
+    // A key that hasn't served anything yet still starts at 100% left.
+    expect(keys.fresh).toMatchObject({ used: 0, percentLeft: 100 });
+  });
+
   it("ignores dead keys that never served anything", () => {
     // Without them dropped first: tokens as the unit (no cost on the empty
     // keys), and a median of 0 with three of five dead on arrival.
