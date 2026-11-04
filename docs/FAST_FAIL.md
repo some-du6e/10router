@@ -17,6 +17,26 @@ If any reset is unknown, the countdown is omitted. Per-account reasons remain in
 The original final status and retry delay are retained in
 `x-10router-upstream-status` and `x-10router-retry-after` headers.
 
+### After early stream headers
+
+A streaming request with no upstream answer after `STREAM_EARLY_HEADERS_MS` (30s)
+already has its 200 and SSE headers, so the final failure can't be an HTTP 400.
+For a Responses stream it is a `response.failed` event whose error has code
+`invalid_prompt` and the same text as the body above:
+
+```text
+event: response.failed
+data: {"type":"response.failed","response":{"id":"resp_…","status":"failed","error":{"type":"stream_error","code":"invalid_prompt","message":"All your accounts have hit their limits. Next account resets in 2 hours."}}}
+```
+
+Codex treats `invalid_prompt` as final and shows its message as is, so it stops and
+keeps the countdown. `insufficient_quota` would also stop Codex, but Codex replaces
+it with its own "Quota exceeded. Check your plan and billing details." and the
+countdown is lost (codex-rs `codex-api/src/sse/responses_error.rs`
+`parse_failed_response`; `protocol/src/error.rs`). Other failures after early
+headers use `server_error` or `rate_limit_exceeded`, which Codex retries. A limit
+exhaustion reached within the first 30s still gets the HTTP 400 above.
+
 Temporary outages, mixed limit/outage failures, and interrupted streams retain normal
 retry behavior. Claude and other clients retain their existing HTTP status and retry
 headers. Codex request and stream retry limits are not changed.
