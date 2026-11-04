@@ -15,6 +15,9 @@ on:
       - "open-sse/handlers/chatCore/jsonToSse.ts"
       - "src/sse/handlers/chat.ts"
       - "open-sse/utils/limitHold.js"
+      - "open-sse/services/combo.js"
+      - "src/sse/services/limitHoldConfig.js"
+      - "src/app/api/v1/codex/responses/route.js"
       - "src/sse/services/finalRoutingError.js"
       - "src/app/api/v1/messages/route.js"
       - "src/app/api/v1/chat/completions/route.js"
@@ -55,6 +58,7 @@ jobs:
           unit/responses-abort-terminal.test.js
           unit/final-routing-error.test.js
           unit/limit-hold-integration.test.js
+          unit/limit-hold.test.js
           unit/upstream-json-reply.test.js
           unit/account-failure-handler.test.js
           unit/chat-core-failure-detail.test.js
@@ -71,6 +75,8 @@ jobs:
           src/app/api/v1/messages/route.js
           src/app/api/v1/chat/completions/route.js
           src/app/api/v1/responses/route.js
+          src/app/api/v1/codex/responses/route.js
+          open-sse/utils/limitHold.js
           src/sse/services/finalRoutingError.js
           open-sse/utils/streamHelpers.js
           open-sse/utils/responsesStreamHelpers.js
