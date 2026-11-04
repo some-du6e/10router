@@ -5,15 +5,24 @@ on:
     paths:
       - "open-sse/utils/earlyHeaders.js"
       - "open-sse/utils/streamHandler.js"
+      - "open-sse/utils/streamHelpers.js"
+      - "open-sse/utils/responsesStreamHelpers.js"
+      - "open-sse/utils/sseConstants.js"
       - "open-sse/config/runtimeConfig.js"
       - "open-sse/config/errorConfig.js"
       - "open-sse/handlers/chatCore.js"
       - "open-sse/handlers/chatCore/streamingHandler.js"
+      - "open-sse/handlers/chatCore/jsonToSse.ts"
       - "src/sse/handlers/chat.ts"
+      - "src/sse/services/finalRoutingError.js"
       - "src/app/api/v1/messages/route.js"
       - "src/app/api/v1/chat/completions/route.js"
       - "src/app/api/v1/responses/route.js"
-      - "tests/unit/stream-early-headers.test.js"
+      - "src/app/api/v1/responses/compact/route.js"
+      - "src/app/api/v1/api/chat/route.js"
+      - "src/app/api/v1beta/models/[[]...path]/route.js"
+      - "tests/unit/stream-early-headers*.test.js"
+      - "tests/unit/chat-core-client-signal.test.js"
       - ".github/workflows/stream-early-headers.yml"
   workflow_dispatch:
 
@@ -39,7 +48,11 @@ jobs:
         run: >
           ./node_modules/.bin/vitest run
           unit/stream-early-headers.test.js
+          unit/stream-early-headers-routes.test.js
+          unit/chat-core-client-signal.test.js
           unit/stream-keepalive.test.js
+          unit/responses-abort-terminal.test.js
+          unit/final-routing-error.test.js
           unit/limit-hold-integration.test.js
           unit/upstream-json-reply.test.js
           unit/account-failure-handler.test.js
@@ -57,7 +70,13 @@ jobs:
           src/app/api/v1/messages/route.js
           src/app/api/v1/chat/completions/route.js
           src/app/api/v1/responses/route.js
+          src/sse/services/finalRoutingError.js
+          open-sse/utils/streamHelpers.js
+          open-sse/utils/responsesStreamHelpers.js
+          open-sse/utils/sseConstants.js
           tests/unit/stream-early-headers.test.js
+          tests/unit/stream-early-headers-routes.test.js
+          tests/unit/chat-core-client-signal.test.js
       # Fails only on errors in chat.ts, so unrelated type errors elsewhere
       # don't block it.
       - name: Type check
