@@ -110,20 +110,23 @@ export function clientReceivesStream({ body, provider, model, sourceFormat, clie
 }
 
 /**
- * One attempt at one account. `clientSignal` aborts when the client hangs up;
- * the attempt's upstream call is aborted with it. The listener comes off the
- * signal (shared by every attempt of the request) once the attempt is over:
- * on a failure or a reply that isn't a stream. A stream keeps it until it ends.
+ * One attempt at one account. `clientSignal` aborts when the client hangs up.
+ * While the attempt waits on the upstream, that aborts the upstream call (the
+ * executor's catch then settles the attempt). Once a stream is returned it is a
+ * disconnect instead, which ends the stream's bookkeeping the way a cancelled
+ * body does. The listener comes off the signal (shared by every attempt of the
+ * request) once the attempt is over: on a failure or a reply that isn't a
+ * stream. A stream keeps it until it ends.
  */
 export async function handleChatCore(args) {
-  const hangUp = { onAbort: null };
+  const hangUp = { onAbort: null, streaming: false };
   let result = null;
   try {
     result = await runChatCore(args, hangUp);
     return result;
   } finally {
-    const streaming = result?.success && (result.response?.headers?.get?.("content-type") || "").includes("text/event-stream");
-    if (hangUp.onAbort && !streaming) args.clientSignal?.removeEventListener?.("abort", hangUp.onAbort);
+    hangUp.streaming = !!result?.success && (result.response?.headers?.get?.("content-type") || "").includes("text/event-stream");
+    if (hangUp.onAbort && !hangUp.streaming) args.clientSignal?.removeEventListener?.("abort", hangUp.onAbort);
   }
 }
 
@@ -354,7 +357,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   // The client hung up: drop the upstream call.
   if (clientSignal?.aborted) streamController.abort();
   else if (clientSignal) {
-    hangUp.onAbort = () => streamController.abort();
+    hangUp.onAbort = () => (hangUp.streaming ? streamController.handleDisconnect("client_closed") : streamController.abort());
     clientSignal.addEventListener("abort", hangUp.onAbort, { once: true });
   }
 

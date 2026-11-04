@@ -1,9 +1,11 @@
 // handleChatCore's clientSignal: a client that hangs up aborts this attempt's
-// upstream call, and a finished attempt takes its listener off the signal every
-// attempt of the request shares.
+// upstream call while it waits on headers, ends a returned stream as a
+// disconnect, and a finished attempt takes its listener off the signal every
+// attempt of the request shares. The dashboard's pending count goes up once
+// and down once whichever way it ends.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { executeMock } = vi.hoisted(() => ({ executeMock: vi.fn() }));
+const { executeMock, trackPendingMock } = vi.hoisted(() => ({ executeMock: vi.fn(), trackPendingMock: vi.fn() }));
 
 vi.mock("../../open-sse/executors/index.js", () => ({
   getExecutor: vi.fn(() => ({ execute: executeMock, noAuth: true })),
@@ -17,7 +19,7 @@ vi.mock("../../open-sse/translator/concerns/prefetch.js", () => ({
   prefetchRemoteImages: vi.fn(async () => 0),
 }));
 vi.mock("@/lib/usageDb.js", () => ({
-  trackPendingRequest: vi.fn(),
+  trackPendingRequest: trackPendingMock,
   appendRequestLog: vi.fn(() => Promise.resolve()),
   saveRequestDetail: vi.fn(() => Promise.resolve()),
   saveRequestUsage: vi.fn(() => Promise.resolve()),
@@ -38,23 +40,35 @@ function run(clientSignal, { stream = false } = {}) {
   });
 }
 
-// An upstream that answers after `ms`, or rejects like fetch once its signal aborts.
+// An upstream that answers after `ms`, or rejects like fetch once its signal
+// aborts. `response` gets the signal, so a body can error on abort like fetch's.
 function upstream(response, ms = 50) {
   executeMock.mockImplementation(({ signal } = {}) => new Promise((resolve, reject) => {
     const abort = () => { clearTimeout(t); reject(Object.assign(new Error("aborted"), { name: "AbortError" })); };
-    const t = setTimeout(() => resolve({ response: response(), url: "https://upstream.example.test", headers: {}, transformedBody: {} }), ms);
+    const t = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve({ response: response(signal), url: "https://upstream.example.test", headers: {}, transformedBody: {} });
+    }, ms);
     if (signal?.aborted) abort();
     else signal?.addEventListener("abort", abort, { once: true });
   }));
 }
 const failed = () => new Response(JSON.stringify({ error: { message: "down" } }), { status: 503, headers: { "content-type": "application/json" } });
-const streamed = () => new Response('data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } });
+// One chunk, then open until the upstream signal aborts it.
+const streaming = (signal) => new Response(new ReadableStream({
+  start(c) {
+    c.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'));
+    signal?.addEventListener("abort", () => c.error(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+  },
+}), { headers: { "content-type": "text/event-stream" } });
+
+const pendingCalls = () => trackPendingMock.mock.calls.map((c) => c[3]);
 
 describe("handleChatCore clientSignal", () => {
   beforeAll(async () => {
     ({ handleChatCore } = await import("../../open-sse/handlers/chatCore.js"));
   }, 30000);
-  beforeEach(() => executeMock.mockReset());
+  beforeEach(() => { executeMock.mockReset(); trackPendingMock.mockClear(); });
 
   it("an already-aborted signal aborts the upstream call before it starts", async () => {
     upstream(failed);
@@ -63,9 +77,10 @@ describe("handleChatCore clientSignal", () => {
     const result = await run(client.signal);
     expect(executeMock.mock.calls[0][0].signal.aborted).toBe(true);
     expect(result.status).toBe(499);
+    expect(pendingCalls()).toEqual([true, false]);
   });
 
-  it("a hang-up during the upstream wait aborts the upstream call", async () => {
+  it("a hang-up during the upstream wait aborts the upstream call; pending goes down once", async () => {
     upstream(failed, 5_000);
     const client = new AbortController();
     const pending = run(client.signal);
@@ -75,6 +90,7 @@ describe("handleChatCore clientSignal", () => {
     client.abort();
     expect(signal.aborted).toBe(true);
     expect((await pending).status).toBe(499);
+    expect(pendingCalls()).toEqual([true, false]);
   });
 
   it("a failed attempt takes its listener off the shared signal", async () => {
@@ -88,16 +104,23 @@ describe("handleChatCore clientSignal", () => {
     expect(remove).toHaveBeenCalledWith("abort", add.mock.calls[0][1]);
   });
 
-  it("a streaming attempt keeps its listener, so a later hang-up still aborts it", async () => {
-    upstream(streamed);
+  it("a hang-up mid-stream is a disconnect: upstream dropped, pending down exactly once", async () => {
+    upstream(streaming);
     const client = new AbortController();
     const remove = vi.spyOn(client.signal, "removeEventListener");
     const result = await run(client.signal, { stream: true });
     expect(result.success).toBe(true);
     expect(remove).not.toHaveBeenCalled();
-    const { signal } = executeMock.mock.calls[0][0];
+    const reader = result.response.body.getReader();
+    const first = await reader.read();
+    expect(new TextDecoder().decode(first.value)).toContain("hi");
+
+    // Next aborts request.signal before the body cancel arrives.
     client.abort();
-    expect(signal.aborted).toBe(true);
-    await result.response.body.cancel();
+    expect(pendingCalls()).toEqual([true, false]);
+    await reader.cancel();
+    const { signal } = executeMock.mock.calls[0][0];
+    await vi.waitFor(() => expect(signal.aborted).toBe(true), { timeout: 2000 });
+    expect(pendingCalls()).toEqual([true, false]);
   });
 });
