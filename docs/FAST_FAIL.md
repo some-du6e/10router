@@ -34,8 +34,17 @@ keeps the countdown. `insufficient_quota` would also stop Codex, but Codex repla
 it with its own "Quota exceeded. Check your plan and billing details." and the
 countdown is lost (codex-rs `codex-api/src/sse/responses_error.rs`
 `parse_failed_response`; `protocol/src/error.rs`). Other failures after early
-headers use `server_error` or `rate_limit_exceeded`, which Codex retries. A limit
-exhaustion reached within the first 30s still gets the HTTP 400 above.
+headers get their code by whether the HTTP status would have been retried:
+
+- 408, 429 and 5xx: `rate_limit_exceeded` (429) or `server_error`, which Codex
+  retries.
+- Anything else, such as 400, 401, 403 or 404, and any failure marked
+  `x-should-retry: false` (the limit exhaustion above): `invalid_prompt`, final.
+- If the failed body carries a code Codex has its own path for
+  (`context_length_exceeded`, `usage_not_included`, `server_is_overloaded`,
+  `slow_down`, `invalid_prompt`), that code is kept instead.
+
+A limit exhaustion reached within the first 30s still gets the HTTP 400 above.
 
 Temporary outages, mixed limit/outage failures, and interrupted streams retain normal
 retry behavior. Claude and other clients retain their existing HTTP status and retry
