@@ -61,6 +61,8 @@ export async function getKeyLifespans(provider, opts = {}) {
   const recentSince = new Date(now - LIFESPAN_RECENT_WINDOW_MS).toISOString();
   const usage = connections.length ? await getKeyUsageByConnection(connections, recentSince) : {};
   const value = estimateKeyLifespans(connections, usage, { now });
+  // Drop expired entries so arbitrary provider= values can't grow the map.
+  for (const [key, entry] of cache) if (now - entry.ts >= CACHE_TTL_MS || entry.version !== version) cache.delete(key);
   cache.set(provider, { ts: now, version, value });
   return value;
 }

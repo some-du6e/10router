@@ -327,6 +327,13 @@ describe("getKeyLifespans", () => {
     expect((await repo.getKeyLifespans(provider, { now: NOW + 62 * 1000 })).keys).toEqual({});
   });
 
+  it("drops expired cache entries when it stores a new one", async () => {
+    for (let i = 0; i < 50; i++) await repo.getKeyLifespans(`no-such-provider-${i}`, { now: NOW });
+    expect(global._keyLifespanCache.size).toBe(50);
+    await repo.getKeyLifespans("no-such-provider-later", { now: NOW + 61 * 1000 });
+    expect([...global._keyLifespanCache.keys()]).toEqual(["no-such-provider-later"]);
+  });
+
   it("aggregates from the covering index without reading table rows", () => {
     const plan = adapter.all(`EXPLAIN QUERY PLAN ${repo.keyUsageSql(2)}`, [iso(NOW), iso(NOW), "a", "b"]);
     const detail = plan.map((r) => r.detail).join("\n");
