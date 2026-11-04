@@ -109,7 +109,7 @@ export function clientReceivesStream({ body, provider, model, sourceFormat, clie
   return body.stream !== false;
 }
 
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onBetasRejected, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, sourceFormatOverride, providerThinking }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onBetasRejected, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, sourceFormatOverride, providerThinking, clientSignal = null }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -333,6 +333,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     onError: () => trackPendingRequest(model, provider, connectionId, false),
     log, provider, model, reqTag
   });
+  // The client hung up on a stream whose headers went out early: drop the upstream call.
+  if (clientSignal?.aborted) streamController.abort();
+  else clientSignal?.addEventListener?.("abort", () => streamController.abort(), { once: true });
 
   const proxyOptions = {
     connectionProxyEnabled: credentials?.providerSpecificData?.connectionProxyEnabled === true,

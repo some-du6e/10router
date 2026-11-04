@@ -14,6 +14,8 @@ import { resolveAutoCombo, blockedBillingSets, connectionBilling, billingPolicyA
 import type { BillingSet } from "../services/autoCombo.js";
 import { BUILTIN_MODEL_ALIASES } from "open-sse/services/model.js";
 import { handleChatCore, clientReceivesStream } from "open-sse/handlers/chatCore.js";
+import { KEEPALIVE_FORMATS } from "open-sse/handlers/chatCore/streamingHandler.js";
+import { respondWithEarlyHeaders } from "open-sse/utils/earlyHeaders.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { createLimitHoldResponse, awaitLimitClear, isLimitError, allLockedError } from "open-sse/utils/limitHold.js";
 import { resolveLimitHold } from "../services/limitHoldConfig.js";
@@ -126,6 +128,8 @@ interface SingleModelOptions {
   routingFailures?: RoutingFailure[];
   // Set inside an auto combo: connections billed this way are never used.
   blockedBilling?: Set<BillingSet> | null;
+  // Aborted when a client whose headers went out early hangs up.
+  signal?: AbortSignal | null;
 }
 
 interface RoutedChatArgs {
@@ -136,6 +140,7 @@ interface RoutedChatArgs {
   request: Request;
   apiKey: string | null;
   routingFailures: RoutingFailure[];
+  signal?: AbortSignal | null;
 }
 
 interface ComboLimitHoldArgs {
@@ -165,7 +170,13 @@ interface HoldArgs {
  * Supports: OpenAI, Claude, Gemini, OpenAI Responses API formats
  * Format detection and translation handled by translator
  */
-export async function handleChat(request: Request, clientRawRequest: ClientRawRequest | null = null): Promise<Response> {
+export async function handleChat(
+  request: Request,
+  clientRawRequest: ClientRawRequest | null = null,
+  // Routes whose response goes straight to the client turn this on; wrappers that
+  // reshape the response (Ollama, Gemini) need its real status.
+  { earlyHeaders = false }: { earlyHeaders?: boolean } = {},
+): Promise<Response> {
   let body: ChatBody;
   try {
     body = await request.json();
@@ -230,14 +241,21 @@ export async function handleChat(request: Request, clientRawRequest: ClientRawRe
   if (bypassResponse) return bypassResponse.response || bypassResponse;
 
   const routingFailures: RoutingFailure[] = [];
-  const response = await handleRoutedChat({ body, modelStr, settings, clientRawRequest, request, apiKey, routingFailures });
-  return finalizeRoutingError(response, {
-    clientTool: detectClientTool(Object.fromEntries(request.headers.entries()), body),
-    routingFailures,
-  } as Parameters<typeof finalizeRoutingError>[1]);
+  const clientTool = detectClientTool(Object.fromEntries(request.headers.entries()), body);
+  const rawRequest = clientRawRequest;
+  const route = async (signal: AbortSignal | null = null): Promise<Response> => finalizeRoutingError(
+    await handleRoutedChat({ body, modelStr, settings, clientRawRequest: rawRequest, request, apiKey, routingFailures, signal }),
+    { clientTool, routingFailures } as Parameters<typeof finalizeRoutingError>[1],
+  );
+
+  // A streaming client whose upstream is slow to answer gets its headers early,
+  // so a proxy waiting on them (Cloudflare) doesn't give up on the request.
+  const sourceFormat = sourceFormatOverride || detectFormat(body);
+  if (!earlyHeaders || body.stream !== true || !KEEPALIVE_FORMATS.has(sourceFormat)) return route();
+  return respondWithEarlyHeaders({ run: route, sourceFormat, log });
 }
 
-async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, request, apiKey, routingFailures }: RoutedChatArgs): Promise<Response> {
+async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, request, apiKey, routingFailures, signal = null }: RoutedChatArgs): Promise<Response> {
   const requiredCapabilities = detectRequiredCapabilities(body);
 
   // Check if model is a combo (has multiple models with fallback). A bare id
@@ -273,7 +291,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
               cleanRawReq = { ...clientRawRequest, body: cleanBody };
             }
-            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false, routingFailures, blockedBilling });
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false, routingFailures, blockedBilling, signal });
           },
           log,
           comboName: comboKey,
@@ -294,7 +312,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
         body,
         models: augmentedModels,
         handleSingleModel: withCapacityAdapterStripping(
-          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures, blockedBilling }),
+          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures, blockedBilling, signal }),
           adapterAdded
         ),
         log,
@@ -320,7 +338,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
         body,
         models: soloAugmented,
         handleSingleModel: withCapacityAdapterStripping(
-          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures, blockedBilling: soloBlockedBilling }),
+          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures, blockedBilling: soloBlockedBilling, signal }),
           adapterAdded
         ),
         log,
@@ -331,7 +349,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
     });
   }
 
-  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { routingFailures, blockedBilling: soloBlockedBilling });
+  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { routingFailures, blockedBilling: soloBlockedBilling, signal });
 }
 
 /**
@@ -452,13 +470,13 @@ async function handleSingleModelChat(
   clientRawRequest: ClientRawRequest | null = null,
   request: Request | null = null,
   apiKey: string | null = null,
-  { allowHold = true, routingFailures = [], blockedBilling = null }: SingleModelOptions = {},
+  { allowHold = true, routingFailures = [], blockedBilling = null, signal = null }: SingleModelOptions = {},
 ): Promise<Response> {
   // An unfinished fusion panel is not proof of limit exhaustion. Successful
   // panels with empty/unparseable content must also remain retryable.
   const unconfirmed: RoutingFailure = { limited: false };
   routingFailures.push(unconfirmed);
-  const response = await routeSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { allowHold, routingFailures, blockedBilling });
+  const response = await routeSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { allowHold, routingFailures, blockedBilling, signal });
   if (!response.ok) routingFailures.splice(routingFailures.indexOf(unconfirmed), 1);
   return response;
 }
@@ -515,7 +533,7 @@ async function routeSingleModelChat(
   clientRawRequest: ClientRawRequest | null,
   request: Request | null,
   apiKey: string | null,
-  { allowHold, routingFailures, blockedBilling = null }: { allowHold: boolean; routingFailures: RoutingFailure[]; blockedBilling?: Set<BillingSet> | null },
+  { allowHold, routingFailures, blockedBilling = null, signal = null }: { allowHold: boolean; routingFailures: RoutingFailure[]; blockedBilling?: Set<BillingSet> | null; signal?: AbortSignal | null },
 ): Promise<Response> {
   // Detect source format by endpoint + body (scoped per-call; handleChat's copy is a
   // separate function and is not visible here)
@@ -549,7 +567,7 @@ async function routeSingleModelChat(
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
               cleanRawReq = { ...clientRawRequest, body: cleanBody };
             }
-            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false, routingFailures });
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false, routingFailures, signal });
           },
           log,
           comboName: comboKey,
@@ -564,7 +582,7 @@ async function routeSingleModelChat(
         body,
         models: augmentedModels,
         handleSingleModel: withCapacityAdapterStripping(
-          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures }),
+          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures, signal }),
           adapterAdded
         ),
         log,
@@ -607,6 +625,13 @@ async function routeSingleModelChat(
     }
   }
 
+  const clientGone = (): PassResult => ({
+    success: false,
+    status: HTTP_STATUS.CLIENT_CLOSED_REQUEST,
+    error: "Request aborted",
+    response: errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted"),
+  });
+
   // Rate-limit hold: when every account is limited we can keep the client's
   // stream open and wait for the reset instead of returning an error.
   const limitHold = allowHold ? await resolveLimitHold(apiKey) : { enabled: false, onPinned: false };
@@ -625,6 +650,8 @@ async function routeSingleModelChat(
   let lockedUntil = 0;
 
   while (true) {
+    // The client is gone: try no more accounts, and lock none for its abort.
+    if (signal?.aborted) return clientGone();
     // A pin is a preference, not a requirement: getProviderCredentials ignores a
     // connection that is excluded, model-locked or rate-limited and falls back to
     // the configured strategy, so a dead pinned account never wedges a session.
@@ -714,6 +741,7 @@ async function routeSingleModelChat(
       ccFilterNaming: !!chatSettings.ccFilterNaming,
       providerThinking,
       sourceFormatOverride,
+      clientSignal: signal,
       onCredentialsRefreshed: async (newCreds: Record<string, unknown>) => {
         await updateProviderCredentials(credentials.connectionId, {
           ...newCreds,
@@ -732,6 +760,7 @@ async function routeSingleModelChat(
     } as Parameters<typeof handleChatCore>[0])) as ChatCoreResult;
 
     if (result.success) return result;
+    if (signal?.aborted) return clientGone();
 
     // Refresh Antigravity quota before deciding how long to lock the account.
     let quotaResetMs: number | null = null;

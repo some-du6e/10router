@@ -62,6 +62,12 @@ export const STREAM_STALL_TIMEOUT_MS = envMs("STREAM_STALL_TIMEOUT_MS", 360 * 10
 // Env: STREAM_KEEPALIVE_MS (0 disables).
 export const STREAM_KEEPALIVE_MS = envMs("STREAM_KEEPALIVE_MS", 15 * 1000, 0);
 
+// A streaming request whose upstream hasn't sent response headers after this
+// long gets 200 + SSE headers and keepalives, so a proxy that waits ~100s for
+// headers (Cloudflare 524) doesn't drop it. Fallback continues server-side; a
+// final failure is then written into the stream. Env: STREAM_EARLY_HEADERS_MS (0 disables).
+export const STREAM_EARLY_HEADERS_MS = envMs("STREAM_EARLY_HEADERS_MS", 30 * 1000, 0);
+
 // Wait for a Chat Completions usage trailer before completing a Responses stream.
 export const RESPONSES_COMPLETION_WAIT_MS = 3000;
 
