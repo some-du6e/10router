@@ -341,6 +341,7 @@ export async function updateProviderConnection(id, data, { autoDisable = null, d
     const psdAfter = merged.providerSpecificData || {};
     servesChanged =
       existing.isActive !== merged.isActive ||
+      existing.keySetAt !== merged.keySetAt ||
       existing.authType !== merged.authType ||
       psdBefore.prefix !== psdAfter.prefix ||
       psdBefore.baseUrl !== psdAfter.baseUrl ||

@@ -382,6 +382,21 @@ describe("getKeyLifespans", () => {
     expect((await repo.getKeyLifespans(provider, { now: NOW + 62 * 1000 })).keys).toEqual({});
   });
 
+  it("refreshes at once when an active connection gets a new key", async () => {
+    for (const i of [1, 2, 3]) record(await addKey(`dead${i}`, { deadAt: iso(NOW - 30 * HOUR) }), { at: NOW - 40 * HOUR, cost: 100 });
+    const k = await addKey("live");
+    record(k, { at: NOW - 20 * HOUR, cost: 60 });
+    expect((await repo.getKeyLifespans(provider, { now: NOW })).keys[k].used).toBe(60);
+    const before = db.connectionsVersion();
+    await db.updateProviderConnection(k, { apiKey: "sk-test-live-NEW-0123456789" });
+    expect(db.connectionsVersion()).toBeGreaterThan(before);
+    expect((await repo.getKeyLifespans(provider, { now: NOW + 1000 })).keys[k].used).toBe(0);
+    // A write that changes nothing the estimate reads leaves the cache alone.
+    const v = db.connectionsVersion();
+    await db.updateProviderConnection(k, { lastError: "x" });
+    expect(db.connectionsVersion()).toBe(v);
+  });
+
   it("reads providers with more keys than one query's chunk", async () => {
     const ids = Array.from({ length: 950 }, (_, i) => `${provider}-bulk-${i}`);
     record(ids[3], { at: NOW - HOUR, cost: 1 });
