@@ -45,13 +45,14 @@ jobs:
         env:
           NEXT_TELEMETRY_DISABLED: "1"
         run: npm run build
-      - name: Install cloudflared and Claude Code
+      - name: Install cloudflared, Claude Code and Codex
         run: |
           curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i /tmp/cloudflared.deb
-          npm install -g @anthropic-ai/claude-code
+          npm install -g @anthropic-ai/claude-code @openai/codex
           cloudflared --version
           claude --version
+          codex --version
       - name: E2E (${{ matrix.leg }})
         working-directory: app
         env:
@@ -77,4 +78,5 @@ jobs:
             e2e-out/*.body
             e2e-out/*.out
             e2e-out/*.meta
+            e2e-out/*.last
             e2e-${{ matrix.leg }}.txt

@@ -1,6 +1,7 @@
 // OpenAI-compatible upstream for the early-headers E2E. Behaviour by model id:
 //   slow*  - sends no response headers for HOLD_MS, then streams "pong"
-//   flaky  - first request: waits FLAKY_MS, then 500; every later one streams "pong"
+//   flaky* - first request per model id: waits FLAKY_MS, then 500; every later
+//            one streams "pong" (one id per client, so their retries don't mix)
 //   *      - streams "pong" at once
 // Every request and how it ended is logged as one JSON line.
 import http from "node:http";
@@ -10,7 +11,7 @@ const HOLD_MS = Number(process.env.HOLD_MS || 150_000);
 const FLAKY_MS = Number(process.env.FLAKY_MS || 45_000);
 const t0 = Date.now();
 let seq = 0;
-let flakyCalls = 0;
+const flakyCalls = new Map();
 
 const log = (o) => console.log(JSON.stringify({ t: ((Date.now() - t0) / 1000).toFixed(1), ...o }));
 
@@ -33,7 +34,7 @@ http.createServer((req, res) => {
     const id = ++seq;
     if (req.method === "GET") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ object: "list", data: ["slow", "flaky", "fast"].map((m) => ({ id: m, object: "model" })) }));
+      res.end(JSON.stringify({ object: "list", data: ["slow", "flaky", "flaky-codex", "fast"].map((m) => ({ id: m, object: "model" })) }));
       return;
     }
     let body = {};
@@ -52,7 +53,9 @@ http.createServer((req, res) => {
       res.on("close", () => clearTimeout(t));
       return;
     }
-    if (model === "flaky" && ++flakyCalls === 1) {
+    const flakyCall = model.startsWith("flaky") ? (flakyCalls.get(model) || 0) + 1 : 0;
+    if (flakyCall) flakyCalls.set(model, flakyCall);
+    if (flakyCall === 1) {
       const t = setTimeout(() => answer(() => {
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: { message: "mock upstream failed", type: "server_error" } }));
