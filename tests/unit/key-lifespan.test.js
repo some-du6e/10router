@@ -106,6 +106,15 @@ describe("estimateKeyLifespans", () => {
     expect(keys.k.ratePerHour).toBeCloseTo(10);
   });
 
+  it("measures the rate over at least 15 minutes for a key that just started", () => {
+    // $1 in its first minute: $4/h, not $60/h.
+    const { keys } = estimateKeyLifespans(...Object.values(snowflake({ cost: 1, recentCost: 1, firstAt: iso(NOW - 60 * 1000) })), { now: NOW });
+    expect(keys.k.ratePerHour).toBeCloseTo(4);
+    // Past the floor, the real span counts.
+    const later = estimateKeyLifespans(...Object.values(snowflake({ cost: 1, recentCost: 1, firstAt: iso(NOW - 30 * 60 * 1000) })), { now: NOW });
+    expect(later.keys.k.ratePerHour).toBeCloseTo(2);
+  });
+
   it("has no ETA for an idle key", () => {
     const { keys } = estimateKeyLifespans(...Object.values(snowflake()), { now: NOW });
     expect(keys.k.ratePerHour).toBeNull();
@@ -325,6 +334,18 @@ describe("getKeyLifespans", () => {
     expect((await repo.getKeyLifespans(provider, { now: NOW + 61 * 1000 })).keys[k].used).toBe(10);
     await db.updateProviderConnection(k, { isActive: false, autoDisabledAt: iso(NOW), autoDisabledReason: "403" });
     expect((await repo.getKeyLifespans(provider, { now: NOW + 62 * 1000 })).keys).toEqual({});
+  });
+
+  it("reads providers with more keys than one query's chunk", async () => {
+    const ids = Array.from({ length: 950 }, (_, i) => `${provider}-bulk-${i}`);
+    use(ids[3], { at: NOW - HOUR, cost: 1 });
+    use(ids[420], { at: NOW - 2 * HOUR, cost: 2, prompt: 10 });
+    use(ids[420], { at: NOW - 10 * HOUR, cost: 3 });
+    use(ids[949], { at: NOW - HOUR, cost: 4 });
+    const usage = await repo.getKeyUsageByConnection(ids.map((id) => ({ id })), iso(NOW - 6 * HOUR));
+    expect(Object.keys(usage).sort()).toEqual([ids[3], ids[420], ids[949]].sort());
+    expect(usage[ids[420]]).toEqual({ cost: 5, tokens: 10, firstAt: iso(NOW - 10 * HOUR), recentCost: 2, recentTokens: 10 });
+    expect(usage[ids[949]].cost).toBe(4);
   });
 
   it("drops expired cache entries when it stores a new one", async () => {
