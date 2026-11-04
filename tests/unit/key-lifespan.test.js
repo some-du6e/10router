@@ -289,9 +289,55 @@ describe("getKeyLifespans", () => {
       vi.useRealTimers();
 
       expect((await repo.getKeyLifespans(provider, { now: NOW })).keys[x].used).toBe(50);
-      // Dead again, it counts one key's spend, not both: $50 is an early death.
+      // Dead again, each key counts its own spend: the old key's $450 is a
+      // sample of its own, and the new key's $50 an early death.
       await db.updateProviderConnection(x, { isActive: false, autoDisabledAt: iso(NOW - HOUR), autoDisabledReason: "403" });
-      expect((await repo.getKeyLifespans(provider, { now: NOW })).estimate).toMatchObject({ median: 500, sampleSize: 3, excluded: 1 });
+      expect((await repo.getKeyLifespans(provider, { now: NOW })).estimate).toMatchObject({ median: 500, sampleSize: 4, excluded: 1 });
+    });
+
+    it("keeps each key that died before being replaced in place as a dead key", async () => {
+      const x = await addKey("rotated");
+      for (const [i, cost] of [400, 500, 600].entries()) {
+        const t = NOW - (30 - 10 * i) * HOUR;
+        record(x, { at: t, cost });
+        await db.updateProviderConnection(x, { isActive: false, autoDisabledAt: iso(t + HOUR), autoDisabledReason: "403" });
+        at(t + 2 * HOUR);
+        await db.updateProviderConnection(x, { apiKey: `sk-test-rotated-${i}-0123456789` });
+        vi.useRealTimers();
+      }
+      record(x, { at: NOW - 5 * HOUR, cost: 100 });
+      const conn = await db.getProviderConnectionById(x);
+      expect(conn.pastKeys).toEqual([
+        { since: "", until: iso(NOW - 29 * HOUR) },
+        { since: iso(NOW - 28 * HOUR), until: iso(NOW - 19 * HOUR) },
+        { since: iso(NOW - 18 * HOUR), until: iso(NOW - 9 * HOUR) },
+      ]);
+      const { estimate, keys } = await repo.getKeyLifespans(provider, { now: NOW });
+      expect(estimate).toEqual({ metric: "cost", median: 500, low: 450, high: 550, sampleSize: 3, excluded: 0 });
+      expect(Object.keys(keys)).toEqual([x]);
+      expect(keys[x]).toMatchObject({ used: 100, remaining: 400 });
+    });
+
+    it("adds no dead key when the key of a working connection is replaced", async () => {
+      await withDeadPeers();
+      const x = await addKey("working");
+      record(x, { at: NOW - 10 * HOUR, cost: 300 });
+      at(NOW - 5 * HOUR);
+      await db.updateProviderConnection(x, { apiKey: "sk-test-working-NEW-0123456789" });
+      vi.useRealTimers();
+      expect((await db.getProviderConnectionById(x)).pastKeys).toBeUndefined();
+      expect((await repo.getKeyLifespans(provider, { now: NOW })).estimate.sampleSize).toBe(3);
+    });
+
+    it("keeps only the last 50 replaced keys", async () => {
+      const x = await addKey("many");
+      for (let i = 0; i < 55; i++) {
+        await db.updateProviderConnection(x, { isActive: false, autoDisabledAt: iso(NOW - (60 - i) * HOUR), autoDisabledReason: "403" });
+        await db.updateProviderConnection(x, { apiKey: `sk-test-many-${i}-0123456789` });
+      }
+      const { pastKeys } = await db.getProviderConnectionById(x);
+      expect(pastKeys).toHaveLength(50);
+      expect(pastKeys.at(-1).until).toBe(iso(NOW - 6 * HOUR));
     });
 
     it("starts from zero when a key is re-added under the same name", async () => {
@@ -356,7 +402,7 @@ describe("getKeyLifespans", () => {
   });
 
   it("aggregates from the covering index without reading table rows", () => {
-    const plan = adapter.all(`EXPLAIN QUERY PLAN ${repo.keyUsageSql(2)}`, [iso(NOW), iso(NOW), "a", "b"]);
+    const plan = adapter.all(`EXPLAIN QUERY PLAN ${repo.keyUsageSql(2)}`, ["a", "a", "", "9999", "b#0", "b", "", iso(NOW), iso(NOW), iso(NOW)]);
     const detail = plan.map((r) => r.detail).join("\n");
     expect(detail).toMatch(/USING COVERING INDEX idx_uh_conn_ok/);
   });

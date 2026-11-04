@@ -26,9 +26,17 @@ const AUTO_DISABLE_FIELDS = ["autoDisabledAt", "autoDisabledReason", ...AUTH_STR
 export const AUTH_DEMOTE_PREFIX = DEMOTE_PREFIX;
 export const getAuthDemoteKey = (model) => `${AUTH_DEMOTE_PREFIX}${model}`;
 
+// Keys that died on a connection before it got a new one, as usage windows
+// ({ since, until }) the key lifespan estimate counts as dead keys.
+export const PAST_KEYS_CAP = 50;
+
 function applyAutoDisableTransition(existing, merged, data) {
   const newKey = String(data.apiKey ?? "").trim();
   const keyChanged = newKey !== "" && newKey !== String(existing.apiKey ?? "").trim();
+  if (keyChanged && existing.isActive === false && existing.autoDisabledAt) {
+    const past = Array.isArray(existing.pastKeys) ? existing.pastKeys : [];
+    merged.pastKeys = [...past, { since: existing.keySetAt || "", until: existing.autoDisabledAt }].slice(-PAST_KEYS_CAP);
+  }
   // A different key pasted into a connection the router turned off fixes it.
   if (existing.autoDisabledAt && data.isActive === undefined && keyChanged) merged.isActive = true;
   const reEnabled = existing.isActive === false && merged.isActive === true;

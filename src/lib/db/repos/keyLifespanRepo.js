@@ -4,37 +4,41 @@ import { estimateKeyLifespans, LIFESPAN_RECENT_WINDOW_MS } from "../../../shared
 
 const CACHE_TTL_MS = 60 * 1000;
 // Stay well under SQLite's bound-parameter limit (999 on old builds) on
-// bulk-imported providers: two per key.
-const ID_CHUNK = 400;
+// bulk-imported providers: four per window, plus two.
+export const WINDOW_CHUNK = 200;
+// Later than any ISO timestamp: a window that is still open.
+const OPEN = "9999";
 
 if (!global._keyLifespanCache) global._keyLifespanCache = new Map();
 const cache = global._keyLifespanCache;
 
-// Successful usage per connection since its current key was stored (keySetAt;
-// "" counts every row), in one grouped pass over the covering index
+// Successful usage per window: a connection's rows between since and until
+// (its current key: since keySetAt, or "" for every row; a key it had before:
+// one of its pastKeys). One grouped pass over the covering index
 // idx_uh_conn_ok (connectionId, status, timestamp, cost, tokens).
-export function keyUsageSql(idCount) {
-  return `WITH k(id, since) AS (VALUES ${Array(idCount).fill("(?, ?)").join(", ")})
-    SELECT k.id AS connectionId,
+export function keyUsageSql(windowCount) {
+  return `WITH w(id, connectionId, since, until) AS (VALUES ${Array(windowCount).fill("(?, ?, ?, ?)").join(", ")})
+    SELECT w.id AS id,
       SUM(u.cost) AS cost,
       SUM(u.promptTokens) + SUM(u.completionTokens) AS tokens,
       MIN(u.timestamp) AS firstAt,
       SUM(CASE WHEN u.timestamp >= ? THEN u.cost ELSE 0 END) AS recentCost,
       SUM(CASE WHEN u.timestamp >= ? THEN u.promptTokens + u.completionTokens ELSE 0 END) AS recentTokens
-    FROM k CROSS JOIN usageHistory u
-    WHERE u.connectionId = k.id AND u.status IN ('ok', 'success') AND u.timestamp >= k.since
-    GROUP BY k.id`;
+    FROM w CROSS JOIN usageHistory u
+    WHERE u.connectionId = w.connectionId AND u.status IN ('ok', 'success')
+      AND u.timestamp >= w.since AND u.timestamp <= w.until
+    GROUP BY w.id`;
 }
 
-// keys: [{ id, since? }]
-export async function getKeyUsageByConnection(keys, recentSince) {
+// windows: [{ id, connectionId?, since?, until? }]; connectionId defaults to id.
+export async function getKeyUsageByConnection(windows, recentSince) {
   const db = await getAdapter();
   const out = {};
-  for (let i = 0; i < keys.length; i += ID_CHUNK) {
-    const chunk = keys.slice(i, i + ID_CHUNK);
-    const params = [...chunk.flatMap((k) => [k.id, k.since || ""]), recentSince, recentSince];
+  for (let i = 0; i < windows.length; i += WINDOW_CHUNK) {
+    const chunk = windows.slice(i, i + WINDOW_CHUNK);
+    const params = [...chunk.flatMap((w) => [w.id, w.connectionId || w.id, w.since || "", w.until || OPEN]), recentSince, recentSince];
     for (const r of db.all(keyUsageSql(chunk.length), params)) {
-      out[r.connectionId] = {
+      out[r.id] = {
         cost: r.cost || 0, tokens: r.tokens || 0, firstAt: r.firstAt || null,
         recentCost: r.recentCost || 0, recentTokens: r.recentTokens || 0,
       };
@@ -55,12 +59,19 @@ export async function getKeyLifespans(provider, opts = {}) {
   const hit = cache.get(provider);
   if (!opts.fresh && hit && hit.version === version && now - hit.ts < CACHE_TTL_MS) return hit.value;
 
-  const connections = (await getProviderConnections({ provider })).map((c) => ({
-    id: c.id, isActive: c.isActive, autoDisabledAt: c.autoDisabledAt || null, since: c.keySetAt || "",
-  }));
+  // Each connection's current key, plus each key that died on it before it
+  // got a new one (pastKeys), which counts as a dead key of its own.
+  const keys = [];
+  for (const c of await getProviderConnections({ provider })) {
+    keys.push({ id: c.id, isActive: c.isActive, autoDisabledAt: c.autoDisabledAt || null, since: c.keySetAt || "" });
+    (Array.isArray(c.pastKeys) ? c.pastKeys : []).forEach((past, i) => {
+      if (!past?.until) return;
+      keys.push({ id: `${c.id}#${i}`, connectionId: c.id, isActive: false, autoDisabledAt: past.until, since: past.since || "", until: past.until });
+    });
+  }
   const recentSince = new Date(now - LIFESPAN_RECENT_WINDOW_MS).toISOString();
-  const usage = connections.length ? await getKeyUsageByConnection(connections, recentSince) : {};
-  const value = estimateKeyLifespans(connections, usage, { now });
+  const usage = keys.length ? await getKeyUsageByConnection(keys, recentSince) : {};
+  const value = estimateKeyLifespans(keys, usage, { now });
   // Drop expired entries so arbitrary provider= values can't grow the map.
   for (const [key, entry] of cache) if (now - entry.ts >= CACHE_TTL_MS || entry.version !== version) cache.delete(key);
   cache.set(provider, { ts: now, version, value });
