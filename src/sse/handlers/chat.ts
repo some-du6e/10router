@@ -397,6 +397,9 @@ async function withComboLimitHold({ run, models, body, modelStr, request, apiKey
 
   const first = await pass();
   if (first.success || !first.limited) return first.response;
+  // Nobody is left to wait for: a model skipped after a hang-up left no failure,
+  // so "every model limited" may only count the ones before it.
+  if (signal?.aborted) return first.response;
   const limitHold = await resolveLimitHold(apiKey);
   if (!limitHold.enabled) return first.response;
 
@@ -864,7 +867,7 @@ async function routeSingleModelChat(
     error: first.error,
   });
 
-  if (!first.limited || !limitHold.enabled) return first.response;
+  if (!first.limited || !limitHold.enabled || signal?.aborted) return first.response;
 
   // Non-streaming clients have no stream to narrate into, so the request just
   // hangs until the limit clears and the real JSON comes back. `body.stream`

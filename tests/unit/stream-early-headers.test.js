@@ -8,7 +8,7 @@ import { respondWithEarlyHeaders, buildEarlyErrorBytes } from "../../open-sse/ut
 import { SSE_KEEPALIVE } from "../../open-sse/utils/sseConstants.js";
 import { errorResponse } from "../../open-sse/utils/error.js";
 
-const state = { settings: {}, accounts: [], exhausted: null, core: null, coreCalls: [], markCalls: [], modelLookups: [] };
+const state = { settings: {}, accounts: [], exhausted: null, creds: null, core: null, coreCalls: [], markCalls: [], modelLookups: [] };
 
 vi.mock("@/lib/localDb", () => ({ getSettings: async () => state.settings }));
 vi.mock("@/lib/db/repos/apiKeysRepo.js", () => ({ getApiKeyLimitHold: async () => null }));
@@ -18,8 +18,8 @@ vi.mock("@/sse/services/auth.js", async () => {
     ...actual,
     extractApiKey: () => "sk-test",
     isValidApiKey: async () => true,
-    getProviderCredentials: async (_provider, exclude) =>
-      state.accounts.find((a) => !exclude.has(a.connectionId)) ?? state.exhausted ?? null,
+    getProviderCredentials: async (provider, exclude) => state.creds?.(provider, exclude)
+      ?? state.accounts.find((a) => !exclude.has(a.connectionId)) ?? state.exhausted ?? null,
     markAccountUnavailable: async (...args) => {
       state.markCalls.push(args);
       return { shouldFallback: true, cooldownMs: 1000 };
@@ -115,6 +115,7 @@ beforeEach(() => {
     { connectionId: "c2", connectionName: "acct2", accessToken: "t" },
   ];
   state.exhausted = null;
+  state.creds = null;
   state.coreCalls = [];
   state.markCalls = [];
   state.modelLookups = [];
@@ -449,6 +450,45 @@ describe("handleChat with early headers", () => {
     // Not even looked up: no search enrichment or account pick for them.
     expect(state.modelLookups.filter((m) => m === "nextp/b" || m === "lastp/c")).toEqual([]);
     expect(state.markCalls).toHaveLength(0);
+  });
+
+  // Every account limited, but the client left meanwhile: nothing to wait for.
+  const limitedAfterHangUp = (client, provider = null) => (p) => {
+    if (provider && p !== provider) return null;
+    client.abort();
+    return {
+      allRateLimited: true,
+      allLimitsExhausted: true,
+      retryAfter: new Date(Date.now() + 3_600_000).toISOString(),
+      retryAfterHuman: "reset after 1h",
+      lastError: "usage_limit_reached",
+      lastErrorCode: 429,
+    };
+  };
+
+  it("no limit hold for a client that hung up", async () => {
+    state.settings.limitHoldEnabled = true;
+    const client = new AbortController();
+    state.creds = limitedAfterHangUp(client);
+    const p = request("/v1/messages", claudeBody, { earlyHeaders: true }, { signal: client.signal });
+    await vi.advanceTimersByTimeAsync(1_000);
+    const res = await p;
+    expect(res.status).toBe(429);
+    expect(res.headers.get("Content-Type")).not.toContain("text/event-stream");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("no combo limit hold when the client hung up between models", async () => {
+    state.settings.limitHoldEnabled = true;
+    state.settings.combos = { duo: ["slowp/a", "nextp/b"] };
+    const client = new AbortController();
+    state.creds = limitedAfterHangUp(client, "slowp");
+    const p = request("/v1/messages", { ...claudeBody, model: "duo" }, { earlyHeaders: true }, { signal: client.signal });
+    await vi.advanceTimersByTimeAsync(1_000);
+    const res = await p;
+    expect(res.headers.get("Content-Type")).not.toContain("text/event-stream");
+    expect(state.modelLookups).not.toContain("nextp/b");
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("without early headers too, a hang-up stops the account loop", async () => {
