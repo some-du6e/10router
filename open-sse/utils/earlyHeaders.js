@@ -35,34 +35,30 @@ function isRetryableFailure(status, headers = null) {
 /**
  * The final error of a stream whose headers already went out, in the client's
  * own format: Claude `event: error`, Responses `response.failed`, OpenAI
- * `data: {"error":…}` + [DONE]. `code` is the failed body's own error code;
- * Responses keeps it when Codex has a path of its own for it.
+ * `data: {"error":…}` + [DONE].
  */
-export function buildEarlyErrorBytes(status, message, sourceFormat, { retryable = isRetryableFailure(status), code = null } = {}) {
+export function buildEarlyErrorBytes(status, message, sourceFormat, { retryable = isRetryableFailure(status) } = {}) {
   if (sourceFormat === FORMATS.CLAUDE) {
     return buildStreamErrorBytes(status, message, FORMATS.CLAUDE, retryable ? { type: CLAUDE_RETRYABLE_STREAM_ERROR_TYPE } : {});
   }
   if (sourceFormat === FORMATS.OPENAI_RESPONSES) {
     const codes = RESPONSES_STREAM_ERROR_CODES;
-    const own = codes.passthrough.includes(code) ? code : null;
-    const fallback = retryable
+    const code = retryable
       ? (status === HTTP_STATUS.RATE_LIMITED ? codes.rateLimited : codes.retryable)
       : codes.final;
-    return encoder.encode(formatIncompleteOpenAIResponsesStreamFailure({ code: own || fallback, message }));
+    return encoder.encode(formatIncompleteOpenAIResponsesStreamFailure({ code, message }));
   }
   return buildStreamErrorBytes(status, message, FORMATS.OPENAI);
 }
 
-async function readFailure(response) {
+async function failureMessage(response) {
   const text = await response.text().catch(() => "");
   let message = text;
-  let code = null;
   try {
     const err = JSON.parse(text)?.error;
     message = (typeof err?.message === "string" && err.message) || (typeof err === "string" && err) || text;
-    if (typeof err?.code === "string") code = err.code;
   } catch { /* plain-text body */ }
-  return { message: String(message || `request failed (${response.status})`).slice(0, MAX_MESSAGE), code };
+  return String(message || `request failed (${response.status})`).slice(0, MAX_MESSAGE);
 }
 
 // Bytes that end a committed stream for a routing result that isn't a stream.
@@ -73,10 +69,8 @@ async function terminalBytes(response, sourceFormat) {
     response.body?.cancel().catch(() => {});
     return buildEarlyErrorBytes(HTTP_STATUS.BAD_GATEWAY, "upstream reply was not a stream", sourceFormat);
   }
-  const { message, code } = await readFailure(response);
-  return buildEarlyErrorBytes(response.status, message, sourceFormat, {
+  return buildEarlyErrorBytes(response.status, await failureMessage(response), sourceFormat, {
     retryable: isRetryableFailure(response.status, response.headers),
-    code,
   });
 }
 

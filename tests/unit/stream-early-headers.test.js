@@ -289,20 +289,10 @@ describe("in-band errors", () => {
     expect(code(400, { retryable: false })).toBe("invalid_prompt");
   });
 
-  it("Responses keeps a body code Codex has its own path for, and only those", () => {
-    const code = (status, own) => errorOf(buildEarlyErrorBytes(status, "nope", "openai-responses", { code: own })).response.error.code;
-    expect(code(400, "context_length_exceeded")).toBe("context_length_exceeded");
-    expect(code(503, "server_is_overloaded")).toBe("server_is_overloaded");
-    // 10router's own codes for a status don't steer Codex.
-    expect(code(400, "bad_request")).toBe("invalid_prompt");
-    expect(code(403, "insufficient_quota")).toBe("invalid_prompt");
-    expect(code(503, "service_unavailable")).toBe("server_error");
-  });
-
-  it("a failed body's code reaches the Responses error", async () => {
-    const body = Response.json({ error: { message: "too long", code: "context_length_exceeded" } }, { status: 400 });
+  it("a failed body's message reaches the Responses error; its code comes from the status", async () => {
+    const body = Response.json({ error: { message: "too long", code: "bad_request" } }, { status: 400 });
     const text = await earlyRun(() => later(40_000, body), "openai-responses");
-    expect(JSON.parse(events(text)[0].data).response.error).toEqual({ type: "stream_error", code: "context_length_exceeded", message: "too long" });
+    expect(JSON.parse(events(text)[0].data).response.error).toEqual({ type: "stream_error", code: "invalid_prompt", message: "too long" });
   });
 });
 

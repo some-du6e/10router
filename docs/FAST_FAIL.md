@@ -46,9 +46,6 @@ headers get their code from the status:
   `x-should-retry: false` (the limit exhaustion above): `invalid_prompt`, final.
   Over HTTP Codex would treat a 400 as final too, but would retry a 401, 403 or
   404 as `UnexpectedStatus`; in-band they stop it instead.
-- If the failed body carries a code Codex has its own path for
-  (`context_length_exceeded`, `usage_not_included`, `server_is_overloaded`,
-  `slow_down`, `invalid_prompt`), that code is kept instead.
 
 A limit exhaustion reached within the first 30s still gets the HTTP 400 above.
 

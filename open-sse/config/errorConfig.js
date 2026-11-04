@@ -177,11 +177,9 @@ export const CLAUDE_RETRYABLE_STREAM_ERROR_TYPE = "overloaded_error";
 // codex-api/src/sse/responses_error.rs parse_failed_response). Codex retries a
 // code it doesn't know (`retryable`) and backs off on `rateLimited`.
 // `invalid_prompt` is final and shows our message as is; `insufficient_quota`
-// would show Codex's own fixed text, losing a reset countdown. `passthrough`
-// codes from the error body have a path of their own in Codex and are kept.
+// would show Codex's own fixed text, losing a reset countdown.
 export const RESPONSES_STREAM_ERROR_CODES = {
   rateLimited: "rate_limit_exceeded",
   retryable: "server_error",
   final: "invalid_prompt",
-  passthrough: ["context_length_exceeded", "usage_not_included", "server_is_overloaded", "slow_down", "invalid_prompt"],
 };
