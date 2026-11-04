@@ -12,6 +12,8 @@ OUT="${OUT_DIR:-$PWD/e2e-out}"
 mkdir -p "$OUT"
 export DATA_DIR="$OUT/data"
 mkdir -p "$DATA_DIR"
+# Fake, per-run 10router key; the tunnel makes requests non-local.
+export E2E_API_KEY="sk-e2e-$(openssl rand -hex 12)"
 
 node "$HERE/mock-upstream.mjs" > "$OUT/mock.log" 2>&1 &
 node --experimental-loader=./scripts/resolve-src-alias.mjs "$HERE/seed.mjs" 2>&1 | grep -v -i warning
@@ -36,7 +38,7 @@ for _ in $(seq 1 60); do
 done
 [ -n "$TUNNEL" ] || { echo "no tunnel URL"; cat "$OUT/cloudflared.log"; exit 1; }
 for _ in $(seq 1 60); do
-  [ "$(curl -s -o /dev/null -w '%{http_code}' "$TUNNEL/v1/models")" = "200" ] && break
+  [ "$(curl -s -o /dev/null -w '%{http_code}' -H "x-api-key: $E2E_API_KEY" "$TUNNEL/v1/models")" = "200" ] && break
   sleep 3
 done
 echo "tunnel: $TUNNEL"
@@ -45,12 +47,12 @@ MSG='{"model":"mock/slow","max_tokens":64,"stream":true,"messages":[{"role":"use
 
 # 1. curl, Claude Messages format, through Cloudflare.
 ( curl -sS -N -o "$OUT/curl-messages.body" -w 'http=%{http_code} time=%{time_total}s\n' \
-    -X POST "$TUNNEL/v1/messages" -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' \
+    -X POST "$TUNNEL/v1/messages" -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' -H "x-api-key: $E2E_API_KEY" \
     -d "$MSG" > "$OUT/curl-messages.meta" 2>&1 ) &
 
 # 2. Real Claude Code through Cloudflare. No retries, so a 524 shows once
 # instead of after ten more 100s waits.
-export ANTHROPIC_API_KEY="sk-ant-fake-e2e" CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1
+export ANTHROPIC_API_KEY="$E2E_API_KEY" CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="mock/fast" ANTHROPIC_SMALL_FAST_MODEL="mock/fast"
 ( start=$(date +%s); ANTHROPIC_BASE_URL="$TUNNEL" CLAUDE_CODE_MAX_RETRIES=0 \
     timeout 400 claude -p "Reply with one word." --model mock/slow > "$OUT/claude-slow.out" 2>&1
@@ -59,7 +61,7 @@ export ANTHROPIC_DEFAULT_HAIKU_MODEL="mock/fast" ANTHROPIC_SMALL_FAST_MODEL="moc
 if [ "$LEG" = "pr" ]; then
   # 3. curl, OpenAI chat format, through Cloudflare.
   ( curl -sS -N -o "$OUT/curl-chat.body" -w 'http=%{http_code} time=%{time_total}s\n' \
-      -X POST "$TUNNEL/v1/chat/completions" -H 'content-type: application/json' \
+      -X POST "$TUNNEL/v1/chat/completions" -H 'content-type: application/json' -H "authorization: Bearer $E2E_API_KEY" \
       -d '{"model":"mock/slow","stream":true,"messages":[{"role":"user","content":"ping"}]}' > "$OUT/curl-chat.meta" 2>&1 ) &
 
   # 4. Claude Code, upstream fails after the headers went out: the in-band

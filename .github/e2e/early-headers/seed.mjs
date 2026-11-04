@@ -36,5 +36,14 @@ await importDb({
     createdAt: now,
     updatedAt: now,
   }],
+  // Requests through the tunnel aren't local, so they need a 10router key.
+  apiKeys: [{
+    id: "e2e-key",
+    key: process.env.E2E_API_KEY || "sk-e2e-fake",
+    name: "e2e",
+    machineId: "e2e-machine",
+    isActive: true,
+    createdAt: now,
+  }],
 });
 console.log(`seeded ${node.id} -> ${baseUrl} in ${DATA_DIR}`);

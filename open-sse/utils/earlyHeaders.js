@@ -94,6 +94,7 @@ function isEventStream(response) {
  * @param {string} options.sourceFormat - client's wire format
  * @param {number} [options.delayMs] - 0 disables
  * @param {number} [options.keepaliveMs] - comment interval while waiting
+ * @param {any} [options.log]
  */
 export async function respondWithEarlyHeaders({ run, sourceFormat, delayMs = STREAM_EARLY_HEADERS_MS, keepaliveMs = STREAM_KEEPALIVE_MS, log = null }) {
   const abort = new AbortController();
