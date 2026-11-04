@@ -22,7 +22,7 @@ export function keyUsageSql(idCount) {
       SUM(CASE WHEN u.timestamp >= ? THEN u.cost ELSE 0 END) AS recentCost,
       SUM(CASE WHEN u.timestamp >= ? THEN u.promptTokens + u.completionTokens ELSE 0 END) AS recentTokens
     FROM k CROSS JOIN usageHistory u
-    WHERE u.connectionId = k.id AND u.status = 'ok' AND u.timestamp >= k.since
+    WHERE u.connectionId = k.id AND u.status IN ('ok', 'success') AND u.timestamp >= k.since
     GROUP BY k.id`;
 }
 

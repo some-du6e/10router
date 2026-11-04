@@ -219,6 +219,27 @@ describe("getKeyLifespans", () => {
     expect(result.keys[idle]).toMatchObject({ used: 0, etaHours: null });
   });
 
+  it("counts what the usage writer stores for chat (no status) and embeddings/systemone (\"success\"), not failures", async () => {
+    const usageRepo = await import("@/lib/db/repos/usageRepo.js");
+    // As requestDetail.js (chat), embeddings.js / systemone.js, and a failure.
+    const write = (connectionId, at, tokens, status) => usageRepo.saveRequestUsage({
+      provider, model: "lifespan-unpriced-model", connectionId, timestamp: iso(at),
+      tokens: { prompt_tokens: tokens, completion_tokens: 0 }, ...(status ? { status } : {}),
+    });
+    for (const i of [1, 2, 3]) {
+      const id = await addKey(`dead${i}`, { deadAt: iso(NOW - HOUR) });
+      await write(id, NOW - 10 * HOUR, 1000 * i);
+      await write(id, NOW - 9 * HOUR, 1000 * i, "success");
+      await write(id, NOW - 8 * HOUR, 99999, "error");
+    }
+    const k = await addKey("live");
+    await write(k, NOW - 2 * HOUR, 500, "success");
+    await write(k, NOW - 2 * HOUR, 500);
+    const { estimate, keys } = await repo.getKeyLifespans(provider, { now: NOW });
+    expect(estimate).toMatchObject({ metric: "tokens", median: 4000, low: 3000, high: 5000, sampleSize: 3 });
+    expect(keys[k].used).toBe(1000);
+  });
+
   describe("a new key on an existing connection", () => {
     afterEach(() => vi.useRealTimers());
 
