@@ -27,11 +27,11 @@ vi.mock("@/lib/usageDb.js", () => ({
 
 let handleChatCore;
 
-function run(clientSignal, { stream = false } = {}) {
+function run(clientSignal, { stream = false, provider = "openai" } = {}) {
   const body = { model: "gpt-4o", stream, messages: [{ role: "user", content: "Hi" }] };
   return handleChatCore({
     body,
-    modelInfo: { provider: "openai", model: "gpt-4o" },
+    modelInfo: { provider, model: "gpt-4o" },
     credentials: { apiKey: "k", providerSpecificData: {} },
     clientRawRequest: { endpoint: "/v1/chat/completions", body, headers: {} },
     connectionId: "conn-1",
@@ -102,6 +102,24 @@ describe("handleChatCore clientSignal", () => {
     expect(result.success).toBe(false);
     expect(add).toHaveBeenCalledTimes(1);
     expect(remove).toHaveBeenCalledWith("abort", add.mock.calls[0][1]);
+  });
+
+  it("a hang-up while a non-stream request reads an SSE body is a quiet 499, not a throw", async () => {
+    // Half an event, then open until the upstream signal aborts it.
+    upstream((signal) => new Response(new ReadableStream({
+      start(c) {
+        c.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"h'));
+        signal?.addEventListener("abort", () => c.error(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+      },
+    }), { headers: { "content-type": "text/event-stream" } }));
+    const client = new AbortController();
+    // groq is not forceStream, so the reply goes through the plain non-stream handler.
+    const pending = run(client.signal, { stream: false, provider: "groq" });
+    await vi.waitFor(() => expect(executeMock).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 100));
+    client.abort();
+    const result = await pending;
+    expect(result).toMatchObject({ success: false, status: 499 });
   });
 
   it("a hang-up mid-stream is a disconnect: upstream dropped, pending down exactly once", async () => {

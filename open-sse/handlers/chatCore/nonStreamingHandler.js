@@ -298,7 +298,16 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   let responseBody;
 
   if (contentType.includes("text/event-stream")) {
-    const sseText = await providerResponse.text();
+    let sseText;
+    try {
+      sseText = await providerResponse.text();
+    } catch (err) {
+      // A client hang-up aborts the upstream body mid-read.
+      const aborted = err?.name === "AbortError";
+      const status = aborted ? HTTP_STATUS.CLIENT_CLOSED_REQUEST : HTTP_STATUS.BAD_GATEWAY;
+      appendLog({ status: `FAILED ${status}` });
+      return createErrorResult(status, aborted ? "Request aborted" : `Upstream SSE body from ${provider} failed: ${err?.message || err}`);
+    }
     const parsed = parseSSEToOpenAIResponse(sseText, model);
     if (!parsed) {
       appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
