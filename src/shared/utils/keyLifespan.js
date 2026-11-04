@@ -37,7 +37,10 @@ export function estimateKeyLifespans(connections, usage, opts = {}) {
   const windowMs = opts.windowMs ?? LIFESPAN_RECENT_WINDOW_MS;
   const of = (id) => usage?.[id] || {};
 
-  const dead = (connections || []).filter((c) => c.isActive === false && c.autoDisabledAt);
+  // A dead key that never served anything says nothing about the budget, and
+  // would flip the unit to tokens or pull the median to zero.
+  const dead = (connections || []).filter((c) => c.isActive === false && c.autoDisabledAt
+    && (num(of(c.id).cost) > 0 || num(of(c.id).tokens) > 0));
   if (dead.length < LIFESPAN_MIN_DEAD_KEYS) return { estimate: null, keys: {} };
 
   // Cost when every dead key has one; otherwise pricing is missing for some of

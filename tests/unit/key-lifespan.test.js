@@ -75,6 +75,16 @@ describe("estimateKeyLifespans", () => {
     expect(estimateKeyLifespans([dead("a"), dead("b"), dead("c"), live("k")], usage, { now: NOW }).estimate).toBeNull();
   });
 
+  it("ignores dead keys that never served anything", () => {
+    // Without them dropped first: tokens as the unit (no cost on the empty
+    // keys), and a median of 0 with three of five dead on arrival.
+    const usage = { a: { cost: 400, tokens: 4e5 }, b: { cost: 500, tokens: 5e5 }, c: { cost: 600, tokens: 6e5 }, k: { cost: 100, tokens: 1e5 } };
+    const connections = [dead("a"), dead("b"), dead("c"), dead("doa1"), dead("doa2"), dead("doa3"), live("k")];
+    const { estimate, keys } = estimateKeyLifespans(connections, { ...usage, doa1: { cost: 0, tokens: 0 } }, { now: NOW });
+    expect(estimate).toEqual({ metric: "cost", median: 500, low: 450, high: 550, sampleSize: 3, excluded: 0 });
+    expect(keys.k.used).toBe(100);
+  });
+
   it("projects an ETA from the key's recent burn rate", () => {
     // $36 over the 6h window, key in use for longer than that: $6/h.
     const { keys } = estimateKeyLifespans(...Object.values(snowflake({ cost: 230, recentCost: 36, firstAt: iso(NOW - 30 * HOUR) })), { now: NOW });
