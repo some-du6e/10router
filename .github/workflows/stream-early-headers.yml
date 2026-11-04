@@ -12,6 +12,10 @@ on:
       - "open-sse/config/errorConfig.js"
       - "open-sse/handlers/chatCore.js"
       - "open-sse/handlers/chatCore/streamingHandler.js"
+      - "open-sse/handlers/chatCore/nonStreamingHandler.js"
+      - "open-sse/handlers/chatCore/sseToJsonHandler.js"
+      - "open-sse/utils/error.js"
+      - "tests/unit/force-stream-config.test.js"
       - "open-sse/handlers/chatCore/jsonToSse.ts"
       - "src/sse/handlers/chat.ts"
       - "open-sse/utils/limitHold.js"
@@ -63,6 +67,7 @@ jobs:
           unit/account-failure-handler.test.js
           unit/chat-core-failure-detail.test.js
           unit/chat-core-transport-selection.test.js
+          unit/force-stream-config.test.js
       - name: Lint
         run: >
           ./node_modules/.bin/eslint
@@ -71,6 +76,9 @@ jobs:
           open-sse/config/errorConfig.js
           open-sse/handlers/chatCore.js
           open-sse/handlers/chatCore/streamingHandler.js
+          open-sse/handlers/chatCore/nonStreamingHandler.js
+          open-sse/handlers/chatCore/sseToJsonHandler.js
+          open-sse/utils/error.js
           src/sse/handlers/chat.ts
           src/app/api/v1/messages/route.js
           src/app/api/v1/chat/completions/route.js
