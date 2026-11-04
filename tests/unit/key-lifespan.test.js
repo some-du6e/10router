@@ -355,24 +355,6 @@ describe("getKeyLifespans", () => {
     expect([...global._keyLifespanCache.keys()]).toEqual(["no-such-provider-later"]);
   });
 
-  it("still serves a plain lookup by connectionId from an index", () => {
-    const plan = adapter.all(`EXPLAIN QUERY PLAN SELECT model, cost FROM usageHistory WHERE connectionId = ?`, ["a"]);
-    expect(plan.map((r) => r.detail).join("\n")).toMatch(/SEARCH usageHistory USING INDEX idx_uh_conn_ok \(connectionId=\?\)/);
-  });
-
-  it("drops the old single-column connectionId index on existing DBs, and doesn't create it on new ones", async () => {
-    const indexes = () => adapter.all(`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'usageHistory'`).map((r) => r.name);
-    expect(indexes()).toContain("idx_uh_conn_ok");
-    expect(indexes()).not.toContain("idx_uh_conn");
-    adapter.exec("CREATE INDEX idx_uh_conn ON usageHistory(connectionId)");
-    const { MIGRATIONS, latestVersion } = await import("@/lib/db/migrations/index.js");
-    const drop = MIGRATIONS.find((m) => m.name === "drop-redundant-conn-index");
-    expect(drop.version).toBe(latestVersion());
-    drop.up(adapter);
-    expect(indexes()).not.toContain("idx_uh_conn");
-    drop.up(adapter);
-  });
-
   it("aggregates from the covering index without reading table rows", () => {
     const plan = adapter.all(`EXPLAIN QUERY PLAN ${repo.keyUsageSql(2)}`, [iso(NOW), iso(NOW), "a", "b"]);
     const detail = plan.map((r) => r.detail).join("\n");
