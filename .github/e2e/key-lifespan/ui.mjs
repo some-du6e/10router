@@ -2,7 +2,7 @@
 // full-page screenshots. Usage: node ui.mjs <baseUrl> <outDir>
 //   custom endpoint page (CustomEndpointPage.tsx): openai-compatible-e2e-alpha / -beta
 //   built-in provider page (ConnectionRow.js):      openai
-//   media provider page (ConnectionsCard.js):        tts/elevenlabs
+//   media provider page (ConnectionsCard.js):        embedding/voyage-ai
 import { chromium } from "playwright";
 import { mkdirSync } from "node:fs";
 
@@ -67,8 +67,8 @@ check("ui beta: no lifespan label", betaCount === 0, String(betaCount));
 await open("/dashboard/providers/openai", "openai", "openai-active", "openai-provider");
 await expectLabel("openai", { activeName: "openai-active", deadName: "openai-dead", text: "~80% left" });
 
-await open("/dashboard/media-providers/tts/elevenlabs", "elevenlabs", "eleven-active", "elevenlabs-media-provider");
-await expectLabel("elevenlabs", { activeName: "eleven-active", deadName: "eleven-dead", text: "~50% left" });
+await open("/dashboard/media-providers/embedding/voyage-ai", "voyage-ai", "voyage-active", "voyage-media-provider");
+await expectLabel("voyage", { activeName: "voyage-active", deadName: "voyage-dead", text: "~50% left" });
 
 await browser.close();
 if (failed) {

@@ -35,9 +35,9 @@ const alphaManual = { conn: key(ALPHA, "alpha-manual-off", "alpha-manual-off", {
 const alphaActive = key(ALPHA, "alpha-active", "alpha-active", { prefix: "e2ea" });
 
 // Built-in API-key providers: openai renders keys with ConnectionRow.js, and
-// elevenlabs (a TTS provider) with the media page's ConnectionsCard.js.
+// voyage-ai (embeddings only) with the media page's ConnectionsCard.js.
 const OPENAI = "openai";
-const ELEVEN = "elevenlabs";
+const VOYAGE = "voyage-ai";
 const builtinKey = (provider, id, { active = true } = {}) => ({
   id, provider, authType: "apikey", name: id, priority: 1, isActive: active,
   apiKey: `sk-e2e-fake-${id}`, testStatus: active ? "active" : "error",
@@ -46,8 +46,8 @@ const builtinKey = (provider, id, { active = true } = {}) => ({
 });
 const openaiDead = [400, 500, 600].map((cost, i) => ({ conn: builtinKey(OPENAI, `openai-dead-${i + 1}`, { active: false }), cost }));
 const openaiActive = builtinKey(OPENAI, "openai-active");
-const elevenDead = [40, 50, 60].map((cost, i) => ({ conn: builtinKey(ELEVEN, `eleven-dead-${i + 1}`, { active: false }), cost }));
-const elevenActive = builtinKey(ELEVEN, "eleven-active");
+const voyageDead = [40, 50, 60].map((cost, i) => ({ conn: builtinKey(VOYAGE, `voyage-dead-${i + 1}`, { active: false }), cost }));
+const voyageActive = builtinKey(VOYAGE, "voyage-active");
 
 const betaDead = [300, 500].map((cost, i) => ({ conn: key(BETA, `beta-dead-${i + 1}`, `beta-dead-${i + 1}`, { active: false, autoDisabled: true, prefix: "e2eb" }), cost }));
 const betaActive = key(BETA, "beta-active", "beta-active", { prefix: "e2eb" });
@@ -59,7 +59,7 @@ await importDb({
     ...alphaDead.map((d) => d.conn), alphaEarly.conn, alphaManual.conn, alphaActive,
     ...betaDead.map((d) => d.conn), betaActive,
     ...openaiDead.map((d) => d.conn), openaiActive,
-    ...elevenDead.map((d) => d.conn), elevenActive,
+    ...voyageDead.map((d) => d.conn), voyageActive,
   ],
 });
 
@@ -87,9 +87,9 @@ db.transaction(() => {
   // openai: typical $500, active at $100: ~80% left.
   for (const { conn, cost } of openaiDead) insert(OPENAI, conn.id, cost, 24 * 3);
   insert(OPENAI, openaiActive.id, 100, 30);
-  // elevenlabs: stored as "success" like the TTS/embeddings writers; typical $50, active at $25: ~50% left.
-  for (const { conn, cost } of elevenDead) insert(ELEVEN, conn.id, cost, 24 * 3, "success");
-  insert(ELEVEN, elevenActive.id, 25, 30, "success");
+  // voyage-ai: stored as "success", as src/sse/handlers/embeddings.js writes it; typical $50, active at $25: ~50% left.
+  for (const { conn, cost } of voyageDead) insert(VOYAGE, conn.id, cost, 24 * 3, "success");
+  insert(VOYAGE, voyageActive.id, 25, 30, "success");
 });
 
 const rows = db.all(`SELECT provider, COUNT(*) AS n, SUM(cost) AS cost FROM usageHistory GROUP BY provider`);
