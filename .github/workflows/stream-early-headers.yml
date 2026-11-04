@@ -20,7 +20,7 @@ on:
       - "src/app/api/v1/responses/route.js"
       - "src/app/api/v1/responses/compact/route.js"
       - "src/app/api/v1/api/chat/route.js"
-      - "src/app/api/v1beta/models/[[]...path]/route.js"
+      - "src/app/api/v1beta/models/**"
       - "tests/unit/stream-early-headers*.test.js"
       - "tests/unit/chat-core-client-signal.test.js"
       - ".github/workflows/stream-early-headers.yml"
