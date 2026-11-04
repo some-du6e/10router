@@ -36,7 +36,7 @@ countdown is lost (codex-rs `codex-api/src/sse/responses_error.rs`
 `parse_failed_response`; `protocol/src/error.rs`). Other failures after early
 headers get their code by whether the HTTP status would have been retried:
 
-- 408, 429 and 5xx: `rate_limit_exceeded` (429) or `server_error`, which Codex
+- 408, 409, 429 and 5xx: `rate_limit_exceeded` (429) or `server_error`, which Codex
   retries.
 - Anything else, such as 400, 401, 403 or 404, and any failure marked
   `x-should-retry: false` (the limit exhaustion above): `invalid_prompt`, final.

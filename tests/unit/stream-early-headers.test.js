@@ -255,7 +255,7 @@ describe("respondWithEarlyHeaders", () => {
 
 describe("in-band errors", () => {
   it("Claude: overloaded_error for retryable statuses, the status's own type otherwise", () => {
-    for (const status of [429, 500, 502, 503, 504, 408]) {
+    for (const status of [408, 409, 429, 500, 502, 503, 504]) {
       const [ev] = events(dec.decode(buildEarlyErrorBytes(status, "nope", "claude")));
       expect(ev.event).toBe("error");
       // Claude Code retries an error whose text carries "type":"overloaded_error".
@@ -282,6 +282,7 @@ describe("in-band errors", () => {
     expect(ev.event).toBe("response.failed");
     expect(JSON.parse(ev.data)).toMatchObject({ type: "response.failed", response: { status: "failed", error: { message: "nope" } } });
     expect(code(503)).toBe("server_error");
+    expect(code(409)).toBe("server_error");
     expect(code(429)).toBe("rate_limit_exceeded");
     expect(code(400)).toBe("invalid_prompt");
     expect(code(400, { retryable: false })).toBe("invalid_prompt");

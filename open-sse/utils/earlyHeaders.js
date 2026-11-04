@@ -22,9 +22,10 @@ const EARLY = Symbol("early");
 const MAX_MESSAGE = 2000;
 
 // Would the client have retried this failure if it had come as an HTTP status?
+// The Anthropic and OpenAI SDKs (and Claude Code) retry 408, 409, 429 and 5xx.
 function isRetryableFailure(status, headers = null) {
   if (headers?.get?.(SHOULD_RETRY_HEADER) === SHOULD_RETRY_NO) return false;
-  return status === HTTP_STATUS.REQUEST_TIMEOUT || status === HTTP_STATUS.RATE_LIMITED || status >= HTTP_STATUS.SERVER_ERROR;
+  return [HTTP_STATUS.REQUEST_TIMEOUT, HTTP_STATUS.CONFLICT, HTTP_STATUS.RATE_LIMITED].includes(status) || status >= HTTP_STATUS.SERVER_ERROR;
 }
 
 /**
