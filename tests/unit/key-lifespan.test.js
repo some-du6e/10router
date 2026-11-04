@@ -207,7 +207,7 @@ describe("getKeyLifespans", () => {
     return c.id;
   }
 
-  function use(connectionId, { at, cost = 0, prompt = 0, completion = 0, status = "ok" }) {
+  function record(connectionId, { at, cost = 0, prompt = 0, completion = 0, status = "ok" }) {
     adapter.run(
       `INSERT INTO usageHistory(timestamp, provider, model, connectionId, promptTokens, completionTokens, cost, status) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
       [iso(at), provider, "m", connectionId, prompt, completion, cost, status]
@@ -219,17 +219,17 @@ describe("getKeyLifespans", () => {
     for (const [i, cost] of [400, 500, 600].entries()) {
       const id = await addKey(`dead${i}`, { deadAt: iso(NOW - 24 * HOUR) });
       deadIds.push(id);
-      use(id, { at: NOW - 40 * HOUR, cost: cost / 2, prompt: 100, completion: 10 });
-      use(id, { at: NOW - 30 * HOUR, cost: cost / 2, prompt: 100, completion: 10 });
-      use(id, { at: NOW - 25 * HOUR, cost: 999, status: "error" });
+      record(id, { at: NOW - 40 * HOUR, cost: cost / 2, prompt: 100, completion: 10 });
+      record(id, { at: NOW - 30 * HOUR, cost: cost / 2, prompt: 100, completion: 10 });
+      record(id, { at: NOW - 25 * HOUR, cost: 999, status: "error" });
     }
     const early = await addKey("locked", { deadAt: iso(NOW - 20 * HOUR) });
-    use(early, { at: NOW - 21 * HOUR, cost: 20 });
+    record(early, { at: NOW - 21 * HOUR, cost: 20 });
     const k = await addKey("live");
-    use(k, { at: NOW - 20 * HOUR, cost: 100 });
-    use(k, { at: NOW - 2 * HOUR, cost: 30 });
-    use(k, { at: NOW - 1 * HOUR, cost: 20 });
-    use(k, { at: NOW - 1 * HOUR, cost: 500, status: "error" });
+    record(k, { at: NOW - 20 * HOUR, cost: 100 });
+    record(k, { at: NOW - 2 * HOUR, cost: 30 });
+    record(k, { at: NOW - 1 * HOUR, cost: 20 });
+    record(k, { at: NOW - 1 * HOUR, cost: 500, status: "error" });
     const idle = await addKey("idle");
 
     const usage = await repo.getKeyUsageByConnection([...deadIds, k].map((id) => ({ id })), iso(NOW - 6 * HOUR));
@@ -269,14 +269,14 @@ describe("getKeyLifespans", () => {
     afterEach(() => vi.useRealTimers());
 
     async function withDeadPeers() {
-      for (const i of [1, 2, 3]) use(await addKey(`peer${i}`, { deadAt: iso(NOW - 30 * HOUR) }), { at: NOW - 40 * HOUR, cost: 500 });
+      for (const i of [1, 2, 3]) record(await addKey(`peer${i}`, { deadAt: iso(NOW - 30 * HOUR) }), { at: NOW - 40 * HOUR, cost: 500 });
     }
     const at = (ms) => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date(ms)); };
 
     it("starts from zero when a new key is pasted into a dead connection", async () => {
       await withDeadPeers();
       const x = await addKey("reused", { deadAt: iso(NOW - 8 * HOUR) });
-      use(x, { at: NOW - 10 * HOUR, cost: 450 });
+      record(x, { at: NOW - 10 * HOUR, cost: 450 });
       at(NOW - 5 * HOUR);
       await db.updateProviderConnection(x, { apiKey: "sk-test-reused-NEW-0123456789" });
       const conn = await db.getProviderConnectionById(x);
@@ -285,7 +285,7 @@ describe("getKeyLifespans", () => {
       at(NOW - 4.5 * HOUR);
       await db.updateProviderConnection(x, { apiKey: "sk-test-reused-NEW-0123456789" });
       expect((await db.getProviderConnectionById(x)).keySetAt).toBe(iso(NOW - 5 * HOUR));
-      use(x, { at: NOW - 4 * HOUR, cost: 50 });
+      record(x, { at: NOW - 4 * HOUR, cost: 50 });
       vi.useRealTimers();
 
       expect((await repo.getKeyLifespans(provider, { now: NOW })).keys[x].used).toBe(50);
@@ -297,25 +297,25 @@ describe("getKeyLifespans", () => {
     it("starts from zero when a key is re-added under the same name", async () => {
       await withDeadPeers();
       const x = await addKey("same-name");
-      use(x, { at: NOW - 10 * HOUR, cost: 300 });
+      record(x, { at: NOW - 10 * HOUR, cost: 300 });
       at(NOW - 5 * HOUR);
       const again = await db.createProviderConnection({ provider, authType: "apikey", name: "same-name", apiKey: "sk-test-same-name-NEW-0123456789" });
       expect(again.id).toBe(x);
-      use(x, { at: NOW - 4 * HOUR, cost: 20 });
+      record(x, { at: NOW - 4 * HOUR, cost: 20 });
       vi.useRealTimers();
       expect((await repo.getKeyLifespans(provider, { now: NOW })).keys[x].used).toBe(20);
     });
   });
 
   it("returns only ids and numbers, never credentials", async () => {
-    for (const i of [1, 2, 3]) use(await addKey(`dead${i}`, { deadAt: iso(NOW - HOUR) }), { at: NOW - 2 * HOUR, cost: 100 });
+    for (const i of [1, 2, 3]) record(await addKey(`dead${i}`, { deadAt: iso(NOW - HOUR) }), { at: NOW - 2 * HOUR, cost: 100 });
     await addKey("live");
     const json = JSON.stringify(await repo.getKeyLifespans(provider, { now: NOW }));
     expect(json).not.toMatch(/sk-test|apiKey|accessToken|refreshToken|name/);
   });
 
   it("gives no estimate for a provider with fewer than 3 dead keys", async () => {
-    use(await addKey("dead", { deadAt: iso(NOW - HOUR) }), { at: NOW - 2 * HOUR, cost: 100 });
+    record(await addKey("dead", { deadAt: iso(NOW - HOUR) }), { at: NOW - 2 * HOUR, cost: 100 });
     await addKey("live");
     expect(await repo.getKeyLifespans(provider, { now: NOW })).toEqual({ estimate: null, keys: {} });
   });
@@ -325,11 +325,11 @@ describe("getKeyLifespans", () => {
     for (const i of [1, 2, 3]) {
       const id = await addKey(`dead${i}`, { deadAt: iso(NOW - HOUR) });
       ids.push(id);
-      use(id, { at: NOW - 2 * HOUR, cost: 100 });
+      record(id, { at: NOW - 2 * HOUR, cost: 100 });
     }
     const k = await addKey("live");
     const first = await repo.getKeyLifespans(provider, { now: NOW });
-    use(k, { at: NOW - 60 * 1000, cost: 10 });
+    record(k, { at: NOW - 60 * 1000, cost: 10 });
     expect(await repo.getKeyLifespans(provider, { now: NOW + 1000 })).toBe(first);
     expect((await repo.getKeyLifespans(provider, { now: NOW + 61 * 1000 })).keys[k].used).toBe(10);
     await db.updateProviderConnection(k, { isActive: false, autoDisabledAt: iso(NOW), autoDisabledReason: "403" });
@@ -338,10 +338,10 @@ describe("getKeyLifespans", () => {
 
   it("reads providers with more keys than one query's chunk", async () => {
     const ids = Array.from({ length: 950 }, (_, i) => `${provider}-bulk-${i}`);
-    use(ids[3], { at: NOW - HOUR, cost: 1 });
-    use(ids[420], { at: NOW - 2 * HOUR, cost: 2, prompt: 10 });
-    use(ids[420], { at: NOW - 10 * HOUR, cost: 3 });
-    use(ids[949], { at: NOW - HOUR, cost: 4 });
+    record(ids[3], { at: NOW - HOUR, cost: 1 });
+    record(ids[420], { at: NOW - 2 * HOUR, cost: 2, prompt: 10 });
+    record(ids[420], { at: NOW - 10 * HOUR, cost: 3 });
+    record(ids[949], { at: NOW - HOUR, cost: 4 });
     const usage = await repo.getKeyUsageByConnection(ids.map((id) => ({ id })), iso(NOW - 6 * HOUR));
     expect(Object.keys(usage).sort()).toEqual([ids[3], ids[420], ids[949]].sort());
     expect(usage[ids[420]]).toEqual({ cost: 5, tokens: 10, firstAt: iso(NOW - 10 * HOUR), recentCost: 2, recentTokens: 10 });
