@@ -44,6 +44,8 @@ function applyAutoDisableTransition(existing, merged, data) {
   }
   // The old key's failures say nothing about the new one.
   if (keyChanged) for (const f of AUTH_STREAK_FIELDS) delete merged[f];
+  // Nor its spend: the key lifespan estimate counts usage from here on.
+  if (keyChanged) merged.keySetAt = new Date().toISOString();
 }
 
 // Read by sse/services/autoCombo.ts to notice its model catalog is stale.

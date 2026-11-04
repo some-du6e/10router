@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   estimateKeyLifespans, keyLifespanLabel, lifespanLabel, percentile,
 } from "../../src/shared/utils/keyLifespan.js";
@@ -197,7 +197,7 @@ describe("getKeyLifespans", () => {
     use(k, { at: NOW - 1 * HOUR, cost: 500, status: "error" });
     const idle = await addKey("idle");
 
-    const usage = await repo.getKeyUsageByConnection([...deadIds, k], iso(NOW - 6 * HOUR));
+    const usage = await repo.getKeyUsageByConnection([...deadIds, k].map((id) => ({ id })), iso(NOW - 6 * HOUR));
     expect(usage[deadIds[0]]).toEqual({ cost: 400, tokens: 220, firstAt: iso(NOW - 40 * HOUR), recentCost: 0, recentTokens: 0 });
     expect(usage[k]).toMatchObject({ cost: 150, recentCost: 50 });
 
@@ -207,6 +207,48 @@ describe("getKeyLifespans", () => {
     expect(result.keys[k]).toMatchObject({ used: 150, remaining: 350, percentLeft: 70 });
     expect(result.keys[k].ratePerHour).toBeCloseTo(50 / 6);
     expect(result.keys[idle]).toMatchObject({ used: 0, etaHours: null });
+  });
+
+  describe("a new key on an existing connection", () => {
+    afterEach(() => vi.useRealTimers());
+
+    async function withDeadPeers() {
+      for (const i of [1, 2, 3]) use(await addKey(`peer${i}`, { deadAt: iso(NOW - 30 * HOUR) }), { at: NOW - 40 * HOUR, cost: 500 });
+    }
+    const at = (ms) => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date(ms)); };
+
+    it("starts from zero when a new key is pasted into a dead connection", async () => {
+      await withDeadPeers();
+      const x = await addKey("reused", { deadAt: iso(NOW - 8 * HOUR) });
+      use(x, { at: NOW - 10 * HOUR, cost: 450 });
+      at(NOW - 5 * HOUR);
+      await db.updateProviderConnection(x, { apiKey: "sk-test-reused-NEW-0123456789" });
+      const conn = await db.getProviderConnectionById(x);
+      expect(conn).toMatchObject({ isActive: true, keySetAt: iso(NOW - 5 * HOUR) });
+      // Saving the same key again keeps the stamp.
+      at(NOW - 4.5 * HOUR);
+      await db.updateProviderConnection(x, { apiKey: "sk-test-reused-NEW-0123456789" });
+      expect((await db.getProviderConnectionById(x)).keySetAt).toBe(iso(NOW - 5 * HOUR));
+      use(x, { at: NOW - 4 * HOUR, cost: 50 });
+      vi.useRealTimers();
+
+      expect((await repo.getKeyLifespans(provider, { now: NOW })).keys[x].used).toBe(50);
+      // Dead again, it counts one key's spend, not both: $50 is an early death.
+      await db.updateProviderConnection(x, { isActive: false, autoDisabledAt: iso(NOW - HOUR), autoDisabledReason: "403" });
+      expect((await repo.getKeyLifespans(provider, { now: NOW })).estimate).toMatchObject({ median: 500, sampleSize: 3, excluded: 1 });
+    });
+
+    it("starts from zero when a key is re-added under the same name", async () => {
+      await withDeadPeers();
+      const x = await addKey("same-name");
+      use(x, { at: NOW - 10 * HOUR, cost: 300 });
+      at(NOW - 5 * HOUR);
+      const again = await db.createProviderConnection({ provider, authType: "apikey", name: "same-name", apiKey: "sk-test-same-name-NEW-0123456789" });
+      expect(again.id).toBe(x);
+      use(x, { at: NOW - 4 * HOUR, cost: 20 });
+      vi.useRealTimers();
+      expect((await repo.getKeyLifespans(provider, { now: NOW })).keys[x].used).toBe(20);
+    });
   });
 
   it("returns only ids and numbers, never credentials", async () => {
