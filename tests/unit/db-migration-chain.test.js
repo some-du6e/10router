@@ -104,7 +104,8 @@ describe("Schema migrations", () => {
     expect(JSON.parse(upgraded.get("SELECT data FROM settings WHERE id = 1").data)).toEqual({ tunnelEnabled: true });
     expect(JSON.parse(upgraded.get("SELECT data FROM requestDetails WHERE id = 'r1'").data)).toEqual({ id: "r1", request: { model: "m" } });
     const { BACKUPS_DIR } = await import("@/lib/db/paths.js");
-    expect(fs.readdirSync(BACKUPS_DIR).some((d) => d.includes("schema-3-to-4"))).toBe(true);
+    const { SCHEMA_VERSION } = await import("@/lib/db/schema.js");
+    expect(fs.readdirSync(BACKUPS_DIR).some((d) => d.includes(`schema-3-to-${SCHEMA_VERSION}`))).toBe(true);
   });
 
   it("leaves unreadable settings in place when removing token saver settings", async () => {
