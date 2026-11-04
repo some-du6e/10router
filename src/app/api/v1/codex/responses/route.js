@@ -62,6 +62,8 @@ async function withCodexFallback(request) {
     method: request.method,
     headers: request.headers,
     body: JSON.stringify({ ...body, model: `cx/${model}` }),
+    // Keep the client's hang-up signal, or routing never hears it left.
+    signal: request.signal,
   });
 }
 
