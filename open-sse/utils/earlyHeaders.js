@@ -8,73 +8,70 @@
 // stream, or writes the final failure into the stream in the client's format.
 import { FORMATS } from "../translator/formats.js";
 import { HTTP_STATUS, STREAM_EARLY_HEADERS_MS, STREAM_KEEPALIVE_MS } from "../config/runtimeConfig.js";
-import { CLAUDE_STREAM_ERROR_TYPES, RESPONSES_STREAM_ERROR_CODES } from "../config/errorConfig.js";
-import { buildStreamErrorBytes, formatSSE } from "./streamHelpers.js";
+import {
+  CLAUDE_RETRYABLE_STREAM_ERROR_TYPE, RESPONSES_STREAM_ERROR_CODES,
+  SHOULD_RETRY_HEADER, SHOULD_RETRY_NO, DEFAULT_ERROR_MESSAGES,
+} from "../config/errorConfig.js";
+import { buildStreamErrorBytes } from "./streamHelpers.js";
+import { formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { SSE_HEADERS_CORS, SSE_KEEPALIVE } from "./sseConstants.js";
-import { jsonReplyToSse } from "../handlers/chatCore/jsonToSse.js";
 
 const encoder = new TextEncoder();
 const KEEPALIVE_BYTES = encoder.encode(SSE_KEEPALIVE);
 const EARLY = Symbol("early");
 const MAX_MESSAGE = 2000;
 
-/** Would the client have retried this failure if it had come as an HTTP status? */
-export function isRetryableFailure(status, headers = null) {
-  if (headers?.get?.("x-should-retry") === "false") return false;
+// Would the client have retried this failure if it had come as an HTTP status?
+function isRetryableFailure(status, headers = null) {
+  if (headers?.get?.(SHOULD_RETRY_HEADER) === SHOULD_RETRY_NO) return false;
   return status === HTTP_STATUS.REQUEST_TIMEOUT || status === HTTP_STATUS.RATE_LIMITED || status >= HTTP_STATUS.SERVER_ERROR;
 }
 
 /**
  * The final error of a stream whose headers already went out, in the client's
  * own format: Claude `event: error`, Responses `response.failed`, OpenAI
- * `data: {"error":…}` + [DONE].
+ * `data: {"error":…}` + [DONE]. `code` is the failed body's own error code;
+ * Responses keeps it when Codex has a path of its own for it.
  */
-export function buildEarlyErrorBytes(status, message, sourceFormat, { retryable = isRetryableFailure(status), exhausted = false } = {}) {
+export function buildEarlyErrorBytes(status, message, sourceFormat, { retryable = isRetryableFailure(status), code = null } = {}) {
   if (sourceFormat === FORMATS.CLAUDE) {
-    const type = retryable
-      ? CLAUDE_STREAM_ERROR_TYPES.retryable
-      : CLAUDE_STREAM_ERROR_TYPES[status] || CLAUDE_STREAM_ERROR_TYPES.default;
-    return encoder.encode(formatSSE({ type: "error", error: { type, message } }, FORMATS.CLAUDE));
+    return buildStreamErrorBytes(status, message, FORMATS.CLAUDE, retryable ? { type: CLAUDE_RETRYABLE_STREAM_ERROR_TYPE } : {});
   }
   if (sourceFormat === FORMATS.OPENAI_RESPONSES) {
     const codes = RESPONSES_STREAM_ERROR_CODES;
-    const code = retryable
+    const own = codes.passthrough.includes(code) ? code : null;
+    const fallback = retryable
       ? (status === HTTP_STATUS.RATE_LIMITED ? codes.rateLimited : codes.retryable)
-      : (exhausted ? codes.quota : codes.final);
-    return encoder.encode(formatSSE({
-      event: "response.failed",
-      data: {
-        type: "response.failed",
-        sequence_number: 0,
-        response: { id: `resp_${Date.now()}`, object: "response", status: "failed", error: { code, message } },
-      },
-    }, FORMATS.OPENAI_RESPONSES));
+      : codes.final;
+    return encoder.encode(formatIncompleteOpenAIResponsesStreamFailure({ code: own || fallback, message }));
   }
   return buildStreamErrorBytes(status, message, FORMATS.OPENAI);
 }
 
-async function failureMessage(response) {
+async function readFailure(response) {
   const text = await response.text().catch(() => "");
   let message = text;
+  let code = null;
   try {
-    const json = JSON.parse(text);
-    const err = json?.error;
-    message = (typeof err?.message === "string" && err.message) || (typeof err === "string" && err) || json?.message || text;
+    const err = JSON.parse(text)?.error;
+    message = (typeof err?.message === "string" && err.message) || (typeof err === "string" && err) || text;
+    if (typeof err?.code === "string") code = err.code;
   } catch { /* plain-text body */ }
-  return String(message || `request failed (${response.status})`).slice(0, MAX_MESSAGE);
+  return { message: String(message || `request failed (${response.status})`).slice(0, MAX_MESSAGE), code };
 }
 
 // Bytes that end a committed stream for a routing result that isn't a stream.
+// A JSON success can't land here: chatCore already replays one as the client's
+// stream, so an ok non-stream reply is one it couldn't replay.
 async function terminalBytes(response, sourceFormat) {
   if (response.ok) {
-    const replay = jsonReplyToSse(await response.json().catch(() => null), sourceFormat);
-    if (replay) return encoder.encode(replay);
+    response.body?.cancel().catch(() => {});
     return buildEarlyErrorBytes(HTTP_STATUS.BAD_GATEWAY, "upstream reply was not a stream", sourceFormat);
   }
-  const retryable = isRetryableFailure(response.status, response.headers);
-  return buildEarlyErrorBytes(response.status, await failureMessage(response), sourceFormat, {
-    retryable,
-    exhausted: !retryable && response.headers.get("x-should-retry") === "false",
+  const { message, code } = await readFailure(response);
+  return buildEarlyErrorBytes(response.status, message, sourceFormat, {
+    retryable: isRetryableFailure(response.status, response.headers),
+    code,
   });
 }
 
@@ -87,19 +84,24 @@ function isEventStream(response) {
  * Run `run(signal)`. If it answers within `delayMs` its Response is returned
  * as is, real status included. Otherwise a 200 SSE Response is returned at
  * `delayMs`, carrying keepalives until `run` settles and then its stream or
- * failure. A client that hangs up aborts `signal`.
+ * failure. `signal` aborts when the client hangs up, before or after the
+ * headers went out.
  *
  * @param {object} options
  * @param {(signal: AbortSignal) => Promise<Response>} options.run
  * @param {string} options.sourceFormat - client's wire format
+ * @param {AbortSignal|null} [options.signal] - the client request's signal
  * @param {number} [options.delayMs] - 0 disables
- * @param {number} [options.keepaliveMs] - comment interval while waiting
+ * @param {number} [options.keepaliveMs] - comment interval while waiting; 0 disables early headers too
  * @param {any} [options.log]
  */
-export async function respondWithEarlyHeaders({ run, sourceFormat, delayMs = STREAM_EARLY_HEADERS_MS, keepaliveMs = STREAM_KEEPALIVE_MS, log = null }) {
+export async function respondWithEarlyHeaders({ run, sourceFormat, signal = null, delayMs = STREAM_EARLY_HEADERS_MS, keepaliveMs = STREAM_KEEPALIVE_MS, log = null }) {
   const abort = new AbortController();
+  if (signal?.aborted) abort.abort();
+  else signal?.addEventListener?.("abort", () => abort.abort(), { once: true });
   const pending = Promise.resolve().then(() => run(abort.signal));
-  if (!(delayMs > 0)) return pending;
+  // Without keepalives an early stream would sit silent, which proxies cut too.
+  if (!(delayMs > 0) || !(keepaliveMs > 0)) return pending;
 
   let timer = null;
   const early = new Promise((resolve) => { timer = setTimeout(resolve, delayMs, EARLY); });
@@ -112,10 +114,10 @@ export async function respondWithEarlyHeaders({ run, sourceFormat, delayMs = STR
   if (first !== EARLY) return first;
 
   log?.info?.("STREAM", `no upstream headers after ${delayMs}ms, sent early SSE headers`);
-  return new Response(earlyStream({ pending, sourceFormat, abort, intervalMs: keepaliveMs > 0 ? keepaliveMs : delayMs, log }), { headers: SSE_HEADERS_CORS });
+  return new Response(earlyStream({ pending, sourceFormat, abort, keepaliveMs, log }), { headers: SSE_HEADERS_CORS });
 }
 
-function earlyStream({ pending, sourceFormat, abort, intervalMs, log }) {
+function earlyStream({ pending, sourceFormat, abort, keepaliveMs, log }) {
   let interval = null;
   let cancelled = false;
   let reader = null;
@@ -137,8 +139,9 @@ function earlyStream({ pending, sourceFormat, abort, intervalMs, log }) {
     tail = await terminalBytes(response, sourceFormat);
   }, (error) => {
     stopKeepalive();
-    log?.warn?.("STREAM", `request failed after early headers: ${error?.message || error}`);
-    tail = buildEarlyErrorBytes(HTTP_STATUS.SERVER_ERROR, String(error?.message || "request failed").slice(0, MAX_MESSAGE), sourceFormat);
+    // Not an upstream failure: keep the detail in the log, as the plain 500 did.
+    log?.error?.("STREAM", `request failed after early headers: ${error?.stack || error?.message || error}`);
+    tail = buildEarlyErrorBytes(HTTP_STATUS.SERVER_ERROR, DEFAULT_ERROR_MESSAGES[HTTP_STATUS.SERVER_ERROR], sourceFormat);
   });
 
   return new ReadableStream({
@@ -147,24 +150,33 @@ function earlyStream({ pending, sourceFormat, abort, intervalMs, log }) {
       controller.enqueue(KEEPALIVE_BYTES);
       interval = setInterval(() => {
         try { controller.enqueue(KEEPALIVE_BYTES); } catch { stopKeepalive(); }
-      }, intervalMs);
+      }, keepaliveMs);
     },
     async pull(controller) {
       await settled;
       if (cancelled) return;
-      try {
-        if (!reader) {
-          if (tail) controller.enqueue(tail);
-          tail = null;
-          controller.close();
-          return;
-        }
-        const { done, value } = await reader.read();
-        if (done) controller.close();
-        else controller.enqueue(value);
-      } catch {
-        try { controller.close(); } catch { /* already closed */ }
+      if (!reader) {
+        if (tail) controller.enqueue(tail);
+        tail = null;
+        controller.close();
+        return;
       }
+      let chunk;
+      try {
+        chunk = await reader.read();
+      } catch (error) {
+        // The stream failed without writing its own terminal: end it with one,
+        // so the client sees an error rather than a reply that just stops.
+        if (cancelled) return;
+        log?.warn?.("STREAM", `stream failed after early headers: ${error?.message || error}`);
+        try {
+          controller.enqueue(buildEarlyErrorBytes(HTTP_STATUS.BAD_GATEWAY, DEFAULT_ERROR_MESSAGES[HTTP_STATUS.BAD_GATEWAY], sourceFormat));
+          controller.close();
+        } catch { /* already closed */ }
+        return;
+      }
+      if (chunk.done) controller.close();
+      else controller.enqueue(chunk.value);
     },
     cancel(reason) {
       cancelled = true;

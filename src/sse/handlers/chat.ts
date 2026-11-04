@@ -14,7 +14,7 @@ import { resolveAutoCombo, blockedBillingSets, connectionBilling, billingPolicyA
 import type { BillingSet } from "../services/autoCombo.js";
 import { BUILTIN_MODEL_ALIASES } from "open-sse/services/model.js";
 import { handleChatCore, clientReceivesStream } from "open-sse/handlers/chatCore.js";
-import { KEEPALIVE_FORMATS } from "open-sse/handlers/chatCore/streamingHandler.js";
+import { KEEPALIVE_FORMATS } from "open-sse/utils/sseConstants.js";
 import { respondWithEarlyHeaders } from "open-sse/utils/earlyHeaders.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { createLimitHoldResponse, awaitLimitClear, isLimitError, allLockedError } from "open-sse/utils/limitHold.js";

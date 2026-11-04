@@ -1,8 +1,14 @@
-// Shared SSE primitives (no imports → safe for executors + stream.js)
+// Shared SSE primitives (only import-free modules → safe for executors + stream.js)
+import { FORMATS } from "../translator/formats.js";
+
 export const SSE_DONE = "data: [DONE]\n\n";
 
 // Comment line: every SSE parser ignores it, but it counts as traffic to proxies.
 export const SSE_KEEPALIVE = ": keepalive\n\n";
+
+// Client formats whose SSE parsers skip comment lines (OpenAI SDK, Anthropic SDK,
+// Codex). Everything else gets no keepalive until its parser is checked.
+export const KEEPALIVE_FORMATS = new Set([FORMATS.OPENAI, FORMATS.CLAUDE, FORMATS.OPENAI_RESPONSES]);
 
 export const SSE_HEADERS = {
   "Content-Type": "text/event-stream",

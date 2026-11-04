@@ -163,26 +163,25 @@ export const NETWORK_PATTERN = /\b(enotfound|econnrefused|econnreset|econnaborte
 // Only this much of an error message is classified; bodies can be megabytes.
 export const ERROR_CLASS_MAX_TEXT = 8 * 1024;
 
-// Anthropic error `type` by status, for an error written into a Claude stream
-// after the headers went out. Claude Code retries an in-stream error whose text
-// carries "type":"overloaded_error", so retryable statuses use that.
-export const CLAUDE_STREAM_ERROR_TYPES = {
-  400: "invalid_request_error",
-  401: "authentication_error",
-  402: "billing_error",
-  403: "permission_error",
-  404: "not_found_error",
-  413: "request_too_large",
-  default: "api_error",
-  retryable: "overloaded_error",
-};
+// A final error a client must not retry: header and value (Codex and the
+// Anthropic/OpenAI SDKs honour it).
+export const SHOULD_RETRY_HEADER = "x-should-retry";
+export const SHOULD_RETRY_NO = "false";
 
-// `response.failed` error codes for a Responses stream. Codex retries a failed
-// response with any code but a few; insufficient_quota and invalid_prompt are
-// two it gives up on.
+// Error type for a retryable error written into a Claude stream after the
+// headers went out: Claude Code retries an in-stream error whose text carries
+// "type":"overloaded_error" (it treats it as a 529).
+export const CLAUDE_RETRYABLE_STREAM_ERROR_TYPE = "overloaded_error";
+
+// `response.failed` error codes for a Responses stream (codex-rs
+// codex-api/src/sse/responses_error.rs parse_failed_response). Codex retries a
+// code it doesn't know (`retryable`) and backs off on `rateLimited`.
+// `invalid_prompt` is final and shows our message as is; `insufficient_quota`
+// would show Codex's own fixed text, losing a reset countdown. `passthrough`
+// codes from the error body have a path of their own in Codex and are kept.
 export const RESPONSES_STREAM_ERROR_CODES = {
   rateLimited: "rate_limit_exceeded",
   retryable: "server_error",
   final: "invalid_prompt",
-  quota: "insufficient_quota",
+  passthrough: ["context_length_exceeded", "usage_not_included", "server_is_overloaded", "slow_down", "invalid_prompt"],
 };
