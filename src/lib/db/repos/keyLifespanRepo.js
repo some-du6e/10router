@@ -20,10 +20,10 @@ export function keyUsageSql(windowCount) {
   return `WITH w(id, connectionId, since, until) AS (VALUES ${Array(windowCount).fill("(?, ?, ?, ?)").join(", ")})
     SELECT w.id AS id,
       SUM(u.cost) AS cost,
-      SUM(u.promptTokens) + SUM(u.completionTokens) AS tokens,
+      COALESCE(SUM(u.promptTokens), 0) + COALESCE(SUM(u.completionTokens), 0) AS tokens,
       MIN(u.timestamp) AS firstAt,
       SUM(CASE WHEN u.timestamp >= ? THEN u.cost ELSE 0 END) AS recentCost,
-      SUM(CASE WHEN u.timestamp >= ? THEN u.promptTokens + u.completionTokens ELSE 0 END) AS recentTokens
+      SUM(CASE WHEN u.timestamp >= ? THEN COALESCE(u.promptTokens, 0) + COALESCE(u.completionTokens, 0) ELSE 0 END) AS recentTokens
     FROM w CROSS JOIN usageHistory u
     WHERE u.connectionId = w.connectionId AND u.status IN ('ok', 'success')
       AND u.timestamp >= w.since AND u.timestamp <= w.until

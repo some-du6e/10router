@@ -382,6 +382,22 @@ describe("getKeyLifespans", () => {
     expect((await repo.getKeyLifespans(provider, { now: NOW + 62 * 1000 })).keys).toEqual({});
   });
 
+  it("counts a row's tokens when one of its token columns is NULL", async () => {
+    const id = `${provider}-null-tokens`;
+    const insert = (at, prompt, completion) => adapter.run(
+      `INSERT INTO usageHistory(timestamp, provider, model, connectionId, promptTokens, completionTokens, cost, status) VALUES(?, ?, 'm', ?, ?, ?, 0, 'ok')`,
+      [iso(at), provider, id, prompt, completion]
+    );
+    insert(NOW - HOUR, 100, null);
+    insert(NOW - 2 * HOUR, null, 30);
+    insert(NOW - 10 * HOUR, null, null);
+    const usage = await repo.getKeyUsageByConnection([{ id }], iso(NOW - 6 * HOUR));
+    expect(usage[id]).toMatchObject({ tokens: 130, recentTokens: 130 });
+    const none = `${provider}-no-completion`;
+    adapter.run(`INSERT INTO usageHistory(timestamp, provider, model, connectionId, promptTokens, completionTokens, cost, status) VALUES(?, ?, 'm', ?, 50, NULL, 0, 'ok')`, [iso(NOW - HOUR), provider, none]);
+    expect((await repo.getKeyUsageByConnection([{ id: none }], iso(NOW - 6 * HOUR)))[none]).toMatchObject({ tokens: 50, recentTokens: 50 });
+  });
+
   it("refreshes at once when an active connection gets a new key", async () => {
     for (const i of [1, 2, 3]) record(await addKey(`dead${i}`, { deadAt: iso(NOW - 30 * HOUR) }), { at: NOW - 40 * HOUR, cost: 100 });
     const k = await addKey("live");
