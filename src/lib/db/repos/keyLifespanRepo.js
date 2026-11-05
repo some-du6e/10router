@@ -58,10 +58,13 @@ export async function getKeyLifespans(provider, { now = Date.now() } = {}) {
   const hit = cache.get(provider);
   if (hit && hit.version === version && now - hit.ts < CACHE_TTL_MS) return hit.value;
 
-  // Each connection's current key, plus each key that died on it before it
-  // got a new one (pastKeys), which counts as a dead key of its own.
+  // Each API key connection's current key, plus each key that died on it
+  // before it got a new one (pastKeys), which counts as a dead key of its own.
+  // Only API keys get turned off automatically, so OAuth and cookie accounts
+  // have no such budget.
   const keys = [];
   for (const c of await getProviderConnections({ provider })) {
+    if (c.authType !== "apikey") continue;
     keys.push({ id: c.id, isActive: c.isActive, autoDisabledAt: c.autoDisabledAt || null, since: c.keySetAt || "" });
     (Array.isArray(c.pastKeys) ? c.pastKeys : []).forEach((past, i) => {
       if (!past?.until) return;

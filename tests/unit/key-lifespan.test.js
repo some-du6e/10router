@@ -396,6 +396,30 @@ describe("getKeyLifespans", () => {
     expect(await repo.getKeyLifespans(provider, { now: NOW })).toEqual({ estimate: null, keys: {} });
   });
 
+  it("gives OAuth and cookie accounts no estimate and doesn't count them as dead keys", async () => {
+    for (const [i, cost] of [40, 45, 50].entries()) record(await addKey(`dead${i}`, { deadAt: iso(NOW - HOUR) }), { at: NOW - 2 * HOUR, cost });
+    const k = await addKey("live");
+    const account = async (authType, name, extra = {}) => {
+      const c = await db.createProviderConnection({ provider, authType, name, email: `${name}@example.com`, accessToken: `tok-${name}`, ...extra });
+      record(c.id, { at: NOW - 3 * HOUR, cost: 30 });
+      return c.id;
+    };
+    const oauth = await account("oauth", "sub");
+    const cookie = await account("cookie", "web");
+    // Even marked as turned off automatically, they aren't samples: three of
+    // them at $500 would move the median.
+    for (const i of [1, 2, 3]) {
+      const id = await account("oauth", `gone${i}`);
+      record(id, { at: NOW - 3 * HOUR, cost: 470 });
+      await db.updateProviderConnection(id, { isActive: false, autoDisabledAt: iso(NOW - HOUR), autoDisabledReason: "401" });
+    }
+    const { estimate, keys } = await repo.getKeyLifespans(provider, { now: NOW });
+    expect(estimate).toMatchObject({ median: 45, sampleSize: 3 });
+    expect(Object.keys(keys)).toEqual([k]);
+    expect(keys).not.toHaveProperty(oauth);
+    expect(keys).not.toHaveProperty(cookie);
+  });
+
   it("caches briefly and refreshes when the provider's connections change", async () => {
     const ids = [];
     for (const i of [1, 2, 3]) {
