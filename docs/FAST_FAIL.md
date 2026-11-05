@@ -66,6 +66,15 @@ stop where over HTTP they would be retried.
 
 A limit exhaustion reached within the first 30s still gets the HTTP 400 above.
 
+Codex counts only SSE events, not `: keepalive` comments, against its stream idle
+timeout (`stream_idle_timeout_ms` in the model provider config, default 300s;
+codex-rs `codex-api/src/sse/responses.rs`). So a routing pass still busy about
+5 minutes after the early headers ends in Codex with "idle timeout waiting for
+SSE", and Codex sends the turn again (up to `stream_max_retries`, default 5),
+each time from the first model and account. If fallback can take that long,
+raise `stream_idle_timeout_ms` on the client. Claude Code has a similar limit
+(`CLAUDE_STREAM_IDLE_TIMEOUT_MS`, default 300s).
+
 Claude Code (2.1.318) retries an in-band `overloaded_error` on the stream only
 twice. At the third, or the first for a background query such as title
 generation, it logs "Error streaming, falling back to non-streaming mode" and
