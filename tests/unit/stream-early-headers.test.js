@@ -647,18 +647,26 @@ describe("handleChat with early headers", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("a JSON request's limit hold ends when the client hangs up, and retries nothing", async () => {
+  it.each([
+    ["a single model", "/v1/messages", { ...claudeBody, stream: false }, {}, 429],
+    ["a fusion combo", "/v1/chat/completions", { ...openaiBody, model: "fuse", stream: false },
+      { combos: { fuse: ["slowp/a", "nextp/b"] }, comboStrategies: { fuse: { fallbackStrategy: "fusion" } } }, 503],
+    ["a capacity adapter", "/v1/chat/completions",
+      { ...openaiBody, stream: false, messages: [{ role: "user", content: [{ type: "text", text: "hi" }, image] }] },
+      { capacityAdapter: { vision: { enabled: true, models: ["oc/mimo-v2.5-free"] } } }, 429],
+  ])("a JSON request's limit hold on %s ends when the client hangs up, and retries nothing", async (_name, path, body, settings, status) => {
     state.settings.limitHoldEnabled = true;
+    Object.assign(state.settings, settings);
     const client = new AbortController();
     const hold = alwaysLimited();
     state.creds = hold.creds;
-    const p = request("/v1/messages", { ...claudeBody, stream: false }, {}, { signal: client.signal });
+    const p = request(path, body, {}, { signal: client.signal });
     await vi.advanceTimersByTimeAsync(1_000);
     const before = hold.lookups();
     client.abort();
     await vi.advanceTimersByTimeAsync(100);
     const res = await p;
-    expect(res.status).toBe(429);
+    expect(res.status).toBe(status);
     await vi.advanceTimersByTimeAsync(10 * 60_000);
     expect(hold.lookups()).toBe(before);
     expect(vi.getTimerCount()).toBe(0);
