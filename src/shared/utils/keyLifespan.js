@@ -2,6 +2,7 @@
 // how much earlier keys of the same provider consumed before they were turned
 // off automatically. Pure functions, shared by the server (estimate) and the
 // dashboard (label).
+import { fmtCount, fmtMoney } from "./formatAmounts.js";
 
 export const LIFESPAN_MIN_DEAD_KEYS = 3;
 // Dead keys below this share of the median died of something else (a locked
@@ -96,10 +97,7 @@ export function estimateKeyLifespans(keyWindows, usage, opts = {}) {
 }
 
 function formatAmount(metric, v) {
-  if (metric === "cost") return v >= 100 ? `$${Math.round(v)}` : `$${v.toFixed(2)}`;
-  const abs = Math.abs(v);
-  const short = abs >= 1e9 ? `${(v / 1e9).toFixed(1)}B` : abs >= 1e6 ? `${(v / 1e6).toFixed(1)}M` : abs >= 1e3 ? `${(v / 1e3).toFixed(1)}K` : `${Math.round(v)}`;
-  return `${short} tokens`;
+  return metric === "cost" ? fmtMoney(v) : `${fmtCount(v)} tokens`;
 }
 
 export function formatDuration(hours) {
