@@ -76,6 +76,15 @@ describe("estimateKeyLifespans", () => {
     expect(keys.k.etaHours).toBeCloseTo(30);
   });
 
+  it("keeps a dead key at a quarter of the median or more, and drops one below it", () => {
+    const est = (costs) => estimateKeyLifespans(costs.map((_, i) => dead(`d${i}`)),
+      Object.fromEntries(costs.map((cost, i) => [`d${i}`, { cost }])), { now: NOW }).estimate;
+    // $125 is exactly a quarter of the $500 median.
+    expect(est([125, 500, 500, 600])).toMatchObject({ sampleSize: 4, excluded: 0, median: 500 });
+    // Median $500: $120 (24%) goes, $140 (28%) stays.
+    expect(est([120, 140, 500, 550, 600])).toMatchObject({ sampleSize: 4, excluded: 1, median: 525 });
+  });
+
   it("gives no estimate when the dead keys consumed nothing", () => {
     const usage = { a: { cost: 0, tokens: 0 }, b: {}, c: {} };
     expect(estimateKeyLifespans([dead("a"), dead("b"), dead("c"), live("k")], usage, { now: NOW }).estimate).toBeNull();
