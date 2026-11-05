@@ -9,8 +9,16 @@ export const WINDOW_CHUNK = 200;
 // Later than any ISO timestamp: a window that is still open.
 const OPEN = "9999";
 
+// A dead key's sums, once its window has settled (requests still in flight
+// when it died have landed), keyed by connection, window and death time: no new
+// rows can fall in it, so a cache miss only re-reads the live keys.
+export const CLOSED_SETTLE_MS = 10 * 60 * 1000;
+const CLOSED_CAP = 10000;
+
 if (!global._keyLifespanCache) global._keyLifespanCache = new Map();
 const cache = global._keyLifespanCache;
+if (!global._keyLifespanClosed) global._keyLifespanClosed = new Map();
+const closed = global._keyLifespanClosed;
 
 // Successful usage per window: a connection's rows between since and until
 // (its current key: since keySetAt, or "" for every row; a key it had before:
@@ -71,8 +79,23 @@ export async function getKeyLifespans(provider, { now = Date.now() } = {}) {
       keys.push({ id: `${c.id}#${i}`, connectionId: c.id, isActive: false, autoDisabledAt: past.until, since: past.since || "", until: past.until });
     });
   }
+  const usage = {};
+  const toRead = [];
+  const settledBefore = now - CLOSED_SETTLE_MS;
+  for (const k of keys) {
+    // Off by hand: neither a sample nor a labelled key.
+    if (k.isActive === false && !k.autoDisabledAt) continue;
+    const settled = k.isActive === false && Date.parse(k.autoDisabledAt) <= settledBefore;
+    k.memoKey = settled ? [k.connectionId || k.id, k.since, k.until || OPEN, k.autoDisabledAt].join("|") : null;
+    if (k.memoKey && closed.has(k.memoKey)) {
+      const u = closed.get(k.memoKey);
+      if (u) usage[k.id] = u;
+    } else toRead.push(k);
+  }
   const recentSince = new Date(now - LIFESPAN_RECENT_WINDOW_MS).toISOString();
-  const usage = keys.length ? await getKeyWindowUsage(keys, recentSince) : {};
+  if (toRead.length) Object.assign(usage, await getKeyWindowUsage(toRead, recentSince));
+  if (closed.size > CLOSED_CAP) closed.clear();
+  for (const k of toRead) if (k.memoKey) closed.set(k.memoKey, usage[k.id] || null);
   const value = estimateKeyLifespans(keys, usage, { now });
   // Drop expired entries so arbitrary provider= values can't grow the map.
   for (const [key, entry] of cache) if (now - entry.ts >= CACHE_TTL_MS || entry.version !== version) cache.delete(key);
@@ -82,4 +105,5 @@ export async function getKeyLifespans(provider, { now = Date.now() } = {}) {
 
 export function clearKeyLifespanCache() {
   cache.clear();
+  closed.clear();
 }

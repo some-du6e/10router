@@ -514,6 +514,73 @@ describe("getKeyLifespans", () => {
     expect(usage[ids[949]].cost).toBe(4);
   });
 
+  describe("dead keys whose usage can no longer change", () => {
+    const windowQueries = async (now) => {
+      const all = vi.spyOn(adapter, "all");
+      const result = await repo.getKeyLifespans(provider, { now });
+      const windows = all.mock.calls.filter(([sql]) => sql.startsWith("WITH w(")).flatMap(([, params]) => {
+        const out = [];
+        for (let i = 0; i + 4 <= params.length - 2; i += 4) out.push(params[i]);
+        return out;
+      });
+      all.mockRestore();
+      return { result, windows };
+    };
+
+    it("reads them once, then only the live keys and keys that died minutes ago", async () => {
+      const ids = [];
+      for (const i of [1, 2, 3]) {
+        const id = await addKey(`dead${i}`, { deadAt: iso(NOW - 2 * HOUR) });
+        record(id, { at: NOW - 3 * HOUR, cost: 100 });
+        ids.push(id);
+      }
+      const rotated = await addKey("rotated", { deadAt: iso(NOW - 5 * HOUR) });
+      record(rotated, { at: NOW - 6 * HOUR, cost: 110 });
+      await db.updateProviderConnection(rotated, { apiKey: "sk-test-rotated-NEW-0123456789" });
+      const fresh = await addKey("fresh", { deadAt: iso(NOW - 60 * 1000) });
+      record(fresh, { at: NOW - 2 * 60 * 1000, cost: 90 });
+      const k = await addKey("live");
+      record(k, { at: NOW - HOUR, cost: 20 });
+      await addKey("off-by-hand").then((id) => db.updateProviderConnection(id, { isActive: false }));
+
+      const first = await windowQueries(NOW);
+      expect(first.windows).toHaveLength(7);
+      expect(first.result.estimate).toMatchObject({ median: 100, sampleSize: 5 });
+
+      // An in-flight request on the key that just died lands late; so does one
+      // on a long-dead key, which the estimate has already settled.
+      record(fresh, { at: NOW - 30 * 1000, cost: 40 });
+      record(ids[0], { at: NOW - 3 * HOUR, cost: 1000 });
+      record(k, { at: NOW - 60 * 1000, cost: 5 });
+      const second = await windowQueries(NOW + 61 * 1000);
+      expect(second.windows.sort()).toEqual([fresh, k, rotated].sort());
+      expect(second.result.estimate).toMatchObject({ median: 100, high: 110, sampleSize: 5 });
+      expect(second.result.keys[k].used).toBe(25);
+
+      // Ten minutes after it died, the last key is read one final time, then
+      // never again.
+      const third = await windowQueries(NOW + 11 * 60 * 1000);
+      expect(third.windows.sort()).toEqual([fresh, k, rotated].sort());
+      const fourth = await windowQueries(NOW + 13 * 60 * 1000);
+      expect(fourth.windows.sort()).toEqual([k, rotated].sort());
+      expect(fourth.result.estimate).toEqual(second.result.estimate);
+    });
+
+    it("reads a key afresh when it dies again after being turned back on", async () => {
+      const ids = [];
+      for (const i of [1, 2, 3]) {
+        const id = await addKey(`dead${i}`, { deadAt: iso(NOW - 5 * HOUR) });
+        record(id, { at: NOW - 6 * HOUR, cost: 100 });
+        ids.push(id);
+      }
+      expect((await repo.getKeyLifespans(provider, { now: NOW })).estimate).toMatchObject({ median: 100 });
+      await db.updateProviderConnection(ids[0], { isActive: true });
+      record(ids[0], { at: NOW - 4 * HOUR, cost: 300 });
+      await db.updateProviderConnection(ids[0], { isActive: false, autoDisabledAt: iso(NOW - 3 * HOUR), autoDisabledReason: "403" });
+      expect((await repo.getKeyLifespans(provider, { now: NOW })).estimate).toMatchObject({ median: 100, high: 250, sampleSize: 3 });
+    });
+  });
+
   it("drops expired cache entries when it stores a new one", async () => {
     for (let i = 0; i < 50; i++) await repo.getKeyLifespans(`no-such-provider-${i}`, { now: NOW });
     expect(global._keyLifespanCache.size).toBe(50);
