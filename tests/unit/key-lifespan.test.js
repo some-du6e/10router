@@ -154,6 +154,10 @@ describe("lifespan label", () => {
     expect(lifespanLabel({ lifespan: keys.k }).text).toBe("<1% left · ~2h at current pace");
     const almost = estimateKeyLifespans(...Object.values(snowflake({ cost: 548, firstAt: iso(NOW - 30 * HOUR) })), { now: NOW });
     expect(lifespanLabel({ lifespan: almost.keys.k }).text).toBe("~1% left");
+    // 0.47% left still rounds to 0, so it reads <1% too.
+    const edge = estimateKeyLifespans(...Object.values(snowflake({ cost: 549.4, firstAt: iso(NOW - 30 * HOUR) })), { now: NOW });
+    expect(edge.keys.k.percentLeft).toBeCloseTo(0.47, 2);
+    expect(lifespanLabel({ lifespan: edge.keys.k }).text).toBe("<1% left");
   });
 
   it("formats tokens and long durations", () => {
@@ -173,6 +177,19 @@ describe("lifespan label", () => {
     expect(at("cost", 0.004)).toBe("$0.004");
     expect(at("cost", 0.000123)).toBe("$0.00012");
     expect(at("cost", 0)).toBe("$0");
+  });
+
+  it("formats short and day-and-a-half ETAs", () => {
+    const eta = (etaHours) => lifespanLabel({ lifespan: { metric: "cost", used: 1, budget: 10, low: 9, high: 11, percentLeft: 90, remaining: 9, etaHours, sampleSize: 3, excluded: 0 } }).text;
+    expect(eta(30)).toBe("~90% left · ~30h at current pace");
+    expect(eta(0.25)).toBe("~90% left · ~15m at current pace");
+    expect(eta(5 / 3600)).toBe("~90% left · ~1m at current pace");
+  });
+
+  it("gives a key past the typical budget no time-estimate note", () => {
+    const { keys } = estimateKeyLifespans(...Object.values(snowflake({ cost: 600 })), { now: NOW });
+    expect(keys.k.etaHours).toBeNull();
+    expect(lifespanLabel({ lifespan: keys.k }).title).not.toMatch(/No recent traffic/);
   });
 
   it("shows nothing without an estimate or for a key that is off", () => {
