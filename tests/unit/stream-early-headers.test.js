@@ -63,6 +63,7 @@ const fail = (status, error) => ({ success: false, status, error, response: erro
 // Resolves after `ms` of fake time, or at once with a 499 if the client signal aborts.
 function later(ms, value, signal) {
   return new Promise((resolve) => {
+    if (signal?.aborted) return resolve(fail(499, "Request aborted"));
     const t = setTimeout(() => resolve(typeof value === "function" ? value() : value), ms);
     signal?.addEventListener("abort", () => { clearTimeout(t); resolve(fail(499, "Request aborted")); }, { once: true });
   });
@@ -199,6 +200,43 @@ describe("respondWithEarlyHeaders", () => {
     expect(signal.aborted).toBe(true);
     expect((await p).status).toBe(499);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a client already gone when it's called gets run an aborted signal", async () => {
+    const client = new AbortController();
+    client.abort();
+    let signal;
+    const p = respondWithEarlyHeaders({ run: (s) => { signal = s; return later(100_000, () => sse(CLAUDE_REPLY), s); }, sourceFormat: "claude", signal: client.signal, delayMs: DELAY, keepaliveMs: KEEPALIVE });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(signal.aborted).toBe(true);
+    expect((await p).status).toBe(499);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a client that leaves mid-reply cancels the piped stream", async () => {
+    let ctrl;
+    const cancel = vi.fn();
+    const body = new ReadableStream({ start(c) { ctrl = c; }, cancel });
+    const p = respondWithEarlyHeaders({ run: () => later(40_000, () => new Response(body, { headers: SSE_HEADERS })), sourceFormat: "claude", delayMs: DELAY, keepaliveMs: KEEPALIVE });
+    await vi.advanceTimersByTimeAsync(DELAY);
+    const out = read(await p);
+    await vi.advanceTimersByTimeAsync(10_000);
+    ctrl.enqueue(enc.encode(CLAUDE_REPLY));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(out.text).toContain(CLAUDE_REPLY);
+    expect(cancel).not.toHaveBeenCalled();
+    await out.reader.cancel("gone");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cancel).toHaveBeenCalledWith("gone");
+  });
+
+  it("a failure marked x-should-retry: false is final whatever its status", async () => {
+    const reply = () => new Response("try later", { status: 503, headers: { "x-should-retry": "false" } });
+    const claude = JSON.parse(events(await earlyRun(() => later(40_000, reply), "claude"))[0].data).error;
+    expect(claude).toMatchObject({ message: "try later" });
+    expect(claude.type).not.toBe("overloaded_error");
+    const responses = JSON.parse(events(await earlyRun(() => later(40_000, reply), "openai-responses"))[0].data).response.error;
+    expect(responses.code).toBe("invalid_prompt");
   });
 
   it("cancels a reply that lands after the client left", async () => {
