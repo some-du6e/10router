@@ -1,7 +1,7 @@
 import REGISTRY from "open-sse/providers/registry/index.js";
 import { stripContextWindowSuffix } from "open-sse/services/model.js";
 import { getProviderConnections, getSettings, getModelAliases, getComboByName } from "@/lib/localDb";
-import { connectionsVersion } from "@/lib/db/repos/connectionsRepo.js";
+import { connectionsVersion } from "@/lib/db/index.js";
 
 // How a provider is paid for. Auto combos skip the sets the user blocks, so a
 // request for a free model never quietly falls back to a metered key.
