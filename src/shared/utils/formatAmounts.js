@@ -5,6 +5,7 @@
 export function fmtMoney(value) {
   const n = Number(value) || 0;
   if (n === 0) return "$0";
+  if (n < 0.01) return `$${n.toLocaleString("en-US", { maximumSignificantDigits: 2 })}`;
   if (n < 10) return `$${n.toFixed(2)}`;
   if (n < 1000) return `$${Math.round(n).toLocaleString()}`;
   if (n < 1_000_000) {

@@ -9,7 +9,6 @@ import {
   estimateKeyLifespans, lifespanLabel, percentile,
 } from "../../src/shared/utils/keyLifespan.js";
 import { withLifespans, withToggledActive } from "../../src/app/(dashboard)/dashboard/providers/utils.js";
-import { fmtCount, fmtMoney } from "../../src/app/(dashboard)/dashboard/accounts/[id]/formatters.js";
 
 const NOW = Date.parse("2026-11-04T12:00:00.000Z");
 const HOUR = 60 * 60 * 1000;
@@ -166,10 +165,14 @@ describe("lifespan label", () => {
   it("formats amounts like the account page does", () => {
     const at = (metric, used) => lifespanLabel({ lifespan: { metric, used, budget: 1e9, low: 1e9, high: 1e9, percentLeft: 50, remaining: 1, etaHours: 1, sampleSize: 3, excluded: 0 } })
       .title.match(/^Used (.*) of a typical/)[1];
-    expect(at("tokens", 2500)).toBe(`${fmtCount(2500)} tokens`);
+    expect(at("tokens", 2500)).toBe("2.5K tokens");
     expect(at("tokens", 19_600)).toBe("20K tokens");
-    expect(at("cost", 12.4)).toBe(fmtMoney(12.4));
+    expect(at("cost", 12.4)).toBe("$12");
     expect(at("cost", 3.61)).toBe("$3.61");
+    // An embeddings key's first requests cost fractions of a cent.
+    expect(at("cost", 0.004)).toBe("$0.004");
+    expect(at("cost", 0.000123)).toBe("$0.00012");
+    expect(at("cost", 0)).toBe("$0");
   });
 
   it("shows nothing without an estimate or for a key that is off", () => {
