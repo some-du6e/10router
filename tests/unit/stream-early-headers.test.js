@@ -374,6 +374,12 @@ describe("in-band errors", () => {
     expect(JSON.parse(events(text)[0].data).response.id).toBe("resp_up");
   });
 
+  it("a long failure body is cut to 2000 characters in the stream", async () => {
+    const page = `<html>${"x".repeat(5_000)}</html>`;
+    const text = await earlyRun(() => later(40_000, () => new Response(page, { status: 502 })), "claude");
+    expect(JSON.parse(events(text)[0].data).error.message).toBe(page.slice(0, 2000));
+  });
+
   it.each([
     ["a top-level message", () => Response.json({ message: "model not found" }, { status: 404 }), "model not found"],
     ["an empty body", () => new Response("", { status: 404 }), "Model not found"],
