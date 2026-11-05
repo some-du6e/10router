@@ -483,27 +483,39 @@ describe("handleChat with early headers", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("a limit hold ends when the client hangs up, and retries nothing", async () => {
-    state.settings.limitHoldEnabled = true;
-    const client = new AbortController();
+  // Every account of every provider limited, reset a minute away; counts the lookups.
+  const alwaysLimited = () => {
     let lookups = 0;
-    state.creds = () => {
-      lookups++;
-      return {
-        allRateLimited: true,
-        allLimitsExhausted: true,
-        retryAfter: new Date(Date.now() + 60_000).toISOString(),
-        retryAfterHuman: "reset after 1m",
-        lastError: "usage_limit_reached",
-        lastErrorCode: 429,
-      };
+    return {
+      lookups: () => lookups,
+      creds: () => {
+        lookups++;
+        return {
+          allRateLimited: true,
+          allLimitsExhausted: true,
+          retryAfter: new Date(Date.now() + 60_000).toISOString(),
+          retryAfterHuman: "reset after 1m",
+          lastError: "usage_limit_reached",
+          lastErrorCode: 429,
+        };
+      },
     };
-    const res = await request("/v1/messages", claudeBody, { earlyHeaders: true }, { signal: client.signal });
+  };
+
+  it.each([
+    ["a single model", "slowp/m1", null],
+  ])("a limit hold on %s ends when the client hangs up, and retries nothing", async (_name, model, combos) => {
+    state.settings.limitHoldEnabled = true;
+    if (combos) state.settings.combos = combos;
+    const client = new AbortController();
+    const hold = alwaysLimited();
+    state.creds = hold.creds;
+    const res = await request("/v1/messages", { ...claudeBody, model }, { earlyHeaders: true }, { signal: client.signal });
     expect(res.status).toBe(200);
     const out = read(res);
     await vi.advanceTimersByTimeAsync(1_000);
     expect(out.text).toContain("limit reached");
-    const before = lookups;
+    const before = hold.lookups();
     const written = out.text;
     client.abort();
     // Ends now, not at the next retry 30s+ away.
@@ -511,7 +523,24 @@ describe("handleChat with early headers", () => {
     expect(out.done).toBe(true);
     expect(out.text).toBe(written);
     await vi.advanceTimersByTimeAsync(10 * 60_000);
-    expect(lookups).toBe(before);
+    expect(hold.lookups()).toBe(before);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a JSON request's limit hold ends when the client hangs up, and retries nothing", async () => {
+    state.settings.limitHoldEnabled = true;
+    const client = new AbortController();
+    const hold = alwaysLimited();
+    state.creds = hold.creds;
+    const p = request("/v1/messages", { ...claudeBody, stream: false }, {}, { signal: client.signal });
+    await vi.advanceTimersByTimeAsync(1_000);
+    const before = hold.lookups();
+    client.abort();
+    await vi.advanceTimersByTimeAsync(100);
+    const res = await p;
+    expect(res.status).toBe(429);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(hold.lookups()).toBe(before);
     expect(vi.getTimerCount()).toBe(0);
   });
 

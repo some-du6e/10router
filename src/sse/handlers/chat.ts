@@ -163,7 +163,6 @@ interface HoldArgs {
   modelStr: string;
   provider: string;
   model?: string;
-  request: Request | null;
   signal?: AbortSignal | null;
 }
 
@@ -412,7 +411,7 @@ async function withComboLimitHold({ run, models, body, modelStr, request, apiKey
   const settings = await Promise.all(infos.map((info) => nodeSettings(info.provider || "")));
   const willStream = infos.every((info, i) => clientReceivesStream({ body, provider: info.provider, model: info.model || "", sourceFormat, clientRawRequest, credentials: settings[i] }));
   log.warn("LIMITHOLD", `combo ${modelStr}: all models rate-limited, holding`);
-  return holdUntilClear({ first, attempt: pass, willStream, sourceFormat, modelStr, provider: modelStr, request, signal });
+  return holdUntilClear({ first, attempt: pass, willStream, sourceFormat, modelStr, provider: modelStr, signal });
 }
 
 /**
@@ -442,19 +441,14 @@ async function leafModelInfos(
 }
 
 /** Wait out a limit: a narrated stream for streaming clients, a silent hang for JSON ones. */
-async function holdUntilClear({ first, attempt, willStream, sourceFormat, modelStr, provider, model, request, signal = null }: HoldArgs): Promise<Response> {
+async function holdUntilClear({ first, attempt, willStream, sourceFormat, modelStr, provider, model, signal = null }: HoldArgs): Promise<Response> {
   if (!willStream) {
-    const abort = new AbortController();
-    for (const s of [request?.signal, signal]) {
-      if (s?.aborted) abort.abort();
-      else s?.addEventListener?.("abort", () => abort.abort(), { once: true });
-    }
     const settled = await awaitLimitClear({
       retryAtMs: first.retryAtMs,
       attempt,
       provider,
       model: model || modelStr,
-      signal: abort.signal,
+      signal,
       log,
     } as Parameters<typeof awaitLimitClear>[0]) as { response?: Response } | null;
     return settled?.response || first.response;
@@ -878,7 +872,6 @@ async function routeSingleModelChat(
     modelStr,
     provider,
     model,
-    request,
     signal,
   });
 }
