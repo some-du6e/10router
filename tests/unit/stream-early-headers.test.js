@@ -128,7 +128,7 @@ beforeEach(() => {
   state.credLookups = 0;
   state.modelLookups = [];
 });
-afterEach(() => { vi.useRealTimers(); });
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 // Every event of an SSE text, parsed (comments skipped).
 function events(text) {
@@ -341,6 +341,8 @@ describe("in-band errors", () => {
 
   // openai-python's responses.stream() throws on any first event but response.created.
   it("Responses: a stream nothing opened gets response.created first, with the failure's id", () => {
+    let now = 1_700_000_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now++);
     const evs = events(dec.decode(buildEarlyErrorBytes(503, "nope", "openai-responses")));
     expect(evs.map((e) => e.event)).toEqual(["response.created", "response.failed"]);
     const [created, failed] = evs.map((e) => JSON.parse(e.data));
