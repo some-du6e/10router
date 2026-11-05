@@ -439,7 +439,7 @@ describe("getKeyLifespans", () => {
     expect((await repo.getKeyLifespans(provider, { now: NOW + 1000 })).keys[k].used).toBe(0);
     // A write that changes nothing the estimate reads leaves the cache alone.
     const v = db.connectionsVersion();
-    await db.updateProviderConnection(k, { lastError: "x" });
+    await db.updateProviderConnection(k, { lastError: "x", accessToken: "refreshed", rateLimitedUntil: iso(NOW + HOUR) });
     expect(db.connectionsVersion()).toBe(v);
   });
 

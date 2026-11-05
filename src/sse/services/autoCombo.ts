@@ -106,10 +106,8 @@ interface CatalogState {
   connectionsVersion: number;
 }
 
-// connectionsVersion() is bumped by the connections repo on every write; a
-// change makes the catalog stale. The catalog lives on globalThis too:
-// instrumentation and the route handlers are separate bundles, and the startup
-// warm has to fill the copy routes read.
+// The catalog lives on globalThis: instrumentation and the route handlers are
+// separate bundles, and the startup warm has to fill the copy routes read.
 declare global {
   var _autoComboCatalog: CatalogState | undefined;
 }

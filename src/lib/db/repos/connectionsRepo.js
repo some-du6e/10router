@@ -56,9 +56,6 @@ function applyAutoDisableTransition(existing, merged, data) {
   if (keyChanged) merged.keySetAt = new Date().toISOString();
 }
 
-// Read by sse/services/autoCombo.ts to notice its model catalog is stale.
-// Bumped on any write that changes what /v1/models lists: connections, model
-// aliases, custom and disabled models.
 export function bumpConnectionsVersion() {
   global._connectionsVersion = (global._connectionsVersion || 0) + 1;
 }
