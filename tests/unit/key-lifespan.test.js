@@ -566,6 +566,34 @@ describe("getKeyLifespans", () => {
       expect(fourth.result.estimate).toEqual(second.result.estimate);
     });
 
+    it("doesn't read the live keys while the dead keys give no estimate", async () => {
+      const dead = [];
+      for (const [i, cost] of [100, 0].entries()) {
+        const id = await addKey(`dead${i}`, { deadAt: iso(NOW - 2 * HOUR) });
+        if (cost) record(id, { at: NOW - 3 * HOUR, cost });
+        dead.push(id);
+      }
+      const k = await addKey("live");
+      for (let i = 0; i < 20; i++) record(k, { at: NOW - i * 60 * 1000, cost: 5 });
+
+      const first = await windowQueries(NOW);
+      expect(first.windows.sort()).toEqual([...dead].sort());
+      expect(first.result).toEqual({ estimate: null, keys: {} });
+
+      // A third dead key that served something makes an estimate possible.
+      const third = await addKey("dead2", { deadAt: iso(NOW - HOUR) });
+      record(third, { at: NOW - 2 * HOUR, cost: 100 });
+      const withDeadZero = await windowQueries(NOW);
+      expect(withDeadZero.windows).not.toContain(k);
+      expect(withDeadZero.result.estimate).toBeNull();
+
+      const fourth = await addKey("dead3", { deadAt: iso(NOW - HOUR) });
+      record(fourth, { at: NOW - 2 * HOUR, cost: 100 });
+      const ready = await windowQueries(NOW);
+      expect(ready.windows).toContain(k);
+      expect(ready.result.keys[k].used).toBe(100);
+    });
+
     it("reads a key afresh when it dies again after being turned back on", async () => {
       const ids = [];
       for (const i of [1, 2, 3]) {

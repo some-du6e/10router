@@ -80,12 +80,19 @@ export async function getKeyLifespans(provider, { now = Date.now() } = {}) {
     });
   }
   const usage = {};
+  const dead = [];
+  const live = [];
   const toRead = [];
   const settledBefore = now - CLOSED_SETTLE_MS;
   for (const k of keys) {
+    if (k.isActive !== false) {
+      live.push(k);
+      continue;
+    }
     // Off by hand: neither a sample nor a labelled key.
-    if (k.isActive === false && !k.autoDisabledAt) continue;
-    const settled = k.isActive === false && Date.parse(k.autoDisabledAt) <= settledBefore;
+    if (!k.autoDisabledAt) continue;
+    dead.push(k);
+    const settled = Date.parse(k.autoDisabledAt) <= settledBefore;
     k.memoKey = settled ? [k.connectionId || k.id, k.since, k.until || OPEN, k.autoDisabledAt].join("|") : null;
     if (k.memoKey && closed.has(k.memoKey)) {
       const u = closed.get(k.memoKey);
@@ -96,7 +103,11 @@ export async function getKeyLifespans(provider, { now = Date.now() } = {}) {
   if (toRead.length) Object.assign(usage, await getKeyWindowUsage(toRead, recentSince));
   if (closed.size > CLOSED_CAP) closed.clear();
   for (const k of toRead) if (k.memoKey) closed.set(k.memoKey, usage[k.id] || null);
-  const value = estimateKeyLifespans(keys, usage, { now });
+  let value = estimateKeyLifespans(dead, usage, { now });
+  if (value.estimate && live.length) {
+    Object.assign(usage, await getKeyWindowUsage(live, recentSince));
+    value = estimateKeyLifespans(keys, usage, { now });
+  }
   // Drop expired entries so arbitrary provider= values can't grow the map.
   for (const [key, entry] of cache) if (now - entry.ts >= CACHE_TTL_MS || entry.version !== version) cache.delete(key);
   cache.set(provider, { ts: now, version, value });
