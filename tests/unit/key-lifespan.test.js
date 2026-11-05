@@ -90,6 +90,13 @@ describe("estimateKeyLifespans", () => {
     expect(estimateKeyLifespans([dead("a"), dead("b"), dead("c"), live("k")], usage, { now: NOW }).estimate).toBeNull();
   });
 
+  it("gives no estimate when the median in tokens is zero", () => {
+    // Priced keys that report no tokens, plus one unpriced key: the unit is
+    // tokens and two of the three consumed none.
+    const usage = { a: { cost: 5, tokens: 0 }, b: { cost: 5, tokens: 0 }, c: { cost: 0, tokens: 100 }, k: { cost: 1, tokens: 10 } };
+    expect(estimateKeyLifespans([dead("a"), dead("b"), dead("c"), live("k")], usage, { now: NOW })).toEqual({ estimate: null, keys: {} });
+  });
+
   it("gives no estimate for an active key whose usage has no cost when the unit is cost", () => {
     const { connections, usage } = snowflake({ cost: 0, tokens: 5e6, recentCost: 0, recentTokens: 1e5 });
     const { estimate, keys } = estimateKeyLifespans([...connections, live("fresh")], usage, { now: NOW });
@@ -214,6 +221,7 @@ describe("lifespan label", () => {
     const row = withLifespans([{ id: "k", isActive: true }, { id: "other", isActive: true }], keys);
     expect(lifespanLabel(row[0]).text).toBe("~58% left");
     expect(lifespanLabel(row[1])).toBeNull();
+    expect(lifespanLabel({ isActive: true, lifespan: { ...keys.k, budget: 0 } })).toBeNull();
     expect(lifespanLabel(withToggledActive(row[0], false, { id: "k", isActive: false }))).toBeNull();
   });
 });
