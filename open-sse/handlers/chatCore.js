@@ -354,6 +354,12 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     onError: () => trackPendingRequest(model, provider, connectionId, false),
     log, provider, model, reqTag
   });
+  // A hang-up is a disconnect: the pending count goes down, nothing is a failure.
+  const endAsHangUp = () => {
+    trackPendingRequest(model, provider, connectionId, false);
+    streamController.handleComplete();
+    return clientAbortResult();
+  };
   // The client hung up: drop the upstream call.
   if (clientSignal?.aborted) streamController.abort();
   else if (clientSignal) {
@@ -413,12 +419,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     providerResponseFormat = result.responseFormat || targetFormat;
     reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody);
   } catch (error) {
-    if (isClientAbort(error, clientSignal)) {
-      // Like a disconnect: the pending count goes down, nothing is a failure.
-      trackPendingRequest(model, provider, connectionId, false);
-      streamController.handleComplete();
-      return clientAbortResult();
-    }
+    if (isClientAbort(error, clientSignal)) return endAsHangUp();
     trackPendingRequest(model, provider, connectionId, false, true);
     const failStatus = error?.name === "AbortError" ? HTTP_STATUS.CLIENT_CLOSED_REQUEST : HTTP_STATUS.BAD_GATEWAY;
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${failStatus}` }).catch(() => { });
@@ -485,9 +486,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   // Hung up during the token refresh: the 401/403 is a disconnect, not a failure.
   if (!providerResponse.ok && clientSignal?.aborted) {
     providerResponse.body?.cancel().catch(() => { });
-    trackPendingRequest(model, provider, connectionId, false);
-    streamController.handleComplete();
-    return clientAbortResult();
+    return endAsHangUp();
   }
 
   // Provider returned error
