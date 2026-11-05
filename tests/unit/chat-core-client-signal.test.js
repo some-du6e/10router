@@ -154,6 +154,19 @@ describe("handleChatCore clientSignal", () => {
     consoleError.mockRestore();
   });
 
+  it("an upstream reset while a non-stream request reads an SSE body is a 502 the account loop can fall back on", async () => {
+    upstream(() => new Response(new ReadableStream({
+      start(c) {
+        c.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"h'));
+        setTimeout(() => c.error(Object.assign(new Error("socket hang up"), { code: "ECONNRESET" })), 20);
+      },
+    }), { headers: { "content-type": "text/event-stream" } }));
+    const result = await run(new AbortController().signal, { stream: false, provider: "groq" });
+    expect(result).toMatchObject({ success: false, status: 502 });
+    expect(result.error).toContain("Upstream SSE body from groq failed: socket hang up");
+    expect(appendLogMock.mock.calls.map((c) => c[0].status)).toContain("FAILED 502");
+  });
+
   it("a hang-up mid-stream is a disconnect: upstream dropped, pending down exactly once", async () => {
     upstream(streaming);
     const client = new AbortController();
