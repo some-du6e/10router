@@ -359,6 +359,20 @@ describe("getKeyLifespans", () => {
       expect((await repo.getKeyLifespans(provider, { now: NOW })).estimate.sampleSize).toBe(3);
     });
 
+    it("adds no dead key when a dead connection is edited or turned back on without a new key", async () => {
+      const ids = [];
+      for (const [i, cost] of [100, 500, 900].entries()) {
+        const id = await addKey(`d${i}`, { deadAt: iso(NOW - 10 * HOUR) });
+        record(id, { at: NOW - 20 * HOUR, cost });
+        ids.push(id);
+      }
+      await db.updateProviderConnection(ids[0], { name: "renamed", priority: 7 });
+      await db.updateProviderConnection(ids[0], { lastError: "401", apiKey: "sk-test-d0-0123456789" });
+      await db.updateProviderConnection(ids[1], { isActive: true });
+      for (const id of ids) expect((await db.getProviderConnectionById(id)).pastKeys).toBeUndefined();
+      expect((await repo.getKeyLifespans(provider, { now: NOW })).estimate).toBeNull();
+    });
+
     it("keeps only the last 50 replaced keys", async () => {
       const x = await addKey("many");
       for (let i = 0; i < 55; i++) {
