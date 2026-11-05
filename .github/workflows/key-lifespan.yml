@@ -1,0 +1,87 @@
+name: Key lifespan
+
+on:
+  pull_request:
+    paths:
+      - "src/shared/utils/keyLifespan.js"
+      - "src/shared/utils/formatAmounts.js"
+      - "src/app/(dashboard)/dashboard/accounts/*/formatters.js"
+      - "src/lib/db/repos/keyLifespanRepo.js"
+      - "src/lib/db/repos/connectionsRepo.js"
+      - "src/lib/db/repos/usageRepo.js"
+      - "src/lib/db/schema.js"
+      - "src/lib/db/migrate.js"
+      - "src/lib/db/migrations/**"
+      - "src/lib/db/index.js"
+      - "src/sse/services/autoCombo.ts"
+      - "src/app/api/providers/lifespan/route.js"
+      - "src/app/(dashboard)/dashboard/providers/*/ConnectionRow.js"
+      - "src/app/(dashboard)/dashboard/providers/*/CustomEndpointPage.tsx"
+      - "src/app/(dashboard)/dashboard/providers/*/page.js"
+      - "src/app/(dashboard)/dashboard/providers/components/ConnectionsCard.js"
+      - "src/app/(dashboard)/dashboard/providers/utils.js"
+      - "src/app/(dashboard)/dashboard/media-providers/*/*/page.js"
+      - "tests/unit/key-lifespan.test.js"
+      - "tests/unit/db-migration-chain.test.js"
+      - "tests/unit/auto-combo.test.js"
+      - ".github/workflows/key-lifespan.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Unit test
+        working-directory: tests
+        run: >
+          ./node_modules/.bin/vitest run
+          unit/key-lifespan.test.js
+          unit/demoted-label.test.js
+          unit/auto-disable-dead-keys.test.js
+          unit/db-migration-chain.test.js
+          unit/auto-combo.test.js
+      # set-state-in-effect: the data-loading effects in ConnectionsCard.js and
+      # page.js, which predate this check (they fail on master too).
+      - name: Lint
+        run: >
+          ./node_modules/.bin/eslint --rule 'react-hooks/set-state-in-effect: off'
+          src/shared/utils/keyLifespan.js
+          src/shared/utils/formatAmounts.js
+          "src/app/(dashboard)/dashboard/accounts/[id]/formatters.js"
+          src/lib/db/repos/keyLifespanRepo.js
+          src/lib/db/schema.js
+          src/lib/db/index.js
+          src/lib/db/repos/connectionsRepo.js
+          src/sse/services/autoCombo.ts
+          src/app/api/providers/lifespan/route.js
+          "src/app/(dashboard)/dashboard/providers/[id]/ConnectionRow.js"
+          "src/app/(dashboard)/dashboard/providers/[id]/CustomEndpointPage.tsx"
+          "src/app/(dashboard)/dashboard/providers/[id]/page.js"
+          "src/app/(dashboard)/dashboard/providers/components/ConnectionsCard.js"
+          "src/app/(dashboard)/dashboard/providers/utils.js"
+          tests/unit/key-lifespan.test.js
+      # Fails only on errors in the changed .ts/.tsx files, so unrelated type errors
+      # elsewhere don't block it.
+      - name: Type check CustomEndpointPage.tsx and autoCombo.ts
+        run: |
+          set +e
+          ./node_modules/.bin/tsc --noEmit -p . > tsc.log 2>&1
+          code=$?
+          set -e
+          tail -5 tsc.log
+          if [ "$code" -gt 2 ] || ! [ -x ./node_modules/.bin/tsc ]; then echo "tsc did not run (exit $code)"; exit 1; fi
+          if grep -F "providers/[id]/CustomEndpointPage.tsx" tsc.log; then exit 1; fi
+          if grep -F "src/sse/services/autoCombo.ts" tsc.log; then exit 1; fi

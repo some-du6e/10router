@@ -104,7 +104,24 @@ describe("Schema migrations", () => {
     expect(JSON.parse(upgraded.get("SELECT data FROM settings WHERE id = 1").data)).toEqual({ tunnelEnabled: true });
     expect(JSON.parse(upgraded.get("SELECT data FROM requestDetails WHERE id = 'r1'").data)).toEqual({ id: "r1", request: { model: "m" } });
     const { BACKUPS_DIR } = await import("@/lib/db/paths.js");
-    expect(fs.readdirSync(BACKUPS_DIR).some((d) => d.includes("schema-3-to-4"))).toBe(true);
+    const { SCHEMA_VERSION } = await import("@/lib/db/schema.js");
+    expect(fs.readdirSync(BACKUPS_DIR).some((d) => d.includes(`schema-3-to-${SCHEMA_VERSION}`))).toBe(true);
+  });
+
+  it("backs up a v4 DB before building the key lifespan index", async () => {
+    const { getAdapter } = await import("@/lib/db/driver.js");
+    const db = await getAdapter();
+    db.exec("DROP INDEX IF EXISTS idx_uh_conn_ok");
+    db.run("UPDATE _meta SET value = '4' WHERE key IN ('schemaVersion', 'backupSchemaVersion')");
+    db.close?.();
+
+    delete global._dbAdapter;
+    vi.resetModules();
+    const { getAdapter: restart } = await import("@/lib/db/driver.js");
+    const upgraded = await restart();
+    expect(upgraded.all("PRAGMA index_list(usageHistory)").map((i) => i.name)).toContain("idx_uh_conn_ok");
+    const { BACKUPS_DIR } = await import("@/lib/db/paths.js");
+    expect(fs.readdirSync(BACKUPS_DIR).some((d) => d.includes("schema-4-to-"))).toBe(true);
   });
 
   it("leaves unreadable settings in place when removing token saver settings", async () => {

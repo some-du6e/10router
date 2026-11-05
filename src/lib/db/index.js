@@ -19,7 +19,7 @@ export {
   createProviderConnection, updateProviderConnection,
   deleteProviderConnection, deleteProviderConnectionsByProvider,
   reorderProviderConnections, cleanupProviderConnections,
-  AUTH_DEMOTE_PREFIX, getAuthDemoteKey,
+  AUTH_DEMOTE_PREFIX, getAuthDemoteKey, connectionsVersion,
 } from "./repos/connectionsRepo.js";
 
 // Provider nodes
@@ -73,6 +73,9 @@ export {
   saveRequestUsage, getUsageHistory, getUsageStats, getChartData,
   appendRequestLog, getRecentLogs, getConnectionValue, getConnectionDetail,
 } from "./repos/usageRepo.js";
+
+// Key lifespan estimate
+export { getKeyLifespans } from "./repos/keyLifespanRepo.js";
 
 // Request details
 export {

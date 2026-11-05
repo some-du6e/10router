@@ -34,3 +34,18 @@ export function withToggledActive(connection, isActive, saved) {
 export function connectionsToTest(connections) {
   return connections.filter((c) => c.isActive !== false);
 }
+
+// Per-key lifespan estimates for a provider ({} when there are none or the
+// request fails: the rows then show no estimate).
+export async function fetchKeyLifespans(providerId) {
+  try {
+    const res = await fetch(`/api/providers/lifespan?provider=${encodeURIComponent(providerId)}`, { cache: "no-store" });
+    return res.ok ? (await res.json()).keys || {} : {};
+  } catch {
+    return {};
+  }
+}
+
+export function withLifespans(connections, keys) {
+  return connections.map((c) => ({ ...c, lifespan: keys?.[c.id] || null }));
+}

@@ -1,0 +1,100 @@
+name: Key lifespan E2E
+
+on:
+  pull_request:
+    paths:
+      - ".github/e2e/key-lifespan/**"
+      - "src/shared/utils/keyLifespan.js"
+      - "src/shared/utils/formatAmounts.js"
+      - "src/lib/db/repos/keyLifespanRepo.js"
+      - "src/lib/db/repos/connectionsRepo.js"
+      - "src/lib/db/repos/usageRepo.js"
+      - "src/lib/db/schema.js"
+      - "src/lib/db/migrate.js"
+      - "src/lib/db/migrations/**"
+      - "src/lib/db/index.js"
+      - "src/lib/db/driver.js"
+      - "scripts/resolve-src-alias.mjs"
+      - "src/proxy.js"
+      - "src/dashboardGuard.js"
+      - "src/sse/services/autoCombo.ts"
+      - "src/app/api/providers/lifespan/route.js"
+      - "src/app/(dashboard)/dashboard/providers/*/ConnectionRow.js"
+      - "src/app/(dashboard)/dashboard/providers/*/CustomEndpointPage.tsx"
+      - "src/app/(dashboard)/dashboard/providers/*/page.js"
+      - "src/app/(dashboard)/dashboard/providers/components/ConnectionsCard.js"
+      - "src/app/(dashboard)/dashboard/providers/utils.js"
+      - "src/app/(dashboard)/dashboard/media-providers/*/*/page.js"
+      - ".github/workflows/key-lifespan-e2e.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATA_DIR: /tmp/10router-e2e-data
+      INITIAL_PASSWORD: e2e-password-not-secret
+      JWT_SECRET: e2e-jwt-secret-not-secret
+      API_KEY_SECRET: e2e-api-key-secret
+      MACHINE_ID_SALT: e2e-salt
+      NEXT_TELEMETRY_DISABLED: "1"
+      BASE: http://127.0.0.1:20127
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: bun install --ignore-scripts
+      - name: Build
+        run: npm run build
+      - name: Seed database
+        run: |
+          mkdir -p "$DATA_DIR"
+          node --experimental-loader=./scripts/resolve-src-alias.mjs .github/e2e/key-lifespan/seed.mjs
+      - name: Start app
+        run: |
+          nohup npm run start > "$RUNNER_TEMP/server.log" 2>&1 &
+          for i in $(seq 1 90); do
+            if curl -fsS "$BASE/api/health" > /dev/null 2>&1; then echo "up after ${i}s"; exit 0; fi
+            sleep 1
+          done
+          echo "server did not come up"; cat "$RUNNER_TEMP/server.log"; exit 1
+      - name: API checks
+        run: |
+          set -e
+          out="$RUNNER_TEMP/api"; mkdir -p "$out"
+          curl -sS -c "$out/jar" -H 'content-type: application/json' \
+            -d "{\"password\":\"$INITIAL_PASSWORD\"}" "$BASE/api/auth/login" -o "$out/login.json" -w 'login status %{http_code}\n'
+          cat "$out/login.json"; echo
+          curl -sS -b "$out/jar" "$BASE/api/providers/lifespan?provider=openai-compatible-e2e-alpha" -o "$out/alpha.json" -w 'alpha status %{http_code}\n'
+          curl -sS -b "$out/jar" "$BASE/api/providers/lifespan?provider=openai-compatible-e2e-beta" -o "$out/beta.json" -w 'beta status %{http_code}\n'
+          unauth=$(curl -sS -o "$out/unauth.json" -w '%{http_code}' "$BASE/api/providers/lifespan?provider=openai-compatible-e2e-alpha")
+          echo "unauthenticated status $unauth: $(cat "$out/unauth.json")"
+          echo "=== alpha body ==="; cat "$out/alpha.json"; echo
+          echo "=== beta body ==="; cat "$out/beta.json"; echo
+          node .github/e2e/key-lifespan/check-api.mjs "$out/alpha.json" "$out/beta.json" "$unauth"
+      - name: Install Playwright
+        run: |
+          mkdir -p "$RUNNER_TEMP/pw" && cd "$RUNNER_TEMP/pw"
+          npm init -y > /dev/null
+          npm install playwright@1 > /dev/null
+          ./node_modules/.bin/playwright install --with-deps chromium
+      - name: UI checks
+        run: |
+          cp .github/e2e/key-lifespan/ui.mjs "$RUNNER_TEMP/pw/ui.mjs"
+          cd "$RUNNER_TEMP/pw" && node ui.mjs "$BASE" "$RUNNER_TEMP/screenshots"
+      - name: Server log
+        if: always()
+        run: tail -200 "$RUNNER_TEMP/server.log" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: key-lifespan-e2e-screenshots
+          path: ${{ runner.temp }}/screenshots
+          if-no-files-found: warn
