@@ -414,6 +414,17 @@ describe("handleChat with early headers", () => {
     expect((await p).status).toBe(503);
   });
 
+  // chatCore streams a body without `stream` unless the client asks for JSON.
+  it("a request that leaves stream out is never committed early", async () => {
+    state.core = (args) => later(40_000, fail(503, "overloaded"), args.clientSignal);
+    const { stream: _stream, ...noStream } = claudeBody;
+    const p = request("/v1/messages", noStream, { earlyHeaders: true }, { headers: { accept: "application/json" } });
+    await vi.advanceTimersByTimeAsync(80_000);
+    const res = await p;
+    expect(res.status).toBe(503);
+    expect(res.headers.get("Content-Type")).toContain("application/json");
+  });
+
   it("a format without keepalives on /v1/chat/completions is never committed early", async () => {
     state.core = (args) => later(40_000, fail(503, "overloaded"), args.clientSignal);
     const gemini = { model: "slowp/m1", stream: true, contents: [{ role: "user", parts: [{ text: "hi" }] }] };
