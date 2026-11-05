@@ -5,6 +5,7 @@ on:
     paths:
       - ".github/e2e/key-lifespan/**"
       - "src/shared/utils/keyLifespan.js"
+      - "src/shared/utils/formatAmounts.js"
       - "src/lib/db/repos/keyLifespanRepo.js"
       - "src/lib/db/repos/connectionsRepo.js"
       - "src/lib/db/repos/usageRepo.js"
