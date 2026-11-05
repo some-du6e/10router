@@ -496,6 +496,17 @@ describe("handleChat with early headers", () => {
     expect(state.markCalls).toHaveLength(0);
   });
 
+  it("a hang-up after a failed account tries no other account", async () => {
+    const client = new AbortController();
+    state.core = () => fail(503, "overloaded");
+    // The client leaves while the first account is being locked.
+    state.onMark = () => client.abort();
+    const res = await request("/v1/messages", claudeBody, { earlyHeaders: true }, { signal: client.signal });
+    expect(res.status).toBe(499);
+    expect(state.coreCalls.map((c) => c.connectionId)).toEqual(["c1"]);
+    expect(state.credLookups).toBe(1);
+  });
+
   const image = { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } };
   it.each([
     ["a fusion combo's panel", { combos: { fuse: ["slowp/a", "nextp/b"] }, comboStrategies: { fuse: { fallbackStrategy: "fusion" } } }, "fuse", ["slowp", "nextp"]],
