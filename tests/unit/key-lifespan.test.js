@@ -617,16 +617,29 @@ describe("getKeyLifespans", () => {
       await db.updateProviderConnection(ids[0], { isActive: false, autoDisabledAt: iso(NOW - 3 * HOUR), autoDisabledReason: "403" });
       expect((await repo.getKeyLifespans(provider, { now: NOW })).estimate).toMatchObject({ median: 100, high: 250, sampleSize: 3 });
     });
+
+    it("keeps the memo over the cap when a refresh has nothing new to store", async () => {
+      for (const i of [1, 2, 3]) {
+        const id = await addKey(`dead${i}`, { deadAt: iso(NOW - 2 * HOUR) });
+        record(id, { at: NOW - 3 * HOUR, cost: 100 });
+      }
+      expect((await windowQueries(NOW)).windows).toHaveLength(3);
+      for (let i = 0; i < repo.CLOSED_CAP; i++) global._keyLifespanClosed.set(`other-${i}`, null);
+      expect((await windowQueries(NOW + 61 * 1000)).windows).toEqual([]);
+      const third = await windowQueries(NOW + 122 * 1000);
+      expect(third.windows).toEqual([]);
+      expect(third.result.estimate).toMatchObject({ median: 100 });
+    });
   });
 
-  it("clears the settled dead keys' sums once there are more than the cap", async () => {
+  it("clears the settled dead keys' sums when storing new ones would go over the cap", async () => {
     const ids = [];
     for (const i of [1, 2, 3]) {
       const id = await addKey(`dead${i}`, { deadAt: iso(NOW - 2 * HOUR) });
       record(id, { at: NOW - 3 * HOUR, cost: 100 });
       ids.push(id);
     }
-    for (let i = 0; i <= repo.CLOSED_CAP; i++) global._keyLifespanClosed.set(`stale-${i}`, null);
+    for (let i = 0; i < repo.CLOSED_CAP - 2; i++) global._keyLifespanClosed.set(`stale-${i}`, null);
     expect((await repo.getKeyLifespans(provider, { now: NOW })).estimate).toMatchObject({ median: 100 });
     expect(global._keyLifespanClosed.size).toBe(3);
     expect([...global._keyLifespanClosed.keys()].map((k) => k.split("|")[0]).sort()).toEqual([...ids].sort());

@@ -101,8 +101,9 @@ export async function getKeyLifespans(provider, { now = Date.now() } = {}) {
   }
   const recentSince = new Date(now - LIFESPAN_RECENT_WINDOW_MS).toISOString();
   if (toRead.length) Object.assign(usage, await getKeyWindowUsage(toRead, recentSince));
-  if (closed.size > CLOSED_CAP) closed.clear();
-  for (const k of toRead) if (k.memoKey) closed.set(k.memoKey, usage[k.id] || null);
+  const toStore = toRead.filter((k) => k.memoKey);
+  if (toStore.length && closed.size + toStore.length > CLOSED_CAP) closed.clear();
+  for (const k of toStore) closed.set(k.memoKey, usage[k.id] || null);
   let value = estimateKeyLifespans(dead, usage, { now });
   if (value.estimate && live.length) {
     Object.assign(usage, await getKeyWindowUsage(live, recentSince));
