@@ -294,6 +294,14 @@ describe("in-band errors", () => {
     const text = await earlyRun(() => later(40_000, body), "openai-responses");
     expect(JSON.parse(events(text)[0].data).response.error).toEqual({ type: "stream_error", code: "invalid_prompt", message: "too long" });
   });
+
+  it.each([
+    ["a top-level message", () => Response.json({ message: "model not found" }, { status: 404 }), "model not found"],
+    ["an empty body", () => new Response("", { status: 404 }), "Model not found"],
+  ])("a failed body with %s is read like any upstream error", async (_name, reply, message) => {
+    const text = await earlyRun(() => later(40_000, reply), "claude");
+    expect(JSON.parse(events(text)[0].data).error.message).toBe(message);
+  });
 });
 
 describe("handleChat with early headers", () => {

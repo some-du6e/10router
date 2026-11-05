@@ -13,6 +13,7 @@ import {
   SHOULD_RETRY_HEADER, SHOULD_RETRY_NO, DEFAULT_ERROR_MESSAGES,
 } from "../config/errorConfig.js";
 import { buildStreamErrorBytes } from "./streamHelpers.js";
+import { parseUpstreamError } from "./error.js";
 import { formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { SSE_HEADERS_CORS, SSE_KEEPALIVE } from "./sseConstants.js";
 
@@ -52,16 +53,6 @@ export function buildEarlyErrorBytes(status, message, sourceFormat, { retryable 
   return buildStreamErrorBytes(status, message, FORMATS.OPENAI);
 }
 
-async function failureMessage(response) {
-  const text = await response.text().catch(() => "");
-  let message = text;
-  try {
-    const err = JSON.parse(text)?.error;
-    message = (typeof err?.message === "string" && err.message) || (typeof err === "string" && err) || text;
-  } catch { /* plain-text body */ }
-  return String(message || `request failed (${response.status})`).slice(0, MAX_MESSAGE);
-}
-
 // Bytes that end a committed stream for a routing result that isn't a stream.
 // A JSON success can't land here: chatCore already replays one as the client's
 // stream, so an ok non-stream reply is one it couldn't replay.
@@ -70,7 +61,7 @@ async function terminalBytes(response, sourceFormat) {
     response.body?.cancel().catch(() => {});
     return buildEarlyErrorBytes(HTTP_STATUS.BAD_GATEWAY, "upstream reply was not a stream", sourceFormat);
   }
-  return buildEarlyErrorBytes(response.status, await failureMessage(response), sourceFormat, {
+  return buildEarlyErrorBytes(response.status, (await parseUpstreamError(response)).message.slice(0, MAX_MESSAGE), sourceFormat, {
     retryable: isRetryableFailure(response.status, response.headers),
   });
 }
