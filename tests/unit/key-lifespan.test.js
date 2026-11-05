@@ -579,6 +579,8 @@ describe("getKeyLifespans", () => {
       const first = await windowQueries(NOW);
       expect(first.windows.sort()).toEqual([...dead].sort());
       expect(first.result).toEqual({ estimate: null, keys: {} });
+      // Both are settled, the one that served nothing too: not read again.
+      expect((await windowQueries(NOW + 61 * 1000)).windows).toEqual([]);
 
       // A third dead key that served something makes an estimate possible.
       const third = await addKey("dead2", { deadAt: iso(NOW - HOUR) });
@@ -607,6 +609,19 @@ describe("getKeyLifespans", () => {
       await db.updateProviderConnection(ids[0], { isActive: false, autoDisabledAt: iso(NOW - 3 * HOUR), autoDisabledReason: "403" });
       expect((await repo.getKeyLifespans(provider, { now: NOW })).estimate).toMatchObject({ median: 100, high: 250, sampleSize: 3 });
     });
+  });
+
+  it("clears the settled dead keys' sums once there are more than the cap", async () => {
+    const ids = [];
+    for (const i of [1, 2, 3]) {
+      const id = await addKey(`dead${i}`, { deadAt: iso(NOW - 2 * HOUR) });
+      record(id, { at: NOW - 3 * HOUR, cost: 100 });
+      ids.push(id);
+    }
+    for (let i = 0; i <= repo.CLOSED_CAP; i++) global._keyLifespanClosed.set(`stale-${i}`, null);
+    expect((await repo.getKeyLifespans(provider, { now: NOW })).estimate).toMatchObject({ median: 100 });
+    expect(global._keyLifespanClosed.size).toBe(3);
+    expect([...global._keyLifespanClosed.keys()].map((k) => k.split("|")[0]).sort()).toEqual([...ids].sort());
   });
 
   it("drops expired cache entries when it stores a new one", async () => {

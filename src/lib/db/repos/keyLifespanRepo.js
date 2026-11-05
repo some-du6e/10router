@@ -13,7 +13,7 @@ const OPEN = "9999";
 // when it died have landed), keyed by connection, window and death time: no new
 // rows can fall in it, so a cache miss only re-reads the live keys.
 export const CLOSED_SETTLE_MS = 10 * 60 * 1000;
-const CLOSED_CAP = 10000;
+export const CLOSED_CAP = 10000;
 
 if (!global._keyLifespanCache) global._keyLifespanCache = new Map();
 const cache = global._keyLifespanCache;
