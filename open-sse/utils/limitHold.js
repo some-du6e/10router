@@ -233,9 +233,10 @@ export async function awaitLimitClear({ retryAtMs, attempt, provider, model, sig
  * @param {number} options.retryAtMs - epoch ms the provider says the limit resets
  * @param {function} options.attempt - re-runs the request; resolves to the account-loop result
  * @param {object} options.log
+ * @param {AbortSignal} [options.signal] - the client's hang-up signal; the hold ends when it fires
  * @returns {Response} streaming response that starts with the banner
  */
-export function createLimitHoldResponse({ sourceFormat, model, provider, retryAtMs, attempt, log, timing }) {
+export function createLimitHoldResponse({ sourceFormat, model, provider, retryAtMs, attempt, log, timing, signal = null }) {
   const { keepaliveMs, minWaitMs, recheckMs } = { ...DEFAULT_TIMING, ...(timing || {}) };
   const encoder = new TextEncoder();
   const state = initState(sourceFormat);
@@ -258,6 +259,14 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
 
   const stream = new ReadableStream({
     async start(controller) {
+      // The client may have left before the hold was built, or leave during it
+      // without the body being cancelled: end it rather than wait on no one.
+      if (signal?.aborted) {
+        stop();
+        controller.close();
+        return;
+      }
+      signal?.addEventListener?.("abort", stop, { once: true });
       const write = (text) => {
         if (cancelled) return;
         try {
@@ -277,6 +286,7 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
 
       const sleep = (ms) =>
         new Promise((resolve) => {
+          if (abortController.signal.aborted) return resolve();
           wakeTimer = setTimeout(resolve, ms);
           abortController.signal.addEventListener("abort", () => {
             if (wakeTimer) clearTimeout(wakeTimer);

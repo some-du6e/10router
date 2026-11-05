@@ -1,4 +1,5 @@
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
+import { SHOULD_RETRY_HEADER, SHOULD_RETRY_NO } from "open-sse/config/errorConfig.js";
 import { formatAccountLimitMessage } from "./accountFailureSummary.js";
 
 // Only final, confirmed limit exhaustion is terminal. Keep upstream statuses
@@ -16,7 +17,7 @@ export function finalizeRoutingError(response, { clientTool = null, routingFailu
   headers.delete("content-length");
   headers.delete("content-encoding");
   headers.set("content-type", "text/plain; charset=utf-8");
-  headers.set("x-should-retry", "false");
+  headers.set(SHOULD_RETRY_HEADER, SHOULD_RETRY_NO);
   headers.set("x-10router-upstream-status", String(response.status));
   if (retryAfter) headers.set("x-10router-retry-after", retryAfter);
   response.body?.cancel().catch(() => {});

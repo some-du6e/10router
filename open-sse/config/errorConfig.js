@@ -162,3 +162,24 @@ export const TIMEOUT_PATTERN = /\b(timed out|etimedout|und_err_(connect|headers|
 export const NETWORK_PATTERN = /\b(enotfound|econnrefused|econnreset|econnaborted|ehostunreach|enetunreach|eai_again|epipe|und_err_socket|socket hang up|other side closed|fetch failed)\b/;
 // Only this much of an error message is classified; bodies can be megabytes.
 export const ERROR_CLASS_MAX_TEXT = 8 * 1024;
+
+// A final error a client must not retry: header and value (Codex and the
+// Anthropic/OpenAI SDKs honour it).
+export const SHOULD_RETRY_HEADER = "x-should-retry";
+export const SHOULD_RETRY_NO = "false";
+
+// Error type for a retryable error written into a Claude stream after the
+// headers went out: Claude Code retries an in-stream error whose text carries
+// "type":"overloaded_error" (it treats it as a 529).
+export const CLAUDE_RETRYABLE_STREAM_ERROR_TYPE = "overloaded_error";
+
+// `response.failed` error codes for a Responses stream (codex-rs
+// codex-api/src/sse/responses_error.rs parse_failed_response). Codex retries a
+// code it doesn't know (`retryable`) and backs off on `rateLimited`.
+// `invalid_prompt` is final and shows our message as is; `insufficient_quota`
+// would show Codex's own fixed text, losing a reset countdown.
+export const RESPONSES_STREAM_ERROR_CODES = {
+  rateLimited: "rate_limit_exceeded",
+  retryable: "server_error",
+  final: "invalid_prompt",
+};

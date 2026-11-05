@@ -8,7 +8,7 @@ import { refreshWithRetry } from "../services/tokenRefresh.js";
 import { createRequestLogger } from "../utils/requestLogger.js";
 import { getModelTargetFormat, getModelSupportedFormats, getModelStrip, getModelUpstreamId, getModelType, PROVIDER_ID_TO_ALIAS } from "../config/providerModels.js";
 import { PROVIDERS } from "../config/providers.js";
-import { createErrorResult, parseUpstreamError, formatProviderError } from "../utils/error.js";
+import { createErrorResult, parseUpstreamError, formatProviderError, isClientAbort, clientAbortResult } from "../utils/error.js";
 import { classifyError, classifyThrownError } from "../utils/errorClass.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { handleBypassRequest } from "../utils/bypassHandler.js";
@@ -109,7 +109,28 @@ export function clientReceivesStream({ body, provider, model, sourceFormat, clie
   return body.stream !== false;
 }
 
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onBetasRejected, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, sourceFormatOverride, providerThinking }) {
+/**
+ * One attempt at one account. `clientSignal` aborts when the client hangs up.
+ * While the attempt waits on the upstream, that aborts the upstream call (the
+ * executor's catch then settles the attempt). Once a stream is returned it is a
+ * disconnect instead, which ends the stream's bookkeeping the way a cancelled
+ * body does. The listener comes off the signal (shared by every attempt of the
+ * request) once the attempt is over: on a failure or a reply that isn't a
+ * stream. A stream keeps it until it ends.
+ */
+export async function handleChatCore(args) {
+  const hangUp = { onAbort: null, streaming: false };
+  let result = null;
+  try {
+    result = await runChatCore(args, hangUp);
+    return result;
+  } finally {
+    hangUp.streaming = !!result?.success && (result.response?.headers?.get?.("content-type") || "").includes("text/event-stream");
+    if (hangUp.onAbort && !hangUp.streaming) args.clientSignal?.removeEventListener?.("abort", hangUp.onAbort);
+  }
+}
+
+async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onBetasRejected, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, sourceFormatOverride, providerThinking, clientSignal = null }, hangUp) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -333,6 +354,18 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     onError: () => trackPendingRequest(model, provider, connectionId, false),
     log, provider, model, reqTag
   });
+  // A hang-up is a disconnect: the pending count goes down, nothing is a failure.
+  const endAsHangUp = () => {
+    trackPendingRequest(model, provider, connectionId, false);
+    streamController.handleComplete();
+    return clientAbortResult();
+  };
+  // The client hung up: drop the upstream call.
+  if (clientSignal?.aborted) streamController.abort();
+  else if (clientSignal) {
+    hangUp.onAbort = () => (hangUp.streaming ? streamController.handleDisconnect("client_closed") : streamController.abort());
+    clientSignal.addEventListener("abort", hangUp.onAbort, { once: true });
+  }
 
   const proxyOptions = {
     connectionProxyEnabled: credentials?.providerSpecificData?.connectionProxyEnabled === true,
@@ -386,6 +419,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     providerResponseFormat = result.responseFormat || targetFormat;
     reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody);
   } catch (error) {
+    if (isClientAbort(error, clientSignal)) return endAsHangUp();
     trackPendingRequest(model, provider, connectionId, false, true);
     const failStatus = error?.name === "AbortError" ? HTTP_STATUS.CLIENT_CLOSED_REQUEST : HTTP_STATUS.BAD_GATEWAY;
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${failStatus}` }).catch(() => { });
@@ -403,7 +437,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
     if (error?.name === "AbortError") {
       streamController.handleError(error);
-      return createErrorResult(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
+      return clientAbortResult();
     }
     const errMsg = formatProviderError(error ?? {}, provider, model, HTTP_STATUS.BAD_GATEWAY);
     if (log?.errorLine) {
@@ -449,6 +483,12 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     }
   }
 
+  // Hung up during the token refresh: the 401/403 is a disconnect, not a failure.
+  if (!providerResponse.ok && clientSignal?.aborted) {
+    providerResponse.body?.cancel().catch(() => { });
+    return endAsHangUp();
+  }
+
   // Provider returned error
   if (!providerResponse.ok) {
     trackPendingRequest(model, provider, connectionId, false, true);
@@ -474,7 +514,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     return createErrorResult(statusCode, errMsg, resetsAtMs);
   }
 
-  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqTag, log };
+  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqTag, log, clientSignal };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = () => trackPendingRequest(model, provider, connectionId, false);
 
