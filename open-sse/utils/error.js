@@ -115,7 +115,7 @@ export function isClientAbort(error, clientSignal) {
   return error?.name === "AbortError" && clientSignal?.aborted === true;
 }
 
-/** The result of an attempt the client hung up on; the account loop turns it into its client-gone result. */
+/** The result of an attempt the client hung up on. */
 export function clientAbortResult() {
   return createErrorResult(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
 }
