@@ -17,7 +17,21 @@ If any reset is unknown, the countdown is omitted. Per-account reasons remain in
 The original final status and retry delay are retained in
 `x-10router-upstream-status` and `x-10router-retry-after` headers.
 
-### After early stream headers
+Temporary outages, mixed limit/outage failures, and interrupted streams retain normal
+retry behavior. Claude and other clients retain their existing HTTP status and retry
+headers, unless the stream's headers already went out (below). Codex request and
+stream retry limits are not changed.
+
+Limit classification is stored with each model's cooldown, so an error on another
+model cannot change its meaning. Existing cooldowns without this metadata keep
+normal retries until the router records a fresh result. Timed-out or empty fusion
+panel responses also remain unconfirmed and retryable.
+
+The existing **Wait out rate limits** setting and per-key hold overrides still work.
+When the existing hold path waits, this change does not turn that response into a
+terminal error. Combo routing retains its existing fallback behavior.
+
+## After early stream headers
 
 A streaming request with no upstream answer after `STREAM_EARLY_HEADERS_MS` (30s)
 already has its 200 and SSE headers, so the final failure can't be an HTTP 400.
@@ -51,19 +65,6 @@ without `Retry-After` is retried where over HTTP it would stop, and 401/403/404
 stop where over HTTP they would be retried.
 
 A limit exhaustion reached within the first 30s still gets the HTTP 400 above.
-
-Temporary outages, mixed limit/outage failures, and interrupted streams retain normal
-retry behavior. Claude and other clients retain their existing HTTP status and retry
-headers. Codex request and stream retry limits are not changed.
-
-Limit classification is stored with each model's cooldown, so an error on another
-model cannot change its meaning. Existing cooldowns without this metadata keep
-normal retries until the router records a fresh result. Timed-out or empty fusion
-panel responses also remain unconfirmed and retryable.
-
-The existing **Wait out rate limits** setting and per-key hold overrides still work.
-When the existing hold path waits, this change does not turn that response into a
-terminal error. Combo routing retains its existing fallback behavior.
 
 ## Verification
 
