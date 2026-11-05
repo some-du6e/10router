@@ -64,10 +64,16 @@ describe("estimateKeyLifespans", () => {
   });
 
   it("falls back to tokens when a dead key has no cost", () => {
-    const usage = { a: { cost: 0, tokens: 1000 }, b: { cost: 3, tokens: 2000 }, c: { tokens: 3000 }, k: { cost: 1, tokens: 500 } };
+    const usage = {
+      a: { cost: 0, tokens: 1000 }, b: { cost: 3, tokens: 2000 }, c: { tokens: 3000 },
+      k: { cost: 1, tokens: 500, recentCost: 1, recentTokens: 300, firstAt: iso(NOW - 30 * HOUR) },
+    };
     const { estimate, keys } = estimateKeyLifespans([dead("a"), dead("b"), dead("c"), live("k")], usage, { now: NOW });
     expect(estimate).toMatchObject({ metric: "tokens", median: 2000, low: 1500, high: 2500 });
     expect(keys.k).toMatchObject({ metric: "tokens", used: 500, remaining: 1500 });
+    // The pace is in tokens too: 300 over the 6h window.
+    expect(keys.k.ratePerHour).toBeCloseTo(50);
+    expect(keys.k.etaHours).toBeCloseTo(30);
   });
 
   it("gives no estimate when the dead keys consumed nothing", () => {
