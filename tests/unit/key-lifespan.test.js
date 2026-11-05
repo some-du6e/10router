@@ -232,7 +232,7 @@ describe("getKeyLifespans", () => {
     record(k, { at: NOW - 1 * HOUR, cost: 500, status: "error" });
     const idle = await addKey("idle");
 
-    const usage = await repo.getKeyUsageByConnection([...deadIds, k].map((id) => ({ id })), iso(NOW - 6 * HOUR));
+    const usage = await repo.getKeyWindowUsage([...deadIds, k].map((id) => ({ id })), iso(NOW - 6 * HOUR));
     expect(usage[deadIds[0]]).toEqual({ cost: 400, tokens: 220, firstAt: iso(NOW - 40 * HOUR), recentCost: 0, recentTokens: 0 });
     expect(usage[k]).toMatchObject({ cost: 150, recentCost: 50 });
 
@@ -391,11 +391,11 @@ describe("getKeyLifespans", () => {
     insert(NOW - HOUR, 100, null);
     insert(NOW - 2 * HOUR, null, 30);
     insert(NOW - 10 * HOUR, null, null);
-    const usage = await repo.getKeyUsageByConnection([{ id }], iso(NOW - 6 * HOUR));
+    const usage = await repo.getKeyWindowUsage([{ id }], iso(NOW - 6 * HOUR));
     expect(usage[id]).toMatchObject({ tokens: 130, recentTokens: 130 });
     const none = `${provider}-no-completion`;
     adapter.run(`INSERT INTO usageHistory(timestamp, provider, model, connectionId, promptTokens, completionTokens, cost, status) VALUES(?, ?, 'm', ?, 50, NULL, 0, 'ok')`, [iso(NOW - HOUR), provider, none]);
-    expect((await repo.getKeyUsageByConnection([{ id: none }], iso(NOW - 6 * HOUR)))[none]).toMatchObject({ tokens: 50, recentTokens: 50 });
+    expect((await repo.getKeyWindowUsage([{ id: none }], iso(NOW - 6 * HOUR)))[none]).toMatchObject({ tokens: 50, recentTokens: 50 });
   });
 
   it("refreshes at once when an active connection gets a new key", async () => {
@@ -420,7 +420,7 @@ describe("getKeyLifespans", () => {
     record(ids[420], { at: NOW - 10 * HOUR, cost: 3 });
     record(ids[949], { at: NOW - HOUR, cost: 4 });
     const all = vi.spyOn(adapter, "all");
-    const usage = await repo.getKeyUsageByConnection(ids.map((id) => ({ id })), iso(NOW - 6 * HOUR));
+    const usage = await repo.getKeyWindowUsage(ids.map((id) => ({ id })), iso(NOW - 6 * HOUR));
     const calls = all.mock.calls.filter(([sql]) => sql.startsWith("WITH w("));
     all.mockRestore();
     expect(calls.length).toBeGreaterThan(1);

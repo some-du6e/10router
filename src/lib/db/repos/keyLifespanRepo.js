@@ -31,7 +31,7 @@ export function keyUsageSql(windowCount) {
 }
 
 // windows: [{ id, connectionId?, since?, until? }]; connectionId defaults to id.
-export async function getKeyUsageByConnection(windows, recentSince) {
+export async function getKeyWindowUsage(windows, recentSince) {
   const db = await getAdapter();
   const out = {};
   for (let i = 0; i < windows.length; i += WINDOW_CHUNK) {
@@ -52,12 +52,11 @@ export async function getKeyUsageByConnection(windows, recentSince) {
  * numbers, never connection fields. Cached briefly per provider; a change to
  * the provider's connections (toggle, new key, auto-disable) refreshes it.
  */
-export async function getKeyLifespans(provider, opts = {}) {
+export async function getKeyLifespans(provider, { now = Date.now() } = {}) {
   if (!provider) return { estimate: null, keys: {} };
-  const now = opts.now ?? Date.now();
   const version = connectionsVersion();
   const hit = cache.get(provider);
-  if (!opts.fresh && hit && hit.version === version && now - hit.ts < CACHE_TTL_MS) return hit.value;
+  if (hit && hit.version === version && now - hit.ts < CACHE_TTL_MS) return hit.value;
 
   // Each connection's current key, plus each key that died on it before it
   // got a new one (pastKeys), which counts as a dead key of its own.
@@ -70,7 +69,7 @@ export async function getKeyLifespans(provider, opts = {}) {
     });
   }
   const recentSince = new Date(now - LIFESPAN_RECENT_WINDOW_MS).toISOString();
-  const usage = keys.length ? await getKeyUsageByConnection(keys, recentSince) : {};
+  const usage = keys.length ? await getKeyWindowUsage(keys, recentSince) : {};
   const value = estimateKeyLifespans(keys, usage, { now });
   // Drop expired entries so arbitrary provider= values can't grow the map.
   for (const [key, entry] of cache) if (now - entry.ts >= CACHE_TTL_MS || entry.version !== version) cache.delete(key);

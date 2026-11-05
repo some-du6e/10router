@@ -26,20 +26,20 @@ export function percentile(sorted, p) {
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
 /**
- * @param {Array<{id: string, isActive?: boolean, autoDisabledAt?: string|null}>} connections
+ * @param {Array<{id: string, isActive?: boolean, autoDisabledAt?: string|null}>} keyWindows
+ *   one per key: a connection's current key, or a key it had before
  * @param {Record<string, {cost?: number, tokens?: number, recentCost?: number, recentTokens?: number, firstAt?: string|null}>} usage
- *   per connectionId, successful requests only
- * @param {{ now?: number, windowMs?: number }} [opts]
+ *   per key window id, successful requests only; recent* cover LIFESPAN_RECENT_WINDOW_MS
+ * @param {{ now?: number }} [opts]
  * @returns {{ estimate: null | { metric: "cost"|"tokens", median: number, low: number, high: number, sampleSize: number, excluded: number }, keys: Record<string, object> }}
  */
-export function estimateKeyLifespans(connections, usage, opts = {}) {
+export function estimateKeyLifespans(keyWindows, usage, opts = {}) {
   const now = opts.now ?? Date.now();
-  const windowMs = opts.windowMs ?? LIFESPAN_RECENT_WINDOW_MS;
   const of = (id) => usage?.[id] || {};
 
   // A dead key that never served anything says nothing about the budget, and
   // would flip the unit to tokens or pull the median to zero.
-  const dead = (connections || []).filter((c) => c.isActive === false && c.autoDisabledAt
+  const dead = (keyWindows || []).filter((c) => c.isActive === false && c.autoDisabledAt
     && (num(of(c.id).cost) > 0 || num(of(c.id).tokens) > 0));
   if (dead.length < LIFESPAN_MIN_DEAD_KEYS) return { estimate: null, keys: {} };
 
@@ -64,7 +64,7 @@ export function estimateKeyLifespans(connections, usage, opts = {}) {
   };
 
   const keys = {};
-  for (const c of connections) {
+  for (const c of keyWindows || []) {
     if (c.isActive === false) continue;
     const u = of(c.id);
     // Served tokens with no cost: its models aren't priced, so its spend is
@@ -73,7 +73,8 @@ export function estimateKeyLifespans(connections, usage, opts = {}) {
     const used = consumed(u);
     const recent = num(metric === "cost" ? u.recentCost : u.recentTokens);
     const firstMs = u.firstAt ? Date.parse(u.firstAt) : NaN;
-    const spanStart = Number.isFinite(firstMs) ? Math.max(now - windowMs, firstMs) : now - windowMs;
+    const windowStart = now - LIFESPAN_RECENT_WINDOW_MS;
+    const spanStart = Number.isFinite(firstMs) ? Math.max(windowStart, firstMs) : windowStart;
     const spanMs = Math.max(now - spanStart, LIFESPAN_MIN_RATE_SPAN_MS);
     const ratePerHour = recent > 0 ? recent / (spanMs / HOUR_MS) : null;
     const remaining = Math.max(0, estimate.median - used);
