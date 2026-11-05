@@ -63,11 +63,13 @@ jobs:
           "src/app/(dashboard)/dashboard/accounts/[id]/formatters.js"
           src/lib/db/repos/keyLifespanRepo.js
           src/lib/db/schema.js
+          src/lib/db/index.js
           src/lib/db/repos/connectionsRepo.js
           src/sse/services/autoCombo.ts
           src/app/api/providers/lifespan/route.js
           "src/app/(dashboard)/dashboard/providers/[id]/ConnectionRow.js"
           "src/app/(dashboard)/dashboard/providers/[id]/CustomEndpointPage.tsx"
+          "src/app/(dashboard)/dashboard/providers/[id]/page.js"
           "src/app/(dashboard)/dashboard/providers/components/ConnectionsCard.js"
           "src/app/(dashboard)/dashboard/providers/utils.js"
           tests/unit/key-lifespan.test.js
