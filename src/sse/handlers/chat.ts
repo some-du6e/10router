@@ -16,7 +16,7 @@ import { BUILTIN_MODEL_ALIASES } from "open-sse/services/model.js";
 import { handleChatCore, clientReceivesStream } from "open-sse/handlers/chatCore.js";
 import { KEEPALIVE_FORMATS } from "open-sse/utils/sseConstants.js";
 import { respondWithEarlyHeaders } from "open-sse/utils/earlyHeaders.js";
-import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
+import { errorResponse, unavailableResponse, clientAbortResult } from "open-sse/utils/error.js";
 import { createLimitHoldResponse, awaitLimitClear, isLimitError, allLockedError } from "open-sse/utils/limitHold.js";
 import { resolveLimitHold } from "../services/limitHoldConfig.js";
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
@@ -128,7 +128,7 @@ interface SingleModelOptions {
   routingFailures?: RoutingFailure[];
   // Set inside an auto combo: connections billed this way are never used.
   blockedBilling?: Set<BillingSet> | null;
-  // Aborted when a client whose headers went out early hangs up.
+  // Aborted when the client hangs up.
   signal?: AbortSignal | null;
 }
 
@@ -483,7 +483,7 @@ async function handleSingleModelChat(
   { allowHold = true, routingFailures = [], blockedBilling = null, signal = null }: SingleModelOptions = {},
 ): Promise<Response> {
   // The client is gone: a combo's later models have no one to answer.
-  if (signal?.aborted) return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
+  if (signal?.aborted) return clientAbortResult().response;
   // An unfinished fusion panel is not proof of limit exhaustion. Successful
   // panels with empty/unparseable content must also remain retryable.
   const unconfirmed: RoutingFailure = { limited: false };
@@ -637,13 +637,6 @@ async function routeSingleModelChat(
     }
   }
 
-  const clientGone = (): PassResult => ({
-    success: false,
-    status: HTTP_STATUS.CLIENT_CLOSED_REQUEST,
-    error: "Request aborted",
-    response: errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted"),
-  });
-
   // Rate-limit hold: when every account is limited we can keep the client's
   // stream open and wait for the reset instead of returning an error.
   const limitHold = allowHold ? await resolveLimitHold(apiKey) : { enabled: false, onPinned: false };
@@ -663,7 +656,7 @@ async function routeSingleModelChat(
 
   while (true) {
     // The client is gone: try no more accounts, and lock none for its abort.
-    if (signal?.aborted) return clientGone();
+    if (signal?.aborted) return clientAbortResult();
     // A pin is a preference, not a requirement: getProviderCredentials ignores a
     // connection that is excluded, model-locked or rate-limited and falls back to
     // the configured strategy, so a dead pinned account never wedges a session.
@@ -772,7 +765,7 @@ async function routeSingleModelChat(
     } as Parameters<typeof handleChatCore>[0])) as ChatCoreResult;
 
     if (result.success) return result;
-    if (signal?.aborted) return clientGone();
+    if (signal?.aborted) return clientAbortResult();
 
     // Refresh Antigravity quota before deciding how long to lock the account.
     let quotaResetMs: number | null = null;

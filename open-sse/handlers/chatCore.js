@@ -436,7 +436,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
 
     if (error?.name === "AbortError") {
       streamController.handleError(error);
-      return createErrorResult(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
+      return clientAbortResult();
     }
     const errMsg = formatProviderError(error ?? {}, provider, model, HTTP_STATUS.BAD_GATEWAY);
     if (log?.errorLine) {
