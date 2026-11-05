@@ -504,6 +504,7 @@ describe("handleChat with early headers", () => {
 
   it.each([
     ["a single model", "slowp/m1", null],
+    ["a combo", "duo", { duo: ["slowp/a", "nextp/b"] }],
   ])("a limit hold on %s ends when the client hangs up, and retries nothing", async (_name, model, combos) => {
     state.settings.limitHoldEnabled = true;
     if (combos) state.settings.combos = combos;
