@@ -482,6 +482,14 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     }
   }
 
+  // Hung up during the token refresh: the 401/403 is a disconnect, not a failure.
+  if (!providerResponse.ok && clientSignal?.aborted) {
+    providerResponse.body?.cancel().catch(() => { });
+    trackPendingRequest(model, provider, connectionId, false);
+    streamController.handleComplete();
+    return clientAbortResult();
+  }
+
   // Provider returned error
   if (!providerResponse.ok) {
     trackPendingRequest(model, provider, connectionId, false, true);

@@ -5,15 +5,16 @@
 // and down once whichever way it ends.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { executeMock, trackPendingMock, appendLogMock, saveDetailMock } = vi.hoisted(() => ({
+const { executeMock, executor, trackPendingMock, appendLogMock, saveDetailMock } = vi.hoisted(() => ({
   executeMock: vi.fn(),
+  executor: {},
   trackPendingMock: vi.fn(),
   appendLogMock: vi.fn(() => Promise.resolve()),
   saveDetailMock: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("../../open-sse/executors/index.js", () => ({
-  getExecutor: vi.fn(() => ({ execute: executeMock, noAuth: true })),
+  getExecutor: vi.fn(() => executor),
 }));
 vi.mock("../../open-sse/utils/requestLogger.js", () => ({
   createRequestLogger: vi.fn(async () => ({
@@ -102,7 +103,12 @@ describe("handleChatCore clientSignal", () => {
   beforeAll(async () => {
     ({ handleChatCore } = await import("../../open-sse/handlers/chatCore.js"));
   }, 30000);
-  beforeEach(() => { executeMock.mockReset(); trackPendingMock.mockClear(); appendLogMock.mockClear(); saveDetailMock.mockClear(); });
+  beforeEach(() => {
+    executeMock.mockReset();
+    for (const k of Object.keys(executor)) delete executor[k];
+    Object.assign(executor, { execute: executeMock, noAuth: true });
+    trackPendingMock.mockClear(); appendLogMock.mockClear(); saveDetailMock.mockClear();
+  });
 
   it("an already-aborted signal aborts the upstream call before it starts", async () => {
     upstream(failed);
@@ -165,6 +171,23 @@ describe("handleChatCore clientSignal", () => {
     expect(result).toMatchObject({ success: false, status: 502 });
     expect(result.error).toContain("Upstream SSE body from groq failed: socket hang up");
     expect(appendLogMock.mock.calls.map((c) => c[0].status)).toContain("FAILED 502");
+  });
+
+  it("a hang-up during the 401 token refresh is a quiet 499, not a FAILED 401", async () => {
+    const client = new AbortController();
+    executor.noAuth = false;
+    executor.refreshCredentials = vi.fn(async () => {
+      client.abort();
+      return { accessToken: "fresh" };
+    });
+    upstream(() => new Response(JSON.stringify({ error: { message: "expired" } }), { status: 401, headers: { "content-type": "application/json" } }), 10);
+    const consoleError = vi.spyOn(console, "error");
+    const result = await run(client.signal);
+    expect(executor.refreshCredentials).toHaveBeenCalledTimes(1);
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expectQuietAbort(result, consoleError);
+    expect(pendingCalls()).toEqual([true, false]);
+    consoleError.mockRestore();
   });
 
   it("a hang-up mid-stream is a disconnect: upstream dropped, pending down exactly once", async () => {
