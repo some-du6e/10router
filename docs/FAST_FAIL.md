@@ -66,6 +66,15 @@ stop where over HTTP they would be retried.
 
 A limit exhaustion reached within the first 30s still gets the HTTP 400 above.
 
+Claude Code (2.1.318) retries an in-band `overloaded_error` on the stream only
+twice. At the third, or the first for a background query such as title
+generation, it logs "Error streaming, falling back to non-streaming mode" and
+sends the turn again with `stream: false`. That request gets no early headers,
+so behind Cloudflare a routing pass that is still that slow gets a 524 again,
+and after its HTTP retries Claude Code shows `API Error: 524`. Set
+`CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1` on the client to keep it retrying
+on the stream.
+
 ## Verification
 
 With root dependencies installed and `codex` on `PATH`, run:
