@@ -9,7 +9,7 @@ import { SSE_KEEPALIVE } from "../../open-sse/utils/sseConstants.js";
 import { errorResponse } from "../../open-sse/utils/error.js";
 import { createLimitHoldResponse } from "../../open-sse/utils/limitHold.js";
 
-const state = { settings: {}, accounts: [], exhausted: null, creds: null, core: null, coreCalls: [], markCalls: [], modelLookups: [] };
+const state = { settings: {}, accounts: [], exhausted: null, creds: null, core: null, coreCalls: [], markCalls: [], onMark: null, credLookups: 0, modelLookups: [] };
 
 vi.mock("@/lib/localDb", () => ({ getSettings: async () => state.settings }));
 vi.mock("@/lib/db/repos/apiKeysRepo.js", () => ({ getApiKeyLimitHold: async () => null }));
@@ -19,10 +19,14 @@ vi.mock("@/sse/services/auth.js", async () => {
     ...actual,
     extractApiKey: () => "sk-test",
     isValidApiKey: async () => true,
-    getProviderCredentials: async (provider, exclude) => state.creds?.(provider, exclude)
-      ?? state.accounts.find((a) => !exclude.has(a.connectionId)) ?? state.exhausted ?? null,
+    getProviderCredentials: async (provider, exclude) => {
+      state.credLookups++;
+      return state.creds?.(provider, exclude)
+        ?? state.accounts.find((a) => !exclude.has(a.connectionId)) ?? state.exhausted ?? null;
+    },
     markAccountUnavailable: async (...args) => {
       state.markCalls.push(args);
+      state.onMark?.();
       return { shouldFallback: true, cooldownMs: 1000 };
     },
     clearAccountError: async () => {},
@@ -120,6 +124,8 @@ beforeEach(() => {
   state.creds = null;
   state.coreCalls = [];
   state.markCalls = [];
+  state.onMark = null;
+  state.credLookups = 0;
   state.modelLookups = [];
 });
 afterEach(() => { vi.useRealTimers(); });
@@ -487,6 +493,27 @@ describe("handleChat with early headers", () => {
     expect(state.coreCalls.map((c) => c.modelInfo.provider)).toEqual(["slowp"]);
     // Not even looked up: no search enrichment or account pick for them.
     expect(state.modelLookups.filter((m) => m === "nextp/b" || m === "lastp/c")).toEqual([]);
+    expect(state.markCalls).toHaveLength(0);
+  });
+
+  const image = { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } };
+  it.each([
+    ["a fusion combo's panel", { combos: { fuse: ["slowp/a", "nextp/b"] }, comboStrategies: { fuse: { fallbackStrategy: "fusion" } } }, "fuse", ["slowp", "nextp"]],
+    ["a capacity adapter", { capacityAdapter: { vision: { enabled: true, models: ["oc/mimo-v2.5-free"] } } }, "slowp/m1", ["oc"]],
+    ["a nested fusion combo's panel", { combos: { outer: ["inner"], inner: ["slowp/a", "nextp/b"] }, comboStrategies: { inner: { fallbackStrategy: "fusion" } } }, "outer", ["slowp", "nextp"]],
+    ["a nested fallback combo", { combos: { outer: ["inner"], inner: ["slowp/a", "nextp/b"] } }, "outer", ["slowp"]],
+  ])("client leaves during %s: its upstream is aborted, nothing else is called", async (_name, settings, model, providers) => {
+    Object.assign(state.settings, settings);
+    const client = new AbortController();
+    state.core = (args) => later(100_000, () => ok(CLAUDE_REPLY), args.clientSignal);
+    const body = { ...openaiBody, model, messages: [{ role: "user", content: [{ type: "text", text: "hi" }, image] }] };
+    const p = request("/v1/chat/completions", body, { earlyHeaders: true }, { signal: client.signal });
+    await vi.advanceTimersByTimeAsync(10_000);
+    client.abort();
+    await vi.advanceTimersByTimeAsync(200_000);
+    await p;
+    expect(state.coreCalls.map((c) => c.modelInfo.provider)).toEqual(providers);
+    expect(state.coreCalls.every((c) => c.clientSignal?.aborted === true)).toBe(true);
     expect(state.markCalls).toHaveLength(0);
   });
 
