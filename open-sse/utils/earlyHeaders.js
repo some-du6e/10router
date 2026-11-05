@@ -12,7 +12,7 @@ import {
   CLAUDE_RETRYABLE_STREAM_ERROR_TYPE, RESPONSES_STREAM_ERROR_CODES,
   SHOULD_RETRY_HEADER, SHOULD_RETRY_NO, DEFAULT_ERROR_MESSAGES,
 } from "../config/errorConfig.js";
-import { buildStreamErrorBytes } from "./streamHelpers.js";
+import { buildStreamErrorBytes, formatSSE } from "./streamHelpers.js";
 import { parseUpstreamError } from "./error.js";
 import { formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { SSE_HEADERS_CORS, SSE_KEEPALIVE } from "./sseConstants.js";
@@ -37,9 +37,10 @@ function isRetryableFailure(status, headers = null) {
 /**
  * The final error of a stream whose headers already went out, in the client's
  * own format: Claude `event: error`, Responses `response.failed`, OpenAI
- * `data: {"error":…}` + [DONE].
+ * `data: {"error":…}` + [DONE]. A Responses stream nothing has opened yet
+ * (`opened` false) gets a `response.created` first, as the real API sends.
  */
-export function buildEarlyErrorBytes(status, message, sourceFormat, { retryable = isRetryableFailure(status) } = {}) {
+export function buildEarlyErrorBytes(status, message, sourceFormat, { retryable = isRetryableFailure(status), opened = false } = {}) {
   if (sourceFormat === FORMATS.CLAUDE) {
     return buildStreamErrorBytes(status, message, FORMATS.CLAUDE, retryable ? { type: CLAUDE_RETRYABLE_STREAM_ERROR_TYPE } : {});
   }
@@ -48,7 +49,12 @@ export function buildEarlyErrorBytes(status, message, sourceFormat, { retryable 
     const code = retryable
       ? (status === HTTP_STATUS.RATE_LIMITED ? codes.rateLimited : codes.retryable)
       : codes.final;
-    return encoder.encode(formatIncompleteOpenAIResponsesStreamFailure({ code, message }));
+    const id = `resp_${Date.now()}`;
+    const created = opened ? "" : formatSSE({
+      event: "response.created",
+      data: { type: "response.created", response: { id, object: "response", created_at: Math.floor(Date.now() / 1000), status: "in_progress", output: [] } },
+    }, FORMATS.OPENAI_RESPONSES);
+    return encoder.encode(created + formatIncompleteOpenAIResponsesStreamFailure({ id, code, message }));
   }
   return buildStreamErrorBytes(status, message, FORMATS.OPENAI);
 }
@@ -112,6 +118,7 @@ function earlyStream({ pending, sourceFormat, abort, keepaliveMs, log }) {
   let interval = null;
   let cancelled = false;
   let reader = null;
+  let piped = false;
   let tail = null;
   const stopKeepalive = () => {
     if (interval) { clearInterval(interval); interval = null; }
@@ -161,13 +168,13 @@ function earlyStream({ pending, sourceFormat, abort, keepaliveMs, log }) {
         if (cancelled) return;
         log?.warn?.("STREAM", `stream failed after early headers: ${error?.message || error}`);
         try {
-          controller.enqueue(buildEarlyErrorBytes(HTTP_STATUS.BAD_GATEWAY, DEFAULT_ERROR_MESSAGES[HTTP_STATUS.BAD_GATEWAY], sourceFormat));
+          controller.enqueue(buildEarlyErrorBytes(HTTP_STATUS.BAD_GATEWAY, DEFAULT_ERROR_MESSAGES[HTTP_STATUS.BAD_GATEWAY], sourceFormat, { opened: piped }));
           controller.close();
         } catch { /* already closed */ }
         return;
       }
       if (chunk.done) controller.close();
-      else controller.enqueue(chunk.value);
+      else { piped = true; controller.enqueue(chunk.value); }
     },
     cancel(reason) {
       cancelled = true;

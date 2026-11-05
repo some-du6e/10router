@@ -138,6 +138,8 @@ function events(text) {
   }));
 }
 const errorOf = (bytes) => JSON.parse(events(dec.decode(bytes))[0].data);
+// The response.failed payload of a Responses stream's text.
+const failedOf = (text) => JSON.parse(events(text).find((e) => e.event === "response.failed").data);
 
 describe("respondWithEarlyHeaders", () => {
   it("delay 0 returns run's response untouched, whenever it comes", async () => {
@@ -241,7 +243,7 @@ describe("respondWithEarlyHeaders", () => {
     const claude = JSON.parse(events(await earlyRun(() => later(40_000, reply), "claude"))[0].data).error;
     expect(claude).toMatchObject({ message: "try later" });
     expect(claude.type).not.toBe("overloaded_error");
-    const responses = JSON.parse(events(await earlyRun(() => later(40_000, reply), "openai-responses"))[0].data).response.error;
+    const responses = failedOf(await earlyRun(() => later(40_000, reply), "openai-responses")).response.error;
     expect(responses.code).toBe("invalid_prompt");
   });
 
@@ -322,10 +324,8 @@ describe("in-band errors", () => {
   });
 
   it("Responses: response.failed, with codes Codex retries or gives up on", () => {
-    const code = (status, opts) => errorOf(buildEarlyErrorBytes(status, "nope", "openai-responses", opts)).response.error.code;
-    const [ev] = events(dec.decode(buildEarlyErrorBytes(503, "nope", "openai-responses")));
-    expect(ev.event).toBe("response.failed");
-    expect(JSON.parse(ev.data)).toMatchObject({ type: "response.failed", response: { status: "failed", error: { message: "nope" } } });
+    const code = (status, opts) => failedOf(dec.decode(buildEarlyErrorBytes(status, "nope", "openai-responses", opts))).response.error.code;
+    expect(failedOf(dec.decode(buildEarlyErrorBytes(503, "nope", "openai-responses")))).toMatchObject({ type: "response.failed", response: { status: "failed", error: { message: "nope" } } });
     expect(code(503)).toBe("server_error");
     expect(code(409)).toBe("server_error");
     expect(code(429)).toBe("rate_limit_exceeded");
@@ -336,7 +336,42 @@ describe("in-band errors", () => {
   it("a failed body's message reaches the Responses error; its code comes from the status", async () => {
     const body = Response.json({ error: { message: "too long", code: "bad_request" } }, { status: 400 });
     const text = await earlyRun(() => later(40_000, body), "openai-responses");
-    expect(JSON.parse(events(text)[0].data).response.error).toEqual({ type: "stream_error", code: "invalid_prompt", message: "too long" });
+    expect(failedOf(text).response.error).toEqual({ type: "stream_error", code: "invalid_prompt", message: "too long" });
+  });
+
+  // openai-python's responses.stream() throws on any first event but response.created.
+  it("Responses: a stream nothing opened gets response.created first, with the failure's id", () => {
+    const evs = events(dec.decode(buildEarlyErrorBytes(503, "nope", "openai-responses")));
+    expect(evs.map((e) => e.event)).toEqual(["response.created", "response.failed"]);
+    const [created, failed] = evs.map((e) => JSON.parse(e.data));
+    expect(created).toMatchObject({ type: "response.created", response: { status: "in_progress" } });
+    expect(created.response.id).toBe(failed.response.id);
+    expect(events(dec.decode(buildEarlyErrorBytes(503, "nope", "openai-responses", { opened: true }))).map((e) => e.event)).toEqual(["response.failed"]);
+  });
+
+  it.each([
+    ["a failed reply", () => later(40_000, () => new Response("down", { status: 503 }))],
+    ["a thrown error", () => later(40_000, () => Promise.reject(new Error("boom")))],
+    ["a stream that errors on its first read", () => later(40_000, () => new Response(new ReadableStream({ pull(c) { c.error(new Error("reset")); } }), { headers: SSE_HEADERS }))],
+  ])("Responses: %s after early headers opens with response.created", async (_name, run) => {
+    const text = await earlyRun(run, "openai-responses");
+    expect(events(text).map((e) => e.event)).toEqual(["response.created", "response.failed"]);
+  });
+
+  it("Responses: a stream that errors after its own events gets only response.failed", async () => {
+    const opened = 'event: response.created\ndata: {"type":"response.created","response":{"id":"resp_up"}}\n\n';
+    let sent = false;
+    const body = new ReadableStream({
+      pull(c) {
+        if (sent) return c.error(new Error("reset"));
+        sent = true;
+        c.enqueue(enc.encode(opened));
+      },
+    });
+    const text = await earlyRun(() => later(40_000, () => new Response(body, { headers: SSE_HEADERS })), "openai-responses");
+    expect(events(text).map((e) => e.event)).toEqual(["response.created", "response.failed"]);
+    expect(text.startsWith(SSE_KEEPALIVE) && text.includes(opened)).toBe(true);
+    expect(JSON.parse(events(text)[0].data).response.id).toBe("resp_up");
   });
 
   it.each([
@@ -447,7 +482,7 @@ describe("handleChat with early headers", () => {
     const out = read(await p);
     await vi.advanceTimersByTimeAsync(20_000);
     await out.pump;
-    const err = JSON.parse(events(out.text)[0].data).response.error;
+    const err = failedOf(out.text).response.error;
     // Codex shows invalid_prompt's message as is and doesn't retry it.
     expect(err.code).toBe("invalid_prompt");
     expect(err.message).toMatch(/^All your accounts have hit their limits\. Next account resets in 2 hours/);

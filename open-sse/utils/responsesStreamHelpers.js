@@ -35,13 +35,14 @@ export function buildAbortedResponsesTerminalBytes() {
 export function formatIncompleteOpenAIResponsesStreamFailure({
   code = "stream_disconnected",
   message = "stream closed before response.completed",
+  id = `resp_${Date.now()}`,
 } = {}) {
   return formatSSE({
     event: "response.failed",
     data: {
       type: "response.failed",
       response: {
-        id: `resp_${Date.now()}`,
+        id,
         status: "failed",
         error: {
           type: "stream_error",
