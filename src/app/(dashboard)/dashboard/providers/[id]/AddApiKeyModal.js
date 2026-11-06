@@ -59,7 +59,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
   // A pasted Claude Code config or env lines fill the key and, on custom
   // endpoints, the key's own URL. Returns false for a plain key.
   const applyPastedConfig = (text) => {
-    const apiType = isCompatible ? (isAnthropic ? "anthropic" : "openai") : undefined;
+    const apiType = isCompatible ? (isAnthropic ? "anthropic" : "openai") : provider === "openai" ? "openai" : undefined;
     const parsed = parsePastedKeyConfig(text, { endpointUrl: nodeBaseUrl, keyUrl: !!isCompatible, apiType });
     if (!parsed) return false;
     const urlField = parsed.baseUrl || parsed.sameAsEndpoint ? { baseUrl: parsed.baseUrl } : {};
@@ -72,7 +72,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
   };
   const apiKeyFieldProps = {
     value: formData.apiKey,
-    // An <input> drops a paste's line breaks, so read the clipboard text itself.
+    // An <input> loses a paste's line breaks, so read the clipboard text itself.
     onPaste: (e) => {
       if (applyPastedConfig(e.clipboardData?.getData("text") || "")) e.preventDefault();
     },

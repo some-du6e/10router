@@ -172,6 +172,10 @@ await builtinKey.waitFor({ state: "visible", timeout: 30000 });
 await paste(builtinKey, snippet);
 check("built-in paste: hint shown", await hintShown("Filled from pasted config: key. Ignored 2 other variables."));
 check("built-in paste: key field holds only the key", (await builtinKey.inputValue()) === "sk-xxx");
+// A .env with both APIs' keys on the OpenAI page: the OpenAI key.
+await paste(builtinKey, "ANTHROPIC_API_KEY=sk-a\nOPENAI_API_KEY=sk-o");
+check("built-in paste both APIs: hint shown", await hintShown("Filled from pasted config: key. Ignored 1 other variable."));
+check("built-in paste both APIs: OpenAI key", (await builtinKey.inputValue()) === "sk-o");
 await page.screenshot({ path: `${outDir}/paste-config-built-in.png`, fullPage: true });
 
 await browser.close();
