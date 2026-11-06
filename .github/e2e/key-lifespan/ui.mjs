@@ -70,6 +70,63 @@ await expectLabel("openai", { activeName: "openai-active", deadName: "openai-dea
 await open("/dashboard/media-providers/embedding/voyage-ai", "voyage-ai", "voyage-active", "voyage-media-provider");
 await expectLabel("voyage", { activeName: "voyage-active", deadName: "voyage-dead", text: "~50% left" });
 
+// Add key dialog (AddApiKeyModal.js): a pasted Claude Code config fills the
+// key and, when its URL isn't the endpoint's own, the key's endpoint URL.
+const keyField = () => page.getByPlaceholder("Paste a key");
+async function openAddKey(pagePath, providerId, activeName, shot) {
+  await open(pagePath, providerId, activeName, shot);
+  await page.getByRole("button", { name: "Add key" }).first().click();
+  await keyField().waitFor({ state: "visible", timeout: 30000 });
+}
+
+// A real paste of the multi-line snippet. An <input> drops line breaks, so the
+// dialog reads the clipboard text from the paste event.
+const snippet = JSON.stringify({
+  env: {
+    ANTHROPIC_BASE_URL: "https://example.com/api",
+    ANTHROPIC_AUTH_TOKEN: "sk-xxx",
+    CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1",
+  },
+}, null, 2);
+await openAddKey("/dashboard/providers/openai-compatible-e2e-beta", "openai-compatible-e2e-beta", "beta-active", "beta-before-paste");
+await keyField().evaluate((el, text) => {
+  el.focus();
+  const clipboardData = new DataTransfer();
+  clipboardData.setData("text/plain", text);
+  el.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
+}, snippet);
+const pasteHint = page.getByText("Filled from pasted config: key, endpoint URL. Ignored 1 other variable.");
+await pasteHint.waitFor({ state: "visible", timeout: 10000 }).catch(() => {});
+check("paste: hint shown", await pasteHint.isVisible());
+check("paste: key field holds only the key", (await keyField().inputValue()) === "sk-xxx");
+const keyUrlField = page.getByPlaceholder("https://e2eb.e2e.invalid/v1");
+const keyUrlShown = await keyUrlField.isVisible();
+check("paste: per-key URL revealed", keyUrlShown);
+if (keyUrlShown) check("paste: per-key URL gets /v1", (await keyUrlField.inputValue()) === "https://example.com/api/v1", await keyUrlField.inputValue());
+await page.screenshot({ path: `${outDir}/paste-config-filled.png`, fullPage: true });
+const saved = page.waitForResponse((r) => r.url().endsWith("/api/providers") && r.request().method() === "POST", { timeout: 30000 });
+await page.locator('form button[type="submit"]').click();
+check("paste: key saved", (await saved).ok());
+const list = await (await context.request.get("/api/providers")).json();
+const added = (list.connections || []).filter((c) => c.provider === "openai-compatible-e2e-beta" && c.providerSpecificData?.ownBaseUrl);
+check("paste: saved key has its own URL", added.length === 1 && added[0].providerSpecificData.baseUrl === "https://example.com/api/v1",
+  JSON.stringify(added.map((c) => c.providerSpecificData?.baseUrl)));
+
+// The endpoint's own URL, put in at once (a drop, or a browser that didn't fire paste): no per-key URL.
+await openAddKey("/dashboard/providers/openai-compatible-e2e-alpha", "openai-compatible-e2e-alpha", "alpha-active", "alpha-before-paste");
+await keyField().fill(JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://e2ea.e2e.invalid/", ANTHROPIC_AUTH_TOKEN: "sk-xxx" } }));
+const sameHint = page.getByText("Filled from pasted config: key. Its URL is this endpoint's own, so the key uses that.");
+await sameHint.waitFor({ state: "visible", timeout: 10000 }).catch(() => {});
+check("paste same URL: hint shown", await sameHint.isVisible());
+check("paste same URL: key filled", (await keyField().inputValue()) === "sk-xxx");
+check("paste same URL: per-key URL stays hidden", await page.getByRole("button", { name: "Use a different endpoint URL for this key" }).isVisible());
+await page.screenshot({ path: `${outDir}/paste-config-same-url.png`, fullPage: true });
+
+// A plain key is left alone.
+await keyField().fill("sk-plain={xxx}==");
+check("plain key: unchanged", (await keyField().inputValue()) === "sk-plain={xxx}==");
+check("plain key: hint cleared", !(await sameHint.isVisible()));
+
 await browser.close();
 if (failed) {
   console.log(`${failed} UI assertion(s) failed`);

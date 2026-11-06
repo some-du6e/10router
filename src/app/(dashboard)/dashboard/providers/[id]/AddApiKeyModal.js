@@ -5,6 +5,7 @@ import PropTypes from "prop-types";
 import { Button, Badge, Input, Modal, Select } from "@/shared/components";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { planBulkAdd } from "@/shared/utils/bulkAdd";
+import { describePastedKeyConfig, parsePastedKeyConfig } from "@/shared/utils/parsePastedKeyConfig";
 
 const BULK_PLACEHOLDER = `name1|sk-key1\nname2|sk-key2\nsk-key-only-auto-named`;
 
@@ -33,6 +34,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
     baseUrl: "",
   });
   const [showBaseUrl, setShowBaseUrl] = useState(false);
+  const [pasteHint, setPasteHint] = useState("");
   const [azureData, setAzureData] = useState({
     azureEndpoint: "",
     apiVersion: "2024-10-01-preview",
@@ -53,6 +55,33 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
   const [mode, setMode] = useState("single"); // "single" | "bulk"
   const [bulkText, setBulkText] = useState("");
   const [bulkResult, setBulkResult] = useState(null); // { success, failed }
+
+  // A pasted Claude Code config or env lines fill the key and, on custom
+  // endpoints, the key's own URL. Returns false for a plain key.
+  const applyPastedConfig = (text) => {
+    const parsed = parsePastedKeyConfig(text, { endpointUrl: nodeBaseUrl, keyUrl: !!isCompatible });
+    if (!parsed) return false;
+    const urlField = parsed.baseUrl || parsed.sameAsEndpoint ? { baseUrl: parsed.baseUrl } : {};
+    setFormData((prev) => ({ ...prev, apiKey: parsed.apiKey, ...urlField }));
+    if (parsed.baseUrl) setShowBaseUrl(true);
+    setPasteHint(describePastedKeyConfig(parsed));
+    return true;
+  };
+  const apiKeyFieldProps = {
+    value: formData.apiKey,
+    // An <input> drops a paste's line breaks, so read the clipboard text itself.
+    onPaste: (e) => {
+      if (applyPastedConfig(e.clipboardData?.getData("text") || "")) e.preventDefault();
+    },
+    onChange: (e) => {
+      const value = e.target.value;
+      // Typing adds one character at a time; more at once is a drop or autofill.
+      if (value.length - formData.apiKey.length > 1 && applyPastedConfig(value)) return;
+      setPasteHint("");
+      setFormData({ ...formData, apiKey: value });
+    },
+    hint: pasteHint || undefined,
+  };
 
   const buildProviderSpecificData = () => {
     if (isOllamaLocal && formData.ollamaHostUrl.trim()) {
@@ -212,8 +241,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
             label="API key"
             type="password"
             icon="key"
-            value={formData.apiKey}
-            onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
+            {...apiKeyFieldProps}
             placeholder="Paste a key"
             ignorePasswordManagers
             autoFocus
@@ -318,6 +346,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
               type={isCookie ? "text" : "password"}
               value={formData.apiKey}
               onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
+              {...(isCookie ? {} : apiKeyFieldProps)}
               placeholder={credentialPlaceholder}
               className="flex-1"
               ignorePasswordManagers
