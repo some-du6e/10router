@@ -127,7 +127,11 @@ export function parsePastedKeyConfig(
   const keyVars = apiType === "openai" ? [...KEY_VARS].sort((a, b) => Number(b.startsWith("OPENAI_")) - Number(a.startsWith("OPENAI_"))) : KEY_VARS;
   const keyVar = keyVars.find((k) => env[k]?.trim());
   const family = keyVar ? (keyVar.startsWith("OPENAI_") ? "OPENAI_" : "ANTHROPIC_") : (apiType === "openai" ? "OPENAI_" : "ANTHROPIC_");
-  const urlVars = keyUrl ? [...URL_VARS].sort((a, b) => Number(b.family === family) - Number(a.family === family)) : [];
+  const urlVars = keyUrl
+    ? [...URL_VARS]
+      .filter((u) => u.family === family || !KEY_VARS.some((k) => k.startsWith(u.family) && env[k]?.trim()))
+      .sort((a, b) => Number(b.family === family) - Number(a.family === family))
+    : [];
   const urlVar = urlVars.find((u) => toEndpointUrl(env[u.name] || "", u.addVersion));
   if (!keyVar && !urlVar) return null;
 

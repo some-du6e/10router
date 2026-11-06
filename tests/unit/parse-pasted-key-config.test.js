@@ -119,6 +119,13 @@ describe("endpoint URL", () => {
     expect(parsePastedKeyConfig(SETTINGS, { apiType: "openai" })).toMatchObject({ apiKey: "sk-xxx", baseUrl: "https://other.example.com/api/v1" });
   });
 
+  it("leaves the other API's URL to the other API's key from the same paste", () => {
+    const anthropicKey = "ANTHROPIC_API_KEY=sk-a\nOPENAI_API_KEY=sk-o\nOPENAI_BASE_URL=https://o.example.com/api/v1";
+    expect(parsePastedKeyConfig(anthropicKey, { endpointUrl: ENDPOINT, apiType: "anthropic" })).toEqual({ apiKey: "sk-a", baseUrl: "", sameAsEndpoint: false, ignored: 2 });
+    const openaiKey = "OPENAI_API_KEY=sk-o\nANTHROPIC_AUTH_TOKEN=sk-a\nANTHROPIC_BASE_URL=https://a.example.com/anthropic";
+    expect(parsePastedKeyConfig(openaiKey, { endpointUrl: ENDPOINT, apiType: "openai" })).toEqual({ apiKey: "sk-o", baseUrl: "", sameAsEndpoint: false, ignored: 2 });
+  });
+
   it("takes the endpoint's own API's URL from a URL-only paste that sets both", () => {
     const text = "ANTHROPIC_BASE_URL=https://a.example.com\nOPENAI_BASE_URL=https://o.example.com/v1";
     expect(parsePastedKeyConfig(text, { apiType: "openai" })).toMatchObject({ apiKey: "", baseUrl: "https://o.example.com/v1", ignored: 1 });
