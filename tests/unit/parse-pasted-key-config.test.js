@@ -235,6 +235,28 @@ describe("hint", () => {
     expect(describePastedKeyConfig(r)).toBe("Filled from pasted config: key. Its URL is this endpoint's own, so the key uses that. Ignored 2 other variables.");
   });
 
+  it("reads a key given as a reference to another variable in the paste", () => {
+    // OpenRouter's Claude Code guide: the key goes in its own variable first.
+    const openrouter = 'export OPENROUTER_API_KEY="sk-or-xxx"\nexport ANTHROPIC_BASE_URL="https://other.example.com/api"\nexport ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY"\nexport ANTHROPIC_API_KEY=""';
+    expect(parsePastedKeyConfig(openrouter, { endpointUrl: ENDPOINT })).toEqual({ apiKey: "sk-or-xxx", baseUrl: "https://other.example.com/api/v1", sameAsEndpoint: false, ignored: 1, badUrl: "" });
+    for (const ref of ["${VENDOR_KEY}", "%VENDOR_KEY%", "$env:VENDOR_KEY"]) {
+      expect(parsePastedKeyConfig(`VENDOR_KEY=sk-v\nANTHROPIC_AUTH_TOKEN=${ref}`), ref).toMatchObject({ apiKey: "sk-v", ignored: 0 });
+    }
+    expect(parsePastedKeyConfig("VENDOR_URL=https://other.example.com/api\nANTHROPIC_AUTH_TOKEN=sk-xxx\nANTHROPIC_BASE_URL=${VENDOR_URL}", { endpointUrl: ENDPOINT })).toMatchObject({ baseUrl: "https://other.example.com/api/v1", ignored: 0, badUrl: "" });
+  });
+
+  it("asks for the key when it is a reference the paste doesn't define", () => {
+    // DeepSeek's and Moonshot's guides: the key variable is set elsewhere.
+    for (const ref of ["${DEEPSEEK_API_KEY}", "$DEEPSEEK_API_KEY", "%DEEPSEEK_API_KEY%", "$env:DEEPSEEK_API_KEY"]) {
+      const r = parsePastedKeyConfig(`export ANTHROPIC_BASE_URL=https://other.example.com/anthropic\nexport ANTHROPIC_AUTH_TOKEN=${ref}`, { endpointUrl: ENDPOINT });
+      expect(r, ref).toEqual({ apiKey: "", baseUrl: "https://other.example.com/anthropic/v1", sameAsEndpoint: false, ignored: 0, badUrl: "" });
+      expect(describePastedKeyConfig(r)).toBe("Filled from pasted config: endpoint URL. It has no key: paste the key here.");
+    }
+    expect(parsePastedKeyConfig("ANTHROPIC_AUTH_TOKEN=${DEEPSEEK_API_KEY}", { keyUrl: false })).toEqual({ apiKey: "", baseUrl: "", sameAsEndpoint: false, ignored: 0, badUrl: "" });
+    // A key with a "$" in it is still a key.
+    expect(parsePastedKeyConfig("ANTHROPIC_AUTH_TOKEN=sk-a$b")).toMatchObject({ apiKey: "sk-a$b" });
+  });
+
   it("names a pasted URL it couldn't use", () => {
     const r = parsePastedKeyConfig("ANTHROPIC_AUTH_TOKEN=sk-xxx\nANTHROPIC_BASE_URL=ftp://other.example.com\nA=1", { endpointUrl: ENDPOINT });
     expect(describePastedKeyConfig(r)).toBe("Filled from pasted config: key. Its ANTHROPIC_BASE_URL isn't an http(s) URL, so the key uses this endpoint's. Ignored 1 other variable.");

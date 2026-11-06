@@ -12,7 +12,8 @@ export interface PastedKeyConfig {
   // "" when there is none, or it is the endpoint's own URL (sameAsEndpoint).
   baseUrl: string;
   sameAsEndpoint: boolean;
-  // How many variables were neither the key nor the URL (nor badUrl).
+  // How many variables were neither the key nor the URL (nor badUrl, nor
+  // read for them through a reference).
   ignored: number;
   // The *_BASE_URL variable that would have set the URL but isn't an
   // http(s) URL, or "".
@@ -30,6 +31,8 @@ const URL_VARS = [
   { name: "OPENAI_BASE_URL", family: "OPENAI_", addVersion: false },
 ];
 
+// $NAME, ${NAME}, %NAME% or $env:NAME as the whole value.
+const VAR_REF = /^(?:\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)|%([A-Za-z_]\w*)%|\$env:([A-Za-z_]\w*))$/i;
 const VERSION_SUFFIX = /\/v\d+(beta)?$/i;
 const ENV_LINE = /^(?:(?:export|set)\s+|\$env:)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/i;
 
@@ -131,6 +134,24 @@ export function parsePastedKeyConfig(
   if (!t) return null;
   const env = /^[{"\u201c\u201d]/.test(t) ? envFromJson(t) : envFromLines(t);
   if (!env) return null;
+  // Provider docs set the key in its own variable and point ANTHROPIC_AUTH_TOKEN
+  // at it. Read it from the paste; a key that names a variable the paste
+  // doesn't set is no key, and a URL like that is left for badUrl.
+  const refTo: Record<string, string> = {};
+  const unsetKeyRefs: string[] = [];
+  for (const [k, v] of Object.entries(env)) {
+    const ref = VAR_REF.exec(v.trim());
+    if (!ref) continue;
+    const target = ref.slice(1).find(Boolean) as string;
+    const value = env[target]?.trim() || "";
+    if (target !== k && value && !VAR_REF.test(value)) {
+      env[k] = value;
+      refTo[k] = target;
+    } else if (KEY_VARS.includes(k)) {
+      env[k] = "";
+      unsetKeyRefs.push(k);
+    }
+  }
 
   const keyVars = apiType === "openai" ? [...KEY_VARS].sort((a, b) => Number(b.startsWith("OPENAI_")) - Number(a.startsWith("OPENAI_"))) : KEY_VARS;
   const keyVar = keyVars.find((k) => env[k]?.trim());
@@ -141,14 +162,15 @@ export function parsePastedKeyConfig(
       .sort((a, b) => Number(b.family === family) - Number(a.family === family))
     : [];
   const urlVar = urlVars.find((u) => toEndpointUrl(env[u.name] || "", u.addVersion));
-  if (!keyVar && !urlVar) return null;
+  if (!keyVar && !urlVar && !unsetKeyRefs.length) return null;
   const badUrl = urlVar ? "" : urlVars.find((u) => env[u.name]?.trim())?.name || "";
 
   const rawUrl = urlVar ? env[urlVar.name] : "";
   const pastedUrl = urlVar ? toEndpointUrl(rawUrl, urlVar.addVersion) : "";
   const nodeUrl = endpointUrl ? canonicalUrl(endpointUrl) : "";
   const sameAsEndpoint = !!pastedUrl && !!nodeUrl && (pastedUrl === nodeUrl || canonicalUrl(rawUrl) === nodeUrl);
-  const used = new Set([keyVar, urlVar?.name, badUrl].filter(Boolean));
+  const used = new Set([keyVar, urlVar?.name, badUrl, ...unsetKeyRefs].filter(Boolean));
+  for (const k of [keyVar, urlVar?.name]) if (k && refTo[k]) used.add(refTo[k]);
   return {
     apiKey: keyVar ? env[keyVar].trim() : "",
     baseUrl: sameAsEndpoint ? "" : pastedUrl,
