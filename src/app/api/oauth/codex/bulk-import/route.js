@@ -69,9 +69,10 @@ export async function POST(request) {
         ...item
       } = raw;
 
-      if (!item.accessToken || typeof item.accessToken !== "string") {
+      if (typeof item.accessToken !== "string" || !item.accessToken.trim()) {
         throw new Error("Missing accessToken");
       }
+      item.accessToken = item.accessToken.trim();
 
       // Backfill missing identity fields from JWT claims
       const psd = item.providerSpecificData || {};
@@ -80,7 +81,7 @@ export async function POST(request) {
       const needsPlanType = !psd.chatgptPlanType;
 
       if (needsEmail || needsAccountId || needsPlanType) {
-        const info = extractCodexAccountInfo(item.idToken || item.accessToken) || {};
+        const info = extractCodexAccountInfo(item.idToken, item.accessToken);
         if (needsEmail && info.email) item.email = info.email;
         if (needsAccountId && info.chatgptAccountId) {
           psd.chatgptAccountId = info.chatgptAccountId;
