@@ -79,7 +79,9 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
     onChange: (e) => {
       const value = e.target.value;
       // Typing adds one character at a time; more at once is a drop or autofill.
-      if (value.length - formData.apiKey.length > 1 && applyPastedConfig(value)) return;
+      // A paste was already read in onPaste, with its line breaks.
+      const pasted = e.nativeEvent?.inputType?.startsWith("insertFromPaste");
+      if (!pasted && value.length - formData.apiKey.length > 1 && applyPastedConfig(value)) return;
       setPasteHint("");
       setFormData({ ...formData, apiKey: value });
     },
