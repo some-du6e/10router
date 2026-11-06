@@ -113,7 +113,7 @@ function toEndpointUrl(raw: string, addVersion: boolean): string {
 
 // endpointUrl: the endpoint's own base URL. keyUrl: whether this dialog can
 // give the key its own URL (custom endpoints only). apiType: the endpoint's
-// API, whose key wins when the paste has both. Returns null when the text
+// API, whose key (and, with no key, URL) wins when the paste has both. Returns null when the text
 // isn't a config naming a key or URL.
 export function parsePastedKeyConfig(
   text: unknown,
@@ -126,7 +126,7 @@ export function parsePastedKeyConfig(
 
   const keyVars = apiType === "openai" ? [...KEY_VARS].sort((a, b) => Number(b.startsWith("OPENAI_")) - Number(a.startsWith("OPENAI_"))) : KEY_VARS;
   const keyVar = keyVars.find((k) => env[k]?.trim());
-  const family = keyVar?.startsWith("OPENAI_") ? "OPENAI_" : "ANTHROPIC_";
+  const family = keyVar ? (keyVar.startsWith("OPENAI_") ? "OPENAI_" : "ANTHROPIC_") : (apiType === "openai" ? "OPENAI_" : "ANTHROPIC_");
   const urlVars = keyUrl ? [...URL_VARS].sort((a, b) => Number(b.family === family) - Number(a.family === family)) : [];
   const urlVar = urlVars.find((u) => toEndpointUrl(env[u.name] || "", u.addVersion));
   if (!keyVar && !urlVar) return null;
