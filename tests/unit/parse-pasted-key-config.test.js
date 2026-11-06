@@ -68,6 +68,13 @@ describe("config shapes", () => {
     expect(parsePastedKeyConfig("OPENAI_API_KEY=sk-c").apiKey).toBe("sk-c");
     expect(parsePastedKeyConfig(`ANTHROPIC_AUTH_TOKEN=""\nOPENAI_API_KEY=sk-c`).apiKey).toBe("sk-c");
   });
+
+  it("trims the key, skips a blank one and drops an inline comment", () => {
+    expect(parsePastedKeyConfig(`{"ANTHROPIC_AUTH_TOKEN":" sk-xxx "}`).apiKey).toBe("sk-xxx");
+    expect(parsePastedKeyConfig(`{"ANTHROPIC_AUTH_TOKEN":"  ","OPENAI_API_KEY":"sk-c"}`).apiKey).toBe("sk-c");
+    expect(parsePastedKeyConfig("ANTHROPIC_AUTH_TOKEN=sk-xxx # work account").apiKey).toBe("sk-xxx");
+    expect(parsePastedKeyConfig(`ANTHROPIC_AUTH_TOKEN="sk-xxx" # work account`).apiKey).toBe("sk-xxx");
+  });
 });
 
 describe("endpoint URL", () => {
@@ -151,6 +158,17 @@ describe("plain keys stay plain", () => {
     "[1, 2, 3]",
     "FOO=bar",
     "ANTHROPIC_AUTH_TOKEN=sk-xxx\nnot a line",
+    // Shell one-liners: more than one value after the "=".
+    "ANTHROPIC_BASE_URL=https://example.com/api ANTHROPIC_AUTH_TOKEN=sk-xxx claude",
+    "export ANTHROPIC_BASE_URL=https://example.com/api ANTHROPIC_AUTH_TOKEN=sk-xxx",
+    "ANTHROPIC_AUTH_TOKEN=sk-xxx ANTHROPIC_BASE_URL=https://example.com/api claude",
+    `ANTHROPIC_BASE_URL="https://example.com/api" ANTHROPIC_AUTH_TOKEN="sk-xxx" claude`,
+    "set ANTHROPIC_AUTH_TOKEN=sk-xxx && claude",
+    "ANTHROPIC_AUTH_TOKEN=sk-xxx; claude",
+    // Lines an <input> ran together (Chrome drops the breaks, Firefox makes them spaces).
+    "ANTHROPIC_BASE_URL=https://example.com/apiANTHROPIC_AUTH_TOKEN=sk-xxxclaude",
+    "export ANTHROPIC_AUTH_TOKEN=sk-xxxexport ANTHROPIC_BASE_URL=https://example.com/apiclaude",
+    "export ANTHROPIC_AUTH_TOKEN=sk-xxx export ANTHROPIC_BASE_URL=https://example.com/api claude",
     "",
   ];
   for (const k of keys) {

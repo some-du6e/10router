@@ -51,13 +51,26 @@ function envFromJson(text: string): Env | null {
   return out;
 }
 
-function unquote(raw: string): string {
+// A shell one-liner (`A=x B=y claude`, `A=x && claude`) has more than the
+// value after the "=", and so do lines an <input> ran together.
+const RUN_ON = /\s|;|&&|\|\|/;
+const OTHER_VAR = /(?:ANTHROPIC|OPENAI)_[A-Z0-9_]*=/;
+
+// The value of a KEY=value line, or null when it isn't a single value.
+function unquote(raw: string): string | null {
   const v = raw.trim();
-  const dq = /^"((?:[^"\\]|\\.)*)"/.exec(v);
-  if (dq) return dq[1].replace(/\\(["\\$`])/g, "$1");
-  const sq = /^'([^']*)'/.exec(v);
-  if (sq) return sq[1];
-  return v.replace(/\s+#.*$/, "");
+  const dq = /^"((?:[^"\\]|\\.)*)"(.*)$/.exec(v);
+  const sq = /^'([^']*)'(.*)$/.exec(v);
+  let value: string;
+  if (dq || sq) {
+    const [, inner, rest] = (dq || sq) as RegExpExecArray;
+    if (rest && !/^\s+#/.test(rest)) return null;
+    value = dq ? inner.replace(/\\(["\\$`])/g, "$1") : inner;
+  } else {
+    value = v.replace(/\s+#.*$/, "");
+    if (RUN_ON.test(value)) return null;
+  }
+  return OTHER_VAR.test(value) ? null : value;
 }
 
 function envFromLines(text: string): Env | null {
@@ -67,8 +80,9 @@ function envFromLines(text: string): Env | null {
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
     const m = ENV_LINE.exec(line);
-    if (!m) return null;
-    out[m[1]] = unquote(m[2]);
+    const value = m ? unquote(m[2]) : null;
+    if (!m || value == null) return null;
+    out[m[1]] = value;
     any = true;
   }
   return any ? out : null;
