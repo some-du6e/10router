@@ -179,7 +179,7 @@ describe("plain keys stay plain", () => {
     `ANTHROPIC_BASE_URL="https://example.com/api" ANTHROPIC_AUTH_TOKEN="sk-xxx" claude`,
     "set ANTHROPIC_AUTH_TOKEN=sk-xxx && claude",
     "ANTHROPIC_AUTH_TOKEN=sk-xxx; claude",
-    // Lines an <input> ran together (Chrome drops the breaks, Firefox makes them spaces).
+    // Lines an <input> ran together (the breaks dropped or made spaces).
     "ANTHROPIC_BASE_URL=https://example.com/apiANTHROPIC_AUTH_TOKEN=sk-xxxclaude",
     "export ANTHROPIC_AUTH_TOKEN=sk-xxxexport ANTHROPIC_BASE_URL=https://example.com/apiclaude",
     "export ANTHROPIC_AUTH_TOKEN=sk-xxx export ANTHROPIC_BASE_URL=https://example.com/api claude",

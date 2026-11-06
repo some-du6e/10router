@@ -81,7 +81,7 @@ async function openAddKey(pagePath, providerId, activeName, shot) {
 }
 
 // A real paste: the clipboard and Ctrl+V, so the browser's own insert (which
-// drops line breaks) runs unless the dialog cancels it.
+// turns line breaks into spaces or drops them) runs unless the dialog cancels it.
 async function paste(field, text) {
   await page.evaluate((t) => navigator.clipboard.writeText(t), text);
   await field.focus();
@@ -127,10 +127,12 @@ check("paste: saved key has its own URL", added.length === 1 && added[0].provide
 await openAddKey("/dashboard/providers/openai-compatible-e2e-alpha", "openai-compatible-e2e-alpha", "alpha-active", "alpha-before-paste");
 const alphaUrlField = page.getByPlaceholder("https://e2ea.e2e.invalid/v1");
 
-// Not a config (the last line is a command): pasted as text, like any key,
-// and the run-together text isn't read as a config afterwards.
-await paste(keyField(), "ANTHROPIC_AUTH_TOKEN=sk-xxx\nclaude");
-check("rejected paste: inserted as text", (await keyField().inputValue()) === "ANTHROPIC_AUTH_TOKEN=sk-xxxclaude", await keyField().inputValue());
+// Not a config (the last line is a command): pasted as text, like any key.
+// Run together, it reads as one commented line, so it must not be re-read.
+const rejected = "ANTHROPIC_AUTH_TOKEN=sk-xxx # my token\nclaude";
+await paste(keyField(), rejected);
+const rejectedValue = await keyField().inputValue();
+check("rejected paste: inserted as text", [rejected.replace("\n", " "), rejected.replace("\n", "")].includes(rejectedValue), rejectedValue);
 check("rejected paste: no hint", (await filledAny().count()) === 0);
 
 // The endpoint's own URL, put in at once (a drop, or a browser that didn't fire paste): no per-key URL.
