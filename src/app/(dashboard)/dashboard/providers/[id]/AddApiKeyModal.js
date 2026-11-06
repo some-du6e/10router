@@ -62,7 +62,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
     const apiType = isCompatible ? (isAnthropic ? "anthropic" : "openai") : provider === "openai" ? "openai" : undefined;
     const parsed = parsePastedKeyConfig(text, { endpointUrl: nodeBaseUrl, keyUrl: !!isCompatible, apiType });
     if (!parsed) return false;
-    const urlField = parsed.baseUrl || parsed.sameAsEndpoint ? { baseUrl: parsed.baseUrl } : {};
+    const urlField = parsed.baseUrl || parsed.sameAsEndpoint || parsed.badUrl ? { baseUrl: parsed.baseUrl } : {};
     // A URL-only paste keeps a key already in the field.
     const keptKey = !parsed.apiKey && !!formData.apiKey.trim();
     setFormData((prev) => ({ ...prev, apiKey: parsed.apiKey || (keptKey ? prev.apiKey : ""), ...urlField }));

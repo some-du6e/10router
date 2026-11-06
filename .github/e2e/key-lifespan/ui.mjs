@@ -153,6 +153,14 @@ await paste(keyField(), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://e2e
 check("paste same URL after another: hint shown", await hintShown(sameHint));
 check("paste same URL after another: per-key URL cleared", (await alphaUrlField.inputValue()) === "", await alphaUrlField.inputValue());
 
+// Then a URL that isn't http(s): the hint says the key uses the endpoint's URL, so the earlier per-key URL goes.
+await paste(keyField(), "ANTHROPIC_AUTH_TOKEN=sk-a\nANTHROPIC_BASE_URL=https://a.example.com");
+check("paste unusable URL after another: first URL filled", (await alphaUrlField.inputValue()) === "https://a.example.com/v1", await alphaUrlField.inputValue());
+await paste(keyField(), "ANTHROPIC_AUTH_TOKEN=sk-b\nANTHROPIC_BASE_URL=api.vendor.example/api/anthropic");
+check("paste unusable URL after another: hint shown", await hintShown("Filled from pasted config: key. Its ANTHROPIC_BASE_URL isn't an http(s) URL, so the key uses this endpoint's."));
+check("paste unusable URL after another: key filled", (await keyField().inputValue()) === "sk-b");
+check("paste unusable URL after another: per-key URL cleared", (await alphaUrlField.inputValue()) === "", await alphaUrlField.inputValue());
+
 // A plain key is left alone.
 await keyField().fill("sk-plain={xxx}==");
 check("plain key: unchanged", (await keyField().inputValue()) === "sk-plain={xxx}==");
