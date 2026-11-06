@@ -127,6 +127,19 @@ await keyField().fill("sk-plain={xxx}==");
 check("plain key: unchanged", (await keyField().inputValue()) === "sk-plain={xxx}==");
 check("plain key: hint cleared", !(await sameHint.isVisible()));
 
+// A URL-only paste keeps the key already entered and reveals the per-key URL.
+await keyField().evaluate((el, text) => {
+  const clipboardData = new DataTransfer();
+  clipboardData.setData("text/plain", text);
+  el.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
+}, "export ANTHROPIC_BASE_URL=https://example.com/api\n");
+const keptHint = page.getByText("Filled from pasted config: endpoint URL. It has no key, so the key already entered stays.");
+await keptHint.waitFor({ state: "visible", timeout: 10000 }).catch(() => {});
+check("URL-only paste: hint shown", await keptHint.isVisible());
+check("URL-only paste: key kept", (await keyField().inputValue()) === "sk-plain={xxx}==");
+const alphaUrlField = page.getByPlaceholder("https://e2ea.e2e.invalid/v1");
+check("URL-only paste: per-key URL filled", (await alphaUrlField.isVisible()) && (await alphaUrlField.inputValue()) === "https://example.com/api/v1");
+
 await browser.close();
 if (failed) {
   console.log(`${failed} UI assertion(s) failed`);

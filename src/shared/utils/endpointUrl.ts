@@ -6,7 +6,7 @@ const TRAILING_API_PATH = /\/(chat\/completions|messages|responses)$/i;
 
 // Trim, drop trailing slashes and a pasted API path, keep any query string
 // (Azure's ?api-version=).
-export function normalizeEndpointUrl(raw) {
+export function normalizeEndpointUrl(raw: unknown): string {
   const s = String(raw ?? "").trim();
   const q = s.indexOf("?");
   let base = q === -1 ? s : s.slice(0, q);

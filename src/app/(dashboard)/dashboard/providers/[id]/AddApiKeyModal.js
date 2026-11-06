@@ -62,9 +62,11 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
     const parsed = parsePastedKeyConfig(text, { endpointUrl: nodeBaseUrl, keyUrl: !!isCompatible });
     if (!parsed) return false;
     const urlField = parsed.baseUrl || parsed.sameAsEndpoint ? { baseUrl: parsed.baseUrl } : {};
-    setFormData((prev) => ({ ...prev, apiKey: parsed.apiKey, ...urlField }));
+    // A URL-only paste keeps a key already in the field.
+    const keptKey = !parsed.apiKey && !!formData.apiKey.trim();
+    setFormData((prev) => ({ ...prev, apiKey: parsed.apiKey || (keptKey ? prev.apiKey : ""), ...urlField }));
     if (parsed.baseUrl) setShowBaseUrl(true);
-    setPasteHint(describePastedKeyConfig(parsed));
+    setPasteHint(describePastedKeyConfig(parsed, { keptKey }));
     return true;
   };
   const apiKeyFieldProps = {

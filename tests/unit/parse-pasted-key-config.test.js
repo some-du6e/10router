@@ -178,4 +178,9 @@ describe("hint", () => {
     const r = parsePastedKeyConfig("ANTHROPIC_BASE_URL=https://other.example.com/api", { endpointUrl: ENDPOINT });
     expect(describePastedKeyConfig(r)).toBe("Filled from pasted config: endpoint URL. It has no key: paste the key here.");
   });
+
+  it("says the entered key stays when the paste had none", () => {
+    const r = parsePastedKeyConfig("ANTHROPIC_BASE_URL=https://other.example.com/api", { endpointUrl: ENDPOINT });
+    expect(describePastedKeyConfig(r, { keptKey: true })).toBe("Filled from pasted config: endpoint URL. It has no key, so the key already entered stays.");
+  });
 });
