@@ -8,7 +8,7 @@
 //
 //   cd tests && ./node_modules/.bin/vitest run --config vitest.benchmark.config.js bench/router-overhead-benchmark.test.js
 //
-// BENCH_ITER (default 15) sets the measured iterations per scenario.
+// BENCH_ITER (default 30) sets the measured iterations per scenario.
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";

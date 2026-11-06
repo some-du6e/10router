@@ -107,7 +107,7 @@ function sanitizeHeaders(headers) {
 // A streaming request is saved twice under one id, when it starts and when it
 // ends, with the same request objects both times. Capping and packing a ~1 MB
 // body is the costly part of a flush, so the second save reuses the first's.
-const cappedPayloads = new WeakMap();   // payload object → its capped copy and JSON
+const cappedPayloads = new WeakMap();   // payload object → its capped copy
 const packedFullData = new WeakMap();   // first capped field → its packed full copy
 
 // Returns the untruncated payloads that truncateField cut, gzipped, or null.
@@ -203,10 +203,9 @@ function prettyJsonPrefix(json, limit) {
 function truncateField(obj, maxSize, fieldJson, key) {
   if (obj === undefined || obj === null) return {};
   const cached = typeof obj === "object" ? cappedPayloads.get(obj) : undefined;
-  if (cached?.maxSize === maxSize && (!fieldJson || cached.json !== undefined)) {
-    if (fieldJson) fieldJson[key] = cached.json;
-    return cached.truncated;
-  }
+  // No JSON is kept with it (1 MB per body while the stream runs): packFullData
+  // reuses its earlier full copy, or serializes again when it can't.
+  if (cached?.maxSize === maxSize) return cached.truncated;
   let str;
   try {
     str = JSON.stringify(obj);
@@ -227,7 +226,7 @@ function truncateField(obj, maxSize, fieldJson, key) {
     }
     const remaining = maxSize - JSON.stringify(truncated).length;
     truncated._structuredPreview = structuredPreview(obj, remaining);
-    if (typeof obj === "object") cappedPayloads.set(obj, { maxSize, truncated, json: fieldJson ? str : undefined });
+    if (typeof obj === "object") cappedPayloads.set(obj, { maxSize, truncated });
     return truncated;
   }
   return obj;
