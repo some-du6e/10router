@@ -22,12 +22,13 @@ describe("config shapes", () => {
       baseUrl: "https://other.example.com/api/v1",
       sameAsEndpoint: false,
       ignored: 1,
+      badUrl: "",
     });
   });
 
   it("reads a full settings.json whose other settings aren't env variables", () => {
     const text = JSON.stringify({ model: "opus", permissions: { allow: [] }, env: { ANTHROPIC_API_KEY: "sk-xxx" } });
-    expect(parsePastedKeyConfig(text)).toEqual({ apiKey: "sk-xxx", baseUrl: "", sameAsEndpoint: false, ignored: 0 });
+    expect(parsePastedKeyConfig(text)).toEqual({ apiKey: "sk-xxx", baseUrl: "", sameAsEndpoint: false, ignored: 0, badUrl: "" });
   });
 
   it("reads a bare env object, with trailing commas", () => {
@@ -53,6 +54,7 @@ describe("config shapes", () => {
       baseUrl: "https://other.example.com/api/v1",
       sameAsEndpoint: false,
       ignored: 1,
+      badUrl: "",
     });
   });
 
@@ -100,7 +102,7 @@ describe("endpoint URL", () => {
 
   it("uses OPENAI_BASE_URL as given, since it already includes /v1", () => {
     const r = parsePastedKeyConfig("OPENAI_API_KEY=sk-xxx\nOPENAI_BASE_URL=https://other.example.com/v1/chat/completions", { endpointUrl: ENDPOINT });
-    expect(r).toEqual({ apiKey: "sk-xxx", baseUrl: "https://other.example.com/v1", sameAsEndpoint: false, ignored: 0 });
+    expect(r).toEqual({ apiKey: "sk-xxx", baseUrl: "https://other.example.com/v1", sameAsEndpoint: false, ignored: 0, badUrl: "" });
     const bare = parsePastedKeyConfig("OPENAI_API_KEY=sk-xxx\nOPENAI_BASE_URL=https://other.example.com/openai", { endpointUrl: ENDPOINT });
     expect(bare.baseUrl).toBe("https://other.example.com/openai");
   });
@@ -121,9 +123,9 @@ describe("endpoint URL", () => {
 
   it("leaves the other API's URL to the other API's key from the same paste", () => {
     const anthropicKey = "ANTHROPIC_API_KEY=sk-a\nOPENAI_API_KEY=sk-o\nOPENAI_BASE_URL=https://o.example.com/api/v1";
-    expect(parsePastedKeyConfig(anthropicKey, { endpointUrl: ENDPOINT, apiType: "anthropic" })).toEqual({ apiKey: "sk-a", baseUrl: "", sameAsEndpoint: false, ignored: 2 });
+    expect(parsePastedKeyConfig(anthropicKey, { endpointUrl: ENDPOINT, apiType: "anthropic" })).toEqual({ apiKey: "sk-a", baseUrl: "", sameAsEndpoint: false, ignored: 2, badUrl: "" });
     const openaiKey = "OPENAI_API_KEY=sk-o\nANTHROPIC_AUTH_TOKEN=sk-a\nANTHROPIC_BASE_URL=https://a.example.com/anthropic";
-    expect(parsePastedKeyConfig(openaiKey, { endpointUrl: ENDPOINT, apiType: "openai" })).toEqual({ apiKey: "sk-o", baseUrl: "", sameAsEndpoint: false, ignored: 2 });
+    expect(parsePastedKeyConfig(openaiKey, { endpointUrl: ENDPOINT, apiType: "openai" })).toEqual({ apiKey: "sk-o", baseUrl: "", sameAsEndpoint: false, ignored: 2, badUrl: "" });
   });
 
   it("takes the endpoint's own API's URL from a URL-only paste that sets both", () => {
@@ -135,7 +137,7 @@ describe("endpoint URL", () => {
   it("sets no per-key URL when it is the endpoint's own", () => {
     for (const url of ["https://example.com/api", "https://example.com/api/", "https://EXAMPLE.com/api/v1", "https://example.com/api/v1/messages"]) {
       const r = parsePastedKeyConfig(`ANTHROPIC_AUTH_TOKEN=sk-xxx\nANTHROPIC_BASE_URL=${url}`, { endpointUrl: `${ENDPOINT}/` });
-      expect(r, url).toEqual({ apiKey: "sk-xxx", baseUrl: "", sameAsEndpoint: true, ignored: 0 });
+      expect(r, url).toEqual({ apiKey: "sk-xxx", baseUrl: "", sameAsEndpoint: true, ignored: 0, badUrl: "" });
     }
     const openai = parsePastedKeyConfig("OPENAI_API_KEY=sk-xxx\nOPENAI_BASE_URL=https://example.com/api/v1/", { endpointUrl: ENDPOINT });
     expect(openai).toMatchObject({ baseUrl: "", sameAsEndpoint: true });
@@ -148,17 +150,17 @@ describe("endpoint URL", () => {
 
   it("fills a URL with no key", () => {
     const r = parsePastedKeyConfig(`{"env":{"ANTHROPIC_BASE_URL":"https://other.example.com/api"}}`, { endpointUrl: ENDPOINT });
-    expect(r).toEqual({ apiKey: "", baseUrl: "https://other.example.com/api/v1", sameAsEndpoint: false, ignored: 0 });
+    expect(r).toEqual({ apiKey: "", baseUrl: "https://other.example.com/api/v1", sameAsEndpoint: false, ignored: 0, badUrl: "" });
   });
 
   it("ignores URLs where a key can't have its own (built-in providers)", () => {
-    expect(parsePastedKeyConfig(SETTINGS, { keyUrl: false })).toEqual({ apiKey: "sk-xxx", baseUrl: "", sameAsEndpoint: false, ignored: 2 });
+    expect(parsePastedKeyConfig(SETTINGS, { keyUrl: false })).toEqual({ apiKey: "sk-xxx", baseUrl: "", sameAsEndpoint: false, ignored: 2, badUrl: "" });
     expect(parsePastedKeyConfig("ANTHROPIC_BASE_URL=https://other.example.com/api", { keyUrl: false })).toBeNull();
   });
 
   it("drops a URL that isn't http(s)", () => {
     expect(parsePastedKeyConfig("ANTHROPIC_BASE_URL=not a url")).toBeNull();
-    expect(parsePastedKeyConfig("ANTHROPIC_AUTH_TOKEN=sk-xxx\nANTHROPIC_BASE_URL=ftp://example.com")).toMatchObject({ baseUrl: "", ignored: 1 });
+    expect(parsePastedKeyConfig("ANTHROPIC_AUTH_TOKEN=sk-xxx\nANTHROPIC_BASE_URL=ftp://example.com")).toMatchObject({ baseUrl: "", ignored: 0, badUrl: "ANTHROPIC_BASE_URL" });
   });
 
   // Requests must reach where Claude Code would have sent them: ANTHROPIC_BASE_URL + /v1/messages.
@@ -221,6 +223,11 @@ describe("hint", () => {
   it("says when the URL is the endpoint's own", () => {
     const r = parsePastedKeyConfig("ANTHROPIC_AUTH_TOKEN=sk-xxx\nANTHROPIC_BASE_URL=https://example.com/api\nA=1\nB=2", { endpointUrl: ENDPOINT });
     expect(describePastedKeyConfig(r)).toBe("Filled from pasted config: key. Its URL is this endpoint's own, so the key uses that. Ignored 2 other variables.");
+  });
+
+  it("names a pasted URL it couldn't use", () => {
+    const r = parsePastedKeyConfig("ANTHROPIC_AUTH_TOKEN=sk-xxx\nANTHROPIC_BASE_URL=ftp://other.example.com\nA=1", { endpointUrl: ENDPOINT });
+    expect(describePastedKeyConfig(r)).toBe("Filled from pasted config: key. Its ANTHROPIC_BASE_URL isn't an http(s) URL, so the key uses this endpoint's. Ignored 1 other variable.");
   });
 
   it("asks for the key when there was none", () => {

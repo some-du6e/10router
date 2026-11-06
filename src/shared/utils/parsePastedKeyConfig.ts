@@ -12,8 +12,11 @@ export interface PastedKeyConfig {
   // "" when there is none, or it is the endpoint's own URL (sameAsEndpoint).
   baseUrl: string;
   sameAsEndpoint: boolean;
-  // How many variables were neither the key nor the URL.
+  // How many variables were neither the key nor the URL (nor badUrl).
   ignored: number;
+  // The *_BASE_URL variable that would have set the URL but isn't an
+  // http(s) URL, or "".
+  badUrl: string;
 }
 
 const KEY_VARS = ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"];
@@ -134,29 +137,32 @@ export function parsePastedKeyConfig(
     : [];
   const urlVar = urlVars.find((u) => toEndpointUrl(env[u.name] || "", u.addVersion));
   if (!keyVar && !urlVar) return null;
+  const badUrl = urlVar ? "" : urlVars.find((u) => env[u.name]?.trim())?.name || "";
 
   const rawUrl = urlVar ? env[urlVar.name] : "";
   const pastedUrl = urlVar ? toEndpointUrl(rawUrl, urlVar.addVersion) : "";
   const nodeUrl = endpointUrl ? canonicalUrl(endpointUrl) : "";
   const sameAsEndpoint = !!pastedUrl && !!nodeUrl && (pastedUrl === nodeUrl || canonicalUrl(rawUrl) === nodeUrl);
-  const used = new Set([keyVar, urlVar?.name].filter(Boolean));
+  const used = new Set([keyVar, urlVar?.name, badUrl].filter(Boolean));
   return {
     apiKey: keyVar ? env[keyVar].trim() : "",
     baseUrl: sameAsEndpoint ? "" : pastedUrl,
     sameAsEndpoint,
     ignored: Object.keys(env).filter((k) => !used.has(k)).length,
+    badUrl,
   };
 }
 
 // The hint shown under the key field. Names what was filled, never a value.
 // keptKey: the paste had no key and the field's existing key was left in place.
 export function describePastedKeyConfig(
-  { apiKey, baseUrl, sameAsEndpoint, ignored }: PastedKeyConfig,
+  { apiKey, baseUrl, sameAsEndpoint, ignored, badUrl }: PastedKeyConfig,
   { keptKey = false }: { keptKey?: boolean } = {},
 ): string {
   const filled = [apiKey && "key", baseUrl && "endpoint URL"].filter(Boolean);
   const parts = [filled.length ? `Filled from pasted config: ${filled.join(", ")}.` : "Read the pasted config."];
   if (sameAsEndpoint) parts.push("Its URL is this endpoint's own, so the key uses that.");
+  if (badUrl) parts.push(`Its ${badUrl} isn't an http(s) URL, so the key uses this endpoint's.`);
   if (!apiKey) parts.push(keptKey ? "It has no key, so the key already entered stays." : "It has no key: paste the key here.");
   if (ignored) parts.push(`Ignored ${ignored} other variable${ignored === 1 ? "" : "s"}.`);
   return parts.join(" ");
