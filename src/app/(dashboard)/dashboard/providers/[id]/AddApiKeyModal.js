@@ -5,6 +5,7 @@ import PropTypes from "prop-types";
 import { Button, Badge, Input, Modal, Select } from "@/shared/components";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { planBulkAdd } from "@/shared/utils/bulkAdd";
+import { describePastedKeyConfig, parsePastedKeyConfig } from "@/shared/utils/parsePastedKeyConfig";
 
 const BULK_PLACEHOLDER = `name1|sk-key1\nname2|sk-key2\nsk-key-only-auto-named`;
 
@@ -33,6 +34,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
     baseUrl: "",
   });
   const [showBaseUrl, setShowBaseUrl] = useState(false);
+  const [pasteHint, setPasteHint] = useState("");
   const [azureData, setAzureData] = useState({
     azureEndpoint: "",
     apiVersion: "2024-10-01-preview",
@@ -53,6 +55,39 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
   const [mode, setMode] = useState("single"); // "single" | "bulk"
   const [bulkText, setBulkText] = useState("");
   const [bulkResult, setBulkResult] = useState(null); // { success, failed }
+
+  // A pasted Claude Code config or env lines fill the key and, on custom
+  // endpoints, the key's own URL. Returns false for a plain key.
+  const applyPastedConfig = (text) => {
+    const apiType = isCompatible ? (isAnthropic ? "anthropic" : "openai") : provider === "openai" ? "openai" : undefined;
+    const parsed = parsePastedKeyConfig(text, { endpointUrl: nodeBaseUrl, keyUrl: !!isCompatible, apiType });
+    if (!parsed) return false;
+    const urlField = parsed.baseUrl || parsed.sameAsEndpoint || parsed.badUrl ? { baseUrl: parsed.baseUrl } : {};
+    // A URL-only paste keeps a key already in the field.
+    const keptKey = !parsed.apiKey && !!formData.apiKey.trim();
+    setFormData((prev) => ({ ...prev, apiKey: parsed.apiKey || (keptKey ? prev.apiKey : ""), ...urlField }));
+    if (parsed.baseUrl) setShowBaseUrl((shown) => shown || "paste");
+    setPasteHint(describePastedKeyConfig(parsed, { keptKey }));
+    return true;
+  };
+  const apiKeyFieldProps = {
+    value: formData.apiKey,
+    // An <input> loses a paste's line breaks, so read the clipboard text itself.
+    onPaste: (e) => {
+      if (applyPastedConfig(e.clipboardData?.getData("text") || "")) e.preventDefault();
+    },
+    onChange: (e) => {
+      const value = e.target.value;
+      // Typing adds one character at a time; more at once is a drop or autofill.
+      // A paste was already read in onPaste, with its line breaks.
+      const pasted = e.nativeEvent?.inputType?.startsWith("insertFromPaste");
+      if (!pasted && value.length - formData.apiKey.length > 1 && applyPastedConfig(value)) return;
+      setPasteHint("");
+      setFormData({ ...formData, apiKey: value });
+    },
+    hint: pasteHint || undefined,
+    hintLive: true,
+  };
 
   const buildProviderSpecificData = () => {
     if (isOllamaLocal && formData.ollamaHostUrl.trim()) {
@@ -212,8 +247,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
             label="API key"
             type="password"
             icon="key"
-            value={formData.apiKey}
-            onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
+            {...apiKeyFieldProps}
             placeholder="Paste a key"
             ignorePasswordManagers
             autoFocus
@@ -232,10 +266,10 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
               onChange={(e) => setFormData({ ...formData, baseUrl: e.target.value })}
               placeholder={nodeBaseUrl || "https://..."}
               hint="Leave empty to use the endpoint's URL. Use this when this key belongs to another account or region."
-              autoFocus
+              autoFocus={showBaseUrl === "button"}
             />
           ) : (
-            <button type="button" onClick={() => setShowBaseUrl(true)} className="self-start text-xs text-primary hover:underline">
+            <button type="button" onClick={() => setShowBaseUrl("button")} className="self-start text-xs text-primary hover:underline">
               Use a different endpoint URL for this key
             </button>
           )}
@@ -318,6 +352,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
               type={isCookie ? "text" : "password"}
               value={formData.apiKey}
               onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
+              {...(isCookie ? {} : apiKeyFieldProps)}
               placeholder={credentialPlaceholder}
               className="flex-1"
               ignorePasswordManagers
@@ -372,7 +407,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
             hint="Leave empty to use the provider's URL. Use this when this key belongs to another account or region."
           />
         ) : (
-          <button type="button" onClick={() => setShowBaseUrl(true)} className="self-start text-xs text-primary hover:underline">
+          <button type="button" onClick={() => setShowBaseUrl("button")} className="self-start text-xs text-primary hover:underline">
             Use a different endpoint URL for this key
           </button>
         ))}
