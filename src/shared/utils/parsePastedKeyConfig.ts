@@ -33,10 +33,15 @@ const URL_VARS = [
 const VERSION_SUFFIX = /\/v\d+(beta)?$/i;
 const ENV_LINE = /^(?:(?:export|set)\s+|\$env:)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/i;
 
+// A doc or chat app may have turned the quotes typographic.
+const asciiQuotes = (s: string) => s.replace(/[\u201c\u201d\u201e]/g, '"').replace(/[\u2018\u2019]/g, "'");
+const TYPOGRAPHIC_QUOTE = /^[\u201c\u201d\u201e\u2018\u2019]/;
+
 const isPlainObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 
 function parseJsonLoose(text: string): unknown {
-  for (const t of [text, text.replace(/,(\s*[}\]])/g, "$1")]) {
+  const forms = [text, asciiQuotes(text)].flatMap((t) => [t, t.replace(/,(\s*[}\]])/g, "$1")]);
+  for (const t of forms) {
     try { return JSON.parse(t); } catch { /* try the next form */ }
   }
   return undefined;
@@ -61,7 +66,7 @@ const OTHER_VAR = /(?:ANTHROPIC|OPENAI)_[A-Z0-9_]*=/;
 
 // The value of a KEY=value line, or null when it isn't a single value.
 function unquote(raw: string): string | null {
-  const v = raw.trim();
+  const v = TYPOGRAPHIC_QUOTE.test(raw.trim()) ? asciiQuotes(raw.trim()) : raw.trim();
   const dq = /^"((?:[^"\\]|\\.)*)"(.*)$/.exec(v);
   const sq = /^'([^']*)'(.*)$/.exec(v);
   let value: string;
@@ -124,7 +129,7 @@ export function parsePastedKeyConfig(
 ): PastedKeyConfig | null {
   const t = String(text ?? "").trim();
   if (!t) return null;
-  const env = t.startsWith("{") || t.startsWith('"') ? envFromJson(t) : envFromLines(t);
+  const env = /^[{"\u201c\u201d]/.test(t) ? envFromJson(t) : envFromLines(t);
   if (!env) return null;
 
   const keyVars = apiType === "openai" ? [...KEY_VARS].sort((a, b) => Number(b.startsWith("OPENAI_")) - Number(a.startsWith("OPENAI_"))) : KEY_VARS;

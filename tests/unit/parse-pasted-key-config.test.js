@@ -163,6 +163,15 @@ describe("endpoint URL", () => {
     expect(parsePastedKeyConfig("ANTHROPIC_AUTH_TOKEN=sk-xxx\nANTHROPIC_BASE_URL=ftp://example.com")).toMatchObject({ baseUrl: "", ignored: 0, badUrl: "ANTHROPIC_BASE_URL" });
   });
 
+  it("reads values in typographic quotes from a doc or chat app", () => {
+    const lines = "ANTHROPIC_AUTH_TOKEN=\u201csk-xxx\u201d\nANTHROPIC_BASE_URL=\u2018https://other.example.com/api\u2019";
+    const want = { apiKey: "sk-xxx", baseUrl: "https://other.example.com/api/v1", sameAsEndpoint: false, ignored: 0, badUrl: "" };
+    expect(parsePastedKeyConfig(lines, { endpointUrl: ENDPOINT })).toEqual(want);
+    const json = SETTINGS.replace(/"([^"]*)"/g, "\u201c$1\u201d");
+    expect(parsePastedKeyConfig(json, { endpointUrl: ENDPOINT })).toEqual({ ...want, ignored: 1 });
+    expect(parsePastedKeyConfig(json.slice(json.indexOf("\u201cenv")).replace(/\}\s*$/, ""), { endpointUrl: ENDPOINT })).toEqual({ ...want, ignored: 1 });
+  });
+
   // Requests must reach where Claude Code would have sent them: ANTHROPIC_BASE_URL + /v1/messages.
   it("routes requests where Claude Code would have sent them", () => {
     const { baseUrl } = parsePastedKeyConfig(SETTINGS, { endpointUrl: ENDPOINT });
@@ -185,6 +194,7 @@ describe("plain keys stay plain", () => {
     "{not json at all}",
     `{"ANTHROPIC_AUTH_TOKEN": "sk-xxx"`,
     `"quoted-key"`,
+    "\u201cquoted-key\u201d",
     "{}",
     `{"env": {}}`,
     `{"foo": "bar"}`,
