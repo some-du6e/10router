@@ -133,6 +133,18 @@ describe("upstream answers a stream request with JSON", () => {
     expect(handleNonStreamingResponse).not.toHaveBeenCalled();
   });
 
+  it("hands the stream's start save the request config its complete save uses", async () => {
+    const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
+    const { handleStreamingResponse, buildOnStreamComplete } = await import("../../open-sse/handlers/chatCore/streamingHandler.js");
+    vi.mocked(handleStreamingResponse).mockClear();
+    const streamRequest = { body: {}, stream: true };
+    vi.mocked(buildOnStreamComplete).mockReturnValueOnce({ onStreamComplete: vi.fn(), streamDetailId: "d1", streamRequest });
+    executeMock.mockResolvedValue(upstream("text/event-stream"));
+    await handleChatCore(opts());
+    expect(handleStreamingResponse).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(handleStreamingResponse).mock.calls[0][0].streamRequest).toBe(streamRequest);
+  });
+
   it("replays a JSON reply as SSE when the client asked to stream", async () => {
     const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
     const { handleNonStreamingResponse } = await import("../../open-sse/handlers/chatCore/nonStreamingHandler.js");
