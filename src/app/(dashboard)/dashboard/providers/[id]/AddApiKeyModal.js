@@ -66,7 +66,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
     // A URL-only paste keeps a key already in the field.
     const keptKey = !parsed.apiKey && !!formData.apiKey.trim();
     setFormData((prev) => ({ ...prev, apiKey: parsed.apiKey || (keptKey ? prev.apiKey : ""), ...urlField }));
-    if (parsed.baseUrl) setShowBaseUrl(true);
+    if (parsed.baseUrl) setShowBaseUrl((shown) => shown || "paste");
     setPasteHint(describePastedKeyConfig(parsed, { keptKey }));
     return true;
   };
@@ -86,6 +86,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
       setFormData({ ...formData, apiKey: value });
     },
     hint: pasteHint || undefined,
+    hintLive: true,
   };
 
   const buildProviderSpecificData = () => {
@@ -265,10 +266,10 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
               onChange={(e) => setFormData({ ...formData, baseUrl: e.target.value })}
               placeholder={nodeBaseUrl || "https://..."}
               hint="Leave empty to use the endpoint's URL. Use this when this key belongs to another account or region."
-              autoFocus
+              autoFocus={showBaseUrl === "button"}
             />
           ) : (
-            <button type="button" onClick={() => setShowBaseUrl(true)} className="self-start text-xs text-primary hover:underline">
+            <button type="button" onClick={() => setShowBaseUrl("button")} className="self-start text-xs text-primary hover:underline">
               Use a different endpoint URL for this key
             </button>
           )}
@@ -406,7 +407,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
             hint="Leave empty to use the provider's URL. Use this when this key belongs to another account or region."
           />
         ) : (
-          <button type="button" onClick={() => setShowBaseUrl(true)} className="self-start text-xs text-primary hover:underline">
+          <button type="button" onClick={() => setShowBaseUrl("button")} className="self-start text-xs text-primary hover:underline">
             Use a different endpoint URL for this key
           </button>
         ))}

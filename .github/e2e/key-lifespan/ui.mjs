@@ -92,6 +92,8 @@ async function hintShown(text) {
   await hintText(text).waitFor({ state: "visible", timeout: 10000 }).catch(() => {});
   return hintText(text).isVisible();
 }
+const announced = async (text) => (await page.getByRole("status").filter({ hasText: text }).count()) === 1;
+const isFocused = (field) => field.evaluate((el) => el === document.activeElement);
 const filledAny = () => page.getByText("Filled from pasted config", { exact: false });
 const urlButton = () => page.getByRole("button", { name: "Use a different endpoint URL for this key" });
 
@@ -106,7 +108,9 @@ await openAddKey("/dashboard/providers/openai-compatible-e2e-beta", "openai-comp
 await paste(keyField(), snippet);
 const pasteHint = "Filled from pasted config: key, endpoint URL. Ignored 1 other variable.";
 check("paste: hint shown", await hintShown(pasteHint));
+check("paste: hint announced", await announced(pasteHint));
 check("paste: key field holds only the key", (await keyField().inputValue()) === "sk-xxx");
+check("paste: focus stays on the key field", await isFocused(keyField()));
 const keyUrlField = page.getByPlaceholder("https://e2eb.e2e.invalid/v1");
 const keyUrlShown = await keyUrlField.isVisible();
 check("paste: per-key URL revealed", keyUrlShown);
