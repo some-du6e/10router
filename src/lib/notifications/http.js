@@ -76,8 +76,9 @@ export async function notificationFetch(urlValue, options = {}, deps = {}) {
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), NOTIFICATION_CONFIG.requestTimeoutMs);
+  let response;
   try {
-    const response = await fetchImpl(url, {
+    response = await fetchImpl(url, {
       ...fetchOptions,
       redirect: "manual",
       signal: controller.signal,
@@ -92,6 +93,9 @@ export async function notificationFetch(urlValue, options = {}, deps = {}) {
     }
     return response;
   } finally {
+    // Senders only need the HTTP status. Release unread bodies before closing
+    // the pinned dispatcher, which otherwise waits for the response to finish.
+    await response?.body?.cancel?.().catch(() => {});
     clearTimeout(timeout);
     await dispatcher?.close().catch(() => {});
   }
