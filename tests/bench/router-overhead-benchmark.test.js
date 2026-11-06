@@ -218,36 +218,12 @@ const clientHeaders = () => ({
   "x-app": "cli",
 });
 
-// Optional phase marks: a local patch can call globalThis.__bm?.("name") along
-// the path; each request then reports the time between consecutive marks.
 async function viaRouter(bodyStr) {
   const request = new Request("http://localhost/v1/messages", { method: "POST", headers: clientHeaders(), body: bodyStr });
-  const marks = [];
-  globalThis.__bm = (name) => marks.push([name, performance.now()]);
   const t0 = performance.now();
-  marks.push(["t0", t0]);
   const response = await POST(request);
   const headersAt = performance.now() - t0;
-  marks.push(["route:returned", performance.now()]);
-  const r = await readTimed(response, t0);
-  marks.push(["client:firstByte", t0 + r.ttfb]);
-  marks.push(["client:done", t0 + r.total]);
-  marks.sort((a, b) => a[1] - b[1]);
-  delete globalThis.__bm;
-  return { ...r, headersAt, status: response.status, marks };
-}
-
-function phaseTable(rows) {
-  const per = new Map();
-  for (const { marks } of rows) {
-    if (!marks || marks.length <= 4) return null;
-    for (let i = 1; i < marks.length; i++) {
-      const key = `${marks[i - 1][0]} → ${marks[i][0]}`;
-      if (!per.has(key)) per.set(key, { order: i, xs: [] });
-      per.get(key).xs.push(marks[i][1] - marks[i - 1][1]);
-    }
-  }
-  return [...per.entries()].sort((a, b) => a[1].order - b[1].order).map(([k, v]) => [k, median(v.xs)]);
+  return { ...(await readTimed(response, t0)), headersAt, status: response.status };
 }
 
 async function direct(bodyStr, route) {
@@ -263,7 +239,7 @@ async function run(label, fn) {
   // Request details buffer: flush between scenarios so one scenario's backlog
   // never lands inside another's timing.
   await repo.__test__.flush();
-  return { label, phases: phaseTable(rows), ttfb: median(rows.map((r) => r.ttfb)), ttfbP90: p90(rows.map((r) => r.ttfb)), total: median(rows.map((r) => r.total)), headers: median(rows.map((r) => r.headersAt)), sample: rows[0] };
+  return { label, ttfb: median(rows.map((r) => r.ttfb)), ttfbP90: p90(rows.map((r) => r.ttfb)), total: median(rows.map((r) => r.total)), headers: median(rows.map((r) => r.headersAt)), sample: rows[0] };
 }
 
 describe("router overhead", () => {
@@ -323,11 +299,6 @@ describe("router overhead", () => {
     for (const [k, label] of [["start", "split: start row"], ["end", "split: complete row"], ["same", "same batch: both rows"]]) {
       const xs = flushes[k];
       out.push(`  ${label.padEnd(40)} ${fmt(median(xs.map((b) => b.wall)))} ${fmt(median(xs.map((b) => b.busy)))} ${fmt(median(xs.map((b) => b.block)))}`);
-    }
-    for (const r of results) {
-      if (!r.phases) continue;
-      out.push(`\nphases, ${r.label} (median ms)`);
-      for (const [k, v] of r.phases) if (v >= 0.05) out.push(`  ${k.padEnd(52)} ${fmt(v)}`);
     }
     process.stderr.write(out.join("\n") + "\n");
   }, 600_000);
