@@ -101,6 +101,14 @@ describe("endpoint URL", () => {
     expect(parsePastedKeyConfig(text).ignored).toBe(1);
   });
 
+  it("takes the endpoint's own API's key and URL when both are set", () => {
+    const text = "ANTHROPIC_AUTH_TOKEN=sk-a\nANTHROPIC_BASE_URL=https://a.example.com\nOPENAI_API_KEY=sk-o\nOPENAI_BASE_URL=https://o.example.com/v1";
+    expect(parsePastedKeyConfig(text, { apiType: "openai" })).toMatchObject({ apiKey: "sk-o", baseUrl: "https://o.example.com/v1", ignored: 2 });
+    expect(parsePastedKeyConfig(text, { apiType: "anthropic" })).toMatchObject({ apiKey: "sk-a", baseUrl: "https://a.example.com/v1", ignored: 2 });
+    // With only the other API's variables, those are used.
+    expect(parsePastedKeyConfig(SETTINGS, { apiType: "openai" })).toMatchObject({ apiKey: "sk-xxx", baseUrl: "https://other.example.com/api/v1" });
+  });
+
   it("sets no per-key URL when it is the endpoint's own", () => {
     for (const url of ["https://example.com/api", "https://example.com/api/", "https://EXAMPLE.com/api/v1", "https://example.com/api/v1/messages"]) {
       const r = parsePastedKeyConfig(`ANTHROPIC_AUTH_TOKEN=sk-xxx\nANTHROPIC_BASE_URL=${url}`, { endpointUrl: `${ENDPOINT}/` });

@@ -112,18 +112,20 @@ function toEndpointUrl(raw: string, addVersion: boolean): string {
 }
 
 // endpointUrl: the endpoint's own base URL. keyUrl: whether this dialog can
-// give the key its own URL (custom endpoints only). Returns null when the text
+// give the key its own URL (custom endpoints only). apiType: the endpoint's
+// API, whose key wins when the paste has both. Returns null when the text
 // isn't a config naming a key or URL.
 export function parsePastedKeyConfig(
   text: unknown,
-  { endpointUrl = "", keyUrl = true }: { endpointUrl?: string | null; keyUrl?: boolean } = {},
+  { endpointUrl = "", keyUrl = true, apiType }: { endpointUrl?: string | null; keyUrl?: boolean; apiType?: "anthropic" | "openai" } = {},
 ): PastedKeyConfig | null {
   const t = String(text ?? "").trim();
   if (!t) return null;
   const env = t.startsWith("{") || t.startsWith('"') ? envFromJson(t) : envFromLines(t);
   if (!env) return null;
 
-  const keyVar = KEY_VARS.find((k) => env[k]?.trim());
+  const keyVars = apiType === "openai" ? [...KEY_VARS].sort((a, b) => Number(b.startsWith("OPENAI_")) - Number(a.startsWith("OPENAI_"))) : KEY_VARS;
+  const keyVar = keyVars.find((k) => env[k]?.trim());
   const family = keyVar?.startsWith("OPENAI_") ? "OPENAI_" : "ANTHROPIC_";
   const urlVars = keyUrl ? [...URL_VARS].sort((a, b) => Number(b.family === family) - Number(a.family === family)) : [];
   const urlVar = urlVars.find((u) => toEndpointUrl(env[u.name] || "", u.addVersion));
