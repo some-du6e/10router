@@ -44,7 +44,7 @@ function buildTransformStream({ provider, sourceFormat, targetFormat, userAgent,
 /**
  * Handle streaming response — pipe provider SSE through transform stream to client.
  */
-export async function handleStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, toolNamespaces, streamController, onStreamComplete, streamDetailId, reqTag, log }) {
+export async function handleStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, toolNamespaces, streamController, onStreamComplete, streamDetailId, streamRequest, reqTag, log }) {
   if (onRequestSuccess) {
     Promise.resolve()
       .then(onRequestSuccess)
@@ -98,7 +98,7 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
     provider, model, connectionId,
     latency: { ttft: 0, total: Date.now() - requestStartTime },
     tokens: { prompt_tokens: 0, completion_tokens: 0 },
-    request: extractRequestConfig(body, stream),
+    request: streamRequest || extractRequestConfig(body, stream),
     providerRequest: finalBody || translatedBody || null,
     providerResponse: "[Streaming - raw response not captured]",
     response: { content: "[Streaming in progress...]", thinking: null, type: "streaming" },
@@ -118,6 +118,8 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
  */
 export function buildOnStreamComplete({ provider, model, connectionId, apiKey, requestStartTime, body, stream, finalBody, translatedBody, clientRawRequest, reqTag, log }) {
   const streamDetailId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+  // One object for both saves of this row, so the second reuses the first's capping.
+  const streamRequest = extractRequestConfig(body, stream);
 
   const onStreamComplete = (contentObj, usage, ttftAt) => {
     const latency = {
@@ -132,7 +134,7 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
       provider, model, connectionId,
       latency,
       tokens: usage || { prompt_tokens: 0, completion_tokens: 0 },
-      request: extractRequestConfig(body, stream),
+      request: streamRequest,
       providerRequest: finalBody || translatedBody || null,
       providerResponse: { content: safeContent, thinking: safeThinking, tool_calls: toolCalls, type: "streaming" },
       response: { content: safeContent, thinking: safeThinking, tool_calls: toolCalls, type: "streaming" },
@@ -146,5 +148,5 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
     if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency }));
   };
 
-  return { onStreamComplete, streamDetailId };
+  return { onStreamComplete, streamDetailId, streamRequest };
 }
