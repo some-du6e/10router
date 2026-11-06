@@ -62,6 +62,16 @@ describe("config shapes", () => {
     expect(parsePastedKeyConfig(`$env:ANTHROPIC_AUTH_TOKEN = "sk-xxx"`).apiKey).toBe("sk-xxx");
   });
 
+  it("reads the Windows prefixes in any case", () => {
+    expect(parsePastedKeyConfig(`$Env:ANTHROPIC_AUTH_TOKEN="sk-xxx"\n$Env:ANTHROPIC_BASE_URL="https://o.example.com/api"`)).toMatchObject({
+      apiKey: "sk-xxx",
+      baseUrl: "https://o.example.com/api/v1",
+    });
+    expect(parsePastedKeyConfig("SET ANTHROPIC_AUTH_TOKEN=sk-xxx").apiKey).toBe("sk-xxx");
+    expect(parsePastedKeyConfig("Set ANTHROPIC_AUTH_TOKEN=sk-xxx").apiKey).toBe("sk-xxx");
+    expect(parsePastedKeyConfig("Export ANTHROPIC_AUTH_TOKEN=sk-xxx").apiKey).toBe("sk-xxx");
+  });
+
   it("takes the key from ANTHROPIC_AUTH_TOKEN, then ANTHROPIC_API_KEY, then OPENAI_API_KEY", () => {
     expect(parsePastedKeyConfig("OPENAI_API_KEY=sk-c\nANTHROPIC_API_KEY=sk-b\nANTHROPIC_AUTH_TOKEN=sk-a").apiKey).toBe("sk-a");
     expect(parsePastedKeyConfig("OPENAI_API_KEY=sk-c\nANTHROPIC_API_KEY=sk-b").apiKey).toBe("sk-b");

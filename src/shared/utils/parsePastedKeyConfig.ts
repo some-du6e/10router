@@ -28,7 +28,7 @@ const URL_VARS = [
 ];
 
 const VERSION_SUFFIX = /\/v\d+(beta)?$/i;
-const ENV_LINE = /^(?:export\s+|set\s+|\$env:)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/;
+const ENV_LINE = /^(?:(?:export|set)\s+|\$env:)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/i;
 
 const isPlainObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 
