@@ -543,8 +543,8 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   }
 
   // Streaming response
-  const { onStreamComplete, streamDetailId } = buildOnStreamComplete({ ...sharedCtx });
-  return handleStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, userAgent, reqLogger, toolNameMap, customToolNames, toolNamespaces, streamController, onStreamComplete, streamDetailId });
+  const { onStreamComplete, streamDetailId, streamRequest } = buildOnStreamComplete({ ...sharedCtx });
+  return handleStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, userAgent, reqLogger, toolNameMap, customToolNames, toolNamespaces, streamController, onStreamComplete, streamDetailId, streamRequest });
 }
 
 export function isTokenExpiringSoon(expiresAt, bufferMs = 5 * 60 * 1000) {
