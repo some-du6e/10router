@@ -5,9 +5,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { respondWithEarlyHeaders, buildEarlyErrorBytes } from "../../open-sse/utils/earlyHeaders.js";
-import { SSE_KEEPALIVE } from "../../open-sse/utils/sseConstants.js";
+import { SSE_KEEPALIVE, JSON_KEEPALIVE } from "../../open-sse/utils/sseConstants.js";
 import { errorResponse } from "../../open-sse/utils/error.js";
 import { createLimitHoldResponse } from "../../open-sse/utils/limitHold.js";
+import { clientDemandsJson } from "../../open-sse/utils/replyShape.js";
 
 const state = { settings: {}, accounts: [], exhausted: null, creds: null, core: null, coreCalls: [], markCalls: [], onMark: null, credLookups: 0, modelLookups: [] };
 
@@ -407,22 +408,15 @@ describe("handleChat with early headers", () => {
     expect(state.coreCalls).toHaveLength(2);
   });
 
-  it("a non-stream request is never committed early", async () => {
-    state.core = (args) => later(40_000, fail(503, "overloaded"), args.clientSignal);
-    const p = request("/v1/messages", { ...claudeBody, stream: false }, { earlyHeaders: true });
-    await vi.advanceTimersByTimeAsync(80_000);
-    expect((await p).status).toBe(503);
-  });
-
-  // chatCore streams a body without `stream` unless the client asks for JSON.
-  it("a request that leaves stream out is never committed early", async () => {
+  // Without `stream` or an Accept that asks for JSON, whether the client gets a
+  // stream depends on the provider, so neither early shape is safe.
+  it("a request that leaves stream out and doesn't ask for JSON is never committed early", async () => {
     state.core = (args) => later(40_000, fail(503, "overloaded"), args.clientSignal);
     const { stream: _stream, ...noStream } = claudeBody;
-    const p = request("/v1/messages", noStream, { earlyHeaders: true }, { headers: { accept: "application/json" } });
+    const p = request("/v1/messages", noStream, { earlyHeaders: true }, { headers: { accept: "*/*" } });
     await vi.advanceTimersByTimeAsync(80_000);
     const res = await p;
     expect(res.status).toBe(503);
-    expect(res.headers.get("Content-Type")).toContain("application/json");
   });
 
   it("a format without keepalives on /v1/chat/completions is never committed early", async () => {
@@ -700,6 +694,315 @@ describe("handleChat with early headers", () => {
     expect((await p).status).toBe(499);
     expect(state.coreCalls).toHaveLength(1);
     expect(state.markCalls).toHaveLength(0);
+  });
+});
+
+// A non-streaming client (Claude Code's non-streaming fallback, the OpenAI and
+// Anthropic SDKs' create() without stream) reads one JSON body. Committed early
+// it gets 200 + application/json, a newline per keepalive, then the body.
+const CLAUDE_MESSAGE = { id: "msg_1", type: "message", role: "assistant", model: "m1", content: [{ type: "text", text: "pong" }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } };
+const jsonOk = (body = CLAUDE_MESSAGE) => ({ success: true, response: Response.json(body) });
+// What both SDKs do with a JSON content type: read the text and JSON.parse it.
+const sdkParse = (text) => new Response(text, { headers: { "content-type": "application/json" } }).json();
+
+async function earlyJsonRun(run, sourceFormat, settleMs = 10_000) {
+  const p = respondWithEarlyHeaders({ run, sourceFormat, json: true, delayMs: DELAY, keepaliveMs: KEEPALIVE });
+  await vi.advanceTimersByTimeAsync(DELAY);
+  const res = await p;
+  expect(res.status).toBe(200);
+  const out = read(res);
+  await vi.advanceTimersByTimeAsync(settleMs);
+  await out.pump;
+  return out.text;
+}
+
+describe("respondWithEarlyHeaders for a JSON client", () => {
+  it("a slow answer gets 200 JSON headers at the delay, a newline per keepalive, then the body", async () => {
+    const p = respondWithEarlyHeaders({ run: () => later(100_000, () => Response.json(CLAUDE_MESSAGE)), sourceFormat: "claude", json: true, delayMs: DELAY, keepaliveMs: KEEPALIVE });
+    await vi.advanceTimersByTimeAsync(DELAY);
+    const res = await p;
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("application/json");
+    expect(res.headers.get("Content-Length")).toBeNull();
+    const out = read(res);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(out.text).toBe(JSON_KEEPALIVE);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(out.text).toBe(JSON_KEEPALIVE.repeat(5));
+    await vi.advanceTimersByTimeAsync(10_000);
+    await out.pump;
+    expect(out.text).toBe(JSON_KEEPALIVE.repeat(5) + JSON.stringify(CLAUDE_MESSAGE));
+    expect(await sdkParse(out.text)).toEqual(CLAUDE_MESSAGE);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a fast answer is returned as is, real status and headers included", async () => {
+    const real = Response.json({ error: { message: "nope" } }, { status: 429, headers: { "retry-after": "7" } });
+    const p = respondWithEarlyHeaders({ run: () => later(5_000, real), sourceFormat: "claude", json: true, delayMs: DELAY, keepaliveMs: KEEPALIVE });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await p).toBe(real);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    ["delay 0", 0, KEEPALIVE],
+    ["keepalive 0", DELAY, 0],
+  ])("%s turns it off", async (_name, delayMs, keepaliveMs) => {
+    const real = new Response("x", { status: 503 });
+    const p = respondWithEarlyHeaders({ run: () => later(120_000, real), sourceFormat: "claude", json: true, delayMs, keepaliveMs });
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(await p).toBe(real);
+  });
+
+  it.each([
+    ["claude", 503, (b) => expect(b).toEqual({ type: "error", error: { type: "overloaded_error", message: "overloaded", code: "service_unavailable" } })],
+    ["claude", 400, (b) => expect(b).toEqual({ type: "error", error: { type: "invalid_request_error", message: "overloaded", code: "bad_request" } })],
+    ["openai", 503, (b) => expect(b).toEqual({ error: { message: "overloaded", type: "server_error", code: "service_unavailable" } })],
+    ["openai-responses", 503, (b) => expect(b).toMatchObject({ object: "response", status: "failed", output: [], error: { message: "overloaded", code: "server_error" } })],
+    ["openai-responses", 429, (b) => expect(b.error.code).toBe("rate_limit_exceeded")],
+    ["openai-responses", 400, (b) => expect(b.error.code).toBe("invalid_prompt")],
+  ])("a slow %s failure (%i) is written as that API's error body", async (format, status, check) => {
+    const text = await earlyJsonRun(() => later(40_000, () => errorResponse(status, "overloaded")), format);
+    expect(text.startsWith(JSON_KEEPALIVE)).toBe(true);
+    check(await sdkParse(text));
+  });
+
+  it("an unexpected throw is a generic 500 error body, the detail only in the log", async () => {
+    const log = { error: vi.fn(), info: vi.fn() };
+    const p = respondWithEarlyHeaders({ run: () => later(40_000, () => Promise.reject(new Error("secret internals"))), sourceFormat: "openai", json: true, delayMs: DELAY, keepaliveMs: KEEPALIVE, log });
+    await vi.advanceTimersByTimeAsync(DELAY);
+    const out = read(await p);
+    await vi.advanceTimersByTimeAsync(20_000);
+    await out.pump;
+    expect(out.text).not.toContain("secret");
+    expect((await sdkParse(out.text)).error.message).toBe("Internal server error");
+    expect(log.error.mock.calls[0][1]).toContain("secret internals");
+  });
+
+  it("an ok stream where JSON was due is a 502 error body, and the stream is cancelled", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream({ cancel });
+    const text = await earlyJsonRun(() => later(40_000, () => new Response(body, { headers: SSE_HEADERS })), "openai");
+    expect((await sdkParse(text)).error.message).toBe("upstream reply was not JSON");
+    expect(cancel).toHaveBeenCalled();
+  });
+
+  it("a body that fails before its first byte becomes an error body", async () => {
+    const body = new ReadableStream({ pull(c) { c.error(new Error("reset")); } });
+    const text = await earlyJsonRun(() => later(40_000, () => new Response(body, { headers: { "content-type": "application/json" } })), "claude");
+    expect((await sdkParse(text)).type).toBe("error");
+  });
+
+  // Half a JSON body can't be finished into valid JSON: cut the connection,
+  // which both SDKs raise as an error, rather than end it as if it were whole.
+  it("a body that fails halfway errors the reply instead of ending it", async () => {
+    let ctrl;
+    const body = new ReadableStream({ start(c) { ctrl = c; } });
+    const p = respondWithEarlyHeaders({ run: () => later(40_000, () => new Response(body, { headers: { "content-type": "application/json" } })), sourceFormat: "claude", json: true, delayMs: DELAY, keepaliveMs: KEEPALIVE });
+    await vi.advanceTimersByTimeAsync(DELAY);
+    const res = await p;
+    const reader = res.body.getReader();
+    const chunks = [];
+    const all = (async () => { for (;;) { const r = await reader.read(); if (r.done) return "done"; chunks.push(dec.decode(r.value)); } })().catch((e) => e);
+    await vi.advanceTimersByTimeAsync(10_000);
+    ctrl.enqueue(enc.encode('{"id":"msg_1",'));
+    await vi.advanceTimersByTimeAsync(0);
+    ctrl.error(new Error("upstream reset"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await all).toBeInstanceOf(Error);
+    expect(chunks.join("")).toContain('{"id":"msg_1",');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a client that leaves while waiting aborts run's signal and clears the timers", async () => {
+    let signal;
+    const p = respondWithEarlyHeaders({ run: (s) => { signal = s; return later(100_000, () => Response.json(CLAUDE_MESSAGE), s); }, sourceFormat: "claude", json: true, delayMs: DELAY, keepaliveMs: KEEPALIVE });
+    await vi.advanceTimersByTimeAsync(DELAY);
+    const out = read(await p);
+    await vi.advanceTimersByTimeAsync(KEEPALIVE);
+    expect(signal.aborted).toBe(false);
+    await out.reader.cancel();
+    expect(signal.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("handleChat early headers for a non-streaming request", () => {
+  const claudeJson = { ...claudeBody, stream: false };
+  const { stream: _s, ...openaiNoStream } = openaiBody;
+  // The OpenAI and Anthropic SDKs leave `stream` out of a create() call and send this.
+  const SDK_ACCEPT = { headers: { accept: "application/json" } };
+
+  // Claude Code and both SDKs send Accept: application/json on a streaming call too.
+  it.each([
+    ["/v1/messages", claudeBody],
+    ["/v1/chat/completions", openaiBody],
+    ["/v1/responses", { model: "slowp/m1", stream: true, input: "hi" }],
+  ])("stream: true with the SDK's Accept still gets an SSE stream on %s", async (path, body) => {
+    state.core = (args) => later(40_000, fail(503, "overloaded"), args.clientSignal);
+    const p = request(path, body, { earlyHeaders: true }, SDK_ACCEPT);
+    await vi.advanceTimersByTimeAsync(DELAY);
+    const res = await p;
+    expect(res.headers.get("Content-Type")).toContain("text/event-stream");
+    const out = read(res);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await out.pump;
+  });
+
+  it.each([
+    [{ stream: true }, { accept: "application/json" }, false],
+    [{ stream: true }, null, false],
+    [{ stream: false }, { accept: "text/event-stream" }, true],
+    [{}, { accept: "application/json" }, true],
+    [{}, { accept: "application/json, text/event-stream" }, false],
+    [{}, { accept: "*/*" }, false],
+    [{}, null, false],
+  ])("clientDemandsJson(%j, %j) is %s", (body, headers, want) => {
+    expect(clientDemandsJson(body, headers)).toBe(want);
+  });
+
+  it("a fast answer is the routed Response itself", async () => {
+    const reply = jsonOk();
+    state.core = () => reply;
+    const res = await request("/v1/messages", claudeJson, { earlyHeaders: true });
+    expect(res).toBe(reply.response);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a fast failure keeps its real HTTP status", async () => {
+    state.core = () => fail(503, "overloaded");
+    const res = await request("/v1/messages", claudeJson, { earlyHeaders: true });
+    expect(res.status).toBe(503);
+    expect(res.headers.get("Content-Type")).toContain("application/json");
+  });
+
+  it("the outage: first account hangs 92s then 500s, the next answers; 200 with the reply, the first account locked", async () => {
+    state.core = (args, n) => (n === 1
+      ? later(92_000, () => ({ success: false, status: 500, error: "", response: Response.json({ message: "" }, { status: 500 }) }), args.clientSignal)
+      : later(40_000, () => jsonOk(), args.clientSignal));
+    const p = request("/v1/messages", claudeJson, { earlyHeaders: true });
+    await vi.advanceTimersByTimeAsync(DELAY);
+    const res = await p;
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("application/json");
+    const out = read(res);
+    await vi.advanceTimersByTimeAsync(110_000);
+    await out.pump;
+    // Never more than one keepalive interval without a byte.
+    expect(out.text.split(JSON_KEEPALIVE).length - 1).toBeGreaterThanOrEqual(Math.floor((132_000 - DELAY) / KEEPALIVE));
+    expect(await sdkParse(out.text)).toEqual(CLAUDE_MESSAGE);
+    expect(state.coreCalls.map((c) => c.connectionId)).toEqual(["c1", "c2"]);
+    expect(state.markCalls.map((c) => c[0])).toEqual(["c1"]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    ["/v1/messages", claudeJson, {}, (b) => expect(b).toMatchObject({ type: "error", error: { type: "overloaded_error", message: expect.stringContaining("overloaded") } })],
+    ["/v1/chat/completions", { ...openaiBody, stream: false }, {}, (b) => expect(b).toMatchObject({ error: { message: expect.stringContaining("overloaded"), type: "server_error" } })],
+    ["/v1/chat/completions (SDK, no stream)", openaiNoStream, SDK_ACCEPT, (b) => expect(b.error.message).toContain("overloaded")],
+    ["/v1/responses", { model: "slowp/m1", stream: false, input: "hi" }, {}, (b) => expect(b).toMatchObject({ object: "response", status: "failed", error: { code: "server_error", message: expect.stringContaining("overloaded") } })],
+  ])("slow and every account fails: an error body on %s", async (path, body, extra, check) => {
+    state.core = (args) => later(40_000, fail(503, "overloaded"), args.clientSignal);
+    const p = request(path.split(" ")[0], body, { earlyHeaders: true }, extra);
+    await vi.advanceTimersByTimeAsync(DELAY);
+    const res = await p;
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("application/json");
+    const out = read(res);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await out.pump;
+    check(await sdkParse(out.text));
+    expect(state.coreCalls).toHaveLength(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("an SDK call without stream on /v1/chat/completions gets its slow reply as JSON", async () => {
+    const completion = { id: "c1", object: "chat.completion", created: 1, model: "m1", choices: [{ index: 0, message: { role: "assistant", content: "pong" }, finish_reason: "stop" }] };
+    state.core = (args) => later(50_000, () => jsonOk(completion), args.clientSignal);
+    const p = request("/v1/chat/completions", openaiNoStream, { earlyHeaders: true }, SDK_ACCEPT);
+    await vi.advanceTimersByTimeAsync(DELAY);
+    const res = await p;
+    expect(res.headers.get("Content-Type")).toBe("application/json");
+    const out = read(res);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await out.pump;
+    expect(await sdkParse(out.text)).toEqual(completion);
+  });
+
+  it("client leaves after the headers: upstream aborted, no other account tried or locked, no timer left", async () => {
+    state.core = (args) => later(100_000, () => jsonOk(), args.clientSignal);
+    const p = request("/v1/messages", claudeJson, { earlyHeaders: true });
+    await vi.advanceTimersByTimeAsync(DELAY);
+    const out = read(await p);
+    await vi.advanceTimersByTimeAsync(KEEPALIVE);
+    await out.reader.cancel();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(state.coreCalls).toHaveLength(1);
+    expect(state.coreCalls[0].clientSignal.aborted).toBe(true);
+    expect(state.markCalls).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("off for routes that don't ask for it", async () => {
+    state.core = (args) => later(40_000, fail(503, "overloaded"), args.clientSignal);
+    const p = request("/v1/messages", claudeJson);
+    await vi.advanceTimersByTimeAsync(80_000);
+    expect((await p).status).toBe(503);
+  });
+
+  describe("kill switches", () => {
+    afterEach(() => { vi.unstubAllEnvs(); vi.resetModules(); });
+    // A slow failure on a JSON and a streaming request, checked at the delay.
+    const atDelay = async (env) => {
+      for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
+      vi.resetModules();
+      const { handleChat: fresh } = await import("@/sse/handlers/chat.js");
+      state.core = (args) => later(40_000, fail(503, "overloaded"), args.clientSignal);
+      const send = (body) => fresh(new Request("http://localhost/v1/messages", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      }), null, { earlyHeaders: true });
+      const settledBy = (p) => Promise.race([p.then((r) => r.headers.get("Content-Type")), new Promise((r) => setTimeout(r, DELAY + 1, "pending"))]);
+      const json = settledBy(send(claudeJson));
+      const stream = settledBy(send(claudeBody));
+      await vi.advanceTimersByTimeAsync(DELAY + 1);
+      const out = { json: await json, stream: await stream };
+      await vi.advanceTimersByTimeAsync(60_000);
+      return out;
+    };
+
+    it("NON_STREAM_EARLY_HEADERS_MS=0 turns off only the JSON reply", async () => {
+      expect(await atDelay({ NON_STREAM_EARLY_HEADERS_MS: "0" })).toEqual({ json: "pending", stream: "text/event-stream" });
+    });
+
+    it.each([
+      ["STREAM_EARLY_HEADERS_MS=0", { STREAM_EARLY_HEADERS_MS: "0" }],
+      ["STREAM_KEEPALIVE_MS=0", { STREAM_KEEPALIVE_MS: "0" }],
+    ])("%s turns off both", async (_name, env) => {
+      expect(await atDelay(env)).toEqual({ json: "pending", stream: "pending" });
+    });
+
+    it("by default both commit early", async () => {
+      expect(await atDelay({})).toEqual({ json: "application/json", stream: "text/event-stream" });
+    });
+  });
+});
+
+describe("NON_STREAM_EARLY_HEADERS_MS", () => {
+  afterEach(() => { vi.unstubAllEnvs(); vi.resetModules(); });
+  const load = async (env) => {
+    for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
+    vi.resetModules();
+    return (await import("../../open-sse/config/runtimeConfig.js")).NON_STREAM_EARLY_HEADERS_MS;
+  };
+
+  it("follows STREAM_EARLY_HEADERS_MS unless set, accepts 0, ignores junk", async () => {
+    expect(await load({})).toBe(30_000);
+    expect(await load({ STREAM_EARLY_HEADERS_MS: "0" })).toBe(0);
+    expect(await load({ STREAM_EARLY_HEADERS_MS: "20000" })).toBe(20_000);
+    expect(await load({ STREAM_EARLY_HEADERS_MS: "", NON_STREAM_EARLY_HEADERS_MS: "0" })).toBe(0);
+    expect(await load({ STREAM_EARLY_HEADERS_MS: "0", NON_STREAM_EARLY_HEADERS_MS: "45000" })).toBe(45_000);
+    expect(await load({ STREAM_EARLY_HEADERS_MS: "", NON_STREAM_EARLY_HEADERS_MS: "soon" })).toBe(30_000);
   });
 });
 

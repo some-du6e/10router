@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "open-sse/utils/earlyHeaders.js"
+      - "open-sse/utils/replyShape.js"
       - "open-sse/utils/streamHandler.js"
       - "open-sse/utils/streamHelpers.js"
       - "open-sse/utils/responsesStreamHelpers.js"
@@ -31,6 +32,8 @@ on:
       - "src/app/api/v1beta/models/**"
       - "tests/unit/stream-early-headers*.test.js"
       - "tests/unit/chat-core-client-signal.test.js"
+      - "tests/unit/client-receives-stream.test.js"
+      - "tests/unit/chat-core-transport-selection.test.js"
       - ".github/workflows/stream-early-headers.yml"
   workflow_dispatch:
 
@@ -68,10 +71,12 @@ jobs:
           unit/chat-core-failure-detail.test.js
           unit/chat-core-transport-selection.test.js
           unit/force-stream-config.test.js
+          unit/client-receives-stream.test.js
       - name: Lint
         run: >
           ./node_modules/.bin/eslint
           open-sse/utils/earlyHeaders.js
+          open-sse/utils/replyShape.js
           open-sse/config/runtimeConfig.js
           open-sse/config/errorConfig.js
           open-sse/handlers/chatCore.js

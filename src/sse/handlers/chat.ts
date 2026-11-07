@@ -14,6 +14,7 @@ import { resolveAutoCombo, blockedBillingSets, connectionBilling, billingPolicyA
 import type { BillingSet } from "../services/autoCombo.js";
 import { BUILTIN_MODEL_ALIASES } from "open-sse/services/model.js";
 import { handleChatCore, clientReceivesStream } from "open-sse/handlers/chatCore.js";
+import { clientDemandsJson } from "open-sse/utils/replyShape.js";
 import { KEEPALIVE_FORMATS } from "open-sse/utils/sseConstants.js";
 import { respondWithEarlyHeaders } from "open-sse/utils/earlyHeaders.js";
 import { errorResponse, unavailableResponse, clientAbortResult } from "open-sse/utils/error.js";
@@ -22,7 +23,7 @@ import { resolveLimitHold } from "../services/limitHoldConfig.js";
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
-import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
+import { HTTP_STATUS, NON_STREAM_EARLY_HEADERS_MS, STREAM_EARLY_HEADERS_MS } from "open-sse/config/runtimeConfig.js";
 import { isRequestError } from "open-sse/services/accountFallback.js";
 import { detectFormatByEndpoint, FORMATS } from "open-sse/translator/formats.js";
 import { detectFormat } from "open-sse/services/provider.js";
@@ -249,12 +250,16 @@ export async function handleChat(
     { clientTool, routingFailures } as Parameters<typeof finalizeRoutingError>[1],
   );
 
-  // A streaming client whose upstream is slow to answer gets its headers early,
-  // so a proxy waiting on them (Cloudflare) doesn't give up on the request.
+  // A client whose upstream is slow to answer gets its headers early, so a proxy
+  // waiting on them (Cloudflare) doesn't give up on the request. Only when the
+  // reply's shape is known up front: a stream for `stream: true`, JSON for a
+  // client that demands it. Without `stream` the shape depends on the provider.
   const sourceFormat = sourceFormatOverride || detectFormat(body);
+  const json = clientDemandsJson(body, clientRawRequest.headers);
   // Next aborts request.signal only when the client leaves before the response ends.
-  if (!earlyHeaders || body.stream !== true || !KEEPALIVE_FORMATS.has(sourceFormat)) return route(request.signal);
-  return respondWithEarlyHeaders({ run: route, sourceFormat, signal: request.signal, log });
+  if (!earlyHeaders || !(body.stream === true || json) || !KEEPALIVE_FORMATS.has(sourceFormat)) return route(request.signal);
+  const delayMs = json ? NON_STREAM_EARLY_HEADERS_MS : STREAM_EARLY_HEADERS_MS;
+  return respondWithEarlyHeaders({ run: route, sourceFormat, json, delayMs, signal: request.signal, log });
 }
 
 async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, request, apiKey, routingFailures, signal = null }: RoutedChatArgs): Promise<Response> {

@@ -1,3 +1,4 @@
+import { clientDemandsJson } from "../utils/replyShape.js";
 import { detectFormat, getTargetFormat, resolveTransport, resolveCompatibleRoute } from "../services/provider.js";
 import { translateRequest } from "../translator/index.js";
 import { applyThinking, extractThinking, stripThinkingSuffix } from "../translator/concerns/thinkingUnified.js";
@@ -101,12 +102,7 @@ export function clientReceivesStream({ body, provider, model, sourceFormat, clie
   const detectedTool = detectClientTool(clientRawRequest?.headers || {}, body);
   if (detectedTool === "deepseek-tui" && body.stream !== true) return false;
 
-  const acceptHeader = clientRawRequest?.headers?.accept || "";
-  const clientPrefersJson = acceptHeader.includes("application/json");
-  const clientPrefersSSE = acceptHeader.includes("text/event-stream");
-  if (clientPrefersJson && !clientPrefersSSE && body.stream !== true) return false;
-
-  return body.stream !== false;
+  return !clientDemandsJson(body, clientRawRequest?.headers);
 }
 
 /**
@@ -217,14 +213,8 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   const detectedTool = detectClientTool(clientRawRequest?.headers || {}, body);
   if (detectedTool === "deepseek-tui" && body.stream !== true) stream = false;
 
-  // Check client Accept header preference for non-streaming requests
-  // This fixes AI SDK compatibility where clients send Accept: application/json
-  const acceptHeader = clientRawRequest?.headers?.accept || "";
-  const clientPrefersJson = acceptHeader.includes("application/json");
-  const clientPrefersSSE = acceptHeader.includes("text/event-stream");
-  if (clientPrefersJson && !clientPrefersSSE && body.stream !== true && !providerRequiresStreaming) {
-    stream = false;
-  }
+  // A client that sends Accept: application/json (AI SDK) wants JSON.
+  if (clientDemandsJson(body, clientRawRequest?.headers) && !providerRequiresStreaming) stream = false;
   if (streamMode === "never") stream = false;
 
   const reqLogger = await createRequestLogger(sourceFormat, targetFormat, model);

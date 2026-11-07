@@ -70,6 +70,14 @@ export const STREAM_KEEPALIVE_MS = envMs("STREAM_KEEPALIVE_MS", 15 * 1000, 0);
 // Env: STREAM_EARLY_HEADERS_MS (0 disables; so does STREAM_KEEPALIVE_MS=0).
 export const STREAM_EARLY_HEADERS_MS = envMs("STREAM_EARLY_HEADERS_MS", 30 * 1000, 0);
 
+// The same for a non-streaming request (/v1/messages, /v1/chat/completions,
+// /v1/responses): 200 + JSON content type, a whitespace byte every
+// STREAM_KEEPALIVE_MS, then the JSON body, or the failure as the client's error
+// body. Defaults to STREAM_EARLY_HEADERS_MS, so while this is unset that
+// switch turns both off.
+// Env: NON_STREAM_EARLY_HEADERS_MS (0 disables only this; so does STREAM_KEEPALIVE_MS=0).
+export const NON_STREAM_EARLY_HEADERS_MS = envMs("NON_STREAM_EARLY_HEADERS_MS", STREAM_EARLY_HEADERS_MS, 0);
+
 // Wait for a Chat Completions usage trailer before completing a Responses stream.
 export const RESPONSES_COMPLETION_WAIT_MS = 3000;
 
