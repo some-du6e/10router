@@ -31,6 +31,11 @@ describe("clientReceivesStream with a streaming override", () => {
     expect(bare("never")).toBe(true);
   });
 
+  // Claude Code and both SDKs send Accept: application/json on a streaming call too.
+  it("stream: true with Accept: application/json is still a stream", () => {
+    expect(clientReceivesStream({ body: { model: "m", messages: [], stream: true }, provider: "openai", model: "m", sourceFormat: "openai", clientRawRequest: { headers: { accept: "application/json" } }, credentials: null })).toBe(true);
+  });
+
   it("ignores the override on built-in providers", () => {
     expect(ask(false, "always", "openai")).toBe(false);
     expect(ask(true, "always", "openai")).toBe(true);

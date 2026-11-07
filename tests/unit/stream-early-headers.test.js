@@ -8,6 +8,7 @@ import { respondWithEarlyHeaders, buildEarlyErrorBytes } from "../../open-sse/ut
 import { SSE_KEEPALIVE, JSON_KEEPALIVE } from "../../open-sse/utils/sseConstants.js";
 import { errorResponse } from "../../open-sse/utils/error.js";
 import { createLimitHoldResponse } from "../../open-sse/utils/limitHold.js";
+import { clientDemandsJson } from "../../open-sse/utils/replyShape.js";
 
 const state = { settings: {}, accounts: [], exhausted: null, creds: null, core: null, coreCalls: [], markCalls: [], onMark: null, credLookups: 0, modelLookups: [] };
 
@@ -832,6 +833,34 @@ describe("handleChat early headers for a non-streaming request", () => {
   const { stream: _s, ...openaiNoStream } = openaiBody;
   // The OpenAI and Anthropic SDKs leave `stream` out of a create() call and send this.
   const SDK_ACCEPT = { headers: { accept: "application/json" } };
+
+  // Claude Code and both SDKs send Accept: application/json on a streaming call too.
+  it.each([
+    ["/v1/messages", claudeBody],
+    ["/v1/chat/completions", openaiBody],
+    ["/v1/responses", { model: "slowp/m1", stream: true, input: "hi" }],
+  ])("stream: true with the SDK's Accept still gets an SSE stream on %s", async (path, body) => {
+    state.core = (args) => later(40_000, fail(503, "overloaded"), args.clientSignal);
+    const p = request(path, body, { earlyHeaders: true }, SDK_ACCEPT);
+    await vi.advanceTimersByTimeAsync(DELAY);
+    const res = await p;
+    expect(res.headers.get("Content-Type")).toContain("text/event-stream");
+    const out = read(res);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await out.pump;
+  });
+
+  it.each([
+    [{ stream: true }, { accept: "application/json" }, false],
+    [{ stream: true }, null, false],
+    [{ stream: false }, { accept: "text/event-stream" }, true],
+    [{}, { accept: "application/json" }, true],
+    [{}, { accept: "application/json, text/event-stream" }, false],
+    [{}, { accept: "*/*" }, false],
+    [{}, null, false],
+  ])("clientDemandsJson(%j, %j) is %s", (body, headers, want) => {
+    expect(clientDemandsJson(body, headers)).toBe(want);
+  });
 
   it("a fast answer is the routed Response itself", async () => {
     const reply = jsonOk();
