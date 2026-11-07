@@ -32,6 +32,8 @@ on:
       - "src/app/api/v1beta/models/**"
       - "tests/unit/stream-early-headers*.test.js"
       - "tests/unit/chat-core-client-signal.test.js"
+      - "tests/unit/client-receives-stream.test.js"
+      - "tests/unit/chat-core-transport-selection.test.js"
       - ".github/workflows/stream-early-headers.yml"
   workflow_dispatch:
 
@@ -69,6 +71,7 @@ jobs:
           unit/chat-core-failure-detail.test.js
           unit/chat-core-transport-selection.test.js
           unit/force-stream-config.test.js
+          unit/client-receives-stream.test.js
       - name: Lint
         run: >
           ./node_modules/.bin/eslint

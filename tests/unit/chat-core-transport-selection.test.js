@@ -171,6 +171,30 @@ describe("chatCore transport selection", () => {
     expect(request.credentials.runtimeTransport).toBeUndefined();
   });
 
+  // deepseek doesn't forceStream, so the client's request alone decides the upstream shape.
+  it("fetches stream: true with Accept: application/json upstream as a stream", async () => {
+    executeMock.mockResolvedValue({
+      response: new Response("data: {}\n\n", { status: 200, headers: { "content-type": "text/event-stream" } }),
+      url: "https://upstream.example.test/mock",
+      headers: {},
+      transformedBody: {},
+    });
+    const body = { model: "deepseek-chat", stream: true, messages: [{ role: "user", content: "Hello" }] };
+    const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
+    await handleChatCore(makeOptions(body, "deepseek", "deepseek-chat"));
+
+    expect(executeMock.mock.calls[0][0].stream).toBe(true);
+    expect(handleNonStreamingResponseMock).not.toHaveBeenCalled();
+  });
+
+  it("fetches a stream-less body with Accept: application/json upstream as JSON", async () => {
+    const body = { model: "deepseek-chat", messages: [{ role: "user", content: "Hello" }] };
+    const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
+    await handleChatCore(makeOptions(body, "deepseek", "deepseek-chat"));
+
+    expect(executeMock.mock.calls[0][0].stream).toBe(false);
+  });
+
   // Regression: https://github.com/decolua/9router/issues/3418
   it("prefers MiniMax-M3's matching OpenAI transport over its Claude target", async () => {
     const imageBlock = {
