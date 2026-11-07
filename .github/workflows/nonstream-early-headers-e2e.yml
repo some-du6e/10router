@@ -1,0 +1,105 @@
+name: Non-streaming early headers E2E
+
+# Real Anthropic and OpenAI SDK calls without streaming, and Claude Code's
+# non-streaming fallback, through a real Cloudflare quick tunnel to a mock
+# upstream slower than Cloudflare's ~100s wait. The "master" leg is master from
+# before the fix (pinned, so it keeps showing the 524 after the fix merges); the
+# "pr" leg is this checkout and must answer. Tool versions are pinned so a new
+# release of any of them can't turn this red on its own.
+on:
+  pull_request:
+    paths:
+      - "open-sse/utils/earlyHeaders.js"
+      - "open-sse/utils/error.js"
+      - "open-sse/utils/sseConstants.js"
+      - "open-sse/config/errorConfig.js"
+      - "open-sse/config/runtimeConfig.js"
+      - "open-sse/handlers/chatCore.js"
+      - "open-sse/handlers/chatCore/nonStreamingHandler.js"
+      - "src/sse/handlers/chat.ts"
+      - "src/sse/services/finalRoutingError.js"
+      - "src/app/api/v1/messages/route.js"
+      - "src/app/api/v1/chat/completions/route.js"
+      - "src/app/api/v1/responses/route.js"
+      - "custom-server.js"
+      - "next.config.mjs"
+      - ".github/e2e/early-headers/**"
+      - ".github/workflows/nonstream-early-headers-e2e.yml"
+  workflow_dispatch:
+
+env:
+  # master just before the non-streaming fix (streaming early headers already in).
+  PRE_FIX_SHA: 17294000611c85bb61ba0b546c55c72132e33ca6
+  CLOUDFLARED_VERSION: "2026.10.7"
+  CLAUDE_CODE_VERSION: "2.1.318"
+  ANTHROPIC_SDK_VERSION: "1.6.0"
+  OPENAI_SDK_VERSION: "7.53.0"
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [master, pr]
+    steps:
+      - name: Check out the harness
+        uses: actions/checkout@v5
+        with:
+          path: harness
+      - name: Check out the app (${{ matrix.leg }})
+        uses: actions/checkout@v5
+        with:
+          path: app
+          ref: ${{ matrix.leg == 'master' && env.PRE_FIX_SHA || github.sha }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        working-directory: app
+        run: bun install --ignore-scripts
+      - name: Build
+        working-directory: app
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build
+      - name: Install cloudflared, Claude Code and the SDKs
+        run: |
+          curl -fsSL -o /tmp/cloudflared.deb "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64.deb"
+          sudo dpkg -i /tmp/cloudflared.deb
+          npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+          mkdir -p "$RUNNER_TEMP/sdks"
+          npm install --prefix "$RUNNER_TEMP/sdks" --no-save "@anthropic-ai/sdk@${ANTHROPIC_SDK_VERSION}" "openai@${OPENAI_SDK_VERSION}"
+          cloudflared --version
+          claude --version
+      - name: E2E (${{ matrix.leg }})
+        working-directory: app
+        env:
+          OUT_DIR: ${{ github.workspace }}/e2e-out
+        run: |
+          set -o pipefail
+          SDK_DIR="$RUNNER_TEMP/sdks" bash ../harness/.github/e2e/early-headers/run-nonstream.sh ${{ matrix.leg }} 2>&1 | tee ../e2e-${{ matrix.leg }}.txt
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### ${{ matrix.leg }}"
+            echo '```'
+            grep -vE '^::(end)?group::' e2e-${{ matrix.leg }}.txt | head -300
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nonstream-e2e-${{ matrix.leg }}
+          path: |
+            e2e-out/*.log
+            e2e-out/*.out
+            e2e-out/*.meta
+            e2e-out/*.body
+            e2e-${{ matrix.leg }}.txt

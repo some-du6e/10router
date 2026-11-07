@@ -101,12 +101,20 @@ export function clientReceivesStream({ body, provider, model, sourceFormat, clie
   const detectedTool = detectClientTool(clientRawRequest?.headers || {}, body);
   if (detectedTool === "deepseek-tui" && body.stream !== true) return false;
 
-  const acceptHeader = clientRawRequest?.headers?.accept || "";
-  const clientPrefersJson = acceptHeader.includes("application/json");
-  const clientPrefersSSE = acceptHeader.includes("text/event-stream");
-  if (clientPrefersJson && !clientPrefersSSE && body.stream !== true) return false;
+  return !clientDemandsJson(body, clientRawRequest?.headers);
+}
 
-  return body.stream !== false;
+/**
+ * Does the client want one JSON reply whatever the provider? `stream: false`,
+ * or no `stream` with an Accept that takes JSON but not SSE (the Anthropic and
+ * OpenAI SDKs send `Accept: application/json` on a non-streaming call and leave
+ * `stream` out). When true, clientReceivesStream is false for every provider.
+ */
+export function clientDemandsJson(body, headers = null) {
+  if (body.stream === false) return true;
+  if (body.stream === true) return false;
+  const accept = headers?.accept || "";
+  return accept.includes("application/json") && !accept.includes("text/event-stream");
 }
 
 /**
@@ -217,14 +225,8 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   const detectedTool = detectClientTool(clientRawRequest?.headers || {}, body);
   if (detectedTool === "deepseek-tui" && body.stream !== true) stream = false;
 
-  // Check client Accept header preference for non-streaming requests
-  // This fixes AI SDK compatibility where clients send Accept: application/json
-  const acceptHeader = clientRawRequest?.headers?.accept || "";
-  const clientPrefersJson = acceptHeader.includes("application/json");
-  const clientPrefersSSE = acceptHeader.includes("text/event-stream");
-  if (clientPrefersJson && !clientPrefersSSE && body.stream !== true && !providerRequiresStreaming) {
-    stream = false;
-  }
+  // A client that sends Accept: application/json (AI SDK) wants JSON.
+  if (clientDemandsJson(body, clientRawRequest?.headers) && !providerRequiresStreaming) stream = false;
   if (streamMode === "never") stream = false;
 
   const reqLogger = await createRequestLogger(sourceFormat, targetFormat, model);

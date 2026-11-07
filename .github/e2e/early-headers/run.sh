@@ -7,41 +7,8 @@
 set -uo pipefail
 
 LEG="$1"
-HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT="${OUT_DIR:-$PWD/e2e-out}"
-mkdir -p "$OUT"
-export DATA_DIR="$OUT/data"
-mkdir -p "$DATA_DIR"
-# Fake, per-run 10router key; the tunnel makes requests non-local.
-export E2E_API_KEY="sk-e2e-$(openssl rand -hex 12)"
-
-node "$HERE/mock-upstream.mjs" > "$OUT/mock.log" 2>&1 &
-node --experimental-loader=./scripts/resolve-src-alias.mjs "$HERE/seed.mjs" 2>&1 | grep -v -i warning
-
-# The upstream's own connect timeout (60s, retried) would end the wait before
-# Cloudflare does; raise it so the only clock is Cloudflare's.
-JWT_SECRET="e2e-$(openssl rand -hex 16)" FETCH_CONNECT_TIMEOUT_MS=300000 PORT=20128 HOSTNAME=127.0.0.1 \
-  node custom-server.js --port 20128 > "$OUT/server.log" 2>&1 &
-
-for _ in $(seq 1 60); do
-  curl -sf -o /dev/null http://127.0.0.1:20128/v1/models && break
-  sleep 2
-done
-curl -sf -o /dev/null http://127.0.0.1:20128/v1/models || { echo "server did not start"; tail -50 "$OUT/server.log"; exit 1; }
-
-cloudflared tunnel --no-autoupdate --url http://127.0.0.1:20128 > "$OUT/cloudflared.log" 2>&1 &
-TUNNEL=""
-for _ in $(seq 1 60); do
-  TUNNEL="$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$OUT/cloudflared.log" | head -1)"
-  [ -n "$TUNNEL" ] && break
-  sleep 2
-done
-[ -n "$TUNNEL" ] || { echo "no tunnel URL"; cat "$OUT/cloudflared.log"; exit 1; }
-for _ in $(seq 1 60); do
-  [ "$(curl -s -o /dev/null -w '%{http_code}' -H "x-api-key: $E2E_API_KEY" "$TUNNEL/v1/models")" = "200" ] && break
-  sleep 3
-done
-echo "tunnel: $TUNNEL"
+# shellcheck source=stack.sh
+source "$(cd "$(dirname "$0")" && pwd)/stack.sh"
 
 MSG='{"model":"mock/slow","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"ping"}]}'
 
@@ -109,17 +76,10 @@ if [ "$LEG" = "pr" ]; then
 fi
 
 # Wait for the request jobs only (mock, server and tunnel stay up).
-for _ in $(seq 1 100); do
-  done_all=1
-  for f in curl-messages claude-slow codex-slow $( [ "$LEG" = pr ] && echo curl-chat claude-flaky codex-flaky curl-disconnect ); do
-    [ -s "$OUT/$f.meta" ] || done_all=0
-  done
-  [ "$done_all" = 1 ] && break
-  sleep 5
-done
+# shellcheck disable=SC2046
+wait_for curl-messages claude-slow codex-slow $( [ "$LEG" = pr ] && echo curl-chat claude-flaky codex-flaky curl-disconnect )
 sleep 2
 
-show() { echo "::group::$1"; cat "$2" 2>/dev/null; echo; echo "::endgroup::"; }
 for f in "$OUT"/*.meta; do n=$(basename "$f" .meta); echo "== $n: $(cat "$f")"; done
 show "curl /v1/messages body" "$OUT/curl-messages.body"
 show "claude -p (slow)" "$OUT/claude-slow.out"
@@ -129,8 +89,6 @@ show "codex exec (slow) last message" "$OUT/codex-slow.last"
 show "mock upstream log" "$OUT/mock.log"
 grep -E 'early SSE|ERROR|✗' "$OUT/server.log" | head -40
 
-fail=0
-check() { if eval "$2"; then echo "PASS: $1"; else echo "FAIL: $1"; fail=1; fi; }
 if [ "$LEG" = master ]; then
   check "curl gets Cloudflare 524" "grep -q 'http=524' '$OUT/curl-messages.meta'"
   check "Claude Code fails with 524" "grep -q '524' '$OUT/claude-slow.out'"

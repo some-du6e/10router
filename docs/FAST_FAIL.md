@@ -78,11 +78,25 @@ raise `stream_idle_timeout_ms` on the client. Claude Code has a similar limit
 Claude Code (2.1.318) retries an in-band `overloaded_error` on the stream only
 twice. At the third, or the first for a background query such as title
 generation, it logs "Error streaming, falling back to non-streaming mode" and
-sends the turn again with `stream: false`. That request gets no early headers,
-so behind Cloudflare a routing pass that is still that slow gets a 524 again,
-and after its HTTP retries Claude Code shows `API Error: 524`. Set
-`CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1` on the client to keep it retrying
-on the stream.
+sends the turn again with `stream: false`. That request gets early headers as
+JSON: 200 with `Content-Type: application/json`, a newline every
+`STREAM_KEEPALIVE_MS`, then the reply (leading whitespace is valid JSON, and the
+Anthropic and OpenAI SDKs parse it). If that routing pass fails after the 200
+went out too, the body is an Anthropic error object
+(`{"type":"error","error":{…}}`). Claude Code's non-streaming path checks that
+the body is a Message, so it shows `API Error: API returned an empty or
+malformed response (HTTP 200) … body is JSON but not a Message` and does not
+retry. Set `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1` on the client to keep
+it retrying on the stream instead.
+
+Other non-streaming clients get the same treatment on `/v1/messages`,
+`/v1/chat/completions` and `/v1/responses`, for a body with `stream: false`, or
+with no `stream` and `Accept: application/json` (what the SDKs send). A failure
+after the 200 is the API's own error body: OpenAI chat `{"error":{…}}`, and for
+Responses a `status: "failed"` Response whose `error` has the code chosen as
+above. The SDKs return such a body as the result instead of throwing, since they
+only check the status. `NON_STREAM_EARLY_HEADERS_MS` sets the wait for these
+(default: `STREAM_EARLY_HEADERS_MS`; `0` turns off only this).
 
 ## Verification
 
