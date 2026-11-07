@@ -4,7 +4,7 @@
 //   slow*    - sends no response headers for HOLD_MS, then answers
 //   flaky*   - first request per model id: waits FLAKY_MS, then 500; every later
 //              one answers (one id per client, so their retries don't mix)
-//   hollow*  - a stream with no content at once (Claude Code then falls back to
+//   hollow*  - a stream with no chunks at once (Claude Code then falls back to
 //              a non-streaming request); a non-stream request is held HOLD_MS
 //   outage*  - the outage seen in prod: first request per model id hangs
 //              OUTAGE_MS, then 500 {"message":""}; later ones answer after OUTAGE_NEXT_MS
@@ -27,13 +27,19 @@ const firstCalls = new Map();
 const log = (o) => console.log(JSON.stringify({ t: ((Date.now() - t0) / 1000).toFixed(1), ...o }));
 const USAGE = { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 };
 
-function streamReply(res, model, content = "pong") {
+// No chunk at all, so the Claude stream never gets a message_start.
+function streamHollow(res) {
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+  res.end("data: [DONE]\n\n");
+}
+
+function streamReply(res, model) {
   res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
   const chunk = (delta, finish = null) => `data: ${JSON.stringify({
     id: "chatcmpl-mock", object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model,
     choices: [{ index: 0, delta, finish_reason: finish }],
   })}\n\n`;
-  res.write(chunk(content ? { role: "assistant", content } : { role: "assistant" }));
+  res.write(chunk({ role: "assistant", content: "pong" }));
   res.write(chunk({}, "stop"));
   res.write(`data: ${JSON.stringify({ id: "chatcmpl-mock", object: "chat.completion.chunk", model, choices: [], usage: USAGE })}\n\n`);
   res.end("data: [DONE]\n\n");
@@ -88,7 +94,7 @@ http.createServer((req, res) => {
     };
 
     if (model.startsWith("slow")) return after(HOLD_MS, reply);
-    if (model.startsWith("hollow")) return stream ? answer(() => streamReply(res, model, "")) : after(HOLD_MS, reply);
+    if (model.startsWith("hollow")) return stream ? answer(() => streamHollow(res)) : after(HOLD_MS, reply);
     if (model.startsWith("outage")) {
       return isFirstCall(model) ? after(OUTAGE_MS, () => fail500(res, { message: "" })) : after(OUTAGE_NEXT_MS, reply);
     }
