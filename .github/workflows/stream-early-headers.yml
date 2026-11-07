@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "open-sse/utils/earlyHeaders.js"
+      - "open-sse/utils/replyShape.js"
       - "open-sse/utils/streamHandler.js"
       - "open-sse/utils/streamHelpers.js"
       - "open-sse/utils/responsesStreamHelpers.js"
@@ -72,6 +73,7 @@ jobs:
         run: >
           ./node_modules/.bin/eslint
           open-sse/utils/earlyHeaders.js
+          open-sse/utils/replyShape.js
           open-sse/config/runtimeConfig.js
           open-sse/config/errorConfig.js
           open-sse/handlers/chatCore.js

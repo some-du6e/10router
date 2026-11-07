@@ -1,3 +1,4 @@
+import { clientDemandsJson } from "../utils/replyShape.js";
 import { detectFormat, getTargetFormat, resolveTransport, resolveCompatibleRoute } from "../services/provider.js";
 import { translateRequest } from "../translator/index.js";
 import { applyThinking, extractThinking, stripThinkingSuffix } from "../translator/concerns/thinkingUnified.js";
@@ -102,19 +103,6 @@ export function clientReceivesStream({ body, provider, model, sourceFormat, clie
   if (detectedTool === "deepseek-tui" && body.stream !== true) return false;
 
   return !clientDemandsJson(body, clientRawRequest?.headers);
-}
-
-/**
- * Does the client want one JSON reply whatever the provider? `stream: false`,
- * or no `stream` with an Accept that takes JSON but not SSE (the Anthropic and
- * OpenAI SDKs send `Accept: application/json` on a non-streaming call and leave
- * `stream` out). When true, clientReceivesStream is false for every provider.
- */
-export function clientDemandsJson(body, headers = null) {
-  if (body.stream === false) return true;
-  if (body.stream === true) return false;
-  const accept = headers?.accept || "";
-  return accept.includes("application/json") && !accept.includes("text/event-stream");
 }
 
 /**

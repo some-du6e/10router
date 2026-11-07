@@ -13,7 +13,8 @@ import { getModelInfo, getComboModels, comboLookupName } from "../services/model
 import { resolveAutoCombo, blockedBillingSets, connectionBilling, billingPolicyApplies } from "../services/autoCombo.js";
 import type { BillingSet } from "../services/autoCombo.js";
 import { BUILTIN_MODEL_ALIASES } from "open-sse/services/model.js";
-import { handleChatCore, clientReceivesStream, clientDemandsJson } from "open-sse/handlers/chatCore.js";
+import { handleChatCore, clientReceivesStream } from "open-sse/handlers/chatCore.js";
+import { clientDemandsJson } from "open-sse/utils/replyShape.js";
 import { KEEPALIVE_FORMATS } from "open-sse/utils/sseConstants.js";
 import { respondWithEarlyHeaders } from "open-sse/utils/earlyHeaders.js";
 import { errorResponse, unavailableResponse, clientAbortResult } from "open-sse/utils/error.js";

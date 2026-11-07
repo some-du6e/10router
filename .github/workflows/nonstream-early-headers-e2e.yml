@@ -10,6 +10,7 @@ on:
   pull_request:
     paths:
       - "open-sse/utils/earlyHeaders.js"
+      - "open-sse/utils/replyShape.js"
       - "open-sse/utils/error.js"
       - "open-sse/utils/sseConstants.js"
       - "open-sse/config/errorConfig.js"
