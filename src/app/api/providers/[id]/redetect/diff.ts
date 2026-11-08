@@ -119,7 +119,9 @@ export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: De
   const switchable = to !== from && from !== "anthropic" && to !== "anthropic";
   const protocol = ep && to !== from ? { from, to, applicable: switchable } : null;
   const baseUrl = ep && !keyScoped && r.baseUrl && trimUrl(r.baseUrl) !== trimUrl(node.baseUrl) ? { from: trimUrl(node.baseUrl), to: trimUrl(r.baseUrl) } : null;
-  const found = ms ? r.models || [] : [];
+  // One account's models split across APIs would need routes it can't offer:
+  // only the ones it serves on the saved API.
+  const found = !ms ? [] : keyScoped && r.byProtocol ? r.byProtocol[from] || [] : r.models || [];
   const have = new Set(currentModels);
   // Outdated but just listed or answered by the endpoint: the user may want it, keep it.
   const listed = new Set(found.map((m) => m.toLowerCase()));

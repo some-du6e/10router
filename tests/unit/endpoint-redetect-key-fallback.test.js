@@ -76,6 +76,8 @@ const refusedLater = { ...works, models: [], authRejected: true, stopReason: "au
 // A key limited to models outside the ones asked about: it works.
 const limitedKey = { ...works, models: [], authRejected: true, stopReason: "denied" };
 const rateLimit = { ok: false, failure: "rate", error: "The endpoint is rate-limiting requests.", steps: [] };
+// The free probes passed, then the model probes kept getting 429s and found nothing.
+const modelsRateLimited = { ...works, models: [], stopReason: "rate", partialReason: "The endpoint kept rate-limiting, so some models weren't checked." };
 // Only GET /models refused the key (an admin-only list); nothing says the key is bad.
 const listOnlyRefused = { ...works, models: [], authRejected: true, stopReason: null };
 
@@ -187,6 +189,17 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     verdict.good = works;
     expect((await json()).ok).toBe(true);
     expect(keysUsed()).toEqual(["busy", "good"]);
+  });
+
+  it("moves past a key rate-limited on the model probes, and says so if it was the only one", async () => {
+    mocks.getProviderConnections.mockResolvedValue(conns("busy", "good"));
+    verdict.busy = modelsRateLimited;
+    verdict.good = works;
+    expect((await json()).ok).toBe(true);
+    expect(keysUsed()).toEqual(["busy", "good"]);
+    vi.clearAllMocks();
+    mocks.getProviderConnections.mockResolvedValue(conns("busy"));
+    expect(await json()).toMatchObject({ ok: false, error: "The endpoint kept rate-limiting, so some models weren't checked" });
   });
 
   it("doesn't spend an attempt on a key with no credential", async () => {

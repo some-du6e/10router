@@ -94,12 +94,20 @@ describe("redetectDiff for one key at its own URL (keyScoped)", () => {
 
   it("keeps that account's URL, auth style, routes and missing models out of the endpoint's changes", () => {
     const d = redetectDiff(node, ["a", "gone"], r, [], "all", { keyScoped: true });
-    expect(d).toMatchObject({ ok: true, baseUrl: null, removeModels: [], addModels: ["new"], quirks: { maxCompletionTokens: true } });
+    // "new" is served only on Anthropic, which this Chat endpoint has no route for.
+    expect(d).toMatchObject({ ok: true, baseUrl: null, removeModels: [], addModels: [], quirks: { maxCompletionTokens: true } });
     expect(d.quirks.apiKeyHeader).toBeUndefined();
     expect(d.quirks.modelRoutes).toBeUndefined();
     // Chat -> Responses is the API's, not the account's: still offered.
     expect(d.protocol.to).toBe("openai-responses");
-    expect(d.changes).toBe(3);
+    expect(d.changes).toBe(2);
+  });
+
+  it("adds only the models that account serves on the saved API", () => {
+    const d = redetectDiff(node, ["a"], r, [], "models", { keyScoped: true });
+    // "new" answered only on Anthropic; the endpoint is saved as Chat and gets no route for it.
+    expect(d.addModels).toEqual([]);
+    expect(redetectDiff(node, ["a"], found({ byProtocol: { "openai-chat": ["a", "b"] }, models: ["a", "b"] }), [], "models", { keyScoped: true }).addModels).toEqual(["b"]);
   });
 
   it("still offers an outdated saved model the account didn't list", () => {
@@ -108,7 +116,7 @@ describe("redetectDiff for one key at its own URL (keyScoped)", () => {
     expect(redetectDiff(node, ["a", "old-4"], listed, ["old-4"], "all", { keyScoped: true })).toMatchObject({ removeModels: [], outdatedModels: ["old-4"] });
   });
 
-  it("changes nothing for a result from the endpoint's own URL", () => {
+  it("offers the URL, removals, auth style and routes when not scoped to one key", () => {
     const d = redetectDiff(node, ["a", "gone"], r, [], "all");
     expect(d.baseUrl).toEqual({ from: "https://api.acme.dev/v1", to: "https://acct-1.acme.dev/v1" });
     expect(d.removeModels).toEqual(["gone"]);

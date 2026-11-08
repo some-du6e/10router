@@ -352,9 +352,9 @@ function RedetectStatus({ live, onStop }: { live: RedetectLive; onStop: () => vo
 // "Nothing changed", for the half of the page that asked. A check through one
 // key's own URL didn't ask the endpoint's URL, so it doesn't claim it.
 function unchangedText(part: RedetectPart, viaKeyUrl: boolean): string {
-  if (part === "models") return "Same models as you have now.";
+  if (part === "models") return viaKeyUrl ? "No new models." : "Same models as you have now.";
   if (part === "endpoint") return viaKeyUrl ? "No changes to the API or fixes." : "No changes to the API, URL or fixes.";
-  return viaKeyUrl ? "Same API and models as when it was added." : "Same API, URL and models as when it was added.";
+  return viaKeyUrl ? "Same API, no new models." : "Same API, URL and models as when it was added.";
 }
 
 // What a check through one key's own URL (one account) couldn't vouch for.

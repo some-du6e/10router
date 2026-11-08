@@ -32,9 +32,10 @@ type CustomModel = { id?: string; providerAlias?: string; type?: string; kind?: 
 // "denied" stop is a key limited to other models, which still works.
 const lateRefusal = (r: DetectResult) => r.ok && !!r.authRejected && r.stopReason === "auth";
 const keyRefused = (r: DetectResult) => (r.ok ? lateRefusal(r) : r.failure === "key");
-const worked = (r: DetectResult) => r.ok && !lateRefusal(r);
-// Rate limits and quota are usually per key, as inference's failover assumes.
-const rateLimited = (r: DetectResult) => !r.ok && r.failure === "rate";
+// Rate limits and quota are usually per key, as inference's failover assumes:
+// on the free probes (a failure), or on the model probes, which then found none.
+const rateLimited = (r: DetectResult) => (r.ok ? r.stopReason === "rate" && !r.models?.length : r.failure === "rate");
+const worked = (r: DetectResult) => r.ok && !lateRefusal(r) && !rateLimited(r);
 const clause = (s: string | undefined) => String(s || "").replace(/\s*\.*\s*$/, "");
 
 // POST /api/providers/[id]/redetect - the endpoint page's "Re-detect": run the
@@ -120,10 +121,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     // None worked: report the first key's verdict (the endpoint's own URL when
     // a key uses it), as a failure even when its refusal came after the free
     // probes passed, and say how many keys were tried. A run with no key keeps
-    // its result: there is no key to blame.
+    // its result, a refusal reworded as needing a key: there is no key to blame.
     const shown = win || runs[0];
     const refused = keyRefused(shown.result);
-    const verdict = clause(shown.result.error) || (refused ? "The key was rejected" : "No answer");
+    const verdict = clause(shown.result.error) || (refused ? "The key was rejected" : clause(shown.result.partialReason || undefined) || "No answer");
     if (!shown.candidate.apiKey && !shown.result.ok && shown.result.failure === "key") {
       const on = conns.some((c) => c.isActive !== false);
       shown.result = { ...shown.result, error: on ? "It needs a key, and no switched-on key has one set" : conns.length ? "It needs a key, and none of its keys is switched on" : "It needs a key, and this endpoint has none" };
