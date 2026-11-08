@@ -53,8 +53,14 @@ on:
       - "tests/unit/db-migration-chain.test.js"
       - "tests/unit/auto-disable-dead-keys.test.js"
       - ".github/e2e/management-keys/**"
+      - ".github/e2e/key-budgets/mock-upstream.mjs"
       - ".github/workflows/management-keys.yml"
   workflow_dispatch:
+
+env:
+  # Same pins as key-budgets-live-e2e.yml.
+  CLAUDE_CODE_VERSION: "2.1.318"
+  CODEX_VERSION: "0.167.0"
 
 permissions:
   contents: read
@@ -169,3 +175,39 @@ jobs:
           name: management-keys-e2e-screenshots
           path: ${{ runner.temp }}/screenshots
           if-no-files-found: warn
+
+  # Real Claude Code and Codex CLIs on a client key that only a management key
+  # made, against a mock upstream; then delete and revoke. Keys are fake and per run.
+  cli-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: bun install --ignore-scripts
+      - name: Build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build
+      - name: Install Claude Code and Codex
+        run: |
+          npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}"
+          claude --version
+          codex --version
+      - name: CLI E2E
+        env:
+          OUT_DIR: ${{ runner.temp }}/e2e-out
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: bash .github/e2e/management-keys/cli.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: management-keys-cli-e2e
+          path: |
+            ${{ runner.temp }}/e2e-out/*.out
+            ${{ runner.temp }}/e2e-out/mock.log
+            ${{ runner.temp }}/e2e-out/server.log
