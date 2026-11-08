@@ -16,10 +16,10 @@ import { hasValidUsage, estimateBillingUsage, weighChars } from "../../utils/usa
  * from the request and the reply's text, so the request is still charged and
  * logged instead of skipped. Reported usage is returned as is.
  */
-function billedUsage(usage, body, texts) {
+function billedUsage(usage, body, texts, fieldNames = FORMATS.OPENAI) {
   if (hasValidUsage(usage)) return usage;
   const weight = texts.reduce((sum, t) => sum + weighChars(typeof t === "string" ? t : ""), 0);
-  return estimateBillingUsage(body, weight, FORMATS.OPENAI);
+  return estimateBillingUsage(body, weight, fieldNames);
 }
 
 function textFromResponsesMessageItem(item) {
@@ -217,25 +217,26 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
       if (onRequestSuccess) await onRequestSuccess();
 
       const usage = jsonResponse.usage || {};
+      // input_tokens/output_tokens, the Responses usage names the detail below reads.
       const billed = billedUsage(usage, body, (jsonResponse.output || []).flatMap((item) => [
         item?.arguments, item?.input, ...(item?.content || []).map((part) => part?.text), ...(item?.summary || []).map((part) => part?.text),
-      ]));
+      ]), FORMATS.CLAUDE);
       appendLog({ tokens: billed, status: "200 OK" });
       saveUsageStats({ provider, model, tokens: billed, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
-      if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
+      if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage: billed, latency: { total: Date.now() - requestStartTime } }));
 
       // Same cache-inclusive total for the recorded detail, so the DB and the
       // client-facing usage can never disagree.
-      const inTokensForLog = (usage.input_tokens || 0)
-        + (usage.cache_read_input_tokens || usage.cached_tokens || 0)
-        + (usage.cache_creation_input_tokens || 0);
+      const inTokensForLog = (billed.input_tokens || 0)
+        + (billed.cache_read_input_tokens || billed.cached_tokens || 0)
+        + (billed.cache_creation_input_tokens || 0);
       const { msgItem, textContent } = pickAssistantMessageForChatCompletion(jsonResponse.output);
       const totalLatency = Date.now() - requestStartTime;
 
       saveRequestDetail(buildRequestDetail({
         ...ctx,
         latency: { ttft: totalLatency, total: totalLatency },
-        tokens: { prompt_tokens: inTokensForLog, completion_tokens: usage.output_tokens || 0 },
+        tokens: { prompt_tokens: inTokensForLog, completion_tokens: billed.output_tokens || 0 },
         response: { content: textContent, thinking: null, finish_reason: jsonResponse.status || "unknown" },
         status: "success"
       }, { endpoint: clientRawRequest?.endpoint || null })).catch(() => {});
@@ -327,13 +328,13 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
     ]);
     appendLog({ tokens: billed, status: "200 OK" });
     saveUsageStats({ provider, model, tokens: billed, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
-    if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
+    if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage: billed, latency: { total: Date.now() - requestStartTime } }));
 
     const totalLatency = Date.now() - requestStartTime;
     saveRequestDetail(buildRequestDetail({
       ...ctx,
       latency: { ttft: totalLatency, total: totalLatency },
-      tokens: usage,
+      tokens: billed,
       response: {
         content: parsed.choices?.[0]?.message?.content || null,
         thinking: parsed.choices?.[0]?.message?.reasoning_content || null,
