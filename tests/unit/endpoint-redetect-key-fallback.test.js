@@ -130,6 +130,25 @@ describe("re-detect model check on keys with their own URL", () => {
     expect(body.quirks.modelRoutes).toBeUndefined();
   });
 
+  it("doesn't spend an attempt on a key with no credential", async () => {
+    mocks.getProviderConnections.mockResolvedValue([...conns("", "", "", "", ""), ...conns("good")]);
+    mocks._verdict.good = works;
+    expect((await call()).ok).toBe(true);
+    expect(keysUsed()).toEqual(["good"]);
+  });
+
+  it("shares one time budget across keys, so the page's 60s wait isn't outrun", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      mocks.getProviderConnections.mockResolvedValue(conns("a", "b", "c", "d", "e"));
+      // Every rejected key takes 20s to answer.
+      mocks.detectEndpoint.mockImplementation(({ deadlineMs }) => { vi.setSystemTime(Date.now() + 20_000); return Promise.resolve({ ...rejected, deadlineMs }); });
+      await call();
+      const budgets = mocks.detectEndpoint.mock.calls.map((c) => c[0].deadlineMs);
+      expect(budgets).toEqual([45_000, 25_000, 5_000]);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("skips a key whose own URL the SSRF guard refuses", async () => {
     const { NextResponse } = await import("next/server");
     mocks.guardTarget.mockImplementation((_r, url) => Promise.resolve(url.includes("acct-bad") ? NextResponse.json({ ok: false }, { status: 400 }) : { remote: true }));

@@ -3,11 +3,11 @@ name: Re-detect model check
 on:
   pull_request:
     paths:
-      - "src/app/api/providers/[id]/redetect/route.ts"
-      - "src/app/api/providers/[id]/redetect/diff.ts"
+      - "src/app/api/providers/*/redetect/route.ts"
+      - "src/app/api/providers/*/redetect/diff.ts"
       - "src/app/(dashboard)/dashboard/providers/*/CustomEndpointPage.tsx"
       - "src/lib/endpointDetect.ts"
-      - "src/lib/endpointImpersonate.js"
+      - "src/lib/endpointImpersonate.ts"
       - "tests/unit/endpoint-redetect-key-fallback.test.js"
       - "tests/unit/endpoint-redetect-diff.test.js"
       - ".github/workflows/redetect-model-check.yml"
@@ -66,7 +66,9 @@ jobs:
           node-version: 22
       - uses: oven-sh/setup-bun@v2
       - name: Check out the base branch next to this one
-        run: git worktree add ../base "origin/${{ github.base_ref || 'master' }}"
+        env:
+          BASE_REF: ${{ github.base_ref || 'master' }}
+        run: git worktree add ../base "origin/$BASE_REF"
       - name: Install dependencies (branch and base)
         run: |
           for dir in . ../base; do

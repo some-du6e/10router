@@ -19,6 +19,10 @@ const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,160}$/;
 // How many active keys the re-detect check will try before it gives up: enough
 // to skip a few dead-but-still-on keys without probing a whole large pool.
 const MAX_KEY_ATTEMPTS = 5;
+// One time budget for every key the check tries, as one detection gets (the
+// page gives up at 60s); a key isn't started with less than MIN_ATTEMPT_MS left.
+const REDETECT_BUDGET_MS = 45_000;
+const MIN_ATTEMPT_MS = 5_000;
 
 // A diff from a key on its own URL, cut to what holds for the whole endpoint.
 function scopeToKey(diff: RedetectDiff): RedetectDiff {
@@ -56,6 +60,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const candidates: Candidate[] = [];
   for (const c of keys) {
     if (candidates.length >= MAX_KEY_ATTEMPTS) break;
+    if (!c.apiKey) continue;
     if (!c.providerSpecificData?.ownBaseUrl) { candidates.push({ apiKey: c.apiKey || "", url: base, own: false }); continue; }
     const url = normalizeUrl(c.providerSpecificData.baseUrl);
     if (!url) continue;
@@ -76,6 +81,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     // each fall-through to the next key) restarts its request numbers at 1, so
     // shift them past every run before it.
     let maxN = 0, offset = 0, sentBase = 0, maxSent = 0;
+    const deadlineAt = Date.now() + REDETECT_BUDGET_MS;
+    const left = () => Math.max(0, deadlineAt - Date.now());
     const onProgress = (e: DetectProgress) => {
       const ev = { ...e } as DetectProgress & { n?: number; sent?: number };
       if (typeof ev.n === "number") { ev.n += offset; maxN = Math.max(maxN, ev.n); }
@@ -85,12 +92,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const runWith = async ({ apiKey: key, url }: Candidate): Promise<DetectResult & { gate?: unknown }> => {
       offset = maxN; sentBase = maxSent;
       // Probe with the endpoint's saved identity and auth style, as requests go out.
-      const first = await detectEndpoint({ url, apiKey: key, fetchFn: savedSettingsFetch(rawFetch, node, key), catalog, signal, onProgress, skipModels });
+      const first = await detectEndpoint({ url, apiKey: key, fetchFn: savedSettingsFetch(rawFetch, node, key), catalog, signal, onProgress, skipModels, deadlineMs: left() });
       // Still client-gated (no saved identity, or it stopped working): try the
       // known clients, as Add endpoint does. Their headers replace the saved ones.
       return retryAsClient(first, {
         url, apiKey: key, fetchFn: savedSettingsFetch(rawFetch, node, key, { identity: false }), signal,
-        detect: (f) => { offset = maxN; sentBase = maxSent; return detectEndpoint({ url, apiKey: key, fetchFn: f, catalog, signal, onProgress, skipModels }); },
+        detect: (f) => { offset = maxN; sentBase = maxSent; return detectEndpoint({ url, apiKey: key, fetchFn: f, catalog, signal, onProgress, skipModels, deadlineMs: left() }); },
       });
     };
     let used = candidates[0];
@@ -99,7 +106,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     // the endpoint's verdict, not the key's, and the next key would only repeat
     // it (and spend more free probes). A key on its own URL is another server,
     // so its refusal or outage says nothing about the next one: try it too.
-    for (let i = 1; i < candidates.length && !signal.aborted && !result.ok && (result.failure === "key" || used.own); i++) {
+    for (let i = 1; i < candidates.length && !signal.aborted && left() >= MIN_ATTEMPT_MS && !result.ok && (result.failure === "key" || used.own); i++) {
       used = candidates[i];
       result = await runWith(used);
     }
