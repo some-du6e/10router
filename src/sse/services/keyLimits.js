@@ -94,23 +94,28 @@ export async function isModelAllowed(requested, allowedModels, lookup, depth = 0
   const req = canonicalModel(requested);
   if (!req) return false;
   const allowed = new Set(allowedModels.map(canonicalModel).filter(Boolean));
-  if (matchesAllowed(req, allowed)) return true;
 
+  // Routing finds combos and aliases by their exact name, so only an entry
+  // spelled exactly that way names one; other spellings check what it runs.
   const raw = stripContextWindowSuffix(String(requested).trim()).model;
-  const target = lookup?.aliases?.[raw];
-  if (typeof target === "string" && matchesAllowed(canonicalModel(target), allowed)) return true;
+  const namedExactly = () => allowedModels.some((e) => typeof e === "string" && stripContextWindowSuffix(e.trim()).model === raw);
 
-  // The depth cap stops a combo that (mis)lists itself from looping.
-  if (depth < 3 && !raw.includes("/") && lookup?.comboModels) {
+  if (!raw.includes("/") && lookup?.comboModels) {
     const members = await lookup.comboModels(raw);
     if (Array.isArray(members) && members.length > 0) {
+      if (namedExactly()) return true;
+      // The depth cap stops a combo that (mis)lists itself from looping.
+      if (depth >= 3) return false;
       for (const member of members) {
         if (!(await isModelAllowed(member, allowedModels, lookup, depth + 1))) return false;
       }
       return true;
     }
   }
-  return false;
+
+  const target = lookup?.aliases?.[raw];
+  if (typeof target === "string") return namedExactly() || matchesAllowed(canonicalModel(target), allowed);
+  return matchesAllowed(req, allowed);
 }
 
 // ---- Request checks ----------------------------------------------------------

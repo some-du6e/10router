@@ -2,6 +2,7 @@ import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { parseVertexSaJson, refreshVertexToken, refreshGoogleToken } from "../services/tokenRefresh.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { modelPathSegment } from "../utils/modelPath.js";
 
 // Cache project IDs resolved from raw API keys { apiKey → projectId }
 const projectIdCache = new Map();
@@ -92,14 +93,14 @@ export class VertexExecutor extends BaseExecutor {
         );
       }
       const location = credentials?.providerSpecificData?.location || "us-central1";
-      let url = `https://aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${model}:${action}`;
+      let url = `https://aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${modelPathSegment(model)}:${action}`;
       if (stream) url += "?alt=sse";
       return url;
     }
 
     // Raw API key: use global publishers endpoint with ?key= param
     // ?alt=sse is required for proper SSE streaming (matches every other Gemini executor)
-    let url = `https://aiplatform.googleapis.com/v1/publishers/google/models/${model}:${action}`;
+    let url = `https://aiplatform.googleapis.com/v1/publishers/google/models/${modelPathSegment(model)}:${action}`;
     if (stream) url += "?alt=sse";
     if (rawKey) url += stream ? `&key=${rawKey}` : `?key=${rawKey}`;
     return url;

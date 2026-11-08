@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { clientDemandsJson } from "../utils/replyShape.js";
 import { detectFormat, getTargetFormat, resolveTransport, resolveCompatibleRoute } from "../services/provider.js";
 import { translateRequest } from "../translator/index.js";
@@ -17,7 +18,8 @@ import { injectLimitHoldNotice } from "../utils/limitHoldNotice.js";
 import { trackPendingRequest, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { getExecutor } from "../executors/index.js";
 import { supportsGrokCliReasoningEffort } from "../config/grokCli.js";
-import { buildRequestDetail, extractRequestConfig } from "./chatCore/requestDetail.js";
+import { buildRequestDetail, extractRequestConfig, saveUsageStats } from "./chatCore/requestDetail.js";
+import { hangUpUsage } from "../utils/hangUpCharge.js";
 import { handleForcedSSEToJson } from "./chatCore/sseToJsonHandler.js";
 import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
 import { jsonReplyToSse } from "./chatCore/jsonToSse.js";
@@ -229,7 +231,11 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   const passthrough = isNativePassthrough(clientTool, provider) && (!useTransport?.compatibleRoute || targetFormat === sourceFormat);
 
   // Expose raw client headers to translators/executors for session-id resolution
-  if (credentials) credentials.rawHeaders = clientRawRequest?.headers || {};
+  if (credentials) {
+    credentials.rawHeaders = clientRawRequest?.headers || {};
+    // Which client key this request came in on, so per-session state stays with it.
+    credentials.clientScope = apiKey ? createHash("sha256").update(apiKey).digest("hex").slice(0, 16) : "local";
+  }
 
   // Auto-strip media blocks the model can't read (vision/audio/pdf) before translation.
   if (!passthrough) {
@@ -361,6 +367,24 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     streamController.handleComplete();
     return clientAbortResult();
   };
+  // When the request went upstream (0 = not yet, or the client had already left).
+  let dispatchedAt = 0;
+  // A hang-up after the request went upstream still costs the owner, so it is
+  // charged like a cut-short stream: input, plus the time floor from floorFrom.
+  const chargeHangUp = (floorFrom) => {
+    if (!dispatchedAt) return;
+    const tokens = hangUpUsage({ body, sentBody: finalBody || translatedBody, floorFrom });
+    saveUsageStats({ provider, model, tokens, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, label: "HANG-UP USAGE", silent: true });
+    saveRequestDetail(buildRequestDetail({
+      provider, model, connectionId,
+      latency: { ttft: 0, total: Date.now() - requestStartTime },
+      tokens,
+      request: extractRequestConfig(body, stream),
+      providerRequest: finalBody || translatedBody || null,
+      response: { error: "Request aborted", status: HTTP_STATUS.CLIENT_CLOSED_REQUEST, thinking: null },
+      status: "error",
+    })).catch(() => { });
+  };
   // The client hung up: drop the upstream call.
   if (clientSignal?.aborted) streamController.abort();
   else if (clientSignal) {
@@ -411,6 +435,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   // 2s sleeps records over 6s). Upstream-error rows report it as ttft.
   let upstreamRespondedAt = 0;
   try {
+    dispatchedAt = clientSignal?.aborted ? 0 : Date.now();
     const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onBetasRejected });
     upstreamRespondedAt = Date.now();
     providerResponse = result.response;
@@ -420,7 +445,11 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     providerResponseFormat = result.responseFormat || targetFormat;
     reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody);
   } catch (error) {
-    if (isClientAbort(error, clientSignal)) return endAsHangUp();
+    if (isClientAbort(error, clientSignal)) {
+      // A JSON upstream generates before it answers; a stream's floor starts at its first byte.
+      chargeHangUp(stream ? null : dispatchedAt);
+      return endAsHangUp();
+    }
     trackPendingRequest(model, provider, connectionId, false, true);
     const failStatus = error?.name === "AbortError" ? HTTP_STATUS.CLIENT_CLOSED_REQUEST : HTTP_STATUS.BAD_GATEWAY;
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${failStatus}` }).catch(() => { });
@@ -515,7 +544,13 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     return createErrorResult(statusCode, errMsg, resetsAtMs);
   }
 
-  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqTag, log, clientSignal };
+  // A handler's hang-up while reading the body: an SSE body is charged from its
+  // first byte, a JSON one from when it was sent.
+  const hangUpResult = ({ sse = false } = {}) => {
+    chargeHangUp(sse ? upstreamRespondedAt : dispatchedAt);
+    return clientAbortResult();
+  };
+  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqTag, log, clientSignal, hangUpResult };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = endPending;
 
