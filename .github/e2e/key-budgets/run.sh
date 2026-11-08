@@ -127,7 +127,7 @@ code=$(curl -s -o "$OUT/over-curl.json" -w '%{http_code}' -X POST "$BASE/v1/mess
   -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' \
   -d "{\"model\":\"$CC_MODEL\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")
 after2=$(mock_total)
-if [ "$(jget "$OUT/keyA-over.json" data.budget_exhausted)" = true ] && [ "$CC_EXIT" != 0 ] && grep -qiE "budget|402|billing" "$OUT/cc-over.out" && [ "$before" = "$after" ]; then
+if [ "$(jget "$OUT/keyA-over.json" data.budget_exhausted)" = true ] && [ "$CC_EXIT" != 0 ] && grep -qiE "budget|402|billing|credit" "$OUT/cc-over.out" && [ "$before" = "$after" ]; then
   row "3a. claude -p over budget fails with budget msg, no upstream req" PASS "exit=$CC_EXIT, mock requests $before -> $after"
 else
   row "3a. claude -p over budget fails with budget msg, no upstream req" FAIL "exhausted=$(jget "$OUT/keyA-over.json" data.budget_exhausted) exit=$CC_EXIT mock $before -> $after"
@@ -229,13 +229,16 @@ sleep 4
 key_info KEY_B "$OUT/keyB-post-abort.json"
 post=$(jget "$OUT/keyB-post-abort.json" data.usage)
 delta=$(node -e 'console.log((Number(process.argv[2]) - Number(process.argv[1])).toFixed(6))' "$pre" "$post")
-# Input alone: 1000 tokens x $4/1M = $0.004. Six ~100-token deltas add ~$0.012.
+# Input alone: 1000 tokens x $4/1M = $0.004, plus message_start's 1 output token.
+# The client read six ~100-token deltas (~$0.012 of output); require at least
+# 100 output tokens ($0.002) on top, so input-only charging can't pass.
 INPUT_ONLY=0.004
-echo "abort client: $(cat "$OUT/abort.out"); spend \$$pre -> \$$post (+\$$delta), input-only \$$INPUT_ONLY"
-if [ "$(jget "$OUT/abort.out" status)" = 200 ] && [ "$(jget "$OUT/abort.out" sawMessageDelta)" = false ] && gt "$delta" "$INPUT_ONLY"; then
-  row "6. aborted stream charges estimated output" PASS "+\$$delta > input-only \$$INPUT_ONLY"
+MIN_CHARGE=0.006
+echo "abort client: $(cat "$OUT/abort.out"); spend \$$pre -> \$$post (+\$$delta), input-only \$$INPUT_ONLY, need > \$$MIN_CHARGE"
+if [ "$(jget "$OUT/abort.out" status)" = 200 ] && [ "$(jget "$OUT/abort.out" sawMessageDelta)" = false ] && gt "$delta" "$MIN_CHARGE"; then
+  row "6. aborted stream charges estimated output" PASS "+\$$delta > \$$MIN_CHARGE (input-only \$$INPUT_ONLY)"
 else
-  row "6. aborted stream charges estimated output" FAIL "+\$$delta, input-only \$$INPUT_ONLY ($(head -c 120 "$OUT/abort.out"))"
+  row "6. aborted stream charges estimated output" FAIL "+\$$delta, need > \$$MIN_CHARGE; input-only \$$INPUT_ONLY ($(head -c 120 "$OUT/abort.out"))"
 fi
 
 echo "::group::mock upstream log"; cat "$OUT/mock.log"; echo "::endgroup::"
