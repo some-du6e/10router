@@ -231,32 +231,22 @@ describe("spend on the real chat path", () => {
     expect(stored.spentUsd).toBeGreaterThan(0);
   });
 
-  it("a budgeted key's cut Anthropic stream (omitted thinking) is charged exactly the message_delta usage", async () => {
-    const key = await newKey("budgeted-drain", { budgetUsd: 1000 });
+  it("with the drain off (the default), a budgeted key's hang-up drops the upstream about 500 ms later", async () => {
+    const key = await newKey("budgeted-no-drain", { budgetUsd: 1000 });
     let ctrl;
-    let upstreamCancelled = false;
-    const body = new ReadableStream({ start(c) { ctrl = c; }, cancel() { upstreamCancelled = true; } });
+    let upstreamCancelledAt = null;
+    const body = new ReadableStream({ start(c) { ctrl = c; }, cancel() { upstreamCancelledAt = Date.now(); } });
     fetchMock.mockResolvedValueOnce(new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }));
-    const push = (event, data) => ctrl.enqueue(sseEvent(event, data));
-
     const res = await handleChat(request(key, { stream: true }, { endpoint: "/v1/messages", model: "anthropic/claude-spend" }));
     const reader = res.body.getReader();
-    push("message_start", { type: "message_start", message: { id: "m1", type: "message", role: "assistant", model: "claude-spend", content: [], usage: { input_tokens: 1_000_000, output_tokens: 1 } } });
-    push("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } });
-    push("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "EqQBCgIYAhIM" } });
-    push("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "short visible" } });
-    await readUntil(reader, "short visible");
+    ctrl.enqueue(sseEvent("message_start", { type: "message_start", message: { id: "m1", type: "message", role: "assistant", model: "claude-spend", content: [], usage: { input_tokens: 1000, output_tokens: 1 } } }));
+    ctrl.enqueue(sseEvent("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "visible" } }));
+    await readUntil(reader, "visible");
+    const hungUpAt = Date.now();
     await reader.cancel();
-    await new Promise((r) => setTimeout(r, 50));
-    expect(upstreamCancelled).toBe(false);
-
-    push("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 750_000 } });
-    push("message_stop", { type: "message_stop" });
-    const stored = await keyAfterUsage(key, (k) => k.requestCount === 1);
-    const row = await usageRow(key);
-    expect(row.promptTokens).toBe(1_000_000);
-    expect(row.completionTokens).toBe(750_000);
-    expect(stored.spentUsd).toBeCloseTo(1.75, 6);
+    await vi.waitFor(() => expect(upstreamCancelledAt).not.toBeNull(), { timeout: 2000 });
+    expect(upstreamCancelledAt - hungUpAt).toBeLessThan(1000);
+    await keyAfterUsage(key, (k) => k.requestCount === 1);
   });
 
   it("a non-streaming request over a forced stream with no usage is still charged and recorded", async () => {
@@ -289,6 +279,11 @@ describe("spend on the real chat path", () => {
     const req = { model: "gpt-x", stream: true, messages: [{ role: "user", content: "hi" }] };
     expect(new DefaultExecutor("openai").transformRequest("gpt-x", { ...req }, true, {}).stream_options).toEqual({ include_usage: true });
     expect(new DefaultExecutor("openai-compatible-chat-other").transformRequest("gpt-x", { ...req }, true, {}).stream_options).toBeUndefined();
+    // A non-streaming body never gets stream_options (OpenAI 400s on it), even
+    // though a forceStream provider passes stream = true for it.
+    const { stream: _omit, ...noStreamField } = req;
+    expect(new DefaultExecutor("openai").transformRequest("gpt-x", { ...req, stream: false }, true, {}).stream_options).toBeUndefined();
+    expect(new DefaultExecutor("openai").transformRequest("gpt-x", { ...noStreamField }, true, {}).stream_options).toBeUndefined();
   });
 
   it("a stream closed after its final event is counted once, at the reported usage", async () => {

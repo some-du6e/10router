@@ -336,12 +336,20 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   const msgCount = translatedBody.messages?.length || translatedBody.input?.length || translatedBody.contents?.length || translatedBody.request?.contents?.length || 0;
   log?.debug?.("REQUEST", `${provider.toUpperCase()} | ${model} | ${msgCount} msgs`);
 
+  // The pending count goes down exactly once, however the request ends (a
+  // hang-up followed by the stream's own end must not count twice).
+  let pendingOpen = true;
+  const endPending = () => {
+    if (!pendingOpen) return;
+    pendingOpen = false;
+    trackPendingRequest(model, provider, connectionId, false);
+  };
   const streamController = createStreamController({
     onDisconnect: (reason) => {
-      trackPendingRequest(model, provider, connectionId, false);
+      endPending();
       if (onDisconnect) onDisconnect(reason);
     },
-    onError: () => trackPendingRequest(model, provider, connectionId, false),
+    onError: endPending,
     log, provider, model, reqTag,
     // A key with a budget is charged the provider's real usage even when its
     // client hangs up mid-stream: the upstream is read to its final usage.
@@ -349,7 +357,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   });
   // A hang-up is a disconnect: the pending count goes down, nothing is a failure.
   const endAsHangUp = () => {
-    trackPendingRequest(model, provider, connectionId, false);
+    endPending();
     streamController.handleComplete();
     return clientAbortResult();
   };
@@ -509,7 +517,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
 
   const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqTag, log, clientSignal };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
-  const trackDone = () => trackPendingRequest(model, provider, connectionId, false);
+  const trackDone = endPending;
 
   // Provider forced streaming but client wants JSON
   if (!clientRequestedStreaming && providerRequiresStreaming) {
@@ -537,7 +545,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
 
   // Streaming response
   const { onStreamComplete, streamDetailId, streamRequest } = buildOnStreamComplete({ ...sharedCtx });
-  return handleStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, userAgent, reqLogger, toolNameMap, customToolNames, toolNamespaces, streamController, onStreamComplete, streamDetailId, streamRequest });
+  return handleStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, userAgent, reqLogger, toolNameMap, customToolNames, toolNamespaces, streamController, onStreamComplete, streamDetailId, streamRequest, endPending });
 }
 
 export function isTokenExpiringSoon(expiresAt, bufferMs = 5 * 60 * 1000) {

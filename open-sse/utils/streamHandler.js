@@ -158,6 +158,7 @@ export function createDisconnectAwareStream(transformStream, streamController, o
   const startDrain = () => {
     if (drainStarted) return;
     drainStarted = true;
+    transformStream.markClientGone?.();
     (async () => {
       try {
         while (!transformStream.finalUsageSeen?.()) {
@@ -396,6 +397,7 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
       finalizeOnAbort: transformStream.finalizeOnAbort,
       finalUsageSeen: transformStream.finalUsageSeen,
       finalizeNow: transformStream.finalizeNow,
+      markClientGone: transformStream.markClientGone,
     },
     wrappedController,
     onAbortTerminal ? () => onAbortTerminal(abortMessage) : null,

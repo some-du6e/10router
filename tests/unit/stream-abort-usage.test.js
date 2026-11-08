@@ -1,6 +1,6 @@
 // A stream that ends before its final event (hang-up, stall, upstream error)
 // still records its usage, but not as a success.
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, onTestFinished } from "vitest";
 
 const logs = vi.hoisted(() => ({ requestLog: vi.fn(async () => {}), detail: vi.fn(async () => {}), usage: vi.fn(async () => {}) }));
 vi.mock("@/lib/usageDb.js", () => ({
@@ -20,13 +20,14 @@ const encoder = new TextEncoder();
 const body = { model: "gpt-x", input: [{ role: "user", content: "please call the tool for me with the right path" }] };
 
 /** Push SSE text through a passthrough stream, then end it the given way. */
-async function run(parts, end, requestBody = body) {
+async function run(parts, end, requestBody = body, { provider = "codex", output = null, onWrite = null } = {}) {
   const completed = [];
-  const ts = createPassthroughStreamWithLogger("codex", null, "gpt-x", "conn", requestBody, (...args) => completed.push(args), "sk-test");
+  const ts = createPassthroughStreamWithLogger(provider, null, "gpt-x", "conn", requestBody, (...args) => completed.push(args), "sk-test");
   const writer = ts.writable.getWriter();
   const reader = ts.readable.getReader();
-  const drain = (async () => { for (;;) { const { done } = await reader.read(); if (done) break; } })().catch(() => {});
-  for (const part of parts) await writer.write(encoder.encode(part));
+  const decoder = new TextDecoder();
+  const drain = (async () => { for (;;) { const { value, done } = await reader.read(); if (done) break; if (output) output.push(decoder.decode(value)); } })().catch(() => {});
+  for (const part of parts) { await writer.write(encoder.encode(part)); onWrite?.(); }
   if (end === "abort") {
     ts.finalizeOnAbort();
     await writer.abort(new Error("client went away")).catch(() => {});
@@ -126,12 +127,12 @@ const claudeEv = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 
 /** Pipe a fake upstream through the real stream + disconnect-aware wrapper. */
-function pipe({ drain = false, drainMaxMs = 60_000, stallMs = 60_000, translate = null } = {}) {
+function pipe({ drain = false, drainMaxMs = 60_000, stallMs = 60_000, translate = null, requestBody = body } = {}) {
   const completed = [];
   const onComplete = (...args) => completed.push(args);
   const ts = translate
-    ? createSSETransformStreamWithLogger(translate.target, translate.source, "anthropic", null, null, "claude-x", "conn", body, onComplete, "sk-test")
-    : createPassthroughStreamWithLogger("anthropic", null, "claude-x", "conn", body, onComplete, "sk-test");
+    ? createSSETransformStreamWithLogger(translate.target, translate.source, "anthropic", null, null, "claude-x", "conn", requestBody, onComplete, "sk-test")
+    : createPassthroughStreamWithLogger("anthropic", null, "claude-x", "conn", requestBody, onComplete, "sk-test");
   const controller = createStreamController({ provider: "anthropic", model: "claude-x", drainOnDisconnect: drain, drainMaxMs });
   const up = upstreamBody();
   up.abortWith(controller.signal);
@@ -207,22 +208,149 @@ describe("drain: a budgeted key's client hangs up mid-stream", () => {
     expect(completed[0][3]).toEqual({ aborted: true });
   });
 
-  it("past the drain cap, aborts the upstream and falls back to the estimate", async () => {
+  it("past the drain cap, aborts the upstream and charges the time floor", async () => {
+    const clock = useClock();
     const { up, out, completed } = pipe({ drain: true, drainMaxMs: 60 });
     const reader = out.getReader();
-    const text = "visible text before the hang-up";
-    up.push(messageStart + textBlock(text));
+    up.push(messageStart + textBlock("visible text before the hang-up"));
     await readUntil(reader, "hang-up");
+    clock.advance(4000);
     await reader.cancel();
     await vi.waitFor(() => expect(completed).toHaveLength(1), { timeout: 2000 });
     const [, usage, , meta] = completed[0];
     expect(inTok(usage)).toBe(3000);
-    expect(outTok(usage)).toBe(estimateOutputTokens(weighChars(text)));
+    expect(outTok(usage)).toBe(4 * 150);
     expect(meta).toEqual({ aborted: true });
+  });
+
+  it("a drain that reaches the upstream's end without final usage is an error, not a success", async () => {
+    const { up, out, completed } = pipe({ drain: true });
+    const reader = out.getReader();
+    up.push(messageStart + textBlock("no final usage will come"));
+    await readUntil(reader, "will come");
+    await reader.cancel();
+    up.close();
+    await vi.waitFor(() => expect(completed).toHaveLength(1));
+    expect(completed[0][3]).toEqual({ aborted: true });
+  });
+
+  it("keeps the stall watchdog armed while draining", async () => {
+    const { out, completed, up } = pipe({ drain: true, drainMaxMs: 60_000, stallMs: 80 });
+    const reader = out.getReader();
+    up.push(messageStart + textBlock("then the upstream went quiet"));
+    await readUntil(reader, "went quiet");
+    await reader.cancel();
+    // Only the stall (80 ms) can end this drain; the cap is a minute away.
+    await vi.waitFor(() => expect(completed).toHaveLength(1), { timeout: 2000 });
+    expect(completed[0][3]).toEqual({ aborted: true });
+  });
+
+  it("starts from a hang-up seen on the client signal, not just a cancelled body", async () => {
+    const { up, out, completed, controller } = pipe({ drain: true });
+    const reader = out.getReader();
+    up.push(messageStart + textBlock("signal hang-up"));
+    await readUntil(reader, "signal hang-up");
+    // What chatCore's clientSignal listener does on a hang-up mid-stream.
+    controller.handleDisconnect("client_closed");
+    await tick();
+    expect(up.state.cancelled).toBe(false);
+    up.push(messageDelta(321) + messageStop);
+    await vi.waitFor(() => expect(completed).toHaveLength(1));
+    expect(outTok(completed[0][1])).toBe(321);
+    expect(completed[0][3]).toEqual({ aborted: false });
+  });
+});
+
+/** Control Date.now (the floor's clock) from the test. */
+function useClock() {
+  let now = Date.now();
+  const spy = vi.spyOn(Date, "now").mockImplementation(() => now);
+  onTestFinished(() => spy.mockRestore());
+  return { advance: (ms) => { now += ms; } };
+}
+
+describe("cut-short floor", () => {
+  it("charges a Claude stream with omitted thinking, cut at 20 s, at least 20 x 150 output tokens", async () => {
+    const clock = useClock();
+    const { up, out, completed } = pipe({ drain: false });
+    const reader = out.getReader();
+    up.push(messageStart + hiddenThinking + textBlock("tiny"));
+    await readUntil(reader, "tiny");
+    clock.advance(20_000);
+    await reader.cancel();
+    await vi.waitFor(() => expect(completed).toHaveLength(1));
+    expect(outTok(completed[0][1])).toBe(20 * 150);
+    expect(inTok(completed[0][1])).toBe(3000);
+  });
+
+  it("never charges more than the request's max_tokens", async () => {
+    const clock = useClock();
+    const { up, out, completed } = pipe({ drain: false, requestBody: { ...body, max_tokens: 1000 } });
+    const reader = out.getReader();
+    up.push(messageStart + hiddenThinking + textBlock("tiny"));
+    await readUntil(reader, "tiny");
+    clock.advance(20_000);
+    await reader.cancel();
+    await vi.waitFor(() => expect(completed).toHaveLength(1));
+    expect(outTok(completed[0][1])).toBe(1000);
+  });
+
+  it("raises both output field names when the usage carries both", async () => {
+    const clock = useClock();
+    const { up, out, completed } = pipe({ drain: false, translate: { target: FORMATS.CLAUDE, source: FORMATS.OPENAI } });
+    const reader = out.getReader();
+    up.push(messageStart + textBlock("both names"));
+    await readUntil(reader, "both names");
+    clock.advance(2000);
+    await reader.cancel();
+    await vi.waitFor(() => expect(completed).toHaveLength(1));
+    const [, usage] = completed[0];
+    expect(usage.completion_tokens).toBe(300);
+    expect(usage.output_tokens).toBe(300);
+  });
+
+  it("leaves a completed stream's usage exact, however long it ran", async () => {
+    const clock = useClock();
+    const { up, out, completed } = pipe({ drain: false });
+    const reader = out.getReader();
+    up.push(messageStart + textBlock("all of it"));
+    clock.advance(60_000);
+    up.push(messageDelta(57) + messageStop);
+    up.close();
+    await readUntil(reader, "message_stop");
+    await vi.waitFor(() => expect(completed).toHaveLength(1));
+    expect(outTok(completed[0][1])).toBe(57);
   });
 });
 
 describe("terminal shapes", () => {
+  it("Gemini finishReason with usageMetadata ends the answer (passthrough, no translator)", async () => {
+    const completed = [];
+    const ts = createPassthroughStreamWithLogger("gemini", null, "g", "conn", body, (...a) => completed.push(a), "sk-test");
+    const writer = ts.writable.getWriter();
+    const reader = ts.readable.getReader();
+    const drain = (async () => { for (;;) { const { done } = await reader.read(); if (done) break; } })().catch(() => {});
+    await writer.write(encoder.encode(`data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: "hi" }] }, finishReason: "STOP" }], usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 3, totalTokenCount: 10 } })}\n\n`));
+    ts.finalizeOnAbort();
+    await writer.abort(new Error("client went away")).catch(() => {});
+    await drain;
+    expect(completed[0][3]).toEqual({ aborted: false });
+  });
+
+  it("Ollama's done ends the answer", async () => {
+    const completed = [];
+    const ts = createSSETransformStreamWithLogger(FORMATS.OLLAMA, FORMATS.OPENAI, "ollama", null, null, "o", "conn", body, (...a) => completed.push(a), "sk-test");
+    const writer = ts.writable.getWriter();
+    const reader = ts.readable.getReader();
+    const drain = (async () => { for (;;) { const { done } = await reader.read(); if (done) break; } })().catch(() => {});
+    await writer.write(encoder.encode(`${JSON.stringify({ model: "o", message: { role: "assistant", content: "hi" }, done: false })}\n`));
+    await writer.write(encoder.encode(`${JSON.stringify({ model: "o", message: { role: "assistant", content: "" }, done: true, done_reason: "stop", prompt_eval_count: 7, eval_count: 3 })}\n`));
+    ts.finalizeOnAbort();
+    await writer.abort(new Error("client went away")).catch(() => {});
+    await drain;
+    expect(completed[0][3]).toEqual({ aborted: false });
+  });
+
   it("a Claude passthrough read through message_stop and closed before upstream EOF is a success with exact usage", async () => {
     const { up, out, completed } = pipe({ drain: false });
     const reader = out.getReader();
@@ -300,8 +428,44 @@ describe("real usage replaces an estimate", () => {
     await writer.close().catch(() => {});
     await drain;
     const [, usage] = completed[0];
-    expect(usage.prompt_tokens ?? usage.input_tokens).toBe(150);
-    expect(usage.completion_tokens ?? usage.output_tokens).toBe(20);
+    // On master the estimate (input_tokens ~2,000) sat next to the real
+    // prompt_tokens; every input and output field must hold the real value.
+    expect(Math.max(usage.prompt_tokens ?? 0, usage.input_tokens ?? 0)).toBe(150);
+    expect(Math.max(usage.completion_tokens ?? 0, usage.output_tokens ?? 0)).toBe(20);
+  });
+});
+
+describe("a completed stream with no usage at all", () => {
+  it("records the estimate with no context-meter buffer, and no time floor", async () => {
+    const clock = useClock();
+    const content = "a complete answer of moderate length";
+    const [[, usage, , meta]] = await run([
+      `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: "stop" }] })}\n\n`, "data: [DONE]\n\n",
+    ], "close", body, { onWrite: () => clock.advance(30_000) });
+    expect(meta).toEqual({ aborted: false });
+    expect(usage.prompt_tokens).toBe(estimateBillingInputTokens(body));
+    expect(usage.prompt_tokens).toBeLessThan(100);
+    expect(usage.completion_tokens).toBe(estimateOutputTokens(weighChars(content)));
+  });
+});
+
+describe("the usage chunk 10router asked for", () => {
+  const usageOnly = `data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", choices: [], usage: { prompt_tokens: 11, completion_tokens: 4, total_tokens: 15 } })}\n\n`;
+  const finish = `data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", choices: [{ index: 0, delta: { content: "hey" }, finish_reason: "stop" }] })}\n\n`;
+
+  it("isn't forwarded when the client didn't ask, but its usage is kept", async () => {
+    const output = [];
+    const [[, usage]] = await run([finish, usageOnly, "data: [DONE]\n\n"], "close", body, { provider: "openai", output });
+    expect(output.join("")).not.toContain('"choices":[]');
+    expect(usage.prompt_tokens).toBe(11);
+  });
+
+  it("is forwarded when the client asked for it", async () => {
+    const output = [];
+    const asked = { ...body, stream_options: { include_usage: true } };
+    const [[, usage]] = await run([finish, usageOnly, "data: [DONE]\n\n"], "close", asked, { provider: "openai", output });
+    expect(output.join("")).toContain('"choices":[]');
+    expect(usage.prompt_tokens).toBe(11);
   });
 });
 
@@ -318,6 +482,8 @@ describe("billing estimates", () => {
     expect(reasoning.completion_tokens).toBe(100);
     const [[, ollama]] = await run([`data: ${JSON.stringify({ message: { role: "assistant", content: "z".repeat(400) }, done: false })}\n\n`], "abort");
     expect(ollama.completion_tokens).toBe(100);
+    const [[, customItem]] = await run([ev("response.output_item.done", { type: "response.output_item.done", item: { type: "custom_tool_call", call_id: "c1", name: "apply_patch", input: "p".repeat(400) } })], "abort");
+    expect(customItem.completion_tokens).toBe(100);
   });
 
   it("bill input without the context-meter buffer, and an image at a flat rate rather than as base64 text", () => {
@@ -329,6 +495,19 @@ describe("billing estimates", () => {
     expect(estimateInputTokens(withImage)).toBeGreaterThan(100_000);
     const anthropicImage = { messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "B".repeat(400_000) } }] }] };
     expect(estimateBillingInputTokens(anthropicImage)).toBeLessThan(2000);
+  });
+
+  it("bill other inline files by decoded size: PDF data URLs, Claude documents, Gemini inlineData, input_audio", () => {
+    const b64 = "C".repeat(160_000); // 120 KB decoded = 30,000 tokens
+    const bySize = 30_000;
+    const near = (v) => expect(Math.abs(v - bySize)).toBeLessThan(200);
+    near(estimateBillingInputTokens({ messages: [{ role: "user", content: [{ type: "file", file: { file_data: `data:application/pdf;base64,${b64}` } }] }] }));
+    near(estimateBillingInputTokens({ messages: [{ role: "user", content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } }] }] }));
+    near(estimateBillingInputTokens({ contents: [{ role: "user", parts: [{ inlineData: { mimeType: "audio/wav", data: b64 } }] }] }));
+    near(estimateBillingInputTokens({ contents: [{ role: "user", parts: [{ inline_data: { mime_type: "application/pdf", data: b64 } }] }] }));
+    near(estimateBillingInputTokens({ messages: [{ role: "user", content: [{ type: "input_audio", input_audio: { data: b64, format: "wav" } }] }] }));
+    // A Gemini inline image is flat, like the others.
+    expect(estimateBillingInputTokens({ contents: [{ role: "user", parts: [{ inlineData: { mimeType: "image/jpeg", data: b64 } }] }] })).toBeLessThan(2000);
   });
 });
 
@@ -354,5 +533,53 @@ describe("the done line", () => {
     up2.close();
     await readUntil(reader2, "message_stop");
     await vi.waitFor(() => expect(line.mock.calls.filter(([, symbol]) => symbol === "📊")).toHaveLength(1));
+  });
+});
+
+describe("non-streaming request over a forced Responses stream with no usage", () => {
+  it("records, logs and details the same estimate", async () => {
+    const { handleForcedSSEToJson } = await import("open-sse/handlers/chatCore/sseToJsonHandler.js");
+    const text = "an answer that came with no usage at all";
+    const sse = ev("response.created", { type: "response.created", response: { id: "r1", status: "in_progress", output: [] } })
+      + ev("response.output_item.added", { type: "response.output_item.added", output_index: 0, item: { id: "m1", type: "message", role: "assistant", content: [] } })
+      + ev("response.output_text.delta", { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: text })
+      + ev("response.output_item.done", { type: "response.output_item.done", output_index: 0, item: { id: "m1", type: "message", role: "assistant", content: [{ type: "output_text", text }] } })
+      + ev("response.completed", { type: "response.completed", response: { id: "r1", status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }] } });
+    const appendLog = vi.fn();
+    const result = await handleForcedSSEToJson({
+      providerResponse: new Response(sse, { headers: { "content-type": "text/event-stream" } }),
+      sourceFormat: FORMATS.OPENAI_RESPONSES, targetFormat: FORMATS.OPENAI_RESPONSES, provider: "codex", model: "gpt-x",
+      body, stream: false, requestStartTime: Date.now(), connectionId: "conn", apiKey: "sk-test",
+      clientRawRequest: { endpoint: "/v1/responses" }, trackDone: vi.fn(), appendLog,
+    });
+    expect(result.success).toBe(true);
+    const saved = logs.usage.mock.calls.at(-1)[0];
+    expect(saved.apiKey).toBe("sk-test");
+    expect(saved.tokens.prompt_tokens).toBe(estimateBillingInputTokens(body));
+    expect(saved.tokens.completion_tokens).toBe(estimateOutputTokens(weighChars(text)));
+    expect(appendLog).toHaveBeenCalledWith(expect.objectContaining({ tokens: expect.objectContaining({ output_tokens: estimateOutputTokens(weighChars(text)) }) }));
+    const detail = logs.detail.mock.calls.at(-1)[0];
+    expect(detail.tokens.completion_tokens).toBe(estimateOutputTokens(weighChars(text)));
+  });
+});
+
+describe("non-streaming request over a forced chat stream with no usage", () => {
+  it("details and logs the same estimate it records", async () => {
+    const { handleForcedSSEToJson } = await import("open-sse/handlers/chatCore/sseToJsonHandler.js");
+    const text = "a chat answer with no usage";
+    const sse = `data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: text } }] })}\n\n`
+      + `data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
+    const line = vi.fn();
+    const result = await handleForcedSSEToJson({
+      providerResponse: new Response(sse, { headers: { "content-type": "text/event-stream" } }),
+      sourceFormat: FORMATS.OPENAI, targetFormat: FORMATS.OPENAI, provider: "openai-compatible-chat-x", model: "gpt-x",
+      body, stream: false, requestStartTime: Date.now(), connectionId: "conn", apiKey: "sk-test",
+      clientRawRequest: { endpoint: "/v1/chat/completions" }, trackDone: vi.fn(), appendLog: vi.fn(), log: { line }, reqTag: "t",
+    });
+    expect(result.success).toBe(true);
+    const expected = estimateOutputTokens(weighChars(text));
+    expect(logs.usage.mock.calls.at(-1)[0].tokens.completion_tokens).toBe(expected);
+    expect(logs.detail.mock.calls.at(-1)[0].tokens.completion_tokens).toBe(expected);
+    expect(line.mock.calls.at(-1)[2]).toContain(`OUT ${expected}`);
   });
 });
