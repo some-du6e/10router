@@ -1,6 +1,7 @@
 // Management keys: scoped keys for /api/management/v1 that can list, create and
 // delete client keys and provider keys within their scopes. Client-safe
 // helpers shared by the server and the dashboard. See docs/MANAGEMENT_KEYS.md.
+import { parseKeyLimitsInput } from "./apiKeyLimits.js";
 
 /**
  * Every management key starts with this. Client keys start with "sk-", so the
@@ -11,12 +12,17 @@ export const MANAGEMENT_KEY_PREFIX = "10r-mgmt-";
 
 const MAX_LIST = 200;
 const MAX_ID_LENGTH = 300;
-const MAX_BUDGET_USD = 1_000_000_000;
-const MAX_NAME_LENGTH = 120;
+/** Longest name for a management key, a client key or a provider key made through the management API. */
+export const MAX_NAME_LENGTH = 120;
 
 /** Is this string shaped like a management key? Says nothing about whether it is valid. */
 export function isManagementKeyToken(value) {
   return typeof value === "string" && value.startsWith(MANAGEMENT_KEY_PREFIX);
+}
+
+/** Does this token carry a management key anywhere in it? Used to refuse one on /v1 however it is padded. */
+export function containsManagementKey(value) {
+  return typeof value === "string" && value.includes(MANAGEMENT_KEY_PREFIX);
 }
 
 /** No access to either kind of key: what a missing or broken scopes column reads as. */
@@ -86,14 +92,10 @@ export function normalizeManagementScopes(input) {
       scopes.clientKeys.providers = parseIdList(ck.providers, "scopes.clientKeys.providers", errors);
       scopes.clientKeys.models = parseIdList(ck.models, "scopes.clientKeys.models", errors);
       scopes.clientKeys.manageExisting = parseBool(ck.manageExisting, "scopes.clientKeys.manageExisting", errors);
-      if (ck.maxBudgetUsd !== undefined && ck.maxBudgetUsd !== null && ck.maxBudgetUsd !== "") {
-        const n = typeof ck.maxBudgetUsd === "string" ? Number(ck.maxBudgetUsd.trim()) : ck.maxBudgetUsd;
-        if (typeof n !== "number" || !Number.isFinite(n) || n < 0 || n > MAX_BUDGET_USD) {
-          errors.push(`scopes.clientKeys.maxBudgetUsd must be a number of US dollars from 0 to ${MAX_BUDGET_USD}, or null for no cap`);
-        } else {
-          scopes.clientKeys.maxBudgetUsd = Math.round(n * 1e6) / 1e6;
-        }
-      }
+      // The same parsing and limits as a client key's own budget.
+      const budget = parseKeyLimitsInput({ budgetUsd: ck.maxBudgetUsd ?? null });
+      if (budget.errors.length) errors.push(`scopes.clientKeys.maxBudgetUsd: ${budget.errors[0]}`);
+      else scopes.clientKeys.maxBudgetUsd = budget.data.budgetUsd ?? null;
     }
   }
 
@@ -125,9 +127,9 @@ export function parseStoredScopes(raw) {
   return errors.length ? emptyScopes() : scopes;
 }
 
-/** Validate a management key's name. */
+/** Validate a name (management key, or a key made through the management API). */
 export function normalizeManagementKeyName(raw) {
-  if (typeof raw !== "string" || !raw.trim()) return { error: "name is required" };
+  if (typeof raw !== "string" || !raw.trim()) return { error: "name must be a non-empty string" };
   const name = raw.trim();
   if (name.length > MAX_NAME_LENGTH) return { error: `name can be at most ${MAX_NAME_LENGTH} characters` };
   return { name };

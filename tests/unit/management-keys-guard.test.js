@@ -62,7 +62,7 @@ let clientKey;
 beforeAll(async () => {
   process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
   const full = { clientKeys: { enabled: true, manageExisting: true }, providerKeys: { enabled: true, manageExisting: true } };
-  mgmt = (await db.createManagementKey({ name: "admin-ish", scopes: full })).secret;
+  mgmt = (await db.createScopedManagementKey({ name: "admin-ish", scopes: full })).secret;
   clientKey = (await db.createApiKey("client", "machine-test-0001")).key;
 });
 
@@ -166,10 +166,10 @@ describe("the management API takes a management key and nothing else", () => {
 
   it("refuses a key that is turned off, expired or revoked", async () => {
     const scopes = { providerKeys: { enabled: true } };
-    const off = await db.createManagementKey({ name: "off", scopes });
+    const off = await db.createScopedManagementKey({ name: "off", scopes });
     await db.updateManagementKey(off.managementKey.id, { isActive: false });
-    const expired = await db.createManagementKey({ name: "expired", scopes, expiresAt: new Date(Date.now() - 1000).toISOString() });
-    const revoked = await db.createManagementKey({ name: "revoked", scopes });
+    const expired = await db.createScopedManagementKey({ name: "expired", scopes, expiresAt: new Date(Date.now() - 1000).toISOString() });
+    const revoked = await db.createScopedManagementKey({ name: "revoked", scopes });
     expect(await proxy(request("/api/management/v1/me", { headers: bearer(revoked.secret) }))).toBe(NEXT);
     await db.deleteManagementKey(revoked.managementKey.id);
     for (const { secret } of [off, expired, revoked]) {
@@ -179,16 +179,46 @@ describe("the management API takes a management key and nothing else", () => {
 });
 
 describe("a management key never authenticates on /v1", () => {
-  const inference = ["/v1/chat/completions", "/api/v1/chat/completions", "/v1/messages", "/v1/models", "/v1beta/models", "/codex/responses", "/responses"];
+  const inference = ["/v1/chat/completions", "/api/v1/chat/completions", "/v1/messages", "/v1/models", "/v1beta/models", "/codex/responses", "/responses", "/backend-api/codex/responses"];
+
+  /** Every path next.config.mjs rewrites to an inference route, as a concrete request path. */
+  async function rewrittenInferencePaths() {
+    const config = (await import("../../next.config.mjs")).default;
+    const raw = await config.rewrites();
+    const list = Array.isArray(raw) ? raw : [...(raw.beforeFiles || []), ...(raw.afterFiles || []), ...(raw.fallback || [])];
+    return list
+      .filter((r) => r.destination.startsWith("/api/v1"))
+      .map((r) => r.source.replace(/:[a-z]+\*/gi, "x/y").replace(/:[a-z]+/gi, "x"));
+  }
+
+  it("covers every rewrite to an inference route", async () => {
+    const paths = await rewrittenInferencePaths();
+    expect(paths).toEqual(expect.arrayContaining(["/backend-api/codex/x/y", "/v1/x/y", "/codex/x/y", "/responses"]));
+    for (const p of paths) {
+      expect(__test__.isPublicLlmApi(p), p).toBe(true);
+      // Guarded: a remote caller with no key is refused, one with a client key let through.
+      expect((await proxy(request(p))).status, p).toBe(401);
+      expect(await proxy(request(p, { headers: bearer(clientKey) })), p).toBe(NEXT);
+      for (const local of [false, true]) {
+        const res = await proxy(request(p, { headers: bearer(mgmt), local }));
+        expect(res.status, `${p} local=${local}`).toBe(401);
+        expect(res.body.error).toMatch(/management key can't be used for inference/);
+      }
+    }
+  });
 
   it("is refused with 401, remote and from loopback, in every place a client key is read from", async () => {
-    for (const p of inference) {
+    for (const p of [...inference, ...(await rewrittenInferencePaths())]) {
       for (const local of [false, true]) {
         for (const r of [
           request(p, { headers: bearer(mgmt), local }),
           request(p, { headers: { "x-api-key": mgmt }, local }),
           request(p, { headers: { "x-goog-api-key": mgmt }, local }),
           request(`${p}?key=${mgmt}`, { local }),
+          // Padding must not slip one past.
+          request(p, { headers: { Authorization: `Bearer  ${mgmt}` }, local }),
+          request(p, { headers: { Authorization: `Bearer \t${mgmt} ` }, local }),
+          request(`${p}?key=%20${mgmt}`, { local }),
         ]) {
           const res = await proxy(r);
           expect(res, `${p} local=${local}`).not.toBe(NEXT);
@@ -198,7 +228,10 @@ describe("a management key never authenticates on /v1", () => {
     }
   });
 
-  it("while a client key still gets through remotely", async () => {
+  it("while a client key still gets through remotely, Codex ingress included", async () => {
     expect(await proxy(request("/v1/chat/completions", { headers: bearer(clientKey) }))).toBe(NEXT);
+    expect(await proxy(request("/backend-api/codex/responses", { headers: bearer(clientKey) }))).toBe(NEXT);
+    expect(await proxy(request("/backend-api/codex/responses", { local: true }))).toBe(NEXT);
+    expect((await proxy(request("/backend-api/codex/responses"))).status).toBe(401);
   });
 });

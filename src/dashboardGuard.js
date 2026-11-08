@@ -5,7 +5,7 @@ import { verifyDashboardAuthToken, getDashboardAuthSession } from "@/lib/auth/da
 import { needsSetup } from "@/lib/auth/setupState";
 import { hasTrustedPeerHeaders } from "@/lib/auth/trustedPeer";
 import { extractClientApiKey } from "@/shared/utils/clientApiKey.js";
-import { isManagementKeyToken } from "@/shared/utils/managementKey.js";
+import { containsManagementKey } from "@/shared/utils/managementKey.js";
 import { isManagementApiPath, authenticateManagementKey } from "@/lib/management/auth.js";
 
 const CLI_TOKEN_HEADER = "x-9r-cli-token";
@@ -41,7 +41,9 @@ const PUBLIC_API_PATHS = [
 
 // Public top-level prefixes (LLM API endpoints with their own API key auth).
 // Keep root-level rewrites here too: middleware runs before Next.js rewrites.
-const PUBLIC_PREFIXES = ["/v1", "/v1beta", "/api/v1", "/api/v1beta", "/codex", "/responses", "/systemone"];
+// Every source of a next.config.mjs rewrite to /api/v1* belongs here; the
+// guard test checks that against the config.
+const PUBLIC_PREFIXES = ["/v1", "/v1beta", "/api/v1", "/api/v1beta", "/codex", "/responses", "/systemone", "/backend-api"];
 
 // Always require JWT token regardless of requireLogin setting
 const ALWAYS_PROTECTED = [
@@ -275,7 +277,8 @@ export async function proxy(request) {
   if (isPublicLlmApi(pathname)) {
     // Refused even from loopback: a handler would otherwise record usage
     // against the presented token, writing the management secret to the log.
-    if (isManagementKeyToken(extractApiKey(request))) {
+    // Anywhere in the token, so padding ("Bearer  10r-mgmt-…") can't slip one past.
+    if (containsManagementKey(extractApiKey(request))) {
       return NextResponse.json({ error: "A management key can't be used for inference. Use a client API key." }, { status: 401 });
     }
     if (await canAccessPublicLlmApi(request)) return NextResponse.next();
