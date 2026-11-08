@@ -4,6 +4,8 @@ import { OPENAI_COMPATIBLE_PREFIX, ANTHROPIC_COMPATIBLE_PREFIX, CUSTOM_EMBEDDING
 import { generateId } from "@/shared/utils";
 import { sanitizeNodeQuirks } from "@/shared/utils/nodeQuirks";
 import { prefixFormatProblem, prefixProblem } from "@/shared/utils/reservedPrefixes";
+import { endpointUrlProblem } from "@/shared/utils/connectionBaseUrl.js";
+import { isLocalRequest } from "@/dashboardGuard";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +23,11 @@ const CUSTOM_EMBEDDING_DEFAULTS = {
 
 // Compare base URLs the way the POST below stores them.
 const trimUrl = (u) => String(u || "").trim().replace(/\/+$/, "").replace(/\/(messages|embeddings)$/, "");
+
+const baseUrlRejection = async (request, url) => {
+  const problem = await endpointUrlProblem(url, { remote: !isLocalRequest(request) });
+  return problem ? NextResponse.json({ error: problem, field: "baseUrl" }, { status: 400 }) : null;
+};
 
 // GET /api/provider-nodes - List all provider nodes
 export async function GET() {
@@ -80,12 +87,16 @@ export async function POST(request) {
         return NextResponse.json({ error: "Invalid OpenAI compatible API type" }, { status: 400 });
       }
 
+      const nodeBaseUrl = (baseUrl || OPENAI_COMPATIBLE_DEFAULTS.baseUrl).trim();
+      const rejected = await baseUrlRejection(request, nodeBaseUrl);
+      if (rejected) return rejected;
+
       const node = await createProviderNode({
         id: `${OPENAI_COMPATIBLE_PREFIX}${apiType}-${generateId()}`,
         type: "openai-compatible",
         prefix: prefix.trim(),
         apiType,
-        baseUrl: (baseUrl || OPENAI_COMPATIBLE_DEFAULTS.baseUrl).trim(),
+        baseUrl: nodeBaseUrl,
         name: name.trim(),
         ...quirks,
         ...verified,
@@ -100,6 +111,9 @@ export async function POST(request) {
       if (sanitizedBaseUrl.endsWith("/embeddings")) {
         sanitizedBaseUrl = sanitizedBaseUrl.slice(0, -"/embeddings".length);
       }
+
+      const rejected = await baseUrlRejection(request, sanitizedBaseUrl);
+      if (rejected) return rejected;
 
       const node = await createProviderNode({
         id: `${CUSTOM_EMBEDDING_PREFIX}${generateId()}`,
@@ -118,6 +132,9 @@ export async function POST(request) {
       if (sanitizedBaseUrl.endsWith("/messages")) {
         sanitizedBaseUrl = sanitizedBaseUrl.slice(0, -9); // remove /messages
       }
+
+      const rejected = await baseUrlRejection(request, sanitizedBaseUrl);
+      if (rejected) return rejected;
 
       const node = await createProviderNode({
         id: `${ANTHROPIC_COMPATIBLE_PREFIX}${generateId()}`,

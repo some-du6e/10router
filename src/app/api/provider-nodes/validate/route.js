@@ -1,16 +1,10 @@
 import { NextResponse } from "next/server";
 import { assertPublicUrl } from "@/shared/utils/ssrfGuard.js";
 import { isLocalRequest } from "@/dashboardGuard";
+import { describeRedirect, makeProbeFetch } from "@/lib/probeFetch.js";
 
-// Fetch with timeout wrapper
-const fetchWithTimeout = (url, options, timeout = 10000) => {
-  return Promise.race([
-    fetch(url, options),
-    new Promise((_, reject) => 
-      setTimeout(() => reject(new Error("Request timeout")), timeout)
-    )
-  ]);
-};
+const withTimeout = (probe) => (url, options, timeout = 10000) =>
+  probe(url, { ...options, signal: AbortSignal.timeout(timeout) });
 
 // Validate URL format
 const isValidUrl = (url) => {
@@ -74,6 +68,7 @@ export async function POST(request) {
         return NextResponse.json({ error: "URL not allowed" }, { status: 400 });
       }
     }
+    const fetchWithTimeout = withTimeout(makeProbeFetch(!isLocalRequest(request)));
 
     // Custom Embedding Validation - test POST /embeddings directly
     if (type === "custom-embedding") {
@@ -150,12 +145,12 @@ export async function POST(request) {
         }
         return NextResponse.json({
           valid: false,
-          error: getChatErrorMessage(chatRes.status),
+          error: describeRedirect(chatRes) || getChatErrorMessage(chatRes.status),
           method: "chat"
         });
       }
 
-      return NextResponse.json({ valid: false, error: getModelsErrorMessage(res.status) });
+      return NextResponse.json({ valid: false, error: describeRedirect(res) || getModelsErrorMessage(res.status) });
     }
 
     // OpenAI Compatible Validation (Default)
@@ -190,13 +185,16 @@ export async function POST(request) {
       }
       return NextResponse.json({
         valid: false,
-        error: getChatErrorMessage(chatRes.status),
+        error: describeRedirect(chatRes) || getChatErrorMessage(chatRes.status),
         method: "chat"
       });
     }
 
-    return NextResponse.json({ valid: false, error: getModelsErrorMessage(res.status) });
+    return NextResponse.json({ valid: false, error: describeRedirect(res) || getModelsErrorMessage(res.status) });
   } catch (error) {
+    if (String(error?.message).startsWith("Blocked URL")) {
+      return NextResponse.json({ error: "URL not allowed" }, { status: 400 });
+    }
     const errorMessage = getErrorMessage(error);
     console.error("Error validating provider node:", {
       message: error.message,

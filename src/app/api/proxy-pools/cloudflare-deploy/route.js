@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { createProxyPool } from "@/models";
+import { newRelayKey, relayKeyCheck, withRelayKey } from "@/lib/network/relayKey.js";
 
 // Relay worker source code deployed to Cloudflare
-const RELAY_WORKER_CODE = `
+const relayWorkerCode = (key) => `
 export default {
   async fetch(request, env, ctx) {
+    ${relayKeyCheck(key, "request")}
     const target = request.headers.get("x-relay-target");
     const relayPath = request.headers.get("x-relay-path") || "/";
     
@@ -62,8 +64,9 @@ export async function POST(request) {
     const workerScriptUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${projectName}`;
     
     // Cloudflare requires multipart/form-data for worker script upload
+    const relayKey = newRelayKey();
     const formData = new FormData();
-    formData.append("index.js", new Blob([RELAY_WORKER_CODE], { type: "application/javascript+module" }), "index.js");
+    formData.append("index.js", new Blob([relayWorkerCode(relayKey)], { type: "application/javascript+module" }), "index.js");
     formData.append("metadata", new Blob([JSON.stringify({
       main_module: "index.js",
       compatibility_date: "2024-03-20",
@@ -130,7 +133,7 @@ export async function POST(request) {
     // Create proxy pool entry with type cloudflare
     const proxyPool = await createProxyPool({
       name: projectName,
-      proxyUrl: deployUrl,
+      proxyUrl: withRelayKey(deployUrl, relayKey),
       type: "cloudflare",
       noProxy: "",
       isActive: true,

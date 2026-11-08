@@ -1,4 +1,5 @@
 import { GITLAB_CONFIG } from "../constants/oauth.js";
+import { describeRedirect, makeProbeFetch } from "@/lib/probeFetch.js";
 
 // GitLab Duo - Authorization Code Flow with PKCE
 // Supports two login modes via loginMode metadata: "oauth" (default) or "pat"
@@ -31,15 +32,18 @@ const gitlab = {
       code_verifier: codeVerifier,
     });
     if (clientSecret) body.set("client_secret", clientSecret);
-    const response = await fetch(`${baseUrl}${config.tokenUrlPath}`, {
+    // Every hop is checked for remote callers, and redirects stay on this origin,
+    // so a public GitLab URL can't bounce the code or token to an internal host.
+    const probe = makeProbeFetch(meta.remote !== false);
+    const response = await probe(`${baseUrl}${config.tokenUrlPath}`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
       body: body.toString(),
     });
-    if (!response.ok) throw new Error(`GitLab token exchange failed: ${await response.text()}`);
+    if (!response.ok) throw new Error(describeRedirect(response) || `GitLab token exchange failed (${response.status})`);
     const tokens = await response.json();
     // Fetch user info
-    const userRes = await fetch(`${baseUrl}${config.userInfoUrlPath}`, {
+    const userRes = await probe(`${baseUrl}${config.userInfoUrlPath}`, {
       headers: { Authorization: `Bearer ${tokens.access_token}` },
     });
     const user = userRes.ok ? await userRes.json() : {};

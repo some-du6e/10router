@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { KiroService } from "@/lib/oauth/services/kiro";
 import { createProviderConnection } from "@/models";
+import { isValidKiroProfileArn } from "open-sse/utils/awsRegion.js";
 
 /**
  * POST /api/oauth/kiro/import
@@ -33,7 +34,7 @@ export async function POST(request) {
     const email = kiroService.extractEmailFromJWT(tokenData.accessToken);
     const resolvedAuthMethod = isIdc ? "idc" : "imported";
     const providerLabel = isIdc ? "Enterprise" : "Imported";
-    const resolvedProfileArn = profileArn || tokenData.profileArn || null;
+    const resolvedProfileArn = [profileArn, tokenData.profileArn].find(isValidKiroProfileArn) || null;
 
     const connection = await createProviderConnection({
       provider: "kiro",
