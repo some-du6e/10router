@@ -26,6 +26,7 @@ on:
       - "tests/vitest.config.js"
       - "tests/unit/api-key-budgets*.test.js"
       - "tests/unit/stream-abort-usage.test.js"
+      - "tests/unit/stream-floor-wiring.test.js"
       - "tests/unit/limit-hold-integration.test.js"
       - "tests/unit/stream-early-headers.test.js"
       - ".github/workflows/api-key-budgets.yml"
@@ -57,6 +58,7 @@ jobs:
           unit/api-key-budgets-spend.test.js
           unit/api-key-budgets-drain.test.js
           unit/stream-abort-usage.test.js
+          unit/stream-floor-wiring.test.js
           unit/db-migration-chain.test.js
           unit/dashboard-guard.test.js
           unit/limit-hold-integration.test.js
@@ -95,6 +97,7 @@ jobs:
           tests/unit/api-key-budgets-spend.test.js
           tests/unit/api-key-budgets-drain.test.js
           tests/unit/stream-abort-usage.test.js
+          tests/unit/stream-floor-wiring.test.js
       # Fails only on errors in the .ts files this change touches, so unrelated
       # type errors elsewhere don't block it.
       - name: Type check chat.ts and the endpoint requests route
