@@ -32,7 +32,7 @@ vi.mock("@/lib/localDb", () => ({
 
 vi.mock("@/lib/endpointDetect.js", () => ({
   // Not the real 45s, so the test proves the route uses the export.
-  DETECT_DEADLINE_MS: 40_000,
+  DETECT_DEADLINE_MS: 50_000,
   detectEndpoint: mocks.detectEndpoint,
   // An http(s) URL or null, as the real normalizeUrl answers.
   normalizeUrl: (u) => (typeof u === "string" && /^https?:\/\/[^/\s]+/.test(u) ? u.replace(/\/+$/, "") : null),
@@ -67,11 +67,14 @@ vi.mock("@/app/api/providers/[id]/redetect/diff.js", () => ({
 
 const { POST } = await import("@/app/api/providers/[id]/redetect/route.ts");
 
-const rejected = { ok: false, failure: "key", error: "The key was rejected.", steps: [] };
+// Worded unlike the route's own "The key was rejected", so tests can tell them apart.
+const rejected = { ok: false, failure: "key", error: "Wrong key.", steps: [] };
 const down = { ok: false, failure: "down", error: "The endpoint didn't answer.", steps: [] };
 const works = { ok: true, steps: [], protocol: "openai-chat", baseUrl: "https://api.acme.dev/v1", models: ["m1"], modelsSource: "models", quirks: {} };
-// Passed the free probes, then refused once models were asked about.
-const refusedLater = { ...works, models: [], authRejected: true };
+// Passed the free probes, then the model probes stopped on the key.
+const refusedLater = { ...works, models: [], authRejected: true, stopReason: "auth" };
+// Only GET /models refused the key (an admin-only list); nothing says the key is bad.
+const listOnlyRefused = { ...works, models: [], authRejected: true, stopReason: null };
 
 const req = () => new Request("https://dash.local/api/providers/ep1/redetect?part=models", { method: "POST" });
 const call = () => POST(req(), { params: Promise.resolve({ id: "ep1" }) });
@@ -152,7 +155,20 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     mocks.getProviderConnections.mockResolvedValue([...conns("dead"), ...ownConns("o1")]);
     verdict.dead = refusedLater;
     verdict.o1 = down;
-    expect(await json()).toMatchObject({ ok: false, error: "None of the 2 keys it tried got through. The first: The key was rejected" });
+    expect(await json()).toMatchObject({ ok: false, error: "None of the 2 keys it tried worked. The first: The key was rejected" });
+  });
+
+  it("doesn't blame a key that only GET /models refused, and tries no other", async () => {
+    mocks.getProviderConnections.mockResolvedValue(conns("fine", "spare"));
+    verdict.fine = listOnlyRefused;
+    expect((await json()).ok).toBe(true);
+    expect(keysUsed()).toEqual(["fine"]);
+  });
+
+  it("says how many keys it tried when some were refused late and the rest outright", async () => {
+    mocks.getProviderConnections.mockResolvedValue(conns("late", "bad"));
+    verdict.late = refusedLater;
+    expect(await json()).toMatchObject({ ok: false, error: "None of the 2 keys it tried was accepted" });
   });
 
   it("doesn't spend an attempt on a key with no credential", async () => {
@@ -160,6 +176,12 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     verdict.good = works;
     expect((await json()).ok).toBe(true);
     expect(keysUsed()).toEqual(["good"]);
+  });
+
+  it("never blames a key when there is none to blame", async () => {
+    mocks.getProviderConnections.mockResolvedValue([]);
+    verdict[""] = refusedLater;
+    expect(await json()).toMatchObject({ ok: true, usedKey: false });
   });
 
   it("still runs once with no key when the endpoint has no keys", async () => {
@@ -191,7 +213,7 @@ describe("re-detect model check: keys with their own URL", () => {
     mocks.getProviderConnections.mockResolvedValue([...conns("shared"), ...ownConns("o1")]);
     verdict.o1 = down;
     const body = await json();
-    expect(body).toMatchObject({ ok: false, error: "None of the 2 keys it tried got through. The first: The key was rejected" });
+    expect(body).toMatchObject({ ok: false, error: "None of the 2 keys it tried worked. The first: Wrong key" });
     expect(body.viaKeyUrl).toBeUndefined();
   });
 
@@ -238,10 +260,10 @@ describe("re-detect model check: one run across keys", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       mocks.getProviderConnections.mockResolvedValue(conns("a", "b", "c", "d", "e"));
-      // Every rejected key takes 20s to answer.
-      mocks.detectEndpoint.mockImplementation(() => { vi.setSystemTime(Date.now() + 20_000); return Promise.resolve(rejected); });
+      // Every rejected key takes 15s to answer; the fourth starts with exactly the 5s minimum left.
+      mocks.detectEndpoint.mockImplementation(() => { vi.setSystemTime(Date.now() + 15_000); return Promise.resolve(rejected); });
       await json();
-      expect(mocks.detectEndpoint.mock.calls.map((c) => c[0].deadlineMs)).toEqual([40_000, 20_000]);
+      expect(mocks.detectEndpoint.mock.calls.map((c) => c[0].deadlineMs)).toEqual([50_000, 35_000, 20_000, 5_000]);
     } finally { vi.useRealTimers(); }
   });
 

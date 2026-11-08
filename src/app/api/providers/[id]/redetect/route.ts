@@ -25,10 +25,13 @@ const MAX_KEY_ATTEMPTS = 5;
 const MIN_ATTEMPT_MS = 5_000;
 type CustomModel = { id?: string; providerAlias?: string; type?: string; kind?: string };
 
-// The key was refused: outright, or after the free probes passed, while models
-// were asked about (no /models, so detection still answers ok).
-const keyRefused = (r: DetectResult) => (r.ok ? !!r.authRejected : r.failure === "key");
-const worked = (r: DetectResult) => r.ok && !r.authRejected;
+// The key was refused: outright, or after the free probes passed, when the
+// model probes stopped on it (no /models, so detection still answers ok). As in
+// Add endpoint, authRejected alone isn't enough: it is also set when only GET
+// /models refused the key, and the endpoint check asks no models at all.
+const lateRefusal = (r: DetectResult) => r.ok && !!r.authRejected && (r.stopReason === "auth" || r.stopReason === "denied");
+const keyRefused = (r: DetectResult) => (r.ok ? lateRefusal(r) : r.failure === "key");
+const worked = (r: DetectResult) => r.ok && !lateRefusal(r);
 const clause = (s: string | undefined) => String(s || "").replace(/\s*\.*\s*$/, "");
 
 // POST /api/providers/[id]/redetect - the endpoint page's "Re-detect": run the
@@ -112,15 +115,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const win = worked(last.result) ? last : null;
     // None worked: report the first key's verdict (the endpoint's own URL when
     // a key uses it), as a failure even when its refusal came after the free
-    // probes passed, and say how many keys were tried.
+    // probes passed, and say how many keys were tried. A run with no key keeps
+    // its result: there is no key to blame.
     const shown = win || runs[0];
     const refused = keyRefused(shown.result);
     const verdict = clause(shown.result.error) || (refused ? "The key was rejected" : "It didn't answer");
-    const result = win || (runs.length === 1 && !shown.result.ok) ? shown.result : {
+    const result = win || (runs.length === 1 && (!shown.result.ok || !shown.candidate.apiKey)) ? shown.result : {
       ...shown.result, ok: false as const,
       error: runs.length === 1 ? verdict
         : runs.every((r) => keyRefused(r.result)) ? `None of the ${runs.length} keys it tried was accepted`
-        : `None of the ${runs.length} keys it tried got through. The first: ${verdict}`,
+        : `None of the ${runs.length} keys it tried worked. The first: ${verdict}`,
     };
     // What a key on its own URL sees is that account's: redetectDiff keeps its
     // URL, missing models, routes and auth style out of the endpoint's changes.

@@ -359,9 +359,9 @@ function unchangedText(part: RedetectPart, viaKeyUrl: boolean): string {
 
 // What a check through one key's own URL (one account) couldn't vouch for.
 function keyUrlNote(part: RedetectPart): string {
-  if (part === "models") return "Checked through one key's own URL, so models it lacks aren't offered for removal.";
+  if (part === "models") return "Checked through one key's own URL, so models it lacks aren't offered for removal and model routes stay as they are.";
   if (part === "endpoint") return "Checked through one key's own URL, so the endpoint's URL and key style weren't checked.";
-  return "Checked through one key's own URL, so the endpoint's URL, key style and models it lacks weren't checked.";
+  return "Checked through one key's own URL, so the endpoint's URL, key style, model routes and models it lacks weren't checked.";
 }
 
 // What Re-detect found, as changes to tick and apply.
