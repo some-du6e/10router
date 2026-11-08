@@ -157,11 +157,14 @@ export const TABLES = {
       targetId: "TEXT",
       at: "TEXT NOT NULL",
       detail: "TEXT",
-      // 1 for a refused request. Refusals are trimmed apart from the rest, so
-      // a flood of them can't push the real trail out.
-      denied: "INTEGER DEFAULT 0",
+      // Which pool the row is trimmed in: "dashboard" (changes made in the
+      // dashboard), "ok" or "denied" (a management key's actions and refusals,
+      // capped per key). One key's flood can only evict its own history.
+      pool: "TEXT NOT NULL DEFAULT 'ok'",
     },
-    indexes: ["CREATE INDEX IF NOT EXISTS idx_ma_denied ON managementAudit(denied, id)"],
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_ma_pool_key ON managementAudit(pool, managementKeyId, id)",
+    ],
   },
   combos: {
     columns: {

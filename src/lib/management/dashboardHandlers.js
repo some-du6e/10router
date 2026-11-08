@@ -3,8 +3,8 @@
 // This is the only place management keys can be created or changed.
 import {
   createScopedManagementKey, getManagementKeys, getManagementKeyById, updateManagementKey, deleteManagementKey,
-  getManagementAudit, addManagementAudit, getRowOwners, getRowsOwnedBy, getApiKeys, deleteApiKey,
-  getProviderConnections, deleteProviderConnection, getProviderNodes, getSettings,
+  getManagementAudit, addManagementAudit, getOwnedRows, getRowsOwnedBy, deleteApiKey,
+  deleteProviderConnection, getProviderNodes, getSettings,
 } from "@/lib/db/index.js";
 import { getDashboardAuthSession } from "@/lib/auth/dashboardSession";
 import { needsSetup } from "@/lib/auth/setupState";
@@ -69,7 +69,7 @@ async function parseScopes(raw) {
 
 async function dashboardAudit(managementKeyId, action, detail) {
   try {
-    await addManagementAudit({ managementKeyId, action, targetType: "managementKey", targetId: managementKeyId, detail: { by: "dashboard", ...detail } });
+    await addManagementAudit({ managementKeyId, action, targetType: "managementKey", targetId: managementKeyId, detail: { by: "dashboard", ...detail }, pool: "dashboard" });
   } catch {}
 }
 
@@ -79,8 +79,9 @@ function emptyCreated() {
 
 export function listManagementKeys(request) {
   return withSession(request, async () => {
-    const [keys, providerOwners, apiKeys, connections, audit] = await Promise.all([
-      getManagementKeys(), getRowOwners("providerKey"), getApiKeys(), getProviderConnections(),
+    // Only rows a management key made, through the owner indexes.
+    const [keys, ownedClientKeys, ownedProviderKeys, audit] = await Promise.all([
+      getManagementKeys(), getOwnedRows("clientKey"), getOwnedRows("providerKey"),
       getManagementAudit({ limit: DASHBOARD_AUDIT_LIMIT }),
     ]);
     // Grouped by owner id, including owners that have since been revoked.
@@ -89,16 +90,13 @@ export function listManagementKeys(request) {
       if (!created.has(id)) created.set(id, emptyCreated());
       return created.get(id);
     };
-    for (const k of apiKeys) {
-      if (!k.ownerManagementKeyId) continue;
+    for (const k of ownedClientKeys) {
       const g = group(k.ownerManagementKeyId);
       g.clientKeyCount++;
       if (g.clientKeys.length < DASHBOARD_CREATED_LIMIT) g.clientKeys.push({ id: k.id, name: k.name, isActive: k.isActive });
     }
-    for (const c of connections) {
-      const owner = providerOwners.get(c.id);
-      if (!owner) continue;
-      const g = group(owner);
+    for (const c of ownedProviderKeys) {
+      const g = group(c.ownerManagementKeyId);
       g.providerKeyCount++;
       if (g.providerKeys.length < DASHBOARD_CREATED_LIMIT) g.providerKeys.push({ id: c.id, provider: c.provider, name: c.name, isActive: c.isActive });
     }
@@ -155,8 +153,10 @@ export function updateManagementKeyFromDashboard(request, id) {
       if (scopes.error) return fail(400, scopes.error);
       update.scopes = scopes.scopes;
     }
+    const changed = Object.keys(update).filter((f) => JSON.stringify(update[f] ?? null) !== JSON.stringify(existing[f] ?? null));
+    if (!changed.length) return json({ managementKey: serializeManagementKey(existing) });
     const saved = await updateManagementKey(id, update);
-    await dashboardAudit(id, "management_key.update", { changed: Object.keys(update) });
+    await dashboardAudit(id, "management_key.update", { changed });
     return json({ managementKey: serializeManagementKey(saved) });
   });
 }
@@ -169,11 +169,13 @@ export function updateManagementKeyFromDashboard(request, id) {
 export function revokeManagementKeyFromDashboard(request, id) {
   return withSession(request, async () => {
     const deleteCreated = ["1", "true"].includes(new URL(request.url).searchParams.get("deleteCreated") || "");
+    // The key goes first: a create still in flight then fails its claim (and
+    // is undone) instead of leaving a row after the sweep below.
     const existing = await getManagementKeyById(id);
+    if (existing) await deleteManagementKey(id);
     const clientIds = deleteCreated ? await getRowsOwnedBy("clientKey", id) : [];
     const providerIds = deleteCreated ? await getRowsOwnedBy("providerKey", id) : [];
     if (!existing && !clientIds.length && !providerIds.length) return fail(404, "Management key not found");
-    if (existing) await deleteManagementKey(id);
     for (const cid of clientIds) await deleteApiKey(cid);
     for (const pid of providerIds) await deleteProviderConnection(pid);
     await dashboardAudit(id, deleteCreated ? "management_key.revoke_and_delete" : "management_key.revoke", {
