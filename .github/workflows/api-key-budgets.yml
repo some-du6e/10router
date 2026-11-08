@@ -25,6 +25,7 @@ on:
       - "tests/package.json"
       - "tests/vitest.config.js"
       - "tests/unit/api-key-budgets*.test.js"
+      - "tests/unit/stream-abort-usage.test.js"
       - "tests/unit/limit-hold-integration.test.js"
       - "tests/unit/stream-early-headers.test.js"
       - ".github/workflows/api-key-budgets.yml"

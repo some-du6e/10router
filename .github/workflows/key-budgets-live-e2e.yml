@@ -9,7 +9,13 @@ name: Key budgets live E2E
 on:
   pull_request:
     paths:
+      - "open-sse/handlers/chatCore/streamingHandler.js"
+      - "src/lib/db/index.js"
+      - "src/sse/services/model.js"
+      - "open-sse/utils/usageTracking.js"
+      - "open-sse/providers/pricing.js"
       - "open-sse/utils/stream.js"
+      - "open-sse/handlers/chatCore/sseToJsonHandler.js"
       - "open-sse/utils/streamHandler.js"
       - "open-sse/handlers/chatCore.js"
       - "src/sse/handlers/chat.ts"

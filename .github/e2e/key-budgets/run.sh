@@ -221,24 +221,29 @@ else
   row "5b. allowed model on key D, any model on unlimited key B" FAIL "D exit=$cc_allowed_exit B exit=$CC_EXIT"
 fi
 
-# ---- 6. Client hangs up mid-stream: output is still charged -------------------
-key_info KEY_B "$OUT/keyB-pre-abort.json"
-pre=$(jget "$OUT/keyB-pre-abort.json" data.usage)
-KEY="$KEY_B" node "$HERE/abort-client.mjs" "$BASE" "$CC_MODEL" 6 > "$OUT/abort.out" 2>&1
-sleep 4
-key_info KEY_B "$OUT/keyB-post-abort.json"
-post=$(jget "$OUT/keyB-post-abort.json" data.usage)
+# ---- 6. Client hangs up mid-stream: a budgeted key pays the real usage ---------
+# Key E has a budget, so 10router keeps reading the upstream after the client
+# hangs up, until the mock's message_delta (about 15 s in: 60 deltas x 250 ms),
+# and charges exactly what it reports: 1000 in x $4/1M + 6000 out x $20/1M.
+make_key drain-budget '{"budgetUsd":100}' KEY_E
+key_info KEY_E "$OUT/keyE-pre-abort.json"
+pre=$(jget "$OUT/keyE-pre-abort.json" data.usage)
+KEY="$KEY_E" node "$HERE/abort-client.mjs" "$BASE" "$CC_MODEL" 6 > "$OUT/abort.out" 2>&1
+EXPECTED=0.124
+post=$pre
+for _ in $(seq 1 30); do
+  sleep 1
+  key_info KEY_E "$OUT/keyE-post-abort.json"
+  post=$(jget "$OUT/keyE-post-abort.json" data.usage)
+  [ "$post" != "$pre" ] && break
+done
 delta=$(node -e 'console.log((Number(process.argv[2]) - Number(process.argv[1])).toFixed(6))' "$pre" "$post")
-# Input alone: 1000 tokens x $4/1M = $0.004, plus message_start's 1 output token.
-# The client read six ~100-token deltas (~$0.012 of output); require at least
-# 100 output tokens ($0.002) on top, so input-only charging can't pass.
-INPUT_ONLY=0.004
-MIN_CHARGE=0.006
-echo "abort client: $(cat "$OUT/abort.out"); spend \$$pre -> \$$post (+\$$delta), input-only \$$INPUT_ONLY, need > \$$MIN_CHARGE"
-if [ "$(jget "$OUT/abort.out" status)" = 200 ] && [ "$(jget "$OUT/abort.out" sawMessageDelta)" = false ] && gt "$delta" "$MIN_CHARGE"; then
-  row "6. aborted stream charges estimated output" PASS "+\$$delta > \$$MIN_CHARGE (input-only \$$INPUT_ONLY)"
+echo "abort client: $(cat "$OUT/abort.out"); spend \$$pre -> \$$post (+\$$delta), expected \$$EXPECTED"
+exact=$(node -e 'console.log(Math.abs(Number(process.argv[1]) - Number(process.argv[2])) < 1e-6 ? "yes" : "no")' "$delta" "$EXPECTED")
+if [ "$(jget "$OUT/abort.out" status)" = 200 ] && [ "$(jget "$OUT/abort.out" sawMessageDelta)" = false ] && [ "$exact" = yes ]; then
+  row "6. aborted stream on a budgeted key charges the real usage" PASS "+\$$delta = \$$EXPECTED (message_delta usage, read after the hang-up)"
 else
-  row "6. aborted stream charges estimated output" FAIL "+\$$delta, need > \$$MIN_CHARGE; input-only \$$INPUT_ONLY ($(head -c 120 "$OUT/abort.out"))"
+  row "6. aborted stream on a budgeted key charges the real usage" FAIL "+\$$delta, expected \$$EXPECTED ($(head -c 120 "$OUT/abort.out"))"
 fi
 
 echo "::group::mock upstream log"; cat "$OUT/mock.log"; echo "::endgroup::"
