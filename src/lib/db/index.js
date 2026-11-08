@@ -50,8 +50,9 @@ export {
 // Management keys (scoped keys for /api/management/v1) and their audit log
 export {
   createScopedManagementKey, getManagementKeys, getManagementKeyById, findManagementKeyBySecret,
-  updateManagementKey, deleteManagementKey, touchManagementKey, createOwnedApiKey, recordApiKeyActor,
-  setRowOwner, getRowOwners, getRowOwner, getRowsOwnedBy, addManagementAudit, getManagementAudit,
+  updateManagementKey, deleteManagementKey, touchManagementKey, createOwnedApiKey, updateApiKeyAs,
+  setRowOwner, claimRowForManagementKey, getRowOwners, getOwnedRows, getRowOwner, getRowsOwnedBy,
+  addManagementAudit, getManagementAudit,
 } from "./repos/managementKeysRepo.js";
 
 // Combos

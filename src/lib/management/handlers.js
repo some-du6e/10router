@@ -7,10 +7,10 @@
 // See docs/MANAGEMENT_KEYS.md.
 import crypto from "node:crypto";
 import {
-  getApiKeys, getApiKeyById, updateApiKey, deleteApiKey,
+  getApiKeys, getApiKeyById, deleteApiKey,
   getProviderConnections, getProviderConnectionById, deleteProviderConnection,
-  touchManagementKey, setRowOwner, getRowOwners, getRowOwner, addManagementAudit,
-  createOwnedApiKey, recordApiKeyActor,
+  touchManagementKey, claimRowForManagementKey, getRowOwners, getRowOwner, addManagementAudit,
+  createOwnedApiKey, updateApiKeyAs,
 } from "@/lib/db/index.js";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { parseKeyLimitsInput } from "@/shared/utils/apiKeyLimits.js";
@@ -47,7 +47,7 @@ function parseName(raw, { required }) {
 
 async function audit(mk, action, targetType, targetId, detail, { denied = false } = {}) {
   try {
-    await addManagementAudit({ managementKeyId: mk.id, action, targetType, targetId, detail, denied });
+    await addManagementAudit({ managementKeyId: mk.id, action, targetType, targetId, detail, pool: denied ? "denied" : "ok" });
   } catch (e) {
     console.warn(`[management] audit write failed: ${e.message}`);
   }
@@ -70,6 +70,17 @@ async function withKey(request, scope, fn) {
     console.warn(`[management] ${request.method} failed: ${e.message}`);
     return fail(500, "The management request failed");
   }
+}
+
+const sameJson = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+const sameInstant = (a, b) => (a ? new Date(a).getTime() : null) === (b ? new Date(b).getTime() : null);
+
+/** The fields of `update` that differ from the key as stored. */
+function changedFields(key, update) {
+  return Object.keys(update).filter((f) => {
+    if (f === "expiresAt") return !sameInstant(update[f], key[f]);
+    return !sameJson(update[f], key[f]);
+  });
 }
 
 // ---- GET /me -----------------------------------------------------------------
@@ -119,6 +130,7 @@ export function createClientKey(request) {
 
     // One insert with its limits and owner: never a moment as an unrestricted key.
     const created = await createOwnedApiKey({ name: name.name, machineId: await getConsistentMachineId(), limits: limits.data, ownerId: mk.id });
+    if (!created) return fail(401, "This management key was revoked or turned off");
     await audit(mk, "client_key.create", "clientKey", created.id, {
       name: created.name, budgetUsd: created.budgetUsd, allowedModels: created.allowedModels, expiresAt: created.expiresAt,
     });
@@ -150,17 +162,18 @@ export function updateClientKey(request, id) {
     const update = { ...limits.data };
     if (name.name) update.name = name.name;
     if (body.isActive !== undefined) update.isActive = body.isActive;
+    // Only what differs counts: a no-op edit changes nothing and isn't logged.
+    const changed = changedFields(key, update);
+    if (!changed.length) return json({ clientKey: serializeClientKey(key, key.ownerManagementKeyId, mk.id) });
     const violation = (await clientKeyScopeViolation(mk.scopes.clientKeys, { ...key, ...limits.data }))
       || dashboardChoiceViolation(key, update);
     if (violation) {
-      await audit(mk, "client_key.update.denied", "clientKey", key.id, { changed: Object.keys(update), reason: violation }, { denied: true });
+      await audit(mk, "client_key.update.denied", "clientKey", key.id, { changed, reason: violation }, { denied: true });
       return fail(403, violation);
     }
-    await updateApiKey(key.id, update);
-    await recordApiKeyActor(key.id, { isActive: update.isActive, expiresAt: update.expiresAt }, mk.id);
-    const saved = await getApiKeyById(key.id);
+    const saved = await updateApiKeyAs(key.id, update, mk.id);
     if (!saved) return fail(404, "Client key not found");
-    await audit(mk, "client_key.update", "clientKey", saved.id, { changed: Object.keys(update) });
+    await audit(mk, "client_key.update", "clientKey", saved.id, { changed });
     return json({ clientKey: serializeClientKey(saved, saved.ownerManagementKeyId, mk.id) });
   });
 }
@@ -302,12 +315,17 @@ export function createProviderKey(request) {
     if (res.status === 409) return fail(409, `A key named "${connectionName}" already exists for this provider; pick another name`);
     if (!res.ok || !out.connection?.id) return fail(res.ok ? 500 : res.status, typeof out.error === "string" ? out.error : "Could not add the key");
 
+    // The route makes the row in its own transaction; claim it right after,
+    // and only while this key is still on. Unclaimed it would read as the
+    // dashboard's, so a row that can't be claimed is removed again.
     let saved;
     try {
-      await setRowOwner("providerKey", out.connection.id, mk.id);
+      if (!(await claimRowForManagementKey("providerKey", out.connection.id, mk.id))) {
+        await deleteProviderConnection(out.connection.id);
+        return fail(401, "This management key was revoked or turned off");
+      }
       saved = await getProviderConnectionById(out.connection.id);
     } catch (e) {
-      // Without its owner the key would read as the dashboard's; don't keep it.
       await deleteProviderConnection(out.connection.id).catch(() => {});
       throw e;
     }

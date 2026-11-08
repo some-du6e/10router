@@ -6,17 +6,19 @@ import crypto from "node:crypto";
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
-import { rowToKey, numberOrNull, toAllowedModelsColumn } from "./apiKeysRepo.js";
+import { rowToKey, numberOrNull, toAllowedModelsColumn, updateApiKeyInTx } from "./apiKeysRepo.js";
 import { generateApiKeyWithMachine } from "@/shared/utils/apiKey.js";
 import { MANAGEMENT_KEY_PREFIX, parseStoredScopes } from "@/shared/utils/managementKey.js";
 
 // Random characters shown after the prefix so a key can be recognised in a list.
 const DISPLAY_CHARS = 6;
-// The audit log keeps this many rows of each kind. Refusals are counted apart,
-// so a flood of refused requests never pushes out what keys actually did.
-export const AUDIT_KEEP = 5000;
-export const AUDIT_KEEP_DENIED = 1000;
-// Longest audit detail, as JSON. A longer one is replaced by a stub.
+// The audit log keeps this many rows per pool: each management key's own
+// actions and refusals apart (so one key can only evict its own history), and
+// the dashboard's changes in a pool of their own.
+export const AUDIT_KEEP_PER_KEY = 1000;
+export const AUDIT_KEEP_DENIED_PER_KEY = 200;
+export const AUDIT_KEEP_DASHBOARD = 2000;
+// Longest audit detail, as JSON.
 export const AUDIT_DETAIL_MAX = 2048;
 
 export const DASHBOARD_ACTOR = "dashboard";
@@ -104,9 +106,17 @@ export async function touchManagementKey(id, at = new Date().toISOString()) {
 
 // ---- Client keys made by a management key -----------------------------------
 
+/** Is this management key still there and on? Checked inside the write that claims a row for it. */
+function managementKeyActiveInTx(db, managementKeyId) {
+  const row = db.get(`SELECT isActive, expiresAt FROM managementKeys WHERE id = ?`, [managementKeyId]);
+  if (!row || !(row.isActive === 1 || row.isActive === true)) return false;
+  return !row.expiresAt || new Date(row.expiresAt).getTime() > Date.now();
+}
+
 /**
  * Create a client key with its limits and owner in one insert, so it never
- * exists, even for a moment, without them.
+ * exists, even for a moment, without them. Null when the management key was
+ * revoked or turned off meanwhile: then nothing is created.
  * @param {{ name: string, machineId: string, limits: { budgetUsd?: number|null, allowedModels?: string[]|null, expiresAt?: string|null }, ownerId: string }} input
  */
 export async function createOwnedApiKey({ name, machineId, limits, ownerId }) {
@@ -115,23 +125,67 @@ export async function createOwnedApiKey({ name, machineId, limits, ownerId }) {
   const id = uuidv4();
   const { key } = generateApiKeyWithMachine(machineId);
   const expiresAt = limits.expiresAt || null;
-  db.run(
-    `INSERT INTO apiKeys(id, key, name, machineId, isActive, createdAt, budgetUsd, allowedModels, expiresAt, ownerManagementKeyId, expiresAtSetBy)
-     VALUES(?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
-    [id, key, name, machineId, new Date().toISOString(), numberOrNull(limits.budgetUsd), toAllowedModelsColumn(limits.allowedModels),
-      expiresAt, ownerId, expiresAt ? ownerId : null]
-  );
-  return rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]));
+  let created = null;
+  db.transaction(() => {
+    if (!managementKeyActiveInTx(db, ownerId)) return;
+    db.run(
+      `INSERT INTO apiKeys(id, key, name, machineId, isActive, createdAt, budgetUsd, allowedModels, expiresAt, ownerManagementKeyId, expiresAtSetBy)
+       VALUES(?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
+      [id, key, name, machineId, new Date().toISOString(), numberOrNull(limits.budgetUsd), toAllowedModelsColumn(limits.allowedModels),
+        expiresAt, ownerId, expiresAt ? ownerId : null]
+    );
+    created = rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]));
+  });
+  return created;
+}
+
+const sameInstant = (a, b) => (a ? new Date(a).getTime() : null) === (b ? new Date(b).getTime() : null);
+
+/**
+ * Who owns the key's on/off state and expiry after `actor` applies `update`.
+ * "dashboard" is never replaced by a management key, and a no-op change (off
+ * to off, the same expiry) moves nothing, so a management key can't take over
+ * the dashboard's choice by repeating it.
+ */
+export function nextKeyActors(existing, update, actor) {
+  let disabledBy = existing.disabledBy || null;
+  let expiresAtSetBy = existing.expiresAtSetBy || null;
+  const isDashboard = actor === DASHBOARD_ACTOR;
+  // A key off, or with an expiry, from before this was recorded is the dashboard's.
+  if (existing.isActive === false && !disabledBy) disabledBy = DASHBOARD_ACTOR;
+  if (existing.expiresAt && !expiresAtSetBy) expiresAtSetBy = DASHBOARD_ACTOR;
+
+  if (update.isActive !== undefined && update.isActive !== existing.isActive) {
+    if (update.isActive) disabledBy = null;
+    else if (isDashboard || disabledBy !== DASHBOARD_ACTOR) disabledBy = actor;
+  } else if (isDashboard && update.isActive === false) {
+    // The dashboard turning off a key a management key had turned off takes it over.
+    disabledBy = DASHBOARD_ACTOR;
+  }
+
+  if (update.expiresAt !== undefined && !sameInstant(update.expiresAt, existing.expiresAt)) {
+    if (!update.expiresAt) expiresAtSetBy = null;
+    else if (isDashboard || expiresAtSetBy !== DASHBOARD_ACTOR) expiresAtSetBy = actor;
+  }
+  return { disabledBy, expiresAtSetBy };
 }
 
 /**
- * Record who turned a client key off and who set its expiry, after a change by
- * `actor` ("dashboard" or a management key id).
+ * Update a client key and record who changed its on/off state and expiry, in
+ * one transaction. `actor` is "dashboard" or a management key id.
  */
-export async function recordApiKeyActor(id, { isActive, expiresAt }, actor) {
+export async function updateApiKeyAs(id, update, actor) {
   const db = await getAdapter();
-  if (isActive !== undefined) db.run(`UPDATE apiKeys SET disabledBy = ? WHERE id = ?`, [isActive ? null : actor, id]);
-  if (expiresAt !== undefined) db.run(`UPDATE apiKeys SET expiresAtSetBy = ? WHERE id = ?`, [expiresAt ? actor : null, id]);
+  let result = null;
+  db.transaction(() => {
+    const before = rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]));
+    if (!before) return;
+    updateApiKeyInTx(db, id, update);
+    const { disabledBy, expiresAtSetBy } = nextKeyActors(before, update, actor);
+    db.run(`UPDATE apiKeys SET disabledBy = ?, expiresAtSetBy = ? WHERE id = ?`, [disabledBy, expiresAtSetBy, id]);
+    result = rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]));
+  });
+  return result;
 }
 
 // ---- Ownership ---------------------------------------------------------------
@@ -144,7 +198,22 @@ function ownedTable(kind) {
   return table;
 }
 
-/** Record that a management key created this client key or provider connection. */
+/**
+ * Record that a management key created this row, if the key is still there
+ * and on, in one transaction. False when it isn't: the caller removes the row.
+ */
+export async function claimRowForManagementKey(kind, rowId, managementKeyId) {
+  const db = await getAdapter();
+  let claimed = false;
+  db.transaction(() => {
+    if (!managementKeyActiveInTx(db, managementKeyId)) return;
+    db.run(`UPDATE ${ownedTable(kind)} SET ownerManagementKeyId = ? WHERE id = ?`, [managementKeyId, rowId]);
+    claimed = true;
+  });
+  return claimed;
+}
+
+/** Record an owner unconditionally (backups, tests). */
 export async function setRowOwner(kind, rowId, managementKeyId) {
   const db = await getAdapter();
   db.run(`UPDATE ${ownedTable(kind)} SET ownerManagementKeyId = ? WHERE id = ?`, [managementKeyId, rowId]);
@@ -160,6 +229,14 @@ export async function getRowOwners(kind) {
   return out;
 }
 
+/** The rows management keys created, with what the dashboard lists for each. Uses the owner index. */
+export async function getOwnedRows(kind) {
+  const db = await getAdapter();
+  const cols = kind === "providerKey" ? "id, provider, name, isActive, ownerManagementKeyId" : "id, name, isActive, ownerManagementKeyId";
+  return db.all(`SELECT ${cols} FROM ${ownedTable(kind)} WHERE ownerManagementKeyId IS NOT NULL ORDER BY rowid`)
+    .map((r) => ({ ...r, isActive: r.isActive === 1 || r.isActive === true }));
+}
+
 export async function getRowOwner(kind, rowId) {
   const db = await getAdapter();
   return db.get(`SELECT ownerManagementKeyId FROM ${ownedTable(kind)} WHERE id = ?`, [rowId])?.ownerManagementKeyId || null;
@@ -173,14 +250,15 @@ export async function getRowsOwnedBy(kind, managementKeyId) {
 
 // ---- Audit log ---------------------------------------------------------------
 
+export const AUDIT_POOLS = { ok: "ok", denied: "denied", dashboard: "dashboard" };
+
 function truncate(value, max) {
   const s = String(value);
   return s.length > max ? `${s.slice(0, max)}…` : s;
 }
 
-/** A detail as stored: strings and lists cut short, and the whole thing capped. */
-export function compactAuditDetail(detail) {
-  if (!detail || typeof detail !== "object") return null;
+/** Lists cut to their first 3 entries plus a count, strings to 300 characters. */
+function compacted(detail) {
   const out = {};
   for (const [k, v] of Object.entries(detail)) {
     if (v === null || v === undefined || typeof v === "number" || typeof v === "boolean") out[k] = v ?? null;
@@ -189,25 +267,59 @@ export function compactAuditDetail(detail) {
       if (v.length > 3) out[`${k}Count`] = v.length;
     } else out[k] = truncate(typeof v === "object" ? JSON.stringify(v) : v, 300);
   }
-  const json = stringifyJson(out);
-  return json.length <= AUDIT_DETAIL_MAX ? json : stringifyJson({ truncated: true, bytes: json.length });
+  return out;
+}
+
+/** Lists replaced by their counts, strings cut short: what a success detail falls back to over the cap. */
+function counted(detail) {
+  const out = {};
+  for (const [k, v] of Object.entries(detail)) {
+    if (Array.isArray(v)) out[`${k}Count`] = v.length;
+    else if (typeof v === "string") out[k] = truncate(v, 300);
+    else if (v && typeof v === "object") out[k] = truncate(JSON.stringify(v), 300);
+    else out[k] = v ?? null;
+  }
+  return out;
 }
 
 /**
- * @param {{ managementKeyId: string|null, action: string, targetType?: string|null, targetId?: string|null, detail?: object|null, denied?: boolean }} entry
+ * A detail as stored, always under AUDIT_DETAIL_MAX. A refusal's is compacted
+ * (an attacker picks its content). A success keeps its full lists while they
+ * fit, and falls back to counts when they don't.
+ */
+export function compactAuditDetail(detail, { denied = false } = {}) {
+  if (!detail || typeof detail !== "object") return null;
+  const tries = denied ? [compacted(detail)] : [detail, counted(detail)];
+  for (const t of tries) {
+    const json = stringifyJson(t);
+    if (json.length <= AUDIT_DETAIL_MAX) return json;
+  }
+  return stringifyJson({ truncated: true });
+}
+
+/**
+ * @param {{ managementKeyId: string|null, action: string, targetType?: string|null, targetId?: string|null, detail?: object|null, pool?: "ok"|"denied"|"dashboard" }} entry
  *   detail must not hold a secret; callers pass names, ids and limits only.
  */
-export async function addManagementAudit({ managementKeyId, action, targetType = null, targetId = null, detail = null, denied = false }) {
+export async function addManagementAudit({ managementKeyId, action, targetType = null, targetId = null, detail = null, pool = AUDIT_POOLS.ok }) {
+  if (!Object.values(AUDIT_POOLS).includes(pool)) throw new Error(`unknown audit pool ${pool}`);
   const db = await getAdapter();
-  const flag = denied ? 1 : 0;
   db.run(
-    `INSERT INTO managementAudit(managementKeyId, action, targetType, targetId, at, detail, denied) VALUES(?, ?, ?, ?, ?, ?, ?)`,
-    [managementKeyId || null, action, targetType, targetId, new Date().toISOString(), compactAuditDetail(detail), flag]
+    `INSERT INTO managementAudit(managementKeyId, action, targetType, targetId, at, detail, pool) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+    [managementKeyId || null, action, targetType, targetId, new Date().toISOString(), compactAuditDetail(detail, { denied: pool === AUDIT_POOLS.denied }), pool]
   );
-  db.run(
-    `DELETE FROM managementAudit WHERE denied = ? AND id <= (SELECT id FROM managementAudit WHERE denied = ? ORDER BY id DESC LIMIT 1 OFFSET ?)`,
-    [flag, flag, denied ? AUDIT_KEEP_DENIED : AUDIT_KEEP]
-  );
+  // Trim only the pool (and, for a key's own rows, only that key) the row went into.
+  if (pool === AUDIT_POOLS.dashboard) {
+    db.run(
+      `DELETE FROM managementAudit WHERE pool = ? AND id <= (SELECT id FROM managementAudit WHERE pool = ? ORDER BY id DESC LIMIT 1 OFFSET ?)`,
+      [pool, pool, AUDIT_KEEP_DASHBOARD]
+    );
+  } else {
+    db.run(
+      `DELETE FROM managementAudit WHERE pool = ? AND managementKeyId IS ? AND id <= (SELECT id FROM managementAudit WHERE pool = ? AND managementKeyId IS ? ORDER BY id DESC LIMIT 1 OFFSET ?)`,
+      [pool, managementKeyId || null, pool, managementKeyId || null, pool === AUDIT_POOLS.denied ? AUDIT_KEEP_DENIED_PER_KEY : AUDIT_KEEP_PER_KEY]
+    );
+  }
 }
 
 export async function getManagementAudit({ limit = 50, managementKeyId = null } = {}) {
@@ -223,7 +335,8 @@ export async function getManagementAudit({ limit = 50, managementKeyId = null } 
     targetType: r.targetType,
     targetId: r.targetId,
     at: r.at,
-    denied: r.denied === 1,
+    pool: r.pool,
+    denied: r.pool === AUDIT_POOLS.denied,
     detail: parseJson(r.detail, null),
   }));
 }

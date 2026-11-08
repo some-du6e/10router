@@ -83,8 +83,11 @@ export async function createApiKey(name, machineId) {
   return apiKey;
 }
 
-export async function updateApiKey(id, data) {
-  const db = await getAdapter();
+/**
+ * The update itself, for a caller already holding the adapter (and possibly a
+ * transaction, which this nests in).
+ */
+export function updateApiKeyInTx(db, id, data) {
   let result = null;
   db.transaction(() => {
     const row = db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]);
@@ -105,6 +108,11 @@ export async function updateApiKey(id, data) {
     result = rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]));
   });
   return result;
+}
+
+export async function updateApiKey(id, data) {
+  const db = await getAdapter();
+  return updateApiKeyInTx(db, id, data);
 }
 
 export async function deleteApiKey(id) {
