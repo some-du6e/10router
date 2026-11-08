@@ -358,7 +358,7 @@ function RedetectBox({ node, part, diff, onClose, onApplied }: { node: EndpointN
     return (
       <div role="alert" className="ep-in mt-4 flex items-start gap-2 rounded-[10px] border border-red-500/30 bg-red-500/5 px-3 py-2.5 text-xs">
         <span aria-hidden="true" className="material-symbols-outlined text-[16px] text-red-500">error</span>
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5"><p className="font-medium text-text-main">{part === "models" ? "The model check" : "Re-detect"} didn&apos;t get through</p><p className="text-text-muted">{diff.error}. Nothing was changed.</p></div>
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5"><p className="font-medium text-text-main">{part === "models" ? "The model check" : "Re-detect"} didn&apos;t get through</p><p className="text-text-muted">{diff.error ? `${diff.error.replace(/\s*\.*$/, "")}. ` : ""}Nothing was changed.</p></div>
         <button type="button" onClick={onClose} aria-label="Dismiss" className="material-symbols-outlined text-[16px] text-text-muted hover:text-text-main">close</button>
       </div>
     );

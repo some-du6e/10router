@@ -1,0 +1,55 @@
+name: Re-detect model check
+
+on:
+  pull_request:
+    paths:
+      - "src/app/api/providers/[id]/redetect/route.ts"
+      - "src/app/api/providers/[id]/redetect/diff.ts"
+      - "src/app/(dashboard)/dashboard/providers/*/CustomEndpointPage.tsx"
+      - "src/lib/endpointDetect.ts"
+      - "src/lib/endpointImpersonate.js"
+      - "tests/unit/endpoint-redetect-key-fallback.test.js"
+      - "tests/unit/endpoint-redetect-diff.test.js"
+      - ".github/workflows/redetect-model-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Unit test
+        working-directory: tests
+        run: ./node_modules/.bin/vitest run unit/endpoint-redetect-key-fallback.test.js unit/endpoint-redetect-diff.test.js
+      # set-state-in-effect: CustomEndpointPage.tsx's data-loading effects
+      # predate this check and fail on master too.
+      - name: Lint
+        run: >
+          ./node_modules/.bin/eslint --rule 'react-hooks/set-state-in-effect: off'
+          "src/app/api/providers/[id]/redetect/route.ts"
+          "src/app/(dashboard)/dashboard/providers/[id]/CustomEndpointPage.tsx"
+          tests/unit/endpoint-redetect-key-fallback.test.js
+      # Fails only on errors in the changed files, so unrelated type errors
+      # elsewhere don't block it.
+      - name: Type check changed files
+        run: |
+          set +e
+          ./node_modules/.bin/tsc --noEmit -p . > tsc.log 2>&1
+          code=$?
+          set -e
+          tail -5 tsc.log
+          if [ "$code" -gt 2 ] || ! [ -x ./node_modules/.bin/tsc ]; then echo "tsc did not run (exit $code)"; exit 1; fi
+          if grep -F "providers/[id]/redetect/route.ts" tsc.log; then exit 1; fi
+          if grep -F "providers/[id]/CustomEndpointPage.tsx" tsc.log; then exit 1; fi

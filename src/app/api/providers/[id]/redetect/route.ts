@@ -15,11 +15,15 @@ export const dynamic = "force-dynamic";
 
 type Connection = { id: string; isActive?: boolean; apiKey?: string; providerSpecificData?: { ownBaseUrl?: boolean } };
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,160}$/;
+// How many active keys the re-detect check will try before it gives up — enough
+// to skip a few dead-but-still-on keys without probing a whole large pool.
+const MAX_KEY_ATTEMPTS = 5;
 type CustomModel = { id?: string; providerAlias?: string; type?: string; kind?: string };
 
 // POST /api/providers/[id]/redetect - the endpoint page's "Re-detect": run the
-// same free-probe detection as "Add endpoint" on the saved URL with the first
-// active key, and answer with what would change. Nothing is saved here; the
+// same free-probe detection as "Add endpoint" on the saved URL, trying the
+// active keys in turn until one isn't rejected, and answer with what would
+// change. Nothing is saved here; the
 // page applies the changes the user accepts through the usual routes.
 // [id] is the endpoint's node id. Streams progress as NDJSON when asked.
 // ?part=endpoint checks the API, URL and fixes without asking about models;
@@ -35,21 +39,25 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   if (guard instanceof NextResponse) return guard;
 
   const conns = (await getProviderConnections({ provider: id })) as Connection[];
-  const conn = conns.find((c) => c.isActive !== false && !c.providerSpecificData?.ownBaseUrl) || null;
+  // The keys the router itself would reach for, in the same priority order. The
+  // check tries them in turn so one dead-but-still-on key can't make a working
+  // endpoint look rejected while healthy keys sit behind it in the list.
+  // Inference already fails over this way; the check used to stop at the first
+  // active key and report its rejection as the whole endpoint's.
+  const keys = conns.filter((c) => c.isActive !== false && !c.providerSpecificData?.ownBaseUrl);
+  const candidates: (string | null)[] = keys.length ? keys.slice(0, MAX_KEY_ATTEMPTS).map((c) => c.apiKey || "") : [null];
   const current = ((await getCustomModels()) as CustomModel[])
     .filter((m) => m.providerAlias === id && (m.kind || m.type || "llm") === "llm" && m.id)
     .map((m) => m.id as string);
-  const apiKey = conn?.apiKey || "";
   const rawFetch = makeProbeFetch(guard.remote);
-  // Probe with the endpoint's saved identity and auth style, as requests go out.
-  const fetchFn = savedSettingsFetch(rawFetch, node, apiKey);
   const q = new URL(request.url).searchParams.get("part");
   const part: RedetectPart = q === "endpoint" || q === "models" ? q : "all";
   const skipModels = part === "endpoint";
   return respond(request, "re-detecting endpoint", async (signal, send) => {
     const catalog = await getEndpointCatalog();
-    // As in the detect route: the client-identity retry is a second run whose
-    // request numbers restart at 1, so shift them past the first run's.
+    // As in the detect route: each extra run (the client-identity retry, and
+    // each fall-through to the next key) restarts its request numbers at 1, so
+    // shift them past every run before it.
     let maxN = 0, offset = 0, sentBase = 0, maxSent = 0;
     const onProgress = (e: DetectProgress) => {
       const ev = { ...e } as DetectProgress & { n?: number; sent?: number };
@@ -57,14 +65,26 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       if (typeof ev.sent === "number") { ev.sent += sentBase; maxSent = Math.max(maxSent, ev.sent); }
       send(ev);
     };
-    const first = await detectEndpoint({ url: base, apiKey, fetchFn, catalog, signal, onProgress, skipModels });
-    // Still client-gated (no saved identity, or it stopped working): try the
-    // known clients, as Add endpoint does. Their headers replace the saved ones.
-    const result: DetectResult & { gate?: unknown } = await retryAsClient(first, {
-      url: base, apiKey, fetchFn: savedSettingsFetch(rawFetch, node, apiKey, { identity: false }), signal,
-      detect: (f) => { offset = maxN; sentBase = maxSent; return detectEndpoint({ url: base, apiKey, fetchFn: f, catalog, signal, onProgress, skipModels }); },
-    });
-    return { ...redetectDiff(node, current, result, outdatedModels(current, catalog), part), steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!conn, ...(result.gate ? { gate: result.gate } : {}) };
+    const runWith = async (apiKey: string | null): Promise<DetectResult & { gate?: unknown }> => {
+      const key = apiKey || "";
+      offset = maxN; sentBase = maxSent;
+      // Probe with the endpoint's saved identity and auth style, as requests go out.
+      const first = await detectEndpoint({ url: base, apiKey: key, fetchFn: savedSettingsFetch(rawFetch, node, key), catalog, signal, onProgress, skipModels });
+      // Still client-gated (no saved identity, or it stopped working): try the
+      // known clients, as Add endpoint does. Their headers replace the saved ones.
+      return retryAsClient(first, {
+        url: base, apiKey: key, fetchFn: savedSettingsFetch(rawFetch, node, key, { identity: false }), signal,
+        detect: (f) => { offset = maxN; sentBase = maxSent; return detectEndpoint({ url: base, apiKey: key, fetchFn: f, catalog, signal, onProgress, skipModels }); },
+      });
+    };
+    let result = await runWith(candidates[0]);
+    // Only a rejected key earns another try: a network/down/gated/rate result is
+    // the endpoint's verdict, not the key's, and the next key would only repeat
+    // it (and spend more free probes).
+    for (let i = 1; i < candidates.length && !signal.aborted && !result.ok && result.failure === "key"; i++) {
+      result = await runWith(candidates[i]);
+    }
+    return { ...redetectDiff(node, current, result, outdatedModels(current, catalog), part), steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: keys.length > 0, ...(result.gate ? { gate: result.gate } : {}) };
   }, { ok: false, error: "Re-detect failed", steps: [] });
 }
 
