@@ -121,7 +121,10 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
   // One object for both saves of this row, so the second reuses the first's capping.
   const streamRequest = extractRequestConfig(body, stream);
 
-  const onStreamComplete = (contentObj, usage, ttftAt) => {
+  // `aborted`: the stream ended before its final event (hang-up, stall, upstream
+  // error). Its usage is still saved, so the key is charged, but the request
+  // isn't recorded as a success.
+  const onStreamComplete = (contentObj, usage, ttftAt, { aborted = false } = {}) => {
     const latency = {
       ttft: ttftAt ? ttftAt - requestStartTime : Date.now() - requestStartTime,
       total: Date.now() - requestStartTime
@@ -138,14 +141,14 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
       providerRequest: finalBody || translatedBody || null,
       providerResponse: { content: safeContent, thinking: safeThinking, tool_calls: toolCalls, type: "streaming" },
       response: { content: safeContent, thinking: safeThinking, tool_calls: toolCalls, type: "streaming" },
-      status: "success"
+      status: aborted ? "error" : "success"
     }, { id: streamDetailId })).catch(err => {
       console.error("[RequestDetail] Failed to update streaming content:", err.message);
     });
 
     // Persist stream usage to DB (no console line; the "📊 done" line below is authoritative)
     saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, label: "STREAM USAGE", silent: true });
-    if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency }));
+    if (log?.line && !aborted) log.line(reqTag, "📊", formatDoneLine({ usage, latency }));
   };
 
   return { onStreamComplete, streamDetailId, streamRequest };

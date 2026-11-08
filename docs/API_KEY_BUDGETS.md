@@ -63,9 +63,13 @@ them. A backup carries the totals, so a key restored onto another install
   the next request gets the 402. The overshoot is bounded by how many requests
   run at once times what each costs.
 - **Streams cut short still cost.** A stream the client closes (or that stalls,
-  or whose upstream drops) before its final event is charged for what it
-  streamed: the usage the provider reported so far, with output tokens
-  estimated from the streamed text when the provider hadn't sent them yet.
+  or whose upstream drops) before its final event is charged for its input and
+  for what it streamed. Input is what the provider reported (Anthropic sends it
+  at the start), else an estimate from the request. Output is the larger of
+  what the provider reported and an estimate from the streamed text, thinking
+  and tool-call arguments, since the output count sent at the start of a
+  stream is a placeholder. A stream cut off before anything came back still
+  pays for its input. Such a request is recorded as an error, not a success.
 - **Only priced requests cost anything.** A request whose model has no price
   in the pricing table, and endpoints that don't record usage (images, speech,
   transcription, web search and fetch, video), cost $0 against the budget. They
