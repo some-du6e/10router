@@ -90,7 +90,6 @@ them. A backup carries the totals, so a key restored onto another install
   (a JSON upstream generates its whole answer before it replies), or, when the
   upstream was answering as a stream (a provider set to always stream), from
   its first byte. A stream cut before its first byte pays for its input only.
-  These are recorded as errors.
 - **Opt-in: drain to the real usage.** With `STREAM_DRAIN_MAX_MS` set (it is
   `0`, off, by default), a key with a budget whose client hangs up keeps the
   upstream running: 10router closes the client's stream at once but reads the

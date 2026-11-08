@@ -375,15 +375,6 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     if (!dispatchedAt) return;
     const tokens = hangUpUsage({ body, sentBody: finalBody || translatedBody, floorFrom });
     saveUsageStats({ provider, model, tokens, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, label: "HANG-UP USAGE", silent: true });
-    saveRequestDetail(buildRequestDetail({
-      provider, model, connectionId,
-      latency: { ttft: 0, total: Date.now() - requestStartTime },
-      tokens,
-      request: extractRequestConfig(body, stream),
-      providerRequest: finalBody || translatedBody || null,
-      response: { error: "Request aborted", status: HTTP_STATUS.CLIENT_CLOSED_REQUEST, thinking: null },
-      status: "error",
-    })).catch(() => { });
   };
   // The client hung up: drop the upstream call.
   if (clientSignal?.aborted) streamController.abort();
