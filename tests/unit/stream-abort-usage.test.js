@@ -620,6 +620,26 @@ describe("the floor's cap", () => {
   ])("reads %s", async (_name, sentBody, cap) => {
     expect(outTok(await cutAt(20, { sentBody }))).toBe(cap);
   });
+
+  it("reads Kiro's inferenceConfig.maxTokens, not the client's max_tokens: 1", async () => {
+    expect(outTok(await cutAt(10, { requestBody: { ...body, max_tokens: 1 }, sentBody: { inferenceConfig: { maxTokens: 32000 } } }))).toBe(1500);
+    // and the upstream cap still bounds the floor: 300 s x 150 = 45000 > 32000
+    expect(outTok(await cutAt(300, { requestBody: { ...body, max_tokens: 1 }, sentBody: { inferenceConfig: { maxTokens: 32000 } } }))).toBe(32000);
+  });
+
+  it("is uncapped when the upstream body has no cap (Codex strips it), whatever the client sent", async () => {
+    const usage = await cutAt(10, { requestBody: { ...body, max_output_tokens: 1 }, sentBody: { model: "gpt-x", input: [] } });
+    expect(outTok(usage)).toBe(1500);
+  });
+
+  it("reads a serialized upstream body", async () => {
+    const usage = await cutAt(20, { requestBody: { ...body, max_tokens: 1 }, sentBody: JSON.stringify({ max_tokens: 700 }) });
+    expect(outTok(usage)).toBe(700);
+  });
+
+  it("falls back to the client's cap only when nothing was sent upstream", async () => {
+    expect(outTok(await cutAt(20, { requestBody: { ...body, max_tokens: 600 }, sentBody: null }))).toBe(600);
+  });
 });
 
 describe("the floor's clock", () => {

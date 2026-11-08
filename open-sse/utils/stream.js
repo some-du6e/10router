@@ -210,16 +210,23 @@ export function createSSEStream(options = {}) {
     if (finishSeen && hasValidUsage(parsed.usage)) finalUsageSeen = true;
   };
 
-  // The output cap, which an estimate never exceeds: from the body sent
-  // upstream (sse.upstreamBody, in the provider's field), since a translator
-  // may raise it (Claude's max_tokens for tools or a thinking budget); else
-  // from the client's request.
+  // The output cap, which an estimate never exceeds. When a body was sent
+  // upstream, only its cap counts: a translator may raise the client's
+  // (Claude's max_tokens for tools or a thinking budget, Kiro's fixed
+  // maxTokens) or drop it (Codex), and then the client's number says nothing
+  // about how much was generated. No cap upstream means no cap on the floor.
   const capOf = (b) => {
     const cap = b?.max_tokens ?? b?.max_output_tokens ?? b?.max_completion_tokens
-      ?? b?.generationConfig?.maxOutputTokens ?? b?.request?.generationConfig?.maxOutputTokens;
+      ?? b?.generationConfig?.maxOutputTokens ?? b?.request?.generationConfig?.maxOutputTokens
+      ?? b?.inferenceConfig?.maxTokens;
     return typeof cap === "number" && cap > 0 ? cap : null;
   };
-  const maxOutputTokens = () => capOf(sse.upstreamBody) ?? capOf(body);
+  const sentBody = () => {
+    const b = sse.upstreamBody;
+    if (typeof b !== "string") return b || null;
+    try { return JSON.parse(b); } catch { return {}; }
+  };
+  const maxOutputTokens = () => { const up = sentBody(); return up ? capOf(up) : capOf(body); };
 
   /**
    * The usage to bill when the final usage never arrived: input as reported
