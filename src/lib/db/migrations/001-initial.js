@@ -11,7 +11,11 @@ export default {
       for (const idx of def.indexes || []) {
         // On a legacy table, an index on a column a later migration adds
         // can't be built yet; that migration (and syncSchemaFromTables) builds it.
-        try { db.exec(idx); } catch {}
+        try {
+          db.exec(idx);
+        } catch (e) {
+          if (!/no such column/i.test(String(e?.message))) throw e;
+        }
       }
     }
   },
