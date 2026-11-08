@@ -217,19 +217,23 @@ export async function filterModelsForRequest(request, models, idOf = (m) => m?.i
   const key = await getApiKeyPolicy(apiKey);
   if (!key?.allowedModels?.length) return models;
   const lookup = await allowlistLookup();
+  const bareEntries = key.allowedModels.filter((e) => typeof e === "string" && e && !e.includes("/"));
   const visible = [];
   const listed = new Set();
-  for (const entry of key.allowedModels) {
-    const bare = typeof entry === "string" && !entry.includes("/");
-    for (const model of models) {
-      const id = idOf(model);
-      if (!(await isModelAllowed(id, [entry], lookup))) continue;
-      const shownAs = bare ? entry : id;
-      if (listed.has(shownAs)) continue;
-      listed.add(shownAs);
-      visible.push(bare ? rename(model, entry) : model);
-      if (bare) break;
+  for (const model of models) {
+    const id = idOf(model);
+    // Whole-allowlist check, so a combo whose members different entries allow still shows.
+    if (!(await isModelAllowed(id, key.allowedModels, lookup))) continue;
+    // Bare ids (combos, bare catalog ids) carry no provider: listed as they are.
+    let shownAs = id;
+    if (typeof id === "string" && id.includes("/")) {
+      for (const entry of bareEntries) {
+        if (await isModelAllowed(id, [entry], lookup)) { shownAs = entry; break; }
+      }
     }
+    if (listed.has(shownAs)) continue;
+    listed.add(shownAs);
+    visible.push(shownAs === id ? model : rename(model, shownAs));
   }
   return visible;
 }

@@ -60,7 +60,7 @@ export async function GET(request) {
       request,
       models,
       (m) => m.name.replace(/^models\//, ""),
-      (m, id) => ({ ...m, name: `models/${id}`, displayName: id, description: `Gemini model: ${id}` }),
+      (m, id) => ({ ...m, name: `models/${id}`, displayName: id, description: id }),
     );
     return Response.json({ models: visible });
   } catch (error) {
