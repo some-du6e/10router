@@ -28,7 +28,8 @@ Primary runtime model:
 ### In Scope
 
 - Local gateway runtime
-- Dashboard management APIs
+- Dashboard configuration APIs (`/api/*`, behind the session login)
+- The scoped management-key API (`/api/management/v1/*`, bearer management keys)
 - Provider authentication and token refresh
 - Request translation and SSE streaming
 - Local state + usage persistence
@@ -54,7 +55,7 @@ flowchart LR
 
     subgraph Router[10router Local Process]
         API[V1 Compatibility API\n/v1/*]
-        DASH[Dashboard + Management API\n/api/*]
+        DASH[Dashboard config API\n/api/*]
         CORE[SSE + Translation Core\nopen-sse + src/sse]
         DB[(db.json)]
         UDB[(usage.json + log.txt)]
@@ -95,7 +96,11 @@ flowchart LR
 Main directories:
 
 - `src/app/api/v1/*` and `src/app/api/v1beta/*` for compatibility APIs
-- `src/app/api/*` for management/configuration APIs
+- `src/app/api/*` for the dashboard's configuration APIs (session login)
+- `src/app/api/management/v1/*` for the management-key API: scoped
+  `10r-mgmt-…` bearer keys that list, create and delete client keys and
+  provider keys (see `docs/MANAGEMENT_KEYS.md`). Not the same thing as the
+  dashboard's configuration APIs above, which a management key can't reach.
 - Next rewrites in `next.config.mjs` map `/v1/*` to `/api/v1/*`, and
   `/backend-api/codex/*` (plus the duplicated `/backend-api/codex/v1/*` some
   clients emit) to `/api/v1/codex/*` — the Codex-native ingress
@@ -119,6 +124,11 @@ Important compatibility routes:
 Management domains:
 
 - Auth/settings: `src/app/api/auth/*`, `src/app/api/settings/*`
+- Management keys: `src/app/api/management-keys/*` (dashboard side, session
+  checked in the route too) and `src/app/api/management/v1/*` (the keys' own
+  API). In `src/dashboardGuard.js`, `/api/management/v1/*` is the only path
+  that takes a management key, as `Authorization: Bearer`, and nothing else; a
+  token carrying `10r-mgmt-` is refused on every inference prefix, loopback included.
 - Providers/connections: `src/app/api/providers*`
 - Provider nodes: `src/app/api/provider-nodes*`
 - OAuth: `src/app/api/oauth/*`

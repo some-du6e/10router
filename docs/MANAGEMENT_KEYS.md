@@ -14,8 +14,10 @@ pick its scope, and copy the secret. It is shown once. 10router stores only its
 sha256 hash, so a lost key can't be recovered, only revoked and replaced.
 
 A management key starts with `10r-mgmt-`. Client keys start with `sk-`. The
-gateway refuses a `10r-mgmt-` token on every `/v1` route with a `401`, even
-from localhost, and the management API accepts nothing else.
+gateway refuses any token containing `10r-mgmt-` on every inference route
+(`/v1`, `/v1beta`, `/codex`, `/responses`, `/systemone`, `/backend-api/codex`)
+with a `401`, even from localhost and however it is padded. The management API
+accepts nothing else.
 
 ## Scopes
 
@@ -30,11 +32,14 @@ from localhost, and the management API accepts nothing else.
   },
   "providerKeys": {
     "enabled": true,
-    "providers": ["openai-compatible-chat-snowflake"],
+    "providers": ["openai-compatible-chat-<id>"],
     "manageExisting": false
   }
 }
 ```
+
+A stored scope that doesn't parse, or has a field of the wrong type, grants
+nothing until the dashboard saves it again.
 
 ### Client keys
 
@@ -65,19 +70,41 @@ key allowed to create ten keys at $50 can hand out $500. Spend resets
 fresh budget. Delete and recreate is still possible, so treat the cap as a
 per-key limit, not a total.
 
+The dashboard has the last word on a key's on/off state and expiry. If the
+dashboard turned a key off, no management key can turn it back on. If the
+dashboard set its expiry, a management key can only move it earlier. A key that
+was off, or had an expiry, before this was recorded counts as the dashboard's.
+A management key can undo its own choices.
+
 ### Provider keys
 
-With `providerKeys.enabled`, the key can list, add and delete upstream keys
-(provider connections). `providers` limits which providers. Use registry ids
-(`openai`, `anthropic`, ...) or the id of a custom endpoint, which you can see in
-its URL on the Providers page. Without `providers` it can add keys for any
-provider that takes an API key.
+With `providerKeys.enabled`, the key can list, add and delete upstream API keys
+(provider connections with `authType: "apikey"`). OAuth logins and session
+cookies are never reachable, not even with `manageExisting`, and providers that
+take a session cookie can't be added. `providers` limits which providers. Use
+registry ids (`openai`, `anthropic`, ...) or a custom endpoint's id
+(`openai-compatible-chat-<id>`, shown in its URL on the Providers page).
+Without `providers` it can add keys for any provider that takes an API key.
 
 Adding a key goes through the same code the dashboard uses: the validation
-ping (`/api/providers/validate`), then the create route (`/api/providers`). A
-key the provider refuses is not added, and the response is a `422`. A name
-that's already taken for that provider gets a `409`. It never overwrites an
-existing key.
+ping (`/api/providers/validate`), then the create route (`/api/providers`).
+
+- A key the provider refuses is not added, and the response is a `422`.
+- A probe that doesn't answer in 15 seconds is given up on with a `504`, and
+  nothing is added.
+- An error from the validator itself (a custom endpoint that no longer exists,
+  a bad field) comes back with its own status.
+- The management key is checked again after the probe, so a key revoked or
+  narrowed while the probe ran adds nothing.
+- `apiKey` can be at most 8192 characters.
+- A name that's already taken for that provider gets a `409`. It never
+  overwrites an existing key. The `409` does tell the caller that a key of that
+  name exists for a provider in its scope, which is accepted.
+
+The probe is only as strict as the dashboard's. Some providers have no real
+check: a keyless self-hosted endpoint passes on any answer, the generic fallback
+counts anything but a 401 or 403 as valid, and a few media providers are
+accepted without a probe. Those keys are added and fail later, at use.
 
 The management API takes `provider`, `apiKey`, `name`, `defaultModel` and a few
 `providerSpecificData` fields (`accountId`, `region`, `deployment`,
@@ -125,11 +152,15 @@ curl -X POST http://localhost:20128/api/management/v1/client-keys \
   -H "Authorization: Bearer $MK" -H 'Content-Type: application/json' \
   -d '{"name": "intern", "allowedModels": ["openai/gpt-5"], "budgetUsd": 20}'
 
-# Add an upstream key to the Snowflake pool
+# Add an upstream key to a custom endpoint's pool
 curl -X POST http://localhost:20128/api/management/v1/provider-keys \
   -H "Authorization: Bearer $MK" -H 'Content-Type: application/json' \
-  -d '{"provider": "openai-compatible-chat-snowflake", "apiKey": "...", "name": "pool 7"}'
+  -d '{"provider": "openai-compatible-chat-<id>", "apiKey": "...", "name": "pool 7"}'
 ```
+
+A client key is created in one insert with its limits and owner, so it never
+exists without them. A provider key whose owner can't be recorded is deleted
+again.
 
 Unknown body fields get a `400`, so a typo can't silently do nothing. A request
 outside the scope gets a `403` with the reason.
@@ -140,7 +171,8 @@ Responses are built field by field. They never include provider secrets
 (`apiKey`, `accessToken`, `refreshToken`, `idToken`, `providerSpecificData`), a
 management key's secret or hash, or a full client key. The one exception is
 `POST /client-keys`, whose response carries the new key once, in `key`. Later
-reads show `keyPreview` (the first 8 characters).
+reads show `keyPreview`: at most a third of the key and never more than 8
+characters, so a short legacy `sk-xxxxxxxx` key shows only `sk-…`.
 
 A client key row has `id`, `name`, `keyPreview`, `isActive`, `budgetUsd`,
 `allowedModels`, `expiresAt`, `spentUsd`, `lifetimeSpentUsd`, `requestCount`,
@@ -152,39 +184,62 @@ A client key row has `id`, `name`, `keyPreview`, `isActive`, `budgetUsd`,
 
 There is no route for management keys in the management API. Creating, editing,
 listing and revoking them happens only in the dashboard
-(`/api/management-keys`, behind the login), so a management key can't give
-itself or another key more scope.
+(`/api/management-keys`). Those routes check the dashboard session themselves,
+on top of the proxy, so a management key can't give itself or another key more
+scope.
 
 ## Turning keys off
 
 - **Off**: the toggle on its row. It gets `401` until turned back on.
 - **Expiry**: set a date and it gets `401` after it.
-- **Revoke**: the delete icon. The key stops working at once. Keys it created
-  stay, and the dashboard still shows which management key made them.
+- **Revoke**: the delete icon. The key stops working at once. By default the
+  keys it created stay. Each one keeps the revoked key's id as its owner, its
+  row on the Endpoint page says "made by a deleted management key", and the
+  Management Keys section lists them under "Made by deleted management keys",
+  with a button to delete them later.
+- **Revoke and delete everything it created**: the option in the revoke dialog
+  (`DELETE /api/management-keys/:id?deleteCreated=1`). The client keys and
+  provider keys it made are deleted with it.
 
 Each row also shows when the key was last used and which client and provider
 keys it created.
 
 ## Audit log
 
-Every create, edit and delete through the management API is logged, and so is
-every refused one (with the reason). Creating, changing and revoking keys in
-the dashboard is logged too. The Endpoint page shows the latest entries. Each
-entry has the management key, the action, the target's type and id, a time, and
-a detail with names, providers and limits. It never holds a secret. The log
-keeps the newest 5000 entries.
+These go into the log:
+
+- every create, edit and delete a management key makes;
+- a create or edit refused for being outside the scope, a provider-key create
+  for a provider outside the scope, and a provider key the provider refused,
+  each with the reason;
+- creating, changing and revoking management keys in the dashboard.
+
+These don't: failed authentication (no key, a wrong key, a key that's off,
+expired or revoked), `404`s for rows a key can't see, the `409` for a taken
+name, a `504` probe timeout, and `400`s for malformed requests.
+
+Each entry has the management key, the action, the target's type and id, a
+time, and a detail with names, providers and limits. It never holds a secret.
+Details are compact: strings are cut at 300 characters, lists keep their first 3
+entries plus a count, and a detail over 2 KB is replaced by a stub. The log
+keeps the newest 5000 entries of what keys did and, apart from those, the newest
+1000 refusals, so a flood of refused requests can't push out the real trail.
+The Endpoint page shows the latest 30 entries and names each entry's key, or
+"deleted management key".
 
 ## Storage
 
-Migration 006 adds two tables and one column:
+Migration 006 adds two tables and some columns:
 
-- `managementKeys`: `id`, `name`, `keyHash` (sha256 of the secret), `keyPrefix`
-  (`10r-mgmt-` plus 6 characters, for display), `scopes` (JSON), `isActive`,
-  `expiresAt`, `createdAt`, `lastUsedAt`.
+- `managementKeys`: `id`, `name`, `keyHash` (sha256 of the secret, unique),
+  `keyPrefix` (`10r-mgmt-` plus 6 characters, for display), `scopes` (JSON),
+  `isActive`, `expiresAt`, `createdAt`, `lastUsedAt`.
 - `managementAudit`: `managementKeyId`, `action`, `targetType`, `targetId`,
-  `at`, `detail` (JSON).
+  `at`, `detail` (JSON), `denied` (1 for a refusal).
 - `ownerManagementKeyId` on `apiKeys` and `providerConnections`. `NULL` means the
   dashboard made the row.
+- `disabledBy` and `expiresAtSetBy` on `apiKeys`: `"dashboard"` or a management
+  key id.
 
 Management keys are not in backups (`exportDb`), and a restore clears the owner
 column. After a restore, management keys keep working, but a key without
