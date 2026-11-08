@@ -43,6 +43,11 @@ export function rowToKey(row) {
     spendResetAt: row.spendResetAt || null,
     requestCount: Number(row.requestCount) || 0,
     lastUsedAt: row.lastUsedAt || null,
+    // Which management key made it (null: the dashboard), and who last turned
+    // it off or set its expiry. See docs/MANAGEMENT_KEYS.md.
+    ownerManagementKeyId: row.ownerManagementKeyId || null,
+    disabledBy: row.disabledBy || null,
+    expiresAtSetBy: row.expiresAtSetBy || null,
   };
 }
 
@@ -78,8 +83,11 @@ export async function createApiKey(name, machineId) {
   return apiKey;
 }
 
-export async function updateApiKey(id, data) {
-  const db = await getAdapter();
+/**
+ * The update itself, for a caller already holding the adapter (and possibly a
+ * transaction, which this nests in).
+ */
+export function updateApiKeyInTx(db, id, data) {
   let result = null;
   db.transaction(() => {
     const row = db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]);
@@ -100,6 +108,11 @@ export async function updateApiKey(id, data) {
     result = rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]));
   });
   return result;
+}
+
+export async function updateApiKey(id, data) {
+  const db = await getAdapter();
+  return updateApiKeyInTx(db, id, data);
 }
 
 export async function deleteApiKey(id) {

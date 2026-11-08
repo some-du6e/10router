@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -43,11 +43,15 @@ export const TABLES = {
       data: "TEXT NOT NULL",
       createdAt: "TEXT NOT NULL",
       updatedAt: "TEXT NOT NULL",
+      // The management key that added this connection (migration 006). NULL for
+      // connections added in the dashboard. Never part of the data JSON.
+      ownerManagementKeyId: "TEXT",
     },
     indexes: [
       "CREATE INDEX IF NOT EXISTS idx_pc_provider ON providerConnections(provider)",
       "CREATE INDEX IF NOT EXISTS idx_pc_provider_active ON providerConnections(provider, isActive)",
       "CREATE INDEX IF NOT EXISTS idx_pc_priority ON providerConnections(provider, priority)",
+      "CREATE INDEX IF NOT EXISTS idx_pc_owner ON providerConnections(ownerManagementKeyId)",
     ],
   },
   providerNodes: {
@@ -114,8 +118,53 @@ export const TABLES = {
       spendResetAt: "TEXT",
       requestCount: "INTEGER DEFAULT 0",
       lastUsedAt: "TEXT",
+      // The management key that created this key (migration 006). NULL for
+      // keys created in the dashboard.
+      ownerManagementKeyId: "TEXT",
+      // Who last turned the key off and who set its expiry: "dashboard" or a
+      // management key id (migration 006). A management key may not undo the
+      // dashboard's choice. NULL with the key off (or an expiry set) reads as the dashboard.
+      disabledBy: "TEXT",
+      expiresAtSetBy: "TEXT",
     },
-    indexes: ["CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)"],
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)",
+      "CREATE INDEX IF NOT EXISTS idx_ak_owner ON apiKeys(ownerManagementKeyId)",
+    ],
+  },
+  // Scoped keys for the management API (/api/management/v1). Only the sha256
+  // of the secret is stored; keyPrefix is a display hint. See docs/MANAGEMENT_KEYS.md.
+  managementKeys: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      name: "TEXT NOT NULL",
+      keyHash: "TEXT UNIQUE NOT NULL",
+      keyPrefix: "TEXT NOT NULL",
+      scopes: "TEXT NOT NULL",
+      isActive: "INTEGER DEFAULT 1",
+      expiresAt: "TEXT",
+      createdAt: "TEXT NOT NULL",
+      lastUsedAt: "TEXT",
+    },
+  },
+  // What each management key did. detail is JSON and never holds a secret.
+  managementAudit: {
+    columns: {
+      id: "INTEGER PRIMARY KEY AUTOINCREMENT",
+      managementKeyId: "TEXT",
+      action: "TEXT NOT NULL",
+      targetType: "TEXT",
+      targetId: "TEXT",
+      at: "TEXT NOT NULL",
+      detail: "TEXT",
+      // Which pool the row is trimmed in: "dashboard" (changes made in the
+      // dashboard), "ok" or "denied" (a management key's actions and refusals,
+      // capped per key). One key's flood can only evict its own history.
+      pool: "TEXT NOT NULL DEFAULT 'ok'",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_ma_pool_key ON managementAudit(pool, managementKeyId, id)",
+    ],
   },
   combos: {
     columns: {

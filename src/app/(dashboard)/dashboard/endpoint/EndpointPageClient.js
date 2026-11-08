@@ -20,8 +20,13 @@ import SecurityWarning from "./components/SecurityWarning";
 import KeySpendSummary from "./components/KeySpendSummary";
 import KeyLimitsModal from "./components/KeyLimitsModal";
 import KeyUsageModal from "./components/KeyUsageModal";
+import ManagementKeysCard from "./components/ManagementKeysCard";
+import CreatedSecretModal from "./components/CreatedSecretModal";
 export default function APIPageClient({ machineId }) {
   const [keys, setKeys] = useState([]);
+  // Management key id → name, for the "made by" line on keys a management key
+  // created. Null until loaded: no label rather than a wrong "deleted" one.
+  const [managementKeyNames, setManagementKeyNames] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
@@ -1122,6 +1127,9 @@ export default function APIPageClient({ machineId }) {
                   </div>
                   <p className="text-xs text-text-muted mt-1">
                     Created {new Date(key.createdAt).toLocaleDateString()}
+                    {key.ownerManagementKeyId && managementKeyNames
+                      ? ` · made by ${managementKeyNames[key.ownerManagementKeyId] ? `management key "${managementKeyNames[key.ownerManagementKeyId]}"` : "a deleted management key"}`
+                      : ""}
                   </p>
                   {key.isActive === false && (
                     <p className="text-xs text-orange-500 mt-1">Paused</p>
@@ -1188,6 +1196,8 @@ export default function APIPageClient({ machineId }) {
         )}
       </Card>
 
+      <ManagementKeysCard onKeysLoaded={setManagementKeyNames} onRowsChanged={fetchData} />
+
       {limitsKey && (
         <KeyLimitsModal
           key={limitsKey.id}
@@ -1235,39 +1245,12 @@ export default function APIPageClient({ machineId }) {
       </Modal>
 
       {/* Created Key Modal */}
-      <Modal
-        isOpen={!!createdKey}
+      <CreatedSecretModal
+        secret={createdKey}
         title="API Key Created"
+        note="This is the only time you will see this key. Store it securely."
         onClose={() => setCreatedKey(null)}
-      >
-        <div className="flex flex-col gap-4">
-          <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4">
-            <p className="text-sm text-yellow-800 dark:text-yellow-200 mb-2 font-medium">
-              Save this key now!
-            </p>
-            <p className="text-sm text-yellow-700 dark:text-yellow-300">
-              This is the only time you will see this key. Store it securely.
-            </p>
-          </div>
-          <div className="flex gap-2">
-            <Input
-              value={createdKey || ""}
-              readOnly
-              className="flex-1 font-mono text-sm"
-            />
-            <Button
-              variant="secondary"
-              icon={copied === "created_key" ? "check" : "content_copy"}
-              onClick={() => copy(createdKey, "created_key")}
-            >
-              {copied === "created_key" ? "Copied!" : "Copy"}
-            </Button>
-          </div>
-          <Button onClick={() => setCreatedKey(null)} fullWidth>
-            Done
-          </Button>
-        </div>
-      </Modal>
+      />
 
       {/* Enable Tunnel Modal */}
       <Modal

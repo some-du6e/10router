@@ -59,6 +59,9 @@ practical promise, not a claim that upstream providers will never change their A
   fallback behavior.
 - A key can have a spend budget, a model allowlist and an expiry date (Endpoint page →
   API Keys). See [docs/API_KEY_BUDGETS.md](docs/API_KEY_BUDGETS.md).
+- A management key (`10r-mgmt-…`) manages client keys or provider keys over
+  `/api/management/v1`, limited to the providers, models and budget cap its scope allows.
+  It never works on `/v1`. See [docs/MANAGEMENT_KEYS.md](docs/MANAGEMENT_KEYS.md).
 
 ## Request flow
 
@@ -381,6 +384,23 @@ Authorization: Bearer your-api-key
 Returns the calling key's own budget (`limit`), spend (`usage`), what's left
 (`limit_remaining`), allowed models and expiry, and nothing about other keys. See
 [docs/API_KEY_BUDGETS.md](docs/API_KEY_BUDGETS.md).
+
+### Management API
+
+```bash
+GET  http://localhost:20128/api/management/v1/me
+GET  http://localhost:20128/api/management/v1/client-keys
+POST http://localhost:20128/api/management/v1/client-keys     {"name", "allowedModels", "budgetUsd", "expiresAt"}
+POST http://localhost:20128/api/management/v1/provider-keys   {"provider", "apiKey", "name"}
+Authorization: Bearer 10r-mgmt-...
+```
+
+Create a management key on the Endpoint page and pick what it may do: client keys
+(optionally only for some providers or models, under a budget cap) and/or provider keys
+(optionally only for some providers). By default it sees and deletes only the keys it
+created. Responses never include provider secrets, and a new client key's full value
+appears only in the response that created it. Management keys can't be created or listed
+through this API. See [docs/MANAGEMENT_KEYS.md](docs/MANAGEMENT_KEYS.md).
 
 ## Troubleshooting
 

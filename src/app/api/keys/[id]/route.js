@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { deleteApiKey, getApiKeyById, updateApiKey } from "@/lib/localDb";
+import { deleteApiKey, getApiKeyById } from "@/lib/localDb";
 import { parseKeyLimitsInput } from "@/shared/utils/apiKeyLimits.js";
+import { updateApiKeyAs } from "@/lib/db/repos/managementKeysRepo.js";
 
 export const dynamic = "force-dynamic";
 
@@ -48,7 +49,9 @@ export async function PUT(request, { params }) {
     // global limit-hold setting again.
     if (limitHold !== undefined) updateData.limitHold = limitHold === null ? null : !!limitHold;
 
-    const updated = await updateApiKey(id, updateData);
+    // Records the dashboard as the one that turned the key off or set its
+    // expiry, in the same transaction, so a management key can't undo it.
+    const { key: updated } = await updateApiKeyAs(id, updateData, "dashboard");
 
     return NextResponse.json({ key: updated });
   } catch (error) {

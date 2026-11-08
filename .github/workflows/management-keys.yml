@@ -1,0 +1,213 @@
+name: Management keys
+
+on:
+  pull_request:
+    paths:
+      - "src/dashboardGuard.js"
+      - "src/proxy.js"
+      - "src/lib/auth/**"
+      - "src/lib/localDb.js"
+      - "src/lib/providerNormalization.js"
+      - "open-sse/services/model.js"
+      - "open-sse/providers/**"
+      - "open-sse/config/**"
+      - "src/shared/constants/providers.js"
+      - "src/shared/utils/apiKey.js"
+      - "tests/vitest.shared.js"
+      - "next.config.mjs"
+      - "custom-server.js"
+      - "package.json"
+      - "src/app/api/v1/**"
+      - "src/sse/services/auth.js"
+      - "open-sse/translator/formats.js"
+      - "open-sse/utils/error.js"
+      - "src/lib/dataDir.js"
+      - "src/shared/utils/machineId.js"
+      - "src/lib/management/**"
+      - "src/lib/db/**"
+      - "src/shared/utils/managementKey.js"
+      - "src/shared/utils/apiKeyLimits.js"
+      - "src/shared/utils/clientApiKey.js"
+      - "src/sse/services/keyLimits.js"
+      - "src/sse/services/model.js"
+      - "src/app/api/management/**"
+      - "src/app/api/management-keys/**"
+      - "src/app/api/providers/route.js"
+      - "src/app/api/providers/[id]/route.js"
+      - "src/app/api/providers/validate/route.js"
+      - "src/app/api/keys/**"
+      - "src/app/(dashboard)/dashboard/endpoint/**"
+      - "docs/MANAGEMENT_KEYS.md"
+      - "tests/package.json"
+      - "tests/vitest.config.js"
+      # Every test file the job below runs.
+      - "tests/unit/management-keys.test.js"
+      - "tests/unit/management-keys-guard.test.js"
+      - "tests/unit/management-keys-migration.test.js"
+      - "tests/unit/codex-ws-bridge-peer.test.js"
+      - "tests/unit/key-limits-payload.test.js"
+      - "tests/unit/custom-server-peer-headers.test.js"
+      - "tests/unit/dashboard-guard.test.js"
+      - "tests/unit/api-key-budgets-migration.test.js"
+      - "tests/unit/api-key-budgets.test.js"
+      - "tests/unit/db-migration-chain.test.js"
+      - "tests/unit/auto-disable-dead-keys.test.js"
+      - ".github/e2e/management-keys/**"
+      - ".github/e2e/key-budgets/mock-upstream.mjs"
+      - ".github/workflows/management-keys.yml"
+  workflow_dispatch:
+
+env:
+  # Same pins as key-budgets-live-e2e.yml.
+  CLAUDE_CODE_VERSION: "2.1.318"
+  CODEX_VERSION: "0.167.0"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Unit tests
+        working-directory: tests
+        run: >
+          ./node_modules/.bin/vitest run
+          unit/management-keys.test.js
+          unit/management-keys-guard.test.js
+          unit/management-keys-migration.test.js
+          unit/dashboard-guard.test.js
+          unit/api-key-budgets-migration.test.js
+          unit/api-key-budgets.test.js
+          unit/db-migration-chain.test.js
+          unit/codex-ws-bridge-peer.test.js
+          unit/key-limits-payload.test.js
+          unit/custom-server-peer-headers.test.js
+          unit/auto-disable-dead-keys.test.js
+      - name: Lint
+        run: >
+          ./node_modules/.bin/eslint
+          src/dashboardGuard.js
+          src/lib/management
+          src/lib/db/repos/managementKeysRepo.js
+          src/lib/db/migrations/006-management-keys.js
+          src/lib/db/schema.js
+          src/lib/db/index.js
+          src/lib/db/repos/apiKeysRepo.js
+          src/lib/db/repos/connectionsRepo.js
+          custom-server.js
+          tests/unit/codex-ws-bridge-peer.test.js
+          tests/unit/key-limits-payload.test.js
+          "src/app/(dashboard)/dashboard/endpoint/components/keyFormat.js"
+          src/shared/utils/managementKey.js
+          src/app/api/management
+          src/app/api/management-keys
+          "src/app/(dashboard)/dashboard/endpoint/components/ManagementKeysCard.js"
+          "src/app/(dashboard)/dashboard/endpoint/components/ManagementKeyModal.js"
+          "src/app/(dashboard)/dashboard/endpoint/components/ModelAllowlistField.js"
+          "src/app/(dashboard)/dashboard/endpoint/components/CreatedSecretModal.js"
+          "src/app/(dashboard)/dashboard/endpoint/components/KeyLimitsModal.js"
+          "src/app/api/keys/[id]/route.js"
+          src/lib/db/migrations/001-initial.js
+          tests/unit/management-keys.test.js
+          tests/unit/management-keys-guard.test.js
+          tests/unit/management-keys-migration.test.js
+          .github/e2e/management-keys/run.mjs
+
+  # The built app: the real proxy in front of the management API, /v1 and the
+  # dashboard APIs, and the dashboard section in a browser.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATA_DIR: /tmp/10router-e2e-data
+      INITIAL_PASSWORD: e2e-password-not-secret
+      JWT_SECRET: e2e-jwt-secret-not-secret
+      API_KEY_SECRET: e2e-api-key-secret
+      MACHINE_ID_SALT: e2e-salt
+      NEXT_TELEMETRY_DISABLED: "1"
+      BASE: http://127.0.0.1:20127
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: bun install --ignore-scripts
+      - name: Build
+        run: npm run build
+      - name: Start app
+        run: |
+          mkdir -p "$DATA_DIR"
+          nohup npm run start > "$RUNNER_TEMP/server.log" 2>&1 &
+          for i in $(seq 1 90); do
+            if curl -fsS "$BASE/api/health" > /dev/null 2>&1; then echo "up after ${i}s"; exit 0; fi
+            sleep 1
+          done
+          echo "server did not come up"; cat "$RUNNER_TEMP/server.log"; exit 1
+      - name: Install Playwright
+        run: |
+          mkdir -p "$RUNNER_TEMP/pw" && cd "$RUNNER_TEMP/pw"
+          npm init -y > /dev/null
+          npm install playwright@1 > /dev/null
+          ./node_modules/.bin/playwright install --with-deps chromium
+      - name: API and UI checks
+        run: |
+          cp .github/e2e/management-keys/run.mjs "$RUNNER_TEMP/pw/run.mjs"
+          cd "$RUNNER_TEMP/pw" && node run.mjs "$BASE" "$RUNNER_TEMP/screenshots"
+      - name: Server log
+        if: always()
+        run: tail -200 "$RUNNER_TEMP/server.log" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: management-keys-e2e-screenshots
+          path: ${{ runner.temp }}/screenshots
+          if-no-files-found: warn
+
+  # Real Claude Code and Codex CLIs on a client key that only a management key
+  # made, against a mock upstream; then delete and revoke. Keys are fake and per run.
+  cli-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: bun install --ignore-scripts
+      - name: Build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build
+      - name: Install Claude Code and Codex
+        run: |
+          npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}"
+          claude --version
+          codex --version
+      - name: CLI E2E
+        env:
+          OUT_DIR: ${{ runner.temp }}/e2e-out
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: bash .github/e2e/management-keys/cli.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: management-keys-cli-e2e
+          path: |
+            ${{ runner.temp }}/e2e-out/*.out
+            ${{ runner.temp }}/e2e-out/mock.log
+            ${{ runner.temp }}/e2e-out/server.log
