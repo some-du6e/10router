@@ -155,7 +155,7 @@ describe("custom-server Codex WebSocket connection cap", () => {
     await new Promise((resolve) => server.close(resolve));
   });
 
-  function upgrade() {
+  function upgrade(extraHeaders = []) {
     return new Promise((resolve, reject) => {
       const socket = net.createConnection({ host: "127.0.0.1", port }, () => {
         socket.write([
@@ -165,6 +165,7 @@ describe("custom-server Codex WebSocket connection cap", () => {
           "Upgrade: websocket",
           "Sec-WebSocket-Version: 13",
           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+          ...extraHeaders,
         ].join("\r\n") + "\r\n\r\n");
       });
       sockets.push(socket);
@@ -178,6 +179,17 @@ describe("custom-server Codex WebSocket connection cap", () => {
     for (let i = 0; i < 64; i++) statuses.push(await upgrade());
     expect(statuses.every((s) => s.startsWith("HTTP/1.1 101"))).toBe(true);
     expect(await upgrade()).toMatch(/^HTTP\/1\.1 503/);
+    for (const s of sockets.splice(0)) s.destroy();
+  });
+
+  it("gives one remote client behind a proxy only its share of the slots", async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const fromA = ["X-Forwarded-For: 203.0.113.7"];
+    const statuses = [];
+    for (let i = 0; i < 8; i++) statuses.push(await upgrade(fromA));
+    expect(statuses.every((s) => s.startsWith("HTTP/1.1 101"))).toBe(true);
+    expect(await upgrade(fromA)).toMatch(/^HTTP\/1\.1 503/);
+    expect(await upgrade(["X-Forwarded-For: 203.0.113.8"])).toMatch(/^HTTP\/1\.1 101/);
   });
 });
 
@@ -225,6 +237,16 @@ describe("login limiter", () => {
     const next = limiter.reserveAttempt("198.51.100.250");
     expect(next.ok).toBe(false);
     expect(next.retryAfter).toBeGreaterThan(0);
+  });
+
+  it("keeps password login open on this machine when remote clients exhaust the global budget", () => {
+    for (let i = 0; i < 30; i++) {
+      const ip = `198.51.100.${i}`;
+      limiter.reserveAttempt(ip);
+      limiter.recordFail(ip);
+      limiter.releaseAttempt(ip);
+    }
+    expect(limiter.reserveAttempt("127.0.0.1", { local: true }).ok).toBe(true);
   });
 
   it("clears a key's failures on a normal success", () => {

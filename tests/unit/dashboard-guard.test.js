@@ -492,6 +492,12 @@ describe("dashboard guard network trust", () => {
     }
   });
 
+  it("keeps a page on another localhost port local for keyless /v1", async () => {
+    mocks.getSettings.mockResolvedValue(OPEN);
+    const response = await proxy(localRequest("/v1/chat/completions", { host: "localhost:20128", origin: "http://localhost:3000", "sec-fetch-site": "same-site" }));
+    expect(response).toBe(mocks.nextResponse);
+  });
+
   it("still serves the dashboard's own requests and non-browser clients when login is off", async () => {
     mocks.getSettings.mockResolvedValue(OPEN);
     expect(await proxy(request("/api/cli-tools/claude-settings", { host: "localhost:20128", "sec-fetch-site": "same-origin" }))).toBe(mocks.nextResponse);

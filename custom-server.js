@@ -62,7 +62,9 @@ const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const MAX_WS_MESSAGE_BYTES = 64 * 1024 * 1024;
 const MAX_CODEX_WS_CONNECTIONS = 64;
 const CODEX_WS_IDLE_MS = 5 * 60 * 1000;
+const MAX_CODEX_WS_PER_CLIENT = 8;
 let codexWsConnections = 0;
+const codexWsByClient = new Map();
 
 // Same setting and default as next.config.mjs's proxyClientMaxBodySize.
 function parseByteSize(value) {
@@ -333,16 +335,30 @@ function handleCodexUpgrade(req, socket, head, port) {
     }
   }
 
-  if (codexWsConnections >= MAX_CODEX_WS_CONNECTIONS) {
+  // Remote clients get a share of the cap so one can't take every slot. Behind
+  // a loopback proxy they all share its socket address, so key on the hop the
+  // proxy appended. A client on this machine is exempt.
+  const socketIp = socket.remoteAddress || "";
+  const proxied = isProxiedRequest(req.headers, socketIp);
+  const clientKey = !proxied && isLoopbackSocketIp(socketIp)
+    ? null
+    : (isLoopbackSocketIp(socketIp) && forwardedClientIp(req.headers)) || socketIp;
+  const clientConnections = clientKey === null ? 0 : codexWsByClient.get(clientKey) || 0;
+  if (codexWsConnections >= MAX_CODEX_WS_CONNECTIONS || clientConnections >= MAX_CODEX_WS_PER_CLIENT) {
     socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nRetry-After: 5\r\n\r\n");
     return socket.destroy();
   }
   codexWsConnections += 1;
+  if (clientKey !== null) codexWsByClient.set(clientKey, clientConnections + 1);
   let counted = true;
   const release = () => {
     if (!counted) return;
     counted = false;
     codexWsConnections -= 1;
+    if (clientKey === null) return;
+    const left = (codexWsByClient.get(clientKey) || 1) - 1;
+    if (left > 0) codexWsByClient.set(clientKey, left);
+    else codexWsByClient.delete(clientKey);
   };
 
   socket.write(
@@ -442,6 +458,7 @@ function handleCodexUpgrade(req, socket, head, port) {
 
       inflight = bridgeCodexTurn(request, port, req.headers, peerIp, send, (error, rejectedStatus) => {
         inflight = null;
+        armIdle();
         // The client is already gone — its socket handler abandoned this turn.
         if (closed) return;
         if (error) {
@@ -474,14 +491,22 @@ function handleCodexUpgrade(req, socket, head, port) {
   // is often already here — dropping `head` would hang the turn forever.
   if (head && head.length) feed(head);
   socket.on("data", feed);
-  // An idle socket with no turn running holds a connection slot and up to a
-  // partial frame of memory; a streaming turn keeps writing, so it never idles.
-  socket.setTimeout(CODEX_WS_IDLE_MS, () => {
-    if (inflight) return;
-    close(1001, "idle timeout");
-    socket.destroy();
-  });
+  // Idle means no turn since connect or since the last turn ended. Pings and
+  // ignored frames don't count, so they can't hold a connection slot forever.
+  let idleTimer = null;
+  function armIdle() {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      if (closed) return;
+      if (inflight) return armIdle();
+      close(1001, "idle timeout");
+      socket.destroy();
+    }, CODEX_WS_IDLE_MS);
+    idleTimer.unref?.();
+  }
+  armIdle();
   const abandon = () => {
+    clearTimeout(idleTimer);
     closed = true;
     release();
     abortInflight();

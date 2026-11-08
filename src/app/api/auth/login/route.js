@@ -6,6 +6,7 @@ import { setDashboardAuthCookie } from "@/lib/auth/dashboardSession";
 import { isOidcConfigured } from "@/lib/auth/oidc";
 import { isSamlConfigured } from "@/lib/auth/saml.js";
 import { checkLock, recordFail, recordSuccess, getClientIp, reserveAttempt, releaseAttempt } from "@/lib/auth/loginLimiter";
+import { isLocalRequest } from "@/dashboardGuard";
 import { getAuthBootstrapState, getBootstrapSecret } from "@/lib/auth/setupState";
 
 const RESET_HINT = "Forgot password? Run 10router CLI → Settings → Reset Password, then use the new setup token printed on the host console.";
@@ -20,7 +21,8 @@ function isTunnelRequest(request, settings) {
 
 export async function POST(request) {
   const ip = getClientIp(request);
-  const lock = reserveAttempt(ip);
+  const local = isLocalRequest(request);
+  const lock = reserveAttempt(ip, { local });
   try {
     if (!lock.ok) {
       return NextResponse.json(
@@ -110,7 +112,7 @@ export async function POST(request) {
       return NextResponse.json({ success: true, mustChangePassword: false }, { headers: NO_STORE_HEADERS });
     }
 
-    const { remainingBeforeLock } = recordFail(ip);
+    const { remainingBeforeLock } = recordFail(ip, { local });
     const postLock = checkLock(ip);
     if (postLock.locked) {
       return NextResponse.json(

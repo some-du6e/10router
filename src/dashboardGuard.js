@@ -148,8 +148,10 @@ export function isLocalRequest(request) {
   // a reverse proxy, so the loopback socket is the proxy hop, not the end-user.
   if (request.headers.get("x-9r-via-proxy")) return false;
   if (!isLoopbackPeer(request)) return false;
-  if (isCrossSiteBrowserRequest(request)) return false;
   const origin = request.headers.get("origin");
+  // A cross-site request without Origin (a navigation or simple GET) can't be
+  // told apart from a local tool by Origin, so Sec-Fetch-Site decides it.
+  if (!origin && isCrossSiteBrowserRequest(request)) return false;
   if (origin) {
     try {
       if (!isLoopbackHostname(new URL(origin).hostname)) return false;

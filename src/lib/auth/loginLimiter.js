@@ -46,10 +46,12 @@ function globalRetryAfter() {
  * the lockout while they are in flight, so a burst cannot outrun it. Pair every
  * successful reservation with releaseAttempt().
  */
-export function reserveAttempt(ip) {
+export function reserveAttempt(ip, { local = false } = {}) {
   const lock = checkLock(ip);
   if (lock.locked) return { ok: false, retryAfter: lock.retryAfter };
-  const globalWait = globalRetryAfter();
+  // A login from this machine is never a distributed guess, and must stay open
+  // when remote clients have exhausted the global budget.
+  const globalWait = local ? 0 : globalRetryAfter();
   if (globalWait) return { ok: false, retryAfter: globalWait };
   const e = getEntry(ip) || { fails: 0, lockUntil: 0, lockLevel: 0, lastFailAt: 0, inFlight: 0 };
   if (e.fails + (e.inFlight || 0) >= MAX_FAILS_BEFORE_LOCK) return { ok: false, retryAfter: 1 };
@@ -63,8 +65,8 @@ export function releaseAttempt(ip) {
   if (e && e.inFlight) e.inFlight -= 1;
 }
 
-export function recordFail(ip) {
-  globalFails.push(now());
+export function recordFail(ip, { local = false } = {}) {
+  if (!local) globalFails.push(now());
   const e = getEntry(ip) || { fails: 0, lockUntil: 0, lockLevel: 0, lastFailAt: 0, inFlight: 0 };
   e.fails += 1;
   e.lastFailAt = now();
