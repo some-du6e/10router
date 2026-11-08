@@ -62,10 +62,11 @@ function getHeader(port) {
 /**
  * Start Terminal UI
  * @param {number} port - Server port number
+ * @param {string} [bindHost] - Address the server is bound to
  */
-async function startTerminalUI(port) {
+async function startTerminalUI(port, bindHost) {
   // Configure API client
-  api.configure({ port });
+  api.configure({ port, host: api.hostForBind(bindHost) });
 
   const basePath = ["10router"];
 

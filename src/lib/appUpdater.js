@@ -7,62 +7,51 @@ import { UPDATER_CONFIG } from "@/shared/constants/config";
 const KILL_TIMEOUT_MS = 5000;
 const PROCESS_WAIT_MS = 1500;
 
-// Collect PIDs of all 10router-related processes (excluding current)
-function collectAppPids() {
-  const pids = [];
-  const platform = process.platform;
+// Directories that only this install's processes run from: the CLI package
+// (cli.js, bundled tray binaries), the standalone app, and DATA_DIR's
+// downloaded binaries and runtime node_modules (cloudflared, tray).
+function getInstallRoots() {
+  const appDir = path.resolve(process.cwd());
+  const pkgRoot = path.basename(appDir) === "app" ? path.dirname(appDir) : appDir;
+  const dataDir = getDataDir();
+  return [pkgRoot, path.join(dataDir, "bin"), path.join(dataDir, "runtime")]
+    .map((dir) => path.resolve(dir) + path.sep);
+}
 
-  if (platform === "win32") {
+// Collect PIDs of this install's own processes (excluding current): those the
+// current OS user runs from this install's directories.
+export function collectAppPids() {
+  const pids = new Set();
+  const self = String(process.pid);
+  const isWin = process.platform === "win32";
+  const roots = getInstallRoots().map((root) => (isWin ? root.toLowerCase() : root));
+  const fromInstall = (cmdline) => {
+    const text = isWin ? cmdline.toLowerCase() : cmdline;
+    return roots.some((root) => text.includes(root));
+  };
+
+  if (isWin) {
     try {
-      const psCmd = `powershell -NonInteractive -WindowStyle Hidden -Command "Get-WmiObject Win32_Process -Filter 'Name=\\"node.exe\\"' | Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation"`;
+      const psCmd = `powershell -NonInteractive -WindowStyle Hidden -Command "Get-WmiObject Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation"`;
       const output = execSync(psCmd, { encoding: "utf8", windowsHide: true, timeout: KILL_TIMEOUT_MS });
-      const lines = output.split("\n").slice(1).filter(l => l.trim());
-      lines.forEach(line => {
-        const lower = line.toLowerCase();
-        // Match anything running from 10router install dir or wrapper cli.js
-        const isAppProcess = lower.includes("10router") ||
-          lower.includes("next-server") ||
-          lower.includes("\\bin\\app\\") ||
-          lower.includes("/bin/app/") ||
-          lower.includes("cli.js");
-        if (isAppProcess) {
-          const match = line.match(/^"(\d+)"/);
-          if (match && match[1] && match[1] !== process.pid.toString()) pids.push(match[1]);
-        }
+      output.split("\n").slice(1).forEach((line) => {
+        const match = line.match(/^"(\d+)",(.*)$/);
+        if (match && fromInstall(match[2])) pids.add(match[1]);
       });
     } catch { /* no processes */ }
-
-    // Kill cloudflared + tray binaries (hold app dir lock)
-    for (const procName of ["cloudflared", "tray_windows_release"]) {
-      try {
-        const cmd = `powershell -NonInteractive -WindowStyle Hidden -Command "Get-Process ${procName} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id"`;
-        const out = execSync(cmd, { encoding: "utf8", windowsHide: true, timeout: KILL_TIMEOUT_MS });
-        out.split("\n").forEach(l => {
-          const pid = l.trim();
-          if (pid && !isNaN(pid)) pids.push(pid);
-        });
-      } catch { /* not running */ }
-    }
   } else {
+    const uid = String(process.getuid?.() ?? "");
     try {
-      const output = execSync("ps aux 2>/dev/null", { encoding: "utf8", timeout: KILL_TIMEOUT_MS });
-      output.split("\n").forEach(line => {
-        const isAppProcess = line.includes("10router") ||
-          line.includes("next-server") ||
-          line.includes("cloudflared") ||
-          line.includes("/bin/app/") ||
-          line.includes("tray_darwin") ||
-          line.includes("tray_linux");
-        if (isAppProcess) {
-          const parts = line.trim().split(/\s+/);
-          const pid = parts[1];
-          if (pid && !isNaN(pid) && pid !== process.pid.toString()) pids.push(pid);
-        }
+      const output = execSync("ps -eo pid=,uid=,args= 2>/dev/null", { encoding: "utf8", timeout: KILL_TIMEOUT_MS });
+      output.split("\n").forEach((line) => {
+        const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+        if (match && match[2] === uid && fromInstall(match[3])) pids.add(match[1]);
       });
     } catch { /* no processes */ }
   }
 
-  return pids;
+  pids.delete(self);
+  return [...pids];
 }
 
 // Copy updater.js into DATA_DIR so npm -g can overwrite node_modules safely.

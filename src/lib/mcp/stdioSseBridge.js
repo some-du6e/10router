@@ -4,6 +4,7 @@
 const { spawn } = require("child_process");
 const crypto = require("crypto");
 const { LOCAL_STDIO_PLUGINS } = require("@/shared/constants/coworkPlugins");
+const { buildChildEnv } = require("./childEnv.js");
 
 const G_KEY = "__10routerMcpBridges";
 const MAX_TEXT_CHARS = 50000;
@@ -114,7 +115,7 @@ function getOrSpawn(name) {
   const plugin = findPlugin(name);
   if (!plugin) throw new Error(`Unknown local plugin: ${name}`);
 
-  const proc = spawn(plugin.command, plugin.args, { stdio: ["pipe", "pipe", "pipe"], env: process.env });
+  const proc = spawn(plugin.command, plugin.args, { stdio: ["pipe", "pipe", "pipe"], env: buildChildEnv() });
   entry = { proc, sessions: new Map(), buffer: "" };
   store.set(name, entry);
 

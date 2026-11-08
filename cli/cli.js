@@ -707,7 +707,7 @@ function startServer(updatePromise) {
         } else if (choice === "terminal") {
           // Start Terminal UI - it will return when user selects Back
           const { startTerminalUI } = require("./src/cli/terminalUI");
-          await startTerminalUI(port);
+          await startTerminalUI(port, host);
           // Loop continues, show menu again
         } else if (choice === "hide") {
           const { clearScreen } = require("./src/cli/utils/display");

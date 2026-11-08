@@ -1,7 +1,7 @@
 // Local device TTS — macOS `say` + Windows SAPI + ffmpeg
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -67,8 +67,11 @@ async function synthesizeMacOrWin(text, voiceId) {
   const dir = await mkdtemp(join(tmpdir(), "tts-"));
   const aiffPath = join(dir, "out.aiff");
   const mp3Path = join(dir, "out.mp3");
+  const textPath = join(dir, "in.txt");
   try {
-    const args = voiceId ? ["-v", voiceId, "-o", aiffPath, text] : ["-o", aiffPath, text];
+    await writeFile(textPath, text, "utf8");
+    const voiceArgs = voiceId ? ["-v", voiceId] : [];
+    const args = [...voiceArgs, "-o", aiffPath, "-f", textPath];
     await execFileAsync("say", args);
     await execFileAsync("ffmpeg", ["-y", "-i", aiffPath, "-codec:a", "libmp3lame", "-qscale:a", "4", mp3Path]);
     const buf = await readFile(mp3Path);
