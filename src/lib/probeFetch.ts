@@ -63,3 +63,16 @@ export function makeProbeFetch(checkPublic: boolean, { fetchImpl }: { fetchImpl?
     }
   };
 }
+
+// A redirect makeProbeFetch declined to follow (another origin, or POST→GET),
+// worded so the user can fix the URL rather than see a bare status code.
+export function describeRedirect(res: Response): string | null {
+  if (res.status < 300 || res.status >= 400) return null;
+  const location = res.headers.get("location");
+  if (!location) return null;
+  try {
+    return `The server redirected to ${new URL(location, res.url || undefined).origin}. Use that URL instead.`;
+  } catch {
+    return "The server redirected elsewhere. Use the final URL instead.";
+  }
+}

@@ -11,6 +11,8 @@ import { KiroExecutor } from "../../open-sse/executors/kiro.js";
 import { normalizeKiroExternalIdpAuth } from "../../src/lib/oauth/kiroExternalIdp.js";
 import { normalizeGitlabBaseUrl } from "../../src/lib/oauth/gitlabBaseUrl.js";
 import { relayKeyCheck, withRelayKey, newRelayKey } from "../../src/lib/network/relayKey.js";
+import { regionFromProfileArn } from "../../open-sse/services/kiroModels.js";
+import gitlabOAuth from "../../src/lib/oauth/providers/gitlab.js";
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const realFetch = globalThis.fetch;
@@ -95,6 +97,13 @@ describe("kiro region", () => {
     expect(normalizeKiroExternalIdpAuth({ ...base, region: "eu-central-1" }).providerSpecificData.region).toBe("eu-central-1");
   });
 
+  it("rejects a profile ARN whose region field isn't an AWS region", () => {
+    const bad = "arn:aws:codewhisperer:x@evil.example/#:123456789012:profile/AB";
+    expect(() => normalizeKiroExternalIdpAuth({ ...base, region: "us-east-1", profile_arn: bad })).toThrow(/Invalid profile_arn/);
+    expect(regionFromProfileArn(bad)).toBe("us-east-1");
+    expect(regionFromProfileArn("arn:aws:codewhisperer:eu-central-1:123456789012:profile/AB")).toBe("eu-central-1");
+  });
+
   it("never lets a stored region change the upstream host", () => {
     const executor = new KiroExecutor();
     const urls = executor.getOrderedBaseUrls({ providerSpecificData: { authMethod: "external_idp", region: "x.attacker.example/#" } });
@@ -112,6 +121,16 @@ describe("gitlab base URL", () => {
     for (const bad of ["https://x.example/?", "https://x.example#", "ftp://x.example", "https://u:p@x.example", "not a url", 5]) {
       expect(normalizeGitlabBaseUrl(bad), String(bad)).toBeNull();
     }
+  });
+});
+
+describe("gitlab OAuth exchange", () => {
+  it("does not follow a redirect off the instance's origin", async () => {
+    globalThis.fetch = vi.fn(async () => new Response(null, { status: 307, headers: { location: "http://169.254.169.254/latest" } }));
+    await expect(
+      gitlabOAuth.exchangeToken(gitlabOAuth.config, "code", "http://localhost/cb", "verifier", "st", { baseUrl: "https://git.example.com", remote: false })
+    ).rejects.toThrow(/redirected to http:\/\/169\.254\.169\.254/);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
   });
 });
 

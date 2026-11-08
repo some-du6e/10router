@@ -357,7 +357,7 @@ export async function POST(request, { params }) {
         if (!(await isAllowedGitlabBase(base, !isLocalRequest(request)))) {
           return NextResponse.json({ error: "URL not allowed" }, { status: 400 });
         }
-        exchangeMeta = { ...meta, baseUrl: base };
+        exchangeMeta = { ...meta, baseUrl: base, remote: !isLocalRequest(request) };
       }
 
       // Exchange code for tokens (meta carries provider-specific params, e.g. gitlab clientId/baseUrl)

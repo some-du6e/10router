@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createProviderConnection } from "@/models";
 import { isLocalRequest } from "@/dashboardGuard";
-import { makeProbeFetch } from "@/lib/probeFetch.js";
+import { describeRedirect, makeProbeFetch } from "@/lib/probeFetch.js";
 import { normalizeGitlabBaseUrl } from "@/lib/oauth/gitlabBaseUrl.js";
 
 /**
@@ -41,7 +41,7 @@ export async function POST(request) {
     }
 
     if (!userRes.ok) {
-      return NextResponse.json({ error: `GitLab token verification failed (${userRes.status})` }, { status: 401 });
+      return NextResponse.json({ error: describeRedirect(userRes) || `GitLab token verification failed (${userRes.status})` }, { status: 401 });
     }
 
     const user = await userRes.json();

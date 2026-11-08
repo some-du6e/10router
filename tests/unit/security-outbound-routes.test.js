@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("next/server", () => ({ NextResponse: { json: mocks.json } }));
 vi.mock("@/dashboardGuard", () => ({ isLocalRequest: () => state.local }));
-vi.mock("@/lib/probeFetch.js", () => ({ makeProbeFetch: mocks.makeProbeFetch }));
+vi.mock("@/lib/probeFetch.js", async (orig) => ({ ...(await orig()), makeProbeFetch: mocks.makeProbeFetch }));
 vi.mock("@/shared/utils/ssrfGuard.js", async (orig) => ({ ...(await orig()), fetchPublic: mocks.fetchPublic }));
 vi.mock("@/models", () => ({
   getProviderNodes: vi.fn(async () => state.nodes),

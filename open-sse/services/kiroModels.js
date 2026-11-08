@@ -22,6 +22,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { createHash } from "crypto";
 import { refreshKiroToken } from "./tokenRefresh.js";
+import { isValidAwsRegion } from "../utils/awsRegion.js";
 
 const KIRO_RUNTIME_SDK_VERSION = "1.0.0";
 const KIRO_AGENT_OS = "windows";
@@ -52,11 +53,10 @@ function stripSyntheticSuffixes(id) {
  * Extract region from a profileArn like
  *   arn:aws:codewhisperer:us-east-1:123456789012:profile/ABC
  */
-function regionFromProfileArn(profileArn) {
+export function regionFromProfileArn(profileArn) {
   if (!profileArn || typeof profileArn !== "string") return DEFAULT_REGION;
-  const parts = profileArn.split(":");
-  if (parts.length >= 4 && parts[3]) return parts[3];
-  return DEFAULT_REGION;
+  const region = profileArn.split(":")[3];
+  return isValidAwsRegion(region) ? region : DEFAULT_REGION;
 }
 
 /**

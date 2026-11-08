@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { assertPublicUrl } from "@/shared/utils/ssrfGuard.js";
 import { isLocalRequest } from "@/dashboardGuard";
-import { makeProbeFetch } from "@/lib/probeFetch.js";
+import { describeRedirect, makeProbeFetch } from "@/lib/probeFetch.js";
 
 const withTimeout = (probe) => (url, options, timeout = 10000) =>
   probe(url, { ...options, signal: AbortSignal.timeout(timeout) });
@@ -145,12 +145,12 @@ export async function POST(request) {
         }
         return NextResponse.json({
           valid: false,
-          error: getChatErrorMessage(chatRes.status),
+          error: describeRedirect(chatRes) || getChatErrorMessage(chatRes.status),
           method: "chat"
         });
       }
 
-      return NextResponse.json({ valid: false, error: getModelsErrorMessage(res.status) });
+      return NextResponse.json({ valid: false, error: describeRedirect(res) || getModelsErrorMessage(res.status) });
     }
 
     // OpenAI Compatible Validation (Default)
@@ -185,12 +185,12 @@ export async function POST(request) {
       }
       return NextResponse.json({
         valid: false,
-        error: getChatErrorMessage(chatRes.status),
+        error: describeRedirect(chatRes) || getChatErrorMessage(chatRes.status),
         method: "chat"
       });
     }
 
-    return NextResponse.json({ valid: false, error: getModelsErrorMessage(res.status) });
+    return NextResponse.json({ valid: false, error: describeRedirect(res) || getModelsErrorMessage(res.status) });
   } catch (error) {
     if (String(error?.message).startsWith("Blocked URL")) {
       return NextResponse.json({ error: "URL not allowed" }, { status: 400 });
