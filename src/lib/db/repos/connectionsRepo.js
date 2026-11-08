@@ -56,6 +56,18 @@ function applyAutoDisableTransition(existing, merged, data) {
   if (keyChanged) merged.keySetAt = new Date().toISOString();
 }
 
+function apiKeyReplaced(existing, data) {
+  const newKey = String(data.apiKey ?? "").trim();
+  return newKey !== "" && newKey !== String(existing.apiKey ?? "").trim();
+}
+
+// A connection a management key added stops being its once someone puts a
+// different key in it (the dashboard's edit or overwrite): the management key
+// must not own, or be able to delete, a row holding the admin's secret.
+function releaseOwnerIfKeyReplaced(db, existing, data) {
+  if (apiKeyReplaced(existing, data)) db.run(`UPDATE providerConnections SET ownerManagementKeyId = NULL WHERE id = ?`, [existing.id]);
+}
+
 export function bumpConnectionsVersion() {
   global._connectionsVersion = (global._connectionsVersion || 0) + 1;
 }
@@ -242,6 +254,7 @@ export async function createProviderConnection(data) {
       if (existing.autoDisabledAt && updates.isActive === undefined) merged.isActive = true;
       applyAutoDisableTransition(existing, merged, updates);
       upsert(db, merged);
+      releaseOwnerIfKeyReplaced(db, existing, updates);
       result = merged;
       return;
     }
@@ -330,6 +343,7 @@ export async function updateProviderConnection(id, data, { autoDisable = null, d
     if (noteServed) merged.authDemoteOkAt = new Date().toISOString();
     applyAutoDisableTransition(existing, merged, data);
     upsert(db, merged);
+    releaseOwnerIfKeyReplaced(db, existing, data);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
     result = merged;
     // Token refreshes and rate-limit stamps write here constantly; only a
