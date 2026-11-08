@@ -1,18 +1,12 @@
 import { extractApiKey } from "@/sse/services/auth.js";
-import { getApiKeyPolicy } from "@/lib/db/repos/apiKeysRepo.js";
+import { getApiKeyPolicy, maskApiKey } from "@/lib/db/index.js";
 import { budgetState, isKeyExpired } from "@/shared/utils/apiKeyLimits.js";
-import { maskApiKey } from "@/lib/db/repos/usageRepo.js";
+import { errorResponse } from "open-sse/utils/error.js";
+import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 
 export const dynamic = "force-dynamic";
 
 const CORS = { "Access-Control-Allow-Origin": "*" };
-
-function unauthorized(message) {
-  return Response.json(
-    { error: { message, type: "authentication_error", code: "invalid_api_key" } },
-    { status: 401, headers: CORS }
-  );
-}
 
 export async function OPTIONS() {
   return new Response(null, {
@@ -31,9 +25,9 @@ export async function OPTIONS() {
  */
 export async function GET(request) {
   const apiKey = extractApiKey(request);
-  if (!apiKey) return unauthorized("Missing API key");
+  if (!apiKey) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
   const key = await getApiKeyPolicy(apiKey);
-  if (!key) return unauthorized("Invalid API key");
+  if (!key) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
 
   const budget = budgetState(key);
   return Response.json({

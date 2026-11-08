@@ -1,4 +1,5 @@
 import { PROVIDER_MODELS } from "@/shared/constants/models";
+import { filterModelsForRequest } from "@/sse/services/keyLimits.js";
 
 /**
  * Handle CORS preflight
@@ -17,7 +18,7 @@ export async function OPTIONS() {
  * GET /v1beta/models - Gemini compatible models list
  * Returns models in Gemini API format
  */
-export async function GET() {
+export async function GET(request) {
   try {
     const models = [];
     const seen = new Set();
@@ -54,7 +55,9 @@ export async function GET() {
       }
     }
 
-    return Response.json({ models });
+    // A key with a model allowlist sees only the models it may use ("models/cc/x" → "cc/x").
+    const visible = await filterModelsForRequest(request, models, (m) => m.name.replace(/^models\//, ""));
+    return Response.json({ models: visible });
   } catch (error) {
     console.log("Error fetching models:", error);
     return Response.json({ error: { message: error.message } }, { status: 500 });

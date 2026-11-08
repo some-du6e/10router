@@ -13,7 +13,7 @@ const originalDataDir = process.env.DATA_DIR;
 process.env.DATA_DIR = tempDir;
 delete global._dbAdapter;
 
-const upstream = { credentials: vi.fn(), core: vi.fn() };
+const upstream = { credentials: vi.fn(), core: vi.fn(), adapterPool: [] };
 
 vi.mock("@/sse/services/auth.js", async () => {
   const actual = await vi.importActual("@/sse/services/auth.js");
@@ -32,17 +32,23 @@ vi.mock("open-sse/handlers/chatCore.js", async (importOriginal) => ({
   ...(await importOriginal()),
   handleChatCore: (...args) => upstream.core(...args),
 }));
+// The capacity adapter's own model choice (which needs capability data) is
+// replaced by a fixed pool; what chat.ts does with the pool is under test.
+vi.mock("open-sse/services/capacityAdapter.js", async (importOriginal) => ({
+  ...(await importOriginal()),
+  augmentModelsWithCapacityAdapter: (models) => (upstream.adapterPool.length ? [...upstream.adapterPool, ...models] : models),
+}));
 
 const db = await import("@/lib/db/index.js");
 const { getAdapter } = await import("@/lib/db/driver.js");
 const { saveRequestUsage, updateSettings, createApiKey, updateApiKey, getApiKeyById, createCombo, setModelAlias, updatePricing } = db;
 const { handleChat } = await import("@/sse/handlers/chat.js");
 const { handleEmbeddings } = await import("@/sse/handlers/embeddings.js");
-const { checkApiKeyLimits, filterModelsForRequest } = await import("@/sse/services/keyLimits.js");
+const { checkApiKeyLimits, filterModelsForRequest, isModelAllowed, keepAllowedAdapterModels } = await import("@/sse/services/keyLimits.js");
 const { GET: getOwnKey } = await import("@/app/api/v1/key/route.js");
 const { PUT: putKey } = await import("@/app/api/keys/[id]/route.js");
 const { GET: getKeyUsage } = await import("@/app/api/keys/[id]/usage/route.js");
-const { parseKeyLimitsInput, isModelAllowed, budgetState } = await import("@/shared/utils/apiKeyLimits.js");
+const { parseKeyLimitsInput, budgetState, pickInternalKey } = await import("@/shared/utils/apiKeyLimits.js");
 
 const MACHINE = "machine-test-0001";
 const PRICED = { provider: "testprov", model: "m1" };
@@ -90,6 +96,7 @@ afterAll(() => {
 beforeEach(() => {
   upstream.credentials.mockReset();
   upstream.core.mockReset();
+  upstream.adapterPool = [];
   upstream.credentials.mockResolvedValue({ connectionId: "conn-1", connectionName: "acct", accessToken: "t" });
   upstream.core.mockImplementation(async () => ({ success: true, response: new Response(JSON.stringify({ ok: true }), { status: 200 }) }));
 });
@@ -294,7 +301,7 @@ describe("model allowlist", () => {
   });
 
   it("matching rules: bare id = any provider, prefixed = that provider, suffix and case ignored", async () => {
-    const lookup = { aliases: { fast: "cc/claude-opus-5-5" }, getComboModels: async (n) => (n === "c" ? ["cc/claude-opus-5-5"] : null) };
+    const lookup = { aliases: { fast: "cc/claude-opus-5-5" }, comboModels: async (n) => (n === "c" ? ["cc/claude-opus-5-5"] : null) };
     expect(await isModelAllowed("cc/claude-opus-5-5", ["claude-opus-5-5"], lookup)).toBe(true);
     expect(await isModelAllowed("claude-opus-5-5[1m]", ["claude-opus-5-5"], lookup)).toBe(true);
     expect(await isModelAllowed("CC/Claude-Opus-5-5", ["cc/claude-opus-5-5"], lookup)).toBe(true);
@@ -303,6 +310,100 @@ describe("model allowlist", () => {
     expect(await isModelAllowed("fast", ["claude-opus-5-5"], lookup)).toBe(true);
     expect(await isModelAllowed("c", ["claude-opus-5-5"], lookup)).toBe(true);
     expect(await isModelAllowed("anything", null, lookup)).toBe(true);
+  });
+
+  it("a provider alias counts as the provider (cc = claude)", async () => {
+    expect(await isModelAllowed("claude/claude-opus-5-5", ["cc/claude-opus-5-5"], {})).toBe(true);
+    expect(await isModelAllowed("cc/claude-opus-5-5", ["claude/claude-opus-5-5"], {})).toBe(true);
+  });
+
+  it("a bare-id match goes one level deep: cc/x on the list doesn't allow openrouter/cc/x", async () => {
+    expect(await isModelAllowed("openrouter/cc/x", ["cc/x"], {})).toBe(false);
+    expect(await isModelAllowed("openrouter/x", ["x"], {})).toBe(true);
+    expect(await isModelAllowed("openrouter/cc/x", ["x"], {})).toBe(false);
+    const key = await newKey("nested-prefix", { allowedModels: ["openai/gpt-a"] });
+    expect((await handleChat(chatRequest(key, "openrouter/openai/gpt-a"))).status).toBe(403);
+  });
+
+  it("checks a fusion combo's judge along with its members", async () => {
+    await createCombo({ name: "fusion-combo", models: ["openai/gpt-a", "anthropic/claude-x"] });
+    await updateSettings({ comboStrategies: { "fusion-combo": { fallbackStrategy: "fusion", judgeModel: "openai/gpt-forbidden" } } });
+    try {
+      const key = await newKey("fusion-judge", { allowedModels: ["openai/gpt-a", "anthropic/claude-x"] });
+      const res = await handleChat(chatRequest(key, "fusion-combo"));
+      expect(res.status).toBe(403);
+      expect(upstream.credentials).not.toHaveBeenCalled();
+      const withJudge = await newKey("fusion-judge-ok", { allowedModels: ["openai/gpt-a", "anthropic/claude-x", "openai/gpt-forbidden"] });
+      expect(await checkApiKeyLimits(withJudge.key, { model: "fusion-combo" })).toBeNull();
+    } finally {
+      await updateSettings({ comboStrategies: {} });
+    }
+  });
+
+  it("the capacity adapter never routes an allowlisted key to a model off its list", async () => {
+    upstream.adapterPool = ["openai/gpt-pool"];
+    const limited = await newKey("adapter-limited", { allowedModels: ["openai/gpt-a"] });
+    expect((await handleChat(chatRequest(limited, "openai/gpt-a"))).status).toBe(200);
+    expect(upstream.core.mock.calls.map(([args]) => args.modelInfo.model)).not.toContain("gpt-pool");
+
+    upstream.core.mockClear();
+    const plain = await newKey("adapter-plain");
+    await handleChat(chatRequest(plain, "openai/gpt-a"));
+    expect(upstream.core.mock.calls[0][0].modelInfo.model).toBe("gpt-pool");
+
+    expect(await keepAllowedAdapterModels(limited.key, ["openai/gpt-pool", "openai/gpt-a"], ["openai/gpt-a"])).toEqual(["openai/gpt-a"]);
+    expect(await keepAllowedAdapterModels(plain.key, ["openai/gpt-pool", "openai/gpt-a"], ["openai/gpt-a"])).toEqual(["openai/gpt-pool", "openai/gpt-a"]);
+  });
+
+  const media = (key, url, body) => new Request(`http://localhost${url}`, {
+    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key.key}` }, body: JSON.stringify(body),
+  });
+  it.each([
+    ["embeddings", async () => (await import("@/sse/handlers/embeddings.js")).handleEmbeddings, (k) => media(k, "/v1/embeddings", { model: "openai/text-embedding-3-small", input: "hi" })],
+    ["images", async () => (await import("@/sse/handlers/imageGeneration.js")).handleImageGeneration, (k) => media(k, "/v1/images/generations", { model: "openai/img", prompt: "a cat" })],
+    ["speech", async () => (await import("@/sse/handlers/tts.js")).handleTts, (k) => media(k, "/v1/audio/speech", { model: "openai/tts-1", input: "hi" })],
+    ["transcriptions", async () => (await import("@/sse/handlers/stt.js")).handleStt, (k) => {
+      const form = new FormData();
+      form.set("model", "openai/whisper-1");
+      form.set("file", new Blob([new Uint8Array([1, 2, 3])]), "a.wav");
+      return new Request("http://localhost/v1/audio/transcriptions", { method: "POST", headers: { Authorization: `Bearer ${k.key}` }, body: form });
+    }],
+  ])("refuses a model off the list on %s before any upstream call", async (_name, load, makeRequest) => {
+    const handler = await load();
+    const key = await newKey("media-allowlist", { allowedModels: ["openai/gpt-a"] });
+    const res = await handler(makeRequest(key));
+    expect(res.status).toBe(403);
+    expect((await res.json()).error.code).toBe("model_not_allowed");
+    expect(upstream.credentials).not.toHaveBeenCalled();
+  });
+
+  it("every model list route shows an allowlisted key only its models", async () => {
+    const modelsRoute = await import("@/app/api/v1/models/route.js");
+    const all = (await modelsRoute.buildModelsList(["llm"])).map((m) => m.id);
+    expect(all).toContain("safe-combo");
+    expect(all.length).toBeGreaterThan(2);
+    const key = await newKey("routes-filter", { allowedModels: ["safe-combo"] });
+    const get = (url) => new Request(`http://localhost${url}`, { headers: { Authorization: `Bearer ${key.key}` } });
+
+    const list = await (await modelsRoute.GET(get("/v1/models"))).json();
+    expect(list.data.map((m) => m.id)).toEqual(["safe-combo"]);
+
+    const sub = await import("@/app/api/v1/models/[...model]/route.js");
+    expect((await sub.GET(get("/v1/models/mixed-combo"), { params: Promise.resolve({ model: ["mixed-combo"] }) })).status).toBe(404);
+    expect((await sub.GET(get("/v1/models/safe-combo"), { params: Promise.resolve({ model: ["safe-combo"] }) })).status).toBe(200);
+
+    const codex = await import("@/app/api/v1/codex/models/route.js");
+    const codexList = await (await codex.GET(get("/backend-api/codex/models"))).json();
+    expect(codexList.data.map((m) => m.id)).toEqual(["safe-combo"]);
+
+    const gemini = await import("@/app/api/v1beta/models/route.js");
+    const geminiAll = (await (await gemini.GET(new Request("http://localhost/v1beta/models"))).json()).models;
+    const anyId = geminiAll[0].name.replace(/^models\//, "");
+    const geminiKey = await newKey("gemini-filter", { allowedModels: [anyId] });
+    const geminiList = await (await gemini.GET(new Request("http://localhost/v1beta/models", { headers: { "x-goog-api-key": geminiKey.key } }))).json();
+    expect(geminiList.models.length).toBeGreaterThan(0);
+    expect(geminiList.models.length).toBeLessThan(geminiAll.length);
+    expect(geminiList.models.every((m) => m.name.toLowerCase().endsWith(anyId.split("/").pop().toLowerCase()))).toBe(true);
   });
 
   it("/v1/models lists only the allowed models for that key", async () => {
@@ -328,6 +429,148 @@ describe("expiry", () => {
 
     const later = await newKey("later", { expiresAt: new Date(Date.now() + 86_400_000).toISOString() });
     expect((await handleChat(chatRequest(later, "openai/gpt-a"))).status).toBe(200);
+  });
+});
+
+describe("a key sent while Require API key is off", () => {
+  const withSettings = async (fn) => {
+    await updateSettings({ requireApiKey: false });
+    try { await fn(); } finally { await updateSettings({ requireApiKey: true }); }
+  };
+  const sent = (key, place) => {
+    const headers = { "Content-Type": "application/json" };
+    let url = "http://localhost/v1/chat/completions";
+    if (place === "bearer") headers.Authorization = `Bearer ${key.key}`;
+    if (place === "x-goog-api-key") headers["x-goog-api-key"] = key.key;
+    if (place === "query") url += `?key=${encodeURIComponent(key.key)}`;
+    return new Request(url, { method: "POST", headers, body: JSON.stringify({ model: "openai/gpt-a", messages: [{ role: "user", content: "hi" }] }) });
+  };
+
+  it.each(["bearer", "x-goog-api-key", "query"])("still has its limits enforced (key sent as %s)", async (place) => {
+    await withSettings(async () => {
+      const key = await newKey(`off-${place}`, { budgetUsd: 1 });
+      await spend(key, 1);
+      const res = await handleChat(sent(key, place));
+      expect(res.status).toBe(402);
+      expect(upstream.credentials).not.toHaveBeenCalled();
+    });
+  });
+
+  it("handlers read the key from x-goog-api-key and ?key=, like the middleware", async () => {
+    const { extractApiKey } = await import("@/sse/services/auth.js");
+    const key = await newKey("goog-attribution");
+    expect(extractApiKey(sent(key, "x-goog-api-key"))).toBe(key.key);
+    expect(extractApiKey(sent(key, "query"))).toBe(key.key);
+  });
+});
+
+describe("rate-limit hold", () => {
+  it("checks the key again before re-running a held request", async () => {
+    const { DEFAULT_TIMING } = await import("open-sse/utils/limitHold.js");
+    const timing = { ...DEFAULT_TIMING };
+    Object.assign(DEFAULT_TIMING, { minWaitMs: 10, recheckMs: 10 });
+    await updateSettings({ limitHoldEnabled: true });
+    try {
+      const key = await newKey("held", { budgetUsd: 1 });
+      // The first attempt finds every account rate-limited, and meanwhile the
+      // key's other traffic uses up its budget. A re-run would succeed.
+      upstream.credentials.mockImplementationOnce(async () => {
+        await spend(key, 1);
+        return { allRateLimited: true, retryAfter: new Date(Date.now() + 50).toISOString(), retryAfterHuman: "reset after 1s", lastError: "rate limited", lastErrorCode: 429 };
+      });
+      const res = await handleChat(chatRequest(key, "openai/gpt-a", { body: { stream: false } }));
+      expect(res.status).toBe(402);
+      expect(upstream.core).not.toHaveBeenCalled();
+    } finally {
+      Object.assign(DEFAULT_TIMING, timing);
+      await updateSettings({ limitHoldEnabled: false });
+    }
+  });
+});
+
+describe("Ollama /v1/api/chat", () => {
+  it("returns a refusal with its status and body instead of an empty 200", async () => {
+    const { POST } = await import("@/app/api/v1/api/chat/route.js");
+    const key = await newKey("ollama-over", { budgetUsd: 1 });
+    await spend(key, 1);
+    const res = await POST(chatRequest(key, "openai/gpt-a", { endpoint: "/v1/api/chat" }));
+    expect(res.status).toBe(402);
+    expect((await res.json()).error.code).toBe("key_budget_exceeded");
+  });
+});
+
+describe("v1beta native TTS and video polling", () => {
+  it("refuses an expired key on the Gemini native TTS passthrough before any upstream call", async () => {
+    const { POST } = await import("@/app/api/v1beta/models/[...path]/route.js");
+    const key = await newKey("gemini-tts-expired", { expiresAt: new Date(Date.now() - 1000).toISOString() });
+    const req = new Request("http://localhost/v1beta/models/gemini-2.5-flash-preview-tts:generateContent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": key.key },
+      body: JSON.stringify({ contents: [{ parts: [{ text: "hi" }] }], generationConfig: { responseModalities: ["AUDIO"] } }),
+    });
+    const res = await POST(req, { params: Promise.resolve({ path: ["gemini-2.5-flash-preview-tts:generateContent"] }) });
+    expect(res.status).toBe(401);
+    expect((await res.json()).error.code).toBe("key_expired");
+    expect(upstream.credentials).not.toHaveBeenCalled();
+  });
+
+  it("video polling refuses an expired key but lets an over-budget key collect its job", async () => {
+    const { handleVideoGet } = await import("@/sse/handlers/videoGeneration.js");
+    const poll = (k) => new Request("http://localhost/v1/videos/req-1", { headers: { Authorization: `Bearer ${k.key}` } });
+    const expired = await newKey("poll-expired", { expiresAt: new Date(Date.now() - 1000).toISOString() });
+    expect((await handleVideoGet(poll(expired), "req-1")).status).toBe(401);
+    expect(upstream.credentials).not.toHaveBeenCalled();
+
+    const spent = await newKey("poll-spent", { budgetUsd: 1, allowedModels: ["openai/gpt-a"] });
+    await spend(spent, 1);
+    upstream.credentials.mockResolvedValueOnce(null);
+    const res = await handleVideoGet(poll(spent), "req-1");
+    expect(res.status).not.toBe(402);
+    expect(res.status).not.toBe(403);
+    expect(upstream.credentials).toHaveBeenCalled();
+  });
+});
+
+describe("running total bookkeeping", () => {
+  it("keeps the latest lastUsedAt when writes land out of order", async () => {
+    const key = await newKey("out-of-order");
+    await saveRequestUsage({ ...PRICED, apiKey: key.key, timestamp: "2026-05-02T00:00:00.000Z", tokens: { prompt_tokens: 10, completion_tokens: 0 } });
+    await saveRequestUsage({ ...PRICED, apiKey: key.key, timestamp: "2026-05-01T00:00:00.000Z", tokens: { prompt_tokens: 10, completion_tokens: 0 } });
+    expect((await getApiKeyById(key.id)).lastUsedAt).toBe("2026-05-02T00:00:00.000Z");
+  });
+
+  it("still matches SUM(cost) after a reset and after a same-install restore", async () => {
+    const key = await newKey("sum-after");
+    await spend(key, 1.5);
+    await updateApiKey(key.id, { resetSpend: true });
+    await spend(key, 0.25);
+    const adapter = await getAdapter();
+    const sum = () => adapter.get("SELECT SUM(cost) AS s FROM usageHistory WHERE apiKey = ?", [key.key]).s;
+    let stored = await getApiKeyById(key.id);
+    expect(stored.lifetimeSpentUsd).toBeCloseTo(sum(), 9);
+    expect(stored.spentUsd).toBeCloseTo(0.25, 9);
+
+    await db.importDb(await db.exportDb());
+    stored = await getApiKeyById(key.id);
+    expect(stored.lifetimeSpentUsd).toBeCloseTo(sum(), 9);
+    expect(stored.spentUsd).toBeCloseTo(0.25, 9);
+  });
+});
+
+describe("pickInternalKey", () => {
+  const k = (key, extra = {}) => ({ key, isActive: true, budgetUsd: null, allowedModels: null, expiresAt: null, spentUsd: 0, ...extra });
+  it("prefers an active key with no limits", () => {
+    expect(pickInternalKey([k("a", { budgetUsd: 5 }), k("b", { isActive: false }), k("c")])).toBe("c");
+  });
+  it("with every key limited, takes one that can still be used", () => {
+    const past = new Date(Date.now() - 1000).toISOString();
+    expect(pickInternalKey([k("expired", { expiresAt: past }), k("spent", { budgetUsd: 1, spentUsd: 1 }), k("ok", { budgetUsd: 10, spentUsd: 1 })])).toBe("ok");
+  });
+  it("with every key expired or exhausted, falls back to the first active one, and to null with none", () => {
+    const past = new Date(Date.now() - 1000).toISOString();
+    expect(pickInternalKey([k("off", { isActive: false }), k("expired", { expiresAt: past }), k("spent", { budgetUsd: 0 })])).toBe("expired");
+    expect(pickInternalKey([k("off", { isActive: false })])).toBeNull();
+    expect(pickInternalKey([])).toBeNull();
   });
 });
 
@@ -428,12 +671,21 @@ describe("keys API", () => {
     expect(detail.byModel).toEqual([expect.objectContaining({ model: "m1", requests: 2 })]);
     expect(detail.byModel[0].cost).toBeCloseTo(2, 6);
     expect(detail.recent).toHaveLength(2);
-    expect(detail.budget.spentUsd).toBeCloseTo(2, 6);
+    expect(Object.keys(detail).sort()).toEqual(["byModel", "daily", "recent"]);
     expect(text).not.toContain(key.key);
   });
 
   it("parseKeyLimitsInput leaves out fields that weren't sent", () => {
     expect(parseKeyLimitsInput({ name: "x" })).toEqual({ data: {}, errors: [] });
     expect(parseKeyLimitsInput({ resetSpend: false })).toEqual({ data: {}, errors: [] });
+  });
+
+  it("a blank budget clears it rather than meaning $0", async () => {
+    expect(parseKeyLimitsInput({ budgetUsd: "   " })).toEqual({ data: { budgetUsd: null }, errors: [] });
+    expect(parseKeyLimitsInput({ budgetUsd: " 12.5 " })).toEqual({ data: { budgetUsd: 12.5 }, errors: [] });
+    const key = await newKey("blank-budget", { budgetUsd: 3 });
+    const { key: saved } = await (await put(key.id, { budgetUsd: "  " })).json();
+    expect(saved.budgetUsd).toBeNull();
+    expect((await handleChat(chatRequest(saved, "openai/gpt-a"))).status).toBe(200);
   });
 });

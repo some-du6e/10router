@@ -1,39 +1,33 @@
 // Spend limits on the client API keys 10router issues: a USD budget, a model
-// allowlist and an expiry date. Pure helpers, shared by the request path, the
-// keys API and the dashboard. See docs/API_KEY_BUDGETS.md.
+// allowlist and an expiry date. Client-safe helpers shared by the keys API and
+// the dashboard; allowlist matching lives server-side in
+// src/sse/services/keyLimits.js. See docs/API_KEY_BUDGETS.md.
 
-export const MAX_BUDGET_USD = 1_000_000_000;
-export const MAX_ALLOWED_MODELS = 500;
-export const MAX_MODEL_ID_LENGTH = 300;
-
-const CONTEXT_SUFFIX = /\[(\d+[km])\]$/i;
+const MAX_BUDGET_USD = 1_000_000_000;
+const MAX_ALLOWED_MODELS = 500;
+const MAX_MODEL_ID_LENGTH = 300;
 
 /** Round to whole micro-dollars so float drift never shows as $1999.9999999. */
-function roundUsd(n) {
+export function roundUsd(n) {
   return Math.round(n * 1e6) / 1e6;
 }
 
-/** Spend counted against the budget: lifetime spend minus the last reset's baseline. */
-export function spentSinceReset(key) {
-  const lifetime = Number(key?.lifetimeSpentUsd ?? key?.spentUsd) || 0;
-  const offset = Number(key?.spendOffsetUsd) || 0;
-  return Math.max(0, roundUsd(lifetime - offset));
-}
-
 /**
- * Where a key stands against its budget.
- * @returns {{ spentUsd: number, budgetUsd: number|null, remainingUsd: number|null, exhausted: boolean }}
+ * Where a key stands against its budget. `spentUsd` is the key's spend since
+ * its last reset; `fraction` is how much of the budget is gone (1 = all of it).
+ * @returns {{ spentUsd: number, budgetUsd: number|null, remainingUsd: number|null, exhausted: boolean, fraction: number }}
  */
 export function budgetState(key) {
   const spentUsd = Number(key?.spentUsd) || 0;
   const budgetUsd = typeof key?.budgetUsd === "number" && Number.isFinite(key.budgetUsd) ? key.budgetUsd : null;
-  if (budgetUsd === null) return { spentUsd, budgetUsd: null, remainingUsd: null, exhausted: false };
+  if (budgetUsd === null) return { spentUsd, budgetUsd: null, remainingUsd: null, exhausted: false, fraction: 0 };
   return {
     spentUsd,
     budgetUsd,
     remainingUsd: Math.max(0, roundUsd(budgetUsd - spentUsd)),
     // At the cap counts as used up: a $0 budget lets nothing through.
     exhausted: spentUsd >= budgetUsd,
+    fraction: budgetUsd > 0 ? spentUsd / budgetUsd : 1,
   };
 }
 
@@ -53,66 +47,20 @@ export function keyHasLimits(key) {
 
 /**
  * The key the dashboard uses for its own calls through /v1 (model tests,
- * endpoint pings): an active key with no limits, so those calls neither get
- * refused by someone's allowlist nor spend someone's budget.
+ * endpoint tests, media examples): an active key with no limits, so those calls
+ * neither get refused by someone's allowlist nor spend someone's budget. With
+ * every active key limited, the first one that can still be used, then the
+ * first active one.
  */
 export function pickInternalKey(keys) {
   const active = (keys || []).filter((k) => k && k.isActive !== false && k.key);
-  return (active.find((k) => !keyHasLimits(k)) || active[0])?.key || null;
-}
-
-function normalizeModelId(id) {
-  if (typeof id !== "string") return "";
-  return id.trim().replace(CONTEXT_SUFFIX, "").toLowerCase();
-}
-
-function matchesAllowed(requested, allowed) {
-  if (allowed.has(requested)) return true;
-  // A bare id on the list ("claude-opus-5-5") allows that model from any
-  // provider ("cc/claude-opus-5-5"). A provider-prefixed entry allows only that provider.
-  const slash = requested.indexOf("/");
-  return slash > 0 && allowed.has(requested.slice(slash + 1));
-}
-
-/**
- * May a key with this allowlist request this model?
- *
- * Allowed when the model is on the list, when it is an alias whose target is
- * on the list, or when it is a combo whose every member is allowed. A combo
- * named on the list is allowed as a whole.
- *
- * @param {string} requested model id as the client sent it
- * @param {string[]|null} allowedModels null or empty = everything allowed
- * @param {{ aliases?: Record<string, string>, getComboModels?: (name: string) => Promise<string[]|null> }} [lookup]
- */
-export async function isModelAllowed(requested, allowedModels, lookup = {}, depth = 0) {
-  if (!Array.isArray(allowedModels) || allowedModels.length === 0) return true;
-  const req = normalizeModelId(requested);
-  if (!req) return false;
-  const allowed = new Set(allowedModels.map(normalizeModelId).filter(Boolean));
-  if (matchesAllowed(req, allowed)) return true;
-
-  const raw = String(requested).trim().replace(CONTEXT_SUFFIX, "");
-  const target = lookup.aliases?.[raw];
-  if (typeof target === "string" && matchesAllowed(normalizeModelId(target), allowed)) return true;
-
-  // Combos are stored under a bare name. The depth cap stops a combo that
-  // (mis)lists itself from looping.
-  if (depth < 3 && !raw.includes("/") && lookup.getComboModels) {
-    const members = await lookup.getComboModels(raw);
-    if (Array.isArray(members) && members.length > 0) {
-      for (const member of members) {
-        if (!(await isModelAllowed(member, allowedModels, lookup, depth + 1))) return false;
-      }
-      return true;
-    }
-  }
-  return false;
+  const usable = active.filter((k) => !isKeyExpired(k) && !budgetState(k).exhausted);
+  return (active.find((k) => !keyHasLimits(k)) || usable[0] || active[0])?.key || null;
 }
 
 /**
  * Validate the limit fields of a key update. Fields left out are not touched;
- * null clears a limit.
+ * null (or an empty string) clears a limit.
  *
  * @returns {{ data: object, errors: string[] }}
  */
@@ -122,10 +70,11 @@ export function parseKeyLimitsInput(body) {
   if (!body || typeof body !== "object") return { data, errors };
 
   if (body.budgetUsd !== undefined) {
-    if (body.budgetUsd === null || body.budgetUsd === "") {
+    const raw = typeof body.budgetUsd === "string" ? body.budgetUsd.trim() : body.budgetUsd;
+    if (raw === null || raw === "") {
       data.budgetUsd = null;
     } else {
-      const n = typeof body.budgetUsd === "string" ? Number(body.budgetUsd.trim()) : body.budgetUsd;
+      const n = typeof raw === "string" ? Number(raw) : raw;
       if (typeof n !== "number" || !Number.isFinite(n) || n < 0) {
         errors.push("budgetUsd must be a non-negative number of US dollars, or null for no budget");
       } else if (n > MAX_BUDGET_USD) {
@@ -164,12 +113,13 @@ export function parseKeyLimitsInput(body) {
   }
 
   if (body.expiresAt !== undefined) {
-    if (body.expiresAt === null || body.expiresAt === "") {
+    const raw = typeof body.expiresAt === "string" ? body.expiresAt.trim() : body.expiresAt;
+    if (raw === null || raw === "") {
       data.expiresAt = null;
-    } else if (typeof body.expiresAt !== "string" && typeof body.expiresAt !== "number") {
+    } else if (typeof raw !== "string" && typeof raw !== "number") {
       errors.push("expiresAt must be an ISO date string, or null for no expiry");
     } else {
-      const at = new Date(body.expiresAt);
+      const at = new Date(raw);
       if (Number.isNaN(at.getTime())) errors.push("expiresAt is not a valid date");
       else data.expiresAt = at.toISOString();
     }
