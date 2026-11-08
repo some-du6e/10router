@@ -8,6 +8,8 @@ on:
       - "src/shared/utils/clientApiKey.js"
       - "src/dashboardGuard.js"
       - "src/sse/services/keyLimits.js"
+      - "src/sse/services/model.js"
+      - "src/shared/utils/formatAmounts.js"
       - "src/sse/services/auth.js"
       - "src/sse/handlers/**"
       - "src/lib/db/**"
@@ -52,6 +54,7 @@ jobs:
           unit/api-key-budgets.test.js
           unit/api-key-budgets-migration.test.js
           unit/api-key-budgets-spend.test.js
+          unit/stream-abort-usage.test.js
           unit/db-migration-chain.test.js
           unit/dashboard-guard.test.js
           unit/limit-hold-integration.test.js
@@ -67,6 +70,7 @@ jobs:
           src/dashboardGuard.js
           open-sse/utils/stream.js
           open-sse/utils/streamHandler.js
+          open-sse/handlers/chatCore/streamingHandler.js
           src/lib/db/repos/usageRepo.js
           src/app/api/v1/api/chat/route.js
           src/app/api/v1/codex/models/route.js
@@ -87,6 +91,7 @@ jobs:
           tests/unit/api-key-budgets.test.js
           tests/unit/api-key-budgets-migration.test.js
           tests/unit/api-key-budgets-spend.test.js
+          tests/unit/stream-abort-usage.test.js
       # Fails only on errors in the .ts files this change touches, so unrelated
       # type errors elsewhere don't block it.
       - name: Type check chat.ts and the endpoint requests route
