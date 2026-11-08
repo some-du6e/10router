@@ -359,12 +359,13 @@ export function openaiToKiroRequest(model, body, stream, credentials) {
   const continuationId = resolveContinuationId({
     sessionId: conversationId,
     connectionId: credentials?.connectionId,
-    scope: "kiro",
+    scope: `kiro:${credentials?.clientScope || ""}`,
     ephemeral: sessionIdentity.ephemeral,
   });
   const replay = applyKiroSessionReplay({
     conversationId,
     connectionId: credentials?.connectionId,
+    clientScope: credentials?.clientScope,
     modelId: upstreamModel,
     systemPrompt,
     contentPrefix,

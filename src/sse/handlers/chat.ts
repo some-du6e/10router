@@ -132,7 +132,12 @@ interface SingleModelOptions {
   blockedBilling?: Set<BillingSet> | null;
   // Aborted when the client hangs up.
   signal?: AbortSignal | null;
+  // Combos already being expanded on the way to this model, outermost first.
+  comboPath?: string[];
 }
+
+// Nesting deeper than this is treated like a cycle.
+const MAX_COMBO_DEPTH = 4;
 
 interface RoutedChatArgs {
   body: ChatBody;
@@ -315,7 +320,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
               cleanRawReq = { ...clientRawRequest, body: cleanBody };
             }
-            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false, routingFailures, blockedBilling, signal });
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false, routingFailures, blockedBilling, signal, comboPath: [comboKey] });
           },
           log,
           comboName: comboKey,
@@ -336,7 +341,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
         body,
         models: augmentedModels,
         handleSingleModel: withCapacityAdapterStripping(
-          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures, blockedBilling, signal }),
+          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures, blockedBilling, signal, comboPath: [comboKey] }),
           adapterAdded
         ),
         log,
@@ -362,7 +367,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
         body,
         models: soloAugmented,
         handleSingleModel: withCapacityAdapterStripping(
-          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures, blockedBilling: soloBlockedBilling, signal }),
+          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures, blockedBilling: soloBlockedBilling, signal, comboPath: [comboLookupName(modelStr)] }),
           adapterAdded
         ),
         log,
@@ -467,6 +472,10 @@ async function holdUntilClear({ first, attempt: rerun, willStream, sourceFormat,
   // A hold can last hours: the key may run out of budget (other requests) or
   // expire meanwhile, so each re-run checks it first. A refusal ends the hold.
   const attempt = async (): Promise<PassResult> => {
+    if (apiKey && ((await getSettings()) as ChatSettings).requireApiKey && !(await isValidApiKey(apiKey))) {
+      log.warn("LIMITHOLD", "API key disabled or deleted during the hold");
+      return { success: false, limited: false, status: HTTP_STATUS.UNAUTHORIZED, error: "Invalid API key", response: errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key") };
+    }
     const denied = await apiKeyLimitDenial(apiKey, { model: modelStr, format: sourceFormat });
     if (denied) return { success: false, limited: false, status: denied.status, error: denied.message, response: denied.response };
     return rerun();
@@ -503,7 +512,7 @@ async function handleSingleModelChat(
   clientRawRequest: ClientRawRequest | null = null,
   request: Request | null = null,
   apiKey: string | null = null,
-  { allowHold = true, routingFailures = [], blockedBilling = null, signal = null }: SingleModelOptions = {},
+  { allowHold = true, routingFailures = [], blockedBilling = null, signal = null, comboPath = [] }: SingleModelOptions = {},
 ): Promise<Response> {
   // The client is gone: a combo's later models have no one to answer.
   if (signal?.aborted) return clientAbortResult().response;
@@ -511,7 +520,7 @@ async function handleSingleModelChat(
   // panels with empty/unparseable content must also remain retryable.
   const unconfirmed: RoutingFailure = { limited: false };
   routingFailures.push(unconfirmed);
-  const response = await routeSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { allowHold, routingFailures, blockedBilling, signal });
+  const response = await routeSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { allowHold, routingFailures, blockedBilling, signal, comboPath });
   if (!response.ok) routingFailures.splice(routingFailures.indexOf(unconfirmed), 1);
   return response;
 }
@@ -568,7 +577,7 @@ async function routeSingleModelChat(
   clientRawRequest: ClientRawRequest | null,
   request: Request | null,
   apiKey: string | null,
-  { allowHold, routingFailures, blockedBilling = null, signal = null }: { allowHold: boolean; routingFailures: RoutingFailure[]; blockedBilling?: Set<BillingSet> | null; signal?: AbortSignal | null },
+  { allowHold, routingFailures, blockedBilling = null, signal = null, comboPath = [] }: { allowHold: boolean; routingFailures: RoutingFailure[]; blockedBilling?: Set<BillingSet> | null; signal?: AbortSignal | null; comboPath?: string[] },
 ): Promise<Response> {
   // Detect source format by endpoint + body (scoped per-call; handleChat's copy is a
   // separate function and is not visible here)
@@ -581,9 +590,15 @@ async function routeSingleModelChat(
   if (!modelInfo.provider) {
     const comboModels = await getComboModels(modelStr);
     if (comboModels) {
+      const comboKey = comboLookupName(modelStr);
+      if (comboPath.includes(comboKey) || comboPath.length >= MAX_COMBO_DEPTH) {
+        routingFailures.push({ limited: false, unconfigured: true });
+        log.warn("CHAT", `Combo "${comboKey}" skipped: nested in itself or too deeply`, { path: comboPath });
+        return errorResponse(HTTP_STATUS.BAD_REQUEST, `Combo "${comboKey}" is nested in itself or too deeply`);
+      }
+      const nestedPath = [...comboPath, comboKey];
       const chatSettings = (await getSettings()) as ChatSettings;
       // Check for combo-specific strategy first, fallback to global
-      const comboKey = comboLookupName(modelStr);
       const comboStrategies: Record<string, ComboStrategyConfig> = chatSettings.comboStrategies || {};
       const comboSpecificStrategy = comboStrategies[comboKey]?.fallbackStrategy;
       const comboStrategy = comboSpecificStrategy || chatSettings.comboStrategy || "fallback";
@@ -602,7 +617,7 @@ async function routeSingleModelChat(
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
               cleanRawReq = { ...clientRawRequest, body: cleanBody };
             }
-            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false, routingFailures, signal });
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false, routingFailures, signal, comboPath: nestedPath });
           },
           log,
           comboName: comboKey,
@@ -617,7 +632,7 @@ async function routeSingleModelChat(
         body,
         models: augmentedModels,
         handleSingleModel: withCapacityAdapterStripping(
-          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures, signal }),
+          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures, signal, comboPath: nestedPath }),
           adapterAdded
         ),
         log,

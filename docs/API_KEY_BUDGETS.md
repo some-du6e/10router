@@ -84,6 +84,12 @@ them. A backup carries the totals, so a key restored onto another install
   long they ran. Set `STREAM_ABORT_FLOOR_TPS` to change the rate (`0` turns
   the floor off). This applies to every key, so the usage page counts cut-short
   requests the same way.
+- **Non-streaming requests cut short.** A client that hangs up on a
+  non-streaming request after it went upstream is charged the same kind of
+  estimate: its input, plus the time floor from when the request was sent
+  (a JSON upstream generates its whole answer before it replies), or, when the
+  upstream was answering as a stream (a provider set to always stream), from
+  its first byte. A stream cut before its first byte pays for its input only.
 - **Opt-in: drain to the real usage.** With `STREAM_DRAIN_MAX_MS` set (it is
   `0`, off, by default), a key with a budget whose client hangs up keeps the
   upstream running: 10router closes the client's stream at once but reads the

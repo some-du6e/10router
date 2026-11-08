@@ -255,7 +255,19 @@ export class CodexExecutor extends BaseExecutor {
     }
   }
 
-  async execute(args) {
+  // The compact flag is per request; keep it on a per-call view so a shared
+  // executor never builds one request's URL from another's body.
+  execute(args) {
+    // Strip the flag from a copy: chatCore passes the same body again when it
+    // retries after a token refresh, and that retry is still a compact call.
+    const call = Object.create(this);
+    if (!args.body) return call._execute(args);
+    const { _compact, ...body } = args.body;
+    call._isCompact = !!_compact;
+    return call._execute({ ...args, body });
+  }
+
+  async _execute(args) {
     const imgCount = Array.isArray(args.body?.input) ? args.body.input.reduce((n, it) => n + (Array.isArray(it.content) ? it.content.filter(c => c.type === "image_url").length : 0), 0) : 0;
     const inputLen = Array.isArray(args.body?.input) ? args.body.input.length : 0;
     dbg("CODEX", `execute start | inputItems=${inputLen} | images=${imgCount} | sessionId=${this._currentSessionId || "pending"}`);
@@ -395,7 +407,6 @@ export class CodexExecutor extends BaseExecutor {
    * Image fetching is handled separately in prefetchImages() so this stays sync.
    */
   transformRequest(model, body, stream, credentials) {
-    this._isCompact = !!body._compact;
     delete body._compact;
     // Resolve conversation-stable session_id (priority: body → assistant-text → workspace → machine)
     this._currentSessionId = resolveCacheSessionId(body, credentials);
