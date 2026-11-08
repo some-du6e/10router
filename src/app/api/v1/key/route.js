@@ -1,7 +1,7 @@
 import { extractApiKey } from "@/sse/services/auth.js";
 import { getApiKeyPolicy } from "@/lib/db/repos/apiKeysRepo.js";
 import { budgetState, isKeyExpired } from "@/shared/utils/apiKeyLimits.js";
-import { maskApiKey } from "@/shared/utils/apiKey.js";
+import { maskApiKey } from "@/lib/db/repos/usageRepo.js";
 
 export const dynamic = "force-dynamic";
 

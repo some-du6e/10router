@@ -96,12 +96,3 @@ export function isNewFormatKey(apiKey) {
   return parsed?.isNewFormat === true;
 }
 
-
-/**
- * Show enough of a key to recognise it, never enough to use it: "sk-abc12***".
- */
-export function maskApiKey(key) {
-  if (!key || typeof key !== "string") return null;
-  if (key.length <= 8) return key.charAt(0) + "***";
-  return key.slice(0, 8) + "***";
-}

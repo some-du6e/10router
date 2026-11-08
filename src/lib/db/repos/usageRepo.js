@@ -3,7 +3,13 @@ import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
 import { addApiKeySpendSync } from "./apiKeysRepo.js";
-import { maskApiKey } from "@/shared/utils/apiKey.js";
+
+/** Show enough of a key to recognise it, never enough to use it. */
+export function maskApiKey(key) {
+  if (!key || typeof key !== "string") return null;
+  if (key.length <= 8) return key.charAt(0) + "***";
+  return key.slice(0, 8) + "***";
+}
 
 const PENDING_TIMEOUT_MS = 60 * 1000;
 const RING_CAP = 50;
