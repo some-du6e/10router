@@ -51,8 +51,9 @@ afterAll(() => {
 
 beforeEach(() => fetchMock.mockReset());
 
-async function newKey(name) {
+async function newKey(name, limits = {}) {
   const created = await db.createApiKey(name, "machine-spend-0001");
+  if (Object.keys(limits).length) await db.updateApiKey(created.id, limits);
   return db.getApiKeyById(created.id);
 }
 
@@ -78,6 +79,13 @@ const claudeCutStream = () => openStream([
   sseEvent("content_block_start", { type: "content_block_start", index: 2, content_block: { type: "tool_use", id: "toolu_1", name: "read_file", input: {} } }),
   sseEvent("content_block_delta", { type: "content_block_delta", index: 2, delta: { type: "input_json_delta", partial_json: "{\"path\": \"/some/long/path/to/a/file.txt\"" } }),
 ]);
+const { weighChars, estimateOutputTokens } = await import("open-sse/utils/usageTracking.js");
+// What claudeCutStream streams before the cut: thinking, text and tool input.
+const CUT_STREAM_OUTPUT = estimateOutputTokens(
+  weighChars("Let me think about this carefully before answering the question.")
+  + weighChars("Here is a fairly long partial answer that got cut")
+  + weighChars("{\"path\": \"/some/long/path/to/a/file.txt\""),
+);
 const usageRow = async (key) => (await (await import("@/lib/db/driver.js")).getAdapter())
   .get("SELECT promptTokens, completionTokens FROM usageHistory WHERE apiKey = ?", [key.key]);
 
@@ -185,7 +193,7 @@ describe("spend on the real chat path", () => {
     const row = await usageRow(key);
     expect(row.promptTokens).toBe(1_000_000);
     // ~150 streamed characters: far more than the placeholder 1.
-    expect(row.completionTokens).toBeGreaterThan(20);
+    expect(row.completionTokens).toBe(CUT_STREAM_OUTPUT);
   });
 
   it("the same Anthropic stream translated for an OpenAI client is charged the same way", async () => {
@@ -200,7 +208,7 @@ describe("spend on the real chat path", () => {
     await keyAfterUsage(key, (k) => k.requestCount === 1);
     const row = await usageRow(key);
     expect(row.promptTokens).toBe(1_000_000);
-    expect(row.completionTokens).toBeGreaterThan(20);
+    expect(row.completionTokens).toBe(CUT_STREAM_OUTPUT);
   });
 
   it("a tool-call-only stream cut before its finish chunk still charges input and the tool arguments", async () => {
@@ -221,6 +229,66 @@ describe("spend on the real chat path", () => {
     expect(row.promptTokens).toBeGreaterThan(0);
     expect(row.completionTokens).toBeGreaterThan(5);
     expect(stored.spentUsd).toBeGreaterThan(0);
+  });
+
+  it("a budgeted key's cut Anthropic stream (omitted thinking) is charged exactly the message_delta usage", async () => {
+    const key = await newKey("budgeted-drain", { budgetUsd: 1000 });
+    let ctrl;
+    let upstreamCancelled = false;
+    const body = new ReadableStream({ start(c) { ctrl = c; }, cancel() { upstreamCancelled = true; } });
+    fetchMock.mockResolvedValueOnce(new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }));
+    const push = (event, data) => ctrl.enqueue(sseEvent(event, data));
+
+    const res = await handleChat(request(key, { stream: true }, { endpoint: "/v1/messages", model: "anthropic/claude-spend" }));
+    const reader = res.body.getReader();
+    push("message_start", { type: "message_start", message: { id: "m1", type: "message", role: "assistant", model: "claude-spend", content: [], usage: { input_tokens: 1_000_000, output_tokens: 1 } } });
+    push("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } });
+    push("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "EqQBCgIYAhIM" } });
+    push("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "short visible" } });
+    await readUntil(reader, "short visible");
+    await reader.cancel();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(upstreamCancelled).toBe(false);
+
+    push("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 750_000 } });
+    push("message_stop", { type: "message_stop" });
+    const stored = await keyAfterUsage(key, (k) => k.requestCount === 1);
+    const row = await usageRow(key);
+    expect(row.promptTokens).toBe(1_000_000);
+    expect(row.completionTokens).toBe(750_000);
+    expect(stored.spentUsd).toBeCloseTo(1.75, 6);
+  });
+
+  it("a non-streaming request over a forced stream with no usage is still charged and recorded", async () => {
+    const { handleChatCore } = await import("open-sse/handlers/chatCore.js");
+    const key = await newKey("forced-stream-no-usage");
+    const provider = "openai-compatible-chat-forced";
+    await db.updatePricing({ [provider]: { "gpt-forced": { input: 1, output: 1 } } });
+    fetchMock.mockResolvedValueOnce(new Response(
+      [delta("a reply with no usage anywhere"), chunk({ id: "c1", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }), "data: [DONE]\n\n"]
+        .map((p) => (typeof p === "string" ? p : new TextDecoder().decode(p))).join(""),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    ));
+    const body = { model: "gpt-forced", stream: false, messages: [{ role: "user", content: "hi ".repeat(400) }] };
+    const result = await handleChatCore({
+      body, modelInfo: { provider, model: "gpt-forced" }, apiKey: key.key, connectionId: "conn-forced",
+      credentials: { apiKey: "upstream-test-key", providerSpecificData: { baseUrl: "https://forced.example.test/v1", overrides: { stream: "always" } } },
+      log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn() },
+      clientRawRequest: { endpoint: "/v1/chat/completions", body, headers: { accept: "application/json" } },
+    });
+    expect(result.success).toBe(true);
+    const stored = await keyAfterUsage(key, (k) => k.requestCount === 1);
+    expect(stored.spentUsd).toBeGreaterThan(0);
+    const row = await usageRow(key);
+    expect(row.promptTokens).toBeGreaterThan(0);
+    expect(row.completionTokens).toBeGreaterThan(0);
+  });
+
+  it("asks the official OpenAI provider, and no other, for its usage chunk", async () => {
+    const { DefaultExecutor } = await import("open-sse/executors/default.js");
+    const req = { model: "gpt-x", stream: true, messages: [{ role: "user", content: "hi" }] };
+    expect(new DefaultExecutor("openai").transformRequest("gpt-x", { ...req }, true, {}).stream_options).toEqual({ include_usage: true });
+    expect(new DefaultExecutor("openai-compatible-chat-other").transformRequest("gpt-x", { ...req }, true, {}).stream_options).toBeUndefined();
   });
 
   it("a stream closed after its final event is counted once, at the reported usage", async () => {

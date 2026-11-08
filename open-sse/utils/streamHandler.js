@@ -20,11 +20,14 @@ function getTimeString() {
  * @param {string} options.provider - Provider name
  * @param {string} options.model - Model name
  */
-export function createStreamController({ onDisconnect, onError, log, provider, model, reqTag = "" } = {}) {
+export function createStreamController({ onDisconnect, onError, log, provider, model, reqTag = "", drainOnDisconnect = false, drainMaxMs = 0 } = {}) {
   const abortController = new AbortController();
   const startTime = Date.now();
   let disconnected = false;
   let abortTimeout = null;
+  let draining = false;
+  let drainTimer = null;
+  let drainStarter = null;
 
   // Only abnormal terminations are logged; normal completion is covered by "📊 done".
   // isError uses errorLine (always shown, ignores LOG_LEVEL) so failures survive quiet levels.
@@ -41,10 +44,42 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
 
     isConnected: () => !disconnected,
 
+    // A budgeted key's stream: on a hang-up, keep reading the upstream until its
+    // final usage (see createDisconnectAwareStream), for at most drainMaxMs.
+    drainsOnDisconnect: drainOnDisconnect && drainMaxMs > 0,
+    draining: () => draining,
+    // The client stream registers how to run the drain's read loop, so a
+    // hang-up seen on the client signal starts it too.
+    setDrainStarter: (fn) => { drainStarter = fn; },
+    // The drain is over (final usage read, upstream ended or failed): drop the upstream.
+    endDrain: () => {
+      if (drainTimer) { clearTimeout(drainTimer); drainTimer = null; }
+      if (!draining) return;
+      draining = false;
+      abortController.abort();
+    },
+
     // Call when client disconnects
     handleDisconnect: (reason = "client_closed") => {
       if (disconnected) return;
       disconnected = true;
+
+      if (drainOnDisconnect && drainMaxMs > 0) {
+        // The pending slot is released now; only the read loop stays.
+        draining = true;
+        dbg("CTRL", `${provider}/${model} | disconnect=${reason} | draining upstream for final usage`);
+        drainTimer = setTimeout(() => {
+          drainTimer = null;
+          if (!draining) return;
+          draining = false;
+          dbg("CTRL", `${provider}/${model} | drain cap ${drainMaxMs}ms reached, aborting upstream`);
+          abortController.abort();
+        }, drainMaxMs);
+        drainTimer.unref?.();
+        onDisconnect?.({ reason, duration: Date.now() - startTime });
+        drainStarter?.();
+        return;
+      }
 
       // Debug-only: Responses API has no [DONE] sentinel, so codex/droid close the
       // socket on every completed request. "📊 done" is the authoritative outcome line.
@@ -117,6 +152,30 @@ export function createDisconnectAwareStream(transformStream, streamController, o
   const finalizeOnAbort = () => {
     try { transformStream.finalizeOnAbort?.(); } catch { /* usage is best-effort */ }
   };
+  // Drain: keep reading (and discarding) the upstream until its final usage,
+  // its end, or the drain cap / stall abort, then record the usage once.
+  let drainStarted = false;
+  const startDrain = () => {
+    if (drainStarted) return;
+    drainStarted = true;
+    (async () => {
+      try {
+        while (!transformStream.finalUsageSeen?.()) {
+          const { done } = await reader.read();
+          if (done) break;
+        }
+        transformStream.finalizeNow?.();
+      } catch {
+        // The upstream was aborted (drain cap, stall) or failed: estimate.
+      } finally {
+        finalizeOnAbort();
+        streamController.endDrain?.();
+        reader.cancel().catch(() => {});
+      }
+    })();
+  };
+  streamController.setDrainStarter?.(startDrain);
+  const drains = () => streamController.drainsOnDisconnect && streamController.draining?.();
   let terminalEmitted = false;
   let keepaliveTimer = null;
   // Trailing newlines written so far; 2+ means we sit between events.
@@ -169,7 +228,8 @@ export function createDisconnectAwareStream(transformStream, streamController, o
     async pull(controller) {
       if (!streamController.isConnected()) {
         clearKeepalive();
-        finalizeOnAbort();
+        if (drains()) startDrain();
+        else finalizeOnAbort();
         emitTerminal(controller);
         controller.close();
         return;
@@ -187,6 +247,13 @@ export function createDisconnectAwareStream(transformStream, streamController, o
         write(controller, value);
       } catch (error) {
         clearKeepalive();
+        // The client went away while a read was in flight, and the drain owns
+        // the upstream now: just close the client side.
+        if (drains()) {
+          startDrain();
+          try { controller.close(); } catch { /* already closed or cancelled */ }
+          return;
+        }
         const wasConnected = streamController.isConnected();
         // Controller already closed = downstream ended; not an upstream error, skip noisy log.
         const msg0 = error?.message || "";
@@ -226,8 +293,11 @@ export function createDisconnectAwareStream(transformStream, streamController, o
 
     cancel(reason) {
       clearKeepalive();
-      finalizeOnAbort();
       streamController.handleDisconnect(reason || "cancelled");
+      // A budgeted key's stream keeps reading for its real usage; the client
+      // side is closed either way.
+      if (drains()) { startDrain(); return; }
+      finalizeOnAbort();
       reader.cancel();
       writer.abort();
     }
@@ -282,8 +352,17 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     isConnected: () => streamController.isConnected(),
     handleComplete: () => { dbg(tag, `complete | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); streamController.handleComplete(); },
     handleError: (e) => { dbg(tag, `error: ${e?.message} | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); streamController.handleError(e); },
-    handleDisconnect: (r) => { dbg(tag, `disconnect: ${r} | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); streamController.handleDisconnect(r); },
-    abort: () => { clearStall(); streamController.abort(); }
+    handleDisconnect: (r) => {
+      dbg(tag, `disconnect: ${r} | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`);
+      // A drain still needs the stall watchdog on the upstream.
+      if (!streamController.drainsOnDisconnect) clearStall();
+      streamController.handleDisconnect(r);
+    },
+    abort: () => { clearStall(); streamController.abort(); },
+    drainsOnDisconnect: streamController.drainsOnDisconnect,
+    draining: () => streamController.draining?.(),
+    setDrainStarter: (fn) => streamController.setDrainStarter?.(fn),
+    endDrain: () => { clearStall(); streamController.endDrain?.(); }
   };
 
   armStall();
@@ -311,7 +390,13 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     .pipeThrough(transformStream);
 
   return createDisconnectAwareStream(
-    { readable: transformedBody, writable: { getWriter: () => ({ abort: () => Promise.resolve() }) }, finalizeOnAbort: transformStream.finalizeOnAbort },
+    {
+      readable: transformedBody,
+      writable: { getWriter: () => ({ abort: () => Promise.resolve() }) },
+      finalizeOnAbort: transformStream.finalizeOnAbort,
+      finalUsageSeen: transformStream.finalUsageSeen,
+      finalizeNow: transformStream.finalizeNow,
+    },
     wrappedController,
     onAbortTerminal ? () => onAbortTerminal(abortMessage) : null,
     keepaliveMs,

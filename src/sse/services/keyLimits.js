@@ -157,6 +157,13 @@ export async function checkApiKeyLimits(apiKey, opts) {
   return (await apiKeyLimitDenial(apiKey, opts))?.response || null;
 }
 
+/** Does this key have a spend budget? Its streams are drained on hang-up for real usage. */
+export async function keyHasBudget(apiKey) {
+  if (!apiKey) return false;
+  const key = await getApiKeyPolicy(apiKey);
+  return typeof key?.budgetUsd === "number";
+}
+
 /** Expiry only: for calls that spend nothing and name no model (polling a video job the key already paid for). */
 export async function checkApiKeyExpiry(apiKey, { format = FORMATS.OPENAI } = {}) {
   if (!apiKey) return null;

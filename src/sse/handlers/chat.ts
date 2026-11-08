@@ -20,7 +20,7 @@ import { respondWithEarlyHeaders } from "open-sse/utils/earlyHeaders.js";
 import { errorResponse, unavailableResponse, clientAbortResult } from "open-sse/utils/error.js";
 import { createLimitHoldResponse, awaitLimitClear, isLimitError, allLockedError } from "open-sse/utils/limitHold.js";
 import { resolveLimitHold } from "../services/limitHoldConfig.js";
-import { checkApiKeyLimits, apiKeyLimitDenial, keepAllowedAdapterModels } from "../services/keyLimits.js";
+import { checkApiKeyLimits, apiKeyLimitDenial, keepAllowedAdapterModels, keyHasBudget } from "../services/keyLimits.js";
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
@@ -750,6 +750,7 @@ async function routeSingleModelChat(
     const chatSettings = (await getSettings()) as ChatSettings;
     const providerThinking = (chatSettings.providerThinking || {} as Record<string, unknown>)[provider] || null;
     // Custom endpoints: keep this request for the endpoint page's "Recent requests".
+    const drainOnDisconnect = await keyHasBudget(apiKey);
     const result = await recordEndpointRequests(provider, refreshedCredentials as Parameters<typeof recordEndpointRequests>[1], () => handleChatCore({
       body: { ...body, model: `${provider}/${model}` },
       modelInfo: { provider, model },
@@ -763,6 +764,7 @@ async function routeSingleModelChat(
       providerThinking,
       sourceFormatOverride,
       clientSignal: signal,
+      drainOnDisconnect,
       onCredentialsRefreshed: async (newCreds: Record<string, unknown>) => {
         await updateProviderCredentials(credentials.connectionId, {
           ...newCreds,
