@@ -1,0 +1,31 @@
+name: CLI client
+
+on:
+  pull_request:
+    paths:
+      - "cli/src/cli/api/client.js"
+      - "src/lib/dataDir.js"
+      - "tests/unit/cli-client-data-dir.test.js"
+      - ".github/workflows/cli-client.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: CLI client tests
+        working-directory: tests
+        run: ./node_modules/.bin/vitest run unit/cli-client-data-dir.test.js
