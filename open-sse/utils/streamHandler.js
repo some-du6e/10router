@@ -112,6 +112,11 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
 export function createDisconnectAwareStream(transformStream, streamController, onAbortTerminal = null, keepaliveMs = 0, upstreamOpen = () => true) {
   const reader = transformStream.readable.getReader();
   const writer = transformStream.writable.getWriter();
+  // Record the usage of a stream that ends before its terminal event, so a
+  // hang-up still costs what was streamed. No-op once it was recorded.
+  const finalizeOnAbort = () => {
+    try { transformStream.finalizeOnAbort?.(); } catch { /* usage is best-effort */ }
+  };
   let terminalEmitted = false;
   let keepaliveTimer = null;
   // Trailing newlines written so far; 2+ means we sit between events.
@@ -164,6 +169,7 @@ export function createDisconnectAwareStream(transformStream, streamController, o
     async pull(controller) {
       if (!streamController.isConnected()) {
         clearKeepalive();
+        finalizeOnAbort();
         emitTerminal(controller);
         controller.close();
         return;
@@ -186,6 +192,7 @@ export function createDisconnectAwareStream(transformStream, streamController, o
         const msg0 = error?.message || "";
         const isControllerClosed = msg0.includes("already closed") || msg0.includes("Invalid state");
         if (!isControllerClosed) streamController.handleError(error);
+        finalizeOnAbort();
         reader.cancel().catch(() => {});
         writer.abort().catch(() => {});
 
@@ -219,6 +226,7 @@ export function createDisconnectAwareStream(transformStream, streamController, o
 
     cancel(reason) {
       clearKeepalive();
+      finalizeOnAbort();
       streamController.handleDisconnect(reason || "cancelled");
       reader.cancel();
       writer.abort();
@@ -303,7 +311,7 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     .pipeThrough(transformStream);
 
   return createDisconnectAwareStream(
-    { readable: transformedBody, writable: { getWriter: () => ({ abort: () => Promise.resolve() }) } },
+    { readable: transformedBody, writable: { getWriter: () => ({ abort: () => Promise.resolve() }) }, finalizeOnAbort: transformStream.finalizeOnAbort },
     wrappedController,
     onAbortTerminal ? () => onAbortTerminal(abortMessage) : null,
     keepaliveMs,

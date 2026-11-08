@@ -1,7 +1,7 @@
 import { translateResponse, initState } from "../translator/index.js";
 import { FORMATS } from "../translator/formats.js";
 import { trackPendingRequest, appendRequestLog } from "@/lib/usageDb.js";
-import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
+import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, estimateOutputTokens, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
 import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE } from "./streamHelpers.js";
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
@@ -81,6 +81,9 @@ export function createSSEStream(options = {}) {
   let openAIResponsesDoneSent = false;
   let streamDoneSent = false;  // track duplicate [DONE] across transform + flush
   let finalized = false;
+  // The upstream sent its finish chunk: its usage is final, even if the client
+  // closes before the stream ends.
+  let finishSeen = false;
   let completionFlushTimer = null;
 
   const collectResponsesContent = (parsed, eventName) => {
@@ -122,7 +125,11 @@ export function createSSEStream(options = {}) {
 
   // Usage/logging tail, callable from transform() as well as flush(): a client that
   // closes right after the terminal event cancels the reader, and flush() never runs.
-  const finalizeStream = () => {
+  // Runs once: a terminal event followed by a cancel records the usage once.
+  // `aborted`: the stream ended before its terminal event (client hang-up, stall,
+  // upstream reset), so a usage that came early (input tokens at message_start)
+  // has no output count yet; the output is estimated from what was streamed.
+  const finalizeStream = ({ aborted = false } = {}) => {
     if (completionFlushTimer) { clearTimeout(completionFlushTimer); completionFlushTimer = null; }
     if (finalized) return;
     finalized = true;
@@ -132,8 +139,13 @@ export function createSSEStream(options = {}) {
 
     if (!hasValidUsage(finalUsage) && totalContentLength > 0) {
       finalUsage = estimateUsage(body, totalContentLength, isPassthrough ? FORMATS.OPENAI : sourceFormat);
-      if (isPassthrough) usage = finalUsage; else state.usage = finalUsage;
+    } else if (aborted && !finishSeen && hasValidUsage(finalUsage) && totalContentLength > 0) {
+      const outKey = "completion_tokens" in finalUsage ? "completion_tokens" : "output_tokens";
+      if (!(finalUsage[outKey] > 0)) {
+        finalUsage = { ...finalUsage, [outKey]: estimateOutputTokens(totalContentLength), estimated: true };
+      }
     }
+    if (isPassthrough) usage = finalUsage; else if (state) state.usage = finalUsage;
 
     if (hasValidUsage(finalUsage)) {
       logUsage(isPassthrough ? provider : (state?.provider || targetFormat), finalUsage, model, connectionId, apiKey);
@@ -164,7 +176,7 @@ export function createSSEStream(options = {}) {
     finalizeStream();
   };
 
-  return new TransformStream({
+  const sse = new TransformStream({
     transform(chunk, controller) {
       if (!ttftAt) ttftAt = Date.now();
       const text = decoder.decode(chunk, { stream: true });
@@ -263,6 +275,7 @@ export function createSSEStream(options = {}) {
               responsesTerminal = isOpenAIResponsesTerminalEvent(responseEventName, parsed);
 
               const isFinishChunk = parsed.choices?.[0]?.finish_reason;
+              if (isFinishChunk || responsesTerminal) finishSeen = true;
               if (isFinishChunk && !hasValidUsage(parsed.usage)) {
                 const estimated = estimateUsage(body, totalContentLength, FORMATS.OPENAI);
                 parsed.usage = filterUsageForFormat(estimated, FORMATS.OPENAI);
@@ -431,6 +444,7 @@ export function createSSEStream(options = {}) {
 
             // Inject estimated usage if finish chunk has no valid usage
             const isFinishChunk = item.type === "message_delta" || item.choices?.[0]?.finish_reason;
+            if (state.finishReason && isFinishChunk) finishSeen = true;
             if (state.finishReason && isFinishChunk && !hasValidUsage(item.usage) && totalContentLength > 0) {
               const estimated = estimateUsage(body, totalContentLength, sourceFormat);
               item.usage = filterUsageForFormat(estimated, sourceFormat); // Filter + already has buffer
@@ -574,8 +588,17 @@ export function createSSEStream(options = {}) {
         console.log("Error in flush:", error);
         finalizeStream();
       }
+    },
+
+    // Where the runtime supports it, a cancelled readable lands here.
+    cancel() {
+      finalizeStream({ aborted: true });
     }
   });
+  // For the pipe (streamHandler.js), which ends the stream on a hang-up, a
+  // stall or an upstream error without flush() ever running.
+  sse.finalizeOnAbort = () => finalizeStream({ aborted: true });
+  return sse;
 }
 
 export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider = null, reqLogger = null, toolNameMap = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, customToolNames = null, toolNamespaces = null) {
