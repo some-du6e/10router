@@ -210,7 +210,7 @@ git clone https://github.com/some-du6e/10router.git
 cd 10router/app
 npm install && npm run build
 
-export JWT_SECRET="your-secure-secret"
+export JWT_SECRET="$(openssl rand -hex 32)"
 export INITIAL_PASSWORD="your-password"
 export NODE_ENV="production"
 
@@ -222,7 +222,7 @@ npm start
 docker build -t 10router .
 docker run -d \
   -p 3000:3000 \
-  -e JWT_SECRET="your-secret" \
+  -e JWT_SECRET="$(openssl rand -hex 32)" \
   -v 10router-data:/app/data \
   10router
 ```

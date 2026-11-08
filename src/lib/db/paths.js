@@ -13,6 +13,19 @@ export const LEGACY_FILES = {
 };
 export function ensureDirs() {
   for (const dir of [DATA_DIR, DB_DIR, BACKUPS_DIR]) {
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
+  restrictMode(DB_DIR, 0o700);
+}
+
+// The database holds provider credentials, so only the owner may read it.
+export function restrictDbFilePermissions() {
+  for (const file of [DATA_FILE, `${DATA_FILE}-wal`, `${DATA_FILE}-shm`]) restrictMode(file, 0o600);
+}
+
+function restrictMode(target, mode) {
+  if (process.platform === "win32") return;
+  try {
+    if ((fs.statSync(target).mode & 0o777) !== mode) fs.chmodSync(target, mode);
+  } catch {}
 }

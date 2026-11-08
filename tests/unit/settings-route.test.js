@@ -5,6 +5,10 @@ const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
   updateSettings: vi.fn(),
   verifyDashboardPassword: vi.fn(),
+  getDashboardAuthSession: vi.fn(),
+  revokeDashboardSessions: vi.fn(),
+  setDashboardAuthCookie: vi.fn(),
+  cookieGet: vi.fn(),
   applyOutboundProxyEnv: vi.fn(),
   resetComboRotation: vi.fn(),
   clearLegacyGrace: vi.fn(),
@@ -25,6 +29,13 @@ vi.mock("@/lib/localDb", () => ({
 
 vi.mock("@/lib/auth/dashboardSession", () => ({
   verifyDashboardPassword: mocks.verifyDashboardPassword,
+  getDashboardAuthSession: mocks.getDashboardAuthSession,
+  revokeDashboardSessions: mocks.revokeDashboardSessions,
+  setDashboardAuthCookie: mocks.setDashboardAuthCookie,
+}));
+
+vi.mock("next/headers", () => ({
+  cookies: async () => ({ get: mocks.cookieGet }),
 }));
 
 vi.mock("@/lib/network/outboundProxy", () => ({
@@ -105,5 +116,39 @@ describe("PATCH /api/settings sensitive request details", () => {
   it("prevents hub key and toggle mass assignment through generic settings", async () => {
     await PATCH(request({ usageHubKeyHash: "attacker-hash", usageHubEnabled: true, theme: "dark" }));
     expect(mocks.updateSettings).toHaveBeenCalledWith({ theme: "dark" });
+  });
+});
+
+describe("PATCH /api/settings session revocation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getSettings.mockResolvedValue({ password: "$2a$10$hash" });
+    mocks.updateSettings.mockImplementation(async (body) => body);
+    mocks.getAuthBootstrapState.mockResolvedValue("claimed");
+    mocks.validateNewPassword.mockReturnValue({ ok: true });
+  });
+
+  it("revokes other sessions on a password change and reissues the caller's", async () => {
+    const { default: bcrypt } = await import("bcryptjs");
+    mocks.getSettings.mockResolvedValue({ password: bcrypt.hashSync("old-password", 4) });
+    mocks.cookieGet.mockReturnValue({ value: "caller-token" });
+    mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
+
+    const response = await PATCH(request({ currentPassword: "old-password", newPassword: "new-password-1" }));
+
+    expect(response.status).toBe(200);
+    expect(mocks.revokeDashboardSessions).toHaveBeenCalledTimes(1);
+    expect(mocks.setDashboardAuthCookie).toHaveBeenCalledTimes(1);
+    expect(mocks.revokeDashboardSessions.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.setDashboardAuthCookie.mock.invocationCallOrder[0]);
+  });
+
+  it("does not let the body set the session epoch or leak it back", async () => {
+    mocks.getSettings.mockResolvedValue({ sessionEpoch: "abc" });
+    mocks.updateSettings.mockResolvedValue({ sessionEpoch: "abc", theme: "dark" });
+    const response = await PATCH(request({ sessionEpoch: "attacker", theme: "dark" }));
+    expect(mocks.updateSettings).toHaveBeenCalledWith({ theme: "dark" });
+    expect(response.body).not.toHaveProperty("sessionEpoch");
+    expect((await GET()).body).not.toHaveProperty("sessionEpoch");
   });
 });

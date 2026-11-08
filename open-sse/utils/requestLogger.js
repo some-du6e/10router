@@ -40,7 +40,7 @@ async function createLogSession(sourceFormat, targetFormat, model) {
   
   try {
     if (!fs.existsSync(LOGS_DIR)) {
-      fs.mkdirSync(LOGS_DIR, { recursive: true });
+      fs.mkdirSync(LOGS_DIR, { recursive: true, mode: 0o700 });
     }
     
     const timestamp = formatTimestamp();
@@ -48,7 +48,7 @@ async function createLogSession(sourceFormat, targetFormat, model) {
     const folderName = `${sourceFormat}_${targetFormat}_${safeModel}_${timestamp}`;
     const sessionPath = path.join(LOGS_DIR, folderName);
     
-    fs.mkdirSync(sessionPath, { recursive: true });
+    fs.mkdirSync(sessionPath, { recursive: true, mode: 0o700 });
     
     return sessionPath;
   } catch (err) {
@@ -63,31 +63,23 @@ function writeJsonFile(sessionPath, filename, data) {
   
   try {
     const filePath = path.join(sessionPath, filename);
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), { mode: 0o600 });
   } catch (err) {
     console.log(`[LOG] Failed to write ${filename}:`, err.message);
   }
 }
 
-// Mask sensitive data in headers (DISABLED - keep full token for testing)
-function maskSensitiveHeaders(headers) {
+const SENSITIVE_HEADER = /authorization|api-key|apikey|cookie|token|secret|password/i;
+
+export function maskSensitiveHeaders(headers) {
   if (!headers) return {};
-  return { ...headers };
-  
-  // Old masking code (disabled):
-  // const masked = { ...headers };
-  // const sensitiveKeys = ["authorization", "x-api-key", "cookie", "token"];
-  // 
-  // for (const key of Object.keys(masked)) {
-  //   const lowerKey = key.toLowerCase();
-  //   if (sensitiveKeys.some(sk => lowerKey.includes(sk))) {
-  //     const value = masked[key];
-  //     if (value && value.length > 20) {
-  //       masked[key] = value.slice(0, 10) + "..." + value.slice(-5);
-  //     }
-  //   }
-  // }
-  // return masked;
+  const masked = { ...headers };
+  for (const [key, value] of Object.entries(masked)) {
+    if (!SENSITIVE_HEADER.test(key) || value == null) continue;
+    const text = String(value);
+    masked[key] = text.length > 16 ? `***${text.slice(-4)}` : "***";
+  }
+  return masked;
 }
 
 // No-op logger when logging is disabled
@@ -236,7 +228,7 @@ export function logError(provider, { error, url, model, requestBody }) {
   
   try {
     if (!fs.existsSync(LOGS_DIR)) {
-      fs.mkdirSync(LOGS_DIR, { recursive: true });
+      fs.mkdirSync(LOGS_DIR, { recursive: true, mode: 0o700 });
     }
     
     const date = new Date().toISOString().split("T")[0];

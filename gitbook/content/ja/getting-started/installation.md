@@ -197,7 +197,7 @@ curl http://localhost:20128/v1/chat/completions \
 
 ```bash
 # セキュリティ (本番環境では必須)
-export JWT_SECRET="your-secure-secret-change-this"
+export JWT_SECRET="$(openssl rand -hex 32)"
 export INITIAL_PASSWORD="your-password"
 
 # ストレージ
@@ -393,7 +393,7 @@ npm install -g 10router
 npm install -g 10router
 
 # 設定
-export JWT_SECRET="your-secure-secret"
+export JWT_SECRET="$(openssl rand -hex 32)"
 export INITIAL_PASSWORD="your-password"
 export NODE_ENV="production"
 
@@ -413,7 +413,7 @@ docker pull 10router/10router:latest
 
 docker run -d \
   -p 20128:20128 \
-  -e JWT_SECRET="your-secure-secret" \
+  -e JWT_SECRET="$(openssl rand -hex 32)" \
   -e INITIAL_PASSWORD="your-password" \
   -v 10router-data:/root/.9router \
   --name 10router \

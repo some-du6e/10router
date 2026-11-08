@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { updateSettings } from "@/lib/localDb";
 import { setMeta } from "@/lib/db/helpers/metaStore.js";
 import { LEGACY_GRACE_META_KEY } from "@/lib/auth/setupState";
+import { revokeDashboardSessions } from "@/lib/auth/dashboardSession";
 import { issueSetupToken, printSetupBanner, SETUP_WINDOW_MS } from "@/lib/auth/setupToken";
 
 // Clear the stored password and put the instance back into first-run setup:
@@ -17,6 +18,7 @@ export async function POST() {
     // untouched and mints nothing.
     await setMeta(LEGACY_GRACE_META_KEY, "0");
     await updateSettings({ password: null });
+    await revokeDashboardSessions();
 
     const token = issueSetupToken();
     printSetupBanner(token, { reason: "password reset" });
