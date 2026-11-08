@@ -62,31 +62,44 @@ them. A backup carries the totals, so a key restored onto another install
   check (spent $1,999 < $2,000), so the key finishes at about $2,039, and only
   the next request gets the 402. The overshoot is bounded by how many requests
   run at once times what each costs.
-- **Streams cut short are charged the real usage (budgeted keys).** When the
-  client of a key with a budget hangs up (or cancels) mid-stream, 10router
-  closes the client's stream at once but keeps reading the upstream, discarding
-  it, until the provider's final usage arrives (Claude `message_delta`,
-  Responses `response.completed`, the OpenAI usage chunk or `[DONE]`, or the
-  upstream's end), and charges exactly that. Hidden thinking, encrypted
-  reasoning and server-tool input are all in that number, which an estimate
-  from the visible text can't see. The drain is capped at 10 minutes
-  (`STREAM_DRAIN_MAX_MS`; `0` turns it off) and also ends at the stall timeout;
-  past either, the upstream is dropped and the request is charged an estimate.
-  The client side and the pending-request count are released at the hang-up;
-  only the read loop stays. Keys without a budget keep the old behaviour: the
-  upstream is dropped about half a second after the hang-up, and the request is
-  charged an estimate.
+- **Streams cut short: a time floor.** When a stream ends before the
+  provider's final usage (the client hangs up or presses Esc, the upstream
+  stalls or drops), the upstream is dropped about half a second later and the
+  request is charged an estimate whose output is the largest of: the output
+  the provider reported so far (not Anthropic's `output_tokens: 1`
+  placeholder), what visibly streamed, and **150 output tokens per second**
+  the stream ran (from the upstream's first response to the cut). The floor
+  exists because thinking can be hidden (`display: "omitted"`), and a model
+  thinking for 30 seconds streams nothing visible: without it, an early Esc
+  would make a long generation nearly free. The estimate never goes above the
+  request's `max_tokens` (`max_output_tokens`, `max_completion_tokens`).
+  Completed streams are charged exactly what the provider reports, however
+  long they ran. Set `STREAM_ABORT_FLOOR_TPS` to change the rate (`0` turns
+  the floor off). This applies to every key, so the usage page counts cut-short
+  requests the same way.
+- **Opt-in: drain to the real usage.** With `STREAM_DRAIN_MAX_MS` set (it is
+  `0`, off, by default), a key with a budget whose client hangs up keeps the
+  upstream running: 10router closes the client's stream at once but reads the
+  upstream (discarding it) until the final usage arrives, then charges exactly
+  that. It ends at `STREAM_DRAIN_MAX_MS` or the stall timeout, and then charges
+  the floor estimate above. It is off by default because every Esc would then
+  run the whole generation upstream (the owner's quota and rate limits, and up
+  to that long of an open connection), which costs too much under load.
 - **The estimate, when there is no real usage.** Input is what the provider
   reported (Anthropic sends it at the start), else an estimate from the request
   body: about 4 characters per token for ASCII, one token per non-ASCII
   character (CJK, emoji), and a flat 1,600 tokens per base64 image or file
-  rather than its text. Output is the larger of what the provider reported so
-  far and an estimate from what streamed: text, thinking and tool-call
-  arguments, weighed the same way. A stream cut off before anything came back
+  rather than its text; other inline files (PDF, audio, text) are estimated
+  from their decoded size. Output is described above: what the provider
+  reported, what streamed (text, thinking and tool-call arguments, weighed the
+  same way), and the time floor. A stream cut off before anything came back
   still pays for its input. A cut-short request is recorded as an error, not a
   success. Context from an earlier turn that the provider keeps
   (`previous_response_id`) isn't in the request body, so it can't be estimated
-  when an upstream sends no usage.
+  when an upstream sends no usage. The usage 10router shows the client when an
+  upstream reports none (the estimated `completion_tokens` in the final chunk)
+  weighs text the same way, so CJK and emoji now count about one token per
+  character there too.
 - **Upstreams that send no usage.** A non-streaming request that 10router
   fetches as a stream (a provider or endpoint set to always stream) and whose
   stream reports no usage is charged the same estimate, instead of nothing. On
