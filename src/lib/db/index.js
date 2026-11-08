@@ -2,7 +2,7 @@ import { stripRetiredSettings } from "./helpers/retiredSettings.js";
 import { migrateLegacyHostPassword } from "./helpers/hostCredentials.js";
 import { invalidatePricingCache } from "./repos/pricingRepo.js";
 import { clearRequestDetailFullData as clearFullDataAfterImport } from "./repos/requestDetailsRepo.js";
-import { reseedApiKeySpend } from "./migrations/005-api-key-budgets.js";
+import { rowToKey, toLimitHoldColumn, numberOrNull, toAllowedModelsColumn, reseedApiKeySpend } from "./repos/apiKeysRepo.js";
 // Public API barrel — all DB functions
 import { getAdapter } from "./driver.js";
 import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
@@ -74,7 +74,7 @@ export {
   statsEmitter, trackPendingRequest, getActiveRequests,
   saveRequestUsage, getUsageHistory, getUsageStats, getChartData,
   appendRequestLog, getRecentLogs, getConnectionValue, getConnectionDetail,
-  getApiKeyUsageDetail,
+  getApiKeyUsageDetail, maskApiKey,
 } from "./repos/usageRepo.js";
 
 // Key lifespan estimate
@@ -101,14 +101,7 @@ export async function exportDb() {
     providerNodes: db.all(`SELECT * FROM providerNodes`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, type: r.type, name: r.name, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     proxyPools: db.all(`SELECT * FROM proxyPools`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, isActive: r.isActive === 1, testStatus: r.testStatus, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     notificationChannels: db.all(`SELECT * FROM notificationChannels`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, name: r.name, type: r.type, isActive: r.isActive === 1, createdAt: r.createdAt, updatedAt: r.updatedAt })),
-    apiKeys: db.all(`SELECT * FROM apiKeys`).map((r) => ({
-      id: r.id, key: r.key, name: r.name, machineId: r.machineId, isActive: r.isActive === 1,
-      limitHold: r.limitHold === null || r.limitHold === undefined ? null : r.limitHold === 1, createdAt: r.createdAt,
-      // Limits and the reset baseline travel with the backup; the running
-      // totals don't, since they are rebuilt from usage history on restore.
-      budgetUsd: r.budgetUsd ?? null, allowedModels: parseJson(r.allowedModels, null), expiresAt: r.expiresAt || null,
-      spendOffsetUsd: r.spendOffsetUsd || 0, spendResetAt: r.spendResetAt || null,
-    })),
+    apiKeys: db.all(`SELECT * FROM apiKeys`).map(rowToKey),
     combos: db.all(`SELECT * FROM combos`).map((r) => ({ id: r.id, name: r.name, kind: r.kind, models: parseJson(r.models, []), createdAt: r.createdAt, updatedAt: r.updatedAt })),
     modelAliases: {},
     customModels: [],
@@ -176,18 +169,22 @@ export async function importDb(payload) {
     for (const k of payload.apiKeys || []) {
       db.run(
         `INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, limitHold, createdAt,
-           budgetUsd, allowedModels, expiresAt, spendOffsetUsd, spendResetAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           budgetUsd, allowedModels, expiresAt, spendOffsetUsd, spendResetAt, spentUsd, requestCount, lastUsedAt)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         // limitHold: null (or a pre-override backup) inherits the global setting.
         // A backup from before key limits has none of the limit fields: no limits.
+        // The running totals come along (lifetimeSpentUsd, not the since-reset spentUsd).
         [k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1,
-          k.limitHold === null || k.limitHold === undefined ? null : (k.limitHold ? 1 : 0), k.createdAt || new Date().toISOString(),
-          typeof k.budgetUsd === "number" && Number.isFinite(k.budgetUsd) && k.budgetUsd >= 0 ? k.budgetUsd : null,
-          Array.isArray(k.allowedModels) && k.allowedModels.length ? stringifyJson(k.allowedModels.filter((m) => typeof m === "string")) : null,
+          toLimitHoldColumn(k.limitHold), k.createdAt || new Date().toISOString(),
+          numberOrNull(k.budgetUsd) !== null && k.budgetUsd >= 0 ? k.budgetUsd : null,
+          toAllowedModelsColumn(k.allowedModels),
           k.expiresAt && !Number.isNaN(new Date(k.expiresAt).getTime()) ? new Date(k.expiresAt).toISOString() : null,
-          Number(k.spendOffsetUsd) || 0, k.spendResetAt || null]
+          numberOrNull(k.spendOffsetUsd) ?? 0, k.spendResetAt || null,
+          Math.max(0, numberOrNull(k.lifetimeSpentUsd) ?? 0), Math.max(0, Math.floor(numberOrNull(k.requestCount) ?? 0)), k.lastUsedAt || null]
       );
     }
-    // usageHistory survives the restore; rebuild the keys' running totals from it.
+    // A restore onto another install has none of the keys' history, so the
+    // exported totals stand; history this install does have can only raise them.
     reseedApiKeySpend(db);
     for (const c of payload.combos || []) {
       db.run(

@@ -112,4 +112,48 @@ describe("migration 005: api key budgets", () => {
     const exported = await exportDb();
     expect(exported.apiKeys.find((k) => k.id === "r1")).toMatchObject({ budgetUsd: 10, allowedModels: ["a/b"], spendOffsetUsd: 1 });
   });
+
+  it("a backup restored onto an empty install keeps each key's spend, so budgets aren't refilled", async () => {
+    const { getAdapter } = await import("@/lib/db/driver.js");
+    const db = await getAdapter();
+    db.run(`INSERT INTO apiKeys(id, key, name, machineId, isActive, createdAt, budgetUsd) VALUES('b1', 'sk-moved', 'Moved', 'm', 1, '2026-01-01T00:00:00.000Z', 5)`);
+    addUsage(db, "sk-moved", 4.5, "2026-04-01T00:00:00.000Z");
+    addUsage(db, "sk-moved", 1, "2026-04-02T00:00:00.000Z");
+    const { exportDb } = await import("@/lib/db/index.js");
+    const { reseedApiKeySpend } = await import("@/lib/db/repos/apiKeysRepo.js");
+    reseedApiKeySpend(db);
+    const backup = JSON.parse(JSON.stringify(await exportDb()));
+
+    // Another install: a new data dir with no history at all.
+    global._dbAdapter?.instance?.close?.();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "10router-mig005-"));
+    process.env.DATA_DIR = tempDir;
+    const fresh = await restart();
+    expect(fresh.get("SELECT COUNT(*) AS c FROM usageHistory").c).toBe(0);
+    const { importDb, getApiKeys } = await import("@/lib/db/index.js");
+    await importDb(backup);
+    const [moved] = await getApiKeys();
+    expect(moved).toMatchObject({ id: "b1", budgetUsd: 5, requestCount: 2, lastUsedAt: "2026-04-02T00:00:00.000Z" });
+    expect(moved.spentUsd).toBeCloseTo(5.5, 9);
+    const { checkApiKeyLimits } = await import("@/sse/services/keyLimits.js");
+    expect((await checkApiKeyLimits("sk-moved", { model: "any/model" }))?.status).toBe(402);
+  });
+
+  it("seeds spend for keys and history imported from a legacy JSON install", async () => {
+    fs.writeFileSync(path.join(tempDir, "db.json"), JSON.stringify({
+      apiKeys: [{ id: "l1", key: "sk-legacy-json", name: "Legacy", machineId: "m", isActive: true, createdAt: "2025-01-01T00:00:00.000Z" }],
+    }));
+    fs.writeFileSync(path.join(tempDir, "usage.json"), JSON.stringify({
+      history: [
+        { timestamp: "2025-02-01T00:00:00.000Z", provider: "p", model: "m", apiKey: "sk-legacy-json", cost: 0.75, tokens: { prompt_tokens: 1 } },
+        { timestamp: "2025-02-03T00:00:00.000Z", provider: "p", model: "m", apiKey: "sk-legacy-json", cost: 1.25, tokens: { prompt_tokens: 1 } },
+      ],
+    }));
+    await restart();
+    const { getApiKeys } = await import("@/lib/db/index.js");
+    const [legacy] = await getApiKeys();
+    expect(legacy).toMatchObject({ id: "l1", requestCount: 2, lastUsedAt: "2025-02-03T00:00:00.000Z", budgetUsd: null });
+    expect(legacy.spentUsd).toBeCloseTo(2, 9);
+  });
 });

@@ -5,7 +5,7 @@ import path from "node:path";
 import { LEGACY_FILES, DB_DIR } from "./paths.js";
 import { TABLES, buildCreateTableSql, SCHEMA_VERSION } from "./schema.js";
 import { MIGRATIONS, latestVersion } from "./migrations/index.js";
-import { reseedApiKeySpend } from "./migrations/005-api-key-budgets.js";
+import { reseedApiKeySpend } from "./repos/apiKeysRepo.js";
 import { getMetaSync, setMetaSync } from "./helpers/metaStore.js";
 import { makeBackupDir, backupFile, backupDbLite, pruneOldBackups } from "./backup.js";
 import { getAppVersion } from "./version.js";
