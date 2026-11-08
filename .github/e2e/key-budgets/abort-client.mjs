@@ -1,9 +1,11 @@
 // Streams POST /v1/messages and hangs up after N content deltas, before
-// message_delta. Prints one JSON line: { status, deltas, sawMessageDelta }.
+// message_delta. Prints one JSON line: { status, deltas, sawMessageDelta,
+// elapsedMs } (elapsedMs: from the response headers to the hang-up).
 // Usage: KEY=... node abort-client.mjs <base> <model> <deltas>
 const [base, model, want = "6"] = process.argv.slice(2);
 const ac = new AbortController();
-const out = { status: 0, deltas: 0, sawMessageDelta: false, aborted: false };
+const out = { status: 0, deltas: 0, sawMessageDelta: false, aborted: false, elapsedMs: 0 };
+let startedAt = 0;
 try {
   const res = await fetch(`${base}/v1/messages`, {
     method: "POST",
@@ -12,6 +14,7 @@ try {
     body: JSON.stringify({ model, max_tokens: 8000, stream: true, messages: [{ role: "user", content: "E2E_SLOW_STREAM: write a long story" }] }),
   });
   out.status = res.status;
+  startedAt = Date.now();
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = "";
@@ -28,6 +31,7 @@ try {
     }
   }
   out.aborted = true;
+  out.elapsedMs = Date.now() - startedAt;
   ac.abort();
 } catch (e) {
   if (e.name !== "AbortError") out.error = String(e.message || e);

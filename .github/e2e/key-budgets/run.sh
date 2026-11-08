@@ -221,29 +221,39 @@ else
   row "5b. allowed model on key D, any model on unlimited key B" FAIL "D exit=$cc_allowed_exit B exit=$CC_EXIT"
 fi
 
-# ---- 6. Client hangs up mid-stream: a budgeted key pays the real usage ---------
-# Key E has a budget, so 10router keeps reading the upstream after the client
-# hangs up, until the mock's message_delta (about 15 s in: 60 deltas x 250 ms),
-# and charges exactly what it reports: 1000 in x $4/1M + 6000 out x $20/1M.
-make_key drain-budget '{"budgetUsd":100}' KEY_E
+# ---- 6. Client hangs up mid-stream: charged at least the time floor -----------
+# The mock sends message_delta only ~15 s in; the client hangs up ~5 s in (20
+# deltas x 250 ms). The drain is off by default, so the charge is input
+# (1000 x $4/1M) plus output of at least STREAM_ABORT_FLOOR_TPS (150) tokens per
+# second it ran, at $20/1M, and at most the request's max_tokens (8000).
+make_key abort-budget '{"budgetUsd":100}' KEY_E
 key_info KEY_E "$OUT/keyE-pre-abort.json"
 pre=$(jget "$OUT/keyE-pre-abort.json" data.usage)
-KEY="$KEY_E" node "$HERE/abort-client.mjs" "$BASE" "$CC_MODEL" 6 > "$OUT/abort.out" 2>&1
-EXPECTED=0.124
+KEY="$KEY_E" node "$HERE/abort-client.mjs" "$BASE" "$CC_MODEL" 20 > "$OUT/abort.out" 2>&1
 post=$pre
-for _ in $(seq 1 30); do
+for _ in $(seq 1 20); do
   sleep 1
   key_info KEY_E "$OUT/keyE-post-abort.json"
   post=$(jget "$OUT/keyE-post-abort.json" data.usage)
   [ "$post" != "$pre" ] && break
 done
+# No second charge for the same request (abort plus the stream's own end).
+sleep 2
+key_info KEY_E "$OUT/keyE-final.json"
+final=$(jget "$OUT/keyE-final.json" data.usage)
+requests=$(jget "$OUT/keyE-final.json" data.requests)
+elapsed=$(jget "$OUT/abort.out" elapsedMs)
 delta=$(node -e 'console.log((Number(process.argv[2]) - Number(process.argv[1])).toFixed(6))' "$pre" "$post")
-echo "abort client: $(cat "$OUT/abort.out"); spend \$$pre -> \$$post (+\$$delta), expected \$$EXPECTED"
-exact=$(node -e 'console.log(Math.abs(Number(process.argv[1]) - Number(process.argv[2])) < 1e-6 ? "yes" : "no")' "$delta" "$EXPECTED")
-if [ "$(jget "$OUT/abort.out" status)" = 200 ] && [ "$(jget "$OUT/abort.out" sawMessageDelta)" = false ] && [ "$exact" = yes ]; then
-  row "6. aborted stream on a budgeted key charges the real usage" PASS "+\$$delta = \$$EXPECTED (message_delta usage, read after the hang-up)"
+# The client's elapsed time is a lower bound for the server's (the server's
+# clock starts when the upstream answered); allow 10% for timer slack.
+MIN=$(node -e 'console.log((0.004 + 0.9 * (Number(process.argv[1]) / 1000) * 150 * 20e-6).toFixed(6))' "$elapsed")
+MAX=$(node -e 'console.log((0.004 + 8000 * 20e-6).toFixed(6))')
+echo "abort client: $(cat "$OUT/abort.out"); spend \$$pre -> \$$post -> \$$final (+\$$delta), requests=$requests, need \$$MIN..\$$MAX"
+if [ "$(jget "$OUT/abort.out" status)" = 200 ] && [ "$(jget "$OUT/abort.out" sawMessageDelta)" = false ] \
+   && [ "$final" = "$post" ] && [ "$requests" = 1 ] && ! gt "$MIN" "$delta" && ! gt "$delta" "$MAX"; then
+  row "6. aborted stream charged at least the time floor, once" PASS "+\$$delta in \$$MIN..\$$MAX after ${elapsed}ms, no second charge"
 else
-  row "6. aborted stream on a budgeted key charges the real usage" FAIL "+\$$delta, expected \$$EXPECTED ($(head -c 120 "$OUT/abort.out"))"
+  row "6. aborted stream charged at least the time floor, once" FAIL "+\$$delta (then \$$final, requests=$requests), need \$$MIN..\$$MAX ($(head -c 160 "$OUT/abort.out"))"
 fi
 
 echo "::group::mock upstream log"; cat "$OUT/mock.log"; echo "::endgroup::"
