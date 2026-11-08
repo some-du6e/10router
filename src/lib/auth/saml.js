@@ -1,4 +1,4 @@
-import { SAML } from "@node-saml/node-saml";
+import { InMemoryCacheProvider, SAML } from "@node-saml/node-saml";
 import { getSettings } from "../db/repos/settingsRepo.js";
 import { getActiveSsoType } from "./authMode.js";
 
@@ -88,11 +88,23 @@ export function getSamlBaseUrl(request, settings) {
   return "http://localhost:20128";
 }
 
-export function createSamlInstance(settings, origin, expectedRequestId = null) {
+const SAML_REQUEST_TTL_MS = 10 * 60 * 1000;
+const SAML_REQUEST_CACHES = Symbol.for("10router.samlRequestCaches");
+
+// One store per IdP for the whole process, so an AuthnRequest ID issued by /start is
+// single-use and only redeemable at /acs. Route bundles can each load this module.
+function getSamlRequestCache(settings) {
+  const caches = (globalThis[SAML_REQUEST_CACHES] ??= new Map());
+  const key = `${settings?.samlEntryPoint || ""}\n${settings?.samlCert || ""}`;
+  if (!caches.has(key)) {
+    caches.set(key, new InMemoryCacheProvider({ keyExpirationPeriodMs: SAML_REQUEST_TTL_MS }));
+  }
+  return caches.get(key);
+}
+
+export function createSamlInstance(settings, origin) {
   const cert = formatX509Certificate(settings?.samlCert || "") || DUMMY_FALLBACK_CERT;
   const callbackUrl = `${origin}/api/auth/saml/acs`;
-  // Each callback may validate only the request bound to its browser cookie.
-  const requests = expectedRequestId ? new Map([[expectedRequestId, new Date().toISOString()]]) : null;
   return new SAML({
     entryPoint: settings?.samlEntryPoint || "https://example.com/sso",
     issuer: settings?.samlIssuer || "urn:9router:sp",
@@ -102,14 +114,8 @@ export function createSamlInstance(settings, origin, expectedRequestId = null) {
     acceptedClockSkewMs: 60000,
     wantAssertionsSigned: true,
     validateInResponseTo: "always",
-    requestIdExpirationPeriodMs: 10 * 60 * 1000,
-    ...(requests ? {
-      cacheProvider: {
-        async saveAsync(key, value) { requests.set(key, value); return { value, createdAt: Date.now() }; },
-        async getAsync(key) { return requests.get(key) || null; },
-        async removeAsync(key) { const value = requests.get(key) || null; requests.delete(key); return value; },
-      },
-    } : {}),
+    requestIdExpirationPeriodMs: SAML_REQUEST_TTL_MS,
+    cacheProvider: getSamlRequestCache(settings),
   });
 }
 
@@ -157,7 +163,7 @@ export async function validateSamlResponse(request, body, expectedRequestId, set
     throw new Error("Missing SAML request state; SP-initiated login is required");
   }
   const origin = getSamlBaseUrl(request, settings);
-  const samlInstance = createSamlInstance(settings, origin, expectedRequestId);
+  const samlInstance = createSamlInstance(settings, origin);
   const result = await samlInstance.validatePostResponseAsync({ SAMLResponse: rawSamlResponse });
   const profile = result?.profile || result;
   const confirmations = profile?.getAssertion?.()?.Assertion?.Subject?.[0]?.SubjectConfirmation || [];

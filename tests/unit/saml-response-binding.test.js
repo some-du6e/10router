@@ -5,6 +5,7 @@ vi.mock("@node-saml/node-saml", () => ({
   SAML: class {
     validatePostResponseAsync = mocks.validatePostResponseAsync;
   },
+  InMemoryCacheProvider: class {},
 }));
 vi.mock("../../src/lib/db/repos/settingsRepo.js", () => ({ getSettings: vi.fn() }));
 const { validateSamlResponse } = await import("../../src/lib/auth/saml.js");
