@@ -8,8 +8,9 @@ export async function PATCH(request, { params }) {
   return updateManagementKeyFromDashboard(request, id);
 }
 
-// DELETE /api/management-keys/[id] - revoke: the key stops working at once
+// DELETE /api/management-keys/[id][?deleteCreated=1] - revoke: the key stops
+// working at once. With deleteCreated, the keys it created go too.
 export async function DELETE(request, { params }) {
   const { id } = await params;
-  return revokeManagementKeyFromDashboard(id);
+  return revokeManagementKeyFromDashboard(request, id);
 }

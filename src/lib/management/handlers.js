@@ -7,65 +7,63 @@
 // See docs/MANAGEMENT_KEYS.md.
 import crypto from "node:crypto";
 import {
-  getApiKeys, getApiKeyById, createApiKey, updateApiKey, deleteApiKey,
+  getApiKeys, getApiKeyById, updateApiKey, deleteApiKey,
   getProviderConnections, getProviderConnectionById, deleteProviderConnection,
   touchManagementKey, setRowOwner, getRowOwners, getRowOwner, addManagementAudit,
+  createOwnedApiKey, recordApiKeyActor,
 } from "@/lib/db/index.js";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { parseKeyLimitsInput } from "@/shared/utils/apiKeyLimits.js";
+import { normalizeManagementKeyName } from "@/shared/utils/managementKey.js";
 import { normalizeProviderId } from "@/lib/providerNormalization";
+import { WEB_COOKIE_PROVIDERS } from "@/shared/constants/providers";
 import { authenticateManagementKey } from "./auth.js";
-import { clientKeyScopeViolation, clientKeyVisible, providerInScope, providerKeyVisible } from "./policy.js";
+import {
+  clientKeyScopeViolation, clientKeyVisible, dashboardChoiceViolation,
+  providerInScope, providerKeyVisible, makeProviderResolver,
+} from "./policy.js";
 import { serializeClientKey, serializeProviderKey, serializeManagementKey } from "./serialize.js";
+import { json, fail, readBody } from "./http.js";
 
-const MAX_NAME_LENGTH = 120;
 // Provider-specific fields a management key may set. URL fields (baseUrl,
 // azureEndpoint, proxies) are left out: they decide where the gateway sends a
 // key, which is the dashboard's call.
 const PROVIDER_DATA_FIELDS = new Set(["accountId", "region", "deployment", "organization", "apiVersion"]);
 const MAX_PROVIDER_DATA_LENGTH = 200;
+export const MAX_PROVIDER_API_KEY_LENGTH = 8192;
 const CLIENT_KEY_CREATE_FIELDS = new Set(["name", "budgetUsd", "allowedModels", "expiresAt"]);
 const CLIENT_KEY_PATCH_FIELDS = new Set(["name", "isActive", "budgetUsd", "allowedModels", "expiresAt"]);
 const PROVIDER_KEY_CREATE_FIELDS = new Set(["provider", "apiKey", "name", "defaultModel", "providerSpecificData"]);
+const DEFAULT_PROBE_TIMEOUT_MS = 15_000;
 
-function json(body, status = 200) {
-  return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
-}
-
-function fail(status, error, extra = {}) {
-  return json({ error, ...extra }, status);
-}
-
-async function readBody(request) {
-  const body = await request.json().catch(() => undefined);
-  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
-  return body;
-}
-
-function unknownFields(body, allowed) {
-  return Object.keys(body).filter((k) => !allowed.has(k));
+function probeTimeoutMs() {
+  return Number(process.env.MANAGEMENT_PROBE_TIMEOUT_MS) || DEFAULT_PROBE_TIMEOUT_MS;
 }
 
 function parseName(raw, { required }) {
   if (raw === undefined) return required ? { error: "name is required" } : {};
-  if (typeof raw !== "string" || !raw.trim()) return { error: "name must be a non-empty string" };
-  if (raw.trim().length > MAX_NAME_LENGTH) return { error: `name can be at most ${MAX_NAME_LENGTH} characters` };
-  return { name: raw.trim() };
+  return normalizeManagementKeyName(raw);
 }
 
-async function audit(mk, action, targetType, targetId, detail) {
+async function audit(mk, action, targetType, targetId, detail, { denied = false } = {}) {
   try {
-    await addManagementAudit({ managementKeyId: mk.id, action, targetType, targetId, detail });
+    await addManagementAudit({ managementKeyId: mk.id, action, targetType, targetId, detail, denied });
   } catch (e) {
     console.warn(`[management] audit write failed: ${e.message}`);
   }
 }
 
-/** Authenticate, then run fn with the management key. */
-async function withKey(request, fn) {
+const SCOPE_REFUSALS = {
+  clientKeys: "This management key can't manage client keys",
+  providerKeys: "This management key can't manage provider keys",
+};
+
+/** Authenticate, check the key has this kind of scope (if any), then run fn with it. */
+async function withKey(request, scope, fn) {
   const auth = await authenticateManagementKey(request);
   if (!auth.ok) return fail(auth.status, auth.error);
   try { await touchManagementKey(auth.managementKey.id); } catch {}
+  if (scope && !auth.managementKey.scopes[scope].enabled) return fail(403, SCOPE_REFUSALS[scope]);
   try {
     return await fn(auth.managementKey);
   } catch (e) {
@@ -74,18 +72,10 @@ async function withKey(request, fn) {
   }
 }
 
-function requireClientScope(mk) {
-  return mk.scopes.clientKeys.enabled ? null : fail(403, "This management key can't manage client keys");
-}
-
-function requireProviderScope(mk) {
-  return mk.scopes.providerKeys.enabled ? null : fail(403, "This management key can't manage provider keys");
-}
-
 // ---- GET /me -----------------------------------------------------------------
 
 export function getMe(request) {
-  return withKey(request, async (mk) => json({ managementKey: serializeManagementKey(mk) }));
+  return withKey(request, null, async (mk) => json({ managementKey: serializeManagementKey(mk) }));
 }
 
 // ---- Client keys -------------------------------------------------------------
@@ -94,32 +84,27 @@ export function getMe(request) {
 async function findVisibleClientKey(mk, id) {
   const key = typeof id === "string" && id ? await getApiKeyById(id) : null;
   if (!key) return null;
-  const owner = await getRowOwner("clientKey", key.id);
-  return (await clientKeyVisible(mk, key, owner)) ? { key, owner } : null;
+  return (await clientKeyVisible(mk, key, key.ownerManagementKeyId)) ? key : null;
 }
 
 export function listClientKeys(request) {
-  return withKey(request, async (mk) => {
-    const denied = requireClientScope(mk);
-    if (denied) return denied;
-    const [keys, owners] = await Promise.all([getApiKeys(), getRowOwners("clientKey")]);
+  return withKey(request, "clientKeys", async (mk) => {
+    const keys = await getApiKeys();
+    const resolveProvider = makeProviderResolver();
     const visible = [];
     for (const key of keys) {
-      const owner = owners.get(key.id) || null;
-      if (await clientKeyVisible(mk, key, owner)) visible.push(serializeClientKey(key, owner, mk.id));
+      if (await clientKeyVisible(mk, key, key.ownerManagementKeyId, resolveProvider)) {
+        visible.push(serializeClientKey(key, key.ownerManagementKeyId, mk.id));
+      }
     }
     return json({ clientKeys: visible });
   });
 }
 
 export function createClientKey(request) {
-  return withKey(request, async (mk) => {
-    const denied = requireClientScope(mk);
-    if (denied) return denied;
-    const body = await readBody(request);
-    if (!body) return fail(400, "Body must be a JSON object");
-    const extra = unknownFields(body, CLIENT_KEY_CREATE_FIELDS);
-    if (extra.length) return fail(400, `Unknown or not allowed fields: ${extra.join(", ")}`);
+  return withKey(request, "clientKeys", async (mk) => {
+    const { body, error } = await readBody(request, CLIENT_KEY_CREATE_FIELDS);
+    if (error) return error;
     const name = parseName(body.name, { required: true });
     if (name.error) return fail(400, name.error);
     const limits = parseKeyLimitsInput(body);
@@ -128,82 +113,65 @@ export function createClientKey(request) {
     const wanted = { allowedModels: limits.data.allowedModels ?? null, budgetUsd: limits.data.budgetUsd ?? null };
     const violation = await clientKeyScopeViolation(mk.scopes.clientKeys, wanted);
     if (violation) {
-      await audit(mk, "client_key.create.denied", "clientKey", null, { name: name.name, ...wanted, reason: violation });
+      await audit(mk, "client_key.create.denied", "clientKey", null, { name: name.name, ...wanted, reason: violation }, { denied: true });
       return fail(403, violation);
     }
 
-    const machineId = await getConsistentMachineId();
-    const created = await createApiKey(name.name, machineId);
-    let saved;
-    try {
-      saved = Object.keys(limits.data).length ? await updateApiKey(created.id, limits.data) : await getApiKeyById(created.id);
-      await setRowOwner("clientKey", created.id, mk.id);
-    } catch (e) {
-      // Don't leave a key without its limits or its owner behind.
-      await deleteApiKey(created.id).catch(() => {});
-      throw e;
-    }
+    // One insert with its limits and owner: never a moment as an unrestricted key.
+    const created = await createOwnedApiKey({ name: name.name, machineId: await getConsistentMachineId(), limits: limits.data, ownerId: mk.id });
     await audit(mk, "client_key.create", "clientKey", created.id, {
-      name: saved.name, budgetUsd: saved.budgetUsd, allowedModels: saved.allowedModels, expiresAt: saved.expiresAt,
+      name: created.name, budgetUsd: created.budgetUsd, allowedModels: created.allowedModels, expiresAt: created.expiresAt,
     });
     // The only response that ever carries a full client key.
-    return json({ clientKey: serializeClientKey(saved, mk.id, mk.id), key: created.key }, 201);
+    return json({ clientKey: serializeClientKey(created, mk.id, mk.id), key: created.key }, 201);
   });
 }
 
 export function getClientKey(request, id) {
-  return withKey(request, async (mk) => {
-    const denied = requireClientScope(mk);
-    if (denied) return denied;
-    const found = await findVisibleClientKey(mk, id);
-    if (!found) return fail(404, "Client key not found");
-    return json({ clientKey: serializeClientKey(found.key, found.owner, mk.id) });
+  return withKey(request, "clientKeys", async (mk) => {
+    const key = await findVisibleClientKey(mk, id);
+    if (!key) return fail(404, "Client key not found");
+    return json({ clientKey: serializeClientKey(key, key.ownerManagementKeyId, mk.id) });
   });
 }
 
 export function updateClientKey(request, id) {
-  return withKey(request, async (mk) => {
-    const denied = requireClientScope(mk);
-    if (denied) return denied;
-    const found = await findVisibleClientKey(mk, id);
-    if (!found) return fail(404, "Client key not found");
-    const body = await readBody(request);
-    if (!body) return fail(400, "Body must be a JSON object");
-    const extra = unknownFields(body, CLIENT_KEY_PATCH_FIELDS);
-    if (extra.length) return fail(400, `Unknown or not allowed fields: ${extra.join(", ")}`);
+  return withKey(request, "clientKeys", async (mk) => {
+    const key = await findVisibleClientKey(mk, id);
+    if (!key) return fail(404, "Client key not found");
+    const { body, error } = await readBody(request, CLIENT_KEY_PATCH_FIELDS);
+    if (error) return error;
     const name = parseName(body.name, { required: false });
     if (name.error) return fail(400, name.error);
     if (body.isActive !== undefined && typeof body.isActive !== "boolean") return fail(400, "isActive must be true or false");
     const limits = parseKeyLimitsInput(body);
     if (limits.errors.length) return fail(400, limits.errors.join("; "), { errors: limits.errors });
 
-    const merged = { ...found.key, ...limits.data };
-    const violation = await clientKeyScopeViolation(mk.scopes.clientKeys, merged);
-    if (violation) {
-      await audit(mk, "client_key.update.denied", "clientKey", found.key.id, {
-        allowedModels: merged.allowedModels, budgetUsd: merged.budgetUsd, reason: violation,
-      });
-      return fail(403, violation);
-    }
     const update = { ...limits.data };
     if (name.name) update.name = name.name;
     if (body.isActive !== undefined) update.isActive = body.isActive;
-    const saved = await updateApiKey(found.key.id, update);
+    const violation = (await clientKeyScopeViolation(mk.scopes.clientKeys, { ...key, ...limits.data }))
+      || dashboardChoiceViolation(key, update);
+    if (violation) {
+      await audit(mk, "client_key.update.denied", "clientKey", key.id, { changed: Object.keys(update), reason: violation }, { denied: true });
+      return fail(403, violation);
+    }
+    await updateApiKey(key.id, update);
+    await recordApiKeyActor(key.id, { isActive: update.isActive, expiresAt: update.expiresAt }, mk.id);
+    const saved = await getApiKeyById(key.id);
     if (!saved) return fail(404, "Client key not found");
     await audit(mk, "client_key.update", "clientKey", saved.id, { changed: Object.keys(update) });
-    return json({ clientKey: serializeClientKey(saved, found.owner, mk.id) });
+    return json({ clientKey: serializeClientKey(saved, saved.ownerManagementKeyId, mk.id) });
   });
 }
 
 export function removeClientKey(request, id) {
-  return withKey(request, async (mk) => {
-    const denied = requireClientScope(mk);
-    if (denied) return denied;
-    const found = await findVisibleClientKey(mk, id);
-    if (!found) return fail(404, "Client key not found");
-    if (!(await deleteApiKey(found.key.id))) return fail(404, "Client key not found");
-    await audit(mk, "client_key.delete", "clientKey", found.key.id, { name: found.key.name });
-    return json({ deleted: true, id: found.key.id });
+  return withKey(request, "clientKeys", async (mk) => {
+    const key = await findVisibleClientKey(mk, id);
+    if (!key) return fail(404, "Client key not found");
+    if (!(await deleteApiKey(key.id))) return fail(404, "Client key not found");
+    await audit(mk, "client_key.delete", "clientKey", key.id, { name: key.name });
+    return json({ deleted: true, id: key.id });
   });
 }
 
@@ -217,9 +185,7 @@ async function findVisibleProviderKey(mk, id) {
 }
 
 export function listProviderKeys(request) {
-  return withKey(request, async (mk) => {
-    const denied = requireProviderScope(mk);
-    if (denied) return denied;
+  return withKey(request, "providerKeys", async (mk) => {
     const provider = new URL(request.url).searchParams.get("provider");
     const [connections, owners] = await Promise.all([
       getProviderConnections(provider ? { provider: normalizeProviderId(provider) } : {}),
@@ -256,29 +222,46 @@ async function dashboardProviderRoutes() {
 
 // An internal request with no forwarding headers, so the dashboard routes treat
 // it as remote (the strict URL rules) whatever the caller's address is.
-function internalJsonRequest(path, body) {
+function internalJsonRequest(path, body, signal) {
   return new Request(`http://management.internal${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
 }
 
+const PROBE_TIMED_OUT = Symbol("probe timed out");
+
+/** The validation ping, given up on after the probe timeout. */
+async function probeKey(validate, payload) {
+  const ms = probeTimeoutMs();
+  const signal = AbortSignal.timeout(ms);
+  let timer;
+  const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve(PROBE_TIMED_OUT), ms); });
+  try {
+    const res = await Promise.race([validate(internalJsonRequest("/api/providers/validate", payload, signal)), timeout]);
+    if (res === PROBE_TIMED_OUT) return res;
+    return { res, body: await res.json().catch(() => ({})) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function createProviderKey(request) {
-  return withKey(request, async (mk) => {
-    const denied = requireProviderScope(mk);
-    if (denied) return denied;
-    const body = await readBody(request);
-    if (!body) return fail(400, "Body must be a JSON object");
-    const extra = unknownFields(body, PROVIDER_KEY_CREATE_FIELDS);
-    if (extra.length) return fail(400, `Unknown or not allowed fields: ${extra.join(", ")}`);
+  return withKey(request, "providerKeys", async (mk) => {
+    const { body, error } = await readBody(request, PROVIDER_KEY_CREATE_FIELDS);
+    if (error) return error;
     if (typeof body.provider !== "string" || !body.provider.trim()) return fail(400, "provider is required");
     const provider = normalizeProviderId(body.provider);
     if (!providerInScope(mk.scopes.providerKeys, provider)) {
-      await audit(mk, "provider_key.create.denied", "providerKey", null, { provider, reason: "provider outside scope" });
+      await audit(mk, "provider_key.create.denied", "providerKey", null, { provider, reason: "provider outside scope" }, { denied: true });
       return fail(403, `This management key can't add keys for provider "${provider}"`);
     }
+    // A session cookie is a login, not an API key; those stay a dashboard job.
+    if (WEB_COOKIE_PROVIDERS[provider]) return fail(400, `"${provider}" takes a session cookie, which can only be added in the dashboard`);
     if (typeof body.apiKey !== "string" || !body.apiKey.trim()) return fail(400, "apiKey is required");
+    if (body.apiKey.length > MAX_PROVIDER_API_KEY_LENGTH) return fail(400, `apiKey can be at most ${MAX_PROVIDER_API_KEY_LENGTH} characters`);
     const name = parseName(body.name, { required: false });
     if (name.error) return fail(400, name.error);
     if (body.defaultModel !== undefined && (typeof body.defaultModel !== "string" || body.defaultModel.length > 300)) {
@@ -289,13 +272,21 @@ export function createProviderKey(request) {
 
     const routes = await dashboardProviderRoutes();
     const apiKey = body.apiKey.trim();
-    const check = await routes.validate(internalJsonRequest("/api/providers/validate", { provider, apiKey, providerSpecificData: psd.data }));
-    const checked = await check.json().catch(() => ({}));
-    if (!check.ok) return fail(check.status, typeof checked.error === "string" ? checked.error : "Could not validate the key");
-    if (checked.valid !== true) {
+    const probe = await probeKey(routes.validate, { provider, apiKey, providerSpecificData: psd.data });
+    if (probe === PROBE_TIMED_OUT) return fail(504, `The provider did not answer the validation request within ${Math.round(probeTimeoutMs() / 1000)}s; the key was not added`);
+    if (!probe.res.ok) return fail(probe.res.status, typeof probe.body.error === "string" ? probe.body.error : "Could not validate the key");
+    if (probe.body.valid !== true) {
       // The validator's own error text is not passed on: it can quote the upstream.
-      await audit(mk, "provider_key.create.denied", "providerKey", null, { provider, reason: "the provider did not accept the key" });
+      await audit(mk, "provider_key.create.denied", "providerKey", null, { provider, reason: "the provider did not accept the key" }, { denied: true });
       return fail(422, "The provider did not accept this key, so it was not added");
+    }
+
+    // The probe can take seconds; the key may have been revoked or narrowed meanwhile.
+    const again = await authenticateManagementKey(request);
+    if (!again.ok) return fail(again.status, again.error);
+    if (!providerInScope(again.managementKey.scopes.providerKeys, provider)) {
+      await audit(mk, "provider_key.create.denied", "providerKey", null, { provider, reason: "scope narrowed during validation" }, { denied: true });
+      return fail(403, `This management key can't add keys for provider "${provider}"`);
     }
 
     const connectionName = name.name || `${mk.name} ${crypto.randomBytes(3).toString("hex")}`;
@@ -311,17 +302,22 @@ export function createProviderKey(request) {
     if (res.status === 409) return fail(409, `A key named "${connectionName}" already exists for this provider; pick another name`);
     if (!res.ok || !out.connection?.id) return fail(res.ok ? 500 : res.status, typeof out.error === "string" ? out.error : "Could not add the key");
 
-    await setRowOwner("providerKey", out.connection.id, mk.id);
-    const saved = await getProviderConnectionById(out.connection.id);
+    let saved;
+    try {
+      await setRowOwner("providerKey", out.connection.id, mk.id);
+      saved = await getProviderConnectionById(out.connection.id);
+    } catch (e) {
+      // Without its owner the key would read as the dashboard's; don't keep it.
+      await deleteProviderConnection(out.connection.id).catch(() => {});
+      throw e;
+    }
     await audit(mk, "provider_key.create", "providerKey", saved.id, { provider: saved.provider, name: saved.name });
     return json({ providerKey: serializeProviderKey(saved, mk.id, mk.id) }, 201);
   });
 }
 
 export function getProviderKey(request, id) {
-  return withKey(request, async (mk) => {
-    const denied = requireProviderScope(mk);
-    if (denied) return denied;
+  return withKey(request, "providerKeys", async (mk) => {
     const found = await findVisibleProviderKey(mk, id);
     if (!found) return fail(404, "Provider key not found");
     return json({ providerKey: serializeProviderKey(found.conn, found.owner, mk.id) });
@@ -329,9 +325,7 @@ export function getProviderKey(request, id) {
 }
 
 export function removeProviderKey(request, id) {
-  return withKey(request, async (mk) => {
-    const denied = requireProviderScope(mk);
-    if (denied) return denied;
+  return withKey(request, "providerKeys", async (mk) => {
     const found = await findVisibleProviderKey(mk, id);
     if (!found) return fail(404, "Provider key not found");
     if (!(await deleteProviderConnection(found.conn.id))) return fail(404, "Provider key not found");

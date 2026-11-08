@@ -4,13 +4,21 @@
 // refreshToken, idToken, providerSpecificData) and full client keys are never
 // included; the one exception, a new client key's secret, is added by the
 // create handler alone.
-import { maskApiKey } from "@/lib/db/repos/usageRepo.js";
+
+/**
+ * A client key with at most a third of it showing, and never more than 8
+ * characters: "sk-abcde…" for a full-length key, "sk-…" for a short legacy one.
+ */
+export function maskClientKey(key) {
+  if (typeof key !== "string" || !key) return null;
+  return `${key.slice(0, Math.min(8, Math.floor(key.length / 3)))}…`;
+}
 
 export function serializeClientKey(key, ownerId, managementKeyId) {
   return {
     id: key.id,
     name: key.name ?? null,
-    keyPreview: maskApiKey(key.key),
+    keyPreview: maskClientKey(key.key),
     isActive: key.isActive !== false,
     budgetUsd: key.budgetUsd ?? null,
     allowedModels: key.allowedModels ?? null,
