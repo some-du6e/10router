@@ -86,6 +86,36 @@ describe("redetectDiff", () => {
   });
 });
 
+describe("redetectDiff for one key at its own URL (keyScoped)", () => {
+  // What a single own-URL account answered: another URL, fewer models, an
+  // Azure-style key header, and a model split across APIs.
+  const r = found({ baseUrl: "https://acct-1.acme.dev/v1", models: ["a", "new"], quirks: { apiKeyHeader: true, maxCompletionTokens: true },
+    protocol: "openai-responses", byProtocol: { "openai-responses": ["a"], anthropic: ["new"] } });
+
+  it("keeps that account's URL, auth style, routes and missing models out of the endpoint's changes", () => {
+    const d = redetectDiff(node, ["a", "gone"], r, [], "all", { keyScoped: true });
+    expect(d).toMatchObject({ ok: true, baseUrl: null, removeModels: [], addModels: ["new"], quirks: { maxCompletionTokens: true } });
+    expect(d.quirks.apiKeyHeader).toBeUndefined();
+    expect(d.quirks.modelRoutes).toBeUndefined();
+    // Chat -> Responses is the API's, not the account's: still offered.
+    expect(d.protocol.to).toBe("openai-responses");
+    expect(d.changes).toBe(3);
+  });
+
+  it("still offers an outdated saved model the account didn't list", () => {
+    const listed = found({ models: ["a"] });
+    expect(redetectDiff(node, ["a", "old-4"], listed, ["old-4"]).outdatedModels).toEqual([]);
+    expect(redetectDiff(node, ["a", "old-4"], listed, ["old-4"], "all", { keyScoped: true })).toMatchObject({ removeModels: [], outdatedModels: ["old-4"] });
+  });
+
+  it("changes nothing for a result from the endpoint's own URL", () => {
+    const d = redetectDiff(node, ["a", "gone"], r, [], "all");
+    expect(d.baseUrl).toEqual({ from: "https://api.acme.dev/v1", to: "https://acct-1.acme.dev/v1" });
+    expect(d.removeModels).toEqual(["gone"]);
+    expect(d.quirks.apiKeyHeader).toBe("api-key");
+  });
+});
+
 describe("savedSettingsFetch", () => {
   const capture = () => { const seen = []; return { seen, fetchFn: async (url, init) => { seen.push({ url, headers: init.headers }); return { status: 200, text: async () => "" }; } }; };
   it("sends the saved client identity on every probe", async () => {

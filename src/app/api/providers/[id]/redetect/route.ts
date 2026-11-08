@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { makeProbeFetch } from "@/lib/probeFetch.js";
-import { detectEndpoint, normalizeUrl, outdatedModels } from "@/lib/endpointDetect.js";
+import { DETECT_DEADLINE_MS, detectEndpoint, normalizeUrl, outdatedModels } from "@/lib/endpointDetect.js";
 import type { DetectProgress, DetectResult, Protocol } from "@/lib/endpointDetect.js";
 import { getEndpointCatalog } from "@/lib/endpointCatalog.js";
 import { retryAsClient } from "@/lib/endpointImpersonate.js";
@@ -9,34 +9,33 @@ import { mergeConnectionData, mergeQuirks } from "@/shared/utils/nodeQuirkMerge.
 import { isCustomEndpoint } from "@/lib/endpointRequestLog.js";
 import { guardTarget, respond } from "@/app/api/provider-nodes/detect/ndjson.js";
 import { redetectDiff, savedProtocol, savedSettingsFetch } from "./diff.js";
-import type { RedetectDiff, RedetectPart, SavedEndpoint } from "./diff.js";
+import type { RedetectPart, SavedEndpoint } from "./diff.js";
 
 export const dynamic = "force-dynamic";
 
 type Connection = { id: string; isActive?: boolean; apiKey?: string; providerSpecificData?: { ownBaseUrl?: boolean; baseUrl?: string } };
 type Candidate = { apiKey: string; url: string; own: boolean };
+type Run = { candidate: Candidate; result: DetectResult & { gate?: unknown } };
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,160}$/;
 // How many active keys the re-detect check will try before it gives up: enough
 // to skip a few dead-but-still-on keys without probing a whole large pool.
 const MAX_KEY_ATTEMPTS = 5;
-// One time budget for every key the check tries, as one detection gets (the
-// page gives up at 60s); a key isn't started with less than MIN_ATTEMPT_MS left.
-const REDETECT_BUDGET_MS = 45_000;
+// Every key tried shares one detection's time budget (the page gives up at
+// 60s); another key isn't started with less than this left.
 const MIN_ATTEMPT_MS = 5_000;
-
-// A diff from a key on its own URL, cut to what holds for the whole endpoint.
-function scopeToKey(diff: RedetectDiff): RedetectDiff {
-  const { modelRoutes: _routes, ...quirks } = diff.quirks;
-  const changes = (diff.protocol ? 1 : 0) + diff.addModels.length + diff.outdatedModels.length + Object.keys(quirks).length;
-  return { ...diff, baseUrl: null, removeModels: [], quirks, changes };
-}
 type CustomModel = { id?: string; providerAlias?: string; type?: string; kind?: string };
+
+// The key was refused: outright, or after the free probes passed, while models
+// were asked about (no /models, so detection still answers ok).
+const keyRefused = (r: DetectResult) => (r.ok ? !!r.authRejected : r.failure === "key");
+const worked = (r: DetectResult) => r.ok && !r.authRejected;
+const clause = (s: string | undefined) => String(s || "").replace(/\s*\.*\s*$/, "");
 
 // POST /api/providers/[id]/redetect - the endpoint page's "Re-detect": run the
 // same free-probe detection as "Add endpoint", trying the active keys in turn
-// (each at its own URL if it has one) until one isn't rejected, and answer with
-// what would change. Nothing is saved here; the page applies the changes the
-// user accepts through the usual routes.
+// (each at its own URL if it has one) until one works, and answer with what
+// would change. Nothing is saved here; the page applies the changes the user
+// accepts through the usual routes.
 // [id] is the endpoint's node id. Streams progress as NDJSON when asked.
 // ?part=endpoint checks the API, URL and fixes without asking about models;
 // ?part=models reports only models (it still finds which APIs answer, to ask each).
@@ -51,22 +50,20 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   if (guard instanceof NextResponse) return guard;
 
   const conns = (await getProviderConnections({ provider: id })) as Connection[];
-  // Active keys in priority order, the ones on the endpoint's own URL first. A
-  // key with its own URL (another account or region of the same API) is asked
-  // at that URL. Keys are tried in turn, so neither a dead-but-on key nor a pool
-  // where every key has its own URL makes the check probe with no key at all.
-  const active = conns.filter((c) => c.isActive !== false);
+  // Active keys with a credential, in priority order, the ones on the
+  // endpoint's own URL first. A key with its own URL (another account or region
+  // of the same API) is asked at that URL; the probe fetch checks every hop
+  // against the SSRF rules for remote callers, as it does the endpoint's URL.
+  const active = conns.filter((c) => c.isActive !== false && c.apiKey);
   const keys = [...active.filter((c) => !c.providerSpecificData?.ownBaseUrl), ...active.filter((c) => c.providerSpecificData?.ownBaseUrl)];
-  const candidates: Candidate[] = [];
-  for (const c of keys) {
-    if (candidates.length >= MAX_KEY_ATTEMPTS) break;
-    if (!c.apiKey) continue;
-    if (!c.providerSpecificData?.ownBaseUrl) { candidates.push({ apiKey: c.apiKey || "", url: base, own: false }); continue; }
-    const url = normalizeUrl(c.providerSpecificData.baseUrl);
-    if (!url) continue;
-    if ((await guardTarget(request, url)) instanceof NextResponse) continue;
-    candidates.push({ apiKey: c.apiKey || "", url, own: true });
-  }
+  const candidates: Candidate[] = keys.flatMap((c): Candidate[] => {
+    const own = !!c.providerSpecificData?.ownBaseUrl;
+    const url = own ? normalizeUrl(c.providerSpecificData?.baseUrl) : base;
+    return url ? [{ apiKey: c.apiKey as string, url, own }] : [];
+  }).slice(0, MAX_KEY_ATTEMPTS);
+  // Keys exist but none has a usable URL: say that, rather than probing with no
+  // key and blaming a key.
+  if (keys.length && !candidates.length) return NextResponse.json({ ok: false, error: "None of the active keys has a valid URL of its own", steps: [] }, { status: 400 });
   if (!candidates.length) candidates.push({ apiKey: "", url: base, own: false });
   const current = ((await getCustomModels()) as CustomModel[])
     .filter((m) => m.providerAlias === id && (m.kind || m.type || "llm") === "llm" && m.id)
@@ -81,7 +78,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     // each fall-through to the next key) restarts its request numbers at 1, so
     // shift them past every run before it.
     let maxN = 0, offset = 0, sentBase = 0, maxSent = 0;
-    const deadlineAt = Date.now() + REDETECT_BUDGET_MS;
+    const deadlineAt = Date.now() + DETECT_DEADLINE_MS;
     const left = () => Math.max(0, deadlineAt - Date.now());
     const onProgress = (e: DetectProgress) => {
       const ev = { ...e } as DetectProgress & { n?: number; sent?: number };
@@ -89,7 +86,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       if (typeof ev.sent === "number") { ev.sent += sentBase; maxSent = Math.max(maxSent, ev.sent); }
       send(ev);
     };
-    const runWith = async ({ apiKey: key, url }: Candidate): Promise<DetectResult & { gate?: unknown }> => {
+    const runWith = async ({ apiKey: key, url }: Candidate): Promise<Run["result"]> => {
       offset = maxN; sentBase = maxSent;
       // Probe with the endpoint's saved identity and auth style, as requests go out.
       const first = await detectEndpoint({ url, apiKey: key, fetchFn: savedSettingsFetch(rawFetch, node, key), catalog, signal, onProgress, skipModels, deadlineMs: left() });
@@ -100,21 +97,32 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         detect: (f) => { offset = maxN; sentBase = maxSent; return detectEndpoint({ url, apiKey: key, fetchFn: f, catalog, signal, onProgress, skipModels, deadlineMs: left() }); },
       });
     };
-    let used = candidates[0];
-    let result = await runWith(used);
-    // Only a rejected key earns another try: a network/down/gated/rate result is
-    // the endpoint's verdict, not the key's, and the next key would only repeat
-    // it (and spend more free probes). A key on its own URL is another server,
-    // so its refusal or outage says nothing about the next one: try it too.
-    for (let i = 1; i < candidates.length && !signal.aborted && left() >= MIN_ATTEMPT_MS && !result.ok && (result.failure === "key" || used.own); i++) {
-      used = candidates[i];
-      result = await runWith(used);
+    // The next key gets a try after a refusal. After anything else (down,
+    // gated, rate-limited) only when this key had its own URL: a key on the
+    // endpoint's URL would just meet the same server, while another account's
+    // server may be fine.
+    const runs: Run[] = [];
+    for (const candidate of candidates) {
+      if (runs.length && (signal.aborted || left() < MIN_ATTEMPT_MS)) break;
+      const result = await runWith(candidate);
+      runs.push({ candidate, result });
+      if (worked(result) || (!keyRefused(result) && !candidate.own)) break;
     }
-    const diff = redetectDiff(node, current, result, outdatedModels(current, catalog), part);
-    // What a key on its own URL sees is that account's: never offer it as the
-    // endpoint's URL, or let it drop models or rewrite routes for the other keys.
-    const scoped = used.own && diff.ok ? scopeToKey(diff) : diff;
-    return { ...scoped, steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!used.apiKey, ...(used.own ? { viaKeyUrl: true } : {}), ...(result.gate ? { gate: result.gate } : {}) };
+    const last = runs[runs.length - 1];
+    const win = worked(last.result) ? last : null;
+    // Several keys and none worked: report the first (the endpoint's own URL
+    // when a key uses it), and that more were tried.
+    const shown = win || runs[0];
+    const allRefused = runs.every((r) => keyRefused(r.result));
+    const result = win || runs.length === 1 ? shown.result : {
+      ...shown.result, ok: false, failure: allRefused ? "key" as const : shown.result.failure,
+      error: allRefused ? `None of the ${runs.length} keys it tried was accepted` : `None of the ${runs.length} keys it tried got through. The first: ${clause(shown.result.error) || "no answer"}`,
+    };
+    // What a key on its own URL sees is that account's: redetectDiff keeps its
+    // URL, missing models, routes and auth style out of the endpoint's changes.
+    const via = shown.candidate.own;
+    const diff = redetectDiff(node, current, result, outdatedModels(current, catalog), part, { keyScoped: via });
+    return { ...diff, steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!shown.candidate.apiKey, ...(via ? { viaKeyUrl: true } : {}), ...(result.gate ? { gate: result.gate } : {}) };
   }, { ok: false, error: "Re-detect failed", steps: [] });
 }
 

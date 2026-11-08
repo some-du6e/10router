@@ -157,7 +157,7 @@ const MAX_MODEL_PAGES = 10;      // /models pagination cap
 const PROBE_BODY_MAX = 4 * 1024 * 1024; // a probe reads at most this much
 const CANARY = "10router-no-such-model";
 const CONTROL_PATH = "/10router-no-such-path";
-const DETECT_DEADLINE_MS = 45_000; // whole detection; the UI gives up at 60s
+export const DETECT_DEADLINE_MS = 45_000; // whole detection; the UI gives up at 60s
 const MAX_CONSECUTIVE_FAILURES = 6; // network / timeout / 5xx in a row on one path
 const UNREACHABLE_AFTER = 2;     // network failures with no answer at all = the host is unreachable
 const MODEL_DENIED_STOP = 3;     // the same model-access refusal on this many models = the key, not the model
