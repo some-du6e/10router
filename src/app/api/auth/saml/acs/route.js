@@ -9,7 +9,9 @@ import {
   validateSamlResponse,
 } from "@/lib/auth/saml.js";
 import { setDashboardAuthCookie } from "@/lib/auth/dashboardSession";
+import { isSsoPrincipalAllowed } from "@/lib/auth/ssoAllowlist.js";
 import { checkLock, recordFail, recordSuccess, getClientIp } from "@/lib/auth/loginLimiter";
+import { getActiveSsoType } from "@/lib/auth/authMode.js";
 
 export async function POST(request) {
   const settings = await getSettings();
@@ -41,7 +43,7 @@ export async function POST(request) {
       return NextResponse.redirect(new URL("/login?error=saml_missing_response", origin));
     }
 
-    if (!isSamlConfigured(settings)) {
+    if (getActiveSsoType(settings) !== "saml" || !isSamlConfigured(settings)) {
       recordFail(ip);
       return NextResponse.redirect(new URL("/login?error=saml_not_configured", origin));
     }
@@ -50,6 +52,11 @@ export async function POST(request) {
 
     const samlEmail = pickSamlEmail(profile, settings) || null;
     const samlName = pickSamlDisplayName(profile, settings) || "SAML user";
+
+    if (!isSsoPrincipalAllowed({ subject: profile?.nameID, email: samlEmail, emailVerified: true })) {
+      recordFail(ip);
+      return NextResponse.redirect(new URL("/login?error=sso_user_not_allowed", origin));
+    }
 
     recordSuccess(ip);
 

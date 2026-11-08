@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import PropTypes from "prop-types";
 import { Modal, Button, Input } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import { isCallbackForPendingAuth, isTrustedCallbackOrigin } from "@/shared/utils/oauthCallbackBinding.js";
 
 // Providers using the dynamic-port local callback proxy.
 // Browser OAuth: popup → auto callback → auto exchange → poll-status.
@@ -499,6 +500,17 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     // Handler for callback data - only process once
     const handleCallback = async (data) => {
       if (callbackProcessedRef.current) return; // Already processed
+      if (!isCallbackForPendingAuth(data, authData)) {
+        // The popup has already closed and cleared its URL, so hand the URL to
+        // the paste step instead of dropping it. Submitting it is the user's call.
+        if (data?.code || data?.token || data?.error) {
+          callbackProcessedRef.current = true;
+          setCallbackUrl(data.fullUrl || "");
+          setError("This callback didn't match the login you started. Submit it only if you just signed in yourself, or start again.");
+          setStep("input");
+        }
+        return;
+      }
 
       const { code, token, state, error: callbackError, errorDescription } = data;
 
@@ -517,11 +529,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
     // Method 1: postMessage from popup
     const handleMessage = (event) => {
-      // Allow messages from same origin or localhost (any port)
-      const isLocalhost = event.origin.includes("localhost") || event.origin.includes("127.0.0.1");
-      const isSameOrigin = event.origin === window.location.origin;
-      if (!isLocalhost && !isSameOrigin) return;
-      
+      if (!isTrustedCallbackOrigin(event.origin, window.location.origin)) return;
+
       if (event.data?.type === "oauth_callback") {
         handleCallback(event.data.data);
       }

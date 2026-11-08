@@ -1,5 +1,6 @@
-import { SAML } from "@node-saml/node-saml";
+import { InMemoryCacheProvider, SAML } from "@node-saml/node-saml";
 import { getSettings } from "../db/repos/settingsRepo.js";
+import { getActiveSsoType } from "./authMode.js";
 
 /**
  * Formats a raw Base64 string or unformatted X.509 certificate into standard PEM format.
@@ -35,7 +36,7 @@ export function isSamlConfigured(settings) {
 export async function getSamlRuntimeConfig() {
   const settings = await getSettings();
   return {
-    configured: isSamlConfigured(settings),
+    configured: getActiveSsoType(settings) === "saml" && isSamlConfigured(settings),
     settings,
   };
 }
@@ -87,6 +88,41 @@ export function getSamlBaseUrl(request, settings) {
   return "http://localhost:20128";
 }
 
+const SAML_REQUEST_TTL_MS = 10 * 60 * 1000;
+const SAML_REQUEST_CACHES = Symbol.for("10router.samlRequestCaches");
+
+// One store per IdP for the whole process, so an AuthnRequest ID issued by /start is
+// single-use and only redeemable at /acs. Route bundles can each load this module.
+function getSamlRequestCache(settings) {
+  const caches = (globalThis[SAML_REQUEST_CACHES] ??= new Map());
+  const key = `${settings?.samlEntryPoint || ""}\n${settings?.samlCert || ""}`;
+  if (!caches.has(key)) {
+    caches.set(key, boundedCache(new InMemoryCacheProvider({ keyExpirationPeriodMs: SAML_REQUEST_TTL_MS })));
+  }
+  return caches.get(key);
+}
+
+// /start is public, so cap how many outstanding request IDs it can pile up.
+// Past the cap the oldest IDs go first; a login that slow has to start again.
+export const SAML_MAX_PENDING_REQUESTS = 1000;
+export function boundedCache(cache) {
+  if (typeof cache?.saveAsync !== "function" || typeof cache?.removeAsync !== "function") return cache;
+  const order = [];
+  const saveAsync = cache.saveAsync.bind(cache);
+  const removeAsync = cache.removeAsync.bind(cache);
+  cache.saveAsync = async (key, value) => {
+    order.push(key);
+    while (order.length > SAML_MAX_PENDING_REQUESTS) await removeAsync(order.shift());
+    return saveAsync(key, value);
+  };
+  cache.removeAsync = async (key) => {
+    const i = key == null ? -1 : order.indexOf(key);
+    if (i >= 0) order.splice(i, 1);
+    return removeAsync(key);
+  };
+  return cache;
+}
+
 export function createSamlInstance(settings, origin) {
   const cert = formatX509Certificate(settings?.samlCert || "") || DUMMY_FALLBACK_CERT;
   const callbackUrl = `${origin}/api/auth/saml/acs`;
@@ -98,8 +134,9 @@ export function createSamlInstance(settings, origin) {
     callbackUrl: callbackUrl,
     acceptedClockSkewMs: 60000,
     wantAssertionsSigned: true,
-    validateInResponseTo: "never",
-    requestIdExpirationMs: 28800000, // 8 hours
+    validateInResponseTo: "always",
+    requestIdExpirationPeriodMs: SAML_REQUEST_TTL_MS,
+    cacheProvider: getSamlRequestCache(settings),
   });
 }
 
@@ -135,9 +172,6 @@ export async function validateSamlResponse(request, body, expectedRequestId, set
     throw new Error("IdP X.509 Certificate (samlCert) is missing or not configured");
   }
 
-  const origin = getSamlBaseUrl(request, settings);
-  const samlInstance = createSamlInstance(settings, origin);
-
   const container = typeof body === "object" && body !== null ? body : { SAMLResponse: body };
   const rawSamlResponse = container.SAMLResponse;
 
@@ -145,19 +179,23 @@ export async function validateSamlResponse(request, body, expectedRequestId, set
     throw new Error("Missing SAMLResponse parameter in assertion POST body");
   }
 
-  // Parse response XML to inspect InResponseTo for replay protection
-  if (expectedRequestId) {
-    const xml = Buffer.from(rawSamlResponse, "base64").toString("utf8");
-    const match = xml.match(/InResponseTo=["']([^"']+)["']/i);
-    const inResponseTo = match ? match[1] : null;
-
-    if (!inResponseTo || inResponseTo !== expectedRequestId) {
-      throw new Error(`InResponseTo mismatch: expected ${expectedRequestId}, received ${inResponseTo || "none"}`);
-    }
+  // A response without the SP-issued request state must never authenticate.
+  if (typeof expectedRequestId !== "string" || !expectedRequestId) {
+    throw new Error("Missing SAML request state; SP-initiated login is required");
   }
-
+  const origin = getSamlBaseUrl(request, settings);
+  const samlInstance = createSamlInstance(settings, origin);
   const result = await samlInstance.validatePostResponseAsync({ SAMLResponse: rawSamlResponse });
   const profile = result?.profile || result;
+  const confirmations = profile?.getAssertion?.()?.Assertion?.Subject?.[0]?.SubjectConfirmation || [];
+  // Inspect only the assertion parsed from verified XML, never the raw envelope.
+  const boundSubject = confirmations.some(confirmation =>
+    confirmation.$?.Method === "urn:oasis:names:tc:SAML:2.0:cm:bearer" &&
+    confirmation.SubjectConfirmationData?.[0]?.$?.InResponseTo === expectedRequestId
+  );
+  if (profile?.inResponseTo !== expectedRequestId || !boundSubject) {
+    throw new Error("SAML signed SubjectConfirmation InResponseTo mismatch");
+  }
 
   return profile;
 }
