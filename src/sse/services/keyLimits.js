@@ -117,6 +117,8 @@ export async function isModelAllowed(requested, allowedModels, lookup, depth = 0
 
 /**
  * Why this key may not make this request, or null when it may.
+ * @param {string|null} apiKey the raw key from the request
+ * @param {{ model?: string|null, format?: string }} [opts]
  * @returns {Promise<{ status: number, message: string, response: Response }|null>}
  */
 export async function apiKeyLimitDenial(apiKey, { model = null, format = FORMATS.OPENAI } = {}) {
