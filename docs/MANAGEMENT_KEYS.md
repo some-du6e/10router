@@ -19,6 +19,12 @@ gateway refuses any token containing `10r-mgmt-` on every inference route
 with a `401`, even from localhost and however it is padded. The management API
 accepts nothing else.
 
+`/backend-api/codex` gets the same key check as `/v1`: none from this machine,
+a client key from anywhere else. Codex's WebSocket transport follows the same
+rule. A client on this machine (a loopback connection with no forwarding
+headers) stays local, while a remote client, or one that came through a local
+reverse proxy or tunnel, is treated as remote.
+
 ## Scopes
 
 ```json
@@ -74,7 +80,11 @@ The dashboard has the last word on a key's on/off state and expiry. If the
 dashboard turned a key off, no management key can turn it back on. If the
 dashboard set its expiry, a management key can only move it earlier. A key that
 was off, or had an expiry, before this was recorded counts as the dashboard's.
-A management key can undo its own choices.
+A management key can undo its own choices. Repeating the dashboard's choice
+(turning off a key that is already off, or setting the same or an earlier
+expiry) doesn't make it the management key's. The dashboard takes over any
+on/off state or expiry it changes itself, and saving a key's other limits in
+the dashboard leaves its expiry's owner alone.
 
 ### Provider keys
 
@@ -97,6 +107,9 @@ ping (`/api/providers/validate`), then the create route (`/api/providers`).
 - The management key is checked again after the probe, so a key revoked or
   narrowed while the probe ran adds nothing.
 - `apiKey` can be at most 8192 characters.
+- The new row is claimed for the management key right after the create,
+  only while that key is still on; if it was revoked in between, the row is
+  removed and the response is a `401`.
 - A name that's already taken for that provider gets a `409`. It never
   overwrites an existing key. The `409` does tell the caller that a key of that
   name exists for a provider in its scope, which is accepted.
@@ -120,6 +133,11 @@ By default a management key sees, edits and deletes only rows it created.
 `manageExisting: true` widens that to every row inside its scope, including keys
 made in the dashboard. A key with no `providers`, `models` or cap plus
 `manageExisting` is an admin for that kind of key.
+
+A provider key stops being a management key's once someone puts a different
+secret in it in the dashboard (editing it, or adding a key of the same name
+with overwrite): it then reads as the dashboard's, and the management key can
+no longer see or delete it.
 
 Either way, a row must still be inside the key's current scope. Narrow a scope
 in the dashboard and the key loses sight of rows it made under the old one.
@@ -159,8 +177,9 @@ curl -X POST http://localhost:20128/api/management/v1/provider-keys \
 ```
 
 A client key is created in one insert with its limits and owner, so it never
-exists without them. A provider key whose owner can't be recorded is deleted
-again.
+exists without them, and only while the management key is still on. An edit
+and the record of who changed the key's on/off state or expiry are written in
+one transaction. A provider key whose owner can't be recorded is deleted again.
 
 Unknown body fields get a `400`, so a typo can't silently do nothing. A request
 outside the scope gets a `403` with the reason.
@@ -198,8 +217,9 @@ scope.
   Management Keys section lists them under "Made by deleted management keys",
   with a button to delete them later.
 - **Revoke and delete everything it created**: the option in the revoke dialog
-  (`DELETE /api/management-keys/:id?deleteCreated=1`). The client keys and
-  provider keys it made are deleted with it.
+  (`DELETE /api/management-keys/:id?deleteCreated=1`). The key is deleted
+  first, then the client keys and provider keys it made, so a create still in
+  flight fails its claim instead of leaving a row behind.
 
 Each row also shows when the key was last used and which client and provider
 keys it created.
@@ -216,14 +236,21 @@ These go into the log:
 
 These don't: failed authentication (no key, a wrong key, a key that's off,
 expired or revoked), `404`s for rows a key can't see, the `409` for a taken
-name, a `504` probe timeout, and `400`s for malformed requests.
+name, a `504` probe timeout, `400`s for malformed requests, and edits that
+change nothing.
 
 Each entry has the management key, the action, the target's type and id, a
 time, and a detail with names, providers and limits. It never holds a secret.
-Details are compact: strings are cut at 300 characters, lists keep their first 3
-entries plus a count, and a detail over 2 KB is replaced by a stub. The log
-keeps the newest 5000 entries of what keys did and, apart from those, the newest
-1000 refusals, so a flood of refused requests can't push out the real trail.
+Every detail stays under 2 KB. A refusal's detail is compacted, since the
+caller picks its content: strings are cut at 300 characters and lists keep
+their first 3 entries plus a count. A success keeps its lists in full (the
+fields an edit changed, a new key's allowed models) and falls back to counts
+only when that would go over 2 KB.
+
+The log is trimmed in separate pools, so no one can push out someone else's
+history: each management key keeps its newest 1000 actions and, apart from
+those, its newest 200 refusals, and the dashboard's own changes keep the newest
+2000.
 The Endpoint page shows the latest 30 entries and names each entry's key, or
 "deleted management key".
 
@@ -235,7 +262,7 @@ Migration 006 adds two tables and some columns:
   `keyPrefix` (`10r-mgmt-` plus 6 characters, for display), `scopes` (JSON),
   `isActive`, `expiresAt`, `createdAt`, `lastUsedAt`.
 - `managementAudit`: `managementKeyId`, `action`, `targetType`, `targetId`,
-  `at`, `detail` (JSON), `denied` (1 for a refusal).
+  `at`, `detail` (JSON), `pool` (`ok`, `denied` or `dashboard`).
 - `ownerManagementKeyId` on `apiKeys` and `providerConnections`. `NULL` means the
   dashboard made the row.
 - `disabledBy` and `expiresAtSetBy` on `apiKeys`: `"dashboard"` or a management

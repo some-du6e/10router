@@ -94,7 +94,7 @@ check("remote: the management API works with the key", remoteMe.status === 200, 
 const remoteNoKey = await call("GET", "/v1/models", { headers: REMOTE });
 check("remote: /v1 without a key is refused", remoteNoKey.status === 401, String(remoteNoKey.status));
 const remoteCodex = await call("POST", "/backend-api/codex/responses", { headers: REMOTE, data: { model: "x", input: "hi" } });
-check("remote: /backend-api/codex without a key is refused", remoteCodex.status === 401, String(remoteCodex.status));
+check("remote: /backend-api/codex without a key is refused by the guard", remoteCodex.status === 401 && /API key required for remote API access/.test(remoteCodex.text), `${remoteCodex.status} ${remoteCodex.text.slice(0, 120)}`);
 const remoteMgmtV1 = await call("GET", "/v1/models", { token: clientMgmt, headers: REMOTE });
 check("remote: management key refused on /v1", remoteMgmtV1.status === 401 && /management key can't be used for inference/.test(remoteMgmtV1.text), String(remoteMgmtV1.status));
 const codexMgmt = await call("POST", "/backend-api/codex/responses", { token: clientMgmt, data: { model: "x", input: "hi" } });

@@ -18,6 +18,11 @@ on:
       - "custom-server.js"
       - "package.json"
       - "src/app/api/v1/**"
+      - "src/sse/services/auth.js"
+      - "open-sse/translator/formats.js"
+      - "open-sse/utils/error.js"
+      - "src/lib/dataDir.js"
+      - "src/shared/utils/machineId.js"
       - "src/lib/management/**"
       - "src/lib/db/**"
       - "src/shared/utils/managementKey.js"
@@ -34,9 +39,17 @@ on:
       - "docs/MANAGEMENT_KEYS.md"
       - "tests/package.json"
       - "tests/vitest.config.js"
-      - "tests/unit/management-keys*.test.js"
+      # Every test file the job below runs.
+      - "tests/unit/management-keys.test.js"
+      - "tests/unit/management-keys-guard.test.js"
+      - "tests/unit/management-keys-migration.test.js"
+      - "tests/unit/codex-ws-bridge-peer.test.js"
+      - "tests/unit/custom-server-peer-headers.test.js"
       - "tests/unit/dashboard-guard.test.js"
       - "tests/unit/api-key-budgets-migration.test.js"
+      - "tests/unit/api-key-budgets.test.js"
+      - "tests/unit/db-migration-chain.test.js"
+      - "tests/unit/auto-disable-dead-keys.test.js"
       - ".github/e2e/management-keys/**"
       - ".github/workflows/management-keys.yml"
   workflow_dispatch:
@@ -69,6 +82,9 @@ jobs:
           unit/api-key-budgets-migration.test.js
           unit/api-key-budgets.test.js
           unit/db-migration-chain.test.js
+          unit/codex-ws-bridge-peer.test.js
+          unit/custom-server-peer-headers.test.js
+          unit/auto-disable-dead-keys.test.js
       - name: Lint
         run: >
           ./node_modules/.bin/eslint
@@ -78,6 +94,10 @@ jobs:
           src/lib/db/migrations/006-management-keys.js
           src/lib/db/schema.js
           src/lib/db/index.js
+          src/lib/db/repos/apiKeysRepo.js
+          src/lib/db/repos/connectionsRepo.js
+          custom-server.js
+          tests/unit/codex-ws-bridge-peer.test.js
           src/shared/utils/managementKey.js
           src/app/api/management
           src/app/api/management-keys

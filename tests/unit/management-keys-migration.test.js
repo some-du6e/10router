@@ -95,7 +95,7 @@ describe("migration 006: management keys", () => {
     const key = await db.createApiKey("owned", "machine");
     await db.setRowOwner("providerKey", conn.id, "mk-1");
     await db.setRowOwner("clientKey", key.id, "mk-1");
-    await db.updateProviderConnection(conn.id, { name: "renamed", apiKey: "k2" });
+    await db.updateProviderConnection(conn.id, { name: "renamed", testStatus: "active" });
     await db.updateApiKey(key.id, { name: "renamed", budgetUsd: 3 });
     expect(await db.getRowOwner("providerKey", conn.id)).toBe("mk-1");
     expect(await db.getRowOwner("clientKey", key.id)).toBe("mk-1");
