@@ -136,6 +136,8 @@ await page.screenshot({ path: `${outDir}/create-modal.png`, fullPage: false });
 await page.getByRole("button", { name: "Create", exact: true }).click();
 const secretBox = page.locator("input[readonly]");
 await page.getByText("Management key created").waitFor({ state: "visible", timeout: 30000 });
+// The title can paint a frame before the input holds the value; wait for the value itself.
+await page.waitForFunction(() => [...document.querySelectorAll("input[readonly]")].some((e) => e.value.startsWith("10r-mgmt-")), null, { timeout: 30000 }).catch(() => {});
 const shown = await secretBox.evaluateAll((els) => els.map((e) => e.value).find((v) => v.startsWith("10r-mgmt-")) || "");
 check("secret shown once after create", shown.startsWith("10r-mgmt-"));
 await page.waitForTimeout(500); // the modal's fade-in
