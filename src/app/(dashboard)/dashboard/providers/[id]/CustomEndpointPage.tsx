@@ -361,12 +361,12 @@ function unchangedText(part: RedetectPart, viaKeyUrl: boolean): string {
 function keyUrlNote(part: RedetectPart): string {
   if (part === "models") return "Checked through one key's own URL, so models it lacks aren't offered for removal and model routes stay as they are.";
   if (part === "endpoint") return "Checked through one key's own URL, so the endpoint's URL and key style weren't checked.";
-  return "Checked through one key's own URL, so the endpoint's URL, key style, model routes and models it lacks weren't checked.";
+  return "Checked through one key's own URL, so the endpoint's URL, key style and model routes weren't checked, and models it lacks aren't offered for removal.";
 }
 
 // What Re-detect found, as changes to tick and apply.
 function RedetectBox({ node, part, diff, onClose, onApplied }: { node: EndpointNode; part: RedetectPart; diff: RedetectDiff & { usedKey?: boolean; viaKeyUrl?: boolean }; onClose: () => void; onApplied: (n: EndpointNode | null) => Promise<void> }) {
-  const [pick, setPick] = useState({ protocol: !!diff.protocol?.applicable, baseUrl: !!diff.baseUrl, add: !!diff.ok && diff.addModels.length > 0, remove: !!diff.ok && diff.removeModels.length > 0, outdated: false, quirks: true });
+  const [pick, setPick] = useState({ protocol: !!diff.protocol?.applicable && !diff.viaKeyUrl, baseUrl: !!diff.baseUrl, add: !!diff.ok && diff.addModels.length > 0, remove: !!diff.ok && diff.removeModels.length > 0, outdated: false, quirks: true });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   if (!diff.ok) {

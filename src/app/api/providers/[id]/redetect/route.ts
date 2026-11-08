@@ -28,10 +28,13 @@ type CustomModel = { id?: string; providerAlias?: string; type?: string; kind?: 
 // The key was refused: outright, or after the free probes passed, when the
 // model probes stopped on it (no /models, so detection still answers ok). As in
 // Add endpoint, authRejected alone isn't enough: it is also set when only GET
-// /models refused the key, and the endpoint check asks no models at all.
-const lateRefusal = (r: DetectResult) => r.ok && !!r.authRejected && (r.stopReason === "auth" || r.stopReason === "denied");
+// /models refused the key, and the endpoint check asks no models at all. A
+// "denied" stop is a key limited to other models, which still works.
+const lateRefusal = (r: DetectResult) => r.ok && !!r.authRejected && r.stopReason === "auth";
 const keyRefused = (r: DetectResult) => (r.ok ? lateRefusal(r) : r.failure === "key");
 const worked = (r: DetectResult) => r.ok && !lateRefusal(r);
+// Rate limits and quota are usually per key, as inference's failover assumes.
+const rateLimited = (r: DetectResult) => !r.ok && r.failure === "rate";
 const clause = (s: string | undefined) => String(s || "").replace(/\s*\.*\s*$/, "");
 
 // POST /api/providers/[id]/redetect - the endpoint page's "Re-detect": run the
@@ -58,15 +61,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   // of the same API) is asked at that URL; the probe fetch checks every hop
   // against the SSRF rules for remote callers, as it does the endpoint's URL.
   const active = conns.filter((c) => c.isActive !== false && c.apiKey);
-  const keys = [...active.filter((c) => !c.providerSpecificData?.ownBaseUrl), ...active.filter((c) => c.providerSpecificData?.ownBaseUrl)];
-  const candidates: Candidate[] = keys.flatMap((c): Candidate[] => {
-    const own = !!c.providerSpecificData?.ownBaseUrl;
-    const url = own ? normalizeUrl(c.providerSpecificData?.baseUrl) : base;
-    return url ? [{ apiKey: c.apiKey as string, url, own }] : [];
-  }).slice(0, MAX_KEY_ATTEMPTS);
+  const all: Candidate[] = active.flatMap((c): Candidate[] => {
+    const url = c.providerSpecificData?.ownBaseUrl ? normalizeUrl(c.providerSpecificData?.baseUrl) : base;
+    // A key still flagged with its own URL after the endpoint moved to that URL
+    // is on the endpoint's URL.
+    return url ? [{ apiKey: c.apiKey as string, url, own: url !== base }] : [];
+  });
+  const candidates = [...all.filter((c) => !c.own), ...all.filter((c) => c.own)].slice(0, MAX_KEY_ATTEMPTS);
   // Keys exist but none has a usable URL: say that, rather than probing with no
   // key and blaming a key.
-  if (keys.length && !candidates.length) return NextResponse.json({ ok: false, error: "None of the active keys has a valid URL of its own", steps: [] }, { status: 400 });
+  if (active.length && !candidates.length) return NextResponse.json({ ok: false, error: "None of the active keys has a valid URL of its own", steps: [] }, { status: 400 });
   if (!candidates.length) candidates.push({ apiKey: "", url: base, own: false });
   const current = ((await getCustomModels()) as CustomModel[])
     .filter((m) => m.providerAlias === id && (m.kind || m.type || "llm") === "llm" && m.id)
@@ -100,8 +104,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         detect: (f) => { offset = maxN; sentBase = maxSent; return detectEndpoint({ url, apiKey: key, fetchFn: f, catalog, signal, onProgress, skipModels, deadlineMs: left() }); },
       });
     };
-    // The next key gets a try after a refusal. After anything else (down,
-    // gated, rate-limited) only when this key had its own URL: a key on the
+    // The next key gets a try after a refusal or a rate limit. After anything
+    // else (down, gated) only when this key had its own URL: a key on the
     // endpoint's URL would just meet the same server, while another account's
     // server may be fine.
     const runs: Run[] = [];
@@ -109,7 +113,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       if (runs.length && (signal.aborted || left() < MIN_ATTEMPT_MS)) break;
       const result = await runWith(candidate);
       runs.push({ candidate, result });
-      if (worked(result) || (!keyRefused(result) && !candidate.own)) break;
+      if (worked(result) || (!keyRefused(result) && !rateLimited(result) && !candidate.own)) break;
     }
     const last = runs[runs.length - 1];
     const win = worked(last.result) ? last : null;
@@ -119,7 +123,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     // its result: there is no key to blame.
     const shown = win || runs[0];
     const refused = keyRefused(shown.result);
-    const verdict = clause(shown.result.error) || (refused ? "The key was rejected" : "It didn't answer");
+    const verdict = clause(shown.result.error) || (refused ? "The key was rejected" : "No answer");
+    if (!shown.candidate.apiKey && !shown.result.ok && shown.result.failure === "key") {
+      const on = conns.some((c) => c.isActive !== false);
+      shown.result = { ...shown.result, error: on ? "It needs a key, and no switched-on key has one set" : conns.length ? "It needs a key, and none of its keys is switched on" : "It needs a key, and this endpoint has none" };
+    }
     const result = win || (runs.length === 1 && (!shown.result.ok || !shown.candidate.apiKey)) ? shown.result : {
       ...shown.result, ok: false as const,
       error: runs.length === 1 ? verdict

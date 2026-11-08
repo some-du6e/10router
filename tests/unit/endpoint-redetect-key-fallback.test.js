@@ -73,6 +73,9 @@ const down = { ok: false, failure: "down", error: "The endpoint didn't answer.",
 const works = { ok: true, steps: [], protocol: "openai-chat", baseUrl: "https://api.acme.dev/v1", models: ["m1"], modelsSource: "models", quirks: {} };
 // Passed the free probes, then the model probes stopped on the key.
 const refusedLater = { ...works, models: [], authRejected: true, stopReason: "auth" };
+// A key limited to models outside the ones asked about: it works.
+const limitedKey = { ...works, models: [], authRejected: true, stopReason: "denied" };
+const rateLimit = { ok: false, failure: "rate", error: "The endpoint is rate-limiting requests.", steps: [] };
 // Only GET /models refused the key (an admin-only list); nothing says the key is bad.
 const listOnlyRefused = { ...works, models: [], authRejected: true, stopReason: null };
 
@@ -171,6 +174,21 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     expect(await json()).toMatchObject({ ok: false, error: "None of the 2 keys it tried was accepted" });
   });
 
+  it("doesn't call a key limited to other models rejected", async () => {
+    mocks.getProviderConnections.mockResolvedValue(conns("limited", "spare"));
+    verdict.limited = limitedKey;
+    expect((await json()).ok).toBe(true);
+    expect(keysUsed()).toEqual(["limited"]);
+  });
+
+  it("moves past a rate-limited key: limits are per key", async () => {
+    mocks.getProviderConnections.mockResolvedValue(conns("busy", "good"));
+    verdict.busy = rateLimit;
+    verdict.good = works;
+    expect((await json()).ok).toBe(true);
+    expect(keysUsed()).toEqual(["busy", "good"]);
+  });
+
   it("doesn't spend an attempt on a key with no credential", async () => {
     mocks.getProviderConnections.mockResolvedValue([...conns("", "", "", "", ""), ...conns("good")]);
     verdict.good = works;
@@ -182,6 +200,15 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     mocks.getProviderConnections.mockResolvedValue([]);
     verdict[""] = refusedLater;
     expect(await json()).toMatchObject({ ok: true, usedKey: false });
+  });
+
+  it.each([
+    ["has no keys", [], "It needs a key, and this endpoint has none"],
+    ["has only switched-off keys", [{ id: "x", isActive: false, apiKey: "off" }], "It needs a key, and none of its keys is switched on"],
+    ["has a switched-on key with no credential", [{ id: "x", isActive: true, apiKey: "" }], "It needs a key, and no switched-on key has one set"],
+  ])("says the endpoint needs a key, not that a key was rejected, when it %s", async (_label, list, error) => {
+    mocks.getProviderConnections.mockResolvedValue(list);
+    expect(await json()).toMatchObject({ ok: false, error, usedKey: false });
   });
 
   it("still runs once with no key when the endpoint has no keys", async () => {
@@ -223,6 +250,16 @@ describe("re-detect model check: keys with their own URL", () => {
     const body = await json();
     expect(keysUsed()).toEqual(["shared"]);
     expect(body).toMatchObject({ keyScoped: false });
+    expect(body.viaKeyUrl).toBeUndefined();
+  });
+
+  it("treats a key whose own URL is the endpoint's URL as on the endpoint's URL", async () => {
+    mocks.getProviderConnections.mockResolvedValue([...ownConns("other"),
+      { id: "same", isActive: true, apiKey: "same", providerSpecificData: { ownBaseUrl: true, baseUrl: "https://api.acme.dev/v1/" } }]);
+    verdict.same = works;
+    const body = await json();
+    expect(keysUsed()).toEqual(["same"]);
+    expect(body).toMatchObject({ ok: true, keyScoped: false });
     expect(body.viaKeyUrl).toBeUndefined();
   });
 
