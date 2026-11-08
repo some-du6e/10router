@@ -11,7 +11,7 @@ import { getModelTargetFormat, getModelSupportedFormats, getModelStrip, getModel
 import { PROVIDERS } from "../config/providers.js";
 import { createErrorResult, parseUpstreamError, formatProviderError, isClientAbort, clientAbortResult } from "../utils/error.js";
 import { classifyError, classifyThrownError } from "../utils/errorClass.js";
-import { HTTP_STATUS } from "../config/runtimeConfig.js";
+import { HTTP_STATUS, STREAM_DRAIN_MAX_MS } from "../config/runtimeConfig.js";
 import { handleBypassRequest } from "../utils/bypassHandler.js";
 import { injectLimitHoldNotice } from "../utils/limitHoldNotice.js";
 import { trackPendingRequest, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
@@ -126,7 +126,7 @@ export async function handleChatCore(args) {
   }
 }
 
-async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onBetasRejected, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, sourceFormatOverride, providerThinking, clientSignal = null }, hangUp) {
+async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onBetasRejected, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, sourceFormatOverride, providerThinking, clientSignal = null, drainOnDisconnect = false }, hangUp) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -342,7 +342,10 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
       if (onDisconnect) onDisconnect(reason);
     },
     onError: () => trackPendingRequest(model, provider, connectionId, false),
-    log, provider, model, reqTag
+    log, provider, model, reqTag,
+    // A key with a budget is charged the provider's real usage even when its
+    // client hangs up mid-stream: the upstream is read to its final usage.
+    drainOnDisconnect, drainMaxMs: STREAM_DRAIN_MAX_MS,
   });
   // A hang-up is a disconnect: the pending count goes down, nothing is a failure.
   const endAsHangUp = () => {

@@ -9,6 +9,18 @@ import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
 // Responses-API providers (e.g. codex) may emit SSE without content-type + use Responses output shape
 const isResponsesProvider = (p) => PROVIDERS[p]?.format === FORMATS.OPENAI_RESPONSES;
 import { saveRequestDetail, appendRequestLog } from "@/lib/usageDb.js";
+import { hasValidUsage, estimateBillingUsage, weighChars } from "../../utils/usageTracking.js";
+
+/**
+ * The usage to record for a reply whose upstream reported none: an estimate
+ * from the request and the reply's text, so the request is still charged and
+ * logged instead of skipped. Reported usage is returned as is.
+ */
+function billedUsage(usage, body, texts) {
+  if (hasValidUsage(usage)) return usage;
+  const weight = texts.reduce((sum, t) => sum + weighChars(typeof t === "string" ? t : ""), 0);
+  return estimateBillingUsage(body, weight, FORMATS.OPENAI);
+}
 
 function textFromResponsesMessageItem(item) {
   if (!item?.content || !Array.isArray(item.content)) return "";
@@ -205,8 +217,11 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
       if (onRequestSuccess) await onRequestSuccess();
 
       const usage = jsonResponse.usage || {};
-      appendLog({ tokens: usage, status: "200 OK" });
-      saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
+      const billed = billedUsage(usage, body, (jsonResponse.output || []).flatMap((item) => [
+        item?.arguments, item?.input, ...(item?.content || []).map((part) => part?.text), ...(item?.summary || []).map((part) => part?.text),
+      ]));
+      appendLog({ tokens: billed, status: "200 OK" });
+      saveUsageStats({ provider, model, tokens: billed, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
       if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
 
       // Same cache-inclusive total for the recorded detail, so the DB and the
@@ -306,8 +321,12 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
     if (onRequestSuccess) await onRequestSuccess();
 
     const usage = parsed.usage || {};
-    appendLog({ tokens: usage, status: "200 OK" });
-    saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
+    const message = parsed.choices?.[0]?.message || {};
+    const billed = billedUsage(usage, body, [
+      message.content, message.reasoning_content, ...(message.tool_calls || []).map((call) => call?.function?.arguments),
+    ]);
+    appendLog({ tokens: billed, status: "200 OK" });
+    saveUsageStats({ provider, model, tokens: billed, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
     if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
 
     const totalLatency = Date.now() - requestStartTime;

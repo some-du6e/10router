@@ -387,6 +387,58 @@ export function formatUsage(inputTokens, outputTokens, targetFormat) {
   });
 }
 
+// ---- Billing estimates -------------------------------------------------------
+// What a request is charged when the provider never reports its usage (a
+// stream cut short, an upstream with no usage). Unlike estimateUsage (the
+// client-facing context meter) there is no safety buffer, base64 images are
+// not read as text, and non-ASCII text (CJK, emoji) counts about one token per
+// character instead of a quarter.
+
+const BILLING_IMAGE_TOKENS = 1600;
+const NON_ASCII = /[^\x00-\x7f]/g;
+const DATA_URL = /^data:[^;,]+;base64,/;
+
+/**
+ * Weighted length of streamed text: estimateOutputTokens(weighChars(s)) is
+ * about s's token count (ASCII / 4 + non-ASCII).
+ */
+export function weighChars(text) {
+  if (typeof text !== "string" || !text) return 0;
+  const nonAscii = (text.match(NON_ASCII) || []).length;
+  return text.length + nonAscii * 3;
+}
+
+/** Input tokens a request body is billed at when the provider reports none. */
+export function estimateBillingInputTokens(body) {
+  if (!body || typeof body !== "object") return 0;
+  let images = 0;
+  let json;
+  try {
+    // An image or file is a data: URL (OpenAI) or a { type: "base64", data } source (Anthropic).
+    json = JSON.stringify(body, function replacer(key, value) {
+      if (typeof value === "string" && value.length > 256 && (DATA_URL.test(value) || (key === "data" && this?.type === "base64"))) {
+        images += 1;
+        return "";
+      }
+      return value;
+    });
+  } catch {
+    return 0;
+  }
+  return Math.ceil(weighChars(json) / 4) + images * BILLING_IMAGE_TOKENS;
+}
+
+/**
+ * Usage to bill when the provider reported none: input from the request body,
+ * output from the weighted streamed length. Marked `estimated`, no buffer.
+ */
+export function estimateBillingUsage(body, outputWeight, targetFormat = FORMATS.OPENAI) {
+  const input = estimateBillingInputTokens(body);
+  const output = estimateOutputTokens(outputWeight);
+  if (targetFormat === FORMATS.CLAUDE) return { input_tokens: input, output_tokens: output, estimated: true };
+  return { prompt_tokens: input, completion_tokens: output, total_tokens: input + output, estimated: true };
+}
+
 /**
  * Estimate full usage when provider doesn't return it
  * @param {object} body - Request body for input token estimation

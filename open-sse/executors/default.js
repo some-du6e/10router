@@ -106,6 +106,13 @@ export class DefaultExecutor extends BaseExecutor {
         delete transformed.client_metadata;
       }
       stripUnsupportedParams(this.provider, model, transformed);
+      // Ask OpenAI for its usage chunk on a Chat Completions stream, so the
+      // request (and the client key's budget) is charged real usage. Only the
+      // official provider: some compatible upstreams reject unknown params.
+      if (this.provider === "openai" && (_stream || transformed.stream === true) && Array.isArray(transformed.messages)
+        && transformed.stream_options?.include_usage !== true) {
+        transformed = { ...transformed, stream_options: { ...(transformed.stream_options || {}), include_usage: true } };
+      }
       if (this.onMessagesPath(credentials)) {
         const psd = credentials?.providerSpecificData || {};
         transformed = stripBetaBodyFields({ ...transformed }, { dropped: psd.droppedBetas, stripAll: psd.stripBeta === true });

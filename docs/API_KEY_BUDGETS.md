@@ -62,10 +62,36 @@ them. A backup carries the totals, so a key restored onto another install
   check (spent $1,999 < $2,000), so the key finishes at about $2,039, and only
   the next request gets the 402. The overshoot is bounded by how many requests
   run at once times what each costs.
-- **Streams cut short still cost.** A stream the client closes (or that stalls,
-  or whose upstream drops) before its final event is charged for what it
-  streamed: the usage the provider reported so far, with output tokens
-  estimated from the streamed text when the provider hadn't sent them yet.
+- **Streams cut short are charged the real usage (budgeted keys).** When the
+  client of a key with a budget hangs up (or cancels) mid-stream, 10router
+  closes the client's stream at once but keeps reading the upstream, discarding
+  it, until the provider's final usage arrives (Claude `message_delta`,
+  Responses `response.completed`, the OpenAI usage chunk or `[DONE]`, or the
+  upstream's end), and charges exactly that. Hidden thinking, encrypted
+  reasoning and server-tool input are all in that number, which an estimate
+  from the visible text can't see. The drain is capped at 10 minutes
+  (`STREAM_DRAIN_MAX_MS`; `0` turns it off) and also ends at the stall timeout;
+  past either, the upstream is dropped and the request is charged an estimate.
+  The client side and the pending-request count are released at the hang-up;
+  only the read loop stays. Keys without a budget keep the old behaviour: the
+  upstream is dropped about half a second after the hang-up, and the request is
+  charged an estimate.
+- **The estimate, when there is no real usage.** Input is what the provider
+  reported (Anthropic sends it at the start), else an estimate from the request
+  body: about 4 characters per token for ASCII, one token per non-ASCII
+  character (CJK, emoji), and a flat 1,600 tokens per base64 image or file
+  rather than its text. Output is the larger of what the provider reported so
+  far and an estimate from what streamed: text, thinking and tool-call
+  arguments, weighed the same way. A stream cut off before anything came back
+  still pays for its input. A cut-short request is recorded as an error, not a
+  success. Context from an earlier turn that the provider keeps
+  (`previous_response_id`) isn't in the request body, so it can't be estimated
+  when an upstream sends no usage.
+- **Upstreams that send no usage.** A non-streaming request that 10router
+  fetches as a stream (a provider or endpoint set to always stream) and whose
+  stream reports no usage is charged the same estimate, instead of nothing. On
+  the official OpenAI provider, streams ask for the usage chunk
+  (`stream_options.include_usage`), so they report it.
 - **Only priced requests cost anything.** A request whose model has no price
   in the pricing table, and endpoints that don't record usage (images, speech,
   transcription, web search and fetch, video), cost $0 against the budget. They

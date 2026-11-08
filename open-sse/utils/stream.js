@@ -1,7 +1,7 @@
 import { translateResponse, initState } from "../translator/index.js";
 import { FORMATS } from "../translator/formats.js";
 import { trackPendingRequest, appendRequestLog } from "@/lib/usageDb.js";
-import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, estimateOutputTokens, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
+import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, estimateOutputTokens, estimateBillingUsage, weighChars, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
 import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE } from "./streamHelpers.js";
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
@@ -81,28 +81,36 @@ export function createSSEStream(options = {}) {
   let openAIResponsesDoneSent = false;
   let streamDoneSent = false;  // track duplicate [DONE] across transform + flush
   let finalized = false;
-  // The upstream sent its finish chunk: its usage is final, even if the client
-  // closes before the stream ends.
+  // The upstream sent its finish chunk: the answer is complete, even if the
+  // client closes before the stream ends.
   let finishSeen = false;
+  // The upstream's final usage has arrived (Claude message_delta/message_stop,
+  // Responses response.completed, the OpenAI usage chunk or [DONE], Gemini's
+  // finishReason with usageMetadata, Ollama's done). Until then a reported
+  // output count is a placeholder (message_start says output_tokens: 1).
+  let finalUsageSeen = false;
+  // The usage held is our estimate (a finish chunk with no usage); real usage
+  // arriving later replaces it instead of being max-merged into it.
+  let usageIsEstimate = false;
   let completionFlushTimer = null;
 
   const collectResponsesContent = (parsed, eventName) => {
     const type = eventName || parsed?.type;
     if (type === "response.output_text.delta" && typeof parsed?.delta === "string") {
       accumulatedContent += parsed.delta;
-      totalContentLength += parsed.delta.length;
+      totalContentLength += weighChars(parsed.delta);
       responsesTextSeen = true;
     } else if (type === "response.reasoning_summary_text.delta" && typeof parsed?.delta === "string") {
       accumulatedThinking += parsed.delta;
-      totalContentLength += parsed.delta.length;
+      totalContentLength += weighChars(parsed.delta);
       responsesThinkingSeen = true;
     } else if (type === "response.output_text.done" && !responsesTextSeen && typeof parsed?.text === "string") {
       accumulatedContent += parsed.text;
-      totalContentLength += parsed.text.length;
+      totalContentLength += weighChars(parsed.text);
       responsesTextSeen = true;
     } else if (type === "response.reasoning_summary_text.done" && !responsesThinkingSeen && typeof parsed?.text === "string") {
       accumulatedThinking += parsed.text;
-      totalContentLength += parsed.text.length;
+      totalContentLength += weighChars(parsed.text);
       responsesThinkingSeen = true;
     } else if (type === "response.output_item.done" && parsed?.item?.type === "function_call") {
       accumulatedToolCalls.push({
@@ -116,11 +124,82 @@ export function createSSEStream(options = {}) {
         for (const part of output.content || []) {
           if (part?.type === "output_text" && typeof part.text === "string") {
             accumulatedContent += part.text;
-            totalContentLength += part.text.length;
+            totalContentLength += weighChars(part.text);
           }
         }
       }
     }
+  };
+
+  let toolArgsDeltaSeen = false;
+  // Count the output a chunk streamed, in any client or provider shape, so a
+  // stream cut short can be charged for it: text, thinking and tool-call
+  // arguments (Claude text/thinking/input_json deltas, OpenAI content,
+  // reasoning and tool_calls, Responses function-call arguments).
+  const countStreamed = (parsed, eventName) => {
+    if (!parsed || typeof parsed !== "object") return;
+    const d = parsed.delta;
+    if (d && typeof d === "object") {
+      if (typeof d.text === "string") { totalContentLength += weighChars(d.text); accumulatedContent += d.text; }
+      if (typeof d.thinking === "string") { totalContentLength += weighChars(d.thinking); accumulatedThinking += d.thinking; }
+      if (typeof d.partial_json === "string") totalContentLength += weighChars(d.partial_json);
+    }
+    const choiceDelta = parsed.choices?.[0]?.delta;
+    if (choiceDelta && typeof choiceDelta === "object") {
+      if (typeof choiceDelta.content === "string") { totalContentLength += weighChars(choiceDelta.content); accumulatedContent += choiceDelta.content; }
+      for (const field of ["reasoning_content", "reasoning"]) {
+        if (typeof choiceDelta[field] === "string") { totalContentLength += weighChars(choiceDelta[field]); accumulatedThinking += choiceDelta[field]; }
+      }
+      for (const call of Array.isArray(choiceDelta.tool_calls) ? choiceDelta.tool_calls : []) {
+        if (typeof call?.function?.arguments === "string") totalContentLength += weighChars(call.function.arguments);
+      }
+    }
+    // Ollama
+    if (parsed.message && typeof parsed.message === "object" && !parsed.choices) {
+      if (typeof parsed.message.content === "string") { totalContentLength += weighChars(parsed.message.content); accumulatedContent += parsed.message.content; }
+      if (typeof parsed.message.thinking === "string") { totalContentLength += weighChars(parsed.message.thinking); accumulatedThinking += parsed.message.thinking; }
+    }
+    const type = eventName || parsed.type;
+    // commandcode NDJSON
+    if (type === "text-delta" && typeof parsed.text === "string") { totalContentLength += weighChars(parsed.text); accumulatedContent += parsed.text; }
+    if ((type === "response.function_call_arguments.delta" || type === "response.custom_tool_call_input.delta") && typeof d === "string") {
+      totalContentLength += weighChars(d);
+      toolArgsDeltaSeen = true;
+    } else if (type === "response.output_item.done" && !toolArgsDeltaSeen) {
+      const item = parsed.item;
+      if (item?.type === "function_call" && typeof item.arguments === "string") totalContentLength += weighChars(item.arguments);
+      if (item?.type === "custom_tool_call" && typeof item.input === "string") totalContentLength += weighChars(item.input);
+    }
+  };
+
+  // Note an upstream chunk that ends the answer or carries its final usage, in
+  // any provider shape.
+  const noteTerminal = (parsed, eventName) => {
+    if (!parsed || typeof parsed !== "object") return;
+    const type = eventName || parsed.type;
+    if (type === "message_delta" || type === "message_stop") { finishSeen = true; finalUsageSeen = true; return; }
+    if (isOpenAIResponsesTerminalEvent(eventName, parsed)) {
+      finishSeen = true;
+      // response.completed / incomplete / failed carry the usage; a bare error doesn't.
+      if (String(type || "").startsWith("response.")) finalUsageSeen = true;
+      return;
+    }
+    if (parsed.done === true) { finishSeen = true; finalUsageSeen = true; return; }
+    if (parsed.choices?.[0]?.finish_reason) finishSeen = true;
+    if (Array.isArray(parsed.candidates) && parsed.candidates.some((c) => c?.finishReason)) {
+      finishSeen = true;
+      if (parsed.usageMetadata) finalUsageSeen = true;
+    }
+    // OpenAI's usage chunk: on the finish chunk itself, or after it (include_usage).
+    if (finishSeen && hasValidUsage(parsed.usage)) finalUsageSeen = true;
+  };
+
+  // Real usage replaces an estimate field by field; later real usage max-merges.
+  const takeUsage = (current, extracted) => {
+    if (!usageIsEstimate || !current) return mergeUsage(current, extracted);
+    usageIsEstimate = false;
+    const { estimated: _estimated, ...base } = current;
+    return { ...base, ...extracted };
   };
 
   // Usage/logging tail, callable from transform() as well as flush(): a client that
@@ -137,19 +216,29 @@ export function createSSEStream(options = {}) {
     const isPassthrough = mode === STREAM_MODE.PASSTHROUGH;
     let finalUsage = isPassthrough ? usage : state?.usage;
 
-    if (!hasValidUsage(finalUsage) && totalContentLength > 0) {
-      finalUsage = estimateUsage(body, totalContentLength, isPassthrough ? FORMATS.OPENAI : sourceFormat);
-    } else if (aborted && !finishSeen && hasValidUsage(finalUsage) && totalContentLength > 0) {
-      const outKey = "completion_tokens" in finalUsage ? "completion_tokens" : "output_tokens";
-      if (!(finalUsage[outKey] > 0)) {
-        finalUsage = { ...finalUsage, [outKey]: estimateOutputTokens(totalContentLength), estimated: true };
+    const cutShort = aborted && !finishSeen;
+    if (!hasValidUsage(finalUsage) && (totalContentLength > 0 || cutShort)) {
+      // A stream cut short still had its input read upstream, even if nothing
+      // (or only a tool call) came back yet.
+      const estimated = estimateBillingUsage(body, totalContentLength, isPassthrough ? FORMATS.OPENAI : sourceFormat);
+      if (hasValidUsage(estimated)) finalUsage = estimated;
+    } else if (!finalUsageSeen && hasValidUsage(finalUsage) && totalContentLength > 0) {
+      // The output count reported so far is a placeholder (Anthropic's
+      // message_start says output_tokens: 1); the streamed text says more.
+      // Usage can carry both field names (provider's and normalized); raise each.
+      const estimated = estimateOutputTokens(totalContentLength);
+      const outKeys = ["completion_tokens", "output_tokens"].filter((k) => k in finalUsage);
+      if (!outKeys.length) outKeys.push("completion_tokens");
+      if (outKeys.some((k) => !(finalUsage[k] >= estimated))) {
+        finalUsage = { ...finalUsage, estimated: true };
+        for (const k of outKeys) finalUsage[k] = Math.max(Number(finalUsage[k]) || 0, estimated);
       }
     }
     if (isPassthrough) usage = finalUsage; else if (state) state.usage = finalUsage;
 
     if (hasValidUsage(finalUsage)) {
       logUsage(isPassthrough ? provider : (state?.provider || targetFormat), finalUsage, model, connectionId, apiKey);
-    } else {
+    } else if (!cutShort) {
       appendRequestLog({ model, provider, connectionId, tokens: null, status: "200 OK" }).catch(() => { });
     }
 
@@ -158,7 +247,7 @@ export function createSSEStream(options = {}) {
         content: accumulatedContent,
         thinking: accumulatedThinking,
         toolCalls: accumulatedToolCalls,
-      }, finalUsage, ttftAt);
+      }, finalUsage, ttftAt, { aborted: cutShort });
     }
   };
 
@@ -207,12 +296,18 @@ export function createSSEStream(options = {}) {
           let injectedUsage = false;
           let responsesTerminal = false;
 
+          if (trimmed.startsWith("data:") && trimmed.slice(5).trim() === "[DONE]") {
+            finishSeen = true;
+            finalUsageSeen = true;
+          }
           if (trimmed.startsWith("data:") && trimmed.slice(5).trim() !== "[DONE]") {
             const responseEventName = currentOpenAIResponsesEvent;
             currentOpenAIResponsesEvent = null;
             try {
               const parsed = JSON.parse(trimmed.slice(5).trim());
               collectResponsesContent(parsed, responseEventName);
+              countStreamed(parsed, responseEventName);
+              noteTerminal(parsed, responseEventName);
 
               const idFixed = fixInvalidId(parsed);
 
@@ -255,32 +350,22 @@ export function createSSEStream(options = {}) {
                 continue;
               }
 
-              const delta = parsed.choices?.[0]?.delta;
-              const content = delta?.content;
-              const reasoning = delta?.reasoning_content;
-              if (content && typeof content === "string") {
-                totalContentLength += content.length;
-                accumulatedContent += content;
-              }
-              if (reasoning && typeof reasoning === "string") {
-                totalContentLength += reasoning.length;
-                accumulatedThinking += reasoning;
-              }
-
               const extracted = extractUsage(parsed);
               if (extracted) {
-                usage = mergeUsage(usage, extracted);
+                usage = takeUsage(usage, extracted);
               }
 
               responsesTerminal = isOpenAIResponsesTerminalEvent(responseEventName, parsed);
 
               const isFinishChunk = parsed.choices?.[0]?.finish_reason;
-              if (isFinishChunk || responsesTerminal) finishSeen = true;
               if (isFinishChunk && !hasValidUsage(parsed.usage)) {
+                // The client sees the context-meter estimate; the key is billed
+                // the plain one until the real usage chunk replaces it.
                 const estimated = estimateUsage(body, totalContentLength, FORMATS.OPENAI);
                 parsed.usage = filterUsageForFormat(estimated, FORMATS.OPENAI);
                 output = `data: ${JSON.stringify(parsed)}\n`;
-                usage = estimated;
+                usage = estimateBillingUsage(body, totalContentLength, FORMATS.OPENAI);
+                usageIsEstimate = true;
                 injectedUsage = true;
               } else if (isFinishChunk && usage) {
                 const buffered = addBufferToUsage(usage);
@@ -335,6 +420,8 @@ export function createSSEStream(options = {}) {
         // For Ollama: done=true is the final chunk with finish_reason/usage, must translate
         // For other formats: done=true is the [DONE] sentinel, skip
         if (parsed && parsed.done && targetFormat !== FORMATS.OLLAMA) {
+          finishSeen = true;
+          finalUsageSeen = true;
           // A clean end of stream. Translators may finish a message the upstream
           // never closed with finish_reason, but only after this (not on a cut-off).
           state.upstreamDone = true;
@@ -368,33 +455,15 @@ export function createSSEStream(options = {}) {
           continue;
         }
 
-        // Claude format - content
-        if (parsed.delta?.text) {
-          totalContentLength += parsed.delta.text.length;
-          accumulatedContent += parsed.delta.text;
-        }
-        // Claude format - thinking
-        if (parsed.delta?.thinking) {
-          totalContentLength += parsed.delta.thinking.length;
-          accumulatedThinking += parsed.delta.thinking;
-        }
-        
-        // OpenAI format - content
-        if (parsed.choices?.[0]?.delta?.content) {
-          totalContentLength += parsed.choices[0].delta.content.length;
-          accumulatedContent += parsed.choices[0].delta.content;
-        }
-        // OpenAI format - reasoning
-        if (parsed.choices?.[0]?.delta?.reasoning_content) {
-          totalContentLength += parsed.choices[0].delta.reasoning_content.length;
-          accumulatedThinking += parsed.choices[0].delta.reasoning_content;
-        }
+        // Claude / OpenAI / Responses text, thinking and tool-call arguments
+        countStreamed(parsed, openAIResponsesEventName);
+        noteTerminal(parsed, openAIResponsesEventName);
         
         // Gemini format
         if (parsed.candidates?.[0]?.content?.parts) {
           for (const part of parsed.candidates[0].content.parts) {
             if (part.text && typeof part.text === "string") {
-              totalContentLength += part.text.length;
+              totalContentLength += weighChars(part.text);
               // Check if this is thinking content
               if (part.thought === true) {
                 accumulatedThinking += part.text;
@@ -407,7 +476,7 @@ export function createSSEStream(options = {}) {
 
         // Extract usage
         const extracted = extractUsage(parsed);
-        if (extracted) state.usage = mergeUsage(state.usage, extracted); // Keep original usage for logging
+        if (extracted) state.usage = takeUsage(state.usage, extracted); // Keep original usage for logging
 
         // Responses same-format passthrough: re-emit with original event framing
         if (keepsOpenAIResponsesFormat && openAIResponsesEventName) {
@@ -425,6 +494,9 @@ export function createSSEStream(options = {}) {
 
         // Translate: targetFormat -> openai -> sourceFormat
         const translated = translateResponse(targetFormat, sourceFormat, parsed, state);
+        // The translator saw the upstream finish (any client shape, e.g. a
+        // Responses client on a Claude upstream).
+        if (state.finishReason) finishSeen = true;
 
         // Log OpenAI intermediate chunks (if available)
         if (translated?._openaiIntermediate) {
@@ -444,11 +516,11 @@ export function createSSEStream(options = {}) {
 
             // Inject estimated usage if finish chunk has no valid usage
             const isFinishChunk = item.type === "message_delta" || item.choices?.[0]?.finish_reason;
-            if (state.finishReason && isFinishChunk) finishSeen = true;
             if (state.finishReason && isFinishChunk && !hasValidUsage(item.usage) && totalContentLength > 0) {
               const estimated = estimateUsage(body, totalContentLength, sourceFormat);
               item.usage = filterUsageForFormat(estimated, sourceFormat); // Filter + already has buffer
-              state.usage = estimated;
+              state.usage = estimateBillingUsage(body, totalContentLength, sourceFormat);
+              usageIsEstimate = true;
             } else if (state.finishReason && isFinishChunk && state.usage) {
               // Add buffer and filter usage for client (but keep original in state.usage for logging)
               const buffered = addBufferToUsage(state.usage);
@@ -598,6 +670,10 @@ export function createSSEStream(options = {}) {
   // For the pipe (streamHandler.js), which ends the stream on a hang-up, a
   // stall or an upstream error without flush() ever running.
   sse.finalizeOnAbort = () => finalizeStream({ aborted: true });
+  // For the drain (a budgeted key's client hung up): has the final usage
+  // arrived, and record it now without waiting for the upstream to close.
+  sse.finalUsageSeen = () => finalUsageSeen;
+  sse.finalizeNow = () => finalizeStream();
   return sse;
 }
 

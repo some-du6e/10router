@@ -355,6 +355,26 @@ describe("model allowlist", () => {
     expect(await keepAllowedAdapterModels(plain.key, ["openai/gpt-pool", "openai/gpt-a"], ["openai/gpt-a"])).toEqual(["openai/gpt-pool", "openai/gpt-a"]);
   });
 
+  it("filters the adapter's models on a combo, and on a combo inside a combo", async () => {
+    await createCombo({ name: "outer-combo", models: ["safe-combo"] });
+    upstream.adapterPool = ["openai/gpt-pool"];
+    const routed = () => upstream.core.mock.calls.map(([args]) => args.modelInfo.model);
+
+    const comboKey = await newKey("adapter-combo", { allowedModels: ["safe-combo"] });
+    expect((await handleChat(chatRequest(comboKey, "safe-combo"))).status).toBe(200);
+    expect(routed()).not.toContain("gpt-pool");
+
+    upstream.core.mockClear();
+    const nestedKey = await newKey("adapter-nested", { allowedModels: ["outer-combo"] });
+    expect((await handleChat(chatRequest(nestedKey, "outer-combo"))).status).toBe(200);
+    expect(routed()).not.toContain("gpt-pool");
+
+    upstream.core.mockClear();
+    const plain = await newKey("adapter-combo-plain");
+    await handleChat(chatRequest(plain, "safe-combo"));
+    expect(routed()[0]).toBe("gpt-pool");
+  });
+
   const media = (key, url, body) => new Request(`http://localhost${url}`, {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key.key}` }, body: JSON.stringify(body),
   });
@@ -385,8 +405,10 @@ describe("model allowlist", () => {
     const key = await newKey("routes-filter", { allowedModels: ["safe-combo"] });
     const get = (url) => new Request(`http://localhost${url}`, { headers: { Authorization: `Bearer ${key.key}` } });
 
+    // A combo made only of allowed combos (outer-combo, if another test made it) is allowed too.
+    const onlyAllowed = (ids) => ids.length > 0 && ids.includes("safe-combo") && ids.every((id) => ["safe-combo", "outer-combo"].includes(id));
     const list = await (await modelsRoute.GET(get("/v1/models"))).json();
-    expect(list.data.map((m) => m.id)).toEqual(["safe-combo"]);
+    expect(onlyAllowed(list.data.map((m) => m.id))).toBe(true);
 
     const sub = await import("@/app/api/v1/models/[...model]/route.js");
     expect((await sub.GET(get("/v1/models/mixed-combo"), { params: Promise.resolve({ model: ["mixed-combo"] }) })).status).toBe(404);
@@ -394,7 +416,7 @@ describe("model allowlist", () => {
 
     const codex = await import("@/app/api/v1/codex/models/route.js");
     const codexList = await (await codex.GET(get("/backend-api/codex/models"))).json();
-    expect(codexList.data.map((m) => m.id)).toEqual(["safe-combo"]);
+    expect(onlyAllowed(codexList.data.map((m) => m.id))).toBe(true);
 
     const gemini = await import("@/app/api/v1beta/models/route.js");
     const geminiAll = (await (await gemini.GET(new Request("http://localhost/v1beta/models"))).json()).models;
@@ -485,6 +507,54 @@ describe("rate-limit hold", () => {
       Object.assign(DEFAULT_TIMING, timing);
       await updateSettings({ limitHoldEnabled: false });
     }
+  });
+});
+
+describe("combo rate-limit hold", () => {
+  const LIMITED = () => ({ allRateLimited: true, retryAfter: new Date(Date.now() + 50).toISOString(), retryAfterHuman: "reset after 1s", lastError: "rate limited", lastErrorCode: 429 });
+  const withHold = async (fn) => {
+    const { DEFAULT_TIMING } = await import("open-sse/utils/limitHold.js");
+    const timing = { ...DEFAULT_TIMING };
+    Object.assign(DEFAULT_TIMING, { minWaitMs: 10, recheckMs: 10, keepaliveMs: 5 });
+    await updateSettings({ limitHoldEnabled: true });
+    try { await fn(); } finally {
+      Object.assign(DEFAULT_TIMING, timing);
+      await updateSettings({ limitHoldEnabled: false });
+    }
+  };
+  // Every model of the combo is rate-limited on the first pass, and meanwhile
+  // the key's budget runs out. A re-run would succeed.
+  const limitedOnce = (key) => {
+    let calls = 0;
+    upstream.credentials.mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) await spend(key, 1);
+      return calls <= 2 ? LIMITED() : { connectionId: "conn-1", connectionName: "acct", accessToken: "t" };
+    });
+    upstream.core.mockImplementation(async () => ({ success: true, response: new Response(JSON.stringify({ ok: "rerun reached the upstream" }), { status: 200 }) }));
+  };
+
+  it("checks the key before re-running a held JSON combo request", async () => {
+    await withHold(async () => {
+      const key = await newKey("combo-held-json", { budgetUsd: 1 });
+      limitedOnce(key);
+      const res = await handleChat(chatRequest(key, "safe-combo", { body: { stream: false } }));
+      expect(res.status).toBe(402);
+      expect(upstream.core).not.toHaveBeenCalled();
+    });
+  });
+
+  it("checks the key before re-running a held streaming combo request", async () => {
+    await withHold(async () => {
+      const key = await newKey("combo-held-stream", { budgetUsd: 1 });
+      limitedOnce(key);
+      const res = await handleChat(chatRequest(key, "safe-combo", { body: { stream: true } }));
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(text).toContain("budget is used up");
+      expect(text).not.toContain("rerun reached the upstream");
+      expect(upstream.core).not.toHaveBeenCalled();
+    });
   });
 });
 
