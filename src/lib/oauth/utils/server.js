@@ -1,4 +1,5 @@
 import http from "http";
+import crypto from "crypto";
 import { URL } from "url";
 import { CODEX_CONFIG, TRAE_CONFIG, WINDSURF_CONFIG, ZED_HOSTED_CONFIG } from "../constants/oauth.js";
 
@@ -6,6 +7,12 @@ import { CODEX_CONFIG, TRAE_CONFIG, WINDSURF_CONFIG, ZED_HOSTED_CONFIG } from ".
 // Legit OAuth redirects are top-level navigations (no `Origin` header); a cross-site
 // page issuing `fetch(..., {mode:"no-cors"})` to scan + hit 127.0.0.1 always sends
 // `Origin: https://attacker`. Reject any non-loopback Origin to block login-CSRF.
+function safeEqual(a, b) {
+  const left = Buffer.from(String(a));
+  const right = Buffer.from(String(b));
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
 function isLoopbackOrigin(origin) {
   if (!origin) return true; // navigation redirect — allow
   return /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin);
@@ -442,6 +449,7 @@ export function stopXaiProxy() {
 let traeProxyServer = null;
 let traeProxyTimeout = null;
 let traeProxyPort = null;
+let traeProxyPath = null;
 let traeSession = null;
 
 export function registerTraeSession({ state }) {
@@ -461,12 +469,14 @@ export function clearTraeSession(state) {
 export function startTraeProxy() {
   return new Promise((resolve) => {
     if (traeProxyServer) {
-      resolve({ success: true, port: traeProxyPort, callbackUrl: `http://127.0.0.1:${traeProxyPort}${TRAE_CONFIG.callbackPath}` });
+      resolve({ success: true, port: traeProxyPort, callbackUrl: `http://127.0.0.1:${traeProxyPort}${traeProxyPath}` });
       return;
     }
+    // Trae does not echo state, so an unguessable callback path binds the callback to this login.
+    const callbackPath = `${TRAE_CONFIG.callbackPath}/${crypto.randomBytes(24).toString("base64url")}`;
     const server = http.createServer(async (req, res) => {
       const url = new URL(req.url, "http://localhost");
-      if (url.pathname !== TRAE_CONFIG.callbackPath && url.pathname !== "/auth/callback") {
+      if (!safeEqual(url.pathname, callbackPath)) {
         res.writeHead(404);
         res.end("Not found");
         return;
@@ -525,8 +535,9 @@ export function startTraeProxy() {
     server.listen(0, "127.0.0.1", () => {
       traeProxyServer = server;
       traeProxyPort = server.address().port;
+      traeProxyPath = callbackPath;
       traeProxyTimeout = setTimeout(() => stopTraeProxy(), TRAE_CONFIG.oauthTimeoutMs);
-      resolve({ success: true, port: traeProxyPort, callbackUrl: `http://127.0.0.1:${traeProxyPort}${TRAE_CONFIG.callbackPath}` });
+      resolve({ success: true, port: traeProxyPort, callbackUrl: `http://127.0.0.1:${traeProxyPort}${callbackPath}` });
     });
     server.on("error", (err) => resolve({ success: false, reason: err.message }));
   });
@@ -536,6 +547,7 @@ export function stopTraeProxy() {
   if (traeProxyTimeout) { clearTimeout(traeProxyTimeout); traeProxyTimeout = null; }
   if (traeProxyServer) { traeProxyServer.close(); traeProxyServer = null; }
   traeProxyPort = null;
+  traeProxyPath = null;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
