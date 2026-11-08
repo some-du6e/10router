@@ -89,9 +89,13 @@ export function createSSEStream(options = {}) {
   // finishReason with usageMetadata, Ollama's done). Until then a reported
   // output count is a placeholder (message_start says output_tokens: 1).
   let finalUsageSeen = false;
-  // When the upstream answer started: a stream cut short is charged at least
-  // STREAM_ABORT_FLOOR_TPS output tokens per second from here to the cut.
-  const streamStartedAt = Date.now();
+  // A stream cut short is charged at least STREAM_ABORT_FLOOR_TPS output
+  // tokens per second, from the upstream's first byte (prefill isn't billed;
+  // hidden thinking is, since thinking and ping events stream during it) to
+  // the cut, or to the last upstream byte when the stall watchdog ended it.
+  // An executor that reads ahead of us (codex's peek, kiro's integrity gate)
+  // sets sse.upstreamStartedAt to when its fetch returned.
+  let floorEndAt = null;
   // The client is gone but the upstream is still read (an opted-in drain).
   let clientGone = false;
   // The pending-request count goes down once per request, whoever ends it.
@@ -196,19 +200,33 @@ export function createSSEStream(options = {}) {
     }
     if (parsed.done === true) { finishSeen = true; finalUsageSeen = true; return; }
     if (parsed.choices?.[0]?.finish_reason) finishSeen = true;
-    if (Array.isArray(parsed.candidates) && parsed.candidates.some((c) => c?.finishReason)) {
+    // Gemini, or antigravity's wrapped { response: { candidates, usageMetadata } }.
+    const gemini = Array.isArray(parsed.candidates) ? parsed : Array.isArray(parsed.response?.candidates) ? parsed.response : null;
+    if (gemini?.candidates.some((c) => c?.finishReason)) {
       finishSeen = true;
-      if (parsed.usageMetadata) finalUsageSeen = true;
+      if (gemini.usageMetadata) finalUsageSeen = true;
     }
     // OpenAI's usage chunk: on the finish chunk itself, or after it (include_usage).
     if (finishSeen && hasValidUsage(parsed.usage)) finalUsageSeen = true;
   };
 
-  // The request's output cap, which an estimate never exceeds.
-  const maxOutputTokens = () => {
-    const cap = body?.max_tokens ?? body?.max_output_tokens ?? body?.max_completion_tokens ?? body?.generationConfig?.maxOutputTokens;
+  // The output cap, which an estimate never exceeds. When a body was sent
+  // upstream, only its cap counts: a translator may raise the client's
+  // (Claude's max_tokens for tools or a thinking budget, Kiro's fixed
+  // maxTokens) or drop it (Codex), and then the client's number says nothing
+  // about how much was generated. No cap upstream means no cap on the floor.
+  const capOf = (b) => {
+    const cap = b?.max_tokens ?? b?.max_output_tokens ?? b?.max_completion_tokens
+      ?? b?.generationConfig?.maxOutputTokens ?? b?.request?.generationConfig?.maxOutputTokens
+      ?? b?.inferenceConfig?.maxTokens;
     return typeof cap === "number" && cap > 0 ? cap : null;
   };
+  const sentBody = () => {
+    const b = sse.upstreamBody;
+    if (typeof b !== "string") return b || null;
+    try { return JSON.parse(b); } catch { return {}; }
+  };
+  const maxOutputTokens = () => { const up = sentBody(); return up ? capOf(up) : capOf(body); };
 
   /**
    * The usage to bill when the final usage never arrived: input as reported
@@ -221,10 +239,14 @@ export function createSSEStream(options = {}) {
     const fmt = mode === STREAM_MODE.PASSTHROUGH ? FORMATS.OPENAI : sourceFormat;
     const outKeys = reported ? ["completion_tokens", "output_tokens"].filter((k) => k in reported) : [];
     const reportedOut = Math.max(0, ...outKeys.map((k) => (Number(reported[k]) > 1 ? Number(reported[k]) : 0)));
-    const floor = answerCut ? Math.floor(((Date.now() - streamStartedAt) / 1000) * STREAM_ABORT_FLOOR_TPS) : 0;
-    let out = Math.max(reportedOut, estimateOutputTokens(totalContentLength), floor);
+    const startedAt = sse.upstreamStartedAt ?? ttftAt;
+    const endedAt = floorEndAt ?? Date.now();
+    const floor = answerCut && startedAt ? Math.floor((Math.max(0, endedAt - startedAt) / 1000) * STREAM_ABORT_FLOOR_TPS) : 0;
+    const visible = estimateOutputTokens(totalContentLength);
+    let out = Math.max(reportedOut, visible, floor);
+    // The cap bounds the floor only: what was reported or visibly streamed stands.
     const cap = maxOutputTokens();
-    if (cap) out = Math.max(Math.min(out, cap), reportedOut);
+    if (cap) out = Math.max(Math.min(out, cap), reportedOut, visible);
     const billed = reported ? { ...reported } : estimateBillingUsage(body, 0, fmt);
     const keys = outKeys.length ? outKeys : ["completion_tokens" in billed ? "completion_tokens" : "output_tokens"];
     for (const k of keys) billed[k] = out;
@@ -252,7 +274,7 @@ export function createSSEStream(options = {}) {
     const lostClient = aborted || clientGone;
     const recordAsError = lostClient && !finalUsageSeen;
     const reported = hasValidUsage(finalUsage) ? finalUsage : null;
-    if (!finalUsageSeen ? (reported || totalContentLength > 0 || lostClient) : (!reported && totalContentLength > 0)) {
+    if (!finalUsageSeen ? (reported || totalContentLength > 0 || lostClient) : (!reported && (totalContentLength > 0 || finishSeen))) {
       // Only computed here, once: the final usage never came (or came empty).
       const billed = billCutShort(reported, !finalUsageSeen && !finishSeen);
       if (hasValidUsage(billed)) finalUsage = billed;
@@ -705,6 +727,8 @@ export function createSSEStream(options = {}) {
   // arrived, and record it now without waiting for the upstream to close.
   sse.finalUsageSeen = () => finalUsageSeen;
   sse.markClientGone = () => { clientGone = true; };
+  // The stall watchdog ended the stream: the floor stops at the last upstream byte.
+  sse.markStalled = (lastByteAt) => { floorEndAt = lastByteAt; };
   sse.finalizeNow = () => finalizeStream();
   return sse;
 }

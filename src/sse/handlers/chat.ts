@@ -247,6 +247,13 @@ export async function handleChat(
     log.warn("AUTH", `API key refused by its limits (${limitDenied.status})`);
     return limitDenied;
   }
+  // A budget is counted at standard prices; fast mode (`speed`) and priority
+  // tiers (`service_tier`) bill a multiple the pricing table doesn't know, so
+  // a budgeted key's requests go out without them.
+  if (await keyHasBudget(apiKey)) {
+    delete body.speed;
+    delete body.service_tier;
+  }
 
   // Bypass naming/warmup requests before combo rotation to avoid wasting rotation slots
   const userAgent = request?.headers?.get("user-agent") || "";

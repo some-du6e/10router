@@ -68,11 +68,18 @@ them. A backup carries the totals, so a key restored onto another install
   request is charged an estimate whose output is the largest of: the output
   the provider reported so far (not Anthropic's `output_tokens: 1`
   placeholder), what visibly streamed, and **150 output tokens per second**
-  the stream ran (from the upstream's first response to the cut). The floor
+  the stream ran: from the upstream's first byte (so the wait before the first
+  byte, prefill, isn't billed; executors that read ahead, like Codex's, start
+  when their response arrived) to the cut. When the stall watchdog ends a
+  stream, the floor stops at the last byte the upstream sent, so the silent
+  window isn't billed as generation. The floor
   exists because thinking can be hidden (`display: "omitted"`), and a model
   thinking for 30 seconds streams nothing visible: without it, an early Esc
-  would make a long generation nearly free. The estimate never goes above the
-  request's `max_tokens` (`max_output_tokens`, `max_completion_tokens`).
+  would make a long generation nearly free. The floor never goes above the
+  output cap sent upstream (`max_tokens`, `max_output_tokens`,
+  `max_completion_tokens`, Gemini's `maxOutputTokens`), which a translator may
+  set higher than the client asked (Claude raises it for tools or a thinking
+  budget), and never below what the provider reported or visibly streamed.
   Completed streams are charged exactly what the provider reports, however
   long they ran. Set `STREAM_ABORT_FLOOR_TPS` to change the rate (`0` turns
   the floor off). This applies to every key, so the usage page counts cut-short
@@ -105,6 +112,10 @@ them. A backup carries the totals, so a key restored onto another install
   stream reports no usage is charged the same estimate, instead of nothing. On
   the official OpenAI provider, streams ask for the usage chunk
   (`stream_options.include_usage`), so they report it.
+- **Fast mode and priority tiers are dropped.** The budget counts standard
+  prices, and fast mode (`speed: "fast"`) or a priority/flex tier
+  (`service_tier`) bill a multiple the pricing table doesn't have, so a key
+  with a budget sends its requests without those two fields.
 - **Only priced requests cost anything.** A request whose model has no price
   in the pricing table, and endpoints that don't record usage (images, speech,
   transcription, web search and fetch, video), cost $0 against the budget. They

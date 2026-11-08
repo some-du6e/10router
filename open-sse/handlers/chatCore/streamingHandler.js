@@ -94,6 +94,10 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
   const keepaliveMs = KEEPALIVE_FORMATS.has(sourceFormat) ? STREAM_KEEPALIVE_MS : 0;
   // The stream's own end shares chatCore's once-only pending decrement.
   if (endPending) transformStream.endPending = endPending;
+  // For a cut-short stream's estimate: the body the provider got (its output
+  // cap), and when an executor that read ahead got its response.
+  transformStream.upstreamBody = finalBody || translatedBody || null;
+  if (providerResponse?.upstreamStartedAt) transformStream.upstreamStartedAt = providerResponse.upstreamStartedAt;
   const transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal, stallTimeoutMs, keepaliveMs);
 
   saveRequestDetail(buildRequestDetail({

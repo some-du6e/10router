@@ -558,6 +558,20 @@ describe("combo rate-limit hold", () => {
   });
 });
 
+describe("unpriced billing modes", () => {
+  it("a budgeted key's request goes out without speed and service_tier; others keep them", async () => {
+    const budgeted = await newKey("strip-modes", { budgetUsd: 100 });
+    await handleChat(chatRequest(budgeted, "openai/gpt-a", { body: { speed: "fast", service_tier: "priority" } }));
+    const sent = upstream.core.mock.calls.at(-1)[0].body;
+    expect(sent).not.toHaveProperty("speed");
+    expect(sent).not.toHaveProperty("service_tier");
+
+    const plain = await newKey("keep-modes");
+    await handleChat(chatRequest(plain, "openai/gpt-a", { body: { speed: "fast", service_tier: "priority" } }));
+    expect(upstream.core.mock.calls.at(-1)[0].body).toMatchObject({ speed: "fast", service_tier: "priority" });
+  });
+});
+
 describe("Ollama /v1/api/chat", () => {
   it("returns a refusal with its status and body instead of an empty 200", async () => {
     const { POST } = await import("@/app/api/v1/api/chat/route.js");
