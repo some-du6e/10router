@@ -17,6 +17,9 @@ import EndpointRow from "./components/EndpointRow";
 import StatusAlert from "./components/StatusAlert";
 import Tooltip from "./components/Tooltip";
 import SecurityWarning from "./components/SecurityWarning";
+import KeySpendSummary from "./components/KeySpendSummary";
+import KeyLimitsModal from "./components/KeyLimitsModal";
+import KeyUsageModal from "./components/KeyUsageModal";
 export default function APIPageClient({ machineId }) {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -24,6 +27,9 @@ export default function APIPageClient({ machineId }) {
   const [newKeyName, setNewKeyName] = useState("");
   const [createdKey, setCreatedKey] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
+  // Which key's limits dialog / spend view is open (by id, so they follow list updates).
+  const [limitsKeyId, setLimitsKeyId] = useState(null);
+  const [usageKeyId, setUsageKeyId] = useState(null);
 
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [limitHoldEnabled, setLimitHoldEnabled] = useState(false);
@@ -1118,8 +1124,25 @@ export default function APIPageClient({ machineId }) {
                   {key.isActive === false && (
                     <p className="text-xs text-orange-500 mt-1">Paused</p>
                   )}
+                  <KeySpendSummary apiKey={key} />
                 </div>
                 <div className="flex items-center gap-2 ml-auto">
+                  <button
+                    onClick={() => setUsageKeyId(key.id)}
+                    className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary transition-all"
+                    title="Spend"
+                    aria-label={`Spend for ${key.name}`}
+                  >
+                    <span className="material-symbols-outlined text-[18px]">monitoring</span>
+                  </button>
+                  <button
+                    onClick={() => setLimitsKeyId(key.id)}
+                    className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary transition-all"
+                    title="Budget and limits"
+                    aria-label={`Budget and limits for ${key.name}`}
+                  >
+                    <span className="material-symbols-outlined text-[18px]">tune</span>
+                  </button>
                   <SegmentedControl
                     size="sm"
                     className="[&>button]:px-3"
@@ -1162,6 +1185,20 @@ export default function APIPageClient({ machineId }) {
           </div>
         )}
       </Card>
+
+      {limitsKeyId && keys.some((k) => k.id === limitsKeyId) && (
+        <KeyLimitsModal
+          key={limitsKeyId}
+          apiKey={keys.find((k) => k.id === limitsKeyId)}
+          requireApiKey={requireApiKey}
+          onClose={() => setLimitsKeyId(null)}
+          onSaved={(updated) => updated && setKeys((prev) => prev.map((k) => (k.id === updated.id ? updated : k)))}
+        />
+      )}
+
+      {usageKeyId && keys.some((k) => k.id === usageKeyId) && (
+        <KeyUsageModal key={usageKeyId} apiKey={keys.find((k) => k.id === usageKeyId)} onClose={() => setUsageKeyId(null)} />
+      )}
 
       {/* Add Key Modal */}
       <Modal

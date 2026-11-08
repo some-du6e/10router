@@ -6,6 +6,7 @@ import {
   markAccountUnavailable,
 } from "@/sse/services/auth.js";
 import { getSettings } from "@/lib/localDb";
+import { checkApiKeyLimits } from "@/sse/services/keyLimits.js";
 import { allLockedError } from "open-sse/utils/limitHold.js";
 import { PROVIDER_MODELS } from "@/shared/constants/models";
 import { GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS } from "open-sse/config/runtimeConfig.js";
@@ -240,6 +241,8 @@ function getSafeGeminiNativeErrorText(error) {
 async function forwardGeminiNativeRequest(request, body, model, action) {
   const authError = await validateGeminiNativeClientKey(request);
   if (authError) return authError;
+  const limitDenied = await checkApiKeyLimits(extractGeminiClientApiKey(request), { model });
+  if (limitDenied) return limitDenied;
 
   const modelId = normalizeGeminiNativeModel(model);
   if (!GEMINI_NATIVE_MODEL_PATTERN.test(modelId)) {

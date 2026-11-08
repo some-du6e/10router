@@ -2,12 +2,8 @@ import { EventEmitter } from "events";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
-
-function maskApiKey(key) {
-  if (!key || typeof key !== "string") return null;
-  if (key.length <= 8) return key.charAt(0) + "***";
-  return key.slice(0, 8) + "***";
-}
+import { addApiKeySpendSync } from "./apiKeysRepo.js";
+import { maskApiKey } from "@/shared/utils/apiKey.js";
 
 const PENDING_TIMEOUT_MS = 60 * 1000;
 const RING_CAP = 50;
@@ -311,6 +307,9 @@ export async function saveRequestUsage(entry) {
       const cur = db.get(`SELECT value FROM _meta WHERE key = 'totalRequestsLifetime'`);
       const next = (cur ? parseInt(cur.value, 10) : 0) + 1;
       db.run(`INSERT INTO _meta(key, value) VALUES('totalRequestsLifetime', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [String(next)]);
+
+      // The key's running spend, so budget checks never have to sum history.
+      addApiKeySpendSync(db, entry.apiKey, entry.cost, entry.timestamp);
     });
 
     recordLastUsed(db, entry);
@@ -501,6 +500,63 @@ export async function getConnectionDetail(connectionId, opts = {}) {
     errors7d: errRow?.errors || 0,
     requests7d: recentRow?.total || 0,
   };
+}
+
+/**
+ * Spend detail for one client API key: per day (local dates, dense, so idle
+ * days read as zero), per model, and the latest requests.
+ *
+ * @param {string} apiKey the raw key; never returned
+ * @param {{ dailyDays?: number, recentLimit?: number }} [opts]
+ */
+export async function getApiKeyUsageDetail(apiKey, opts = {}) {
+  const { dailyDays = 30, recentLimit = 10 } = opts;
+  if (!apiKey) return null;
+  const db = await getAdapter();
+
+  const byDate = new Map();
+  for (const row of loadDaysInRange(db, dailyDays)) {
+    const day = parseJson(row.data, {});
+    let requests = 0;
+    let cost = 0;
+    for (const entry of Object.values(day?.byApiKey || {})) {
+      if (entry?.apiKey !== apiKey) continue;
+      requests += entry.requests || 0;
+      cost += entry.cost || 0;
+    }
+    if (requests || cost) byDate.set(row.dateKey, { requests, cost });
+  }
+  const daily = [];
+  const today = new Date();
+  for (let i = dailyDays - 1; i >= 0; i--) {
+    const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - i);
+    const key = getLocalDateKey(d.toISOString());
+    const hit = byDate.get(key);
+    daily.push({ date: key, requests: hit?.requests || 0, cost: hit?.cost || 0 });
+  }
+
+  const byModel = db.all(
+    `SELECT model, provider, COUNT(*) AS requests, SUM(cost) AS cost,
+            SUM(promptTokens) AS promptTokens, SUM(completionTokens) AS completionTokens
+       FROM usageHistory WHERE apiKey = ?
+       GROUP BY model, provider ORDER BY cost DESC, requests DESC LIMIT 20`,
+    [apiKey]
+  ).map((r) => ({
+    model: r.model || "unknown", provider: r.provider || null, requests: r.requests || 0, cost: r.cost || 0,
+    promptTokens: r.promptTokens || 0, completionTokens: r.completionTokens || 0,
+  }));
+
+  const recent = db.all(
+    `SELECT timestamp, model, provider, promptTokens, completionTokens, cost, status
+       FROM usageHistory WHERE apiKey = ? ORDER BY id DESC LIMIT ?`,
+    [apiKey, recentLimit]
+  ).map((r) => ({
+    timestamp: r.timestamp, model: r.model, provider: r.provider || null,
+    promptTokens: r.promptTokens || 0, completionTokens: r.completionTokens || 0,
+    cost: r.cost || 0, status: r.status || "ok",
+  }));
+
+  return { daily, byModel, recent };
 }
 
 export async function getUsageStats(period = "all") {

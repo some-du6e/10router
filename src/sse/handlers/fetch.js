@@ -12,6 +12,7 @@ import { handleFetchCore } from "open-sse/handlers/fetch/index.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
+import { checkApiKeyLimits } from "../services/keyLimits.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { handleComboChat, getComboModelsFromData } from "open-sse/services/combo.js";
 import { assertPublicUrlResolved } from "@/shared/utils/ssrfGuard.js";
@@ -71,6 +72,9 @@ export async function handleFetch(request) {
     log.warn("FETCH", "Missing url");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: url");
   }
+
+  const limitDenied = await checkApiKeyLimits(apiKey, { model: providerInput });
+  if (limitDenied) return limitDenied;
 
   // Validate URL format
   try {

@@ -14,6 +14,7 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
 import { checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { saveRequestUsage } from "@/lib/usageDb.js";
+import { checkApiKeyLimits } from "../services/keyLimits.js";
 
 /**
  * Handle System One (Jev) decision requests for the Next.js server.
@@ -70,6 +71,9 @@ export async function handleSystemone(request) {
   if (!body.questions || typeof body.questions !== "object" || Array.isArray(body.questions)) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: questions");
   }
+
+  const limitDenied = await checkApiKeyLimits(apiKey, { model: modelStr });
+  if (limitDenied) return limitDenied;
 
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) {

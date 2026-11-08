@@ -2,25 +2,33 @@
 
 import { useState } from "react";
 import PropTypes from "prop-types";
-import { fmtDayLabel, fmtCount } from "./formatters";
+import { fmtDayLabel, fmtCount, fmtMoney } from "./formatters";
 
 const W = 880, H = 200, PAD_L = 46, PAD_R = 14, PAD_T = 14, PAD_B = 26;
 const PLOT_W = W - PAD_L - PAD_R;
 const PLOT_H = H - PAD_T - PAD_B;
 
+const MEASURES = {
+  requests: { format: fmtCount, label: "requests", minPeak: 1, minStep: 1 },
+  // Spend in USD: a cent is the smallest step worth an axis label.
+  cost: { format: fmtMoney, label: "spent", minPeak: 0.04, minStep: 0.01 },
+};
+
 /**
- * Requests per day. Single measure, single axis — quota lives in its own chart
- * rather than sharing this one, since two scales on one plot make unrelated
- * series look correlated.
+ * Requests (or spend) per day. Single measure, single axis — quota lives in
+ * its own chart rather than sharing this one, since two scales on one plot
+ * make unrelated series look correlated.
  */
-export default function ActivityChart({ daily }) {
+export default function ActivityChart({ daily, measure = "requests" }) {
   const [hover, setHover] = useState(null);
+  const { format, label, minPeak, minStep } = MEASURES[measure] || MEASURES.requests;
+  const value = (d) => Number(d?.[measure]) || 0;
 
   if (!daily?.length) {
     return <p className="py-10 text-center text-sm text-text-muted">No activity recorded yet.</p>;
   }
 
-  const max = Math.max(...daily.map((d) => d.requests), 1);
+  const max = Math.max(...daily.map(value), minPeak);
   // Round the axis top to a 1/2/5×10^n step so ticks land on readable numbers
   // (0/50/100/150/200) instead of dividing the raw peak (0/53/106/159/212).
   const niceMax = (() => {
@@ -28,7 +36,7 @@ export default function ActivityChart({ daily }) {
     const mag = 10 ** Math.floor(Math.log10(rough));
     // Requests are whole numbers, so never step below 1 — a 0.5 step
     // renders as two identical labels.
-    const step = Math.max(1, [1, 2, 5, 10].find((m) => m * mag >= rough) * mag);
+    const step = Math.max(minStep, [1, 2, 5, 10].find((m) => m * mag >= rough) * mag);
     return step * 4;
   })();
   const bw = PLOT_W / daily.length;
@@ -54,7 +62,7 @@ export default function ActivityChart({ daily }) {
         viewBox={`0 0 ${W} ${H}`}
         className="block w-full h-auto"
         role="img"
-        aria-label={`Requests per day over the last ${daily.length} days, peaking at ${max}.`}
+        aria-label={`${measure === "cost" ? "Spend" : "Requests"} per day over the last ${daily.length} days, peaking at ${format(max)}.`}
         onMouseMove={onMove}
         onMouseLeave={() => setHover(null)}
       >
@@ -68,7 +76,7 @@ export default function ActivityChart({ daily }) {
               x={PAD_L - 8} y={y(v) + 3.5} textAnchor="end"
               className="fill-text-subtle text-[10.5px] tabular-nums"
             >
-              {fmtCount(v)}
+              {format(v)}
             </text>
           </g>
         ))}
@@ -76,8 +84,8 @@ export default function ActivityChart({ daily }) {
         {daily.map((d, i) => (
           <rect
             key={d.date}
-            x={barX(i)} y={y(d.requests)}
-            width={barW} height={Math.max(0, PAD_T + PLOT_H - y(d.requests))}
+            x={barX(i)} y={y(value(d))}
+            width={barW} height={Math.max(0, PAD_T + PLOT_H - y(value(d)))}
             rx="4"
             className="fill-indigo-500"
             opacity={hover === null || hover === i ? 0.95 : 0.45}
@@ -100,12 +108,12 @@ export default function ActivityChart({ daily }) {
           className="pointer-events-none absolute z-10 whitespace-nowrap rounded-[9px] border border-border bg-surface px-2.5 py-1.5 text-xs shadow-[var(--shadow-elevated)]"
           style={{
             left: `min(max(${((barX(hover) + barW / 2) / W) * 100}% - 60px, 4px), calc(100% - 150px))`,
-            top: `${(y(daily[hover].requests) / H) * 100}%`,
+            top: `${(y(value(daily[hover])) / H) * 100}%`,
             transform: "translateY(-115%)",
           }}
         >
           <span className="block text-[11px] text-text-muted">{fmtDayLabel(daily[hover].date)}</span>
-          <span className="font-semibold tabular-nums">{daily[hover].requests}</span> requests
+          <span className="font-semibold tabular-nums">{measure === "cost" ? format(value(daily[hover])) : value(daily[hover])}</span> {label}
         </div>
       )}
     </div>
@@ -118,4 +126,5 @@ ActivityChart.propTypes = {
     requests: PropTypes.number,
     cost: PropTypes.number,
   })),
+  measure: PropTypes.oneOf(["requests", "cost"]),
 };

@@ -20,6 +20,7 @@ import { respondWithEarlyHeaders } from "open-sse/utils/earlyHeaders.js";
 import { errorResponse, unavailableResponse, clientAbortResult } from "open-sse/utils/error.js";
 import { createLimitHoldResponse, awaitLimitClear, isLimitError, allLockedError } from "open-sse/utils/limitHold.js";
 import { resolveLimitHold } from "../services/limitHoldConfig.js";
+import { checkApiKeyLimits } from "../services/keyLimits.js";
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
@@ -236,6 +237,13 @@ export async function handleChat(
   const sourceFormatOverride = request?.url
     ? detectFormatByEndpoint(new URL(request.url).pathname, body)
     : null;
+
+  // The key's budget, model allowlist and expiry, checked before any upstream call.
+  const limitDenied = await checkApiKeyLimits(apiKey, { model: modelStr, format: sourceFormatOverride || detectFormat(body) });
+  if (limitDenied) {
+    log.warn("AUTH", `API key refused by its limits (${limitDenied.status})`);
+    return limitDenied;
+  }
 
   // Bypass naming/warmup requests before combo rotation to avoid wasting rotation slots
   const userAgent = request?.headers?.get("user-agent") || "";
