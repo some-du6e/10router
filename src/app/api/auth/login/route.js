@@ -5,7 +5,7 @@ import { cookies } from "next/headers";
 import { setDashboardAuthCookie } from "@/lib/auth/dashboardSession";
 import { isOidcConfigured } from "@/lib/auth/oidc";
 import { isSamlConfigured } from "@/lib/auth/saml.js";
-import { checkLock, recordFail, recordSuccess, getClientIp } from "@/lib/auth/loginLimiter";
+import { checkLock, recordFail, recordSuccess, getClientIp, reserveAttempt, releaseAttempt } from "@/lib/auth/loginLimiter";
 import { getAuthBootstrapState, getBootstrapSecret } from "@/lib/auth/setupState";
 
 const RESET_HINT = "Forgot password? Run 10router CLI → Settings → Reset Password, then use the new setup token printed on the host console.";
@@ -19,10 +19,10 @@ function isTunnelRequest(request, settings) {
 }
 
 export async function POST(request) {
+  const ip = getClientIp(request);
+  const lock = reserveAttempt(ip);
   try {
-    const ip = getClientIp(request);
-    const lock = checkLock(ip);
-    if (lock.locked) {
+    if (!lock.ok) {
       return NextResponse.json(
         { error: `Too many failed attempts. Try again in ${lock.retryAfter}s. ${RESET_HINT}`, retryAfter: lock.retryAfter, resetHint: RESET_HINT },
         { status: 429, headers: { "Retry-After": String(lock.retryAfter) } }
@@ -124,5 +124,7 @@ export async function POST(request) {
     );
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
+  } finally {
+    if (lock.ok) releaseAttempt(ip);
   }
 }

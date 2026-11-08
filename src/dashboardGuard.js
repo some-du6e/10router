@@ -122,11 +122,33 @@ function isLoopbackPeer(request) {
   return false;
 }
 
+// A browser request another site started (link, <img>, form, fetch). Browsers send no
+// Origin on cross-site GETs, so this is the only header that tells them apart.
+function isCrossSiteBrowserRequest(request) {
+  const site = request.headers.get("sec-fetch-site");
+  return !!site && site !== "same-origin" && site !== "none";
+}
+
+function hostnameOf(value) {
+  try {
+    return value ? new URL(value).hostname.toLowerCase() : "";
+  } catch {
+    return "";
+  }
+}
+
+function isTunnelHost(request, settings) {
+  const host = (request.headers.get("host") || "").split(":")[0].toLowerCase().replace(/\.$/, "");
+  if (!host) return false;
+  return [settings?.tunnelUrl, settings?.tailscaleUrl].some((url) => hostnameOf(url) === host);
+}
+
 export function isLocalRequest(request) {
   // Stamped by custom-server.js when forwarding headers exist: request came through
   // a reverse proxy, so the loopback socket is the proxy hop, not the end-user.
   if (request.headers.get("x-9r-via-proxy")) return false;
   if (!isLoopbackPeer(request)) return false;
+  if (isCrossSiteBrowserRequest(request)) return false;
   const origin = request.headers.get("origin");
   if (origin) {
     try {
@@ -199,7 +221,9 @@ async function isAuthenticated(request) {
   const settings = await loadSettings();
   // requireLogin=false is an opt-out for a *claimed* instance. An instance that
   // has never been set up must never be open, whatever the stored flag says.
-  if (settings && settings.requireLogin === false) return !(await needsSetup(settings));
+  if (settings && settings.requireLogin === false) {
+    return !isCrossSiteBrowserRequest(request) && !(await needsSetup(settings));
+  }
   return false;
 }
 
@@ -260,6 +284,13 @@ export async function proxy(request) {
     }
   }
 
+  if (pathname.startsWith("/api/") && !isPublicApi(pathname)) {
+    const settings = await loadSettings();
+    if (settings && settings.tunnelDashboardAccess !== true && isTunnelHost(request, settings)) {
+      return NextResponse.json({ error: "Dashboard access via tunnel is disabled" }, { status: 403 });
+    }
+  }
+
   // Local-only gate for spawn-capable / host-secret routes.
   if (LOCAL_ONLY_PATHS.some((p) => pathname.startsWith(p))) {
     if (!(await canAccessLocalOnlyRoute(request))) {
@@ -305,13 +336,8 @@ export async function proxy(request) {
         tunnelDashboardAccess = settings.tunnelDashboardAccess === true;
 
         // Block tunnel/tailscale access if disabled (redirect to login)
-        if (!tunnelDashboardAccess) {
-          const host = (request.headers.get("host") || "").split(":")[0].toLowerCase();
-          const tunnelHost = settings.tunnelUrl ? new URL(settings.tunnelUrl).hostname.toLowerCase() : "";
-          const tailscaleHost = settings.tailscaleUrl ? new URL(settings.tailscaleUrl).hostname.toLowerCase() : "";
-          if ((tunnelHost && host === tunnelHost) || (tailscaleHost && host === tailscaleHost)) {
-            return NextResponse.redirect(new URL("/login", request.url));
-          }
+        if (!tunnelDashboardAccess && isTunnelHost(request, settings)) {
+          return NextResponse.redirect(new URL("/login", request.url));
         }
       }
     } catch {

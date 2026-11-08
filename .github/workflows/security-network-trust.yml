@@ -1,0 +1,67 @@
+name: Security network trust
+
+on:
+  pull_request:
+    paths:
+      - "custom-server.js"
+      - "src/dashboardGuard.js"
+      - "src/proxy.js"
+      - "src/lib/auth/**"
+      - "src/app/api/auth/login/**"
+      - "next.config.mjs"
+      - "package.json"
+      - "tests/package.json"
+      - "tests/vitest.config.js"
+      - "tests/__baseline__/**"
+      - "tests/unit/security-network-trust.test.js"
+      - "tests/unit/dashboard-guard.test.js"
+      - "tests/unit/custom-server-peer-headers.test.js"
+      - "tests/unit/custom-server-h2c.test.js"
+      - "tests/unit/codex-ws-bridge-peer.test.js"
+      - "tests/unit/local-request-peer-trust-3294.test.js"
+      - ".github/workflows/security-network-trust.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Unit tests
+        working-directory: tests
+        run: >
+          ./node_modules/.bin/vitest run
+          unit/security-network-trust.test.js
+          unit/dashboard-guard.test.js
+          unit/custom-server-peer-headers.test.js
+          unit/custom-server-h2c.test.js
+          unit/codex-ws-bridge-peer.test.js
+          unit/local-request-peer-trust-3294.test.js
+      - name: Lint
+        run: >
+          ./node_modules/.bin/eslint
+          custom-server.js
+          src/dashboardGuard.js
+          src/lib/auth/loginLimiter.js
+          src/app/api/auth/login/route.js
+          next.config.mjs
+          tests/unit/security-network-trust.test.js
+          tests/unit/dashboard-guard.test.js
+      - name: Full suite (red on master by design; judged by the next step)
+        working-directory: tests
+        continue-on-error: true
+        run: ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/results.json"
+      - name: No regressions against the baseline
+        run: node tests/__baseline__/verify-no-regression.mjs "$RUNNER_TEMP/results.json"

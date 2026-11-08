@@ -60,6 +60,21 @@ const origCreate = http.createServer.bind(http);
 const CODEX_WS_PATH = "/backend-api/codex/responses";
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const MAX_WS_MESSAGE_BYTES = 64 * 1024 * 1024;
+const MAX_CODEX_WS_CONNECTIONS = 64;
+const CODEX_WS_IDLE_MS = 5 * 60 * 1000;
+let codexWsConnections = 0;
+
+// Same setting and default as next.config.mjs's proxyClientMaxBodySize.
+function parseByteSize(value) {
+  const match = /^\s*(\d+(?:\.\d+)?)\s*(b|kb|mb|gb)?\s*$/i.exec(String(value || ""));
+  if (!match) return null;
+  const unit = { b: 1, kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3 }[(match[2] || "b").toLowerCase()];
+  return Math.floor(Number(match[1]) * unit);
+}
+const MAX_H2C_BODY_BYTES = parseByteSize(
+  process.env.TENROUTER_PROXY_CLIENT_MAX_BODY_SIZE || process.env.NINEROUTER_PROXY_CLIENT_MAX_BODY_SIZE || "128mb"
+) || 128 * 1024 * 1024;
+const H2C_BODY_TIMEOUT_MS = 30_000;
 
 function wsAccept(key) {
   return crypto.createHash("sha1").update(key + WS_GUID).digest("base64");
@@ -164,6 +179,36 @@ function isLoopbackSocketIp(ip) {
   return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
 }
 
+const FORWARDING_HEADERS = ["x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host", "x-forwarded-proto", "cf-connecting-ip", "true-client-ip"];
+
+function isLoopbackHostHeader(host) {
+  if (!host) return true;
+  let name = String(host).trim().toLowerCase();
+  if (name.startsWith("[")) name = name.slice(1, name.indexOf("]"));
+  else if (name.indexOf(":") !== -1 && name.indexOf(":") === name.lastIndexOf(":")) name = name.slice(0, name.indexOf(":"));
+  return name === "localhost" || isLoopbackSocketIp(name);
+}
+
+// A loopback peer is a client on this machine only when nothing says otherwise:
+// any forwarding header, a non-loopback Host, or BEHIND_PROXY=true marks it as a
+// local reverse proxy or tunnel relaying someone else.
+function isProxiedRequest(headers, socketIp) {
+  if (!isLoopbackSocketIp(socketIp)) return FORWARDING_HEADERS.some((name) => headers[name]);
+  if (process.env.BEHIND_PROXY === "true") return true;
+  return FORWARDING_HEADERS.some((name) => headers[name]) || !isLoopbackHostHeader(headers.host);
+}
+
+// The rightmost non-loopback X-Forwarded-For entry is the one the nearest
+// proxy appended; everything left of it is client-authored.
+function forwardedClientIp(headers) {
+  const hops = String(headers["x-forwarded-for"] || "").split(",").map((s) => s.trim()).filter(Boolean);
+  for (let i = hops.length - 1; i >= 0; i--) {
+    if (!isLoopbackSocketIp(hops[i])) return hops[i];
+  }
+  if (hops.length) return hops[hops.length - 1];
+  return headers["x-real-ip"] ? String(headers["x-real-ip"]).trim() : "";
+}
+
 /**
  * The headers a bridged Codex turn is POSTed to loopback with. The POST always
  * comes from 127.0.0.1, so the HTTP wrapper below would read it as local; the
@@ -189,10 +234,8 @@ function bridgeForwardHeaders(handshakeHeaders, socketIp, payloadLength) {
     if (/^(x-forwarded-for|x-real-ip|x-9r-|cookie)/i.test(name)) continue;
     forwarded[name] = value;
   }
-  const xff = handshakeHeaders["x-forwarded-for"];
-  const xRealIp = handshakeHeaders["x-real-ip"];
   const loopback = isLoopbackSocketIp(socketIp);
-  if (!loopback || xff || xRealIp) forwarded["x-forwarded-for"] = socketIp || "unknown";
+  if (!loopback || isProxiedRequest(handshakeHeaders, socketIp)) forwarded["x-forwarded-for"] = socketIp || "unknown";
   return forwarded;
 }
 
@@ -289,6 +332,18 @@ function handleCodexUpgrade(req, socket, head, port) {
       return socket.destroy();
     }
   }
+
+  if (codexWsConnections >= MAX_CODEX_WS_CONNECTIONS) {
+    socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nRetry-After: 5\r\n\r\n");
+    return socket.destroy();
+  }
+  codexWsConnections += 1;
+  let counted = true;
+  const release = () => {
+    if (!counted) return;
+    counted = false;
+    codexWsConnections -= 1;
+  };
 
   socket.write(
     "HTTP/1.1 101 Switching Protocols\r\n" +
@@ -419,10 +474,22 @@ function handleCodexUpgrade(req, socket, head, port) {
   // is often already here — dropping `head` would hang the turn forever.
   if (head && head.length) feed(head);
   socket.on("data", feed);
+  // An idle socket with no turn running holds a connection slot and up to a
+  // partial frame of memory; a streaming turn keeps writing, so it never idles.
+  socket.setTimeout(CODEX_WS_IDLE_MS, () => {
+    if (inflight) return;
+    close(1001, "idle timeout");
+    socket.destroy();
+  });
   const abandon = () => {
     closed = true;
+    release();
     abortInflight();
   };
+  socket.on("end", () => {
+    close(1000, "");
+    socket.destroy();
+  });
   socket.on("error", abandon);
   socket.on("close", abandon);
 }
@@ -475,14 +542,11 @@ http.createServer = (...args) => {
   if (!handler) return origCreate(...args);
   const wrapped = (req, res) => {
     const socketIp = req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : "";
-    const xff = req.headers["x-forwarded-for"];
-    const xRealIp = req.headers["x-real-ip"];
-    const viaProxy = !!(xff || xRealIp);
-    const isLoopbackProxy = isLoopbackSocketIp(socketIp);
+    const viaProxy = isProxiedRequest(req.headers, socketIp);
     // Trust forwarding headers only when the TCP peer is a local reverse proxy.
     // Direct/public sockets remain keyed by the unspoofable peer address.
-    const proxyIp = xRealIp || (xff ? String(xff).split(",")[0].trim() : "");
-    const ip = isLoopbackProxy && proxyIp ? proxyIp : socketIp;
+    const proxyIp = isLoopbackSocketIp(socketIp) ? forwardedClientIp(req.headers) : "";
+    const ip = proxyIp || socketIp;
     delete req.headers["x-9r-real-ip"];
     delete req.headers["x-forwarded-for"];
     delete req.headers["x-9r-via-proxy"];
@@ -521,9 +585,14 @@ http.createServer = (...args) => {
       socket.destroy();
       return true;
     }
+    if (contentLength > MAX_H2C_BODY_BYTES) {
+      socket.end("HTTP/1.1 413 Payload Too Large\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+      return true;
+    }
     const chunks = [head];
     let received = head.length;
     const serve = () => {
+      socket.setTimeout(0);
       // Replay the upgraded request through the existing HTTP/1.1 handler.
       const replay = new http.IncomingMessage(socket);
       Object.assign(replay, { method: req.method, url: req.url, headers: req.headers, complete: true });
@@ -540,6 +609,7 @@ http.createServer = (...args) => {
     };
     if (received >= contentLength) serve();
     else {
+      socket.setTimeout(H2C_BODY_TIMEOUT_MS, () => socket.destroy());
       socket.on("data", function readBody(chunk) {
         chunks.push(chunk);
         received += chunk.length;
@@ -557,7 +627,7 @@ http.createServer = (...args) => {
   return server;
 };
 
-module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn } };
+module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn, forwardedClientIp, isProxiedRequest, parseByteSize } };
 
 if (require.main === module) {
   const standalone = path.join(__dirname, "server.js");
