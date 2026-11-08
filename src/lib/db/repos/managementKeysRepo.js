@@ -17,6 +17,9 @@ const DISPLAY_CHARS = 6;
 // the dashboard's changes in a pool of their own.
 export const AUDIT_KEEP_PER_KEY = 1000;
 export const AUDIT_KEEP_DENIED_PER_KEY = 200;
+// Deletes are kept apart and longer, so a run of renames can't trim away the
+// record of what a key removed.
+export const AUDIT_KEEP_DELETES_PER_KEY = 5000;
 export const AUDIT_KEEP_DASHBOARD = 2000;
 // Longest audit detail, as JSON.
 export const AUDIT_DETAIL_MAX = 2048;
@@ -171,21 +174,50 @@ export function nextKeyActors(existing, update, actor) {
 }
 
 /**
+ * Why a management key may not make this change to the key's on/off state or
+ * expiry, or null. A key the dashboard turned off stays off, and an expiry the
+ * dashboard set can only be moved earlier. A key that is off (or has an
+ * expiry) with no recorded actor predates the record, so it counts as the dashboard's.
+ */
+export function dashboardChoiceViolation(existing, update) {
+  if (update.isActive === true && existing.isActive === false) {
+    const by = existing.disabledBy || DASHBOARD_ACTOR;
+    if (by === DASHBOARD_ACTOR) return "this key was turned off in the dashboard; only the dashboard can turn it back on";
+  }
+  if (update.expiresAt !== undefined && existing.expiresAt) {
+    const by = existing.expiresAtSetBy || DASHBOARD_ACTOR;
+    const later = !update.expiresAt || new Date(update.expiresAt).getTime() > new Date(existing.expiresAt).getTime();
+    if (by === DASHBOARD_ACTOR && later) return "this key's expiry was set in the dashboard; it can only be moved earlier";
+  }
+  return null;
+}
+
+/**
  * Update a client key and record who changed its on/off state and expiry, in
- * one transaction. `actor` is "dashboard" or a management key id.
+ * one transaction. `actor` is "dashboard" or a management key id. For a
+ * management key, the key's own state and the dashboard's choices are checked
+ * again against the row as it is inside that transaction, so an admin pausing
+ * the key (or setting its expiry) between the caller's read and this write wins.
+ *
+ * @returns {Promise<{ key: object|null, status?: number, error?: string }>}
  */
 export async function updateApiKeyAs(id, update, actor) {
   const db = await getAdapter();
-  let result = null;
+  let out = { key: null };
   db.transaction(() => {
     const before = rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]));
     if (!before) return;
+    if (actor !== DASHBOARD_ACTOR) {
+      if (!managementKeyActiveInTx(db, actor)) { out = { key: null, status: 401, error: "This management key was revoked or turned off" }; return; }
+      const refusal = dashboardChoiceViolation(before, update);
+      if (refusal) { out = { key: null, status: 403, error: refusal }; return; }
+    }
     updateApiKeyInTx(db, id, update);
     const { disabledBy, expiresAtSetBy } = nextKeyActors(before, update, actor);
     db.run(`UPDATE apiKeys SET disabledBy = ?, expiresAtSetBy = ? WHERE id = ?`, [disabledBy, expiresAtSetBy, id]);
-    result = rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]));
+    out = { key: rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id])) };
   });
-  return result;
+  return out;
 }
 
 // ---- Ownership ---------------------------------------------------------------
@@ -213,7 +245,7 @@ export async function claimRowForManagementKey(kind, rowId, managementKeyId) {
   return claimed;
 }
 
-/** Record an owner unconditionally (backups, tests). */
+/** Record an owner without checking the management key (tests set up rows with it). */
 export async function setRowOwner(kind, rowId, managementKeyId) {
   const db = await getAdapter();
   db.run(`UPDATE ${ownedTable(kind)} SET ownerManagementKeyId = ? WHERE id = ?`, [managementKeyId, rowId]);
@@ -250,7 +282,8 @@ export async function getRowsOwnedBy(kind, managementKeyId) {
 
 // ---- Audit log ---------------------------------------------------------------
 
-export const AUDIT_POOLS = { ok: "ok", denied: "denied", dashboard: "dashboard" };
+export const AUDIT_POOLS = { ok: "ok", denied: "denied", delete: "delete", dashboard: "dashboard" };
+const PER_KEY_KEEP = { ok: AUDIT_KEEP_PER_KEY, denied: AUDIT_KEEP_DENIED_PER_KEY, delete: AUDIT_KEEP_DELETES_PER_KEY };
 
 function truncate(value, max) {
   const s = String(value);
@@ -317,7 +350,7 @@ export async function addManagementAudit({ managementKeyId, action, targetType =
   } else {
     db.run(
       `DELETE FROM managementAudit WHERE pool = ? AND managementKeyId IS ? AND id <= (SELECT id FROM managementAudit WHERE pool = ? AND managementKeyId IS ? ORDER BY id DESC LIMIT 1 OFFSET ?)`,
-      [pool, managementKeyId || null, pool, managementKeyId || null, pool === AUDIT_POOLS.denied ? AUDIT_KEEP_DENIED_PER_KEY : AUDIT_KEEP_PER_KEY]
+      [pool, managementKeyId || null, pool, managementKeyId || null, PER_KEY_KEEP[pool]]
     );
   }
 }

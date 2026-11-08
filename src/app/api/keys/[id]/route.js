@@ -51,7 +51,7 @@ export async function PUT(request, { params }) {
 
     // Records the dashboard as the one that turned the key off or set its
     // expiry, in the same transaction, so a management key can't undo it.
-    const updated = await updateApiKeyAs(id, updateData, "dashboard");
+    const { key: updated } = await updateApiKeyAs(id, updateData, "dashboard");
 
     return NextResponse.json({ key: updated });
   } catch (error) {

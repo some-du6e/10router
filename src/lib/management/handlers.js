@@ -46,8 +46,9 @@ function parseName(raw, { required }) {
 }
 
 async function audit(mk, action, targetType, targetId, detail, { denied = false } = {}) {
+  const pool = denied ? "denied" : action.endsWith(".delete") ? "delete" : "ok";
   try {
-    await addManagementAudit({ managementKeyId: mk.id, action, targetType, targetId, detail, pool: denied ? "denied" : "ok" });
+    await addManagementAudit({ managementKeyId: mk.id, action, targetType, targetId, detail, pool });
   } catch (e) {
     console.warn(`[management] audit write failed: ${e.message}`);
   }
@@ -171,7 +172,11 @@ export function updateClientKey(request, id) {
       await audit(mk, "client_key.update.denied", "clientKey", key.id, { changed, reason: violation }, { denied: true });
       return fail(403, violation);
     }
-    const saved = await updateApiKeyAs(key.id, update, mk.id);
+    const { key: saved, status, error: refused } = await updateApiKeyAs(key.id, update, mk.id);
+    if (refused) {
+      if (status === 403) await audit(mk, "client_key.update.denied", "clientKey", key.id, { changed, reason: refused }, { denied: true });
+      return fail(status, refused);
+    }
     if (!saved) return fail(404, "Client key not found");
     await audit(mk, "client_key.update", "clientKey", saved.id, { changed });
     return json({ clientKey: serializeClientKey(saved, saved.ownerManagementKeyId, mk.id) });
@@ -329,6 +334,8 @@ export function createProviderKey(request) {
       await deleteProviderConnection(out.connection.id).catch(() => {});
       throw e;
     }
+    // Claimed, then swept by a revoke-and-delete racing this request.
+    if (!saved) return fail(401, "This management key was revoked or turned off");
     await audit(mk, "provider_key.create", "providerKey", saved.id, { provider: saved.provider, name: saved.name });
     return json({ providerKey: serializeProviderKey(saved, mk.id, mk.id) }, 201);
   });

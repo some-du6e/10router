@@ -5,7 +5,8 @@ import { isModelAllowed } from "@/sse/services/keyLimits.js";
 import { getModelInfo } from "@/sse/services/model.js";
 import { resolveProviderAlias, stripContextWindowSuffix } from "open-sse/services/model.js";
 import { normalizeProviderId } from "@/lib/providerNormalization";
-import { DASHBOARD_ACTOR } from "@/lib/db/repos/managementKeysRepo.js";
+// Checked again inside the write that applies it (updateApiKeyAs).
+export { dashboardChoiceViolation } from "@/lib/db/repos/managementKeysRepo.js";
 
 // isModelAllowed with nothing to expand: plain id matching, so an entry is in
 // scope only by what it names, never by what an alias or combo points to today.
@@ -88,25 +89,6 @@ export async function clientKeyScopeViolation(scope, { allowedModels, budgetUsd 
     if (budgetUsd > scope.maxBudgetUsd) {
       return `budgetUsd $${budgetUsd} is above this management key's cap of $${scope.maxBudgetUsd}`;
     }
-  }
-  return null;
-}
-
-/**
- * Why a management key may not make this change to the key's on/off state or
- * expiry, or null. A key the dashboard turned off stays off, and an expiry the
- * dashboard set can only be moved earlier. A key that is off (or has an
- * expiry) with no recorded actor predates the record, so it counts as the dashboard's.
- */
-export function dashboardChoiceViolation(existing, update) {
-  if (update.isActive === true && existing.isActive === false) {
-    const by = existing.disabledBy || DASHBOARD_ACTOR;
-    if (by === DASHBOARD_ACTOR) return "this key was turned off in the dashboard; only the dashboard can turn it back on";
-  }
-  if (update.expiresAt !== undefined && existing.expiresAt) {
-    const by = existing.expiresAtSetBy || DASHBOARD_ACTOR;
-    const later = !update.expiresAt || new Date(update.expiresAt).getTime() > new Date(existing.expiresAt).getTime();
-    if (by === DASHBOARD_ACTOR && later) return "this key's expiry was set in the dashboard; it can only be moved earlier";
   }
   return null;
 }
