@@ -83,27 +83,37 @@ export default function ManagementKeysCard({ onKeysLoaded, onRowsChanged }) {
 
   const patch = async (id, body) => {
     setActionError("");
-    const res = await fetch(`/api/management-keys/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) setActionError(data.error || "Could not update the key");
-    load();
+    try {
+      const res = await fetch(`/api/management-keys/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) setActionError(data.error || "Could not update the key");
+    } catch (e) {
+      setActionError(`Could not update the key: ${e.message}`);
+    } finally {
+      load();
+    }
   };
 
   const revoke = async () => {
     const target = revoking;
     setRevoking(null);
     setActionError("");
-    const res = await fetch(`/api/management-keys/${target.id}${deleteCreated ? "?deleteCreated=1" : ""}`, { method: "DELETE" });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      setActionError(data.error || "Could not revoke the key");
+    try {
+      const res = await fetch(`/api/management-keys/${target.id}${deleteCreated ? "?deleteCreated=1" : ""}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setActionError(data.error || "Could not revoke the key");
+      }
+    } catch (e) {
+      setActionError(`Could not revoke the key: ${e.message}`);
+    } finally {
+      if (deleteCreated) onRowsChanged?.();
+      load();
     }
-    if (deleteCreated) onRowsChanged?.();
-    load();
   };
 
   const openRevoke = (target) => {

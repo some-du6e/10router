@@ -4,7 +4,7 @@ import { useState } from "react";
 import PropTypes from "prop-types";
 import { Modal, Button, Input, ConfirmModal } from "@/shared/components";
 import { budgetState } from "@/shared/utils/apiKeyLimits.js";
-import { fmtUsdExact, isoToLocalInput, localInputToIso } from "./keyFormat";
+import { fmtUsdExact, isoToLocalInput, localInputToIso, buildKeyLimitsPayload } from "./keyFormat";
 import StatusAlert from "./StatusAlert";
 import ModelAllowlistField from "./ModelAllowlistField";
 
@@ -48,13 +48,7 @@ export default function KeyLimitsModal({ apiKey, onClose, onSaved, requireApiKey
     setSaving(true);
     setError("");
     try {
-      const key = await put({
-        budgetUsd: trimmed === "" ? null : Number(trimmed),
-        allowedModels: models.length ? models : null,
-        // Only when it changed: sending it makes the dashboard the owner of
-        // the expiry, which a management key may have set.
-        ...(expiry !== isoToLocalInput(apiKey.expiresAt) ? { expiresAt: localInputToIso(expiry) } : {}),
-      });
+      const key = await put(buildKeyLimitsPayload({ budget: trimmed, models, expiry, savedExpiresAt: apiKey.expiresAt }));
       onSaved(key);
       onClose();
     } catch (e) {

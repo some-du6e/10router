@@ -18,6 +18,22 @@ export function isoToLocalInput(iso) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/**
+ * What the limits dialog saves. The expiry goes only when the field changed:
+ * the field holds minutes, so resending it would drop a stored expiry's seconds
+ * and make the dashboard the owner of an expiry a management key set.
+ *
+ * @param {{ budget: string, models: string[], expiry: string, savedExpiresAt: string|null }} form
+ */
+export function buildKeyLimitsPayload({ budget, models, expiry, savedExpiresAt }) {
+  const trimmed = String(budget ?? "").trim();
+  return {
+    budgetUsd: trimmed === "" ? null : Number(trimmed),
+    allowedModels: models.length ? models : null,
+    ...(expiry !== isoToLocalInput(savedExpiresAt) ? { expiresAt: localInputToIso(expiry) } : {}),
+  };
+}
+
 /** datetime-local value (local time) → ISO, or null when empty/invalid. */
 export function localInputToIso(value) {
   if (!value) return null;
