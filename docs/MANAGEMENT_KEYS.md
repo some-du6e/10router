@@ -249,10 +249,16 @@ fields an edit changed, a new key's allowed models) and falls back to counts
 only when that would go over 2 KB.
 
 The log is trimmed in separate pools, so no one can push out someone else's
-history: each management key keeps its newest 1000 actions, apart from those
-its newest 5000 deletes (so a run of renames can't trim away what it removed)
-and its newest 200 refusals, and the dashboard's own changes keep the newest
-2000.
+history: each management key keeps its newest 1000 actions (deleting rows it
+created counts as one), apart from those its newest 5000 deletes of rows it
+didn't create (the `manageExisting` ones, so a loop of renames or of creating
+and deleting its own keys can't trim them away) and its newest 200 refusals,
+and the dashboard's own changes keep the newest 2000.
+
+A delete is decided inside its own transaction: the management key must still
+be on, and the row must still be its own (or reachable with `manageExisting`,
+and for a provider key still an API key). An admin pausing the key or taking
+the row over between the request's read and the delete wins.
 The Endpoint page shows the latest 30 entries and names each entry's key, or
 "deleted management key".
 

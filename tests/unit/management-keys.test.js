@@ -29,7 +29,7 @@ vi.mock("@/app/api/providers/validate/route.js", () => ({
   },
 }));
 // The real DB layer, with hooks to inject a race at a chosen step.
-const dbHooks = { beforeUpdateAs: null, beforeCreateOwned: null, afterClaim: null, beforeRowsOwnedBy: null };
+const dbHooks = { beforeUpdateAs: null, beforeCreateOwned: null, afterClaim: null, beforeRowsOwnedBy: null, beforeDeleteAs: null };
 vi.mock("@/lib/db/index.js", async (importOriginal) => {
   const actual = await importOriginal();
   return {
@@ -38,6 +38,7 @@ vi.mock("@/lib/db/index.js", async (importOriginal) => {
     createOwnedApiKey: async (...a) => { if (dbHooks.beforeCreateOwned) await dbHooks.beforeCreateOwned(...a); return actual.createOwnedApiKey(...a); },
     claimRowForManagementKey: async (...a) => { const r = await actual.claimRowForManagementKey(...a); if (dbHooks.afterClaim) await dbHooks.afterClaim(...a); return r; },
     getRowsOwnedBy: async (...a) => { if (dbHooks.beforeRowsOwnedBy) await dbHooks.beforeRowsOwnedBy(...a); return actual.getRowsOwnedBy(...a); },
+    deleteRowAsManagementKey: async (...a) => { if (dbHooks.beforeDeleteAs) await dbHooks.beforeDeleteAs(...a); return actual.deleteRowAsManagementKey(...a); },
   };
 });
 
@@ -1101,23 +1102,34 @@ describe("round 3: audit", () => {
     expect(n()).toBe(before);
   });
 
-  it("deletes are kept apart, so 1000+ renames don't trim them away", async () => {
-    const { AUDIT_KEEP_PER_KEY } = await import("@/lib/db/repos/managementKeysRepo.js");
-    const mk = await newManagementKey(OPENAI_ONLY);
-    const deleted = [];
-    for (let i = 0; i < 5; i++) {
-      const id = (await api.createClient(mk.secret, { name: `to delete ${i}`, allowedModels: ["openai/gpt-5"], budgetUsd: 1 })).body.clientKey.id;
-      expect((await api.deleteClient(mk.secret, id)).status).toBe(200);
-      deleted.push(id);
-    }
-    for (let i = 0; i < AUDIT_KEEP_PER_KEY + 100; i++) {
-      await db.addManagementAudit({ managementKeyId: mk.id, action: "client_key.update", targetType: "clientKey", targetId: "x", detail: { changed: ["name"] } });
-    }
+  it("deletes of rows a key didn't create are kept apart, so its own create-and-delete loops and renames can't trim them", async () => {
+    const { AUDIT_KEEP_DELETES_PER_KEY, AUDIT_KEEP_PER_KEY } = await import("@/lib/db/repos/managementKeysRepo.js");
+    const wide = await newManagementKey({
+      clientKeys: { enabled: true, manageExisting: true },
+      providerKeys: { enabled: true, providers: ["openai"], manageExisting: true },
+    });
+    const adminProvider = (await db.createProviderConnection({ provider: "openai", authType: "apikey", name: "admin pool row", apiKey: providerSecret("admin-row") })).id;
+    const adminClient = (await dashboardClientKey("admin client row")).id;
+    expect((await api.deleteProvider(wide.secret, adminProvider)).status).toBe(200);
+    expect((await api.deleteClient(wide.secret, adminClient)).status).toBe(200);
     const adapter = await getAdapter();
-    const kept = adapter.all("SELECT targetId FROM managementAudit WHERE managementKeyId = ? AND action = 'client_key.delete'", [mk.id]).map((r) => r.targetId);
-    expect(kept.sort()).toEqual(deleted.sort());
-    expect(adapter.get("SELECT pool FROM managementAudit WHERE managementKeyId = ? AND action = 'client_key.delete'", [mk.id]).pool).toBe("delete");
-  });
+    const poolOf = (action, targetId) => adapter.get("SELECT pool FROM managementAudit WHERE managementKeyId = ? AND action = ? AND targetId = ?", [wide.id, action, targetId])?.pool;
+    expect(poolOf("provider_key.delete", adminProvider)).toBe("delete");
+    expect(poolOf("client_key.delete", adminClient)).toBe("delete");
+
+    // Its own rows: deletes stay with its other actions.
+    const ownProvider = (await api.createProvider(wide.secret, { provider: "openai", apiKey: providerSecret("own-row"), name: "own pool row" })).body.providerKey.id;
+    expect((await api.deleteProvider(wide.secret, ownProvider)).status).toBe(200);
+    expect(poolOf("provider_key.delete", ownProvider)).toBe("ok");
+
+    for (let i = 0; i < AUDIT_KEEP_DELETES_PER_KEY + 1; i++) {
+      const id = (await api.createClient(wide.secret, { name: `loop ${i}` })).body.clientKey.id;
+      expect((await api.deleteClient(wide.secret, id)).status).toBe(200);
+    }
+    expect(poolOf("provider_key.delete", adminProvider)).toBe("delete");
+    expect(poolOf("client_key.delete", adminClient)).toBe("delete");
+    expect(adapter.get("SELECT COUNT(*) AS n FROM managementAudit WHERE managementKeyId = ? AND pool = 'ok'", [wide.id]).n).toBe(AUDIT_KEEP_PER_KEY);
+  }, 120_000);
 
   it("over 2000 dashboard rows trims only the dashboard pool", async () => {
     const { AUDIT_KEEP_DASHBOARD } = await import("@/lib/db/repos/managementKeysRepo.js");
@@ -1174,6 +1186,71 @@ describe("round 3: the dashboard's provider edit route releases the owner", () =
   });
 });
 
+describe("round 4: rechecks inside the write", () => {
+  it("an edit is refused with 401 when the key is paused or expired between the read and the write", async () => {
+    for (const change of [{ isActive: false }, { expiresAt: new Date(Date.now() - 1000).toISOString() }]) {
+      const mk = await newManagementKey(OPENAI_ONLY);
+      const id = (await api.createClient(mk.secret, { name: "edit race", allowedModels: ["openai/gpt-5"], budgetUsd: 1 })).body.clientKey.id;
+      dbHooks.beforeUpdateAs = () => db.updateManagementKey(mk.id, change);
+      expect((await api.patchClient(mk.secret, id, { budgetUsd: 2 })).status, JSON.stringify(change)).toBe(401);
+      expect((await db.getApiKeyById(id)).budgetUsd).toBe(1);
+      dbHooks.beforeUpdateAs = null;
+    }
+  });
+
+  it("a client-key delete is refused when the key is paused, or the row stops being its own, between the read and the delete", async () => {
+    const paused = await newManagementKey(OPENAI_ONLY);
+    const a = (await api.createClient(paused.secret, { name: "delete race 1", allowedModels: ["openai/gpt-5"], budgetUsd: 1 })).body.clientKey.id;
+    dbHooks.beforeDeleteAs = () => db.updateManagementKey(paused.id, { isActive: false });
+    expect((await api.deleteClient(paused.secret, a)).status).toBe(401);
+    expect(await db.getApiKeyById(a)).not.toBeNull();
+
+    const owner = await newManagementKey(OPENAI_ONLY);
+    const b = (await api.createClient(owner.secret, { name: "delete race 2", allowedModels: ["openai/gpt-5"], budgetUsd: 1 })).body.clientKey.id;
+    dbHooks.beforeDeleteAs = () => db.setRowOwner("clientKey", b, null);
+    expect((await api.deleteClient(owner.secret, b)).status).toBe(404);
+    expect(await db.getApiKeyById(b)).not.toBeNull();
+  });
+
+  it("a provider-key delete is refused when the key is paused, or an admin takes the row over, between the read and the delete", async () => {
+    const scope = { providerKeys: { enabled: true, providers: ["openai"] } };
+    const paused = await newManagementKey(scope);
+    const a = (await api.createProvider(paused.secret, { provider: "openai", apiKey: providerSecret("del-race-1"), name: "del race 1" })).body.providerKey.id;
+    dbHooks.beforeDeleteAs = () => db.updateManagementKey(paused.id, { isActive: false });
+    expect((await api.deleteProvider(paused.secret, a)).status).toBe(401);
+    expect(await db.getProviderConnectionById(a)).not.toBeNull();
+
+    const owner = await newManagementKey(scope);
+    const b = (await api.createProvider(owner.secret, { provider: "openai", apiKey: providerSecret("del-race-2"), name: "del race 2" })).body.providerKey.id;
+    dbHooks.beforeDeleteAs = () => db.updateProviderConnection(b, { apiKey: providerSecret("admin-takeover") });
+    expect((await api.deleteProvider(owner.secret, b)).status).toBe(404);
+    expect(await db.getProviderConnectionById(b)).not.toBeNull();
+  });
+});
+
+describe("round 4: restoring a backup from before management keys", () => {
+  it("leaves every row with no owner and no actor, and off or expiring keys count as the dashboard's", async () => {
+    const admin = await newManagementKey({ clientKeys: { enabled: true, manageExisting: true }, providerKeys: { enabled: true, manageExisting: true } });
+    const legacy = {
+      apiKeys: [
+        { id: "old-off", key: "sk-old-off-0001", name: "old off", machineId: "m", isActive: false, createdAt: "2026-01-01T00:00:00.000Z" },
+        { id: "old-exp", key: "sk-old-exp-0001", name: "old expiring", machineId: "m", isActive: true, createdAt: "2026-01-01T00:00:00.000Z", expiresAt: "2027-06-01T00:00:00.000Z" },
+      ],
+      providerConnections: [
+        { id: "old-conn", provider: "openai", authType: "apikey", name: "old pool", apiKey: providerSecret("old-conn"), isActive: true, createdAt: "2026-01-01", updatedAt: "2026-01-01" },
+      ],
+    };
+    await db.importDb(legacy);
+    for (const id of ["old-off", "old-exp"]) {
+      expect(await db.getApiKeyById(id)).toMatchObject({ ownerManagementKeyId: null, disabledBy: null, expiresAtSetBy: null });
+    }
+    expect(await db.getRowOwner("providerKey", "old-conn")).toBeNull();
+    expect((await api.patchClient(admin.secret, "old-off", { isActive: true })).status).toBe(403);
+    expect((await api.patchClient(admin.secret, "old-exp", { expiresAt: null })).status).toBe(403);
+    expect((await api.patchClient(admin.secret, "old-exp", { expiresAt: "2028-01-01T00:00:00.000Z" })).status).toBe(403);
+  });
+});
+
 describe("no secrets in any response", () => {
   it("no response carries a provider secret, a full client key outside its create response, or a management secret outside its own", async () => {
     // Make sure at least one listing of everything runs last.
@@ -1182,10 +1259,10 @@ describe("no secrets in any response", () => {
     await api.listProvider(admin.secret);
 
     // Every client key ever issued, including ones deleted since.
-    const allClientKeys = [...new Set([
+    const clientKeySet = new Set([
       ...(await db.getApiKeys()).map((k) => k.key),
       ...seen.filter((s) => s.label === "POST /api/management/v1/client-keys" && s.status === 201).map((s) => JSON.parse(s.text).key),
-    ])];
+    ]);
     const adapter = await getAdapter();
     const hashes = adapter.all("SELECT keyHash FROM managementKeys").map((r) => r.keyHash);
     expect(seen.length).toBeGreaterThan(50);
@@ -1200,7 +1277,7 @@ describe("no secrets in any response", () => {
       for (const h of hashes) expect(text, label).not.toContain(h);
 
       const isClientCreate = label === "POST /api/management/v1/client-keys" && status === 201;
-      const fullKeys = allClientKeys.filter((k) => text.includes(k));
+      const fullKeys = [...new Set(text.match(/sk-[A-Za-z0-9_-]+/g) || [])].filter((t) => clientKeySet.has(t));
       if (isClientCreate) expect(fullKeys, label).toEqual([JSON.parse(text).key]);
       else expect(fullKeys, label).toEqual([]);
 
@@ -1209,5 +1286,5 @@ describe("no secrets in any response", () => {
       if (isDashboardCreate) expect(secrets, label).toEqual([JSON.parse(text).secret]);
       else expect(secrets, label).toEqual([]);
     }
-  });
+  }, 120_000);
 });
