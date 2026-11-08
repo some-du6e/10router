@@ -274,6 +274,9 @@ export class CodexExecutor extends BaseExecutor {
     let attempt = 0;
     while (true) {
       const result = await super.execute(args);
+      // The peek below reads up to the first output delta, reasoning included;
+      // a cut-short stream's floor starts here, when the response arrived.
+      const fetchedAt = Date.now();
       const peek = await this._peekSseTransientError(result.response);
       if (!peek.matched) {
         // Replace body with re-assembled stream (prefix bytes already read + rest)
@@ -284,6 +287,7 @@ export class CodexExecutor extends BaseExecutor {
             headers: result.response.headers,
           });
         }
+        if (result.response) result.response.upstreamStartedAt = fetchedAt;
         return result;
       }
       if (peek.accountFallback) {

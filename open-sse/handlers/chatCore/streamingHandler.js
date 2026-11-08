@@ -44,7 +44,7 @@ function buildTransformStream({ provider, sourceFormat, targetFormat, userAgent,
 /**
  * Handle streaming response — pipe provider SSE through transform stream to client.
  */
-export async function handleStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, toolNamespaces, streamController, onStreamComplete, streamDetailId, streamRequest, reqTag, log }) {
+export async function handleStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, toolNamespaces, streamController, onStreamComplete, streamDetailId, streamRequest, reqTag, log, endPending = null }) {
   if (onRequestSuccess) {
     Promise.resolve()
       .then(onRequestSuccess)
@@ -92,6 +92,12 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
     : (message) => buildStreamErrorBytes(HTTP_STATUS.GATEWAY_TIMEOUT, message, sourceFormat);
   const stallTimeoutMs = PROVIDERS[provider]?.stallTimeoutMs || STREAM_STALL_TIMEOUT_MS;
   const keepaliveMs = KEEPALIVE_FORMATS.has(sourceFormat) ? STREAM_KEEPALIVE_MS : 0;
+  // The stream's own end shares chatCore's once-only pending decrement.
+  if (endPending) transformStream.endPending = endPending;
+  // For a cut-short stream's estimate: the body the provider got (its output
+  // cap), and when an executor that read ahead got its response.
+  transformStream.upstreamBody = finalBody || translatedBody || null;
+  if (providerResponse?.upstreamStartedAt) transformStream.upstreamStartedAt = providerResponse.upstreamStartedAt;
   const transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal, stallTimeoutMs, keepaliveMs);
 
   saveRequestDetail(buildRequestDetail({
@@ -121,7 +127,10 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
   // One object for both saves of this row, so the second reuses the first's capping.
   const streamRequest = extractRequestConfig(body, stream);
 
-  const onStreamComplete = (contentObj, usage, ttftAt) => {
+  // `aborted`: the stream ended before its final event (hang-up, stall, upstream
+  // error). Its usage is still saved, so the key is charged, but the request
+  // isn't recorded as a success.
+  const onStreamComplete = (contentObj, usage, ttftAt, { aborted = false } = {}) => {
     const latency = {
       ttft: ttftAt ? ttftAt - requestStartTime : Date.now() - requestStartTime,
       total: Date.now() - requestStartTime
@@ -138,14 +147,14 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
       providerRequest: finalBody || translatedBody || null,
       providerResponse: { content: safeContent, thinking: safeThinking, tool_calls: toolCalls, type: "streaming" },
       response: { content: safeContent, thinking: safeThinking, tool_calls: toolCalls, type: "streaming" },
-      status: "success"
+      status: aborted ? "error" : "success"
     }, { id: streamDetailId })).catch(err => {
       console.error("[RequestDetail] Failed to update streaming content:", err.message);
     });
 
     // Persist stream usage to DB (no console line; the "📊 done" line below is authoritative)
     saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, label: "STREAM USAGE", silent: true });
-    if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency }));
+    if (log?.line && !aborted) log.line(reqTag, "📊", formatDoneLine({ usage, latency }));
   };
 
   return { onStreamComplete, streamDetailId, streamRequest };

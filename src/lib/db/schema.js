@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -101,6 +101,19 @@ export const TABLES = {
       // stream open until the limit resets, 0 = fail fast (e.g. CI keys).
       limitHold: "INTEGER",
       createdAt: "TEXT NOT NULL",
+      // Spend limits (migration 005). NULL = no limit, which is how every key
+      // created before them behaves.
+      budgetUsd: "REAL",
+      allowedModels: "TEXT",
+      expiresAt: "TEXT",
+      // Running totals over this key's usageHistory rows, kept current by
+      // saveRequestUsage so the request path never sums history. The spend
+      // counted against the budget is spentUsd - spendOffsetUsd.
+      spentUsd: "REAL DEFAULT 0",
+      spendOffsetUsd: "REAL DEFAULT 0",
+      spendResetAt: "TEXT",
+      requestCount: "INTEGER DEFAULT 0",
+      lastUsedAt: "TEXT",
     },
     indexes: ["CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)"],
   },
@@ -147,6 +160,8 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_uh_conn ON usageHistory(connectionId)",
       // Covers the key lifespan aggregate (keyLifespanRepo.js) without touching rows.
       "CREATE INDEX IF NOT EXISTS idx_uh_conn_ok ON usageHistory(connectionId, status, timestamp, cost, promptTokens, completionTokens)",
+      // Per-key spend: the migration's seed sum and the key detail view.
+      "CREATE INDEX IF NOT EXISTS idx_uh_apikey ON usageHistory(apiKey, cost)",
     ],
   },
   usageDaily: {

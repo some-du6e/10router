@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 import { deleteApiKey, getApiKeyById, updateApiKey } from "@/lib/localDb";
+import { parseKeyLimitsInput } from "@/shared/utils/apiKeyLimits.js";
+
+export const dynamic = "force-dynamic";
 
 // GET /api/keys/[id] - Get single key
 export async function GET(request, { params }) {
@@ -20,7 +23,10 @@ export async function GET(request, { params }) {
 export async function PUT(request, { params }) {
   try {
     const { id } = await params;
-    const body = await request.json();
+    const body = await request.json().catch(() => null);
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return NextResponse.json({ error: "Body must be a JSON object" }, { status: 400 });
+    }
     const { isActive, limitHold } = body;
 
     const existing = await getApiKeyById(id);
@@ -28,7 +34,15 @@ export async function PUT(request, { params }) {
       return NextResponse.json({ error: "Key not found" }, { status: 404 });
     }
 
-    const updateData = {};
+    if (isActive !== undefined && typeof isActive !== "boolean") {
+      return NextResponse.json({ error: "isActive must be true or false" }, { status: 400 });
+    }
+    const limits = parseKeyLimitsInput(body);
+    if (limits.errors.length) {
+      return NextResponse.json({ error: limits.errors.join("; "), errors: limits.errors }, { status: 400 });
+    }
+
+    const updateData = { ...limits.data };
     if (isActive !== undefined) updateData.isActive = isActive;
     // null is meaningful here: it clears the override so the key follows the
     // global limit-hold setting again.

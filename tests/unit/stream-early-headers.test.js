@@ -13,7 +13,7 @@ import { clientDemandsJson } from "../../open-sse/utils/replyShape.js";
 const state = { settings: {}, accounts: [], exhausted: null, creds: null, core: null, coreCalls: [], markCalls: [], onMark: null, credLookups: 0, modelLookups: [] };
 
 vi.mock("@/lib/localDb", () => ({ getSettings: async () => state.settings }));
-vi.mock("@/lib/db/repos/apiKeysRepo.js", () => ({ getApiKeyLimitHold: async () => null }));
+vi.mock("@/lib/db/repos/apiKeysRepo.js", () => ({ getApiKeyLimitHold: async () => null, getApiKeyPolicy: async () => null }));
 vi.mock("@/sse/services/auth.js", async () => {
   const actual = await vi.importActual("@/sse/services/auth.js");
   return {

@@ -1,4 +1,5 @@
 import { buildModelsList } from "../../models/route.js";
+import { filterModelsForRequest } from "@/sse/services/keyLimits.js";
 import { PROVIDER_ID_TO_ALIAS } from "@/shared/constants/models";
 import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 
@@ -107,9 +108,10 @@ export async function OPTIONS() {
 /**
  * GET /backend-api/codex/models - Codex-native model catalog
  */
-export async function GET() {
+export async function GET(request) {
   try {
-    const models = await buildModelsList(["llm"]);
+    // A key with a model allowlist sees only the models it may use.
+    const models = await filterModelsForRequest(request, await buildModelsList(["llm"]));
     const created = Math.floor(Date.now() / 1000);
     const entries = models.map(toCodexEntry);
     return Response.json(

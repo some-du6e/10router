@@ -4,6 +4,7 @@ import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { UPDATER_CONFIG } from "@/shared/constants/config";
 import { clearEndpointRequests, errorMessage, getEndpointRequests, isCustomEndpoint, outputTokens, replyText } from "@/lib/endpointRequestLog.js";
 import { pickTestModel } from "./pick.js";
+import { pickInternalKey } from "@/shared/utils/apiKeyLimits.js";
 
 export const dynamic = "force-dynamic";
 
@@ -49,8 +50,7 @@ export async function POST(request: Request, { params }: Ctx) {
   const anthropic = node.type === "anthropic-compatible";
   const headers: Record<string, string> = { "Content-Type": "application/json", "x-9r-cli-token": await (getConsistentMachineId as unknown as (salt: string) => Promise<string>)(CLI_TOKEN_SALT) };
   try {
-    const keys = (await getApiKeys()) as { key?: string; isActive?: boolean }[];
-    const k = keys.find((x) => x.isActive !== false)?.key;
+    const k = pickInternalKey(await getApiKeys());
     if (k) headers.Authorization = `Bearer ${k}`;
   } catch { /* no client keys: local mode */ }
   if (anthropic) headers["anthropic-version"] = "2023-06-01";

@@ -20,6 +20,7 @@ import { respondWithEarlyHeaders } from "open-sse/utils/earlyHeaders.js";
 import { errorResponse, unavailableResponse, clientAbortResult } from "open-sse/utils/error.js";
 import { createLimitHoldResponse, awaitLimitClear, isLimitError, allLockedError } from "open-sse/utils/limitHold.js";
 import { resolveLimitHold } from "../services/limitHoldConfig.js";
+import { checkApiKeyLimits, apiKeyLimitDenial, keepAllowedAdapterModels, keyHasBudget } from "../services/keyLimits.js";
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
@@ -165,6 +166,7 @@ interface HoldArgs {
   provider: string;
   model?: string;
   signal?: AbortSignal | null;
+  apiKey?: string | null;
 }
 
 /**
@@ -237,6 +239,22 @@ export async function handleChat(
     ? detectFormatByEndpoint(new URL(request.url).pathname, body)
     : null;
 
+  const sourceFormat = sourceFormatOverride || detectFormat(body);
+
+  // The key's budget, model allowlist and expiry, checked before any upstream call.
+  const limitDenied = await checkApiKeyLimits(apiKey, { model: modelStr, format: sourceFormat });
+  if (limitDenied) {
+    log.warn("AUTH", `API key refused by its limits (${limitDenied.status})`);
+    return limitDenied;
+  }
+  // A budget is counted at standard prices; fast mode (`speed`) and priority
+  // tiers (`service_tier`) bill a multiple the pricing table doesn't know, so
+  // a budgeted key's requests go out without them.
+  if (await keyHasBudget(apiKey)) {
+    delete body.speed;
+    delete body.service_tier;
+  }
+
   // Bypass naming/warmup requests before combo rotation to avoid wasting rotation slots
   const userAgent = request?.headers?.get("user-agent") || "";
   const bypassResponse = handleBypassRequest(body, modelStr, userAgent, !!settings.ccFilterNaming, sourceFormatOverride as Parameters<typeof handleBypassRequest>[4]);
@@ -254,7 +272,6 @@ export async function handleChat(
   // waiting on them (Cloudflare) doesn't give up on the request. Only when the
   // reply's shape is known up front: a stream for `stream: true`, JSON for a
   // client that demands it. Without `stream` the shape depends on the provider.
-  const sourceFormat = sourceFormatOverride || detectFormat(body);
   const json = clientDemandsJson(body, clientRawRequest.headers);
   // Next aborts request.signal only when the client leaves before the response ends.
   if (!earlyHeaders || !(body.stream === true || json) || !KEEPALIVE_FORMATS.has(sourceFormat)) return route(request.signal);
@@ -282,7 +299,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
     // Rotating providers per turn would throw away prompt caches, so the global
     // strategy only covers combos the user made.
     const comboStrategy = comboSpecificStrategy || (blockedBilling ? "fallback" : settings.comboStrategy) || "fallback";
-    const augmentedModels = augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, settings);
+    const augmentedModels = await keepAllowedAdapterModels(apiKey, augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, settings), comboModels);
     const adapterAdded = augmentedModels.filter((m: string) => !comboModels.includes(m));
 
     if (comboStrategy === "fusion") {
@@ -336,7 +353,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
 
   // Single model request — may still switch to a capacity-adapter model if the
   // target lacks a capability the request needs (e.g. no vision, request has an image).
-  const soloAugmented = augmentModelsWithCapacityAdapter([modelStr], requiredCapabilities, settings);
+  const soloAugmented = await keepAllowedAdapterModels(apiKey, augmentModelsWithCapacityAdapter([modelStr], requiredCapabilities, settings), [modelStr]);
   if (soloAugmented.length > 1) {
     const adapterAdded = soloAugmented.filter((m: string) => m !== modelStr);
     log.info("CHAT", `Capacity adapter for [${[...requiredCapabilities].join(",")}] on "${modelStr}" → trying ${soloAugmented.join(", ")}`);
@@ -416,7 +433,7 @@ async function withComboLimitHold({ run, models, body, modelStr, request, apiKey
   const settings = await Promise.all(infos.map((info) => nodeSettings(info.provider || "")));
   const willStream = infos.every((info, i) => clientReceivesStream({ body, provider: info.provider, model: info.model || "", sourceFormat, clientRawRequest, credentials: settings[i] }));
   log.warn("LIMITHOLD", `combo ${modelStr}: all models rate-limited, holding`);
-  return holdUntilClear({ first, attempt: pass, willStream, sourceFormat, modelStr, provider: modelStr, signal });
+  return holdUntilClear({ first, attempt: pass, willStream, sourceFormat, modelStr, provider: modelStr, signal, apiKey });
 }
 
 /**
@@ -446,7 +463,14 @@ async function leafModelInfos(
 }
 
 /** Wait out a limit: a narrated stream for streaming clients, a silent hang for JSON ones. */
-async function holdUntilClear({ first, attempt, willStream, sourceFormat, modelStr, provider, model, signal = null }: HoldArgs): Promise<Response> {
+async function holdUntilClear({ first, attempt: rerun, willStream, sourceFormat, modelStr, provider, model, signal = null, apiKey = null }: HoldArgs): Promise<Response> {
+  // A hold can last hours: the key may run out of budget (other requests) or
+  // expire meanwhile, so each re-run checks it first. A refusal ends the hold.
+  const attempt = async (): Promise<PassResult> => {
+    const denied = await apiKeyLimitDenial(apiKey, { model: modelStr, format: sourceFormat });
+    if (denied) return { success: false, limited: false, status: denied.status, error: denied.message, response: denied.response };
+    return rerun();
+  };
   if (!willStream) {
     const settled = await awaitLimitClear({
       retryAtMs: first.retryAtMs,
@@ -564,7 +588,7 @@ async function routeSingleModelChat(
       const comboSpecificStrategy = comboStrategies[comboKey]?.fallbackStrategy;
       const comboStrategy = comboSpecificStrategy || chatSettings.comboStrategy || "fallback";
       const requiredCapabilities = detectRequiredCapabilities(body);
-      const augmentedModels = augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, chatSettings);
+      const augmentedModels = await keepAllowedAdapterModels(apiKey, augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, chatSettings), comboModels);
       const adapterAdded = augmentedModels.filter((m: string) => !comboModels.includes(m));
 
       if (comboStrategy === "fusion") {
@@ -733,6 +757,7 @@ async function routeSingleModelChat(
     const chatSettings = (await getSettings()) as ChatSettings;
     const providerThinking = (chatSettings.providerThinking || {} as Record<string, unknown>)[provider] || null;
     // Custom endpoints: keep this request for the endpoint page's "Recent requests".
+    const drainOnDisconnect = await keyHasBudget(apiKey);
     const result = await recordEndpointRequests(provider, refreshedCredentials as Parameters<typeof recordEndpointRequests>[1], () => handleChatCore({
       body: { ...body, model: `${provider}/${model}` },
       modelInfo: { provider, model },
@@ -746,6 +771,7 @@ async function routeSingleModelChat(
       providerThinking,
       sourceFormatOverride,
       clientSignal: signal,
+      drainOnDisconnect,
       onCredentialsRefreshed: async (newCreds: Record<string, unknown>) => {
         await updateProviderCredentials(credentials.connectionId, {
           ...newCreds,
@@ -870,6 +896,7 @@ async function routeSingleModelChat(
   const holdSourceFormat = sourceFormatOverride || detectFormat(body);
   const willStream = clientReceivesStream({ body, provider, model, sourceFormat: holdSourceFormat, clientRawRequest, credentials: await nodeSettings(provider) });
   return holdUntilClear({
+    apiKey,
     first,
     attempt: runAccountLoop,
     willStream,

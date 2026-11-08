@@ -13,7 +13,7 @@ const state = {
 };
 
 vi.mock("@/lib/localDb", () => ({ getSettings: async () => state.settings }));
-vi.mock("@/lib/db/repos/apiKeysRepo.js", () => ({ getApiKeyLimitHold: async () => state.keyHold }));
+vi.mock("@/lib/db/repos/apiKeysRepo.js", () => ({ getApiKeyLimitHold: async () => state.keyHold, getApiKeyPolicy: async () => null }));
 vi.mock("@/sse/services/auth.js", async () => {
   const actual = await vi.importActual("@/sse/services/auth.js");
   return {

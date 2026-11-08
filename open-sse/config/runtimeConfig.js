@@ -63,6 +63,19 @@ export const STREAM_STALL_TIMEOUT_MS = envMs("STREAM_STALL_TIMEOUT_MS", 360 * 10
 // Env: STREAM_KEEPALIVE_MS (0 disables).
 export const STREAM_KEEPALIVE_MS = envMs("STREAM_KEEPALIVE_MS", 15 * 1000, 0);
 
+// Opt-in: a key with a spend budget whose client hangs up mid-stream keeps
+// reading the upstream (discarding it) until the final usage arrives, for at
+// most this long, so the key is charged what the provider reports. Off by
+// default: every Esc would otherwise run the whole generation upstream.
+// Env: STREAM_DRAIN_MAX_MS (0, the default, disables the drain).
+export const STREAM_DRAIN_MAX_MS = envMs("STREAM_DRAIN_MAX_MS", 0, 0);
+
+// A stream cut short before its final usage is charged at least this many
+// output tokens per second it ran: hidden thinking streams nothing visible,
+// so the visible text alone would make an early Esc nearly free.
+// Env: STREAM_ABORT_FLOOR_TPS (0 disables the floor).
+export const STREAM_ABORT_FLOOR_TPS = envMs("STREAM_ABORT_FLOOR_TPS", 150, 0);
+
 // A streaming request whose upstream hasn't sent response headers after this
 // long gets 200 + SSE headers and keepalives, so a proxy that waits ~100s for
 // headers (Cloudflare 524) doesn't drop it. Fallback continues server-side; a

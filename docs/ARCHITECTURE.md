@@ -111,6 +111,8 @@ Important compatibility routes:
   the routed catalog in Codex's `{ "models": [...] }` shape, `[...path]`
   acknowledges Codex's advisory side-calls)
 - `src/app/api/v1/messages/count_tokens/route.js`
+- `src/app/api/v1/key/route.js` — `GET /v1/key`: the calling key's own budget,
+  spend, allowed models and expiry (see `docs/API_KEY_BUDGETS.md`)
 - `src/app/api/v1beta/models/route.js`
 - `src/app/api/v1beta/models/[...path]/route.js`
 
@@ -157,6 +159,10 @@ Usage DB:
 
 - Dashboard cookie auth: `src/proxy.js`, `src/app/api/auth/login/route.js`
 - API key generation/verification: `src/shared/utils/apiKey.js`
+- Client API key limits (budget, model allowlist, expiry), checked by every
+  `/v1` handler before any upstream call: `src/sse/services/keyLimits.js`.
+  Spend is a running total per key, updated with each usage row
+  (`docs/API_KEY_BUDGETS.md`)
 - Provider secrets persisted in `providerConnections` entries
 - Optional proxy support for upstream calls via env proxy variables (`open-sse/utils/proxyFetch.js`)
 
@@ -184,6 +190,7 @@ sequenceDiagram
 
     Client->>Route: POST /v1/chat/completions
     Route->>Chat: handleChat(request)
+    Chat->>Chat: API key check, then the key's limits (budget, model allowlist, expiry; keyLimits.js)
     Chat->>Model: parse/resolve model or combo
 
     alt Combo model

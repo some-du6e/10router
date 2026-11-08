@@ -47,6 +47,7 @@ practical promise, not a claim that upstream providers will never change their A
 - Chat clients call `POST /v1/chat/completions`.
 - Anthropic-shaped clients call `POST /v1/messages`.
 - Model discovery uses `GET /v1/models`.
+- A key holder checks their own key's budget, spend and limits with `GET /v1/key`.
 - Codex-native clients can use `http://localhost:20128/backend-api/codex`, including
   `/responses`, `/responses/compact`, and `/models`.
 
@@ -56,6 +57,8 @@ practical promise, not a claim that upstream providers will never change their A
 - Use provider-prefixed model IDs such as `cc/claude-opus-4-7` or `cx/gpt-5.5`.
 - Combo names are accepted anywhere a model ID is accepted and preserve their ordered
   fallback behavior.
+- A key can have a spend budget, a model allowlist and an expiry date (Endpoint page →
+  API Keys). See [docs/API_KEY_BUDGETS.md](docs/API_KEY_BUDGETS.md).
 
 ## Request flow
 
@@ -171,8 +174,12 @@ Use the combo name in place of a model id in your client.
 ## Cost display
 
 The "cost" in Usage Analytics is an estimate of what the same traffic would have cost on
-paid APIs directly. It is a tracking figure, not a bill — 10router has no billing system.
-You pay providers directly, if at all.
+paid APIs directly, from the pricing table. You pay providers directly, if at all; 10router
+charges no one.
+
+The same figure is what an API key's budget counts against: give a key a $2,000 budget and
+it is refused once its requests add up to $2,000 at those prices. See
+[docs/API_KEY_BUDGETS.md](docs/API_KEY_BUDGETS.md).
 
 ## Cloud sync
 
@@ -361,7 +368,19 @@ GET http://localhost:20128/v1/models
 Authorization: Bearer your-api-key
 ```
 
-Returns all models and combos in OpenAI format.
+Returns all models and combos in OpenAI format. A key with a model allowlist sees only
+the models it may use.
+
+### Your key's budget and spend
+
+```bash
+GET http://localhost:20128/v1/key
+Authorization: Bearer your-api-key
+```
+
+Returns the calling key's own budget (`limit`), spend (`usage`), what's left
+(`limit_remaining`), allowed models and expiry, and nothing about other keys. See
+[docs/API_KEY_BUDGETS.md](docs/API_KEY_BUDGETS.md).
 
 ## Troubleshooting
 

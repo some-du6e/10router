@@ -14,6 +14,7 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { saveRequestUsage } from "@/lib/usageDb.js";
+import { checkApiKeyLimits } from "../services/keyLimits.js";
 
 function exactEmbeddingUsage(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw) || raw.estimated === true) return null;
@@ -75,6 +76,9 @@ export async function handleEmbeddings(request) {
     log.warn("EMBEDDINGS", "Missing input");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: input");
   }
+
+  const limitDenied = await checkApiKeyLimits(apiKey, { model: modelStr });
+  if (limitDenied) return limitDenied;
 
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) {

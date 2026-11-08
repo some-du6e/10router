@@ -7,6 +7,7 @@ import { getProviderAlias, isCustomEmbeddingProvider } from "@/shared/constants/
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { Row } from "./exampleShared";
+import { pickInternalKey } from "@/shared/utils/apiKeyLimits.js";
 
 const DEFAULT_RESPONSE_EXAMPLE = `{
   "object": "list",
@@ -42,7 +43,7 @@ export function EmbeddingExampleCard({ providerId, customAlias }) {
     setLocalEndpoint(window.location.origin);
     fetch("/api/keys")
       .then((r) => r.json())
-      .then((d) => { setApiKey((d.keys || []).find((k) => k.isActive !== false)?.key || ""); })
+      .then((d) => { setApiKey(pickInternalKey(d.keys) || ""); })
       .catch(() => {});
     fetch("/api/tunnel/status")
       .then((r) => r.json())
