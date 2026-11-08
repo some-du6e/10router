@@ -168,6 +168,12 @@ function isBlockedHost(host) {
   return false;
 }
 
+// True if a resolved IPv4/IPv6 address is internal, by the same rules as the URL checks.
+export function isBlockedIpAddress(address) {
+  if (typeof address !== "string" || !address) return true;
+  return isBlockedHost(normalizeHost(address));
+}
+
 // Throw if URL targets a non-public host by literal hostname/IP alone (no DNS
 // resolution — see assertPublicUrlResolved for that). Caller should map to 400.
 export function assertPublicUrl(rawUrl) {

@@ -1,3 +1,5 @@
+import { isValidAwsRegion } from "open-sse/utils/awsRegion.js";
+
 const MICROSOFT_TOKEN_ENDPOINT_HOSTS = new Set([
   "login.microsoftonline.com",
   "login.microsoft.com",
@@ -99,6 +101,7 @@ export function normalizeKiroExternalIdpAuth(rawAuth) {
   const tokenEndpoint = validateMicrosoftTokenEndpoint(input.token_endpoint || input.tokenEndpoint);
   const profileArn = normalizeString(input.profile_arn || input.profileArn);
   const region = normalizeString(input.region) || DEFAULT_REGION;
+  if (!isValidAwsRegion(region)) throw new Error("Invalid region");
   const scope = normalizeScope(input.scopes || input.scope);
 
   if (!accessToken) throw new Error("access_token is required");

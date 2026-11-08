@@ -36,6 +36,8 @@ import {
 } from "@/lib/oauth/utils/server";
 import { detectIdeInstalled } from "@/lib/oauth/utils/ideDetect";
 import { ZED_HOSTED_CONFIG } from "@/lib/oauth/constants/oauth";
+import { isLocalRequest } from "@/dashboardGuard";
+import { normalizeGitlabBaseUrl, isAllowedGitlabBase } from "@/lib/oauth/gitlabBaseUrl.js";
 
 async function completeXaiManualCode(code, state) {
   const session = state ? getXaiSessionStatus(state) : null;
@@ -348,8 +350,18 @@ export async function POST(request, { params }) {
         return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
       }
 
+      let exchangeMeta = meta;
+      if (provider === "gitlab") {
+        const base = normalizeGitlabBaseUrl(meta?.baseUrl);
+        if (!base) return NextResponse.json({ error: "Invalid GitLab URL" }, { status: 400 });
+        if (!(await isAllowedGitlabBase(base, !isLocalRequest(request)))) {
+          return NextResponse.json({ error: "URL not allowed" }, { status: 400 });
+        }
+        exchangeMeta = { ...meta, baseUrl: base };
+      }
+
       // Exchange code for tokens (meta carries provider-specific params, e.g. gitlab clientId/baseUrl)
-      const tokenData = await exchangeTokens(provider, code, redirectUri, codeVerifier, state, meta);
+      const tokenData = await exchangeTokens(provider, code, redirectUri, codeVerifier, state, exchangeMeta);
 
       // Save to database
       const connection = await createProviderConnection({

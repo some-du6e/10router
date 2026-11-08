@@ -36,7 +36,7 @@ const gitlab = {
       headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
       body: body.toString(),
     });
-    if (!response.ok) throw new Error(`GitLab token exchange failed: ${await response.text()}`);
+    if (!response.ok) throw new Error(`GitLab token exchange failed (${response.status})`);
     const tokens = await response.json();
     // Fetch user info
     const userRes = await fetch(`${baseUrl}${config.userInfoUrlPath}`, {

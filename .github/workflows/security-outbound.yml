@@ -1,0 +1,67 @@
+name: Security outbound
+
+on:
+  pull_request:
+    paths:
+      - "open-sse/executors/kiro.js"
+      - "open-sse/handlers/imageProviders/**"
+      - "open-sse/handlers/search/**"
+      - "open-sse/translator/concerns/image.js"
+      - "open-sse/utils/ssrfGuard.js"
+      - "open-sse/utils/awsRegion.ts"
+      - "src/app/api/oauth/[provider]/[action]/route.js"
+      - "src/app/api/oauth/gitlab/**"
+      - "src/app/api/provider-nodes/**"
+      - "src/app/api/providers/suggested-models/**"
+      - "src/app/api/proxy-pools/**"
+      - "src/lib/network/relayKey.ts"
+      - "src/lib/oauth/**"
+      - "src/lib/probeFetch.ts"
+      - "src/shared/utils/connectionBaseUrl.ts"
+      - "src/shared/utils/ssrfGuard.js"
+      - "tests/unit/security-outbound.test.js"
+      - "tests/unit/security-outbound-routes.test.js"
+      - "tests/unit/image-generation.test.js"
+      - "tests/unit/provider-nodes-routes.test.js"
+      - ".github/workflows/security-outbound.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Unit tests
+        working-directory: tests
+        run: >
+          ./node_modules/.bin/vitest run
+          unit/security-outbound.test.js
+          unit/security-outbound-routes.test.js
+          unit/search-ssrf-guard.test.js
+          unit/image-fetch-hardening.test.js
+          unit/prefetch-images.test.js
+          unit/image-generation.test.js
+          unit/compatible-multi-endpoint.test.js
+          unit/provider-nodes-routes.test.js
+          unit/kiro-external-idp.test.js
+          unit/kiro-api-key-endpoint-routing.test.js
+          unit/ssrf-guard-hardening.test.js
+      - name: Full suite against baseline
+        working-directory: tests
+        run: |
+          ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/results.json" > /dev/null || true
+          node __baseline__/verify-no-regression.mjs "$RUNNER_TEMP/results.json"

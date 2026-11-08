@@ -24,16 +24,24 @@ export async function resolveKeyBaseUrl(
   const wanted = normalizeEndpointUrl(input);
   if (!wanted || wanted === nodeUrl) return { ok: true, baseUrl: String(nodeBaseUrl || ""), own: false };
 
+  const problem = await endpointUrlProblem(wanted, { remote });
+  if (problem) return { ok: false, error: problem };
+  return { ok: true, baseUrl: wanted, own: true };
+}
+
+// Null when url can be stored as an endpoint (a key's or a node's); otherwise
+// the reason. Remote callers may not point at an internal host.
+export async function endpointUrlProblem(url: string, { remote }: { remote: boolean }): Promise<string | null> {
   let parsed: URL;
-  try { parsed = new URL(wanted); } catch { return { ok: false, error: "Endpoint URL isn't a valid URL" }; }
+  try { parsed = new URL(url); } catch { return "Endpoint URL isn't a valid URL"; }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    return { ok: false, error: "Endpoint URL must start with http:// or https://" };
+    return "Endpoint URL must start with http:// or https://";
   }
   if (remote) {
-    try { await assertPublicUrlResolved(wanted); }
-    catch { return { ok: false, error: "URL not allowed" }; }
+    try { await assertPublicUrlResolved(url); }
+    catch { return "URL not allowed"; }
   }
-  return { ok: true, baseUrl: wanted, own: true };
+  return null;
 }
 
 // Apply a resolved URL to a key's providerSpecificData.

@@ -1,14 +1,16 @@
 import { NextResponse } from "next/server";
 import { createProxyPool } from "@/models";
+import { newRelayKey, relayKeyCheck, withRelayKey } from "@/lib/network/relayKey.js";
 
 const VERCEL_API = "https://api.vercel.com";
 
 // Relay function source code deployed to Vercel
 // Forwards requests to target URL specified in x-relay-target header
-const RELAY_FUNCTION_CODE = `
+const relayFunctionCode = (key) => `
 export const config = { runtime: "edge" };
 
 export default async function handler(req) {
+  ${relayKeyCheck(key, "req")}
   const target = req.headers.get("x-relay-target");
   const relayPath = req.headers.get("x-relay-path") || "/";
   if (!target) {
@@ -66,6 +68,7 @@ export async function POST(request) {
       return NextResponse.json({ error: "Vercel API token is required" }, { status: 400 });
     }
 
+    const relayKey = newRelayKey();
     // Deploy relay function to Vercel
     const deployRes = await fetch(`${VERCEL_API}/v13/deployments`, {
       method: "POST",
@@ -78,7 +81,7 @@ export async function POST(request) {
         files: [
           {
             file: "api/relay.js",
-            data: RELAY_FUNCTION_CODE,
+            data: relayFunctionCode(relayKey),
           },
           {
             file: "package.json",
@@ -127,7 +130,7 @@ export async function POST(request) {
     // Create proxy pool entry with type vercel
     const proxyPool = await createProxyPool({
       name: projectName,
-      proxyUrl: deployUrl,
+      proxyUrl: withRelayKey(deployUrl, relayKey),
       type: "vercel",
       noProxy: "",
       isActive: true,

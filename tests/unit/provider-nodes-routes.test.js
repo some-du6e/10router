@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("next/server", () => ({ NextResponse: { json: mocks.json } }));
+vi.mock("@/dashboardGuard", () => ({ isLocalRequest: () => true }));
 
 vi.mock("@/models", () => ({
   getProviderNodes: vi.fn(async () => db.nodes),

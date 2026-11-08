@@ -76,6 +76,10 @@ export function getProviderSetting(params, key) {
  * @returns {string}
  */
 export function resolveBaseUrl(config, params) {
+  const clientOverride = params.providerOptions?.baseUrl;
+  if (params.token && typeof clientOverride === "string" && clientOverride.trim()) {
+    throw new Error("provider_options.baseUrl is not allowed for providers that use a stored credential");
+  }
   const override = getProviderSetting(params, "baseUrl");
   if (override) {
     // SSRF guard: client-supplied base URLs must be public http(s) only.
