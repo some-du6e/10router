@@ -1,0 +1,70 @@
+name: Security - SSO and OAuth callbacks
+
+on:
+  pull_request:
+    paths:
+      - "src/lib/auth/**"
+      - "src/app/api/auth/**"
+      - "src/lib/oauth/utils/server.js"
+      - "src/shared/components/OAuthModal.js"
+      - "src/shared/utils/oauthCallbackBinding.ts"
+      - "src/app/callback/**"
+      - "src/app/layout.js"
+      - "tests/unit/saml*.test.js"
+      - "tests/unit/oidc-token-binding.test.js"
+      - "tests/unit/auth-mode-consistency.test.js"
+      - "tests/unit/sso-allowlist.test.js"
+      - "tests/unit/trae-callback-binding.test.js"
+      - "tests/unit/oauth-callback-binding.test.js"
+      - "tests/unit/analytics-optin.test.js"
+      - "tests/__baseline__/**"
+      - ".github/workflows/security-sso-oauth.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Unit tests
+        working-directory: tests
+        run: >
+          ./node_modules/.bin/vitest run
+          unit/saml.test.js
+          unit/saml-response-binding.test.js
+          unit/saml-signed-request-binding.test.js
+          unit/saml-start-cookie.test.js
+          unit/oidc-token-binding.test.js
+          unit/auth-mode-consistency.test.js
+          unit/sso-allowlist.test.js
+          unit/trae-callback-binding.test.js
+          unit/oauth-callback-binding.test.js
+          unit/analytics-optin.test.js
+      - name: Lint
+        run: >
+          ./node_modules/.bin/eslint
+          src/lib/auth
+          src/app/api/auth
+          src/lib/oauth/utils/server.js
+          src/shared/utils/oauthCallbackBinding.ts
+          src/app/callback/page.js
+          src/app/layout.js
+      - name: Full suite
+        working-directory: tests
+        run: ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/results.json" || true
+      - name: No regressions against the baseline
+        run: node tests/__baseline__/verify-no-regression.mjs "$RUNNER_TEMP/results.json"
