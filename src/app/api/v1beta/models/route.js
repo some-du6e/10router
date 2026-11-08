@@ -56,7 +56,12 @@ export async function GET(request) {
     }
 
     // A key with a model allowlist sees only the models it may use ("models/cc/x" → "cc/x").
-    const visible = await filterModelsForRequest(request, models, (m) => m.name.replace(/^models\//, ""));
+    const visible = await filterModelsForRequest(
+      request,
+      models,
+      (m) => m.name.replace(/^models\//, ""),
+      (m, id) => ({ ...m, name: `models/${id}`, displayName: id, description: id }),
+    );
     return Response.json({ models: visible });
   } catch (error) {
     console.log("Error fetching models:", error);
