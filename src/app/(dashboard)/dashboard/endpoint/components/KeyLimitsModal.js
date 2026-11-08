@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import PropTypes from "prop-types";
-import { Modal, Button, Input, ModelSelectModal, ConfirmModal, Badge } from "@/shared/components";
+import { Modal, Button, Input, ConfirmModal } from "@/shared/components";
 import { budgetState } from "@/shared/utils/apiKeyLimits.js";
 import { fmtUsdExact, isoToLocalInput, localInputToIso } from "./keyFormat";
 import StatusAlert from "./StatusAlert";
+import ModelAllowlistField from "./ModelAllowlistField";
 
 /**
  * Edit one key's limits: budget, allowed models, expiry, and reset its spend.
@@ -15,33 +16,12 @@ import StatusAlert from "./StatusAlert";
 export default function KeyLimitsModal({ apiKey, onClose, onSaved, requireApiKey }) {
   const [budget, setBudget] = useState(apiKey.budgetUsd === null || apiKey.budgetUsd === undefined ? "" : String(apiKey.budgetUsd));
   const [models, setModels] = useState(apiKey.allowedModels || []);
-  const [modelDraft, setModelDraft] = useState("");
   const [expiry, setExpiry] = useState(isoToLocalInput(apiKey.expiresAt));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [showModelSelect, setShowModelSelect] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
-  const [activeProviders, setActiveProviders] = useState([]);
-  const [modelAliases, setModelAliases] = useState({});
-
-  // What the model picker offers: active connections and model aliases.
-  useEffect(() => {
-    fetch("/api/providers").then((r) => (r.ok ? r.json() : null))
-      .then((d) => d && setActiveProviders((d.connections || []).filter((c) => c.isActive !== false)))
-      .catch(() => {});
-    fetch("/api/models/alias").then((r) => (r.ok ? r.json() : null))
-      .then((d) => d && setModelAliases(d.aliases || {}))
-      .catch(() => {});
-  }, []);
 
   const spend = budgetState(apiKey);
-
-  const addModel = (id) => {
-    const value = String(id || "").trim();
-    if (!value || models.some((m) => m.toLowerCase() === value.toLowerCase())) return;
-    setModels((prev) => [...prev, value]);
-  };
-  const removeModel = (id) => setModels((prev) => prev.filter((m) => m !== id));
 
   const put = async (payload) => {
     const res = await fetch(`/api/keys/${apiKey.id}`, {
@@ -126,48 +106,15 @@ export default function KeyLimitsModal({ apiKey, onClose, onSaved, requireApiKey
             </div>
           </div>
 
-          <div>
-            <label className="mb-1.5 block text-sm font-medium">Allowed models</label>
-            {models.length === 0 ? (
-              <p className="text-xs text-text-muted">Every model. Add one to allow only the models listed.</p>
-            ) : (
-              <div className="flex flex-wrap gap-1.5">
-                {models.map((m) => (
-                  <Badge key={m} size="sm" className="pr-1 font-mono">
-                    {m}
-                    <button
-                      onClick={() => removeModel(m)}
-                      className="rounded p-0.5 text-text-muted hover:text-red-500"
-                      title={`Remove ${m}`}
-                      aria-label={`Remove ${m}`}
-                    >
-                      <span className="material-symbols-outlined text-[14px]">close</span>
-                    </button>
-                  </Badge>
-                ))}
-              </div>
-            )}
-            <div className="mt-2 flex gap-2">
-              <input
-                value={modelDraft}
-                onChange={(e) => setModelDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") { e.preventDefault(); addModel(modelDraft); setModelDraft(""); }
-                }}
-                placeholder="Model id, alias or combo (e.g. claude-opus-5-5)"
-                className="min-w-0 flex-1 rounded-[10px] border border-border bg-surface px-3 py-1.5 font-mono text-xs outline-none focus:border-primary"
-              />
-              <Button size="sm" variant="secondary" onClick={() => { addModel(modelDraft); setModelDraft(""); }} disabled={!modelDraft.trim()}>
-                Add
-              </Button>
-              <Button size="sm" variant="outline" icon="list" onClick={() => setShowModelSelect(true)}>
-                Pick
-              </Button>
-            </div>
-            <p className="mt-1 text-[11px] text-text-muted">
-              A bare id allows that model from any provider. An alias or combo is allowed when everything it points to is.
-            </p>
-          </div>
+          <ModelAllowlistField
+            label="Allowed models"
+            value={models}
+            onChange={setModels}
+            emptyText="Every model. Add one to allow only the models listed."
+            placeholder="Model id, alias or combo (e.g. claude-opus-5-5)"
+            hint="A bare id allows that model from any provider. An alias or combo is allowed when everything it points to is."
+            pickerTitle="Allow models"
+          />
 
           <Input
             label="Expires"
@@ -185,20 +132,6 @@ export default function KeyLimitsModal({ apiKey, onClose, onSaved, requireApiKey
           </div>
         </div>
       </Modal>
-
-      {showModelSelect && (
-        <ModelSelectModal
-          isOpen={showModelSelect}
-          onClose={() => setShowModelSelect(false)}
-          onSelect={(m) => addModel(m.value)}
-          onDeselect={(m) => removeModel(m.value)}
-          activeProviders={activeProviders}
-          modelAliases={modelAliases}
-          title="Allow models"
-          addedModelValues={models}
-          closeOnSelect={false}
-        />
-      )}
 
       <ConfirmModal
         isOpen={confirmReset}

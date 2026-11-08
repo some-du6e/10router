@@ -2,10 +2,11 @@
 
 import { useEffect, useMemo, useState } from "react";
 import PropTypes from "prop-types";
-import { Modal, Button, Input, Select, Toggle, Badge, ModelSelectModal } from "@/shared/components";
+import { Modal, Button, Input, Select, Toggle, Badge } from "@/shared/components";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { isoToLocalInput, localInputToIso } from "./keyFormat";
 import StatusAlert from "./StatusAlert";
+import ModelAllowlistField from "./ModelAllowlistField";
 
 function Chips({ items, onRemove, empty }) {
   if (!items.length) return <p className="text-xs text-text-muted">{empty}</p>;
@@ -105,20 +106,12 @@ export default function ManagementKeyModal({ managementKey, onClose, onSaved }) 
   const [name, setName] = useState(managementKey?.name || "");
   const [expiry, setExpiry] = useState(isoToLocalInput(managementKey?.expiresAt));
   const [scopes, setScopes] = useState(() => fromSaved(managementKey?.scopes));
-  const [modelDraft, setModelDraft] = useState("");
-  const [showModelSelect, setShowModelSelect] = useState(false);
-  const [activeProviders, setActiveProviders] = useState([]);
-  const [modelAliases, setModelAliases] = useState({});
   const [nodes, setNodes] = useState([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
     fetch("/api/provider-nodes").then((r) => (r.ok ? r.json() : null)).then((d) => d && setNodes(d.nodes || [])).catch(() => {});
-    fetch("/api/providers").then((r) => (r.ok ? r.json() : null))
-      .then((d) => d && setActiveProviders((d.connections || []).filter((c) => c.isActive !== false)))
-      .catch(() => {});
-    fetch("/api/models/alias").then((r) => (r.ok ? r.json() : null)).then((d) => d && setModelAliases(d.aliases || {})).catch(() => {});
   }, []);
 
   const providerOptions = useMemo(() => {
@@ -129,12 +122,6 @@ export default function ManagementKeyModal({ managementKey, onClose, onSaved }) 
 
   const setClient = (patch) => setScopes((s) => ({ ...s, clientKeys: { ...s.clientKeys, ...patch } }));
   const setProvider = (patch) => setScopes((s) => ({ ...s, providerKeys: { ...s.providerKeys, ...patch } }));
-  const addModel = (id) => {
-    const v = String(id || "").trim();
-    if (!v || scopes.clientKeys.models.some((m) => m.toLowerCase() === v.toLowerCase())) return;
-    setClient({ models: [...scopes.clientKeys.models, v] });
-  };
-  const removeModel = (id) => setClient({ models: scopes.clientKeys.models.filter((m) => m !== id) });
 
   const handleSave = async () => {
     if (!name.trim()) return setError("Give the key a name.");
@@ -189,23 +176,14 @@ export default function ManagementKeyModal({ managementKey, onClose, onSaved }) 
                     empty="Any provider. Add one to require every key it makes to allow only that provider's models."
                   />
                 </div>
-                <div>
-                  <label className="mb-1.5 block text-sm font-medium">Only for models</label>
-                  <Chips items={ck.models.map((m) => ({ value: m, label: m }))} onRemove={removeModel} empty="Any model." />
-                  <div className="mt-2 flex gap-2">
-                    <input
-                      value={modelDraft}
-                      onChange={(e) => setModelDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") { e.preventDefault(); addModel(modelDraft); setModelDraft(""); }
-                      }}
-                      placeholder="provider/model (e.g. openai/gpt-5)"
-                      className="min-w-0 flex-1 rounded-[10px] border border-border bg-surface px-3 py-1.5 font-mono text-xs outline-none focus:border-primary"
-                    />
-                    <Button size="sm" variant="secondary" onClick={() => { addModel(modelDraft); setModelDraft(""); }} disabled={!modelDraft.trim()}>Add</Button>
-                    <Button size="sm" variant="outline" icon="list" onClick={() => setShowModelSelect(true)}>Pick</Button>
-                  </div>
-                </div>
+                <ModelAllowlistField
+                  label="Only for models"
+                  value={ck.models}
+                  onChange={(models) => setClient({ models })}
+                  emptyText="Any model."
+                  placeholder="provider/model (e.g. openai/gpt-5)"
+                  pickerTitle="Scope models"
+                />
                 <Input
                   label="Budget cap per key (USD)"
                   type="number"
@@ -276,19 +254,6 @@ export default function ManagementKeyModal({ managementKey, onClose, onSaved }) 
         </div>
       </Modal>
 
-      {showModelSelect && (
-        <ModelSelectModal
-          isOpen={showModelSelect}
-          onClose={() => setShowModelSelect(false)}
-          onSelect={(m) => addModel(m.value)}
-          onDeselect={(m) => removeModel(m.value)}
-          activeProviders={activeProviders}
-          modelAliases={modelAliases}
-          title="Allow models"
-          addedModelValues={ck.models}
-          closeOnSelect={false}
-        />
-      )}
     </>
   );
 }
