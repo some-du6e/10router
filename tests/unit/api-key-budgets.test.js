@@ -433,9 +433,29 @@ describe("model allowlist", () => {
     const plain = await newKey("list-plain");
     const list = [{ id: "cc/claude-opus-5-5" }, { id: "cc/claude-sonnet-5-5" }, { id: "safe-combo" }, { id: "mixed-combo" }];
     const req = (k) => new Request("http://localhost/v1/models", { headers: { Authorization: `Bearer ${k.key}` } });
-    expect((await filterModelsForRequest(req(key), list)).map((m) => m.id)).toEqual(["cc/claude-opus-5-5", "safe-combo"]);
+    expect((await filterModelsForRequest(req(key), list)).map((m) => m.id)).toEqual(["claude-opus-5-5", "safe-combo"]);
     expect(await filterModelsForRequest(req(plain), list)).toEqual(list);
     expect(await filterModelsForRequest(new Request("http://localhost/v1/models"), list)).toEqual(list);
+  });
+
+  it("lists a bare allowed model once under its own name, hiding which providers serve it", async () => {
+    const key = await newKey("list-bare", { allowedModels: ["claude-opus-5-5"] });
+    const req = new Request("http://localhost/v1/models", { headers: { Authorization: `Bearer ${key.key}` } });
+    const list = [
+      { id: "snow/claude-opus-5-5", object: "model", owned_by: "snow" },
+      { id: "cc/claude-opus-5-5", object: "model", owned_by: "cc" },
+      { id: "cc/claude-sonnet-5-5", object: "model", owned_by: "cc" },
+    ];
+    const shown = await filterModelsForRequest(req, list);
+    expect(shown).toEqual([{ id: "claude-opus-5-5", object: "model", owned_by: "10router" }]);
+    expect(JSON.stringify(shown)).not.toMatch(/snow|"cc/);
+  });
+
+  it("lists a provider-prefixed allowed model as-is", async () => {
+    const key = await newKey("list-prefixed", { allowedModels: ["cc/claude-opus-5-5"] });
+    const req = new Request("http://localhost/v1/models", { headers: { Authorization: `Bearer ${key.key}` } });
+    const list = [{ id: "snow/claude-opus-5-5" }, { id: "cc/claude-opus-5-5" }];
+    expect((await filterModelsForRequest(req, list)).map((m) => m.id)).toEqual(["cc/claude-opus-5-5"]);
   });
 });
 

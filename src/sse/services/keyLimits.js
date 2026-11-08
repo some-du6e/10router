@@ -193,23 +193,43 @@ export async function keepAllowedAdapterModels(apiKey, augmented, original) {
   return kept;
 }
 
+/** An OpenAI-style entry listed under the allowlist's own name. */
+const renameOpenAIEntry = (model, id) => ({ ...model, id, owned_by: "10router" });
+
 /**
  * The model list a key may see: only its allowed models when it has an
  * allowlist, the whole list otherwise (and for a request with no key).
  *
+ * A key with an allowlist sees each entry under the name it was allowed by:
+ * a bare entry ("claude-opus-5-5") is listed once, bare, not as every
+ * provider-prefixed id that serves it, so the list doesn't reveal which
+ * providers or custom endpoints sit behind the key. A prefixed entry is
+ * listed as-is.
+ *
  * @param {Request} request
  * @param {object[]} models
  * @param {(model: object) => string} [idOf] the entry's model id
+ * @param {(model: object, id: string) => object} [rename] the entry listed as `id`
  */
-export async function filterModelsForRequest(request, models, idOf = (m) => m?.id) {
+export async function filterModelsForRequest(request, models, idOf = (m) => m?.id, rename = renameOpenAIEntry) {
   const apiKey = request?.headers ? extractApiKey(request) : null;
   if (!apiKey || !Array.isArray(models)) return models;
   const key = await getApiKeyPolicy(apiKey);
   if (!key?.allowedModels?.length) return models;
   const lookup = await allowlistLookup();
   const visible = [];
-  for (const model of models) {
-    if (await isModelAllowed(idOf(model), key.allowedModels, lookup)) visible.push(model);
+  const listed = new Set();
+  for (const entry of key.allowedModels) {
+    const bare = typeof entry === "string" && !entry.includes("/");
+    for (const model of models) {
+      const id = idOf(model);
+      if (!(await isModelAllowed(id, [entry], lookup))) continue;
+      const shownAs = bare ? entry : id;
+      if (listed.has(shownAs)) continue;
+      listed.add(shownAs);
+      visible.push(bare ? rename(model, entry) : model);
+      if (bare) break;
+    }
   }
   return visible;
 }
