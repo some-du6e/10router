@@ -40,6 +40,18 @@ describe("Codex compact", () => {
     expect(urls[2]).toMatch(/\/responses$/);
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)._compact).toBeUndefined();
   });
+
+  it("keeps a retry with the same body on the compact endpoint", async () => {
+    fetchMock.mockImplementation(async () => sse());
+    const codex = getExecutor("codex");
+    const body = { input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }], _compact: true };
+    const args = { model: "gpt-5.3-codex", body, stream: true, credentials: { accessToken: "t", connectionId: "c" } };
+    await codex.execute(args);
+    await codex.execute(args);
+    const urls = fetchMock.mock.calls.map(([url]) => url);
+    expect(urls).toHaveLength(2);
+    for (const url of urls) expect(url).toMatch(/\/responses\/compact$/);
+  });
 });
 
 describe("model ids in upstream URL paths", () => {

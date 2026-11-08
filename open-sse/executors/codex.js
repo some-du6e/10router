@@ -258,10 +258,13 @@ export class CodexExecutor extends BaseExecutor {
   // The compact flag is per request; keep it on a per-call view so a shared
   // executor never builds one request's URL from another's body.
   execute(args) {
+    // Strip the flag from a copy: chatCore passes the same body again when it
+    // retries after a token refresh, and that retry is still a compact call.
     const call = Object.create(this);
-    call._isCompact = !!args.body?._compact;
-    if (args.body) delete args.body._compact;
-    return call._execute(args);
+    if (!args.body) return call._execute(args);
+    const { _compact, ...body } = args.body;
+    call._isCompact = !!_compact;
+    return call._execute({ ...args, body });
   }
 
   async _execute(args) {

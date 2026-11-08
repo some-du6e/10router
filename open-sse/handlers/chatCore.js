@@ -369,6 +369,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   };
   // When the request went upstream (0 = not yet, or the client had already left).
   let dispatchedAt = 0;
+  let retryDispatchedAt = 0;
   // A hang-up after the request went upstream still costs the owner, so it is
   // charged like a cut-short stream: input, plus the time floor from floorFrom.
   const chargeHangUp = (floorFrom) => {
@@ -489,6 +490,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
           try { await onCredentialsRefreshed(newCredentials); } catch (e) { log?.warn?.("TOKEN", `onCredentialsRefreshed failed: ${e.message}`); }
         }
         try {
+          retryDispatchedAt = clientSignal?.aborted ? 0 : Date.now();
           const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions });
           if (retryResult.response.ok) {
             providerResponse = retryResult.response;
@@ -505,8 +507,10 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   }
 
   // Hung up during the token refresh: the 401/403 is a disconnect, not a failure.
+  // A retry that already went upstream with the new token is charged.
   if (!providerResponse.ok && clientSignal?.aborted) {
     providerResponse.body?.cancel().catch(() => { });
+    if (retryDispatchedAt) chargeHangUp(stream ? null : retryDispatchedAt);
     return endAsHangUp();
   }
 
@@ -538,7 +542,9 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   // A handler's hang-up while reading the body: an SSE body is charged from its
   // first byte, a JSON one from when it was sent.
   const hangUpResult = ({ sse = false } = {}) => {
-    chargeHangUp(sse ? upstreamRespondedAt : dispatchedAt);
+    // Executors that read ahead before returning (Codex, Kiro) record when the
+    // response really started.
+    chargeHangUp(sse ? providerResponse.upstreamStartedAt || upstreamRespondedAt : dispatchedAt);
     return clientAbortResult();
   };
   const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqTag, log, clientSignal, hangUpResult };
