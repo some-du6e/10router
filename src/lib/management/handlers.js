@@ -7,10 +7,10 @@
 // See docs/MANAGEMENT_KEYS.md.
 import crypto from "node:crypto";
 import {
-  getApiKeys, getApiKeyById, deleteApiKey,
+  getApiKeys, getApiKeyById,
   getProviderConnections, getProviderConnectionById, deleteProviderConnection,
   touchManagementKey, claimRowForManagementKey, getRowOwners, getRowOwner, addManagementAudit,
-  createOwnedApiKey, updateApiKeyAs,
+  createOwnedApiKey, updateApiKeyAs, deleteRowAsManagementKey,
 } from "@/lib/db/index.js";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { parseKeyLimitsInput } from "@/shared/utils/apiKeyLimits.js";
@@ -45,8 +45,18 @@ function parseName(raw, { required }) {
   return normalizeManagementKeyName(raw);
 }
 
-async function audit(mk, action, targetType, targetId, detail, { denied = false } = {}) {
-  const pool = denied ? "denied" : action.endsWith(".delete") ? "delete" : "ok";
+/**
+ * The pool an action is kept in. Deleting a row the key didn't create
+ * (manageExisting) goes to its own, longer-kept pool; deleting its own rows
+ * stays with its other actions, so a create-and-delete loop can't flood it.
+ */
+function auditPool(action, { denied = false, ownDelete = false } = {}) {
+  if (denied) return "denied";
+  return action.endsWith(".delete") && !ownDelete ? "delete" : "ok";
+}
+
+async function audit(mk, action, targetType, targetId, detail, opts = {}) {
+  const pool = auditPool(action, opts);
   try {
     await addManagementAudit({ managementKeyId: mk.id, action, targetType, targetId, detail, pool });
   } catch (e) {
@@ -187,8 +197,10 @@ export function removeClientKey(request, id) {
   return withKey(request, "clientKeys", async (mk) => {
     const key = await findVisibleClientKey(mk, id);
     if (!key) return fail(404, "Client key not found");
-    if (!(await deleteApiKey(key.id))) return fail(404, "Client key not found");
-    await audit(mk, "client_key.delete", "clientKey", key.id, { name: key.name });
+    const own = key.ownerManagementKeyId === mk.id;
+    const res = await deleteRowAsManagementKey("clientKey", key.id, mk.id, { manageExisting: mk.scopes.clientKeys.manageExisting });
+    if (!res.deleted) return fail(res.status, res.status === 401 ? "This management key was revoked or turned off" : "Client key not found");
+    await audit(mk, "client_key.delete", "clientKey", key.id, { name: key.name }, { ownDelete: own });
     return json({ deleted: true, id: key.id });
   });
 }
@@ -353,8 +365,10 @@ export function removeProviderKey(request, id) {
   return withKey(request, "providerKeys", async (mk) => {
     const found = await findVisibleProviderKey(mk, id);
     if (!found) return fail(404, "Provider key not found");
-    if (!(await deleteProviderConnection(found.conn.id))) return fail(404, "Provider key not found");
-    await audit(mk, "provider_key.delete", "providerKey", found.conn.id, { provider: found.conn.provider, name: found.conn.name });
+    const own = found.owner === mk.id;
+    const res = await deleteRowAsManagementKey("providerKey", found.conn.id, mk.id, { manageExisting: mk.scopes.providerKeys.manageExisting });
+    if (!res.deleted) return fail(res.status, res.status === 401 ? "This management key was revoked or turned off" : "Provider key not found");
+    await audit(mk, "provider_key.delete", "providerKey", found.conn.id, { provider: found.conn.provider, name: found.conn.name }, { ownDelete: own });
     return json({ deleted: true, id: found.conn.id });
   });
 }

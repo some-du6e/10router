@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { rowToKey, numberOrNull, toAllowedModelsColumn, updateApiKeyInTx } from "./apiKeysRepo.js";
+import { deleteProviderConnectionIf } from "./connectionsRepo.js";
 import { generateApiKeyWithMachine } from "@/shared/utils/apiKey.js";
 import { MANAGEMENT_KEY_PREFIX, parseStoredScopes } from "@/shared/utils/managementKey.js";
 
@@ -218,6 +219,39 @@ export async function updateApiKeyAs(id, update, actor) {
     out = { key: rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id])) };
   });
   return out;
+}
+
+/**
+ * Delete a row for a management key, deciding inside the delete's transaction:
+ * the key must still be on, and the row must still be its own (or, with
+ * manageExisting, any row; a provider row must still be an API key). Whatever
+ * changed since the caller's read (an admin pausing the key, taking the row
+ * over with a new secret) wins.
+ *
+ * @returns {Promise<{ deleted: boolean, status?: number }>} 401 for a key that's off, 404 for a row it can no longer reach
+ */
+export async function deleteRowAsManagementKey(kind, rowId, managementKeyId, { manageExisting = false } = {}) {
+  const db = await getAdapter();
+  const reachable = (row) => row.ownerManagementKeyId === managementKeyId || manageExisting === true;
+  let inactive = false;
+  if (kind === "providerKey") {
+    const deleted = await deleteProviderConnectionIf(rowId, (txDb, row) => {
+      if (!managementKeyActiveInTx(txDb, managementKeyId)) { inactive = true; return false; }
+      return row.authType === "apikey" && reachable(row);
+    });
+    return deleted ? { deleted } : { deleted, status: inactive ? 401 : 404 };
+  }
+  if (kind !== "clientKey") throw new Error(`unknown kind ${kind}`);
+  let deleted = false;
+  db.transaction(() => {
+    if (!managementKeyActiveInTx(db, managementKeyId)) { inactive = true; return; }
+    const res = db.run(
+      `DELETE FROM apiKeys WHERE id = ? AND (ownerManagementKeyId = ? OR ? = 1)`,
+      [rowId, managementKeyId, manageExisting ? 1 : 0]
+    );
+    deleted = (res?.changes ?? 0) > 0;
+  });
+  return deleted ? { deleted } : { deleted, status: inactive ? 401 : 404 };
 }
 
 // ---- Ownership ---------------------------------------------------------------

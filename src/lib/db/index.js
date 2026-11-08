@@ -52,7 +52,7 @@ export {
   createScopedManagementKey, getManagementKeys, getManagementKeyById, findManagementKeyBySecret,
   updateManagementKey, deleteManagementKey, touchManagementKey, createOwnedApiKey, updateApiKeyAs,
   setRowOwner, claimRowForManagementKey, getRowOwners, getOwnedRows, getRowOwner, getRowsOwnedBy,
-  addManagementAudit, getManagementAudit,
+  addManagementAudit, getManagementAudit, deleteRowAsManagementKey,
 } from "./repos/managementKeysRepo.js";
 
 // Combos

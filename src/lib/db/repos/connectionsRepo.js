@@ -363,11 +363,20 @@ export async function updateProviderConnection(id, data, { autoDisable = null, d
 }
 
 export async function deleteProviderConnection(id) {
+  return deleteProviderConnectionIf(id, () => true);
+}
+
+/**
+ * Delete a connection only if `guard(db, row)` (row: id, provider, authType,
+ * ownerManagementKeyId) is true, decided inside the delete's own transaction.
+ * The guard may throw to abort. False when there's no such row or the guard said no.
+ */
+export async function deleteProviderConnectionIf(id, guard) {
   const db = await getAdapter();
   let ok = false;
   db.transaction(() => {
-    const row = db.get(`SELECT provider FROM providerConnections WHERE id = ?`, [id]);
-    if (!row) return;
+    const row = db.get(`SELECT id, provider, authType, ownerManagementKeyId FROM providerConnections WHERE id = ?`, [id]);
+    if (!row || !guard(db, row)) return;
     db.run(`DELETE FROM providerConnections WHERE id = ?`, [id]);
     reorderInTx(db, row.provider);
     ok = true;
