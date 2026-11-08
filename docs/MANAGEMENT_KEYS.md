@@ -179,7 +179,8 @@ curl -X POST http://localhost:20128/api/management/v1/provider-keys \
 A client key is created in one insert with its limits and owner, so it never
 exists without them, and only while the management key is still on. An edit
 and the record of who changed the key's on/off state or expiry are written in
-one transaction. A provider key whose owner can't be recorded is deleted again.
+one transaction, which checks the management key and the dashboard's choices
+again against the row as it is then, so an admin pausing the key mid-request wins. A provider key whose owner can't be recorded is deleted again.
 
 Unknown body fields get a `400`, so a typo can't silently do nothing. A request
 outside the scope gets a `403` with the reason.
@@ -248,8 +249,9 @@ fields an edit changed, a new key's allowed models) and falls back to counts
 only when that would go over 2 KB.
 
 The log is trimmed in separate pools, so no one can push out someone else's
-history: each management key keeps its newest 1000 actions and, apart from
-those, its newest 200 refusals, and the dashboard's own changes keep the newest
+history: each management key keeps its newest 1000 actions, apart from those
+its newest 5000 deletes (so a run of renames can't trim away what it removed)
+and its newest 200 refusals, and the dashboard's own changes keep the newest
 2000.
 The Endpoint page shows the latest 30 entries and names each entry's key, or
 "deleted management key".
@@ -268,6 +270,9 @@ Migration 006 adds two tables and some columns:
 - `disabledBy` and `expiresAtSetBy` on `apiKeys`: `"dashboard"` or a management
   key id.
 
-Management keys are not in backups (`exportDb`), and a restore clears the owner
-column. After a restore, management keys keep working, but a key without
-`manageExisting` no longer sees the rows it made before.
+Management keys themselves are not in backups (`exportDb`), and a restore
+doesn't touch them. A backup carries each row's `ownerManagementKeyId` (and a
+client key's `disabledBy` and `expiresAtSetBy`). A restore keeps one only if
+that management key exists on the install it is restored onto, and otherwise
+clears it, so ownership is never invented. A key that is off, or has an expiry,
+with its actor cleared then counts as the dashboard's.

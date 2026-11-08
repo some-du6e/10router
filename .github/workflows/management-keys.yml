@@ -33,6 +33,7 @@ on:
       - "src/app/api/management/**"
       - "src/app/api/management-keys/**"
       - "src/app/api/providers/route.js"
+      - "src/app/api/providers/[id]/route.js"
       - "src/app/api/providers/validate/route.js"
       - "src/app/api/keys/**"
       - "src/app/(dashboard)/dashboard/endpoint/**"
@@ -44,6 +45,7 @@ on:
       - "tests/unit/management-keys-guard.test.js"
       - "tests/unit/management-keys-migration.test.js"
       - "tests/unit/codex-ws-bridge-peer.test.js"
+      - "tests/unit/key-limits-payload.test.js"
       - "tests/unit/custom-server-peer-headers.test.js"
       - "tests/unit/dashboard-guard.test.js"
       - "tests/unit/api-key-budgets-migration.test.js"
@@ -83,6 +85,7 @@ jobs:
           unit/api-key-budgets.test.js
           unit/db-migration-chain.test.js
           unit/codex-ws-bridge-peer.test.js
+          unit/key-limits-payload.test.js
           unit/custom-server-peer-headers.test.js
           unit/auto-disable-dead-keys.test.js
       - name: Lint
@@ -98,6 +101,8 @@ jobs:
           src/lib/db/repos/connectionsRepo.js
           custom-server.js
           tests/unit/codex-ws-bridge-peer.test.js
+          tests/unit/key-limits-payload.test.js
+          "src/app/(dashboard)/dashboard/endpoint/components/keyFormat.js"
           src/shared/utils/managementKey.js
           src/app/api/management
           src/app/api/management-keys

@@ -70,3 +70,43 @@ describe("what the wrapper makes of a bridged turn", () => {
     expect(seen["x-9r-via-proxy"]).toBe("1");
   });
 });
+
+describe("bridge error frames and wiring", () => {
+  const { bridgeErrorFrame, bridgeCodexTurn } = __test__;
+
+  it("wraps a string error (the gateway's own refusals) as an object Codex can read", () => {
+    expect(JSON.parse(bridgeErrorFrame(JSON.stringify({ error: "API key required for remote API access" }), 401)))
+      .toEqual({ type: "error", error: { message: "API key required for remote API access", type: "invalid_request_error" } });
+    expect(JSON.parse(bridgeErrorFrame(JSON.stringify({ error: { message: "m", type: "t" } }), 400)).error).toEqual({ message: "m", type: "t" });
+    expect(JSON.parse(bridgeErrorFrame("not json", 502)).error).toEqual({ message: "Request failed with status 502", type: "server_error" });
+  });
+
+  it("falls back to a placeholder address for a remote peer with no address", () => {
+    expect(bridgeForwardHeaders({}, "", 1)["x-forwarded-for"]).toBe("unknown");
+  });
+
+  it("bridgeCodexTurn sends the turn with bridgeForwardHeaders' shape, and a rejected turn as a wrapped error frame", async () => {
+    const received = [];
+    const upstream = http.createServer((req, res) => {
+      received.push(req.headers);
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "API key required for remote API access" }));
+    });
+    await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    const port = upstream.address().port;
+    const turn = (peerIp, headers = HANDSHAKE) => new Promise((resolve) => {
+      const frames = [];
+      bridgeCodexTurn({ type: "response.create", model: "m", input: "hi" }, port, headers, peerIp, (f) => frames.push(f), () => resolve(frames));
+    });
+    try {
+      const localFrames = await turn("127.0.0.1");
+      expect(received[0]["x-9r-via-proxy"]).toBeUndefined();
+      expect(received[0].authorization).toBe("Bearer sk-x");
+      expect(JSON.parse(localFrames[0]).error).toEqual({ message: "API key required for remote API access", type: "invalid_request_error" });
+      await turn("203.0.113.9");
+      expect(received[1]["x-9r-via-proxy"]).toBe("1");
+    } finally {
+      await new Promise((resolve) => upstream.close(resolve));
+    }
+  });
+});

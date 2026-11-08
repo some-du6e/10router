@@ -101,3 +101,23 @@ describe("migration 006: management keys", () => {
     expect(await db.getRowOwner("clientKey", key.id)).toBe("mk-1");
   });
 });
+
+describe("migration 001 on a legacy table", () => {
+  async function run001(execError) {
+    const { default: m001 } = await import("@/lib/db/migrations/001-initial.js");
+    const fake = {
+      exec(sql) {
+        if (sql.startsWith("CREATE INDEX") && sql.includes("ownerManagementKeyId")) throw new Error(execError);
+      },
+    };
+    return () => m001.up(fake);
+  }
+
+  it("skips an index whose column a later migration adds", async () => {
+    expect(await run001("no such column: ownerManagementKeyId")).not.toThrow();
+  });
+
+  it("rethrows any other error", async () => {
+    expect(await run001("database disk image is malformed")).toThrow(/malformed/);
+  });
+});
