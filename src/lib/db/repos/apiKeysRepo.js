@@ -43,6 +43,11 @@ export function rowToKey(row) {
     spendResetAt: row.spendResetAt || null,
     requestCount: Number(row.requestCount) || 0,
     lastUsedAt: row.lastUsedAt || null,
+    // Which management key made it (null: the dashboard), and who last turned
+    // it off or set its expiry. See docs/MANAGEMENT_KEYS.md.
+    ownerManagementKeyId: row.ownerManagementKeyId || null,
+    disabledBy: row.disabledBy || null,
+    expiresAtSetBy: row.expiresAtSetBy || null,
   };
 }
 

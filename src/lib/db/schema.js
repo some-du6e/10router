@@ -51,6 +51,7 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_pc_provider ON providerConnections(provider)",
       "CREATE INDEX IF NOT EXISTS idx_pc_provider_active ON providerConnections(provider, isActive)",
       "CREATE INDEX IF NOT EXISTS idx_pc_priority ON providerConnections(provider, priority)",
+      "CREATE INDEX IF NOT EXISTS idx_pc_owner ON providerConnections(ownerManagementKeyId)",
     ],
   },
   providerNodes: {
@@ -120,8 +121,16 @@ export const TABLES = {
       // The management key that created this key (migration 006). NULL for
       // keys created in the dashboard.
       ownerManagementKeyId: "TEXT",
+      // Who last turned the key off and who set its expiry: "dashboard" or a
+      // management key id (migration 006). A management key may not undo the
+      // dashboard's choice. NULL with the key off (or an expiry set) reads as the dashboard.
+      disabledBy: "TEXT",
+      expiresAtSetBy: "TEXT",
     },
-    indexes: ["CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)"],
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)",
+      "CREATE INDEX IF NOT EXISTS idx_ak_owner ON apiKeys(ownerManagementKeyId)",
+    ],
   },
   // Scoped keys for the management API (/api/management/v1). Only the sha256
   // of the secret is stored; keyPrefix is a display hint. See docs/MANAGEMENT_KEYS.md.
@@ -137,7 +146,6 @@ export const TABLES = {
       createdAt: "TEXT NOT NULL",
       lastUsedAt: "TEXT",
     },
-    indexes: ["CREATE INDEX IF NOT EXISTS idx_mk_hash ON managementKeys(keyHash)"],
   },
   // What each management key did. detail is JSON and never holds a secret.
   managementAudit: {
@@ -149,11 +157,11 @@ export const TABLES = {
       targetId: "TEXT",
       at: "TEXT NOT NULL",
       detail: "TEXT",
+      // 1 for a refused request. Refusals are trimmed apart from the rest, so
+      // a flood of them can't push the real trail out.
+      denied: "INTEGER DEFAULT 0",
     },
-    indexes: [
-      "CREATE INDEX IF NOT EXISTS idx_ma_at ON managementAudit(at DESC)",
-      "CREATE INDEX IF NOT EXISTS idx_ma_key ON managementAudit(managementKeyId, at DESC)",
-    ],
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_ma_denied ON managementAudit(denied, id)"],
   },
   combos: {
     columns: {

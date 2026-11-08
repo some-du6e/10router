@@ -34,7 +34,7 @@ async function restart() {
 
 /** Rebuild a table as it was before 006: every current column but the owner one. */
 function dropOwnerColumn(db, table) {
-  const cols = db.all(`PRAGMA table_info(${table})`).map((c) => c.name).filter((c) => c !== "ownerManagementKeyId");
+  const cols = db.all(`PRAGMA table_info(${table})`).map((c) => c.name).filter((c) => !["ownerManagementKeyId", "disabledBy", "expiresAtSetBy"].includes(c));
   db.exec(`CREATE TABLE ${table}_old AS SELECT ${cols.join(", ")} FROM ${table}`);
   db.exec(`DROP TABLE ${table}`);
   db.exec(`ALTER TABLE ${table}_old RENAME TO ${table}`);
@@ -57,6 +57,9 @@ describe("migration 006: management keys", () => {
     for (const table of ["apiKeys", "providerConnections"]) {
       expect(upgraded.all(`PRAGMA table_info(${table})`).map((c) => c.name)).toContain("ownerManagementKeyId");
     }
+    for (const col of ["disabledBy", "expiresAtSetBy"]) {
+      expect(upgraded.all("PRAGMA table_info(apiKeys)").map((c) => c.name)).toContain(col);
+    }
     expect(upgraded.all("PRAGMA index_list(apiKeys)").map((i) => i.name)).toContain("idx_ak_owner");
     expect(upgraded.all("PRAGMA index_list(providerConnections)").map((i) => i.name)).toContain("idx_pc_owner");
     const tables = upgraded.all("SELECT name FROM sqlite_master WHERE type = 'table'").map((t) => t.name);
@@ -70,6 +73,18 @@ describe("migration 006: management keys", () => {
     const conn = await getProviderConnectionById("c1");
     expect(conn).toMatchObject({ apiKey: "x", name: "Old" });
     expect(conn).not.toHaveProperty("ownerManagementKeyId");
+  });
+
+  it("upgrades a legacy unstamped database (version 0) whose tables lack the owner columns", async () => {
+    const { getAdapter } = await import("@/lib/db/driver.js");
+    const db = await getAdapter();
+    dropOwnerColumn(db, "apiKeys");
+    dropOwnerColumn(db, "providerConnections");
+    db.run("UPDATE _meta SET value = '0' WHERE key = 'schemaVersion'");
+    // 001 can't build the owner indexes yet; it must not fail on them.
+    const upgraded = await restart();
+    expect(upgraded.all("PRAGMA index_list(apiKeys)").map((i) => i.name)).toContain("idx_ak_owner");
+    expect(upgraded.all("PRAGMA table_info(providerConnections)").map((c) => c.name)).toContain("ownerManagementKeyId");
   });
 
   it("keeps a connection's owner through the dashboard's updates", async () => {
