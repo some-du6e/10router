@@ -443,3 +443,65 @@ describe("dashboard guard helpers", () => {
     expect(__test__.extractApiKey(apiRequest)).toBe("header-key");
   });
 });
+
+describe("dashboard guard network trust", () => {
+  const OPEN = { requireLogin: false, password: "$2a$10$storedhash" };
+  const TUNNEL = { ...OPEN, tunnelUrl: "https://abc.trycloudflare.com", tailscaleUrl: "https://box.tail0.ts.net" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
+    mocks.validateApiKey.mockResolvedValue(false);
+    mocks.getConsistentMachineId.mockResolvedValue("cli-token");
+    mocks.verifyDashboardAuthToken.mockResolvedValue(false);
+    mocks.getDashboardAuthSession.mockResolvedValue(null);
+    mocks.getMeta.mockResolvedValue("0");
+  });
+
+  it("refuses admin APIs on the tunnel host while tunnel dashboard access is off", async () => {
+    mocks.getSettings.mockResolvedValue(TUNNEL);
+    for (const host of ["abc.trycloudflare.com", "box.tail0.ts.net:443"]) {
+      const response = await proxy(request("/api/keys", { host }));
+      expect(response.status, host).toBe(403);
+    }
+  });
+
+  it("serves admin APIs on the tunnel host once tunnel dashboard access is on", async () => {
+    mocks.getSettings.mockResolvedValue({ ...TUNNEL, tunnelDashboardAccess: true });
+    expect(await proxy(request("/api/keys", { host: "abc.trycloudflare.com" }))).toBe(mocks.nextResponse);
+  });
+
+  it("keeps public and LLM endpoints reachable on the tunnel host", async () => {
+    mocks.getSettings.mockResolvedValue(TUNNEL);
+    expect(await proxy(request("/api/health", { host: "abc.trycloudflare.com" }))).toBe(mocks.nextResponse);
+    mocks.validateApiKey.mockResolvedValue(true);
+    expect(await proxy(request("/v1/chat/completions", { host: "abc.trycloudflare.com", authorization: "Bearer sk-x" }))).toBe(mocks.nextResponse);
+  });
+
+  it("refuses a cross-site GET to a local-only spawn route even with no Origin", async () => {
+    mocks.getSettings.mockResolvedValue(OPEN);
+    const response = await proxy(localRequest("/api/mcp/browsermcp/sse", { host: "localhost:20128", "sec-fetch-site": "cross-site" }));
+    expect(response.status).toBe(403);
+  });
+
+  it("refuses cross-site and same-site writes when login is off", async () => {
+    mocks.getSettings.mockResolvedValue(OPEN);
+    for (const site of ["cross-site", "same-site"]) {
+      const response = await proxy(request("/api/cli-tools/claude-settings", { host: "localhost:20128", "sec-fetch-site": site }));
+      expect(response.status, site).toBe(401);
+    }
+  });
+
+  it("keeps a page on another localhost port local for keyless /v1", async () => {
+    mocks.getSettings.mockResolvedValue(OPEN);
+    const response = await proxy(localRequest("/v1/chat/completions", { host: "localhost:20128", origin: "http://localhost:3000", "sec-fetch-site": "same-site" }));
+    expect(response).toBe(mocks.nextResponse);
+  });
+
+  it("still serves the dashboard's own requests and non-browser clients when login is off", async () => {
+    mocks.getSettings.mockResolvedValue(OPEN);
+    expect(await proxy(request("/api/cli-tools/claude-settings", { host: "localhost:20128", "sec-fetch-site": "same-origin" }))).toBe(mocks.nextResponse);
+    expect(await proxy(request("/api/cli-tools/claude-settings", { host: "localhost:20128" }))).toBe(mocks.nextResponse);
+    expect(await proxy(localRequest("/api/mcp/browsermcp/sse", { host: "localhost:20128", "sec-fetch-site": "same-origin" }))).toBe(mocks.nextResponse);
+  });
+});

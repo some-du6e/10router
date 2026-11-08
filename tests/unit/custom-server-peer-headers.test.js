@@ -60,11 +60,11 @@ describe("custom-server peer header sanitizing", () => {
     expect(headers["x-9r-via-proxy"]).toBeUndefined();
   });
 
-  it("marks via-proxy and adopts the forwarded IP for a loopback proxy hop", async () => {
+  it("marks via-proxy and adopts the hop the loopback proxy appended", async () => {
     const headers = await get({ "x-forwarded-for": "203.0.113.9, 10.0.0.1" });
 
     expect(headers["x-9r-via-proxy"]).toBe("1");
-    expect(headers["x-9r-real-ip"]).toBe("203.0.113.9");
+    expect(headers["x-9r-real-ip"]).toBe("10.0.0.1");
     expect(headers["x-forwarded-for"]).toBeUndefined();
   });
 
