@@ -396,7 +396,13 @@ export function formatUsage(inputTokens, outputTokens, targetFormat) {
 
 const BILLING_IMAGE_TOKENS = 1600;
 const NON_ASCII = /[^\x00-\x7f]/g;
-const DATA_URL = /^data:[^;,]+;base64,/;
+const DATA_URL = /^data:([^;,]+);base64,/;
+
+/** Tokens a base64 payload is billed at: an image flat, any other file by its decoded size. */
+function inlinePayloadTokens(mime, base64) {
+  if (/^image\//i.test(mime || "")) return BILLING_IMAGE_TOKENS;
+  return Math.ceil((base64.length * 3) / 4 / 4);
+}
 
 /**
  * Weighted length of streamed text: estimateOutputTokens(weighChars(s)) is
@@ -411,21 +417,26 @@ export function weighChars(text) {
 /** Input tokens a request body is billed at when the provider reports none. */
 export function estimateBillingInputTokens(body) {
   if (!body || typeof body !== "object") return 0;
-  let images = 0;
+  let inline = 0;
   let json;
   try {
-    // An image or file is a data: URL (OpenAI) or a { type: "base64", data } source (Anthropic).
+    // Inline files: a data: URL (OpenAI), a { type: "base64", media_type, data }
+    // source (Anthropic image/document), { mimeType, data } (Gemini inlineData),
+    // { data, format } (OpenAI input_audio). Billed by kind and size, not as text.
     json = JSON.stringify(body, function replacer(key, value) {
-      if (typeof value === "string" && value.length > 256 && (DATA_URL.test(value) || (key === "data" && this?.type === "base64"))) {
-        images += 1;
-        return "";
+      if (typeof value !== "string" || value.length <= 256) return value;
+      const url = DATA_URL.exec(value);
+      if (url) { inline += inlinePayloadTokens(url[1], value.slice(url[0].length)); return ""; }
+      if (key === "data" && this && typeof this === "object") {
+        const mime = this.media_type || this.mimeType || this.mime_type || (this.format ? `audio/${this.format}` : null);
+        if (this.type === "base64" || mime) { inline += inlinePayloadTokens(mime, value); return ""; }
       }
       return value;
     });
   } catch {
     return 0;
   }
-  return Math.ceil(weighChars(json) / 4) + images * BILLING_IMAGE_TOKENS;
+  return Math.ceil(weighChars(json) / 4) + inline;
 }
 
 /**
