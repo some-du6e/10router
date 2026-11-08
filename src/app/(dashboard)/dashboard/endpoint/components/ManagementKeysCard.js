@@ -49,7 +49,10 @@ export default function ManagementKeysCard({ onKeysLoaded, onRowsChanged }) {
   const [keys, setKeys] = useState([]);
   const [orphans, setOrphans] = useState([]);
   const [audit, setAudit] = useState([]);
-  const [error, setError] = useState("");
+  // A failed load clears on the next good one; a failed action stays until
+  // the user dismisses it or tries another, so the reload can't hide it.
+  const [loadError, setLoadError] = useState("");
+  const [actionError, setActionError] = useState("");
   const [editing, setEditing] = useState(null); // null | "new" | key
   const [secret, setSecret] = useState(null);
   const [revoking, setRevoking] = useState(null); // { id, name, created }
@@ -71,29 +74,34 @@ export default function ManagementKeysCard({ onKeysLoaded, onRowsChanged }) {
         setKeys(data.managementKeys || []);
         setOrphans(data.orphans || []);
         setAudit(data.audit || []);
-        setError("");
+        setLoadError("");
         onKeysLoaded?.(Object.fromEntries((data.managementKeys || []).map((k) => [k.id, k.name])));
       })
-      .catch((e) => live && setError(e.message));
+      .catch((e) => live && setLoadError(e.message));
     return () => { live = false; };
   }, [version, onKeysLoaded]);
 
   const patch = async (id, body) => {
+    setActionError("");
     const res = await fetch(`/api/management-keys/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) setError(data.error || "Could not update the key");
+    if (!res.ok) setActionError(data.error || "Could not update the key");
     load();
   };
 
   const revoke = async () => {
     const target = revoking;
     setRevoking(null);
+    setActionError("");
     const res = await fetch(`/api/management-keys/${target.id}${deleteCreated ? "?deleteCreated=1" : ""}`, { method: "DELETE" });
-    if (!res.ok) setError("Could not revoke the key");
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setActionError(data.error || "Could not revoke the key");
+    }
     if (deleteCreated) onRowsChanged?.();
     load();
   };
@@ -125,7 +133,13 @@ export default function ManagementKeysCard({ onKeysLoaded, onRowsChanged }) {
         its scope allows, without dashboard access. They don&apos;t work on <code>/v1</code>.
       </p>
 
-      {error && <div className="mb-4"><StatusAlert status={{ type: "error", message: error }} /></div>}
+      {loadError && <div className="mb-4"><StatusAlert status={{ type: "error", message: loadError }} /></div>}
+      {actionError && (
+        <div className="mb-4 flex items-start gap-2">
+          <div className="flex-1"><StatusAlert status={{ type: "error", message: actionError }} /></div>
+          <Button size="sm" variant="ghost" onClick={() => setActionError("")}>Dismiss</Button>
+        </div>
+      )}
 
       {keys.length === 0 ? (
         <p className="text-sm text-text-muted py-4 text-center">No management keys yet.</p>

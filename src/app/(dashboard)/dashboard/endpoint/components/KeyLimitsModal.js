@@ -51,7 +51,9 @@ export default function KeyLimitsModal({ apiKey, onClose, onSaved, requireApiKey
       const key = await put({
         budgetUsd: trimmed === "" ? null : Number(trimmed),
         allowedModels: models.length ? models : null,
-        expiresAt: localInputToIso(expiry),
+        // Only when it changed: sending it makes the dashboard the owner of
+        // the expiry, which a management key may have set.
+        ...(expiry !== isoToLocalInput(apiKey.expiresAt) ? { expiresAt: localInputToIso(expiry) } : {}),
       });
       onSaved(key);
       onClose();

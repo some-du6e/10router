@@ -24,8 +24,9 @@ import ManagementKeysCard from "./components/ManagementKeysCard";
 import CreatedSecretModal from "./components/CreatedSecretModal";
 export default function APIPageClient({ machineId }) {
   const [keys, setKeys] = useState([]);
-  // Management key id → name, for the "made by" line on keys a management key created.
-  const [managementKeyNames, setManagementKeyNames] = useState({});
+  // Management key id → name, for the "made by" line on keys a management key
+  // created. Null until loaded: no label rather than a wrong "deleted" one.
+  const [managementKeyNames, setManagementKeyNames] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
@@ -1126,7 +1127,9 @@ export default function APIPageClient({ machineId }) {
                   </div>
                   <p className="text-xs text-text-muted mt-1">
                     Created {new Date(key.createdAt).toLocaleDateString()}
-                    {key.ownerManagementKeyId ? ` · made by ${managementKeyNames[key.ownerManagementKeyId] ? `management key "${managementKeyNames[key.ownerManagementKeyId]}"` : "a deleted management key"}` : ""}
+                    {key.ownerManagementKeyId && managementKeyNames
+                      ? ` · made by ${managementKeyNames[key.ownerManagementKeyId] ? `management key "${managementKeyNames[key.ownerManagementKeyId]}"` : "a deleted management key"}`
+                      : ""}
                   </p>
                   {key.isActive === false && (
                     <p className="text-xs text-orange-500 mt-1">Paused</p>
