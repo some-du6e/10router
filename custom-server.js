@@ -196,6 +196,23 @@ function bridgeForwardHeaders(handshakeHeaders, socketIp, payloadLength) {
   return forwarded;
 }
 
+/**
+ * The WebSocket error frame for a rejected turn. Codex reads `error` as an
+ * object; the gateway's own refusals (a missing key, a management key) carry
+ * it as a string, which is wrapped.
+ */
+function bridgeErrorFrame(raw, statusCode) {
+  let error;
+  try {
+    error = JSON.parse(raw).error;
+  } catch {
+    error = null;
+  }
+  if (typeof error === "string") error = { message: error, type: "invalid_request_error" };
+  if (!error || typeof error !== "object") error = { message: `Request failed with status ${statusCode}`, type: "server_error" };
+  return JSON.stringify({ type: "error", error });
+}
+
 // Run one `response.create` through this process's own HTTP endpoint and relay
 // each SSE event back as a text frame.
 function bridgeCodexTurn(request, port, headers, peerIp, send, done) {
@@ -219,16 +236,7 @@ function bridgeCodexTurn(request, port, headers, peerIp, send, done) {
         let raw = "";
         res.on("data", (chunk) => { raw += chunk; });
         res.on("end", () => {
-          let error;
-          try {
-            error = JSON.parse(raw).error;
-          } catch {
-            error = null;
-          }
-          send(JSON.stringify({
-            type: "error",
-            error: error || { message: `Request failed with status ${res.statusCode}`, type: "server_error" },
-          }));
+          send(bridgeErrorFrame(raw, res.statusCode));
           done(null, res.statusCode);
         });
         res.on("error", (error) => done(error));
@@ -549,7 +557,7 @@ http.createServer = (...args) => {
   return server;
 };
 
-module.exports = { __test__: { bridgeForwardHeaders } };
+module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn } };
 
 if (require.main === module) {
   const standalone = path.join(__dirname, "server.js");
