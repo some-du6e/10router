@@ -400,6 +400,23 @@ export async function getConnectionValue() {
   return out;
 }
 
+/**
+ * The last `days` local days, oldest first, each { date, requests, cost }.
+ * Dense: a day with no traffic reads as zero rather than being dropped, or a
+ * chart silently compresses idle days out of the timeline.
+ * @param {Map<string, { requests?: number, cost?: number }>} byDate keyed by local date ("2026-11-07")
+ */
+function denseDaily(byDate, days) {
+  const daily = [];
+  const today = new Date();
+  for (let i = days - 1; i >= 0; i--) {
+    const key = getLocalDateKey(new Date(today.getFullYear(), today.getMonth(), today.getDate() - i).getTime());
+    const hit = byDate.get(key);
+    daily.push({ date: key, requests: hit?.requests || 0, cost: hit?.cost || 0 });
+  }
+  return daily;
+}
+
 function monthKeyOf(dateKey) {
   return String(dateKey || "").slice(0, 7);
 }
@@ -451,16 +468,7 @@ export async function getConnectionDetail(connectionId, opts = {}) {
     monthly.set(mk, m);
   }
 
-  // Dense series — a day with no traffic must read as zero, not be dropped,
-  // or the chart silently compresses idle days out of the timeline.
-  const daily = [];
-  const today = new Date();
-  for (let i = dailyDays - 1; i >= 0; i--) {
-    const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - i);
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    const hit = byDate.get(key);
-    daily.push({ date: key, requests: hit?.requests || 0, cost: hit?.cost || 0 });
-  }
+  const daily = denseDaily(byDate, dailyDays);
 
   // ---- per-model split, errors and tail, from raw history ---------------
   const byModel = db.all(
@@ -532,14 +540,7 @@ export async function getApiKeyUsageDetail(apiKey, opts = {}) {
     }
     if (requests || cost) byDate.set(row.dateKey, { requests, cost });
   }
-  const daily = [];
-  const today = new Date();
-  for (let i = dailyDays - 1; i >= 0; i--) {
-    const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - i);
-    const key = getLocalDateKey(d.toISOString());
-    const hit = byDate.get(key);
-    daily.push({ date: key, requests: hit?.requests || 0, cost: hit?.cost || 0 });
-  }
+  const daily = denseDaily(byDate, dailyDays);
 
   const byModel = db.all(
     `SELECT model, provider, COUNT(*) AS requests, SUM(cost) AS cost,

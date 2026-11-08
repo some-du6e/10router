@@ -5,7 +5,9 @@ import PropTypes from "prop-types";
 import { Modal, CardSkeleton } from "@/shared/components";
 import ActivityChart from "../../accounts/[id]/ActivityChart";
 import { fmtCount, fmtRelative } from "../../accounts/[id]/formatters";
-import { fmtUsdExact, budgetTone } from "./keyFormat";
+import { budgetState } from "@/shared/utils/apiKeyLimits.js";
+import { fmtUsdExact } from "./keyFormat";
+import BudgetBar from "./BudgetBar";
 
 function Stat({ label, value, sub }) {
   return (
@@ -20,8 +22,9 @@ function Stat({ label, value, sub }) {
 Stat.propTypes = { label: PropTypes.string.isRequired, value: PropTypes.node.isRequired, sub: PropTypes.node };
 
 /**
- * One key's spend: totals against its budget, spend per day for 30 days,
- * spend by model and the latest requests. Mount it per key while open.
+ * One key's spend: totals against its budget (from the key itself), spend per
+ * day for 30 days, spend by model and the latest requests (from
+ * /api/keys/[id]/usage). Mount it per key while open.
  */
 export default function KeyUsageModal({ apiKey, onClose }) {
   const [usage, setUsage] = useState(null);
@@ -40,8 +43,7 @@ export default function KeyUsageModal({ apiKey, onClose }) {
     return () => { live = false; };
   }, [apiKey.id]);
 
-  const budget = usage?.budget;
-  const fraction = budget?.budgetUsd ? budget.spentUsd / budget.budgetUsd : budget?.budgetUsd === 0 ? 1 : 0;
+  const budget = budgetState(apiKey);
   const maxModel = Math.max(...(usage?.byModel || []).map((m) => m.cost), 0.0001);
   const spent30d = (usage?.daily || []).reduce((sum, d) => sum + (d.cost || 0), 0);
 
@@ -55,7 +57,7 @@ export default function KeyUsageModal({ apiKey, onClose }) {
             <Stat
               label="Spent"
               value={fmtUsdExact(budget.spentUsd)}
-              sub={usage.spendResetAt ? `since reset ${new Date(usage.spendResetAt).toLocaleDateString()}` : "lifetime"}
+              sub={apiKey.spendResetAt ? `since reset ${new Date(apiKey.spendResetAt).toLocaleDateString()}` : "lifetime"}
             />
             <Stat label="Budget" value={budget.budgetUsd === null ? "None" : fmtUsdExact(budget.budgetUsd)} />
             <Stat
@@ -63,15 +65,10 @@ export default function KeyUsageModal({ apiKey, onClose }) {
               value={budget.budgetUsd === null ? "—" : fmtUsdExact(budget.remainingUsd)}
               sub={budget.exhausted ? <span className="text-red-500">Budget used up</span> : null}
             />
-            <Stat label="Requests" value={fmtCount(usage.requestCount)} sub={`last ${fmtRelative(usage.lastUsedAt)}`} />
+            <Stat label="Requests" value={fmtCount(apiKey.requestCount)} sub={`last ${fmtRelative(apiKey.lastUsedAt)}`} />
           </div>
 
-          {budget.budgetUsd !== null && (
-            <div className="h-2 overflow-hidden rounded-full bg-surface-2" role="progressbar" aria-label="Budget spent"
-              aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(Math.min(1, fraction) * 100)}>
-              <div className={`h-full rounded-full ${budgetTone(fraction)}`} style={{ width: `${Math.min(1, fraction) * 100}%` }} />
-            </div>
-          )}
+          {budget.budgetUsd !== null && <BudgetBar fraction={budget.fraction} className="h-2" />}
 
           <div>
             <h3 className="text-[12.5px] font-semibold">
@@ -136,6 +133,12 @@ export default function KeyUsageModal({ apiKey, onClose }) {
 }
 
 KeyUsageModal.propTypes = {
-  apiKey: PropTypes.shape({ id: PropTypes.string.isRequired, name: PropTypes.string }).isRequired,
+  apiKey: PropTypes.shape({
+    id: PropTypes.string.isRequired,
+    name: PropTypes.string,
+    spendResetAt: PropTypes.string,
+    requestCount: PropTypes.number,
+    lastUsedAt: PropTypes.string,
+  }).isRequired,
   onClose: PropTypes.func.isRequired,
 };

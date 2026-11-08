@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import PropTypes from "prop-types";
-import { Modal, Button, Input, ModelSelectModal, ConfirmModal } from "@/shared/components";
+import { Modal, Button, Input, ModelSelectModal, ConfirmModal, Badge } from "@/shared/components";
 import { budgetState } from "@/shared/utils/apiKeyLimits.js";
 import { fmtUsdExact, isoToLocalInput, localInputToIso } from "./keyFormat";
 import StatusAlert from "./StatusAlert";
@@ -55,6 +55,7 @@ export default function KeyLimitsModal({ apiKey, onClose, onSaved, requireApiKey
   };
 
   const handleSave = async () => {
+    // Blank (spaces included) clears the budget, as the API does.
     const trimmed = budget.trim();
     if (trimmed && (!Number.isFinite(Number(trimmed)) || Number(trimmed) < 0)) {
       setError("Budget must be a dollar amount of 0 or more, or empty for no budget.");
@@ -132,7 +133,7 @@ export default function KeyLimitsModal({ apiKey, onClose, onSaved, requireApiKey
             ) : (
               <div className="flex flex-wrap gap-1.5">
                 {models.map((m) => (
-                  <span key={m} className="inline-flex items-center gap-1 rounded-md border border-border bg-surface-2 py-0.5 pl-2 pr-1 font-mono text-xs">
+                  <Badge key={m} size="sm" className="pr-1 font-mono">
                     {m}
                     <button
                       onClick={() => removeModel(m)}
@@ -142,7 +143,7 @@ export default function KeyLimitsModal({ apiKey, onClose, onSaved, requireApiKey
                     >
                       <span className="material-symbols-outlined text-[14px]">close</span>
                     </button>
-                  </span>
+                  </Badge>
                 ))}
               </div>
             )}

@@ -1,14 +1,15 @@
 "use client";
 
 import PropTypes from "prop-types";
+import { Badge } from "@/shared/components";
 import { budgetState, isKeyExpired } from "@/shared/utils/apiKeyLimits.js";
 import { fmtCount, fmtRelative } from "../../accounts/[id]/formatters";
-import { fmtUsdExact, budgetTone } from "./keyFormat";
+import { fmtUsdExact } from "./keyFormat";
+import BudgetBar from "./BudgetBar";
 
 /** One key's spend at a glance: spent / budget / remaining, requests, last use, limits. */
 export default function KeySpendSummary({ apiKey }) {
   const budget = budgetState(apiKey);
-  const fraction = budget.budgetUsd ? budget.spentUsd / budget.budgetUsd : budget.budgetUsd === 0 ? 1 : 0;
   const expired = isKeyExpired(apiKey);
   const models = apiKey.allowedModels || [];
 
@@ -25,16 +26,7 @@ export default function KeySpendSummary({ apiKey }) {
               {budget.exhausted ? "Budget used up" : `${fmtUsdExact(budget.remainingUsd)} left`}
             </span>
           </div>
-          <div
-            className="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-2"
-            role="progressbar"
-            aria-label="Budget spent"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={Math.round(Math.min(1, fraction) * 100)}
-          >
-            <div className={`h-full rounded-full ${budgetTone(fraction)}`} style={{ width: `${Math.min(1, fraction) * 100}%` }} />
-          </div>
+          <BudgetBar fraction={budget.fraction} className="mt-1 h-1.5" />
         </>
       ) : (
         <p className="text-xs tabular-nums">
@@ -47,14 +39,14 @@ export default function KeySpendSummary({ apiKey }) {
         <span aria-hidden="true">·</span>
         <span>last used {fmtRelative(apiKey.lastUsedAt)}</span>
         {models.length > 0 && (
-          <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px]" title={models.join(", ")}>
-            {models.length === 1 ? models[0] : `${models.length} models`}
+          <span title={models.join(", ")}>
+            <Badge size="sm">{models.length === 1 ? models[0] : `${models.length} models`}</Badge>
           </span>
         )}
         {apiKey.expiresAt && (
-          <span className={`rounded px-1.5 py-0.5 text-[11px] ${expired ? "bg-red-500/10 text-red-500" : "bg-surface-2"}`}>
+          <Badge size="sm" variant={expired ? "error" : "default"}>
             {expired ? "Expired" : `Expires ${fmtRelative(apiKey.expiresAt)}`}
-          </span>
+          </Badge>
         )}
       </div>
     </div>

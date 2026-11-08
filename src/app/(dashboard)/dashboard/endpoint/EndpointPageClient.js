@@ -30,6 +30,8 @@ export default function APIPageClient({ machineId }) {
   // Which key's limits dialog / spend view is open (by id, so they follow list updates).
   const [limitsKeyId, setLimitsKeyId] = useState(null);
   const [usageKeyId, setUsageKeyId] = useState(null);
+  const limitsKey = limitsKeyId ? keys.find((k) => k.id === limitsKeyId) : null;
+  const usageKey = usageKeyId ? keys.find((k) => k.id === usageKeyId) : null;
 
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [limitHoldEnabled, setLimitHoldEnabled] = useState(false);
@@ -1186,19 +1188,17 @@ export default function APIPageClient({ machineId }) {
         )}
       </Card>
 
-      {limitsKeyId && keys.some((k) => k.id === limitsKeyId) && (
+      {limitsKey && (
         <KeyLimitsModal
-          key={limitsKeyId}
-          apiKey={keys.find((k) => k.id === limitsKeyId)}
+          key={limitsKey.id}
+          apiKey={limitsKey}
           requireApiKey={requireApiKey}
           onClose={() => setLimitsKeyId(null)}
           onSaved={(updated) => updated && setKeys((prev) => prev.map((k) => (k.id === updated.id ? updated : k)))}
         />
       )}
 
-      {usageKeyId && keys.some((k) => k.id === usageKeyId) && (
-        <KeyUsageModal key={usageKeyId} apiKey={keys.find((k) => k.id === usageKeyId)} onClose={() => setUsageKeyId(null)} />
-      )}
+      {usageKey && <KeyUsageModal key={usageKey.id} apiKey={usageKey} onClose={() => setUsageKeyId(null)} />}
 
       {/* Add Key Modal */}
       <Modal
