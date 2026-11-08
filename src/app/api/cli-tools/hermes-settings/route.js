@@ -6,6 +6,7 @@ import { promisify } from "util";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
+import { findUnsafeConfigValue } from "@/lib/cliTools/configValue.js";
 
 const execAsync = promisify(exec);
 
@@ -124,6 +125,10 @@ export async function POST(request) {
     const { baseUrl, apiKey, model } = await request.json();
     if (!baseUrl || !model) {
       return NextResponse.json({ error: "baseUrl and model are required" }, { status: 400 });
+    }
+    const unsafeField = findUnsafeConfigValue({ baseUrl, apiKey, model });
+    if (unsafeField) {
+      return NextResponse.json({ error: `Invalid ${unsafeField}` }, { status: 400 });
     }
 
     const dir = getHermesDir();

@@ -9,7 +9,13 @@ import {
   validateNewPassword,
   clearLegacyGrace,
 } from "@/lib/auth/setupState";
-import { verifyDashboardPassword } from "@/lib/auth/dashboardSession";
+import { cookies } from "next/headers";
+import {
+  verifyDashboardPassword,
+  getDashboardAuthSession,
+  revokeDashboardSessions,
+  setDashboardAuthCookie,
+} from "@/lib/auth/dashboardSession";
 import { clearSetupToken } from "@/lib/auth/setupToken";
 import { sanitizeAutoComboSetting } from "@/sse/services/autoCombo.js";
 import { clearRequestDetailFullData } from "@/lib/db/index.js";
@@ -22,12 +28,12 @@ const SETTINGS_RESPONSE_HEADERS = {
 };
 
 // Secrets must never be mass-assigned from request body (CWE-915)
-const PROTECTED_SETTING_KEYS = ["password", "usageHubKeyHash", "usageHubEnabled"];
+const PROTECTED_SETTING_KEYS = ["password", "usageHubKeyHash", "usageHubEnabled", "sessionEpoch"];
 
 export async function GET() {
   try {
     const settings = await getSettings();
-    const { password, oidcClientSecret, usageHubKeyHash, ...safeSettings } = settings;
+    const { password, oidcClientSecret, usageHubKeyHash, sessionEpoch, ...safeSettings } = settings;
     safeSettings.oidcConfigured = !!(safeSettings.oidcIssuerUrl && safeSettings.oidcClientId && oidcClientSecret);
     
     const enableRequestLogs = process.env.ENABLE_REQUEST_LOGS === "true";
@@ -132,6 +138,10 @@ export async function PATCH(request) {
     if (passwordChanged) {
       await clearLegacyGrace();
       clearSetupToken();
+      const cookieStore = await cookies();
+      const hadSession = !!(await getDashboardAuthSession(cookieStore.get("auth_token")?.value));
+      await revokeDashboardSessions();
+      if (hadSession) await setDashboardAuthCookie(cookieStore, request);
     }
 
     // Stored full payloads hold prompts; turning the setting off removes them.
@@ -169,7 +179,7 @@ export async function PATCH(request) {
         .catch((error) => console.warn("[AutoPing] settings update failed:", error.message));
     }
 
-    const { password, oidcClientSecret, usageHubKeyHash, ...safeSettings } = settings;
+    const { password, oidcClientSecret, usageHubKeyHash, sessionEpoch, ...safeSettings } = settings;
     safeSettings.oidcConfigured = !!(safeSettings.oidcIssuerUrl && safeSettings.oidcClientId && oidcClientSecret);
     return NextResponse.json(safeSettings, { headers: SETTINGS_RESPONSE_HEADERS });
   } catch (error) {

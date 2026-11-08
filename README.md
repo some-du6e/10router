@@ -238,7 +238,7 @@ container.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `JWT_SECRET` | Auto-generated (`~/.9router/jwt-secret`) | JWT signing secret for the dashboard auth cookie (override to share across instances) |
+| `JWT_SECRET` | Auto-generated (`~/.9router/jwt-secret`) | JWT signing secret for the dashboard auth cookie (override to share across instances). Values shorter than 32 characters and documented placeholders are ignored; generate one with `openssl rand -hex 32` |
 | `INITIAL_PASSWORD` | unset | Optional headless bootstrap password (min 8 chars). When unset, first run requires the one-time setup token printed to the server console. There is no default password |
 | `DATA_DIR` | `~/.9router` | App data location (SQLite at `$DATA_DIR/db/data.sqlite`); the `.9router` name is kept for compatibility |
 | `PORT` | framework default | Service port (`20128` in examples) |

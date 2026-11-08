@@ -1,6 +1,7 @@
 "use server";
 
 import { NextResponse } from "next/server";
+import { findUnsafeConfigValue } from "@/lib/cliTools/configValue.js";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
@@ -137,6 +138,10 @@ export async function POST(request) {
         { error: "baseUrl and apiKey are required" },
         { status: 400 }
       );
+    }
+    const unsafeField = findUnsafeConfigValue({ baseUrl, apiKey });
+    if (unsafeField) {
+      return NextResponse.json({ error: `Invalid ${unsafeField}` }, { status: 400 });
     }
 
     const normalizedBaseUrl = baseUrl.endsWith("/v1")

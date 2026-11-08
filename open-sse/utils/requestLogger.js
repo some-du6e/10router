@@ -8,6 +8,30 @@ let fs = null;
 let path = null;
 let LOGS_DIR = null;
 
+const URL_SECRET_PARAMS = ["key", "api_key", "apikey", "access_token", "token"];
+// Some upstreams (Vertex with an API key) carry the credential in the query.
+export function redactUrlSecrets(url) {
+  if (typeof url !== "string" || !url.includes("?")) return url;
+  try {
+    const parsed = new URL(url);
+    let changed = false;
+    for (const name of [...parsed.searchParams.keys()]) {
+      if (URL_SECRET_PARAMS.includes(name.toLowerCase())) {
+        parsed.searchParams.set(name, "[REDACTED]");
+        changed = true;
+      }
+    }
+    return changed ? parsed.toString() : url;
+  } catch {
+    return url;
+  }
+}
+
+function ensureLogsDir() {
+  fs.mkdirSync(LOGS_DIR, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(LOGS_DIR, 0o700); } catch { /* not ours to change */ }
+}
+
 // Lazy load Node.js modules (avoid top-level await)
 async function ensureNodeModules() {
   if (!isNode || !LOGGING_ENABLED || fs) return;
@@ -39,16 +63,14 @@ async function createLogSession(sourceFormat, targetFormat, model) {
   if (!fs || !LOGS_DIR) return null;
   
   try {
-    if (!fs.existsSync(LOGS_DIR)) {
-      fs.mkdirSync(LOGS_DIR, { recursive: true });
-    }
+    ensureLogsDir();
     
     const timestamp = formatTimestamp();
     const safeModel = (model || "unknown").replace(/[/:]/g, "-");
     const folderName = `${sourceFormat}_${targetFormat}_${safeModel}_${timestamp}`;
     const sessionPath = path.join(LOGS_DIR, folderName);
     
-    fs.mkdirSync(sessionPath, { recursive: true });
+    fs.mkdirSync(sessionPath, { recursive: true, mode: 0o700 });
     
     return sessionPath;
   } catch (err) {
@@ -63,31 +85,23 @@ function writeJsonFile(sessionPath, filename, data) {
   
   try {
     const filePath = path.join(sessionPath, filename);
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), { mode: 0o600 });
   } catch (err) {
     console.log(`[LOG] Failed to write ${filename}:`, err.message);
   }
 }
 
-// Mask sensitive data in headers (DISABLED - keep full token for testing)
-function maskSensitiveHeaders(headers) {
+const SENSITIVE_HEADER = /authorization|api-key|apikey|cookie|token|secret|password/i;
+
+export function maskSensitiveHeaders(headers) {
   if (!headers) return {};
-  return { ...headers };
-  
-  // Old masking code (disabled):
-  // const masked = { ...headers };
-  // const sensitiveKeys = ["authorization", "x-api-key", "cookie", "token"];
-  // 
-  // for (const key of Object.keys(masked)) {
-  //   const lowerKey = key.toLowerCase();
-  //   if (sensitiveKeys.some(sk => lowerKey.includes(sk))) {
-  //     const value = masked[key];
-  //     if (value && value.length > 20) {
-  //       masked[key] = value.slice(0, 10) + "..." + value.slice(-5);
-  //     }
-  //   }
-  // }
-  // return masked;
+  const masked = { ...headers };
+  for (const [key, value] of Object.entries(masked)) {
+    if (!SENSITIVE_HEADER.test(key) || value == null) continue;
+    const text = String(value);
+    masked[key] = text.length > 16 ? `***${text.slice(-4)}` : "***";
+  }
+  return masked;
 }
 
 // No-op logger when logging is disabled
@@ -157,7 +171,7 @@ export async function createRequestLogger(sourceFormat, targetFormat, model) {
     logTargetRequest(url, headers, body) {
       writeJsonFile(sessionPath, "4_req_target.json", {
         timestamp: new Date().toISOString(),
-        url,
+        url: redactUrlSecrets(url),
         headers: maskSensitiveHeaders(headers),
         body
       });
@@ -235,9 +249,7 @@ export function logError(provider, { error, url, model, requestBody }) {
   if (!fs || !LOGS_DIR) return;
   
   try {
-    if (!fs.existsSync(LOGS_DIR)) {
-      fs.mkdirSync(LOGS_DIR, { recursive: true });
-    }
+    ensureLogsDir();
     
     const date = new Date().toISOString().split("T")[0];
     const logPath = path.join(LOGS_DIR, `${provider}-${date}.log`);
@@ -247,13 +259,13 @@ export function logError(provider, { error, url, model, requestBody }) {
       type: "error",
       provider,
       model,
-      url,
+      url: redactUrlSecrets(url),
       error: error?.message || String(error),
       stack: error?.stack,
       requestBody
     };
     
-    fs.appendFileSync(logPath, JSON.stringify(logEntry) + "\n");
+    fs.appendFileSync(logPath, JSON.stringify(logEntry) + "\n", { mode: 0o600 });
   } catch (err) {
     console.log("[LOG] Failed to write error log:", err.message);
   }

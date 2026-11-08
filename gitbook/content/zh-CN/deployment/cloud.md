@@ -37,7 +37,7 @@ npm run build
 创建 `.env` 文件或导出变量:
 
 ```bash
-export JWT_SECRET="your-secure-secret-change-this-to-random-string"
+export JWT_SECRET="$(openssl rand -hex 32)"
 export INITIAL_PASSWORD="your-secure-password"
 export DATA_DIR="/var/lib/10router"
 export NODE_ENV="production"
@@ -154,7 +154,7 @@ docker run -d \
   --name 10router \
   -p 3000:3000 \
   -p 20128:20128 \
-  -e JWT_SECRET="your-secure-secret-change-this" \
+  -e JWT_SECRET="$(openssl rand -hex 32)" \
   -e INITIAL_PASSWORD="your-secure-password" \
   -v 10router-data:/app/data \
   10router
@@ -176,7 +176,7 @@ services:
       - "20128:20128"
     environment:
       - NODE_ENV=production
-      - JWT_SECRET=your-secure-secret-change-this
+      - JWT_SECRET=${JWT_SECRET}
       - INITIAL_PASSWORD=your-secure-password
       - DATA_DIR=/app/data
     volumes:
@@ -320,7 +320,7 @@ sudo certbot renew --dry-run
 openssl rand -base64 32
 
 # 将该值用于 JWT_SECRET
-export JWT_SECRET="generated-secret-here"
+export JWT_SECRET="$(openssl rand -hex 32)"
 ```
 
 ### 2. 防火墙配置

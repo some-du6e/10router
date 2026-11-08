@@ -241,6 +241,20 @@ async function writeSkipApprovals(managedServers) {
   return { written: Object.keys(skip).length };
 }
 
+// Status responses must not carry the CLI token (in bridge headers) or the client key.
+const redactConfig = (cfg) => {
+  if (!cfg || typeof cfg !== "object") return cfg;
+  const { inferenceGatewayApiKey, ...rest } = cfg;
+  if (Array.isArray(rest.managedMcpServers)) {
+    rest.managedMcpServers = rest.managedMcpServers.map((m) => {
+      if (!m || typeof m !== "object") return m;
+      const { headers, ...entry } = m;
+      return entry;
+    });
+  }
+  return rest;
+};
+
 export async function GET() {
   try {
     const installed = await checkInstalled();
@@ -273,7 +287,7 @@ export async function GET() {
 
     return NextResponse.json({
       installed: true,
-      config,
+      config: redactConfig(config),
       has10Router,
       configPath,
       cowork: {
