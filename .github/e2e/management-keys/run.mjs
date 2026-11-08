@@ -103,20 +103,23 @@ await card.screenshot({ path: `${outDir}/management-keys-card.png` });
 await card.getByRole("button", { name: "Create Key" }).click();
 await page.getByPlaceholder("Snowflake top-up").fill("e2e from the UI");
 await page.getByRole("switch", { name: "Provider keys" }).click();
+await page.waitForTimeout(500); // the toggle's transition
 await page.screenshot({ path: `${outDir}/create-modal.png`, fullPage: false });
 await page.getByRole("button", { name: "Create", exact: true }).click();
-const secretBox = page.locator('input[readonly]').filter({ hasText: "" });
+const secretBox = page.locator("input[readonly]");
 await page.getByText("Management key created").waitFor({ state: "visible", timeout: 30000 });
 const shown = await secretBox.evaluateAll((els) => els.map((e) => e.value).find((v) => v.startsWith("10r-mgmt-")) || "");
 check("secret shown once after create", shown.startsWith("10r-mgmt-"));
-await page.screenshot({ path: `${outDir}/secret-modal.png`, fullPage: false });
+await page.waitForTimeout(500); // the modal's fade-in
+// The secret is a throwaway from this run's database; masked all the same.
+await page.screenshot({ path: `${outDir}/secret-modal.png`, fullPage: false, mask: [secretBox] });
 await page.getByRole("button", { name: "Done" }).click();
 await card.getByText("e2e from the UI", { exact: true }).first().waitFor({ state: "visible", timeout: 30000 });
 check("new key is listed", true);
 check("the list never shows the secret", !(await card.innerText()).includes(shown));
 const viaUi = await call("GET", "/api/management/v1/me", { token: shown });
 check("the UI-created key works", viaUi.status === 200 && viaUi.json?.managementKey?.scopes?.providerKeys?.enabled === true, String(viaUi.status));
-await page.screenshot({ path: `${outDir}/endpoint-page.png`, fullPage: true });
+await page.screenshot({ path: `${outDir}/endpoint-page.png`, fullPage: true, mask: [page.locator("code")] });
 
 await browser.close();
 await anon.dispose();

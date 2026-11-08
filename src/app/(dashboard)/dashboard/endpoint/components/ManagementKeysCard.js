@@ -89,7 +89,7 @@ export default function ManagementKeysCard() {
     <Card id="management-keys">
       <div className="flex items-center justify-between mb-2">
         <h2 className="text-lg font-semibold flex items-center gap-2">
-          <span className="material-symbols-outlined text-primary">admin_panel_settings</span>
+          <span className="material-symbols-outlined text-primary">shield</span>
           Management Keys
         </h2>
         <Button icon="add" onClick={() => setEditing("new")}>Create Key</Button>
