@@ -106,6 +106,7 @@ function getSamlRequestCache(settings) {
 // Past the cap the oldest IDs go first; a login that slow has to start again.
 export const SAML_MAX_PENDING_REQUESTS = 1000;
 export function boundedCache(cache) {
+  if (typeof cache?.saveAsync !== "function" || typeof cache?.removeAsync !== "function") return cache;
   const order = [];
   const saveAsync = cache.saveAsync.bind(cache);
   const removeAsync = cache.removeAsync.bind(cache);
