@@ -110,13 +110,17 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     }
     const last = runs[runs.length - 1];
     const win = worked(last.result) ? last : null;
-    // Several keys and none worked: report the first (the endpoint's own URL
-    // when a key uses it), and that more were tried.
+    // None worked: report the first key's verdict (the endpoint's own URL when
+    // a key uses it), as a failure even when its refusal came after the free
+    // probes passed, and say how many keys were tried.
     const shown = win || runs[0];
-    const allRefused = runs.every((r) => keyRefused(r.result));
-    const result = win || runs.length === 1 ? shown.result : {
-      ...shown.result, ok: false, failure: allRefused ? "key" as const : shown.result.failure,
-      error: allRefused ? `None of the ${runs.length} keys it tried was accepted` : `None of the ${runs.length} keys it tried got through. The first: ${clause(shown.result.error) || "no answer"}`,
+    const refused = keyRefused(shown.result);
+    const verdict = clause(shown.result.error) || (refused ? "The key was rejected" : "It didn't answer");
+    const result = win || (runs.length === 1 && !shown.result.ok) ? shown.result : {
+      ...shown.result, ok: false as const,
+      error: runs.length === 1 ? verdict
+        : runs.every((r) => keyRefused(r.result)) ? `None of the ${runs.length} keys it tried was accepted`
+        : `None of the ${runs.length} keys it tried got through. The first: ${verdict}`,
     };
     // What a key on its own URL sees is that account's: redetectDiff keeps its
     // URL, missing models, routes and auth style out of the endpoint's changes.

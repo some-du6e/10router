@@ -113,6 +113,8 @@ describe("redetectDiff for one key at its own URL (keyScoped)", () => {
     expect(d.baseUrl).toEqual({ from: "https://api.acme.dev/v1", to: "https://acct-1.acme.dev/v1" });
     expect(d.removeModels).toEqual(["gone"]);
     expect(d.quirks.apiKeyHeader).toBe("api-key");
+    // The control for the scoped case: unscoped, the split is offered as routes.
+    expect(d.quirks.modelRoutes).toEqual({ a: "openai-responses", new: "anthropic" });
   });
 });
 

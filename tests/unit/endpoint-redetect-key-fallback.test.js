@@ -31,7 +31,8 @@ vi.mock("@/lib/localDb", () => ({
 }));
 
 vi.mock("@/lib/endpointDetect.js", () => ({
-  DETECT_DEADLINE_MS: 45_000,
+  // Not the real 45s, so the test proves the route uses the export.
+  DETECT_DEADLINE_MS: 40_000,
   detectEndpoint: mocks.detectEndpoint,
   // An http(s) URL or null, as the real normalizeUrl answers.
   normalizeUrl: (u) => (typeof u === "string" && /^https?:\/\/[^/\s]+/.test(u) ? u.replace(/\/+$/, "") : null),
@@ -141,6 +142,19 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     expect(keysUsed()).toEqual(["a", "b", "c", "d", "e"]);
   });
 
+  it("reports a late refusal of the only key as a refusal, not as nothing changed", async () => {
+    mocks.getProviderConnections.mockResolvedValue(conns("dead"));
+    verdict.dead = refusedLater;
+    expect(await json()).toMatchObject({ ok: false, error: "The key was rejected" });
+  });
+
+  it("names a late refusal of the first key when a later one fails otherwise", async () => {
+    mocks.getProviderConnections.mockResolvedValue([...conns("dead"), ...ownConns("o1")]);
+    verdict.dead = refusedLater;
+    verdict.o1 = down;
+    expect(await json()).toMatchObject({ ok: false, error: "None of the 2 keys it tried got through. The first: The key was rejected" });
+  });
+
   it("doesn't spend an attempt on a key with no credential", async () => {
     mocks.getProviderConnections.mockResolvedValue([...conns("", "", "", "", ""), ...conns("good")]);
     verdict.good = works;
@@ -227,7 +241,7 @@ describe("re-detect model check: one run across keys", () => {
       // Every rejected key takes 20s to answer.
       mocks.detectEndpoint.mockImplementation(() => { vi.setSystemTime(Date.now() + 20_000); return Promise.resolve(rejected); });
       await json();
-      expect(mocks.detectEndpoint.mock.calls.map((c) => c[0].deadlineMs)).toEqual([45_000, 25_000, 5_000]);
+      expect(mocks.detectEndpoint.mock.calls.map((c) => c[0].deadlineMs)).toEqual([40_000, 20_000]);
     } finally { vi.useRealTimers(); }
   });
 
