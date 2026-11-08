@@ -127,12 +127,14 @@ const claudeEv = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 
 /** Pipe a fake upstream through the real stream + disconnect-aware wrapper. */
-function pipe({ drain = false, drainMaxMs = 60_000, stallMs = 60_000, translate = null, requestBody = body } = {}) {
+function pipe({ drain = false, drainMaxMs = 60_000, stallMs = 60_000, translate = null, requestBody = body, sentBody = undefined, upstreamStartedAt = undefined } = {}) {
   const completed = [];
   const onComplete = (...args) => completed.push(args);
   const ts = translate
     ? createSSETransformStreamWithLogger(translate.target, translate.source, "anthropic", null, null, "claude-x", "conn", requestBody, onComplete, "sk-test")
     : createPassthroughStreamWithLogger("anthropic", null, "claude-x", "conn", requestBody, onComplete, "sk-test");
+  if (sentBody !== undefined) ts.upstreamBody = sentBody;
+  if (upstreamStartedAt !== undefined) ts.upstreamStartedAt = upstreamStartedAt;
   const controller = createStreamController({ provider: "anthropic", model: "claude-x", drainOnDisconnect: drain, drainMaxMs });
   const up = upstreamBody();
   up.abortWith(controller.signal);
@@ -209,7 +211,7 @@ describe("drain: a budgeted key's client hangs up mid-stream", () => {
   });
 
   it("past the drain cap, aborts the upstream and charges the time floor", async () => {
-    const clock = useClock();
+    const clock = fakeClock();
     const { up, out, completed } = pipe({ drain: true, drainMaxMs: 60 });
     const reader = out.getReader();
     up.push(messageStart + textBlock("visible text before the hang-up"));
@@ -262,7 +264,7 @@ describe("drain: a budgeted key's client hangs up mid-stream", () => {
 });
 
 /** Control Date.now (the floor's clock) from the test. */
-function useClock() {
+function fakeClock() {
   let now = Date.now();
   const spy = vi.spyOn(Date, "now").mockImplementation(() => now);
   onTestFinished(() => spy.mockRestore());
@@ -271,7 +273,7 @@ function useClock() {
 
 describe("cut-short floor", () => {
   it("charges a Claude stream with omitted thinking, cut at 20 s, at least 20 x 150 output tokens", async () => {
-    const clock = useClock();
+    const clock = fakeClock();
     const { up, out, completed } = pipe({ drain: false });
     const reader = out.getReader();
     up.push(messageStart + hiddenThinking + textBlock("tiny"));
@@ -284,7 +286,7 @@ describe("cut-short floor", () => {
   });
 
   it("never charges more than the request's max_tokens", async () => {
-    const clock = useClock();
+    const clock = fakeClock();
     const { up, out, completed } = pipe({ drain: false, requestBody: { ...body, max_tokens: 1000 } });
     const reader = out.getReader();
     up.push(messageStart + hiddenThinking + textBlock("tiny"));
@@ -296,7 +298,7 @@ describe("cut-short floor", () => {
   });
 
   it("raises both output field names when the usage carries both", async () => {
-    const clock = useClock();
+    const clock = fakeClock();
     const { up, out, completed } = pipe({ drain: false, translate: { target: FORMATS.CLAUDE, source: FORMATS.OPENAI } });
     const reader = out.getReader();
     up.push(messageStart + textBlock("both names"));
@@ -310,7 +312,7 @@ describe("cut-short floor", () => {
   });
 
   it("leaves a completed stream's usage exact, however long it ran", async () => {
-    const clock = useClock();
+    const clock = fakeClock();
     const { up, out, completed } = pipe({ drain: false });
     const reader = out.getReader();
     up.push(messageStart + textBlock("all of it"));
@@ -437,7 +439,7 @@ describe("real usage replaces an estimate", () => {
 
 describe("a completed stream with no usage at all", () => {
   it("records the estimate with no context-meter buffer, and no time floor", async () => {
-    const clock = useClock();
+    const clock = fakeClock();
     const content = "a complete answer of moderate length";
     const [[, usage, , meta]] = await run([
       `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: "stop" }] })}\n\n`, "data: [DONE]\n\n",
@@ -581,5 +583,157 @@ describe("non-streaming request over a forced chat stream with no usage", () => 
     expect(logs.usage.mock.calls.at(-1)[0].tokens.completion_tokens).toBe(expected);
     expect(logs.detail.mock.calls.at(-1)[0].tokens.completion_tokens).toBe(expected);
     expect(line.mock.calls.at(-1)[2]).toContain(`OUT ${expected}`);
+  });
+});
+
+// ---- Round 5 ----
+
+/** Cut a Claude stream with only a little visible text at `seconds`, return the billed usage. */
+async function cutAt(seconds, opts = {}, text = "tiny") {
+  const clock = fakeClock();
+  const { up, out, completed } = pipe({ drain: false, ...opts });
+  const reader = out.getReader();
+  up.push(messageStart + hiddenThinking + textBlock(text));
+  await readUntil(reader, text);
+  clock.advance(seconds * 1000);
+  await reader.cancel();
+  await vi.waitFor(() => expect(completed).toHaveLength(1));
+  return completed[0][1];
+}
+
+describe("the floor's cap", () => {
+  it("comes from the body sent upstream, not the client's (max_completion_tokens: 1 to Claude)", async () => {
+    const usage = await cutAt(10, { requestBody: { ...body, max_completion_tokens: 1 }, sentBody: { max_tokens: 64000 } });
+    expect(outTok(usage)).toBe(1500);
+  });
+
+  it("never shrinks below what visibly streamed", async () => {
+    const text = "x".repeat(400);
+    const usage = await cutAt(10, { requestBody: { ...body, max_tokens: 1 } }, text);
+    expect(outTok(usage)).toBe(estimateOutputTokens(weighChars(text)));
+  });
+
+  it.each([
+    ["max_output_tokens", { max_output_tokens: 700 }, 700],
+    ["Gemini generationConfig.maxOutputTokens", { generationConfig: { maxOutputTokens: 800 } }, 800],
+    ["antigravity request.generationConfig.maxOutputTokens", { request: { generationConfig: { maxOutputTokens: 900 } } }, 900],
+  ])("reads %s", async (_name, sentBody, cap) => {
+    expect(outTok(await cutAt(20, { sentBody }))).toBe(cap);
+  });
+});
+
+describe("the floor's clock", () => {
+  it("stops at the last upstream byte when the stall watchdog ended the stream", async () => {
+    const clock = fakeClock();
+    const text = "then nothing for a long time";
+    const { up, out, completed } = pipe({ drain: false, stallMs: 80 });
+    const reader = out.getReader();
+    up.push(messageStart + textBlock(text));
+    await readUntil(reader, "long time");
+    clock.advance(300_000); // the silent window, which isn't generation
+    await vi.waitFor(() => expect(completed).toHaveLength(1), { timeout: 2000 });
+    expect(outTok(completed[0][1])).toBe(estimateOutputTokens(weighChars(text)));
+  });
+
+  it("starts at the first upstream byte, so prefill isn't billed", async () => {
+    const clock = fakeClock();
+    const { up, out, completed } = pipe({ drain: false });
+    const reader = out.getReader();
+    clock.advance(30_000); // headers came, then 30 s of prefill before any byte
+    up.push(messageStart + textBlock("tiny"));
+    await readUntil(reader, "tiny");
+    clock.advance(2000);
+    await reader.cancel();
+    await vi.waitFor(() => expect(completed).toHaveLength(1));
+    expect(outTok(completed[0][1])).toBe(2 * 150);
+  });
+
+  it("starts when the response arrived for an executor that read ahead (codex's peek)", async () => {
+    const clock = fakeClock();
+    const arrived = Date.now();
+    const { up, out, completed } = pipe({ drain: false, upstreamStartedAt: arrived });
+    const reader = out.getReader();
+    clock.advance(8000); // the peek read reasoning events up to the first output delta
+    up.push(messageStart + textBlock("tiny"));
+    await readUntil(reader, "tiny");
+    clock.advance(2000);
+    await reader.cancel();
+    await vi.waitFor(() => expect(completed).toHaveLength(1));
+    expect(outTok(completed[0][1])).toBe(10 * 150);
+  });
+
+  it("codex stamps when its fetch returned, before the peek", async () => {
+    const { BaseExecutor } = await import("open-sse/executors/base.js");
+    const { CodexExecutor } = await import("open-sse/executors/codex.js");
+    const sse = ev("response.output_text.delta", { type: "response.output_text.delta", delta: "hello" });
+    const spy = vi.spyOn(BaseExecutor.prototype, "execute").mockResolvedValue({ response: new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } }) });
+    try {
+      const before = Date.now();
+      const result = await new CodexExecutor("codex").execute({ body: { input: [] }, model: "gpt-x", stream: true, credentials: {} });
+      expect(result.response.upstreamStartedAt).toBeGreaterThanOrEqual(before);
+      expect(result.response.upstreamStartedAt).toBeLessThanOrEqual(Date.now());
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("isn't applied after the finish chunk when the client hangs up before the usage trailer", async () => {
+    const clock = fakeClock();
+    const content = "the whole answer";
+    const completed = [];
+    const ts = createPassthroughStreamWithLogger("openai", null, "gpt-x", "conn", body, (...a) => completed.push(a), "sk-test");
+    const writer = ts.writable.getWriter();
+    const reader = ts.readable.getReader();
+    const drain = (async () => { for (;;) { const { done } = await reader.read(); if (done) break; } })().catch(() => {});
+    await writer.write(encoder.encode(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: "stop" }] })}\n\n`));
+    clock.advance(20_000);
+    ts.finalizeOnAbort();
+    await writer.abort(new Error("client went away")).catch(() => {});
+    await drain;
+    expect(completed[0][1].completion_tokens).toBe(estimateOutputTokens(weighChars(content)));
+  });
+});
+
+describe("round 5 shapes", () => {
+  it("antigravity's wrapped Gemini chunk ends the answer", async () => {
+    const completed = [];
+    const ts = createPassthroughStreamWithLogger("antigravity", null, "g", "conn", body, (...a) => completed.push(a), "sk-test");
+    const writer = ts.writable.getWriter();
+    const reader = ts.readable.getReader();
+    const drain = (async () => { for (;;) { const { done } = await reader.read(); if (done) break; } })().catch(() => {});
+    await writer.write(encoder.encode(`data: ${JSON.stringify({ response: { candidates: [{ content: { parts: [{ text: "hi" }] }, finishReason: "STOP" }], usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 3, totalTokenCount: 10 } } })}\n\n`));
+    ts.finalizeOnAbort();
+    await writer.abort(new Error("client went away")).catch(() => {});
+    await drain;
+    expect(completed[0][3]).toEqual({ aborted: false });
+  });
+
+  it("an empty completion with no usage still records the input", async () => {
+    const [[, usage]] = await run([
+      `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`, "data: [DONE]\n\n",
+    ], "close");
+    expect(usage.prompt_tokens).toBe(estimateBillingInputTokens(body));
+    expect(usage.completion_tokens).toBe(0);
+  });
+
+  it("a normal end drops the pending count through the shared once-only hook", async () => {
+    const endPending = vi.fn();
+    const completed = [];
+    const ts = createPassthroughStreamWithLogger("openai", null, "gpt-x", "conn", body, (...a) => completed.push(a), "sk-test");
+    ts.endPending = endPending;
+    const writer = ts.writable.getWriter();
+    const reader = ts.readable.getReader();
+    const drain = (async () => { for (;;) { const { done } = await reader.read(); if (done) break; } })().catch(() => {});
+    await writer.write(encoder.encode("data: [DONE]\n\n"));
+    await writer.close();
+    await drain;
+    expect(endPending).toHaveBeenCalledTimes(1);
+  });
+
+  it("another provider's usage-only chunk is forwarded (only openai's is ours)", async () => {
+    const output = [];
+    const usageOnly = `data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", choices: [], usage: { prompt_tokens: 11, completion_tokens: 4, total_tokens: 15 } })}\n\n`;
+    await run([usageOnly, "data: [DONE]\n\n"], "close", body, { provider: "iflow", output });
+    expect(output.join("")).toContain('"choices":[]');
   });
 });

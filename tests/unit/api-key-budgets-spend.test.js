@@ -274,6 +274,34 @@ describe("spend on the real chat path", () => {
     expect(row.completionTokens).toBeGreaterThan(0);
   });
 
+  it.each([
+    ["plain", {}],
+    ["with tools", { tools: [{ type: "function", function: { name: "read_file", parameters: { type: "object", properties: {} } } }] }],
+    ["with reasoning_effort", { reasoning_effort: "high" }],
+  ])("an OpenAI client's max_completion_tokens: 1 to Claude, cut at 10 s, is charged the floor (%s)", async (_name, extra) => {
+    const key = await newKey(`cap-from-upstream-${_name}`);
+    const realNow = Date.now.bind(Date);
+    let offset = 0;
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => realNow() + offset);
+    try {
+      fetchMock.mockResolvedValueOnce(new Response(openStream([
+        sseEvent("message_start", { type: "message_start", message: { id: "m1", type: "message", role: "assistant", model: "claude-spend", content: [], usage: { input_tokens: 1000, output_tokens: 1 } } }),
+        sseEvent("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+        sseEvent("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "visible" } }),
+      ]), { status: 200, headers: { "content-type": "text/event-stream" } }));
+      const res = await handleChat(request(key, { stream: true, max_completion_tokens: 1, ...extra }, { model: "anthropic/claude-spend" }));
+      const reader = res.body.getReader();
+      await readUntil(reader, "visible");
+      offset += 10_000;
+      await reader.cancel();
+      await keyAfterUsage(key, (k) => k.requestCount === 1);
+    } finally {
+      spy.mockRestore();
+    }
+    const row = await usageRow(key);
+    expect(row.completionTokens).toBeGreaterThanOrEqual(1500);
+  });
+
   it("asks the official OpenAI provider, and no other, for its usage chunk", async () => {
     const { DefaultExecutor } = await import("open-sse/executors/default.js");
     const req = { model: "gpt-x", stream: true, messages: [{ role: "user", content: "hi" }] };
@@ -284,6 +312,8 @@ describe("spend on the real chat path", () => {
     const { stream: _omit, ...noStreamField } = req;
     expect(new DefaultExecutor("openai").transformRequest("gpt-x", { ...req, stream: false }, true, {}).stream_options).toBeUndefined();
     expect(new DefaultExecutor("openai").transformRequest("gpt-x", { ...noStreamField }, true, {}).stream_options).toBeUndefined();
+    // Only Chat Completions has stream_options: a Responses body never gets it.
+    expect(new DefaultExecutor("openai").transformRequest("gpt-x", { model: "gpt-x", stream: true, input: [{ role: "user", content: "hi" }] }, true, {}).stream_options).toBeUndefined();
   });
 
   it("a stream closed after its final event is counted once, at the reported usage", async () => {
