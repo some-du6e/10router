@@ -17,6 +17,10 @@ describe("MCP stdio bridge child env", () => {
       NINEROUTER_PEER_TOKEN: "peer",
       DATA_DIR: "/data",
       OPENAI_API_KEY: "sk",
+      npm_config__authToken: "npm-token",
+      "npm_config_//registry.example/:_authToken": "scoped-token",
+      NPM_CONFIG_OTP: "123456",
+      npm_config__password: "pw",
     });
 
     expect(env).toEqual({

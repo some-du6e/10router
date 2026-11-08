@@ -12,6 +12,7 @@ export function buildChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Proc
   const out: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(env)) {
     const upper = key.toUpperCase();
+    if (upper.startsWith("NPM_CONFIG_") && /AUTH|TOKEN|PASS|OTP|CERT|KEY/.test(upper)) continue;
     if (CHILD_ENV_KEYS.has(upper) || CHILD_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix))) {
       out[key] = value;
     }
