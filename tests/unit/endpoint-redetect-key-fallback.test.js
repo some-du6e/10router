@@ -57,10 +57,11 @@ vi.mock("@/app/api/providers/[id]/redetect/diff.js", () => ({
   savedProtocol: () => "openai-chat",
   savedSettingsFetch: (f) => f,
   // Thin passthrough so the test can read which run's result reached the diff.
-  redetectDiff: (_node, _current, r) => ({
-    ok: !!r.ok, error: r.error ?? null, protocol: null, baseUrl: null,
-    addModels: [], removeModels: [], outdatedModels: [], quirks: {}, modelsNote: null, changes: 0,
-  }),
+  // A working run proposes every kind of change, so scoping can be checked.
+  redetectDiff: (_node, _current, r) => r.ok
+    ? { ok: true, protocol: null, baseUrl: { from: "https://api.acme.dev/v1", to: r.baseUrl }, addModels: ["new"], removeModels: ["gone"],
+      outdatedModels: [], quirks: { maxCompletionTokens: true, modelRoutes: { new: "openai-responses" } }, modelsNote: null, changes: 5 }
+    : { ok: false, error: r.error ?? null, protocol: null, baseUrl: null, addModels: [], removeModels: [], outdatedModels: [], quirks: {}, modelsNote: null, changes: 0 },
 }));
 
 const { POST } = await import("@/app/api/providers/[id]/redetect/route.ts");
@@ -89,6 +90,55 @@ beforeEach(() => {
 });
 
 const conns = (...keys) => keys.map((apiKey, i) => ({ id: `c${i}`, isActive: true, apiKey }));
+// Keys that each carry their own URL (one account per key), as Add key saves them.
+const ownConns = (...keys) => keys.map((apiKey, i) => ({ id: `o${i}`, isActive: true, apiKey,
+  providerSpecificData: { ownBaseUrl: true, baseUrl: `https://acct-${apiKey}.acme.dev/v1` } }));
+const urlsUsed = () => mocks.detectEndpoint.mock.calls.map((c) => c[0].url);
+
+describe("re-detect model check on keys with their own URL", () => {
+  it("asks each key at its own URL instead of probing the endpoint with no key", async () => {
+    mocks.getProviderConnections.mockResolvedValue([{ id: "off", isActive: false, apiKey: "shared-off" }, ...ownConns("dead", "good")]);
+    mocks._verdict.good = works;
+    const body = await call();
+    expect(body).toMatchObject({ ok: true, usedKey: true, viaKeyUrl: true });
+    expect(keysUsed()).toEqual(["dead", "good"]);
+    expect(urlsUsed()).toEqual(["https://acct-dead.acme.dev/v1", "https://acct-good.acme.dev/v1"]);
+  });
+
+  it("moves on when a key's own server is down: it says nothing about the next account", async () => {
+    mocks.getProviderConnections.mockResolvedValue(ownConns("k1", "k2"));
+    mocks._verdict.k1 = down;
+    mocks._verdict.k2 = works;
+    expect((await call()).ok).toBe(true);
+    expect(keysUsed()).toEqual(["k1", "k2"]);
+  });
+
+  it("tries keys on the endpoint's URL before keys with their own", async () => {
+    mocks.getProviderConnections.mockResolvedValue([...ownConns("own"), ...conns("shared")]);
+    mocks._verdict.shared = works;
+    const body = await call();
+    expect(keysUsed()).toEqual(["shared"]);
+    expect(body.viaKeyUrl).toBeUndefined();
+    expect(body.removeModels).toEqual(["gone"]);
+  });
+
+  it("never offers one account's URL, missing models or routes as the whole endpoint's", async () => {
+    mocks.getProviderConnections.mockResolvedValue(ownConns("good"));
+    mocks._verdict.good = works;
+    const body = await call();
+    expect(body).toMatchObject({ ok: true, baseUrl: null, removeModels: [], addModels: ["new"], quirks: { maxCompletionTokens: true }, changes: 2 });
+    expect(body.quirks.modelRoutes).toBeUndefined();
+  });
+
+  it("skips a key whose own URL the SSRF guard refuses", async () => {
+    const { NextResponse } = await import("next/server");
+    mocks.guardTarget.mockImplementation((_r, url) => Promise.resolve(url.includes("acct-bad") ? NextResponse.json({ ok: false }, { status: 400 }) : { remote: true }));
+    mocks.getProviderConnections.mockResolvedValue(ownConns("bad", "good"));
+    mocks._verdict.good = works;
+    expect((await call()).ok).toBe(true);
+    expect(keysUsed()).toEqual(["good"]);
+  });
+});
 
 describe("re-detect model check key fallback", () => {
   it("falls through a rejected key to the next one and reports that endpoint works", async () => {
