@@ -70,6 +70,37 @@ describe("request log header masking", () => {
   });
 });
 
+describe("request log URL redaction", () => {
+  it("redacts credentials carried in the query string", async () => {
+    const { redactUrlSecrets } = await import("../../open-sse/utils/requestLogger.js");
+    const url = redactUrlSecrets("https://aiplatform.example/v1/models/m:streamGenerateContent?alt=sse&key=AIzaSecretValue");
+    expect(url).not.toContain("AIzaSecretValue");
+    expect(url).toContain("alt=sse");
+    expect(redactUrlSecrets("https://api.example/v1/chat")).toBe("https://api.example/v1/chat");
+  });
+
+  it.runIf(isPosix)("writes error logs owner-only and tightens an existing logs dir", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "10r-errlogs-"));
+    fs.mkdirSync(path.join(cwd, "logs"), { mode: 0o755 });
+    vi.resetModules();
+    process.env.ENABLE_REQUEST_LOGS = "true";
+    const spy = vi.spyOn(process, "cwd").mockReturnValue(cwd);
+    try {
+      const { logError, createRequestLogger } = await import("../../open-sse/utils/requestLogger.js");
+      await createRequestLogger("openai", "openai", "m");
+      logError("vertex", { error: new Error("boom"), url: "https://v.example/x?key=AIzaSecretValue", model: "m" });
+      const logsDir = path.join(cwd, "logs");
+      const file = path.join(logsDir, fs.readdirSync(logsDir).find((f) => f.endsWith(".log")));
+      expect(mode(logsDir)).toBe(0o700);
+      expect(mode(file)).toBe(0o600);
+      expect(fs.readFileSync(file, "utf8")).not.toContain("AIzaSecretValue");
+    } finally {
+      spy.mockRestore();
+      delete process.env.ENABLE_REQUEST_LOGS;
+    }
+  });
+});
+
 describe.runIf(isPosix)("SQLite credential store permissions", () => {
   let umask;
   beforeEach(() => {

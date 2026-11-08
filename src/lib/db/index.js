@@ -139,6 +139,13 @@ export async function importDb(payload) {
     // and a key that is off (or has an expiry) with no actor then counts as the dashboard's.
     const actorOrNull = (a) => (a === "dashboard" ? a : ownerOrNull(a));
 
+    // Sessions are revoked by rotating this epoch, so a restore keeps the live
+    // one: an old backup must neither log everyone out nor revive a revoked cookie.
+    let liveSessionEpoch;
+    try {
+      liveSessionEpoch = JSON.parse(db.all(`SELECT data FROM settings WHERE id = 1`)[0]?.data || "{}").sessionEpoch;
+    } catch { /* no live settings */ }
+
     // Wipe all tables (keep _meta)
     db.run(`DELETE FROM settings`);
     db.run(`DELETE FROM providerConnections`);
@@ -152,7 +159,9 @@ export async function importDb(payload) {
     // Settings
     if (payload.settings) {
       migrateLegacyHostPassword(db, payload.settings, { cleanup: false });
-      db.run(`INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, [stringifyJson(stripRetiredSettings(payload.settings))]);
+      const { sessionEpoch: _ignored, ...importedSettings } = stripRetiredSettings(payload.settings);
+      if (liveSessionEpoch !== undefined) importedSettings.sessionEpoch = liveSessionEpoch;
+      db.run(`INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, [stringifyJson(importedSettings)]);
     }
 
     for (const c of payload.providerConnections || []) {
