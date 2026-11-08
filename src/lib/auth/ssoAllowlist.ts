@@ -1,7 +1,7 @@
 export interface SsoPrincipal {
   subject?: string | null;
   email?: string | null;
-  emailVerified?: boolean | null;
+  emailVerified?: boolean | string | null;
 }
 
 function parseAllowlist(raw: string | undefined): string[] {
@@ -18,7 +18,10 @@ export function isSsoPrincipalAllowed(principal: SsoPrincipal, raw: string | und
   if (entries.length === 0) return true;
 
   const subject = String(principal.subject || "");
-  const email = principal.emailVerified === false ? "" : String(principal.email || "").trim().toLowerCase();
+  // Email and domain entries need an email the IdP says it verified. Some IdPs
+  // send the claim as a string; one that omits it is not vouching for the email.
+  const verified = principal.emailVerified === true || principal.emailVerified === "true";
+  const email = verified ? String(principal.email || "").trim().toLowerCase() : "";
 
   return entries.some((entry) => {
     if (subject && entry === subject) return true;

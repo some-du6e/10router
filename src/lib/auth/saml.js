@@ -97,9 +97,29 @@ function getSamlRequestCache(settings) {
   const caches = (globalThis[SAML_REQUEST_CACHES] ??= new Map());
   const key = `${settings?.samlEntryPoint || ""}\n${settings?.samlCert || ""}`;
   if (!caches.has(key)) {
-    caches.set(key, new InMemoryCacheProvider({ keyExpirationPeriodMs: SAML_REQUEST_TTL_MS }));
+    caches.set(key, boundedCache(new InMemoryCacheProvider({ keyExpirationPeriodMs: SAML_REQUEST_TTL_MS })));
   }
   return caches.get(key);
+}
+
+// /start is public, so cap how many outstanding request IDs it can pile up.
+// Past the cap the oldest IDs go first; a login that slow has to start again.
+export const SAML_MAX_PENDING_REQUESTS = 1000;
+export function boundedCache(cache) {
+  const order = [];
+  const saveAsync = cache.saveAsync.bind(cache);
+  const removeAsync = cache.removeAsync.bind(cache);
+  cache.saveAsync = async (key, value) => {
+    order.push(key);
+    while (order.length > SAML_MAX_PENDING_REQUESTS) await removeAsync(order.shift());
+    return saveAsync(key, value);
+  };
+  cache.removeAsync = async (key) => {
+    const i = key == null ? -1 : order.indexOf(key);
+    if (i >= 0) order.splice(i, 1);
+    return removeAsync(key);
+  };
+  return cache;
 }
 
 export function createSamlInstance(settings, origin) {

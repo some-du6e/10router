@@ -53,7 +53,7 @@ export async function POST(request) {
     const samlEmail = pickSamlEmail(profile, settings) || null;
     const samlName = pickSamlDisplayName(profile, settings) || "SAML user";
 
-    if (!isSsoPrincipalAllowed({ subject: profile?.nameID, email: samlEmail })) {
+    if (!isSsoPrincipalAllowed({ subject: profile?.nameID, email: samlEmail, emailVerified: true })) {
       recordFail(ip);
       return NextResponse.redirect(new URL("/login?error=sso_user_not_allowed", origin));
     }

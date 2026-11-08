@@ -44,16 +44,19 @@ describe("isSsoPrincipalAllowed", () => {
 
   it("matches emails case-insensitively, @domain suffixes, and exact subjects", () => {
     const list = "Owner@Example.test, @team.example.test, sub-123";
-    expect(isSsoPrincipalAllowed({ email: "owner@example.test" }, list)).toBe(true);
-    expect(isSsoPrincipalAllowed({ email: "dev@team.example.test" }, list)).toBe(true);
+    expect(isSsoPrincipalAllowed({ email: "owner@example.test", emailVerified: true }, list)).toBe(true);
+    expect(isSsoPrincipalAllowed({ email: "dev@team.example.test", emailVerified: "true" }, list)).toBe(true);
     expect(isSsoPrincipalAllowed({ subject: "sub-123" }, list)).toBe(true);
-    expect(isSsoPrincipalAllowed({ email: "mallory@example.test", subject: "sub-999" }, list)).toBe(false);
-    expect(isSsoPrincipalAllowed({ email: "x@evilteam.example.test" }, list)).toBe(false);
+    expect(isSsoPrincipalAllowed({ email: "mallory@example.test", subject: "sub-999", emailVerified: true }, list)).toBe(false);
+    expect(isSsoPrincipalAllowed({ email: "x@evilteam.example.test", emailVerified: true }, list)).toBe(false);
     expect(isSsoPrincipalAllowed({ subject: "SUB-123" }, list)).toBe(false);
   });
 
-  it("ignores an email the IdP marks unverified", () => {
-    expect(isSsoPrincipalAllowed({ email: "owner@example.test", emailVerified: false }, "owner@example.test")).toBe(false);
+  it("ignores an email the IdP doesn't say it verified", () => {
+    for (const emailVerified of [false, "false", undefined, null]) {
+      expect(isSsoPrincipalAllowed({ email: "owner@example.test", emailVerified }, "owner@example.test"), String(emailVerified)).toBe(false);
+      expect(isSsoPrincipalAllowed({ email: "dev@team.example.test", emailVerified }, "@team.example.test"), String(emailVerified)).toBe(false);
+    }
   });
 });
 
