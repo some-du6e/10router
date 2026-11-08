@@ -20,6 +20,7 @@ import SecurityWarning from "./components/SecurityWarning";
 import KeySpendSummary from "./components/KeySpendSummary";
 import KeyLimitsModal from "./components/KeyLimitsModal";
 import KeyUsageModal from "./components/KeyUsageModal";
+import ManagementKeysCard from "./components/ManagementKeysCard";
 export default function APIPageClient({ machineId }) {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1187,6 +1188,8 @@ export default function APIPageClient({ machineId }) {
           </div>
         )}
       </Card>
+
+      <ManagementKeysCard />
 
       {limitsKey && (
         <KeyLimitsModal

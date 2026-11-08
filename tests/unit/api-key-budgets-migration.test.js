@@ -66,7 +66,7 @@ describe("migration 005: api key budgets", () => {
       expect(columns).toContain(c);
     }
     expect(upgraded.all("PRAGMA index_list(usageHistory)").map((i) => i.name)).toContain("idx_uh_apikey");
-    expect(upgraded.get("SELECT value FROM _meta WHERE key = 'schemaVersion'").value).toBe("5");
+    expect(upgraded.get("SELECT value FROM _meta WHERE key = 'schemaVersion'").value).toBe(String((await import("@/lib/db/migrations/index.js")).latestVersion()));
 
     const { getApiKeys } = await import("@/lib/db/index.js");
     const keys = await getApiKeys();
@@ -90,7 +90,7 @@ describe("migration 005: api key budgets", () => {
   it("is a no-op on a fresh database, which already has the columns", async () => {
     const { getAdapter } = await import("@/lib/db/driver.js");
     const db = await getAdapter();
-    expect(db.get("SELECT value FROM _meta WHERE key = 'schemaVersion'").value).toBe("5");
+    expect(db.get("SELECT value FROM _meta WHERE key = 'schemaVersion'").value).toBe(String((await import("@/lib/db/migrations/index.js")).latestVersion()));
     expect(db.all("PRAGMA table_info(apiKeys)").map((c) => c.name)).toContain("spentUsd");
   });
 

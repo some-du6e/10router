@@ -47,6 +47,13 @@ export {
   getApiKeyPolicy,
 } from "./repos/apiKeysRepo.js";
 
+// Management keys (scoped keys for /api/management/v1) and their audit log
+export {
+  createManagementKey, getManagementKeys, getManagementKeyById, findManagementKeyBySecret,
+  updateManagementKey, deleteManagementKey, touchManagementKey,
+  setRowOwner, getRowOwners, getRowOwner, addManagementAudit, getManagementAudit,
+} from "./repos/managementKeysRepo.js";
+
 // Combos
 export {
   getCombos, getComboById, getComboByName,

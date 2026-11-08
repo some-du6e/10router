@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -43,6 +43,9 @@ export const TABLES = {
       data: "TEXT NOT NULL",
       createdAt: "TEXT NOT NULL",
       updatedAt: "TEXT NOT NULL",
+      // The management key that added this connection (migration 006). NULL for
+      // connections added in the dashboard. Never part of the data JSON.
+      ownerManagementKeyId: "TEXT",
     },
     indexes: [
       "CREATE INDEX IF NOT EXISTS idx_pc_provider ON providerConnections(provider)",
@@ -114,8 +117,43 @@ export const TABLES = {
       spendResetAt: "TEXT",
       requestCount: "INTEGER DEFAULT 0",
       lastUsedAt: "TEXT",
+      // The management key that created this key (migration 006). NULL for
+      // keys created in the dashboard.
+      ownerManagementKeyId: "TEXT",
     },
     indexes: ["CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)"],
+  },
+  // Scoped keys for the management API (/api/management/v1). Only the sha256
+  // of the secret is stored; keyPrefix is a display hint. See docs/MANAGEMENT_KEYS.md.
+  managementKeys: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      name: "TEXT NOT NULL",
+      keyHash: "TEXT UNIQUE NOT NULL",
+      keyPrefix: "TEXT NOT NULL",
+      scopes: "TEXT NOT NULL",
+      isActive: "INTEGER DEFAULT 1",
+      expiresAt: "TEXT",
+      createdAt: "TEXT NOT NULL",
+      lastUsedAt: "TEXT",
+    },
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_mk_hash ON managementKeys(keyHash)"],
+  },
+  // What each management key did. detail is JSON and never holds a secret.
+  managementAudit: {
+    columns: {
+      id: "INTEGER PRIMARY KEY AUTOINCREMENT",
+      managementKeyId: "TEXT",
+      action: "TEXT NOT NULL",
+      targetType: "TEXT",
+      targetId: "TEXT",
+      at: "TEXT NOT NULL",
+      detail: "TEXT",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_ma_at ON managementAudit(at DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_ma_key ON managementAudit(managementKeyId, at DESC)",
+    ],
   },
   combos: {
     columns: {

@@ -5,6 +5,8 @@ import { verifyDashboardAuthToken, getDashboardAuthSession } from "@/lib/auth/da
 import { needsSetup } from "@/lib/auth/setupState";
 import { hasTrustedPeerHeaders } from "@/lib/auth/trustedPeer";
 import { extractClientApiKey } from "@/shared/utils/clientApiKey.js";
+import { isManagementKeyToken } from "@/shared/utils/managementKey.js";
+import { isManagementApiPath, authenticateManagementKey } from "@/lib/management/auth.js";
 
 const CLI_TOKEN_HEADER = "x-9r-cli-token";
 const CLI_TOKEN_SALT = "9r-cli-auth";
@@ -210,10 +212,21 @@ export const __test__ = {
   extractApiKey,
   canAccessPublicLlmApi,
   canAccessLocalOnlyRoute,
+  isPublicApi,
 };
 
 export async function proxy(request) {
   const { pathname } = request.nextUrl;
+
+  // The management API takes a management key and nothing else: no session,
+  // no CLI token, no requireLogin=false. It is the only place a management
+  // key is accepted; everywhere below, one counts for nothing. The routes
+  // authenticate it again to act as it.
+  if (isManagementApiPath(pathname)) {
+    const auth = await authenticateManagementKey(request);
+    if (auth.ok) return NextResponse.next();
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
+  }
 
   // First-run gate: until someone claims the instance with the console setup
   // token, every dashboard/login page funnels to /setup.
@@ -260,6 +273,11 @@ export async function proxy(request) {
   }
 
   if (isPublicLlmApi(pathname)) {
+    // Refused even from loopback: a handler would otherwise record usage
+    // against the presented token, writing the management secret to the log.
+    if (isManagementKeyToken(extractApiKey(request))) {
+      return NextResponse.json({ error: "A management key can't be used for inference. Use a client API key." }, { status: 401 });
+    }
     if (await canAccessPublicLlmApi(request)) return NextResponse.next();
     return NextResponse.json({ error: "API key required for remote API access" }, { status: 401 });
   }
