@@ -65,7 +65,7 @@ for (const path of ["/api/keys", "/api/providers", "/api/settings", "/api/manage
   check(`management key refused on ${path}`, r.status === 401 || r.status === 403, String(r.status));
 }
 const inference = await call("POST", "/v1/chat/completions", { token: clientMgmt, data: { model: "openai/gpt-5", messages: [{ role: "user", content: "hi" }] } });
-check("management key refused on /v1 (even from loopback)", inference.status === 401, String(inference.status));
+check("management key refused on /v1 (even from loopback), with the refusal message", inference.status === 401 && /management key can't be used for inference/.test(inference.text), `${inference.status} ${inference.text.slice(0, 120)}`);
 const models = await call("GET", "/v1/models", { headers: { "x-api-key": clientMgmt } });
 check("management key refused on /v1/models via x-api-key", models.status === 401, String(models.status));
 const clientOnMgmt = await call("GET", "/api/management/v1/me", { token: clientKey });
@@ -86,6 +86,34 @@ check("no response carried a management secret", bodies.every((b) => !b.text.inc
 
 const del = await call("DELETE", `/api/management/v1/client-keys/${created.json?.clientKey?.id}`, { token: clientMgmt });
 check("delete its own client key", del.status === 200, String(del.status));
+
+// A remote caller: custom-server.js treats forwarding headers as a proxied, non-local request.
+const REMOTE = { "X-Forwarded-For": "203.0.113.7" };
+const remoteMe = await call("GET", "/api/management/v1/me", { token: clientMgmt, headers: REMOTE });
+check("remote: the management API works with the key", remoteMe.status === 200, String(remoteMe.status));
+const remoteNoKey = await call("GET", "/v1/models", { headers: REMOTE });
+check("remote: /v1 without a key is refused", remoteNoKey.status === 401, String(remoteNoKey.status));
+const remoteCodex = await call("POST", "/backend-api/codex/responses", { headers: REMOTE, data: { model: "x", input: "hi" } });
+check("remote: /backend-api/codex without a key is refused", remoteCodex.status === 401, String(remoteCodex.status));
+const remoteMgmtV1 = await call("GET", "/v1/models", { token: clientMgmt, headers: REMOTE });
+check("remote: management key refused on /v1", remoteMgmtV1.status === 401 && /management key can't be used for inference/.test(remoteMgmtV1.text), String(remoteMgmtV1.status));
+const codexMgmt = await call("POST", "/backend-api/codex/responses", { token: clientMgmt, data: { model: "x", input: "hi" } });
+check("management key refused on /backend-api/codex from loopback", codexMgmt.status === 401 && /management key can't be used for inference/.test(codexMgmt.text), String(codexMgmt.status));
+const padded = await call("GET", "/v1/models", { headers: { Authorization: `Bearer  ${clientMgmt}` } });
+check("a padded management key is refused on /v1", padded.status === 401, String(padded.status));
+
+// Expiry and revocation, through the dashboard.
+const expiring = await makeKey("e2e expiring", { providerKeys: { enabled: true } });
+check("a fresh key works", (await call("GET", "/api/management/v1/me", { token: expiring })).status === 200);
+const all = await (await context.request.get("/api/management-keys")).json();
+const expId = all.managementKeys.find((k) => k.name === "e2e expiring").id;
+await context.request.patch(`/api/management-keys/${expId}`, { data: { expiresAt: new Date(Date.now() - 1000).toISOString() } });
+check("an expired key is refused", (await call("GET", "/api/management/v1/me", { token: expiring })).status === 401);
+await context.request.patch(`/api/management-keys/${expId}`, { data: { expiresAt: null } });
+check("clearing the expiry brings it back", (await call("GET", "/api/management/v1/me", { token: expiring })).status === 200);
+const revoked = await context.request.delete(`/api/management-keys/${expId}`);
+check("dashboard revokes the key", revoked.ok(), String(revoked.status()));
+check("a revoked key is refused", (await call("GET", "/api/management/v1/me", { token: expiring })).status === 401);
 
 // Dashboard section.
 const page = await context.newPage();

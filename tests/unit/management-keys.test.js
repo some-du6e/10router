@@ -16,15 +16,22 @@ process.env.DATA_DIR = tempDir;
 delete global._dbAdapter;
 
 const MACHINE = "machine-test-0001";
-const validation = { valid: true, calls: [] };
+// The validation ping: valid or not, or a custom handler (to hang, fail, or act mid-probe).
+const validation = { valid: true, calls: [], handler: null };
 
 vi.mock("@/shared/utils/machineId", () => ({ getConsistentMachineId: async () => MACHINE }));
 vi.mock("@/app/api/providers/validate/route.js", () => ({
   POST: async (request) => {
     const body = await request.json();
     validation.calls.push(body);
+    if (validation.handler) return validation.handler(body);
     return Response.json({ valid: validation.valid, error: validation.valid ? null : `upstream said no to ${body.apiKey}` });
   },
+}));
+// A cookie of "good-session" is a valid dashboard login.
+vi.mock("@/lib/auth/dashboardSession", () => ({
+  getDashboardAuthSession: async (t) => (t === "good-session" ? { sub: "admin" } : null),
+  verifyDashboardAuthToken: async (t) => t === "good-session",
 }));
 
 const db = await import("@/lib/db/index.js");
@@ -38,6 +45,8 @@ const providerKeys = await import("@/app/api/management/v1/provider-keys/route.j
 const providerKey = await import("@/app/api/management/v1/provider-keys/[id]/route.js");
 const dashKeys = await import("@/app/api/management-keys/route.js");
 const dashKey = await import("@/app/api/management-keys/[id]/route.js");
+const keysRoute = await import("@/app/api/keys/[id]/route.js");
+const { maskClientKey } = await import("@/lib/management/serialize.js");
 
 afterAll(() => {
   try { global._dbAdapter?.instance?.close?.(); } catch {}
@@ -80,11 +89,14 @@ const api = {
   deleteProvider: (token, id) => call(providerKey.DELETE, req(`/api/management/v1/provider-keys/${id}`, { method: "DELETE", token }), { id }),
 };
 
+const SESSION = { cookie: "auth_token=good-session" };
 const dashboard = {
-  list: () => call(dashKeys.GET, req("/api/management-keys")),
-  create: (body) => call(dashKeys.POST, req("/api/management-keys", { method: "POST", body })),
-  patch: (id, body) => call(dashKey.PATCH, req(`/api/management-keys/${id}`, { method: "PATCH", body }), { id }),
-  revoke: (id) => call(dashKey.DELETE, req(`/api/management-keys/${id}`, { method: "DELETE" }), { id }),
+  list: (headers = SESSION) => call(dashKeys.GET, req("/api/management-keys", { headers })),
+  create: (body, headers = SESSION) => call(dashKeys.POST, req("/api/management-keys", { method: "POST", body, headers })),
+  patch: (id, body, headers = SESSION) => call(dashKey.PATCH, req(`/api/management-keys/${id}`, { method: "PATCH", body, headers }), { id }),
+  revoke: (id, query = "", headers = SESSION) => call(dashKey.DELETE, req(`/api/management-keys/${id}${query}`, { method: "DELETE", headers }), { id }),
+  // The dashboard's own client-key edit (PUT /api/keys/[id]).
+  putKey: (id, body) => call(keysRoute.PUT, req(`/api/keys/${id}`, { method: "PUT", body, headers: SESSION }), { id }),
 };
 
 let counter = 0;
@@ -113,6 +125,8 @@ async function dashboardClientKey(name, limits = {}) {
 beforeEach(() => {
   validation.valid = true;
   validation.calls = [];
+  validation.handler = null;
+  delete process.env.MANAGEMENT_PROBE_TIMEOUT_MS;
 });
 
 describe("storage", () => {
@@ -405,8 +419,13 @@ describe("visibility", () => {
     expect(await ids(a.secret)).toEqual([pa]);
     expect(await ids(b.secret)).toEqual([pb]);
     const wideIds = await ids(wide.secret);
-    expect(wideIds).toEqual(expect.arrayContaining([pa, pb, dashOpenai, oauth]));
+    expect(wideIds).toEqual(expect.arrayContaining([pa, pb, dashOpenai]));
     expect(wideIds).not.toContain(dashAnthropic);
+    // An OAuth login is never reachable, even with manageExisting.
+    expect(wideIds).not.toContain(oauth);
+    expect((await api.getProvider(wide.secret, oauth)).status).toBe(404);
+    expect((await api.deleteProvider(wide.secret, oauth)).status).toBe(404);
+    expect(await db.getProviderConnectionById(oauth)).not.toBeNull();
     expect(await ids(wide.secret, "?provider=anthropic")).toEqual([]);
 
     for (const id of [pb, dashOpenai, dashAnthropic]) {
@@ -451,25 +470,39 @@ describe("expiry and revocation", () => {
 });
 
 describe("no management-key CRUD through the management API", () => {
-  it("has exactly the documented routes, none of them for management keys", () => {
-    const root = fileURLToPath(new URL("../../src/app/api/management/v1", import.meta.url));
-    const routes = [];
+  const root = fileURLToPath(new URL("../../src/app/api/management/v1", import.meta.url));
+  const routeFiles = () => {
+    const out = [];
     const walk = (dir) => {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         const full = path.join(dir, entry.name);
         if (entry.isDirectory()) walk(full);
-        else routes.push(path.relative(root, full).split(path.sep).join("/"));
+        else out.push(path.relative(root, full).split(path.sep).join("/"));
       }
     };
     walk(root);
-    expect(routes.sort()).toEqual([
-      "client-keys/[id]/route.js",
-      "client-keys/route.js",
-      "me/route.js",
-      "provider-keys/[id]/route.js",
-      "provider-keys/route.js",
-    ]);
-    expect(Object.keys(handlers).sort()).toEqual([
+    return out.sort();
+  };
+
+  it("has exactly the documented routes and methods, and none reaches the dashboard's management-key handlers", async () => {
+    const expected = {
+      "client-keys/[id]/route.js": ["DELETE", "GET", "PATCH"],
+      "client-keys/route.js": ["GET", "POST"],
+      "me/route.js": ["GET"],
+      "provider-keys/[id]/route.js": ["DELETE", "GET"],
+      "provider-keys/route.js": ["GET", "POST"],
+    };
+    expect(routeFiles()).toEqual(Object.keys(expected).sort());
+    const HTTP = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]);
+    for (const [file, methods] of Object.entries(expected)) {
+      const mod = await import(path.join(root, file));
+      expect(Object.keys(mod).filter((k) => HTTP.has(k)).sort(), file).toEqual(methods);
+      const src = fs.readFileSync(path.join(root, file), "utf8");
+      expect(src, file).not.toMatch(/dashboardHandlers|managementKeysRepo|createScopedManagementKey|updateManagementKey|deleteManagementKey/);
+    }
+    expect(fs.readFileSync(fileURLToPath(new URL("../../src/lib/management/handlers.js", import.meta.url)), "utf8"))
+      .not.toMatch(/dashboardHandlers|createScopedManagementKey|updateManagementKey|deleteManagementKey/);
+    expect(Object.keys(handlers).filter((k) => typeof handlers[k] === "function").sort()).toEqual([
       "createClientKey", "createProviderKey", "getClientKey", "getMe", "getProviderKey",
       "listClientKeys", "listProviderKeys", "removeClientKey", "removeProviderKey", "updateClientKey",
     ]);
@@ -542,6 +575,247 @@ describe("dashboard validation of management keys", () => {
   });
 });
 
+describe("dashboard routes check the session themselves", () => {
+  it("refuse every management-keys route without a session, whatever the proxy did", async () => {
+    const mk = await newManagementKey(OPENAI_ONLY);
+    const none = {};
+    const bad = { cookie: "auth_token=forged" };
+    for (const headers of [none, bad]) {
+      expect((await dashboard.list(headers)).status).toBe(401);
+      expect((await dashboard.create({ name: "x", scopes: OPENAI_ONLY }, headers)).status).toBe(401);
+      expect((await dashboard.patch(mk.id, { isActive: false }, headers)).status).toBe(401);
+      expect((await dashboard.revoke(mk.id, "", headers)).status).toBe(401);
+    }
+    expect((await api.me(mk.secret)).status).toBe(200);
+  });
+});
+
+describe("stored scopes fail closed", () => {
+  it("a scopes column that is not valid JSON, or has the wrong types, grants nothing", async () => {
+    const adapter = await getAdapter();
+    for (const raw of ["{not json", JSON.stringify({ clientKeys: { enabled: "yes", manageExisting: true } }), JSON.stringify({ clientKeys: { enabled: true, providers: "openai" } }), "null", "[]"]) {
+      const mk = await newManagementKey({ clientKeys: { enabled: true, manageExisting: true }, providerKeys: { enabled: true, manageExisting: true } });
+      adapter.run("UPDATE managementKeys SET scopes = ? WHERE id = ?", [raw, mk.id]);
+      const me = await api.me(mk.secret);
+      expect(me.status, raw).toBe(200);
+      expect(me.body.managementKey.scopes.clientKeys.enabled, raw).toBe(false);
+      expect(me.body.managementKey.scopes.providerKeys.enabled, raw).toBe(false);
+      expect((await api.listClient(mk.secret)).status, raw).toBe(403);
+      expect((await api.listProvider(mk.secret)).status, raw).toBe(403);
+    }
+  });
+});
+
+describe("client key masking", () => {
+  it("shows at most a third of a key, so a short legacy key shows none of its random part", () => {
+    expect(maskClientKey("sk-abcdefgh")).toBe("sk-…");
+    expect(maskClientKey("sk-machine-test-0001-abcdef-12345678")).toBe("sk-machi…");
+    for (const k of ["sk-abcdefgh", "sk-12345678901", "sk-machine-test-0001-abcdef-12345678"]) {
+      expect(maskClientKey(k).length - 1).toBeLessThanOrEqual(Math.floor(k.length / 3));
+    }
+  });
+
+  it("lists a short legacy key masked", async () => {
+    const adapter = await getAdapter();
+    adapter.run(`INSERT INTO apiKeys(id, key, name, machineId, isActive, createdAt) VALUES('legacy-1', 'sk-q7w8e9r0', 'legacy', NULL, 1, '2026-01-01T00:00:00.000Z')`);
+    const admin = await newManagementKey({ clientKeys: { enabled: true, manageExisting: true } });
+    const res = await api.getClient(admin.secret, "legacy-1");
+    expect(res.status).toBe(200);
+    expect(res.body.clientKey.keyPreview).toBe("sk-…");
+    expect(res.text).not.toMatch(/q7w8|e9r0/);
+  });
+});
+
+describe("the dashboard's choices stand", () => {
+  it("a management key can't turn back on a key the dashboard turned off, but can undo its own", async () => {
+    const mk = await newManagementKey(OPENAI_ONLY);
+    const id = (await api.createClient(mk.secret, { name: "toggle", allowedModels: ["openai/gpt-5"], budgetUsd: 1 })).body.clientKey.id;
+    expect((await dashboard.putKey(id, { isActive: false })).status).toBe(200);
+    const refused = await api.patchClient(mk.secret, id, { isActive: true });
+    expect(refused.status).toBe(403);
+    expect(refused.body.error).toMatch(/turned off in the dashboard/);
+    expect((await db.getApiKeyById(id)).isActive).toBe(false);
+
+    expect((await dashboard.putKey(id, { isActive: true })).status).toBe(200);
+    expect((await api.patchClient(mk.secret, id, { isActive: false })).status).toBe(200);
+    expect((await api.patchClient(mk.secret, id, { isActive: true })).status).toBe(200);
+    expect((await db.getApiKeyById(id)).isActive).toBe(true);
+
+    // The management key turns it off, then the dashboard takes over: the dashboard's choice wins.
+    expect((await api.patchClient(mk.secret, id, { isActive: false })).status).toBe(200);
+    expect((await dashboard.putKey(id, { isActive: true })).status).toBe(200);
+    expect((await dashboard.putKey(id, { isActive: false })).status).toBe(200);
+    expect((await api.patchClient(mk.secret, id, { isActive: true })).status).toBe(403);
+  });
+
+  it("an expiry the management key set becomes the dashboard's once the dashboard changes it", async () => {
+    const mk = await newManagementKey(OPENAI_ONLY);
+    const id = (await api.createClient(mk.secret, { name: "handed over", allowedModels: ["openai/gpt-5"], budgetUsd: 1, expiresAt: "2027-01-01T00:00:00.000Z" })).body.clientKey.id;
+    expect((await dashboard.putKey(id, { expiresAt: "2027-02-01T00:00:00.000Z" })).status).toBe(200);
+    expect((await api.patchClient(mk.secret, id, { expiresAt: null })).status).toBe(403);
+  });
+
+  it("a key off with no recorded actor (from before the record) counts as the dashboard's", async () => {
+    const admin = await newManagementKey({ clientKeys: { enabled: true, manageExisting: true } });
+    const old = await dashboardClientKey("old and off");
+    await db.updateApiKey(old.id, { isActive: false });
+    expect((await api.patchClient(admin.secret, old.id, { isActive: true })).status).toBe(403);
+  });
+
+  it("an expiry the dashboard set can only be moved earlier", async () => {
+    const mk = await newManagementKey(OPENAI_ONLY);
+    const id = (await api.createClient(mk.secret, { name: "expiring", allowedModels: ["openai/gpt-5"], budgetUsd: 1 })).body.clientKey.id;
+    const set = "2027-06-01T00:00:00.000Z";
+    expect((await dashboard.putKey(id, { expiresAt: set })).status).toBe(200);
+    expect((await api.patchClient(mk.secret, id, { expiresAt: null })).status).toBe(403);
+    expect((await api.patchClient(mk.secret, id, { expiresAt: "2027-07-01T00:00:00.000Z" })).status).toBe(403);
+    expect((await db.getApiKeyById(id)).expiresAt).toBe(set);
+    expect((await api.patchClient(mk.secret, id, { expiresAt: "2027-05-01T00:00:00.000Z" })).status).toBe(200);
+    // Its own expiry it can move freely.
+    const own = (await api.createClient(mk.secret, { name: "own expiry", allowedModels: ["openai/gpt-5"], budgetUsd: 1, expiresAt: set })).body.clientKey.id;
+    expect((await api.patchClient(mk.secret, own, { expiresAt: null })).status).toBe(200);
+  });
+});
+
+describe("revoking keeps or deletes what a key made", () => {
+  it("plain revoke keeps the rows, marked as made by a deleted key; deleteCreated removes them later", async () => {
+    const mk = await newManagementKey({ clientKeys: OPENAI_ONLY.clientKeys, providerKeys: { enabled: true, providers: ["openai"] } });
+    const kid = (await api.createClient(mk.secret, { name: "left behind", allowedModels: ["openai/gpt-5"], budgetUsd: 1 })).body.clientKey.id;
+    const pid = (await api.createProvider(mk.secret, { provider: "openai", apiKey: providerSecret("left"), name: "left pool" })).body.providerKey.id;
+    expect((await dashboard.revoke(mk.id)).status).toBe(200);
+    expect((await db.getApiKeyById(kid)).ownerManagementKeyId).toBe(mk.id);
+    expect(await db.getRowOwner("providerKey", pid)).toBe(mk.id);
+
+    const list = await dashboard.list();
+    const orphan = list.body.orphans.find((o) => o.managementKeyId === mk.id);
+    expect(orphan).toMatchObject({ clientKeyCount: 1, providerKeyCount: 1 });
+    expect(orphan.clientKeys.map((k) => k.id)).toEqual([kid]);
+
+    const cleaned = await dashboard.revoke(mk.id, "?deleteCreated=1");
+    expect(cleaned.body).toMatchObject({ deletedClientKeys: 1, deletedProviderKeys: 1 });
+    expect(await db.getApiKeyById(kid)).toBeNull();
+    expect(await db.getProviderConnectionById(pid)).toBeNull();
+    expect((await dashboard.list()).body.orphans.find((o) => o.managementKeyId === mk.id)).toBeUndefined();
+    expect((await dashboard.revoke(mk.id, "?deleteCreated=1")).status).toBe(404);
+  });
+
+  it("revoke with deleteCreated takes the key and everything it made, and nothing else", async () => {
+    const mk = await newManagementKey(OPENAI_ONLY);
+    const other = await newManagementKey(OPENAI_ONLY);
+    const mine = (await api.createClient(mk.secret, { name: "mine", allowedModels: ["openai/gpt-5"], budgetUsd: 1 })).body.clientKey.id;
+    const theirs = (await api.createClient(other.secret, { name: "theirs", allowedModels: ["openai/gpt-5"], budgetUsd: 1 })).body.clientKey.id;
+    const dash = (await dashboardClientKey("dash")).id;
+    expect((await dashboard.revoke(mk.id, "?deleteCreated=1")).status).toBe(200);
+    expect((await api.me(mk.secret)).status).toBe(401);
+    expect(await db.getApiKeyById(mine)).toBeNull();
+    expect(await db.getApiKeyById(theirs)).not.toBeNull();
+    expect(await db.getApiKeyById(dash)).not.toBeNull();
+  });
+});
+
+describe("provider key validation on the management path", () => {
+  const scope = { providerKeys: { enabled: true, providers: ["openai"] } };
+
+  it("gives up on a probe that doesn't answer with a 504, and adds nothing", async () => {
+    const mk = await newManagementKey(scope);
+    const before = (await db.getProviderConnections()).length;
+    process.env.MANAGEMENT_PROBE_TIMEOUT_MS = "50";
+    validation.handler = () => new Promise(() => {});
+    const res = await api.createProvider(mk.secret, { provider: "openai", apiKey: providerSecret("hang"), name: "hang" });
+    expect(res.status).toBe(504);
+    expect((await db.getProviderConnections()).length).toBe(before);
+  });
+
+  it("passes on the validator's own error status, and adds nothing", async () => {
+    const mk = await newManagementKey(scope);
+    const before = (await db.getProviderConnections()).length;
+    validation.handler = () => Response.json({ error: "OpenAI Compatible node not found" }, { status: 404 });
+    const res = await api.createProvider(mk.secret, { provider: "openai", apiKey: providerSecret("404"), name: "404" });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("OpenAI Compatible node not found");
+    expect((await db.getProviderConnections()).length).toBe(before);
+  });
+
+  it("checks the key again after the probe: revoked or narrowed meanwhile adds nothing", async () => {
+    const before = (await db.getProviderConnections()).length;
+    const revoked = await newManagementKey(scope);
+    validation.handler = async () => {
+      await db.deleteManagementKey(revoked.id);
+      return Response.json({ valid: true });
+    };
+    expect((await api.createProvider(revoked.secret, { provider: "openai", apiKey: providerSecret("race1"), name: "race1" })).status).toBe(401);
+
+    const narrowed = await newManagementKey(scope);
+    validation.handler = async () => {
+      await db.updateManagementKey(narrowed.id, { scopes: { ...(await db.getManagementKeyById(narrowed.id)).scopes, providerKeys: { enabled: true, providers: ["anthropic"], manageExisting: false } } });
+      return Response.json({ valid: true });
+    };
+    expect((await api.createProvider(narrowed.secret, { provider: "openai", apiKey: providerSecret("race2"), name: "race2" })).status).toBe(403);
+    expect((await db.getProviderConnections()).length).toBe(before);
+  });
+
+  it("refuses an oversized key and a session-cookie provider before probing", async () => {
+    const mk = await newManagementKey({ providerKeys: { enabled: true } });
+    const big = await api.createProvider(mk.secret, { provider: "openai", apiKey: "k".repeat(8193) });
+    expect(big.status).toBe(400);
+    expect(big.body.error).toMatch(/at most 8192/);
+    const cookie = await api.createProvider(mk.secret, { provider: "grok-web", apiKey: providerSecret("cookie") });
+    expect(cookie.status).toBe(400);
+    expect(validation.calls).toHaveLength(0);
+  });
+});
+
+describe("audit log under abuse", () => {
+  it("6000 refusals leave the earlier real trail intact", async () => {
+    const { AUDIT_KEEP_DENIED } = await import("@/lib/db/repos/managementKeysRepo.js");
+    const mk = await newManagementKey(OPENAI_ONLY);
+    const kid = (await api.createClient(mk.secret, { name: "before the flood", allowedModels: ["openai/gpt-5"], budgetUsd: 1 })).body.clientKey.id;
+    // One refusal through the API, flagged as one.
+    await api.createClient(mk.secret, { name: "x", allowedModels: ["anthropic/claude-opus-5-5"], budgetUsd: 1 });
+    const adapter = await getAdapter();
+    expect(adapter.get("SELECT denied FROM managementAudit WHERE managementKeyId = ? AND action = 'client_key.create.denied'", [mk.id]).denied).toBe(1);
+
+    for (let i = 0; i < 6000; i++) {
+      await db.addManagementAudit({ managementKeyId: mk.id, action: "client_key.create.denied", targetType: "clientKey", detail: { reason: `flood ${i}` }, denied: true });
+    }
+    const real = adapter.all("SELECT action, targetId FROM managementAudit WHERE managementKeyId = ? AND denied = 0", [mk.id]);
+    expect(real).toEqual(expect.arrayContaining([
+      { action: "management_key.create", targetId: mk.id },
+      { action: "client_key.create", targetId: kid },
+    ]));
+    expect(adapter.get("SELECT COUNT(*) AS n FROM managementAudit WHERE denied = 1").n).toBe(AUDIT_KEEP_DENIED);
+  });
+
+  it("keeps a refusal's detail compact and every detail under the cap", async () => {
+    const { AUDIT_DETAIL_MAX } = await import("@/lib/db/repos/managementKeysRepo.js");
+    const mk = await newManagementKey(OPENAI_ONLY);
+    const models = Array.from({ length: 400 }, (_, i) => `anthropic/${"m".repeat(280)}${i}`);
+    expect((await api.createClient(mk.secret, { name: "n".repeat(120), allowedModels: models, budgetUsd: 1 })).status).toBe(403);
+    const adapter = await getAdapter();
+    const row = adapter.get("SELECT detail FROM managementAudit WHERE managementKeyId = ? AND denied = 1 ORDER BY id DESC", [mk.id]);
+    expect(row.detail.length).toBeLessThanOrEqual(AUDIT_DETAIL_MAX);
+    const detail = JSON.parse(row.detail);
+    expect(detail.allowedModels).toHaveLength(3);
+    expect(detail.allowedModelsCount).toBe(400);
+    expect(detail.allowedModels[0].length).toBeLessThanOrEqual(101);
+
+    await db.addManagementAudit({ managementKeyId: mk.id, action: "x", detail: Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`k${i}`, "v".repeat(300)])) });
+    const big = adapter.get("SELECT detail FROM managementAudit WHERE managementKeyId = ? AND action = 'x'", [mk.id]);
+    expect(big.detail.length).toBeLessThanOrEqual(AUDIT_DETAIL_MAX);
+  });
+
+  it("the dashboard list is bounded", async () => {
+    const { DASHBOARD_AUDIT_LIMIT, DASHBOARD_CREATED_LIMIT } = await import("@/lib/management/dashboardHandlers.js");
+    const mk = await newManagementKey({ clientKeys: { enabled: true } });
+    for (let i = 0; i < DASHBOARD_CREATED_LIMIT + 5; i++) await api.createClient(mk.secret, { name: `bulk ${i}` });
+    const list = await dashboard.list();
+    expect(list.body.audit.length).toBeLessThanOrEqual(DASHBOARD_AUDIT_LIMIT);
+    const entry = list.body.managementKeys.find((k) => k.id === mk.id);
+    expect(entry.created.clientKeys).toHaveLength(DASHBOARD_CREATED_LIMIT);
+    expect(entry.created.clientKeyCount).toBe(DASHBOARD_CREATED_LIMIT + 5);
+  });
+});
+
 describe("no secrets in any response", () => {
   it("no response carries a provider secret, a full client key outside its create response, or a management secret outside its own", async () => {
     // Make sure at least one listing of everything runs last.
@@ -559,7 +833,8 @@ describe("no secrets in any response", () => {
     expect(seen.length).toBeGreaterThan(50);
     expect(PROVIDER_SECRETS.length).toBeGreaterThan(10);
 
-    for (const { label, status, text } of seen) {
+    // The dashboard's own client-key route returns full keys by design; it is not under test here.
+    for (const { label, status, text } of seen.filter((s) => !s.label.startsWith("PUT /api/keys/"))) {
       for (const s of PROVIDER_SECRETS) expect(text, label).not.toContain(s);
       for (const field of ["\"apiKey\"", "\"accessToken\"", "\"refreshToken\"", "\"idToken\"", "\"providerSpecificData\"", "\"keyHash\""]) {
         expect(text, label).not.toContain(field);

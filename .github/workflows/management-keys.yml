@@ -5,6 +5,19 @@ on:
     paths:
       - "src/dashboardGuard.js"
       - "src/proxy.js"
+      - "src/lib/auth/**"
+      - "src/lib/localDb.js"
+      - "src/lib/providerNormalization.js"
+      - "open-sse/services/model.js"
+      - "open-sse/providers/**"
+      - "open-sse/config/**"
+      - "src/shared/constants/providers.js"
+      - "src/shared/utils/apiKey.js"
+      - "tests/vitest.shared.js"
+      - "next.config.mjs"
+      - "custom-server.js"
+      - "package.json"
+      - "src/app/api/v1/**"
       - "src/lib/management/**"
       - "src/lib/db/**"
       - "src/shared/utils/managementKey.js"
@@ -54,6 +67,7 @@ jobs:
           unit/management-keys-migration.test.js
           unit/dashboard-guard.test.js
           unit/api-key-budgets-migration.test.js
+          unit/api-key-budgets.test.js
           unit/db-migration-chain.test.js
       - name: Lint
         run: >
@@ -69,6 +83,11 @@ jobs:
           src/app/api/management-keys
           "src/app/(dashboard)/dashboard/endpoint/components/ManagementKeysCard.js"
           "src/app/(dashboard)/dashboard/endpoint/components/ManagementKeyModal.js"
+          "src/app/(dashboard)/dashboard/endpoint/components/ModelAllowlistField.js"
+          "src/app/(dashboard)/dashboard/endpoint/components/CreatedSecretModal.js"
+          "src/app/(dashboard)/dashboard/endpoint/components/KeyLimitsModal.js"
+          "src/app/api/keys/[id]/route.js"
+          src/lib/db/migrations/001-initial.js
           tests/unit/management-keys.test.js
           tests/unit/management-keys-guard.test.js
           tests/unit/management-keys-migration.test.js
