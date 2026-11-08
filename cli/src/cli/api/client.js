@@ -15,7 +15,8 @@ const DEFAULT_CONFIG = {
 
 const CLI_TOKEN_HEADER = "x-9r-cli-token";
 const CLI_TOKEN_SALT = "9r-cli-auth";
-const APP_NAME = "10router";
+// Must match src/lib/dataDir.js: the server keeps the "9router" directory for existing installs.
+const APP_NAME = "9router";
 
 function getDataDir() {
   if (process.env.DATA_DIR) return process.env.DATA_DIR;
@@ -496,6 +497,7 @@ async function disableTunnel() {
 
 module.exports = {
   configure,
+  getDataDir,
   
   // Providers
   getProviders,
