@@ -9,6 +9,7 @@ import {
   validateSamlResponse,
 } from "@/lib/auth/saml.js";
 import { setDashboardAuthCookie } from "@/lib/auth/dashboardSession";
+import { isSsoPrincipalAllowed } from "@/lib/auth/ssoAllowlist.js";
 import { checkLock, recordFail, recordSuccess, getClientIp } from "@/lib/auth/loginLimiter";
 import { getActiveSsoType } from "@/lib/auth/authMode.js";
 
@@ -51,6 +52,11 @@ export async function POST(request) {
 
     const samlEmail = pickSamlEmail(profile, settings) || null;
     const samlName = pickSamlDisplayName(profile, settings) || "SAML user";
+
+    if (!isSsoPrincipalAllowed({ subject: profile?.nameID, email: samlEmail })) {
+      recordFail(ip);
+      return NextResponse.redirect(new URL("/login?error=sso_user_not_allowed", origin));
+    }
 
     recordSuccess(ip);
 
