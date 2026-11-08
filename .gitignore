@@ -53,6 +53,7 @@ source/*
 docs/*
 !docs/ARCHITECTURE.md
 !docs/FAST_FAIL.md
+!docs/API_KEY_BUDGETS.md
 test/*
 open-sse/test/*
 RM.vn.md

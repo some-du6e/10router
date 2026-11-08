@@ -3,7 +3,10 @@ name: API key budgets
 on:
   pull_request:
     paths:
+      - "open-sse/**"
       - "src/shared/utils/apiKeyLimits.js"
+      - "src/shared/utils/clientApiKey.js"
+      - "src/dashboardGuard.js"
       - "src/sse/services/keyLimits.js"
       - "src/sse/services/auth.js"
       - "src/sse/handlers/**"
@@ -15,6 +18,10 @@ on:
       - "src/app/api/providers/*/requests/route.ts"
       - "src/app/(dashboard)/dashboard/endpoint/**"
       - "src/app/(dashboard)/dashboard/accounts/*/ActivityChart.js"
+      - "src/app/(dashboard)/dashboard/media-providers/**"
+      - "docs/API_KEY_BUDGETS.md"
+      - "tests/package.json"
+      - "tests/vitest.config.js"
       - "tests/unit/api-key-budgets*.test.js"
       - "tests/unit/limit-hold-integration.test.js"
       - "tests/unit/stream-early-headers.test.js"
@@ -44,7 +51,9 @@ jobs:
           ./node_modules/.bin/vitest run
           unit/api-key-budgets.test.js
           unit/api-key-budgets-migration.test.js
+          unit/api-key-budgets-spend.test.js
           unit/db-migration-chain.test.js
+          unit/dashboard-guard.test.js
           unit/limit-hold-integration.test.js
           unit/stream-early-headers.test.js
           unit/embedding-usage-persistence.test.js
@@ -52,7 +61,16 @@ jobs:
         run: >
           ./node_modules/.bin/eslint
           src/shared/utils/apiKeyLimits.js
+          src/shared/utils/clientApiKey.js
           src/sse/services/keyLimits.js
+          src/sse/services/auth.js
+          src/dashboardGuard.js
+          open-sse/utils/stream.js
+          open-sse/utils/streamHandler.js
+          src/lib/db/repos/usageRepo.js
+          src/app/api/v1/api/chat/route.js
+          src/app/api/v1/codex/models/route.js
+          src/app/api/v1beta/models/route.js
           src/lib/db/repos/apiKeysRepo.js
           src/lib/db/migrations/005-api-key-budgets.js
           src/lib/db/schema.js
@@ -64,9 +82,11 @@ jobs:
           "src/app/(dashboard)/dashboard/endpoint/components/KeyUsageModal.js"
           "src/app/(dashboard)/dashboard/endpoint/components/KeySpendSummary.js"
           "src/app/(dashboard)/dashboard/endpoint/components/keyFormat.js"
+          "src/app/(dashboard)/dashboard/endpoint/components/BudgetBar.js"
           "src/app/(dashboard)/dashboard/accounts/[id]/ActivityChart.js"
           tests/unit/api-key-budgets.test.js
           tests/unit/api-key-budgets-migration.test.js
+          tests/unit/api-key-budgets-spend.test.js
       # Fails only on errors in the .ts files this change touches, so unrelated
       # type errors elsewhere don't block it.
       - name: Type check chat.ts and the endpoint requests route
