@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { rowToKey, numberOrNull, toAllowedModelsColumn } from "./apiKeysRepo.js";
-import { generateApiKeyWithMachine } from "@/shared/utils/apiKey";
+import { generateApiKeyWithMachine } from "@/shared/utils/apiKey.js";
 import { MANAGEMENT_KEY_PREFIX, parseStoredScopes } from "@/shared/utils/managementKey.js";
 
 // Random characters shown after the prefix so a key can be recognised in a list.
