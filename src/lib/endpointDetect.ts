@@ -1253,9 +1253,11 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   // confirmed, or that GET /models took, works. A public list that refused it
   // when sent with the key doesn't vouch for it. Anything found or generated
   // means it works. It was refused only if the model probes stopped on the key
-  // itself ("denied" is a key limited to other models, and a GET /models
-  // refusal can be an admin-only list), and limited only if a rate limit
-  // stopped them first. Probes cut short by time or failures say nothing.
+  // itself, and limited only if a rate limit stopped them first. A key that
+  // got through but could use none of the models asked about (limited, out of
+  // credit), or that only GET /models refused in the API path's style, is
+  // unknown: another key may do better. So are probes cut short by time or
+  // failures.
   const confirmed = keyConfirmed === "confirmed";
   // The keyed list retry sends Bearer: it only speaks for a path that takes Bearer.
   const bearerPath = pathStyle.length === 1 && pathStyle[0] === "bearer";
@@ -1264,9 +1266,8 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
     : models.length ? "accepted"
     : modelStops.has("auth") && !keyAccepted && !confirmed ? "refused"
     : modelStops.has("rate") ? "rate-limited"
-    // GET /models refused the very style the API path uses, and nothing vouches for the key.
-    : listRefusedPathStyle && !modelStops.has("denied") ? null
-    : keyAccepted || confirmed || modelStops.has("denied") || !inconclusive ? "accepted"
+    : modelStops.has("auth") || modelStops.has("denied") || listRefusedPathStyle ? null
+    : keyAccepted || confirmed || !inconclusive ? "accepted"
     : null;
 
   const name = matched?.name || suggestName(base);

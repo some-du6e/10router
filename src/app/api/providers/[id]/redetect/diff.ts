@@ -87,17 +87,15 @@ const sameRoutes = (a: Record<string, string> = {}, b: Record<string, string> = 
 // (the saved API, or the new one when a Chat <-> Responses switch is offered).
 // The offer is the full model -> API map, so the PUT can drop the entries for
 // whichever API the node ends up on, whether or not the switch is applied.
-// When the endpoint no longer splits models, it offers {} to clear old routes.
+// It never offers {} to clear routes: one API failing its probe (a 503)
+// looks the same as an endpoint that stopped splitting models.
 function routesChange(node: SavedEndpoint, r: DetectResult, target: Protocol): Record<string, string> | null {
   // No per-API probing (it listed /models): nothing is known about routes.
   if (!r.byProtocol) return null;
   const built = buildRoutes(r.byProtocol, target);
   if (!built.models.length) return null;
   const saved = node.modelRoutes || {};
-  if (!Object.keys(built.routes).length) {
-    // An early stop leaves some API's list short: not proof the split is gone.
-    return Object.keys(saved).length && !r.partial ? {} : null;
-  }
+  if (!Object.keys(built.routes).length) return null;
   // A cut-short run moves no saved route whose API it didn't finish checking,
   // nor one for a model it never reached (the offer replaces modelRoutes whole).
   const finished = (p: string) => { const c = (r.checks as Record<string, ModelCheck | undefined> | undefined)?.[p]; return !!c && !c.stopped && !c.unchecked.length; };
@@ -125,7 +123,8 @@ export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: De
   // off a saved API that still answers: detection's pick is just probe order.
   const to = part === "endpoint" && r.protocols?.includes(from) ? from : r.protocol || from;
   const switchable = to !== from && from !== "anthropic" && to !== "anthropic";
-  const protocol = ep && to !== from ? { from, to, applicable: switchable } : null;
+  // One account's server answering another API isn't the endpoint's API.
+  const protocol = ep && !keyScoped && to !== from ? { from, to, applicable: switchable } : null;
   const baseUrl = ep && !keyScoped && r.baseUrl && trimUrl(r.baseUrl) !== trimUrl(node.baseUrl) ? { from: trimUrl(node.baseUrl), to: trimUrl(r.baseUrl) } : null;
   // One account's models split across APIs would need routes it can't offer:
   // only the ones it serves on the saved API.

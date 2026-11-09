@@ -18,11 +18,14 @@ describe("Re-detect box text", () => {
     expect(summaryText("models", diff({ viaKeyUrl: true }))).toBe(`No new models. ${keyUrlNote("models", false)}`);
   });
 
-  it("says when the endpoint's URL was asked and its keys didn't get through", () => {
-    expect(keyUrlNote("all", true)).toMatch(/^The keys on the endpoint's URL didn't get through/);
+  it("says when the endpoint's URL was asked and its keys gave no usable answer", () => {
+    expect(keyUrlNote("all", true)).toMatch(/^The keys on the endpoint's URL gave no usable answer/);
     expect(keyUrlNote("all", false)).toMatch(/^Checked through one key's own URL/);
-    expect(summaryText("all", diff({ viaKeyUrl: true, otherKeysFailed: 2, baseKeysFailed: 2 })))
-      .toBe(`Same API, no new models. ${keyUrlNote("all", true)} 2 other keys didn't get through.`);
+    expect(summaryText("all", diff({ viaKeyUrl: true, otherKeysFailed: 2, baseKeysTried: 2 })))
+      .toBe(`No new models. ${keyUrlNote("all", true)} 2 other keys didn't get through.`);
+    // Nor that the API or fixes were checked.
+    expect(unchangedText("endpoint", true)).toBe("Nothing to change.");
+    expect(keyUrlNote("endpoint", false)).toMatch(/the API, URL changes and fixes weren't checked/);
   });
 
   it("counts the other keys that didn't get through", () => {
@@ -42,10 +45,10 @@ describe("Re-detect box text", () => {
 });
 
 describe("Re-detect box fixes row", () => {
-  it("lists each fix, and an empty route map as clearing routes", () => {
+  it("lists each fix, and never an empty route map", () => {
     expect(fixesList({ maxCompletionTokens: true, apiKeyHeader: "api-key", modelRoutes: { a: "anthropic" } }))
       .toEqual(["send max_completion_tokens", "send the key in an api-key header", "send each model to the API that answers it"]);
-    expect(fixesList({ modelRoutes: {} })).toEqual(["stop sending models to other APIs"]);
+    expect(fixesList({ modelRoutes: {} })).toEqual([]);
     expect(fixesList({})).toEqual([]);
   });
 });
@@ -54,9 +57,6 @@ describe("Re-detect box default ticks", () => {
   const switchable = { protocol: { from: "openai-chat", to: "openai-responses", applicable: true } };
   it("ticks an API switch the endpoint's URL answered", () => {
     expect(defaultPick(diff(switchable)).protocol).toBe(true);
-  });
-  it("leaves an API switch seen through one key's own URL unticked", () => {
-    expect(defaultPick(diff({ ...switchable, viaKeyUrl: true })).protocol).toBe(false);
   });
   it("ticks new and gone models, never outdated ones", () => {
     expect(defaultPick(diff({ addModels: ["a"], removeModels: ["b"], outdatedModels: ["c"] }))).toMatchObject({ add: true, remove: true, outdated: false, quirks: true });

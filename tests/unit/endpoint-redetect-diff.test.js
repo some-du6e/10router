@@ -67,10 +67,12 @@ describe("redetectDiff", () => {
     expect(d.protocol.to).toBe("openai-responses");
     expect(d.quirks.modelRoutes).toEqual({ "gpt-x": "openai-responses", "claude-a": "anthropic" });
   });
-  it("offers clearing stale routes once the endpoint no longer splits models", () => {
+  it("never offers clearing saved routes: an API that failed its probe looks the same", () => {
+    // Anthropic answered 503 on its free probe, so only Chat was asked.
     const saved = { ...node, modelRoutes: { "claude-a": "anthropic" } };
     const r = found({ modelsSource: "guessed", models: ["claude-a", "gpt-x"], byProtocol: { "openai-chat": ["claude-a", "gpt-x"] } });
-    expect(redetectDiff(saved, ["claude-a", "gpt-x"], r).quirks.modelRoutes).toEqual({});
+    expect(redetectDiff(saved, ["claude-a", "gpt-x"], r).quirks.modelRoutes).toBeUndefined();
+    expect(redetectDiff(saved, ["claude-a", "gpt-x"], r).changes).toBe(0);
     expect(redetectDiff(saved, ["claude-a", "gpt-x"], { ...r, partial: true }).quirks.modelRoutes).toBeUndefined();
     expect(redetectDiff(node, ["claude-a", "gpt-x"], r).quirks.modelRoutes).toBeUndefined();
     // Listed via /models (no per-API probing): routes left alone.
@@ -121,13 +123,11 @@ describe("redetectDiff for one key at its own URL (keyScoped)", () => {
   const r = found({ baseUrl: "https://acct-1.acme.dev/v1", models: ["a", "new"], quirks: { apiKeyHeader: true, maxCompletionTokens: true },
     protocol: "openai-responses", byProtocol: { "openai-responses": ["a"], anthropic: ["new"] } });
 
-  it("keeps that account's URL, fixes, routes and missing models out of the endpoint's changes", () => {
+  it("keeps that account's API, URL, fixes, routes and missing models out of the endpoint's changes", () => {
     const d = redetectDiff(node, ["a", "gone"], r, [], "all", { keyScoped: true });
     // "new" is served only on Anthropic, which this Chat endpoint has no route for.
-    expect(d).toMatchObject({ ok: true, baseUrl: null, removeModels: [], addModels: [], quirks: {} });
-    // Chat -> Responses is offered, unticked by the page.
-    expect(d.protocol.to).toBe("openai-responses");
-    expect(d.changes).toBe(1);
+    expect(d).toMatchObject({ ok: true, protocol: null, baseUrl: null, removeModels: [], addModels: [], quirks: {}, changes: 0 });
+    expect(Object.keys(d.quirks)).toEqual([]);
   });
 
   it("adds only the models that account serves on the saved API", () => {
@@ -154,6 +154,7 @@ describe("redetectDiff for one key at its own URL (keyScoped)", () => {
     expect(d.removeModels).toEqual(["gone"]);
     expect(d.quirks.apiKeyHeader).toBe("api-key");
     expect(d.quirks.maxCompletionTokens).toBe(true);
+    expect(d.protocol.to).toBe("openai-responses");
     // The control for the scoped case: unscoped, the split is offered as routes.
     expect(d.quirks.modelRoutes).toEqual({ a: "openai-responses", new: "anthropic" });
   });

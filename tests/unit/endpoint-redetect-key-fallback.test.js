@@ -77,9 +77,11 @@ const works = { ok: true, keyVerdict: "accepted", steps: [], protocol: "openai-c
 const unlisted = { ...works, models: [], modelsSource: "none" };
 const refusedLater = { ...unlisted, authRejected: true, stopReason: "auth", keyVerdict: "refused", partialReason: "The key was rejected part-way through, so some models weren't checked." };
 // A key the bad-key check proved, whose model probes were then refused: limited, not dead.
-const provedThenRefused = { ...unlisted, stopReason: "auth", keyVerdict: "accepted", partialReason: refusedLater.partialReason };
-// A key limited to models outside the ones asked about: it works.
-const limitedKey = { ...unlisted, authRejected: true, stopReason: "denied", partialReason: "The key isn't allowed to use any of the models checked." };
+const provedThenRefused = { ...unlisted, stopReason: "auth", keyVerdict: null, partialReason: refusedLater.partialReason };
+// A key limited to models outside the ones asked about: not dead, but another key may see more.
+const limitedKey = { ...unlisted, authRejected: true, stopReason: "denied", keyVerdict: null, partialReason: "The key isn't allowed to use any of the models checked." };
+// Only GET /models refused the key, and no API path answered.
+const listOnlyFail = { ok: false, failure: "key", keyVerdict: null, error: "The key was rejected.", steps: [] };
 const rateLimit = { ok: false, failure: "rate", keyVerdict: "rate-limited", error: "The endpoint is rate-limiting requests.", steps: [] };
 // The free probes passed, then the model probes kept getting 429s and found nothing.
 const modelsRateLimited = { ...unlisted, stopReason: "rate", keyVerdict: "rate-limited", partialReason: "The endpoint kept rate-limiting, so some models weren't checked." };
@@ -186,17 +188,46 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     expect(await json()).toMatchObject({ ok: true, partialReason: "The endpoint refused the models it was asked about, so some weren't checked." });
   });
 
+  it("probes every key, at its own URL too, through the SSRF-checked fetch for remote callers", async () => {
+    mocks.guardTarget.mockResolvedValue({ remote: true });
+    const guarded = () => {};
+    mocks.makeProbeFetch.mockReturnValue(guarded);
+    mocks.getProviderConnections.mockResolvedValue([...conns("k1"), ...ownConns("o1")]);
+    verdict.o1 = works;
+    await json();
+    expect(mocks.makeProbeFetch).toHaveBeenCalledWith(true);
+    expect(mocks.savedSettingsFetch.mock.calls.length).toBeGreaterThanOrEqual(2);
+    for (const c of mocks.savedSettingsFetch.mock.calls) expect(c[0]).toBe(guarded);
+  });
+
   it("says how many keys it tried when some were refused late and the rest outright", async () => {
     mocks.getProviderConnections.mockResolvedValue(conns("late", "bad"));
     verdict.late = refusedLater;
     expect(await json()).toMatchObject({ ok: false, error: "None of the 2 keys it tried was accepted" });
   });
 
-  it("doesn't call a key limited to other models rejected, and says what it found", async () => {
+  it("tries another key after one limited to other models, and shows it, not a rejection, if none does better", async () => {
     mocks.getProviderConnections.mockResolvedValue(conns("limited", "spare"));
     verdict.limited = limitedKey;
     expect(await json()).toMatchObject({ ok: true, partialReason: limitedKey.partialReason });
-    expect(keysUsed()).toEqual(["limited"]);
+    expect(keysUsed()).toEqual(["limited", "spare"]);
+  });
+
+  it("tries another key when only GET /models refused one, and doesn't call it rejected", async () => {
+    mocks.getProviderConnections.mockResolvedValue(conns("admin-only", "good"));
+    verdict["admin-only"] = listOnlyFail;
+    verdict.good = works;
+    expect((await json()).ok).toBe(true);
+    expect(keysUsed()).toEqual(["admin-only", "good"]);
+    vi.clearAllMocks();
+    mocks.getProviderConnections.mockResolvedValue(conns("admin-only"));
+    expect(await json()).toMatchObject({ ok: false, error: "The model list refused the key, and no API answered" });
+  });
+
+  it("reports a later key that met a failing server, not the first key's refusal", async () => {
+    mocks.getProviderConnections.mockResolvedValue(conns("dead", "good"));
+    verdict.good = down;
+    expect(await json()).toMatchObject({ ok: false, error: "None of the 2 keys it tried worked. Key 2: The endpoint didn't answer" });
   });
 
   it("moves past a rate-limited key: limits are per key", async () => {
@@ -232,7 +263,7 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
   it("shows a check cut short, and why, when no other key does better", async () => {
     mocks.getProviderConnections.mockResolvedValue(conns("dead", "slow", "spare"));
     verdict.slow = cutShort;
-    expect(await json()).toMatchObject({ ok: true, otherKeysFailed: 2, baseKeysFailed: 2, partialReason: cutShort.partialReason });
+    expect(await json()).toMatchObject({ ok: true, otherKeysFailed: 2, baseKeysTried: 2, partialReason: cutShort.partialReason });
     expect(keysUsed()).toEqual(["dead", "slow", "spare"]);
   });
 
@@ -241,9 +272,9 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     verdict.slow = cutShort;
     verdict.o1 = works;
     const body = await json();
-    expect(body).toMatchObject({ ok: true, viaKeyUrl: true });
+    // Tried on the endpoint's URL, but not a key that didn't get through.
+    expect(body).toMatchObject({ ok: true, viaKeyUrl: true, baseKeysTried: 1 });
     expect(body.otherKeysFailed).toBeUndefined();
-    expect(body.baseKeysFailed).toBeUndefined();
   });
 
   it("shows a lone check whose model probes told nothing as it is, not as a failure", async () => {
@@ -259,12 +290,12 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     mocks.getProviderConnections.mockResolvedValue(conns("dead", "busy", "good"));
     verdict.busy = rateLimit;
     verdict.good = works;
-    expect(await json()).toMatchObject({ ok: true, otherKeysFailed: 2, baseKeysFailed: 2 });
+    expect(await json()).toMatchObject({ ok: true, otherKeysFailed: 2, baseKeysTried: 2 });
     vi.clearAllMocks();
     mocks.getProviderConnections.mockResolvedValue(conns("good"));
     const body = await json();
     expect(body.otherKeysFailed).toBeUndefined();
-    expect(body.baseKeysFailed).toBeUndefined();
+    expect(body.baseKeysTried).toBeUndefined();
     expect(body.partialReason).toBeUndefined();
   });
 
@@ -320,10 +351,12 @@ describe("re-detect model check: keys with their own URL", () => {
   it("says when the keys on the endpoint's URL failed before a key's own URL got through", async () => {
     mocks.getProviderConnections.mockResolvedValue([...conns("dead"), ...ownConns("o1")]);
     verdict.o1 = works;
-    expect(await json()).toMatchObject({ ok: true, viaKeyUrl: true, otherKeysFailed: 1, baseKeysFailed: 1 });
+    expect(await json()).toMatchObject({ ok: true, viaKeyUrl: true, otherKeysFailed: 1, baseKeysTried: 1 });
     vi.clearAllMocks();
     mocks.getProviderConnections.mockResolvedValue(ownConns("o0", "o1"));
-    expect(await json()).toMatchObject({ ok: true, viaKeyUrl: true, otherKeysFailed: 1, baseKeysFailed: 0 });
+    const body = await json();
+    expect(body).toMatchObject({ ok: true, viaKeyUrl: true, otherKeysFailed: 1 });
+    expect(body.baseKeysTried).toBeUndefined();
   });
 
   it("reports the first key's verdict, and that more were tried, when none gets through", async () => {

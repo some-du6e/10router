@@ -30,9 +30,13 @@ type CustomModel = { id?: string; providerAlias?: string; type?: string; kind?: 
 const keyRefused = (r: DetectResult) => r.keyVerdict === "refused";
 const rateLimited = (r: DetectResult) => r.keyVerdict === "rate-limited";
 const worked = (r: DetectResult) => r.ok && r.keyVerdict === "accepted";
-// It answered, but the model probes were cut short before they said anything
-// about the key: worth trying another key, and shown if none does better.
+// It answered, but nothing it said is about the key (the model probes were cut
+// short, or it could use none of the models asked about): worth trying another
+// key, and shown if none does better.
 const unsure = (r: DetectResult) => r.ok && !r.keyVerdict;
+// Only GET /models refused the key and no API path answered: it may be an
+// admin-only list, so another key gets a try, and no key is blamed.
+const listOnly = (r: DetectResult) => !r.ok && r.failure === "key" && !r.keyVerdict;
 const clause = (s: string | undefined) => String(s || "").replace(/\s*\.*\s*$/, "");
 
 // POST /api/providers/[id]/redetect - the endpoint page's "Re-detect": run the
@@ -103,24 +107,28 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         detect: (f) => { offset = maxN; sentBase = maxSent; return detectEndpoint({ url, apiKey: key, fetchFn: f, catalog, signal, onProgress, skipModels, deadlineMs: left() }); },
       });
     };
-    // The next key gets a try after a refusal, a rate limit or a cut-short
-    // check. After anything else (down, gated) only when this key had its own
-    // URL: a key on the endpoint's URL would just meet the same server, while
-    // another account's server may be fine.
+    // The next key gets a try after a refusal, a rate limit, or an answer that
+    // said nothing about the key. After anything else (down, gated) only when
+    // this key had its own URL: a key on the endpoint's URL would just meet the
+    // same server, while another account's server may be fine.
     const runs: Run[] = [];
     for (const candidate of candidates) {
       if (runs.length && (signal.aborted || left() < MIN_ATTEMPT_MS)) break;
       const result = await runWith(candidate);
       runs.push({ candidate, result });
-      if (worked(result) || (!keyRefused(result) && !rateLimited(result) && !unsure(result) && !candidate.own)) break;
+      if (worked(result) || (!keyRefused(result) && !rateLimited(result) && !unsure(result) && !listOnly(result) && !candidate.own)) break;
     }
     // A key that worked, else the first that answered without a verdict.
     const win = runs.find((r) => worked(r.result)) || runs.find((r) => unsure(r.result)) || null;
     // None worked: report the first key's verdict (the endpoint's own URL when
     // a key uses it), as a failure even when its refusal came after the free
-    // probes passed, and say how many keys were tried. A run with no key keeps
-    // its result, a refusal reworded as needing a key: there is no key to blame.
-    const shown = win || runs[0];
+    // probes passed, and say how many keys were tried. A later key on the
+    // endpoint's URL that met a failing server is reported instead: that is
+    // about the endpoint. A run with no key keeps its result, a refusal
+    // reworded as needing a key: there is no key to blame.
+    const serverFailed = runs.find((r, i) => i > 0 && !r.candidate.own && !r.result.ok && !r.result.keyVerdict && !listOnly(r.result));
+    const shown = win || serverFailed || runs[0];
+    if (shown.candidate.apiKey && listOnly(shown.result)) shown.result = { ...shown.result, error: "The model list refused the key, and no API answered" };
     const refused = keyRefused(shown.result);
     const verdict = clause(shown.result.error) || (refused ? "The key was rejected" : clause(shown.result.partialReason || undefined) || "No answer");
     if (!shown.candidate.apiKey && !shown.result.ok && shown.result.failure === "key") {
@@ -131,7 +139,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       ...shown.result, ok: false as const,
       error: runs.length === 1 ? verdict
         : runs.every((r) => keyRefused(r.result)) ? `None of the ${runs.length} keys it tried was accepted`
-        : `None of the ${runs.length} keys it tried worked. The first: ${verdict}`,
+        : `None of the ${runs.length} keys it tried worked. ${shown === runs[0] ? "The first" : `Key ${runs.indexOf(shown) + 1}`}: ${verdict}`,
     };
     // What a key on its own URL sees is that account's: redetectDiff keeps its
     // URL, missing models, routes and auth style out of the endpoint's changes.
@@ -142,7 +150,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     // URL refused its keys mustn't read as "the URL wasn't asked".
     // Runs that were only cut short did get through to the server.
     const others = win ? runs.filter((r) => r !== win && !unsure(r.result)) : [];
-    const failed = others.length ? { otherKeysFailed: others.length, baseKeysFailed: others.filter((r) => !r.candidate.own).length } : {};
+    const baseTried = win ? runs.filter((r) => r !== win && !r.candidate.own).length : 0;
+    const failed = { ...(others.length ? { otherKeysFailed: others.length } : {}), ...(baseTried ? { baseKeysTried: baseTried } : {}) };
     // Why the model checks stopped early, so "nothing changed" doesn't overclaim.
     // A stop on "the key" is reworded: a key shown here wasn't refused (the
     // refusals were about models), and with no key there is none to blame.
