@@ -193,6 +193,8 @@ describe("detectEndpoint keyVerdict", () => {
   it("accepted: no catalog, so there were no models to ask about", async () => {
     const r = await detect(chat(() => [500, oaiErr("internal error", "server_error")]), { catalog: {} });
     expect(r).toMatchObject({ ok: true, models: [], keyVerdict: "accepted" });
+    // Nothing was asked, so nothing "kept failing".
+    expect(r.partialReason ?? null).toBeNull();
   });
 
   it("refused: GET /models lists without a key and refuses this one", async () => {

@@ -295,24 +295,24 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
   });
 
   it("tries the next key after a web server's own 401 page", async () => {
-    // nginx in front of the API refusing the token with its HTML page.
-    const nginx401 = { ok: false, failure: "html", keyVerdict: null, error: 'This isn\'t an API response (got "401 Authorization Required").', steps: [{ label: "POST /chat/completions (empty)", url: "https://api.acme.dev/v1/chat/completions", status: 401, preview: "", html: true }] };
+    // As a real run records it: GET /models without a key gets the API's JSON
+    // 401 first, then nginx answers the POSTs with its HTML 401 page.
+    const list401 = { label: "GET /models (no auth)", url: "https://api.acme.dev/v1/models", status: 401, preview: '{"error":"missing key"}' };
+    const page = (status) => ({ label: "POST /chat/completions (empty)", url: "https://api.acme.dev/v1/chat/completions", status, preview: "", html: true });
+    const nginx401 = { ok: false, failure: "html", keyVerdict: null, error: 'This isn\'t an API response (got "401 Authorization Required").', steps: [list401, page(401)] };
     mocks.getProviderConnections.mockResolvedValue(conns("dead", "good"));
     verdict.dead = nginx401;
     verdict.good = works;
     expect((await json()).ok).toBe(true);
     expect(keysUsed()).toEqual(["dead", "good"]);
-    // A 403 page (a WAF or bot block, the same for every key), or one with no 401: no other key.
-    vi.clearAllMocks();
-    mocks.getProviderConnections.mockResolvedValue(conns("dead", "good"));
-    verdict.dead = { ...nginx401, steps: [{ ...nginx401.steps[0], status: 403 }] };
-    await json();
-    expect(keysUsed()).toEqual(["dead"]);
-    vi.clearAllMocks();
-    mocks.getProviderConnections.mockResolvedValue(conns("dead", "good"));
-    verdict.dead = { ...nginx401, steps: [{ ...nginx401.steps[0], status: 200 }] };
-    await json();
-    expect(keysUsed()).toEqual(["dead"]);
+    // A WAF's 403 page, or a plain HTML page, next to the same JSON 401: no other key.
+    for (const status of [403, 404]) {
+      vi.clearAllMocks();
+      mocks.getProviderConnections.mockResolvedValue(conns("dead", "good"));
+      verdict.dead = { ...nginx401, steps: [list401, page(status)] };
+      await json();
+      expect(keysUsed()).toEqual(["dead"]);
+    }
   });
 
   it("lets a key's own URL speak for the API and fixes only when every key uses that URL", async () => {
@@ -364,7 +364,7 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
   });
 
   it("names neither a later key cut off by time nor one refused by a web page", async () => {
-    const nginx401 = { ok: false, failure: "html", keyVerdict: null, error: "This isn't an API response.", steps: [{ status: 401 }] };
+    const nginx401 = { ok: false, failure: "html", keyVerdict: null, error: "This isn't an API response.", steps: [{ status: 401, html: true }] };
     mocks.getProviderConnections.mockResolvedValue(conns("dead", "busy", "page", "late"));
     verdict.busy = rateLimit;
     verdict.page = nginx401;
@@ -649,6 +649,39 @@ describe("re-detect model check: one run across keys", () => {
       expect(retrySignal.aborted).toBe(false);
       mocks.signal.abort();
       expect(retrySignal.aborted).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("caps a gated key's identity search at its own share when more keys wait", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      mocks.getProviderConnections.mockResolvedValue(conns("gated", "next"));
+      const gated = { ok: false, failure: "gated", keyVerdict: null, clientGated: true, error: "Only works as a known client.", steps: [] };
+      mocks.detectEndpoint.mockImplementationOnce(() => { vi.setSystemTime(Date.now() + 10_000); return Promise.resolve(gated); });
+      mocks.retryAsClient.mockImplementationOnce(async (first, opts) => opts.detect(() => {}));
+      await json();
+      // 30s for this key's run, 10s of it used: the retry gets 20s, not the 40s left overall.
+      expect(mocks.detectEndpoint.mock.calls[1][0].deadlineMs).toBe(20_000);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("ends the client-identity search when this key's share runs out, with more keys waiting", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      mocks.getProviderConnections.mockResolvedValue(conns("gated", "next"));
+      // The first run uses all but 50ms of this key's 30s share; 20s are left overall.
+      mocks.detectEndpoint.mockImplementationOnce(() => { vi.setSystemTime(Date.now() + 29_950); return Promise.resolve({ ok: false, failure: "gated", keyVerdict: null, clientGated: true, error: "Only works as a known client.", steps: [] }); });
+      let aborted;
+      mocks.retryAsClient.mockImplementationOnce(async (first, opts) => {
+        aborted = await new Promise((resolve) => {
+          if (opts.signal.aborted) return resolve(true);
+          opts.signal.addEventListener("abort", () => resolve(true));
+          setTimeout(() => resolve(false), 1_000);
+        });
+        return first;
+      });
+      await json();
+      expect(aborted).toBe(true);
     } finally { vi.useRealTimers(); }
   });
 

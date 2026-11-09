@@ -42,8 +42,10 @@ const unsure = (r: DetectResult) => r.ok && !r.keyVerdict;
 const listOnly = (r: DetectResult) => !r.ok && r.failure === "key" && !r.keyVerdict;
 // A web server's own 401 page (nginx in front of the API refusing the token):
 // not an API answer, but a sign the next key may get through.
-// (A 403 page is usually a WAF or bot block, the same for every key.)
-const pageRefused = (r: DetectResult) => !r.ok && r.failure === "html" && r.steps.some((s) => s.status === 401);
+// Only the HTML 401 counts: every run also has GET /models's plain JSON 401
+// without a key, and a 403 page is usually a WAF or bot block, the same for
+// every key.
+const pageRefused = (r: DetectResult) => !r.ok && r.failure === "html" && r.steps.some((s) => s.html && s.status === 401);
 // Cut off by the shared time or the user: it says nothing about its key.
 const cutOff = (r: DetectResult) => r.failure === "timeout" || r.failure === "cancelled";
 const clause = (s: string | undefined) => String(s || "").replace(/\s*\.*\s*$/, "");
