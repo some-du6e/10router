@@ -68,16 +68,17 @@ vi.mock("@/app/api/providers/[id]/redetect/diff.js", () => ({
 const { POST } = await import("@/app/api/providers/[id]/redetect/route.ts");
 
 // Worded unlike the route's own "The key was rejected", so tests can tell them apart.
-const rejected = { ok: false, failure: "key", error: "Wrong key.", steps: [] };
-const down = { ok: false, failure: "down", error: "The endpoint didn't answer.", steps: [] };
-const works = { ok: true, steps: [], protocol: "openai-chat", baseUrl: "https://api.acme.dev/v1", models: ["m1"], modelsSource: "models", quirks: {} };
+// keyVerdict is detection's own call on the key (endpoint-detect-key-verdict.test.js).
+const rejected = { ok: false, failure: "key", keyVerdict: "refused", error: "Wrong key.", steps: [] };
+const down = { ok: false, failure: "down", keyVerdict: null, error: "The endpoint didn't answer.", steps: [] };
+const works = { ok: true, keyVerdict: "accepted", steps: [], protocol: "openai-chat", baseUrl: "https://api.acme.dev/v1", models: ["m1"], modelsSource: "models", quirks: {} };
 // Passed the free probes, then the model probes stopped on the key.
-const refusedLater = { ...works, models: [], authRejected: true, stopReason: "auth" };
+const refusedLater = { ...works, models: [], authRejected: true, stopReason: "auth", keyVerdict: "refused" };
 // A key limited to models outside the ones asked about: it works.
 const limitedKey = { ...works, models: [], authRejected: true, stopReason: "denied" };
-const rateLimit = { ok: false, failure: "rate", error: "The endpoint is rate-limiting requests.", steps: [] };
+const rateLimit = { ok: false, failure: "rate", keyVerdict: "rate-limited", error: "The endpoint is rate-limiting requests.", steps: [] };
 // The free probes passed, then the model probes kept getting 429s and found nothing.
-const modelsRateLimited = { ...works, models: [], stopReason: "rate", partialReason: "The endpoint kept rate-limiting, so some models weren't checked." };
+const modelsRateLimited = { ...works, models: [], stopReason: "rate", keyVerdict: "rate-limited", partialReason: "The endpoint kept rate-limiting, so some models weren't checked." };
 // Only GET /models refused the key (an admin-only list); nothing says the key is bad.
 const listOnlyRefused = { ...works, models: [], authRejected: true, stopReason: null };
 
@@ -294,7 +295,7 @@ describe("re-detect model check: keys with their own URL", () => {
 
   it("sends the client-identity retry to the key's own URL with the same key", async () => {
     mocks.getProviderConnections.mockResolvedValue(ownConns("gated"));
-    verdict.gated = { ok: false, failure: "gated", clientGated: true, error: "Only works as a known client.", steps: [] };
+    verdict.gated = { ok: false, failure: "gated", keyVerdict: null, clientGated: true, error: "Only works as a known client.", steps: [] };
     mocks.retryAsClient.mockImplementation(async (first, opts) => {
       expect(opts).toMatchObject({ url: "https://acct-gated.acme.dev/v1", apiKey: "gated" });
       return opts.detect(() => {});

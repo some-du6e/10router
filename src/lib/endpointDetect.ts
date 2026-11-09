@@ -17,6 +17,10 @@ export type Protocol = "anthropic" | "openai-chat" | "openai-responses";
 export type KeyConfirmed = "confirmed" | "likely" | "unknown";
 export type ModelsSource = "models" | "catalog" | "guessed" | "none";
 export type StopReason = "auth" | "denied" | "rate" | "generated" | "failing" | "deadline" | "aborted";
+// What one run says about the key it was given, for callers choosing between
+// keys: it got through, it was refused, it was rate-limited before anything
+// was found, or nothing is known about it (the endpoint itself failed).
+export type KeyVerdict = "accepted" | "refused" | "rate-limited" | null;
 // Stops that mean the key itself can't be used.
 const keyStop = (s: StopReason | null) => s === "auth" || s === "denied";
 type ErrorShape = "anthropic" | "openai" | "generic";
@@ -65,6 +69,7 @@ export interface DetectResult {
   suggestedPrefix?: string;
   // Which failure screen fits, when ok is false.
   failure?: FailureKind;
+  keyVerdict?: KeyVerdict;
   // Why model checks stopped early, if they did.
   stopReason?: StopReason | null;
   // Per API that was asked about models one by one: how far it got, and the
@@ -1143,7 +1148,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   const keyAccepted = !!modelsAuth && modelsAuth !== "none";
   const stop0 = probe.halted();
   if (!filtered.length && stop0) {
-    return { ok: false, failure: stop0 === "aborted" ? "cancelled" : "timeout", error: stop0 === "aborted" ? "Detection was cancelled." : "Detection ran out of time before an API answered. Try again.", baseUrl: base0, steps, partial: true, partialReason: PARTIAL_REASON[stop0], clientGated, authRejected: false, rateLimited };
+    return { ok: false, failure: stop0 === "aborted" ? "cancelled" : "timeout", error: stop0 === "aborted" ? "Detection was cancelled." : "Detection ran out of time before an API answered. Try again.", baseUrl: base0, steps, partial: true, partialReason: PARTIAL_REASON[stop0], clientGated, authRejected: false, rateLimited, keyVerdict: null };
   }
 
   if (!filtered.length) {
@@ -1160,7 +1165,8 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
       : html ? `This isn't an API response${htmlTitle(html.preview) ? ` (got "${htmlTitle(html.preview)}")` : ""}.`
       : last?.status === 0 ? `Couldn't reach it: ${last.preview}`
       : "No OpenAI or Anthropic API found at this URL.";
-    return { ok: false, failure, error, baseUrl: base0, steps, clientGated, authRejected: sawAuthFail && !keyAccepted && !clientGated, rateLimited };
+    const keyVerdict: KeyVerdict = failure === "key" ? "refused" : failure === "rate" ? "rate-limited" : null;
+    return { ok: false, failure, error, baseUrl: base0, steps, clientGated, authRejected: sawAuthFail && !keyAccepted && !clientGated, rateLimited, keyVerdict };
   }
 
   const protocol = filtered[0].proto;
@@ -1195,6 +1201,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   // says nothing about the style that worked.
   let probesRefusedKey = false;
   let stopReason: StopReason | null = null;
+  const modelStops = new Set<StopReason>(); // every stop, not just the first
   let blocked: StopReason | null = null; // a stop that applies to every path
   const checks: Partial<Record<Protocol, ModelCheck>> = {};
   if (!models.length && !skipModels) {
@@ -1209,7 +1216,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
       const res = await probeModels({ probe, base, protocol: proto, AUTH, openaiAuth, ids: candidates, quirks });
       byProtocol[proto] = res.ids || [];
       if (res.check) checks[proto] = res.check;
-      if (res.stopped) { partialReason ||= PARTIAL_REASON[res.stopped]; stopReason ||= res.stopped; if (keyStop(res.stopped)) probesRefusedKey = true; }
+      if (res.stopped) { partialReason ||= PARTIAL_REASON[res.stopped]; stopReason ||= res.stopped; modelStops.add(res.stopped); if (keyStop(res.stopped)) probesRefusedKey = true; }
       if (res.stopped && res.stopped !== "generated" && res.stopped !== "failing") blocked = res.stopped;
     }
     const built = buildRoutes(byProtocol);
@@ -1229,6 +1236,14 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   const pathStyle = primary === "anthropic" ? ["bearer", "x-api-key"] : [openaiAuth === AUTH["api-key"] ? "api-key" : "bearer"];
   const listRefusedPathStyle = pathStyle.every((st) => listRefused.has(st)) && keyConfirmed !== "confirmed";
   const authRejected = !models.length && !keyAccepted && (probesRefusedKey || listRefusedPathStyle);
+  // The free probes got through with this key. It was refused only if the
+  // model probes stopped on the key itself ("denied" is a key limited to other
+  // models, and a GET /models refusal can be an admin-only list), and limited
+  // only if a rate limit stopped them before any model was found.
+  const keyVerdict: KeyVerdict = models.length ? "accepted"
+    : modelStops.has("auth") && !keyAccepted ? "refused"
+    : modelStops.has("rate") ? "rate-limited"
+    : "accepted";
 
   const name = matched?.name || suggestName(base);
   return {
@@ -1246,6 +1261,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
     partial: !!partialReason,
     partialReason,
     authRejected,
+    keyVerdict,
     suggestedName: name,
     suggestedPrefix: makePrefix(name),
     stopReason,

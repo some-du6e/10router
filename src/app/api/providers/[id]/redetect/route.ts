@@ -25,17 +25,11 @@ const MAX_KEY_ATTEMPTS = 5;
 const MIN_ATTEMPT_MS = 5_000;
 type CustomModel = { id?: string; providerAlias?: string; type?: string; kind?: string };
 
-// The key was refused: outright, or after the free probes passed, when the
-// model probes stopped on it (no /models, so detection still answers ok). As in
-// Add endpoint, authRejected alone isn't enough: it is also set when only GET
-// /models refused the key, and the endpoint check asks no models at all. A
-// "denied" stop is a key limited to other models, which still works.
-const lateRefusal = (r: DetectResult) => r.ok && !!r.authRejected && r.stopReason === "auth";
-const keyRefused = (r: DetectResult) => (r.ok ? lateRefusal(r) : r.failure === "key");
-// Rate limits and quota are usually per key, as inference's failover assumes:
-// on the free probes (a failure), or on the model probes, which then found none.
-const rateLimited = (r: DetectResult) => (r.ok ? r.stopReason === "rate" && !r.models?.length : r.failure === "rate");
-const worked = (r: DetectResult) => r.ok && !lateRefusal(r) && !rateLimited(r);
+// Detection says what each run showed about its key (see KeyVerdict). Rate
+// limits and quota are usually per key, as inference's failover assumes.
+const keyRefused = (r: DetectResult) => r.keyVerdict === "refused";
+const rateLimited = (r: DetectResult) => r.keyVerdict === "rate-limited";
+const worked = (r: DetectResult) => r.ok && r.keyVerdict === "accepted";
 const clause = (s: string | undefined) => String(s || "").replace(/\s*\.*\s*$/, "");
 
 // POST /api/providers/[id]/redetect - the endpoint page's "Re-detect": run the

@@ -14,6 +14,7 @@ on:
       - "tests/package.json"
       - "tests/vitest.config.js"
       - "tests/unit/endpoint-redetect-key-fallback.test.js"
+      - "tests/unit/endpoint-detect-key-verdict.test.js"
       - "tests/unit/endpoint-redetect-diff.test.js"
       - ".github/workflows/redetect-model-check.yml"
   workflow_dispatch:
@@ -37,7 +38,7 @@ jobs:
           cd tests && bun install --ignore-scripts
       - name: Unit test
         working-directory: tests
-        run: ./node_modules/.bin/vitest run unit/endpoint-redetect-key-fallback.test.js unit/endpoint-redetect-diff.test.js
+        run: ./node_modules/.bin/vitest run unit/endpoint-detect-key-verdict.test.js unit/endpoint-redetect-key-fallback.test.js unit/endpoint-redetect-diff.test.js
       # set-state-in-effect: CustomEndpointPage.tsx's data-loading effects
       # predate this check and fail on master too.
       - name: Lint
@@ -48,6 +49,7 @@ jobs:
           "src/app/(dashboard)/dashboard/providers/[id]/CustomEndpointPage.tsx"
           tests/unit/endpoint-redetect-key-fallback.test.js
           tests/unit/endpoint-redetect-diff.test.js
+          tests/unit/endpoint-detect-key-verdict.test.js
       # Fails only on errors in the changed files, so unrelated type errors
       # elsewhere don't block it.
       - name: Type check changed files
