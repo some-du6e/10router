@@ -118,17 +118,25 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       runs.push({ candidate, result });
       if (worked(result) || (!keyRefused(result) && !rateLimited(result) && !unsure(result) && !listOnly(result) && !candidate.own)) break;
     }
-    // A key that worked, else the first that answered without a verdict.
-    const win = runs.find((r) => worked(r.result)) || runs.find((r) => unsure(r.result)) || null;
+    // A key that worked, else the first that answered without a verdict. The
+    // endpoint half prefers an answer from the endpoint's own URL, even without
+    // a verdict, to one account's: only that one can speak for the API and URL.
+    const atBase = (r: Run) => !r.candidate.own;
+    const win = runs.find((r) => worked(r.result) && atBase(r))
+      || (part === "endpoint" ? runs.find((r) => unsure(r.result) && atBase(r)) : undefined)
+      || runs.find((r) => worked(r.result)) || runs.find((r) => unsure(r.result)) || null;
     // None worked: report the first key's verdict (the endpoint's own URL when
     // a key uses it), as a failure even when its refusal came after the free
-    // probes passed, and say how many keys were tried. A later key on the
-    // endpoint's URL that met a failing server is reported instead: that is
-    // about the endpoint. A run with no key keeps its result, a refusal
-    // reworded as needing a key: there is no key to blame.
-    const serverFailed = runs.find((r, i) => i > 0 && !r.candidate.own && !r.result.ok && !r.result.keyVerdict && !listOnly(r.result));
-    const shown = win || serverFailed || runs[0];
+    // probes passed, and say how many keys were tried. A run with no key keeps
+    // its result, a refusal reworded as needing a key: there is no key to blame.
+    const shown = win || runs[0];
     if (shown.candidate.apiKey && listOnly(shown.result)) shown.result = { ...shown.result, error: "The model list refused the key, and no API answered" };
+    // Listed models with it, but every API refused it: the detector's own
+    // message ("no API found") is about the URL.
+    else if (shown.candidate.apiKey && !shown.result.ok && keyRefused(shown.result) && shown.result.failure !== "key") shown.result = { ...shown.result, error: "The key can list models, but every API refused it" };
+    // A later key on the endpoint's URL that met a failing server: that is
+    // about the endpoint, so it's named too (not a cut-off run's timeout).
+    const later = runs.find((r, i) => i > 0 && atBase(r) && !r.result.ok && !r.result.keyVerdict && !listOnly(r.result) && r.result.failure !== "timeout" && r.result.failure !== "cancelled");
     const refused = keyRefused(shown.result);
     const verdict = clause(shown.result.error) || (refused ? "The key was rejected" : clause(shown.result.partialReason || undefined) || "No answer");
     if (!shown.candidate.apiKey && !shown.result.ok && shown.result.failure === "key") {
@@ -139,12 +147,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       ...shown.result, ok: false as const,
       error: runs.length === 1 ? verdict
         : runs.every((r) => keyRefused(r.result)) ? `None of the ${runs.length} keys it tried was accepted`
-        : `None of the ${runs.length} keys it tried worked. ${shown === runs[0] ? "The first" : `Key ${runs.indexOf(shown) + 1}`}: ${verdict}`,
+        : `None of the ${runs.length} keys it tried worked. The first: ${verdict}${later ? `. A later one: ${clause(later.result.error)}` : ""}`,
     };
     // What a key on its own URL sees is that account's: redetectDiff keeps its
     // URL, missing models, routes and auth style out of the endpoint's changes.
     const via = shown.candidate.own;
-    const diff = redetectDiff(node, current, result, outdatedModels(current, catalog), part, { keyScoped: via });
+    // Gateways can list models per key: a fallback key's shorter list isn't
+    // proof the first key's models are gone, so only the first key removes.
+    const diff = redetectDiff(node, current, result, outdatedModels(current, catalog), part, { keyScoped: via, removals: shown === runs[0] });
     // The other keys tried, when one got through: a dead key still switched on
     // is worth knowing about, and a win at a key's own URL after the endpoint's
     // URL refused its keys mustn't read as "the URL wasn't asked".

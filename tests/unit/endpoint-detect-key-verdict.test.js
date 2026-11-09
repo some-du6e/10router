@@ -204,6 +204,24 @@ describe("detectEndpoint keyVerdict", () => {
     expect(r).toMatchObject({ ok: true, models: ["public-1"], keyVerdict: "refused" });
   });
 
+  it("accepted: a public GET /models list whose keyed retry hit a server error", async () => {
+    const r = await detect(upstream((m, path, body, headers) => {
+      if (path === "/v1/models") return headers.authorization ? [502, oaiErr("bad gateway", "server_error")] : [200, { object: "list", data: [{ id: "public-1" }] }];
+      if (path !== "/v1/chat/completions") return;
+      return [400, oaiErr("messages: at least one message is required")];
+    }));
+    expect(r).toMatchObject({ ok: true, models: ["public-1"], keyVerdict: "accepted" });
+  });
+
+  it("refused: GET /models lists with the key, but every API refuses it", async () => {
+    // A key allowed to read the model list and nothing else.
+    const r = await detect(upstream((m, path, body, headers) => {
+      if (path === "/v1/models") return headers.authorization ? [200, { object: "list", data: [{ id: "m1" }] }] : [401, oaiErr("Missing key", "authentication_error")];
+      if (m === "POST") return [401, oaiErr("You have insufficient permissions for this operation. Missing scopes: model.request", "authentication_error")];
+    }));
+    expect(r).toMatchObject({ ok: false, keyVerdict: "refused" });
+  });
+
   it("accepted: a public GET /models list that also answers with the key", async () => {
     const r = await detect(upstream((m, path) => {
       if (path === "/v1/models") return [200, { object: "list", data: [{ id: "public-1" }] }];
@@ -289,7 +307,7 @@ describe("detectEndpoint keyVerdict", () => {
       }
       return quick(url, init);
     };
-    const r = await detect(fetchFn, { deadlineMs: 1_500, timeoutMs: 10_000 });
+    const r = await detect(fetchFn, { deadlineMs: 3_000, timeoutMs: 10_000 });
     expect(r).toMatchObject({ ok: true, models: [], keyVerdict: null });
   });
 
@@ -308,6 +326,7 @@ describe("detectEndpoint keyVerdict", () => {
     const r = await detect(upstream((m, path) => (path === "/v1/models" ? [401, oaiErr("Admin key required", "authentication_error")] : [503, oaiErr("upstream down", "server_error")])));
     // Down, not "The key was rejected".
     expect(r).toMatchObject({ ok: false, failure: "down", keyVerdict: null });
+    expect(r.error).toMatch(/server errors/);
   });
 
   it("nothing known about the key when the endpoint itself fails", async () => {

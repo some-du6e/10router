@@ -103,9 +103,21 @@ describe("redetectDiff", () => {
     const done = { ...cut, checks: { ...cut.checks, anthropic: anth() } };
     expect(redetectDiff(saved, ids, done, [], "models").quirks.modelRoutes)
       .toEqual({ "claude-a": "anthropic", "claude-b": "openai-chat", "gpt-x": "openai-chat" });
-    // A full run that no longer sees claude-b drops its route.
-    expect(redetectDiff(saved, ["claude-a", "gpt-x"], { ...cut, partial: false, models: ["claude-a", "gpt-x"], byProtocol: { "openai-chat": ["gpt-x"], "openai-responses": ["claude-a"] } }, [], "models").quirks.modelRoutes)
-      .toEqual({ "claude-a": "openai-responses", "gpt-x": "openai-chat" });
+    // A full run: claude-a moved (Anthropic finished without it); claude-b was
+    // never reached (outdated, so not asked) and keeps its route.
+    const full = found({ modelsSource: "guessed", models: ["claude-a", "gpt-x"], byProtocol: { "openai-chat": ["gpt-x"], "openai-responses": ["claude-a"], anthropic: [] },
+      checks: { anthropic: anth({ found: 0 }), "openai-chat": chat, "openai-responses": chat } });
+    expect(redetectDiff(saved, ids, full, [], "models").quirks.modelRoutes)
+      .toEqual({ "claude-a": "openai-responses", "claude-b": "anthropic", "gpt-x": "openai-chat" });
+    // A full run where Anthropic failed its free probe (never asked): its routes stay.
+    const noAnth = found({ modelsSource: "guessed", models: ["claude-a", "gpt-x", "gpt-y"], byProtocol: { "openai-chat": ["gpt-x", "claude-a"], "openai-responses": ["gpt-y"] },
+      checks: { "openai-chat": chat, "openai-responses": chat } });
+    expect(redetectDiff(saved, [...ids, "gpt-y"], noAnth, [], "models").quirks.modelRoutes)
+      .toMatchObject({ "claude-a": "anthropic", "claude-b": "anthropic", "gpt-y": "openai-responses" });
+  });
+  it("offers no removals from a fallback key's list", () => {
+    expect(redetectDiff(node, ["a", "gone"], found(), [], "models").removeModels).toEqual(["gone"]);
+    expect(redetectDiff(node, ["a", "gone"], found(), [], "models", { removals: false }).removeModels).toEqual([]);
   });
   it("passes a failure through", () => {
     expect(redetectDiff(node, [], { ok: false, error: "401", steps: [] })).toMatchObject({ ok: false, error: "401", changes: 0 });

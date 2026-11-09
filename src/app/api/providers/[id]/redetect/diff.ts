@@ -96,11 +96,12 @@ function routesChange(node: SavedEndpoint, r: DetectResult, target: Protocol): R
   if (!built.models.length) return null;
   const saved = node.modelRoutes || {};
   if (!Object.keys(built.routes).length) return null;
-  // A cut-short run moves no saved route whose API it didn't finish checking,
-  // nor one for a model it never reached (the offer replaces modelRoutes whole).
+  // No saved route moves off an API whose check didn't finish (cut short, or
+  // the API failed its probe and was never asked), nor one for a model the run
+  // never reached (outdated, so not asked): the offer replaces modelRoutes whole.
   const finished = (p: string) => { const c = (r.checks as Record<string, ModelCheck | undefined> | undefined)?.[p]; return !!c && !c.stopped && !c.unchecked.length; };
   const reached = new Set(built.models.map((m) => m.toLowerCase()));
-  const kept = r.partial ? Object.fromEntries(Object.entries(saved).filter(([m, p]) => !reached.has(m.toLowerCase()) || !finished(p))) : {};
+  const kept = Object.fromEntries(Object.entries(saved).filter(([m, p]) => !reached.has(m.toLowerCase()) || !finished(p)));
   const routes = { ...built.routes, ...kept };
   if (sameRoutes(saved, routes)) return null;
   return { ...Object.fromEntries(built.models.map((m) => [m, built.routes[m] || target])), ...kept };
@@ -113,8 +114,9 @@ export type RedetectPart = "endpoint" | "models" | "all";
 // `outdated`: saved models the labs have moved on from, offered for removal too.
 // `keyScoped`: the result came from one key at its own URL (one account), so
 // it can't vouch for the endpoint's URL, its auth style, which saved models are
-// gone, or the per-model routes the other keys use.
-export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: DetectResult, outdated: string[] = [], part: RedetectPart = "all", { keyScoped = false }: { keyScoped?: boolean } = {}): RedetectDiff {
+// gone, or the per-model routes the other keys use. `removals: false`: the list
+// came from a fallback key, which may list fewer models than the others.
+export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: DetectResult, outdated: string[] = [], part: RedetectPart = "all", { keyScoped = false, removals = true }: { keyScoped?: boolean; removals?: boolean } = {}): RedetectDiff {
   const empty: RedetectDiff = { ok: false, protocol: null, baseUrl: null, addModels: [], removeModels: [], outdatedModels: [], quirks: {}, modelsNote: null, changes: 0 };
   if (!r.ok) return { ...empty, error: r.error || "Detection failed", keyConfirmed: r.keyConfirmed };
   const ep = part !== "models", ms = part !== "endpoint";
@@ -134,7 +136,7 @@ export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: De
   const listed = new Set(found.map((m) => m.toLowerCase()));
   const old = new Set(ms ? outdated.filter((m) => !listed.has(m.toLowerCase())) : []);
   // Only a full list proves a model is gone; a cut-short one just missed it.
-  const fullList = ms && !keyScoped && r.modelsSource === "models" && r.listComplete !== false;
+  const fullList = ms && !keyScoped && removals && r.modelsSource === "models" && r.listComplete !== false;
   const removeModels = currentModels.filter((m) => fullList && !listed.has(m.toLowerCase()));
   const outdatedModels = currentModels.filter((m) => old.has(m) && !removeModels.includes(m));
   const addModels = found.filter((m) => !have.has(m) && !old.has(m));

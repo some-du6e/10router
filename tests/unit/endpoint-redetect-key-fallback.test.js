@@ -91,9 +91,9 @@ const listOnlyRefused = { ...unlisted, authRejected: true, stopReason: null, key
 // (A deadline cut uses up the shared budget, so only failures lead to another key.)
 const cutShort = { ...unlisted, stopReason: "failing", keyVerdict: null, partialReason: "The endpoint kept failing (network errors, timeouts or 5xx), so some models weren't checked." };
 
-const req = () => new Request("https://dash.local/api/providers/ep1/redetect?part=models", { method: "POST" });
-const call = () => POST(req(), { params: Promise.resolve({ id: "ep1" }) });
-const json = () => call().then((r) => r.json());
+const req = (part = "models") => new Request(`https://dash.local/api/providers/ep1/redetect?part=${part}`, { method: "POST" });
+const call = (part) => POST(req(part), { params: Promise.resolve({ id: "ep1" }) });
+const json = (part) => call(part).then((r) => r.json());
 const keysUsed = () => mocks.detectEndpoint.mock.calls.map((c) => c[0].apiKey);
 const urlsUsed = () => mocks.detectEndpoint.mock.calls.map((c) => c[0].url);
 
@@ -113,7 +113,8 @@ beforeEach(() => {
   mocks.makeProbeFetch.mockReturnValue(() => Promise.resolve(new Response("{}")));
   mocks.guardTarget.mockResolvedValue({ remote: false });
   mocks.retryAsClient.mockImplementation((first) => Promise.resolve(first));
-  mocks.savedSettingsFetch.mockImplementation(() => () => {});
+  // Tagged with the fetch it wraps, so tests can see the SSRF-checked one is used.
+  mocks.savedSettingsFetch.mockImplementation((f) => Object.assign(() => {}, { wraps: f }));
   mocks.redetectDiff.mockImplementation((_node, _current, r, _outdated, _part, opts = {}) => r.ok
     ? { ok: true, protocol: null, baseUrl: null, addModels: r.models, removeModels: [], outdatedModels: [], quirks: {}, modelsNote: null, changes: r.models.length, keyScoped: !!opts.keyScoped }
     : { ok: false, error: r.error, protocol: null, baseUrl: null, addModels: [], removeModels: [], outdatedModels: [], quirks: {}, modelsNote: null, changes: 0 });
@@ -190,14 +191,29 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
 
   it("probes every key, at its own URL too, through the SSRF-checked fetch for remote callers", async () => {
     mocks.guardTarget.mockResolvedValue({ remote: true });
-    const guarded = () => {};
-    mocks.makeProbeFetch.mockReturnValue(guarded);
+    const guarded = () => {}, open = () => {};
+    mocks.makeProbeFetch.mockImplementation((remote) => (remote ? guarded : open));
     mocks.getProviderConnections.mockResolvedValue([...conns("k1"), ...ownConns("o1")]);
     verdict.o1 = works;
     await json();
-    expect(mocks.makeProbeFetch).toHaveBeenCalledWith(true);
-    expect(mocks.savedSettingsFetch.mock.calls.length).toBeGreaterThanOrEqual(2);
-    for (const c of mocks.savedSettingsFetch.mock.calls) expect(c[0]).toBe(guarded);
+    expect(keysUsed()).toEqual(["k1", "o1"]);
+    expect(mocks.makeProbeFetch.mock.calls.every(([remote]) => remote === true)).toBe(true);
+    for (const c of mocks.detectEndpoint.mock.calls) expect(c[0].fetchFn.wraps).toBe(guarded);
+  });
+
+  it("checks the endpoint's own URL answer over one account's for the endpoint half", async () => {
+    // The key on the endpoint's URL answered without a verdict; an own-URL key worked.
+    mocks.getProviderConnections.mockResolvedValue([...conns("base"), ...ownConns("o1")]);
+    verdict.base = listOnlyRefused;
+    verdict.o1 = works;
+    const body = await json("endpoint");
+    expect(keysUsed()).toEqual(["base", "o1"]);
+    expect(body.viaKeyUrl).toBeUndefined();
+    expect(mocks.redetectDiff.mock.calls[0][5]).toMatchObject({ keyScoped: false });
+    // The models half takes the account that worked.
+    vi.clearAllMocks();
+    mocks.getProviderConnections.mockResolvedValue([...conns("base"), ...ownConns("o1")]);
+    expect(await json("models")).toMatchObject({ viaKeyUrl: true });
   });
 
   it("says how many keys it tried when some were refused late and the rest outright", async () => {
@@ -224,10 +240,47 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     expect(await json()).toMatchObject({ ok: false, error: "The model list refused the key, and no API answered" });
   });
 
-  it("reports a later key that met a failing server, not the first key's refusal", async () => {
+  it("names a later key that met a failing server, as well as the first key's refusal", async () => {
     mocks.getProviderConnections.mockResolvedValue(conns("dead", "good"));
     verdict.good = down;
-    expect(await json()).toMatchObject({ ok: false, error: "None of the 2 keys it tried worked. Key 2: The endpoint didn't answer" });
+    expect(await json()).toMatchObject({ ok: false, error: "None of the 2 keys it tried worked. The first: Wrong key. A later one: The endpoint didn't answer" });
+  });
+
+  it("doesn't name a later key that was only rate-limited or lost the model list", async () => {
+    mocks.getProviderConnections.mockResolvedValue(conns("dead", "busy", "admin-only"));
+    verdict.busy = rateLimit;
+    verdict["admin-only"] = listOnlyFail;
+    expect(await json()).toMatchObject({ ok: false, error: "None of the 3 keys it tried worked. The first: Wrong key" });
+  });
+
+  it("doesn't name a later key that only ran out of the shared time", async () => {
+    mocks.getProviderConnections.mockResolvedValue(conns("dead", "late"));
+    verdict.late = { ok: false, failure: "timeout", keyVerdict: null, error: "Detection ran out of time before an API answered. Try again.", steps: [] };
+    expect(await json()).toMatchObject({ ok: false, error: "None of the 2 keys it tried worked. The first: Wrong key" });
+  });
+
+  it("says a key that can list models but every API refused was rejected, and tries the next", async () => {
+    const listOnlyKey = { ok: false, failure: "no-api", keyVerdict: "refused", error: "No OpenAI or Anthropic API found at this URL.", steps: [] };
+    mocks.getProviderConnections.mockResolvedValue(conns("lister", "good"));
+    verdict.lister = listOnlyKey;
+    verdict.good = works;
+    expect((await json()).ok).toBe(true);
+    expect(keysUsed()).toEqual(["lister", "good"]);
+    vi.clearAllMocks();
+    mocks.getProviderConnections.mockResolvedValue(conns("lister"));
+    expect(await json()).toMatchObject({ ok: false, error: "The key can list models, but every API refused it" });
+  });
+
+  it("lets only the first key's model list remove models", async () => {
+    mocks.getProviderConnections.mockResolvedValue(conns("good"));
+    verdict.good = works;
+    await json();
+    expect(mocks.redetectDiff.mock.calls[0][5]).toMatchObject({ removals: true });
+    vi.clearAllMocks();
+    mocks.getProviderConnections.mockResolvedValue(conns("busy", "good"));
+    verdict.busy = rateLimit;
+    await json();
+    expect(mocks.redetectDiff.mock.calls[0][5]).toMatchObject({ removals: false });
   });
 
   it("moves past a rate-limited key: limits are per key", async () => {
@@ -278,11 +331,11 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
   });
 
   it("shows a lone check whose model probes told nothing as it is, not as a failure", async () => {
-    // The made-up-model check got a 5xx: no verdict, no reason.
+    // The made-up-model check got a 5xx: no verdict, and the run says why.
     mocks.getProviderConnections.mockResolvedValue(conns("only"));
-    verdict.only = { ...unlisted, keyVerdict: null, partialReason: null };
+    verdict.only = { ...unlisted, keyVerdict: null, partialReason: cutShort.partialReason };
     const body = await json();
-    expect(body.ok).toBe(true);
+    expect(body).toMatchObject({ ok: true, partialReason: cutShort.partialReason });
     expect(body.error).toBeUndefined();
   });
 
