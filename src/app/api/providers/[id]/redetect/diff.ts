@@ -112,11 +112,13 @@ function routesChange(node: SavedEndpoint, r: DetectResult, target: Protocol): R
 export type RedetectPart = "endpoint" | "models" | "all";
 
 // `outdated`: saved models the labs have moved on from, offered for removal too.
-// `keyScoped`: the result came from one key at its own URL (one account), so
-// it can't vouch for the endpoint's URL, its auth style, which saved models are
-// gone, or the per-model routes the other keys use. `removals: false`: the list
-// came from a fallback key, which may list fewer models than the others.
-export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: DetectResult, outdated: string[] = [], part: RedetectPart = "all", { keyScoped = false, removals = true }: { keyScoped?: boolean; removals?: boolean } = {}): RedetectDiff {
+// `ownUrl`: the result came from one key at its own URL, so it can't vouch
+// for the endpoint's URL. `keyScoped`: other keys use the endpoint's URL, so
+// that one account can't vouch for their API, auth style, fixes or routes
+// either (when every key has its own URL, those are what traffic uses).
+// `removals: false`: the list came from a key that isn't first in line, which
+// may list fewer models than the others.
+export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: DetectResult, outdated: string[] = [], part: RedetectPart = "all", { keyScoped = false, ownUrl = keyScoped, removals = true }: { keyScoped?: boolean; ownUrl?: boolean; removals?: boolean } = {}): RedetectDiff {
   const empty: RedetectDiff = { ok: false, protocol: null, baseUrl: null, addModels: [], removeModels: [], outdatedModels: [], quirks: {}, modelsNote: null, changes: 0 };
   if (!r.ok) return { ...empty, error: r.error || "Detection failed", keyConfirmed: r.keyConfirmed };
   const ep = part !== "models", ms = part !== "endpoint";
@@ -127,7 +129,7 @@ export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: De
   const switchable = to !== from && from !== "anthropic" && to !== "anthropic";
   // One account's server answering another API isn't the endpoint's API.
   const protocol = ep && !keyScoped && to !== from ? { from, to, applicable: switchable } : null;
-  const baseUrl = ep && !keyScoped && r.baseUrl && trimUrl(r.baseUrl) !== trimUrl(node.baseUrl) ? { from: trimUrl(node.baseUrl), to: trimUrl(r.baseUrl) } : null;
+  const baseUrl = ep && !ownUrl && r.baseUrl && trimUrl(r.baseUrl) !== trimUrl(node.baseUrl) ? { from: trimUrl(node.baseUrl), to: trimUrl(r.baseUrl) } : null;
   // One account's models split across APIs would need routes it can't offer:
   // only the ones it serves on the saved API.
   const found = !ms ? [] : keyScoped && r.byProtocol ? r.byProtocol[from] || [] : r.models || [];
@@ -136,7 +138,7 @@ export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: De
   const listed = new Set(found.map((m) => m.toLowerCase()));
   const old = new Set(ms ? outdated.filter((m) => !listed.has(m.toLowerCase())) : []);
   // Only a full list proves a model is gone; a cut-short one just missed it.
-  const fullList = ms && !keyScoped && removals && r.modelsSource === "models" && r.listComplete !== false;
+  const fullList = ms && !ownUrl && removals && r.modelsSource === "models" && r.listComplete !== false;
   const removeModels = currentModels.filter((m) => fullList && !listed.has(m.toLowerCase()));
   const outdatedModels = currentModels.filter((m) => old.has(m) && !removeModels.includes(m));
   const addModels = found.filter((m) => !have.has(m) && !old.has(m));
@@ -148,5 +150,6 @@ export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: De
   const modelRoutes = ms && !keyScoped ? routesChange(node, r, ep && switchable ? to : from) : null;
   if (modelRoutes) quirks.modelRoutes = modelRoutes;
   const changes = (protocol ? 1 : 0) + (baseUrl ? 1 : 0) + addModels.length + removeModels.length + outdatedModels.length + Object.keys(quirks).length;
-  return { ok: true, protocol, baseUrl, addModels, removeModels, outdatedModels, quirks, modelsNote: ms ? modelsNoteFor(r) : null, keyConfirmed: r.keyConfirmed, changes };
+  // One account's or a fallback key's list doesn't describe the endpoint's.
+  return { ok: true, protocol, baseUrl, addModels, removeModels, outdatedModels, quirks, modelsNote: ms && !keyScoped && removals ? modelsNoteFor(r) : null, keyConfirmed: r.keyConfirmed, changes };
 }

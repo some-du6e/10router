@@ -39,7 +39,8 @@ const unsure = (r: DetectResult) => r.ok && !r.keyVerdict;
 const listOnly = (r: DetectResult) => !r.ok && r.failure === "key" && !r.keyVerdict;
 // A web server's own 401 page (nginx in front of the API refusing the token):
 // not an API answer, but a sign the next key may get through.
-const pageRefused = (r: DetectResult) => !r.ok && r.failure === "html" && r.steps.some((s) => s.status === 401 || s.status === 403);
+// (A 403 page is usually a WAF or bot block, the same for every key.)
+const pageRefused = (r: DetectResult) => !r.ok && r.failure === "html" && r.steps.some((s) => s.status === 401);
 // Cut off by the shared time or the user: it says nothing about its key.
 const cutOff = (r: DetectResult) => r.failure === "timeout" || r.failure === "cancelled";
 const clause = (s: string | undefined) => String(s || "").replace(/\s*\.*\s*$/, "");
@@ -156,19 +157,29 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       const on = conns.some((c) => c.isActive !== false);
       shown.result = { ...shown.result, error: on ? "It needs a key, and no switched-on key has one set" : conns.length ? "It needs a key, and none of its keys is switched on" : "It needs a key, and this endpoint has none" };
     }
-    const result = win || (tried.length === 1 && (!shown.result.ok || !shown.candidate.apiKey)) ? shown.result : {
+    const settled = win || (tried.length === 1 && (!shown.result.ok || !shown.candidate.apiKey)) ? shown.result : {
       ...shown.result, ok: false as const,
       error: tried.length === 1 ? verdict
         : tried.every((r) => keyRefused(r.result)) ? `None of the ${tried.length} keys it tried was accepted`
         : `None of the ${tried.length} keys it tried worked. The first: ${verdict}${later ? `. A later one: ${clause(later.result.error)}` : ""}`,
     };
+    // A lone failure at a key's own URL happened there, not at the endpoint's;
+    // and a key the shared time cut off wasn't really checked.
+    const atOwn = shown.candidate.own && tried.length === 1, cut = tried.length < runs.length;
+    const result = !settled.ok && settled.error && (atOwn || cut)
+      ? { ...settled, error: `${clause(settled.error)}${atOwn ? " (at the key's own URL)" : ""}${cut ? ". Another key ran out of time before it was checked" : ""}` }
+      : settled;
     // What a key on its own URL sees is that account's: redetectDiff keeps its
     // URL, missing models, routes and auth style out of the endpoint's changes.
     const via = shown.candidate.own;
+    // When every key has its own URL, a key's URL is what traffic uses, so its
+    // API and fixes are the endpoint's; with keys on the endpoint's URL too,
+    // they're one account's.
+    const scoped = via && all.some((c) => !c.own);
     // Gateways can list models per key: a fallback key's shorter list isn't
     // proof the first key's models are gone, so only the first key removes.
     const removals = shown === runs[0];
-    const diff = redetectDiff(node, current, result, outdatedModels(current, catalog), part, { keyScoped: via, removals });
+    const diff = redetectDiff(node, current, result, outdatedModels(current, catalog), part, { keyScoped: scoped, ownUrl: via, removals });
     // The other keys tried, when one got through: a dead key still switched on
     // is worth knowing about, and a win at a key's own URL after the endpoint's
     // URL refused its keys mustn't read as "the URL wasn't asked".
@@ -182,10 +193,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const reason = !result.partialReason ? null
       : result.stopReason !== "auth" ? result.partialReason
       : shown.candidate.apiKey ? "The endpoint refused the models it was asked about, so some weren't checked." : null;
-    const cut = reason ? { partialReason: reason } : {};
+    const why = reason ? { partialReason: reason } : {};
     // Its full list removed nothing because another key came first: say so.
     const held = !removals && !via && result.ok && result.modelsSource === "models" && part !== "endpoint" ? { removalsHeld: true } : {};
-    return { ...diff, steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!shown.candidate.apiKey, ...failed, ...cut, ...held, ...(via ? { viaKeyUrl: true } : {}), ...(result.gate ? { gate: result.gate } : {}) };
+    return { ...diff, steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!shown.candidate.apiKey, ...failed, ...why, ...held, ...(via ? { viaKeyUrl: true } : {}), ...(scoped ? { keyScoped: true } : {}), ...(result.gate ? { gate: result.gate } : {}) };
   }, { ok: false, error: "Re-detect failed", steps: [] });
 }
 

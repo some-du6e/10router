@@ -12,20 +12,20 @@ describe("Re-detect box text", () => {
   });
 
   it("doesn't claim the endpoint's URL was asked when one key's own URL was", () => {
-    expect(unchangedText("all", false)).toMatch(/URL/);
-    expect(unchangedText("all", true)).not.toMatch(/URL/);
-    expect(unchangedText("endpoint", true)).not.toMatch(/URL/);
-    expect(summaryText("models", diff({ viaKeyUrl: true }))).toBe(`No new models. ${keyUrlNote("models", false)}`);
+    expect(unchangedText("all", "none")).toMatch(/URL/);
+    expect(unchangedText("all", "account")).not.toMatch(/URL/);
+    expect(unchangedText("endpoint", "account")).not.toMatch(/URL/);
+    expect(summaryText("models", diff({ viaKeyUrl: true, keyScoped: true }))).toBe(`No new models. ${keyUrlNote("models", false, "account")}`);
   });
 
-  it("says when the endpoint's URL was asked and its keys gave no usable answer", () => {
-    expect(keyUrlNote("all", true)).toMatch(/^The keys on the endpoint's URL gave no usable answer/);
-    expect(keyUrlNote("all", false)).toMatch(/^Checked through one key's own URL/);
-    expect(summaryText("all", diff({ viaKeyUrl: true, otherKeysFailed: 2, baseKeysTried: 2 })))
-      .toBe(`No new models. ${keyUrlNote("all", true)} 2 other keys didn't get through.`);
+  it("says when the endpoint's URL was asked and its keys didn't give a full answer", () => {
+    expect(keyUrlNote("all", true, "account")).toMatch(/^The keys on the endpoint's URL didn't give a full answer/);
+    expect(keyUrlNote("all", false, "account")).toMatch(/^Checked through one key's own URL/);
+    expect(summaryText("all", diff({ viaKeyUrl: true, keyScoped: true, otherKeysFailed: 2, baseKeysTried: 2 })))
+      .toBe(`No new models. ${keyUrlNote("all", true, "account")} 2 other keys didn't get through.`);
     // Nor that the API or fixes were checked.
-    expect(unchangedText("endpoint", true)).toBe("Nothing to change.");
-    expect(keyUrlNote("endpoint", false)).toMatch(/the API, URL changes and fixes weren't checked/);
+    expect(unchangedText("endpoint", "account")).toBe("Nothing to change.");
+    expect(keyUrlNote("endpoint", false, "account")).toMatch(/the API, URL changes and fixes weren't checked/);
   });
 
   it("counts the other keys that didn't get through", () => {
@@ -35,7 +35,15 @@ describe("Re-detect box text", () => {
 
   it("says when a fallback key's list wasn't used to remove models", () => {
     expect(summaryText("models", diff({ removalsHeld: true, otherKeysFailed: 1 })))
-      .toBe("No new models. Models missing from this key's list aren't offered for removal: it may list fewer than the key tried first. 1 other key didn't get through.");
+      .toBe("No new models. Models missing from this key's list aren't offered for removal: another key comes first, and lists can differ by key. Switch off keys that don't work to get them. 1 other key didn't get through.");
+  });
+
+  it("when every key has its own URL, claims all but the URL and removals", () => {
+    const own = { viaKeyUrl: true };
+    expect(summaryText("endpoint", diff(own))).toBe(`No changes to the API or fixes. ${keyUrlNote("endpoint", false, "url")}`);
+    expect(keyUrlNote("endpoint", false, "url")).toBe("No key uses the endpoint's URL, so this was checked through one key's own URL, and URL changes weren't checked.");
+    expect(summaryText("models", diff(own))).toMatch(/^No new models\. No key uses the endpoint's URL/);
+    expect(unchangedText("all", "url")).toBe("Same API, no new models.");
   });
 
   it("says why the model checks stopped early", () => {

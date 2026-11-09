@@ -1269,7 +1269,8 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
     : models.length ? "accepted"
     : modelStops.has("auth") && !keyAccepted && !confirmed ? "refused"
     : modelStops.has("rate") ? "rate-limited"
-    : modelStops.has("auth") || modelStops.has("denied") || listRefusedPathStyle ? null
+    // A 402 (out of credit) on the model probes: that key can't use anything.
+    : modelStops.has("auth") || modelStops.has("denied") || listRefusedPathStyle || steps.some((s) => s.status === 402) ? null
     : keyAccepted || confirmed || !inconclusive ? "accepted"
     : null;
 

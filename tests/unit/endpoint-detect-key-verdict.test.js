@@ -286,6 +286,17 @@ describe("detectEndpoint keyVerdict", () => {
     expect(r.partialReason).toMatch(/kept failing/);
   });
 
+  it("nothing known: the model probes answered 402, out of credit", async () => {
+    const r = await detect(chat((id) => (id === "10router-no-such-model" ? unknown(id) : [402, oaiErr("Insufficient Balance", "insufficient_balance")])));
+    expect(r).toMatchObject({ ok: true, models: [], keyVerdict: null });
+  });
+
+  it("an HTML 401 page (nginx in front of the API) is a page, not an API refusal", async () => {
+    const r = await detect(upstream(() => [401, "<html><head><title>401 Authorization Required</title></head><body>nginx</body></html>", { "content-type": "text/html" }]));
+    expect(r).toMatchObject({ ok: false, failure: "html", keyVerdict: null });
+    expect(r.steps.some((s) => s.status === 401)).toBe(true);
+  });
+
   it("nothing known: the made-up-id check got a server error, and it says so", async () => {
     const r = await detect(chat(() => [503, oaiErr("upstream down", "server_error")]));
     expect(r).toMatchObject({ ok: true, models: [], keyVerdict: null, partial: true });

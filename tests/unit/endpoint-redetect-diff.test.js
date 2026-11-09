@@ -168,6 +168,17 @@ describe("redetectDiff for one key at its own URL (keyScoped)", () => {
     expect(redetectDiff(node, ["a", "old-4"], listed, ["old-4"], "all", { keyScoped: true })).toMatchObject({ removeModels: [], outdatedModels: ["old-4"] });
   });
 
+  it("offers the API, fixes and routes, but not the URL or removals, from a key's own URL when every key has one", () => {
+    const d = redetectDiff(node, ["a", "gone"], r, [], "all", { ownUrl: true });
+    expect(d).toMatchObject({ baseUrl: null, removeModels: [], quirks: { apiKeyHeader: "api-key", maxCompletionTokens: true } });
+    expect(d.protocol.to).toBe("openai-responses");
+    expect(d.quirks.modelRoutes).toEqual({ a: "openai-responses", new: "anthropic" });
+    expect(d.modelsNote).not.toBeNull();
+    // A fallback key's or one account's list doesn't set the models note.
+    expect(redetectDiff(node, ["a"], r, [], "all", { removals: false }).modelsNote).toBeNull();
+    expect(redetectDiff(node, ["a"], r, [], "all", { keyScoped: true }).modelsNote).toBeNull();
+  });
+
   it("offers the URL, removals, auth style and routes when not scoped to one key", () => {
     const d = redetectDiff(node, ["a", "gone"], r, [], "all");
     expect(d.baseUrl).toEqual({ from: "https://api.acme.dev/v1", to: "https://acct-1.acme.dev/v1" });

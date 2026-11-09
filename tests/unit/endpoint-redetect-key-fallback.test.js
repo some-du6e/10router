@@ -283,7 +283,7 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     const late = { ok: false, failure: "timeout", keyVerdict: null, error: "Detection ran out of time before an API answered. Try again.", steps: [] };
     mocks.getProviderConnections.mockResolvedValue(conns("dead", "late"));
     verdict.late = late;
-    expect(await json()).toMatchObject({ ok: false, error: rejected.error });
+    expect(await json()).toMatchObject({ ok: false, error: "Wrong key. Another key ran out of time before it was checked" });
     // Nor as a key that didn't get through, next to one that answered.
     vi.clearAllMocks();
     mocks.getProviderConnections.mockResolvedValue(conns("slow", "late"));
@@ -302,12 +302,74 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     verdict.good = works;
     expect((await json()).ok).toBe(true);
     expect(keysUsed()).toEqual(["dead", "good"]);
-    // A plain HTML page with no 401/403 says nothing about keys: no other key.
+    // A 403 page (a WAF or bot block, the same for every key), or one with no 401: no other key.
+    vi.clearAllMocks();
+    mocks.getProviderConnections.mockResolvedValue(conns("dead", "good"));
+    verdict.dead = { ...nginx401, steps: [{ ...nginx401.steps[0], status: 403 }] };
+    await json();
+    expect(keysUsed()).toEqual(["dead"]);
     vi.clearAllMocks();
     mocks.getProviderConnections.mockResolvedValue(conns("dead", "good"));
     verdict.dead = { ...nginx401, steps: [{ ...nginx401.steps[0], status: 200 }] };
     await json();
     expect(keysUsed()).toEqual(["dead"]);
+  });
+
+  it("lets a key's own URL speak for the API and fixes only when no key uses the endpoint's URL", async () => {
+    mocks.getProviderConnections.mockResolvedValue(ownConns("o0", "o1"));
+    verdict.o1 = works;
+    expect(await json("endpoint")).toMatchObject({ ok: true, viaKeyUrl: true });
+    expect(mocks.redetectDiff.mock.calls[0][5]).toMatchObject({ keyScoped: false, ownUrl: true });
+    vi.clearAllMocks();
+    mocks.getProviderConnections.mockResolvedValue([...conns("dead"), ...ownConns("o1")]);
+    verdict.o1 = works;
+    expect(await json("models")).toMatchObject({ ok: true, viaKeyUrl: true, keyScoped: true });
+    expect(mocks.redetectDiff.mock.calls[0][5]).toMatchObject({ keyScoped: true, ownUrl: true });
+  });
+
+  it("says a lone failure at a key's own URL happened there", async () => {
+    mocks.getProviderConnections.mockResolvedValue(ownConns("o0"));
+    verdict.o0 = down;
+    expect(await json()).toMatchObject({ ok: false, error: "The endpoint didn't answer (at the key's own URL)" });
+  });
+
+  it("says when another key ran out of time before it was checked", async () => {
+    mocks.getProviderConnections.mockResolvedValue(conns("first", "late"));
+    verdict.first = { ...rejected, keyVerdict: "refused" };
+    verdict.late = { ok: false, failure: "timeout", keyVerdict: null, error: "Detection ran out of time before an API answered. Try again.", steps: [] };
+    expect(await json()).toMatchObject({ ok: false, error: "Wrong key. Another key ran out of time before it was checked" });
+    // A lone key cut off still counts as tried.
+    vi.clearAllMocks();
+    mocks.getProviderConnections.mockResolvedValue(conns("late"));
+    expect(await json()).toMatchObject({ ok: false, error: verdict.late.error });
+  });
+
+  it("names neither a later key cut off by time nor one refused by a web page", async () => {
+    const nginx401 = { ok: false, failure: "html", keyVerdict: null, error: "This isn't an API response.", steps: [{ status: 401 }] };
+    mocks.getProviderConnections.mockResolvedValue(conns("dead", "busy", "page", "late"));
+    verdict.busy = rateLimit;
+    verdict.page = nginx401;
+    verdict.late = { ok: false, failure: "timeout", keyVerdict: null, error: "Detection ran out of time before an API answered. Try again.", steps: [] };
+    expect((await json()).error).toBe("None of the 3 keys it tried worked. The first: Wrong key. Another key ran out of time before it was checked");
+  });
+
+  it("hands the half that asked, the request's signal and skipModels to every call", async () => {
+    mocks.getProviderConnections.mockResolvedValue(conns("gated"));
+    mocks.detectEndpoint.mockImplementationOnce(() => Promise.resolve({ ok: false, failure: "gated", keyVerdict: null, clientGated: true, error: "Only works as a known client.", steps: [] }));
+    mocks.retryAsClient.mockImplementation((first, opts) => opts.detect(() => {}));
+    await json("endpoint");
+    for (const [o] of mocks.detectEndpoint.mock.calls) {
+      expect(o.skipModels).toBe(true);
+      expect(o.signal).toBe(mocks.signal.signal);
+    }
+    expect(mocks.detectEndpoint).toHaveBeenCalledTimes(2);
+    expect(mocks.redetectDiff.mock.calls[0][4]).toBe("endpoint");
+    vi.clearAllMocks();
+    mocks.getProviderConnections.mockResolvedValue(conns("good"));
+    verdict.good = works;
+    await json("models");
+    expect(mocks.detectEndpoint.mock.calls[0][0].skipModels).toBe(false);
+    expect(mocks.redetectDiff.mock.calls[0][4]).toBe("models");
   });
 
   it("tries the endpoint's URL first even past five keys with their own", async () => {
@@ -451,7 +513,8 @@ describe("re-detect model check: keys with their own URL", () => {
   it("asks each key at its own URL instead of probing the endpoint with no key", async () => {
     mocks.getProviderConnections.mockResolvedValue([{ id: "off", isActive: false, apiKey: "shared-off" }, ...ownConns("dead", "good")]);
     verdict.good = works;
-    expect(await json()).toMatchObject({ ok: true, usedKey: true, viaKeyUrl: true, keyScoped: true });
+    // Every active key has its own URL, so the result isn't scoped to one account.
+    expect(await json()).toMatchObject({ ok: true, usedKey: true, viaKeyUrl: true, keyScoped: false });
     expect(keysUsed()).toEqual(["dead", "good"]);
     expect(urlsUsed()).toEqual(["https://acct-dead.acme.dev/v1", "https://acct-good.acme.dev/v1"]);
   });
