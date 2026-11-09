@@ -1,6 +1,6 @@
 // The endpoint page's Re-detect box: what it says and what it ticks.
 import { describe, it, expect } from "vitest";
-import { defaultPick, failedText, keyUrlNote, summaryText, unchangedText } from "../../src/app/(dashboard)/dashboard/providers/[id]/redetectText.ts";
+import { defaultPick, failedText, fixesList, keyUrlNote, summaryText, unchangedText } from "../../src/app/(dashboard)/dashboard/providers/[id]/redetectText.ts";
 
 const diff = (over = {}) => ({ ok: true, protocol: null, baseUrl: null, addModels: [], removeModels: [], outdatedModels: [], quirks: {}, modelsNote: null, changes: 0, ...over });
 
@@ -38,6 +38,15 @@ describe("Re-detect box text", () => {
   it("says a keyless check only saw what's public, and nothing about it once there are changes", () => {
     expect(summaryText("models", diff({ usedKey: false }))).toBe("Same models as you have now. No key, so only what's public was checked.");
     expect(summaryText("models", diff({ usedKey: false, changes: 1 }))).toBe("Pick what to apply. Free probes only, nothing was generated.");
+  });
+});
+
+describe("Re-detect box fixes row", () => {
+  it("lists each fix, and an empty route map as clearing routes", () => {
+    expect(fixesList({ maxCompletionTokens: true, apiKeyHeader: "api-key", modelRoutes: { a: "anthropic" } }))
+      .toEqual(["send max_completion_tokens", "send the key in an api-key header", "send each model to the API that answers it"]);
+    expect(fixesList({ modelRoutes: {} })).toEqual(["stop sending models to other APIs"]);
+    expect(fixesList({})).toEqual([]);
   });
 });
 

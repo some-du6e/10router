@@ -45,9 +45,15 @@ jobs:
         run: |
           bun install --ignore-scripts
           cd tests && bun install --ignore-scripts
+      # vitest takes these as name filters and skips one that matches nothing,
+      # so a moved file has to fail here.
       - name: Unit test
         working-directory: tests
-        run: ./node_modules/.bin/vitest run unit/endpoint-detect-key-verdict.test.js unit/endpoint-impersonate.test.js unit/endpoint-redetect-key-fallback.test.js unit/endpoint-redetect-diff.test.js unit/endpoint-redetect-text.test.js
+        env:
+          FILES: unit/endpoint-detect-key-verdict.test.js unit/endpoint-impersonate.test.js unit/endpoint-redetect-key-fallback.test.js unit/endpoint-redetect-diff.test.js unit/endpoint-redetect-text.test.js
+        run: |
+          for f in $FILES; do [ -f "$f" ] || { echo "missing $f"; exit 1; }; done
+          ./node_modules/.bin/vitest run $FILES
       # set-state-in-effect: CustomEndpointPage.tsx's data-loading effects
       # predate this check and fail on master too.
       - name: Lint

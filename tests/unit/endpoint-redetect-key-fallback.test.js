@@ -79,14 +79,15 @@ const refusedLater = { ...unlisted, authRejected: true, stopReason: "auth", keyV
 // A key the bad-key check proved, whose model probes were then refused: limited, not dead.
 const provedThenRefused = { ...unlisted, stopReason: "auth", keyVerdict: "accepted", partialReason: refusedLater.partialReason };
 // A key limited to models outside the ones asked about: it works.
-const limitedKey = { ...unlisted, authRejected: true, stopReason: "denied" };
+const limitedKey = { ...unlisted, authRejected: true, stopReason: "denied", partialReason: "The key isn't allowed to use any of the models checked." };
 const rateLimit = { ok: false, failure: "rate", keyVerdict: "rate-limited", error: "The endpoint is rate-limiting requests.", steps: [] };
 // The free probes passed, then the model probes kept getting 429s and found nothing.
 const modelsRateLimited = { ...unlisted, stopReason: "rate", keyVerdict: "rate-limited", partialReason: "The endpoint kept rate-limiting, so some models weren't checked." };
 // Only GET /models refused the key (an admin-only list); nothing says whether the key is bad.
 const listOnlyRefused = { ...unlisted, authRejected: true, stopReason: null, keyVerdict: null };
 // The model probes were cut short (time, 5xx) before they told anything.
-const cutShort = { ...unlisted, stopReason: "deadline", keyVerdict: null, partialReason: "Detection ran out of time, so some models weren't checked." };
+// (A deadline cut uses up the shared budget, so only failures lead to another key.)
+const cutShort = { ...unlisted, stopReason: "failing", keyVerdict: null, partialReason: "The endpoint kept failing (network errors, timeouts or 5xx), so some models weren't checked." };
 
 const req = () => new Request("https://dash.local/api/providers/ep1/redetect?part=models", { method: "POST" });
 const call = () => POST(req(), { params: Promise.resolve({ id: "ep1" }) });
@@ -110,9 +111,7 @@ beforeEach(() => {
   mocks.makeProbeFetch.mockReturnValue(() => Promise.resolve(new Response("{}")));
   mocks.guardTarget.mockResolvedValue({ remote: false });
   mocks.retryAsClient.mockImplementation((first) => Promise.resolve(first));
-  // Tags the fetch with the key it was built for, so tests can see which key
-  // the saved auth settings were applied with.
-  mocks.savedSettingsFetch.mockImplementation((_f, _node, key) => Object.assign(() => {}, { forKey: key }));
+  mocks.savedSettingsFetch.mockImplementation(() => () => {});
   mocks.redetectDiff.mockImplementation((_node, _current, r, _outdated, _part, opts = {}) => r.ok
     ? { ok: true, protocol: null, baseUrl: null, addModels: r.models, removeModels: [], outdatedModels: [], quirks: {}, modelsNote: null, changes: r.models.length, keyScoped: !!opts.keyScoped }
     : { ok: false, error: r.error, protocol: null, baseUrl: null, addModels: [], removeModels: [], outdatedModels: [], quirks: {}, modelsNote: null, changes: 0 });
@@ -121,12 +120,11 @@ beforeEach(() => {
 });
 
 describe("re-detect model check: keys on the endpoint's URL", () => {
-  it("falls through a rejected key to the next one, with that key's saved auth settings", async () => {
+  it("falls through a rejected key to the next one", async () => {
     mocks.getProviderConnections.mockResolvedValue(conns("dead", "good"));
     verdict.good = works;
     expect(await json()).toMatchObject({ ok: true, usedKey: true });
     expect(keysUsed()).toEqual(["dead", "good"]);
-    expect(mocks.detectEndpoint.mock.calls.map((c) => c[0].fetchFn.forKey)).toEqual(["dead", "good"]);
   });
 
   it("falls through a key refused only once models were asked about", async () => {
@@ -182,12 +180,10 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     expect(keysUsed()).toEqual(["fine", "spare"]);
   });
 
-  it("never passes on a refusal as the reason the checks stopped", async () => {
+  it("never passes on a refusal of the key as the reason the checks stopped", async () => {
     mocks.getProviderConnections.mockResolvedValue(conns("proved"));
     verdict.proved = provedThenRefused;
-    const body = await json();
-    expect(body.ok).toBe(true);
-    expect(body.partialReason).toBeUndefined();
+    expect(await json()).toMatchObject({ ok: true, partialReason: "The endpoint refused the models it was asked about, so some weren't checked." });
   });
 
   it("says how many keys it tried when some were refused late and the rest outright", async () => {
@@ -196,10 +192,10 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     expect(await json()).toMatchObject({ ok: false, error: "None of the 2 keys it tried was accepted" });
   });
 
-  it("doesn't call a key limited to other models rejected", async () => {
+  it("doesn't call a key limited to other models rejected, and says what it found", async () => {
     mocks.getProviderConnections.mockResolvedValue(conns("limited", "spare"));
     verdict.limited = limitedKey;
-    expect((await json()).ok).toBe(true);
+    expect(await json()).toMatchObject({ ok: true, partialReason: limitedKey.partialReason });
     expect(keysUsed()).toEqual(["limited"]);
   });
 
@@ -378,14 +374,13 @@ describe("re-detect model check: keys with their own URL", () => {
     verdict.gated = { ok: false, failure: "gated", keyVerdict: null, clientGated: true, error: "Only works as a known client.", steps: [] };
     mocks.retryAsClient.mockImplementation(async (first, opts) => {
       expect(opts).toMatchObject({ url: "https://acct-gated.acme.dev/v1", apiKey: "gated" });
-      expect(opts.fetchFn.forKey).toBe("gated");
       return opts.detect(() => {});
     });
     await json();
     expect(urlsUsed()).toEqual(["https://acct-gated.acme.dev/v1", "https://acct-gated.acme.dev/v1"]);
     expect(keysUsed()).toEqual(["gated", "gated"]);
     // Without the saved identity: the retry's headers replace it.
-    expect(mocks.savedSettingsFetch.mock.calls.map((c) => c[3])).toEqual([undefined, { identity: false }]);
+    expect(mocks.savedSettingsFetch.mock.calls.map((c) => c[2])).toEqual([undefined, { identity: false }]);
   });
 });
 

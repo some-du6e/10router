@@ -44,9 +44,9 @@ export const savedProtocol = (n: SavedEndpoint): Protocol =>
 // Codex CLI" is client-gated, so without this every re-detect is refused.
 // `identity: false` leaves out the saved mimic, for the client-identity retry
 // whose own preset headers must not be overwritten.
-// `_apiKey` is the key the run probes with; each request is sent with the key
-// it carries, so the bad-key check's made-up one stays made up.
-export function savedSettingsFetch(fetchFn: DetectFetch, node: unknown, _apiKey: string, { identity = true }: { identity?: boolean } = {}): DetectFetch {
+// Each request is sent with the key it carries, so the bad-key check's made-up
+// one stays made up.
+export function savedSettingsFetch(fetchFn: DetectFetch, node: unknown, { identity = true }: { identity?: boolean } = {}): DetectFetch {
   const q0 = sanitizeNodeQuirks(node);
   const q = identity ? q0 : { ...q0, mimic: undefined, customHeaders: undefined };
   return (url, init) => {
@@ -140,7 +140,8 @@ export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: De
   const outdatedModels = currentModels.filter((m) => old.has(m) && !removeModels.includes(m));
   const addModels = found.filter((m) => !have.has(m) && !old.has(m));
   const quirks: RedetectDiff["quirks"] = {};
-  if (ep && r.quirks?.maxCompletionTokens && !node.maxCompletionTokens) quirks.maxCompletionTokens = true;
+  // One account's server may be another service entirely: its fixes aren't the endpoint's.
+  if (ep && !keyScoped && r.quirks?.maxCompletionTokens && !node.maxCompletionTokens) quirks.maxCompletionTokens = true;
   if (ep && !keyScoped && r.quirks?.apiKeyHeader && node.apiKeyHeader !== "api-key") quirks.apiKeyHeader = "api-key";
   // Models alone: routes stay relative to the saved API (a switch is the endpoint check's call).
   const modelRoutes = ms && !keyScoped ? routesChange(node, r, ep && switchable ? to : from) : null;

@@ -17,7 +17,7 @@ import { MIMIC_LABELS } from "@/shared/utils/nodeQuirks.js";
 import type { Mimic, NodeQuirks, RouteProtocol } from "@/shared/utils/nodeQuirks.js";
 import type { EndpointRequestEntry } from "@/lib/endpointRequestLog.js";
 import type { RedetectDiff, RedetectPart } from "@/app/api/providers/[id]/redetect/diff.js";
-import { defaultPick, failedText, summaryText } from "./redetectText";
+import { defaultPick, failedText, fixesList, summaryText } from "./redetectText";
 import type { RedetectKeys } from "./redetectText";
 import { PROTOCOL_NAME, prettyModel, readNdjson } from "../components/AddEndpointParts";
 import type { DetectProgress } from "@/lib/endpointDetect.js";
@@ -366,7 +366,7 @@ function RedetectBox({ node, part, diff, onClose, onApplied }: { node: EndpointN
     );
   }
   const q = diff.quirks;
-  const qList = [q.maxCompletionTokens && "send max_completion_tokens", q.apiKeyHeader && "send the key in an api-key header", q.modelRoutes && Object.keys(q.modelRoutes).length > 0 && "send each model to the API that answers it"].filter(Boolean) as string[];
+  const qList = fixesList(q);
   // Ticked rows that exist; a lone "needs a new endpoint" note has nothing to apply.
   const applicable = (pick.protocol && !!diff.protocol?.applicable) || (pick.baseUrl && !!diff.baseUrl) || (pick.add && diff.addModels.length > 0) || (pick.remove && diff.removeModels.length > 0) || (pick.outdated && diff.outdatedModels.length > 0) || (pick.quirks && qList.length > 0);
   const apply = async () => {

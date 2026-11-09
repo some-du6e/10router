@@ -94,12 +94,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const runWith = async ({ apiKey: key, url }: Candidate): Promise<Run["result"]> => {
       offset = maxN; sentBase = maxSent;
       // Probe with the endpoint's saved identity and auth style, as requests go out.
-      const first = await detectEndpoint({ url, apiKey: key, fetchFn: savedSettingsFetch(rawFetch, node, key), catalog, signal, onProgress, skipModels, deadlineMs: left() });
+      const first = await detectEndpoint({ url, apiKey: key, fetchFn: savedSettingsFetch(rawFetch, node), catalog, signal, onProgress, skipModels, deadlineMs: left() });
       // Still client-gated (no saved identity, or it stopped working): try the
       // known clients, as Add endpoint does. Their headers replace the saved ones.
       // The identity search stays inside the shared budget too.
       return retryAsClient(first, {
-        url, apiKey: key, fetchFn: savedSettingsFetch(rawFetch, node, key, { identity: false }), signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, left()))]),
+        url, apiKey: key, fetchFn: savedSettingsFetch(rawFetch, node, { identity: false }), signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, left()))]),
         detect: (f) => { offset = maxN; sentBase = maxSent; return detectEndpoint({ url, apiKey: key, fetchFn: f, catalog, signal, onProgress, skipModels, deadlineMs: left() }); },
       });
     };
@@ -144,10 +144,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const others = win ? runs.filter((r) => r !== win && !unsure(r.result)) : [];
     const failed = others.length ? { otherKeysFailed: others.length, baseKeysFailed: others.filter((r) => !r.candidate.own).length } : {};
     // Why the model checks stopped early, so "nothing changed" doesn't overclaim.
-    // Not a stop on the key: a key that won wasn't refused, and with no key
-    // there is none to blame.
-    const keyStopped = result.stopReason === "auth" || result.stopReason === "denied";
-    const cut = result.ok && result.partialReason && !keyStopped ? { partialReason: result.partialReason } : {};
+    // A stop on "the key" is reworded: a key shown here wasn't refused (the
+    // refusals were about models), and with no key there is none to blame.
+    const reason = !result.partialReason ? null
+      : result.stopReason !== "auth" ? result.partialReason
+      : shown.candidate.apiKey ? "The endpoint refused the models it was asked about, so some weren't checked." : null;
+    const cut = reason ? { partialReason: reason } : {};
     return { ...diff, steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!shown.candidate.apiKey, ...failed, ...cut, ...(via ? { viaKeyUrl: true } : {}), ...(result.gate ? { gate: result.gate } : {}) };
   }, { ok: false, error: "Re-detect failed", steps: [] });
 }

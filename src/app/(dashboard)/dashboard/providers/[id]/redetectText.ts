@@ -48,6 +48,15 @@ export function failedText(diff: Shown): string {
   return `${diff.error ? `${sentence(diff.error)} ` : ""}Nothing was changed.`;
 }
 
+// The "Fixes" row. An empty route map clears routes the endpoint no longer needs.
+export function fixesList(q: RedetectDiff["quirks"]): string[] {
+  return [
+    q.maxCompletionTokens && "send max_completion_tokens",
+    q.apiKeyHeader && "send the key in an api-key header",
+    q.modelRoutes && (Object.keys(q.modelRoutes).length > 0 ? "send each model to the API that answers it" : "stop sending models to other APIs"),
+  ].filter((x): x is string => !!x);
+}
+
 // Ticked to start with. An API switch seen through one key's own URL is one
 // account's answer, so the user opts in.
 export function defaultPick(diff: Shown) {

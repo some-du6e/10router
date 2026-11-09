@@ -121,15 +121,13 @@ describe("redetectDiff for one key at its own URL (keyScoped)", () => {
   const r = found({ baseUrl: "https://acct-1.acme.dev/v1", models: ["a", "new"], quirks: { apiKeyHeader: true, maxCompletionTokens: true },
     protocol: "openai-responses", byProtocol: { "openai-responses": ["a"], anthropic: ["new"] } });
 
-  it("keeps that account's URL, auth style, routes and missing models out of the endpoint's changes", () => {
+  it("keeps that account's URL, fixes, routes and missing models out of the endpoint's changes", () => {
     const d = redetectDiff(node, ["a", "gone"], r, [], "all", { keyScoped: true });
     // "new" is served only on Anthropic, which this Chat endpoint has no route for.
-    expect(d).toMatchObject({ ok: true, baseUrl: null, removeModels: [], addModels: [], quirks: { maxCompletionTokens: true } });
-    expect(d.quirks.apiKeyHeader).toBeUndefined();
-    expect(d.quirks.modelRoutes).toBeUndefined();
-    // Chat -> Responses is the API's, not the account's: still offered.
+    expect(d).toMatchObject({ ok: true, baseUrl: null, removeModels: [], addModels: [], quirks: {} });
+    // Chat -> Responses is offered, unticked by the page.
     expect(d.protocol.to).toBe("openai-responses");
-    expect(d.changes).toBe(2);
+    expect(d.changes).toBe(1);
   });
 
   it("adds only the models that account serves on the saved API", () => {
@@ -155,6 +153,7 @@ describe("redetectDiff for one key at its own URL (keyScoped)", () => {
     expect(d.baseUrl).toEqual({ from: "https://api.acme.dev/v1", to: "https://acct-1.acme.dev/v1" });
     expect(d.removeModels).toEqual(["gone"]);
     expect(d.quirks.apiKeyHeader).toBe("api-key");
+    expect(d.quirks.maxCompletionTokens).toBe(true);
     // The control for the scoped case: unscoped, the split is offered as routes.
     expect(d.quirks.modelRoutes).toEqual({ a: "openai-responses", new: "anthropic" });
   });
@@ -164,7 +163,7 @@ describe("savedSettingsFetch", () => {
   const capture = () => { const seen = []; return { seen, fetchFn: async (url, init) => { seen.push({ url, headers: init.headers }); return { status: 200, text: async () => "" }; } }; };
   it("sends the saved client identity on every probe", async () => {
     const { seen, fetchFn } = capture();
-    const f = savedSettingsFetch(fetchFn, { mimic: "codex" }, "sk-1");
+    const f = savedSettingsFetch(fetchFn, { mimic: "codex" });
     await f("https://x.dev/v1/models", { method: "GET", headers: {} });
     await f("https://x.dev/v1/chat/completions", { method: "POST", headers: { authorization: "Bearer sk-1" } });
     for (const s of seen) expect(s.headers["user-agent"]).toMatch(/^codex_cli_rs\//);
@@ -172,24 +171,24 @@ describe("savedSettingsFetch", () => {
   });
   it("sends the key the saved way", async () => {
     const { seen, fetchFn } = capture();
-    await savedSettingsFetch(fetchFn, { authHeader: "x-api-key" }, "sk-1")("https://x.dev/v1/chat/completions", { method: "POST", headers: { authorization: "Bearer sk-1" } });
+    await savedSettingsFetch(fetchFn, { authHeader: "x-api-key" })("https://x.dev/v1/chat/completions", { method: "POST", headers: { authorization: "Bearer sk-1" } });
     expect(seen[0].headers).toEqual({ "x-api-key": "sk-1" });
-    await savedSettingsFetch(fetchFn, { apiKeyHeader: "api-key" }, "sk-1")("https://x.dev/v1/responses", { method: "POST", headers: { authorization: "Bearer sk-1" } });
+    await savedSettingsFetch(fetchFn, { apiKeyHeader: "api-key" })("https://x.dev/v1/responses", { method: "POST", headers: { authorization: "Bearer sk-1" } });
     expect(seen[1].headers).toEqual({ "api-key": "sk-1" });
     // apiKeyHeader is OpenAI-only, like the executor: /messages keeps its auth.
-    await savedSettingsFetch(fetchFn, { apiKeyHeader: "api-key" }, "sk-1")("https://x.dev/v1/messages", { method: "POST", headers: { authorization: "Bearer sk-1", "x-api-key": "sk-1" } });
+    await savedSettingsFetch(fetchFn, { apiKeyHeader: "api-key" })("https://x.dev/v1/messages", { method: "POST", headers: { authorization: "Bearer sk-1", "x-api-key": "sk-1" } });
     expect(seen[2].headers).toEqual({ authorization: "Bearer sk-1", "x-api-key": "sk-1" });
   });
   it("keeps the bad-key check's made-up key when sending it the saved way", async () => {
     const { seen, fetchFn } = capture();
-    await savedSettingsFetch(fetchFn, { authHeader: "x-api-key" }, "sk-1")("https://x.dev/v1/messages", { method: "POST", headers: { "x-api-key": "made-up" } });
+    await savedSettingsFetch(fetchFn, { authHeader: "x-api-key" })("https://x.dev/v1/messages", { method: "POST", headers: { "x-api-key": "made-up" } });
     expect(seen[0].headers).toEqual({ "x-api-key": "made-up" });
-    await savedSettingsFetch(fetchFn, { apiKeyHeader: "api-key" }, "sk-1")("https://x.dev/v1/chat/completions", { method: "POST", headers: { authorization: "Bearer made-up" } });
+    await savedSettingsFetch(fetchFn, { apiKeyHeader: "api-key" })("https://x.dev/v1/chat/completions", { method: "POST", headers: { authorization: "Bearer made-up" } });
     expect(seen[1].headers).toEqual({ "api-key": "made-up" });
   });
   it("can leave the identity out for the client retry", async () => {
     const { seen, fetchFn } = capture();
-    await savedSettingsFetch(fetchFn, { mimic: "codex" }, "sk-1", { identity: false })("https://x.dev/v1/models", { method: "GET", headers: { "user-agent": "claude-cli/1" } });
+    await savedSettingsFetch(fetchFn, { mimic: "codex" }, { identity: false })("https://x.dev/v1/models", { method: "GET", headers: { "user-agent": "claude-cli/1" } });
     expect(seen[0].headers["user-agent"]).toBe("claude-cli/1");
   });
 });

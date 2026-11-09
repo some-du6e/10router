@@ -249,9 +249,30 @@ describe("detectEndpoint keyVerdict", () => {
     expect(r).toMatchObject({ ok: true, models: [], stopReason: "aborted", keyVerdict: null });
   });
 
-  it("nothing known: the made-up-id check got a server error", async () => {
+  it("nothing known: the made-up-id check got a server error, and it says so", async () => {
     const r = await detect(chat(() => [503, oaiErr("upstream down", "server_error")]));
-    expect(r).toMatchObject({ ok: true, models: [], keyVerdict: null });
+    expect(r).toMatchObject({ ok: true, models: [], keyVerdict: null, partial: true });
+    expect(r.partialReason).toMatch(/kept failing/);
+  });
+
+  it("accepted: a public Bearer list refused the key, but the API takes it as x-api-key", async () => {
+    const r = await detectEndpoint({ url: "https://anth.acme.dev/v1", apiKey: KEY, catalog: CATALOG, sleep: noSleep, fetchFn: upstream((m, path, body, headers) => {
+      if (path === "/v1/models") return headers.authorization ? [401, { type: "error", error: { type: "authentication_error", message: "invalid bearer" } }] : [200, { object: "list", data: [{ id: "claude-x" }] }];
+      if (path !== "/v1/messages") return;
+      return [400, { type: "error", error: { type: "invalid_request_error", message: "messages: at least one message is required" } }];
+    }) });
+    expect(r).toMatchObject({ ok: true, protocol: "anthropic", models: ["claude-x"], keyVerdict: "accepted" });
+  });
+
+  it("accepted: the made-up-id check ran a model on one API, though another was rate-limited", async () => {
+    const r = await detect(upstream((m, path, body) => {
+      if (path !== "/v1/chat/completions" && path !== "/v1/responses") return;
+      if (body.model === "probe") return [400, oaiErr("input: required")];
+      if (path === "/v1/chat/completions") return [200, { id: "c1", object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }] }];
+      return [429, oaiErr("rate limited", "rate_limit_error")];
+    }));
+    expect(r.stopReason).toBe("generated");
+    expect(r.keyVerdict).toBe("accepted");
   });
 
   it("nothing known: the model probes ran out of time before any answered", async () => {
@@ -271,10 +292,16 @@ describe("detectEndpoint keyVerdict", () => {
     expect(r).toMatchObject({ ok: true, models: [], keyVerdict: null });
   });
 
+  it("nothing known: only GET /models refused the key, and no API path answered", async () => {
+    // Said as before ("The key was rejected"), but no POST refused it, so it isn't counted against the key.
+    const r = await detect(upstream((m, path) => (path === "/v1/models" ? [401, oaiErr("Admin key required", "authentication_error")] : [404, oaiErr("Not found", "not_found")])));
+    expect(r).toMatchObject({ ok: false, failure: "key", keyVerdict: null });
+  });
+
   it("nothing known: only GET /models refused the key, and the API paths are down", async () => {
     const r = await detect(upstream((m, path) => (path === "/v1/models" ? [401, oaiErr("Admin key required", "authentication_error")] : [503, oaiErr("upstream down", "server_error")])));
-    expect(r.ok).toBe(false);
-    expect(r.keyVerdict).toBeNull();
+    // Down, not "The key was rejected".
+    expect(r).toMatchObject({ ok: false, failure: "down", keyVerdict: null });
   });
 
   it("nothing known about the key when the endpoint itself fails", async () => {

@@ -1159,18 +1159,20 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   if (!filtered.length) {
     const last = steps[steps.length - 1];
     const html = steps.find((s) => s.html);
-    const keyRefused = sawAuthFail && !keyAccepted;
+    // Only GET /models refused the key, and the API paths answer 5xx: an
+    // admin-only list in front of a server that is down, not a dead key.
+    const keyRefused = sawAuthFail && !keyAccepted && (probeAuthFail || !serverErrors);
     const failure: FailureKind = clientGated ? "gated" : keyRefused ? "key" : rateLimited ? "rate" : found.length ? "catch-all"
       : serverErrors ? "down" : html ? "html" : unreachable() || last?.status === 0 ? "unreachable" : "no-api";
     const error = clientGated ? "This endpoint only accepts specific clients."
-      : sawAuthFail && !keyAccepted ? "The key was rejected."
+      : keyRefused ? "The key was rejected."
       : rateLimited ? "The endpoint is rate-limiting requests. Try again in a minute."
       : found.length ? "This server answers every request the same way, so no API could be identified."
       : serverErrors ? "The endpoint returned server errors (5xx). It may be down; try again later."
       : html ? `This isn't an API response${htmlTitle(html.preview) ? ` (got "${htmlTitle(html.preview)}")` : ""}.`
       : last?.status === 0 ? `Couldn't reach it: ${last.preview}`
       : "No OpenAI or Anthropic API found at this URL.";
-    // A GET /models refusal alone can be an admin-only list in front of a dead server.
+    // A GET /models refusal alone can be an admin-only list.
     const keyVerdict: KeyVerdict = failure === "key" ? (probeAuthFail ? "refused" : null) : failure === "rate" ? "rate-limited" : null;
     return { ok: false, failure, error, baseUrl: base0, steps, clientGated, authRejected: sawAuthFail && !keyAccepted && !clientGated, rateLimited, keyVerdict };
   }
@@ -1226,6 +1228,8 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
       if (res.stopped) { partialReason ||= PARTIAL_REASON[res.stopped]; stopReason ||= res.stopped; modelStops.add(res.stopped); if (keyStop(res.stopped)) probesRefusedKey = true; }
       // Cut short, or the made-up-id check itself failed (5xx, network).
       if (res.stopped === "failing" || res.stopped === "deadline" || res.stopped === "aborted" || (res.ids === null && !res.stopped && !res.complete && candidates.length)) inconclusive = true;
+      // Some models got no answer (5xx, network) without a stop: still partial.
+      if (!res.stopped && !res.complete && candidates.length) partialReason ||= PARTIAL_REASON.failing;
       if (res.stopped && res.stopped !== "generated" && res.stopped !== "failing") blocked = res.stopped;
     }
     const built = buildRoutes(byProtocol);
@@ -1253,8 +1257,11 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   // refusal can be an admin-only list), and limited only if a rate limit
   // stopped them first. Probes cut short by time or failures say nothing.
   const confirmed = keyConfirmed === "confirmed";
-  const keyVerdict: KeyVerdict = keyedListRefused && !confirmed ? "refused"
-    : models.length || generatesOnEmpty.size || modelStops.has("generated") ? "accepted"
+  // The keyed list retry sends Bearer: it only speaks for a path that takes Bearer.
+  const bearerPath = pathStyle.length === 1 && pathStyle[0] === "bearer";
+  const keyVerdict: KeyVerdict = generatesOnEmpty.size || modelStops.has("generated") ? "accepted"
+    : keyedListRefused && bearerPath && !confirmed ? "refused"
+    : models.length ? "accepted"
     : modelStops.has("auth") && !keyAccepted && !confirmed ? "refused"
     : modelStops.has("rate") ? "rate-limited"
     // GET /models refused the very style the API path uses, and nothing vouches for the key.
