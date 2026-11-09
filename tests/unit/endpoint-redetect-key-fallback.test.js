@@ -75,14 +75,16 @@ const down = { ok: false, failure: "down", keyVerdict: null, error: "The endpoin
 const works = { ok: true, keyVerdict: "accepted", steps: [], protocol: "openai-chat", baseUrl: "https://api.acme.dev/v1", models: ["m1"], modelsSource: "models", quirks: {} };
 // Passed the free probes with no /models list, then the model probes stopped on the key.
 const unlisted = { ...works, models: [], modelsSource: "none" };
-const refusedLater = { ...unlisted, authRejected: true, stopReason: "auth", keyVerdict: "refused" };
+const refusedLater = { ...unlisted, authRejected: true, stopReason: "auth", keyVerdict: "refused", partialReason: "The key was rejected part-way through, so some models weren't checked." };
+// A key the bad-key check proved, whose model probes were then refused: limited, not dead.
+const provedThenRefused = { ...unlisted, stopReason: "auth", keyVerdict: "accepted", partialReason: refusedLater.partialReason };
 // A key limited to models outside the ones asked about: it works.
 const limitedKey = { ...unlisted, authRejected: true, stopReason: "denied" };
 const rateLimit = { ok: false, failure: "rate", keyVerdict: "rate-limited", error: "The endpoint is rate-limiting requests.", steps: [] };
 // The free probes passed, then the model probes kept getting 429s and found nothing.
 const modelsRateLimited = { ...unlisted, stopReason: "rate", keyVerdict: "rate-limited", partialReason: "The endpoint kept rate-limiting, so some models weren't checked." };
-// Only GET /models refused the key (an admin-only list); nothing says the key is bad.
-const listOnlyRefused = { ...unlisted, authRejected: true, stopReason: null };
+// Only GET /models refused the key (an admin-only list); nothing says whether the key is bad.
+const listOnlyRefused = { ...unlisted, authRejected: true, stopReason: null, keyVerdict: null };
 // The model probes were cut short (time, 5xx) before they told anything.
 const cutShort = { ...unlisted, stopReason: "deadline", keyVerdict: null, partialReason: "Detection ran out of time, so some models weren't checked." };
 
@@ -171,11 +173,21 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     expect(await json()).toMatchObject({ ok: false, error: "None of the 2 keys it tried worked. The first: The key was rejected" });
   });
 
-  it("doesn't blame a key that only GET /models refused, and tries no other", async () => {
+  it("doesn't blame a key that only GET /models refused, but tries another", async () => {
     mocks.getProviderConnections.mockResolvedValue(conns("fine", "spare"));
     verdict.fine = listOnlyRefused;
-    expect((await json()).ok).toBe(true);
-    expect(keysUsed()).toEqual(["fine"]);
+    const body = await json();
+    expect(body.ok).toBe(true);
+    expect(body.error).toBeUndefined();
+    expect(keysUsed()).toEqual(["fine", "spare"]);
+  });
+
+  it("never passes on a refusal as the reason the checks stopped", async () => {
+    mocks.getProviderConnections.mockResolvedValue(conns("proved"));
+    verdict.proved = provedThenRefused;
+    const body = await json();
+    expect(body.ok).toBe(true);
+    expect(body.partialReason).toBeUndefined();
   });
 
   it("says how many keys it tried when some were refused late and the rest outright", async () => {
@@ -215,8 +227,9 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     verdict.slow = cutShort;
     verdict.good = works;
     const body = await json();
-    expect(body).toMatchObject({ ok: true, addModels: ["m1"], otherKeysFailed: 1 });
+    expect(body).toMatchObject({ ok: true, addModels: ["m1"] });
     expect(body.partialReason).toBeUndefined();
+    expect(body.otherKeysFailed).toBeUndefined(); // it got through, only cut short
     expect(keysUsed()).toEqual(["slow", "good"]);
   });
 
@@ -225,6 +238,16 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     verdict.slow = cutShort;
     expect(await json()).toMatchObject({ ok: true, otherKeysFailed: 2, baseKeysFailed: 2, partialReason: cutShort.partialReason });
     expect(keysUsed()).toEqual(["dead", "slow", "spare"]);
+  });
+
+  it("doesn't count a check that was only cut short as a key that didn't get through", async () => {
+    mocks.getProviderConnections.mockResolvedValue([...conns("slow"), ...ownConns("o1")]);
+    verdict.slow = cutShort;
+    verdict.o1 = works;
+    const body = await json();
+    expect(body).toMatchObject({ ok: true, viaKeyUrl: true });
+    expect(body.otherKeysFailed).toBeUndefined();
+    expect(body.baseKeysFailed).toBeUndefined();
   });
 
   it("shows a lone check whose model probes told nothing as it is, not as a failure", async () => {
@@ -259,7 +282,9 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
   it("never blames a key when there is none to blame", async () => {
     mocks.getProviderConnections.mockResolvedValue([]);
     verdict[""] = refusedLater;
-    expect(await json()).toMatchObject({ ok: true, usedKey: false });
+    const body = await json();
+    expect(body).toMatchObject({ ok: true, usedKey: false });
+    expect(body.partialReason).toBeUndefined();
   });
 
   it.each([

@@ -63,14 +63,46 @@ describe("detectEndpoint keyVerdict", () => {
     expect(r).toMatchObject({ ok: false, failure: "rate", keyVerdict: "rate-limited" });
   });
 
-  it("accepted: only GET /models refused the key, and the model probes found nothing", async () => {
-    // An admin-only list; chat answers alike with any key, so the bad-key check proves nothing.
+  it("nothing known: only GET /models refused the key, and nothing else vouches for it", async () => {
+    // An admin-only list, or a dead key on a server that checks the body first:
+    // chat answers alike with any key, so the bad-key check proves nothing.
     const r = await detect(upstream((m, path, body) => {
       if (path === "/v1/models") return [401, oaiErr("Admin key required", "authentication_error")];
       if (path !== "/v1/chat/completions") return;
       return body.model === "probe" ? [400, oaiErr("messages: at least one message is required")] : unknown(body.model);
     }));
-    expect(r).toMatchObject({ ok: true, models: [], authRejected: true, keyVerdict: "accepted" });
+    expect(r).toMatchObject({ ok: true, models: [], authRejected: true, keyVerdict: null });
+  });
+
+  it("accepted: GET /models refused the key, and the model probes found it limited to other models", async () => {
+    const r = await detect(upstream((m, path, body) => {
+      if (path === "/v1/models") return [401, oaiErr("Admin key required", "authentication_error")];
+      if (path !== "/v1/chat/completions") return;
+      if (body.model === "probe") return [400, oaiErr("messages: at least one message is required")];
+      if (body.model === "10router-no-such-model") return unknown(body.model);
+      return [403, oaiErr(`key not allowed to access model. This key can only access models=["other"]. Tried to access ${body.model}`, "auth_error")];
+    }));
+    expect(r).toMatchObject({ ok: true, models: [], stopReason: "denied", keyVerdict: "accepted" });
+  });
+
+  it("accepted: GET /models refused the key, but the bad-key check proved it", async () => {
+    const r = await detect(upstream((m, path, body, headers) => {
+      if (path === "/v1/models") return [401, oaiErr("Admin key required", "authentication_error")];
+      if (path !== "/v1/chat/completions") return;
+      if (headers.authorization !== `Bearer ${KEY}`) return [401, oaiErr("Invalid API key", "authentication_error")];
+      return body.model === "probe" ? [400, oaiErr("messages: at least one message is required")] : unknown(body.model);
+    }));
+    expect(r).toMatchObject({ ok: true, models: [], keyConfirmed: "confirmed", keyVerdict: "accepted" });
+  });
+
+  it("accepted: a public GET /models list refused the key, but the bad-key check proved it", async () => {
+    const r = await detect(upstream((m, path, body, headers) => {
+      if (path === "/v1/models") return headers.authorization ? [401, oaiErr("Invalid API key", "authentication_error")] : [200, { object: "list", data: [{ id: "public-1" }] }];
+      if (path !== "/v1/chat/completions") return;
+      if (headers.authorization !== `Bearer ${KEY}`) return [401, oaiErr("Invalid API key", "authentication_error")];
+      return [400, oaiErr("messages: at least one message is required")];
+    }));
+    expect(r).toMatchObject({ ok: true, models: ["public-1"], keyConfirmed: "confirmed", keyVerdict: "accepted" });
   });
 
   it("accepted: the endpoint check, which asks no models", async () => {

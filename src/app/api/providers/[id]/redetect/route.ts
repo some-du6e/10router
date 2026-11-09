@@ -140,10 +140,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     // The other keys tried, when one got through: a dead key still switched on
     // is worth knowing about, and a win at a key's own URL after the endpoint's
     // URL refused its keys mustn't read as "the URL wasn't asked".
-    const others = win ? runs.filter((r) => r !== win) : [];
+    // Runs that were only cut short did get through to the server.
+    const others = win ? runs.filter((r) => r !== win && !unsure(r.result)) : [];
     const failed = others.length ? { otherKeysFailed: others.length, baseKeysFailed: others.filter((r) => !r.candidate.own).length } : {};
     // Why the model checks stopped early, so "nothing changed" doesn't overclaim.
-    const cut = result.ok && result.partialReason ? { partialReason: result.partialReason } : {};
+    // Not a stop on the key: a key that won wasn't refused, and with no key
+    // there is none to blame.
+    const keyStopped = result.stopReason === "auth" || result.stopReason === "denied";
+    const cut = result.ok && result.partialReason && !keyStopped ? { partialReason: result.partialReason } : {};
     return { ...diff, steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!shown.candidate.apiKey, ...failed, ...cut, ...(via ? { viaKeyUrl: true } : {}), ...(result.gate ? { gate: result.gate } : {}) };
   }, { ok: false, error: "Re-detect failed", steps: [] });
 }

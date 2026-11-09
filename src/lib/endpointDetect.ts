@@ -1257,6 +1257,8 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
     : models.length || generatesOnEmpty.size || modelStops.has("generated") ? "accepted"
     : modelStops.has("auth") && !keyAccepted && !confirmed ? "refused"
     : modelStops.has("rate") ? "rate-limited"
+    // GET /models refused the very style the API path uses, and nothing vouches for the key.
+    : listRefusedPathStyle && !modelStops.has("denied") ? null
     : keyAccepted || confirmed || modelStops.has("denied") || !inconclusive ? "accepted"
     : null;
 

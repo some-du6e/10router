@@ -2,7 +2,7 @@
 // has saved, as a list of changes the user can apply. Pure, so it's tested
 // directly (tests/unit/endpoint-redetect-diff.test.js).
 import { buildRoutes } from "@/lib/endpointDetect.js";
-import type { DetectFetch, DetectResult, Protocol } from "@/lib/endpointDetect.js";
+import type { DetectFetch, DetectResult, ModelCheck, Protocol } from "@/lib/endpointDetect.js";
 import { sanitizeNodeQuirks } from "@/shared/utils/nodeQuirks.js";
 import { applyAuthHeader, applyIdentityAndHeaders, getHeader } from "@/shared/utils/endpointOverrides.js";
 
@@ -44,17 +44,19 @@ export const savedProtocol = (n: SavedEndpoint): Protocol =>
 // Codex CLI" is client-gated, so without this every re-detect is refused.
 // `identity: false` leaves out the saved mimic, for the client-identity retry
 // whose own preset headers must not be overwritten.
-export function savedSettingsFetch(fetchFn: DetectFetch, node: unknown, apiKey: string, { identity = true }: { identity?: boolean } = {}): DetectFetch {
+// `_apiKey` is the key the run probes with; each request is sent with the key
+// it carries, so the bad-key check's made-up one stays made up.
+export function savedSettingsFetch(fetchFn: DetectFetch, node: unknown, _apiKey: string, { identity = true }: { identity?: boolean } = {}): DetectFetch {
   const q0 = sanitizeNodeQuirks(node);
   const q = identity ? q0 : { ...q0, mimic: undefined, customHeaders: undefined };
-  const key = String(apiKey || "").trim();
   return (url, init) => {
     const headers = { ...init.headers };
     const messagesPath = /\/messages(?:\?|$)/.test(url);
     const keyed = ["authorization", "x-api-key", "api-key"].some((h) => getHeader(headers, h) !== undefined);
-    if (keyed && key) {
-      if (q.authHeader) applyAuthHeader(headers, q.authHeader, key);
-      else if (q.apiKeyHeader === "api-key" && !messagesPath) applyAuthHeader(headers, "api-key", key);
+    const sent = String(getHeader(headers, "x-api-key") ?? getHeader(headers, "api-key") ?? String(getHeader(headers, "authorization") ?? "").replace(/^Bearer\s+/i, "")).trim();
+    if (keyed && sent) {
+      if (q.authHeader) applyAuthHeader(headers, q.authHeader, sent);
+      else if (q.apiKeyHeader === "api-key" && !messagesPath) applyAuthHeader(headers, "api-key", sent);
     }
     applyIdentityAndHeaders(headers, q, { messagesPath });
     return fetchFn(url, { ...init, headers });
@@ -96,12 +98,14 @@ function routesChange(node: SavedEndpoint, r: DetectResult, target: Protocol): R
     // An early stop leaves some API's list short: not proof the split is gone.
     return Object.keys(saved).length && !r.partial ? {} : null;
   }
-  // A cut-short run didn't reach every model: the saved routes of the ones it
-  // missed stay (the offer replaces modelRoutes whole).
+  // A cut-short run moves no saved route whose API it didn't finish checking,
+  // nor one for a model it never reached (the offer replaces modelRoutes whole).
+  const finished = (p: string) => { const c = (r.checks as Record<string, ModelCheck | undefined> | undefined)?.[p]; return !!c && !c.stopped && !c.unchecked.length; };
   const reached = new Set(built.models.map((m) => m.toLowerCase()));
-  const kept = r.partial ? Object.fromEntries(Object.entries(saved).filter(([m]) => !reached.has(m.toLowerCase()))) : {};
-  if (sameRoutes(saved, { ...kept, ...built.routes })) return null;
-  return { ...kept, ...Object.fromEntries(built.models.map((m) => [m, built.routes[m] || target])) };
+  const kept = r.partial ? Object.fromEntries(Object.entries(saved).filter(([m, p]) => !reached.has(m.toLowerCase()) || !finished(p))) : {};
+  const routes = { ...built.routes, ...kept };
+  if (sameRoutes(saved, routes)) return null;
+  return { ...Object.fromEntries(built.models.map((m) => [m, built.routes[m] || target])), ...kept };
 }
 
 // Which half of the page asked: "endpoint" (API, URL, fixes), "models"

@@ -76,17 +76,33 @@ describe("redetectDiff", () => {
     // Listed via /models (no per-API probing): routes left alone.
     expect(redetectDiff(saved, ["a", "b"], found()).quirks.modelRoutes).toBeUndefined();
   });
-  it("keeps the saved routes of models a cut-short run never reached", () => {
+  it("moves no saved route a cut-short run didn't finish checking", () => {
     const saved = { ...node, modelRoutes: { "claude-a": "anthropic", "claude-b": "anthropic" } };
-    // Stopped early: only claude-a (now on Responses) and gpt-x were reached.
-    const r = found({ modelsSource: "guessed", partial: true, models: ["claude-a", "gpt-x"], byProtocol: { "openai-chat": ["gpt-x"], "openai-responses": ["claude-a"] } });
-    expect(redetectDiff(saved, ["claude-a", "claude-b", "gpt-x"], r, [], "models").quirks.modelRoutes)
-      .toEqual({ "claude-a": "openai-responses", "claude-b": "anthropic", "gpt-x": "openai-chat" });
-    // Cut short with the reached routes unchanged: nothing to offer.
-    expect(redetectDiff(saved, ["claude-a", "claude-b", "gpt-x"], found({ modelsSource: "guessed", partial: true, models: ["claude-a", "gpt-x"],
-      byProtocol: { "openai-chat": ["gpt-x"], anthropic: ["claude-a"] } }), [], "models").quirks.modelRoutes).toBeUndefined();
+    const ids = ["claude-a", "claude-b", "gpt-x"];
+    const anth = (over) => ({ total: 3, checked: 3, found: 1, unchecked: [], stopped: null, ...over });
+    const chat = anth({ found: 2 });
+    // Anthropic stopped (5xx) before claude-b; claude-b answered on Chat.
+    const cut = found({ modelsSource: "guessed", partial: true, models: ids,
+      byProtocol: { "openai-chat": ["gpt-x", "claude-b"], anthropic: ["claude-a"] },
+      checks: { anthropic: anth({ checked: 1, unchecked: ["claude-b"], stopped: "failing" }), "openai-chat": chat } });
+    expect(redetectDiff(saved, ids, cut, [], "models").quirks.modelRoutes).toBeUndefined();
+    // Still kept when another change is offered alongside.
+    const more = { ...cut, models: [...ids, "gpt-y"], byProtocol: { ...cut.byProtocol, "openai-responses": ["gpt-y"] } };
+    expect(redetectDiff(saved, ids, more, [], "models").quirks.modelRoutes)
+      .toMatchObject({ "claude-a": "anthropic", "claude-b": "anthropic", "gpt-y": "openai-responses" });
+    // Never reached at all: kept.
+    const unreached = found({ modelsSource: "guessed", partial: true, models: ["claude-a", "gpt-x", "gpt-y"],
+      byProtocol: { "openai-chat": ["gpt-x"], anthropic: ["claude-a"], "openai-responses": ["gpt-y"] }, checks: { anthropic: anth(), "openai-chat": chat } });
+    expect(redetectDiff(saved, ids, unreached, [], "models").quirks.modelRoutes).toMatchObject({ "claude-b": "anthropic" });
+    // Anthropic never stopped but left claude-b unasked (network errors): unfinished too.
+    const unasked = { ...cut, checks: { ...cut.checks, anthropic: anth({ checked: 1, unchecked: ["claude-b"] }) } };
+    expect(redetectDiff(saved, ids, unasked, [], "models").quirks.modelRoutes).toBeUndefined();
+    // Anthropic finished without claude-b: it moved.
+    const done = { ...cut, checks: { ...cut.checks, anthropic: anth() } };
+    expect(redetectDiff(saved, ids, done, [], "models").quirks.modelRoutes)
+      .toEqual({ "claude-a": "anthropic", "claude-b": "openai-chat", "gpt-x": "openai-chat" });
     // A full run that no longer sees claude-b drops its route.
-    expect(redetectDiff(saved, ["claude-a", "gpt-x"], { ...r, partial: false }, [], "models").quirks.modelRoutes)
+    expect(redetectDiff(saved, ["claude-a", "gpt-x"], { ...cut, partial: false, models: ["claude-a", "gpt-x"], byProtocol: { "openai-chat": ["gpt-x"], "openai-responses": ["claude-a"] } }, [], "models").quirks.modelRoutes)
       .toEqual({ "claude-a": "openai-responses", "gpt-x": "openai-chat" });
   });
   it("passes a failure through", () => {
@@ -163,6 +179,13 @@ describe("savedSettingsFetch", () => {
     // apiKeyHeader is OpenAI-only, like the executor: /messages keeps its auth.
     await savedSettingsFetch(fetchFn, { apiKeyHeader: "api-key" }, "sk-1")("https://x.dev/v1/messages", { method: "POST", headers: { authorization: "Bearer sk-1", "x-api-key": "sk-1" } });
     expect(seen[2].headers).toEqual({ authorization: "Bearer sk-1", "x-api-key": "sk-1" });
+  });
+  it("keeps the bad-key check's made-up key when sending it the saved way", async () => {
+    const { seen, fetchFn } = capture();
+    await savedSettingsFetch(fetchFn, { authHeader: "x-api-key" }, "sk-1")("https://x.dev/v1/messages", { method: "POST", headers: { "x-api-key": "made-up" } });
+    expect(seen[0].headers).toEqual({ "x-api-key": "made-up" });
+    await savedSettingsFetch(fetchFn, { apiKeyHeader: "api-key" }, "sk-1")("https://x.dev/v1/chat/completions", { method: "POST", headers: { authorization: "Bearer made-up" } });
+    expect(seen[1].headers).toEqual({ "api-key": "made-up" });
   });
   it("can leave the identity out for the client retry", async () => {
     const { seen, fetchFn } = capture();
