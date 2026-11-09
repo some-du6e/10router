@@ -17,7 +17,7 @@ import { MIMIC_LABELS } from "@/shared/utils/nodeQuirks.js";
 import type { Mimic, NodeQuirks, RouteProtocol } from "@/shared/utils/nodeQuirks.js";
 import type { EndpointRequestEntry } from "@/lib/endpointRequestLog.js";
 import type { RedetectDiff, RedetectPart } from "@/app/api/providers/[id]/redetect/diff.js";
-import { defaultPick, failedText, fixesList, summaryText } from "./redetectText";
+import { defaultPick, failedText, fixesList, summaryText, titleText } from "./redetectText";
 import type { RedetectKeys } from "./redetectText";
 import { PROTOCOL_NAME, prettyModel, readNdjson } from "../components/AddEndpointParts";
 import type { DetectProgress } from "@/lib/endpointDetect.js";
@@ -402,7 +402,7 @@ function RedetectBox({ node, part, diff, onClose, onApplied }: { node: EndpointN
       <div className="flex items-start gap-2">
         <span aria-hidden="true" className={`material-symbols-outlined text-[16px] ${diff.changes ? "text-brand-500" : "text-green-500"}`}>{diff.changes ? "bolt" : "check_circle"}</span>
         <div className="min-w-0 flex-1 text-xs">
-          <p className="font-medium text-text-main">{diff.changes ? `Found ${diff.changes} change${diff.changes === 1 ? "" : "s"}` : "Nothing changed"}</p>
+          <p className="font-medium text-text-main">{titleText(diff)}</p>
           <p className="text-text-muted">{summaryText(part, diff)}</p>
         </div>
         <button type="button" onClick={onClose} aria-label="Dismiss" className="material-symbols-outlined text-[16px] text-text-muted hover:text-text-main">close</button>

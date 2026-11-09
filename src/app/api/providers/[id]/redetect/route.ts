@@ -172,14 +172,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     // What a key on its own URL sees is that account's: redetectDiff keeps its
     // URL, missing models, routes and auth style out of the endpoint's changes.
     const via = shown.candidate.own;
-    // When every key has its own URL, a key's URL is what traffic uses, so its
-    // API and fixes are the endpoint's; with keys on the endpoint's URL too,
-    // they're one account's.
-    const scoped = via && all.some((c) => !c.own);
+    // A key's own URL speaks for the endpoint's API and fixes only when every
+    // active key uses that same URL: the PUT writes them onto every key, and
+    // keys on other URLs (the endpoint's, or other accounts') may differ.
+    const scoped = via && all.some((c) => c.url !== shown.candidate.url);
     // Gateways can list models per key: a fallback key's shorter list isn't
     // proof the first key's models are gone, so only the first key removes.
     const removals = shown === runs[0];
-    const diff = redetectDiff(node, current, result, outdatedModels(current, catalog), part, { keyScoped: scoped, ownUrl: via, removals });
+    const diff = redetectDiff(node, current, result, outdatedModels(current, catalog), part, { keyScoped: scoped, ownUrl: via, removals, checkedUrl: shown.candidate.url });
     // The other keys tried, when one got through: a dead key still switched on
     // is worth knowing about, and a win at a key's own URL after the endpoint's
     // URL refused its keys mustn't read as "the URL wasn't asked".

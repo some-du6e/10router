@@ -12,6 +12,7 @@ describe("Re-detect box wiring", () => {
     ["the red box's text", /\{failedText\(diff\)\}/],
     ["the fixes row", /const qList = fixesList\(q\);/],
     ["the summary line", /\{summaryText\(part, diff\)\}/],
+    ["the title", /\{titleText\(diff\)\}/],
   ])("uses the helper for %s", (_what, call) => {
     expect(page).toMatch(call);
   });

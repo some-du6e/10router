@@ -168,7 +168,18 @@ describe("redetectDiff for one key at its own URL (keyScoped)", () => {
     expect(redetectDiff(node, ["a", "old-4"], listed, ["old-4"], "all", { keyScoped: true })).toMatchObject({ removeModels: [], outdatedModels: ["old-4"] });
   });
 
-  it("offers the API, fixes and routes, but not the URL or removals, from a key's own URL when every key has one", () => {
+  it("reports what one account's URL answered instead of offering it", () => {
+    const d = redetectDiff(node, ["a"], r, [], "endpoint", { keyScoped: true, checkedUrl: "https://acct-1.acme.dev" });
+    expect(d).toMatchObject({ protocol: null, quirks: {}, changes: 0 });
+    // r answered at .../v1 though the key's URL was saved without it.
+    expect(d.account).toEqual({ protocol: "openai-responses", maxCompletionTokens: true, apiKeyHeader: true, baseUrl: "https://acct-1.acme.dev/v1" });
+    expect(redetectDiff(node, ["a"], r, [], "endpoint", { keyScoped: true, checkedUrl: "https://acct-1.acme.dev/v1" }).account.baseUrl).toBeUndefined();
+    expect(redetectDiff(node, ["a"], r, [], "endpoint").account).toBeUndefined();
+    // The models half reports none of it.
+    expect(redetectDiff(node, ["a"], r, [], "models", { keyScoped: true, checkedUrl: "https://acct-1.acme.dev" }).account).toBeUndefined();
+  });
+
+  it("offers the API, fixes and routes, but not the URL or removals, from a key's own URL that every key uses", () => {
     const d = redetectDiff(node, ["a", "gone"], r, [], "all", { ownUrl: true });
     expect(d).toMatchObject({ baseUrl: null, removeModels: [], quirks: { apiKeyHeader: "api-key", maxCompletionTokens: true } });
     expect(d.protocol.to).toBe("openai-responses");

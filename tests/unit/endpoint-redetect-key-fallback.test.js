@@ -315,11 +315,24 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     expect(keysUsed()).toEqual(["dead"]);
   });
 
-  it("lets a key's own URL speak for the API and fixes only when no key uses the endpoint's URL", async () => {
+  it("lets a key's own URL speak for the API and fixes only when every key uses that URL", async () => {
+    const shared = (...keys) => keys.map((apiKey, i) => ({ id: `s${i}`, isActive: true, apiKey, providerSpecificData: { ownBaseUrl: true, baseUrl: "https://region.acme.dev/v1" } }));
+    mocks.getProviderConnections.mockResolvedValue(shared("s0", "s1"));
+    verdict.s1 = works;
+    expect(await json("endpoint")).toMatchObject({ ok: true, viaKeyUrl: true });
+    expect(mocks.redetectDiff.mock.calls[0][5]).toMatchObject({ keyScoped: false, ownUrl: true, checkedUrl: "https://region.acme.dev/v1" });
+    // Keys on different accounts' URLs: one account's answer.
+    vi.clearAllMocks();
     mocks.getProviderConnections.mockResolvedValue(ownConns("o0", "o1"));
     verdict.o1 = works;
-    expect(await json("endpoint")).toMatchObject({ ok: true, viaKeyUrl: true });
-    expect(mocks.redetectDiff.mock.calls[0][5]).toMatchObject({ keyScoped: false, ownUrl: true });
+    expect(await json("endpoint")).toMatchObject({ ok: true, viaKeyUrl: true, keyScoped: true });
+    expect(mocks.redetectDiff.mock.calls[0][5]).toMatchObject({ keyScoped: true, ownUrl: true, checkedUrl: "https://acct-o1.acme.dev/v1" });
+    // A key on the endpoint's URL: neither.
+    vi.clearAllMocks();
+    mocks.getProviderConnections.mockResolvedValue(conns("good"));
+    verdict.good = works;
+    await json("endpoint");
+    expect(mocks.redetectDiff.mock.calls[0][5]).toMatchObject({ keyScoped: false, ownUrl: false });
     vi.clearAllMocks();
     mocks.getProviderConnections.mockResolvedValue([...conns("dead"), ...ownConns("o1")]);
     verdict.o1 = works;
@@ -513,8 +526,8 @@ describe("re-detect model check: keys with their own URL", () => {
   it("asks each key at its own URL instead of probing the endpoint with no key", async () => {
     mocks.getProviderConnections.mockResolvedValue([{ id: "off", isActive: false, apiKey: "shared-off" }, ...ownConns("dead", "good")]);
     verdict.good = works;
-    // Every active key has its own URL, so the result isn't scoped to one account.
-    expect(await json()).toMatchObject({ ok: true, usedKey: true, viaKeyUrl: true, keyScoped: false });
+    // Each key has its own account's URL: one account's result.
+    expect(await json()).toMatchObject({ ok: true, usedKey: true, viaKeyUrl: true, keyScoped: true });
     expect(keysUsed()).toEqual(["dead", "good"]);
     expect(urlsUsed()).toEqual(["https://acct-dead.acme.dev/v1", "https://acct-good.acme.dev/v1"]);
   });

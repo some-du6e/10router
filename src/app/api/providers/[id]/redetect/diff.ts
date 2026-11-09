@@ -32,6 +32,16 @@ export interface RedetectDiff {
   modelsNote: string | null;
   keyConfirmed?: string;
   changes: number;
+  // What the one key's own URL answered that isn't applied to the endpoint:
+  // shown to the user, never ticked.
+  account?: AccountFindings;
+}
+
+export interface AccountFindings {
+  protocol?: Protocol;
+  maxCompletionTokens?: true;
+  apiKeyHeader?: true;
+  baseUrl?: string; // that key's URL answers here instead
 }
 
 export const savedProtocol = (n: SavedEndpoint): Protocol =>
@@ -112,13 +122,13 @@ function routesChange(node: SavedEndpoint, r: DetectResult, target: Protocol): R
 export type RedetectPart = "endpoint" | "models" | "all";
 
 // `outdated`: saved models the labs have moved on from, offered for removal too.
-// `ownUrl`: the result came from one key at its own URL, so it can't vouch
-// for the endpoint's URL. `keyScoped`: other keys use the endpoint's URL, so
-// that one account can't vouch for their API, auth style, fixes or routes
-// either (when every key has its own URL, those are what traffic uses).
-// `removals: false`: the list came from a key that isn't first in line, which
-// may list fewer models than the others.
-export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: DetectResult, outdated: string[] = [], part: RedetectPart = "all", { keyScoped = false, ownUrl = keyScoped, removals = true }: { keyScoped?: boolean; ownUrl?: boolean; removals?: boolean } = {}): RedetectDiff {
+// `ownUrl`: the result came from one key at its own URL (`checkedUrl`), so it
+// can't vouch for the endpoint's URL. `keyScoped`: other keys use other URLs,
+// so that one account can't vouch for their API, auth style, fixes or routes
+// either; what it found is reported in `account` instead. `removals: false`:
+// the list came from a key that isn't first in line, which may list fewer
+// models than the others.
+export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: DetectResult, outdated: string[] = [], part: RedetectPart = "all", { keyScoped = false, ownUrl = keyScoped, removals = true, checkedUrl }: { keyScoped?: boolean; ownUrl?: boolean; removals?: boolean; checkedUrl?: string } = {}): RedetectDiff {
   const empty: RedetectDiff = { ok: false, protocol: null, baseUrl: null, addModels: [], removeModels: [], outdatedModels: [], quirks: {}, modelsNote: null, changes: 0 };
   if (!r.ok) return { ...empty, error: r.error || "Detection failed", keyConfirmed: r.keyConfirmed };
   const ep = part !== "models", ms = part !== "endpoint";
@@ -150,6 +160,11 @@ export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: De
   const modelRoutes = ms && !keyScoped ? routesChange(node, r, ep && switchable ? to : from) : null;
   if (modelRoutes) quirks.modelRoutes = modelRoutes;
   const changes = (protocol ? 1 : 0) + (baseUrl ? 1 : 0) + addModels.length + removeModels.length + outdatedModels.length + Object.keys(quirks).length;
+  const account: AccountFindings = {};
+  if (ep && keyScoped && to !== from) account.protocol = to;
+  if (ep && keyScoped && r.quirks?.maxCompletionTokens && !node.maxCompletionTokens) account.maxCompletionTokens = true;
+  if (ep && keyScoped && r.quirks?.apiKeyHeader && node.apiKeyHeader !== "api-key") account.apiKeyHeader = true;
+  if (ep && ownUrl && checkedUrl && r.baseUrl && trimUrl(r.baseUrl) !== trimUrl(checkedUrl)) account.baseUrl = trimUrl(r.baseUrl);
   // One account's or a fallback key's list doesn't describe the endpoint's.
-  return { ok: true, protocol, baseUrl, addModels, removeModels, outdatedModels, quirks, modelsNote: ms && !keyScoped && removals ? modelsNoteFor(r) : null, keyConfirmed: r.keyConfirmed, changes };
+  return { ok: true, protocol, baseUrl, addModels, removeModels, outdatedModels, quirks, modelsNote: ms && !keyScoped && removals ? modelsNoteFor(r) : null, keyConfirmed: r.keyConfirmed, changes, ...(Object.keys(account).length ? { account } : {}) };
 }

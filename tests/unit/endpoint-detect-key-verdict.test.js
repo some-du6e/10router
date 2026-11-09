@@ -229,7 +229,13 @@ describe("detectEndpoint keyVerdict", () => {
       if (path === "/v1/models") return headers.authorization ? [200, { object: "list", data: [{ id: "m1" }] }] : [401, oaiErr("Missing key", "authentication_error")];
       if (m === "POST") return [401, oaiErr("You have insufficient permissions for this operation. Missing scopes: model.request", "authentication_error")];
     }));
-    expect(r).toMatchObject({ ok: false, keyVerdict: "refused" });
+    expect(r).toMatchObject({ ok: false, failure: "no-api", keyVerdict: "refused" });
+  });
+
+  it("nothing known: GET /models lists with the key, but no API path exists", async () => {
+    // The URL is wrong, not the key: every POST is a plain 404.
+    const r = await detect(upstream((m, path, body, headers) => (path === "/v1/models" ? (headers.authorization ? [200, { object: "list", data: [{ id: "m1" }] }] : [401, oaiErr("Missing key", "authentication_error")]) : null)));
+    expect(r).toMatchObject({ ok: false, failure: "no-api", keyVerdict: null });
   });
 
   it("accepted: a public GET /models list that also answers with the key", async () => {

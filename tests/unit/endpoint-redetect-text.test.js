@@ -1,6 +1,6 @@
 // The endpoint page's Re-detect box: what it says and what it ticks.
 import { describe, it, expect } from "vitest";
-import { defaultPick, failedText, fixesList, keyUrlNote, summaryText, unchangedText } from "../../src/app/(dashboard)/dashboard/providers/[id]/redetectText.ts";
+import { accountText, defaultPick, failedText, fixesList, keyUrlNote, summaryText, titleText, unchangedText } from "../../src/app/(dashboard)/dashboard/providers/[id]/redetectText.ts";
 
 const diff = (over = {}) => ({ ok: true, protocol: null, baseUrl: null, addModels: [], removeModels: [], outdatedModels: [], quirks: {}, modelsNote: null, changes: 0, ...over });
 
@@ -22,28 +22,43 @@ describe("Re-detect box text", () => {
     expect(keyUrlNote("all", true, "account")).toMatch(/^The keys on the endpoint's URL didn't give a full answer/);
     expect(keyUrlNote("all", false, "account")).toMatch(/^Checked through one key's own URL/);
     expect(summaryText("all", diff({ viaKeyUrl: true, keyScoped: true, otherKeysFailed: 2, baseKeysTried: 2 })))
-      .toBe(`No new models. ${keyUrlNote("all", true, "account")} 2 other keys didn't get through.`);
+      .toBe(`No new models. ${keyUrlNote("all", true, "account")} 2 other keys got no usable answer.`);
     // Nor that the API or fixes were checked.
     expect(unchangedText("endpoint", "account")).toBe("Nothing to change.");
     expect(keyUrlNote("endpoint", false, "account")).toMatch(/the API, URL changes and fixes weren't checked/);
   });
 
-  it("counts the other keys that didn't get through", () => {
-    expect(summaryText("models", diff({ otherKeysFailed: 1 }))).toBe("Same models as you have now. 1 other key didn't get through.");
+  it("counts the other keys that got no usable answer", () => {
+    expect(summaryText("models", diff({ otherKeysFailed: 1 }))).toBe("Same models as you have now. 1 other key got no usable answer.");
     expect(summaryText("models", diff())).toBe("Same models as you have now.");
   });
 
   it("says when a fallback key's list wasn't used to remove models", () => {
     expect(summaryText("models", diff({ removalsHeld: true, otherKeysFailed: 1 })))
-      .toBe("No new models. Models missing from this key's list aren't offered for removal: another key comes first, and lists can differ by key. Switch off keys that don't work to get them. 1 other key didn't get through.");
+      .toBe("No new models. Models missing from this key's list aren't offered for removal: another key comes first, and lists can differ by key. Switch off keys that don't work to get them. 1 other key got no usable answer.");
   });
 
-  it("when every key has its own URL, claims all but the URL and removals", () => {
+  it("when every key uses the same URL of its own, claims all but the URL and removals", () => {
     const own = { viaKeyUrl: true };
     expect(summaryText("endpoint", diff(own))).toBe(`No changes to the API or fixes. ${keyUrlNote("endpoint", false, "url")}`);
-    expect(keyUrlNote("endpoint", false, "url")).toBe("No key uses the endpoint's URL, so this was checked through one key's own URL, and URL changes weren't checked.");
-    expect(summaryText("models", diff(own))).toMatch(/^No new models\. No key uses the endpoint's URL/);
+    expect(keyUrlNote("endpoint", false, "url")).toBe("Every key uses the same URL of its own, so this was checked there, and URL changes weren't checked.");
+    expect(summaryText("models", diff(own))).toMatch(/^No new models\. Every key uses the same URL/);
     expect(unchangedText("all", "url")).toBe("Same API, no new models.");
+  });
+
+  it("reports what one key's own URL answered, without applying it", () => {
+    const found = diff({ viaKeyUrl: true, keyScoped: true, account: { protocol: "openai-responses", maxCompletionTokens: true, baseUrl: "https://acct.acme.dev/v1" } });
+    expect(accountText(found)).toBe("That key's URL answers on Responses, needs max_completion_tokens and answers at https://acct.acme.dev/v1; the endpoint's settings weren't changed for it. Change the URL on the key.");
+    expect(accountText(diff({ account: { apiKeyHeader: true } }))).toBe("That key's URL takes the key in an api-key header; the endpoint's settings weren't changed for it.");
+    expect(summaryText("endpoint", found)).toContain(accountText(found));
+    expect(accountText(diff())).toBe("");
+  });
+
+  it("titles the box by what there is to apply", () => {
+    expect(titleText(diff({ changes: 2 }))).toBe("Found 2 changes");
+    expect(titleText(diff({ changes: 1 }))).toBe("Found 1 change");
+    expect(titleText(diff({ account: { protocol: "anthropic" } }))).toBe("Nothing to apply");
+    expect(titleText(diff())).toBe("Nothing changed");
   });
 
   it("says why the model checks stopped early", () => {

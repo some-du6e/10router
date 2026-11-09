@@ -18,9 +18,9 @@ type Shown = RedetectDiff & RedetectKeys;
 const sentence = (s: string) => `${s.replace(/\s*\.*\s*$/, "")}.`;
 
 // "Nothing changed", for the half of the page that asked. `scope`: "none"
-// (the endpoint's URL), "url" (a key's own URL, every key having one: only the
-// URL and removals unchecked) or "account" (one account among keys on the
-// endpoint's URL: it vouches only for its models).
+// (the endpoint's URL), "url" (a key's own URL that every key uses: only the
+// URL and removals unchecked) or "account" (one key's URL among others: it
+// vouches only for its models).
 export type CheckScope = "none" | "url" | "account";
 export function unchangedText(part: RedetectPart, scope: CheckScope): string {
   if (part === "models") return scope === "none" ? "Same models as you have now." : "No new models.";
@@ -31,7 +31,7 @@ export function unchangedText(part: RedetectPart, scope: CheckScope): string {
 // What a check through one key's own URL couldn't vouch for.
 export function keyUrlNote(part: RedetectPart, baseTried: boolean, scope: CheckScope = "account"): string {
   if (scope === "url") {
-    const via = "No key uses the endpoint's URL, so this was checked through one key's own URL";
+    const via = "Every key uses the same URL of its own, so this was checked there";
     if (part === "models") return `${via}, and models it lacks aren't offered for removal.`;
     if (part === "endpoint") return `${via}, and URL changes weren't checked.`;
     return `${via}: URL changes weren't checked, and models it lacks aren't offered for removal.`;
@@ -40,6 +40,27 @@ export function keyUrlNote(part: RedetectPart, baseTried: boolean, scope: CheckS
   if (part === "models") return `${via}, so models it lacks aren't offered for removal and model routes stay as they are.`;
   if (part === "endpoint") return `${via}, so the API, URL changes and fixes weren't checked.`;
   return `${via}, so the API, URL changes, fixes and model routes weren't checked, and models it lacks aren't offered for removal.`;
+}
+
+const PROTOCOL: Record<string, string> = { "openai-chat": "Chat Completions", "openai-responses": "Responses", anthropic: "Anthropic Messages" };
+
+// What one key's own URL answered that wasn't applied to the endpoint.
+export function accountText(diff: Shown): string {
+  const a = diff.account;
+  if (!a) return "";
+  const said = [
+    a.protocol && `answers on ${PROTOCOL[a.protocol] || a.protocol}`,
+    a.maxCompletionTokens && "needs max_completion_tokens",
+    a.apiKeyHeader && "takes the key in an api-key header",
+    a.baseUrl && `answers at ${a.baseUrl}`,
+  ].filter(Boolean) as string[];
+  const list = said.length > 1 ? `${said.slice(0, -1).join(", ")} and ${said[said.length - 1]}` : said[0];
+  return `That key's URL ${list}; the endpoint's settings weren't changed for it${a.baseUrl ? ". Change the URL on the key" : ""}.`;
+}
+
+// The box's title.
+export function titleText(diff: Shown): string {
+  return diff.changes ? `Found ${diff.changes} change${diff.changes === 1 ? "" : "s"}` : diff.account ? "Nothing to apply" : "Nothing changed";
 }
 
 const scopeOf = (diff: Shown): CheckScope => (!diff.viaKeyUrl ? "none" : diff.keyScoped ? "account" : "url");
@@ -52,8 +73,9 @@ export function summaryText(part: RedetectPart, diff: Shown): string {
     !diff.changes && diff.usedKey === false ? "No key, so only what's public was checked." : "",
     diff.partialReason ? sentence(diff.partialReason) : "",
     diff.viaKeyUrl ? keyUrlNote(part, !!diff.baseKeysTried, scopeOf(diff)) : "",
+    accountText(diff),
     diff.removalsHeld ? "Models missing from this key's list aren't offered for removal: another key comes first, and lists can differ by key. Switch off keys that don't work to get them." : "",
-    n ? `${n === 1 ? "1 other key" : `${n} other keys`} didn't get through.` : "",
+    n ? `${n === 1 ? "1 other key" : `${n} other keys`} got no usable answer.` : "",
   ].filter(Boolean).join(" ");
 }
 
