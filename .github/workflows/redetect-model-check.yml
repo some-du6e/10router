@@ -11,10 +11,15 @@ on:
       - "src/lib/probeFetch.ts"
       - "src/app/api/provider-nodes/detect/ndjson.ts"
       - "src/shared/utils/nodeQuirkMerge.ts"
+      - "src/shared/utils/nodeQuirks.ts"
+      - "src/shared/utils/endpointOverrides.ts"
+      - "package.json"
+      - "tsconfig.json"
       - "tests/package.json"
       - "tests/vitest.config.js"
       - "tests/unit/endpoint-redetect-key-fallback.test.js"
       - "tests/unit/endpoint-detect-key-verdict.test.js"
+      - "tests/unit/endpoint-impersonate.test.js"
       - "tests/unit/endpoint-redetect-diff.test.js"
       - ".github/workflows/redetect-model-check.yml"
   workflow_dispatch:
@@ -38,7 +43,7 @@ jobs:
           cd tests && bun install --ignore-scripts
       - name: Unit test
         working-directory: tests
-        run: ./node_modules/.bin/vitest run unit/endpoint-detect-key-verdict.test.js unit/endpoint-redetect-key-fallback.test.js unit/endpoint-redetect-diff.test.js
+        run: ./node_modules/.bin/vitest run unit/endpoint-detect-key-verdict.test.js unit/endpoint-impersonate.test.js unit/endpoint-redetect-key-fallback.test.js unit/endpoint-redetect-diff.test.js
       # set-state-in-effect: CustomEndpointPage.tsx's data-loading effects
       # predate this check and fail on master too.
       - name: Lint
@@ -47,11 +52,14 @@ jobs:
           "src/app/api/providers/[id]/redetect/route.ts"
           "src/app/api/providers/[id]/redetect/diff.ts"
           "src/app/(dashboard)/dashboard/providers/[id]/CustomEndpointPage.tsx"
+          src/lib/endpointDetect.ts
+          src/lib/endpointImpersonate.ts
           tests/unit/endpoint-redetect-key-fallback.test.js
           tests/unit/endpoint-redetect-diff.test.js
           tests/unit/endpoint-detect-key-verdict.test.js
-      # Fails only on errors in the changed files, so unrelated type errors
-      # elsewhere don't block it.
+          tests/unit/endpoint-impersonate.test.js
+      # Fails on errors in the changed files, or on errors tied to no file (a
+      # broken tsconfig), so unrelated type errors elsewhere don't block it.
       - name: Type check changed files
         run: |
           set +e
@@ -61,7 +69,9 @@ jobs:
           tail -5 tsc.log
           if [ "$code" -gt 2 ] || ! [ -x ./node_modules/.bin/tsc ]; then echo "tsc did not run (exit $code)"; exit 1; fi
           if grep -F "providers/[id]/redetect/" tsc.log; then exit 1; fi
+          if grep -E "^error TS" tsc.log; then exit 1; fi
           if grep -F "src/lib/endpointDetect.ts" tsc.log; then exit 1; fi
+          if grep -F "src/lib/endpointImpersonate.ts" tsc.log; then exit 1; fi
           if grep -F "providers/[id]/CustomEndpointPage.tsx" tsc.log; then exit 1; fi
 
   no-new-failures:

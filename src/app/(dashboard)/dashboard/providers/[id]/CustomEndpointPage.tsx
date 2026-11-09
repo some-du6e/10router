@@ -291,7 +291,7 @@ function LogRow({ l, fresh }: { l: EndpointRequestEntry; fresh: boolean }) {
 // One run of Re-detect for one half of the page, with its live progress.
 // Leaving the page stops the run, so the server stops probing too.
 function useRedetect(nodeId: string, part: RedetectPart, setChecking: (p: RedetectPart | null) => void) {
-  const [result, setResult] = useState<(RedetectDiff & { usedKey?: boolean; viaKeyUrl?: boolean }) | null>(null);
+  const [result, setResult] = useState<(RedetectDiff & RedetectKeys) | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [live, setLive] = useState<RedetectLive>(LIVE0);
   const stopRef = useRef<AbortController | null>(null);
@@ -357,15 +357,25 @@ function unchangedText(part: RedetectPart, viaKeyUrl: boolean): string {
   return viaKeyUrl ? "Same API, no new models." : "Same API, URL and models as when it was added.";
 }
 
+// Which keys the check went through (see the redetect route).
+type RedetectKeys = { usedKey?: boolean; viaKeyUrl?: boolean; keysFailedFirst?: number; baseKeysFailed?: number };
+
 // What a check through one key's own URL (one account) couldn't vouch for.
-function keyUrlNote(part: RedetectPart): string {
-  if (part === "models") return "Checked through one key's own URL, so models it lacks aren't offered for removal and model routes stay as they are.";
-  if (part === "endpoint") return "Checked through one key's own URL, so the endpoint's URL and key style weren't checked.";
-  return "Checked through one key's own URL, so the endpoint's URL, key style and model routes weren't checked, and models it lacks aren't offered for removal.";
+function keyUrlNote(part: RedetectPart, baseFailed: boolean): string {
+  const via = baseFailed ? "The keys on the endpoint's URL didn't get through, so this was checked through one key's own URL" : "Checked through one key's own URL";
+  if (part === "models") return `${via}, so models it lacks aren't offered for removal and model routes stay as they are.`;
+  if (part === "endpoint") return `${via}, so URL changes and key style weren't checked.`;
+  return `${via}, so URL changes, key style and model routes weren't checked, and models it lacks aren't offered for removal.`;
+}
+
+// The keys tried before the one that got through.
+function failedFirstNote(diff: RedetectKeys): string {
+  const n = diff.keysFailedFirst || 0;
+  return n ? ` ${n === 1 ? "1 key" : `${n} keys`} tried before it didn't get through.` : "";
 }
 
 // What Re-detect found, as changes to tick and apply.
-function RedetectBox({ node, part, diff, onClose, onApplied }: { node: EndpointNode; part: RedetectPart; diff: RedetectDiff & { usedKey?: boolean; viaKeyUrl?: boolean }; onClose: () => void; onApplied: (n: EndpointNode | null) => Promise<void> }) {
+function RedetectBox({ node, part, diff, onClose, onApplied }: { node: EndpointNode; part: RedetectPart; diff: RedetectDiff & RedetectKeys; onClose: () => void; onApplied: (n: EndpointNode | null) => Promise<void> }) {
   const [pick, setPick] = useState({ protocol: !!diff.protocol?.applicable && !diff.viaKeyUrl, baseUrl: !!diff.baseUrl, add: !!diff.ok && diff.addModels.length > 0, remove: !!diff.ok && diff.removeModels.length > 0, outdated: false, quirks: true });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
@@ -416,7 +426,7 @@ function RedetectBox({ node, part, diff, onClose, onApplied }: { node: EndpointN
         <span aria-hidden="true" className={`material-symbols-outlined text-[16px] ${diff.changes ? "text-brand-500" : "text-green-500"}`}>{diff.changes ? "bolt" : "check_circle"}</span>
         <div className="min-w-0 flex-1 text-xs">
           <p className="font-medium text-text-main">{diff.changes ? `Found ${diff.changes} change${diff.changes === 1 ? "" : "s"}` : "Nothing changed"}</p>
-          <p className="text-text-muted">{diff.changes ? "Pick what to apply. Free probes only, nothing was generated." : `${unchangedText(part, !!diff.viaKeyUrl)}${diff.usedKey === false ? " No key, so only what's public was checked." : ""}`}{diff.viaKeyUrl ? ` ${keyUrlNote(part)}` : ""}</p>
+          <p className="text-text-muted">{diff.changes ? "Pick what to apply. Free probes only, nothing was generated." : `${unchangedText(part, !!diff.viaKeyUrl)}${diff.usedKey === false ? " No key, so only what's public was checked." : ""}`}{diff.viaKeyUrl ? ` ${keyUrlNote(part, !!diff.baseKeysFailed)}` : ""}{failedFirstNote(diff)}</p>
         </div>
         <button type="button" onClick={onClose} aria-label="Dismiss" className="material-symbols-outlined text-[16px] text-text-muted hover:text-text-main">close</button>
       </div>

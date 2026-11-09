@@ -60,7 +60,8 @@ vi.mock("@/app/api/provider-nodes/detect/ndjson.js", () => ({
 // pulls buildRoutes() from the (here-mocked) detect module. The real diff's
 // scoping is tested in endpoint-redetect-diff.test.js.
 vi.mock("@/app/api/providers/[id]/redetect/diff.js", () => ({
-  savedProtocol: () => "openai-chat",
+  // As the real one answers.
+  savedProtocol: (n) => (n.type === "anthropic-compatible" ? "anthropic" : n.apiType === "responses" ? "openai-responses" : "openai-chat"),
   savedSettingsFetch: mocks.savedSettingsFetch,
   redetectDiff: mocks.redetectDiff,
 }));
@@ -72,15 +73,18 @@ const { POST } = await import("@/app/api/providers/[id]/redetect/route.ts");
 const rejected = { ok: false, failure: "key", keyVerdict: "refused", error: "Wrong key.", steps: [] };
 const down = { ok: false, failure: "down", keyVerdict: null, error: "The endpoint didn't answer.", steps: [] };
 const works = { ok: true, keyVerdict: "accepted", steps: [], protocol: "openai-chat", baseUrl: "https://api.acme.dev/v1", models: ["m1"], modelsSource: "models", quirks: {} };
-// Passed the free probes, then the model probes stopped on the key.
-const refusedLater = { ...works, models: [], authRejected: true, stopReason: "auth", keyVerdict: "refused" };
+// Passed the free probes with no /models list, then the model probes stopped on the key.
+const unlisted = { ...works, models: [], modelsSource: "none" };
+const refusedLater = { ...unlisted, authRejected: true, stopReason: "auth", keyVerdict: "refused" };
 // A key limited to models outside the ones asked about: it works.
-const limitedKey = { ...works, models: [], authRejected: true, stopReason: "denied" };
+const limitedKey = { ...unlisted, authRejected: true, stopReason: "denied" };
 const rateLimit = { ok: false, failure: "rate", keyVerdict: "rate-limited", error: "The endpoint is rate-limiting requests.", steps: [] };
 // The free probes passed, then the model probes kept getting 429s and found nothing.
-const modelsRateLimited = { ...works, models: [], stopReason: "rate", keyVerdict: "rate-limited", partialReason: "The endpoint kept rate-limiting, so some models weren't checked." };
+const modelsRateLimited = { ...unlisted, stopReason: "rate", keyVerdict: "rate-limited", partialReason: "The endpoint kept rate-limiting, so some models weren't checked." };
 // Only GET /models refused the key (an admin-only list); nothing says the key is bad.
-const listOnlyRefused = { ...works, models: [], authRejected: true, stopReason: null };
+const listOnlyRefused = { ...unlisted, authRejected: true, stopReason: null };
+// The model probes were cut short (time, 5xx) before they told anything.
+const cutShort = { ...unlisted, stopReason: "deadline", keyVerdict: null, partialReason: "Detection ran out of time, so some models weren't checked." };
 
 const req = () => new Request("https://dash.local/api/providers/ep1/redetect?part=models", { method: "POST" });
 const call = () => POST(req(), { params: Promise.resolve({ id: "ep1" }) });
@@ -147,8 +151,11 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
 
   it("says how many keys it tried when all are refused, capped at 5", async () => {
     mocks.getProviderConnections.mockResolvedValue(conns("a", "b", "c", "d", "e", "f"));
-    expect(await json()).toMatchObject({ ok: false, error: "None of the 5 keys it tried was accepted", usedKey: true });
+    const body = await json();
+    expect(body).toMatchObject({ ok: false, error: "None of the 5 keys it tried was accepted", usedKey: true });
     expect(keysUsed()).toEqual(["a", "b", "c", "d", "e"]);
+    // "Tried before the one that got through" only when one did.
+    expect(body.keysFailedFirst).toBeUndefined();
   });
 
   it("reports a late refusal of the only key as a refusal, not as nothing changed", async () => {
@@ -203,6 +210,25 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     expect(await json()).toMatchObject({ ok: false, error: "The endpoint kept rate-limiting, so some models weren't checked" });
   });
 
+  it("doesn't count a key whose model checks were cut short as working, and says why", async () => {
+    mocks.getProviderConnections.mockResolvedValue(conns("slow", "spare"));
+    verdict.slow = cutShort;
+    expect(await json()).toMatchObject({ ok: false, error: "Detection ran out of time, so some models weren't checked" });
+    expect(keysUsed()).toEqual(["slow"]);
+  });
+
+  it("says how many keys didn't get through before the one that did", async () => {
+    mocks.getProviderConnections.mockResolvedValue(conns("dead", "busy", "good"));
+    verdict.busy = rateLimit;
+    verdict.good = works;
+    expect(await json()).toMatchObject({ ok: true, keysFailedFirst: 2, baseKeysFailed: 2 });
+    vi.clearAllMocks();
+    mocks.getProviderConnections.mockResolvedValue(conns("good"));
+    const body = await json();
+    expect(body.keysFailedFirst).toBeUndefined();
+    expect(body.baseKeysFailed).toBeUndefined();
+  });
+
   it("doesn't spend an attempt on a key with no credential", async () => {
     mocks.getProviderConnections.mockResolvedValue([...conns("", "", "", "", ""), ...conns("good")]);
     verdict.good = works;
@@ -248,6 +274,15 @@ describe("re-detect model check: keys with their own URL", () => {
     verdict.k2 = works;
     expect((await json()).ok).toBe(true);
     expect(keysUsed()).toEqual(["k1", "k2"]);
+  });
+
+  it("says when the keys on the endpoint's URL failed before a key's own URL got through", async () => {
+    mocks.getProviderConnections.mockResolvedValue([...conns("dead"), ...ownConns("o1")]);
+    verdict.o1 = works;
+    expect(await json()).toMatchObject({ ok: true, viaKeyUrl: true, keysFailedFirst: 1, baseKeysFailed: 1 });
+    vi.clearAllMocks();
+    mocks.getProviderConnections.mockResolvedValue(ownConns("o0", "o1"));
+    expect(await json()).toMatchObject({ ok: true, viaKeyUrl: true, keysFailedFirst: 1, baseKeysFailed: 0 });
   });
 
   it("reports the first key's verdict, and that more were tried, when none gets through", async () => {
@@ -298,11 +333,14 @@ describe("re-detect model check: keys with their own URL", () => {
     verdict.gated = { ok: false, failure: "gated", keyVerdict: null, clientGated: true, error: "Only works as a known client.", steps: [] };
     mocks.retryAsClient.mockImplementation(async (first, opts) => {
       expect(opts).toMatchObject({ url: "https://acct-gated.acme.dev/v1", apiKey: "gated" });
+      expect(opts.fetchFn.forKey).toBe("gated");
       return opts.detect(() => {});
     });
     await json();
     expect(urlsUsed()).toEqual(["https://acct-gated.acme.dev/v1", "https://acct-gated.acme.dev/v1"]);
     expect(keysUsed()).toEqual(["gated", "gated"]);
+    // Without the saved identity: the retry's headers replace it.
+    expect(mocks.savedSettingsFetch.mock.calls.map((c) => c[3])).toEqual([undefined, { identity: false }]);
   });
 });
 
@@ -316,6 +354,44 @@ describe("re-detect model check: one run across keys", () => {
       await json();
       expect(mocks.detectEndpoint.mock.calls.map((c) => c[0].deadlineMs)).toEqual([50_000, 35_000, 20_000, 5_000]);
     } finally { vi.useRealTimers(); }
+  });
+
+  it("gives the client-identity retry what's left of the budget", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      mocks.getProviderConnections.mockResolvedValue(conns("gated"));
+      const gated = { ok: false, failure: "gated", keyVerdict: null, clientGated: true, error: "Only works as a known client.", steps: [] };
+      // The first run takes 30s of the 50s.
+      mocks.detectEndpoint.mockImplementationOnce(() => { vi.setSystemTime(Date.now() + 30_000); return Promise.resolve(gated); });
+      let retrySignal;
+      mocks.retryAsClient.mockImplementation(async (first, opts) => { retrySignal = opts.signal; return opts.detect(() => {}); });
+      await json();
+      expect(mocks.detectEndpoint.mock.calls.map((c) => c[0].deadlineMs)).toEqual([50_000, 20_000]);
+      // The identity search's signal isn't the bare request signal: it also times out.
+      expect(retrySignal).toBeInstanceOf(AbortSignal);
+      expect(retrySignal).not.toBe(mocks.detectEndpoint.mock.calls[0][0].signal);
+      expect(retrySignal.aborted).toBe(false);
+      mocks.signal.abort();
+      expect(retrySignal.aborted).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("ends the client-identity search when the budget runs out", async () => {
+    mocks.getProviderConnections.mockResolvedValue(conns("gated"));
+    mocks.detectEndpoint.mockImplementationOnce(() => Promise.resolve({ ok: false, failure: "gated", keyVerdict: null, clientGated: true, error: "Only works as a known client.", steps: [] }));
+    let aborted;
+    mocks.retryAsClient.mockImplementation(async (first, opts) => {
+      // Real timers: the route's budget is 50s here, so shrink it by waiting on a short one.
+      aborted = await new Promise((resolve) => {
+        if (opts.signal.aborted) return resolve(true);
+        opts.signal.addEventListener("abort", () => resolve(true));
+        setTimeout(() => resolve(false), 200);
+      });
+      return first;
+    });
+    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValue(49_950);
+    try { await json(); } finally { vi.restoreAllMocks(); }
+    expect(aborted).toBe(true);
   });
 
   it("stops trying keys once the user cancels", async () => {
@@ -335,5 +411,32 @@ describe("re-detect model check: one run across keys", () => {
     });
     await json();
     expect(mocks.sent.map((e) => [e.n, e.sent])).toEqual([[1, 1], [2, 2], [3, 3], [4, 4]]);
+  });
+
+  it("numbers the client-identity retry's requests on from the first run", async () => {
+    mocks.getProviderConnections.mockResolvedValue(conns("gated"));
+    let call = 0;
+    mocks.detectEndpoint.mockImplementation(({ onProgress }) => {
+      onProgress({ type: "request", n: 1, sent: 1 });
+      onProgress({ type: "request", n: 2, sent: 2 });
+      return Promise.resolve(call++ ? works : { ok: false, failure: "gated", keyVerdict: null, clientGated: true, error: "Only works as a known client.", steps: [] });
+    });
+    mocks.retryAsClient.mockImplementation((first, opts) => opts.detect(() => {}));
+    await json();
+    expect(mocks.sent.map((e) => [e.n, e.sent])).toEqual([[1, 1], [2, 2], [3, 3], [4, 4]]);
+  });
+});
+
+describe("re-detect apply (PUT)", () => {
+  it("keeps models added while switching API on the API they were found on", async () => {
+    const { PUT } = await import("@/app/api/providers/[id]/redetect/route.ts");
+    const db = await import("@/lib/localDb");
+    mocks.getProviderNodeById.mockResolvedValue({ id: "ep1", type: "openai-compatible", apiType: "chat", baseUrl: "https://api.acme.dev/v1" });
+    mocks.getCustomModels.mockResolvedValue([{ id: "old", providerAlias: "ep1", type: "llm" }]);
+    mocks.getProviderConnections.mockResolvedValue([]);
+    db.updateProviderNode.mockImplementation(async (_id, updates) => ({ id: "ep1", type: "openai-compatible", baseUrl: "https://api.acme.dev/v1", ...updates }));
+    const res = await PUT(new Request("https://dash.local/api/providers/ep1/redetect", { method: "PUT", body: JSON.stringify({ apiType: "responses", addModels: ["new"] }) }), { params: Promise.resolve({ id: "ep1" }) });
+    expect(res.status).toBe(200);
+    expect(db.updateProviderNode.mock.calls[0][1]).toMatchObject({ apiType: "responses", modelRoutes: { old: "openai-chat", new: "openai-chat" } });
   });
 });

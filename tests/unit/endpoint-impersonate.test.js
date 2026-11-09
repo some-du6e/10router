@@ -73,6 +73,17 @@ describe("retryAsClient", () => {
     const res = { ok: false, error: "The key was rejected.", steps: [], clientGated: false };
     expect(await retryAsClient(res, { url: BASE, fetchFn: async () => { throw new Error("no"); }, detect: async () => { throw new Error("no"); } })).toBe(res);
   });
+  it("answers with the key refusal once a client gets past the gate, not the gate", async () => {
+    // A dead key: the gate lets Codex through, then the key itself is refused.
+    const { fn } = gatedFetch();
+    const dead = "sk-dead-key-0123456789";
+    const first = await detectEndpoint({ url: BASE, apiKey: dead, fetchFn: fn, deadlineMs: 20_000 });
+    expect(first).toMatchObject({ ok: false, failure: "gated", keyVerdict: null });
+    const r = await retryAsClient(first, { url: BASE, apiKey: dead, fetchFn: fn, detect: (f) => detectEndpoint({ url: BASE, apiKey: dead, fetchFn: f, deadlineMs: 20_000 }) });
+    expect(r).toMatchObject({ ok: false, failure: "key", keyVerdict: "refused" });
+    expect(r.gate).toBeUndefined();
+    expect(r.steps.length).toBeGreaterThan(first.steps.length);
+  });
   it("keeps the failure (with the extra steps) when no client gets in", async () => {
     const { fn } = gatedFetch({ allow: /never/ });
     const first = await detectEndpoint({ url: BASE, apiKey: KEY, fetchFn: fn, deadlineMs: 20_000 });

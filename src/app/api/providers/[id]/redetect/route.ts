@@ -94,8 +94,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       const first = await detectEndpoint({ url, apiKey: key, fetchFn: savedSettingsFetch(rawFetch, node, key), catalog, signal, onProgress, skipModels, deadlineMs: left() });
       // Still client-gated (no saved identity, or it stopped working): try the
       // known clients, as Add endpoint does. Their headers replace the saved ones.
+      // The identity search stays inside the shared budget too.
       return retryAsClient(first, {
-        url, apiKey: key, fetchFn: savedSettingsFetch(rawFetch, node, key, { identity: false }), signal,
+        url, apiKey: key, fetchFn: savedSettingsFetch(rawFetch, node, key, { identity: false }), signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, left()))]),
         detect: (f) => { offset = maxN; sentBase = maxSent; return detectEndpoint({ url, apiKey: key, fetchFn: f, catalog, signal, onProgress, skipModels, deadlineMs: left() }); },
       });
     };
@@ -133,7 +134,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     // URL, missing models, routes and auth style out of the endpoint's changes.
     const via = shown.candidate.own;
     const diff = redetectDiff(node, current, result, outdatedModels(current, catalog), part, { keyScoped: via });
-    return { ...diff, steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!shown.candidate.apiKey, ...(via ? { viaKeyUrl: true } : {}), ...(result.gate ? { gate: result.gate } : {}) };
+    // Keys that didn't get through before the one that did: a dead key still
+    // switched on is worth knowing about, and a win at a key's own URL after the
+    // endpoint's URL refused its keys mustn't read as "the URL wasn't asked".
+    const before = win ? runs.slice(0, -1) : [];
+    const failedFirst = before.length ? { keysFailedFirst: before.length, baseKeysFailed: before.filter((r) => !r.candidate.own).length } : {};
+    return { ...diff, steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!shown.candidate.apiKey, ...failedFirst, ...(via ? { viaKeyUrl: true } : {}), ...(result.gate ? { gate: result.gate } : {}) };
   }, { ok: false, error: "Re-detect failed", steps: [] });
 }
 
@@ -163,6 +169,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
   let body: { baseUrl?: unknown; apiType?: unknown; quirks?: unknown; addModels?: unknown; removeModels?: unknown; modelsNote?: unknown } = {};
   try { body = await request.json(); } catch { return NextResponse.json({ error: "Bad request" }, { status: 400 }); }
 
+  const ids = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && MODEL_RE.test(x)).slice(0, 1000) : []);
   const updates: Record<string, unknown> = {};
   if (body.baseUrl !== undefined) {
     const base = normalizeUrl(body.baseUrl);
@@ -183,7 +190,9 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
   const hasRoutes = !!offered && typeof offered === "object" && "modelRoutes" in (offered as object);
   if (updates.apiType !== undefined && finalProtocol(node, updates.apiType) !== oldProto && !hasRoutes) {
     const saved = (node.modelRoutes || {}) as Record<string, string>;
-    const mine = ((await getCustomModels()) as CustomModel[]).filter((m) => m.providerAlias === id && (m.kind || m.type || "llm") === "llm" && m.id).map((m) => m.id as string);
+    // Models added in the same apply were found on the old API too (a check
+    // through one key's own URL offers no routes).
+    const mine = [...((await getCustomModels()) as CustomModel[]).filter((m) => m.providerAlias === id && (m.kind || m.type || "llm") === "llm" && m.id).map((m) => m.id as string), ...ids(body.addModels)];
     offered = { ...(offered && typeof offered === "object" ? offered : {}), modelRoutes: Object.fromEntries(mine.map((m) => [m, saved[m] || oldProto])) };
   }
   const { quirks, removed } = mergeQuirks(node, { quirks: ownRoutesOnly(offered, finalProtocol(node, updates.apiType)) });
@@ -201,7 +210,6 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     }),
   })));
 
-  const ids = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && MODEL_RE.test(x)).slice(0, 1000) : []);
   let added = 0, failed = 0;
   for (const m of ids(body.addModels)) {
     try { await addCustomModel({ providerAlias: id, id: m, type: "llm", name: undefined, caps: undefined }); added++; } catch { failed++; }
