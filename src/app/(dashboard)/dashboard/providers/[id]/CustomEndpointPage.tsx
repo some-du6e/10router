@@ -17,6 +17,8 @@ import { MIMIC_LABELS } from "@/shared/utils/nodeQuirks.js";
 import type { Mimic, NodeQuirks, RouteProtocol } from "@/shared/utils/nodeQuirks.js";
 import type { EndpointRequestEntry } from "@/lib/endpointRequestLog.js";
 import type { RedetectDiff, RedetectPart } from "@/app/api/providers/[id]/redetect/diff.js";
+import { defaultPick, failedText, fixesList, summaryText, titleText } from "./redetectText";
+import type { RedetectKeys } from "./redetectText";
 import { PROTOCOL_NAME, prettyModel, readNdjson } from "../components/AddEndpointParts";
 import type { DetectProgress } from "@/lib/endpointDetect.js";
 import { shrinkIcon } from "../components/shrinkIcon.js";
@@ -291,7 +293,7 @@ function LogRow({ l, fresh }: { l: EndpointRequestEntry; fresh: boolean }) {
 // One run of Re-detect for one half of the page, with its live progress.
 // Leaving the page stops the run, so the server stops probing too.
 function useRedetect(nodeId: string, part: RedetectPart, setChecking: (p: RedetectPart | null) => void) {
-  const [result, setResult] = useState<(RedetectDiff & { usedKey?: boolean }) | null>(null);
+  const [result, setResult] = useState<(RedetectDiff & RedetectKeys) | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [live, setLive] = useState<RedetectLive>(LIVE0);
   const stopRef = useRef<AbortController | null>(null);
@@ -350,21 +352,21 @@ function RedetectStatus({ live, onStop }: { live: RedetectLive; onStop: () => vo
 }
 
 // What Re-detect found, as changes to tick and apply.
-function RedetectBox({ node, part, diff, onClose, onApplied }: { node: EndpointNode; part: RedetectPart; diff: RedetectDiff & { usedKey?: boolean }; onClose: () => void; onApplied: (n: EndpointNode | null) => Promise<void> }) {
-  const [pick, setPick] = useState({ protocol: !!diff.protocol?.applicable, baseUrl: !!diff.baseUrl, add: !!diff.ok && diff.addModels.length > 0, remove: !!diff.ok && diff.removeModels.length > 0, outdated: false, quirks: true });
+function RedetectBox({ node, part, diff, onClose, onApplied }: { node: EndpointNode; part: RedetectPart; diff: RedetectDiff & RedetectKeys; onClose: () => void; onApplied: (n: EndpointNode | null) => Promise<void> }) {
+  const [pick, setPick] = useState(() => defaultPick(diff));
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   if (!diff.ok) {
     return (
       <div role="alert" className="ep-in mt-4 flex items-start gap-2 rounded-[10px] border border-red-500/30 bg-red-500/5 px-3 py-2.5 text-xs">
         <span aria-hidden="true" className="material-symbols-outlined text-[16px] text-red-500">error</span>
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5"><p className="font-medium text-text-main">{part === "models" ? "The model check" : "Re-detect"} didn&apos;t get through</p><p className="text-text-muted">{diff.error}. Nothing was changed.</p></div>
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5"><p className="font-medium text-text-main">{part === "models" ? "The model check" : "Re-detect"} didn&apos;t get through</p><p className="text-text-muted">{failedText(diff)}</p></div>
         <button type="button" onClick={onClose} aria-label="Dismiss" className="material-symbols-outlined text-[16px] text-text-muted hover:text-text-main">close</button>
       </div>
     );
   }
   const q = diff.quirks;
-  const qList = [q.maxCompletionTokens && "send max_completion_tokens", q.apiKeyHeader && "send the key in an api-key header", q.modelRoutes && Object.keys(q.modelRoutes).length > 0 && "send each model to the API that answers it"].filter(Boolean) as string[];
+  const qList = fixesList(q);
   // Ticked rows that exist; a lone "needs a new endpoint" note has nothing to apply.
   const applicable = (pick.protocol && !!diff.protocol?.applicable) || (pick.baseUrl && !!diff.baseUrl) || (pick.add && diff.addModels.length > 0) || (pick.remove && diff.removeModels.length > 0) || (pick.outdated && diff.outdatedModels.length > 0) || (pick.quirks && qList.length > 0);
   const apply = async () => {
@@ -400,8 +402,8 @@ function RedetectBox({ node, part, diff, onClose, onApplied }: { node: EndpointN
       <div className="flex items-start gap-2">
         <span aria-hidden="true" className={`material-symbols-outlined text-[16px] ${diff.changes ? "text-brand-500" : "text-green-500"}`}>{diff.changes ? "bolt" : "check_circle"}</span>
         <div className="min-w-0 flex-1 text-xs">
-          <p className="font-medium text-text-main">{diff.changes ? `Found ${diff.changes} change${diff.changes === 1 ? "" : "s"}` : "Nothing changed"}</p>
-          <p className="text-text-muted">{diff.changes ? "Pick what to apply. Free probes only, nothing was generated." : `${part === "models" ? "Same models as you have now." : part === "endpoint" ? "No changes to the API, URL or fixes." : "Same API, URL and models as when it was added."}${diff.usedKey === false ? " No key, so only what's public was checked." : ""}`}</p>
+          <p className="font-medium text-text-main">{titleText(diff)}</p>
+          <p className="text-text-muted">{summaryText(part, diff)}</p>
         </div>
         <button type="button" onClick={onClose} aria-label="Dismiss" className="material-symbols-outlined text-[16px] text-text-muted hover:text-text-main">close</button>
       </div>
