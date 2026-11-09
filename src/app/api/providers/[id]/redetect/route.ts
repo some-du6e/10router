@@ -23,6 +23,9 @@ const MAX_KEY_ATTEMPTS = 5;
 // Every key tried shares one detection's time budget (the page gives up at
 // 60s); another key isn't started with less than this left.
 const MIN_ATTEMPT_MS = 5_000;
+// With another key waiting, one key's run (a rate-limited key sitting out its
+// Retry-After waits, say) can't take more than this of the budget.
+const MAX_RUN_MS = 30_000;
 type CustomModel = { id?: string; providerAlias?: string; type?: string; kind?: string };
 
 // Detection says what each run showed about its key (see KeyVerdict). Rate
@@ -75,11 +78,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   // endpoint's own URL first. A key with its own URL (another account or region
   // of the same API) is asked at that URL; the probe fetch checks every hop
   // against the SSRF rules for remote callers, as it does the endpoint's URL.
+  // A key still flagged with its own URL after the endpoint moved to that URL
+  // is on the endpoint's URL.
+  const urlOf = (c: Connection) => (c.providerSpecificData?.ownBaseUrl ? normalizeUrl(c.providerSpecificData?.baseUrl) : base);
   const active = conns.filter((c) => c.isActive !== false && c.apiKey);
   const all: Candidate[] = active.flatMap((c): Candidate[] => {
-    const url = c.providerSpecificData?.ownBaseUrl ? normalizeUrl(c.providerSpecificData?.baseUrl) : base;
-    // A key still flagged with its own URL after the endpoint moved to that URL
-    // is on the endpoint's URL.
+    const url = urlOf(c);
     return url ? [{ apiKey: c.apiKey as string, url, own: url !== base }] : [];
   });
   // The endpoint half asks about the endpoint's URL: a key with its own URL
@@ -109,16 +113,18 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       if (typeof ev.sent === "number") { ev.sent += sentBase; maxSent = Math.max(maxSent, ev.sent); }
       send(ev);
     };
-    const runWith = async ({ apiKey: key, url }: Candidate): Promise<Run["result"]> => {
+    const runWith = async ({ apiKey: key, url }: Candidate, more: boolean): Promise<Run["result"]> => {
       offset = maxN; sentBase = maxSent;
+      const runEnd = more ? Math.min(deadlineAt, Date.now() + MAX_RUN_MS) : deadlineAt;
+      const runLeft = () => Math.max(0, runEnd - Date.now());
       // Probe with the endpoint's saved identity and auth style, as requests go out.
-      const first = await detectEndpoint({ url, apiKey: key, fetchFn: savedSettingsFetch(rawFetch, node), catalog, signal, onProgress, skipModels, deadlineMs: left() });
+      const first = await detectEndpoint({ url, apiKey: key, fetchFn: savedSettingsFetch(rawFetch, node), catalog, signal, onProgress, skipModels, deadlineMs: runLeft() });
       // Still client-gated (no saved identity, or it stopped working): try the
       // known clients, as Add endpoint does. Their headers replace the saved ones.
-      // The identity search stays inside the shared budget too.
+      // The identity search stays inside the budget too.
       return retryAsClient(first, {
-        url, apiKey: key, fetchFn: savedSettingsFetch(rawFetch, node, { identity: false }), signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, left()))]),
-        detect: (f) => { offset = maxN; sentBase = maxSent; return detectEndpoint({ url, apiKey: key, fetchFn: f, catalog, signal, onProgress, skipModels, deadlineMs: left() }); },
+        url, apiKey: key, fetchFn: savedSettingsFetch(rawFetch, node, { identity: false }), signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, runLeft()))]),
+        detect: (f) => { offset = maxN; sentBase = maxSent; return detectEndpoint({ url, apiKey: key, fetchFn: f, catalog, signal, onProgress, skipModels, deadlineMs: runLeft() }); },
       });
     };
     // The next key gets a try after a refusal, a rate limit, or an answer that
@@ -126,9 +132,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     // this key had its own URL: a key on the endpoint's URL would just meet the
     // same server, while another account's server may be fine.
     const runs: Run[] = [];
-    for (const candidate of candidates) {
-      if (runs.length && (signal.aborted || left() < MIN_ATTEMPT_MS)) break;
-      const result = await runWith(candidate);
+    let unstarted = 0; // keys left in line when the time ran out
+    for (const [i, candidate] of candidates.entries()) {
+      if (runs.length && !signal.aborted && left() < MIN_ATTEMPT_MS) { unstarted = candidates.length - i; break; }
+      if (runs.length && signal.aborted) break;
+      const result = await runWith(candidate, i < candidates.length - 1);
       runs.push({ candidate, result });
       if (worked(result) || (!keyRefused(result) && !rateLimited(result) && !unsure(result) && !listOnly(result) && !pageRefused(result) && !candidate.own)) break;
     }
@@ -166,8 +174,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     // A lone failure at a key's own URL happened there, not at the endpoint's;
     // and a key the shared time cut off wasn't really checked.
     const atOwn = shown.candidate.own && tried.length === 1, cut = tried.length < runs.length;
-    const result = !settled.ok && settled.error && (atOwn || cut)
-      ? { ...settled, error: `${clause(settled.error)}${atOwn ? " (at the key's own URL)" : ""}${cut ? ". Another key ran out of time before it was checked" : ""}` }
+    const untried = unstarted ? `. ${unstarted === 1 ? "1 more key wasn't" : `${unstarted} more keys weren't`} tried: no time was left` : "";
+    const result = !settled.ok && settled.error && (atOwn || cut || untried)
+      ? { ...settled, error: `${clause(settled.error)}${atOwn ? " (at the key's own URL)" : ""}${cut ? ". Another key ran out of time before it was checked" : ""}${untried}` }
       : settled;
     // What a key on its own URL sees is that account's: redetectDiff keeps its
     // URL, missing models, routes and auth style out of the endpoint's changes.
@@ -175,7 +184,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     // A key's own URL speaks for the endpoint's API and fixes only when every
     // active key uses that same URL: the PUT writes them onto every key, and
     // keys on other URLs (the endpoint's, or other accounts') may differ.
-    const scoped = via && all.some((c) => c.url !== shown.candidate.url);
+    // Switched-off keys count: the apply writes onto them too.
+    const scoped = via && conns.some((c) => { const u = urlOf(c); return !!u && u !== shown.candidate.url; });
     // Gateways can list models per key: a fallback key's shorter list isn't
     // proof the first key's models are gone, so only the first key removes.
     const removals = shown === runs[0];

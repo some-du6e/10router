@@ -31,10 +31,10 @@ export function unchangedText(part: RedetectPart, scope: CheckScope): string {
 // What a check through one key's own URL couldn't vouch for.
 export function keyUrlNote(part: RedetectPart, baseTried: boolean, scope: CheckScope = "account"): string {
   if (scope === "url") {
-    const via = "Every key uses the same URL of its own, so this was checked there";
+    const via = "Every key uses the same URL of its own, so this was checked there, not at the endpoint's URL";
     if (part === "models") return `${via}, and models it lacks aren't offered for removal.`;
-    if (part === "endpoint") return `${via}, and URL changes weren't checked.`;
-    return `${via}: URL changes weren't checked, and models it lacks aren't offered for removal.`;
+    if (part === "endpoint") return `${via}.`;
+    return `${via}, and models it lacks aren't offered for removal.`;
   }
   const via = baseTried ? "The keys on the endpoint's URL didn't give a full answer, so this was checked through one key's own URL" : "Checked through one key's own URL";
   if (part === "models") return `${via}, so models it lacks aren't offered for removal and model routes stay as they are.`;
@@ -55,6 +55,8 @@ export function accountText(diff: Shown): string {
     a.baseUrl && `answers at ${a.baseUrl}`,
   ].filter(Boolean) as string[];
   const list = said.length > 1 ? `${said.slice(0, -1).join(", ")} and ${said[said.length - 1]}` : said[0];
+  // Every key on that one URL: only a moved URL is reported, and it's theirs.
+  if (!diff.keyScoped) return `That URL ${list}; change it on the keys.`;
   return `That key's URL ${list}; the endpoint's settings weren't changed for it${a.baseUrl ? ". Change the URL on the key" : ""}.`;
 }
 

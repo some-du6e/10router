@@ -41,7 +41,7 @@ describe("Re-detect box text", () => {
   it("when every key uses the same URL of its own, claims all but the URL and removals", () => {
     const own = { viaKeyUrl: true };
     expect(summaryText("endpoint", diff(own))).toBe(`No changes to the API or fixes. ${keyUrlNote("endpoint", false, "url")}`);
-    expect(keyUrlNote("endpoint", false, "url")).toBe("Every key uses the same URL of its own, so this was checked there, and URL changes weren't checked.");
+    expect(keyUrlNote("endpoint", false, "url")).toBe("Every key uses the same URL of its own, so this was checked there, not at the endpoint's URL.");
     expect(summaryText("models", diff(own))).toMatch(/^No new models\. Every key uses the same URL/);
     expect(unchangedText("all", "url")).toBe("Same API, no new models.");
   });
@@ -49,9 +49,11 @@ describe("Re-detect box text", () => {
   it("reports what one key's own URL answered, without applying it", () => {
     const found = diff({ viaKeyUrl: true, keyScoped: true, account: { protocol: "openai-responses", maxCompletionTokens: true, baseUrl: "https://acct.acme.dev/v1" } });
     expect(accountText(found)).toBe("That key's URL answers on Responses, needs max_completion_tokens and answers at https://acct.acme.dev/v1; the endpoint's settings weren't changed for it. Change the URL on the key.");
-    expect(accountText(diff({ account: { apiKeyHeader: true } }))).toBe("That key's URL takes the key in an api-key header; the endpoint's settings weren't changed for it.");
+    expect(accountText(diff({ keyScoped: true, account: { apiKeyHeader: true } }))).toBe("That key's URL takes the key in an api-key header; the endpoint's settings weren't changed for it.");
     expect(summaryText("endpoint", found)).toContain(accountText(found));
     expect(accountText(diff())).toBe("");
+    // Every key on that one URL: only a moved URL, and it's theirs.
+    expect(accountText(diff({ viaKeyUrl: true, account: { baseUrl: "https://region.acme.dev/v1" } }))).toBe("That URL answers at https://region.acme.dev/v1; change it on the keys.");
   });
 
   it("titles the box by what there is to apply", () => {

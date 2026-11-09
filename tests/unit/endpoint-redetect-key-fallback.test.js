@@ -116,7 +116,7 @@ beforeEach(() => {
   // Tagged with the fetch it wraps, so tests can see the SSRF-checked one is used.
   mocks.savedSettingsFetch.mockImplementation((f) => Object.assign(() => {}, { wraps: f }));
   mocks.redetectDiff.mockImplementation((_node, _current, r, _outdated, _part, opts = {}) => r.ok
-    ? { ok: true, protocol: null, baseUrl: null, addModels: r.models, removeModels: [], outdatedModels: [], quirks: {}, modelsNote: null, changes: r.models.length, keyScoped: !!opts.keyScoped }
+    ? { ok: true, protocol: null, baseUrl: null, addModels: r.models, removeModels: [], outdatedModels: [], quirks: {}, modelsNote: null, changes: r.models.length }
     : { ok: false, error: r.error, protocol: null, baseUrl: null, addModels: [], removeModels: [], outdatedModels: [], quirks: {}, modelsNote: null, changes: 0 });
   verdict = {};
   mocks.detectEndpoint.mockImplementation(({ apiKey }) => Promise.resolve(verdict[apiKey] ?? rejected));
@@ -321,6 +321,12 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     verdict.s1 = works;
     expect(await json("endpoint")).toMatchObject({ ok: true, viaKeyUrl: true });
     expect(mocks.redetectDiff.mock.calls[0][5]).toMatchObject({ keyScoped: false, ownUrl: true, checkedUrl: "https://region.acme.dev/v1" });
+    expect((await json("endpoint")).keyScoped).toBeUndefined();
+    // A switched-off key on the endpoint's URL counts: the apply writes onto it too.
+    vi.clearAllMocks();
+    mocks.getProviderConnections.mockResolvedValue([{ id: "off", isActive: false, apiKey: "off" }, ...shared("s0")]);
+    verdict.s0 = works;
+    expect(await json("endpoint")).toMatchObject({ ok: true, viaKeyUrl: true, keyScoped: true });
     // Keys on different accounts' URLs: one account's answer.
     vi.clearAllMocks();
     mocks.getProviderConnections.mockResolvedValue(ownConns("o0", "o1"));
@@ -567,7 +573,7 @@ describe("re-detect model check: keys with their own URL", () => {
     verdict.shared = works;
     const body = await json();
     expect(keysUsed()).toEqual(["shared"]);
-    expect(body).toMatchObject({ keyScoped: false });
+    expect(body.keyScoped).toBeUndefined();
     expect(body.viaKeyUrl).toBeUndefined();
   });
 
@@ -577,7 +583,8 @@ describe("re-detect model check: keys with their own URL", () => {
     verdict.same = works;
     const body = await json();
     expect(keysUsed()).toEqual(["same"]);
-    expect(body).toMatchObject({ ok: true, keyScoped: false });
+    expect(body.ok).toBe(true);
+    expect(body.keyScoped).toBeUndefined();
     expect(body.viaKeyUrl).toBeUndefined();
   });
 
@@ -620,7 +627,8 @@ describe("re-detect model check: one run across keys", () => {
       // Every rejected key takes 15s to answer; the fourth starts with exactly the 5s minimum left.
       mocks.detectEndpoint.mockImplementation(() => { vi.setSystemTime(Date.now() + 15_000); return Promise.resolve(rejected); });
       await json();
-      expect(mocks.detectEndpoint.mock.calls.map((c) => c[0].deadlineMs)).toEqual([50_000, 35_000, 20_000, 5_000]);
+      // Each run is capped at 30s while another key waits; the fourth has exactly the 5s minimum left.
+      expect(mocks.detectEndpoint.mock.calls.map((c) => c[0].deadlineMs)).toEqual([30_000, 30_000, 20_000, 5_000]);
     } finally { vi.useRealTimers(); }
   });
 
@@ -660,6 +668,21 @@ describe("re-detect model check: one run across keys", () => {
     vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValue(49_950);
     try { await json(); } finally { vi.restoreAllMocks(); }
     expect(aborted).toBe(true);
+  });
+
+  it("gives a lone key the whole budget, and says which keys the time left out", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      mocks.getProviderConnections.mockResolvedValue(conns("solo"));
+      await json();
+      expect(mocks.detectEndpoint.mock.calls[0][0].deadlineMs).toBe(50_000);
+      vi.clearAllMocks();
+      mocks.getProviderConnections.mockResolvedValue(conns("slow", "b", "c"));
+      // The first key's run takes 46s of the 50s.
+      mocks.detectEndpoint.mockImplementationOnce(() => { vi.setSystemTime(Date.now() + 46_000); return Promise.resolve(rejected); });
+      expect(await json()).toMatchObject({ ok: false, error: "Wrong key. 2 more keys weren't tried: no time was left" });
+      expect(keysUsed()).toEqual(["slow"]);
+    } finally { vi.useRealTimers(); }
   });
 
   it("stops trying keys once the user cancels", async () => {
