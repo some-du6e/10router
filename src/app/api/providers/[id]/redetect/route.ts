@@ -39,6 +39,12 @@ const unsure = (r: DetectResult) => r.ok && !r.keyVerdict;
 const listOnly = (r: DetectResult) => !r.ok && r.failure === "key" && !r.keyVerdict;
 const clause = (s: string | undefined) => String(s || "").replace(/\s*\.*\s*$/, "");
 
+// Which half of the page asked (see RedetectPart).
+const partOf = (request: Request): RedetectPart => {
+  const q = new URL(request.url).searchParams.get("part");
+  return q === "endpoint" || q === "models" ? q : "all";
+};
+
 // POST /api/providers/[id]/redetect - the endpoint page's "Re-detect": run the
 // same free-probe detection as "Add endpoint", trying the active keys in turn
 // (each at its own URL if it has one) until one works, and answer with what
@@ -57,6 +63,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const guard = await guardTarget(request, base);
   if (guard instanceof NextResponse) return guard;
 
+  const part = partOf(request);
   const conns = (await getProviderConnections({ provider: id })) as Connection[];
   // Active keys with a credential, in priority order, the ones on the
   // endpoint's own URL first. A key with its own URL (another account or region
@@ -69,7 +76,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     // is on the endpoint's URL.
     return url ? [{ apiKey: c.apiKey as string, url, own: url !== base }] : [];
   });
-  const candidates = [...all.filter((c) => !c.own), ...all.filter((c) => c.own)].slice(0, MAX_KEY_ATTEMPTS);
+  // The endpoint half asks about the endpoint's URL: a key with its own URL
+  // can't speak for it, so those are only tried when no key uses that URL.
+  const pool = part === "endpoint" && all.some((c) => !c.own) ? all.filter((c) => !c.own) : all;
+  const candidates = [...pool.filter((c) => !c.own), ...pool.filter((c) => c.own)].slice(0, MAX_KEY_ATTEMPTS);
   // Keys exist but none has a usable URL: say that, rather than probing with no
   // key and blaming a key.
   if (active.length && !candidates.length) return NextResponse.json({ ok: false, error: "None of the active keys has a valid URL of its own", steps: [] }, { status: 400 });
@@ -78,8 +88,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     .filter((m) => m.providerAlias === id && (m.kind || m.type || "llm") === "llm" && m.id)
     .map((m) => m.id as string);
   const rawFetch = makeProbeFetch(guard.remote);
-  const q = new URL(request.url).searchParams.get("part");
-  const part: RedetectPart = q === "endpoint" || q === "models" ? q : "all";
   const skipModels = part === "endpoint";
   return respond(request, "re-detecting endpoint", async (signal, send) => {
     const catalog = await getEndpointCatalog();
@@ -118,13 +126,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       runs.push({ candidate, result });
       if (worked(result) || (!keyRefused(result) && !rateLimited(result) && !unsure(result) && !listOnly(result) && !candidate.own)) break;
     }
-    // A key that worked, else the first that answered without a verdict. The
-    // endpoint half prefers an answer from the endpoint's own URL, even without
-    // a verdict, to one account's: only that one can speak for the API and URL.
+    // A key that worked, else the first that answered without a verdict.
     const atBase = (r: Run) => !r.candidate.own;
-    const win = runs.find((r) => worked(r.result) && atBase(r))
-      || (part === "endpoint" ? runs.find((r) => unsure(r.result) && atBase(r)) : undefined)
-      || runs.find((r) => worked(r.result)) || runs.find((r) => unsure(r.result)) || null;
+    const win = runs.find((r) => worked(r.result)) || runs.find((r) => unsure(r.result)) || null;
     // None worked: report the first key's verdict (the endpoint's own URL when
     // a key uses it), as a failure even when its refusal came after the free
     // probes passed, and say how many keys were tried. A run with no key keeps
@@ -138,7 +142,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     // about the endpoint, so it's named too (not a cut-off run's timeout).
     const later = runs.find((r, i) => i > 0 && atBase(r) && !r.result.ok && !r.result.keyVerdict && !listOnly(r.result) && r.result.failure !== "timeout" && r.result.failure !== "cancelled");
     const refused = keyRefused(shown.result);
-    const verdict = clause(shown.result.error) || (refused ? "The key was rejected" : clause(shown.result.partialReason || undefined) || "No answer");
+    const verdict = clause(shown.result.error) || (refused ? "The key was rejected"
+      : rateLimited(shown.result) ? "The endpoint kept rate-limiting the model checks. Try again in a minute"
+      : clause(shown.result.partialReason || undefined) || "No answer");
     if (!shown.candidate.apiKey && !shown.result.ok && shown.result.failure === "key") {
       const on = conns.some((c) => c.isActive !== false);
       shown.result = { ...shown.result, error: on ? "It needs a key, and no switched-on key has one set" : conns.length ? "It needs a key, and none of its keys is switched on" : "It needs a key, and this endpoint has none" };
@@ -154,7 +160,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const via = shown.candidate.own;
     // Gateways can list models per key: a fallback key's shorter list isn't
     // proof the first key's models are gone, so only the first key removes.
-    const diff = redetectDiff(node, current, result, outdatedModels(current, catalog), part, { keyScoped: via, removals: shown === runs[0] });
+    const removals = shown === runs[0];
+    const diff = redetectDiff(node, current, result, outdatedModels(current, catalog), part, { keyScoped: via, removals });
     // The other keys tried, when one got through: a dead key still switched on
     // is worth knowing about, and a win at a key's own URL after the endpoint's
     // URL refused its keys mustn't read as "the URL wasn't asked".
@@ -169,7 +176,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       : result.stopReason !== "auth" ? result.partialReason
       : shown.candidate.apiKey ? "The endpoint refused the models it was asked about, so some weren't checked." : null;
     const cut = reason ? { partialReason: reason } : {};
-    return { ...diff, steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!shown.candidate.apiKey, ...failed, ...cut, ...(via ? { viaKeyUrl: true } : {}), ...(result.gate ? { gate: result.gate } : {}) };
+    // Its full list removed nothing because another key came first: say so.
+    const held = !removals && !via && result.ok && result.modelsSource === "models" && part !== "endpoint" ? { removalsHeld: true } : {};
+    return { ...diff, steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!shown.candidate.apiKey, ...failed, ...cut, ...held, ...(via ? { viaKeyUrl: true } : {}), ...(result.gate ? { gate: result.gate } : {}) };
   }, { ok: false, error: "Re-detect failed", steps: [] });
 }
 

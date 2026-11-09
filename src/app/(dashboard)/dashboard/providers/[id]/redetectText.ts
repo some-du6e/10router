@@ -9,6 +9,7 @@ export type RedetectKeys = {
   otherKeysFailed?: number;
   baseKeysTried?: number;
   partialReason?: string;
+  removalsHeld?: boolean;
 };
 
 type Shown = RedetectDiff & RedetectKeys;
@@ -35,10 +36,11 @@ export function keyUrlNote(part: RedetectPart, baseTried: boolean): string {
 export function summaryText(part: RedetectPart, diff: Shown): string {
   const n = diff.otherKeysFailed || 0;
   return [
-    diff.changes ? "Pick what to apply. Free probes only, nothing was generated." : unchangedText(part, !!diff.viaKeyUrl),
+    diff.changes ? "Pick what to apply. Free probes only, nothing was generated." : unchangedText(part, !!diff.viaKeyUrl || !!diff.removalsHeld),
     !diff.changes && diff.usedKey === false ? "No key, so only what's public was checked." : "",
     diff.partialReason ? sentence(diff.partialReason) : "",
     diff.viaKeyUrl ? keyUrlNote(part, !!diff.baseKeysTried) : "",
+    diff.removalsHeld ? "Models missing from this key's list aren't offered for removal: it may list fewer than the key tried first." : "",
     n ? `${n === 1 ? "1 other key" : `${n} other keys`} didn't get through.` : "",
   ].filter(Boolean).join(" ");
 }

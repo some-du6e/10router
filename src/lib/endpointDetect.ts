@@ -1173,9 +1173,10 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
       : last?.status === 0 ? `Couldn't reach it: ${last.preview}`
       : "No OpenAI or Anthropic API found at this URL.";
     // A GET /models refusal alone can be an admin-only list.
-    // GET /models took the key and every POST refused it: it can list, not use.
+    // GET /models took the key and the POSTs refused it, with nothing else
+    // answering (no 5xx, no gate): it can list, not use.
     const keyVerdict: KeyVerdict = failure === "key" ? (probeAuthFail ? "refused" : null) : failure === "rate" ? "rate-limited"
-      : keyAccepted && probeAuthFail && !clientGated ? "refused" : null;
+      : failure === "no-api" && keyAccepted && probeAuthFail ? "refused" : null;
     return { ok: false, failure, error, baseUrl: base0, steps, clientGated, authRejected: sawAuthFail && !keyAccepted && !clientGated, rateLimited, keyVerdict };
   }
 

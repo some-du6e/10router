@@ -201,19 +201,40 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     for (const c of mocks.detectEndpoint.mock.calls) expect(c[0].fetchFn.wraps).toBe(guarded);
   });
 
-  it("checks the endpoint's own URL answer over one account's for the endpoint half", async () => {
-    // The key on the endpoint's URL answered without a verdict; an own-URL key worked.
+  it("asks only keys on the endpoint's URL in the endpoint half, when it has any", async () => {
     mocks.getProviderConnections.mockResolvedValue([...conns("base"), ...ownConns("o1")]);
     verdict.base = listOnlyRefused;
     verdict.o1 = works;
     const body = await json("endpoint");
-    expect(keysUsed()).toEqual(["base", "o1"]);
+    expect(keysUsed()).toEqual(["base"]);
+    expect(body).toMatchObject({ ok: true });
     expect(body.viaKeyUrl).toBeUndefined();
-    expect(mocks.redetectDiff.mock.calls[0][5]).toMatchObject({ keyScoped: false });
-    // The models half takes the account that worked.
+    // Every key on the endpoint's URL refused: a failure, not "nothing changed" from another account.
+    vi.clearAllMocks();
+    mocks.getProviderConnections.mockResolvedValue([...conns("dead"), ...ownConns("o1")]);
+    expect(await json("endpoint")).toMatchObject({ ok: false, error: rejected.error });
+    expect(keysUsed()).toEqual(["dead"]);
+    // The models half goes on to the account that works.
     vi.clearAllMocks();
     mocks.getProviderConnections.mockResolvedValue([...conns("base"), ...ownConns("o1")]);
     expect(await json("models")).toMatchObject({ viaKeyUrl: true });
+    // With no key on the endpoint's URL, the endpoint half asks the own-URL keys.
+    vi.clearAllMocks();
+    mocks.getProviderConnections.mockResolvedValue(ownConns("o0", "o1"));
+    expect(await json("endpoint")).toMatchObject({ ok: true, viaKeyUrl: true });
+    expect(keysUsed()).toEqual(["o0", "o1"]);
+  });
+
+  it("sends the client-identity search through the SSRF-checked fetch too", async () => {
+    mocks.guardTarget.mockResolvedValue({ remote: true });
+    const guarded = () => {}, open = () => {};
+    mocks.makeProbeFetch.mockImplementation((remote) => (remote ? guarded : open));
+    mocks.getProviderConnections.mockResolvedValue(ownConns("gated"));
+    verdict.gated = { ok: false, failure: "gated", keyVerdict: null, clientGated: true, error: "Only works as a known client.", steps: [] };
+    let retryFetch;
+    mocks.retryAsClient.mockImplementation(async (first, opts) => { retryFetch = opts.fetchFn; return first; });
+    await json();
+    expect(retryFetch.wraps).toBe(guarded);
   });
 
   it("says how many keys it tried when some were refused late and the rest outright", async () => {
@@ -271,16 +292,21 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     expect(await json()).toMatchObject({ ok: false, error: "The key can list models, but every API refused it" });
   });
 
-  it("lets only the first key's model list remove models", async () => {
+  it("lets only the first key's model list remove models, and says when it held them back", async () => {
     mocks.getProviderConnections.mockResolvedValue(conns("good"));
     verdict.good = works;
-    await json();
+    expect((await json()).removalsHeld).toBeUndefined();
     expect(mocks.redetectDiff.mock.calls[0][5]).toMatchObject({ removals: true });
     vi.clearAllMocks();
     mocks.getProviderConnections.mockResolvedValue(conns("busy", "good"));
     verdict.busy = rateLimit;
-    await json();
+    expect(await json()).toMatchObject({ removalsHeld: true });
     expect(mocks.redetectDiff.mock.calls[0][5]).toMatchObject({ removals: false });
+    // A guessed list never removes anything, so nothing was held back.
+    vi.clearAllMocks();
+    mocks.getProviderConnections.mockResolvedValue(conns("busy", "good"));
+    verdict.good = { ...works, modelsSource: "guessed" };
+    expect((await json()).removalsHeld).toBeUndefined();
   });
 
   it("moves past a rate-limited key: limits are per key", async () => {
@@ -299,7 +325,7 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     expect(keysUsed()).toEqual(["busy", "good"]);
     vi.clearAllMocks();
     mocks.getProviderConnections.mockResolvedValue(conns("busy"));
-    expect(await json()).toMatchObject({ ok: false, error: "The endpoint kept rate-limiting, so some models weren't checked" });
+    expect(await json()).toMatchObject({ ok: false, error: "The endpoint kept rate-limiting the model checks. Try again in a minute" });
   });
 
   it("tries the next key after a check cut short, and takes one that works", async () => {

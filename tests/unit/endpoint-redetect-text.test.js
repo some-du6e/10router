@@ -33,6 +33,11 @@ describe("Re-detect box text", () => {
     expect(summaryText("models", diff())).toBe("Same models as you have now.");
   });
 
+  it("says when a fallback key's list wasn't used to remove models", () => {
+    expect(summaryText("models", diff({ removalsHeld: true, otherKeysFailed: 1 })))
+      .toBe("No new models. Models missing from this key's list aren't offered for removal: it may list fewer than the key tried first. 1 other key didn't get through.");
+  });
+
   it("says why the model checks stopped early", () => {
     expect(summaryText("models", diff({ partialReason: "Detection ran out of time, so some models weren't checked." })))
       .toBe("Same models as you have now. Detection ran out of time, so some models weren't checked.");

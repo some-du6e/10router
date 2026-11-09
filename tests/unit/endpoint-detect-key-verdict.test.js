@@ -213,6 +213,16 @@ describe("detectEndpoint keyVerdict", () => {
     expect(r).toMatchObject({ ok: true, models: ["public-1"], keyVerdict: "accepted" });
   });
 
+  it("nothing known: GET /models lists with the key, one API refuses it and another is down", async () => {
+    // An auth-first gateway (unknown routes get 403) in front of a backend that is down.
+    const r = await detect(upstream((m, path, body, headers) => {
+      if (path === "/v1/models") return headers.authorization ? [200, { object: "list", data: [{ id: "m1" }] }] : [401, oaiErr("Missing key", "authentication_error")];
+      if (path === "/v1/chat/completions") return [502, oaiErr("bad gateway", "server_error")];
+      if (m === "POST") return [403, { message: "Missing Authentication Token" }];
+    }));
+    expect(r).toMatchObject({ ok: false, failure: "down", keyVerdict: null });
+  });
+
   it("refused: GET /models lists with the key, but every API refuses it", async () => {
     // A key allowed to read the model list and nothing else.
     const r = await detect(upstream((m, path, body, headers) => {
@@ -307,9 +317,9 @@ describe("detectEndpoint keyVerdict", () => {
       }
       return quick(url, init);
     };
-    const r = await detect(fetchFn, { deadlineMs: 3_000, timeoutMs: 10_000 });
+    const r = await detect(fetchFn, { deadlineMs: 1_500, timeoutMs: 10_000 });
     expect(r).toMatchObject({ ok: true, models: [], keyVerdict: null });
-  });
+  }, 15_000);
 
   it("nothing known: only GET /models refused the key, and no API path answered", async () => {
     // Said as before ("The key was rejected"), but no POST refused it, so it isn't counted against the key.
