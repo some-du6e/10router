@@ -119,8 +119,10 @@ export async function retryAsClient(result: DetectResult, opts: ImpersonateOptio
   const client = works[0];
   const again = await opts.detect(withClientHeaders(opts.fetchFn, client));
   // Got past the gate, then the key was refused or rate-limited: that is the
-  // answer, not the gate.
-  if (!again.ok && again.keyVerdict) return { ...again, steps: [...result.steps, ...steps, ...again.steps] };
+  // answer, not the gate. Any other failure keeps the gate's message, with
+  // what the retry learned about the key.
+  if (!again.ok && again.keyVerdict && (again.failure === "key" || again.failure === "rate")) return { ...again, steps: [...result.steps, ...steps, ...again.steps] };
+  if (!again.ok && again.keyVerdict) return { ...result, keyVerdict: again.keyVerdict, steps: [...result.steps, ...steps, ...again.steps] };
   if (!again.ok) return { ...result, steps: [...result.steps, ...steps, ...again.steps] };
   const alsoWorks = works.slice(1).map((c) => MIMIC_LABELS[c]).join(", ") || null;
   return { ...again, clientGated: true, steps: [...result.steps, ...steps, ...again.steps], gate: { client, label: MIMIC_LABELS[client], alsoWorks } };

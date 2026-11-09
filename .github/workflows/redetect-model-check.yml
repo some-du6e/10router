@@ -21,6 +21,7 @@ on:
       - "tests/vitest.config.js"
       - "tests/vitest.shared.js"
       - "tests/unit/endpoint-redetect-text.test.js"
+      - "tests/unit/endpoint-redetect-page-wiring.test.js"
       - "tests/unit/endpoint-redetect-key-fallback.test.js"
       - "tests/unit/endpoint-detect-key-verdict.test.js"
       - "tests/unit/endpoint-impersonate.test.js"
@@ -50,7 +51,7 @@ jobs:
       - name: Unit test
         working-directory: tests
         env:
-          FILES: unit/endpoint-detect-key-verdict.test.js unit/endpoint-impersonate.test.js unit/endpoint-redetect-key-fallback.test.js unit/endpoint-redetect-diff.test.js unit/endpoint-redetect-text.test.js
+          FILES: unit/endpoint-detect-key-verdict.test.js unit/endpoint-impersonate.test.js unit/endpoint-redetect-key-fallback.test.js unit/endpoint-redetect-diff.test.js unit/endpoint-redetect-text.test.js unit/endpoint-redetect-page-wiring.test.js
         run: |
           for f in $FILES; do [ -f "$f" ] || { echo "missing $f"; exit 1; }; done
           ./node_modules/.bin/vitest run $FILES
@@ -70,6 +71,7 @@ jobs:
           tests/unit/endpoint-detect-key-verdict.test.js
           tests/unit/endpoint-impersonate.test.js
           tests/unit/endpoint-redetect-text.test.js
+          tests/unit/endpoint-redetect-page-wiring.test.js
       # The repo type-checks clean, so any error fails this.
       - name: Type check
         run: ./node_modules/.bin/tsc --noEmit -p .

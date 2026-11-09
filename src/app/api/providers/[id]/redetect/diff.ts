@@ -88,14 +88,14 @@ const sameRoutes = (a: Record<string, string> = {}, b: Record<string, string> = 
 // The offer is the full model -> API map, so the PUT can drop the entries for
 // whichever API the node ends up on, whether or not the switch is applied.
 // It never offers {} to clear routes: one API failing its probe (a 503)
-// looks the same as an endpoint that stopped splitting models.
+// looks the same as an endpoint that stopped splitting models. A saved route
+// is moved only once its API was checked in full without the model.
 function routesChange(node: SavedEndpoint, r: DetectResult, target: Protocol): Record<string, string> | null {
   // No per-API probing (it listed /models): nothing is known about routes.
   if (!r.byProtocol) return null;
   const built = buildRoutes(r.byProtocol, target);
   if (!built.models.length) return null;
   const saved = node.modelRoutes || {};
-  if (!Object.keys(built.routes).length) return null;
   // No saved route moves off an API whose check didn't finish (cut short, or
   // the API failed its probe and was never asked), nor one for a model the run
   // never reached (outdated, so not asked): the offer replaces modelRoutes whole.

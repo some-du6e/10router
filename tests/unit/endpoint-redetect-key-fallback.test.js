@@ -214,6 +214,11 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     mocks.getProviderConnections.mockResolvedValue([...conns("dead"), ...ownConns("o1")]);
     expect(await json("endpoint")).toMatchObject({ ok: false, error: rejected.error });
     expect(keysUsed()).toEqual(["dead"]);
+    // The endpoint half asks about no models, so it holds back no removals.
+    vi.clearAllMocks();
+    mocks.getProviderConnections.mockResolvedValue(conns("dead", "good"));
+    verdict.good = works;
+    expect((await json("endpoint")).removalsHeld).toBeUndefined();
     // The models half goes on to the account that works.
     vi.clearAllMocks();
     mocks.getProviderConnections.mockResolvedValue([...conns("base"), ...ownConns("o1")]);
@@ -274,10 +279,42 @@ describe("re-detect model check: keys on the endpoint's URL", () => {
     expect(await json()).toMatchObject({ ok: false, error: "None of the 3 keys it tried worked. The first: Wrong key" });
   });
 
-  it("doesn't name a later key that only ran out of the shared time", async () => {
+  it("doesn't count a later key that only ran out of the shared time as tried", async () => {
+    const late = { ok: false, failure: "timeout", keyVerdict: null, error: "Detection ran out of time before an API answered. Try again.", steps: [] };
     mocks.getProviderConnections.mockResolvedValue(conns("dead", "late"));
-    verdict.late = { ok: false, failure: "timeout", keyVerdict: null, error: "Detection ran out of time before an API answered. Try again.", steps: [] };
-    expect(await json()).toMatchObject({ ok: false, error: "None of the 2 keys it tried worked. The first: Wrong key" });
+    verdict.late = late;
+    expect(await json()).toMatchObject({ ok: false, error: rejected.error });
+    // Nor as a key that didn't get through, next to one that answered.
+    vi.clearAllMocks();
+    mocks.getProviderConnections.mockResolvedValue(conns("slow", "late"));
+    verdict.slow = cutShort;
+    verdict.late = late;
+    const body = await json();
+    expect(body.ok).toBe(true);
+    expect(body.otherKeysFailed).toBeUndefined();
+  });
+
+  it("tries the next key after a web server's own 401 page", async () => {
+    // nginx in front of the API refusing the token with its HTML page.
+    const nginx401 = { ok: false, failure: "html", keyVerdict: null, error: 'This isn\'t an API response (got "401 Authorization Required").', steps: [{ label: "POST /chat/completions (empty)", url: "https://api.acme.dev/v1/chat/completions", status: 401, preview: "", html: true }] };
+    mocks.getProviderConnections.mockResolvedValue(conns("dead", "good"));
+    verdict.dead = nginx401;
+    verdict.good = works;
+    expect((await json()).ok).toBe(true);
+    expect(keysUsed()).toEqual(["dead", "good"]);
+    // A plain HTML page with no 401/403 says nothing about keys: no other key.
+    vi.clearAllMocks();
+    mocks.getProviderConnections.mockResolvedValue(conns("dead", "good"));
+    verdict.dead = { ...nginx401, steps: [{ ...nginx401.steps[0], status: 200 }] };
+    await json();
+    expect(keysUsed()).toEqual(["dead"]);
+  });
+
+  it("tries the endpoint's URL first even past five keys with their own", async () => {
+    mocks.getProviderConnections.mockResolvedValue([...ownConns("o1", "o2", "o3", "o4", "o5"), ...conns("base")]);
+    verdict.base = works;
+    await json();
+    expect(keysUsed()).toEqual(["base"]);
   });
 
   it("says a key that can list models but every API refused was rejected, and tries the next", async () => {
@@ -430,7 +467,10 @@ describe("re-detect model check: keys with their own URL", () => {
   it("says when the keys on the endpoint's URL failed before a key's own URL got through", async () => {
     mocks.getProviderConnections.mockResolvedValue([...conns("dead"), ...ownConns("o1")]);
     verdict.o1 = works;
-    expect(await json()).toMatchObject({ ok: true, viaKeyUrl: true, otherKeysFailed: 1, baseKeysTried: 1 });
+    const viaOwn = await json();
+    expect(viaOwn).toMatchObject({ ok: true, viaKeyUrl: true, otherKeysFailed: 1, baseKeysTried: 1 });
+    // Its list never removes anything anyway, so nothing is "held back".
+    expect(viaOwn.removalsHeld).toBeUndefined();
     vi.clearAllMocks();
     mocks.getProviderConnections.mockResolvedValue(ownConns("o0", "o1"));
     const body = await json();

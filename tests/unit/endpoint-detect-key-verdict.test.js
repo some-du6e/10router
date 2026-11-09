@@ -278,6 +278,14 @@ describe("detectEndpoint keyVerdict", () => {
     expect(r).toMatchObject({ ok: true, models: [], stopReason: "aborted", keyVerdict: null });
   });
 
+  it("accepted, and partial: a few model probes got server errors", async () => {
+    // Not six in a row, so nothing stops, but those models went unanswered.
+    let n = 0;
+    const r = await detect(chat((id) => (id === "10router-no-such-model" ? unknown(id) : id === "fam0-model-1" ? [400, oaiErr("messages: at least one message is required")] : ++n % 2 ? [502, oaiErr("bad gateway", "server_error")] : unknown(id))));
+    expect(r).toMatchObject({ ok: true, models: ["fam0-model-1"], keyVerdict: "accepted", partial: true });
+    expect(r.partialReason).toMatch(/kept failing/);
+  });
+
   it("nothing known: the made-up-id check got a server error, and it says so", async () => {
     const r = await detect(chat(() => [503, oaiErr("upstream down", "server_error")]));
     expect(r).toMatchObject({ ok: true, models: [], keyVerdict: null, partial: true });

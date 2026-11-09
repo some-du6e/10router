@@ -67,6 +67,14 @@ describe("redetectDiff", () => {
     expect(d.protocol.to).toBe("openai-responses");
     expect(d.quirks.modelRoutes).toEqual({ "gpt-x": "openai-responses", "claude-a": "anthropic" });
   });
+  it("moves a saved route once its API was checked in full without the model", () => {
+    const saved = { ...node, modelRoutes: { "claude-a": "anthropic" } };
+    const done = { total: 2, checked: 2, found: 0, unchecked: [], stopped: null };
+    const r = found({ modelsSource: "guessed", models: ["claude-a", "gpt-x"], byProtocol: { "openai-chat": ["claude-a", "gpt-x"], anthropic: [] },
+      checks: { "openai-chat": { ...done, found: 2 }, anthropic: done } });
+    // Every model now on the saved API: the PUT drops those, clearing the route.
+    expect(redetectDiff(saved, ["claude-a", "gpt-x"], r, [], "models").quirks.modelRoutes).toEqual({ "claude-a": "openai-chat", "gpt-x": "openai-chat" });
+  });
   it("never offers clearing saved routes: an API that failed its probe looks the same", () => {
     // Anthropic answered 503 on its free probe, so only Chat was asked.
     const saved = { ...node, modelRoutes: { "claude-a": "anthropic" } };
