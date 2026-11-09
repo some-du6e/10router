@@ -17,6 +17,8 @@ import { MIMIC_LABELS } from "@/shared/utils/nodeQuirks.js";
 import type { Mimic, NodeQuirks, RouteProtocol } from "@/shared/utils/nodeQuirks.js";
 import type { EndpointRequestEntry } from "@/lib/endpointRequestLog.js";
 import type { RedetectDiff, RedetectPart } from "@/app/api/providers/[id]/redetect/diff.js";
+import { defaultPick, failedText, summaryText } from "./redetectText";
+import type { RedetectKeys } from "./redetectText";
 import { PROTOCOL_NAME, prettyModel, readNdjson } from "../components/AddEndpointParts";
 import type { DetectProgress } from "@/lib/endpointDetect.js";
 import { shrinkIcon } from "../components/shrinkIcon.js";
@@ -349,41 +351,16 @@ function RedetectStatus({ live, onStop }: { live: RedetectLive; onStop: () => vo
   );
 }
 
-// "Nothing changed", for the half of the page that asked. A check through one
-// key's own URL didn't ask the endpoint's URL, so it doesn't claim it.
-function unchangedText(part: RedetectPart, viaKeyUrl: boolean): string {
-  if (part === "models") return viaKeyUrl ? "No new models." : "Same models as you have now.";
-  if (part === "endpoint") return viaKeyUrl ? "No changes to the API or fixes." : "No changes to the API, URL or fixes.";
-  return viaKeyUrl ? "Same API, no new models." : "Same API, URL and models as when it was added.";
-}
-
-// Which keys the check went through (see the redetect route).
-type RedetectKeys = { usedKey?: boolean; viaKeyUrl?: boolean; keysFailedFirst?: number; baseKeysFailed?: number };
-
-// What a check through one key's own URL (one account) couldn't vouch for.
-function keyUrlNote(part: RedetectPart, baseFailed: boolean): string {
-  const via = baseFailed ? "The keys on the endpoint's URL didn't get through, so this was checked through one key's own URL" : "Checked through one key's own URL";
-  if (part === "models") return `${via}, so models it lacks aren't offered for removal and model routes stay as they are.`;
-  if (part === "endpoint") return `${via}, so URL changes and key style weren't checked.`;
-  return `${via}, so URL changes, key style and model routes weren't checked, and models it lacks aren't offered for removal.`;
-}
-
-// The keys tried before the one that got through.
-function failedFirstNote(diff: RedetectKeys): string {
-  const n = diff.keysFailedFirst || 0;
-  return n ? ` ${n === 1 ? "1 key" : `${n} keys`} tried before it didn't get through.` : "";
-}
-
 // What Re-detect found, as changes to tick and apply.
 function RedetectBox({ node, part, diff, onClose, onApplied }: { node: EndpointNode; part: RedetectPart; diff: RedetectDiff & RedetectKeys; onClose: () => void; onApplied: (n: EndpointNode | null) => Promise<void> }) {
-  const [pick, setPick] = useState({ protocol: !!diff.protocol?.applicable && !diff.viaKeyUrl, baseUrl: !!diff.baseUrl, add: !!diff.ok && diff.addModels.length > 0, remove: !!diff.ok && diff.removeModels.length > 0, outdated: false, quirks: true });
+  const [pick, setPick] = useState(() => defaultPick(diff));
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   if (!diff.ok) {
     return (
       <div role="alert" className="ep-in mt-4 flex items-start gap-2 rounded-[10px] border border-red-500/30 bg-red-500/5 px-3 py-2.5 text-xs">
         <span aria-hidden="true" className="material-symbols-outlined text-[16px] text-red-500">error</span>
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5"><p className="font-medium text-text-main">{part === "models" ? "The model check" : "Re-detect"} didn&apos;t get through</p><p className="text-text-muted">{diff.error ? `${diff.error.replace(/\s*\.*$/, "")}. ` : ""}Nothing was changed.</p></div>
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5"><p className="font-medium text-text-main">{part === "models" ? "The model check" : "Re-detect"} didn&apos;t get through</p><p className="text-text-muted">{failedText(diff)}</p></div>
         <button type="button" onClick={onClose} aria-label="Dismiss" className="material-symbols-outlined text-[16px] text-text-muted hover:text-text-main">close</button>
       </div>
     );
@@ -426,7 +403,7 @@ function RedetectBox({ node, part, diff, onClose, onApplied }: { node: EndpointN
         <span aria-hidden="true" className={`material-symbols-outlined text-[16px] ${diff.changes ? "text-brand-500" : "text-green-500"}`}>{diff.changes ? "bolt" : "check_circle"}</span>
         <div className="min-w-0 flex-1 text-xs">
           <p className="font-medium text-text-main">{diff.changes ? `Found ${diff.changes} change${diff.changes === 1 ? "" : "s"}` : "Nothing changed"}</p>
-          <p className="text-text-muted">{diff.changes ? "Pick what to apply. Free probes only, nothing was generated." : `${unchangedText(part, !!diff.viaKeyUrl)}${diff.usedKey === false ? " No key, so only what's public was checked." : ""}`}{diff.viaKeyUrl ? ` ${keyUrlNote(part, !!diff.baseKeysFailed)}` : ""}{failedFirstNote(diff)}</p>
+          <p className="text-text-muted">{summaryText(part, diff)}</p>
         </div>
         <button type="button" onClick={onClose} aria-label="Dismiss" className="material-symbols-outlined text-[16px] text-text-muted hover:text-text-main">close</button>
       </div>

@@ -84,6 +84,18 @@ describe("retryAsClient", () => {
     expect(r.gate).toBeUndefined();
     expect(r.steps.length).toBeGreaterThan(first.steps.length);
   });
+  it("answers with a rate limit once a client gets past the gate, not the gate", async () => {
+    const fn = async (url, init) => {
+      const h = Object.fromEntries(Object.entries(init.headers || {}).map(([k, v]) => [k.toLowerCase(), v]));
+      const res = (status, obj) => ({ status, text: async () => JSON.stringify(obj), headers: { get: (n) => (n === "content-type" ? "application/json" : null) } });
+      if (!/codex_cli_rs/.test(`${h["user-agent"] || ""} ${h.originator || ""}`)) return res(401, { error: { message: "unauthorized client detected", type: "unauthorized_client_error" } });
+      return res(429, { error: { message: "rate limited", type: "rate_limit_error" } });
+    };
+    const first = await detectEndpoint({ url: BASE, apiKey: KEY, fetchFn: fn, deadlineMs: 20_000, sleep: async () => {} });
+    expect(first).toMatchObject({ ok: false, failure: "gated" });
+    const r = await retryAsClient(first, { url: BASE, apiKey: KEY, fetchFn: fn, detect: (f) => detectEndpoint({ url: BASE, apiKey: KEY, fetchFn: f, deadlineMs: 20_000, sleep: async () => {} }) });
+    expect(r).toMatchObject({ ok: false, failure: "rate", keyVerdict: "rate-limited" });
+  });
   it("keeps the failure (with the extra steps) when no client gets in", async () => {
     const { fn } = gatedFetch({ allow: /never/ });
     const first = await detectEndpoint({ url: BASE, apiKey: KEY, fetchFn: fn, deadlineMs: 20_000 });

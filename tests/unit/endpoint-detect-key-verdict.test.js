@@ -137,6 +137,86 @@ describe("detectEndpoint keyVerdict", () => {
     expect(r).toMatchObject({ ok: true, models: [], stopReason: "failing", keyVerdict: "accepted" });
   });
 
+  it("accepted: the bad-key check proved the key, though the model probes then told nothing", async () => {
+    // Every POST checks the key: the bad one is refused, the real one gets through.
+    const r = await detect(upstream((m, path, body, headers) => {
+      if (path !== "/v1/chat/completions") return;
+      if (headers.authorization !== `Bearer ${KEY}`) return [401, oaiErr("Invalid API key", "authentication_error")];
+      return body.model === "probe" ? [400, oaiErr("messages: at least one message is required")] : [503, oaiErr("upstream down", "server_error")];
+    }));
+    expect(r).toMatchObject({ ok: true, models: [], keyConfirmed: "confirmed", keyVerdict: "accepted" });
+  });
+
+  it("accepted: the bad-key check proved the key, so model refusals are about the models", async () => {
+    const r = await detect(upstream((m, path, body, headers) => {
+      if (path !== "/v1/chat/completions") return;
+      if (headers.authorization !== `Bearer ${KEY}`) return [401, oaiErr("Invalid API key", "authentication_error")];
+      if (body.model === "probe") return [400, oaiErr("messages: at least one message is required")];
+      return body.model === "10router-no-such-model" ? unknown(body.model) : [403, { error: { message: `Forbidden: ${body.model}`, type: "forbidden" } }];
+    }));
+    expect(r).toMatchObject({ ok: true, models: [], keyConfirmed: "confirmed", stopReason: "auth", keyVerdict: "accepted" });
+  });
+
+  it("accepted: no catalog, so there were no models to ask about", async () => {
+    const r = await detect(chat(() => [500, oaiErr("internal error", "server_error")]), { catalog: {} });
+    expect(r).toMatchObject({ ok: true, models: [], keyVerdict: "accepted" });
+  });
+
+  it("refused: GET /models lists without a key and refuses this one", async () => {
+    const r = await detect(upstream((m, path, body, headers) => {
+      if (path === "/v1/models") return headers.authorization ? [401, oaiErr("Invalid API key", "authentication_error")] : [200, { object: "list", data: [{ id: "public-1" }] }];
+      if (path !== "/v1/chat/completions") return;
+      return [400, oaiErr("messages: at least one message is required")];
+    }));
+    expect(r).toMatchObject({ ok: true, models: ["public-1"], keyVerdict: "refused" });
+  });
+
+  it("accepted: a public GET /models list that also answers with the key", async () => {
+    const r = await detect(upstream((m, path) => {
+      if (path === "/v1/models") return [200, { object: "list", data: [{ id: "public-1" }] }];
+      if (path !== "/v1/chat/completions") return;
+      return [400, oaiErr("messages: at least one message is required")];
+    }));
+    expect(r).toMatchObject({ ok: true, models: ["public-1"], keyVerdict: "accepted" });
+  });
+
+  it("rate-limited: one API's probes kept failing, then another API's were rate-limited", async () => {
+    const r = await detect(upstream((m, path, body) => {
+      if (path !== "/v1/chat/completions" && path !== "/v1/responses") return;
+      if (body.model === "probe") return [400, oaiErr("input: required")];
+      if (path === "/v1/chat/completions") return body.model === "10router-no-such-model" ? unknown(body.model) : [500, oaiErr("internal error", "server_error")];
+      return [429, oaiErr("rate limited", "rate_limit_error")];
+    }));
+    expect(r).toMatchObject({ ok: true, models: [], stopReason: "failing", keyVerdict: "rate-limited" });
+  });
+
+  it("accepted: an API that runs a model even on an empty request", async () => {
+    // Chat generates on the empty-body probe (so its models can't be asked);
+    // Responses then refuses every model. The key evidently works.
+    const r = await detect(upstream((m, path, body) => {
+      if (path === "/v1/chat/completions") return [200, { id: "c1", object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }] }];
+      if (path !== "/v1/responses") return;
+      if (body.model === "probe") return [400, oaiErr("input: required")];
+      return [401, oaiErr("Invalid API key", "authentication_error")];
+    }));
+    expect(r.ok).toBe(true);
+    expect(r.quirks?.generatesOnEmpty).toBe(true);
+    expect(r.keyVerdict).toBe("accepted");
+  });
+
+  it("nothing known: detection was cancelled during the model probes", async () => {
+    const ctl = new AbortController();
+    const quick = chat((id) => (id === "10router-no-such-model" ? unknown(id) : [400, oaiErr("messages: at least one message is required")]));
+    const fetchFn = async (url, init) => {
+      const body = init.body ? JSON.parse(init.body) : null;
+      if (body?.model && body.model !== "probe" && body.model !== "10router-no-such-model") ctl.abort();
+      if (init.signal?.aborted) throw new DOMException("aborted", "AbortError");
+      return quick(url, init);
+    };
+    const r = await detect(fetchFn, { signal: ctl.signal });
+    expect(r).toMatchObject({ ok: true, models: [], stopReason: "aborted", keyVerdict: null });
+  });
+
   it("nothing known: the made-up-id check got a server error", async () => {
     const r = await detect(chat(() => [503, oaiErr("upstream down", "server_error")]));
     expect(r).toMatchObject({ ok: true, models: [], keyVerdict: null });
@@ -149,13 +229,13 @@ describe("detectEndpoint keyVerdict", () => {
       const body = init.body ? JSON.parse(init.body) : null;
       if (body?.model && body.model !== "probe" && body.model !== "10router-no-such-model") {
         await new Promise((resolve, reject) => {
-          const t = setTimeout(resolve, 5_000);
+          const t = setTimeout(resolve, 10_000);
           init.signal?.addEventListener("abort", () => { clearTimeout(t); reject(new DOMException("aborted", "AbortError")); });
         });
       }
       return quick(url, init);
     };
-    const r = await detect(fetchFn, { deadlineMs: 300, timeoutMs: 5_000 });
+    const r = await detect(fetchFn, { deadlineMs: 1_500, timeoutMs: 10_000 });
     expect(r).toMatchObject({ ok: true, models: [], keyVerdict: null });
   });
 

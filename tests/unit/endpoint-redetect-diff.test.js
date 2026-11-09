@@ -76,6 +76,19 @@ describe("redetectDiff", () => {
     // Listed via /models (no per-API probing): routes left alone.
     expect(redetectDiff(saved, ["a", "b"], found()).quirks.modelRoutes).toBeUndefined();
   });
+  it("keeps the saved routes of models a cut-short run never reached", () => {
+    const saved = { ...node, modelRoutes: { "claude-a": "anthropic", "claude-b": "anthropic" } };
+    // Stopped early: only claude-a (now on Responses) and gpt-x were reached.
+    const r = found({ modelsSource: "guessed", partial: true, models: ["claude-a", "gpt-x"], byProtocol: { "openai-chat": ["gpt-x"], "openai-responses": ["claude-a"] } });
+    expect(redetectDiff(saved, ["claude-a", "claude-b", "gpt-x"], r, [], "models").quirks.modelRoutes)
+      .toEqual({ "claude-a": "openai-responses", "claude-b": "anthropic", "gpt-x": "openai-chat" });
+    // Cut short with the reached routes unchanged: nothing to offer.
+    expect(redetectDiff(saved, ["claude-a", "claude-b", "gpt-x"], found({ modelsSource: "guessed", partial: true, models: ["claude-a", "gpt-x"],
+      byProtocol: { "openai-chat": ["gpt-x"], anthropic: ["claude-a"] } }), [], "models").quirks.modelRoutes).toBeUndefined();
+    // A full run that no longer sees claude-b drops its route.
+    expect(redetectDiff(saved, ["claude-a", "gpt-x"], { ...r, partial: false }, [], "models").quirks.modelRoutes)
+      .toEqual({ "claude-a": "openai-responses", "gpt-x": "openai-chat" });
+  });
   it("passes a failure through", () => {
     expect(redetectDiff(node, [], { ok: false, error: "401", steps: [] })).toMatchObject({ ok: false, error: "401", changes: 0 });
   });
@@ -108,6 +121,11 @@ describe("redetectDiff for one key at its own URL (keyScoped)", () => {
     // "new" answered only on Anthropic; the endpoint is saved as Chat and gets no route for it.
     expect(d.addModels).toEqual([]);
     expect(redetectDiff(node, ["a"], found({ byProtocol: { "openai-chat": ["a", "b"] }, models: ["a", "b"] }), [], "models", { keyScoped: true }).addModels).toEqual(["b"]);
+  });
+
+  it("adds the models served on the saved API, not the ones on the API it would switch to", () => {
+    const split = found({ protocol: "openai-responses", models: ["x", "y"], byProtocol: { "openai-chat": ["x"], "openai-responses": ["y"] } });
+    expect(redetectDiff(node, [], split, [], "all", { keyScoped: true }).addModels).toEqual(["x"]);
   });
 
   it("still offers an outdated saved model the account didn't list", () => {

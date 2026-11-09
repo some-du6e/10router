@@ -96,8 +96,12 @@ function routesChange(node: SavedEndpoint, r: DetectResult, target: Protocol): R
     // An early stop leaves some API's list short: not proof the split is gone.
     return Object.keys(saved).length && !r.partial ? {} : null;
   }
-  if (sameRoutes(saved, built.routes)) return null;
-  return Object.fromEntries(built.models.map((m) => [m, built.routes[m] || target]));
+  // A cut-short run didn't reach every model: the saved routes of the ones it
+  // missed stay (the offer replaces modelRoutes whole).
+  const reached = new Set(built.models.map((m) => m.toLowerCase()));
+  const kept = r.partial ? Object.fromEntries(Object.entries(saved).filter(([m]) => !reached.has(m.toLowerCase()))) : {};
+  if (sameRoutes(saved, { ...kept, ...built.routes })) return null;
+  return { ...kept, ...Object.fromEntries(built.models.map((m) => [m, built.routes[m] || target])) };
 }
 
 // Which half of the page asked: "endpoint" (API, URL, fixes), "models"

@@ -1055,6 +1055,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   let clientGated = false;
   let rateLimited = false;
   let probeAuthFail = false; // a POST probe, not just GET /models, refused the key
+  let keyedListRefused = false; // GET /models listed without a key, and refused this one
   // A host that never answers (timeouts, refused, no DNS): two such requests
   // with nothing else heard back is enough; waiting on the rest only burns time.
   let netFails = 0, answered = false;
@@ -1081,6 +1082,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
         if (style === "none" && key) {
           const k = await fetchModelList(probe, b, "GET /models (bearer)", AUTH.bearer);
           if (k.listed) models = dedupe([...models, ...k.ids]);
+          else if (classify(k.first) === "auth") keyedListRefused = true;
           listComplete &&= k.listed && k.complete;
         }
         break outer;
@@ -1243,15 +1245,19 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   const pathStyle = primary === "anthropic" ? ["bearer", "x-api-key"] : [openaiAuth === AUTH["api-key"] ? "api-key" : "bearer"];
   const listRefusedPathStyle = pathStyle.every((st) => listRefused.has(st)) && keyConfirmed !== "confirmed";
   const authRejected = !models.length && !keyAccepted && (probesRefusedKey || listRefusedPathStyle);
-  // The free probes got through with this key. Anything found or generated
+  // The free probes got through with this key. A key the bad-key check
+  // confirmed, or that GET /models took, works. A public list that refused it
+  // when sent with the key doesn't vouch for it. Anything found or generated
   // means it works. It was refused only if the model probes stopped on the key
   // itself ("denied" is a key limited to other models, and a GET /models
   // refusal can be an admin-only list), and limited only if a rate limit
   // stopped them first. Probes cut short by time or failures say nothing.
-  const keyVerdict: KeyVerdict = models.length || generatesOnEmpty.size || modelStops.has("generated") ? "accepted"
-    : modelStops.has("auth") && !keyAccepted ? "refused"
+  const confirmed = keyConfirmed === "confirmed";
+  const keyVerdict: KeyVerdict = keyedListRefused && !confirmed ? "refused"
+    : models.length || generatesOnEmpty.size || modelStops.has("generated") ? "accepted"
+    : modelStops.has("auth") && !keyAccepted && !confirmed ? "refused"
     : modelStops.has("rate") ? "rate-limited"
-    : keyAccepted || modelStops.has("denied") || !inconclusive ? "accepted"
+    : keyAccepted || confirmed || modelStops.has("denied") || !inconclusive ? "accepted"
     : null;
 
   const name = matched?.name || suggestName(base);

@@ -30,6 +30,9 @@ type CustomModel = { id?: string; providerAlias?: string; type?: string; kind?: 
 const keyRefused = (r: DetectResult) => r.keyVerdict === "refused";
 const rateLimited = (r: DetectResult) => r.keyVerdict === "rate-limited";
 const worked = (r: DetectResult) => r.ok && r.keyVerdict === "accepted";
+// It answered, but the model probes were cut short before they said anything
+// about the key: worth trying another key, and shown if none does better.
+const unsure = (r: DetectResult) => r.ok && !r.keyVerdict;
 const clause = (s: string | undefined) => String(s || "").replace(/\s*\.*\s*$/, "");
 
 // POST /api/providers/[id]/redetect - the endpoint page's "Re-detect": run the
@@ -100,19 +103,19 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         detect: (f) => { offset = maxN; sentBase = maxSent; return detectEndpoint({ url, apiKey: key, fetchFn: f, catalog, signal, onProgress, skipModels, deadlineMs: left() }); },
       });
     };
-    // The next key gets a try after a refusal or a rate limit. After anything
-    // else (down, gated) only when this key had its own URL: a key on the
-    // endpoint's URL would just meet the same server, while another account's
-    // server may be fine.
+    // The next key gets a try after a refusal, a rate limit or a cut-short
+    // check. After anything else (down, gated) only when this key had its own
+    // URL: a key on the endpoint's URL would just meet the same server, while
+    // another account's server may be fine.
     const runs: Run[] = [];
     for (const candidate of candidates) {
       if (runs.length && (signal.aborted || left() < MIN_ATTEMPT_MS)) break;
       const result = await runWith(candidate);
       runs.push({ candidate, result });
-      if (worked(result) || (!keyRefused(result) && !rateLimited(result) && !candidate.own)) break;
+      if (worked(result) || (!keyRefused(result) && !rateLimited(result) && !unsure(result) && !candidate.own)) break;
     }
-    const last = runs[runs.length - 1];
-    const win = worked(last.result) ? last : null;
+    // A key that worked, else the first that answered without a verdict.
+    const win = runs.find((r) => worked(r.result)) || runs.find((r) => unsure(r.result)) || null;
     // None worked: report the first key's verdict (the endpoint's own URL when
     // a key uses it), as a failure even when its refusal came after the free
     // probes passed, and say how many keys were tried. A run with no key keeps
@@ -134,12 +137,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     // URL, missing models, routes and auth style out of the endpoint's changes.
     const via = shown.candidate.own;
     const diff = redetectDiff(node, current, result, outdatedModels(current, catalog), part, { keyScoped: via });
-    // Keys that didn't get through before the one that did: a dead key still
-    // switched on is worth knowing about, and a win at a key's own URL after the
-    // endpoint's URL refused its keys mustn't read as "the URL wasn't asked".
-    const before = win ? runs.slice(0, -1) : [];
-    const failedFirst = before.length ? { keysFailedFirst: before.length, baseKeysFailed: before.filter((r) => !r.candidate.own).length } : {};
-    return { ...diff, steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!shown.candidate.apiKey, ...failedFirst, ...(via ? { viaKeyUrl: true } : {}), ...(result.gate ? { gate: result.gate } : {}) };
+    // The other keys tried, when one got through: a dead key still switched on
+    // is worth knowing about, and a win at a key's own URL after the endpoint's
+    // URL refused its keys mustn't read as "the URL wasn't asked".
+    const others = win ? runs.filter((r) => r !== win) : [];
+    const failed = others.length ? { otherKeysFailed: others.length, baseKeysFailed: others.filter((r) => !r.candidate.own).length } : {};
+    // Why the model checks stopped early, so "nothing changed" doesn't overclaim.
+    const cut = result.ok && result.partialReason ? { partialReason: result.partialReason } : {};
+    return { ...diff, steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!shown.candidate.apiKey, ...failed, ...cut, ...(via ? { viaKeyUrl: true } : {}), ...(result.gate ? { gate: result.gate } : {}) };
   }, { ok: false, error: "Re-detect failed", steps: [] });
 }
 
@@ -169,7 +174,6 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
   let body: { baseUrl?: unknown; apiType?: unknown; quirks?: unknown; addModels?: unknown; removeModels?: unknown; modelsNote?: unknown } = {};
   try { body = await request.json(); } catch { return NextResponse.json({ error: "Bad request" }, { status: 400 }); }
 
-  const ids = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && MODEL_RE.test(x)).slice(0, 1000) : []);
   const updates: Record<string, unknown> = {};
   if (body.baseUrl !== undefined) {
     const base = normalizeUrl(body.baseUrl);
@@ -190,9 +194,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
   const hasRoutes = !!offered && typeof offered === "object" && "modelRoutes" in (offered as object);
   if (updates.apiType !== undefined && finalProtocol(node, updates.apiType) !== oldProto && !hasRoutes) {
     const saved = (node.modelRoutes || {}) as Record<string, string>;
-    // Models added in the same apply were found on the old API too (a check
-    // through one key's own URL offers no routes).
-    const mine = [...((await getCustomModels()) as CustomModel[]).filter((m) => m.providerAlias === id && (m.kind || m.type || "llm") === "llm" && m.id).map((m) => m.id as string), ...ids(body.addModels)];
+    const mine = ((await getCustomModels()) as CustomModel[]).filter((m) => m.providerAlias === id && (m.kind || m.type || "llm") === "llm" && m.id).map((m) => m.id as string);
     offered = { ...(offered && typeof offered === "object" ? offered : {}), modelRoutes: Object.fromEntries(mine.map((m) => [m, saved[m] || oldProto])) };
   }
   const { quirks, removed } = mergeQuirks(node, { quirks: ownRoutesOnly(offered, finalProtocol(node, updates.apiType)) });
@@ -210,6 +212,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     }),
   })));
 
+  const ids = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && MODEL_RE.test(x)).slice(0, 1000) : []);
   let added = 0, failed = 0;
   for (const m of ids(body.addModels)) {
     try { await addCustomModel({ providerAlias: id, id: m, type: "llm", name: undefined, caps: undefined }); added++; } catch { failed++; }
