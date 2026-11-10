@@ -134,7 +134,7 @@ function extractAntigravitySession(body) {
     return m ? normalizeSessionId(m[1]) : null;
 }
 
-function extractClientSessionId(headers, body, scope = "") {
+function extractClientSessionId(headers, body, scope = "", strict = scope === "kiro") {
     // Claude Code sends the session in a header AND in metadata.user_id; the header
     // survives translation to formats that drop metadata (e.g. Responses API).
     const claude = extractClaudeCodeSession(body?.metadata?.user_id)
@@ -146,13 +146,13 @@ function extractClientSessionId(headers, body, scope = "") {
         const v = headerValue(headers, key);
         if (v) return v;
     }
-    const requestId = scope === "kiro" ? null : headerValue(headers, "x-client-request-id");
+    const requestId = strict ? null : headerValue(headers, "x-client-request-id");
     if (requestId) return requestId;
     const fromBody =
         normalizeSessionId(body?.prompt_cache_key) ||
         normalizeSessionId(body?.session_id) ||
         normalizeSessionId(body?.conversation_id) ||
-        (scope === "kiro" ? null : normalizeSessionId(body?.metadata?.user_id));
+        (strict ? null : normalizeSessionId(body?.metadata?.user_id));
     return fromBody || null;
 }
 
@@ -229,10 +229,12 @@ export function resolveSessionId(opts = {}) {
  * Session→account affinity needs an identity that exists *before* an account is
  * chosen, so the per-connection fallback in `resolveSessionIdentity` is not
  * usable there (it is derived from the very thing being selected). Returns null
- * when the client sent nothing identifying.
+ * when the client sent nothing identifying. `strict` also skips the ids that
+ * need not name one conversation: `x-client-request-id` and a bare
+ * `metadata.user_id` (per user for most clients).
  */
-export function resolveClientSessionId({ headers, body, scope = "" } = {}) {
-    return extractClientSessionId(headers, body, scope);
+export function resolveClientSessionId({ headers, body, scope = "", strict = scope === "kiro" } = {}) {
+    return extractClientSessionId(headers, body, scope, strict);
 }
 
 export function resolveContinuationId({ sessionId, connectionId, scope = "", ephemeral = false } = {}) {

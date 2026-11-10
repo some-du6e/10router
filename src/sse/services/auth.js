@@ -318,6 +318,43 @@ async function claimProbe(conn, model, from) {
   return JSON.stringify(saved?.[getAuthDemoteKey(model)]) === JSON.stringify(to);
 }
 
+// Locked on this model for a limit: a key that serves again once it clears.
+// The lock that ends last decides, so a short limit lock can't hide a longer
+// account-wide refusal.
+function isLimitLocked(c, model) {
+  const [scope, until] = [[getModelLockKey(model), model || "__all"], [MODEL_LOCK_ALL, "__all"]]
+    .map(([key, sc]) => [sc, new Date(c[key] || 0).getTime() || 0])
+    .reduce((a, b) => (b[1] > a[1] ? b : a));
+  return until > Date.now() && c[`${MODEL_LIMIT_PREFIX}${scope}`] === true;
+}
+
+/**
+ * A key's rate-limit lock on a model, and whether another key could serve the
+ * model meanwhile. Null when the key is excluded, switched off, gone or
+ * filtered out.
+ * @param {string} provider
+ * @param {string} connectionId
+ * @param {string} model
+ * @param {{ excludeIds?: Set<string>, connectionFilter?: ((c: any) => boolean) | null }} [options]
+ * @returns {Promise<{ name: string, limitUntilMs: number, alternative: boolean } | null>}
+ *   limitUntilMs is 0 unless the key is locked for a limit (not a refusal or
+ *   server error).
+ */
+export async function getLimitLock(provider, connectionId, model, { excludeIds = new Set(), connectionFilter = null } = {}) {
+  if (!connectionId || excludeIds.has(connectionId)) return null;
+  const providerId = resolveProviderId(provider);
+  const all = await getProviderConnections({ provider: providerId, isActive: true });
+  const connections = typeof connectionFilter === "function" ? all.filter(c => connectionFilter(c)) : all;
+  const conn = connections.find(c => c.id === connectionId);
+  if (!conn) return null;
+  return {
+    name: conn.displayName || conn.name || conn.email || connectionId.slice(0, 8),
+    limitUntilMs: isLimitLocked(conn, model) ? getModelLockUntil(conn, model) : 0,
+    alternative: connections.some(c => c.id !== connectionId && !excludeIds.has(c.id)
+      && !isModelLockActive(c, model) && planCanServeModel(providerId, c, model)),
+  };
+}
+
 /**
  * Get provider credentials from localDb
  * Filters out unavailable accounts and returns the selected account based on strategy
@@ -464,15 +501,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       if (earliest) {
         // A dead key's 403 ahead of a key in a 2s rate-limit lock would turn a
         // retryable wait into an auth failure.
-        // Locked on this model for a limit: a key that serves again once it
-        // clears. The lock that ends last decides, so a short limit lock can't
-        // hide a longer account-wide refusal.
-        const limitLocked = c => {
-          const [scope, until] = [[getModelLockKey(model), model || "__all"], [MODEL_LOCK_ALL, "__all"]]
-            .map(([key, sc]) => [sc, new Date(c[key] || 0).getTime() || 0])
-            .reduce((a, b) => (b[1] > a[1] ? b : a));
-          return until > Date.now() && c[`${MODEL_LIMIT_PREFIX}${scope}`] === true;
-        };
+        const limitLocked = c => isLimitLocked(c, model);
         // errorCode/lastError are the key's last error on any model; the limit
         // flag on the lock is this model's. Where they disagree, the stored error
         // came from another model.

@@ -3,6 +3,7 @@ import "open-sse/index.js";
 import {
   getProviderCredentials,
   markAccountUnavailable,
+  getLimitLock,
   clearAccountError,
   extractApiKey,
   isValidApiKey,
@@ -40,6 +41,14 @@ import {
   bindAffinity,
   releaseAffinity,
 } from "open-sse/services/sessionAffinity.js";
+import {
+  cacheAffinityKey,
+  getCacheHolder,
+  rememberCacheHolder,
+  planCacheWait,
+  waitUnlessAborted,
+} from "open-sse/services/cacheAffinity.js";
+import { estimateInputTokens } from "open-sse/utils/usageTracking.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
 import { finalizeRoutingError } from "../services/finalRoutingError.js";
 import { detectClientTool } from "open-sse/utils/clientDetector.js";
@@ -660,6 +669,27 @@ async function routeSingleModelChat(
     }
   }
 
+  // Prompt-cache affinity for every other provider: a conversation that asks for
+  // a prompt cache prefers the key that served it last, which holds that cache.
+  const cacheKey = affinityKey ? null : cacheAffinityKey({ provider, model, body, headers: clientRawRequest?.headers });
+  const connectionFilter = blockedBilling ? (c: { provider: string; authType?: string }) => !blockedBilling.has(connectionBilling(c)) : null;
+  // Total time this request has waited for its cache holder, across passes.
+  let cacheWaitedMs = 0;
+  let promptTokens: number | null = null;
+  // Waits for the cache holder when it is briefly rate-limited and the prompt is
+  // big enough that rebuilding the cache elsewhere costs more than the wait.
+  const waitForCacheHolder = async (holder: string | null, excludeIds: Set<string>): Promise<boolean> => {
+    if (!holder || signal?.aborted) return false;
+    // Fail-open: without the lock the request routes as it would have anyway.
+    const lock = await getLimitLock(provider, holder, model, { excludeIds, connectionFilter }).catch(() => null);
+    const waitMs = planCacheWait({ lock, waitedMs: cacheWaitedMs, promptTokens: () => (promptTokens ??= estimateInputTokens(body)) });
+    if (!waitMs || !lock) return false;
+    log.info("CACHE", `waiting ${waitMs}ms for ACC:${lock.name}, which holds this conversation's prompt cache`);
+    cacheWaitedMs += waitMs;
+    await waitUnlessAborted(waitMs, signal);
+    return true;
+  };
+
   // Rate-limit hold: when every account is limited we can keep the client's
   // stream open and wait for the reset instead of returning an error.
   const limitHold = allowHold ? await resolveLimitHold(apiKey) : { enabled: false, onPinned: false };
@@ -680,14 +710,16 @@ async function routeSingleModelChat(
   while (true) {
     // The client is gone: try no more accounts, and lock none for its abort.
     if (signal?.aborted) return clientAbortResult();
+    const cacheHolder = cacheKey ? getCacheHolder(cacheKey) : null;
+    if (await waitForCacheHolder(cacheHolder, excludeConnectionIds)) continue;
     // A pin is a preference, not a requirement: getProviderCredentials ignores a
     // connection that is excluded, model-locked or rate-limited and falls back to
     // the configured strategy, so a dead pinned account never wedges a session.
-    const preferredConnectionId = affinityKey ? getAffinity(affinityKey) : null;
+    const preferredConnectionId = affinityKey ? getAffinity(affinityKey) : cacheHolder;
     // connectionId is always set on a selected account (real or the "noauth" virtual one).
     const credentials = (await getProviderCredentials(provider, excludeConnectionIds, model, {
       preferredConnectionId,
-      connectionFilter: blockedBilling ? (c: { provider: string; authType?: string }) => !blockedBilling.has(connectionBilling(c)) : null,
+      connectionFilter,
     })) as (Credentials & { connectionId: string } & Record<string, any>) | null;
 
     // All accounts unavailable
@@ -789,7 +821,10 @@ async function routeSingleModelChat(
       }
     } as Parameters<typeof handleChatCore>[0])) as ChatCoreResult;
 
-    if (result.success) return result;
+    if (result.success) {
+      if (cacheKey) rememberCacheHolder(cacheKey, credentials.connectionId);
+      return result;
+    }
     if (signal?.aborted) return clientAbortResult();
 
     // Refresh Antigravity quota before deciding how long to lock the account.
@@ -844,6 +879,20 @@ async function routeSingleModelChat(
         retryAtMs: resetsAtMs || Date.now() + (cooldownMs || 0),
         response: result.response,
       };
+    }
+
+    // The key holding this conversation's prompt cache was just rate-limited:
+    // retry it once its short lock ends rather than rebuilding the cache on the
+    // next key.
+    if (
+      shouldFallback &&
+      credentials.connectionId === cacheHolder &&
+      isLimitError(result.status, result.error) &&
+      await waitForCacheHolder(cacheHolder, excludeConnectionIds)
+    ) {
+      lastError = result.error;
+      lastStatus = result.status;
+      continue;
     }
 
     if (shouldFallback) {
