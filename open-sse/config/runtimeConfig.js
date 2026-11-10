@@ -46,9 +46,9 @@ function envMs(name, def, min = 1) {
 
 // Parse a plain non-negative integer env override (no timer cap), else the default.
 function envInt(name, def, min = 0) {
-  const raw = process.env[name];
-  if (raw == null || raw === "") return def;
-  const n = Number(raw.trim());
+  const raw = process.env[name]?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return def;
+  const n = Number(raw);
   return Number.isSafeInteger(n) && n >= min ? n : def;
 }
 

@@ -586,4 +586,12 @@ describe("env settings", () => {
     const { config } = await fresh();
     expect(config).toMatchObject({ ttlMs: 5 * 60 * 1000, maxWaitMs: 10 * 1000, minPromptTokens: 32 * 1000 });
   });
+
+  it("keeps the token threshold for a blank or non-decimal value", async () => {
+    for (const raw of ["   ", "1e3", "0x10"]) {
+      process.env.CACHE_AFFINITY_MIN_TOKENS = raw;
+      const { config } = await fresh();
+      expect(config.minPromptTokens).toBe(32 * 1000);
+    }
+  });
 });
