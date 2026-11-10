@@ -262,6 +262,8 @@ flowchart TD
 
 Fallback decisions are driven by `open-sse/services/accountFallback.js` using status codes and error-message heuristics.
 
+Prompt-cache affinity (`open-sse/services/cacheAffinity.js`) shapes step G for requests that ask for a prompt cache. Upstream caches are per account, so each conversation remembers its warm keys: the ones that served it within the cache TTL. A conversation is identified by a hash of the client key, session id, system prompt, instructions and first message. `getProviderCredentials` lets the account strategy pick among the usable warm keys, and among all keys when none is usable. When no warm key is usable but one is only rate-limited until shortly (`CACHE_AFFINITY_MAX_WAIT_MS` in all per request), another key could serve, and the prompt is large (`CACHE_AFFINITY_MIN_TOKENS`), it returns `warmLimitedUntilMs` instead of a key. The account loop in `src/sse/handlers/chat.ts` then sleeps until then (abort-aware, with jitter) and selects again. A warm key's own short 429 is recorded as a failure but not excluded, so the next selection can wait for it. Codex uses its own opt-in session pin (`open-sse/services/sessionAffinity.js`) instead.
+
 ## OAuth Onboarding and Token Refresh Lifecycle
 
 ```mermaid

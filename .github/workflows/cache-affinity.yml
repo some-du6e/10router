@@ -3,16 +3,17 @@ name: Cache affinity
 on:
   pull_request:
     paths:
-      - "open-sse/services/cacheAffinity.js"
-      - "open-sse/services/sessionAffinity.js"
-      - "open-sse/utils/sessionManager.js"
-      - "open-sse/config/runtimeConfig.js"
-      - "src/sse/services/auth.js"
-      - "src/sse/handlers/chat.ts"
+      - "open-sse/**"
+      - "src/sse/**"
+      - "src/lib/db/**"
+      - "tests/package.json"
+      - "tests/vitest.config.js"
       - "tests/unit/cache-affinity.test.js"
       - "tests/unit/session-manager.test.js"
       - "tests/unit/session-affinity.test.js"
       - "tests/unit/kiro-conversation-canonicalization.test.js"
+      - "tests/unit/limit-hold*.test.js"
+      - "tests/unit/all-locked-soonest-error.test.js"
       - ".github/workflows/cache-affinity.yml"
   workflow_dispatch:
 
@@ -41,12 +42,19 @@ jobs:
           unit/session-manager.test.js
           unit/session-affinity.test.js
           unit/kiro-conversation-canonicalization.test.js
+          unit/limit-hold.test.js
+          unit/limit-hold-backup.test.js
           unit/limit-hold-integration.test.js
           unit/all-locked-soonest-error.test.js
       - name: Lint
         run: >
           ./node_modules/.bin/eslint
           open-sse/services/cacheAffinity.js
+          open-sse/services/sessionAffinity.js
+          open-sse/utils/abortableSleep.js
+          open-sse/utils/limitHold.js
+          open-sse/utils/claudeCloaking.js
+          open-sse/translator/request/claude-to-openai.js
           open-sse/utils/sessionManager.js
           open-sse/config/runtimeConfig.js
           src/sse/services/auth.js
