@@ -134,7 +134,7 @@ function extractAntigravitySession(body) {
     return m ? normalizeSessionId(m[1]) : null;
 }
 
-function extractClientSessionId(headers, body, scope = "", strict = scope === "kiro") {
+function extractClientSessionId(headers, body, strict) {
     // Claude Code sends the session in a header AND in metadata.user_id; the header
     // survives translation to formats that drop metadata (e.g. Responses API).
     const claude = extractClaudeCodeSession(body?.metadata?.user_id)
@@ -209,7 +209,7 @@ function assistantTextSessionId(scope, body) {
  * @returns {{sessionId: string, ephemeral: boolean}} A session id plus whether it is one-shot
  */
 export function resolveSessionIdentity({ headers, body, connectionId, workspaceId, scope = "" } = {}) {
-    const client = extractClientSessionId(headers, body, scope);
+    const client = extractClientSessionId(headers, body, scope === "kiro");
     if (client) return { sessionId: client, ephemeral: false };
     const fromAssistant = scope === "kiro" ? null : assistantTextSessionId(`${scope}:${connectionId || ""}`, body);
     if (fromAssistant) return { sessionId: fromAssistant, ephemeral: false };
@@ -233,8 +233,8 @@ export function resolveSessionId(opts = {}) {
  * need not name one conversation: `x-client-request-id` and a bare
  * `metadata.user_id` (per user for most clients).
  */
-export function resolveClientSessionId({ headers, body, scope = "", strict = scope === "kiro" } = {}) {
-    return extractClientSessionId(headers, body, scope, strict);
+export function resolveClientSessionId({ headers, body, strict = false } = {}) {
+    return extractClientSessionId(headers, body, strict);
 }
 
 export function resolveContinuationId({ sessionId, connectionId, scope = "", ephemeral = false } = {}) {

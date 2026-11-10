@@ -1,9 +1,10 @@
 /**
  * Codex session → account affinity.
  *
- * The gateway re-picks an account for every turn. For most providers that is
- * exactly what you want: it spreads load and lets a rate-limited account be
- * dodged mid-conversation. For Codex it is expensive. Codex sends a stable
+ * The gateway re-picks an account for every turn. For other providers a
+ * conversation that marks a prompt cache leans toward the keys that served it
+ * recently (services/cacheAffinity.js), but no key is pinned. For Codex,
+ * re-picking is expensive. Codex sends a stable
  * `session_id` and the executor already turns that into a stable
  * `prompt_cache_key` (see `resolveCacheSessionId` in `executors/codex.js`), but
  * the upstream prompt cache is per-account — so a stable key spread across N
@@ -15,8 +16,9 @@
  * is the same idea codex-lb calls `sticky_kind=codex_session`.
  *
  * Deliberately narrow:
- *   - only providers in `AFFINITY_PROVIDERS` are considered, so every other
- *     format/provider keeps the existing per-turn selection untouched;
+ *   - only providers in `AFFINITY_PROVIDERS` are considered; every other
+ *     provider gets prompt-cache affinity instead (services/cacheAffinity.js),
+ *     which prefers warm keys without pinning one;
  *   - a pin is a *preference*, never a requirement. `getProviderCredentials`
  *     ignores a `preferredConnectionId` that is rate-limited, model-locked or
  *     excluded, and falls back to the configured strategy. Callers release the
@@ -82,7 +84,7 @@ function normalize(value) {
 export function affinityKeyFor({ provider, headers, body } = {}) {
   if (!isAffinityProvider(provider)) return null;
   const plain = toPlainHeaders(headers);
-  const session = resolveClientSessionId({ headers: plain, body, scope: "codex" });
+  const session = resolveClientSessionId({ headers: plain, body });
   if (!session) return null;
   const thread = normalize(plain["thread-id"]);
   return `${provider}:${session}${thread ? `#${thread}` : ""}`;
