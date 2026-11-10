@@ -170,11 +170,42 @@ describe("cache affinity routing", () => {
     await chat(body());
     await lockForLimit(a, 300);
 
-    const started = Date.now();
     expect((await chat(body())).status).toBe(200);
     expect(upstream.calls).toEqual([a, a]);
-    expect(Date.now() - started).toBeGreaterThanOrEqual(250);
     expect(cacheWaits()).toHaveLength(1);
+  });
+
+  it("does not wait on a lock that the slack after it would take past the cap", async () => {
+    Object.assign(CACHE_AFFINITY, { lockSlackMs: 600 });
+    const { a, b } = await addKeys("a", "b");
+    await chat(body());
+    await lockForLimit(a, 600);
+
+    expect((await chat(body())).status).toBe(200);
+    expect(cacheWaits()).toHaveLength(0);
+    expect(upstream.calls).toEqual([a, b]);
+  });
+
+  it("keeps round-robin rotating new conversations while one stays on its warm key", async () => {
+    await db.updateSettings({ providerStrategies: { [provider]: { fallbackStrategy: "round-robin" } } });
+    try {
+      const keys = Object.values(await addKeys("a", "b", "c"));
+      await chat(body());
+      const busy = upstream.calls[0];
+      const fresh = [];
+      for (let i = 0; i < 6; i++) {
+        upstream.calls = [];
+        await chat(body({ session: `aaaaaaaa-0000-4000-8000-00000000000${i}` }));
+        fresh.push(upstream.calls[0]);
+        await chat(body());
+        expect(upstream.calls[1]).toBe(busy);
+      }
+      // Sticky round-robin (3 in a row) over the new conversations alone.
+      expect(fresh.filter((id) => id === busy).length).toBeLessThanOrEqual(2);
+      expect(new Set(fresh)).toEqual(new Set(keys));
+    } finally {
+      await db.updateSettings({ providerStrategies: {} });
+    }
   });
 
   it("retries the warm key after its own short 429", async () => {
@@ -186,7 +217,7 @@ describe("cache affinity routing", () => {
     expect(upstream.calls).toEqual([a, a, a]);
   });
 
-  it("still counts the retried 429 among the request's failures", async () => {
+  it("counts the retried warm key once among the request's failures", async () => {
     const { a, b } = await addKeys("a", "b");
     await chat(body());
 
@@ -194,7 +225,10 @@ describe("cache affinity routing", () => {
     const res = await chat(body());
     expect(upstream.calls).toEqual([a, a, a, b]);
     expect(res.status).toBe(429);
-    expect((await res.json()).error.message).toContain("All 3 accounts unavailable");
+    const { message } = (await res.json()).error;
+    expect(message).toContain("All 2 accounts unavailable");
+    expect(message.match(/\ba \(HTTP 429\)/g)).toHaveLength(1);
+    expect(message.match(/\bb \(HTTP 429\)/g)).toHaveLength(1);
   });
 
   it("moves to the next key when the lock outlasts the wait cap", async () => {
@@ -331,6 +365,19 @@ describe("warm key selection", () => {
     await lockForLimit(a, 300);
     const picked = await select(new Set(), { warmConnectionIds: [a], maxWarmWaitMs: 0 });
     expect(picked.connectionId).toBe(b);
+  });
+
+  it("leaves a claimed demotion probe alone", async () => {
+    const { a, c } = await addKeys("a", "b", "c");
+    const past = new Date(Date.now() - 60_000).toISOString();
+    await db.updateProviderConnection(a, {
+      [db.getAuthDemoteKey(MODEL)]: { demotedAt: past, firstAt: past, nextProbeAt: past },
+    });
+    await lockForLimit(c, 300);
+    // a is due its probe; c, the only warm key, is briefly limited.
+    const picked = await select(new Set(), { warmConnectionIds: [c], maxWarmWaitMs: 1000 });
+    expect(picked.warmLimitedUntilMs).toBeUndefined();
+    expect(picked.connectionId).toBe(a);
   });
 
   it("goes the all-locked way when the other key is excluded or filtered out", async () => {
@@ -470,10 +517,18 @@ describe("wait sizing", () => {
   it("adds bounded jitter after the lock", () => {
     vi.useFakeTimers();
     const until = Date.now() + 100;
-    expect(affinity.warmWaitMs(until, () => 0)).toBe(100 + CACHE_AFFINITY.lockSlackMs);
-    const most = affinity.warmWaitMs(until, () => 0.99999);
+    expect(affinity.warmWaitMs(until, Infinity, () => 0)).toBe(100 + CACHE_AFFINITY.lockSlackMs);
+    const most = affinity.warmWaitMs(until, Infinity, () => 0.99999);
     expect(most).toBeGreaterThan(100 + CACHE_AFFINITY.lockSlackMs);
     expect(most).toBeLessThanOrEqual(100 + CACHE_AFFINITY.lockSlackMs + CACHE_AFFINITY.jitterMs);
+  });
+
+  it("keeps lock, slack and jitter within the wait budget", () => {
+    vi.useFakeTimers();
+    expect(affinity.lockBudgetMs(1000)).toBe(1000 - CACHE_AFFINITY.lockSlackMs);
+    const until = Date.now() + affinity.lockBudgetMs(1000);
+    expect(affinity.warmWaitMs(until, 1000, () => 0.99999)).toBe(1000);
+    expect(affinity.warmWaitMs(until, 1000, () => 0)).toBe(1000);
   });
 
   it("does not count inline images and files as prompt tokens", () => {

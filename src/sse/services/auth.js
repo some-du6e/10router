@@ -555,10 +555,14 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // Prompt-cache affinity: pick among the keys warm for this conversation when
     // one is usable. Otherwise, a warm key only briefly rate-limited is worth
     // waiting for, since every key left here would rebuild the cache.
+    // Round-robin counts only picks from every key: a busy conversation's warm
+    // key mustn't stay "current" and draw new conversations to it.
+    let warmPick = false;
     if (warmIds && !probing) {
       const warm = availableConnections.filter(c => warmIds.has(c.id));
       if (warm.length > 0) {
         availableConnections = warm;
+        warmPick = true;
         log.debug("AUTH", `${provider} | ${warm.length} warm key(s) for this conversation`);
       } else if (maxWarmWaitMs > 0) {
         const warmLimitedUntilMs = Math.min(Infinity, ...connections
@@ -602,7 +606,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         // Stay with current account
         connection = current;
         // Update lastUsedAt and increment count (await to ensure persistence)
-        await updateProviderConnection(connection.id, {
+        if (!warmPick) await updateProviderConnection(connection.id, {
           lastUsedAt: new Date().toISOString(),
           consecutiveUseCount: (connection.consecutiveUseCount || 0) + 1
         });
@@ -618,7 +622,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         connection = sortedByOldest[0];
 
         // Update lastUsedAt and reset count to 1 (await to ensure persistence)
-        await updateProviderConnection(connection.id, {
+        if (!warmPick) await updateProviderConnection(connection.id, {
           lastUsedAt: new Date().toISOString(),
           consecutiveUseCount: 1
         });

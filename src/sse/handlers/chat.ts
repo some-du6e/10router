@@ -47,6 +47,7 @@ import {
   rememberWarmKey,
   estimatePromptTokens,
   warmWaitBudget,
+  lockBudgetMs,
   warmWaitMs,
 } from "open-sse/services/cacheAffinity.js";
 import { abortableSleep } from "open-sse/utils/abortableSleep.js";
@@ -692,6 +693,8 @@ async function routeSingleModelChat(
   // inherit exclusions from the pass that ran hours ago.
   const excludeConnectionIds = new Set<string>();
   const accountFailures: { account?: string; status?: number; error?: string }[] = [];
+  // One entry per account: a warm key retried after its 429 replaces its own.
+  const failureIndex = new Map<string, number>();
   let lastError: string | null | undefined = null;
   let lastStatus: number | null | undefined = null;
   let lockedUntil = 0;
@@ -709,13 +712,13 @@ async function routeSingleModelChat(
       preferredConnectionId,
       connectionFilter,
       warmConnectionIds,
-      maxWarmWaitMs: warmConnectionIds.length > 0 ? waitBudget() : 0,
+      maxWarmWaitMs: warmConnectionIds.length > 0 ? lockBudgetMs(waitBudget()) : 0,
     })) as (Credentials & { connectionId: string } & Record<string, any>) | null;
 
     // Every warm key is briefly rate-limited and the prompt is big: waiting is
     // cheaper than rebuilding its cache on a cold key.
     if (credentials?.warmLimitedUntilMs) {
-      const waitMs = warmWaitMs(credentials.warmLimitedUntilMs);
+      const waitMs = warmWaitMs(credentials.warmLimitedUntilMs, waitBudget());
       log.info("CACHE", `waiting ${waitMs}ms for a key holding this conversation's prompt cache`);
       cacheWaitedMs += waitMs;
       await abortableSleep(waitMs, signal);
@@ -882,11 +885,10 @@ async function routeSingleModelChat(
     }
 
     if (shouldFallback) {
-      accountFailures.push({
-        account: credentials.connectionName,
-        status: result.status,
-        error: result.error,
-      });
+      const failure = { account: credentials.connectionName, status: result.status, error: result.error };
+      const seen = failureIndex.get(credentials.connectionId);
+      if (seen === undefined) failureIndex.set(credentials.connectionId, accountFailures.push(failure) - 1);
+      else accountFailures[seen] = failure;
       // A warm key just rate-limited for a short while stays in play: the next
       // selection waits for it (or picks another warm key) rather than rebuilding
       // the cache on a cold one.
@@ -894,7 +896,7 @@ async function routeSingleModelChat(
         cooldownMs > 0 &&
         warmConnectionIds.includes(credentials.connectionId) &&
         isLimitError(result.status, result.error) &&
-        cooldownMs <= waitBudget()
+        cooldownMs <= lockBudgetMs(waitBudget())
       ) {
         log.info("CACHE", `ACC:${credentials.connectionName} rate-limited (${result.status}), keeping this conversation on its warm keys`);
         lastError = result.error;

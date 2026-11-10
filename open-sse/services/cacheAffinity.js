@@ -170,13 +170,26 @@ export function warmWaitBudget({ waitedMs = 0, promptTokens }) {
 }
 
 /**
+ * Longest lock a request with `budgetMs` of waiting left may wait out: its
+ * sleep adds `lockSlackMs` after the lock.
+ * @param {number} budgetMs
+ * @returns {number}
+ */
+export function lockBudgetMs(budgetMs) {
+  return Math.max(0, budgetMs - CACHE_AFFINITY.lockSlackMs);
+}
+
+/**
  * How long to sleep for a warm key locked until `untilMs`: to the end of the
- * lock, plus a little slack and jitter.
+ * lock, plus a little slack and jitter. The jitter never takes the sleep past
+ * `budgetMs`, so a request waits at most CACHE_AFFINITY.maxWaitMs in all.
  * @param {number} untilMs
+ * @param {number} [budgetMs]
  * @param {() => number} [random]
  * @returns {number}
  */
-export function warmWaitMs(untilMs, random = Math.random) {
+export function warmWaitMs(untilMs, budgetMs = Infinity, random = Math.random) {
+  const base = Math.max(0, untilMs - Date.now()) + CACHE_AFFINITY.lockSlackMs;
   const jitter = Math.floor(Math.min(Math.max(random(), 0), 0.999) * (CACHE_AFFINITY.jitterMs + 1));
-  return Math.max(0, untilMs - Date.now()) + CACHE_AFFINITY.lockSlackMs + jitter;
+  return Math.max(base, Math.min(base + jitter, budgetMs));
 }
