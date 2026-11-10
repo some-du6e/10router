@@ -1,6 +1,6 @@
-// Prompt-cache affinity: a conversation stays on the key (account) holding its
-// upstream prompt cache, and waits out a short rate-limit lock on that key
-// instead of rebuilding the cache on the next one.
+// Prompt-cache affinity: a conversation prefers the keys (accounts) warm with
+// its upstream prompt cache, and waits out a short rate-limit lock on them
+// instead of rebuilding the cache on a cold key.
 //
 // The routing tests run the real account loop (handleChat → auth.js against a
 // temporary database); only the upstream call (handleChatCore) is stubbed.
@@ -15,6 +15,7 @@ process.env.DATA_DIR = tempDir;
 delete global._dbAdapter;
 
 const upstream = vi.hoisted(() => ({ calls: [], script: [] }));
+const hooks = vi.hoisted(() => ({ onSleep: null, logged: [] }));
 vi.mock("open-sse/handlers/chatCore.js", async (importOriginal) => ({
   ...(await importOriginal()),
   handleChatCore: async (args) => {
@@ -32,16 +33,37 @@ vi.mock("@/sse/services/tokenRefresh.js", () => ({
   checkAndRefreshToken: async (_p, c) => c,
   updateProviderCredentials: async () => {},
 }));
+// Records what was logged, so a test can tell a cache wait from the limit hold.
+vi.mock("@/sse/utils/logger.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  const record = (level) => (tag, message) => { hooks.logged.push(`${level} ${tag} ${message}`); };
+  return { ...actual, debug: record("debug"), info: record("info"), warn: record("warn"), error: record("error") };
+});
+// Lets a test act once a wait has started.
+vi.mock("open-sse/utils/abortableSleep.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    abortableSleep: (ms, signal) => {
+      const slept = actual.abortableSleep(ms, signal);
+      hooks.onSleep?.(ms);
+      return slept;
+    },
+  };
+});
 
 const db = await import("@/lib/db/index.js");
 const { handleChat } = await import("@/sse/handlers/chat.js");
-const { markAccountUnavailable } = await import("@/sse/services/auth.js");
+const { markAccountUnavailable, getProviderCredentials } = await import("@/sse/services/auth.js");
 const { CACHE_AFFINITY } = await import("open-sse/config/runtimeConfig.js");
+const { DEFAULT_TIMING } = await import("open-sse/utils/limitHold.js");
+const { resolveClientSessionId } = await import("open-sse/utils/sessionManager.js");
 const affinity = await import("open-sse/services/cacheAffinity.js");
 
 const MODEL = "claude-test";
 const SESSION = "0b3c5d7e-1111-4222-8333-944455556666";
+const OTHER_SESSION = "aaaaaaaa-0000-4000-8000-000000000000";
 const DEFAULTS = { ...CACHE_AFFINITY };
+const TIMING = { ...DEFAULT_TIMING };
 const BIG_PROMPT = "You are a coding agent. ".repeat(400); // ~2.4k tokens
 
 let providerSeq = 0;
@@ -64,13 +86,16 @@ beforeEach(() => {
   provider = `openai-compatible-cache-test-${++providerSeq}`;
   upstream.calls = [];
   upstream.script = [];
-  affinity.clearCacheHolders();
+  hooks.onSleep = null;
+  hooks.logged = [];
+  affinity.clearCacheAffinity();
   Object.assign(CACHE_AFFINITY, { maxWaitMs: 1000, minPromptTokens: 1000 });
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers();
   Object.assign(CACHE_AFFINITY, DEFAULTS);
+  Object.assign(DEFAULT_TIMING, TIMING);
 });
 
 async function addKeys(...names) {
@@ -113,24 +138,34 @@ const limited = (ms) => () => ({
 
 // Another request's 429 locks the key on this model for `ms`.
 const lockForLimit = (id, ms) => markAccountUnavailable(id, 429, "rate_limit_error", provider, MODEL, Date.now() + ms);
+const unlock = (id) => db.updateProviderConnection(id, { [`modelLock_${MODEL}`]: null });
+const cacheWaits = () => hooks.logged.filter((line) => line.startsWith("info CACHE waiting"));
 
 describe("cache affinity routing", () => {
-  it("keeps a conversation on the key that served it, not the first by priority", async () => {
+  it("stays on its warm key rather than the first by priority", async () => {
     const { a, b } = await addKeys("a", "b");
     await lockForLimit(a, 60_000);
-    expect((await chat(body())).status).toBe(200);
-    expect(upstream.calls).toEqual([b]);
-
-    await db.updateProviderConnection(a, { [`modelLock_${MODEL}`]: null });
+    await chat(body());
+    await unlock(a);
     expect((await chat(body())).status).toBe(200);
     expect(upstream.calls).toEqual([b, b]);
 
     // Another conversation still starts on the first key.
-    await chat(body({ session: "aaaaaaaa-0000-4000-8000-000000000000" }));
+    await chat(body({ session: OTHER_SESSION }));
     expect(upstream.calls).toEqual([b, b, a]);
   });
 
-  it("waits out a short limit lock on the cache holder instead of moving", async () => {
+  it("goes back to the first key by priority once it is usable and still warm", async () => {
+    const { a, b } = await addKeys("a", "b");
+    await chat(body());
+    await lockForLimit(a, 60_000);
+    await chat(body());
+    await unlock(a);
+    await chat(body());
+    expect(upstream.calls).toEqual([a, b, a]);
+  });
+
+  it("waits out a short limit lock on the warm key instead of moving", async () => {
     const { a } = await addKeys("a", "b");
     await chat(body());
     await lockForLimit(a, 300);
@@ -139,9 +174,10 @@ describe("cache affinity routing", () => {
     expect((await chat(body())).status).toBe(200);
     expect(upstream.calls).toEqual([a, a]);
     expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+    expect(cacheWaits()).toHaveLength(1);
   });
 
-  it("retries the cache holder after its own short 429", async () => {
+  it("retries the warm key after its own short 429", async () => {
     const { a } = await addKeys("a", "b");
     await chat(body());
 
@@ -150,15 +186,25 @@ describe("cache affinity routing", () => {
     expect(upstream.calls).toEqual([a, a, a]);
   });
 
+  it("still counts the retried 429 among the request's failures", async () => {
+    const { a, b } = await addKeys("a", "b");
+    await chat(body());
+
+    upstream.script = [limited(300), limited(60_000), limited(60_000)];
+    const res = await chat(body());
+    expect(upstream.calls).toEqual([a, a, a, b]);
+    expect(res.status).toBe(429);
+    expect((await res.json()).error.message).toContain("All 3 accounts unavailable");
+  });
+
   it("moves to the next key when the lock outlasts the wait cap", async () => {
     const { a, b } = await addKeys("a", "b");
     await chat(body());
 
     upstream.script = [limited(5_000)];
-    const started = Date.now();
     expect((await chat(body())).status).toBe(200);
     expect(upstream.calls).toEqual([a, a, b]);
-    expect(Date.now() - started).toBeLessThan(1000);
+    expect(cacheWaits()).toHaveLength(0);
   });
 
   it("stops waiting once the request has waited the cap in all", async () => {
@@ -197,10 +243,11 @@ describe("cache affinity routing", () => {
     await lockForLimit(a, 5_000);
 
     const controller = new AbortController();
-    setTimeout(() => controller.abort(), 100);
+    hooks.onSleep = () => controller.abort();
     const started = Date.now();
     const res = await chat(body(), { signal: controller.signal });
-    expect(Date.now() - started).toBeLessThan(2000);
+    expect(cacheWaits()).toHaveLength(1);
+    expect(Date.now() - started).toBeLessThan(2_000);
     expect(res.ok).toBe(false);
     expect(upstream.calls).toEqual([a]);
   });
@@ -210,56 +257,167 @@ describe("cache affinity routing", () => {
     await chat(body());
     await lockForLimit(a, 300);
 
-    const started = Date.now();
     const res = await chat(body());
     expect(res.status).toBe(429);
-    expect(Date.now() - started).toBeLessThan(250);
+    expect(cacheWaits()).toHaveLength(0);
     expect(upstream.calls).toEqual([a]);
+  });
+
+  it("does not wait when the other key is locked too", async () => {
+    const { a, b } = await addKeys("a", "b");
+    await chat(body());
+    await lockForLimit(a, 300);
+    await lockForLimit(b, 60_000);
+
+    const res = await chat(body());
+    expect(res.status).toBe(429);
+    expect(cacheWaits()).toHaveLength(0);
+    expect(upstream.calls).toEqual([a]);
+  });
+
+  it("leaves the rate-limit hold to wait when the other key is locked too", async () => {
+    Object.assign(DEFAULT_TIMING, { minWaitMs: 10, recheckMs: 10 });
+    await db.updateSettings({ limitHoldEnabled: true });
+    try {
+      const { a, b } = await addKeys("a", "b");
+      await chat(body());
+      await lockForLimit(a, 300);
+      await lockForLimit(b, 60_000);
+
+      expect((await chat(body())).status).toBe(200);
+      expect(cacheWaits()).toHaveLength(0);
+      expect(hooks.logged.some((line) => line.includes("LIMITHOLD"))).toBe(true);
+      expect(upstream.calls).toEqual([a, a]);
+    } finally {
+      await db.updateSettings({ limitHoldEnabled: false });
+    }
   });
 
   it("leaves requests that ask for no prompt cache alone", async () => {
     const { a, b } = await addKeys("a", "b");
     await lockForLimit(a, 60_000);
     await chat(body({ cache: false }));
-    await db.updateProviderConnection(a, { [`modelLock_${MODEL}`]: null });
+    await unlock(a);
     await chat(body({ cache: false }));
     expect(upstream.calls).toEqual([b, a]);
+  });
+
+  it("keeps a session's main conversation on its key when a side request moves", async () => {
+    const { a, b } = await addKeys("a", "b");
+    await chat(body());
+    await lockForLimit(a, 300);
+
+    // Same session, its own system prompt (a subagent): too small to wait.
+    await chat(body({ prompt: "You are a search subagent." }));
+    expect(upstream.calls).toEqual([a, b]);
+
+    expect((await chat(body())).status).toBe(200);
+    expect(upstream.calls).toEqual([a, b, a]);
+  });
+});
+
+describe("warm key selection", () => {
+  const select = (exclude, options) => getProviderCredentials(provider, exclude, MODEL, options);
+
+  it("reports a briefly limited warm key when another key could serve", async () => {
+    const { a } = await addKeys("a", "b");
+    await lockForLimit(a, 300);
+    const picked = await select(new Set(), { warmConnectionIds: [a], maxWarmWaitMs: 1000 });
+    expect(picked.warmLimitedUntilMs).toBeGreaterThan(Date.now());
+  });
+
+  it("picks a key when it may not wait", async () => {
+    const { a, b } = await addKeys("a", "b");
+    await lockForLimit(a, 300);
+    const picked = await select(new Set(), { warmConnectionIds: [a], maxWarmWaitMs: 0 });
+    expect(picked.connectionId).toBe(b);
+  });
+
+  it("goes the all-locked way when the other key is excluded or filtered out", async () => {
+    const { a, b } = await addKeys("a", "b");
+    await lockForLimit(a, 300);
+    const excluded = await select(new Set([b]), { warmConnectionIds: [a], maxWarmWaitMs: 1000 });
+    expect(excluded.allRateLimited).toBe(true);
+    const filtered = await select(new Set(), { warmConnectionIds: [a], maxWarmWaitMs: 1000, connectionFilter: (c) => c.id !== b });
+    expect(filtered.allRateLimited).toBe(true);
   });
 });
 
 describe("conversation key", () => {
-  const key = (b, headers = {}) => affinity.cacheAffinityKey({ provider: "p", model: "m", body: b, headers });
-  const turn = (extra = []) => ({
-    system: [{ type: "text", text: "system prompt" }],
+  const key = (b, headers = {}, extra = {}) => affinity.cacheAffinityKey({ provider: "p", model: "m", body: b, headers, ...extra });
+  const turn = (extra = [], system = "system prompt") => ({
+    system: [{ type: "text", text: system }],
     messages: [
       { role: "user", content: [{ type: "text", text: "first", ...(extra.length ? {} : { cache_control: { type: "ephemeral" } }) }] },
       ...extra,
     ],
   });
+  const later = (system) => turn([
+    { role: "assistant", content: "ok" },
+    { role: "user", content: [{ type: "text", text: "second", cache_control: { type: "ephemeral" } }] },
+  ], system);
 
   it("is the same on every turn of a conversation without a session id", () => {
-    const later = turn([
-      { role: "assistant", content: "ok" },
-      { role: "user", content: [{ type: "text", text: "second", cache_control: { type: "ephemeral" } }] },
-    ]);
     expect(key(turn())).toBeTruthy();
-    expect(key(later)).toBe(key(turn()));
+    expect(key(later())).toBe(key(turn()));
   });
 
-  it("differs per session, model and provider, and holds no content", () => {
+  it("ignores Claude Code's per-request billing header", () => {
+    const billed = (cch) => ({
+      system: [
+        { type: "text", text: `x-anthropic-billing-header: cc_version=2.1.0.abc; cc_entrypoint=cli; cch=${cch};` },
+        { type: "text", text: "You are Claude Code.", cache_control: { type: "ephemeral" } },
+      ],
+      messages: [{ role: "user", content: "hi" }],
+    });
+    expect(key(billed("aaaaa"))).toBe(key(billed("bbbbb")));
+  });
+
+  it("differs per session, model, provider and tenant, and holds no content", () => {
     const b = body({ session: SESSION });
     const k = key(b);
     expect(k).toMatch(/^[0-9a-f]{32}$/);
-    expect(key(body({ session: "aaaaaaaa-0000-4000-8000-000000000000" }))).not.toBe(k);
+    expect(key(body({ session: OTHER_SESSION }))).not.toBe(k);
     expect(affinity.cacheAffinityKey({ provider: "p", model: "other", body: b })).not.toBe(k);
     expect(affinity.cacheAffinityKey({ provider: "q", model: "m", body: b })).not.toBe(k);
-    // The session id names the conversation, whatever the prompt says.
-    expect(key(body({ session: SESSION, prompt: "something else entirely" }))).toBe(k);
+    expect(key(b, {}, { tenant: "client-key-1" })).not.toBe(k);
+    expect(key(b, {}, { tenant: "client-key-1" })).not.toBe(key(b, {}, { tenant: "client-key-2" }));
   });
 
-  it("ignores a per-request id", () => {
+  it("gives a session's subagents keys of their own", () => {
+    expect(key(body({ prompt: "You are a search subagent." }))).not.toBe(key(body()));
+  });
+
+  it("reads the Claude Code session from the header or a JSON user_id too", () => {
+    const start = turn();
+    const fromMetadata = key({ ...start, metadata: { user_id: `user_abc_account__session_${SESSION}` } });
+    expect(key(start, { "x-claude-code-session-id": SESSION })).toBe(fromMetadata);
+    expect(key({ ...start, metadata: { user_id: JSON.stringify({ session_id: SESSION }) } })).toBe(fromMetadata);
+    expect(fromMetadata).not.toBe(key(start));
+  });
+
+  it("does not take a bare user id or a per-request id for a session", () => {
+    const user = (id) => ({ metadata: { user_id: id } });
+    expect(resolveClientSessionId({ body: user("user-1"), strict: true })).toBeNull();
+    expect(resolveClientSessionId({ body: user("user-1") })).toBe("user-1");
+    expect(key({ ...turn(), ...user("user-1") })).toBe(key({ ...turn(), ...user("user-2") }));
     const b = turn();
     expect(key(b, { "x-client-request-id": "req-1" })).toBe(key(b, { "x-client-request-id": "req-2" }));
+  });
+
+  it("covers prompt_cache_key and Responses bodies", () => {
+    const responses = (instructions) => ({
+      instructions,
+      input: [{ role: "user", content: [{ type: "input_text", text: "hi" }] }],
+      prompt_cache_key: "conv-1",
+    });
+    expect(key(responses("Be terse."))).toMatch(/^[0-9a-f]{32}$/);
+    expect(key(responses("Be verbose."))).not.toBe(key(responses("Be terse.")));
+  });
+
+  it("hashes the whole conversation start, however long", () => {
+    const shared = "x".repeat(40 * 1024);
+    expect(key(turn([], `${shared} one`))).not.toBe(key(turn([], `${shared} two`)));
   });
 
   it("is null without a prompt cache, for Codex, or when turned off", () => {
@@ -270,24 +428,107 @@ describe("conversation key", () => {
   });
 });
 
-describe("holder memory", () => {
-  it("forgets a conversation after the TTL", () => {
+describe("warm key memory", () => {
+  it("forgets a key after the 5-minute TTL", () => {
     vi.useFakeTimers();
-    affinity.rememberCacheHolder("k", "conn-a");
-    vi.advanceTimersByTime(CACHE_AFFINITY.ttlMs - 1);
-    expect(affinity.getCacheHolder("k")).toBe("conn-a");
+    affinity.rememberWarmKey("k", "conn-a", affinity.cacheTtlMs(body()));
+    vi.advanceTimersByTime(5 * 60 * 1000 - 1);
+    expect(affinity.getWarmKeys("k")).toEqual(["conn-a"]);
     vi.advanceTimersByTime(2);
-    expect(affinity.getCacheHolder("k")).toBeNull();
+    expect(affinity.getWarmKeys("k")).toEqual([]);
   });
 
-  it("keeps at most maxEntries, dropping the least recently served", () => {
+  it("keeps a key an hour when the request asks for a 1h cache", () => {
+    vi.useFakeTimers();
+    const hour = body();
+    hour.messages[0].content[0].cache_control = { type: "ephemeral", ttl: "1h" };
+    affinity.rememberWarmKey("k", "conn-a", affinity.cacheTtlMs(hour));
+    vi.advanceTimersByTime(6 * 60 * 1000);
+    expect(affinity.getWarmKeys("k")).toEqual(["conn-a"]);
+    vi.advanceTimersByTime(55 * 60 * 1000);
+    expect(affinity.getWarmKeys("k")).toEqual([]);
+  });
+
+  it("keeps at most maxEntries conversations, dropping the least recently served", () => {
     CACHE_AFFINITY.maxEntries = 3;
-    for (const k of ["k1", "k2", "k3"]) affinity.rememberCacheHolder(k, `conn-${k}`);
-    affinity.rememberCacheHolder("k1", "conn-k1");
-    affinity.rememberCacheHolder("k4", "conn-k4");
-    expect(affinity.cacheHolderCount()).toBe(3);
-    expect(affinity.getCacheHolder("k2")).toBeNull();
-    expect(affinity.getCacheHolder("k1")).toBe("conn-k1");
-    expect(affinity.getCacheHolder("k4")).toBe("conn-k4");
+    for (const k of ["k1", "k2", "k3"]) affinity.rememberWarmKey(k, `conn-${k}`);
+    affinity.rememberWarmKey("k1", "conn-k1");
+    affinity.rememberWarmKey("k4", "conn-k4");
+    expect(affinity.conversationCount()).toBe(3);
+    expect(affinity.getWarmKeys("k2")).toEqual([]);
+    expect(affinity.getWarmKeys("k1")).toEqual(["conn-k1"]);
+    expect(affinity.getWarmKeys("k4")).toEqual(["conn-k4"]);
+  });
+
+  it("keeps at most maxWarmKeys keys per conversation", () => {
+    for (const c of ["c1", "c2", "c3", "c4", "c5"]) affinity.rememberWarmKey("k", c);
+    expect(affinity.getWarmKeys("k")).toEqual(["c2", "c3", "c4", "c5"]);
+  });
+});
+
+describe("wait sizing", () => {
+  it("adds bounded jitter after the lock", () => {
+    vi.useFakeTimers();
+    const until = Date.now() + 100;
+    expect(affinity.warmWaitMs(until, () => 0)).toBe(100 + CACHE_AFFINITY.lockSlackMs);
+    const most = affinity.warmWaitMs(until, () => 0.99999);
+    expect(most).toBeGreaterThan(100 + CACHE_AFFINITY.lockSlackMs);
+    expect(most).toBeLessThanOrEqual(100 + CACHE_AFFINITY.lockSlackMs + CACHE_AFFINITY.jitterMs);
+  });
+
+  it("does not count inline images and files as prompt tokens", () => {
+    const image = "A".repeat(1_000_000);
+    const withImages = {
+      messages: [{
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: "image/png", data: image } },
+          { type: "image_url", image_url: { url: `data:image/png;base64,${image}` } },
+          { type: "text", text: "what is this?" },
+        ],
+      }],
+      contents: [{ parts: [{ inlineData: { mimeType: "image/png", data: image } }] }],
+    };
+    expect(affinity.estimatePromptTokens(withImages)).toBeLessThan(200);
+    expect(affinity.estimatePromptTokens({ messages: [{ role: "user", content: "x".repeat(40_000) }] })).toBeGreaterThanOrEqual(10_000);
+  });
+
+  it("gives a small request no wait budget", () => {
+    expect(affinity.warmWaitBudget({ waitedMs: 0, promptTokens: () => 999 })).toBe(0);
+    expect(affinity.warmWaitBudget({ waitedMs: 400, promptTokens: () => 1000 })).toBe(600);
+    expect(affinity.warmWaitBudget({ waitedMs: 1000, promptTokens: () => 1e9 })).toBe(0);
+  });
+});
+
+describe("env settings", () => {
+  const NAMES = ["CACHE_AFFINITY_TTL_MS", "CACHE_AFFINITY_MAX_WAIT_MS", "CACHE_AFFINITY_MIN_TOKENS"];
+  const saved = Object.fromEntries(NAMES.map((n) => [n, process.env[n]]));
+  afterEach(() => {
+    for (const n of NAMES) {
+      if (saved[n] === undefined) delete process.env[n];
+      else process.env[n] = saved[n];
+    }
+    vi.resetModules();
+  });
+  const fresh = async () => {
+    vi.resetModules();
+    return {
+      config: (await import("open-sse/config/runtimeConfig.js")).CACHE_AFFINITY,
+      cache: await import("open-sse/services/cacheAffinity.js"),
+    };
+  };
+
+  it("turns off with a TTL of 0 and never waits with a max wait of 0", async () => {
+    Object.assign(process.env, { CACHE_AFFINITY_TTL_MS: "0", CACHE_AFFINITY_MAX_WAIT_MS: "0", CACHE_AFFINITY_MIN_TOKENS: "5000000000" });
+    const { config, cache } = await fresh();
+    expect(config).toMatchObject({ ttlMs: 0, maxWaitMs: 0, minPromptTokens: 5_000_000_000 });
+    expect(cache.cacheAffinityKey({ provider: "p", model: "m", body: body() })).toBeNull();
+    expect(cache.warmWaitBudget({ promptTokens: () => 1e12 })).toBe(0);
+  });
+
+  it("keeps the defaults for values it can't read", async () => {
+    Object.assign(process.env, { CACHE_AFFINITY_TTL_MS: "soon", CACHE_AFFINITY_MAX_WAIT_MS: "-5", CACHE_AFFINITY_MIN_TOKENS: "1.5" });
+    const { config } = await fresh();
+    expect(config).toMatchObject({ ttlMs: 5 * 60 * 1000, maxWaitMs: 10 * 1000, minPromptTokens: 32 * 1000 });
   });
 });

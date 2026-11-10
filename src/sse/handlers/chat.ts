@@ -3,7 +3,6 @@ import "open-sse/index.js";
 import {
   getProviderCredentials,
   markAccountUnavailable,
-  getLimitLock,
   clearAccountError,
   extractApiKey,
   isValidApiKey,
@@ -25,7 +24,7 @@ import { checkApiKeyLimits, apiKeyLimitDenial, keepAllowedAdapterModels, keyHasB
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
-import { HTTP_STATUS, NON_STREAM_EARLY_HEADERS_MS, STREAM_EARLY_HEADERS_MS, CACHE_AFFINITY } from "open-sse/config/runtimeConfig.js";
+import { HTTP_STATUS, NON_STREAM_EARLY_HEADERS_MS, STREAM_EARLY_HEADERS_MS } from "open-sse/config/runtimeConfig.js";
 import { isRequestError } from "open-sse/services/accountFallback.js";
 import { detectFormatByEndpoint, FORMATS } from "open-sse/translator/formats.js";
 import { detectFormat } from "open-sse/services/provider.js";
@@ -43,12 +42,14 @@ import {
 } from "open-sse/services/sessionAffinity.js";
 import {
   cacheAffinityKey,
-  getCacheHolder,
-  rememberCacheHolder,
-  planCacheWait,
-  waitUnlessAborted,
+  cacheTtlMs,
+  getWarmKeys,
+  rememberWarmKey,
+  estimatePromptTokens,
+  warmWaitBudget,
+  warmWaitMs,
 } from "open-sse/services/cacheAffinity.js";
-import { estimateInputTokens } from "open-sse/utils/usageTracking.js";
+import { abortableSleep } from "open-sse/utils/abortableSleep.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
 import { finalizeRoutingError } from "../services/finalRoutingError.js";
 import { detectClientTool } from "open-sse/utils/clientDetector.js";
@@ -670,26 +671,13 @@ async function routeSingleModelChat(
   }
 
   // Prompt-cache affinity for every other provider: a conversation that asks for
-  // a prompt cache prefers the key that served it last, which holds that cache.
-  const cacheKey = affinityKey ? null : cacheAffinityKey({ provider, model, body, headers: clientRawRequest?.headers });
+  // a prompt cache prefers the keys that served it recently, which hold that cache.
+  const cacheKey = cacheAffinityKey({ provider, model, body, headers: clientRawRequest?.headers, tenant: apiKey });
   const connectionFilter = blockedBilling ? (c: { provider: string; authType?: string }) => !blockedBilling.has(connectionBilling(c)) : null;
-  // Total time this request has waited for its cache holder, across passes.
+  // Total time this request has waited for a warm key, across passes.
   let cacheWaitedMs = 0;
   let promptTokens: number | null = null;
-  // Waits for the cache holder when it is briefly rate-limited and the prompt is
-  // big enough that rebuilding the cache elsewhere costs more than the wait.
-  const waitForCacheHolder = async (holder: string | null, excludeIds: Set<string>): Promise<boolean> => {
-    // A spent wait budget can't wait again, so skip the lock read.
-    if (!holder || signal?.aborted || cacheWaitedMs >= CACHE_AFFINITY.maxWaitMs) return false;
-    // Fail-open: without the lock the request routes as it would have anyway.
-    const lock = await getLimitLock(provider, holder, model, { excludeIds, connectionFilter }).catch(() => null);
-    const waitMs = planCacheWait({ lock, waitedMs: cacheWaitedMs, promptTokens: () => (promptTokens ??= estimateInputTokens(body)) });
-    if (!waitMs || !lock) return false;
-    log.info("CACHE", `waiting ${waitMs}ms for ACC:${lock.name}, which holds this conversation's prompt cache`);
-    cacheWaitedMs += waitMs;
-    await waitUnlessAborted(waitMs, signal);
-    return true;
-  };
+  const waitBudget = () => warmWaitBudget({ waitedMs: cacheWaitedMs, promptTokens: () => (promptTokens ??= estimatePromptTokens(body)) });
 
   // Rate-limit hold: when every account is limited we can keep the client's
   // stream open and wait for the reset instead of returning an error.
@@ -711,17 +699,28 @@ async function routeSingleModelChat(
   while (true) {
     // The client is gone: try no more accounts, and lock none for its abort.
     if (signal?.aborted) return clientAbortResult();
-    const cacheHolder = cacheKey ? getCacheHolder(cacheKey) : null;
-    if (await waitForCacheHolder(cacheHolder, excludeConnectionIds)) continue;
     // A pin is a preference, not a requirement: getProviderCredentials ignores a
     // connection that is excluded, model-locked or rate-limited and falls back to
     // the configured strategy, so a dead pinned account never wedges a session.
-    const preferredConnectionId = affinityKey ? getAffinity(affinityKey) : cacheHolder;
+    const preferredConnectionId = affinityKey ? getAffinity(affinityKey) : null;
+    const warmConnectionIds = cacheKey ? getWarmKeys(cacheKey) : [];
     // connectionId is always set on a selected account (real or the "noauth" virtual one).
     const credentials = (await getProviderCredentials(provider, excludeConnectionIds, model, {
       preferredConnectionId,
       connectionFilter,
+      warmConnectionIds,
+      maxWarmWaitMs: warmConnectionIds.length > 0 ? waitBudget() : 0,
     })) as (Credentials & { connectionId: string } & Record<string, any>) | null;
+
+    // Every warm key is briefly rate-limited and the prompt is big: waiting is
+    // cheaper than rebuilding its cache on a cold key.
+    if (credentials?.warmLimitedUntilMs) {
+      const waitMs = warmWaitMs(credentials.warmLimitedUntilMs);
+      log.info("CACHE", `waiting ${waitMs}ms for a key holding this conversation's prompt cache`);
+      cacheWaitedMs += waitMs;
+      await abortableSleep(waitMs, signal);
+      continue;
+    }
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
@@ -823,7 +822,7 @@ async function routeSingleModelChat(
     } as Parameters<typeof handleChatCore>[0])) as ChatCoreResult;
 
     if (result.success) {
-      if (cacheKey) rememberCacheHolder(cacheKey, credentials.connectionId);
+      if (cacheKey) rememberWarmKey(cacheKey, credentials.connectionId, cacheTtlMs(body));
       return result;
     }
     if (signal?.aborted) return clientAbortResult();
@@ -882,27 +881,27 @@ async function routeSingleModelChat(
       };
     }
 
-    // The key holding this conversation's prompt cache was just rate-limited:
-    // retry it once its short lock ends rather than rebuilding the cache on the
-    // next key.
-    if (
-      shouldFallback &&
-      credentials.connectionId === cacheHolder &&
-      isLimitError(result.status, result.error) &&
-      await waitForCacheHolder(cacheHolder, excludeConnectionIds)
-    ) {
-      lastError = result.error;
-      lastStatus = result.status;
-      continue;
-    }
-
     if (shouldFallback) {
-      log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);
       accountFailures.push({
         account: credentials.connectionName,
         status: result.status,
         error: result.error,
       });
+      // A warm key just rate-limited for a short while stays in play: the next
+      // selection waits for it (or picks another warm key) rather than rebuilding
+      // the cache on a cold one.
+      if (
+        cooldownMs > 0 &&
+        warmConnectionIds.includes(credentials.connectionId) &&
+        isLimitError(result.status, result.error) &&
+        cooldownMs <= waitBudget()
+      ) {
+        log.info("CACHE", `ACC:${credentials.connectionName} rate-limited (${result.status}), keeping this conversation on its warm keys`);
+        lastError = result.error;
+        lastStatus = result.status;
+        continue;
+      }
+      log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);
       // Stale-anchor recovery: the pinned account just went away, so drop the pin
       // and let the next iteration rebind. Guarded on the id, so a concurrent turn
       // that already moved the session elsewhere is left alone.

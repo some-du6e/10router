@@ -329,38 +329,18 @@ function isLimitLocked(c, model) {
 }
 
 /**
- * A key's rate-limit lock on a model, and whether another key could serve the
- * model meanwhile. Null when the key is excluded, switched off, gone or
- * filtered out.
- * @param {string} provider
- * @param {string} connectionId
- * @param {string} model
- * @param {{ excludeIds?: Set<string>, connectionFilter?: ((c: any) => boolean) | null }} [options]
- * @returns {Promise<{ name: string, limitUntilMs: number, alternative: boolean } | null>}
- *   limitUntilMs is 0 unless the key is locked for a limit (not a refusal or
- *   server error).
- */
-export async function getLimitLock(provider, connectionId, model, { excludeIds = new Set(), connectionFilter = null } = {}) {
-  if (!connectionId || excludeIds.has(connectionId)) return null;
-  const providerId = resolveProviderId(provider);
-  const all = await getProviderConnections({ provider: providerId, isActive: true });
-  const connections = typeof connectionFilter === "function" ? all.filter(c => connectionFilter(c)) : all;
-  const conn = connections.find(c => c.id === connectionId);
-  if (!conn) return null;
-  return {
-    name: conn.displayName || conn.name || conn.email || connectionId.slice(0, 8),
-    limitUntilMs: isLimitLocked(conn, model) ? getModelLockUntil(conn, model) : 0,
-    alternative: connections.some(c => c.id !== connectionId && !excludeIds.has(c.id)
-      && !isModelLockActive(c, model) && planCanServeModel(providerId, c, model)),
-  };
-}
-
-/**
  * Get provider credentials from localDb
  * Filters out unavailable accounts and returns the selected account based on strategy
  * @param {string} provider - Provider name
  * @param {Set<string>|string|null} excludeConnectionIds - Connection ID(s) to exclude (for retry with next account)
  * @param {string|null} model - Model name for per-model rate limit filtering
+ * @param {object} [options]
+ * @param {string[]} [options.warmConnectionIds] - keys holding this conversation's
+ *   prompt cache; the strategy picks among the usable ones, or among all keys
+ *   when none is usable.
+ * @param {number} [options.maxWarmWaitMs] - when no warm key is usable but one is
+ *   only rate-limited until within this long, and another key could serve,
+ *   returns `{ warmLimitedUntilMs }` instead of a key (nothing is picked or written).
  */
 export async function getProviderCredentials(provider, excludeConnectionIds = null, model = null, options = {}) {
   // Normalize to Set for consistent handling
@@ -368,6 +348,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     ? excludeConnectionIds
     : (excludeConnectionIds ? new Set([excludeConnectionIds]) : new Set());
   const preferredConnectionId = options?.preferredConnectionId || null;
+  const warmIds = Array.isArray(options?.warmConnectionIds) && options.warmConnectionIds.length > 0
+    ? new Set(options.warmConnectionIds)
+    : null;
+  const maxWarmWaitMs = Number(options?.maxWarmWaitMs) || 0;
   // Drops connections the caller may not use at all (auto combos skip blocked
   // billing), as if they were not connected.
   const connectionFilter = typeof options?.connectionFilter === "function" ? options.connectionFilter : null;
@@ -457,6 +441,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const demotions = new Map(usableConnections.map(c => [c.id, demotionOf(c, model)]));
     const preferred = usableConnections.filter(c => !demotions.get(c.id));
     let availableConnections = preferred.length > 0 ? preferred : usableConnections;
+    let probing = false;
     if (preferred.length > 0) {
       // Under fill-first a key behind a usable one wouldn't be tried anyway
       // (a backup), so only demoted keys ahead of them are probed.
@@ -464,6 +449,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       for (const c of ahead.filter(c => demotions.get(c.id))) {
         if (await claimProbe(c, model, demotions.get(c.id))) {
           availableConnections = [c];
+          probing = true;
           break;
         }
       }
@@ -560,6 +546,26 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       }
       log.warn("AUTH", `${provider} | all ${connections.length} accounts unavailable`);
       return null;
+    }
+
+    // Prompt-cache affinity: pick among the keys warm for this conversation when
+    // one is usable. Otherwise, a warm key only briefly rate-limited is worth
+    // waiting for, since every key left here would rebuild the cache.
+    if (warmIds && !probing) {
+      const warm = availableConnections.filter(c => warmIds.has(c.id));
+      if (warm.length > 0) {
+        availableConnections = warm;
+        log.debug("AUTH", `${provider} | ${warm.length} warm key(s) for this conversation`);
+      } else if (maxWarmWaitMs > 0) {
+        const warmLimitedUntilMs = Math.min(Infinity, ...connections
+          .filter(c => warmIds.has(c.id) && !excludeSet.has(c.id) && isLimitLocked(c, model)
+            && !resetStates.get(c.id).blockedUntil && !demotionOf(c, model) && planCanServeModel(providerId, c, model))
+          .map(c => getModelLockUntil(c, model)));
+        if (warmLimitedUntilMs - Date.now() <= maxWarmWaitMs) {
+          log.debug("AUTH", `${provider} | warm key rate-limited for ${warmLimitedUntilMs - Date.now()}ms, other keys usable`);
+          return { warmLimitedUntilMs };
+        }
+      }
     }
 
     let connection;

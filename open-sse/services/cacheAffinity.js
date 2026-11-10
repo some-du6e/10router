@@ -1,12 +1,14 @@
 /**
- * Prompt-cache affinity: conversation → the key (connection) holding its cache.
+ * Prompt-cache affinity: conversation → the keys (connections) that hold its cache.
  *
  * Upstream prompt caches are per account. When a provider has several keys and
- * a conversation lands on a different one, that key writes the whole prompt to
- * its cache again. For long conversations that rebuild costs several times a
- * normal request and slows the first token. So a conversation that asks for a
- * prompt cache prefers the key that served it last, and waits out a short
- * rate-limit lock on that key rather than moving.
+ * a conversation lands on one that hasn't served it recently, that key writes
+ * the whole prompt to its cache again. For long conversations that rebuild
+ * costs several times a normal request and slows the first token. So each
+ * conversation that asks for a prompt cache remembers its warm keys (the ones
+ * that served it within the cache TTL); account selection picks among them when
+ * one is usable, and a big request waits out a short rate-limit lock on a warm
+ * key rather than moving to a cold one.
  *
  * Only a hash of the conversation's identity is kept, in memory; never content.
  * Codex (`AFFINITY_PROVIDERS`) has its own opt-in pinning in sessionAffinity.js.
@@ -17,17 +19,35 @@ import { CACHE_AFFINITY } from "../config/runtimeConfig.js";
 import { AFFINITY_PROVIDERS } from "../config/appConstants.js";
 import { ROLE } from "../translator/schema/index.js";
 import { resolveClientSessionId } from "../utils/sessionManager.js";
+import { stripAnthropicBillingHeader } from "../utils/claudeCloaking.js";
 
 const CACHE_CONTROL = "cache_control";
+const LONG_TTL = "1h";
 const LEADING_ROLES = new Set([ROLE.SYSTEM, ROLE.DEVELOPER]);
-// Claude Code's first system block carries a per-request hash (cch=…).
-const BILLING_HEADER = /^x-anthropic-billing-header:[^\n]*(?:\r?\n)?/i;
+const DATA_URI = "data:";
 
-// Hashed conversation key → { connectionId, at }. Map order is recency order.
-const holders = new Map();
+// Hashed conversation key → Map(connectionId → { at, ttlMs }). Map order is
+// recency order at both levels.
+const conversations = new Map();
 
-const marked = (part) => !!part && typeof part === "object" && !!part[CACHE_CONTROL];
-const anyMarked = (list) => Array.isArray(list) && list.some(marked);
+const sha256 = (text) => createHash("sha256").update(text).digest("hex");
+
+// Every cache_control marker on the request, system, tools or message content.
+function cacheMarkers(body) {
+  const markers = [];
+  const take = (part) => {
+    if (part && typeof part === "object" && part[CACHE_CONTROL]) markers.push(part[CACHE_CONTROL]);
+  };
+  const takeAll = (list) => Array.isArray(list) && list.forEach(take);
+  take(body);
+  takeAll(body.system);
+  takeAll(body.tools);
+  for (const m of Array.isArray(body.messages) ? body.messages : []) {
+    take(m);
+    takeAll(m?.content);
+  }
+  return markers;
+}
 
 /**
  * Does the request ask for a prompt cache? Anthropic `cache_control` on the
@@ -35,15 +55,20 @@ const anyMarked = (list) => Array.isArray(list) && list.some(marked);
  */
 export function requestUsesPromptCache(body) {
   if (!body || typeof body !== "object") return false;
-  if (marked(body) || (typeof body.prompt_cache_key === "string" && body.prompt_cache_key)) return true;
-  if (anyMarked(body.system) || anyMarked(body.tools)) return true;
-  const messages = Array.isArray(body.messages) ? body.messages : [];
-  return messages.some((m) => marked(m) || anyMarked(m?.content));
+  if (typeof body.prompt_cache_key === "string" && body.prompt_cache_key) return true;
+  return cacheMarkers(body).length > 0;
 }
 
-// What stays the same on every turn of one conversation: the system prompt and
-// the first message, without cache markers (clients move them each turn).
-function conversationPrefix(body) {
+/** How long a key stays warm after serving this request: 1h when a marker asks for it. */
+export function cacheTtlMs(body) {
+  const long = body && typeof body === "object" && cacheMarkers(body).some((m) => m?.ttl === LONG_TTL);
+  return long ? Math.max(CACHE_AFFINITY.longTtlMs, CACHE_AFFINITY.ttlMs) : CACHE_AFFINITY.ttlMs;
+}
+
+// What stays the same on every turn of one conversation: the system prompt,
+// instructions and the first message, without cache markers (clients move them
+// each turn) or Claude Code's per-request billing header.
+function conversationStart(body) {
   const items = Array.isArray(body.messages) ? body.messages : Array.isArray(body.input) ? body.input : [];
   const lead = [];
   for (const item of items) {
@@ -53,85 +78,105 @@ function conversationPrefix(body) {
   if (lead.length === 0 && body.system == null && body.instructions == null) return null;
   const stable = (key, value) => {
     if (key === CACHE_CONTROL) return undefined;
-    return typeof value === "string" ? value.replace(BILLING_HEADER, "") : value;
+    return typeof value === "string" ? stripAnthropicBillingHeader(value) : value;
   };
-  return JSON.stringify([body.system ?? null, body.instructions ?? null, lead], stable).slice(0, CACHE_AFFINITY.prefixChars);
+  return JSON.stringify([body.system ?? null, body.instructions ?? null, lead], stable);
 }
 
 /**
  * Key for a conversation on one provider model, or null when the request gets
  * no affinity (off, Codex, no cache asked for, nothing to identify it by).
- * The client's session id names the conversation when it sends one; otherwise
- * its system prompt and first message do.
+ * The conversation's start always names it, so a client session's subagents
+ * and side requests (other system prompts, other caches) get keys of their
+ * own; the client's session id and `tenant` (the client's API key) are mixed in
+ * so separate sessions and tenants never share an entry.
  */
-export function cacheAffinityKey({ provider, model, body, headers } = {}) {
+export function cacheAffinityKey({ provider, model, body, headers, tenant } = {}) {
   if (!CACHE_AFFINITY.ttlMs || !provider || !model || AFFINITY_PROVIDERS.has(provider)) return null;
   if (!requestUsesPromptCache(body)) return null;
-  const session = resolveClientSessionId({ headers: headers || {}, body, strict: true });
-  const identity = session ? `session:${session}` : conversationPrefix(body);
-  if (!identity) return null;
-  return createHash("sha256").update(`${provider}\0${model}\0${identity}`).digest("hex").slice(0, 32);
+  const start = conversationStart(body);
+  if (!start) return null;
+  const session = resolveClientSessionId({ headers: headers || {}, body, strict: true }) || "";
+  const tenantPart = typeof tenant === "string" && tenant ? sha256(tenant) : "";
+  return sha256([provider, model, tenantPart, session, sha256(start)].join("\0")).slice(0, 32);
 }
 
-/** Connection that served this conversation within the TTL, or null. */
-export function getCacheHolder(key) {
-  if (!key) return null;
-  const entry = holders.get(key);
-  if (!entry) return null;
-  if (Date.now() - entry.at > CACHE_AFFINITY.ttlMs) {
-    holders.delete(key);
-    return null;
+/** Keys that served this conversation within their TTL, most recent last. */
+export function getWarmKeys(key) {
+  const warm = key ? conversations.get(key) : null;
+  if (!warm) return [];
+  const now = Date.now();
+  for (const [connectionId, entry] of warm) {
+    if (now - entry.at > entry.ttlMs) warm.delete(connectionId);
   }
-  return entry.connectionId;
+  if (warm.size === 0) conversations.delete(key);
+  return [...warm.keys()];
 }
 
-/** This connection now serves (and caches) the conversation. */
-export function rememberCacheHolder(key, connectionId) {
-  if (!key || !connectionId) return;
-  holders.delete(key);
-  while (holders.size >= CACHE_AFFINITY.maxEntries) holders.delete(holders.keys().next().value);
-  holders.set(key, { connectionId, at: Date.now() });
+/** This connection just served (and cached) the conversation. */
+export function rememberWarmKey(key, connectionId, ttlMs = CACHE_AFFINITY.ttlMs) {
+  if (!key || !connectionId || !(ttlMs > 0)) return;
+  const warm = conversations.get(key) || new Map();
+  conversations.delete(key);
+  warm.delete(connectionId);
+  warm.set(connectionId, { at: Date.now(), ttlMs });
+  while (warm.size > CACHE_AFFINITY.maxWarmKeys) warm.delete(warm.keys().next().value);
+  while (conversations.size >= CACHE_AFFINITY.maxEntries) conversations.delete(conversations.keys().next().value);
+  conversations.set(key, warm);
 }
 
-export function clearCacheHolders() {
-  holders.clear();
+export function clearCacheAffinity() {
+  conversations.clear();
 }
 
-export function cacheHolderCount() {
-  return holders.size;
+export function conversationCount() {
+  return conversations.size;
+}
+
+// Characters of text in a value, skipping inline binary: data URIs and the
+// `data` of a base64 source or inline blob (Anthropic, Gemini).
+function textChars(value, depth = 0) {
+  if (typeof value === "string") return value.startsWith(DATA_URI) ? 0 : value.length;
+  if (!value || typeof value !== "object" || depth > 64) return 0;
+  let n = 0;
+  if (Array.isArray(value)) {
+    for (const v of value) n += textChars(v, depth + 1);
+    return n;
+  }
+  const binary = value.type === "base64" || "mimeType" in value || "mime_type" in value;
+  for (const [k, v] of Object.entries(value)) {
+    if (binary && k === "data") continue;
+    n += k.length + textChars(v, depth + 1);
+  }
+  return n;
+}
+
+/** Rough prompt size in tokens (~4 characters each), images and files not counted. */
+export function estimatePromptTokens(body) {
+  return Math.ceil(textChars(body) / 4);
 }
 
 /**
- * How long to wait for the cache holder before using another key, or 0 to go
- * on as usual. `lock` is from getLimitLock: the holder's rate-limit lock on the
- * model (`limitUntilMs`) and whether another key could serve meanwhile
- * (`alternative`). Without one, nothing changes: the usual all-locked path
- * runs. `promptTokens` is called only when the rest would wait.
- * @param {{ lock: { limitUntilMs: number, alternative: boolean } | null, waitedMs?: number, promptTokens: () => number }} args
+ * How much longer this request may wait for a warm key, or 0 when it may not:
+ * a small request rebuilds its cache cheaply elsewhere. `promptTokens` is
+ * called only when there is time left to wait.
+ * @param {{ waitedMs?: number, promptTokens: () => number }} args
  * @returns {number}
  */
-export function planCacheWait({ lock, waitedMs = 0, promptTokens }) {
-  if (!lock?.alternative) return 0;
-  const waitMs = (lock.limitUntilMs || 0) - Date.now();
-  if (!(waitMs > 0) || waitedMs + waitMs > CACHE_AFFINITY.maxWaitMs) return 0;
-  if (!(promptTokens() >= CACHE_AFFINITY.minPromptTokens)) return 0;
-  return waitMs + CACHE_AFFINITY.lockSlackMs;
+export function warmWaitBudget({ waitedMs = 0, promptTokens }) {
+  const left = CACHE_AFFINITY.maxWaitMs - waitedMs;
+  if (!(left > 0)) return 0;
+  return promptTokens() >= CACHE_AFFINITY.minPromptTokens ? left : 0;
 }
 
 /**
- * Resolves after `ms`, or as soon as `signal` aborts.
- * @param {number} ms
- * @param {AbortSignal | null} [signal]
+ * How long to sleep for a warm key locked until `untilMs`: to the end of the
+ * lock, plus a little slack and jitter.
+ * @param {number} untilMs
+ * @param {() => number} [random]
+ * @returns {number}
  */
-export function waitUnlessAborted(ms, signal = null) {
-  if (signal?.aborted) return Promise.resolve();
-  return new Promise((resolve) => {
-    const done = () => {
-      clearTimeout(timer);
-      signal?.removeEventListener?.("abort", done);
-      resolve();
-    };
-    const timer = setTimeout(done, ms);
-    signal?.addEventListener?.("abort", done, { once: true });
-  });
+export function warmWaitMs(untilMs, random = Math.random) {
+  const jitter = Math.floor(Math.min(Math.max(random(), 0), 0.999) * (CACHE_AFFINITY.jitterMs + 1));
+  return Math.max(0, untilMs - Date.now()) + CACHE_AFFINITY.lockSlackMs + jitter;
 }
