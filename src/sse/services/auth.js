@@ -335,6 +335,10 @@ function isLimitLocked(c, model) {
  * @param {Set<string>|string|null} excludeConnectionIds - Connection ID(s) to exclude (for retry with next account)
  * @param {string|null} model - Model name for per-model rate limit filtering
  * @param {object} [options]
+ * @param {string | null} [options.preferredConnectionId] - pinned connection (Codex
+ *   session affinity), used when usable.
+ * @param {((c: any) => boolean) | null} [options.connectionFilter] - drops
+ *   connections the caller may not use at all.
  * @param {string[]} [options.warmConnectionIds] - keys holding this conversation's
  *   prompt cache; the strategy picks among the usable ones, or among all keys
  *   when none is usable.
