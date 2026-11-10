@@ -6,9 +6,10 @@
  * the whole prompt to its cache again. For long conversations that rebuild
  * costs several times a normal request and slows the first token. So each
  * conversation that asks for a prompt cache remembers its warm keys (the ones
- * that served it within the cache TTL); account selection picks among them when
- * one is usable, and a big request waits out a short rate-limit lock on a warm
- * key rather than moving to a cold one.
+ * that served it within the cache TTL). Account selection takes one when the
+ * strategy ranks it with its own pick (see getProviderCredentials), and a big
+ * request waits out a short rate-limit lock on such a key rather than moving to
+ * a cold one.
  *
  * Only a hash of the conversation's identity is kept, in memory; never content.
  * Codex (`AFFINITY_PROVIDERS`) has its own opt-in pinning in sessionAffinity.js.
@@ -17,7 +18,7 @@
 import { createHash } from "node:crypto";
 import { CACHE_AFFINITY } from "../config/runtimeConfig.js";
 import { AFFINITY_PROVIDERS } from "../config/appConstants.js";
-import { ROLE } from "../translator/schema/index.js";
+import { ROLE, OPENAI_BLOCK } from "../translator/schema/index.js";
 import { resolveClientSessionId } from "../utils/sessionManager.js";
 import { stripAnthropicBillingHeader } from "../utils/claudeCloaking.js";
 
@@ -25,6 +26,7 @@ const CACHE_CONTROL = "cache_control";
 const LONG_TTL = "1h";
 const LEADING_ROLES = new Set([ROLE.SYSTEM, ROLE.DEVELOPER]);
 const DATA_URI = "data:";
+const INPUT_AUDIO = OPENAI_BLOCK.INPUT_AUDIO;
 
 // Hashed conversation key → Map(connectionId → { at, ttlMs }). Map order is
 // recency order at both levels.
@@ -134,8 +136,9 @@ export function conversationCount() {
 }
 
 // Characters of text in a value, skipping inline binary: data URIs and the
-// `data` of a base64 source or inline blob (Anthropic, Gemini).
-function textChars(value, depth = 0) {
+// `data` of a base64 source, inline blob (Anthropic, Gemini) or OpenAI
+// `input_audio` part.
+function textChars(value, depth = 0, parentKey = "") {
   if (typeof value === "string") return value.startsWith(DATA_URI) ? 0 : value.length;
   if (!value || typeof value !== "object" || depth > 64) return 0;
   let n = 0;
@@ -143,10 +146,10 @@ function textChars(value, depth = 0) {
     for (const v of value) n += textChars(v, depth + 1);
     return n;
   }
-  const binary = value.type === "base64" || "mimeType" in value || "mime_type" in value;
+  const binary = value.type === "base64" || "mimeType" in value || "mime_type" in value || parentKey === INPUT_AUDIO;
   for (const [k, v] of Object.entries(value)) {
     if (binary && k === "data") continue;
-    n += k.length + textChars(v, depth + 1);
+    n += k.length + textChars(v, depth + 1, k);
   }
   return n;
 }

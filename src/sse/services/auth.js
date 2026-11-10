@@ -340,8 +340,8 @@ function isLimitLocked(c, model) {
  * @param {((c: any) => boolean) | null} [options.connectionFilter] - drops
  *   connections the caller may not use at all.
  * @param {string[]} [options.warmConnectionIds] - keys holding this conversation's
- *   prompt cache; the strategy picks among the usable ones, or among all keys
- *   when none is usable.
+ *   prompt cache, most recently used last. One is picked when it ranks with the
+ *   strategy's own pick (round-robin: the most recent usable one).
  * @param {number} [options.maxWarmWaitMs] - when no warm key is usable but one is
  *   only rate-limited until within this long, and another key could serve,
  *   returns `{ warmLimitedUntilMs }` instead of a key (nothing is picked or written).
@@ -417,6 +417,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // Antigravity quota cache is lazy: only populated after that account returns 409/429.
     const isAntigravity = providerId === "antigravity";
     const antigravityQuotaCache = isAntigravity && model ? getAntigravityQuotaCache() : null;
+    // Antigravity's live quota for this model is used up until a reset still ahead.
+    const quotaBlocked = (c) => {
+      const quota = antigravityQuotaCache?.get(c.id)?.[model];
+      return !!(quota && quota.remainingPercentage <= 0 && quota.resetAt && new Date(quota.resetAt).getTime() > Date.now());
+    };
 
     // Filter out model-locked, excluded, and Antigravity quota-exhausted connections.
     const usable = (c) => {
@@ -429,13 +434,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         return false;
       }
       // Antigravity: skip if live quota exhausted for this model
-      if (isAntigravity && model && antigravityQuotaCache) {
-        const quota = antigravityQuotaCache.get(c.id)?.[model];
-        if (quota && quota.remainingPercentage <= 0 && quota.resetAt && new Date(quota.resetAt).getTime() > Date.now()) {
-          const account = c.id?.slice(0, 8) || "unknown";
-          log.info("AG_QUOTA", `${account} | CACHE_BLOCK ${model} — skip upstream until ${quota.resetAt}`);
-          return false;
-        }
+      if (quotaBlocked(c)) {
+        const account = c.id?.slice(0, 8) || "unknown";
+        log.info("AG_QUOTA", `${account} | CACHE_BLOCK ${model} — skip upstream until ${antigravityQuotaCache.get(c.id)[model].resetAt}`);
+        return false;
       }
       return true;
     };
@@ -552,22 +554,34 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
-    // Prompt-cache affinity: pick among the keys warm for this conversation when
-    // one is usable. Otherwise, a warm key only briefly rate-limited is worth
-    // waiting for, since every key left here would rebuild the cache.
-    // Round-robin counts only picks from every key: a busy conversation's warm
-    // key mustn't stay "current" and draw new conversations to it.
-    let warmPick = false;
+    // Prompt-cache affinity: a key warm for this conversation, if one ranks with
+    // the strategy's own pick. Fill-first and soonest-reset never skip a usable
+    // key they rank ahead (a lower priority number, a sooner reset); round-robin
+    // takes the conversation's most recently used usable warm key, without
+    // moving the rotation, so neither this conversation nor other traffic
+    // shifts the other. With none usable, a warm key that ranks like that and is
+    // only briefly rate-limited is worth waiting for: the caller gets
+    // warmLimitedUntilMs instead of a key.
+    let warmConnection = null;
     if (warmIds && !probing) {
-      const warm = availableConnections.filter(c => warmIds.has(c.id));
+      const best = strategy === "round-robin" ? null
+        : strategy === "soonest-reset" ? pickSoonestReset(availableConnections, resetStates)
+          : availableConnections[0];
+      const ranks = c => !best || (strategy === "soonest-reset"
+        ? pickSoonestReset([c, best], resetStates) === c
+        : (c.priority || 999) <= (best.priority || 999));
+      const recency = c => options.warmConnectionIds.lastIndexOf(c.id);
+      const warm = availableConnections.filter(c => warmIds.has(c.id) && ranks(c));
       if (warm.length > 0) {
-        availableConnections = warm;
-        warmPick = true;
-        log.debug("AUTH", `${provider} | ${warm.length} warm key(s) for this conversation`);
+        warmConnection = strategy === "round-robin" ? warm.reduce((a, b) => (recency(b) > recency(a) ? b : a))
+          : strategy === "soonest-reset" ? pickSoonestReset(warm, resetStates)
+            : warm[0];
+        log.debug("AUTH", `${provider} | warm key for this conversation`);
       } else if (maxWarmWaitMs > 0) {
         const warmLimitedUntilMs = Math.min(Infinity, ...connections
           .filter(c => warmIds.has(c.id) && !excludeSet.has(c.id) && isLimitLocked(c, model)
-            && !resetStates.get(c.id).blockedUntil && !demotionOf(c, model) && planCanServeModel(providerId, c, model))
+            && !resetStates.get(c.id).blockedUntil && !quotaBlocked(c) && !demotionOf(c, model)
+            && planCanServeModel(providerId, c, model) && ranks(c))
           .map(c => getModelLockUntil(c, model)));
         if (warmLimitedUntilMs - Date.now() <= maxWarmWaitMs) {
           log.debug("AUTH", `${provider} | warm key rate-limited for ${warmLimitedUntilMs - Date.now()}ms, other keys usable`);
@@ -576,9 +590,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       }
     }
 
-    let connection;
+    let connection = warmConnection;
     // Pin to preferred connection if specified and available
-    if (preferredConnectionId) {
+    if (!connection && preferredConnectionId) {
       connection = availableConnections.find((c) => c.id === preferredConnectionId);
       if (connection) {
         log.info("AUTH", `${provider} | pinned to ${connection.id?.slice(0, 8)} (${connection.name || connection.email || "unnamed"})`);
@@ -606,7 +620,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         // Stay with current account
         connection = current;
         // Update lastUsedAt and increment count (await to ensure persistence)
-        if (!warmPick) await updateProviderConnection(connection.id, {
+        await updateProviderConnection(connection.id, {
           lastUsedAt: new Date().toISOString(),
           consecutiveUseCount: (connection.consecutiveUseCount || 0) + 1
         });
@@ -622,7 +636,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         connection = sortedByOldest[0];
 
         // Update lastUsedAt and reset count to 1 (await to ensure persistence)
-        if (!warmPick) await updateProviderConnection(connection.id, {
+        await updateProviderConnection(connection.id, {
           lastUsedAt: new Date().toISOString(),
           consecutiveUseCount: 1
         });

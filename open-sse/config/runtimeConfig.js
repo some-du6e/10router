@@ -44,12 +44,13 @@ function envMs(name, def, min = 1) {
   return Number.isFinite(n) && n >= min && n <= MAX_TIMER_MS ? n : def;
 }
 
-// Parse a plain non-negative integer env override (no timer cap), else the default.
-function envInt(name, def, min = 0) {
+// Parse a plain non-negative decimal integer env override (min..max), else the
+// default. Unlike envMs, "5m", "1e4" or "0x10" are rejected, not misread.
+function envInt(name, def, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
   const raw = process.env[name]?.trim();
   if (!raw || !/^\d+$/.test(raw)) return def;
   const n = Number(raw);
-  return Number.isSafeInteger(n) && n >= min ? n : def;
+  return Number.isSafeInteger(n) && n >= min && n <= max ? n : def;
 }
 
 function envUrl(name, def) {
@@ -69,12 +70,13 @@ export const CACHE_AFFINITY = {
   // How long after a key last served a conversation it counts as warm for it:
   // the upstream 5-minute prompt cache TTL. 0 turns cache affinity off.
   // Env: CACHE_AFFINITY_TTL_MS.
-  ttlMs: envMs("CACHE_AFFINITY_TTL_MS", 5 * 60 * 1000, 0),
+  ttlMs: envInt("CACHE_AFFINITY_TTL_MS", 5 * 60 * 1000),
   // Used instead when the request's cache_control asks for ttl: "1h".
   longTtlMs: 60 * 60 * 1000,
-  // Longest one request waits, in all, for a warm key's rate-limit lock to clear
-  // instead of moving to a cold key. 0: never wait. Env: CACHE_AFFINITY_MAX_WAIT_MS.
-  maxWaitMs: envMs("CACHE_AFFINITY_MAX_WAIT_MS", 10 * 1000, 0),
+  // Longest one request waits, in all per model it tries, for a warm key's
+  // rate-limit lock to clear instead of moving to a cold key. 0: never wait.
+  // Env: CACHE_AFFINITY_MAX_WAIT_MS.
+  maxWaitMs: envInt("CACHE_AFFINITY_MAX_WAIT_MS", 10 * 1000, { max: MAX_TIMER_MS }),
   // Only a request at least this big (estimated prompt tokens) waits; a smaller
   // one rebuilds its cache cheaply on another key. Env: CACHE_AFFINITY_MIN_TOKENS.
   minPromptTokens: envInt("CACHE_AFFINITY_MIN_TOKENS", 32 * 1000),

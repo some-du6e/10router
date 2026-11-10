@@ -57,6 +57,7 @@ const { markAccountUnavailable, getProviderCredentials } = await import("@/sse/s
 const { CACHE_AFFINITY } = await import("open-sse/config/runtimeConfig.js");
 const { DEFAULT_TIMING } = await import("open-sse/utils/limitHold.js");
 const { resolveClientSessionId } = await import("open-sse/utils/sessionManager.js");
+const { getAntigravityQuotaCache } = await import("@/sse/services/antigravityQuota.js");
 const affinity = await import("open-sse/services/cacheAffinity.js");
 
 const MODEL = "claude-test";
@@ -139,20 +140,24 @@ const limited = (ms) => () => ({
 // Another request's 429 locks the key on this model for `ms`.
 const lockForLimit = (id, ms) => markAccountUnavailable(id, 429, "rate_limit_error", provider, MODEL, Date.now() + ms);
 const unlock = (id) => db.updateProviderConnection(id, { [`modelLock_${MODEL}`]: null });
+const withRoundRobin = async (fn) => {
+  await db.updateSettings({ providerStrategies: { [provider]: { fallbackStrategy: "round-robin" } } });
+  try {
+    await fn();
+  } finally {
+    await db.updateSettings({ providerStrategies: {} });
+  }
+};
 const cacheWaits = () => hooks.logged.filter((line) => line.startsWith("info CACHE waiting"));
 
 describe("cache affinity routing", () => {
-  it("stays on its warm key rather than the first by priority", async () => {
+  it("goes back to the first key by priority once usable, even when it isn't warm", async () => {
     const { a, b } = await addKeys("a", "b");
     await lockForLimit(a, 60_000);
     await chat(body());
     await unlock(a);
     expect((await chat(body())).status).toBe(200);
-    expect(upstream.calls).toEqual([b, b]);
-
-    // Another conversation still starts on the first key.
-    await chat(body({ session: OTHER_SESSION }));
-    expect(upstream.calls).toEqual([b, b, a]);
+    expect(upstream.calls).toEqual([b, a]);
   });
 
   it("goes back to the first key by priority once it is usable and still warm", async () => {
@@ -187,8 +192,7 @@ describe("cache affinity routing", () => {
   });
 
   it("keeps round-robin rotating new conversations while one stays on its warm key", async () => {
-    await db.updateSettings({ providerStrategies: { [provider]: { fallbackStrategy: "round-robin" } } });
-    try {
+    await withRoundRobin(async () => {
       const keys = Object.values(await addKeys("a", "b", "c"));
       await chat(body());
       const busy = upstream.calls[0];
@@ -203,9 +207,36 @@ describe("cache affinity routing", () => {
       // Sticky round-robin (3 in a row) over the new conversations alone.
       expect(fresh.filter((id) => id === busy).length).toBeLessThanOrEqual(2);
       expect(new Set(fresh)).toEqual(new Set(keys));
-    } finally {
-      await db.updateSettings({ providerStrategies: {} });
-    }
+    });
+  });
+
+  // Count 1: round-robin would stay on the warm key; count 3: it would restart
+  // the warm key's run. Either write would make it the rotation's current key.
+  it.each([1, 3])("leaves round-robin's rotation alone on a warm pick (warm key's run at %i)", async (count) => {
+    await withRoundRobin(async () => {
+      const { a, b } = await addKeys("a", "b", "c");
+      await chat(body());
+      const now = Date.now();
+      await db.updateProviderConnection(a, { lastUsedAt: new Date(now - 60_000).toISOString(), consecutiveUseCount: count });
+      await db.updateProviderConnection(b, { lastUsedAt: new Date(now - 1_000).toISOString(), consecutiveUseCount: 1 });
+      await chat(body());
+      await chat(body({ session: OTHER_SESSION }));
+      expect(upstream.calls).toEqual([a, a, b]);
+    });
+  });
+
+  it("keeps a round-robin conversation on its most recently used warm key", async () => {
+    await withRoundRobin(async () => {
+      const { a, b } = await addKeys("a", "b", "c");
+      await chat(body());
+      await lockForLimit(a, 60_000);
+      await chat(body());
+      await unlock(a);
+      // Other traffic has made a the rotation's current key.
+      await db.updateProviderConnection(a, { lastUsedAt: new Date().toISOString(), consecutiveUseCount: 1 });
+      await chat(body());
+      expect(upstream.calls).toEqual([a, b, b]);
+    });
   });
 
   it("retries the warm key after its own short 429", async () => {
@@ -365,6 +396,30 @@ describe("warm key selection", () => {
     await lockForLimit(a, 300);
     const picked = await select(new Set(), { warmConnectionIds: [a], maxWarmWaitMs: 0 });
     expect(picked.connectionId).toBe(b);
+  });
+
+  it("does not wait for a warm key the first usable key outranks", async () => {
+    const { a, b } = await addKeys("a", "b");
+    await lockForLimit(b, 300);
+    const picked = await select(new Set(), { warmConnectionIds: [b], maxWarmWaitMs: 1000 });
+    expect(picked.warmLimitedUntilMs).toBeUndefined();
+    expect(picked.connectionId).toBe(a);
+  });
+
+  it("does not wait for a warm key whose Antigravity quota is used up", async () => {
+    provider = "antigravity";
+    const { a, b } = await addKeys("a", "b");
+    await lockForLimit(a, 300);
+    const quotas = getAntigravityQuotaCache();
+    quotas.set(a, { [MODEL]: { remainingPercentage: 0, resetAt: new Date(Date.now() + 3_600_000).toISOString() } });
+    try {
+      const picked = await select(new Set(), { warmConnectionIds: [a], maxWarmWaitMs: 1000 });
+      expect(picked.warmLimitedUntilMs).toBeUndefined();
+      expect(picked.connectionId).toBe(b);
+    } finally {
+      quotas.delete(a);
+      await db.deleteProviderConnectionsByProvider("antigravity");
+    }
   });
 
   it("leaves a claimed demotion probe alone", async () => {
@@ -543,6 +598,7 @@ describe("wait sizing", () => {
         ],
       }],
       contents: [{ parts: [{ inlineData: { mimeType: "image/png", data: image } }] }],
+      input: [{ role: "user", content: [{ type: "input_audio", input_audio: { data: image, format: "wav" } }] }],
     };
     expect(affinity.estimatePromptTokens(withImages)).toBeLessThan(200);
     expect(affinity.estimatePromptTokens({ messages: [{ role: "user", content: "x".repeat(40_000) }] })).toBeGreaterThanOrEqual(10_000);
@@ -585,6 +641,14 @@ describe("env settings", () => {
     Object.assign(process.env, { CACHE_AFFINITY_TTL_MS: "soon", CACHE_AFFINITY_MAX_WAIT_MS: "-5", CACHE_AFFINITY_MIN_TOKENS: "1.5" });
     const { config } = await fresh();
     expect(config).toMatchObject({ ttlMs: 5 * 60 * 1000, maxWaitMs: 10 * 1000, minPromptTokens: 32 * 1000 });
+  });
+
+  it("keeps the TTL and wait cap for values that aren't plain milliseconds", async () => {
+    for (const raw of ["5m", "3e5", "0x1000", "1e4"]) {
+      Object.assign(process.env, { CACHE_AFFINITY_TTL_MS: raw, CACHE_AFFINITY_MAX_WAIT_MS: raw });
+      const { config } = await fresh();
+      expect(config).toMatchObject({ ttlMs: 5 * 60 * 1000, maxWaitMs: 10 * 1000 });
+    }
   });
 
   it("keeps the token threshold for a blank or non-decimal value", async () => {
