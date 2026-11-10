@@ -25,7 +25,7 @@ import { checkApiKeyLimits, apiKeyLimitDenial, keepAllowedAdapterModels, keyHasB
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
-import { HTTP_STATUS, NON_STREAM_EARLY_HEADERS_MS, STREAM_EARLY_HEADERS_MS } from "open-sse/config/runtimeConfig.js";
+import { HTTP_STATUS, NON_STREAM_EARLY_HEADERS_MS, STREAM_EARLY_HEADERS_MS, CACHE_AFFINITY } from "open-sse/config/runtimeConfig.js";
 import { isRequestError } from "open-sse/services/accountFallback.js";
 import { detectFormatByEndpoint, FORMATS } from "open-sse/translator/formats.js";
 import { detectFormat } from "open-sse/services/provider.js";
@@ -679,7 +679,8 @@ async function routeSingleModelChat(
   // Waits for the cache holder when it is briefly rate-limited and the prompt is
   // big enough that rebuilding the cache elsewhere costs more than the wait.
   const waitForCacheHolder = async (holder: string | null, excludeIds: Set<string>): Promise<boolean> => {
-    if (!holder || signal?.aborted) return false;
+    // A spent wait budget can't wait again, so skip the lock read.
+    if (!holder || signal?.aborted || cacheWaitedMs >= CACHE_AFFINITY.maxWaitMs) return false;
     // Fail-open: without the lock the request routes as it would have anyway.
     const lock = await getLimitLock(provider, holder, model, { excludeIds, connectionFilter }).catch(() => null);
     const waitMs = planCacheWait({ lock, waitedMs: cacheWaitedMs, promptTokens: () => (promptTokens ??= estimateInputTokens(body)) });
