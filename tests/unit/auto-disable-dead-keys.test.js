@@ -1159,7 +1159,7 @@ describe("a key refused on only one model", () => {
 
   // One client request as the chat handler runs it: a refused key is excluded
   // and selection runs again, until a key serves or none is left.
-  async function request(model, dead, { onRefused = async () => {} } = {}) {
+  async function request(model, dead, { onRefused = async () => {}, refusal = () => [403, DEAD_403] } = {}) {
     const exclude = new Set();
     const tried = [];
     for (;;) {
@@ -1170,7 +1170,7 @@ describe("a key refused on only one model", () => {
         await auth.clearAccountError(creds.connectionId, creds, model);
         return { tried, served: creds.connectionId };
       }
-      await failOnce(creds.connectionId, model);
+      await failOnce(creds.connectionId, model, ...refusal(creds.connectionId));
       await onRefused(creds.connectionId);
       exclude.add(creds.connectionId);
     }
@@ -1208,6 +1208,34 @@ describe("a key refused on only one model", () => {
     const result = await request("m1", dead, { onRefused: turnOff });
     expect(result).toEqual({ tried: [deadKeys[0].id, healthy.id], served: healthy.id });
     expect(await probed(deadKeys.slice(1))).toEqual([]);
+  });
+
+  it("still probes in a request after a key that isn't demoted on the model failed", async () => {
+    // key-x (first) is demoted on m2 only and fails m1 with a 503; key-a is
+    // demoted on m1 with its probe due; key-e serves.
+    const x = await addKey("key-x");
+    const a = await addKey("key-a");
+    const e = await addKey("key-e");
+    await fail(x.id, { times: 5, models: ["m2"], peers: [e] });
+    await fail(a.id, { times: 5, models: ["m1"], peers: [x, e] });
+    expect(demoted(await load(x.id), "m2")).toBe(true);
+    expect(record(await load(x.id))).toBeNull();
+    expect(demoted(await load(a.id))).toBe(true);
+    await atProbe(a.id);
+    const result = await request("m1", new Set([x.id, a.id]), {
+      refusal: (id) => (id === x.id ? [503, "[503]: Service Unavailable"] : [403, DEAD_403]),
+    });
+    expect(result).toEqual({ tried: [x.id, a.id, e.id], served: e.id });
+    expect(await probed([a])).toEqual([a.id]);
+  });
+
+  it("probes one due demoted key per request under round-robin too", async () => {
+    await db.updateSettings({ providerStrategies: { [provider]: { fallbackStrategy: "round-robin" } } });
+    const { deadKeys, healthy } = await fourDemotedAhead();
+    const result = await request("m1", new Set(deadKeys.map((k) => k.id)));
+    expect(result.served).toBe(healthy.id);
+    expect(result.tried).toHaveLength(2);
+    expect(await probed(deadKeys)).toEqual([result.tried[0]]);
   });
 
   it("restores a demoted key whose probe succeeds in a request", async () => {

@@ -454,8 +454,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const preferred = usableConnections.filter(c => !demotions.get(c.id));
     let availableConnections = preferred.length > 0 ? preferred : usableConnections;
     let probing = false;
-    // One probe per request: once the request has tried a key demoted on this
-    // model, or one turned off since, its next pass goes to the keys that serve.
+    // One probe per request: once the request has excluded a key demoted on
+    // this model, or an id that isn't one of this provider's active keys
+    // (turned off or deleted since, or another provider's key in a shared
+    // exclude set), its next pass goes to the keys that serve.
     const activeIds = new Set(allConnections.map(c => c.id));
     const probedThisRequest = [...excludeSet].some(id => !activeIds.has(id))
       || allConnections.some(c => excludeSet.has(c.id) && demotionOf(c, model));
