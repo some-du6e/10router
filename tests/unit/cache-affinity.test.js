@@ -39,6 +39,19 @@ vi.mock("@/sse/utils/logger.js", async (importOriginal) => {
   const record = (level) => (tag, message) => { hooks.logged.push(`${level} ${tag} ${message}`); };
   return { ...actual, debug: record("debug"), info: record("info"), warn: record("warn"), error: record("error") };
 });
+// Seeded quota resets by connection id for soonest-reset; unseeded, the real
+// module runs (no quota data: every reset unknown).
+const resets = vi.hoisted(() => new Map());
+vi.mock("@/sse/services/soonestReset.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    getRoutingQuotas: (p, connections) => (resets.size ? new Map(connections.map((c) => [c.id, c.id])) : actual.getRoutingQuotas(p, connections)),
+    getResetState: (p, quotas, model, now) => (resets.size
+      ? { blockedUntil: 0, weeklyReset: Infinity, sessionReset: Infinity, ...resets.get(quotas) }
+      : actual.getResetState(p, quotas, model, now)),
+  };
+});
 // Lets a test act once a wait has started.
 vi.mock("open-sse/utils/abortableSleep.js", async (importOriginal) => {
   const actual = await importOriginal();
@@ -89,6 +102,7 @@ beforeEach(() => {
   upstream.script = [];
   hooks.onSleep = null;
   hooks.logged = [];
+  resets.clear();
   affinity.clearCacheAffinity();
   Object.assign(CACHE_AFFINITY, { maxWaitMs: 1000, minPromptTokens: 1000 });
 });
@@ -140,14 +154,17 @@ const limited = (ms) => () => ({
 // Another request's 429 locks the key on this model for `ms`.
 const lockForLimit = (id, ms) => markAccountUnavailable(id, 429, "rate_limit_error", provider, MODEL, Date.now() + ms);
 const unlock = (id) => db.updateProviderConnection(id, { [`modelLock_${MODEL}`]: null });
-const withRoundRobin = async (fn) => {
-  await db.updateSettings({ providerStrategies: { [provider]: { fallbackStrategy: "round-robin" } } });
+const withStrategy = (fallbackStrategy) => async (fn) => {
+  await db.updateSettings({ providerStrategies: { [provider]: { fallbackStrategy } } });
   try {
     await fn();
   } finally {
     await db.updateSettings({ providerStrategies: {} });
   }
 };
+const withRoundRobin = withStrategy("round-robin");
+const withSoonestReset = withStrategy("soonest-reset");
+const DAY = 24 * 60 * 60 * 1000;
 const cacheWaits = () => hooks.logged.filter((line) => line.startsWith("info CACHE waiting"));
 
 describe("cache affinity routing", () => {
@@ -406,6 +423,20 @@ describe("warm key selection", () => {
     expect(picked.connectionId).toBe(a);
   });
 
+  it("does not wait for a warm key when a key ranked ahead of it frees up first", async () => {
+    const { p1, p2, p3 } = await addKeys("p1", "p2", "p3");
+    await lockForLimit(p1, 300);
+    await lockForLimit(p2, 600);
+    const picked = await select(new Set(), { warmConnectionIds: [p2], maxWarmWaitMs: 1000 });
+    expect(picked.warmLimitedUntilMs).toBeUndefined();
+    expect(picked.connectionId).toBe(p3);
+
+    // p1 now frees up after p2: waiting for p2 pays off.
+    await lockForLimit(p1, 900);
+    const waits = await select(new Set(), { warmConnectionIds: [p2], maxWarmWaitMs: 1000 });
+    expect(waits.warmLimitedUntilMs).toBeGreaterThan(Date.now());
+  });
+
   it("does not wait for a warm key whose Antigravity quota is used up", async () => {
     provider = "antigravity";
     const { a, b } = await addKeys("a", "b");
@@ -442,6 +473,56 @@ describe("warm key selection", () => {
     expect(excluded.allRateLimited).toBe(true);
     const filtered = await select(new Set(), { warmConnectionIds: [a], maxWarmWaitMs: 1000, connectionFilter: (c) => c.id !== b });
     expect(filtered.allRateLimited).toBe(true);
+  });
+});
+
+describe("warm keys under soonest-reset", () => {
+  const select = (options) => getProviderCredentials(provider, new Set(), MODEL, options);
+  const resetIn = (id, ms) => resets.set(id, { weeklyReset: Date.now() + ms });
+
+  it("picks a usable key with a sooner reset over a warm key with a later one", async () => {
+    await withSoonestReset(async () => {
+      const { k1, k2 } = await addKeys("k1", "k2");
+      resetIn(k1, 7 * DAY);
+      resetIn(k2, DAY);
+      expect((await select({ warmConnectionIds: [k1], maxWarmWaitMs: 1000 })).connectionId).toBe(k2);
+    });
+  });
+
+  it("lets priority decide when resets are unknown", async () => {
+    await withSoonestReset(async () => {
+      const { k1, k2 } = await addKeys("k1", "k2");
+      expect((await select({ warmConnectionIds: [k2], maxWarmWaitMs: 1000 })).connectionId).toBe(k1);
+    });
+  });
+
+  it("does not wait for a warm key that resets later than the usable pick", async () => {
+    await withSoonestReset(async () => {
+      const { k1, k2 } = await addKeys("k1", "k2");
+      resetIn(k1, 7 * DAY);
+      resetIn(k2, DAY);
+      await lockForLimit(k1, 300);
+      const picked = await select({ warmConnectionIds: [k1], maxWarmWaitMs: 1000 });
+      expect(picked.warmLimitedUntilMs).toBeUndefined();
+      expect(picked.connectionId).toBe(k2);
+    });
+  });
+
+  it("waits for a warm key that resets sooner, unless one resetting sooner still frees up first", async () => {
+    await withSoonestReset(async () => {
+      const { k1, k2, k3 } = await addKeys("k1", "k2", "k3");
+      resetIn(k1, 60 * 60 * 1000);
+      resetIn(k2, DAY);
+      resetIn(k3, 7 * DAY);
+      await lockForLimit(k1, 300);
+      await lockForLimit(k2, 600);
+      const picked = await select({ warmConnectionIds: [k2], maxWarmWaitMs: 1000 });
+      expect(picked.warmLimitedUntilMs).toBeUndefined();
+      expect(picked.connectionId).toBe(k3);
+
+      await lockForLimit(k1, 900);
+      expect((await select({ warmConnectionIds: [k2], maxWarmWaitMs: 1000 })).warmLimitedUntilMs).toBeGreaterThan(Date.now());
+    });
   });
 });
 
