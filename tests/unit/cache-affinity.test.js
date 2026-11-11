@@ -405,7 +405,7 @@ describe("warm key selection", () => {
     const { a } = await addKeys("a", "b");
     await lockForLimit(a, 300);
     const picked = await select(new Set(), { warmConnectionIds: [a], maxWarmWaitMs: 1000 });
-    expect(picked.warmLimitedUntilMs).toBeGreaterThan(Date.now());
+    expect(picked.warmRetryAtMs).toBeGreaterThan(Date.now());
   });
 
   it("picks a key when it may not wait", async () => {
@@ -419,7 +419,7 @@ describe("warm key selection", () => {
     const { a, b } = await addKeys("a", "b");
     await lockForLimit(b, 300);
     const picked = await select(new Set(), { warmConnectionIds: [b], maxWarmWaitMs: 1000 });
-    expect(picked.warmLimitedUntilMs).toBeUndefined();
+    expect(picked.warmRetryAtMs).toBeUndefined();
     expect(picked.connectionId).toBe(a);
   });
 
@@ -428,13 +428,62 @@ describe("warm key selection", () => {
     await lockForLimit(p1, 300);
     await lockForLimit(p2, 600);
     const picked = await select(new Set(), { warmConnectionIds: [p2], maxWarmWaitMs: 1000 });
-    expect(picked.warmLimitedUntilMs).toBeUndefined();
+    expect(picked.warmRetryAtMs).toBeUndefined();
     expect(picked.connectionId).toBe(p3);
 
     // p1 now frees up after p2: waiting for p2 pays off.
     await lockForLimit(p1, 900);
     const waits = await select(new Set(), { warmConnectionIds: [p2], maxWarmWaitMs: 1000 });
-    expect(waits.warmLimitedUntilMs).toBeGreaterThan(Date.now());
+    expect(waits.warmRetryAtMs).toBeGreaterThan(Date.now());
+  });
+
+  it("waits for a later warm key when a better key would beat the soonest one", async () => {
+    const { a, x, b } = await addKeys("a", "x", "b", "c");
+    await lockForLimit(a, 6_000);
+    await lockForLimit(x, 500);
+    await lockForLimit(b, 1_000);
+    // b frees first but x (cold, ahead of b) frees before it; nothing is ahead of a.
+    const picked = await select(new Set(), { warmConnectionIds: [a, b], maxWarmWaitMs: 10_000 });
+    expect(picked.warmRetryAtMs).toBeGreaterThan(Date.now() + 5_000);
+  });
+
+  it("counts the retry's slack and jitter when a better key frees up", async () => {
+    const { a, b, c } = await addKeys("a", "b", "c");
+    await lockForLimit(a, 2_000);
+    await lockForLimit(b, 1_990);
+    // b's lock ends first, but a is free before b's retry (lock + slack + jitter).
+    const picked = await select(new Set(), { warmConnectionIds: [b], maxWarmWaitMs: 5_000 });
+    expect(picked.warmRetryAtMs).toBeUndefined();
+    expect(picked.connectionId).toBe(c);
+  });
+
+  it("waits under round-robin even when a higher-priority key frees up first", async () => {
+    await withRoundRobin(async () => {
+      const { a, b } = await addKeys("a", "b", "c");
+      await lockForLimit(a, 300);
+      await lockForLimit(b, 600);
+      const picked = await select(new Set(), { warmConnectionIds: [b], maxWarmWaitMs: 1_000 });
+      expect(picked.warmRetryAtMs).toBeGreaterThan(Date.now());
+    });
+  });
+
+  it("does not wait for a warm key already excluded in this request", async () => {
+    const { b, c } = await addKeys("b", "c");
+    await lockForLimit(b, 300);
+    const picked = await select(new Set([b]), { warmConnectionIds: [b], maxWarmWaitMs: 1_000 });
+    expect(picked.warmRetryAtMs).toBeUndefined();
+    expect(picked.connectionId).toBe(c);
+  });
+
+  it("does not wait for a warm key demoted on the model", async () => {
+    const { b, c } = await addKeys("b", "c");
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const later = new Date(Date.now() + 3_600_000).toISOString();
+    await db.updateProviderConnection(b, { [db.getAuthDemoteKey(MODEL)]: { demotedAt: past, firstAt: past, nextProbeAt: later } });
+    await lockForLimit(b, 300);
+    const picked = await select(new Set(), { warmConnectionIds: [b], maxWarmWaitMs: 1_000 });
+    expect(picked.warmRetryAtMs).toBeUndefined();
+    expect(picked.connectionId).toBe(c);
   });
 
   it("does not wait for a warm key whose Antigravity quota is used up", async () => {
@@ -445,7 +494,7 @@ describe("warm key selection", () => {
     quotas.set(a, { [MODEL]: { remainingPercentage: 0, resetAt: new Date(Date.now() + 3_600_000).toISOString() } });
     try {
       const picked = await select(new Set(), { warmConnectionIds: [a], maxWarmWaitMs: 1000 });
-      expect(picked.warmLimitedUntilMs).toBeUndefined();
+      expect(picked.warmRetryAtMs).toBeUndefined();
       expect(picked.connectionId).toBe(b);
     } finally {
       quotas.delete(a);
@@ -462,7 +511,7 @@ describe("warm key selection", () => {
     await lockForLimit(c, 300);
     // a is due its probe; c, the only warm key, is briefly limited.
     const picked = await select(new Set(), { warmConnectionIds: [c], maxWarmWaitMs: 1000 });
-    expect(picked.warmLimitedUntilMs).toBeUndefined();
+    expect(picked.warmRetryAtMs).toBeUndefined();
     expect(picked.connectionId).toBe(a);
   });
 
@@ -503,8 +552,37 @@ describe("warm keys under soonest-reset", () => {
       resetIn(k2, DAY);
       await lockForLimit(k1, 300);
       const picked = await select({ warmConnectionIds: [k1], maxWarmWaitMs: 1000 });
-      expect(picked.warmLimitedUntilMs).toBeUndefined();
+      expect(picked.warmRetryAtMs).toBeUndefined();
       expect(picked.connectionId).toBe(k2);
+    });
+  });
+
+  it("does not wait for a warm key blocked on its quota", async () => {
+    await withSoonestReset(async () => {
+      const { b, c } = await addKeys("b", "c");
+      resets.set(b, { weeklyReset: Date.now() + DAY, blockedUntil: Date.now() + 60_000 });
+      resetIn(c, 7 * DAY);
+      await lockForLimit(b, 300);
+      const picked = await select({ warmConnectionIds: [b], maxWarmWaitMs: 1_000 });
+      expect(picked.warmRetryAtMs).toBeUndefined();
+      expect(picked.connectionId).toBe(c);
+    });
+  });
+
+  it("lets a sooner-reset key whose quota block ends before the retry overtake", async () => {
+    await withSoonestReset(async () => {
+      const { k1, k2, k3 } = await addKeys("k1", "k2", "k3");
+      resets.set(k1, { weeklyReset: Date.now() + 60 * 60 * 1000, blockedUntil: Date.now() + 300 });
+      resetIn(k2, DAY);
+      resetIn(k3, 7 * DAY);
+      await lockForLimit(k2, 600);
+      const picked = await select({ warmConnectionIds: [k2], maxWarmWaitMs: 1_000 });
+      expect(picked.warmRetryAtMs).toBeUndefined();
+      expect(picked.connectionId).toBe(k3);
+
+      // Blocked past k2's retry: waiting for k2 pays off.
+      resets.set(k1, { weeklyReset: Date.now() + 60 * 60 * 1000, blockedUntil: Date.now() + 5_000 });
+      expect((await select({ warmConnectionIds: [k2], maxWarmWaitMs: 1_000 })).warmRetryAtMs).toBeGreaterThan(Date.now());
     });
   });
 
@@ -517,11 +595,11 @@ describe("warm keys under soonest-reset", () => {
       await lockForLimit(k1, 300);
       await lockForLimit(k2, 600);
       const picked = await select({ warmConnectionIds: [k2], maxWarmWaitMs: 1000 });
-      expect(picked.warmLimitedUntilMs).toBeUndefined();
+      expect(picked.warmRetryAtMs).toBeUndefined();
       expect(picked.connectionId).toBe(k3);
 
       await lockForLimit(k1, 900);
-      expect((await select({ warmConnectionIds: [k2], maxWarmWaitMs: 1000 })).warmLimitedUntilMs).toBeGreaterThan(Date.now());
+      expect((await select({ warmConnectionIds: [k2], maxWarmWaitMs: 1000 })).warmRetryAtMs).toBeGreaterThan(Date.now());
     });
   });
 });
@@ -650,21 +728,21 @@ describe("warm key memory", () => {
 });
 
 describe("wait sizing", () => {
-  it("adds bounded jitter after the lock", () => {
-    vi.useFakeTimers();
-    const until = Date.now() + 100;
-    expect(affinity.warmWaitMs(until, Infinity, () => 0)).toBe(100 + CACHE_AFFINITY.lockSlackMs);
-    const most = affinity.warmWaitMs(until, Infinity, () => 0.99999);
-    expect(most).toBeGreaterThan(100 + CACHE_AFFINITY.lockSlackMs);
-    expect(most).toBeLessThanOrEqual(100 + CACHE_AFFINITY.lockSlackMs + CACHE_AFFINITY.jitterMs);
+  it("draws bounded jitter", () => {
+    expect(affinity.warmJitterMs(() => 0)).toBe(0);
+    const most = affinity.warmJitterMs(() => 0.99999);
+    expect(most).toBeGreaterThan(0);
+    expect(most).toBeLessThanOrEqual(CACHE_AFFINITY.jitterMs);
   });
 
-  it("keeps lock, slack and jitter within the wait budget", () => {
+  it("retries just after the lock, slack and jitter included, within the wait budget", () => {
     vi.useFakeTimers();
-    expect(affinity.lockBudgetMs(1000)).toBe(1000 - CACHE_AFFINITY.lockSlackMs);
-    const until = Date.now() + affinity.lockBudgetMs(1000);
-    expect(affinity.warmWaitMs(until, 1000, () => 0.99999)).toBe(1000);
-    expect(affinity.warmWaitMs(until, 1000, () => 0)).toBe(1000);
+    const now = Date.now();
+    const slack = CACHE_AFFINITY.lockSlackMs;
+    expect(affinity.warmRetryAt(now + 100, 1000, 50)).toBe(now + 100 + slack + 50);
+    // The jitter is cut to the budget; the slack is not.
+    expect(affinity.warmRetryAt(now + 1000 - slack, 1000, 250)).toBe(now + 1000);
+    expect(affinity.warmRetryAt(now + 1000 - slack + 1, 1000, 0)).toBeNull();
   });
 
   it("does not count inline images and files as prompt tokens", () => {

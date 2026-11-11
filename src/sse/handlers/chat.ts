@@ -47,8 +47,7 @@ import {
   rememberWarmKey,
   estimatePromptTokens,
   warmWaitBudget,
-  lockBudgetMs,
-  warmWaitMs,
+  warmRetryAt,
 } from "open-sse/services/cacheAffinity.js";
 import { abortableSleep } from "open-sse/utils/abortableSleep.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
@@ -712,13 +711,13 @@ async function routeSingleModelChat(
       preferredConnectionId,
       connectionFilter,
       warmConnectionIds,
-      maxWarmWaitMs: warmConnectionIds.length > 0 ? lockBudgetMs(waitBudget()) : 0,
+      maxWarmWaitMs: warmConnectionIds.length > 0 ? waitBudget() : 0,
     })) as (Credentials & { connectionId: string } & Record<string, any>) | null;
 
     // Every warm key is briefly rate-limited and the prompt is big: waiting is
     // cheaper than rebuilding its cache on a cold key.
-    if (credentials?.warmLimitedUntilMs) {
-      const waitMs = warmWaitMs(credentials.warmLimitedUntilMs, waitBudget());
+    if (credentials?.warmRetryAtMs) {
+      const waitMs = Math.max(0, credentials.warmRetryAtMs - Date.now());
       log.info("CACHE", `waiting ${waitMs}ms for a key holding this conversation's prompt cache`);
       cacheWaitedMs += waitMs;
       await abortableSleep(waitMs, signal);
@@ -896,7 +895,7 @@ async function routeSingleModelChat(
         cooldownMs > 0 &&
         warmConnectionIds.includes(credentials.connectionId) &&
         isLimitError(result.status, result.error) &&
-        cooldownMs <= lockBudgetMs(waitBudget())
+        warmRetryAt(Date.now() + cooldownMs, waitBudget()) !== null
       ) {
         log.info("CACHE", `ACC:${credentials.connectionName} rate-limited (${result.status}), keeping this conversation on its warm keys`);
         lastError = result.error;

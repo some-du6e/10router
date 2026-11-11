@@ -13,6 +13,7 @@ import { getRoutingQuotas, getResetState, pickSoonestReset } from "./soonestRese
 import * as log from "../utils/logger.js";
 import { getNextAccountReset, PROVIDER_RESET_PREFIX, extractProviderMessage } from "./accountFailureSummary.js";
 import { isLimitError } from "open-sse/utils/limitHold.js";
+import { warmJitterMs, warmRetryAt } from "open-sse/services/cacheAffinity.js";
 
 // Per-provider mutexes for account selection. Picks for the same provider stay
 // serialized (round-robin sticky counters read-then-write lastUsedAt and
@@ -342,11 +343,11 @@ function isLimitLocked(c, model) {
  * @param {string[]} [options.warmConnectionIds] - keys holding this conversation's
  *   prompt cache, most recently used last. One is picked when it ranks with the
  *   strategy's own pick (round-robin: the most recent usable one).
- * @param {number} [options.maxWarmWaitMs] - when no warm key that ranks with the
- *   strategy's pick is usable, but one that ranks no worse is only rate-limited
- *   until within this long, another key could serve, and no key ranked ahead of
- *   it frees up first, returns `{ warmLimitedUntilMs }` instead of a key (nothing
- *   is picked or written).
+ * @param {number} [options.maxWarmWaitMs] - when the strategy's pick isn't warm,
+ *   another key could serve, and a warm key is only rate-limited so briefly that
+ *   its retry (lock end + slack + jitter) is within this long, and no key the
+ *   strategy ranks ahead of it is usable or frees up by then, returns
+ *   `{ warmRetryAtMs }` instead of a key (nothing is picked or written).
  */
 export async function getProviderCredentials(provider, excludeConnectionIds = null, model = null, options = {}) {
   // Normalize to Set for consistent handling
@@ -556,46 +557,46 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
-    // Prompt-cache affinity: a key warm for this conversation, if one ranks with
-    // the strategy's own pick. Fill-first and soonest-reset never skip a usable
-    // key they rank ahead (a lower priority number, a sooner reset, then
-    // priority); round-robin takes the conversation's most recently used usable
-    // warm key, without moving the rotation, so neither this conversation nor
-    // other traffic shifts the other. With none usable, a warm key that ranks
-    // like that and is only briefly rate-limited is worth waiting for, unless a
-    // key ranked ahead of it frees up first: the caller gets warmLimitedUntilMs
-    // instead of a key.
+    // Prompt-cache affinity. Fill-first and soonest-reset keep their own pick;
+    // round-robin takes the conversation's most recently used usable warm key,
+    // without moving the rotation, so neither this conversation nor other
+    // traffic shifts the other. When the pick isn't warm, a warm key only
+    // briefly rate-limited is worth waiting for, unless a key the strategy ranks
+    // ahead of it (round-robin ranks none) is usable or frees up by the retry:
+    // that key would win the pick after the wait. The caller gets
+    // warmRetryAtMs instead of a key.
     let warmConnection = null;
     if (warmIds && !probing) {
-      const best = strategy === "round-robin" ? null
+      const recency = c => options.warmConnectionIds.lastIndexOf(c.id);
+      if (strategy === "round-robin") {
+        warmConnection = availableConnections.filter(c => warmIds.has(c.id))
+          .reduce((a, b) => (!a || recency(b) > recency(a) ? b : a), null);
+      }
+      const pick = strategy === "round-robin" ? warmConnection
         : strategy === "soonest-reset" ? pickSoonestReset(availableConnections, resetStates)
           : availableConnections[0];
-      // Below 0: x ranks ahead of y, the way the strategy orders a whole list.
-      const byPriority = (x, y) => (x.priority || 999) - (y.priority || 999);
-      const rank = (x, y) => {
-        if (strategy !== "soonest-reset") return byPriority(x, y);
-        const [l, r] = [resetStates.get(x.id), resetStates.get(y.id)];
-        return (l.weeklyReset - r.weeklyReset || l.sessionReset - r.sessionReset || 0) || byPriority(x, y);
-      };
-      const ranks = c => !best || rank(c, best) <= 0;
-      const recency = c => options.warmConnectionIds.lastIndexOf(c.id);
-      const warm = availableConnections.filter(c => warmIds.has(c.id) && ranks(c));
-      if (warm.length > 0) {
-        // Only keys ranked level with the strategy's pick get here, so its order stands.
-        warmConnection = strategy === "round-robin" ? warm.reduce((a, b) => (recency(b) > recency(a) ? b : a)) : warm[0];
+      if (pick && warmIds.has(pick.id)) {
         log.debug("AUTH", `${provider} | warm key for this conversation`);
       } else if (maxWarmWaitMs > 0) {
+        const byPriority = (x, y) => (x.priority || 999) - (y.priority || 999);
+        const ahead = (x, y) => {
+          if (strategy === "round-robin") return false;
+          if (strategy !== "soonest-reset") return byPriority(x, y) < 0;
+          const [l, r] = [resetStates.get(x.id), resetStates.get(y.id)];
+          return ((l.weeklyReset - r.weeklyReset || l.sessionReset - r.sessionReset || 0) || byPriority(x, y)) < 0;
+        };
         const servable = c => !excludeSet.has(c.id) && !quotaBlocked(c) && !demotionOf(c, model) && planCanServeModel(providerId, c, model);
-        const target = connections
-          .filter(c => warmIds.has(c.id) && isLimitLocked(c, model) && !resetStates.get(c.id).blockedUntil && servable(c) && ranks(c))
-          .reduce((soonest, c) => (!soonest || getModelLockUntil(c, model) < getModelLockUntil(soonest, model) ? c : soonest), null);
-        const warmLimitedUntilMs = target ? getModelLockUntil(target, model) : Infinity;
-        // A key ranked ahead of it that is free by then would win the pick after the wait.
-        const overtaken = best && target && connections.some(c => c.id !== target.id && servable(c) && rank(c, target) < 0
-          && Math.max(getModelLockUntil(c, model), resetStates.get(c.id).blockedUntil || 0) <= warmLimitedUntilMs);
-        if (!overtaken && warmLimitedUntilMs - Date.now() <= maxWarmWaitMs) {
-          log.debug("AUTH", `${provider} | warm key rate-limited for ${warmLimitedUntilMs - Date.now()}ms, other keys usable`);
-          return { warmLimitedUntilMs };
+        const freeAt = c => Math.max(getModelLockUntil(c, model), resetStates.get(c.id).blockedUntil || 0);
+        const jitterMs = warmJitterMs();
+        const candidates = connections
+          .filter(c => warmIds.has(c.id) && servable(c) && isLimitLocked(c, model) && !resetStates.get(c.id).blockedUntil)
+          .sort((x, y) => getModelLockUntil(x, model) - getModelLockUntil(y, model));
+        for (const c of candidates) {
+          const warmRetryAtMs = warmRetryAt(getModelLockUntil(c, model), maxWarmWaitMs, jitterMs);
+          if (warmRetryAtMs === null) break;
+          if (connections.some(k => k.id !== c.id && servable(k) && ahead(k, c) && freeAt(k) <= warmRetryAtMs)) continue;
+          log.debug("AUTH", `${provider} | warm key rate-limited, retrying it in ${warmRetryAtMs - Date.now()}ms`);
+          return { warmRetryAtMs };
         }
       }
     }

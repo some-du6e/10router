@@ -173,26 +173,28 @@ export function warmWaitBudget({ waitedMs = 0, promptTokens }) {
 }
 
 /**
- * Longest lock a request with `budgetMs` of waiting left may wait out: its
- * sleep adds `lockSlackMs` after the lock.
- * @param {number} budgetMs
- * @returns {number}
- */
-export function lockBudgetMs(budgetMs) {
-  return Math.max(0, budgetMs - CACHE_AFFINITY.lockSlackMs);
-}
-
-/**
- * How long to sleep for a warm key locked until `untilMs`: to the end of the
- * lock, plus a little slack and jitter. The jitter never takes the sleep past
- * `budgetMs`, so a request waits at most CACHE_AFFINITY.maxWaitMs in all.
- * @param {number} untilMs
- * @param {number} [budgetMs]
+ * Random extra delay, 0..CACHE_AFFINITY.jitterMs, so requests waiting on one
+ * key don't all retry it at once.
  * @param {() => number} [random]
  * @returns {number}
  */
-export function warmWaitMs(untilMs, budgetMs = Infinity, random = Math.random) {
-  const base = Math.max(0, untilMs - Date.now()) + CACHE_AFFINITY.lockSlackMs;
-  const jitter = Math.floor(Math.min(Math.max(random(), 0), 0.999) * (CACHE_AFFINITY.jitterMs + 1));
-  return Math.max(base, Math.min(base + jitter, budgetMs));
+export function warmJitterMs(random = Math.random) {
+  return Math.floor(Math.min(Math.max(random(), 0), 0.999) * (CACHE_AFFINITY.jitterMs + 1));
+}
+
+/**
+ * When to retry a warm key locked until `lockEndMs`: just after the lock
+ * (slack + jitter), but no later than `budgetMs` from now. Null when even the
+ * lock plus its slack doesn't fit the budget. Keeps a request's waits within
+ * CACHE_AFFINITY.maxWaitMs in all.
+ * @param {number} lockEndMs
+ * @param {number} budgetMs
+ * @param {number} [jitterMs]
+ * @returns {number | null}
+ */
+export function warmRetryAt(lockEndMs, budgetMs, jitterMs = 0) {
+  const now = Date.now();
+  const earliest = Math.max(lockEndMs, now) + CACHE_AFFINITY.lockSlackMs;
+  if (earliest - now > budgetMs) return null;
+  return Math.min(earliest + jitterMs, now + budgetMs);
 }
