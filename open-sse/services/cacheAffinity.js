@@ -138,7 +138,7 @@ export function conversationCount() {
 // `data` of a base64 source, inline blob (Anthropic, Gemini) or OpenAI
 // `input_audio` part.
 function textChars(value, depth = 0, parentKey = "") {
-  if (typeof value === "string") return value.startsWith(INLINE_MEDIA.dataUriPrefix) ? 0 : value.length;
+  if (typeof value === "string") return INLINE_MEDIA.dataUri.test(value) ? 0 : value.length;
   if (!value || typeof value !== "object" || depth > 64) return 0;
   let n = 0;
   if (Array.isArray(value)) {

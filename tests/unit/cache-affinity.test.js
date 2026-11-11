@@ -447,14 +447,31 @@ describe("warm key selection", () => {
     expect(picked.warmRetryAtMs).toBeGreaterThan(Date.now() + 5_000);
   });
 
-  it("counts the retry's slack and jitter when a better key frees up", async () => {
+  it("counts the retry's slack when a better key frees up", async () => {
+    Object.assign(CACHE_AFFINITY, { lockSlackMs: 600 });
     const { a, b, c } = await addKeys("a", "b", "c");
-    await lockForLimit(a, 2_000);
-    await lockForLimit(b, 1_990);
-    // b's lock ends first, but a is free before b's retry (lock + slack + jitter).
+    await lockForLimit(a, 1_800);
+    await lockForLimit(b, 1_400);
+    // b's lock ends first, but a is free before b's earliest retry (lock + slack).
     const picked = await select(new Set(), { warmConnectionIds: [b], maxWarmWaitMs: 5_000 });
     expect(picked.warmRetryAtMs).toBeUndefined();
     expect(picked.connectionId).toBe(c);
+  });
+
+  it("cuts the jitter short rather than let a better key overtake the retry", async () => {
+    const { a, b } = await addKeys("a", "b", "c");
+    // b first, so a's lock surely ends after b's earliest retry (lock + 25ms).
+    await lockForLimit(b, 2_000);
+    await lockForLimit(a, 2_100);
+    const aFree = new Date((await db.getProviderConnectionById(a))[`modelLock_${MODEL}`]).getTime();
+    vi.spyOn(Math, "random").mockReturnValue(0.999);
+    try {
+      const picked = await select(new Set(), { warmConnectionIds: [b], maxWarmWaitMs: 5_000 });
+      expect(picked.warmRetryAtMs).toBeGreaterThan(Date.now());
+      expect(picked.warmRetryAtMs).toBeLessThan(aFree);
+    } finally {
+      vi.mocked(Math.random).mockRestore();
+    }
   });
 
   it("waits under round-robin even when a higher-priority key frees up first", async () => {
@@ -503,13 +520,14 @@ describe("warm key selection", () => {
   });
 
   it("leaves a claimed demotion probe alone", async () => {
-    const { a, c } = await addKeys("a", "b", "c");
+    // Priorities: a 1 (demoted, due its probe), c 2 (warm, briefly limited), b 3.
+    const { a, c } = await addKeys("a", "c", "b");
     const past = new Date(Date.now() - 60_000).toISOString();
     await db.updateProviderConnection(a, {
       [db.getAuthDemoteKey(MODEL)]: { demotedAt: past, firstAt: past, nextProbeAt: past },
     });
     await lockForLimit(c, 300);
-    // a is due its probe; c, the only warm key, is briefly limited.
+    // Nothing servable outranks c, so only the probe guard keeps it from waiting.
     const picked = await select(new Set(), { warmConnectionIds: [c], maxWarmWaitMs: 1000 });
     expect(picked.warmRetryAtMs).toBeUndefined();
     expect(picked.connectionId).toBe(a);
@@ -542,6 +560,18 @@ describe("warm keys under soonest-reset", () => {
     await withSoonestReset(async () => {
       const { k1, k2 } = await addKeys("k1", "k2");
       expect((await select({ warmConnectionIds: [k2], maxWarmWaitMs: 1000 })).connectionId).toBe(k1);
+    });
+  });
+
+  it("lets priority decide who overtakes a warm key when resets are unknown", async () => {
+    await withSoonestReset(async () => {
+      const { k1, k2, k3 } = await addKeys("k1", "k2", "k3");
+      await lockForLimit(k1, 300);
+      await lockForLimit(k2, 600);
+      // k1 ties k2 on reset and outranks it on priority, and is free first.
+      const picked = await select({ warmConnectionIds: [k2], maxWarmWaitMs: 1000 });
+      expect(picked.warmRetryAtMs).toBeUndefined();
+      expect(picked.connectionId).toBe(k3);
     });
   });
 
@@ -761,6 +791,13 @@ describe("wait sizing", () => {
     };
     expect(affinity.estimatePromptTokens(withImages)).toBeLessThan(200);
     expect(affinity.estimatePromptTokens({ messages: [{ role: "user", content: "x".repeat(40_000) }] })).toBeGreaterThanOrEqual(10_000);
+  });
+
+  it("counts text that only starts like a data URI, such as a captured SSE stream", () => {
+    const sse = 'data: {"type":"content_block_delta","delta":{"text":"hi"}}\n\n'.repeat(1_000);
+    const toolResult = { messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: sse }] }] };
+    expect(affinity.estimatePromptTokens(toolResult)).toBeGreaterThanOrEqual(sse.length / 4);
+    expect(affinity.estimatePromptTokens({ messages: [{ role: "user", content: `data:application/pdf;base64,${"A".repeat(100_000)}` }] })).toBeLessThan(100);
   });
 
   it("gives a small request no wait budget", () => {

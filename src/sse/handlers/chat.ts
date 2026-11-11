@@ -714,8 +714,9 @@ async function routeSingleModelChat(
       maxWarmWaitMs: warmConnectionIds.length > 0 ? waitBudget() : 0,
     })) as (Credentials & { connectionId: string } & Record<string, any>) | null;
 
-    // Every warm key is briefly rate-limited and the prompt is big: waiting is
-    // cheaper than rebuilding its cache on a cold key.
+    // The strategy's pick is cold, a warm key it would rank no worse is briefly
+    // rate-limited, and the prompt is big: waiting is cheaper than rebuilding
+    // the cache on the cold key.
     if (credentials?.warmRetryAtMs) {
       const waitMs = Math.max(0, credentials.warmRetryAtMs - Date.now());
       log.info("CACHE", `waiting ${waitMs}ms for a key holding this conversation's prompt cache`);

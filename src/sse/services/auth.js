@@ -346,7 +346,7 @@ function isLimitLocked(c, model) {
  * @param {number} [options.maxWarmWaitMs] - when the strategy's pick isn't warm,
  *   another key could serve, and a warm key is only rate-limited so briefly that
  *   its retry (lock end + slack + jitter) is within this long, and no key the
- *   strategy ranks ahead of it is usable or frees up by then, returns
+ *   strategy ranks ahead of it is usable or frees up by lock end + slack, returns
  *   `{ warmRetryAtMs }` instead of a key (nothing is picked or written).
  */
 export async function getProviderCredentials(provider, excludeConnectionIds = null, model = null, options = {}) {
@@ -562,8 +562,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // without moving the rotation, so neither this conversation nor other
     // traffic shifts the other. When the pick isn't warm, a warm key only
     // briefly rate-limited is worth waiting for, unless a key the strategy ranks
-    // ahead of it (round-robin ranks none) is usable or frees up by the retry:
-    // that key would win the pick after the wait. The caller gets
+    // ahead of it (round-robin ranks none) is usable or frees up by the earliest
+    // retry: that key would win the pick after the wait. The caller gets
     // warmRetryAtMs instead of a key.
     let warmConnection = null;
     if (warmIds && !probing) {
@@ -592,9 +592,15 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           .filter(c => warmIds.has(c.id) && servable(c) && isLimitLocked(c, model) && !resetStates.get(c.id).blockedUntil)
           .sort((x, y) => getModelLockUntil(x, model) - getModelLockUntil(y, model));
         for (const c of candidates) {
-          const warmRetryAtMs = warmRetryAt(getModelLockUntil(c, model), maxWarmWaitMs, jitterMs);
-          if (warmRetryAtMs === null) break;
-          if (connections.some(k => k.id !== c.id && servable(k) && ahead(k, c) && freeAt(k) <= warmRetryAtMs)) continue;
+          const lockEnd = getModelLockUntil(c, model);
+          const earliest = warmRetryAt(lockEnd, maxWarmWaitMs);
+          if (earliest === null) break;
+          // A better-ranked key free by the earliest retry overtakes; one free later
+          // only caps the jitter, so the retry still lands before it.
+          const betterFreeAt = Math.min(Infinity, ...connections
+            .filter(k => k.id !== c.id && servable(k) && ahead(k, c)).map(freeAt));
+          if (betterFreeAt <= earliest) continue;
+          const warmRetryAtMs = warmRetryAt(lockEnd, maxWarmWaitMs, Math.min(jitterMs, betterFreeAt - 1 - earliest));
           log.debug("AUTH", `${provider} | warm key rate-limited, retrying it in ${warmRetryAtMs - Date.now()}ms`);
           return { warmRetryAtMs };
         }
