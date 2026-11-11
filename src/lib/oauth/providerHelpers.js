@@ -70,14 +70,20 @@ export async function fetchKiroProfileArn(accessToken) {
   }
 }
 
-export function extractCodexAccountInfo(idToken) {
-  const payload = decodeJwtPayload(idToken);
-  if (!payload) return {};
+export function extractCodexAccountInfo(idToken, accessToken) {
+  const idPayload = decodeJwtPayload(idToken);
+  const accessPayload = decodeJwtPayload(accessToken) || {};
+  if (!idPayload && !Object.keys(accessPayload).length) return {};
+  const payload = idPayload || {};
   const chatgpt = payload["https://api.openai.com/auth"] || {};
+  const accessChatgpt = accessPayload["https://api.openai.com/auth"] || {};
   return {
-    email: payload.email,
-    chatgptAccountId: chatgpt.chatgpt_account_id || payload.account_id,
-    chatgptPlanType: chatgpt.chatgpt_plan_type || payload.plan_type,
+    email: payload.email || payload["https://api.openai.com/profile"]?.email || payload.preferred_username
+      || accessPayload.email || accessPayload["https://api.openai.com/profile"]?.email || accessPayload.preferred_username,
+    chatgptAccountId: chatgpt.chatgpt_account_id || payload.account_id
+      || accessChatgpt.chatgpt_account_id || accessPayload.account_id,
+    chatgptPlanType: chatgpt.chatgpt_plan_type || payload.plan_type
+      || accessChatgpt.chatgpt_plan_type || accessPayload.plan_type,
   };
 }
 
