@@ -14,6 +14,7 @@ import * as log from "../utils/logger.js";
 import { getNextAccountReset, PROVIDER_RESET_PREFIX, extractProviderMessage } from "./accountFailureSummary.js";
 import { isLimitError } from "open-sse/utils/limitHold.js";
 import { warmJitterMs, warmRetryAt } from "open-sse/services/cacheAffinity.js";
+import { CACHE_AFFINITY } from "open-sse/config/runtimeConfig.js";
 
 // Per-provider mutexes for account selection. Picks for the same provider stay
 // serialized (round-robin sticky counters read-then-write lastUsedAt and
@@ -345,9 +346,11 @@ function isLimitLocked(c, model) {
  *   strategy's own pick (round-robin: the most recent usable one).
  * @param {number} [options.maxWarmWaitMs] - when the strategy's pick isn't warm,
  *   another key could serve, and a warm key is only rate-limited so briefly that
- *   its retry (lock end + slack + jitter) is within this long, and no key the
- *   strategy ranks ahead of it is usable or frees up by lock end + slack, returns
- *   `{ warmRetryAtMs }` instead of a key (nothing is picked or written).
+ *   its earliest retry (lock end + slack) is within this long, and no key the
+ *   strategy ranks ahead of it is usable or frees up within one more slack of
+ *   that, returns `{ warmRetryAtMs }` instead of a key (nothing is picked or
+ *   written). The retry adds jitter, cut to the budget and to a slack before the
+ *   first better-ranked key frees up.
  */
 export async function getProviderCredentials(provider, excludeConnectionIds = null, model = null, options = {}) {
   // Normalize to Set for consistent handling
@@ -595,12 +598,14 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           const lockEnd = getModelLockUntil(c, model);
           const earliest = warmRetryAt(lockEnd, maxWarmWaitMs);
           if (earliest === null) break;
-          // A better-ranked key free by the earliest retry overtakes; one free later
-          // only caps the jitter, so the retry still lands before it.
+          // A better-ranked key free within one slack of the earliest retry
+          // overtakes (timers fire late, and selection reads before it checks); one
+          // free later only caps the jitter, so the retry lands a slack before it.
+          const marginMs = CACHE_AFFINITY.lockSlackMs;
           const betterFreeAt = Math.min(Infinity, ...connections
             .filter(k => k.id !== c.id && servable(k) && ahead(k, c)).map(freeAt));
-          if (betterFreeAt <= earliest) continue;
-          const warmRetryAtMs = warmRetryAt(lockEnd, maxWarmWaitMs, Math.min(jitterMs, betterFreeAt - 1 - earliest));
+          if (betterFreeAt <= earliest + marginMs) continue;
+          const warmRetryAtMs = warmRetryAt(lockEnd, maxWarmWaitMs, Math.min(jitterMs, betterFreeAt - marginMs - earliest));
           log.debug("AUTH", `${provider} | warm key rate-limited, retrying it in ${warmRetryAtMs - Date.now()}ms`);
           return { warmRetryAtMs };
         }

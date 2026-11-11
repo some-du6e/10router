@@ -458,20 +458,35 @@ describe("warm key selection", () => {
     expect(picked.connectionId).toBe(c);
   });
 
-  it("cuts the jitter short rather than let a better key overtake the retry", async () => {
+  // Time stands still (only Date is faked) so the locks below are exact.
+  it("cuts the jitter so the retry, even a late one, lands on the warm key", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
     const { a, b } = await addKeys("a", "b", "c");
-    // b first, so a's lock surely ends after b's earliest retry (lock + 25ms).
     await lockForLimit(b, 2_000);
     await lockForLimit(a, 2_100);
-    const aFree = new Date((await db.getProviderConnectionById(a))[`modelLock_${MODEL}`]).getTime();
     vi.spyOn(Math, "random").mockReturnValue(0.999);
     try {
       const picked = await select(new Set(), { warmConnectionIds: [b], maxWarmWaitMs: 5_000 });
       expect(picked.warmRetryAtMs).toBeGreaterThan(Date.now());
-      expect(picked.warmRetryAtMs).toBeLessThan(aFree);
+      // The timer fires a little late and selection takes a moment: still b.
+      vi.setSystemTime(picked.warmRetryAtMs + CACHE_AFFINITY.lockSlackMs - 5);
+      const retried = await select(new Set(), { warmConnectionIds: [b], maxWarmWaitMs: 5_000 });
+      expect(retried.connectionId).toBe(b);
+      expect(retried.connectionId).not.toBe(a);
     } finally {
       vi.mocked(Math.random).mockRestore();
     }
+  });
+
+  it("does not wait when a better key frees up just after the warm key's earliest retry", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const { a, b, c } = await addKeys("a", "b", "c");
+    // b's earliest retry is +2025; a frees at +2040, within one more slack.
+    await lockForLimit(b, 2_000);
+    await lockForLimit(a, 2_040);
+    const picked = await select(new Set(), { warmConnectionIds: [b], maxWarmWaitMs: 5_000 });
+    expect(picked.warmRetryAtMs).toBeUndefined();
+    expect(picked.connectionId).toBe(c);
   });
 
   it("waits under round-robin even when a higher-priority key frees up first", async () => {
