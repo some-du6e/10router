@@ -90,6 +90,16 @@ export const SESSION_HEADER_KEYS = [
 // affinity stays inert for every other provider.
 export const AFFINITY_PROVIDERS = new Set(["codex"]);
 
+// How inline binary shows up in request bodies: a data: URI, or a `data` field
+// on a base64 source (Anthropic) or a blob with a MIME type (Gemini).
+export const INLINE_MEDIA = {
+  // A real data URI (data:<type>/<subtype>; or ,), not text like an SSE "data: {...}" line.
+  dataUri: /^data:[\w.+-]+\/[\w.+-]+[;,]/i,
+  base64SourceType: "base64",
+  mimeTypeKeys: ["mimeType", "mime_type"],
+  dataKey: "data",
+};
+
 // Suffix added to client tools when forwarding to Antigravity provider (anti-ban cloaking)
 export const AG_TOOL_SUFFIX = "_ide";
 

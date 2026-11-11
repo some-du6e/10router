@@ -44,6 +44,15 @@ function envMs(name, def, min = 1) {
   return Number.isFinite(n) && n >= min && n <= MAX_TIMER_MS ? n : def;
 }
 
+// Parse a plain non-negative decimal integer env override (min..max), else the
+// default. Unlike envMs, "5m", "1e4" or "0x10" are rejected, not misread.
+function envInt(name, def, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const raw = process.env[name]?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return def;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n >= min && n <= max ? n : def;
+}
+
 function envUrl(name, def) {
   const raw = process.env[name]?.trim();
   return raw || def;
@@ -53,6 +62,34 @@ function envUrl(name, def) {
 // Must resolve to a public address; fetchPublic blocks localhost and private hosts.
 export const SEARXNG_URL = envUrl("SEARXNG_URL", "http://localhost:8888/search");
 export const SEARXNG_CONFIGURED = Boolean(envUrl("SEARXNG_URL", ""));
+
+// Prompt-cache affinity (services/cacheAffinity.js): a conversation that asks for
+// a prompt cache prefers the keys (accounts) that served it recently, because
+// the upstream cache is per account.
+export const CACHE_AFFINITY = {
+  // How long after a key last served a conversation it counts as warm for it:
+  // the upstream 5-minute prompt cache TTL. 0 turns cache affinity off.
+  // Env: CACHE_AFFINITY_TTL_MS.
+  ttlMs: envInt("CACHE_AFFINITY_TTL_MS", 5 * 60 * 1000),
+  // Used instead when the request's cache_control asks for ttl: "1h".
+  longTtlMs: 60 * 60 * 1000,
+  // Longest one request waits, in all per model it tries, for a warm key's
+  // rate-limit lock to clear instead of moving to a cold key. 0: never wait.
+  // Env: CACHE_AFFINITY_MAX_WAIT_MS.
+  maxWaitMs: envInt("CACHE_AFFINITY_MAX_WAIT_MS", 10 * 1000, { max: MAX_TIMER_MS }),
+  // Only a request at least this big (estimated prompt tokens) waits; a smaller
+  // one rebuilds its cache cheaply on another key. Env: CACHE_AFFINITY_MIN_TOKENS.
+  minPromptTokens: envInt("CACHE_AFFINITY_MIN_TOKENS", 32 * 1000),
+  // Conversations remembered at once; the least recently used goes first.
+  maxEntries: 10 * 1000,
+  // Warm keys remembered per conversation; the least recently used goes first.
+  maxWarmKeys: 4,
+  // Added to a wait so the lock has surely ended when the request retries.
+  lockSlackMs: 25,
+  // Up to this much more, at random, so requests waiting on one key don't all
+  // retry it at once and escalate its backoff.
+  jitterMs: 250,
+};
 
 // Inter-chunk stall timeout (once tokens are flowing). Generous headroom so
 // slow reasoning models aren't aborted mid-stream. Env: STREAM_STALL_TIMEOUT_MS.

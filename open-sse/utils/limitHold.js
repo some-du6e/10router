@@ -8,6 +8,7 @@ import { translateResponse, initState } from "../translator/index.js";
 import { FORMATS } from "../translator/formats.js";
 import { ROLE, OPENAI_FINISH } from "../translator/schema/index.js";
 import { formatSSE } from "./stream.js";
+import { abortableSleep } from "./abortableSleep.js";
 
 // Present in every banner we emit. Later requests carry the banner back inside
 // their history; detecting this marker is what triggers the "ignore that line"
@@ -206,10 +207,7 @@ export async function awaitLimitClear({ retryAtMs, attempt, provider, model, sig
     // Never sleep past the ceiling: a reset days away would otherwise pin the
     // connection for days before the deadline is even looked at.
     waitMs = Math.min(waitMs, Math.max(deadline - Date.now(), 0));
-    await new Promise((resolve) => {
-      const timer = setTimeout(resolve, waitMs);
-      signal?.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
-    });
+    await abortableSleep(waitMs, signal);
     if (signal?.aborted) break;
 
     last = await attempt();
@@ -244,15 +242,12 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
   state._holdId = `chatcmpl-hold-${Date.now()}`;
 
   let cancelled = false;
-  let wakeTimer = null;
   let keepaliveTimer = null;
   const abortController = new AbortController();
 
   const stop = () => {
     cancelled = true;
-    if (wakeTimer) clearTimeout(wakeTimer);
     if (keepaliveTimer) clearInterval(keepaliveTimer);
-    wakeTimer = null;
     keepaliveTimer = null;
     abortController.abort();
   };
@@ -284,16 +279,6 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
       // which is what stops an intermediate proxy reaping an idle connection.
       keepaliveTimer = setInterval(() => write(`: 10router limit-hold\n\n`), keepaliveMs);
 
-      const sleep = (ms) =>
-        new Promise((resolve) => {
-          if (abortController.signal.aborted) return resolve();
-          wakeTimer = setTimeout(resolve, ms);
-          abortController.signal.addEventListener("abort", () => {
-            if (wakeTimer) clearTimeout(wakeTimer);
-            resolve();
-          }, { once: true });
-        });
-
       let splicedRealStream = false;
       let attemptNo = 1;
       let waitMs = Math.max((retryAtMs || 0) - Date.now(), minWaitMs);
@@ -302,7 +287,7 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
 
       try {
         while (!cancelled) {
-          await sleep(waitMs);
+          await abortableSleep(waitMs, abortController.signal);
           if (cancelled) break;
 
           attemptNo += 1;

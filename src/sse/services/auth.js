@@ -13,6 +13,8 @@ import { getRoutingQuotas, getResetState, pickSoonestReset } from "./soonestRese
 import * as log from "../utils/logger.js";
 import { getNextAccountReset, PROVIDER_RESET_PREFIX, extractProviderMessage } from "./accountFailureSummary.js";
 import { isLimitError } from "open-sse/utils/limitHold.js";
+import { warmJitterMs, warmRetryAt } from "open-sse/services/cacheAffinity.js";
+import { CACHE_AFFINITY } from "open-sse/config/runtimeConfig.js";
 
 // Per-provider mutexes for account selection. Picks for the same provider stay
 // serialized (round-robin sticky counters read-then-write lastUsedAt and
@@ -318,12 +320,37 @@ async function claimProbe(conn, model, from) {
   return JSON.stringify(saved?.[getAuthDemoteKey(model)]) === JSON.stringify(to);
 }
 
+// Locked on this model for a limit: a key that serves again once it clears.
+// The lock that ends last decides, so a short limit lock can't hide a longer
+// account-wide refusal.
+function isLimitLocked(c, model) {
+  const [scope, until] = [[getModelLockKey(model), model || "__all"], [MODEL_LOCK_ALL, "__all"]]
+    .map(([key, sc]) => [sc, new Date(c[key] || 0).getTime() || 0])
+    .reduce((a, b) => (b[1] > a[1] ? b : a));
+  return until > Date.now() && c[`${MODEL_LIMIT_PREFIX}${scope}`] === true;
+}
+
 /**
  * Get provider credentials from localDb
  * Filters out unavailable accounts and returns the selected account based on strategy
  * @param {string} provider - Provider name
  * @param {Set<string>|string|null} excludeConnectionIds - Connection ID(s) to exclude (for retry with next account)
  * @param {string|null} model - Model name for per-model rate limit filtering
+ * @param {object} [options]
+ * @param {string | null} [options.preferredConnectionId] - pinned connection (Codex
+ *   session affinity), used when usable.
+ * @param {((c: any) => boolean) | null} [options.connectionFilter] - drops
+ *   connections the caller may not use at all.
+ * @param {string[]} [options.warmConnectionIds] - keys holding this conversation's
+ *   prompt cache, most recently used last. One is picked when it ranks with the
+ *   strategy's own pick (round-robin: the most recent usable one).
+ * @param {number} [options.maxWarmWaitMs] - when the strategy's pick isn't warm,
+ *   another key could serve, and a warm key is only rate-limited so briefly that
+ *   its earliest retry (lock end + slack) is within this long, and no key the
+ *   strategy ranks ahead of it is usable or frees up within one more slack of
+ *   that, returns `{ warmRetryAtMs }` instead of a key (nothing is picked or
+ *   written). The retry adds jitter, cut to the budget and to a slack before the
+ *   first better-ranked key frees up.
  */
 export async function getProviderCredentials(provider, excludeConnectionIds = null, model = null, options = {}) {
   // Normalize to Set for consistent handling
@@ -331,6 +358,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     ? excludeConnectionIds
     : (excludeConnectionIds ? new Set([excludeConnectionIds]) : new Set());
   const preferredConnectionId = options?.preferredConnectionId || null;
+  const warmIds = Array.isArray(options?.warmConnectionIds) && options.warmConnectionIds.length > 0
+    ? new Set(options.warmConnectionIds)
+    : null;
+  const maxWarmWaitMs = Number(options?.maxWarmWaitMs) || 0;
   // Drops connections the caller may not use at all (auto combos skip blocked
   // billing), as if they were not connected.
   const connectionFilter = typeof options?.connectionFilter === "function" ? options.connectionFilter : null;
@@ -392,6 +423,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // Antigravity quota cache is lazy: only populated after that account returns 409/429.
     const isAntigravity = providerId === "antigravity";
     const antigravityQuotaCache = isAntigravity && model ? getAntigravityQuotaCache() : null;
+    // Antigravity's live quota for this model is used up until a reset still ahead.
+    const quotaBlocked = (c) => {
+      const quota = antigravityQuotaCache?.get(c.id)?.[model];
+      return !!(quota && quota.remainingPercentage <= 0 && quota.resetAt && new Date(quota.resetAt).getTime() > Date.now());
+    };
 
     // Filter out model-locked, excluded, and Antigravity quota-exhausted connections.
     const usable = (c) => {
@@ -404,13 +440,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         return false;
       }
       // Antigravity: skip if live quota exhausted for this model
-      if (isAntigravity && model && antigravityQuotaCache) {
-        const quota = antigravityQuotaCache.get(c.id)?.[model];
-        if (quota && quota.remainingPercentage <= 0 && quota.resetAt && new Date(quota.resetAt).getTime() > Date.now()) {
-          const account = c.id?.slice(0, 8) || "unknown";
-          log.info("AG_QUOTA", `${account} | CACHE_BLOCK ${model} — skip upstream until ${quota.resetAt}`);
-          return false;
-        }
+      if (quotaBlocked(c)) {
+        const account = c.id?.slice(0, 8) || "unknown";
+        log.info("AG_QUOTA", `${account} | CACHE_BLOCK ${model} — skip upstream until ${antigravityQuotaCache.get(c.id)[model].resetAt}`);
+        return false;
       }
       return true;
     };
@@ -420,6 +453,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const demotions = new Map(usableConnections.map(c => [c.id, demotionOf(c, model)]));
     const preferred = usableConnections.filter(c => !demotions.get(c.id));
     let availableConnections = preferred.length > 0 ? preferred : usableConnections;
+    let probing = false;
     if (preferred.length > 0) {
       // Under fill-first a key behind a usable one wouldn't be tried anyway
       // (a backup), so only demoted keys ahead of them are probed.
@@ -427,6 +461,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       for (const c of ahead.filter(c => demotions.get(c.id))) {
         if (await claimProbe(c, model, demotions.get(c.id))) {
           availableConnections = [c];
+          probing = true;
           break;
         }
       }
@@ -464,15 +499,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       if (earliest) {
         // A dead key's 403 ahead of a key in a 2s rate-limit lock would turn a
         // retryable wait into an auth failure.
-        // Locked on this model for a limit: a key that serves again once it
-        // clears. The lock that ends last decides, so a short limit lock can't
-        // hide a longer account-wide refusal.
-        const limitLocked = c => {
-          const [scope, until] = [[getModelLockKey(model), model || "__all"], [MODEL_LOCK_ALL, "__all"]]
-            .map(([key, sc]) => [sc, new Date(c[key] || 0).getTime() || 0])
-            .reduce((a, b) => (b[1] > a[1] ? b : a));
-          return until > Date.now() && c[`${MODEL_LIMIT_PREFIX}${scope}`] === true;
-        };
+        const limitLocked = c => isLimitLocked(c, model);
         // errorCode/lastError are the key's last error on any model; the limit
         // flag on the lock is this model's. Where they disagree, the stored error
         // came from another model.
@@ -533,9 +560,61 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
-    let connection;
+    // Prompt-cache affinity. Fill-first and soonest-reset keep their own pick;
+    // round-robin takes the conversation's most recently used usable warm key,
+    // without moving the rotation, so neither this conversation nor other
+    // traffic shifts the other. When the pick isn't warm, a warm key only
+    // briefly rate-limited is worth waiting for, unless a key the strategy ranks
+    // ahead of it (round-robin ranks none) is usable or frees up within one slack
+    // of the earliest retry: that key would win the pick after the wait. The caller gets
+    // warmRetryAtMs instead of a key.
+    let warmConnection = null;
+    if (warmIds && !probing) {
+      const recency = c => options.warmConnectionIds.lastIndexOf(c.id);
+      if (strategy === "round-robin") {
+        warmConnection = availableConnections.filter(c => warmIds.has(c.id))
+          .reduce((a, b) => (!a || recency(b) > recency(a) ? b : a), null);
+      }
+      const pick = strategy === "round-robin" ? warmConnection
+        : strategy === "soonest-reset" ? pickSoonestReset(availableConnections, resetStates)
+          : availableConnections[0];
+      if (pick && warmIds.has(pick.id)) {
+        log.debug("AUTH", `${provider} | warm key for this conversation`);
+      } else if (maxWarmWaitMs > 0) {
+        const byPriority = (x, y) => (x.priority || 999) - (y.priority || 999);
+        const ahead = (x, y) => {
+          if (strategy === "round-robin") return false;
+          if (strategy !== "soonest-reset") return byPriority(x, y) < 0;
+          const [l, r] = [resetStates.get(x.id), resetStates.get(y.id)];
+          return ((l.weeklyReset - r.weeklyReset || l.sessionReset - r.sessionReset || 0) || byPriority(x, y)) < 0;
+        };
+        const servable = c => !excludeSet.has(c.id) && !quotaBlocked(c) && !demotionOf(c, model) && planCanServeModel(providerId, c, model);
+        const freeAt = c => Math.max(getModelLockUntil(c, model), resetStates.get(c.id).blockedUntil || 0);
+        const jitterMs = warmJitterMs();
+        const candidates = connections
+          .filter(c => warmIds.has(c.id) && servable(c) && isLimitLocked(c, model) && !resetStates.get(c.id).blockedUntil)
+          .sort((x, y) => getModelLockUntil(x, model) - getModelLockUntil(y, model));
+        for (const c of candidates) {
+          const lockEnd = getModelLockUntil(c, model);
+          const earliest = warmRetryAt(lockEnd, maxWarmWaitMs);
+          if (earliest === null) break;
+          // A better-ranked key free within one slack of the earliest retry
+          // overtakes (timers fire late, and selection reads before it checks); one
+          // free later only caps the jitter, so the retry lands a slack before it.
+          const marginMs = CACHE_AFFINITY.lockSlackMs;
+          const betterFreeAt = Math.min(Infinity, ...connections
+            .filter(k => k.id !== c.id && servable(k) && ahead(k, c)).map(freeAt));
+          if (betterFreeAt <= earliest + marginMs) continue;
+          const warmRetryAtMs = warmRetryAt(lockEnd, maxWarmWaitMs, Math.min(jitterMs, betterFreeAt - marginMs - earliest));
+          log.debug("AUTH", `${provider} | warm key rate-limited, retrying it in ${warmRetryAtMs - Date.now()}ms`);
+          return { warmRetryAtMs };
+        }
+      }
+    }
+
+    let connection = warmConnection;
     // Pin to preferred connection if specified and available
-    if (preferredConnectionId) {
+    if (!connection && preferredConnectionId) {
       connection = availableConnections.find((c) => c.id === preferredConnectionId);
       if (connection) {
         log.info("AUTH", `${provider} | pinned to ${connection.id?.slice(0, 8)} (${connection.name || connection.email || "unnamed"})`);
