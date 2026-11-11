@@ -17,7 +17,7 @@
 
 import { createHash } from "node:crypto";
 import { CACHE_AFFINITY } from "../config/runtimeConfig.js";
-import { AFFINITY_PROVIDERS } from "../config/appConstants.js";
+import { AFFINITY_PROVIDERS, INLINE_MEDIA } from "../config/appConstants.js";
 import { ROLE, OPENAI_BLOCK } from "../translator/schema/index.js";
 import { resolveClientSessionId } from "../utils/sessionManager.js";
 import { stripAnthropicBillingHeader } from "../utils/claudeCloaking.js";
@@ -25,7 +25,6 @@ import { stripAnthropicBillingHeader } from "../utils/claudeCloaking.js";
 const CACHE_CONTROL = "cache_control";
 const LONG_TTL = "1h";
 const LEADING_ROLES = new Set([ROLE.SYSTEM, ROLE.DEVELOPER]);
-const DATA_URI = "data:";
 const INPUT_AUDIO = OPENAI_BLOCK.INPUT_AUDIO;
 
 // Hashed conversation key → Map(connectionId → { at, ttlMs }). Map order is
@@ -139,16 +138,17 @@ export function conversationCount() {
 // `data` of a base64 source, inline blob (Anthropic, Gemini) or OpenAI
 // `input_audio` part.
 function textChars(value, depth = 0, parentKey = "") {
-  if (typeof value === "string") return value.startsWith(DATA_URI) ? 0 : value.length;
+  if (typeof value === "string") return value.startsWith(INLINE_MEDIA.dataUriPrefix) ? 0 : value.length;
   if (!value || typeof value !== "object" || depth > 64) return 0;
   let n = 0;
   if (Array.isArray(value)) {
     for (const v of value) n += textChars(v, depth + 1);
     return n;
   }
-  const binary = value.type === "base64" || "mimeType" in value || "mime_type" in value || parentKey === INPUT_AUDIO;
+  const binary = value.type === INLINE_MEDIA.base64SourceType
+    || INLINE_MEDIA.mimeTypeKeys.some((key) => key in value) || parentKey === INPUT_AUDIO;
   for (const [k, v] of Object.entries(value)) {
-    if (binary && k === "data") continue;
+    if (binary && k === INLINE_MEDIA.dataKey) continue;
     n += k.length + textChars(v, depth + 1, k);
   }
   return n;
