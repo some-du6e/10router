@@ -1157,6 +1157,74 @@ describe("a key refused on only one model", () => {
     expect(probes).toHaveLength(1);
   });
 
+  // One client request as the chat handler runs it: a refused key is excluded
+  // and selection runs again, until a key serves or none is left.
+  async function request(model, dead, { onRefused = async () => {} } = {}) {
+    const exclude = new Set();
+    const tried = [];
+    for (;;) {
+      const creds = await auth.getProviderCredentials(provider, exclude, model);
+      if (!creds?.connectionId) return { tried, served: null };
+      tried.push(creds.connectionId);
+      if (!dead.has(creds.connectionId)) {
+        await auth.clearAccountError(creds.connectionId, creds, model);
+        return { tried, served: creds.connectionId };
+      }
+      await failOnce(creds.connectionId, model);
+      await onRefused(creds.connectionId);
+      exclude.add(creds.connectionId);
+    }
+  }
+
+  // key-a..key-d demoted on m1 ahead of a working key-e, every probe due.
+  async function fourDemotedAhead() {
+    const deadKeys = [];
+    for (const name of ["key-a", "key-b", "key-c", "key-d"]) deadKeys.push(await addKey(name));
+    const healthy = await addKey("key-e");
+    for (const key of deadKeys) await fail(key.id, { times: 5, models: ["m1"], peers: [healthy] });
+    for (const key of deadKeys) expect(demoted(await load(key.id))).toBe(true);
+    const due = Math.max(...await Promise.all(deadKeys.map(async (k) => Date.parse(record(await load(k.id)).nextProbeAt))));
+    vi.setSystemTime(new Date(due));
+    return { deadKeys, healthy };
+  }
+  const probed = async (keys) => (await Promise.all(keys.map((k) => load(k.id)))).filter((c) => record(c).probeId).map((c) => c.id);
+
+  it("probes one due demoted key per request, then goes straight to the key that serves", async () => {
+    const { deadKeys, healthy } = await fourDemotedAhead();
+    const dead = new Set(deadKeys.map((k) => k.id));
+    const first = await request("m1", dead);
+    expect(first).toEqual({ tried: [deadKeys[0].id, healthy.id], served: healthy.id });
+    expect(await probed(deadKeys)).toEqual([deadKeys[0].id]);
+    // The other due probes are left for later requests, one each.
+    const second = await request("m1", dead);
+    expect(second).toEqual({ tried: [deadKeys[1].id, healthy.id], served: healthy.id });
+    expect(await probed(deadKeys)).toEqual([deadKeys[0].id, deadKeys[1].id]);
+  });
+
+  it("takes no second probe in a request whose probed key is turned off by its refusal", async () => {
+    const { deadKeys, healthy } = await fourDemotedAhead();
+    const dead = new Set(deadKeys.map((k) => k.id));
+    const turnOff = (id) => db.updateProviderConnection(id, { isActive: false });
+    const result = await request("m1", dead, { onRefused: turnOff });
+    expect(result).toEqual({ tried: [deadKeys[0].id, healthy.id], served: healthy.id });
+    expect(await probed(deadKeys.slice(1))).toEqual([]);
+  });
+
+  it("restores a demoted key whose probe succeeds in a request", async () => {
+    const { deadKeys } = await fourDemotedAhead();
+    const result = await request("m1", new Set(deadKeys.slice(1).map((k) => k.id)));
+    expect(result).toEqual({ tried: [deadKeys[0].id], served: deadKeys[0].id });
+    expect(record(await load(deadKeys[0].id))).toBeNull();
+  });
+
+  it("still falls back to the other demoted keys in a request when no other key can serve", async () => {
+    const { deadKeys, healthy } = await fourDemotedAhead();
+    await takePeerAway(healthy);
+    const result = await request("m1", new Set(deadKeys.slice(0, 3).map((k) => k.id)));
+    expect(result).toEqual({ tried: deadKeys.map((k) => k.id), served: deadKeys[3].id });
+    expect(record(await load(deadKeys[3].id))).toBeNull();
+  });
+
   it("lists a demotion only for an active key, and marks one whose probe is due", async () => {
     const { dead } = await demotedKey();
     const { GET } = await import("@/app/api/models/availability/route.js");
