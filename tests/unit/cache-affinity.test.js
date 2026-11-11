@@ -450,9 +450,10 @@ describe("warm key selection", () => {
   it("counts the retry's slack when a better key frees up", async () => {
     Object.assign(CACHE_AFFINITY, { lockSlackMs: 600 });
     const { a, b, c } = await addKeys("a", "b", "c");
-    await lockForLimit(a, 1_800);
+    await lockForLimit(a, 2_100);
     await lockForLimit(b, 1_400);
-    // b's lock ends first, but a is free before b's earliest retry (lock + slack).
+    // b's lock ends first; a frees after b's lock + one slack (2000) but within
+    // one slack of b's earliest retry (2000 + 600), so it would win the pick.
     const picked = await select(new Set(), { warmConnectionIds: [b], maxWarmWaitMs: 5_000 });
     expect(picked.warmRetryAtMs).toBeUndefined();
     expect(picked.connectionId).toBe(c);

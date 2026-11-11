@@ -565,8 +565,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // without moving the rotation, so neither this conversation nor other
     // traffic shifts the other. When the pick isn't warm, a warm key only
     // briefly rate-limited is worth waiting for, unless a key the strategy ranks
-    // ahead of it (round-robin ranks none) is usable or frees up by the earliest
-    // retry: that key would win the pick after the wait. The caller gets
+    // ahead of it (round-robin ranks none) is usable or frees up within one slack
+    // of the earliest retry: that key would win the pick after the wait. The caller gets
     // warmRetryAtMs instead of a key.
     let warmConnection = null;
     if (warmIds && !probing) {
