@@ -2,18 +2,27 @@ import { CLAUDE_TOOL_SUFFIX } from "../../config/appConstants.js";
 
 // Responses clients (Codex) call tools by `{ name, namespace }`; Chat and Claude
 // upstreams see one flat list. Maps the upstream name back: to a namespace when
-// the name is unchanged, or to `{ namespace, name }` when it was qualified.
+// the name is unchanged, or to `{ namespace, name }` when it was renamed
+// (namespace is null for a top-level tool whose name had to be sanitized).
 
-export type ToolNamespaceEntry = string | { namespace: string; name: string };
+export type ToolNamespaceEntry = string | { namespace: string | null; name: string };
 export type ToolNamespaces = Map<string, ToolNamespaceEntry> | Record<string, ToolNamespaceEntry> | null | undefined;
 
 // Anthropic caps tool names at 64 chars of [a-zA-Z0-9_-]; OAuth cloaking appends CLAUDE_TOOL_SUFFIX.
 const MAX_TOOL_NAME_LEN = 64 - CLAUDE_TOOL_SUFFIX.length;
+const WIRE_NAME = /^[a-zA-Z0-9_-]+$/;
+
+// Whether an upstream accepts `name` as a tool name as-is.
+export function isWireToolName(name: string): boolean {
+  return name.length <= MAX_TOOL_NAME_LEN && WIRE_NAME.test(name);
+}
 
 // MCP namespaces end in `__server` and their tools start with `_`, so plain
 // concatenation reproduces the full MCP name (mcp__codex_apps__notion_fetch).
-export function qualifyToolName(namespace: string, name: string): string {
-  const raw = name.startsWith("_") ? `${namespace}${name}` : `${namespace}__${name}`;
+// A namespace that already ends in `_` is not given a second separator.
+export function qualifyToolName(namespace: string | null, name: string): string {
+  const raw = !namespace ? name
+    : name.startsWith("_") || namespace.endsWith("_") ? `${namespace}${name}` : `${namespace}__${name}`;
   const qualified = raw.replace(/[^a-zA-Z0-9_-]/g, "_");
   if (qualified.length <= MAX_TOOL_NAME_LEN) return qualified;
   return `${qualified.slice(0, MAX_TOOL_NAME_LEN - 9)}_${hash8(raw)}`;

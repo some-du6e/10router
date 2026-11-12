@@ -8,7 +8,7 @@ import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
 import { normalizeResponsesInput } from "../formats/responsesApi.js";
 import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM, TOOL_TYPE } from "../schema/index.js";
-import { qualifyToolName } from "../concerns/toolNamespace.js";
+import { isWireToolName, qualifyToolName } from "../concerns/toolNamespace.js";
 
 // Responses API enforces max 64 chars on call_id (#393)
 const MAX_CALL_ID_LEN = 64;
@@ -35,7 +35,8 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
   let pendingReasoningEncrypted = "";
   const additionalTools = [];
   const customToolNames = new Set();
-  // name → namespace, so the response hop can re-attach the namespace the client expects
+  // wire name → namespace, or → { namespace, name } for a renamed tool, so the
+  // response hop can hand the client back the name and namespace it declared
   const toolNamespaces = new Map();
 
   const inputItems = normalizeResponsesInput(body.input);
@@ -271,7 +272,10 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
  * keeps the namespace it came from so `assignWireNames` can map calls back.
  *
  * `defer_loading: true` tools are skipped at either level: they are delivered on
- * demand via tool_search and are not part of the initial callable set.
+ * demand via tool_search and are not part of the initial callable set. Hosted
+ * tools (`web_search`, `local_shell`, …) are skipped too: Chat and Claude
+ * upstreams can't run them, and a plain function standing in for one would
+ * never get a result.
  */
 function flattenNamespaceTools(tools) {
   const flat = [];
@@ -279,24 +283,27 @@ function flattenNamespaceTools(tools) {
     if (!tool || typeof tool !== "object") continue;
     if (tool.defer_loading === true) continue;
     if (tool.type !== RESPONSES_ITEM.NAMESPACE) {
-      flat.push({ tool, namespace: null });
+      if (isClientTool(tool)) flat.push({ tool, namespace: null });
       continue;
     }
     const ns = typeof tool.name === "string" && tool.name ? tool.name : null;
     for (const nested of Array.isArray(tool.tools) ? tool.tools : []) {
       if (!nested || typeof nested !== "object") continue;
       if (nested.defer_loading === true) continue;
-      flat.push({ tool: nested, namespace: ns });
+      if (isClientTool(nested)) flat.push({ tool: nested, namespace: ns });
     }
   }
   return flat;
 }
 
+const isClientTool = (tool) => !tool.type || tool.type === TOOL_TYPE.FUNCTION || tool.type === TOOL_TYPE.CUSTOM;
+
 /**
  * Pick the name each flattened tool is declared under upstream, and record in
  * `namespaces` how to turn that name back into the client's `{ name, namespace }`.
  * A name used by more than one tool is qualified with its namespace; unique names
- * are sent as-is. A tool declared twice under the same namespace is kept once.
+ * are sent as-is. A name upstreams reject (`.`, `::`, too long) is sanitized, at
+ * the top level too. A tool declared twice under the same namespace is kept once.
  */
 function assignWireNames(flat, namespaces) {
   const seen = new Map();
@@ -314,7 +321,8 @@ function assignWireNames(flat, namespaces) {
 
   const counts = new Map();
   for (const { name } of entries) if (typeof name === "string" && name) counts.set(name, (counts.get(name) || 0) + 1);
-  const keepsName = ({ name, namespace }) => typeof name === "string" && !!name && (!namespace || counts.get(name) === 1);
+  const keepsName = ({ name, namespace }) => typeof name === "string" && isWireToolName(name)
+    && (!namespace || counts.get(name) === 1);
   const taken = new Set(entries.filter(keepsName).map((e) => e.name));
 
   // Drop any namespace a prior turn's call recorded under a name declared now.
@@ -322,9 +330,9 @@ function assignWireNames(flat, namespaces) {
 
   return entries.map((entry) => {
     const { name, namespace } = entry;
-    if (typeof name !== "string" || !name || !namespace) return entry;
+    if (typeof name !== "string" || !name) return entry;
     if (keepsName(entry)) {
-      namespaces.set(name, namespace);
+      if (namespace) namespaces.set(name, namespace);
       return entry;
     }
     let wire = qualifyToolName(namespace, name);
@@ -335,11 +343,13 @@ function assignWireNames(flat, namespaces) {
   });
 }
 
-// Reverse lookup from the client's (namespace, name) to the qualified wire name.
+const toolRefKey = (namespace, name) => `${namespace || ""}\u0000${name}`;
+
+// Reverse lookup from the client's (namespace, name) to the renamed wire name.
 function wireNamesByRef(namespaces) {
   const byRef = new Map();
   for (const [wire, entry] of namespaces) {
-    if (typeof entry === "object") byRef.set(`${entry.namespace}\u0000${entry.name}`, wire);
+    if (typeof entry === "object") byRef.set(toolRefKey(entry.namespace, entry.name), wire);
   }
   return byRef;
 }
@@ -349,7 +359,7 @@ function renameNamespacedCalls(messages, byRef) {
   if (byRef.size === 0) return;
   for (const msg of messages) {
     for (const tc of msg.tool_calls || []) {
-      const wire = tc.namespace && byRef.get(`${tc.namespace}\u0000${tc.function?.name}`);
+      const wire = tc.function && byRef.get(toolRefKey(tc.namespace, tc.function.name));
       if (wire) tc.function.name = wire;
     }
   }
@@ -357,8 +367,8 @@ function renameNamespacedCalls(messages, byRef) {
 
 // A forced `{ type: "function", name, namespace }` must name the tool as declared upstream.
 function wireToolChoice(choice, byRef) {
-  if (choice?.type !== OPENAI_BLOCK.FUNCTION || typeof choice.name !== "string" || !choice.namespace) return choice;
-  const wire = byRef.get(`${choice.namespace}\u0000${choice.name}`);
+  if (choice?.type !== OPENAI_BLOCK.FUNCTION || typeof choice.name !== "string") return choice;
+  const wire = byRef.get(toolRefKey(choice.namespace, choice.name));
   return wire ? { ...choice, name: wire } : choice;
 }
 
