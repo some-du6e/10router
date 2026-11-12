@@ -248,6 +248,18 @@ describe("Codex WebSocket turn on a translated endpoint", () => {
     expectFullTurn(events.slice(first));
   });
 
+  it("hands an upstream rejection to Codex as the HTTP error it is, then closes", async () => {
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({ error: { message: "tool schema rejected", type: "invalid_request_error" } }), { status: 400, headers: { "content-type": "application/json" } }));
+    const ws = await connect(VIA_PROXY);
+    ws.send(TURN);
+    const events = await ws.until((e) => e.some((x) => "close" in x));
+    ws.close();
+    // Codex 0.137 maps an error frame to an HTTP error only when it has a status.
+    expect(events[0]).toMatchObject({ type: "error", status: 400 });
+    expect(events[0].error.message).toContain("tool schema rejected");
+    expect(events.at(-1)).toMatchObject({ close: 1011 });
+  });
+
   it("still declines a delta turn with previous_response_not_found and closes", async () => {
     const ws = await connect(VIA_PROXY);
     ws.send({ ...TURN, previous_response_id: "resp_earlier" });

@@ -207,7 +207,10 @@ function bridgeForwardHeaders(handshakeHeaders, socketIp, payloadLength) {
 /**
  * The WebSocket error frame for a rejected turn. Codex reads `error` as an
  * object; the gateway's own refusals (a missing key, a management key) carry
- * it as a string, which is wrapped.
+ * it as a string, which is wrapped. `status` is what makes Codex treat the
+ * frame as the HTTP error it stands for (show a 400, retry a 5xx); an error
+ * frame without one is skipped as an unknown event, so the client only sees
+ * the socket close and retries a turn that will fail the same way.
  */
 function bridgeErrorFrame(raw, statusCode) {
   let error;
@@ -218,7 +221,7 @@ function bridgeErrorFrame(raw, statusCode) {
   }
   if (typeof error === "string") error = { message: error, type: "invalid_request_error" };
   if (!error || typeof error !== "object") error = { message: `Request failed with status ${statusCode}`, type: "server_error" };
-  return JSON.stringify({ type: "error", error });
+  return JSON.stringify({ type: "error", status: statusCode, error });
 }
 
 // Run one `response.create` through this process's own HTTP endpoint and relay

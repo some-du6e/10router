@@ -76,7 +76,7 @@ describe("bridge error frames and wiring", () => {
 
   it("wraps a string error (the gateway's own refusals) as an object Codex can read", () => {
     expect(JSON.parse(bridgeErrorFrame(JSON.stringify({ error: "API key required for remote API access" }), 401)))
-      .toEqual({ type: "error", error: { message: "API key required for remote API access", type: "invalid_request_error" } });
+      .toEqual({ type: "error", status: 401, error: { message: "API key required for remote API access", type: "invalid_request_error" } });
     expect(JSON.parse(bridgeErrorFrame(JSON.stringify({ error: { message: "m", type: "t" } }), 400)).error).toEqual({ message: "m", type: "t" });
     expect(JSON.parse(bridgeErrorFrame("not json", 502)).error).toEqual({ message: "Request failed with status 502", type: "server_error" });
   });
