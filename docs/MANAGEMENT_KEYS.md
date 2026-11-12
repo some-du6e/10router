@@ -103,12 +103,15 @@ ping (`/api/providers/validate`), then the create route (`/api/providers`).
 - A key the provider refuses is not added, and the response is a `422`. A
   custom endpoint URL with no API on it (see the probe below) is a `422` too,
   saying the endpoint URL looks wrong instead of that the key was refused.
-- When the endpoint's answer doesn't show whether the key works (a 429, a 5xx
-  or another unexpected status on the fallback probe below), nothing is added
-  and the response is a `502` naming that status. Try again later.
+- When an OpenAI-compatible endpoint's answer doesn't show whether the key
+  works (a 429, a 5xx or another unexpected status on the fallback probe
+  below), or one of its probe requests gets no answer within 8 seconds,
+  nothing is added and the response is a `502` naming the status or the
+  timeout. Try again later.
 - A probe that doesn't answer in 15 seconds is given up on with a `504`, and
-  nothing is added. The probe is cancelled then, so no request goes out after
-  the `504`.
+  nothing is added. An OpenAI-compatible endpoint's probe is cancelled then,
+  so it sends no request after the `504`; other providers' probes may still
+  finish in the background.
 - An error from the validator itself (a custom endpoint that no longer exists,
   a bad field) comes back with its own status.
 - The management key is checked again after the probe, so a key revoked or
@@ -118,15 +121,16 @@ ping (`/api/providers/validate`), then the create route (`/api/providers`).
   that key: its URL, headers and body come from the same code, with the
   endpoint's advanced settings (auth header style, client identity, header
   lines, path and query overrides, model renames, body edits). The
-  endpoint's proxy, timeout and retries are not used for the probe; each
-  probe request gives up after 8 seconds.
+  endpoint's proxy, timeout and retries are not used for the probe.
 - An OpenAI-compatible endpoint's probe is `GET /models` (with the query
-  override; no model is sent). A 2xx is valid, a 401 or 403 is refused. When
-  it answers 404 or 405 (the endpoint has no model list), the probe posts a
-  literal `{}` to the chat path routing uses (`/responses` on a Responses
-  endpoint, with the path and query overrides and the same headers). That
-  body skips the body edits and names no model, so the upstream refuses it
-  before running anything and no tokens are spent. On that post:
+  override; no model is sent). A 2xx is valid; any other answer but a 404 or
+  405 is a refused key. When it answers 404 or 405 (the endpoint has no model
+  list), the probe posts a literal `{}` to the chat path routing uses
+  (`/responses` on a Responses endpoint, with the path and query overrides and
+  the same headers), without following redirects. That body skips the body
+  edits and names no model, so the upstream refuses it before running
+  anything and no tokens are spent. Each of these two requests gives up after
+  8 seconds (the `502` above). On that post:
   - a 2xx, 400 or 422 is valid (the key got past auth and the body was
     refused);
   - a 401 or 403 is a refused key;

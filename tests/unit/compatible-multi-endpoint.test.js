@@ -473,6 +473,70 @@ describe("validating a key at its own URL", () => {
       }
     });
 
+    it("a probe that times out is unverified (the endpoint didn't answer), not a refused key", async () => {
+      // The validator's 8s timeouts, fired by hand.
+      const timeouts = [];
+      const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => {
+        const c = new AbortController();
+        timeouts.push(c);
+        return c.signal;
+      });
+      const hang = (_url, init) => new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+      });
+      try {
+        for (const step of ["/models", "chat"]) {
+          mocks.probeFetch.mockReset();
+          if (step === "/models") mocks.probeFetch.mockImplementationOnce(hang);
+          else mocks.probeFetch.mockResolvedValueOnce(answer(404)).mockImplementationOnce(hang);
+          const pending = validate();
+          await vi.waitFor(() => expect(mocks.probeFetch).toHaveBeenCalledTimes(step === "/models" ? 1 : 2));
+          timeouts.at(-1).abort(new DOMException("The operation timed out.", "TimeoutError"));
+          expect((await pending).body, step).toEqual({
+            valid: false, reason: "unverified", error: "Couldn't check the key: the endpoint didn't answer within 8 seconds. Try again.",
+          });
+        }
+      } finally {
+        timeout.mockRestore();
+      }
+    });
+
+    it("with the plain fetch (no own URL, or a local caller), a chat-path redirect is not followed", async () => {
+      const http = await import("node:http");
+      const hits = [];
+      const listen = (handler) => new Promise((resolve) => {
+        const server = http.createServer((rq, rs) => { hits.push(`${server.address().port} ${rq.method} ${rq.url}`); handler(rq, rs); });
+        server.listen(0, "127.0.0.1", () => resolve(server));
+      });
+      // Another host: a 307 there would re-send the POST and its headers.
+      const other = await listen((_rq, rs) => { rs.writeHead(400); rs.end("{}"); });
+      const otherUrl = `http://127.0.0.1:${other.address().port}`;
+      const redirects = { "/a/v1/chat/completions": [302, "/login"], "/b/v1/chat/completions": [307, `${otherUrl}/v1/chat/completions`] };
+      const main = await listen((rq, rs) => {
+        if (rq.url.endsWith("/models")) { rs.writeHead(404); return rs.end(); }
+        if (redirects[rq.url]) { const [status, location] = redirects[rq.url]; rs.writeHead(status, { location }); return rs.end(); }
+        rs.writeHead(200, { "content-type": "text/html" });
+        rs.end("<html>login</html>");
+      });
+      const base = `http://127.0.0.1:${main.address().port}`;
+      try {
+        db.local = true;
+        db.nodes.push(
+          { id: "openai-compatible-chat-a", type: "openai-compatible", prefix: "pa", apiType: "chat", baseUrl: `${base}/a/v1`, name: "A" },
+          { id: "openai-compatible-chat-b", type: "openai-compatible", prefix: "pb", apiType: "chat", baseUrl: `${base}/b/v1`, name: "B" },
+        );
+        for (const id of ["openai-compatible-chat-a", "openai-compatible-chat-b"]) {
+          const res = await validateRoute.POST(req({ provider: id, apiKey: "sk-p" }));
+          expect(res.body, id).toEqual(WRONG_URL);
+        }
+        expect(hits.some((h) => h.includes("/login"))).toBe(false);
+        expect(hits.some((h) => h.startsWith(`${other.address().port} `))).toBe(false);
+      } finally {
+        main.close();
+        other.close();
+      }
+    });
+
     it("a 405 on /models falls back to the chat path too", async () => {
       const sent = upstream(405, 400);
       expect((await validate()).body.valid).toBe(true);

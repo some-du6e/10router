@@ -17,12 +17,14 @@ process.env.DATA_DIR = tempDir;
 delete global._dbAdapter;
 
 const MACHINE = "machine-test-0001";
-// The validation ping: valid or not, or a custom handler (to hang, fail, or act mid-probe).
-const validation = { valid: true, calls: [], handler: null };
+// The validation ping: valid or not, or a custom handler (to hang, fail, or act
+// mid-probe), or the real validator (`real`).
+const validation = { valid: true, calls: [], handler: null, real: false };
 
 vi.mock("@/shared/utils/machineId", () => ({ getConsistentMachineId: async () => MACHINE }));
-vi.mock("@/app/api/providers/validate/route.js", () => ({
+vi.mock("@/app/api/providers/validate/route.js", async (importOriginal) => ({
   POST: async (request) => {
+    if (validation.real) return (await importOriginal()).POST(request);
     const body = await request.json();
     validation.calls.push(body);
     if (validation.handler) return validation.handler(body, request);
@@ -165,6 +167,7 @@ beforeEach(() => {
   validation.valid = true;
   validation.calls = [];
   validation.handler = null;
+  validation.real = false;
   delete process.env.MANAGEMENT_PROBE_TIMEOUT_MS;
   providerHooks.afterCreate = null;
   upstream.handler = null;
@@ -1231,10 +1234,13 @@ describe("provider key validation on the management path", () => {
       expect(res.body.error).toBe(`Couldn't check the key: the endpoint answered ${status} to the check, so the key was not added. Try again.`);
       expect(await audited()).toEqual({ provider: "openai", reason: "the endpoint's answer did not show whether the key works" });
     }
-    // Only a status number goes into the message.
-    validation.handler = () => Response.json({ valid: false, reason: "unverified", upstreamStatus: "<b>upstream</b>" });
-    const odd = await api.createProvider(mk.secret, { provider: "openai", apiKey: providerSecret("unverified-odd"), name: "unverified odd" });
-    expect(odd.body.error).toBe("Couldn't check the key: the endpoint answered an unexpected status to the check, so the key was not added. Try again.");
+    // Only a status number goes into the message; without one, the probe timed out.
+    for (const upstreamStatus of ["<b>upstream</b>", undefined]) {
+      validation.handler = () => Response.json({ valid: false, reason: "unverified", upstreamStatus });
+      const odd = await api.createProvider(mk.secret, { provider: "openai", apiKey: providerSecret("unverified-odd"), name: "unverified odd" });
+      expect(odd.status).toBe(502);
+      expect(odd.body.error).toBe("Couldn't check the key: the endpoint didn't answer within 8 seconds, so the key was not added. Try again.");
+    }
     // A reason it doesn't know is a plain refusal.
     validation.handler = () => Response.json({ valid: false, reason: "toString" });
     expect((await api.createProvider(mk.secret, { provider: "openai", apiKey: providerSecret("unverified-proto"), name: "unverified proto" })).status).toBe(422);
@@ -1249,6 +1255,74 @@ describe("provider key validation on the management path", () => {
     const res = await api.createProvider(mk.secret, { provider: "openai", apiKey: providerSecret("abort"), name: "abort" });
     expect(res.status).toBe(504);
     await vi.waitFor(() => expect(signal.aborted).toBe(true));
+  });
+
+  describe("with the real validator on an OpenAI-compatible endpoint that hangs", () => {
+    const SLOW = "openai-compatible-chat-slow";
+    const slowScope = { providerKeys: { enabled: true, providers: [SLOW] } };
+    let fetchSpy;
+    let timeoutSpy;
+    // The validator's 8s probe timeouts, fired by hand.
+    let probeTimeouts;
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    // Requests the validator sent; /models answers `models`, `hang` never answers.
+    const hangOn = (models, hang) => {
+      const sent = [];
+      fetchSpy.mockImplementation((url, init) => {
+        sent.push({ url: String(url), signal: init.signal });
+        const isModels = String(url).endsWith("/models");
+        if ((isModels && hang === "models") || (!isModels && hang === "chat")) {
+          return new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true }));
+        }
+        return Promise.resolve(new Response("{}", { status: isModels ? models : 400 }));
+      });
+      return sent;
+    };
+    beforeEach(async () => {
+      validation.real = true;
+      if (!(await db.getProviderNodeById(SLOW))) {
+        await db.createProviderNode({ id: SLOW, type: "openai-compatible", name: "Slow", prefix: "slow", apiType: "chat", baseUrl: "https://slow.acme.example/v1" });
+      }
+      fetchSpy = vi.spyOn(globalThis, "fetch");
+      probeTimeouts = [];
+      timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+        if (ms !== 8000) return realTimeout(ms);
+        const c = new AbortController();
+        probeTimeouts.push(c);
+        return c.signal;
+      });
+    });
+    afterEach(() => {
+      fetchSpy.mockRestore();
+      timeoutSpy.mockRestore();
+    });
+    const fireProbeTimeout = () => probeTimeouts.at(-1).abort(new DOMException("The operation timed out.", "TimeoutError"));
+
+    it("a probe that times out is a 502 saying the endpoint didn't answer, not a refused key", async () => {
+      for (const hang of ["models", "chat"]) {
+        const mk = await newManagementKey(slowScope);
+        const sent = hangOn(404, hang);
+        const pending = api.createProvider(mk.secret, { provider: SLOW, apiKey: providerSecret(`slow-${hang}`), name: `slow ${hang}` });
+        await vi.waitFor(() => expect(sent).toHaveLength(hang === "models" ? 1 : 2));
+        fireProbeTimeout();
+        const res = await pending;
+        expect(res.status, hang).toBe(502);
+        expect(res.body.error, hang).toBe("Couldn't check the key: the endpoint didn't answer within 8 seconds, so the key was not added. Try again.");
+        const [denied] = (await db.getManagementAudit({ managementKeyId: mk.id, limit: 10 })).filter((r) => r.action === "provider_key.create.denied");
+        expect(denied.detail.reason, hang).toBe("the endpoint's answer did not show whether the key works");
+      }
+    });
+
+    it("a probe the management API gave up on is a 504, and the validator's request is aborted", async () => {
+      const mk = await newManagementKey(slowScope);
+      process.env.MANAGEMENT_PROBE_TIMEOUT_MS = "50";
+      const sent = hangOn(404, "chat");
+      const res = await api.createProvider(mk.secret, { provider: SLOW, apiKey: providerSecret("slow-gone"), name: "slow gone" });
+      expect(res.status).toBe(504);
+      await vi.waitFor(() => expect(sent.at(-1).signal.aborted).toBe(true));
+      // The validator's own timeout never fired.
+      expect(probeTimeouts.every((c) => !c.signal.aborted)).toBe(true);
+    });
   });
 
   it("checks the key again after the probe: revoked or narrowed meanwhile adds nothing", async () => {
