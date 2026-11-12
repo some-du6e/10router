@@ -59,7 +59,8 @@ async function parseScopes(raw) {
   if (errors.length) return { error: errors.join("; ") };
   const nodes = await getProviderNodes().catch(() => []);
   const known = new Set([...Object.keys(AI_PROVIDERS), ...nodes.map((n) => n.id)].map((id) => String(id).toLowerCase()));
-  for (const list of [scopes.clientKeys.providers, scopes.providerKeys.providers]) {
+  const hostEndpoints = Object.keys(scopes.providerKeys.baseUrlHosts || {});
+  for (const list of [scopes.clientKeys.providers, scopes.providerKeys.providers, hostEndpoints]) {
     for (const p of list || []) {
       if (!known.has(canonicalProviderId(p))) return { error: `Unknown provider "${p}"` };
     }

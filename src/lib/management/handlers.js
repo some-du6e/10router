@@ -245,22 +245,26 @@ function parseProviderData(raw) {
 /**
  * A key's own baseUrl, when the body has one: only for a custom compatible
  * endpoint (the only keys routing gives their own URL), and only on a host
- * the scope allows. A refusal about the scope is audited with the host.
+ * the scope allows for that provider. A refusal about the scope is a 403,
+ * audited with the host; one about the URL's shape is a 400.
  * @returns {Promise<{ field: object, host?: string } | { error: Response }>}
  */
-async function checkKeyBaseUrl(mk, scope, provider, raw) {
+async function checkKeyBaseUrl(mk, scope, provider, raw, { recheck = false } = {}) {
   if (raw === undefined || raw === null) return { field: {} };
-  const check = keyBaseUrlCheck(scope, raw);
-  if (!check.error && !isOpenAICompatibleProvider(provider) && !isAnthropicCompatibleProvider(provider)) {
-    return { error: fail(400, "baseUrl can only be set on a key for a custom OpenAI- or Anthropic-compatible endpoint", { field: "baseUrl" }) };
-  }
+  const check = keyBaseUrlCheck(scope, provider, raw);
   if (check.error) {
     if (check.outsideScope) {
+      const reason = check.host ? "baseUrl host outside scope" : "no baseUrl hosts allowed for this provider";
       await audit(mk, "provider_key.create.denied", "providerKey", null, {
-        provider, reason: check.host ? "baseUrl host outside scope" : "baseUrl not allowed for this key", ...(check.host ? { baseUrlHost: check.host } : {}),
+        provider, reason: recheck ? `${reason} (scope narrowed during validation)` : reason,
+        ...(check.host ? { baseUrlHost: check.host } : {}),
       }, { denied: true });
     }
-    return { error: fail(400, check.error, { field: "baseUrl" }) };
+    return { error: fail(check.outsideScope ? 403 : 400, check.error, { field: "baseUrl" }) };
+  }
+  // The dashboard only saves hosts for these endpoints; checked again here all the same.
+  if (!isOpenAICompatibleProvider(provider) && !isAnthropicCompatibleProvider(provider)) {
+    return { error: fail(400, "baseUrl can only be set on a key for a custom OpenAI- or Anthropic-compatible endpoint", { field: "baseUrl" }) };
   }
   return { field: { baseUrl: check.url }, host: check.host };
 }
@@ -346,7 +350,7 @@ export function createProviderKey(request) {
       return fail(403, `This management key can't add keys for provider "${provider}"`);
     }
     // The dashboard may have taken the host off the list meanwhile.
-    const urlAgain = await checkKeyBaseUrl(mk, again.managementKey.scopes.providerKeys, provider, body.baseUrl);
+    const urlAgain = await checkKeyBaseUrl(mk, again.managementKey.scopes.providerKeys, provider, body.baseUrl, { recheck: true });
     if (urlAgain.error) return urlAgain.error;
 
     const connectionName = name.name || `${mk.name} ${crypto.randomBytes(3).toString("hex")}`;

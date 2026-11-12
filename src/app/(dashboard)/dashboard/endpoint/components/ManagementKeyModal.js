@@ -7,7 +7,7 @@ import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { isoToLocalInput, localInputToIso } from "./keyFormat";
 import StatusAlert from "./StatusAlert";
 import ModelAllowlistField from "./ModelAllowlistField";
-import { MANAGEMENT_KEYS_DOCS_URL, hostPatternError } from "@/shared/utils/managementKey.js";
+import { MANAGEMENT_KEYS_DOCS_URL, hostPatternError, isCompatibleEndpointId } from "@/shared/utils/managementKey.js";
 
 function Chips({ items, onRemove, empty }) {
   if (!items.length) return <p className="text-xs text-text-muted">{empty}</p>;
@@ -60,55 +60,64 @@ ProviderPicker.propTypes = {
   empty: PropTypes.string.isRequired,
 };
 
-/** Host patterns a key's own baseUrl may use: chips, a text box, checked as they are added. */
-function HostPatternField({ value, onChange }) {
-  const [draft, setDraft] = useState("");
-  const [draftError, setDraftError] = useState("");
-  const add = () => {
-    const pattern = draft.trim().toLowerCase();
-    if (!pattern) return;
-    const why = hostPatternError(pattern);
-    if (why) return setDraftError(`"${pattern}" ${why}.`);
-    if (!value.includes(pattern)) onChange([...value, pattern]);
-    setDraft("");
-    setDraftError("");
-  };
+const lowercase = (s) => s.toLowerCase();
+
+/**
+ * Per custom endpoint, the hosts a key it adds may use for its own URL. Only
+ * custom compatible endpoints can have one, and only those in the scope's
+ * providers when it lists some.
+ */
+function OwnUrlHosts({ value, onChange, endpoints }) {
+  const listed = Object.keys(value);
+  const labelOf = (id) => endpoints.find((o) => o.value === id)?.label || id;
+  const set = (id, hosts) => onChange({ ...value, [id]: hosts });
+  const drop = (id) => onChange(Object.fromEntries(Object.entries(value).filter(([k]) => k !== id)));
   return (
-    <div>
-      <label className="mb-1.5 block text-sm font-medium">Allowed hosts for a key&apos;s own URL</label>
-      <Chips
-        items={value.map((p) => ({ value: p, label: p }))}
-        onRemove={(p) => onChange(value.filter((v) => v !== p))}
-        empty="None. Keys it adds use their endpoint's URL."
-      />
-      <div className="mt-2 flex gap-2">
-        <input
-          value={draft}
-          onChange={(e) => { setDraft(e.target.value); setDraftError(""); }}
-          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
-          placeholder="*.acme.example or api.acme.example"
-          aria-label="Add an allowed host"
-          className="min-w-0 flex-1 rounded-[10px] border border-border bg-surface px-3 py-1.5 font-mono text-xs outline-none focus:border-primary"
-        />
-        <Button size="sm" variant="secondary" onClick={add} disabled={!draft.trim()}>Add</Button>
-      </div>
-      {draftError && <p className="mt-1 text-[11px] text-red-500">{draftError}</p>}
-      <p className="mt-1 text-[11px] text-text-muted">
-        For an upstream where each key has its own host. A key added for a custom endpoint may then bring its own https
-        baseUrl on one of these hosts. *.acme.example matches key-a.acme.example, not acme.example or a.b.acme.example.
+    <div className="flex flex-col gap-2">
+      <label className="block text-sm font-medium">Own URLs for the keys it adds</label>
+      <p className="text-[11px] text-text-muted">
+        For an upstream where each key has its own host. A key added for one of these endpoints may then use its own
+        https URL on one of its hosts. *.acme.example matches key-a.acme.example, not acme.example or a.b.acme.example.
       </p>
+      {listed.map((id) => (
+        <div key={id} className="rounded-lg border border-border p-2">
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="text-xs font-medium">{labelOf(id)}</span>
+            <button onClick={() => drop(id)} className="text-xs text-text-muted hover:text-red-500" aria-label={`Stop allowing own URLs for ${labelOf(id)}`}>
+              Remove
+            </button>
+          </div>
+          <ModelAllowlistField
+            label="Allowed hosts"
+            value={value[id]}
+            onChange={(hosts) => set(id, hosts)}
+            emptyText="None yet. Keys it adds for this endpoint use the endpoint's URL."
+            placeholder="*.acme.example or api.acme.example"
+            inputLabel={`Add an allowed host for ${labelOf(id)}`}
+            normalize={lowercase}
+            validate={hostPatternError}
+          />
+        </div>
+      ))}
+      <Select
+        value=""
+        onChange={(e) => e.target.value && set(e.target.value, [])}
+        placeholder={endpoints.length ? "Allow own URLs for an endpoint…" : "No custom endpoint in this scope"}
+        options={endpoints.filter((o) => !listed.includes(o.value))}
+      />
     </div>
   );
 }
 
-HostPatternField.propTypes = {
-  value: PropTypes.arrayOf(PropTypes.string).isRequired,
+OwnUrlHosts.propTypes = {
+  value: PropTypes.objectOf(PropTypes.arrayOf(PropTypes.string)).isRequired,
   onChange: PropTypes.func.isRequired,
+  endpoints: PropTypes.array.isRequired,
 };
 
 const blankScopes = () => ({
   clientKeys: { enabled: false, providers: [], models: [], maxBudgetUsd: "", manageExisting: false },
-  providerKeys: { enabled: false, providers: [], manageExisting: false, baseUrlHosts: [] },
+  providerKeys: { enabled: false, providers: [], manageExisting: false, baseUrlHosts: {} },
 });
 
 function fromSaved(scopes) {
@@ -122,7 +131,7 @@ function fromSaved(scopes) {
       maxBudgetUsd: ck.maxBudgetUsd === null || ck.maxBudgetUsd === undefined ? "" : String(ck.maxBudgetUsd),
       manageExisting: !!ck.manageExisting,
     },
-    providerKeys: { enabled: !!pk.enabled, providers: pk.providers || [], manageExisting: !!pk.manageExisting, baseUrlHosts: pk.baseUrlHosts || [] },
+    providerKeys: { enabled: !!pk.enabled, providers: pk.providers || [], manageExisting: !!pk.manageExisting, baseUrlHosts: pk.baseUrlHosts || {} },
   };
 }
 
@@ -140,9 +149,16 @@ function toPayload(s) {
       enabled: s.providerKeys.enabled,
       providers: s.providerKeys.providers.length ? s.providerKeys.providers : null,
       manageExisting: s.providerKeys.manageExisting,
-      baseUrlHosts: s.providerKeys.baseUrlHosts.length ? s.providerKeys.baseUrlHosts : null,
+      baseUrlHosts: ownUrlHostsPayload(s.providerKeys),
     },
   };
+}
+
+/** Lists with hosts, for endpoints still in the scope; null when none. */
+function ownUrlHostsPayload(pk) {
+  const entries = Object.entries(pk.baseUrlHosts)
+    .filter(([id, hosts]) => hosts.length && (!pk.providers.length || pk.providers.includes(id)));
+  return entries.length ? Object.fromEntries(entries) : null;
 }
 
 /**
@@ -198,6 +214,15 @@ export default function ManagementKeyModal({ managementKey, onClose, onSaved }) 
 
   const ck = scopes.clientKeys;
   const pk = scopes.providerKeys;
+  // Endpoints that can be given hosts: custom compatible ones, inside the scope's providers when it lists some.
+  const ownUrlEndpoints = providerOptions.filter((o) => isCompatibleEndpointId(o.value) && (!pk.providers.length || pk.providers.includes(o.value)));
+  // Taking an endpoint out of the scope drops its hosts too, in view, not only on save.
+  const setProviderList = (providers) => setProvider({
+    providers,
+    baseUrlHosts: providers.length
+      ? Object.fromEntries(Object.entries(pk.baseUrlHosts).filter(([id]) => providers.includes(id)))
+      : pk.baseUrlHosts,
+  });
 
   return (
     <>
@@ -268,7 +293,7 @@ export default function ManagementKeyModal({ managementKey, onClose, onSaved }) 
                   <label className="mb-1.5 block text-sm font-medium">Only for providers</label>
                   <ProviderPicker
                     value={pk.providers}
-                    onChange={(providers) => setProvider({ providers })}
+                    onChange={setProviderList}
                     options={providerOptions}
                     empty="Any provider."
                   />
@@ -281,7 +306,7 @@ export default function ManagementKeyModal({ managementKey, onClose, onSaved }) 
                   ariaLabel="Also manage existing keys"
                   description="See and delete every key of these providers, not just the ones it added."
                 />
-                <HostPatternField value={pk.baseUrlHosts} onChange={(baseUrlHosts) => setProvider({ baseUrlHosts })} />
+                <OwnUrlHosts value={pk.baseUrlHosts} onChange={(baseUrlHosts) => setProvider({ baseUrlHosts })} endpoints={ownUrlEndpoints} />
               </>
             )}
           </div>

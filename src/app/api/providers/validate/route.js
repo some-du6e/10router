@@ -8,6 +8,7 @@ import { resolveQoderCredentials, resolveQoderModels } from "open-sse/services/q
 import { normalizeProviderId } from "@/lib/providerNormalization";
 import { generateSessionId } from "open-sse/utils/opencodeSession.js";
 import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
+import { appendUrlPath } from "open-sse/services/provider.js";
 import { resolveKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
 import { isLocalRequest } from "@/dashboardGuard";
 import { makeProbeFetch } from "@/lib/probeFetch.js";
@@ -143,7 +144,8 @@ export async function POST(request) {
         }
         const keyUrl = await compatibleBaseUrl(request, body, node);
         if (!keyUrl.ok) return NextResponse.json({ valid: false, error: keyUrl.error }, { status: 400 });
-        const modelsUrl = `${keyUrl.baseUrl?.replace(/\/$/, "")}/models`;
+        // Path before the query string (?api-version=, ?token=), as routing does.
+        const modelsUrl = appendUrlPath(keyUrl.baseUrl, "/models");
         const res = await keyUrl.fetch(modelsUrl, {
           headers: { "Authorization": `Bearer ${apiKey}` },
         });
@@ -193,12 +195,8 @@ export async function POST(request) {
 
         const keyUrl = await compatibleBaseUrl(request, body, node);
         if (!keyUrl.ok) return NextResponse.json({ valid: false, error: keyUrl.error }, { status: 400 });
-        let normalizedBase = keyUrl.baseUrl?.trim().replace(/\/$/, "") || "";
-        if (normalizedBase.endsWith("/messages")) {
-          normalizedBase = normalizedBase.slice(0, -9); // remove /messages
-        }
-
-        const messagesUrl = `${normalizedBase}/v1/messages`;
+        // A pasted /messages is dropped; the path goes before any query string.
+        const messagesUrl = appendUrlPath(String(keyUrl.baseUrl || "").trim(), "/v1/messages", /\/messages$/);
         const model = node.defaultModel || "claude-3-haiku-20240307";
 
         const res = await keyUrl.fetch(messagesUrl, {

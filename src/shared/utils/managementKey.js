@@ -36,10 +36,19 @@ export function emptyScopes() {
   };
 }
 
-/** Most host patterns one scope can list. */
+/** Most host patterns one endpoint's list can hold. */
 export const MAX_BASE_URL_HOSTS = 50;
 const MAX_HOST_LENGTH = 253;
 const HOST_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+// OPENAI_COMPATIBLE_PREFIX and ANTHROPIC_COMPATIBLE_PREFIX in
+// shared/constants/providers.js, not imported: that module pulls in the whole
+// provider registry, and the gateway guard imports this file.
+const COMPATIBLE_ENDPOINT_PREFIXES = ["openai-compatible-", "anthropic-compatible-"];
+
+/** Is this a custom OpenAI- or Anthropic-compatible endpoint's id, the only providers whose keys can have their own URL? */
+export function isCompatibleEndpointId(id) {
+  return typeof id === "string" && COMPATIBLE_ENDPOINT_PREFIXES.some((p) => id.startsWith(p));
+}
 
 /**
  * Why this isn't a usable host pattern for scopes.providerKeys.baseUrlHosts,
@@ -49,7 +58,7 @@ const HOST_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 export function hostPatternError(pattern) {
   if (typeof pattern !== "string" || !pattern) return "must be a non-empty string";
   if (pattern.length > MAX_HOST_LENGTH) return `can be at most ${MAX_HOST_LENGTH} characters`;
-  if (pattern === "*") return "a bare * would allow any host";
+  if (pattern === "*") return "would allow any host; use *.acme.example";
   if (pattern !== pattern.toLowerCase()) return "must be lowercase";
   if (pattern.startsWith("[") || pattern.includes("::")) return "can't be an IP address";
   if (pattern.includes("/")) return "is a host name, not a URL";
@@ -76,14 +85,22 @@ export function hostMatchesPattern(host, pattern) {
   if (!pattern.startsWith("*.")) return host === pattern;
   const suffix = pattern.slice(1);
   if (!host.endsWith(suffix)) return false;
-  const label = host.slice(0, -suffix.length);
-  return label.length > 0 && !label.includes(".");
+  // One real label: not "*", "-" or "a.b".
+  return HOST_LABEL.test(host.slice(0, -suffix.length));
+}
+
+/** The host patterns the scope allows for this provider's keys, or [] for none. */
+export function baseUrlHostsFor(scope, provider) {
+  const map = scope?.baseUrlHosts;
+  if (!map || typeof provider !== "string") return [];
+  const want = provider.trim().toLowerCase();
+  const entry = Object.entries(map).find(([id]) => id.toLowerCase() === want);
+  return entry ? entry[1] : [];
 }
 
 function parseHostPatterns(raw, field, errors) {
-  if (raw === undefined || raw === null) return null;
   if (!Array.isArray(raw)) {
-    errors.push(`${field} must be an array of host patterns, or null for none`);
+    errors.push(`${field} must be an array of host patterns`);
     return null;
   }
   const list = [];
@@ -99,6 +116,42 @@ function parseHostPatterns(raw, field, errors) {
   }
   if (list.length > MAX_BASE_URL_HOSTS) errors.push(`${field} can list at most ${MAX_BASE_URL_HOSTS} patterns`);
   return list.length ? list : null;
+}
+
+/**
+ * baseUrlHosts: { [endpoint id]: patterns }. Hosts are allowed per endpoint,
+ * so a host trusted for one endpoint's keys can't be used to point another
+ * endpoint's keys elsewhere. Every id must be a custom compatible endpoint,
+ * and inside the scope's providers when it lists some.
+ */
+function parseHostMap(raw, providers, field, errors) {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    errors.push(`${field} must be an object of endpoint id to host patterns, or null for none`);
+    return null;
+  }
+  const inScope = providers ? new Set(providers.map((p) => p.toLowerCase())) : null;
+  const map = {};
+  for (const [rawId, list] of Object.entries(raw)) {
+    const id = rawId.trim();
+    const shown = `"${id.slice(0, 80)}"`;
+    if (!isCompatibleEndpointId(id)) {
+      errors.push(`${field}: ${shown} is not a custom OpenAI- or Anthropic-compatible endpoint`);
+      return null;
+    }
+    if (inScope && !inScope.has(id.toLowerCase())) {
+      errors.push(`${field}: ${shown} is not one of scopes.providerKeys.providers`);
+      return null;
+    }
+    if (Object.keys(map).some((k) => k.toLowerCase() === id.toLowerCase())) {
+      errors.push(`${field}: ${shown} is listed twice`);
+      return null;
+    }
+    const patterns = parseHostPatterns(list, `${field}.${id.slice(0, 80)}`, errors);
+    if (patterns) map[id] = patterns;
+  }
+  if (Object.keys(map).length > MAX_LIST) errors.push(`${field} can list at most ${MAX_LIST} endpoints`);
+  return Object.keys(map).length ? map : null;
 }
 
 function parseIdList(raw, field, errors) {
@@ -174,7 +227,7 @@ export function normalizeManagementScopes(input) {
       scopes.providerKeys.enabled = parseBool(pk.enabled, "scopes.providerKeys.enabled", errors);
       scopes.providerKeys.providers = parseIdList(pk.providers, "scopes.providerKeys.providers", errors);
       scopes.providerKeys.manageExisting = parseBool(pk.manageExisting, "scopes.providerKeys.manageExisting", errors);
-      scopes.providerKeys.baseUrlHosts = parseHostPatterns(pk.baseUrlHosts, "scopes.providerKeys.baseUrlHosts", errors);
+      scopes.providerKeys.baseUrlHosts = parseHostMap(pk.baseUrlHosts, scopes.providerKeys.providers, "scopes.providerKeys.baseUrlHosts", errors);
     }
   }
 
@@ -217,7 +270,8 @@ export function describeScopes(scopes) {
   }
   const pk = scopes?.providerKeys;
   if (pk?.enabled) {
-    const hosts = pk.baseUrlHosts?.length ? `, own URLs on ${pk.baseUrlHosts.join(", ")}` : "";
+    const own = Object.entries(pk.baseUrlHosts || {}).map(([id, list]) => `${id} on ${list.join(", ")}`);
+    const hosts = own.length ? `, own URLs: ${own.join("; ")}` : "";
     parts.push(`Provider keys${pk.providers ? ` (${pk.providers.join(", ")})` : " (any provider)"}${pk.manageExisting ? ", incl. existing" : ""}${hosts}`);
   }
   return parts.join(" · ") || "No access";

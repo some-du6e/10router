@@ -6,7 +6,7 @@ import { getModelInfo } from "@/sse/services/model.js";
 import { resolveProviderAlias, stripContextWindowSuffix } from "open-sse/services/model.js";
 import { normalizeProviderId } from "@/lib/providerNormalization";
 import { normalizeEndpointUrl } from "@/shared/utils/endpointUrl";
-import { hostMatchesPattern } from "@/shared/utils/managementKey.js";
+import { hostMatchesPattern, baseUrlHostsFor } from "@/shared/utils/managementKey.js";
 // Checked again inside the write that applies it (updateApiKeyAs).
 export { dashboardChoiceViolation } from "@/lib/db/repos/managementKeysRepo.js";
 
@@ -107,16 +107,17 @@ const IPV4_HOST = /^\d{1,3}(\.\d{1,3}){3}$/;
 
 /**
  * Check a provider key's own baseUrl against the host patterns the dashboard
- * gave this scope. The path is free; the host, scheme and port are not.
+ * gave this scope for that provider. The path is free; the host, scheme and
+ * port are not.
  * Errors never quote the URL, which can carry a token in its query.
  *
  * @returns {{ url: string, host: string } | { error: string, host?: string, outsideScope?: true }}
  *   outsideScope marks the refusals that are about the scope (audited), not the URL's shape.
  */
-export function keyBaseUrlCheck(scope, raw) {
-  const patterns = scope?.baseUrlHosts || [];
+export function keyBaseUrlCheck(scope, provider, raw) {
+  const patterns = baseUrlHostsFor(scope, provider);
   if (!patterns.length) {
-    return { error: "This management key can't set baseUrl: the dashboard hasn't allowed it any hosts", outsideScope: true };
+    return { error: `This management key can't set baseUrl: the dashboard hasn't allowed it any hosts for "${provider}"`, outsideScope: true };
   }
   if (typeof raw !== "string" || !raw.trim()) return { error: "baseUrl must be a URL" };
   if (raw.length > MAX_BASE_URL_LENGTH) return { error: `baseUrl can be at most ${MAX_BASE_URL_LENGTH} characters` };
@@ -134,6 +135,8 @@ export function keyBaseUrlCheck(scope, raw) {
     return { error: `baseUrl host "${host}" isn't one this management key may use (${patterns.join(", ")})`, host, outsideScope: true };
   }
   // Stored in the parser's own serialization, so what routing later parses is what was checked.
+  // No fragment: routing appends its API path, which would land after it.
+  parsed.hash = "";
   return { url: normalizeEndpointUrl(parsed.href), host };
 }
 
