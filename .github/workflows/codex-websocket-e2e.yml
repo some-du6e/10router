@@ -1,0 +1,118 @@
+name: Codex WebSocket E2E
+
+# The real Codex CLI on its default transport (Responses over WebSocket),
+# against a built 10router whose model is served by a translated Chat
+# Completions endpoint (a stub that streams "ok"). The "master" leg is master
+# from before the fix (pinned, so it keeps showing the hang after the fix
+# merges) and must NOT get an answer; the "pr" leg is this checkout and must.
+# Codex is pinned to the version the bug was reported on.
+on:
+  pull_request:
+    paths:
+      - "custom-server.js"
+      - "src/app/api/v1/codex/**"
+      - "src/app/api/v1/responses/route.js"
+      - "src/sse/handlers/chat.ts"
+      - "open-sse/handlers/chatCore.js"
+      - "open-sse/handlers/chatCore/streamingHandler.js"
+      - "open-sse/utils/earlyHeaders.js"
+      - "open-sse/translator/response/openai-responses.js"
+      - "open-sse/translator/request/openai-responses.js"
+      - "tests/unit/codex-ws-translated.test.js"
+      - "tests/unit/codex-ws-bridge-peer.test.js"
+      - ".github/e2e/codex-ws/**"
+      - ".github/workflows/codex-websocket-e2e.yml"
+  workflow_dispatch:
+  push:
+    branches: [fix/codex-ws-translated-models]
+
+env:
+  # master just before the fix.
+  PRE_FIX_SHA: 60dfcc0e9993fdc56f0ad0f0e603bc330074658f
+  CODEX_VERSION: "0.137.0"
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Unit tests
+        working-directory: tests
+        run: ./node_modules/.bin/vitest run unit/codex-ws-translated.test.js unit/codex-ws-bridge-peer.test.js
+      - name: Lint
+        run: ./node_modules/.bin/eslint custom-server.js tests/unit/codex-ws-translated.test.js .github/e2e/codex-ws/stub-upstream.mjs
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [master, pr]
+    steps:
+      - name: Check out the harness
+        uses: actions/checkout@v5
+        with:
+          path: harness
+      - name: Check out the app (${{ matrix.leg }})
+        uses: actions/checkout@v5
+        with:
+          path: app
+          ref: ${{ matrix.leg == 'master' && env.PRE_FIX_SHA || github.sha }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        working-directory: app
+        run: bun install --ignore-scripts
+      - name: Build
+        working-directory: app
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build
+      - name: Install Codex
+        run: |
+          npm install -g "@openai/codex@${CODEX_VERSION}"
+          codex --version
+      - name: E2E (${{ matrix.leg }})
+        working-directory: app
+        env:
+          OUT_DIR: ${{ github.workspace }}/e2e-out
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: |
+          set -o pipefail
+          bash ../harness/.github/e2e/codex-ws/run.sh ${{ matrix.leg == 'master' && 'fail' || 'pass' }} 2>&1 | tee ../e2e-${{ matrix.leg }}.txt
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### ${{ matrix.leg }}"
+            echo '```'
+            grep -vE '^::(end)?group::' e2e-${{ matrix.leg }}.txt | head -200
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: codex-ws-e2e-${{ matrix.leg }}
+          path: |
+            e2e-out/*.log
+            e2e-out/*.out
+            e2e-out/*.meta
+            e2e-out/*.last
+            e2e-out/*.trace
+            e2e-out/http.body
+            e2e-${{ matrix.leg }}.txt
