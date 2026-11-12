@@ -6,9 +6,8 @@ OUT="${OUT_DIR:-$PWD/e2e-out}"
 mkdir -p "$OUT"
 export DATA_DIR="$OUT/data"
 mkdir -p "$DATA_DIR"
-# Fake, per-run 10router key; the tunnel makes requests non-local. A caller
-# that made (and masked) one already passes it in.
-export E2E_API_KEY="${E2E_API_KEY:-sk-e2e-$(openssl rand -hex 12)}"
+# Fake, per-run 10router key; the tunnel makes requests non-local.
+export E2E_API_KEY="sk-e2e-$(openssl rand -hex 12)"
 
 node "$HERE/mock-upstream.mjs" > "$OUT/mock.log" 2>&1 &
 node --experimental-loader=./scripts/resolve-src-alias.mjs "$HERE/seed.mjs" 2>&1 | grep -v -i warning
@@ -25,23 +24,12 @@ for _ in $(seq 1 60); do
 done
 curl -sf -o /dev/null http://127.0.0.1:20128/v1/models || { echo "server did not start"; tail -50 "$OUT/server.log"; exit 1; }
 
-# Quick tunnels are rate-limited (429) when several jobs ask at once, so a
-# cloudflared that exits without a URL is started again, up to 4 times. Its
-# errors name api.trycloudflare.com, which is not a tunnel URL.
+cloudflared tunnel --no-autoupdate --url http://127.0.0.1:20128 > "$OUT/cloudflared.log" 2>&1 &
 TUNNEL=""
-for attempt in 1 2 3 4; do
-  cloudflared tunnel --no-autoupdate --url http://127.0.0.1:20128 > "$OUT/cloudflared.log" 2>&1 &
-  tunnel_pid=$!
-  for _ in $(seq 1 60); do
-    TUNNEL="$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$OUT/cloudflared.log" | grep -v '^https://api\.' | head -1)"
-    [ -n "$TUNNEL" ] && break
-    kill -0 "$tunnel_pid" 2>/dev/null || break
-    sleep 2
-  done
+for _ in $(seq 1 60); do
+  TUNNEL="$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$OUT/cloudflared.log" | head -1)"
   [ -n "$TUNNEL" ] && break
-  kill "$tunnel_pid" 2>/dev/null
-  echo "no tunnel URL (attempt $attempt): $(grep -m1 -i 'failed' "$OUT/cloudflared.log")"
-  sleep $(( attempt * 20 ))
+  sleep 2
 done
 [ -n "$TUNNEL" ] || { echo "no tunnel URL"; cat "$OUT/cloudflared.log"; exit 1; }
 for _ in $(seq 1 60); do
