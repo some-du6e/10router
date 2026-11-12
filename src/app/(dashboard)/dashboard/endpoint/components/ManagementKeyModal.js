@@ -7,7 +7,7 @@ import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { isoToLocalInput, localInputToIso } from "./keyFormat";
 import StatusAlert from "./StatusAlert";
 import ModelAllowlistField from "./ModelAllowlistField";
-import { MANAGEMENT_KEYS_DOCS_URL } from "@/shared/utils/managementKey.js";
+import { MANAGEMENT_KEYS_DOCS_URL, hostPatternError } from "@/shared/utils/managementKey.js";
 
 function Chips({ items, onRemove, empty }) {
   if (!items.length) return <p className="text-xs text-text-muted">{empty}</p>;
@@ -60,9 +60,55 @@ ProviderPicker.propTypes = {
   empty: PropTypes.string.isRequired,
 };
 
+/** Host patterns a key's own baseUrl may use: chips, a text box, checked as they are added. */
+function HostPatternField({ value, onChange }) {
+  const [draft, setDraft] = useState("");
+  const [draftError, setDraftError] = useState("");
+  const add = () => {
+    const pattern = draft.trim().toLowerCase();
+    if (!pattern) return;
+    const why = hostPatternError(pattern);
+    if (why) return setDraftError(`"${pattern}" ${why}.`);
+    if (!value.includes(pattern)) onChange([...value, pattern]);
+    setDraft("");
+    setDraftError("");
+  };
+  return (
+    <div>
+      <label className="mb-1.5 block text-sm font-medium">Allowed hosts for a key&apos;s own URL</label>
+      <Chips
+        items={value.map((p) => ({ value: p, label: p }))}
+        onRemove={(p) => onChange(value.filter((v) => v !== p))}
+        empty="None. Keys it adds use their endpoint's URL."
+      />
+      <div className="mt-2 flex gap-2">
+        <input
+          value={draft}
+          onChange={(e) => { setDraft(e.target.value); setDraftError(""); }}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
+          placeholder="*.acme.example or api.acme.example"
+          aria-label="Add an allowed host"
+          className="min-w-0 flex-1 rounded-[10px] border border-border bg-surface px-3 py-1.5 font-mono text-xs outline-none focus:border-primary"
+        />
+        <Button size="sm" variant="secondary" onClick={add} disabled={!draft.trim()}>Add</Button>
+      </div>
+      {draftError && <p className="mt-1 text-[11px] text-red-500">{draftError}</p>}
+      <p className="mt-1 text-[11px] text-text-muted">
+        For an upstream where each key has its own host. A key added for a custom endpoint may then bring its own https
+        baseUrl on one of these hosts. *.acme.example matches key-a.acme.example, not acme.example or a.b.acme.example.
+      </p>
+    </div>
+  );
+}
+
+HostPatternField.propTypes = {
+  value: PropTypes.arrayOf(PropTypes.string).isRequired,
+  onChange: PropTypes.func.isRequired,
+};
+
 const blankScopes = () => ({
   clientKeys: { enabled: false, providers: [], models: [], maxBudgetUsd: "", manageExisting: false },
-  providerKeys: { enabled: false, providers: [], manageExisting: false },
+  providerKeys: { enabled: false, providers: [], manageExisting: false, baseUrlHosts: [] },
 });
 
 function fromSaved(scopes) {
@@ -76,7 +122,7 @@ function fromSaved(scopes) {
       maxBudgetUsd: ck.maxBudgetUsd === null || ck.maxBudgetUsd === undefined ? "" : String(ck.maxBudgetUsd),
       manageExisting: !!ck.manageExisting,
     },
-    providerKeys: { enabled: !!pk.enabled, providers: pk.providers || [], manageExisting: !!pk.manageExisting },
+    providerKeys: { enabled: !!pk.enabled, providers: pk.providers || [], manageExisting: !!pk.manageExisting, baseUrlHosts: pk.baseUrlHosts || [] },
   };
 }
 
@@ -94,6 +140,7 @@ function toPayload(s) {
       enabled: s.providerKeys.enabled,
       providers: s.providerKeys.providers.length ? s.providerKeys.providers : null,
       manageExisting: s.providerKeys.manageExisting,
+      baseUrlHosts: s.providerKeys.baseUrlHosts.length ? s.providerKeys.baseUrlHosts : null,
     },
   };
 }
@@ -234,6 +281,7 @@ export default function ManagementKeyModal({ managementKey, onClose, onSaved }) 
                   ariaLabel="Also manage existing keys"
                   description="See and delete every key of these providers, not just the ones it added."
                 />
+                <HostPatternField value={pk.baseUrlHosts} onChange={(baseUrlHosts) => setProvider({ baseUrlHosts })} />
               </>
             )}
           </div>

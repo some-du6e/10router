@@ -32,8 +32,73 @@ export function containsManagementKey(value) {
 export function emptyScopes() {
   return {
     clientKeys: { enabled: false, providers: null, models: null, maxBudgetUsd: null, manageExisting: false },
-    providerKeys: { enabled: false, providers: null, manageExisting: false },
+    providerKeys: { enabled: false, providers: null, manageExisting: false, baseUrlHosts: null },
   };
+}
+
+/** Most host patterns one scope can list. */
+export const MAX_BASE_URL_HOSTS = 50;
+const MAX_HOST_LENGTH = 253;
+const HOST_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/**
+ * Why this isn't a usable host pattern for scopes.providerKeys.baseUrlHosts,
+ * or null when it is. A pattern is an exact host (api.acme.example) or one
+ * leading wildcard label (*.acme.example) followed by at least two labels.
+ */
+export function hostPatternError(pattern) {
+  if (typeof pattern !== "string" || !pattern) return "must be a non-empty string";
+  if (pattern.length > MAX_HOST_LENGTH) return `can be at most ${MAX_HOST_LENGTH} characters`;
+  if (pattern === "*") return "a bare * would allow any host";
+  if (pattern !== pattern.toLowerCase()) return "must be lowercase";
+  if (pattern.startsWith("[") || pattern.includes("::")) return "can't be an IP address";
+  if (pattern.includes("/")) return "is a host name, not a URL";
+  if (pattern.includes(":")) return "can't have a port";
+  const wildcard = pattern.startsWith("*.");
+  const rest = wildcard ? pattern.slice(2) : pattern;
+  if (rest.includes("*")) return "may only have one wildcard, as its first label (*.acme.example)";
+  const labels = rest.split(".");
+  if (labels.some((l) => !HOST_LABEL.test(l))) return "has a label that isn't letters, digits and hyphens";
+  // No top-level domain is all digits, so this catches 10.0.0.1 and *.0.0.1 alike.
+  if (/^\d+$/.test(labels[labels.length - 1])) return "can't be an IP address";
+  if (labels[labels.length - 1] === "localhost") return "can't be localhost";
+  if (labels.length < 2) return wildcard ? "needs at least two labels after *. (*.acme.example)" : "needs at least two labels (api.acme.example)";
+  return null;
+}
+
+/**
+ * Does this host match this pattern? Exact, or *.suffix with exactly one more
+ * label: *.acme.example matches key-a.acme.example, not acme.example and not
+ * a.b.acme.example.
+ */
+export function hostMatchesPattern(host, pattern) {
+  if (typeof host !== "string" || typeof pattern !== "string") return false;
+  if (!pattern.startsWith("*.")) return host === pattern;
+  const suffix = pattern.slice(1);
+  if (!host.endsWith(suffix)) return false;
+  const label = host.slice(0, -suffix.length);
+  return label.length > 0 && !label.includes(".");
+}
+
+function parseHostPatterns(raw, field, errors) {
+  if (raw === undefined || raw === null) return null;
+  if (!Array.isArray(raw)) {
+    errors.push(`${field} must be an array of host patterns, or null for none`);
+    return null;
+  }
+  const list = [];
+  for (const item of raw) {
+    const pattern = typeof item === "string" ? item.trim() : item;
+    if (pattern === "") continue;
+    const why = hostPatternError(pattern);
+    if (why) {
+      errors.push(`${field}: "${String(pattern).slice(0, 80)}" ${why}`);
+      return null;
+    }
+    if (!list.includes(pattern)) list.push(pattern);
+  }
+  if (list.length > MAX_BASE_URL_HOSTS) errors.push(`${field} can list at most ${MAX_BASE_URL_HOSTS} patterns`);
+  return list.length ? list : null;
 }
 
 function parseIdList(raw, field, errors) {
@@ -109,6 +174,7 @@ export function normalizeManagementScopes(input) {
       scopes.providerKeys.enabled = parseBool(pk.enabled, "scopes.providerKeys.enabled", errors);
       scopes.providerKeys.providers = parseIdList(pk.providers, "scopes.providerKeys.providers", errors);
       scopes.providerKeys.manageExisting = parseBool(pk.manageExisting, "scopes.providerKeys.manageExisting", errors);
+      scopes.providerKeys.baseUrlHosts = parseHostPatterns(pk.baseUrlHosts, "scopes.providerKeys.baseUrlHosts", errors);
     }
   }
 
@@ -151,7 +217,8 @@ export function describeScopes(scopes) {
   }
   const pk = scopes?.providerKeys;
   if (pk?.enabled) {
-    parts.push(`Provider keys${pk.providers ? ` (${pk.providers.join(", ")})` : " (any provider)"}${pk.manageExisting ? ", incl. existing" : ""}`);
+    const hosts = pk.baseUrlHosts?.length ? `, own URLs on ${pk.baseUrlHosts.join(", ")}` : "";
+    parts.push(`Provider keys${pk.providers ? ` (${pk.providers.join(", ")})` : " (any provider)"}${pk.manageExisting ? ", incl. existing" : ""}${hosts}`);
   }
   return parts.join(" · ") || "No access";
 }

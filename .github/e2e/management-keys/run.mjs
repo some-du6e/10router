@@ -78,6 +78,17 @@ const refused = await call("POST", "/api/management/v1/provider-keys", { token: 
 check("a key the provider refuses is not added", refused.status === 422, String(refused.status));
 const pool = await context.request.get("/api/providers");
 check("the refused key is not in the pool", !(await pool.text()).includes("e2e refused"));
+const noHosts = await call("POST", "/api/management/v1/provider-keys", { token: providerMgmt, data: { provider: "openai", apiKey: fakeUpstream, baseUrl: "https://key-a.acme.example/v1" } });
+check("a baseUrl is refused when the dashboard allowed no hosts", noHosts.status === 400 && /hasn't allowed it any hosts/.test(noHosts.text), `${noHosts.status} ${noHosts.text.slice(0, 120)}`);
+const hostsMgmt = await makeKey("e2e hosts", { providerKeys: { enabled: true, baseUrlHosts: ["*.acme.example"] } });
+const hostsMe = await call("GET", "/api/management/v1/me", { token: hostsMgmt });
+check("GET /me shows the allowed hosts", JSON.stringify(hostsMe.json?.managementKey?.scopes?.providerKeys?.baseUrlHosts) === '["*.acme.example"]');
+const httpUrl = await call("POST", "/api/management/v1/provider-keys", { token: hostsMgmt, data: { provider: "openai", apiKey: fakeUpstream, baseUrl: "http://key-a.acme.example/v1" } });
+check("a http baseUrl is refused", httpUrl.status === 400 && /must use https/.test(httpUrl.text), String(httpUrl.status));
+const notCustom = await call("POST", "/api/management/v1/provider-keys", { token: hostsMgmt, data: { provider: "openai", apiKey: fakeUpstream, baseUrl: "https://key-a.acme.example/v1" } });
+check("a baseUrl is refused for a provider with no per-key URL", notCustom.status === 400 && /custom OpenAI- or Anthropic-compatible/.test(notCustom.text), String(notCustom.status));
+const badPattern = await context.request.post("/api/management-keys", { data: { name: "e2e bad hosts", scopes: { providerKeys: { enabled: true, baseUrlHosts: ["*"] } } } });
+check("the dashboard refuses a bare * host pattern", badPattern.status() === 400, String(badPattern.status()));
 const noClient = await call("GET", "/api/management/v1/client-keys", { token: providerMgmt });
 check("a provider-keys-only key can't list client keys", noClient.status === 403, String(noClient.status));
 
@@ -132,6 +143,13 @@ await card.getByRole("button", { name: "Create Key" }).click();
 await page.getByPlaceholder("e.g. Key rotation script").fill("e2e from the UI");
 await page.getByRole("switch", { name: "Provider keys" }).click();
 await page.waitForTimeout(500); // the toggle's transition
+const hostBox = page.getByLabel("Add an allowed host");
+await hostBox.fill("*");
+await hostBox.locator("xpath=following-sibling::button").click();
+check("the dialog refuses a bare * host", await page.getByText("a bare * would allow any host").first().isVisible());
+await hostBox.fill("*.acme.example");
+await hostBox.locator("xpath=following-sibling::button").click();
+check("the dialog lists the added host", await page.getByRole("button", { name: "Remove *.acme.example" }).isVisible());
 await page.screenshot({ path: `${outDir}/create-modal.png`, fullPage: false });
 await page.getByRole("button", { name: "Create", exact: true }).click();
 const secretBox = page.locator("input[readonly]");
@@ -149,6 +167,8 @@ check("new key is listed", true);
 check("the list never shows the secret", !(await card.innerText()).includes(shown));
 const viaUi = await call("GET", "/api/management/v1/me", { token: shown });
 check("the UI-created key works", viaUi.status === 200 && viaUi.json?.managementKey?.scopes?.providerKeys?.enabled === true, String(viaUi.status));
+check("the UI-created key has the host it was given", JSON.stringify(viaUi.json?.managementKey?.scopes?.providerKeys?.baseUrlHosts) === '["*.acme.example"]');
+check("the card shows the hosts in the scope summary", (await card.innerText()).includes("own URLs on *.acme.example"));
 await page.screenshot({ path: `${outDir}/endpoint-page.png`, fullPage: true, mask: [page.locator("code")] });
 
 await browser.close();

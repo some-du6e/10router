@@ -4,11 +4,12 @@
 // upstream is called. The guard side (which paths take a management key) is
 // in management-keys-guard.test.js.
 import crypto from "node:crypto";
+import dns from "node:dns";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "10router-mgmt-keys-"));
 const originalDataDir = process.env.DATA_DIR;
@@ -55,6 +56,13 @@ vi.mock("@/app/api/providers/route.js", async (importOriginal) => {
     },
   };
 });
+// The executor's upstream fetch, real unless a test sets a handler (to see where a key is sent).
+const upstream = { handler: null };
+vi.mock("../../open-sse/utils/proxyFetch.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  const wrapped = (...a) => (upstream.handler ? upstream.handler(...a) : actual.proxyAwareFetch(...a));
+  return { ...actual, default: wrapped, proxyAwareFetch: wrapped };
+});
 // A cookie of "good-session" is a valid dashboard login.
 vi.mock("@/lib/auth/dashboardSession", () => ({
   getDashboardAuthSession: async (t) => (t === "good-session" ? { sub: "admin" } : null),
@@ -74,6 +82,9 @@ const dashKeys = await import("@/app/api/management-keys/route.js");
 const dashKey = await import("@/app/api/management-keys/[id]/route.js");
 const keysRoute = await import("@/app/api/keys/[id]/route.js");
 const { maskClientKey } = await import("@/lib/management/serialize.js");
+const { hostPatternError, hostMatchesPattern } = await import("@/shared/utils/managementKey.js");
+const { getProviderCredentials } = await import("@/sse/services/auth.js");
+const { getExecutor } = await import("../../open-sse/executors/index.js");
 
 afterAll(() => {
   try { global._dbAdapter?.instance?.close?.(); } catch {}
@@ -155,6 +166,7 @@ beforeEach(() => {
   validation.handler = null;
   delete process.env.MANAGEMENT_PROBE_TIMEOUT_MS;
   providerHooks.afterCreate = null;
+  upstream.handler = null;
   for (const k of Object.keys(dbHooks)) dbHooks[k] = null;
 });
 
@@ -378,6 +390,221 @@ describe("provider key scope", () => {
     expect((await api.getProvider(secret, conn.id)).status).toBe(403);
     expect((await api.deleteProvider(secret, conn.id)).status).toBe(403);
     expect(await db.getProviderConnectionById(conn.id)).not.toBeNull();
+  });
+});
+
+describe("provider keys with their own URL", () => {
+  // An upstream where each key has its own host: key-a.acme.example, key-b.acme.example, ...
+  const NODE = "openai-compatible-chat-acme";
+  const NODE_URL = "https://api.acme.example/v1";
+  const HOSTS = ["*.acme.example"];
+  let dnsSpy;
+
+  beforeEach(async () => {
+    if (!(await db.getProviderNodeById(NODE))) {
+      await db.createProviderNode({ id: NODE, type: "openai-compatible", name: "Acme", prefix: "acme", apiType: "chat", baseUrl: NODE_URL });
+    }
+    // The create route's SSRF check resolves the host; *.acme.example resolves nowhere, as in CI.
+    dnsSpy = vi.spyOn(dns.promises, "lookup").mockRejectedValue(Object.assign(new Error("not found"), { code: "ENOTFOUND" }));
+  });
+  afterEach(() => dnsSpy.mockRestore());
+
+  const hostsKey = (baseUrlHosts = HOSTS, extra = {}) =>
+    newManagementKey({ providerKeys: { enabled: true, providers: [NODE], baseUrlHosts, ...extra } });
+
+  it("validates host patterns when the dashboard saves them", async () => {
+    for (const good of ["api.acme.example", "*.acme.example", "*.eu.acme.example", "key-a.acme.example"]) {
+      expect(hostPatternError(good), good).toBeNull();
+    }
+    const bad = {
+      "*": /bare \*/,
+      "*.example": /two labels after/,
+      "acme": /two labels/,
+      "API.acme.example": /lowercase/,
+      "10.0.0.1": /IP address/,
+      "*.0.0.1": /IP address/,
+      "[::1]": /IP address/,
+      "api.acme.example:8443": /port/,
+      "https://api.acme.example": /not a URL/,
+      "*.*.acme.example": /one wildcard/,
+      "key-*.acme.example": /one wildcard/,
+      "a.*.acme.example": /one wildcard/,
+      "localhost": /localhost/,
+      "*.localhost": /localhost/,
+      "acme.example.": /label/,
+      "under_score.acme.example": /label/,
+    };
+    for (const [pattern, why] of Object.entries(bad)) {
+      expect(hostPatternError(pattern), pattern).toMatch(why);
+      const res = await dashboard.create({ name: "hosts", scopes: { providerKeys: { enabled: true, providers: [NODE], baseUrlHosts: [pattern] } } });
+      expect(res.status, pattern).toBe(400);
+      expect(res.body.error, pattern).toMatch(/baseUrlHosts/);
+    }
+    expect((await dashboard.create({ name: "hosts", scopes: { providerKeys: { enabled: true, baseUrlHosts: "*.acme.example" } } })).status).toBe(400);
+
+    // Trimmed and de-duplicated; an empty list is no hosts.
+    const mk = await hostsKey([" *.acme.example ", "*.acme.example", "api.acme.example"]);
+    expect((await db.getManagementKeyById(mk.id)).scopes.providerKeys.baseUrlHosts).toEqual(["*.acme.example", "api.acme.example"]);
+    const none = await hostsKey([]);
+    expect((await db.getManagementKeyById(none.id)).scopes.providerKeys.baseUrlHosts).toBeNull();
+
+    // A stored pattern that no longer validates grants nothing, like any broken scope.
+    const adapter = await getAdapter();
+    adapter.run("UPDATE managementKeys SET scopes = ? WHERE id = ?", [JSON.stringify({ providerKeys: { enabled: true, baseUrlHosts: ["*"] } }), mk.id]);
+    expect((await api.me(mk.secret)).body.managementKey.scopes.providerKeys).toMatchObject({ enabled: false, baseUrlHosts: null });
+  });
+
+  it("a wildcard matches exactly one more label", () => {
+    expect(hostMatchesPattern("key-a.acme.example", "*.acme.example")).toBe(true);
+    expect(hostMatchesPattern("acme.example", "*.acme.example")).toBe(false);
+    expect(hostMatchesPattern("a.b.acme.example", "*.acme.example")).toBe(false);
+    expect(hostMatchesPattern("key-a.notacme.example", "*.acme.example")).toBe(false);
+    expect(hostMatchesPattern("key-a.acme.example.", "*.acme.example")).toBe(false);
+    expect(hostMatchesPattern("api.acme.example", "api.acme.example")).toBe(true);
+    expect(hostMatchesPattern("key-a.api.acme.example", "api.acme.example")).toBe(false);
+  });
+
+  it("adds a key with its own URL on an allowed host, stored where the dashboard keeps a key's URL", async () => {
+    const mk = await hostsKey();
+    const apiKey = providerSecret("own-url");
+    const res = await api.createProvider(mk.secret, {
+      provider: NODE, apiKey, name: "key-a", baseUrl: "https://key-a.acme.example/api/v2/v1/chat/completions",
+    });
+    expect(res.status, res.text).toBe(201);
+    // Probed at its own URL, through the dashboard's validator.
+    expect(validation.calls).toEqual([expect.objectContaining({ provider: NODE, apiKey, baseUrl: "https://key-a.acme.example/api/v2/v1" })]);
+    const conn = await db.getProviderConnectionById(res.body.providerKey.id);
+    expect(conn.providerSpecificData).toMatchObject({ baseUrl: "https://key-a.acme.example/api/v2/v1", ownBaseUrl: true, prefix: "acme" });
+    expect(await db.getRowOwner("providerKey", conn.id)).toBe(mk.id);
+    // The response still carries no providerSpecificData.
+    expect(res.body.providerKey.providerSpecificData).toBeUndefined();
+    expect(res.text).not.toContain("/api/v2");
+
+    // An exact pattern works too.
+    const exact = await hostsKey(["key-b.acme.example"]);
+    expect((await api.createProvider(exact.secret, { provider: NODE, apiKey: providerSecret("exact"), name: "key-b", baseUrl: "https://key-b.acme.example/v1" })).status).toBe(201);
+  });
+
+  it("refuses a baseUrl for each reason, with a 400 that names it and adds nothing", async () => {
+    const mk = await hostsKey();
+    const noHosts = await newManagementKey({ providerKeys: { enabled: true, providers: [NODE, "openai"] } });
+    const openaiToo = await hostsKey(HOSTS, { providers: [NODE, "openai"] });
+    const before = (await db.getProviderConnections()).length;
+    const planted = `tok-${crypto.randomBytes(6).toString("hex")}`;
+    const cases = [
+      ["no patterns", noHosts.secret, NODE, "https://key-a.acme.example/v1", /hasn't allowed it any hosts/],
+      ["http", mk.secret, NODE, "http://key-a.acme.example/v1", /must use https/],
+      ["wrong host", mk.secret, NODE, "https://key-a.other.example/v1", /isn't one this management key may use/],
+      ["the apex", mk.secret, NODE, "https://acme.example/v1", /isn't one this management key may use/],
+      ["two labels deep", mk.secret, NODE, "https://a.b.acme.example/v1", /isn't one this management key may use/],
+      ["IPv4", mk.secret, NODE, "https://10.0.0.1/v1", /IP address/],
+      ["IPv4 in another notation", mk.secret, NODE, "https://0x7f.1/v1", /IP address/],
+      ["IPv6", mk.secret, NODE, "https://[::1]/v1", /IP address/],
+      ["localhost", mk.secret, NODE, "https://localhost/v1", /localhost/],
+      ["a .localhost name", mk.secret, NODE, "https://key-a.localhost/v1", /localhost/],
+      ["port", mk.secret, NODE, "https://key-a.acme.example:8443/v1", /port other than 443/],
+      ["userinfo", mk.secret, NODE, `https://user:${planted}@key-a.acme.example/v1`, /user name or password/],
+      ["not a URL", mk.secret, NODE, "key-a.acme.example/v1", /isn't a valid URL/],
+      ["not a string", mk.secret, NODE, 42, /must be a URL/],
+      ["a provider with no per-key URL", openaiToo.secret, "openai", "https://key-a.acme.example/v1", /custom OpenAI- or Anthropic-compatible endpoint/],
+    ];
+    for (const [label, secret, provider, baseUrl, why] of cases) {
+      const res = await api.createProvider(secret, { provider, apiKey: providerSecret(`url-${label}`), baseUrl });
+      expect(res.status, label).toBe(400);
+      expect(res.body.error, label).toMatch(why);
+      expect(res.body.field, label).toBe("baseUrl");
+      expect(res.text, label).not.toContain(planted);
+    }
+    expect(validation.calls).toHaveLength(0);
+    expect((await db.getProviderConnections()).length).toBe(before);
+
+    // A default :443 is no port. And the other URL and proxy fields stay closed, hosts or not.
+    expect((await api.createProvider(mk.secret, { provider: NODE, apiKey: providerSecret("p443"), baseUrl: "https://key-c.acme.example:443/v1" })).status).toBe(201);
+    for (const body of [
+      { provider: NODE, apiKey: providerSecret("psd-url"), providerSpecificData: { baseUrl: "https://key-a.acme.example/v1" } },
+      { provider: NODE, apiKey: providerSecret("psd-own"), providerSpecificData: { ownBaseUrl: true } },
+      { provider: NODE, apiKey: providerSecret("proxy"), connectionProxyUrl: "https://key-a.acme.example" },
+      { provider: NODE, apiKey: providerSecret("azure"), providerSpecificData: { azureEndpoint: "https://key-a.acme.example" } },
+    ]) {
+      expect((await api.createProvider(mk.secret, body)).status, JSON.stringify(Object.keys(body))).toBe(400);
+    }
+  });
+
+  it("re-checks the host after the probe: hosts taken away meanwhile add nothing", async () => {
+    const mk = await hostsKey();
+    const before = (await db.getProviderConnections()).length;
+    validation.handler = async () => {
+      await dashboard.patch(mk.id, { scopes: { providerKeys: { enabled: true, providers: [NODE], baseUrlHosts: ["api.acme.example"] } } });
+      return Response.json({ valid: true });
+    };
+    const res = await api.createProvider(mk.secret, { provider: NODE, apiKey: providerSecret("narrowed"), baseUrl: "https://key-a.acme.example/v1" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/isn't one this management key may use/);
+    expect((await db.getProviderConnections()).length).toBe(before);
+  });
+
+  it("a management key can't set host patterns through the API, its own or another's", async () => {
+    const mk = await hostsKey(["key-a.acme.example"]);
+    const other = await newManagementKey({ providerKeys: { enabled: true, providers: [NODE] } });
+    const widen = { providerKeys: { enabled: true, baseUrlHosts: ["*.acme.example"], manageExisting: true } };
+    // No route on the management API takes scopes.
+    expect((await api.createProvider(mk.secret, { provider: NODE, apiKey: providerSecret("scopes"), scopes: widen })).status).toBe(400);
+    expect((await api.createProvider(mk.secret, { provider: NODE, apiKey: providerSecret("hosts"), baseUrlHosts: ["*.acme.example"] })).status).toBe(400);
+    // The dashboard routes take a session, never a management key.
+    const bearer = { authorization: `Bearer ${mk.secret}` };
+    for (const id of [mk.id, other.id]) {
+      expect((await dashboard.patch(id, { scopes: widen }, bearer)).status).toBe(401);
+    }
+    expect((await dashboard.create({ name: "self-made", scopes: widen }, bearer)).status).toBe(401);
+    expect((await db.getManagementKeyById(mk.id)).scopes.providerKeys).toMatchObject({ baseUrlHosts: ["key-a.acme.example"], manageExisting: false });
+    expect((await db.getManagementKeyById(other.id)).scopes.providerKeys.baseUrlHosts).toBeNull();
+  });
+
+  it("routes a key added this way to its own URL, and others to the endpoint's", async () => {
+    const mk = await hostsKey();
+    const a = await api.createProvider(mk.secret, { provider: NODE, apiKey: providerSecret("route-a"), name: "route a", baseUrl: "https://key-a.acme.example/api/v2/v1" });
+    const b = await api.createProvider(mk.secret, { provider: NODE, apiKey: providerSecret("route-b"), name: "route b", baseUrl: "https://key-b.acme.example/api/v2/v1" });
+    const plain = await api.createProvider(mk.secret, { provider: NODE, apiKey: providerSecret("route-plain"), name: "route plain" });
+    expect([a.status, b.status, plain.status]).toEqual([201, 201, 201]);
+
+    const hits = [];
+    upstream.handler = async (url) => {
+      hits.push(String(url));
+      return new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "ok" } }] }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const executor = getExecutor(NODE);
+    for (const created of [a, b, plain]) {
+      // The credentials the account loop hands the executor for this key.
+      const credentials = await getProviderCredentials(NODE, null, null, { preferredConnectionId: created.body.providerKey.id });
+      expect(credentials.connectionId).toBe(created.body.providerKey.id);
+      const out = await executor.execute({ model: "m", body: { model: "m", messages: [{ role: "user", content: "hi" }] }, stream: false, credentials, log: null });
+      expect(out.response.status).toBe(200);
+    }
+    expect(hits).toEqual([
+      "https://key-a.acme.example/api/v2/v1/chat/completions",
+      "https://key-b.acme.example/api/v2/v1/chat/completions",
+      `${NODE_URL}/chat/completions`,
+    ]);
+  });
+
+  it("the audit records the host it was given, never the full URL", async () => {
+    const mk = await hostsKey();
+    const planted = `tok-${crypto.randomBytes(6).toString("hex")}`;
+    const ok = await api.createProvider(mk.secret, { provider: NODE, apiKey: providerSecret("audit-url"), name: "audit url", baseUrl: `https://key-a.acme.example/secret-path/v1?token=${planted}` });
+    expect(ok.status).toBe(201);
+    await api.createProvider(mk.secret, { provider: NODE, apiKey: providerSecret("audit-wrong"), baseUrl: `https://key-z.other.example/secret-path?token=${planted}` });
+    const rows = await db.getManagementAudit({ managementKeyId: mk.id, limit: 10 });
+    expect(rows.find((r) => r.action === "provider_key.create").detail).toEqual({ provider: NODE, name: "audit url", baseUrlHost: "key-a.acme.example" });
+    expect(rows.find((r) => r.action === "provider_key.create.denied").detail).toMatchObject({ provider: NODE, baseUrlHost: "key-z.other.example", reason: "baseUrl host outside scope" });
+    const raw = JSON.stringify(rows);
+    expect(raw).not.toContain(planted);
+    expect(raw).not.toContain("secret-path");
+    expect(raw).not.toContain("https://");
+  });
+
+  it("describes the hosts in the scope summary", async () => {
+    const { describeScopes } = await import("@/shared/utils/managementKey.js");
+    expect(describeScopes({ providerKeys: { enabled: true, providers: [NODE], baseUrlHosts: HOSTS } })).toBe(`Provider keys (${NODE}), own URLs on *.acme.example`);
   });
 });
 

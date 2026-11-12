@@ -26,6 +26,12 @@ on:
       - "src/lib/management/**"
       - "src/lib/db/**"
       - "src/shared/utils/managementKey.js"
+      # A key's own URL: how it is checked, stored and routed.
+      - "src/shared/utils/endpointUrl.ts"
+      - "src/shared/utils/connectionBaseUrl.ts"
+      - "open-sse/utils/ssrfGuard.js"
+      - "open-sse/utils/proxyFetch.js"
+      - "open-sse/executors/**"
       - "src/shared/utils/apiKeyLimits.js"
       - "src/shared/utils/clientApiKey.js"
       - "src/sse/services/keyLimits.js"

@@ -16,24 +16,26 @@ import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { parseKeyLimitsInput } from "@/shared/utils/apiKeyLimits.js";
 import { normalizeManagementKeyName } from "@/shared/utils/managementKey.js";
 import { normalizeProviderId } from "@/lib/providerNormalization";
-import { WEB_COOKIE_PROVIDERS } from "@/shared/constants/providers";
+import { WEB_COOKIE_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 import { authenticateManagementKey } from "./auth.js";
 import {
   clientKeyScopeViolation, clientKeyVisible, dashboardChoiceViolation,
-  providerInScope, providerKeyVisible, makeProviderResolver,
+  providerInScope, providerKeyVisible, makeProviderResolver, keyBaseUrlCheck,
 } from "./policy.js";
 import { serializeClientKey, serializeProviderKey, serializeManagementKey } from "./serialize.js";
 import { json, fail, readBody } from "./http.js";
 
 // Provider-specific fields a management key may set. URL fields (baseUrl,
 // azureEndpoint, proxies) are left out: they decide where the gateway sends a
-// key, which is the dashboard's call.
+// key, which is the dashboard's call. The one exception is a custom endpoint
+// key's own baseUrl, top level, on a host the dashboard allowed for the scope
+// (keyBaseUrlCheck).
 const PROVIDER_DATA_FIELDS = new Set(["accountId", "region", "deployment", "organization", "apiVersion"]);
 const MAX_PROVIDER_DATA_LENGTH = 200;
 export const MAX_PROVIDER_API_KEY_LENGTH = 8192;
 const CLIENT_KEY_CREATE_FIELDS = new Set(["name", "budgetUsd", "allowedModels", "expiresAt"]);
 const CLIENT_KEY_PATCH_FIELDS = new Set(["name", "isActive", "budgetUsd", "allowedModels", "expiresAt"]);
-const PROVIDER_KEY_CREATE_FIELDS = new Set(["provider", "apiKey", "name", "defaultModel", "providerSpecificData"]);
+const PROVIDER_KEY_CREATE_FIELDS = new Set(["provider", "apiKey", "name", "defaultModel", "providerSpecificData", "baseUrl"]);
 const DEFAULT_PROBE_TIMEOUT_MS = 15_000;
 
 function probeTimeoutMs() {
@@ -240,6 +242,29 @@ function parseProviderData(raw) {
   return { data: Object.keys(data).length ? data : undefined };
 }
 
+/**
+ * A key's own baseUrl, when the body has one: only for a custom compatible
+ * endpoint (the only keys routing gives their own URL), and only on a host
+ * the scope allows. A refusal about the scope is audited with the host.
+ * @returns {Promise<{ field: object, host?: string } | { error: Response }>}
+ */
+async function checkKeyBaseUrl(mk, scope, provider, raw) {
+  if (raw === undefined || raw === null) return { field: {} };
+  const check = keyBaseUrlCheck(scope, raw);
+  if (!check.error && !isOpenAICompatibleProvider(provider) && !isAnthropicCompatibleProvider(provider)) {
+    return { error: fail(400, "baseUrl can only be set on a key for a custom OpenAI- or Anthropic-compatible endpoint", { field: "baseUrl" }) };
+  }
+  if (check.error) {
+    if (check.outsideScope) {
+      await audit(mk, "provider_key.create.denied", "providerKey", null, {
+        provider, reason: check.host ? "baseUrl host outside scope" : "baseUrl not allowed for this key", ...(check.host ? { baseUrlHost: check.host } : {}),
+      }, { denied: true });
+    }
+    return { error: fail(400, check.error, { field: "baseUrl" }) };
+  }
+  return { field: { baseUrl: check.url }, host: check.host };
+}
+
 // The dashboard's own add-key path: the validation ping, then the create route.
 // Imported lazily so the provider and model tables load only when a key is added.
 async function dashboardProviderRoutes() {
@@ -299,10 +324,12 @@ export function createProviderKey(request) {
     }
     const psd = parseProviderData(body.providerSpecificData);
     if (psd.error) return fail(400, psd.error);
+    const keyUrl = await checkKeyBaseUrl(mk, mk.scopes.providerKeys, provider, body.baseUrl);
+    if (keyUrl.error) return keyUrl.error;
 
     const routes = await dashboardProviderRoutes();
     const apiKey = body.apiKey.trim();
-    const probe = await probeKey(routes.validate, { provider, apiKey, providerSpecificData: psd.data });
+    const probe = await probeKey(routes.validate, { provider, apiKey, providerSpecificData: psd.data, ...keyUrl.field });
     if (probe === PROBE_TIMED_OUT) return fail(504, `The provider did not answer the validation request within ${Math.round(probeTimeoutMs() / 1000)}s; the key was not added`);
     if (!probe.res.ok) return fail(probe.res.status, typeof probe.body.error === "string" ? probe.body.error : "Could not validate the key");
     if (probe.body.valid !== true) {
@@ -318,6 +345,9 @@ export function createProviderKey(request) {
       await audit(mk, "provider_key.create.denied", "providerKey", null, { provider, reason: "scope narrowed during validation" }, { denied: true });
       return fail(403, `This management key can't add keys for provider "${provider}"`);
     }
+    // The dashboard may have taken the host off the list meanwhile.
+    const urlAgain = await checkKeyBaseUrl(mk, again.managementKey.scopes.providerKeys, provider, body.baseUrl);
+    if (urlAgain.error) return urlAgain.error;
 
     const connectionName = name.name || `${mk.name} ${crypto.randomBytes(3).toString("hex")}`;
     const res = await routes.create(internalJsonRequest("/api/providers", {
@@ -327,6 +357,7 @@ export function createProviderKey(request) {
       defaultModel: body.defaultModel,
       providerSpecificData: psd.data,
       testStatus: "active",
+      ...urlAgain.field,
     }));
     const out = await res.json().catch(() => ({}));
     if (res.status === 409) return fail(409, `A key named "${connectionName}" already exists for this provider; pick another name`);
@@ -348,7 +379,9 @@ export function createProviderKey(request) {
     }
     // Claimed, then swept by a revoke-and-delete racing this request.
     if (!saved) return fail(401, "This management key was revoked or turned off");
-    await audit(mk, "provider_key.create", "providerKey", saved.id, { provider: saved.provider, name: saved.name });
+    await audit(mk, "provider_key.create", "providerKey", saved.id, {
+      provider: saved.provider, name: saved.name, ...(urlAgain.host ? { baseUrlHost: urlAgain.host } : {}),
+    });
     return json({ providerKey: serializeProviderKey(saved, mk.id, mk.id) }, 201);
   });
 }
