@@ -25,12 +25,23 @@ for _ in $(seq 1 60); do
 done
 curl -sf -o /dev/null http://127.0.0.1:20128/v1/models || { echo "server did not start"; tail -50 "$OUT/server.log"; exit 1; }
 
-cloudflared tunnel --no-autoupdate --url http://127.0.0.1:20128 > "$OUT/cloudflared.log" 2>&1 &
+# Quick tunnels are rate-limited (429) when several jobs ask at once, so a
+# cloudflared that exits without a URL is started again, up to 4 times. Its
+# errors name api.trycloudflare.com, which is not a tunnel URL.
 TUNNEL=""
-for _ in $(seq 1 60); do
-  TUNNEL="$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$OUT/cloudflared.log" | head -1)"
+for attempt in 1 2 3 4; do
+  cloudflared tunnel --no-autoupdate --url http://127.0.0.1:20128 > "$OUT/cloudflared.log" 2>&1 &
+  tunnel_pid=$!
+  for _ in $(seq 1 60); do
+    TUNNEL="$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$OUT/cloudflared.log" | grep -v '^https://api\.' | head -1)"
+    [ -n "$TUNNEL" ] && break
+    kill -0 "$tunnel_pid" 2>/dev/null || break
+    sleep 2
+  done
   [ -n "$TUNNEL" ] && break
-  sleep 2
+  kill "$tunnel_pid" 2>/dev/null
+  echo "no tunnel URL (attempt $attempt): $(grep -m1 -i 'failed' "$OUT/cloudflared.log")"
+  sleep $(( attempt * 20 ))
 done
 [ -n "$TUNNEL" ] || { echo "no tunnel URL"; cat "$OUT/cloudflared.log"; exit 1; }
 for _ in $(seq 1 60); do
