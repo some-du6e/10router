@@ -4,8 +4,8 @@ A management key lets a script or a person manage keys over an API without
 dashboard access. Each one has a scope, and it can't do anything outside it. For
 example:
 
-- A key that can only add and remove upstream keys for one custom endpoint (say
-  Snowflake), so someone can top up the pool and nothing else.
+- A key that can only add and remove upstream keys for one custom endpoint, so a
+  script can top up the pool and nothing else.
 - A key that can create, list and delete client keys, but only keys limited to
   `openai/*` models and capped at a $50 budget each.
 

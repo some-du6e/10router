@@ -155,7 +155,7 @@ export default function ManagementKeyModal({ managementKey, onClose, onSaved }) 
     <>
       <Modal isOpen onClose={onClose} title={editing ? `Edit "${managementKey.name}"` : "Create management key"} size="lg">
         <div className="flex flex-col gap-4">
-          <Input label="Name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Snowflake top-up" />
+          <Input label="Name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Key rotation script" />
 
           <div className="rounded-lg border border-border p-3 flex flex-col gap-3">
             <Toggle
