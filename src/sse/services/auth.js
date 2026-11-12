@@ -268,10 +268,11 @@ const demotedElsewhere = (conn, model) => demoteRecords(conn).some(([m, r]) => m
 // - or the key is firmly demoted on `model` (this was a probe or a fallback)
 //   and the other model was refused within minWindowMs;
 // - or the key is demoted on `model` and on the other model the way
-//   isDeadClass says, and was refused there too after its demotion in a way
-//   the turn-off rule counts (lastCountedAt; a refusal of just that model
-//   doesn't move it): refused probes on 2 models with nothing served since
-//   either count began, however far apart they come.
+//   isDeadClass says, and was refused on each again after its demotion there
+//   (a probe, a fallback use, or a request already on its way) in a way the
+//   turn-off rule counts (lastCountedAt; a refusal of just that model doesn't
+//   move it), with nothing served since either count began, however far apart
+//   the refusals come.
 function deadElsewhere(conn, records, model, current, demoting) {
   const now = Date.now();
   const since = (r) => now - new Date(r?.lastCountedAt).getTime();
@@ -465,11 +466,13 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const demotions = new Map(usableConnections.map(c => [c.id, demotionOf(c, model)]));
     // One dead-key try per pass through this model's keys (one exclude set):
     // once the caller has excluded a key demoted on this model (a probe), a key
-    // demoted on another model (demotedElsewhere) whose last error is a 401 or
-    // 403 the turn-off rule counted on this model within minWindowMs, or an id
-    // that isn't one of this provider's active keys (turned off or deleted
-    // since, or another provider's key in a shared exclude set), later calls
-    // with that set skip both kinds while a key that is neither can serve.
+    // demoted on another model (demotedElsewhere) refused on this model with a
+    // 401 or 403 refusing the key itself (isAuthRejection: not a limit or a
+    // refusal of one model), seen by this process within minWindowMs and still
+    // its last stored error, or an id that isn't one of this provider's active
+    // keys (turned off or deleted since, or another provider's key in a shared
+    // exclude set), later calls with that set skip both kinds while a key that
+    // is neither can serve, or is only rate-limited here.
     const activeIds = new Set(allConnections.map(c => c.id));
     const refusedHere = (c) => (c.errorCode === 401 || c.errorCode === 403)
       && refusedSince(`${c.id}|${model}`, Date.now() - AUTH_DEAD_CONFIG.minWindowMs);
@@ -477,9 +480,15 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       || allConnections.some(c => excludeSet.has(c.id) && (demotionOf(c, model) || (refusedHere(c) && demotedElsewhere(c, model))));
     const skippedThisPass = (c) => deadTriedThisPass && demotedElsewhere(c, model);
     const preferred = usableConnections.filter(c => !demotions.get(c.id) && !skippedThisPass(c));
+    // With the try used and such a key only rate-limited here, the request is
+    // told so, as when every key is locked, instead of walking the skipped keys.
+    const cleanKeyLimited = deadTriedThisPass && preferred.length === 0 && connections.some(c => !excludeSet.has(c.id)
+      && !demotionOf(c, model) && !demotedElsewhere(c, model) && isLimitLocked(c, model) && !resetStates.get(c.id).blockedUntil
+      && !quotaBlocked(c) && planCanServeModel(providerId, c, model));
     // Failing that, keys demoted on another model go before keys demoted on this one.
     const notDemotedHere = usableConnections.filter(c => !demotions.get(c.id));
-    let availableConnections = preferred.length > 0 ? preferred : notDemotedHere.length > 0 ? notDemotedHere : usableConnections;
+    let availableConnections = cleanKeyLimited ? []
+      : preferred.length > 0 ? preferred : notDemotedHere.length > 0 ? notDemotedHere : usableConnections;
     let probing = false;
     if (preferred.length > 0 && !deadTriedThisPass) {
       // Under fill-first a key behind a usable one wouldn't be tried anyway

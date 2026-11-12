@@ -1736,6 +1736,24 @@ describe("a key refused on only one model", () => {
     expect(await request("m2", dead)).toEqual({ tried: [deadKeys[1].id, healthy.id], served: healthy.id });
   });
 
+  it("takes a 401 refusing the key on a new model as the pass's dead-key try too", async () => {
+    const { deadKeys, healthy } = await fourDemotedAhead();
+    const result = await request("m2", new Set(deadKeys.map((k) => k.id)), {
+      refusal: (id) => (id === deadKeys[0].id ? [401, "Invalid API key"] : [403, DEAD_403]),
+    });
+    expect(result).toEqual({ tried: [deadKeys[0].id, healthy.id], served: healthy.id });
+  });
+
+  it("reports the working keys' rate limit after one refusal on a new model instead of walking the other dead keys", async () => {
+    const { deadKeys, healthy } = await fourDemotedAhead();
+    const other = await addKey("key-f");
+    for (const key of [healthy, other]) await failOnce(key.id, "m2", 429, "Too many requests");
+    expect(await request("m2", new Set(deadKeys.map((k) => k.id)))).toEqual({ tried: [deadKeys[0].id], served: null });
+    const creds = await auth.getProviderCredentials(provider, new Set([deadKeys[0].id]), "m2");
+    expect(creds).toMatchObject({ allRateLimited: true, lastErrorCode: 429 });
+    expect(Date.parse(creds.retryAfter)).toBe(Math.min(...await Promise.all([healthy, other].map(async (k) => Date.parse((await load(k.id)).modelLock_m2)))));
+  });
+
   it("still tries a key demoted on another model first on a new model, and lets it serve", async () => {
     const { deadKeys } = await fourDemotedAhead();
     const result = await request("m2", new Set(deadKeys.slice(1).map((k) => k.id)));
@@ -1793,7 +1811,7 @@ describe("a key refused on only one model", () => {
 
   it("tries a key demoted on another model before one demoted on this model once the pass's dead-key try is used", async () => {
     // key-x is demoted on m2 with no probe due; key-a (dead) and key-b (lacks
-    // only m1) are demoted on m1; key-e is rate-limited on m2.
+    // only m1) are demoted on m1; key-e is off.
     const x = await addKey("key-x");
     const a = await addKey("key-a");
     const b = await addKey("key-b");
@@ -1801,7 +1819,7 @@ describe("a key refused on only one model", () => {
     for (const key of [a, b]) await fail(key.id, { times: 5, models: ["m1"], peers: [e] });
     await fail(x.id, { times: 5, models: ["m2"], peers: [e] });
     vi.advanceTimersByTime(3 * MIN);
-    await failOnce(e.id, "m2", 429, "Too many requests");
+    await takePeerAway(e);
     expect(await request("m2", new Set([x.id, a.id]))).toEqual({ tried: [a.id, b.id], served: b.id });
   });
 
