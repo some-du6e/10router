@@ -266,3 +266,36 @@ describe("Codex through chatCore with a forced-streaming Chat endpoint", () => {
     expect(json.output).toEqual([expect.objectContaining({ type: "custom_tool_call", name: "apply_patch", input: PATCH })]);
   });
 });
+
+// Executors that build and send a Claude body themselves, skipping finalizeBody.
+describe("a forced tool on Claude routes that skip finalizeBody", () => {
+  const chatBody = (model, extra = {}) => ({
+    model, stream: true, reasoning_effort: "high",
+    messages: [{ role: "user", content: "run it" }],
+    tools: [{ type: "function", function: { name: "exec_command", parameters: { type: "object", properties: {} } } }],
+    tool_choice: { type: "function", function: { name: "exec_command" } },
+    ...extra,
+  });
+
+  it("github's Messages route sends auto for Sonnet 4.6 with thinking, and for Opus 5.5", async () => {
+    const { GithubExecutor } = await import("../../open-sse/executors/github.js");
+    const executor = new GithubExecutor();
+    fetchMock.mockResolvedValue(new Response("{}", { status: 400 }));
+
+    await executor.executeWithMessagesEndpoint({ model: "claude-sonnet-4-6", body: chatBody("claude-sonnet-4-6"), stream: true, credentials: { accessToken: "key-a" } });
+    const sonnet = JSON.parse(fetchMock.mock.calls[0][1].body);
+    await executor.executeWithMessagesEndpoint({ model: "claude-opus-5-5", body: chatBody("claude-opus-5-5", { reasoning_effort: undefined }), stream: true, credentials: { accessToken: "key-a" } });
+    const opus = JSON.parse(fetchMock.mock.calls[1][1].body);
+
+    expect(sonnet.thinking?.type).toBe("adaptive");
+    expect(sonnet.tool_choice).toEqual({ type: "auto" });
+    expect(opus.tool_choice).toEqual({ type: "auto" });
+  });
+
+  it("zed's Anthropic request sends auto for Opus 5.5 and keeps the forced tool on Opus 5", async () => {
+    const { buildProviderRequest } = await import("../../open-sse/executors/zed.js");
+
+    expect(buildProviderRequest("Anthropic", "claude-opus-5-5", chatBody("claude-opus-5-5"), true, {}).tool_choice).toEqual({ type: "auto" });
+    expect(buildProviderRequest("Anthropic", "claude-opus-5", chatBody("claude-opus-5"), true, {}).tool_choice).toEqual({ type: "tool", name: "exec_command" });
+  });
+});

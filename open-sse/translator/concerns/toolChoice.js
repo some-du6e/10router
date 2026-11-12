@@ -26,14 +26,18 @@ function forcedToolRule(provider, model) {
   return RULE.NONE;
 }
 
-// Claude Messages body. Run it once thinking is final: at the end of
-// prepareClaudeRequest, and on the outgoing body in DefaultExecutor.finalizeBody.
-export function relaxForcedToolChoiceForThinking(body, provider = null) {
+// Claude Messages body. With `thinkingIsFinal` false (prepareClaudeRequest,
+// before an endpoint's overrides may drop `thinking` or rename the model) only
+// the thinking-independent rule applies. The full rule runs on the outgoing
+// body: in DefaultExecutor.finalizeBody, and in executors that build and send
+// a Claude body themselves (github's Messages route, zed).
+export function relaxForcedToolChoiceForThinking(body, provider = null, thinkingIsFinal = true) {
   if (!body || typeof body !== "object") return body;
   const choice = body.tool_choice;
   if (!CLAUDE_FORCED.has(choice?.type)) return body;
   const rule = forcedToolRule(provider, body.model);
-  const reject = rule === RULE.ALWAYS || (rule === RULE.WITH_THINKING && THINKING_ON.has(body.thinking?.type));
+  const reject = rule === RULE.ALWAYS
+    || (thinkingIsFinal && rule === RULE.WITH_THINKING && THINKING_ON.has(body.thinking?.type));
   if (!reject) return body;
   body.tool_choice = {
     type: TOOL_CHOICE.AUTO,

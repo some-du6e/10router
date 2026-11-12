@@ -3,6 +3,7 @@
 // Returns null for formats it cannot replay; the caller then sends the JSON.
 import { FORMATS } from "../../translator/formats.js";
 import { CLAUDE_BLOCK, RESPONSES_ITEM, RESPONSES_ITEM_ID_PREFIX, RESPONSES_STATUS, ROLE } from "../../translator/schema/index.js";
+import { responsesItemId, toolCallItemId } from "../../translator/concerns/responsesItemId.js";
 
 type Json = Record<string, any>;
 
@@ -67,10 +68,11 @@ function responsesEvents(body: Json): string {
     ev({ type: "response.created", response: { ...body, status: RESPONSES_STATUS.IN_PROGRESS, output: [] } }),
     ev({ type: "response.in_progress", response: { ...body, status: RESPONSES_STATUS.IN_PROGRESS, output: [] } }),
   ];
-  (body.output || []).forEach((bodyItem: Json, output_index: number) => {
-    // Every item event names its item; a body item without an id (from an
-    // upstream's own Responses JSON) gets one in the live stream's shape.
-    const item = bodyItem.id ? bodyItem : { ...bodyItem, id: `${ITEM_ID_PREFIX_BY_TYPE[bodyItem.type] || RESPONSES_ITEM_ID_PREFIX.MESSAGE}_${body.id || ""}_${output_index}` };
+  // Every item event names its item. A body item without an id (from an
+  // upstream's own Responses JSON) gets one as the live stream would name it,
+  // and the closing response carries the same ids.
+  const items: Json[] = (body.output || []).map((bodyItem: Json, output_index: number) => withItemId(bodyItem, body.id, output_index));
+  items.forEach((item: Json, output_index: number) => {
     // Each item opens empty and fills through deltas, so a client that
     // accumulates deltas onto the added item doesn't see the text twice.
     if (item.type === RESPONSES_ITEM.MESSAGE) {
@@ -103,9 +105,18 @@ function responsesEvents(body: Json): string {
   const incomplete = body.status === RESPONSES_STATUS.INCOMPLETE;
   out.push(ev({
     type: incomplete ? "response.incomplete" : "response.completed",
-    response: { ...body, status: body.status || RESPONSES_STATUS.COMPLETED },
+    response: { ...body, status: body.status || RESPONSES_STATUS.COMPLETED, ...(body.output ? { output: items } : {}) },
   }));
   return out.join("");
+}
+
+function withItemId(item: Json, responseId: unknown, index: number): Json {
+  if (!item || typeof item !== "object" || item.id) return item;
+  const isCall = item.type === RESPONSES_ITEM.FUNCTION_CALL || item.type === RESPONSES_ITEM.CUSTOM_TOOL_CALL;
+  const id = isCall && item.call_id
+    ? toolCallItemId(item.type === RESPONSES_ITEM.CUSTOM_TOOL_CALL, item.call_id)
+    : responsesItemId(ITEM_ID_PREFIX_BY_TYPE[item.type] || RESPONSES_ITEM_ID_PREFIX.MESSAGE, responseId || "", index);
+  return { ...item, id };
 }
 
 export function jsonReplyToSse(body: unknown, sourceFormat: string): string | null {

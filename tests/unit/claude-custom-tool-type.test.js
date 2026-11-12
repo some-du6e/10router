@@ -79,6 +79,16 @@ describe("cloakClaudeTools renames custom tools", () => {
     expect(body.tool_choice.name).toBe(cloaked);
   });
 
+  it("passes a history tool_use with no name through unchanged", () => {
+    const nameless = { type: "tool_use", id: "toolu_1", input: {} };
+    const { body } = cloakClaudeTools({
+      messages: [{ role: "user", content: "hi" }, { role: "assistant", content: [nameless] }],
+      tools: [{ name: "Read", input_schema: schema }],
+    });
+
+    expect(body.messages[1].content[0]).toEqual(nameless);
+  });
+
   it("leaves a short tool name as name + suffix", () => {
     const { body } = cloakClaudeTools({ messages: [{ role: "user", content: "hi" }], tools: [{ name: "x".repeat(60), input_schema: schema }] });
 

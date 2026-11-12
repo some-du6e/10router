@@ -543,8 +543,9 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
     }
   }
 
-  // Thinking is final here (applyThinking runs before this), so a forced tool can be checked against it.
-  relaxForcedToolChoiceForThinking(body, provider);
+  // Only the thinking-independent rule here: an endpoint's overrides can still
+  // drop `thinking` or rename the model, so the thinking check runs on the outgoing body.
+  relaxForcedToolChoiceForThinking(body, provider, false);
 
   // Apply cloaking for OAuth tokens (billing header + fake user ID)
   // session_id in user_id must match X-Claude-Code-Session-Id for fingerprint consistency

@@ -5,6 +5,7 @@ import { ROLE, RESPONSES_ITEM, RESPONSES_ITEM_ID_PREFIX, RESPONSES_STATUS } from
 import { customToolInput } from "../../translator/concerns/toolCall.js";
 import { clientToolFields } from "../../translator/concerns/toolNamespace.js";
 import { toResponsesIncompleteReason } from "../../translator/concerns/finishReason.js";
+import { responsesItemId, toolCallItemId } from "../../translator/concerns/responsesItemId.js";
 
 /**
  * @param {object} responseBody Chat Completions body (`choices[0].message`)
@@ -18,8 +19,12 @@ export function chatCompletionToResponses(responseBody, customToolNames = null, 
   const message = choice.message || {};
   const output = [];
   const responseId = `resp_${responseBody.id || ""}`.replace(/^resp_chatcmpl-/, "resp_");
-  // Same ids as the live stream (response/openai-responses.js): rs_/msg_ + response id + output index.
-  const itemId = (prefix) => `${prefix}_${responseId}_${output.length}`;
+  // Item ids as the live stream (response/openai-responses.js) builds them, from
+  // the upstream id as sent (chatcmpl- kept) and the choice index, so a reply gets
+  // the same item ids streamed or not.
+  const streamResponseId = `resp_${responseBody.id || ""}`;
+  const choiceIndex = choice.index ?? 0;
+  const itemId = (prefix) => responsesItemId(prefix, streamResponseId, choiceIndex);
 
   // Reasoning → a reasoning item (summary text), mirroring the streaming path.
   const reasoning = message.reasoning_content || message.reasoning;
@@ -48,7 +53,7 @@ export function chatCompletionToResponses(responseBody, customToolNames = null, 
     const custom = !!customToolNames?.has(fn.name);
     output.push({
       type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,
-      id: `${custom ? RESPONSES_ITEM_ID_PREFIX.CUSTOM_TOOL_CALL : RESPONSES_ITEM_ID_PREFIX.FUNCTION_CALL}_${tc.id || ""}`,
+      id: toolCallItemId(custom, tc.id || ""),
       call_id: tc.id || "",
       ...clientToolFields(toolNamespaces, fn.name || ""),
       ...(custom

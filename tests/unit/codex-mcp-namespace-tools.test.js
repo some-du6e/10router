@@ -93,6 +93,10 @@ function translate(route, request = codexRequest()) {
 
 const toolName = (tool) => tool.function?.name ?? tool.name;
 
+// The data of every event jsonReplyToSse writes for a Responses body.
+const replayEvents = (body) => jsonReplyToSse(body, FORMATS.OPENAI_RESPONSES).split("\n\n").filter(Boolean)
+  .map((block) => JSON.parse(block.split("\n").find((l) => l.startsWith("data: ")).slice(6)));
+
 // How chatCore pulls the metadata off the translated request, and stream.js seeds the state with it.
 function responsesState(req) {
   return { ...initState(FORMATS.OPENAI_RESPONSES), ...takeToolMetadata(req) };
@@ -512,27 +516,53 @@ describe("non-streaming reply status for a Codex request", () => {
     }, FORMATS.OPENAI, FORMATS.OPENAI_RESPONSES, null, null);
 
     expect(out.id).toBe("resp_9");
-    expect(out.output.map((i) => i.id)).toEqual(["rs_resp_9_0", "msg_resp_9_1", "fc_call_1"]);
+    // The ids the live stream gives the same reply: upstream id as sent, choice index.
+    expect(out.output.map((i) => i.id)).toEqual(["rs_resp_chatcmpl-9_0", "msg_resp_chatcmpl-9_0", "fc_call_1"]);
 
-    const events = jsonReplyToSse(out, FORMATS.OPENAI_RESPONSES).split("\n\n").filter(Boolean)
-      .map((block) => JSON.parse(block.split("\n").find((l) => l.startsWith("data: ")).slice(6)));
+    const events = replayEvents(out);
     const itemEvents = events.filter((e) => e.output_index !== undefined);
     for (const e of itemEvents) {
       const id = e.item?.id ?? e.item_id;
       expect(id).toBe(out.output[e.output_index].id);
     }
-    expect(itemEvents.filter((e) => e.type === "response.output_text.delta").map((e) => e.item_id)).toEqual(["msg_resp_9_1"]);
+    expect(itemEvents.filter((e) => e.type === "response.output_text.delta").map((e) => e.item_id)).toEqual(["msg_resp_chatcmpl-9_0"]);
   });
 
-  it("names items that arrive without an id when it replays them", () => {
+  it("gives a reply the same item ids streamed and not streamed", () => {
+    const chunks = [
+      { id: "chatcmpl-9", model: MODEL, choices: [{ index: 0, delta: { reasoning_content: "thinking it over" } }] },
+      { id: "chatcmpl-9", model: MODEL, choices: [{ index: 0, delta: { content: "running it" } }] },
+      { id: "chatcmpl-9", model: MODEL, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "exec_command", arguments: "{}" } }] } }] },
+      { id: "chatcmpl-9", model: MODEL, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+    ];
+    const state = initState(FORMATS.OPENAI_RESPONSES);
+    const streamed = chunks.flatMap((c) => translateResponse(FORMATS.OPENAI, FORMATS.OPENAI_RESPONSES, c, state) || [])
+      .filter((e) => e.event === "response.output_item.done").map((e) => e.data.item.id);
+    const body = translateNonStreamingResponse({
+      id: "chatcmpl-9", object: "chat.completion", model: MODEL,
+      choices: [{ index: 0, finish_reason: "tool_calls", message: {
+        role: "assistant", reasoning_content: "thinking it over", content: "running it",
+        tool_calls: [{ id: "call_1", type: "function", function: { name: "exec_command", arguments: "{}" } }],
+      } }],
+    }, FORMATS.OPENAI, FORMATS.OPENAI_RESPONSES, null, null);
+
+    expect(body.output.map((i) => i.id).sort()).toEqual([...streamed].sort());
+  });
+
+  it("names items that arrive without an id when it replays them, closing response included", () => {
     const body = {
       id: "resp_x", object: "response", status: "completed",
-      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi", annotations: [] }] }],
+      output: [
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "hi", annotations: [] }] },
+        { type: "function_call", call_id: "call_7", name: "exec_command", arguments: "{}" },
+        { type: "custom_tool_call", call_id: "call_8", name: "apply_patch", input: PATCH },
+      ],
     };
-    const events = jsonReplyToSse(body, FORMATS.OPENAI_RESPONSES).split("\n\n").filter(Boolean)
-      .map((block) => JSON.parse(block.split("\n").find((l) => l.startsWith("data: ")).slice(6)));
+    const events = replayEvents(body);
+    const want = ["msg_resp_x_0", "fc_call_7", "ctc_call_8"];
 
-    for (const e of events.filter((ev) => ev.output_index !== undefined)) expect(e.item?.id ?? e.item_id).toBe("msg_resp_x_0");
+    for (const e of events.filter((ev) => ev.output_index !== undefined)) expect(e.item?.id ?? e.item_id).toBe(want[e.output_index]);
+    expect(events.at(-1).response.output.map((i) => i.id)).toEqual(want);
   });
 
   it("turns a Gemini reply into a Responses body with the client's tool name", () => {
@@ -596,7 +626,8 @@ describe("a forced tool_choice on a Claude model", () => {
     relaxForcedChatToolChoiceForClaude({ model, tool_choice: choice, ...extra }, CHAT_PROVIDER, model, final).tool_choice;
 
   // These reject "any"/"tool" whatever the thinking setting.
-  it.each(["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-mythos-5-1", "claude-opus-5.5", "claude-sonnet-5.5", "claude-fable-5.1"])(
+  // claude-fable-5-1-thinking has no exact row, so it reaches the *claude*fable-5-1* pattern.
+  it.each(["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-mythos-5-1", "claude-opus-5.5", "claude-sonnet-5.5", "claude-fable-5.1", "claude-mythos-5.1", "claude-fable-5-1-thinking"])(
     "%s always gets auto", (model) => {
       expect(claudeChoice(model, null)).toEqual({ type: "auto", disable_parallel_tool_use: true });
       expect(claudeChoice(model, ADAPTIVE).type).toBe("auto");
@@ -684,14 +715,62 @@ describe("a forced tool_choice on a Claude model", () => {
       expect(out.tool_choice).toEqual({ type: "tool", name: "shell" });
     });
 
-    it("sends auto on Haiku 4.5 only when a reasoning effort turns thinking on", () => {
+    it("leaves the thinking check on Haiku 4.5 to the outgoing body", () => {
       const withThinking = toClaude("claude-haiku-4-5", { tool_choice: "required", reasoning_effort: "high" });
       const without = toClaude("claude-haiku-4-5", { tool_choice: "required" });
 
+      // The endpoint's overrides could still drop thinking, so translation keeps the choice.
       expect(withThinking.thinking?.type).toBe("enabled");
-      expect(withThinking.tool_choice).toEqual({ type: "auto" });
+      expect(withThinking.tool_choice).toEqual({ type: "any" });
       expect(without.thinking).toBeUndefined();
       expect(without.tool_choice).toEqual({ type: "any" });
+    });
+
+    it.each(["claude-opus-5.5", "claude-sonnet-5.5"])("never sends disabled thinking to %s", (model) => {
+      for (const reasoning_effort of ["none", undefined]) {
+        const out = toClaude(model, { reasoning_effort });
+        expect(out.thinking?.type).not.toBe("disabled");
+      }
+    });
+  });
+
+  describe("on the outgoing body after an endpoint's overrides", () => {
+    const send = async (model, overrides, extra = {}) => {
+      const { DefaultExecutor } = await import("../../open-sse/executors/default.js");
+      const credentials = { apiKey: "key-a", providerSpecificData: { baseUrl: "https://acme.example/v1", ...(overrides ? { overrides } : {}) } };
+      const body = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, model, {
+        model, stream: true, reasoning_effort: "high",
+        messages: [{ role: "user", content: "run it" }],
+        tools: [{ type: "function", function: { name: "exec_command", parameters: { type: "object", properties: {} } } }],
+        tool_choice: { type: "function", function: { name: "exec_command" } },
+        ...extra,
+      }, true, credentials, PROVIDER, null, [], null, null);
+      const executor = new DefaultExecutor(PROVIDER);
+      return executor.finalizeBody(executor.transformRequest(model, body, true, credentials), {}, credentials);
+    };
+
+    it("sends auto on Sonnet 4.6 when thinking goes out", async () => {
+      const sent = await send("claude-sonnet-4-6", null);
+
+      expect(sent.thinking?.type).toBe("adaptive");
+      expect(sent.tool_choice).toEqual({ type: "auto" });
+    });
+
+    it("keeps the forced tool on Sonnet 4.6 when the endpoint drops thinking", async () => {
+      const sent = await send("claude-sonnet-4-6", { drop: "thinking" });
+
+      expect(sent.thinking).toBeUndefined();
+      expect(sent.tool_choice).toEqual({ type: "tool", name: "exec_command" });
+    });
+
+    it("judges the model the endpoint renames to, not the one asked for", async () => {
+      const toOpus55 = await send("claude-opus-5", { models: "claude-opus-5 => claude-opus-5-5" });
+      const toOpus5 = await send("claude-sonnet-4-6", { models: "claude-sonnet-4-6 => claude-opus-5" });
+
+      expect(toOpus55.model).toBe("claude-opus-5-5");
+      expect(toOpus55.tool_choice).toEqual({ type: "auto" });
+      expect(toOpus5.model).toBe("claude-opus-5");
+      expect(toOpus5.tool_choice).toEqual({ type: "tool", name: "exec_command" });
     });
   });
 });

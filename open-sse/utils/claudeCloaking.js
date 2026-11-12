@@ -52,7 +52,10 @@ export function cloakClaudeTools(body) {
 
   // A name too long for the suffix is cut (with a hash) first, so the cloaked
   // name stays within MAX_TOOL_NAME_LENGTH; toolNameMap maps it back.
-  const suffix = (name) => `${capToolName(name, MAX_TOOL_NAME_LENGTH - CLAUDE_TOOL_SUFFIX.length)}${CLAUDE_TOOL_SUFFIX}`;
+  // A missing or non-string name (a malformed history block) passes through unchanged.
+  const suffix = (name) => (typeof name === "string"
+    ? `${capToolName(name, MAX_TOOL_NAME_LENGTH - CLAUDE_TOOL_SUFFIX.length)}${CLAUDE_TOOL_SUFFIX}`
+    : name);
   const toolNameMap = new Map();
   const clientToolNames = new Set();
   const clientDeclarations = [];

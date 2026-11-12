@@ -57,6 +57,9 @@ jobs:
           open-sse/translator/schema/blocks.js
           open-sse/translator/schema/finishReasons.js
           open-sse/executors/default.js
+          open-sse/executors/github.js
+          open-sse/executors/zed.js
+          open-sse/translator/concerns/responsesItemId.js
           open-sse/handlers/chatCore/jsonToSse.ts
           open-sse/handlers/chatCore.js
           open-sse/handlers/chatCore/nonStreamingHandler.js
