@@ -108,6 +108,9 @@ ping (`/api/providers/validate`), then the create route (`/api/providers`).
 - The management key is checked again after the probe, so a key revoked or
   narrowed while the probe ran adds nothing.
 - `apiKey` can be at most 8192 characters.
+- An Anthropic-compatible endpoint's probe sends a real request, so it names
+  a model: the key's `defaultModel` if given, else one listed for the
+  endpoint. Give `defaultModel` when each key may only use some models.
 - The new row is claimed for the management key right after the create,
   only while that key is still on; if it was revoked in between, the row is
   removed and the response is a `401`.
@@ -156,9 +159,12 @@ The dashboard checks the list when it saves it:
 Only the dashboard can set them; no management API route takes scopes. Without
 hosts for an endpoint (the default) a `baseUrl` for its keys is refused, and
 they use the endpoint's own URL. When an endpoint is deleted, the key's dialog
-shows its hosts under "Deleted endpoint" and drops them when you save; until
-then the scope still names it, and saving it unchanged through the API is
-refused as an unknown provider.
+marks it as a deleted endpoint and, when you save, drops it from `providers`
+and its hosts from `baseUrlHosts`. If it was the only provider the scope was
+limited to, the dialog asks you to pick another (or turn provider keys off)
+instead, since an empty `providers` would mean any provider. Until then the
+scope still names it, and saving it unchanged through the API is refused as
+an unknown provider.
 
 With hosts listed for the endpoint, `POST /provider-keys` takes a top-level
 `baseUrl` (at most 2048 characters; `null` is the same as leaving it out)
