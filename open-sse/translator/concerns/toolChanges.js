@@ -46,6 +46,7 @@ function asBlocks(content) {
 // A message left empty is dropped; if that puts two same-role messages side by
 // side they are merged, and if it leaves an assistant turn last a user
 // "Continue." is added so the request doesn't become a prefill.
+/** @param {(block: any) => boolean} [keep] */
 export function inlineToolChanges(body, keep = () => false) {
   if (!body || typeof body !== "object" || !hasToolChanges(body)) return body;
   const tools = Array.isArray(body.tools) ? [...body.tools] : [];
