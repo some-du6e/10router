@@ -226,7 +226,9 @@ function bridgeErrorFrame(raw, statusCode) {
   }
   const type = statusCode < 500 ? "invalid_request_error" : "server_error";
   if (typeof error === "string") error = { message: error, type: "invalid_request_error" };
-  const text = typeof raw === "string" ? raw.trim().slice(0, MAX_ERROR_TEXT) : "";
+  // Cut on code points: a split surrogate pair is invalid JSON text to Codex,
+  // which would then drop the whole frame.
+  const text = typeof raw === "string" ? Array.from(raw.trim()).slice(0, MAX_ERROR_TEXT).join("") : "";
   if ((!error || typeof error !== "object") && text) error = { message: text, type };
   if (!error || typeof error !== "object") error = { message: `Request failed with status ${statusCode}`, type: "server_error" };
   return JSON.stringify({ type: "error", status: statusCode, error });

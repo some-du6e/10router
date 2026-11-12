@@ -270,6 +270,15 @@ describe("Codex WebSocket turn on a translated endpoint", { timeout: 15_000 }, (
     expect(events.at(-1)).toMatchObject({ close: 1011 });
   });
 
+  it("caps a plain-text error at 2000 characters without splitting one", () => {
+    const frame = (raw) => JSON.parse(__test__.bridgeErrorFrame(raw, 400)).error.message;
+    expect(frame("x".repeat(5000))).toBe("x".repeat(2000));
+    // The cap lands between the two halves of an emoji's surrogate pair.
+    const message = frame(`${"a".repeat(1999)}😀😀`);
+    expect(message).toBe(`${"a".repeat(1999)}😀`);
+    expect(message).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/);
+  });
+
   it("reports a loopback request that died as a 502, which Codex retries", async () => {
     reply = "hang-up";
     const ws = await connect(VIA_PROXY);
