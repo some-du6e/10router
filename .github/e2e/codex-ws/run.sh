@@ -29,6 +29,8 @@ MODEL="mock/fast"
 
 show() { echo "::group::$1"; cat "$2" 2>/dev/null; echo; echo "::endgroup::"; }
 fail=0
+# The mock, the server and the proxy go with the script, however it ends.
+trap 'kill $(jobs -p) 2>/dev/null' EXIT
 check() { if eval "$2"; then echo "PASS: $1"; else echo "FAIL: $1"; fail=1; fi; }
 status_of() { curl -s --max-time 5 -o /dev/null -w '%{http_code}' -H "x-api-key: $E2E_API_KEY" "$1"; }
 
@@ -113,7 +115,7 @@ if [ "$LEG" = master ]; then
   check "through the proxy: the turn's POST reaches the pipeline" "[ $posts_proxied -ge 1 ]"
   check "through the proxy: the upstream answers it with a 200" "[ $answers_proxied -ge 1 ]"
   check "through the proxy: no response event ever arrives" "! grep -q 'websocket event: {\"type\":\"response' '$trace'"
-  check "through the proxy: the server never closes the socket" "! grep -q 'closed by server' '$trace'"
+  check "through the proxy: the server never closes the socket" "! grep -qE 'closed by server|stream closed before' '$trace'"
   check "through the proxy: Codex is still waiting when the timeout hits" "[ \"\$(cat '$OUT/codex-proxied.code')\" = 124 ]"
 else
   check "Codex answers over the WebSocket transport (through the proxy)" "answered codex-proxied"

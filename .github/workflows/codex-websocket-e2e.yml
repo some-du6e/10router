@@ -18,10 +18,18 @@ on:
       - "src/sse/handlers/chat.ts"
       - "src/sse/services/finalRoutingError.js"
       - "open-sse/handlers/chatCore.js"
+      - "open-sse/handlers/chatCore/**"
       - "open-sse/translator/**"
+      - "open-sse/executors/default.js"
       - "open-sse/utils/proxyFetch.js"
+      - "open-sse/utils/streamHandler.js"
+      - "open-sse/utils/stream.js"
+      - "open-sse/utils/sseConstants.js"
+      - "open-sse/utils/earlyHeaders.js"
+      # What seed.mjs loads: importDb and the data dir path.
       - "src/lib/dataDir.js"
-      - "src/lib/db/**"
+      - "src/lib/db/index.js"
+      - "src/lib/db/paths.js"
       - "scripts/resolve-src-alias.mjs"
       - "next.config.mjs"
       - "package.json"
@@ -190,11 +198,18 @@ jobs:
       - name: Summary
         if: always() && steps.scrub.outcome == 'success'
         run: |
+          # The verdict first, so a long trace can't push it out of view.
           {
             echo "### ${{ matrix.leg }}"
             echo '```'
+            grep -E '^(PASS|FAIL): |exit=|turn POST' e2e-${{ matrix.leg }}.txt || true
+            echo '```'
+            echo '<details><summary>log</summary>'
+            echo
+            echo '```'
             grep -vE '^::(end)?group::' e2e-${{ matrix.leg }}.txt | head -200
             echo '```'
+            echo '</details>'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always() && steps.scrub.outcome == 'success'
