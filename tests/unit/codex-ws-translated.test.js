@@ -216,7 +216,17 @@ function expectFullTurn(events) {
     "response.output_item.done",
     "response.completed",
   ]) expect(seen, `missing ${type}`).toContain(type);
-  expect(seen.indexOf("response.created")).toBe(0);
+  // In stream order: created, items opened, their deltas, items closed, completed.
+  const first = (type) => seen.indexOf(type);
+  const last = (type) => seen.lastIndexOf(type);
+  expect(first("response.created")).toBe(0);
+  expect(first("response.created")).toBeLessThan(first("response.output_item.added"));
+  expect(first("response.output_item.added")).toBeLessThan(first("response.output_text.delta"));
+  expect(first("response.output_item.added")).toBeLessThan(first("response.function_call_arguments.delta"));
+  expect(last("response.output_text.delta")).toBeLessThan(last("response.output_item.done"));
+  expect(last("response.function_call_arguments.delta")).toBeLessThan(last("response.output_item.done"));
+  expect(last("response.output_item.done")).toBeLessThan(first("response.completed"));
+  expect(first("response.completed")).toBe(seen.length - 1);
   const text = events.filter((e) => e.type === "response.output_text.delta").map((e) => e.delta).join("");
   expect(text).toBe("ok");
   const args = events.filter((e) => e.type === "response.function_call_arguments.delta").map((e) => e.delta).join("");
@@ -277,6 +287,28 @@ describe("Codex WebSocket turn on a translated endpoint", { timeout: 15_000 }, (
     const message = frame(`${"a".repeat(1999)}😀😀`);
     expect(message).toBe(`${"a".repeat(1999)}😀`);
     expect(message).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/);
+  });
+
+  it("cuts a huge error body before spreading it, and relays only its head", async () => {
+    const huge = `${"e".repeat(3000)}${"z".repeat(8 * 1024 * 1024)}`;
+    const spread = vi.spyOn(Array, "from");
+    try {
+      expect(JSON.parse(__test__.bridgeErrorFrame(huge, 500)).error.message).toBe("e".repeat(2000));
+      for (const [arg] of spread.mock.calls) expect(arg?.length ?? 0).toBeLessThanOrEqual(4000);
+      // A JSON error object is used as is, without building the text at all.
+      spread.mockClear();
+      __test__.bridgeErrorFrame(JSON.stringify({ error: { message: "m", type: "t" }, pad: huge }), 400);
+      expect(spread).not.toHaveBeenCalled();
+    } finally {
+      spread.mockRestore();
+    }
+    // Through the bridge: an 8 MB plain-text 502 still ends as one capped frame.
+    reply = () => new Response(huge, { status: 502, headers: { "content-type": "text/plain" } });
+    const ws = await connect(VIA_PROXY);
+    ws.send(TURN);
+    const events = await ws.until((e) => e.some((x) => "close" in x));
+    ws.close();
+    expect(events[0]).toEqual({ type: "error", status: 502, error: { message: "e".repeat(2000), type: "server_error" } });
   });
 
   it("reports a loopback request that died as a 502, which Codex retries", async () => {

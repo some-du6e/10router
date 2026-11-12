@@ -64,6 +64,7 @@ const CODEX_WS_PATH = "/backend-api/codex/responses";
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const MAX_WS_MESSAGE_BYTES = 64 * 1024 * 1024;
 const MAX_ERROR_TEXT = 2000;
+const MAX_ERROR_BODY = 64 * 1024;
 
 function wsAccept(key) {
   return crypto.createHash("sha1").update(key + WS_GUID).digest("base64");
@@ -226,11 +227,13 @@ function bridgeErrorFrame(raw, statusCode) {
   }
   const type = statusCode < 500 ? "invalid_request_error" : "server_error";
   if (typeof error === "string") error = { message: error, type: "invalid_request_error" };
-  // Cut on code points: a split surrogate pair is invalid JSON text to Codex,
-  // which would then drop the whole frame.
-  const text = typeof raw === "string" ? Array.from(raw.trim()).slice(0, MAX_ERROR_TEXT).join("") : "";
-  if ((!error || typeof error !== "object") && text) error = { message: text, type };
-  if (!error || typeof error !== "object") error = { message: `Request failed with status ${statusCode}`, type: "server_error" };
+  if (!error || typeof error !== "object") {
+    // Cut on code points: a split surrogate pair is invalid JSON text to Codex,
+    // which would then drop the whole frame. Cut by length first, so a big body
+    // is never spread into an array (2000 code points fit in 4000 UTF-16 units).
+    const text = typeof raw === "string" ? Array.from(raw.trim().slice(0, MAX_ERROR_TEXT * 2)).slice(0, MAX_ERROR_TEXT).join("") : "";
+    error = text ? { message: text, type } : { message: `Request failed with status ${statusCode}`, type: "server_error" };
+  }
   return JSON.stringify({ type: "error", status: statusCode, error });
 }
 
@@ -263,8 +266,9 @@ function bridgeCodexTurn(request, port, headers, peerIp, send, done) {
       // JSON error body, not an event stream. Without this the SSE parser finds
       // no `data:` lines and the client is left waiting on a silent socket.
       if (res.statusCode < 200 || res.statusCode >= 300) {
+        // Read the rest so the reply ends, but keep only the head of it.
         let raw = "";
-        res.on("data", (chunk) => { raw += chunk; });
+        res.on("data", (chunk) => { if (raw.length < MAX_ERROR_BODY) raw += chunk; });
         res.on("end", () => {
           send(bridgeErrorFrame(raw, res.statusCode));
           done(null, res.statusCode);
