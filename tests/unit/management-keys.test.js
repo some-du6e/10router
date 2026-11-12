@@ -798,6 +798,17 @@ describe("provider keys with their own URL", () => {
     expect(raw).not.toContain(planted);
     expect(raw).not.toContain("secret-path");
     expect(raw).not.toContain("https://");
+
+    // A key the provider refused at its own URL: the refusal names the host the probe went to.
+    validation.valid = false;
+    const refused = await api.createProvider(mk.secret, { provider: NODE, apiKey: providerSecret("audit-refused"), baseUrl: `https://key-r.acme.example/secret-path?token=${planted}` });
+    expect(refused.status).toBe(422);
+    const [last] = await deniedRows(mk.id);
+    expect(last.detail).toEqual({ provider: NODE, reason: "the provider did not accept the key", baseUrlHost: "key-r.acme.example" });
+    expect(JSON.stringify(last)).not.toContain(planted);
+    // Without its own URL, no host.
+    await api.createProvider(mk.secret, { provider: NODE, apiKey: providerSecret("audit-refused-plain") });
+    expect((await deniedRows(mk.id))[0].detail).toEqual({ provider: NODE, reason: "the provider did not accept the key" });
   });
 
   it("describes the hosts in the scope summary", async () => {

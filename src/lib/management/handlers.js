@@ -339,7 +339,10 @@ export function createProviderKey(request) {
     if (!probe.res.ok) return fail(probe.res.status, typeof probe.body.error === "string" ? probe.body.error : "Could not validate the key");
     if (probe.body.valid !== true) {
       // The validator's own error text is not passed on: it can quote the upstream.
-      await audit(mk, "provider_key.create.denied", "providerKey", null, { provider, reason: "the provider did not accept the key" }, { denied: true });
+      // With its own URL, the host the probe went to.
+      await audit(mk, "provider_key.create.denied", "providerKey", null, {
+        provider, reason: "the provider did not accept the key", ...(keyUrl.host ? { baseUrlHost: keyUrl.host } : {}),
+      }, { denied: true });
       return fail(422, "The provider did not accept this key, so it was not added");
     }
 

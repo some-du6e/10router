@@ -177,8 +177,10 @@ export async function POST(request) {
         // override (sent on every request); its path override is for the chat
         // path, not /models. No model is sent. The headers are the ones a
         // request on this key gets (the executor's, with the node's auth
-        // header style, client identity and header lines), and the only
-        // credential in them is the key being checked.
+        // header style, client identity, header lines and custom headers).
+        // The only key in them is the one being checked; any other value the
+        // admin put in the node's header lines goes too, as it does in
+        // routing, to this URL (a key's own URL when it has one).
         const modelsUrl = applyUrlOverrides(appendUrlPath(keyUrl.baseUrl, "/models"), node.overrides, { replacePath: false });
         const credentials = { apiKey, providerSpecificData: { ...nodeQuirksOf(node), baseUrl: keyUrl.baseUrl } };
         const { "Content-Type": _json, ...modelsHeaders } = getExecutor(provider).buildHeaders(credentials, false, modelsUrl, null);
@@ -231,7 +233,9 @@ export async function POST(request) {
         if (!keyUrl.ok) return NextResponse.json({ valid: false, error: keyUrl.error }, { status: 400 });
         // Probe with the request routing would send on this key, built by
         // the executor from the quirks a new key gets (the create route's
-        // pick) and only the key being checked as a credential:
+        // pick), with the key being checked as the only key. Not the node's
+        // proxy, timeout or retries: those are applied in execute(), which
+        // the probe doesn't use.
         // - the model: one the endpoint serves (see probeModel), since a
         //   gateway that limits each key to some models answers another one
         //   with a 403;
@@ -240,7 +244,9 @@ export async function POST(request) {
         // - the URL: <base>/messages before any query string (the base
         //   carries its version; the default is https://api.anthropic.com/v1),
         //   then the node's path and query overrides;
-        // - the headers: auth header style, client identity, header lines;
+        // - the headers: auth header style, client identity, header lines and
+        //   custom headers (whatever the admin put there goes to this URL,
+        //   as in routing);
         // - the body: the node's model renames and body edits.
         const executor = getExecutor(provider);
         const credentials = { apiKey, providerSpecificData: { ...nodeQuirksOf(node), baseUrl: keyUrl.baseUrl } };
