@@ -92,7 +92,7 @@ check("a http baseUrl is refused (400)", httpUrl.status === 400 && /must use htt
 const wrongHost = await call("POST", "/api/management/v1/provider-keys", { token: hostsMgmt, data: { provider: acmeNode, apiKey: fakeUpstream, baseUrl: "https://key-a.other.example/v1" } });
 check("a baseUrl on a host not listed is refused (403)", wrongHost.status === 403 && /isn't one this management key may use/.test(wrongHost.text), String(wrongHost.status));
 const otherProvider = await call("POST", "/api/management/v1/provider-keys", { token: hostsMgmt, data: { provider: "openai", apiKey: fakeUpstream, baseUrl: "https://key-a.acme.example/v1" } });
-check("the endpoint's hosts don't carry over to another provider (403)", otherProvider.status === 403 && /hasn't allowed it any hosts for "openai"/.test(otherProvider.text), String(otherProvider.status));
+check("the endpoint's hosts don't carry over to another provider (403)", otherProvider.status === 403 && /hasn't allowed it any hosts for "openai"/.test(otherProvider.json?.error), String(otherProvider.status));
 // key-a.acme.example resolves nowhere, so the probe fails; getting that far shows the built server passes baseUrl through.
 const ownUrl = await call("POST", "/api/management/v1/provider-keys", { token: hostsMgmt, data: { provider: acmeNode, apiKey: fakeUpstream, name: "e2e own url", baseUrl: "https://key-a.acme.example/v1" } });
 check("an allowed host gets past the URL checks to the probe", [422, 504].includes(ownUrl.status), `${ownUrl.status} ${ownUrl.text.slice(0, 120)}`);
