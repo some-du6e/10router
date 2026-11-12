@@ -30,11 +30,13 @@ MODEL="mock/fast"
 show() { echo "::group::$1"; cat "$2" 2>/dev/null; echo; echo "::endgroup::"; }
 fail=0
 check() { if eval "$2"; then echo "PASS: $1"; else echo "FAIL: $1"; fail=1; fi; }
-status_of() { curl -s -o /dev/null -w '%{http_code}' -H "x-api-key: $E2E_API_KEY" "$1"; }
+status_of() { curl -s --max-time 5 -o /dev/null -w '%{http_code}' -H "x-api-key: $E2E_API_KEY" "$1"; }
 
 # ---- Stack -------------------------------------------------------------------
 node "$SHARED/mock-upstream.mjs" > "$OUT/mock.log" 2>&1 &
-node --experimental-loader=./scripts/resolve-src-alias.mjs "$SHARED/seed.mjs" 2>&1 | grep -v -i warning
+node --experimental-loader=./scripts/resolve-src-alias.mjs "$SHARED/seed.mjs" > "$OUT/seed.log" 2>&1 \
+  || { echo "seed failed"; cat "$OUT/seed.log"; exit 1; }
+grep -v -i warning "$OUT/seed.log"
 JWT_SECRET="e2e-$(openssl rand -hex 16)" PORT=20128 HOSTNAME=127.0.0.1 node custom-server.js --port 20128 > "$OUT/server.log" 2>&1 &
 node "$HERE/proxy.mjs" > "$OUT/proxy.log" 2>&1 &
 for _ in $(seq 1 60); do [ "$(status_of "$APP/v1/models")" = 200 ] && break; sleep 2; done
@@ -61,7 +63,7 @@ codex_ws() {
   } > "$home/config.toml"
   start=$(date +%s)
   CODEX_HOME="$home" CODEX_API_KEY="$E2E_API_KEY" RUST_LOG="codex_api::endpoint::responses_websocket=trace" \
-    timeout "${CODEX_TIMEOUT_S:-120}" codex exec --skip-git-repo-check -C "$home" -o "$OUT/$name.last" \
+    timeout -k 10 "${CODEX_TIMEOUT_S:-120}" codex exec --skip-git-repo-check -C "$home" -o "$OUT/$name.last" \
     -m "$MODEL" "Reply with one word." < /dev/null > "$OUT/$name.out" 2>&1
   echo "$?" > "$OUT/$name.code"
   echo "$name: exit=$(cat "$OUT/$name.code") time=$(( $(date +%s) - start ))s" | tee "$OUT/$name.meta"
@@ -79,24 +81,39 @@ answered() {
     && grep -q 'websocket event: {"type":"response.completed"' "$OUT/$1.trace" && grep -qi 'pong' "$OUT/$1.last" 2>/dev/null
 }
 
+# Turn POSTs reaching the pipeline (the bridge's included; Codex sends tools,
+# curl doesn't), and streamed upstream answers the mock gave with a 200.
+turn_posts() { grep -c "▶ POST $MODEL .* TOOL" "$OUT/server.log"; }
+answers_200() { grep -c '"event":"answered","model":"fast","stream":true,.*"status":200' "$OUT/mock.log"; }
+
 codex_ws codex-direct "$APP"
+posts_before=$(turn_posts)
+answers_before=$(answers_200)
 codex_ws codex-proxied "$PROXY"
+posts_proxied=$(( $(turn_posts) - posts_before ))
+answers_proxied=$(( $(answers_200) - answers_before ))
 
 show "mock upstream log" "$OUT/mock.log"
 show "proxy log" "$OUT/proxy.log"
 show "server log ([CodexWS] and requests)" <(grep -E 'CodexWS|ERROR|✗|▶' "$OUT/server.log" | head -60)
-# Turn POSTs (the bridge's included): Codex sends tools, curl doesn't.
-turns=$(grep -c "▶ POST $MODEL .* TOOL" "$OUT/server.log")
-echo "turn POSTs in the server log: $turns"
+echo "codex-proxied: $posts_proxied turn POST(s), $answers_proxied upstream answer(s) with 200"
 
 check "Codex answers over the WebSocket transport (direct)" "answered codex-direct"
 check "the proxy carried the WebSocket upgrades" "grep -q '\"kind\":\"upgrade\".*\"status\":101' '$OUT/proxy.log'"
 if [ "$LEG" = master ]; then
-  # The bug's own signature: the socket opens and the turn reaches the
-  # pipeline, but not one event comes back, until the client gives up.
-  check "through the proxy: the WebSocket connects" "grep -q 'successfully connected to websocket' '$OUT/codex-proxied.trace'"
-  check "through the proxy: the turn's POST reaches the pipeline" "[ $turns -ge 2 ]"
-  check "through the proxy: no response event ever arrives" "! grep -q 'websocket event: {\"type\":\"response' '$OUT/codex-proxied.trace'"
+  # The bug's own signature, so no other failure (a 5xx, a rejected turn, a
+  # failing upstream) passes for it: the prewarm is declined, the turn's own
+  # socket opens, its POST reaches the pipeline and the upstream answers it,
+  # yet not one event comes back and nothing closes the socket, until the
+  # client gives up.
+  trace="$OUT/codex-proxied.trace"
+  check "through the proxy: one error frame, the prewarm decline" "[ \$(grep -c 'websocket event: {\"type\":\"error\"' '$trace') = 1 ]"
+  check "through the proxy: the turn's own WebSocket connects (after the decline)" \
+    "sed -n '/websocket event: {\"type\":\"error\"/,\$p' '$trace' | sed 1d | grep -q 'successfully connected to websocket'"
+  check "through the proxy: the turn's POST reaches the pipeline" "[ $posts_proxied -ge 1 ]"
+  check "through the proxy: the upstream answers it with a 200" "[ $answers_proxied -ge 1 ]"
+  check "through the proxy: no response event ever arrives" "! grep -q 'websocket event: {\"type\":\"response' '$trace'"
+  check "through the proxy: the server never closes the socket" "! grep -q 'closed by server' '$trace'"
   check "through the proxy: Codex is still waiting when the timeout hits" "[ \"\$(cat '$OUT/codex-proxied.code')\" = 124 ]"
 else
   check "Codex answers over the WebSocket transport (through the proxy)" "answered codex-proxied"
