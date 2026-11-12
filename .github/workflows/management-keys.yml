@@ -31,6 +31,11 @@ on:
       - "src/shared/utils/connectionBaseUrl.ts"
       - "src/shared/utils/ssrfGuard.js"
       - "src/lib/probeFetch.ts"
+      # What the validation probe sends: the node's quirks and a model it serves.
+      - "src/shared/utils/nodeQuirks.ts"
+      - "src/shared/utils/endpointOverrides.ts"
+      - "open-sse/handlers/chatCore/endpointOverrides.ts"
+      - "src/app/api/providers/*/requests/pick.ts"
       - "open-sse/utils/ssrfGuard.js"
       - "open-sse/utils/proxyFetch.js"
       - "open-sse/services/provider.js"
