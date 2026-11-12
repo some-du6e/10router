@@ -268,9 +268,10 @@ const demotedElsewhere = (conn, model) => demoteRecords(conn).some(([m, r]) => m
 // - or the key is firmly demoted on `model` (this was a probe or a fallback)
 //   and the other model was refused within minWindowMs;
 // - or the key is demoted on `model` and on the other model the way
-//   isDeadClass says, and was refused there too after its demotion: refused
-//   probes on 2 models with nothing served since either count began, however
-//   far apart they come.
+//   isDeadClass says, and was refused there too after its demotion in a way
+//   the turn-off rule counts (lastCountedAt; a refusal of just that model
+//   doesn't move it): refused probes on 2 models with nothing served since
+//   either count began, however far apart they come.
 function deadElsewhere(conn, records, model, current, demoting) {
   const now = Date.now();
   const since = (r) => now - new Date(r?.lastCountedAt).getTime();
@@ -280,7 +281,7 @@ function deadElsewhere(conn, records, model, current, demoting) {
   return (since(current) <= AUTH_DEAD_CONFIG.minWindowMs && found(r => firm(r) && since(r) <= AUTH_DEAD_CONFIG.minWindowMs))
     || (demoting && found(r => firm(r) && since(r) <= probeMs(r.probeLevel || 0) + AUTH_DEAD_CONFIG.minWindowMs))
     || (firm(current) && found(r => since(r) <= AUTH_DEAD_CONFIG.minWindowMs))
-    || (isDeadClass(conn, current) && found(r => isDeadClass(conn, r) && r.probeLevel >= 1))
+    || (isDeadClass(conn, current) && found(r => isDeadClass(conn, r) && r.lastCountedAt > r.demotedAt))
     || null;
 }
 

@@ -1877,6 +1877,16 @@ describe("a key refused on only one model", () => {
     expect((await load(dead.id)).isActive).toBe(false);
   });
 
+  it("does not take a probe refused for just that model as the other model's refused probe", async () => {
+    const { dead, healthy } = await deadOnTwo();
+    await probe(dead, healthy, "m1", { answer: [403, NO_ACCESS], minutes: 30 });
+    expect(record(await load(dead.id), "m1")).toMatchObject({ probeLevel: 1 });
+    await probe(dead, healthy, "m2", { minutes: 30 });
+    expect((await load(dead.id)).isActive).toBe(true);
+    await probe(dead, healthy, "m1", { minutes: 30 });
+    expect(await load(dead.id)).toMatchObject({ isActive: false, autoDisabledReason: '403 "Not authorized for this endpoint" on m2, m1' });
+  });
+
   it("keeps a key demoted on one model on through hours of refused probes", async () => {
     const { dead, healthy } = await demotedKey();
     for (let i = 0; i < 8; i++) await probe(dead, healthy, "m1");
