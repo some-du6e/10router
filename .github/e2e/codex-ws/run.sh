@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Codex over the Responses WebSocket transport, end to end, on a model served
 # by a translated (Chat Completions) custom endpoint. Run from a built app
-# checkout with `codex` on PATH:
+# checkout with `codex` on PATH (and `cloudflared`, for the tunnel run):
 #   run.sh <expect>   expect = pass | fail
 # Starts a stub Chat Completions upstream and 10router, registers the stub as a
 # custom endpoint and makes a client key through the app's own APIs, then runs
 # the real Codex CLI on the built-in `openai` provider (websockets on, the
-# default) with `openai_base_url` pointed at the app. Every key is fake, made
-# per run and masked.
+# default) with `openai_base_url` pointed at the app: once directly, once
+# through a Cloudflare quick tunnel. Every key is fake, made per run and masked.
 set -uo pipefail
 
 EXPECT="${1:-pass}"
@@ -62,35 +62,70 @@ curl -sS -N -o "$OUT/http.body" -w 'http=%{http_code} time=%{time_total}s\n' --m
 check "HTTP SSE answers" "grep -q 'http=200' '$OUT/http.meta' && grep -q 'response.completed' '$OUT/http.body' && grep -q '\"delta\":\"ok\"' '$OUT/http.body'"
 
 # ---- Real Codex CLI, WebSocket transport ------------------------------------
-CODEX_HOME_DIR="$(mktemp -d)"
-{
-  echo "openai_base_url = \"$BASE/backend-api/codex\""
-  echo "model = \"$PREFIX/$MODEL\""
-  echo 'approval_policy = "never"'
-  echo 'sandbox_mode = "read-only"'
-} > "$CODEX_HOME_DIR/config.toml"
-start=$(date +%s)
-CODEX_HOME="$CODEX_HOME_DIR" CODEX_API_KEY="$CLIENT_KEY" RUST_LOG="codex_api::endpoint::responses_websocket=trace,codex_core::client=debug" \
-  timeout "${CODEX_TIMEOUT_S:-120}" codex exec --skip-git-repo-check -C "$CODEX_HOME_DIR" -o "$OUT/codex.last" \
-  -m "$PREFIX/$MODEL" "reply with just: ok" < /dev/null > "$OUT/codex.out" 2>&1
-code=$?
-echo "codex exit=$code time=$(( $(date +%s) - start ))s" | tee "$OUT/codex.meta"
-# Uploaded artifacts are not masked like the job log, so scrub the fake keys.
-sed -i -e "s/$CLIENT_KEY/[client-key]/g" -e "s/$UPSTREAM_KEY/[upstream-key]/g" "$OUT/codex.out" "$OUT/server.log"
+# codex_ws <name> <app base URL>: one `codex exec` on a fresh CODEX_HOME. Sets
+# PASSED=1 when Codex connected over WebSocket, streamed to response.completed
+# and answered "ok".
+codex_ws() {
+  local name="$1" base="$2" home code start
+  home="$(mktemp -d)"
+  {
+    echo "openai_base_url = \"$base/backend-api/codex\""
+    echo "model = \"$PREFIX/$MODEL\""
+    echo 'approval_policy = "never"'
+    echo 'sandbox_mode = "read-only"'
+  } > "$home/config.toml"
+  start=$(date +%s)
+  CODEX_HOME="$home" CODEX_API_KEY="$CLIENT_KEY" RUST_LOG="codex_api::endpoint::responses_websocket=trace,codex_core::client=debug" \
+    timeout "${CODEX_TIMEOUT_S:-120}" codex exec --skip-git-repo-check -C "$home" -o "$OUT/$name.last" \
+    -m "$PREFIX/$MODEL" "reply with just: ok" < /dev/null > "$OUT/$name.out" 2>&1
+  code=$?
+  echo "$name: codex exit=$code time=$(( $(date +%s) - start ))s" | tee "$OUT/$name.meta"
+  # Uploaded artifacts are not masked like the job log, so scrub the fake keys.
+  sed -i -e "s/$CLIENT_KEY/[client-key]/g" -e "s/$UPSTREAM_KEY/[upstream-key]/g" "$OUT/$name.out"
+  # The trace lines carry whole request bodies; keep only what tells the story.
+  grep -oE 'connecting to websocket[^,]*|successfully connected to websocket|websocket event: \{"type":"[a-z_.]+"|stream closed before response.completed|websocket closed by server[^"]*|falling back to HTTP[^"]*|idle timeout[^"]*' "$OUT/$name.out" | head -80 > "$OUT/$name.trace"
+  show "$name: codex WebSocket trace (event types)" "$OUT/$name.trace"
+  show "$name: codex last message" "$OUT/$name.last"
+  PASSED=0
+  grep -q 'connecting to websocket' "$OUT/$name.out" && grep -q 'websocket event: {"type":"response.completed"' "$OUT/$name.out" \
+    && [ "$code" = 0 ] && grep -qi 'ok' "$OUT/$name.last" 2>/dev/null && PASSED=1
+}
 
-# The trace lines carry whole request bodies; keep only what tells the story.
-grep -oE 'connecting to websocket[^,]*|successfully connected to websocket|websocket event: \{"type":"[a-z_.]+"|stream closed before response.completed|websocket closed by server[^"]*|falling back to HTTP[^"]*|idle timeout[^"]*' "$OUT/codex.out" | head -80 > "$OUT/codex-ws.trace"
-show "codex WebSocket trace (event types)" "$OUT/codex-ws.trace"
-show "codex last message" "$OUT/codex.last"
+codex_ws codex-direct "$BASE"
+direct=$PASSED
+
+# The same through a Cloudflare quick tunnel, the way a deployed gateway is
+# reached: TLS, a proxy in front, and the proxy's own request headers.
+tunnel=skip
+if command -v cloudflared > /dev/null; then
+  cloudflared tunnel --no-autoupdate --url "$BASE" > "$OUT/cloudflared.log" 2>&1 &
+  TUNNEL=""
+  for _ in $(seq 1 60); do
+    TUNNEL="$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$OUT/cloudflared.log" | head -1)"
+    [ -n "$TUNNEL" ] && break
+    sleep 2
+  done
+  for _ in $(seq 1 60); do
+    [ -n "$TUNNEL" ] && [ "$(curl -s -o /dev/null -w '%{http_code}' "$TUNNEL/api/health")" = "200" ] && break
+    sleep 3
+  done
+  if [ -n "$TUNNEL" ]; then
+    codex_ws codex-tunnel "$TUNNEL"
+    tunnel=$PASSED
+  else
+    echo "no tunnel URL"; cat "$OUT/cloudflared.log"
+  fi
+fi
+
+sed -i -e "s/$CLIENT_KEY/[client-key]/g" -e "s/$UPSTREAM_KEY/[upstream-key]/g" "$OUT/server.log"
 show "stub upstream log" "$OUT/stub.log"
 show "server log ([CodexWS] and errors)" <(grep -E 'CodexWS|ERROR|✗|▶' "$OUT/server.log" | head -60)
 
-passed=0
-grep -q 'connecting to websocket' "$OUT/codex.out" && grep -q 'websocket event: {"type":"response.completed"' "$OUT/codex.out" \
-  && [ "$code" = 0 ] && grep -qi 'ok' "$OUT/codex.last" 2>/dev/null && passed=1
+echo "direct=$direct tunnel=$tunnel"
 if [ "$EXPECT" = pass ]; then
-  check "Codex answers over the WebSocket transport" "[ $passed = 1 ]"
+  check "Codex answers over the WebSocket transport (direct)" "[ $direct = 1 ]"
+  [ "$tunnel" = skip ] || check "Codex answers over the WebSocket transport (through a tunnel)" "[ $tunnel = 1 ]"
 else
-  check "Codex does not get an answer over the WebSocket transport (the bug)" "[ $passed = 0 ]"
+  check "Codex gets no answer over the WebSocket transport (the bug)" "[ $direct = 0 ] || [ $tunnel = 0 ]"
 fi
 exit $fail

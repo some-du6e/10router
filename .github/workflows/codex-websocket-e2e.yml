@@ -30,6 +30,7 @@ env:
   # master just before the fix.
   PRE_FIX_SHA: 60dfcc0e9993fdc56f0ad0f0e603bc330074658f
   CODEX_VERSION: "0.137.0"
+  CLOUDFLARED_VERSION: "2026.10.7"
 
 permissions:
   contents: read
@@ -83,9 +84,12 @@ jobs:
         env:
           NEXT_TELEMETRY_DISABLED: "1"
         run: npm run build
-      - name: Install Codex
+      - name: Install Codex and cloudflared
         run: |
+          curl -fsSL -o /tmp/cloudflared.deb "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64.deb"
+          sudo dpkg -i /tmp/cloudflared.deb
           npm install -g "@openai/codex@${CODEX_VERSION}"
+          cloudflared --version
           codex --version
       - name: E2E (${{ matrix.leg }})
         working-directory: app
@@ -115,4 +119,5 @@ jobs:
             e2e-out/*.last
             e2e-out/*.trace
             e2e-out/http.body
+            e2e-out/cloudflared.log
             e2e-${{ matrix.leg }}.txt

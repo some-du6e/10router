@@ -43,7 +43,7 @@ beforeAll(async () => {
   server = http.createServer(async (req, res) => {
     let raw = "";
     for await (const c of req) raw += c;
-    console.log("HANDLER", req.method, req.url, JSON.stringify(req.headers), raw.length);
+    if (req.method !== "POST" || !req.url.startsWith("/backend-api/codex/responses")) { res.writeHead(404); return res.end("{}"); }
     const body = JSON.parse(raw);
     seen.push({ headers: req.headers, body });
     const result = await handleChatCore({
@@ -132,7 +132,7 @@ describe("scratch", () => {
     fs.writeFileSync(`${home}/config.toml`, `openai_base_url = "http://127.0.0.1:${port}/backend-api/codex"\nmodel = "acme/claude-opus-5-5"\n`);
     const out = await new Promise((resolve) => {
       const child = spawn(process.env.SCRATCH_CODEX_BIN, ["exec", "--skip-git-repo-check", "-m", "acme/claude-opus-5-5", "reply with just: ok"], {
-        env: { ...process.env, CODEX_HOME: home, CODEX_API_KEY: "key-a", RUST_LOG: "codex_api=trace,codex_core::client=trace" }, cwd: home,
+        stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, CODEX_HOME: home, CODEX_API_KEY: "key-a", RUST_LOG: "codex_api=trace,codex_core::client=trace" }, cwd: home,
       });
       let text = "";
       child.stdout.on("data", (d) => { text += d; });
