@@ -3,12 +3,7 @@ name: Claude mid-conversation tool changes
 on:
   pull_request:
     paths:
-      - "open-sse/config/claudeMessageCompat.js"
-      - "open-sse/utils/anthropicBeta.ts"
-      - "open-sse/executors/base.js"
-      - "open-sse/executors/default.js"
-      - "open-sse/translator/**"
-      - "open-sse/handlers/chatCore.js"
+      - "open-sse/**"
       - "tests/package.json"
       - "tests/vitest.config.js"
       - "tests/unit/claude-tool-changes.test.js"
@@ -54,6 +49,8 @@ jobs:
           open-sse/executors/base.js
           open-sse/executors/default.js
           open-sse/translator/concerns/toolChanges.js
+          open-sse/translator/concerns/message.js
+          open-sse/handlers/chatCore.js
           open-sse/translator/formats/claude.js
           open-sse/translator/index.ts
           open-sse/translator/schema/blocks.js
