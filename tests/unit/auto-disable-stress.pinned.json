@@ -27,7 +27,7 @@
   "flakyAllPeers": "4 of 40 keys off over 10 runs",
   "deadOnEveryModel": {
     "same account: sonnet, then opus": 207,
-    "same account: sessions alternating sonnet and opus": null,
+    "same account: sessions alternating sonnet and opus": 115,
     "same account: opus, plus sonnet every 2 h": 184,
     "same account: opus, then haiku": 207,
     "same account: one model at a time, 2 h each": 124,
