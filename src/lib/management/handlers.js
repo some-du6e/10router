@@ -340,10 +340,13 @@ export function createProviderKey(request) {
     if (probe.body.valid !== true) {
       // The validator's own error text is not passed on: it can quote the upstream.
       // With its own URL, the host the probe went to.
+      const noRoute = probe.body.reason === "no-api-route";
       await audit(mk, "provider_key.create.denied", "providerKey", null, {
-        provider, reason: "the provider did not accept the key", ...(keyUrl.host ? { baseUrlHost: keyUrl.host } : {}),
+        provider, reason: noRoute ? "no API route at the endpoint URL" : "the provider did not accept the key", ...(keyUrl.host ? { baseUrlHost: keyUrl.host } : {}),
       }, { denied: true });
-      return fail(422, "The provider did not accept this key, so it was not added");
+      return fail(422, noRoute
+        ? "The endpoint URL looks wrong: it has no /models and no chat route, so the key was not added"
+        : "The provider did not accept this key, so it was not added");
     }
 
     // The probe can take seconds; the key may have been revoked or narrowed meanwhile.

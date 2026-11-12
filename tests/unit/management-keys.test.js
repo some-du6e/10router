@@ -1202,6 +1202,23 @@ describe("provider key validation on the management path", () => {
     expect((await db.getProviderConnections()).length).toBe(before);
   });
 
+  it("says the endpoint URL looks wrong when nothing answers there, and adds nothing", async () => {
+    const mk = await newManagementKey(scope);
+    const before = (await db.getProviderConnections()).length;
+    validation.handler = () => Response.json({ valid: false, reason: "no-api-route", error: "upstream text that is not passed on" });
+    const res = await api.createProvider(mk.secret, { provider: "openai", apiKey: providerSecret("no-route"), name: "no route" });
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("The endpoint URL looks wrong: it has no /models and no chat route, so the key was not added");
+    expect((await db.getProviderConnections()).length).toBe(before);
+    const [denied] = (await db.getManagementAudit({ managementKeyId: mk.id, limit: 10 })).filter((r) => r.action === "provider_key.create.denied");
+    expect(denied.detail).toEqual({ provider: "openai", reason: "no API route at the endpoint URL" });
+
+    // A plain refusal keeps the key message.
+    validation.handler = () => Response.json({ valid: false, error: "Invalid API key" });
+    const refused = await api.createProvider(mk.secret, { provider: "openai", apiKey: providerSecret("refused"), name: "refused" });
+    expect(refused.body.error).toBe("The provider did not accept this key, so it was not added");
+  });
+
   it("checks the key again after the probe: revoked or narrowed meanwhile adds nothing", async () => {
     const before = (await db.getProviderConnections()).length;
     const revoked = await newManagementKey(scope);

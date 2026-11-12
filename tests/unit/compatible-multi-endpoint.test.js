@@ -411,6 +411,15 @@ describe("validating a key at its own URL", () => {
       }
     });
 
+    it("no /models and no chat route either is a wrong URL, not a valid key", async () => {
+      for (const [modelsStatus, chatStatus] of [[404, 404], [404, 405], [405, 404]]) {
+        const sent = upstream(modelsStatus, chatStatus);
+        const res = await validate();
+        expect(res.body, `${modelsStatus}/${chatStatus}`).toEqual({ valid: false, reason: "no-api-route", error: "The endpoint URL looks wrong: it has no /models and no chat route" });
+        expect(sent).toHaveLength(2);
+      }
+    });
+
     it("a 405 on /models falls back to the chat path too", async () => {
       const sent = upstream(405, 400);
       expect((await validate()).body.valid).toBe(true);

@@ -197,10 +197,15 @@ export async function POST(request) {
           // No /models route: POST {} to the chat path routing uses (the
           // executor's URL, with the node's path and query overrides). With no
           // model, the upstream refuses it before inference, so no tokens are
-          // spent: 401/403 is a bad key, any other answer means it got in.
+          // spent: 401/403 is a bad key, 404/405 means nothing answers at this
+          // URL (likely mistyped), any other answer means the key got in.
           const chatUrl = executor.buildUrl(null, false, 0, credentials);
           const chatRes = await keyUrl.fetch(chatUrl, { method: "POST", headers: executor.buildHeaders(credentials, false, chatUrl, null), body: "{}" });
           await discardBody(chatRes);
+          if (chatRes.status === 404 || chatRes.status === 405) {
+            // reason: the management API words its own error from it.
+            return NextResponse.json({ valid: false, reason: "no-api-route", error: "The endpoint URL looks wrong: it has no /models and no chat route" });
+          }
           isValid = chatRes.status !== 401 && chatRes.status !== 403;
         } else {
           isValid = res.ok;

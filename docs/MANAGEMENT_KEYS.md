@@ -132,9 +132,11 @@ accepted without a probe. Those keys are added and fail later, at use. An
 OpenAI-compatible endpoint's key is checked with `GET /models`; when that
 answers 404 or 405 (the endpoint has no model list), the probe posts `{}` to
 the chat path routing uses (`/responses` on a Responses endpoint, with the
-path and query overrides) and counts anything but a 401 or 403 as valid. That
-body names no model, so the upstream refuses it before running anything and
-no tokens are spent.
+path and query overrides). A 401 or 403 there is a bad key. A 404 or 405 means
+nothing answers at that URL, so the key is not added and the `422` says the
+endpoint URL looks wrong (no `/models` and no chat route) rather than that the
+key was refused. Anything else counts as valid. That body names no model, so
+the upstream refuses it before running anything and no tokens are spent.
 
 The management API takes `provider`, `apiKey`, `name`, `defaultModel`, a few
 `providerSpecificData` fields (`accountId`, `region`, `deployment`,
