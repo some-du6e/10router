@@ -101,7 +101,7 @@ async function clientItems(result) {
 
 beforeEach(() => fetchMock.mockReset());
 
-describe.each(ROUTES)("Codex through chatCore to a Claude model on an $label", (route) => {
+describe.each(ROUTES)("Codex through chatCore to a Claude model ($label)", (route) => {
   it("sends unique tool names upstream and hands the call back with the client's name and namespace", async () => {
     fetchMock.mockResolvedValueOnce(upstreamCall(route, "mcp__node_repl__js_reset", "{}"));
     const result = await runCodex(route);
