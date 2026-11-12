@@ -82,7 +82,8 @@ const dashKeys = await import("@/app/api/management-keys/route.js");
 const dashKey = await import("@/app/api/management-keys/[id]/route.js");
 const keysRoute = await import("@/app/api/keys/[id]/route.js");
 const { maskClientKey } = await import("@/lib/management/serialize.js");
-const { hostPatternError, hostMatchesPattern } = await import("@/shared/utils/managementKey.js");
+const { hostPatternError, hostMatchesPattern, normalizeManagementScopes } = await import("@/shared/utils/managementKey.js");
+const scopeForm = await import("../../src/app/(dashboard)/dashboard/endpoint/components/managementScopeForm.js");
 const { getProviderCredentials } = await import("@/sse/services/auth.js");
 const { getExecutor } = await import("../../open-sse/executors/index.js");
 
@@ -483,6 +484,49 @@ describe("provider keys with their own URL", () => {
     const adapter = await getAdapter();
     adapter.run("UPDATE managementKeys SET scopes = ? WHERE id = ?", [JSON.stringify(scopeWith({ [NODE]: ["*"] })), mk.id]);
     expect((await api.me(mk.secret)).body.managementKey.scopes.providerKeys).toMatchObject({ enabled: false, baseUrlHosts: null });
+  });
+
+  it("refuses an endpoint listed twice in different case, and more endpoints than the cap", async () => {
+    const twice = await dashboard.create({ name: "twice", scopes: scopeWith({ [NODE]: WILDCARD, [NODE.replace("acme", "ACME")]: ["api.acme.example"] }) });
+    expect(twice.status).toBe(400);
+    expect(twice.body.error).toMatch(/is listed twice/);
+
+    const many = (n) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`openai-compatible-chat-n${i}`, WILDCARD]));
+    expect(normalizeManagementScopes(scopeWith(many(200), null)).errors).toEqual([]);
+    expect(normalizeManagementScopes(scopeWith(many(201), null)).errors.join("; ")).toMatch(/at most 200 endpoints/);
+  });
+
+  it("the dialog drops hosts for endpoints taken out of the scope or deleted, and only once the endpoints have loaded", () => {
+    const pk = { enabled: true, providers: [NODE, NODE_B], manageExisting: false, baseUrlHosts: { [NODE]: WILDCARD, [NODE_B]: ["key-b.acme.example"], [ANODE]: [] } };
+    // Taking NODE_B out of the scope drops its hosts in view.
+    expect(scopeForm.withProviders(pk, [NODE]).baseUrlHosts).toEqual({ [NODE]: WILDCARD });
+    // Clearing the list (any provider) keeps them.
+    expect(scopeForm.withProviders(pk, []).baseUrlHosts).toEqual(pk.baseUrlHosts);
+    // On save: only lists with hosts, for endpoints in the scope.
+    expect(scopeForm.ownUrlHostsPayload({ ...pk, providers: [NODE] })).toEqual({ [NODE]: WILDCARD });
+    expect(scopeForm.ownUrlHostsPayload(pk)).toEqual({ [NODE]: WILDCARD, [NODE_B]: ["key-b.acme.example"] });
+    // A deleted endpoint's hosts are dropped, so the save goes through; not before the endpoints load.
+    const anyProvider = { ...pk, providers: [] };
+    expect(scopeForm.ownUrlHostsPayload(anyProvider, new Set([NODE]))).toEqual({ [NODE]: WILDCARD });
+    expect(scopeForm.ownUrlHostsPayload(anyProvider, null)).toEqual({ [NODE]: WILDCARD, [NODE_B]: ["key-b.acme.example"] });
+    expect(scopeForm.isDeletedEndpoint(NODE_B, new Set([NODE]))).toBe(true);
+    expect(scopeForm.isDeletedEndpoint(NODE_B, null)).toBe(false);
+    expect(scopeForm.ownUrlHostsPayload({ ...pk, baseUrlHosts: {} })).toBeNull();
+  });
+
+  it("saving a key whose endpoint was deleted works once the dialog drops that endpoint's hosts", async () => {
+    const gone = "openai-compatible-chat-acme-gone";
+    await db.createProviderNode({ id: gone, type: "openai-compatible", name: "Gone", prefix: "gone", apiType: "chat", baseUrl: "https://gone.acme.example/v1" });
+    const mk = await newManagementKey(scopeWith({ [NODE]: WILDCARD, [gone]: WILDCARD }, null));
+    await db.deleteProviderNode(gone);
+    const state = scopeForm.fromSaved((await db.getManagementKeyById(mk.id)).scopes);
+    // The server stays strict about an unknown endpoint...
+    expect((await dashboard.patch(mk.id, { name: "renamed", scopes: scopeForm.toPayload(state, null) })).status).toBe(400);
+    // ...and the dialog, with the endpoints loaded, no longer sends it.
+    const known = new Set((await db.getProviderNodes()).map((n) => n.id));
+    const res = await dashboard.patch(mk.id, { name: "renamed", scopes: scopeForm.toPayload(state, known) });
+    expect(res.status, res.text).toBe(200);
+    expect((await db.getManagementKeyById(mk.id)).scopes.providerKeys.baseUrlHosts).toEqual({ [NODE]: WILDCARD });
   });
 
   it("a wildcard matches exactly one more real label", () => {

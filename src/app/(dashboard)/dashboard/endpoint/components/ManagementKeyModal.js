@@ -7,6 +7,7 @@ import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { isoToLocalInput, localInputToIso } from "./keyFormat";
 import StatusAlert from "./StatusAlert";
 import ModelAllowlistField from "./ModelAllowlistField";
+import { fromSaved, toPayload, withProviders, isDeletedEndpoint } from "./managementScopeForm";
 import { MANAGEMENT_KEYS_DOCS_URL, hostPatternError, isCompatibleEndpointId } from "@/shared/utils/managementKey.js";
 
 function Chips({ items, onRemove, empty }) {
@@ -67,9 +68,9 @@ const lowercase = (s) => s.toLowerCase();
  * custom compatible endpoints can have one, and only those in the scope's
  * providers when it lists some.
  */
-function OwnUrlHosts({ value, onChange, endpoints }) {
+function OwnUrlHosts({ value, onChange, endpoints, isDeleted }) {
   const listed = Object.keys(value);
-  const labelOf = (id) => endpoints.find((o) => o.value === id)?.label || id;
+  const labelOf = (id) => endpoints.find((o) => o.value === id)?.label || (isDeleted(id) ? `Deleted endpoint (${id})` : id);
   const set = (id, hosts) => onChange({ ...value, [id]: hosts });
   const drop = (id) => onChange(Object.fromEntries(Object.entries(value).filter(([k]) => k !== id)));
   return (
@@ -83,6 +84,7 @@ function OwnUrlHosts({ value, onChange, endpoints }) {
         <div key={id} className="rounded-lg border border-border p-2">
           <div className="mb-1 flex items-center justify-between gap-2">
             <span className="text-xs font-medium">{labelOf(id)}</span>
+            {isDeleted(id) && <span className="text-[11px] text-orange-500">This endpoint was deleted; its hosts are dropped when you save.</span>}
             <button onClick={() => drop(id)} className="text-xs text-text-muted hover:text-red-500" aria-label={`Stop allowing own URLs for ${labelOf(id)}`}>
               Remove
             </button>
@@ -114,53 +116,8 @@ OwnUrlHosts.propTypes = {
   value: PropTypes.objectOf(PropTypes.arrayOf(PropTypes.string)).isRequired,
   onChange: PropTypes.func.isRequired,
   endpoints: PropTypes.array.isRequired,
+  isDeleted: PropTypes.func.isRequired,
 };
-
-const blankScopes = () => ({
-  clientKeys: { enabled: false, providers: [], models: [], maxBudgetUsd: "", manageExisting: false },
-  providerKeys: { enabled: false, providers: [], manageExisting: false, baseUrlHosts: {} },
-});
-
-function fromSaved(scopes) {
-  const s = blankScopes();
-  if (!scopes) return s;
-  const ck = scopes.clientKeys || {};
-  const pk = scopes.providerKeys || {};
-  return {
-    clientKeys: {
-      enabled: !!ck.enabled, providers: ck.providers || [], models: ck.models || [],
-      maxBudgetUsd: ck.maxBudgetUsd === null || ck.maxBudgetUsd === undefined ? "" : String(ck.maxBudgetUsd),
-      manageExisting: !!ck.manageExisting,
-    },
-    providerKeys: { enabled: !!pk.enabled, providers: pk.providers || [], manageExisting: !!pk.manageExisting, baseUrlHosts: pk.baseUrlHosts || {} },
-  };
-}
-
-function toPayload(s) {
-  const budget = s.clientKeys.maxBudgetUsd.trim();
-  return {
-    clientKeys: {
-      enabled: s.clientKeys.enabled,
-      providers: s.clientKeys.providers.length ? s.clientKeys.providers : null,
-      models: s.clientKeys.models.length ? s.clientKeys.models : null,
-      maxBudgetUsd: budget === "" ? null : Number(budget),
-      manageExisting: s.clientKeys.manageExisting,
-    },
-    providerKeys: {
-      enabled: s.providerKeys.enabled,
-      providers: s.providerKeys.providers.length ? s.providerKeys.providers : null,
-      manageExisting: s.providerKeys.manageExisting,
-      baseUrlHosts: ownUrlHostsPayload(s.providerKeys),
-    },
-  };
-}
-
-/** Lists with hosts, for endpoints still in the scope; null when none. */
-function ownUrlHostsPayload(pk) {
-  const entries = Object.entries(pk.baseUrlHosts)
-    .filter(([id, hosts]) => hosts.length && (!pk.providers.length || pk.providers.includes(id)));
-  return entries.length ? Object.fromEntries(entries) : null;
-}
 
 /**
  * Create or edit a management key: name, expiry and scopes. Saves through
@@ -172,11 +129,17 @@ export default function ManagementKeyModal({ managementKey, onClose, onSaved }) 
   const [expiry, setExpiry] = useState(isoToLocalInput(managementKey?.expiresAt));
   const [scopes, setScopes] = useState(() => fromSaved(managementKey?.scopes));
   const [nodes, setNodes] = useState([]);
+  // Endpoint ids once loaded; null until then, so nothing reads as deleted before the list is in.
+  const [knownEndpoints, setKnownEndpoints] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    fetch("/api/provider-nodes").then((r) => (r.ok ? r.json() : null)).then((d) => d && setNodes(d.nodes || [])).catch(() => {});
+    fetch("/api/provider-nodes").then((r) => (r.ok ? r.json() : null)).then((d) => {
+      if (!d) return;
+      setNodes(d.nodes || []);
+      setKnownEndpoints(new Set((d.nodes || []).map((n) => n.id)));
+    }).catch(() => {});
   }, []);
 
   const providerOptions = useMemo(() => {
@@ -200,7 +163,7 @@ export default function ManagementKeyModal({ managementKey, onClose, onSaved }) 
       const res = await fetch(editing ? `/api/management-keys/${managementKey.id}` : "/api/management-keys", {
         method: editing ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), expiresAt: localInputToIso(expiry), scopes: toPayload(scopes) }),
+        body: JSON.stringify({ name: name.trim(), expiresAt: localInputToIso(expiry), scopes: toPayload(scopes, knownEndpoints) }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "Could not save the management key");
@@ -218,12 +181,7 @@ export default function ManagementKeyModal({ managementKey, onClose, onSaved }) 
   // Endpoints that can be given hosts: custom compatible ones, inside the scope's providers when it lists some.
   const ownUrlEndpoints = providerOptions.filter((o) => isCompatibleEndpointId(o.value) && (!pk.providers.length || pk.providers.includes(o.value)));
   // Taking an endpoint out of the scope drops its hosts too, in view, not only on save.
-  const setProviderList = (providers) => setProvider({
-    providers,
-    baseUrlHosts: providers.length
-      ? Object.fromEntries(Object.entries(pk.baseUrlHosts).filter(([id]) => providers.includes(id)))
-      : pk.baseUrlHosts,
-  });
+  const setProviderList = (providers) => setScopes((s) => ({ ...s, providerKeys: withProviders(s.providerKeys, providers) }));
 
   return (
     <>
@@ -307,7 +265,7 @@ export default function ManagementKeyModal({ managementKey, onClose, onSaved }) 
                   ariaLabel="Also manage existing keys"
                   description="See and delete every key of these providers, not just the ones it added."
                 />
-                <OwnUrlHosts value={pk.baseUrlHosts} onChange={(baseUrlHosts) => setProvider({ baseUrlHosts })} endpoints={ownUrlEndpoints} />
+                <OwnUrlHosts value={pk.baseUrlHosts} onChange={(baseUrlHosts) => setProvider({ baseUrlHosts })} endpoints={ownUrlEndpoints} isDeleted={(id) => isDeletedEndpoint(id, knownEndpoints)} />
               </>
             )}
           </div>

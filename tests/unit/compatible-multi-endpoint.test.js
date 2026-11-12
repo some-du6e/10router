@@ -208,7 +208,35 @@ describe("validating a key at its own URL", () => {
     mocks.probeFetch.mockResolvedValue({ ...okRes(), ok: false, status: 400 });
     const res = await validateRoute.POST(req({ provider: "anthropic-compatible-x", apiKey: "sk-x", baseUrl: PUBLIC_URL }));
     expect(res.body.valid).toBe(true);
-    expect(mocks.probeFetch).toHaveBeenCalledWith(`${PUBLIC_URL}/v1/messages`, expect.objectContaining({ method: "POST" }));
+    expect(mocks.probeFetch).toHaveBeenCalledWith(`${PUBLIC_URL}/messages`, expect.objectContaining({ method: "POST" }));
+  });
+
+  it("probes an anthropic-compatible key at the URL routing posts to, with or without /v1 and a query", async () => {
+    db.local = false;
+    const id = "anthropic-compatible-shapes";
+    db.nodes.push({ id, type: "anthropic-compatible", prefix: "as", baseUrl: "https://api.example.com/v1", name: "Shapes" });
+    mocks.probeFetch.mockResolvedValue(okRes());
+    const origin = PUBLIC_URL.replace(/\/v1$/, "");
+    for (const [base, probed] of [
+      [PUBLIC_URL, `${PUBLIC_URL}/messages`],
+      [`${PUBLIC_URL}?k=1`, `${PUBLIC_URL}/messages?k=1`],
+      [origin, `${origin}/messages`],
+      [`${origin}?k=1`, `${origin}/messages?k=1`],
+    ]) {
+      await validateRoute.POST(req({ provider: id, apiKey: "sk-s", baseUrl: base }));
+      expect(mocks.probeFetch, base).toHaveBeenLastCalledWith(probed, expect.objectContaining({ method: "POST" }));
+      // The same URL a request on that key goes to.
+      expect(getExecutor(id).buildUrl("m", false, 0, { providerSpecificData: { baseUrl: base } }), base).toBe(probed);
+    }
+    // A key on the endpoint's own URL (stored with its /v1) is probed there too.
+    db.local = true;
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(okRes());
+    try {
+      await validateRoute.POST(req({ provider: id, apiKey: "sk-s" }));
+      expect(spy).toHaveBeenCalledWith("https://api.example.com/v1/messages", expect.objectContaining({ method: "POST" }));
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("probes the API path before a query string in the key's URL, like routing", async () => {
@@ -218,7 +246,7 @@ describe("validating a key at its own URL", () => {
     await validateRoute.POST(req({ provider: NODE_ID, apiKey: "sk-q", baseUrl: `${PUBLIC_URL}?token=t1` }));
     expect(mocks.probeFetch).toHaveBeenLastCalledWith(`${PUBLIC_URL}/models?token=t1`, expect.anything());
     await validateRoute.POST(req({ provider: "anthropic-compatible-q", apiKey: "sk-q", baseUrl: `${PUBLIC_URL}/messages?token=t2` }));
-    expect(mocks.probeFetch).toHaveBeenLastCalledWith(`${PUBLIC_URL}/v1/messages?token=t2`, expect.anything());
+    expect(mocks.probeFetch).toHaveBeenLastCalledWith(`${PUBLIC_URL}/messages?token=t2`, expect.anything());
   });
 
   it("an internal URL from a remote caller is refused before any request", async () => {

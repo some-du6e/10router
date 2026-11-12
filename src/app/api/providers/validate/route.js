@@ -9,6 +9,7 @@ import { normalizeProviderId } from "@/lib/providerNormalization";
 import { generateSessionId } from "open-sse/utils/opencodeSession.js";
 import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
 import { appendUrlPath } from "open-sse/services/provider.js";
+import { getExecutor } from "open-sse/executors/index.js";
 import { resolveKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
 import { isLocalRequest } from "@/dashboardGuard";
 import { makeProbeFetch } from "@/lib/probeFetch.js";
@@ -195,9 +196,11 @@ export async function POST(request) {
 
         const keyUrl = await compatibleBaseUrl(request, body, node);
         if (!keyUrl.ok) return NextResponse.json({ valid: false, error: keyUrl.error }, { status: 400 });
-        // A pasted /messages is dropped; the path goes before any query string.
-        const messagesUrl = appendUrlPath(String(keyUrl.baseUrl || "").trim(), "/v1/messages", /\/messages$/);
+        // Probe the URL requests on this key go to, from the executor's own
+        // builder: <base>/messages, before any query string. The base already
+        // carries its version (the default is https://api.anthropic.com/v1).
         const model = node.defaultModel || "claude-3-haiku-20240307";
+        const messagesUrl = getExecutor(provider).buildUrl(model, false, 0, { providerSpecificData: { baseUrl: keyUrl.baseUrl } });
 
         const res = await keyUrl.fetch(messagesUrl, {
           method: "POST",
