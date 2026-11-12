@@ -8,8 +8,10 @@ const origCreate = http.createServer.bind(http);
 
 // ─── Codex WebSocket transport ────────────────────────────────────────────────
 //
-// Codex ≥0.147 with `supports_websockets = true` upgrades
-// `<base_url>/responses` instead of POSTing it. The client sends one text frame:
+// Codex upgrades `<base_url>/responses` instead of POSTing it: by default on
+// the built-in `openai` provider (0.137 already does, with no way to turn it
+// off), and on a custom provider with `supports_websockets = true`. The client
+// sends one text frame:
 //
 //   {"type":"response.create","model":"…","input":[…]}
 //
@@ -50,8 +52,9 @@ const origCreate = http.createServer.bind(http);
 //     conversation under it. See the PR discussion for what serving these
 //     properly would require (an upstream websocket held per session).
 //
-// Both get an error frame, which makes the client fall back to a self-contained
-// turn on a fresh connection. That fallback is the path every working turn
+// Both get an error frame (with no `status`, so Codex skips it) and a close,
+// which Codex treats as a failed stream: it retries on a fresh connection,
+// where the turn is self-contained. That fallback is the path every working turn
 // already takes today ("websocket reuse properties didn't match"). It is also
 // the same recovery codex-lb performs when its own upstream rejects an anchor:
 // surface `previous_response_not_found` to the client and let it rebuild the

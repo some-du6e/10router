@@ -267,6 +267,9 @@ describe("Codex WebSocket turn on a translated endpoint", () => {
     ws.close();
     expect(posted).toHaveLength(0);
     expect(events[0]).toMatchObject({ type: "error", error: { code: "previous_response_not_found", param: "previous_response_id" } });
+    // No status: with one, Codex would take a 400 as final instead of retrying
+    // the turn in full on a new connection.
+    expect(events[0].status).toBeUndefined();
     expect(events.at(-1)).toMatchObject({ close: 1000 });
   });
 
@@ -278,6 +281,7 @@ describe("Codex WebSocket turn on a translated endpoint", () => {
     expect(posted).toHaveLength(0);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(events[0]).toMatchObject({ type: "error", error: { code: "prewarm_unsupported" } });
+    expect(events[0].status).toBeUndefined();
     expect(events.at(-1)).toMatchObject({ close: 1000 });
   });
 });
