@@ -32,6 +32,12 @@ async function compatibleBaseUrl(request, body, node) {
   return { ...keyUrl, fetch: keyUrl.own && remote ? makeProbeFetch(true) : plainFetch };
 }
 
+// Only a probe's status is used. Drop its body so the connection (a pinned
+// probe fetch's agent waits for it) closes now.
+async function discardBody(res) {
+  try { await res.body?.cancel(); } catch { /* already read or closed */ }
+}
+
 // A node's quirks, picked the way the create route copies them onto a new key.
 const nodeQuirksOf = (node) => Object.fromEntries(QUIRK_KEYS.filter((k) => node[k] !== undefined).map((k) => [k, node[k]]));
 
@@ -181,11 +187,24 @@ export async function POST(request) {
         // The only key in them is the one being checked; any other value the
         // admin put in the node's header lines goes too, as it does in
         // routing, to this URL (a key's own URL when it has one).
+        const executor = getExecutor(provider);
         const modelsUrl = applyUrlOverrides(appendUrlPath(keyUrl.baseUrl, "/models"), node.overrides, { replacePath: false });
-        const credentials = { apiKey, providerSpecificData: { ...nodeQuirksOf(node), baseUrl: keyUrl.baseUrl } };
-        const { "Content-Type": _json, ...modelsHeaders } = getExecutor(provider).buildHeaders(credentials, false, modelsUrl, null);
+        const credentials = { apiKey, providerSpecificData: { ...nodeQuirksOf(node), apiType: node.apiType, baseUrl: keyUrl.baseUrl } };
+        const { "Content-Type": _json, ...modelsHeaders } = executor.buildHeaders(credentials, false, modelsUrl, null);
         const res = await keyUrl.fetch(modelsUrl, { headers: modelsHeaders });
-        isValid = res.ok;
+        await discardBody(res);
+        if (res.status === 404 || res.status === 405) {
+          // No /models route: POST {} to the chat path routing uses (the
+          // executor's URL, with the node's path and query overrides). With no
+          // model, the upstream refuses it before inference, so no tokens are
+          // spent: 401/403 is a bad key, any other answer means it got in.
+          const chatUrl = executor.buildUrl(null, false, 0, credentials);
+          const chatRes = await keyUrl.fetch(chatUrl, { method: "POST", headers: executor.buildHeaders(credentials, false, chatUrl, null), body: "{}" });
+          await discardBody(chatRes);
+          isValid = chatRes.status !== 401 && chatRes.status !== 403;
+        } else {
+          isValid = res.ok;
+        }
         return NextResponse.json({
           valid: isValid,
           error: isValid ? null : "Invalid API key",

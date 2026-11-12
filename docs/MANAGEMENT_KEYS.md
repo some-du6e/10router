@@ -128,7 +128,13 @@ ping (`/api/providers/validate`), then the create route (`/api/providers`).
 The probe is only as strict as the dashboard's. Some providers have no real
 check: a keyless self-hosted endpoint passes on any answer, the generic fallback
 counts anything but a 401 or 403 as valid, and a few media providers are
-accepted without a probe. Those keys are added and fail later, at use.
+accepted without a probe. Those keys are added and fail later, at use. An
+OpenAI-compatible endpoint's key is checked with `GET /models`; when that
+answers 404 or 405 (the endpoint has no model list), the probe posts `{}` to
+the chat path routing uses (`/responses` on a Responses endpoint, with the
+path and query overrides) and counts anything but a 401 or 403 as valid. That
+body names no model, so the upstream refuses it before running anything and
+no tokens are spent.
 
 The management API takes `provider`, `apiKey`, `name`, `defaultModel`, a few
 `providerSpecificData` fields (`accountId`, `region`, `deployment`,

@@ -374,6 +374,85 @@ describe("validating a key at its own URL", () => {
     }
   });
 
+  describe("an OpenAI-compatible upstream without a /models route", () => {
+    const answer = (status, body = { code: "x", message: "m" }) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    // /models answers `modelsStatus`; the chat path answers `chatStatus`.
+    const upstream = (modelsStatus, chatStatus) => {
+      const sent = [];
+      mocks.probeFetch.mockImplementation(async (url, init) => {
+        const res = answer(String(url).includes("/models") ? modelsStatus : chatStatus);
+        sent.push({ url, init, res });
+        return res;
+      });
+      return sent;
+    };
+    const validate = (body) => validateRoute.POST(req({ provider: NODE_ID, apiKey: "sk-b", baseUrl: PUBLIC_URL, ...body }));
+    beforeEach(() => { db.local = false; });
+
+    it("a key the chat path refuses only for the missing model is valid", async () => {
+      const sent = upstream(404, 400);
+      const res = await validate();
+      expect(res.body).toEqual({ valid: true, error: null });
+      expect(sent).toHaveLength(2);
+      // At the key's own URL, through the pinned probe fetch, with no model: nothing to run.
+      const [, chat] = sent;
+      expect(chat.url).toBe(`${PUBLIC_URL}/chat/completions`);
+      expect(chat.init).toMatchObject({ method: "POST", body: "{}" });
+      expect(chat.init.headers).toMatchObject({ Authorization: "Bearer sk-b", "Content-Type": "application/json" });
+      // Both bodies are dropped, so the pinned connections close.
+      for (const { res: r } of sent) expect(r.bodyUsed).toBe(true);
+    });
+
+    it("a key the chat path answers with 401 or 403 is invalid", async () => {
+      for (const status of [401, 403]) {
+        upstream(404, status);
+        const res = await validate();
+        expect(res.body, String(status)).toEqual({ valid: false, error: "Invalid API key" });
+      }
+    });
+
+    it("a 405 on /models falls back to the chat path too", async () => {
+      const sent = upstream(405, 400);
+      expect((await validate()).body.valid).toBe(true);
+      expect(sent.map((s) => s.url)).toEqual([`${PUBLIC_URL}/models`, `${PUBLIC_URL}/chat/completions`]);
+    });
+
+    it("a /models answer other than 404/405 decides alone", async () => {
+      let sent = upstream(200, 401);
+      expect((await validate()).body.valid).toBe(true);
+      expect(sent).toHaveLength(1);
+      sent = upstream(401, 400);
+      expect((await validate()).body.valid).toBe(false);
+      expect(sent).toHaveLength(1);
+    });
+
+    it("a network error on the chat path fails the key like one on /models", async () => {
+      mocks.probeFetch.mockResolvedValueOnce(answer(404)).mockRejectedValueOnce(new Error("connect ECONNREFUSED"));
+      const res = await validate();
+      expect(res.body).toEqual({ valid: false, error: "connect ECONNREFUSED" });
+    });
+
+    it("posts where routing posts: the node's path and query overrides, its auth header style, /responses for a Responses node", async () => {
+      const overrides = { path: "/chat", query: "api-version=2" };
+      db.nodes.push(
+        { id: "openai-compatible-chat-ovr", type: "openai-compatible", prefix: "ov", apiType: "chat", baseUrl: "https://api.example.com/v1", name: "OV", overrides, apiKeyHeader: "api-key" },
+        // No "responses" in the id: the node's apiType alone must pick the path.
+        { id: "openai-compatible-acme", type: "openai-compatible", prefix: "ac", apiType: "responses", baseUrl: "https://api.example.com/v1", name: "AC" },
+      );
+      let sent = upstream(404, 400);
+      await validateRoute.POST(req({ provider: "openai-compatible-chat-ovr", apiKey: "sk-o", baseUrl: PUBLIC_URL }));
+      expect(sent.map((s) => s.url)).toEqual([`${PUBLIC_URL}/models?api-version=2`, `${PUBLIC_URL}/chat?api-version=2`]);
+      expect(sent[1].init.headers["api-key"]).toBe("sk-o");
+      expect(sent[1].init.headers.Authorization).toBeUndefined();
+      // The URL a request on that key goes to.
+      expect(getExecutor("openai-compatible-chat-ovr").buildUrl("m", false, 0, { providerSpecificData: { baseUrl: PUBLIC_URL, overrides } })).toBe(sent[1].url);
+
+      sent = upstream(404, 400);
+      await validateRoute.POST(req({ provider: "openai-compatible-acme", apiKey: "sk-r", baseUrl: PUBLIC_URL }));
+      expect(sent[1].url).toBe(`${PUBLIC_URL}/responses`);
+    });
+  });
+
   it("an internal URL from a remote caller is refused before any request", async () => {
     db.local = false;
     const res = await validateRoute.POST(req({ provider: NODE_ID, apiKey: "sk-b", baseUrl: "http://169.254.169.254/latest" }));
