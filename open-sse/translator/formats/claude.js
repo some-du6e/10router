@@ -11,6 +11,7 @@ import { applyThinking } from "../concerns/thinkingUnified.js";
 import { FORMATS } from "../formats.js";
 import { isLastMessageFromUser } from "../../services/provider.js";
 import { DEFAULT_MAX_TOKENS } from "../../config/runtimeConfig.js";
+import { isToolChangeBlock } from "../concerns/toolChanges.js";
 import {
   CLAUDE_INTERRUPTED_TOOL_RESULT_TEXT,
   CLAUDE_PREFILL_CONTINUATION_TEXT,
@@ -41,7 +42,9 @@ export function hasValidContent(msg) {
       block.type === CLAUDE_BLOCK.TOOL_USE ||
       block.type === CLAUDE_BLOCK.TOOL_RESULT ||
       block.type === CLAUDE_BLOCK.IMAGE ||
-      block.type === CLAUDE_BLOCK.DOCUMENT
+      block.type === CLAUDE_BLOCK.DOCUMENT ||
+      // Kept for the executor's finalizeBody, which sends or folds them by beta.
+      isToolChangeBlock(block)
     );
   }
   return false;
@@ -198,6 +201,9 @@ export function normalizeClaudePassthrough(body, model = "", provider = null) {
   // Hoisting them into body.system would insert volatile content (token counters,
   // reminders) ahead of the whole conversation and invalidate the prefix cache on
   // every request. Folding in place keeps the cached prefix stable.
+  // tool_addition / tool_removal blocks stay behind in a system message of
+  // their own: the executor's finalizeBody sends them with their beta, or
+  // folds them into tools[] without it.
   if (Array.isArray(body.messages)) {
     const messages = [];
     for (const msg of body.messages) {
@@ -205,12 +211,15 @@ export function normalizeClaudePassthrough(body, model = "", provider = null) {
         messages.push(msg);
         continue;
       }
+      const blocks = Array.isArray(msg.content) ? msg.content : [];
+      const toolChanges = blocks.filter(isToolChangeBlock);
       const text = typeof msg.content === "string"
         ? msg.content
-        : Array.isArray(msg.content)
-          ? msg.content.map(b => (typeof b === "string" ? b : b?.text || "")).join("\n")
-          : "";
-      if (!text.trim()) continue;
+        : blocks.filter(b => !isToolChangeBlock(b)).map(b => (typeof b === "string" ? b : b?.text || "")).join("\n");
+      if (!text.trim()) {
+        if (toolChanges.length) messages.push({ ...msg, content: toolChanges });
+        continue;
+      }
 
       // Copy-on-write: the caller's body is reused across account-fallback
       // attempts, so folding must never mutate the original message.
@@ -221,9 +230,10 @@ export function normalizeClaudePassthrough(body, model = "", provider = null) {
           ? [{ type: CLAUDE_BLOCK.TEXT, text: prev.content }]
           : Array.isArray(prev.content) ? [...prev.content] : [];
         messages[messages.length - 1] = { ...prev, content: [...content, block] };
-        continue;
+      } else {
+        messages.push({ role: ROLE.USER, content: [block] });
       }
-      messages.push({ role: ROLE.USER, content: [block] });
+      if (toolChanges.length) messages.push({ ...msg, content: toolChanges });
     }
     body.messages = messages;
   }
