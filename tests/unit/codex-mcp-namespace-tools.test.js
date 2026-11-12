@@ -374,6 +374,8 @@ describe("Codex tool names that would still collide after qualifying", () => {
       const wire = req.tools.map(toolName).find((n) => n !== "files__read");
       const { done } = streamCall(route, req, wire, "{}");
 
+      expect(wire).toMatch(WIRE_NAME);
+
       expect(done).toHaveLength(1);
       expect(done[0].name).toBe("files::read");
       expect(done[0]).not.toHaveProperty("namespace");
