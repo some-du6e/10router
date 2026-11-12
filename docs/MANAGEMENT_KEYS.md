@@ -39,7 +39,8 @@ reverse proxy or tunnel, is treated as remote.
   "providerKeys": {
     "enabled": true,
     "providers": ["openai-compatible-chat-<id>"],
-    "manageExisting": false
+    "manageExisting": false,
+    "baseUrlHosts": { "openai-compatible-chat-<id>": ["*.acme.example"] }
   }
 }
 ```
@@ -107,6 +108,16 @@ ping (`/api/providers/validate`), then the create route (`/api/providers`).
 - The management key is checked again after the probe, so a key revoked or
   narrowed while the probe ran adds nothing.
 - `apiKey` can be at most 8192 characters.
+- A custom endpoint's probe is built like the request routing would send on
+  that key: its URL, headers and body come from the same code, with the
+  endpoint's advanced settings (auth header style, client identity, header
+  lines, path and query overrides, model renames, body edits). The
+  endpoint's proxy, timeout and retries are not used for the probe. An
+  Anthropic-compatible endpoint's probe sends a real
+  message, so it names a model: the key's `defaultModel` if given (a
+  `(level)` suffix dropped), else one listed for the endpoint, preferring
+  one the endpoint doesn't route to another API. Give `defaultModel` when
+  each key may only use some models.
 - The new row is claimed for the management key right after the create,
   only while that key is still on; if it was revoked in between, the row is
   removed and the response is a `401`.
@@ -119,13 +130,78 @@ check: a keyless self-hosted endpoint passes on any answer, the generic fallback
 counts anything but a 401 or 403 as valid, and a few media providers are
 accepted without a probe. Those keys are added and fail later, at use.
 
-The management API takes `provider`, `apiKey`, `name`, `defaultModel` and a few
+The management API takes `provider`, `apiKey`, `name`, `defaultModel`, a few
 `providerSpecificData` fields (`accountId`, `region`, `deployment`,
-`organization`, `apiVersion`). It takes no URL or proxy fields (`baseUrl`,
-`azureEndpoint`, `connectionProxyUrl`, a proxy pool), since those decide where
-10router sends the key. Providers that need one (Azure, Ollama local, a custom
-endpoint's per-key URL) have to be set up in the dashboard. Keys for a custom
-endpoint use the endpoint's own URL.
+`organization`, `apiVersion`), and `baseUrl` on the terms below. URL and proxy
+fields decide where 10router sends the key, so the dashboard decides them: the
+others (`azureEndpoint`, `connectionProxyUrl`, a proxy pool, any URL inside
+`providerSpecificData`) are always refused, and providers that need one (Azure,
+Ollama local) have to be set up in the dashboard.
+
+#### A key's own URL
+
+Some upstreams give each key its own host, one account per host
+(`https://key-a.acme.example/...`). A custom endpoint's key can carry its own
+URL for that (the per-key URL on the endpoint page), and the dashboard can let a
+management key set one. `providerKeys.baseUrlHosts` maps a custom endpoint's id
+to the hosts its keys may use ("Own URLs for the keys it adds" in the key's
+dialog, under Provider keys). Hosts are allowed per endpoint, so a host trusted
+for one endpoint's keys can't be used to send another endpoint's keys
+somewhere else.
+
+- `api.acme.example` matches that host only.
+- `*.acme.example` matches exactly one more label: `key-a.acme.example`, not
+  `acme.example` and not `a.b.acme.example`.
+
+The dashboard checks the list when it saves it:
+
+- each id is a custom OpenAI- or Anthropic-compatible endpoint that exists,
+  and one of `providers` when the scope lists some (with no `providers`, the
+  ids named here are the endpoints that get hosts);
+- each pattern is lowercase, has no bare `*`, has a wildcard only as its first
+  label with at least two labels after it, and has no IP address, port or
+  `localhost`;
+- an endpoint has at most 50 patterns, and the list at most 200 endpoints.
+
+Only the dashboard can set them; no management API route takes scopes. Without
+hosts for an endpoint (the default) a `baseUrl` for its keys is refused, and
+they use the endpoint's own URL. When an endpoint is deleted, the key's dialog
+marks it as a deleted endpoint and, when you save, drops it from `providers`
+and its hosts from `baseUrlHosts`. If it was the only provider the scope was
+limited to, it is kept, since an empty `providers` would mean any provider:
+with provider keys on, the dialog asks you to pick another provider; with
+them off, the save goes through (an off scope grants nothing, and its
+`providers` aren't checked), and turning them back on asks again. Through the
+API, a scope that is on and names a deleted endpoint is refused as an unknown
+provider.
+
+With hosts listed for the endpoint, `POST /provider-keys` takes a top-level
+`baseUrl` (at most 2048 characters; `null` is the same as leaving it out)
+when:
+
+- it parses as a URL and uses `https`;
+- it has no user name or password, and no port other than 443;
+- its host is not an IP address or `localhost`;
+- its host matches one of that endpoint's patterns.
+
+The path and query are free; a `#fragment` is dropped. When the endpoint has no
+hosts, or the host isn't one of them, the answer is a `403` (and goes into the
+audit log). A URL that breaks one of the other rules gets a `400`. Both carry
+`field: "baseUrl"` and the reason. The error never quotes the URL, which can
+carry a token in its query. The URL is then validated and saved the same way as
+one typed into the dashboard: the validation ping runs at that URL, the
+private-network checks apply (a host that resolves to a private address is
+refused), and it's stored as the key's own URL (`providerSpecificData.baseUrl`
+with `ownBaseUrl`), so requests on that key go there and fail over to the next
+key as usual. The hosts are checked again after the probe, so taking a host off
+the list while a key is being added adds nothing.
+
+Everything the endpoint sends with a key goes to that key's own URL too: its
+header lines and custom headers (Advanced settings), both when the key is
+checked and every time it is used. Allowing a host lets whoever runs it see
+those values, so don't put a secret in them unless you trust every host the
+endpoint's list allows. A refused key's audit entry names the host the check
+went to (`baseUrlHost`).
 
 ### What a key can see
 
@@ -158,7 +234,7 @@ being off don't count here.
 | `PATCH` | `/client-keys/:id` | Change `name`, `isActive`, `allowedModels`, `budgetUsd`, `expiresAt` |
 | `DELETE` | `/client-keys/:id` | Delete it |
 | `GET` | `/provider-keys[?provider=id]` | Provider keys it can see |
-| `POST` | `/provider-keys` | Validate and add one: `{ provider, apiKey, name?, defaultModel?, providerSpecificData? }` |
+| `POST` | `/provider-keys` | Validate and add one: `{ provider, apiKey, name?, defaultModel?, providerSpecificData?, baseUrl? }` |
 | `GET` | `/provider-keys/:id` | One provider key |
 | `DELETE` | `/provider-keys/:id` | Delete it |
 
@@ -174,6 +250,12 @@ curl -X POST http://localhost:20128/api/management/v1/client-keys \
 curl -X POST http://localhost:20128/api/management/v1/provider-keys \
   -H "Authorization: Bearer $MK" -H 'Content-Type: application/json' \
   -d '{"provider": "openai-compatible-chat-<id>", "apiKey": "...", "name": "pool 7"}'
+
+# Add a key with its own URL (the scope lists "*.acme.example" for this endpoint)
+curl -X POST http://localhost:20128/api/management/v1/provider-keys \
+  -H "Authorization: Bearer $MK" -H 'Content-Type: application/json' \
+  -d '{"provider": "openai-compatible-chat-<id>", "apiKey": "...", "name": "key-a",
+       "baseUrl": "https://key-a.acme.example/api/v1"}'
 ```
 
 A client key is created in one insert with its limits and owner, so it never
@@ -231,8 +313,10 @@ These go into the log:
 
 - every create, edit and delete a management key makes;
 - a create or edit refused for being outside the scope, a provider-key create
-  for a provider outside the scope, and a provider key the provider refused,
-  each with the reason;
+  for a provider outside the scope, a `baseUrl` refused because the scope lists
+  no hosts for that endpoint or not its host (also when the dashboard narrowed
+  the list during the probe), and a provider key the provider refused, each
+  with the reason;
 - creating, changing and revoking management keys in the dashboard.
 
 These don't: failed authentication (no key, a wrong key, a key that's off,
@@ -241,7 +325,9 @@ name, a `504` probe timeout, `400`s for malformed requests, and edits that
 change nothing.
 
 Each entry has the management key, the action, the target's type and id, a
-time, and a detail with names, providers and limits. It never holds a secret.
+time, and a detail with names, providers and limits. A provider key added with
+its own URL, or refused for its host, records that host (`baseUrlHost`), never
+the full URL. It never holds a secret.
 Every detail stays under 2 KB. A refusal's detail is compacted, since the
 caller picks its content: strings are cut at 300 characters and lists keep
 their first 3 entries plus a count. A success keeps its lists in full (the

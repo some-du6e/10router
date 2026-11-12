@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { getProviderNodeById } from "@/models";
+import { getProviderNodeById, getCustomModels } from "@/models";
+import { QUIRK_KEYS } from "@/shared/utils/nodeQuirks.js";
+import { applyUrlOverrides } from "@/shared/utils/endpointOverrides.js";
+import { pickTestModel } from "@/app/api/providers/[id]/requests/pick.js";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getDefaultModel, getModelsByProviderId } from "open-sse/config/providerModels.js";
 import { resolveOllamaLocalHost, resolveXiaomiTokenplanBaseUrl, PROVIDERS } from "open-sse/config/providers.js";
@@ -8,6 +11,9 @@ import { resolveQoderCredentials, resolveQoderModels } from "open-sse/services/q
 import { normalizeProviderId } from "@/lib/providerNormalization";
 import { generateSessionId } from "open-sse/utils/opencodeSession.js";
 import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
+import { appendUrlPath, resolveCompatibleRoute } from "open-sse/services/provider.js";
+import { stripThinkingSuffix } from "open-sse/translator/concerns/thinkingUnified.js";
+import { getExecutor } from "open-sse/executors/index.js";
 import { resolveKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
 import { isLocalRequest } from "@/dashboardGuard";
 import { makeProbeFetch } from "@/lib/probeFetch.js";
@@ -24,6 +30,29 @@ async function compatibleBaseUrl(request, body, node) {
   const keyUrl = await resolveKeyBaseUrl(body.baseUrl, node.baseUrl, { remote });
   if (!keyUrl.ok) return keyUrl;
   return { ...keyUrl, fetch: keyUrl.own && remote ? makeProbeFetch(true) : plainFetch };
+}
+
+// A node's quirks, picked the way the create route copies them onto a new key.
+const nodeQuirksOf = (node) => Object.fromEntries(QUIRK_KEYS.filter((k) => node[k] !== undefined).map((k) => [k, node[k]]));
+
+// The model a probe that must name one sends: the key's default model, else
+// one listed for the endpoint (a small one if there is one), else `fallback`.
+// A "(level)" thinking suffix is dropped, as routing drops it before renames
+// and routes. Listed models the endpoint routes to another API path
+// (modelRoutes) are picked only when there is no other.
+async function probeModel(body, provider, credentials, fallback) {
+  if (typeof body.defaultModel === "string" && body.defaultModel.trim()) return stripThinkingSuffix(body.defaultModel.trim());
+  const listed = (await getCustomModels().catch(() => []))
+    .filter((m) => m?.providerAlias === provider && (m.kind || m.type || "llm") === "llm" && m.id)
+    .map((m) => m.id);
+  const onThisPath = listed.filter((m) => !resolveCompatibleRoute(provider, m, credentials));
+  return pickTestModel(onThisPath) || pickTestModel(listed) || fallback;
+}
+
+// The smallest request of each API format.
+function probeRequestBody(model, format) {
+  if (format === "openai-responses") return { model, input: "test", max_output_tokens: 16 };
+  return { model, max_tokens: 1, messages: [{ role: "user", content: "test" }] };
 }
 
 // Probe a webSearch/webFetch provider using its searchConfig/fetchConfig.
@@ -143,10 +172,19 @@ export async function POST(request) {
         }
         const keyUrl = await compatibleBaseUrl(request, body, node);
         if (!keyUrl.ok) return NextResponse.json({ valid: false, error: keyUrl.error }, { status: 400 });
-        const modelsUrl = `${keyUrl.baseUrl?.replace(/\/$/, "")}/models`;
-        const res = await keyUrl.fetch(modelsUrl, {
-          headers: { "Authorization": `Bearer ${apiKey}` },
-        });
+        // GET <base>/models: the path goes before the query string
+        // (?api-version=, ?token=), as routing does, plus the node's query
+        // override (sent on every request); its path override is for the chat
+        // path, not /models. No model is sent. The headers are the ones a
+        // request on this key gets (the executor's, with the node's auth
+        // header style, client identity, header lines and custom headers).
+        // The only key in them is the one being checked; any other value the
+        // admin put in the node's header lines goes too, as it does in
+        // routing, to this URL (a key's own URL when it has one).
+        const modelsUrl = applyUrlOverrides(appendUrlPath(keyUrl.baseUrl, "/models"), node.overrides, { replacePath: false });
+        const credentials = { apiKey, providerSpecificData: { ...nodeQuirksOf(node), baseUrl: keyUrl.baseUrl } };
+        const { "Content-Type": _json, ...modelsHeaders } = getExecutor(provider).buildHeaders(credentials, false, modelsUrl, null);
+        const res = await keyUrl.fetch(modelsUrl, { headers: modelsHeaders });
         isValid = res.ok;
         return NextResponse.json({
           valid: isValid,
@@ -193,28 +231,33 @@ export async function POST(request) {
 
         const keyUrl = await compatibleBaseUrl(request, body, node);
         if (!keyUrl.ok) return NextResponse.json({ valid: false, error: keyUrl.error }, { status: 400 });
-        let normalizedBase = keyUrl.baseUrl?.trim().replace(/\/$/, "") || "";
-        if (normalizedBase.endsWith("/messages")) {
-          normalizedBase = normalizedBase.slice(0, -9); // remove /messages
-        }
+        // Probe with the request routing would send on this key, built by
+        // the executor from the quirks a new key gets (the create route's
+        // pick), with the key being checked as the only key. Not the node's
+        // proxy, timeout or retries: those are applied in execute(), which
+        // the probe doesn't use.
+        // - the model: one the endpoint serves (see probeModel), since a
+        //   gateway that limits each key to some models answers another one
+        //   with a 403;
+        // - its route: a model the node sends to another API path
+        //   (modelRoutes) goes there, as in chatCore;
+        // - the URL: <base>/messages before any query string (the base
+        //   carries its version; the default is https://api.anthropic.com/v1),
+        //   then the node's path and query overrides;
+        // - the headers: auth header style, client identity, header lines and
+        //   custom headers (whatever the admin put there goes to this URL,
+        //   as in routing);
+        // - the body: the node's model renames and body edits.
+        const executor = getExecutor(provider);
+        const credentials = { apiKey, providerSpecificData: { ...nodeQuirksOf(node), baseUrl: keyUrl.baseUrl } };
+        const model = await probeModel(body, provider, credentials, "claude-3-haiku-20240307");
+        const route = resolveCompatibleRoute(provider, model, credentials);
+        if (route) credentials.runtimeTransport = route;
+        const probeUrl = executor.buildUrl(model, false, 0, credentials);
+        const probeHeaders = executor.buildHeaders(credentials, false, probeUrl, model);
+        const probeBody = await executor.transformRequest(model, probeRequestBody(model, route?.format), false, credentials);
 
-        const messagesUrl = `${normalizedBase}/v1/messages`;
-        const model = node.defaultModel || "claude-3-haiku-20240307";
-
-        const res = await keyUrl.fetch(messagesUrl, {
-          method: "POST",
-          headers: {
-            "x-api-key": apiKey,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-            "Authorization": `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model,
-            max_tokens: 1,
-            messages: [{ role: "user", content: "test" }],
-          }),
-        });
+        const res = await keyUrl.fetch(probeUrl, { method: "POST", headers: probeHeaders, body: JSON.stringify(probeBody) });
 
         // 400/529 still confirms key accepted; only 401/403 = bad key
         isValid = res.status !== 401 && res.status !== 403;
