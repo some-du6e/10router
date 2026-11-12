@@ -104,6 +104,7 @@ function OwnUrlHosts({ value, onChange, endpoints }) {
         onChange={(e) => e.target.value && set(e.target.value, [])}
         placeholder={endpoints.length ? "Allow own URLs for an endpoint…" : "No custom endpoint in this scope"}
         options={endpoints.filter((o) => !listed.includes(o.value))}
+        aria-label="Allow own URLs for an endpoint"
       />
     </div>
   );

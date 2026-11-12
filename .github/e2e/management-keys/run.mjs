@@ -78,17 +78,26 @@ const refused = await call("POST", "/api/management/v1/provider-keys", { token: 
 check("a key the provider refuses is not added", refused.status === 422, String(refused.status));
 const pool = await context.request.get("/api/providers");
 check("the refused key is not in the pool", !(await pool.text()).includes("e2e refused"));
+// A key's own URL: hosts are allowed per custom endpoint, by the dashboard.
+const nodeRes = await context.request.post("/api/provider-nodes", { data: { name: "e2e acme", prefix: "e2eacme", apiType: "chat", type: "openai-compatible", baseUrl: "https://api.acme.example/v1" } });
+const acmeNode = (await nodeRes.json()).node?.id;
+check("dashboard creates a custom endpoint", nodeRes.ok() && !!acmeNode, String(nodeRes.status()));
 const noHosts = await call("POST", "/api/management/v1/provider-keys", { token: providerMgmt, data: { provider: "openai", apiKey: fakeUpstream, baseUrl: "https://key-a.acme.example/v1" } });
-check("a baseUrl is refused when the dashboard allowed no hosts", noHosts.status === 400 && /hasn't allowed it any hosts/.test(noHosts.text), `${noHosts.status} ${noHosts.text.slice(0, 120)}`);
-const hostsMgmt = await makeKey("e2e hosts", { providerKeys: { enabled: true, baseUrlHosts: ["*.acme.example"] } });
+check("a baseUrl is refused (403) when the dashboard allowed no hosts", noHosts.status === 403 && /hasn't allowed it any hosts/.test(noHosts.text), `${noHosts.status} ${noHosts.text.slice(0, 120)}`);
+const hostsMgmt = await makeKey("e2e hosts", { providerKeys: { enabled: true, providers: [acmeNode, "openai"], baseUrlHosts: { [acmeNode]: ["*.acme.example"] } } });
 const hostsMe = await call("GET", "/api/management/v1/me", { token: hostsMgmt });
-check("GET /me shows the allowed hosts", JSON.stringify(hostsMe.json?.managementKey?.scopes?.providerKeys?.baseUrlHosts) === '["*.acme.example"]');
-const httpUrl = await call("POST", "/api/management/v1/provider-keys", { token: hostsMgmt, data: { provider: "openai", apiKey: fakeUpstream, baseUrl: "http://key-a.acme.example/v1" } });
-check("a http baseUrl is refused", httpUrl.status === 400 && /must use https/.test(httpUrl.text), String(httpUrl.status));
-const notCustom = await call("POST", "/api/management/v1/provider-keys", { token: hostsMgmt, data: { provider: "openai", apiKey: fakeUpstream, baseUrl: "https://key-a.acme.example/v1" } });
-check("a baseUrl is refused for a provider with no per-key URL", notCustom.status === 400 && /custom OpenAI- or Anthropic-compatible/.test(notCustom.text), String(notCustom.status));
-const badPattern = await context.request.post("/api/management-keys", { data: { name: "e2e bad hosts", scopes: { providerKeys: { enabled: true, baseUrlHosts: ["*"] } } } });
-check("the dashboard refuses a bare * host pattern", badPattern.status() === 400, String(badPattern.status()));
+check("GET /me shows the allowed hosts", JSON.stringify(hostsMe.json?.managementKey?.scopes?.providerKeys?.baseUrlHosts) === JSON.stringify({ [acmeNode]: ["*.acme.example"] }));
+const httpUrl = await call("POST", "/api/management/v1/provider-keys", { token: hostsMgmt, data: { provider: acmeNode, apiKey: fakeUpstream, baseUrl: "http://key-a.acme.example/v1" } });
+check("a http baseUrl is refused (400)", httpUrl.status === 400 && /must use https/.test(httpUrl.text), String(httpUrl.status));
+const wrongHost = await call("POST", "/api/management/v1/provider-keys", { token: hostsMgmt, data: { provider: acmeNode, apiKey: fakeUpstream, baseUrl: "https://key-a.other.example/v1" } });
+check("a baseUrl on a host not listed is refused (403)", wrongHost.status === 403 && /isn't one this management key may use/.test(wrongHost.text), String(wrongHost.status));
+const otherProvider = await call("POST", "/api/management/v1/provider-keys", { token: hostsMgmt, data: { provider: "openai", apiKey: fakeUpstream, baseUrl: "https://key-a.acme.example/v1" } });
+check("the endpoint's hosts don't carry over to another provider (403)", otherProvider.status === 403 && /hasn't allowed it any hosts for "openai"/.test(otherProvider.text), String(otherProvider.status));
+// key-a.acme.example resolves nowhere, so the probe fails; getting that far shows the built server passes baseUrl through.
+const ownUrl = await call("POST", "/api/management/v1/provider-keys", { token: hostsMgmt, data: { provider: acmeNode, apiKey: fakeUpstream, name: "e2e own url", baseUrl: "https://key-a.acme.example/v1" } });
+check("an allowed host gets past the URL checks to the probe", [422, 504].includes(ownUrl.status), `${ownUrl.status} ${ownUrl.text.slice(0, 120)}`);
+const badPattern = await context.request.post("/api/management-keys", { data: { name: "e2e bad hosts", scopes: { providerKeys: { enabled: true, baseUrlHosts: { [acmeNode]: ["*"] } } } } });
+check("the dashboard refuses a bare * host pattern", badPattern.status() === 400 && /would allow any host/.test(await badPattern.text()), String(badPattern.status()));
 const noClient = await call("GET", "/api/management/v1/client-keys", { token: providerMgmt });
 check("a provider-keys-only key can't list client keys", noClient.status === 403, String(noClient.status));
 
@@ -143,13 +152,14 @@ await card.getByRole("button", { name: "Create Key" }).click();
 await page.getByPlaceholder("e.g. Key rotation script").fill("e2e from the UI");
 await page.getByRole("switch", { name: "Provider keys" }).click();
 await page.waitForTimeout(500); // the toggle's transition
-const hostBox = page.getByLabel("Add an allowed host");
+await page.getByLabel("Allow own URLs for an endpoint").selectOption({ value: acmeNode });
+const hostBox = page.getByLabel("Add an allowed host for e2e acme (custom)");
 await hostBox.fill("*");
 await hostBox.locator("xpath=following-sibling::button").click();
-check("the dialog refuses a bare * host", await page.getByText("a bare * would allow any host").first().isVisible());
-await hostBox.fill("*.acme.example");
+check("the dialog refuses a bare * host", await page.getByText("would allow any host; use *.acme.example").first().isVisible());
+await hostBox.fill("*.ACME.example");
 await hostBox.locator("xpath=following-sibling::button").click();
-check("the dialog lists the added host", await page.getByRole("button", { name: "Remove *.acme.example" }).isVisible());
+check("the dialog lists the added host, lowercased", await page.getByRole("button", { name: "Remove *.acme.example" }).isVisible());
 await page.screenshot({ path: `${outDir}/create-modal.png`, fullPage: false });
 await page.getByRole("button", { name: "Create", exact: true }).click();
 const secretBox = page.locator("input[readonly]");
@@ -167,8 +177,19 @@ check("new key is listed", true);
 check("the list never shows the secret", !(await card.innerText()).includes(shown));
 const viaUi = await call("GET", "/api/management/v1/me", { token: shown });
 check("the UI-created key works", viaUi.status === 200 && viaUi.json?.managementKey?.scopes?.providerKeys?.enabled === true, String(viaUi.status));
-check("the UI-created key has the host it was given", JSON.stringify(viaUi.json?.managementKey?.scopes?.providerKeys?.baseUrlHosts) === '["*.acme.example"]');
-check("the card shows the hosts in the scope summary", (await card.innerText()).includes("own URLs on *.acme.example"));
+const uiHosts = JSON.stringify({ [acmeNode]: ["*.acme.example"] });
+check("the UI-created key has the host it was given", JSON.stringify(viaUi.json?.managementKey?.scopes?.providerKeys?.baseUrlHosts) === uiHosts);
+const uiRow = card.locator("div.group", { hasText: "e2e from the UI" });
+check("its row shows the hosts in the scope summary", (await uiRow.innerText()).includes(`own URLs: ${acmeNode} on *.acme.example`));
+
+// Editing something else keeps the hosts.
+await card.getByRole("button", { name: "Edit e2e from the UI", exact: true }).click();
+await page.getByPlaceholder("e.g. Key rotation script").fill("e2e from the UI, renamed");
+await page.getByRole("button", { name: "Save", exact: true }).click();
+await card.getByText("e2e from the UI, renamed", { exact: true }).first().waitFor({ state: "visible", timeout: 30000 });
+const afterEdit = await call("GET", "/api/management/v1/me", { token: shown });
+check("a rename in the dialog keeps the hosts", afterEdit.json?.managementKey?.name === "e2e from the UI, renamed"
+  && JSON.stringify(afterEdit.json?.managementKey?.scopes?.providerKeys?.baseUrlHosts) === uiHosts, afterEdit.text.slice(0, 200));
 await page.screenshot({ path: `${outDir}/endpoint-page.png`, fullPage: true, mask: [page.locator("code")] });
 
 await browser.close();

@@ -29,9 +29,14 @@ on:
       # A key's own URL: how it is checked, stored and routed.
       - "src/shared/utils/endpointUrl.ts"
       - "src/shared/utils/connectionBaseUrl.ts"
+      - "src/shared/utils/ssrfGuard.js"
       - "open-sse/utils/ssrfGuard.js"
       - "open-sse/utils/proxyFetch.js"
+      - "open-sse/services/provider.js"
       - "open-sse/executors/**"
+      - "src/app/api/provider-nodes/**"
+      - "src/app/(dashboard)/dashboard/endpoint/components/ModelAllowlistField.js"
+      - "tests/unit/compatible-multi-endpoint.test.js"
       - "src/shared/utils/apiKeyLimits.js"
       - "src/shared/utils/clientApiKey.js"
       - "src/sse/services/keyLimits.js"
@@ -100,6 +105,7 @@ jobs:
           unit/key-limits-payload.test.js
           unit/custom-server-peer-headers.test.js
           unit/auto-disable-dead-keys.test.js
+          unit/compatible-multi-endpoint.test.js
       - name: Lint
         run: >
           ./node_modules/.bin/eslint
@@ -128,6 +134,8 @@ jobs:
           tests/unit/management-keys.test.js
           tests/unit/management-keys-guard.test.js
           tests/unit/management-keys-migration.test.js
+          tests/unit/compatible-multi-endpoint.test.js
+          src/app/api/providers/validate/route.js
           .github/e2e/management-keys/run.mjs
 
   # The built app: the real proxy in front of the management API, /v1 and the

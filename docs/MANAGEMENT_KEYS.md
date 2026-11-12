@@ -40,7 +40,7 @@ reverse proxy or tunnel, is treated as remote.
     "enabled": true,
     "providers": ["openai-compatible-chat-<id>"],
     "manageExisting": false,
-    "baseUrlHosts": ["*.acme.example"]
+    "baseUrlHosts": { "openai-compatible-chat-<id>": ["*.acme.example"] }
   }
 }
 ```
@@ -133,36 +133,50 @@ Ollama local) have to be set up in the dashboard.
 Some upstreams give each key its own host, one account per host
 (`https://key-a.acme.example/...`). A custom endpoint's key can carry its own
 URL for that (the per-key URL on the endpoint page), and the dashboard can let a
-management key set one, on hosts it lists in `providerKeys.baseUrlHosts`
-("Allowed hosts for a key's own URL" in the key's dialog, under Provider keys):
+management key set one. `providerKeys.baseUrlHosts` maps a custom endpoint's id
+to the hosts its keys may use ("Own URLs for the keys it adds" in the key's
+dialog, under Provider keys). Hosts are allowed per endpoint, so a host trusted
+for one endpoint's keys can't be used to send another endpoint's keys
+somewhere else.
 
 - `api.acme.example` matches that host only.
 - `*.acme.example` matches exactly one more label: `key-a.acme.example`, not
   `acme.example` and not `a.b.acme.example`.
 
-Patterns are checked when the dashboard saves them: lowercase, no bare `*`, a
-wildcard only as the first label with at least two labels after it, no IP
-address, no port, no `localhost`. Only the dashboard can set them; no
-management API route takes scopes. Without `baseUrlHosts` (the default) a
-`baseUrl` is refused, and keys use the endpoint's own URL.
+The dashboard checks the list when it saves it:
 
-With hosts listed, `POST /provider-keys` takes a top-level `baseUrl` when:
+- each id is a custom OpenAI- or Anthropic-compatible endpoint that exists,
+  and one of `providers` when the scope lists some (with no `providers`, the
+  ids named here are the endpoints that get hosts);
+- each pattern is lowercase, has no bare `*`, has a wildcard only as its first
+  label with at least two labels after it, and has no IP address, port or
+  `localhost`;
+- an endpoint has at most 50 patterns.
 
-- the provider is a custom OpenAI- or Anthropic-compatible endpoint (the only
-  keys that can have their own URL);
+Only the dashboard can set them; no management API route takes scopes. Without
+hosts for an endpoint (the default) a `baseUrl` for its keys is refused, and
+they use the endpoint's own URL.
+
+With hosts listed for the endpoint, `POST /provider-keys` takes a top-level
+`baseUrl` (at most 2048 characters; `null` is the same as leaving it out)
+when:
+
 - it parses as a URL and uses `https`;
 - it has no user name or password, and no port other than 443;
 - its host is not an IP address or `localhost`;
-- its host matches one of the patterns.
+- its host matches one of that endpoint's patterns.
 
-The path is free. Anything else gets a `400` with `field: "baseUrl"` and the
-reason. The error never quotes the URL, which can carry a token in its query.
-The URL is then validated and saved the same way as one typed into the
-dashboard: the validation ping runs at that URL, the private-network checks
-apply, and it's stored as the key's own URL (`providerSpecificData.baseUrl` with
-`ownBaseUrl`), so requests on that key go there and fail over to the next key as
-usual. The hosts are checked again after the probe, so taking a host off the
-list while a key is being added adds nothing.
+The path and query are free; a `#fragment` is dropped. When the endpoint has no
+hosts, or the host isn't one of them, the answer is a `403` (and goes into the
+audit log). A URL that breaks one of the other rules gets a `400`. Both carry
+`field: "baseUrl"` and the reason. The error never quotes the URL, which can
+carry a token in its query. The URL is then validated and saved the same way as
+one typed into the dashboard: the validation ping runs at that URL, the
+private-network checks apply (a host that resolves to a private address is
+refused), and it's stored as the key's own URL (`providerSpecificData.baseUrl`
+with `ownBaseUrl`), so requests on that key go there and fail over to the next
+key as usual. The hosts are checked again after the probe, so taking a host off
+the list while a key is being added adds nothing.
 
 ### What a key can see
 
@@ -212,7 +226,7 @@ curl -X POST http://localhost:20128/api/management/v1/provider-keys \
   -H "Authorization: Bearer $MK" -H 'Content-Type: application/json' \
   -d '{"provider": "openai-compatible-chat-<id>", "apiKey": "...", "name": "pool 7"}'
 
-# Add a key with its own URL (the scope lists "*.acme.example")
+# Add a key with its own URL (the scope lists "*.acme.example" for this endpoint)
 curl -X POST http://localhost:20128/api/management/v1/provider-keys \
   -H "Authorization: Bearer $MK" -H 'Content-Type: application/json' \
   -d '{"provider": "openai-compatible-chat-<id>", "apiKey": "...", "name": "key-a",
@@ -226,8 +240,7 @@ one transaction, which checks the management key and the dashboard's choices
 again against the row as it is then, so an admin pausing the key mid-request wins. A provider key whose owner can't be recorded is deleted again.
 
 Unknown body fields get a `400`, so a typo can't silently do nothing. A request
-outside the scope gets a `403` with the reason, except a `baseUrl` the scope
-doesn't allow, which gets a `400` like the other `baseUrl` refusals.
+outside the scope gets a `403` with the reason.
 
 ### What responses contain
 
@@ -276,8 +289,9 @@ These go into the log:
 - every create, edit and delete a management key makes;
 - a create or edit refused for being outside the scope, a provider-key create
   for a provider outside the scope, a `baseUrl` refused because the scope lists
-  no hosts or not its host, and a provider key the provider refused, each with
-  the reason;
+  no hosts for that endpoint or not its host (also when the dashboard narrowed
+  the list during the probe), and a provider key the provider refused, each
+  with the reason;
 - creating, changing and revoking management keys in the dashboard.
 
 These don't: failed authentication (no key, a wrong key, a key that's off,
