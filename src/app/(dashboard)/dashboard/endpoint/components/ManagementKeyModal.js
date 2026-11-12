@@ -7,7 +7,7 @@ import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { isoToLocalInput, localInputToIso } from "./keyFormat";
 import StatusAlert from "./StatusAlert";
 import ModelAllowlistField from "./ModelAllowlistField";
-import { fromSaved, toPayload, withProviders, isDeletedEndpoint } from "./managementScopeForm.js";
+import { fromSaved, toPayload, withProviders, isDeletedEndpoint, scopeProblem } from "./managementScopeForm.js";
 import { MANAGEMENT_KEYS_DOCS_URL, hostPatternError, isCompatibleEndpointId } from "@/shared/utils/managementKey.js";
 
 function Chips({ items, onRemove, empty }) {
@@ -35,11 +35,12 @@ Chips.propTypes = {
   items: PropTypes.arrayOf(PropTypes.shape({ value: PropTypes.string, label: PropTypes.string })).isRequired,
   onRemove: PropTypes.func.isRequired,
   empty: PropTypes.string.isRequired,
+  isDeleted: PropTypes.func,
 };
 
 /** Pick provider ids: built-in providers and the custom endpoints (provider nodes). */
-function ProviderPicker({ value, onChange, options, empty }) {
-  const labelOf = (id) => options.find((o) => o.value === id)?.label || id;
+function ProviderPicker({ value, onChange, options, empty, isDeleted = () => false }) {
+  const labelOf = (id) => options.find((o) => o.value === id)?.label || (isDeleted(id) ? `Deleted endpoint (${id}), dropped on save` : id);
   const add = (id) => id && !value.includes(id) && onChange([...value, id]);
   return (
     <div className="flex flex-col gap-2">
@@ -84,7 +85,7 @@ function OwnUrlHosts({ value, onChange, endpoints, isDeleted }) {
         <div key={id} className="rounded-lg border border-border p-2">
           <div className="mb-1 flex items-center justify-between gap-2">
             <span className="text-xs font-medium">{labelOf(id)}</span>
-            {isDeleted(id) && <span className="text-[11px] text-orange-500">This endpoint was deleted; its hosts are dropped when you save.</span>}
+            {isDeleted(id) && <span className="text-[11px] text-orange-500">This endpoint was deleted; it and its hosts are dropped from the scope when you save.</span>}
             <button onClick={() => drop(id)} className="text-xs text-text-muted hover:text-red-500" aria-label={`Stop allowing own URLs for ${labelOf(id)}`}>
               Remove
             </button>
@@ -157,6 +158,8 @@ export default function ManagementKeyModal({ managementKey, onClose, onSaved }) 
     const budget = scopes.clientKeys.maxBudgetUsd.trim();
     if (budget && (!Number.isFinite(Number(budget)) || Number(budget) < 0)) return setError("Budget cap must be a dollar amount of 0 or more.");
     if (expiry && !localInputToIso(expiry)) return setError("Expiry is not a valid date.");
+    const problem = scopeProblem(scopes, knownEndpoints);
+    if (problem) return setError(problem);
     setSaving(true);
     setError("");
     try {
@@ -255,6 +258,7 @@ export default function ManagementKeyModal({ managementKey, onClose, onSaved }) 
                     onChange={setProviderList}
                     options={providerOptions}
                     empty="Any provider."
+                    isDeleted={(id) => isDeletedEndpoint(id, knownEndpoints)}
                   />
                 </div>
                 <Toggle

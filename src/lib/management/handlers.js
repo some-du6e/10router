@@ -333,7 +333,8 @@ export function createProviderKey(request) {
 
     const routes = await dashboardProviderRoutes();
     const apiKey = body.apiKey.trim();
-    const probe = await probeKey(routes.validate, { provider, apiKey, providerSpecificData: psd.data, ...keyUrl.field });
+    // defaultModel too: a probe that has to name a model uses the key's own.
+    const probe = await probeKey(routes.validate, { provider, apiKey, defaultModel: body.defaultModel, providerSpecificData: psd.data, ...keyUrl.field });
     if (probe === PROBE_TIMED_OUT) return fail(504, `The provider did not answer the validation request within ${Math.round(probeTimeoutMs() / 1000)}s; the key was not added`);
     if (!probe.res.ok) return fail(probe.res.status, typeof probe.body.error === "string" ? probe.body.error : "Could not validate the key");
     if (probe.body.valid !== true) {

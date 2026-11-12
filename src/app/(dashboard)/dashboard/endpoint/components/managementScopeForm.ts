@@ -1,6 +1,7 @@
 // The management key dialog's scope state: from a saved key, to the payload
 // the dashboard sends. Pure functions, so the rules about which own-URL hosts
 // are kept are unit-tested (tests/unit/management-keys.test.js).
+import { OPENAI_COMPATIBLE_PREFIX, ANTHROPIC_COMPATIBLE_PREFIX, CUSTOM_EMBEDDING_PREFIX } from "@/shared/constants/providers.js";
 
 /** Endpoint id to its allowed host patterns. */
 export type HostMap = Record<string, string[]>;
@@ -67,13 +68,40 @@ export function fromSaved(scopes: SavedScopes | null | undefined): ScopesForm {
 const sameId = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
 const listed = (ids: Iterable<string>, id: string): boolean => [...ids].some((x) => sameId(x, id));
 
+/** Is this a custom endpoint's id (a provider node), rather than a built-in provider? */
+export function isCustomEndpointId(id: string): boolean {
+  return [OPENAI_COMPATIBLE_PREFIX, ANTHROPIC_COMPATIBLE_PREFIX, CUSTOM_EMBEDDING_PREFIX].some((p) => id.startsWith(p));
+}
+
 /**
- * Is this endpoint gone? `knownEndpoints` is the set of endpoint ids loaded
- * from the dashboard, or null while they haven't loaded (then nothing counts
- * as gone, so a slow load never drops hosts).
+ * Is this custom endpoint gone? `knownEndpoints` is the set of endpoint ids
+ * loaded from the dashboard, or null while they haven't loaded (then nothing
+ * counts as gone, so a slow or failed load never drops anything). Built-in
+ * providers are never gone.
  */
 export function isDeletedEndpoint(id: string, knownEndpoints: Set<string> | null): boolean {
-  return !!knownEndpoints && !listed(knownEndpoints, id);
+  return !!knownEndpoints && isCustomEndpointId(id) && !listed(knownEndpoints, id);
+}
+
+/**
+ * The provider-keys providers to save: deleted endpoints are left out, so a
+ * key that named one can still be saved. If that would empty a list that
+ * wasn't empty, it is kept as it is: an empty list means "any provider", so
+ * dropping the last one would widen the scope. scopeProblem tells the admin.
+ */
+export function providersPayload(pk: ProviderKeysForm, knownEndpoints: Set<string> | null = null): string[] | null {
+  if (!pk.providers.length) return null;
+  const kept = pk.providers.filter((id) => !isDeletedEndpoint(id, knownEndpoints));
+  return kept.length ? kept : pk.providers;
+}
+
+/** Why the dialog can't save these scopes as they are, or null. */
+export function scopeProblem(s: ScopesForm, knownEndpoints: Set<string> | null = null): string | null {
+  const pk = s.providerKeys;
+  if (pk.enabled && pk.providers.length && pk.providers.every((id) => isDeletedEndpoint(id, knownEndpoints))) {
+    return "Every provider this key's provider keys were limited to has been deleted. Pick a provider, or turn provider keys off.";
+  }
+  return null;
 }
 
 /** A new providers list; taking an endpoint out of the scope drops its hosts too. */
@@ -112,7 +140,7 @@ export function toPayload(s: ScopesForm, knownEndpoints: Set<string> | null = nu
     },
     providerKeys: {
       enabled: s.providerKeys.enabled,
-      providers: s.providerKeys.providers.length ? s.providerKeys.providers : null,
+      providers: providersPayload(s.providerKeys, knownEndpoints),
       manageExisting: s.providerKeys.manageExisting,
       baseUrlHosts: ownUrlHostsPayload(s.providerKeys, knownEndpoints),
     },

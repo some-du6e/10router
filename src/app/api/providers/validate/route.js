@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { getProviderNodeById } from "@/models";
+import { getProviderNodeById, getCustomModels } from "@/models";
+import { QUIRK_KEYS } from "@/shared/utils/nodeQuirks.js";
+import { applyUrlOverrides } from "@/shared/utils/endpointOverrides.js";
+import { pickTestModel } from "@/app/api/providers/[id]/requests/pick.js";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getDefaultModel, getModelsByProviderId } from "open-sse/config/providerModels.js";
 import { resolveOllamaLocalHost, resolveXiaomiTokenplanBaseUrl, PROVIDERS } from "open-sse/config/providers.js";
@@ -26,6 +29,19 @@ async function compatibleBaseUrl(request, body, node) {
   const keyUrl = await resolveKeyBaseUrl(body.baseUrl, node.baseUrl, { remote });
   if (!keyUrl.ok) return keyUrl;
   return { ...keyUrl, fetch: keyUrl.own && remote ? makeProbeFetch(true) : plainFetch };
+}
+
+// A node's quirks, picked the way the create route copies them onto a new key.
+const nodeQuirksOf = (node) => Object.fromEntries(QUIRK_KEYS.filter((k) => node[k] !== undefined).map((k) => [k, node[k]]));
+
+// The model a probe that must name one sends: the key's default model, else
+// one listed for the endpoint (a small one if there is one), else `fallback`.
+async function probeModel(body, provider, fallback) {
+  if (typeof body.defaultModel === "string" && body.defaultModel.trim()) return body.defaultModel.trim();
+  const listed = (await getCustomModels().catch(() => []))
+    .filter((m) => m?.providerAlias === provider && (m.kind || m.type || "llm") === "llm" && m.id)
+    .map((m) => m.id);
+  return pickTestModel(listed) || fallback;
 }
 
 // Probe a webSearch/webFetch provider using its searchConfig/fetchConfig.
@@ -145,8 +161,10 @@ export async function POST(request) {
         }
         const keyUrl = await compatibleBaseUrl(request, body, node);
         if (!keyUrl.ok) return NextResponse.json({ valid: false, error: keyUrl.error }, { status: 400 });
-        // Path before the query string (?api-version=, ?token=), as routing does.
-        const modelsUrl = appendUrlPath(keyUrl.baseUrl, "/models");
+        // Path before the query string (?api-version=, ?token=), as routing
+        // does, plus the node's query override (sent on every request). Its
+        // path override is for the chat path, not /models. No model is sent.
+        const modelsUrl = applyUrlOverrides(appendUrlPath(keyUrl.baseUrl, "/models"), node.overrides, { replacePath: false });
         const res = await keyUrl.fetch(modelsUrl, {
           headers: { "Authorization": `Bearer ${apiKey}` },
         });
@@ -196,11 +214,18 @@ export async function POST(request) {
 
         const keyUrl = await compatibleBaseUrl(request, body, node);
         if (!keyUrl.ok) return NextResponse.json({ valid: false, error: keyUrl.error }, { status: 400 });
-        // Probe the URL requests on this key go to, from the executor's own
-        // builder: <base>/messages, before any query string. The base already
+        // Probe the request routing would send on this key: the executor
+        // builds the URL (<base>/messages before any query string, then the
+        // node's path/query overrides) and the body (its model renames and
+        // body edits), from the same quirks a new key gets. The base already
         // carries its version (the default is https://api.anthropic.com/v1).
-        const model = node.defaultModel || "claude-3-haiku-20240307";
-        const messagesUrl = getExecutor(provider).buildUrl(model, false, 0, { providerSpecificData: { baseUrl: keyUrl.baseUrl } });
+        // The model is one the endpoint serves, since a gateway that limits
+        // each key to some models can answer another one with a 403.
+        const executor = getExecutor(provider);
+        const credentials = { apiKey, providerSpecificData: { ...nodeQuirksOf(node), baseUrl: keyUrl.baseUrl } };
+        const model = await probeModel(body, provider, "claude-3-haiku-20240307");
+        const messagesUrl = executor.buildUrl(model, false, 0, credentials);
+        const probeBody = await executor.transformRequest(model, { model, max_tokens: 1, messages: [{ role: "user", content: "test" }] }, false, credentials);
 
         const res = await keyUrl.fetch(messagesUrl, {
           method: "POST",
@@ -210,11 +235,7 @@ export async function POST(request) {
             "content-type": "application/json",
             "Authorization": `Bearer ${apiKey}`,
           },
-          body: JSON.stringify({
-            model,
-            max_tokens: 1,
-            messages: [{ role: "user", content: "test" }],
-          }),
+          body: JSON.stringify(probeBody),
         });
 
         // 400/529 still confirms key accepted; only 401/403 = bad key

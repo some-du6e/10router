@@ -535,6 +535,31 @@ describe("provider keys with their own URL", () => {
     expect((await db.getManagementKeyById(mk.id)).scopes.providerKeys.baseUrlHosts).toEqual({ [NODE]: WILDCARD });
   });
 
+  it("a deleted endpoint in the scope's providers is dropped on save too, but never the last one", async () => {
+    const gone = "openai-compatible-chat-acme-gone-2";
+    await db.createProviderNode({ id: gone, type: "openai-compatible", name: "Gone 2", prefix: "gone2", apiType: "chat", baseUrl: "https://gone2.acme.example/v1" });
+    const mk = await newManagementKey(scopeWith({ [NODE]: WILDCARD, [gone]: WILDCARD }, [NODE, gone, "openai"]));
+    const alone = await newManagementKey(scopeWith({ [gone]: WILDCARD }, [gone]));
+    await db.deleteProviderNode(gone);
+    const known = new Set((await db.getProviderNodes()).map((n) => n.id));
+
+    const state = scopeForm.fromSaved((await db.getManagementKeyById(mk.id)).scopes);
+    // Before the endpoints load nothing is dropped; built-in providers are never "deleted".
+    expect(scopeForm.toPayload(state, null).providerKeys.providers).toEqual([NODE, gone, "openai"]);
+    expect(scopeForm.isDeletedEndpoint("openai", known)).toBe(false);
+    expect(scopeForm.scopeProblem(state, known)).toBeNull();
+    const res = await dashboard.patch(mk.id, { name: "renamed 2", scopes: scopeForm.toPayload(state, known) });
+    expect(res.status, res.text).toBe(200);
+    expect((await db.getManagementKeyById(mk.id)).scopes.providerKeys).toMatchObject({ providers: [NODE, "openai"], baseUrlHosts: { [NODE]: WILDCARD } });
+
+    // Dropping the only provider would turn "only this endpoint" into "any provider": refused instead.
+    const lone = scopeForm.fromSaved((await db.getManagementKeyById(alone.id)).scopes);
+    expect(scopeForm.scopeProblem(lone, known)).toMatch(/Pick a provider, or turn provider keys off/);
+    expect(scopeForm.toPayload(lone, known).providerKeys.providers).toEqual([gone]);
+    expect((await dashboard.patch(alone.id, { scopes: scopeForm.toPayload(lone, known) })).status).toBe(400);
+    expect((await db.getManagementKeyById(alone.id)).scopes.providerKeys.providers).toEqual([gone]);
+  });
+
   it("a wildcard matches exactly one more real label", () => {
     expect(hostMatchesPattern("key-a.acme.example", "*.acme.example")).toBe(true);
     expect(hostMatchesPattern("acme.example", "*.acme.example")).toBe(false);
@@ -569,6 +594,11 @@ describe("provider keys with their own URL", () => {
     const frag = await api.createProvider(exact.secret, { provider: NODE, apiKey: providerSecret("exact"), name: "key-b", baseUrl: "https://key-b.acme.example/v1?x=1#frag" });
     expect(frag.status).toBe(201);
     expect((await db.getProviderConnectionById(frag.body.providerKey.id)).providerSpecificData.baseUrl).toBe("https://key-b.acme.example/v1?x=1");
+
+    // The key's default model goes to the probe, which uses it when it has to name a model.
+    validation.calls = [];
+    expect((await api.createProvider(mk.secret, { provider: NODE, apiKey: providerSecret("dm"), name: "dm", defaultModel: "acme-opus", baseUrl: "https://key-e.acme.example/v1" })).status).toBe(201);
+    expect(validation.calls).toEqual([expect.objectContaining({ defaultModel: "acme-opus", baseUrl: "https://key-e.acme.example/v1" })]);
 
     // null is no baseUrl: the key uses the endpoint's URL.
     const plain = await api.createProvider(mk.secret, { provider: NODE, apiKey: providerSecret("null-url"), name: "null url", baseUrl: null });
