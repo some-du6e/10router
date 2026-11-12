@@ -1771,7 +1771,9 @@ describe("a key refused on only one model", () => {
   it.each([
     [9, 4],
     [11, 1],
-  ])("counts an excluded key's refusal here %i minutes ago as the pass's dead-key try (picks key %i)", async (minutes, picked) => {
+  ])("takes an excluded key's refusal here %i minutes ago as the pass's dead-key try only within 10 minutes (picks key %i)", async (
+    minutes, picked,
+  ) => {
     const { deadKeys, healthy } = await fourDemotedAhead();
     await request("m2", new Set(deadKeys.map((k) => k.id)));
     vi.advanceTimersByTime(minutes * MIN);
