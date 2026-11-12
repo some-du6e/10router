@@ -5,13 +5,10 @@ name: Dead-key stress
 on:
   pull_request:
     paths:
-      - "src/sse/services/auth.js"
-      - "src/lib/db/index.js"
-      - "src/lib/db/repos/connectionsRepo.js"
-      - "open-sse/config/errorConfig.js"
-      - "open-sse/services/accountFallback.js"
-      - "open-sse/utils/errorClass.js"
-      - "open-sse/utils/limitHold.js"
+      - "src/sse/**"
+      - "src/lib/**"
+      - "src/shared/**"
+      - "open-sse/**"
       - "tests/unit/auto-disable-stress.test.js"
       - "tests/unit/auto-disable-stress.pinned.json"
       - "tests/vitest.stress.config.js"

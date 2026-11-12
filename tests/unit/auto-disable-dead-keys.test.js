@@ -1809,7 +1809,7 @@ describe("a key refused on only one model", () => {
     expect(await request("m1", new Set([p.id, q.id]))).toEqual({ tried: [p.id, e.id], served: e.id });
   });
 
-  it("tries a key demoted on another model before one demoted on this model once the pass's dead-key try is used", async () => {
+  it("tries a key demoted on another model before one demoted on this model that ranks ahead of it, once the try is used and the working key is off", async () => {
     // key-x is demoted on m2 with no probe due; key-a (dead) and key-b (lacks
     // only m1) are demoted on m1; key-e is off.
     const x = await addKey("key-x");
