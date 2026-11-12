@@ -169,10 +169,88 @@ describe("tool changes folded into tools[] without their beta", () => {
   it.each([
     ["mid-conversation-tool-changes", MID_BETA],
     ["inline-tools", INLINE_BETA],
-    ["either, in a capitalised header", `effort-2025-11-24, ${MID_BETA}`],
-  ])("passes a by-reference addition through untouched with %s", (_label, flags) => {
+    ["mid-conversation-tool-changes among other flags", `effort-2025-11-24, ${MID_BETA}`],
+  ])("passes a by-reference addition through untouched with %s (capitalised header)", (_label, flags) => {
     const body = byReference();
     expect(fold(body, { "Anthropic-Beta": flags })).toBe(body);
+  });
+
+  it("a dangling tool_use left last gets an interrupted tool_result, not \"Continue.\"", () => {
+    const toolUse = { type: "tool_use", id: "toolu_9", name: "Read", input: { q: "b.txt" } };
+    const out = fold(claudeCodeBody([user(text("read b.txt")), assistant(text("Reading."), toolUse), system(addRef("mcp__docs__search"))]));
+    expect(out.messages.at(-1)).toEqual(user({
+      type: "tool_result", tool_use_id: "toolu_9", content: "Tool execution was interrupted before a result was returned.", is_error: true,
+    }));
+  });
+
+  it("leaves the client's own prefill alone when the dropped message isn't last", () => {
+    const out = fold(claudeCodeBody([user(text("hi")), system(addRef("mcp__docs__search")), user(text("answer in JSON")), assistant(text("{"))]));
+    expect(out.messages).toEqual([user(text("hi"), text("answer in JSON")), assistant(text("{"))]);
+  });
+
+  it("only merges the turns a dropped message sat between", () => {
+    const out = fold(claudeCodeBody([user(text("a")), system(addRef("mcp__docs__search")), user(text("b")), user(text("c"))]));
+    expect(out.messages).toEqual([user(text("a"), text("b")), user(text("c"))]);
+
+    const kept = fold(claudeCodeBody([user(text("a")), user(text("b")), system(addRef("mcp__docs__search")), assistant(text("ok"))]));
+    expect(kept.messages).toEqual([user(text("a")), user(text("b")), assistant(text("ok"))]);
+  });
+
+  it("merges string content as text blocks", () => {
+    const out = fold(claudeCodeBody([{ role: "user", content: "a" }, system(addRef("mcp__docs__search")), { role: "user", content: "b" }]));
+    expect(out.messages).toEqual([user(text("a"), text("b"))]);
+  });
+
+  it("a mixed message is copied, so a later attempt with the beta still has the block", () => {
+    const body = claudeCodeBody([user(text("hi")), system(text("reminder"), addRef("mcp__docs__search"))]);
+    fold(body);
+    expect(body.messages[1].content).toEqual([text("reminder"), addRef("mcp__docs__search")]);
+    expect(toolNamed(body, "mcp__docs__search").defer_loading).toBe(true);
+  });
+
+  it("doesn't add tools[] for a removal when the body had none", () => {
+    const body = claudeCodeBody([user(text("hi")), system(removeRef("Read")), user(text("go"))]);
+    delete body.tools;
+    expect(fold(body)).not.toHaveProperty("tools");
+  });
+
+  it("an unknown tool.type goes through with either beta, and is dropped without one", () => {
+    const odd = { type: "tool_addition", tool: { type: "tool_future_form", name: "mcp__docs__search" } };
+    const body = claudeCodeBody([user(text("hi")), system(odd), user(text("go"))]);
+    expect(fold(body, { "anthropic-beta": MID_BETA })).toBe(body);
+    expect(fold(body, { "anthropic-beta": INLINE_BETA })).toBe(body);
+    const out = fold(body);
+    noToolChanges(out);
+    expect(out.tools).toEqual(TOOLS);
+  });
+
+  it.each([
+    ["an array", [NEW_TOOL]],
+    ["one without a name", { description: "nameless", input_schema: schema }],
+    ["a string", "mcp__notes__add"],
+  ])("drops a malformed definition (%s) instead of adding it", (_label, definition) => {
+    const out = fold(claudeCodeBody([user(text("hi")), system(addDef(definition))]));
+    expect(out.tools).toEqual(TOOLS);
+    noToolChanges(out);
+  });
+
+  it("moves a breakpoint on a removed block to the message now last", () => {
+    const out = fold(claudeCodeBody([user(text("summary")), system({ ...addRef("mcp__docs__search"), cache_control: { type: "ephemeral" } })]));
+    expect(out.messages).toEqual([user({ ...text("summary"), cache_control: { type: "ephemeral" } })]);
+  });
+
+  it("doesn't add a second breakpoint to a message that has one", () => {
+    const marked = { ...text("summary"), cache_control: { type: "ephemeral", ttl: "1h" } };
+    const out = fold(claudeCodeBody([user(text("a"), marked), system({ ...addRef("mcp__docs__search"), cache_control: { type: "ephemeral" } })]));
+    expect(out.messages).toEqual([user(text("a"), marked)]);
+  });
+
+  it("an inline definition replacing a declared tool keeps that tool's breakpoint and brings none of its own", () => {
+    const body = claudeCodeBody([user(text("hi")), system(addDef({ ...NEW_TOOL, cache_control: { type: "ephemeral" } }), addDef({ ...TOOLS[0], description: "v2" }))]);
+    body.tools[0] = { ...body.tools[0], cache_control: { type: "ephemeral", ttl: "1h" } };
+    const out = fold(body);
+    expect(toolNamed(out, "Read")).toEqual({ ...TOOLS[0], description: "v2", cache_control: { type: "ephemeral", ttl: "1h" } });
+    expect(toolNamed(out, "mcp__notes__add")).toEqual(NEW_TOOL);
   });
 
   it("a by-value addition needs inline-tools; the by-reference one beside it goes through", () => {
@@ -338,5 +416,55 @@ describe("Claude Code through chatCore", () => {
     const { providerRequest } = saveRequestDetail.mock.calls[0][0];
     noToolChanges(providerRequest);
     expect(toolNamed(providerRequest, "mcp__docs__search")).not.toHaveProperty("defer_loading");
+  });
+
+  // Strict gateways 400 on a tools[] entry without `type`; Claude Code's by-value definitions have none.
+  it("two-path node: a tool added by value goes out shaped like the other tools", async () => {
+    fetchMock.mockResolvedValueOnce(claudeReply());
+    const fnShape = { type: "function", function: { name: "mcp__notes__list", description: "List notes", parameters: schema } };
+    const builtIn = { type: "web_search_20250305", name: "web_search" };
+    await chat(claudeCodeBody([user(text("note it")), system(addDef(NEW_TOOL), addDef(fnShape), addDef(builtIn))]), twoPath);
+
+    const out = sentBody();
+    noToolChanges(out);
+    expect(toolNamed(out, "mcp__notes__add")).toEqual({ ...NEW_TOOL, type: "custom" });
+    expect(toolNamed(out, "mcp__notes__list")).toEqual({ name: "mcp__notes__list", description: "List notes", input_schema: schema, type: "custom" });
+    expect(toolNamed(out, "web_search")).toBeUndefined();
+    expect(out.tools.every((t) => t.type)).toBe(true);
+  });
+
+  it("passthrough at a third-party host: a tool added by value gets type custom too", async () => {
+    fetchMock.mockResolvedValueOnce(claudeReply());
+    await chat(claudeCodeBody([user(text("note it")), system(addDef(NEW_TOOL))]), { provider: "anthropic-compatible-gw", psd: { baseUrl: GATEWAY } });
+    expect(toolNamed(sentBody(), "mcp__notes__add")).toEqual({ ...NEW_TOOL, type: "custom" });
+  });
+
+  // After /compact: the summary, then the addition, and no assistant turn yet.
+  it("passthrough at a third-party host: the opening prompt keeps its cache breakpoint", async () => {
+    fetchMock.mockResolvedValueOnce(claudeReply());
+    await chat(claudeCodeBody([user(text("summary of the conversation so far")), system(addRef("mcp__docs__search"))]), { provider: "anthropic-compatible-gw", psd: { baseUrl: GATEWAY } });
+
+    const out = sentBody();
+    noToolChanges(out);
+    expect(out.messages).toEqual([user({ ...text("summary of the conversation so far"), cache_control: { type: "ephemeral" } })]);
+  });
+
+  it("Anthropic's own API (passthrough): text beside the addition is folded, the addition goes out", async () => {
+    fetchMock.mockResolvedValueOnce(claudeReply());
+    await chat(claudeCodeBody([user(text("look it up")), system(text("tools changed"), addRef("mcp__docs__search"))]), {
+      provider: "anthropic-compatible-official", psd: { baseUrl: "https://api.anthropic.com/v1" },
+    });
+
+    const out = sentBody();
+    expect(out.messages.at(-1)).toEqual(system(addRef("mcp__docs__search")));
+    expect(JSON.stringify(out.messages[0])).toContain("tools changed");
+  });
+});
+
+describe("translateRequest", () => {
+  it("claude→claude keeps the blocks for the executor to decide on", async () => {
+    const { translateRequest } = await import("../../open-sse/translator/index.js");
+    const out = translateRequest("claude", "claude", MODEL, byReference(), false, { apiKey: "k" }, "anthropic-compatible-official");
+    expect(out.messages).toContainEqual(system(addRef("mcp__docs__search")));
   });
 });
