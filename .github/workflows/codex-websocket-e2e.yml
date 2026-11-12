@@ -2,26 +2,23 @@ name: Codex WebSocket E2E
 
 # The real Codex CLI on its default transport (Responses over WebSocket),
 # against a built 10router whose model is served by a translated Chat
-# Completions endpoint (a stub that streams "ok"), directly and through a
-# Cloudflare quick tunnel. The "master" leg is master from before the fix
-# (pinned, so it keeps showing the hang after the fix merges) and must NOT get
-# an answer through the tunnel; the "pr" leg is this checkout and must answer
-# both ways. Codex is pinned to the version the bug was reported on.
+# Completions endpoint (the early-headers mock, mock/fast streams "pong"),
+# directly and through a Cloudflare quick tunnel. The "master" leg is master
+# from before the fix (pinned, so it keeps showing the hang after the fix
+# merges) and must show the hang's signature through the tunnel; the "pr" leg
+# is this checkout and must answer both ways. Codex is pinned to the version
+# the bug was reported on.
 on:
   pull_request:
     paths:
       - "custom-server.js"
       - "src/app/api/v1/codex/**"
-      - "src/app/api/v1/responses/route.js"
-      - "src/sse/handlers/chat.ts"
-      - "open-sse/handlers/chatCore.js"
-      - "open-sse/handlers/chatCore/streamingHandler.js"
-      - "open-sse/utils/earlyHeaders.js"
-      - "open-sse/translator/response/openai-responses.js"
-      - "open-sse/translator/request/openai-responses.js"
+      - "next.config.mjs"
+      - "package.json"
       - "tests/unit/codex-ws-translated.test.js"
       - "tests/unit/codex-ws-bridge-peer.test.js"
       - ".github/e2e/codex-ws/**"
+      - ".github/e2e/early-headers/**"
       - ".github/workflows/codex-websocket-e2e.yml"
   workflow_dispatch:
 
@@ -35,6 +32,7 @@ permissions:
   contents: read
 
 jobs:
+  # The peer test and the custom-server.js lint run in management-keys.yml.
   unit:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -50,9 +48,9 @@ jobs:
           cd tests && bun install --ignore-scripts
       - name: Unit tests
         working-directory: tests
-        run: ./node_modules/.bin/vitest run unit/codex-ws-translated.test.js unit/codex-ws-bridge-peer.test.js
+        run: ./node_modules/.bin/vitest run unit/codex-ws-translated.test.js
       - name: Lint
-        run: ./node_modules/.bin/eslint custom-server.js tests/unit/codex-ws-translated.test.js tests/unit/codex-ws-bridge-peer.test.js .github/e2e/codex-ws/stub-upstream.mjs
+        run: ./node_modules/.bin/eslint tests/unit/codex-ws-translated.test.js
 
   # The suite is not all-green on master (see AGENTS.md), so this runs it on
   # both the base and this branch and fails only on tests that pass on the base
@@ -150,6 +148,13 @@ jobs:
           npm install -g "@openai/codex@${CODEX_VERSION}"
           cloudflared --version
           codex --version
+      # Its own step, so the mask command reaches only the runner, never the
+      # tee'd log, the summary or an artifact. stack.sh uses this key.
+      - name: Make the per-run client key
+        run: |
+          key="sk-e2e-$(openssl rand -hex 12)"
+          echo "::add-mask::$key"
+          echo "E2E_API_KEY=$key" >> "$GITHUB_ENV"
       - name: E2E (${{ matrix.leg }})
         working-directory: app
         env:
@@ -157,14 +162,28 @@ jobs:
           NEXT_TELEMETRY_DISABLED: "1"
         run: |
           set -o pipefail
-          bash ../harness/.github/e2e/codex-ws/run.sh ${{ matrix.leg == 'master' && 'fail' || 'pass' }} 2>&1 | tee ../e2e-${{ matrix.leg }}.txt
+          bash ../harness/.github/e2e/codex-ws/run.sh ${{ matrix.leg }} 2>&1 | tee ../e2e-${{ matrix.leg }}.txt
+      # Uploaded files aren't masked like the job log: take the key and any
+      # mask command out of everything that leaves the runner, then prove it.
+      - name: Scrub what gets uploaded
+        if: always()
+        run: |
+          files=$(ls e2e-out/*.log e2e-out/*.out e2e-out/*.meta e2e-out/*.last e2e-out/*.trace e2e-out/*.code e2e-out/http.body e2e-out/http.meta e2e-${{ matrix.leg }}.txt 2>/dev/null)
+          for f in $files; do
+            sed -i -e "s/$E2E_API_KEY/[client-key]/g" -e '/^::add-mask::/d' "$f"
+          done
+          leaked=0
+          for f in $files; do
+            if grep -qF "$E2E_API_KEY" "$f" || grep -q '^::add-mask::' "$f"; then echo "still holds a secret: $f"; leaked=1; fi
+          done
+          exit $leaked
       - name: Summary
         if: always()
         run: |
           {
             echo "### ${{ matrix.leg }}"
             echo '```'
-            grep -vE '^::(end)?group::' e2e-${{ matrix.leg }}.txt | head -200
+            grep -vE '^::(end)?group::|^::add-mask::' e2e-${{ matrix.leg }}.txt | head -200
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
@@ -177,6 +196,7 @@ jobs:
             e2e-out/*.meta
             e2e-out/*.last
             e2e-out/*.trace
+            e2e-out/*.code
             e2e-out/http.body
-            e2e-out/cloudflared.log
+            e2e-out/http.meta
             e2e-${{ matrix.leg }}.txt

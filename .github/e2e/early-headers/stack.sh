@@ -6,8 +6,9 @@ OUT="${OUT_DIR:-$PWD/e2e-out}"
 mkdir -p "$OUT"
 export DATA_DIR="$OUT/data"
 mkdir -p "$DATA_DIR"
-# Fake, per-run 10router key; the tunnel makes requests non-local.
-export E2E_API_KEY="sk-e2e-$(openssl rand -hex 12)"
+# Fake, per-run 10router key; the tunnel makes requests non-local. A caller
+# that made (and masked) one already passes it in.
+export E2E_API_KEY="${E2E_API_KEY:-sk-e2e-$(openssl rand -hex 12)}"
 
 node "$HERE/mock-upstream.mjs" > "$OUT/mock.log" 2>&1 &
 node --experimental-loader=./scripts/resolve-src-alias.mjs "$HERE/seed.mjs" 2>&1 | grep -v -i warning
