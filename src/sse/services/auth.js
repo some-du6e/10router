@@ -466,13 +466,13 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const demotions = new Map(usableConnections.map(c => [c.id, demotionOf(c, model)]));
     // One dead-key try per pass through this model's keys (one exclude set):
     // once the caller has excluded a key demoted on this model (a probe), a key
-    // demoted on another model (demotedElsewhere) refused on this model with a
-    // 401 or 403 refusing the key itself (isAuthRejection: not a limit or a
-    // refusal of one model), seen by this process within minWindowMs and still
-    // its last stored error, or an id that isn't one of this provider's active
-    // keys (turned off or deleted since, or another provider's key in a shared
-    // exclude set), later calls with that set skip both kinds while a key that
-    // is neither can serve, or is only rate-limited here.
+    // demoted on another model (demotedElsewhere) that this process saw refused
+    // on this model within minWindowMs with a 401 or 403 refusing the key
+    // itself (isAuthRejection: not a limit or a refusal of one model), and
+    // whose stored error code is still a 401 or 403, or an id that isn't one of
+    // this provider's active keys (turned off or deleted since, or another
+    // provider's key in a shared exclude set), later calls with that set skip
+    // both kinds while a key that is neither can serve.
     const activeIds = new Set(allConnections.map(c => c.id));
     const refusedHere = (c) => (c.errorCode === 401 || c.errorCode === 403)
       && refusedSince(`${c.id}|${model}`, Date.now() - AUTH_DEAD_CONFIG.minWindowMs);
@@ -480,15 +480,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       || allConnections.some(c => excludeSet.has(c.id) && (demotionOf(c, model) || (refusedHere(c) && demotedElsewhere(c, model))));
     const skippedThisPass = (c) => deadTriedThisPass && demotedElsewhere(c, model);
     const preferred = usableConnections.filter(c => !demotions.get(c.id) && !skippedThisPass(c));
-    // With the try used and such a key only rate-limited here, the request is
-    // told so, as when every key is locked, instead of walking the skipped keys.
-    const cleanKeyLimited = deadTriedThisPass && preferred.length === 0 && connections.some(c => !excludeSet.has(c.id)
-      && !demotionOf(c, model) && !demotedElsewhere(c, model) && isLimitLocked(c, model) && !resetStates.get(c.id).blockedUntil
-      && !quotaBlocked(c) && planCanServeModel(providerId, c, model));
-    // Failing that, keys demoted on another model go before keys demoted on this one.
+    // Failing that (every such key rate-limited, excluded or off), keys demoted
+    // on another model go before keys demoted on this one.
     const notDemotedHere = usableConnections.filter(c => !demotions.get(c.id));
-    let availableConnections = cleanKeyLimited ? []
-      : preferred.length > 0 ? preferred : notDemotedHere.length > 0 ? notDemotedHere : usableConnections;
+    let availableConnections = preferred.length > 0 ? preferred : notDemotedHere.length > 0 ? notDemotedHere : usableConnections;
     let probing = false;
     if (preferred.length > 0 && !deadTriedThisPass) {
       // Under fill-first a key behind a usable one wouldn't be tried anyway
