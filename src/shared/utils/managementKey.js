@@ -10,6 +10,9 @@ import { parseKeyLimitsInput } from "./apiKeyLimits.js";
  */
 export const MANAGEMENT_KEY_PREFIX = "10r-mgmt-";
 
+/** The management API docs: scopes, endpoints with curl examples, audit log. */
+export const MANAGEMENT_KEYS_DOCS_URL = "https://github.com/some-du6e/10router/blob/master/docs/MANAGEMENT_KEYS.md";
+
 const MAX_LIST = 200;
 const MAX_ID_LENGTH = 300;
 /** Longest name for a management key, a client key or a provider key made through the management API. */

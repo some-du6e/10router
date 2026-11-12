@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import PropTypes from "prop-types";
 import { Card, Button, Modal, Toggle } from "@/shared/components";
-import { describeScopes } from "@/shared/utils/managementKey.js";
+import { describeScopes, MANAGEMENT_KEYS_DOCS_URL } from "@/shared/utils/managementKey.js";
 import { isKeyExpired } from "@/shared/utils/apiKeyLimits.js";
 import ManagementKeyModal from "./ManagementKeyModal";
 import CreatedSecretModal from "./CreatedSecretModal";
@@ -140,7 +140,10 @@ export default function ManagementKeysCard({ onKeysLoaded, onRowsChanged }) {
       </div>
       <p className="text-sm text-text-muted mb-4">
         Keys for the management API (<code>/api/management/v1</code>). Each one can only manage the client keys or provider keys
-        its scope allows, without dashboard access. They don&apos;t work on <code>/v1</code>.
+        its scope allows, without dashboard access. They don&apos;t work on <code>/v1</code>.{" "}
+        <a href={MANAGEMENT_KEYS_DOCS_URL} target="_blank" rel="noopener noreferrer" className="text-primary underline">
+          How to use them
+        </a>
       </p>
 
       {loadError && <div className="mb-4"><StatusAlert status={{ type: "error", message: loadError }} /></div>}
@@ -258,6 +261,7 @@ export default function ManagementKeysCard({ onKeysLoaded, onRowsChanged }) {
         secret={secret}
         title="Management key created"
         note="This is the only time you will see it. 10router keeps only a hash, so it can't be shown again."
+        docsUrl={MANAGEMENT_KEYS_DOCS_URL}
         onClose={() => setSecret(null)}
       />
 
