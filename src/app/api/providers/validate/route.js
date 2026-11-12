@@ -51,8 +51,9 @@ const UNANSWERED = { valid: false, reason: UNVERIFIED, error: KEY_CHECK_ERRORS[U
 
 // What the chat-path probe's answer says about a key. `{}` names no model, so
 // a key that gets past auth gets the body refused (400/422), or a 2xx. A
-// 404/405 or a redirect (the probe never follows one) means no API at this
-// URL. Anything else (429, 5xx, other 4xx) shows nothing.
+// 404/405 or a redirect (the probe never follows one, on either fetch: it asks
+// for redirect: "manual") means no API at this URL. Anything else (429, 5xx,
+// other 4xx) shows nothing.
 function chatProbeVerdict(status) {
   if ((status >= 200 && status < 300) || status === 400 || status === 422) return { valid: true, error: null };
   if (status === 401 || status === 403) return { valid: false, error: INVALID_KEY };
@@ -220,8 +221,9 @@ export async function POST(request) {
           // No /models route: POST a literal {} to the chat path routing uses
           // (the executor's URL, with the node's path and query overrides; the
           // body skips the body transform). With no model, the upstream
-          // refuses it before inference, so no tokens are spent. Redirects
-          // are not followed, so a login page or another host can't answer.
+          // refuses it before inference, so no tokens are spent. No redirect
+          // is followed, same-origin or not, on the plain or the pinned probe
+          // fetch, so a login page or another host can't answer for the key.
           const chatUrl = executor.buildUrl(null, false, 0, credentials);
           const chatHeaders = executor.buildHeaders(credentials, false, chatUrl, null);
           const chatRes = await probeRequest(keyUrl.fetch, chatUrl, { method: "POST", headers: chatHeaders, body: "{}", redirect: "manual" }, request);

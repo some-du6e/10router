@@ -127,15 +127,18 @@ ping (`/api/providers/validate`), then the create route (`/api/providers`).
   405 is a refused key. When it answers 404 or 405 (the endpoint has no model
   list), the probe posts a literal `{}` to the chat path routing uses
   (`/responses` on a Responses endpoint, with the path and query overrides and
-  the same headers), without following redirects. That body skips the body
-  edits and names no model, so the upstream refuses it before running
-  anything and no tokens are spent. Each of these two requests gives up after
-  8 seconds (the `502` above). On that post:
+  the same headers). It never follows a redirect, same-origin or not, also
+  for a key with its own URL. That body skips the body edits and names no
+  model, so the upstream refuses it before running anything and no tokens are
+  spent. Each of these two requests gives up after 8 seconds (the `502`
+  above). An endpoint that is starting up cold and takes longer than that to
+  answer gets the `502` ("couldn't check the key, try again"); retry once it
+  is warm. On that post:
   - a 2xx, 400 or 422 is valid (the key got past auth and the body was
     refused);
   - a 401 or 403 is a refused key;
-  - a 404, 405 or any redirect means no API answers at that URL (most likely
-    a typo), so the endpoint URL looks wrong;
+  - a 404, 405 or any redirect (it is not followed) means no API answers at
+    that URL (most likely a typo), so the endpoint URL looks wrong;
   - anything else (a 429, a 5xx, another 4xx) shows nothing about the key,
     so it is not added (the `502` above).
 - An Anthropic-compatible endpoint's probe sends a real

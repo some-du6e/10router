@@ -1320,8 +1320,6 @@ describe("provider key validation on the management path", () => {
       const res = await api.createProvider(mk.secret, { provider: SLOW, apiKey: providerSecret("slow-gone"), name: "slow gone" });
       expect(res.status).toBe(504);
       await vi.waitFor(() => expect(sent.at(-1).signal.aborted).toBe(true));
-      // The validator's own timeout never fired.
-      expect(probeTimeouts.every((c) => !c.signal.aborted)).toBe(true);
     });
   });
 

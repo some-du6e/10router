@@ -496,12 +496,55 @@ describe("validating a key at its own URL", () => {
             valid: false, reason: "unverified", error: "Couldn't check the key: the endpoint didn't answer within 8 seconds. Try again.",
           });
         }
+        // The caller went away and the timeout fired too: the caller's abort wins,
+        // so the management API's 504 isn't overtaken by a 502.
+        mocks.probeFetch.mockReset().mockImplementationOnce(hang);
+        const caller = new AbortController();
+        const pending = validateRoute.POST({ ...req({ provider: NODE_ID, apiKey: "sk-b", baseUrl: PUBLIC_URL }), signal: caller.signal });
+        await vi.waitFor(() => expect(mocks.probeFetch).toHaveBeenCalledTimes(1));
+        caller.abort(new Error("caller gone"));
+        timeouts.at(-1).abort(new DOMException("The operation timed out.", "TimeoutError"));
+        expect((await pending).body).toEqual({ valid: false, error: "caller gone" });
       } finally {
         timeout.mockRestore();
       }
     });
 
-    it("with the plain fetch (no own URL, or a local caller), a chat-path redirect is not followed", async () => {
+    it("with the pinned probe fetch (a remote caller's own URL), a same-origin 307/308 on the chat path is not followed", async () => {
+      const http = await import("node:http");
+      const { makeProbeFetch: realProbeFetch } = await vi.importActual("@/lib/probeFetch.js");
+      const hits = [];
+      const server = await new Promise((resolve) => {
+        const s = http.createServer((rq, rs) => {
+          hits.push(`${rq.method} ${rq.url}`);
+          if (rq.url.endsWith("/models")) { rs.writeHead(404); return rs.end(); }
+          const redirect = { "/v1/chat/completions": [307, "/login"] }[rq.url] || { "/v2/chat/completions": [308, "/login"] }[rq.url];
+          if (redirect) { rs.writeHead(redirect[0], { location: redirect[1] }); return rs.end(); }
+          // A login page that would pass for a working key.
+          rs.writeHead(200, { "content-type": "text/html" });
+          rs.end("<html>login</html>");
+        });
+        s.listen(0, "127.0.0.1", () => resolve(s));
+      });
+      const loopback = `http://127.0.0.1:${server.address().port}`;
+      // The real probe fetch and its redirect handling, sent to the loopback
+      // server in place of the public host (the SSRF check is the only part left out).
+      const toLoopback = (url, init) => fetch(String(url).replace("https://8.8.8.8", loopback), init);
+      mocks.makeProbeFetch.mockImplementation(() => realProbeFetch(false, { fetchImpl: toLoopback }));
+      try {
+        for (const [version, status] of [["v1", 307], ["v2", 308]]) {
+          hits.length = 0;
+          const res = await validate({ baseUrl: `https://8.8.8.8/${version}` });
+          expect(res.body, String(status)).toEqual(WRONG_URL);
+          expect(mocks.makeProbeFetch).toHaveBeenLastCalledWith(true);
+          expect(hits, String(status)).toEqual([`GET /${version}/models`, `POST /${version}/chat/completions`]);
+        }
+      } finally {
+        server.close();
+      }
+    });
+
+    it("with the plain fetch (no own URL, or a local caller's own URL), a chat-path redirect is not followed", async () => {
       const http = await import("node:http");
       const hits = [];
       const listen = (handler) => new Promise((resolve) => {
@@ -529,6 +572,11 @@ describe("validating a key at its own URL", () => {
           const res = await validateRoute.POST(req({ provider: id, apiKey: "sk-p" }));
           expect(res.body, id).toEqual(WRONG_URL);
         }
+        // A local caller's key with its own URL takes the plain fetch too.
+        const own = await validateRoute.POST(req({ provider: NODE_ID, apiKey: "sk-p", baseUrl: `${base}/b/v1` }));
+        expect(own.body).toEqual(WRONG_URL);
+        expect(mocks.makeProbeFetch).not.toHaveBeenCalled();
+        expect(hits.filter((h) => h.includes("/b/v1/chat/completions"))).toHaveLength(2);
         expect(hits.some((h) => h.includes("/login"))).toBe(false);
         expect(hits.some((h) => h.startsWith(`${other.address().port} `))).toBe(false);
       } finally {
