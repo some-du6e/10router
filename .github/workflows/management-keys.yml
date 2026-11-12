@@ -49,8 +49,11 @@ on:
       - "src/app/api/management/**"
       - "src/app/api/management-keys/**"
       - "src/app/api/providers/route.js"
-      - "src/app/api/providers/[id]/route.js"
+      # GitHub reads [id] as a one-character class, so the folder is matched with *.
+      - "src/app/api/providers/*/route.js"
       - "src/app/api/providers/validate/route.js"
+      - "src/shared/components/EditConnectionModal.js"
+      - "open-sse/translator/concerns/thinkingUnified.js"
       - "src/app/api/keys/**"
       - "src/app/(dashboard)/dashboard/endpoint/**"
       - "docs/MANAGEMENT_KEYS.md"

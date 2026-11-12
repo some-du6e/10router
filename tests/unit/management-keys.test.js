@@ -560,6 +560,33 @@ describe("provider keys with their own URL", () => {
     expect((await db.getManagementKeyById(alone.id)).scopes.providerKeys.providers).toEqual([gone]);
   });
 
+  it("turning provider keys off saves even when every provider it named was deleted, and turning them back on doesn't widen", async () => {
+    const gone = "openai-compatible-chat-acme-gone-3";
+    await db.createProviderNode({ id: gone, type: "openai-compatible", name: "Gone 3", prefix: "gone3", apiType: "chat", baseUrl: "https://gone3.acme.example/v1" });
+    const mk = await newManagementKey({ clientKeys: OPENAI_ONLY.clientKeys, ...scopeWith({ [gone]: WILDCARD }, [gone]) });
+    await db.deleteProviderNode(gone);
+    const known = new Set((await db.getProviderNodes()).map((n) => n.id));
+
+    // Off: no problem to report, and the save goes through.
+    const state = scopeForm.fromSaved((await db.getManagementKeyById(mk.id)).scopes);
+    const off = { ...state, providerKeys: { ...state.providerKeys, enabled: false } };
+    expect(scopeForm.scopeProblem(off, known)).toBeNull();
+    const res = await dashboard.patch(mk.id, { name: "off", scopes: scopeForm.toPayload(off, known) });
+    expect(res.status, res.text).toBe(200);
+    const saved = (await db.getManagementKeyById(mk.id)).scopes.providerKeys;
+    // The list is kept, so it never reads as "any provider"; the deleted endpoint's hosts are gone.
+    expect(saved).toMatchObject({ enabled: false, providers: [gone], baseUrlHosts: null });
+    expect((await api.listProvider(mk.secret)).status).toBe(403);
+
+    // Back on: the dialog stops the save, and the server refuses the deleted endpoint.
+    const on = scopeForm.fromSaved((await db.getManagementKeyById(mk.id)).scopes);
+    const reenabled = { ...on, providerKeys: { ...on.providerKeys, enabled: true } };
+    expect(scopeForm.scopeProblem(reenabled, known)).toMatch(/Pick a provider/);
+    expect(scopeForm.toPayload(reenabled, known).providerKeys.providers).toEqual([gone]);
+    expect((await dashboard.patch(mk.id, { scopes: scopeForm.toPayload(reenabled, known) })).status).toBe(400);
+    expect((await db.getManagementKeyById(mk.id)).scopes.providerKeys.enabled).toBe(false);
+  });
+
   it("a wildcard matches exactly one more real label", () => {
     expect(hostMatchesPattern("key-a.acme.example", "*.acme.example")).toBe(true);
     expect(hostMatchesPattern("acme.example", "*.acme.example")).toBe(false);

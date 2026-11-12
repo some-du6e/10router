@@ -87,7 +87,10 @@ export function isDeletedEndpoint(id: string, knownEndpoints: Set<string> | null
  * The provider-keys providers to save: deleted endpoints are left out, so a
  * key that named one can still be saved. If that would empty a list that
  * wasn't empty, it is kept as it is: an empty list means "any provider", so
- * dropping the last one would widen the scope. scopeProblem tells the admin.
+ * dropping the last one would widen the scope. With provider keys on,
+ * scopeProblem stops the save and tells the admin. With them off the save
+ * goes through: the server doesn't check an off scope's providers, and the
+ * kept list is checked again (and stops the save) when it's turned back on.
  */
 export function providersPayload(pk: ProviderKeysForm, knownEndpoints: Set<string> | null = null): string[] | null {
   if (!pk.providers.length) return null;

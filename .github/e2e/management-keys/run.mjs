@@ -192,6 +192,21 @@ check("a rename in the dialog keeps the hosts", afterEdit.json?.managementKey?.n
   && JSON.stringify(afterEdit.json?.managementKey?.scopes?.providerKeys?.baseUrlHosts) === uiHosts, afterEdit.text.slice(0, 200));
 await page.screenshot({ path: `${outDir}/endpoint-page.png`, fullPage: true, mask: [page.locator("code")] });
 
+// The dashboard's key check sends the key's default model, which the probe
+// names on a gateway that only allows some models per key.
+const dmKey = await context.request.post("/api/providers", { data: { provider: acmeNode, apiKey: `sk-e2e-dm-${Date.now()}`, name: "e2e dm key", defaultModel: "acme-small" } });
+check("dashboard adds a key with a default model", dmKey.ok(), String(dmKey.status()));
+await page.goto(`/dashboard/providers/${acmeNode}`, { waitUntil: "domcontentloaded" });
+const dmRow = page.getByText("e2e dm key", { exact: true }).first();
+await dmRow.waitFor({ state: "visible", timeout: 60000 });
+await dmRow.locator("xpath=ancestor::*[.//button[contains(., 'Edit')]][1]").getByRole("button", { name: "Edit" }).click();
+await page.getByPlaceholder("Enter new API key").fill(`sk-e2e-dm-new-${Date.now()}`);
+const validateCall = page.waitForRequest((r) => r.url().endsWith("/api/providers/validate") && r.method() === "POST", { timeout: 30000 });
+await page.getByRole("button", { name: "Check", exact: true }).click();
+const sentBody = (await validateCall).postDataJSON();
+check("the edit dialog's key check sends the key's default model", sentBody?.defaultModel === "acme-small", JSON.stringify(Object.keys(sentBody || {})));
+await page.keyboard.press("Escape");
+
 await browser.close();
 await anon.dispose();
 if (failed) {
