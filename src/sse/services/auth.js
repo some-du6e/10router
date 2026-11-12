@@ -247,10 +247,15 @@ const demotionOf = (conn, model) => {
 };
 
 // A demotion for refusals the turn-off rule counts, with nothing served since
-// minWindowMs before its count began.
-const isFirm = (conn, r) => !!r?.demotedAt && !r.modelScoped && !(conn.authDemoteOkAt >= r.firstAt)
-  && !succeededSince(conn.id, new Date(r.firstAt).getTime() + 1)
+// its count began; firm if nothing was served in the minWindowMs before either.
+const isDeadClass = (conn, r) => !!r?.demotedAt && !r.modelScoped && !(conn.authDemoteOkAt >= r.firstAt)
+  && !succeededSince(conn.id, new Date(r.firstAt).getTime() + 1);
+const isFirm = (conn, r) => isDeadClass(conn, r)
   && !(new Date(r.servedAt).getTime() >= new Date(r.firstAt).getTime() - AUTH_DEAD_CONFIG.minWindowMs);
+
+// Not demoted on `model`, but demoted on another the way isDeadClass says.
+const demotedElsewhere = (conn, model) => !demotionOf(conn, model)
+  && demoteRecords(conn).some(([m, r]) => m !== model && isDeadClass(conn, r));
 
 // Refused, in ways the turn-off rule counts, on 2 models with nothing served in
 // between, the key is dead (tests/unit/auto-disable-stress.test.js replays it).
@@ -260,7 +265,11 @@ const isFirm = (conn, r) => !!r?.demotedAt && !r.modelScoped && !(conn.authDemot
 // - or this refusal demotes `model`, and that demotion was last refused within
 //   its probe interval and minWindowMs;
 // - or the key is firmly demoted on `model` (this was a probe or a fallback)
-//   and the other model was refused within minWindowMs.
+//   and the other model was refused within minWindowMs;
+// - or the key is demoted on `model` and on the other model the way
+//   isDeadClass says, and was refused there too after its demotion: refused
+//   probes on 2 models with nothing served since either count began, however
+//   far apart they come.
 function deadElsewhere(conn, records, model, current, demoting) {
   const now = Date.now();
   const since = (r) => now - new Date(r?.lastCountedAt).getTime();
@@ -270,6 +279,7 @@ function deadElsewhere(conn, records, model, current, demoting) {
   return (since(current) <= AUTH_DEAD_CONFIG.minWindowMs && found(r => firm(r) && since(r) <= AUTH_DEAD_CONFIG.minWindowMs))
     || (demoting && found(r => firm(r) && since(r) <= probeMs(r.probeLevel || 0) + AUTH_DEAD_CONFIG.minWindowMs))
     || (firm(current) && found(r => since(r) <= AUTH_DEAD_CONFIG.minWindowMs))
+    || (isDeadClass(conn, current) && found(r => isDeadClass(conn, r) && r.probeLevel >= 1))
     || null;
 }
 
@@ -451,17 +461,20 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // for its next probe.
     const usableConnections = connections.filter(usable);
     const demotions = new Map(usableConnections.map(c => [c.id, demotionOf(c, model)]));
-    const preferred = usableConnections.filter(c => !demotions.get(c.id));
+    // One dead-key try per pass through this model's keys (one exclude set):
+    // once the caller has excluded a key demoted on this model (a probe), a key
+    // demoted on another model (demotedElsewhere) just refused here the way the
+    // turn-off rule counts, or an id that isn't one of this provider's active
+    // keys (turned off or deleted since, or another provider's key in a shared
+    // exclude set), later calls with that set skip both kinds while a key that
+    // is neither can serve.
+    const activeIds = new Set(allConnections.map(c => c.id));
+    const refusedHere = (c) => (authEvents.refused.get(`${c.id}|${model}`)?.at ?? -Infinity) >= Date.now() - AUTH_DEAD_CONFIG.minWindowMs;
+    const probedThisPass = [...excludeSet].some(id => !activeIds.has(id))
+      || allConnections.some(c => excludeSet.has(c.id) && (demotionOf(c, model) || (refusedHere(c) && demotedElsewhere(c, model))));
+    const preferred = usableConnections.filter(c => !demotions.get(c.id) && !(probedThisPass && demotedElsewhere(c, model)));
     let availableConnections = preferred.length > 0 ? preferred : usableConnections;
     let probing = false;
-    // One probe per pass through this model's keys (one exclude set): once
-    // the caller has excluded a key demoted on this model, or an id that isn't
-    // one of this provider's active keys (turned off or deleted since, or
-    // another provider's key in a shared exclude set), later calls with that
-    // set go to the keys that serve.
-    const activeIds = new Set(allConnections.map(c => c.id));
-    const probedThisPass = [...excludeSet].some(id => !activeIds.has(id))
-      || allConnections.some(c => excludeSet.has(c.id) && demotionOf(c, model));
     if (preferred.length > 0 && !probedThisPass) {
       // Under fill-first a key behind a usable one wouldn't be tried anyway
       // (a backup), so only demoted keys ahead of them are probed.
