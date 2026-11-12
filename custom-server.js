@@ -63,6 +63,7 @@ const origCreate = http.createServer.bind(http);
 const CODEX_WS_PATH = "/backend-api/codex/responses";
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const MAX_WS_MESSAGE_BYTES = 64 * 1024 * 1024;
+const MAX_ERROR_TEXT = 2000;
 
 function wsAccept(key) {
   return crypto.createHash("sha1").update(key + WS_GUID).digest("base64");
@@ -187,14 +188,13 @@ function bridgeForwardHeaders(handshakeHeaders, socketIp, payloadLength) {
   //     rate limiting. The real peer is attached below instead;
   //   - cookie, so a browser-initiated handshake cannot ride a session cookie
   //     into a route that accepts one;
-  //   - accept / accept-encoding. A proxy in front (Cloudflare among them) adds
-  //     `accept-encoding: gzip` to the upgrade request; forwarded, it makes Next
-  //     gzip the event stream, which the line parser below cannot read, so the
-  //     client gets no events at all. The bridge reads plain SSE, so it asks
-  //     for exactly that.
+  //   - accept / accept-encoding, replaced below. A proxy in front (Cloudflare
+  //     among them) adds `accept-encoding: gzip` to the upgrade request;
+  //     forwarded, it makes Next gzip the event stream, which the line parser
+  //     below cannot read, so the client gets no events at all. The bridge
+  //     reads plain SSE, so it asks for exactly that.
   for (const [name, value] of Object.entries(handshakeHeaders)) {
     if (/^(host|connection|upgrade|sec-websocket-|content-length|content-type)/i.test(name)) continue;
-    if (/^accept(-encoding)?$/i.test(name)) continue;
     if (/^(x-forwarded-for|x-real-ip|x-9r-|cookie)/i.test(name)) continue;
     forwarded[name] = value;
   }
@@ -213,7 +213,9 @@ function bridgeForwardHeaders(handshakeHeaders, socketIp, payloadLength) {
  * it as a string, which is wrapped. `status` is what makes Codex treat the
  * frame as the HTTP error it stands for (show a 400, retry a 5xx); an error
  * frame without one is skipped as an unknown event, so the client only sees
- * the socket close and retries a turn that will fail the same way.
+ * the socket close and retries a turn that will fail the same way. A plain-text
+ * body (the final "All your accounts have hit their limits…" refusal) is the
+ * message itself.
  */
 function bridgeErrorFrame(raw, statusCode) {
   let error;
@@ -222,9 +224,21 @@ function bridgeErrorFrame(raw, statusCode) {
   } catch {
     error = null;
   }
+  const type = statusCode < 500 ? "invalid_request_error" : "server_error";
   if (typeof error === "string") error = { message: error, type: "invalid_request_error" };
+  const text = typeof raw === "string" ? raw.trim().slice(0, MAX_ERROR_TEXT) : "";
+  if ((!error || typeof error !== "object") && text) error = { message: text, type };
   if (!error || typeof error !== "object") error = { message: `Request failed with status ${statusCode}`, type: "server_error" };
   return JSON.stringify({ type: "error", status: statusCode, error });
+}
+
+// The bridge's own failures, in the same frame shape. `status` is required for
+// Codex to act on them; 502 for a failed loopback request (Codex retries it),
+// 409 for a second turn while one is still running on the socket.
+function bridgeLocalErrorFrame(status, message, type, code) {
+  const error = { message, type };
+  if (code) error.code = code;
+  return JSON.stringify({ type: "error", status, error });
 }
 
 // Run one `response.create` through this process's own HTTP endpoint and relay
@@ -372,10 +386,7 @@ function handleCodexUpgrade(req, socket, head, port) {
       // completes. Honouring an overlapping one would drop the first request's
       // handle, leaving a turn nothing can abandon.
       if (inflight) {
-        send(JSON.stringify({
-          type: "error",
-          error: { message: "A turn is already in progress on this connection", type: "invalid_request_error", code: "turn_in_progress" },
-        }));
+        send(bridgeLocalErrorFrame(409, "A turn is already in progress on this connection", "invalid_request_error", "turn_in_progress"));
         return;
       }
 
@@ -404,7 +415,7 @@ function handleCodexUpgrade(req, socket, head, port) {
         // The client is already gone — its socket handler abandoned this turn.
         if (closed) return;
         if (error) {
-          send(JSON.stringify({ type: "error", error: { message: error.message, type: "server_error" } }));
+          send(bridgeLocalErrorFrame(502, error.message, "server_error"));
           return close(1011, "bridge error");
         }
         // A rejected turn already sent its error frame; close so the client

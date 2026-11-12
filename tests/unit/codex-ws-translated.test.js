@@ -27,6 +27,7 @@ const { __test__ } = require("../../custom-server.js");
 const compression = require("next/dist/compiled/compression");
 const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
 const { initTranslators } = await import("../../open-sse/translator/index.js");
+const { finalizeRoutingError } = await import("@/sse/services/finalRoutingError.js");
 await initTranslators();
 
 const MODEL = "claude-opus-5-5";
@@ -79,6 +80,9 @@ let server;
 let port;
 const sockets = new Set();
 const posted = [];
+// Per test: null (chatCore answers), a function returning the Response, or
+// "hang-up" (the loopback request dies before any reply).
+let reply = null;
 
 beforeAll(async () => {
   const compress = compression();
@@ -88,9 +92,10 @@ beforeAll(async () => {
     if (req.method !== "POST") { res.writeHead(404); return res.end(); }
     const body = JSON.parse(raw);
     posted.push({ headers: req.headers, body });
+    if (reply === "hang-up") return req.socket.destroy();
     // As router-server.js does, before any route runs.
     compress(req, res, () => {});
-    const { response } = await handleChatCore({
+    const response = typeof reply === "function" ? reply() : (await handleChatCore({
       body,
       modelInfo: { provider: "openai-compatible-chat-acme", model: MODEL },
       credentials: { apiKey: "key-a", providerSpecificData: { baseUrl: "https://acme.example/v1" } },
@@ -98,7 +103,7 @@ beforeAll(async () => {
       connectionId: "conn-a",
       clientRawRequest: { endpoint: req.url, body, headers: req.headers },
       sourceFormatOverride: "openai-responses",
-    });
+    })).response;
     res.writeHead(response.status, Object.fromEntries(response.headers.entries()));
     res.flushHeaders();
     const reader = response.body.getReader();
@@ -125,6 +130,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   posted.length = 0;
+  reply = null;
   fetchMock.mockReset();
   fetchMock.mockImplementation(async () => new Response(upstreamStream(), { status: 200, headers: { "content-type": "text/event-stream" } }));
 });
@@ -219,7 +225,9 @@ function expectFullTurn(events) {
   expect(completed.response.usage).toMatchObject({ input_tokens: USAGE.prompt_tokens, output_tokens: USAGE.completion_tokens });
 }
 
-describe("Codex WebSocket turn on a translated endpoint", () => {
+// Each `until` gives up after 3s and a test chains at most two, so this lets a
+// slow runner report the failed assertion instead of a test timeout.
+describe("Codex WebSocket turn on a translated endpoint", { timeout: 15_000 }, () => {
   it("streams the whole turn when the handshake came through a proxy that asks for gzip", async () => {
     const ws = await connect(VIA_PROXY);
     ws.send(TURN);
@@ -246,6 +254,48 @@ describe("Codex WebSocket turn on a translated endpoint", () => {
     ws.close();
     expect(posted).toHaveLength(2);
     expectFullTurn(events.slice(first));
+  });
+
+  it("hands Codex the gateway's plain-text limit refusal word for word, as a 400", async () => {
+    // What a bridged Codex turn gets when every account is out of limits.
+    const resetAtMs = Date.now() + 90 * 60 * 1000;
+    reply = () => finalizeRoutingError(new Response("{}", { status: 429 }), { clientTool: "codex", routingFailures: [{ limited: true, resetAtMs }] });
+    const expected = await reply().text();
+    expect(expected).toMatch(/^All your accounts have hit their limits\. Next account resets in /);
+    const ws = await connect(VIA_PROXY);
+    ws.send(TURN);
+    const events = await ws.until((e) => e.some((x) => "close" in x));
+    ws.close();
+    expect(events[0]).toEqual({ type: "error", status: 400, error: { message: expected, type: "invalid_request_error" } });
+    expect(events.at(-1)).toMatchObject({ close: 1011 });
+  });
+
+  it("reports a loopback request that died as a 502, which Codex retries", async () => {
+    reply = "hang-up";
+    const ws = await connect(VIA_PROXY);
+    ws.send(TURN);
+    const events = await ws.until((e) => e.some((x) => "close" in x));
+    ws.close();
+    expect(events[0]).toMatchObject({ type: "error", status: 502, error: { type: "server_error" } });
+    expect(events.at(-1)).toMatchObject({ close: 1011, reason: "bridge error" });
+  });
+
+  it("refuses an overlapping turn with a 409 and still finishes the first", async () => {
+    fetchMock.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 300));
+      return new Response(upstreamStream(), { status: 200, headers: { "content-type": "text/event-stream" } });
+    });
+    const ws = await connect(VIA_PROXY);
+    ws.send(TURN);
+    ws.send(TURN);
+    const events = await ws.until((e) => completedCount(e) === 1);
+    ws.close();
+    expect(events[0]).toEqual({
+      type: "error", status: 409,
+      error: { message: "A turn is already in progress on this connection", type: "invalid_request_error", code: "turn_in_progress" },
+    });
+    expect(posted).toHaveLength(1);
+    expectFullTurn(events.slice(1));
   });
 
   it("hands an upstream rejection to Codex as the HTTP error it is, then closes", async () => {
