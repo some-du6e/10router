@@ -1,7 +1,8 @@
 import { createHash, randomBytes, randomUUID } from "crypto";
-import { CLAUDE_TOOL_SUFFIX, CC_DEFAULT_TOOLS } from "../config/appConstants.js";
+import { CLAUDE_TOOL_SUFFIX, CC_DEFAULT_TOOLS, MAX_TOOL_NAME_LENGTH } from "../config/appConstants.js";
 import { CLAUDE_CLI_VERSION } from "../providers/shared.js";
-import { TOOL_TYPE } from "../translator/schema/index.js";
+import { TOOL_TYPE, TOOL_CHOICE } from "../translator/schema/index.js";
+import { capToolName } from "../translator/concerns/toolNamespace.js";
 
 const CC_ENTRYPOINT = "sdk-cli";
 
@@ -49,7 +50,9 @@ export function cloakClaudeTools(body) {
   const tools = body.tools;
   if (!tools || tools.length === 0) return { body, toolNameMap: null };
 
-  const suffix = (name) => `${name}${CLAUDE_TOOL_SUFFIX}`;
+  // A name too long for the suffix is cut (with a hash) first, so the cloaked
+  // name stays within MAX_TOOL_NAME_LENGTH; toolNameMap maps it back.
+  const suffix = (name) => `${capToolName(name, MAX_TOOL_NAME_LENGTH - CLAUDE_TOOL_SUFFIX.length)}${CLAUDE_TOOL_SUFFIX}`;
   const toolNameMap = new Map();
   const clientToolNames = new Set();
   const clientDeclarations = [];
@@ -85,7 +88,7 @@ export function cloakClaudeTools(body) {
   // Only rewrite when the choice targets one of the client tools we actually
   // renamed — never a decoy/built-in name (those are sent unsuffixed).
   if (
-    body.tool_choice?.type === "tool" &&
+    body.tool_choice?.type === TOOL_CHOICE.TOOL &&
     clientToolNames.has(body.tool_choice.name)
   ) {
     cloakedBody.tool_choice = { ...body.tool_choice, name: suffix(body.tool_choice.name) };

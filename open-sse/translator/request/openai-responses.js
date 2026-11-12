@@ -7,7 +7,7 @@
 import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
 import { normalizeResponsesInput } from "../formats/responsesApi.js";
-import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM, TOOL_TYPE } from "../schema/index.js";
+import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM, TOOL_TYPE, TOOL_CHOICE } from "../schema/index.js";
 import { isWireToolName, qualifyToolName } from "../concerns/toolNamespace.js";
 
 // Responses API enforces max 64 chars on call_id (#393)
@@ -380,10 +380,8 @@ function wireToolChoice(choice, byRef, declared) {
     && typeof choice.name === "string";
   if (!isForced) return choice;
   const name = byRef.get(toolRefKey(choice.namespace, choice.name)) ?? choice.name;
-  return declared.has(name) ? { type: OPENAI_BLOCK.FUNCTION, function: { name } } : TOOL_CHOICE_AUTO;
+  return declared.has(name) ? { type: OPENAI_BLOCK.FUNCTION, function: { name } } : TOOL_CHOICE.AUTO;
 }
-
-const TOOL_CHOICE_AUTO = "auto";
 
 /**
  * Ensure object schema always has properties field (required by Codex Responses API)

@@ -2,7 +2,7 @@
 // a client that asked to stream when the upstream answered with plain JSON.
 // Returns null for formats it cannot replay; the caller then sends the JSON.
 import { FORMATS } from "../../translator/formats.js";
-import { CLAUDE_BLOCK, RESPONSES_ITEM, RESPONSES_STATUS, ROLE } from "../../translator/schema/index.js";
+import { CLAUDE_BLOCK, RESPONSES_ITEM, RESPONSES_ITEM_ID_PREFIX, RESPONSES_STATUS, ROLE } from "../../translator/schema/index.js";
 
 type Json = Record<string, any>;
 
@@ -53,6 +53,13 @@ function claudeEvents(body: Json): string {
   return out.join("");
 }
 
+const ITEM_ID_PREFIX_BY_TYPE: Record<string, string> = {
+  [RESPONSES_ITEM.MESSAGE]: RESPONSES_ITEM_ID_PREFIX.MESSAGE,
+  [RESPONSES_ITEM.REASONING]: RESPONSES_ITEM_ID_PREFIX.REASONING,
+  [RESPONSES_ITEM.FUNCTION_CALL]: RESPONSES_ITEM_ID_PREFIX.FUNCTION_CALL,
+  [RESPONSES_ITEM.CUSTOM_TOOL_CALL]: RESPONSES_ITEM_ID_PREFIX.CUSTOM_TOOL_CALL,
+};
+
 function responsesEvents(body: Json): string {
   let seq = 0;
   const ev = (data: Json) => sse({ ...data, sequence_number: seq++ }, data.type);
@@ -60,7 +67,10 @@ function responsesEvents(body: Json): string {
     ev({ type: "response.created", response: { ...body, status: RESPONSES_STATUS.IN_PROGRESS, output: [] } }),
     ev({ type: "response.in_progress", response: { ...body, status: RESPONSES_STATUS.IN_PROGRESS, output: [] } }),
   ];
-  (body.output || []).forEach((item: Json, output_index: number) => {
+  (body.output || []).forEach((bodyItem: Json, output_index: number) => {
+    // Every item event names its item; a body item without an id (from an
+    // upstream's own Responses JSON) gets one in the live stream's shape.
+    const item = bodyItem.id ? bodyItem : { ...bodyItem, id: `${ITEM_ID_PREFIX_BY_TYPE[bodyItem.type] || RESPONSES_ITEM_ID_PREFIX.MESSAGE}_${body.id || ""}_${output_index}` };
     // Each item opens empty and fills through deltas, so a client that
     // accumulates deltas onto the added item doesn't see the text twice.
     if (item.type === RESPONSES_ITEM.MESSAGE) {

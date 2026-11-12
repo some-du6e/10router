@@ -502,6 +502,39 @@ describe("non-streaming reply status for a Codex request", () => {
     expect(jsonReplyToSse({ ...out, status: "completed" }, FORMATS.OPENAI_RESPONSES)).toContain("event: response.completed");
   });
 
+  it("gives every output item an id, and the replay names it on every item event", () => {
+    const out = translateNonStreamingResponse({
+      id: "chatcmpl-9", object: "chat.completion", model: MODEL,
+      choices: [{ index: 0, finish_reason: "tool_calls", message: {
+        role: "assistant", reasoning_content: "thinking it over", content: "running it",
+        tool_calls: [{ id: "call_1", type: "function", function: { name: "exec_command", arguments: "{}" } }],
+      } }],
+    }, FORMATS.OPENAI, FORMATS.OPENAI_RESPONSES, null, null);
+
+    expect(out.id).toBe("resp_9");
+    expect(out.output.map((i) => i.id)).toEqual(["rs_resp_9_0", "msg_resp_9_1", "fc_call_1"]);
+
+    const events = jsonReplyToSse(out, FORMATS.OPENAI_RESPONSES).split("\n\n").filter(Boolean)
+      .map((block) => JSON.parse(block.split("\n").find((l) => l.startsWith("data: ")).slice(6)));
+    const itemEvents = events.filter((e) => e.output_index !== undefined);
+    for (const e of itemEvents) {
+      const id = e.item?.id ?? e.item_id;
+      expect(id).toBe(out.output[e.output_index].id);
+    }
+    expect(itemEvents.filter((e) => e.type === "response.output_text.delta").map((e) => e.item_id)).toEqual(["msg_resp_9_1"]);
+  });
+
+  it("names items that arrive without an id when it replays them", () => {
+    const body = {
+      id: "resp_x", object: "response", status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi", annotations: [] }] }],
+    };
+    const events = jsonReplyToSse(body, FORMATS.OPENAI_RESPONSES).split("\n\n").filter(Boolean)
+      .map((block) => JSON.parse(block.split("\n").find((l) => l.startsWith("data: ")).slice(6)));
+
+    for (const e of events.filter((ev) => ev.output_index !== undefined)) expect(e.item?.id ?? e.item_id).toBe("msg_resp_x_0");
+  });
+
   it("turns a Gemini reply into a Responses body with the client's tool name", () => {
     const req = translate({ target: FORMATS.GEMINI, provider: "gemini" }, codexRequest({ stream: false }));
     const { customToolNames, toolNamespaces } = takeToolMetadata(req);

@@ -1,7 +1,7 @@
 // Chat Completions JSON body → OpenAI Responses body, for a Responses client
 // (Codex) whose non-streaming request went to a Chat, Claude, Gemini or Ollama
 // upstream. The non-streaming and forced-SSE-to-JSON paths both use it.
-import { ROLE, RESPONSES_ITEM, RESPONSES_STATUS } from "../../translator/schema/index.js";
+import { ROLE, RESPONSES_ITEM, RESPONSES_ITEM_ID_PREFIX, RESPONSES_STATUS } from "../../translator/schema/index.js";
 import { customToolInput } from "../../translator/concerns/toolCall.js";
 import { clientToolFields } from "../../translator/concerns/toolNamespace.js";
 import { toResponsesIncompleteReason } from "../../translator/concerns/finishReason.js";
@@ -17,12 +17,16 @@ export function chatCompletionToResponses(responseBody, customToolNames = null, 
 
   const message = choice.message || {};
   const output = [];
+  const responseId = `resp_${responseBody.id || ""}`.replace(/^resp_chatcmpl-/, "resp_");
+  // Same ids as the live stream (response/openai-responses.js): rs_/msg_ + response id + output index.
+  const itemId = (prefix) => `${prefix}_${responseId}_${output.length}`;
 
   // Reasoning → a reasoning item (summary text), mirroring the streaming path.
   const reasoning = message.reasoning_content || message.reasoning;
   if (typeof reasoning === "string" && reasoning.length > 0) {
     output.push({
       type: RESPONSES_ITEM.REASONING,
+      id: itemId(RESPONSES_ITEM_ID_PREFIX.REASONING),
       summary: [{ type: RESPONSES_ITEM.SUMMARY_TEXT, text: reasoning }],
     });
   }
@@ -32,6 +36,7 @@ export function chatCompletionToResponses(responseBody, customToolNames = null, 
   if (text.length > 0) {
     output.push({
       type: RESPONSES_ITEM.MESSAGE,
+      id: itemId(RESPONSES_ITEM_ID_PREFIX.MESSAGE),
       role: ROLE.ASSISTANT,
       content: [{ type: RESPONSES_ITEM.OUTPUT_TEXT, text, annotations: [] }],
     });
@@ -43,7 +48,7 @@ export function chatCompletionToResponses(responseBody, customToolNames = null, 
     const custom = !!customToolNames?.has(fn.name);
     output.push({
       type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,
-      id: `${custom ? "ctc" : "fc"}_${tc.id || ""}`,
+      id: `${custom ? RESPONSES_ITEM_ID_PREFIX.CUSTOM_TOOL_CALL : RESPONSES_ITEM_ID_PREFIX.FUNCTION_CALL}_${tc.id || ""}`,
       call_id: tc.id || "",
       ...clientToolFields(toolNamespaces, fn.name || ""),
       ...(custom
@@ -55,7 +60,7 @@ export function chatCompletionToResponses(responseBody, customToolNames = null, 
   const incompleteReason = toResponsesIncompleteReason(choice.finish_reason);
   const usage = responseBody.usage || {};
   return {
-    id: `resp_${responseBody.id || ""}`.replace(/^resp_chatcmpl-/, "resp_"),
+    id: responseId,
     object: "response",
     created_at: responseBody.created || Math.floor(Date.now() / 1000),
     model: responseBody.model || "unknown",

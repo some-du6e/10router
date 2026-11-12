@@ -106,6 +106,9 @@ export const AG_TOOL_SUFFIX = "_ide";
 // Suffix added to client tools when forwarding to Claude provider (anti-ban cloaking)
 export const CLAUDE_TOOL_SUFFIX = "_ide";
 
+// Longest tool name Anthropic and OpenAI accept (^[a-zA-Z0-9_-]{1,64}$).
+export const MAX_TOOL_NAME_LENGTH = 64;
+
 // CC native default tools — these are Claude Code's own tools, kept as decoys
 // Client tools matching these names are skipped (not renamed), others get _cc suffix
 export const CC_DEFAULT_TOOLS = new Set([

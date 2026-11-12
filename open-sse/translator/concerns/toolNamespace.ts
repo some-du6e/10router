@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { CLAUDE_TOOL_SUFFIX } from "../../config/appConstants.js";
+import { CLAUDE_TOOL_SUFFIX, MAX_TOOL_NAME_LENGTH } from "../../config/appConstants.js";
 
 // Responses clients (Codex) call tools by `{ name, namespace }`; Chat and Claude
 // upstreams see one flat list. The request translator records, for each upstream
@@ -9,9 +9,19 @@ import { CLAUDE_TOOL_SUFFIX } from "../../config/appConstants.js";
 export type ToolRef = { namespace: string | null; name: string };
 export type ToolNamespaces = Map<string, ToolRef> | null | undefined;
 
-// Anthropic caps tool names at 64 chars of [a-zA-Z0-9_-]; OAuth cloaking appends CLAUDE_TOOL_SUFFIX.
-const MAX_TOOL_NAME_LEN = 64 - CLAUDE_TOOL_SUFFIX.length;
+// Leaves room for the CLAUDE_TOOL_SUFFIX that OAuth cloaking appends.
+const MAX_TOOL_NAME_LEN = MAX_TOOL_NAME_LENGTH - CLAUDE_TOOL_SUFFIX.length;
 const WIRE_NAME = /^[a-zA-Z0-9_-]+$/;
+const HASH_LEN = 8;
+
+// Cut a name to `max` characters, ending in 8 hex characters of a sha256 of
+// `hashOf` so two long names that share a prefix stay distinct. Deterministic,
+// so a declaration, its history calls and a forced choice all get the same name.
+export function capToolName(name: string, max: number, hashOf: string = name): string {
+  if (name.length <= max) return name;
+  const hash = createHash("sha256").update(hashOf).digest("hex").slice(0, HASH_LEN);
+  return `${name.slice(0, max - HASH_LEN - 1)}_${hash}`;
+}
 
 // Whether an upstream accepts `name` as a tool name as-is.
 export function isWireToolName(name: string): boolean {
@@ -24,10 +34,7 @@ export function isWireToolName(name: string): boolean {
 export function qualifyToolName(namespace: string | null, name: string): string {
   const raw = !namespace ? name
     : name.startsWith("_") || namespace.endsWith("_") ? `${namespace}${name}` : `${namespace}__${name}`;
-  const qualified = raw.replace(/[^a-zA-Z0-9_-]/g, "_");
-  if (qualified.length <= MAX_TOOL_NAME_LEN) return qualified;
-  const hash = createHash("sha256").update(raw).digest("hex").slice(0, 8);
-  return `${qualified.slice(0, MAX_TOOL_NAME_LEN - 9)}_${hash}`;
+  return capToolName(raw.replace(/[^a-zA-Z0-9_-]/g, "_"), MAX_TOOL_NAME_LEN, raw);
 }
 
 // Pull the translator-only tool metadata off a translated request body. It rides

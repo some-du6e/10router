@@ -41,6 +41,23 @@ export const RESPONSES_ITEM = {
   NAMESPACE: "namespace",
 };
 
+// Prefixes of the output item ids 10router makes up (`msg_…`, `rs_…`, `fc_…`, `ctc_…`).
+export const RESPONSES_ITEM_ID_PREFIX = {
+  MESSAGE: "msg",
+  REASONING: "rs",
+  FUNCTION_CALL: "fc",
+  CUSTOM_TOOL_CALL: "ctc",
+};
+
+// Tool choice values shared by Chat Completions and Claude.
+export const TOOL_CHOICE = {
+  AUTO: "auto",
+  NONE: "none",
+  REQUIRED: "required", // Chat: call some tool
+  ANY: "any",           // Claude: call some tool
+  TOOL: "tool",         // Claude: call the named tool
+};
+
 // OpenAI Responses `status` values, on a response and on its output items.
 export const RESPONSES_STATUS = {
   IN_PROGRESS: "in_progress",

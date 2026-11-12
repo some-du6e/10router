@@ -10,11 +10,11 @@
 // or not. Only Claude models are touched: other models on Claude-format or Chat
 // endpoints (GLM, Kimi, MiniMax, DeepSeek, ...) keep the choice as sent.
 import { getCapabilitiesForModel } from "../../providers/capabilities.js";
+import { OPENAI_BLOCK, TOOL_CHOICE } from "../schema/index.js";
 
-const CLAUDE_FORCED = new Set(["any", "tool"]);
+const CLAUDE_FORCED = new Set([TOOL_CHOICE.ANY, TOOL_CHOICE.TOOL]);
 const THINKING_ON = new Set(["enabled", "adaptive"]);
-const EFFORT_OFF = "none";
-const AUTO = "auto";
+const EFFORT_OFF = "none"; // the reasoning_effort that turns thinking off
 
 const RULE = { NONE: 0, ALWAYS: 1, WITH_THINKING: 2 };
 
@@ -36,7 +36,7 @@ export function relaxForcedToolChoiceForThinking(body, provider = null) {
   const reject = rule === RULE.ALWAYS || (rule === RULE.WITH_THINKING && THINKING_ON.has(body.thinking?.type));
   if (!reject) return body;
   body.tool_choice = {
-    type: AUTO,
+    type: TOOL_CHOICE.AUTO,
     ...(choice.disable_parallel_tool_use !== undefined ? { disable_parallel_tool_use: choice.disable_parallel_tool_use } : {}),
   };
   return body;
@@ -50,7 +50,7 @@ export function relaxForcedToolChoiceForThinking(body, provider = null) {
 export function relaxForcedChatToolChoiceForClaude(body, provider, model, thinkingIsFinal = true) {
   if (!body || typeof body !== "object") return body;
   const choice = body.tool_choice;
-  const forced = choice === "required" || (choice && typeof choice === "object" && choice.type === "function");
+  const forced = choice === TOOL_CHOICE.REQUIRED || (choice && typeof choice === "object" && choice.type === OPENAI_BLOCK.FUNCTION);
   if (!forced) return body;
   const rule = forcedToolRule(provider, model || body.model);
   if (rule === RULE.NONE) return body;
@@ -60,6 +60,6 @@ export function relaxForcedChatToolChoiceForClaude(body, provider, model, thinki
     const thinking = (typeof effort === "string" && effort !== EFFORT_OFF) || THINKING_ON.has(body.thinking?.type);
     if (!thinking) return body;
   }
-  body.tool_choice = AUTO;
+  body.tool_choice = TOOL_CHOICE.AUTO;
   return body;
 }
