@@ -17,6 +17,11 @@ export type Protocol = "anthropic" | "openai-chat" | "openai-responses";
 export type KeyConfirmed = "confirmed" | "likely" | "unknown";
 export type ModelsSource = "models" | "catalog" | "guessed" | "none";
 export type StopReason = "auth" | "denied" | "rate" | "generated" | "failing" | "deadline" | "aborted";
+// What one run says about the key it was given, for callers choosing between
+// keys: it got through, it was refused, it was rate-limited before anything
+// was found, or nothing is known about it (the endpoint failed, or the model
+// probes were cut short before they told anything).
+export type KeyVerdict = "accepted" | "refused" | "rate-limited" | null;
 // Stops that mean the key itself can't be used.
 const keyStop = (s: StopReason | null) => s === "auth" || s === "denied";
 type ErrorShape = "anthropic" | "openai" | "generic";
@@ -65,6 +70,7 @@ export interface DetectResult {
   suggestedPrefix?: string;
   // Which failure screen fits, when ok is false.
   failure?: FailureKind;
+  keyVerdict?: KeyVerdict;
   // Why model checks stopped early, if they did.
   stopReason?: StopReason | null;
   // Per API that was asked about models one by one: how far it got, and the
@@ -157,7 +163,7 @@ const MAX_MODEL_PAGES = 10;      // /models pagination cap
 const PROBE_BODY_MAX = 4 * 1024 * 1024; // a probe reads at most this much
 const CANARY = "10router-no-such-model";
 const CONTROL_PATH = "/10router-no-such-path";
-const DETECT_DEADLINE_MS = 45_000; // whole detection; the UI gives up at 60s
+export const DETECT_DEADLINE_MS = 45_000; // whole detection; the UI gives up at 60s
 const MAX_CONSECUTIVE_FAILURES = 6; // network / timeout / 5xx in a row on one path
 const UNREACHABLE_AFTER = 2;     // network failures with no answer at all = the host is unreachable
 const MODEL_DENIED_STOP = 3;     // the same model-access refusal on this many models = the key, not the model
@@ -1025,8 +1031,11 @@ export interface DetectOptions {
   deadlineMs?: number;
   // Live progress (see DetectProgress). Paths and model ids only, never the key.
   onProgress?: DetectProgressFn | null;
+  // Leave out step 4 (asking about models one by one): the endpoint page's
+  // Re-detect checks only the API, URL and fixes; models have their own check.
+  skipModels?: boolean;
 }
-export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS, sleep, signal = null, deadlineMs = DETECT_DEADLINE_MS, onProgress = null }: DetectOptions): Promise<DetectResult> {
+export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS, sleep, signal = null, deadlineMs = DETECT_DEADLINE_MS, onProgress = null, skipModels = false }: DetectOptions): Promise<DetectResult> {
   const key = cleanKey(apiKey);
   const base0 = normalizeUrl(url);
   const steps: DetectStep[] = [];
@@ -1045,6 +1054,8 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   const listRefused = new Set<string>(); // auth styles GET /models refused
   let clientGated = false;
   let rateLimited = false;
+  let probeAuthFail = false; // a POST probe, not just GET /models, refused the key
+  let keyedListRefused = false; // GET /models listed without a key, and refused this one
   // A host that never answers (timeouts, refused, no DNS): two such requests
   // with nothing else heard back is enough; waiting on the rest only burns time.
   let netFails = 0, answered = false;
@@ -1071,6 +1082,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
         if (style === "none" && key) {
           const k = await fetchModelList(probe, b, "GET /models (bearer)", AUTH.bearer);
           if (k.listed) models = dedupe([...models, ...k.ids]);
+          else if (classify(k.first) === "auth") keyedListRefused = true;
           listComplete &&= k.listed && k.complete;
         }
         break outer;
@@ -1103,6 +1115,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
       const k = classify(r, { model: String(p.body.model) });
       heard(k);
       note(k);
+      if (k === "auth") probeAuthFail = true;
       if (k === "server") serverErrors++;
       if (k === "accepted" || k === "unknown-model" || k === "model-denied") found.push({ proto, base: b, shape: apiErrorShape(r.json), sig: errorSignature(r, String(p.body.model)) });
       else if (k === "generated") { found.push({ proto, base: b, shape: null, sig: "" }); generatesOnEmpty.add(proto); }
@@ -1140,24 +1153,31 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   const keyAccepted = !!modelsAuth && modelsAuth !== "none";
   const stop0 = probe.halted();
   if (!filtered.length && stop0) {
-    return { ok: false, failure: stop0 === "aborted" ? "cancelled" : "timeout", error: stop0 === "aborted" ? "Detection was cancelled." : "Detection ran out of time before an API answered. Try again.", baseUrl: base0, steps, partial: true, partialReason: PARTIAL_REASON[stop0], clientGated, authRejected: false, rateLimited };
+    return { ok: false, failure: stop0 === "aborted" ? "cancelled" : "timeout", error: stop0 === "aborted" ? "Detection was cancelled." : "Detection ran out of time before an API answered. Try again.", baseUrl: base0, steps, partial: true, partialReason: PARTIAL_REASON[stop0], clientGated, authRejected: false, rateLimited, keyVerdict: null };
   }
 
   if (!filtered.length) {
     const last = steps[steps.length - 1];
     const html = steps.find((s) => s.html);
-    const keyRefused = sawAuthFail && !keyAccepted;
+    // Only GET /models refused the key, and the API paths answer 5xx: an
+    // admin-only list in front of a server that is down, not a dead key.
+    const keyRefused = sawAuthFail && !keyAccepted && (probeAuthFail || !serverErrors);
     const failure: FailureKind = clientGated ? "gated" : keyRefused ? "key" : rateLimited ? "rate" : found.length ? "catch-all"
       : serverErrors ? "down" : html ? "html" : unreachable() || last?.status === 0 ? "unreachable" : "no-api";
     const error = clientGated ? "This endpoint only accepts specific clients."
-      : sawAuthFail && !keyAccepted ? "The key was rejected."
+      : keyRefused ? "The key was rejected."
       : rateLimited ? "The endpoint is rate-limiting requests. Try again in a minute."
       : found.length ? "This server answers every request the same way, so no API could be identified."
       : serverErrors ? "The endpoint returned server errors (5xx). It may be down; try again later."
       : html ? `This isn't an API response${htmlTitle(html.preview) ? ` (got "${htmlTitle(html.preview)}")` : ""}.`
       : last?.status === 0 ? `Couldn't reach it: ${last.preview}`
       : "No OpenAI or Anthropic API found at this URL.";
-    return { ok: false, failure, error, baseUrl: base0, steps, clientGated, authRejected: sawAuthFail && !keyAccepted && !clientGated, rateLimited };
+    // A GET /models refusal alone can be an admin-only list.
+    // GET /models took the key and the POSTs refused it, with nothing else
+    // answering (no 5xx, no gate): it can list, not use.
+    const keyVerdict: KeyVerdict = failure === "key" ? (probeAuthFail ? "refused" : null) : failure === "rate" ? "rate-limited"
+      : failure === "no-api" && keyAccepted && probeAuthFail ? "refused" : null;
+    return { ok: false, failure, error, baseUrl: base0, steps, clientGated, authRejected: sawAuthFail && !keyAccepted && !clientGated, rateLimited, keyVerdict };
   }
 
   const protocol = filtered[0].proto;
@@ -1192,9 +1212,11 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   // says nothing about the style that worked.
   let probesRefusedKey = false;
   let stopReason: StopReason | null = null;
+  const modelStops = new Set<StopReason>(); // every stop, not just the first
+  let inconclusive = false; // some API's model probes ended before they told anything
   let blocked: StopReason | null = null; // a stop that applies to every path
   const checks: Partial<Record<Protocol, ModelCheck>> = {};
-  if (!models.length) {
+  if (!models.length && !skipModels) {
     byProtocol = {};
     for (const proto of protocols) {
       if (generatesOnEmpty.has(proto)) { byProtocol[proto] = []; partialReason ||= PARTIAL_REASON.generated; stopReason ||= "generated"; continue; }
@@ -1206,7 +1228,11 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
       const res = await probeModels({ probe, base, protocol: proto, AUTH, openaiAuth, ids: candidates, quirks });
       byProtocol[proto] = res.ids || [];
       if (res.check) checks[proto] = res.check;
-      if (res.stopped) { partialReason ||= PARTIAL_REASON[res.stopped]; stopReason ||= res.stopped; if (keyStop(res.stopped)) probesRefusedKey = true; }
+      if (res.stopped) { partialReason ||= PARTIAL_REASON[res.stopped]; stopReason ||= res.stopped; modelStops.add(res.stopped); if (keyStop(res.stopped)) probesRefusedKey = true; }
+      // Cut short, or the made-up-id check itself failed (5xx, network).
+      if (res.stopped === "failing" || res.stopped === "deadline" || res.stopped === "aborted" || (res.ids === null && !res.stopped && !res.complete && candidates.length)) inconclusive = true;
+      // Some models got no answer (5xx, network) without a stop: still partial.
+      if (!res.stopped && !res.complete && candidates.length) partialReason ||= PARTIAL_REASON.failing;
       if (res.stopped && res.stopped !== "generated" && res.stopped !== "failing") blocked = res.stopped;
     }
     const built = buildRoutes(byProtocol);
@@ -1226,6 +1252,27 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   const pathStyle = primary === "anthropic" ? ["bearer", "x-api-key"] : [openaiAuth === AUTH["api-key"] ? "api-key" : "bearer"];
   const listRefusedPathStyle = pathStyle.every((st) => listRefused.has(st)) && keyConfirmed !== "confirmed";
   const authRejected = !models.length && !keyAccepted && (probesRefusedKey || listRefusedPathStyle);
+  // The free probes got through with this key. A key the bad-key check
+  // confirmed, or that GET /models took, works. A public list that refused it
+  // when sent with the key doesn't vouch for it. Anything found or generated
+  // means it works. It was refused only if the model probes stopped on the key
+  // itself, and limited only if a rate limit stopped them first. A key that
+  // got through but could use none of the models asked about (limited, out of
+  // credit), or that only GET /models refused in the API path's style, is
+  // unknown: another key may do better. So are probes cut short by time or
+  // failures.
+  const confirmed = keyConfirmed === "confirmed";
+  // The keyed list retry sends Bearer: it only speaks for a path that takes Bearer.
+  const bearerPath = pathStyle.length === 1 && pathStyle[0] === "bearer";
+  const keyVerdict: KeyVerdict = generatesOnEmpty.size || modelStops.has("generated") ? "accepted"
+    : keyedListRefused && bearerPath && !confirmed ? "refused"
+    : models.length ? "accepted"
+    : modelStops.has("auth") && !keyAccepted && !confirmed ? "refused"
+    : modelStops.has("rate") ? "rate-limited"
+    // A 402 (out of credit) on the model probes: that key can't use anything.
+    : modelStops.has("auth") || modelStops.has("denied") || listRefusedPathStyle || steps.some((s) => s.status === 402) ? null
+    : keyAccepted || confirmed || !inconclusive ? "accepted"
+    : null;
 
   const name = matched?.name || suggestName(base);
   return {
@@ -1243,6 +1290,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
     partial: !!partialReason,
     partialReason,
     authRejected,
+    keyVerdict,
     suggestedName: name,
     suggestedPrefix: makePrefix(name),
     stopReason,

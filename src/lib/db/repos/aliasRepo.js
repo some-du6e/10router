@@ -1,6 +1,7 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { makeKv } from "../helpers/kvStore.js";
+import { bumpConnectionsVersion } from "./connectionsRepo.js";
 
 const aliasKv = makeKv("modelAliases");
 const customKv = makeKv("customModels");
@@ -12,10 +13,12 @@ export async function getModelAliases() {
 
 export async function setModelAlias(alias, model) {
   await aliasKv.set(alias, model);
+  bumpConnectionsVersion();
 }
 
 export async function deleteModelAlias(alias) {
   await aliasKv.remove(alias);
+  bumpConnectionsVersion();
 }
 
 // customModels: key=`${providerAlias}|${id}|${type}`, value=full model object
@@ -46,9 +49,11 @@ export async function addCustomModel({ providerAlias, id, type = "llm", name, ca
     db.run(`INSERT INTO kv(scope, key, value) VALUES('customModels', ?, ?)`, [k, value]);
     added = true;
   });
+  bumpConnectionsVersion();
   return added;
 }
 
 export async function deleteCustomModel({ providerAlias, id, type = "llm" }) {
   await customKv.remove(customKey(providerAlias, id, type));
+  bumpConnectionsVersion();
 }

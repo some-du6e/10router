@@ -2,7 +2,7 @@
 // has saved, as a list of changes the user can apply. Pure, so it's tested
 // directly (tests/unit/endpoint-redetect-diff.test.js).
 import { buildRoutes } from "@/lib/endpointDetect.js";
-import type { DetectFetch, DetectResult, Protocol } from "@/lib/endpointDetect.js";
+import type { DetectFetch, DetectResult, ModelCheck, Protocol } from "@/lib/endpointDetect.js";
 import { sanitizeNodeQuirks } from "@/shared/utils/nodeQuirks.js";
 import { applyAuthHeader, applyIdentityAndHeaders, getHeader } from "@/shared/utils/endpointOverrides.js";
 
@@ -32,6 +32,16 @@ export interface RedetectDiff {
   modelsNote: string | null;
   keyConfirmed?: string;
   changes: number;
+  // What the one key's own URL answered that isn't applied to the endpoint:
+  // shown to the user, never ticked.
+  account?: AccountFindings;
+}
+
+export interface AccountFindings {
+  protocol?: Protocol;
+  maxCompletionTokens?: true;
+  apiKeyHeader?: true;
+  baseUrl?: string; // that key's URL answers here instead
 }
 
 export const savedProtocol = (n: SavedEndpoint): Protocol =>
@@ -44,17 +54,19 @@ export const savedProtocol = (n: SavedEndpoint): Protocol =>
 // Codex CLI" is client-gated, so without this every re-detect is refused.
 // `identity: false` leaves out the saved mimic, for the client-identity retry
 // whose own preset headers must not be overwritten.
-export function savedSettingsFetch(fetchFn: DetectFetch, node: unknown, apiKey: string, { identity = true }: { identity?: boolean } = {}): DetectFetch {
+// Each request is sent with the key it carries, so the bad-key check's made-up
+// one stays made up.
+export function savedSettingsFetch(fetchFn: DetectFetch, node: unknown, { identity = true }: { identity?: boolean } = {}): DetectFetch {
   const q0 = sanitizeNodeQuirks(node);
   const q = identity ? q0 : { ...q0, mimic: undefined, customHeaders: undefined };
-  const key = String(apiKey || "").trim();
   return (url, init) => {
     const headers = { ...init.headers };
     const messagesPath = /\/messages(?:\?|$)/.test(url);
     const keyed = ["authorization", "x-api-key", "api-key"].some((h) => getHeader(headers, h) !== undefined);
-    if (keyed && key) {
-      if (q.authHeader) applyAuthHeader(headers, q.authHeader, key);
-      else if (q.apiKeyHeader === "api-key" && !messagesPath) applyAuthHeader(headers, "api-key", key);
+    const sent = String(getHeader(headers, "x-api-key") ?? getHeader(headers, "api-key") ?? String(getHeader(headers, "authorization") ?? "").replace(/^Bearer\s+/i, "")).trim();
+    if (keyed && sent) {
+      if (q.authHeader) applyAuthHeader(headers, q.authHeader, sent);
+      else if (q.apiKeyHeader === "api-key" && !messagesPath) applyAuthHeader(headers, "api-key", sent);
     }
     applyIdentityAndHeaders(headers, q, { messagesPath });
     return fetchFn(url, { ...init, headers });
@@ -85,44 +97,74 @@ const sameRoutes = (a: Record<string, string> = {}, b: Record<string, string> = 
 // (the saved API, or the new one when a Chat <-> Responses switch is offered).
 // The offer is the full model -> API map, so the PUT can drop the entries for
 // whichever API the node ends up on, whether or not the switch is applied.
-// When the endpoint no longer splits models, it offers {} to clear old routes.
+// It never offers {} to clear routes: one API failing its probe (a 503)
+// looks the same as an endpoint that stopped splitting models. A saved route
+// is moved only once its API was checked in full without the model.
 function routesChange(node: SavedEndpoint, r: DetectResult, target: Protocol): Record<string, string> | null {
   // No per-API probing (it listed /models): nothing is known about routes.
   if (!r.byProtocol) return null;
   const built = buildRoutes(r.byProtocol, target);
   if (!built.models.length) return null;
   const saved = node.modelRoutes || {};
-  if (!Object.keys(built.routes).length) {
-    // An early stop leaves some API's list short: not proof the split is gone.
-    return Object.keys(saved).length && !r.partial ? {} : null;
-  }
-  if (sameRoutes(saved, built.routes)) return null;
-  return Object.fromEntries(built.models.map((m) => [m, built.routes[m] || target]));
+  // No saved route moves off an API whose check didn't finish (cut short, or
+  // the API failed its probe and was never asked), nor one for a model the run
+  // never reached (outdated, so not asked): the offer replaces modelRoutes whole.
+  const finished = (p: string) => { const c = (r.checks as Record<string, ModelCheck | undefined> | undefined)?.[p]; return !!c && !c.stopped && !c.unchecked.length; };
+  const reached = new Set(built.models.map((m) => m.toLowerCase()));
+  const kept = Object.fromEntries(Object.entries(saved).filter(([m, p]) => !reached.has(m.toLowerCase()) || !finished(p)));
+  const routes = { ...built.routes, ...kept };
+  if (sameRoutes(saved, routes)) return null;
+  return { ...Object.fromEntries(built.models.map((m) => [m, built.routes[m] || target])), ...kept };
 }
 
+// Which half of the page asked: "endpoint" (API, URL, fixes), "models"
+// (models and their routes), or both.
+export type RedetectPart = "endpoint" | "models" | "all";
+
 // `outdated`: saved models the labs have moved on from, offered for removal too.
-export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: DetectResult, outdated: string[] = []): RedetectDiff {
+// `ownUrl`: the result came from one key at its own URL (`checkedUrl`), so it
+// can't vouch for the endpoint's URL. `keyScoped`: other keys use other URLs,
+// so that one account can't vouch for their API, auth style, fixes or routes
+// either; what it found is reported in `account` instead. `removals: false`:
+// the list came from a key that isn't first in line, which may list fewer
+// models than the others.
+export function redetectDiff(node: SavedEndpoint, currentModels: string[], r: DetectResult, outdated: string[] = [], part: RedetectPart = "all", { keyScoped = false, ownUrl = keyScoped, removals = true, checkedUrl }: { keyScoped?: boolean; ownUrl?: boolean; removals?: boolean; checkedUrl?: string } = {}): RedetectDiff {
   const empty: RedetectDiff = { ok: false, protocol: null, baseUrl: null, addModels: [], removeModels: [], outdatedModels: [], quirks: {}, modelsNote: null, changes: 0 };
   if (!r.ok) return { ...empty, error: r.error || "Detection failed", keyConfirmed: r.keyConfirmed };
+  const ep = part !== "models", ms = part !== "endpoint";
   const from = savedProtocol(node);
-  const to = r.protocol || from;
-  const protocol = to !== from ? { from, to, applicable: from !== "anthropic" && to !== "anthropic" } : null;
-  const baseUrl = r.baseUrl && trimUrl(r.baseUrl) !== trimUrl(node.baseUrl) ? { from: trimUrl(node.baseUrl), to: trimUrl(r.baseUrl) } : null;
-  const found = r.models || [];
+  // Without per-model answers (endpoint half only) there's no evidence to move
+  // off a saved API that still answers: detection's pick is just probe order.
+  const to = part === "endpoint" && r.protocols?.includes(from) ? from : r.protocol || from;
+  const switchable = to !== from && from !== "anthropic" && to !== "anthropic";
+  // One account's server answering another API isn't the endpoint's API.
+  const protocol = ep && !keyScoped && to !== from ? { from, to, applicable: switchable } : null;
+  const baseUrl = ep && !ownUrl && r.baseUrl && trimUrl(r.baseUrl) !== trimUrl(node.baseUrl) ? { from: trimUrl(node.baseUrl), to: trimUrl(r.baseUrl) } : null;
+  // One account's models split across APIs would need routes it can't offer:
+  // only the ones it serves on the saved API.
+  const found = !ms ? [] : keyScoped && r.byProtocol ? r.byProtocol[from] || [] : r.models || [];
   const have = new Set(currentModels);
   // Outdated but just listed or answered by the endpoint: the user may want it, keep it.
   const listed = new Set(found.map((m) => m.toLowerCase()));
-  const old = new Set(outdated.filter((m) => !listed.has(m.toLowerCase())));
+  const old = new Set(ms ? outdated.filter((m) => !listed.has(m.toLowerCase())) : []);
   // Only a full list proves a model is gone; a cut-short one just missed it.
-  const fullList = r.modelsSource === "models" && r.listComplete !== false;
+  const fullList = ms && !ownUrl && removals && r.modelsSource === "models" && r.listComplete !== false;
   const removeModels = currentModels.filter((m) => fullList && !listed.has(m.toLowerCase()));
   const outdatedModels = currentModels.filter((m) => old.has(m) && !removeModels.includes(m));
   const addModels = found.filter((m) => !have.has(m) && !old.has(m));
   const quirks: RedetectDiff["quirks"] = {};
-  if (r.quirks?.maxCompletionTokens && !node.maxCompletionTokens) quirks.maxCompletionTokens = true;
-  if (r.quirks?.apiKeyHeader && node.apiKeyHeader !== "api-key") quirks.apiKeyHeader = "api-key";
-  const modelRoutes = routesChange(node, r, protocol?.applicable ? to : from);
+  // One account's server may be another service entirely: its fixes aren't the endpoint's.
+  if (ep && !keyScoped && r.quirks?.maxCompletionTokens && !node.maxCompletionTokens) quirks.maxCompletionTokens = true;
+  if (ep && !keyScoped && r.quirks?.apiKeyHeader && node.apiKeyHeader !== "api-key") quirks.apiKeyHeader = "api-key";
+  // Models alone: routes stay relative to the saved API (a switch is the endpoint check's call).
+  const modelRoutes = ms && !keyScoped ? routesChange(node, r, ep && switchable ? to : from) : null;
   if (modelRoutes) quirks.modelRoutes = modelRoutes;
   const changes = (protocol ? 1 : 0) + (baseUrl ? 1 : 0) + addModels.length + removeModels.length + outdatedModels.length + Object.keys(quirks).length;
-  return { ok: true, protocol, baseUrl, addModels, removeModels, outdatedModels, quirks, modelsNote: modelsNoteFor(r), keyConfirmed: r.keyConfirmed, changes };
+  const account: AccountFindings = {};
+  if (ep && keyScoped && to !== from) account.protocol = to;
+  if (ep && keyScoped && r.quirks?.maxCompletionTokens && !node.maxCompletionTokens) account.maxCompletionTokens = true;
+  if (ep && keyScoped && r.quirks?.apiKeyHeader && node.apiKeyHeader !== "api-key") account.apiKeyHeader = true;
+  if (ep && ownUrl && checkedUrl && r.baseUrl && trimUrl(r.baseUrl) !== trimUrl(checkedUrl)) account.baseUrl = trimUrl(r.baseUrl);
+  // One account's or a fallback key's list doesn't describe the endpoint's.
+  return { ok: true, protocol, baseUrl, addModels, removeModels, outdatedModels, quirks, modelsNote: ms && !keyScoped && removals ? modelsNoteFor(r) : null, keyConfirmed: r.keyConfirmed, changes, ...(Object.keys(account).length ? { account } : {}) };
 }

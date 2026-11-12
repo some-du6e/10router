@@ -57,25 +57,6 @@ vi.mock("../../open-sse/utils/toolDeduper.js", () => ({
   dedupeTools: vi.fn((tools) => ({ tools, stripped: [] })),
 }));
 
-vi.mock("../../open-sse/rtk/caveman.js", () => ({
-  injectCaveman: vi.fn(),
-}));
-
-vi.mock("../../open-sse/rtk/ponytail.js", () => ({
-  injectPonytail: vi.fn(),
-}));
-
-vi.mock("../../open-sse/rtk/index.js", () => ({
-  compressMessages: vi.fn(() => null),
-  formatRtkLog: vi.fn(() => ""),
-}));
-
-vi.mock("../../open-sse/rtk/headroom.js", () => ({
-  compressWithHeadroom: vi.fn(async () => null),
-  formatHeadroomLog: vi.fn(() => ""),
-  formatHeadroomSizeLog: vi.fn(() => ""),
-}));
-
 vi.mock("../../open-sse/providers/capabilities.js", () => ({
   getCapabilitiesForModel: vi.fn(() => ({})),
 }));
@@ -114,7 +95,6 @@ vi.mock("@/lib/usageDb.js", () => ({
   saveRequestDetail: vi.fn(() => Promise.resolve()),
 }));
 
-
 const opts = () => {
   const body = { model: "claude-haiku-4-5", messages: [{ role: "user", content: "hi" }] };
   return {
@@ -151,6 +131,18 @@ describe("upstream answers a stream request with JSON", () => {
     await handleChatCore(opts());
     expect(handleStreamingResponse).toHaveBeenCalledTimes(1);
     expect(handleNonStreamingResponse).not.toHaveBeenCalled();
+  });
+
+  it("hands the stream's start save the request config its complete save uses", async () => {
+    const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
+    const { handleStreamingResponse, buildOnStreamComplete } = await import("../../open-sse/handlers/chatCore/streamingHandler.js");
+    vi.mocked(handleStreamingResponse).mockClear();
+    const streamRequest = { body: {}, stream: true };
+    vi.mocked(buildOnStreamComplete).mockReturnValueOnce({ onStreamComplete: vi.fn(), streamDetailId: "d1", streamRequest });
+    executeMock.mockResolvedValue(upstream("text/event-stream"));
+    await handleChatCore(opts());
+    expect(handleStreamingResponse).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(handleStreamingResponse).mock.calls[0][0].streamRequest).toBe(streamRequest);
   });
 
   it("replays a JSON reply as SSE when the client asked to stream", async () => {

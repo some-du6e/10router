@@ -55,25 +55,6 @@ vi.mock("../../open-sse/utils/toolDeduper.js", () => ({
   dedupeTools: vi.fn((tools) => ({ tools, stripped: [] })),
 }));
 
-vi.mock("../../open-sse/rtk/caveman.js", () => ({
-  injectCaveman: vi.fn(),
-}));
-
-vi.mock("../../open-sse/rtk/ponytail.js", () => ({
-  injectPonytail: vi.fn(),
-}));
-
-vi.mock("../../open-sse/rtk/index.js", () => ({
-  compressMessages: vi.fn(() => null),
-  formatRtkLog: vi.fn(() => ""),
-}));
-
-vi.mock("../../open-sse/rtk/headroom.js", () => ({
-  compressWithHeadroom: vi.fn(async () => null),
-  formatHeadroomLog: vi.fn(() => ""),
-  formatHeadroomSizeLog: vi.fn(() => ""),
-}));
-
 vi.mock("../../open-sse/providers/capabilities.js", () => ({
   getCapabilitiesForModel: vi.fn(() => ({})),
 }));
@@ -95,6 +76,8 @@ vi.mock("../../open-sse/utils/error.js", () => ({
   createErrorResult: vi.fn((status, message) => ({ success: false, status, error: message })),
   formatProviderError: vi.fn((error) => error.message),
   parseUpstreamError: vi.fn(),
+  isClientAbort: vi.fn(() => false),
+  clientAbortResult: vi.fn(),
 }));
 
 vi.mock("@/lib/usageDb.js", () => ({

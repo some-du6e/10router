@@ -2,6 +2,7 @@ import { stripRetiredSettings } from "./helpers/retiredSettings.js";
 import { migrateLegacyHostPassword } from "./helpers/hostCredentials.js";
 import { invalidatePricingCache } from "./repos/pricingRepo.js";
 import { clearRequestDetailFullData as clearFullDataAfterImport } from "./repos/requestDetailsRepo.js";
+import { rowToKey, toLimitHoldColumn, numberOrNull, toAllowedModelsColumn, reseedApiKeySpend } from "./repos/apiKeysRepo.js";
 // Public API barrel — all DB functions
 import { getAdapter } from "./driver.js";
 import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
@@ -11,6 +12,7 @@ export {
   getSettings, updateSettings, isCloudEnabled, getCloudUrl, exportSettings,
 } from "./repos/settingsRepo.js";
 import { invalidateSettingsCache } from "./repos/settingsRepo.js";
+import { bumpConnectionsVersion } from "./repos/connectionsRepo.js";
 
 // Provider connections
 export {
@@ -18,6 +20,7 @@ export {
   createProviderConnection, updateProviderConnection,
   deleteProviderConnection, deleteProviderConnectionsByProvider,
   reorderProviderConnections, cleanupProviderConnections,
+  AUTH_DEMOTE_PREFIX, getAuthDemoteKey, connectionsVersion,
 } from "./repos/connectionsRepo.js";
 
 // Provider nodes
@@ -41,7 +44,16 @@ export {
 // API keys
 export {
   getApiKeys, getApiKeyById, createApiKey, updateApiKey, deleteApiKey, validateApiKey,
+  getApiKeyPolicy,
 } from "./repos/apiKeysRepo.js";
+
+// Management keys (scoped keys for /api/management/v1) and their audit log
+export {
+  createScopedManagementKey, getManagementKeys, getManagementKeyById, findManagementKeyBySecret,
+  updateManagementKey, deleteManagementKey, touchManagementKey, createOwnedApiKey, updateApiKeyAs,
+  setRowOwner, claimRowForManagementKey, getRowOwners, getOwnedRows, getRowOwner, getRowsOwnedBy,
+  addManagementAudit, getManagementAudit, deleteRowAsManagementKey,
+} from "./repos/managementKeysRepo.js";
 
 // Combos
 export {
@@ -70,7 +82,11 @@ export {
   statsEmitter, trackPendingRequest, getActiveRequests,
   saveRequestUsage, getUsageHistory, getUsageStats, getChartData,
   appendRequestLog, getRecentLogs, getConnectionValue, getConnectionDetail,
+  getApiKeyUsageDetail, maskApiKey,
 } from "./repos/usageRepo.js";
+
+// Key lifespan estimate
+export { getKeyLifespans } from "./repos/keyLifespanRepo.js";
 
 // Request details
 export {
@@ -89,11 +105,11 @@ export async function exportDb() {
 
   const out = {
     settings: await exportSettings(),
-    providerConnections: db.all(`SELECT * FROM providerConnections`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, provider: r.provider, authType: r.authType, name: r.name, email: r.email, priority: r.priority, isActive: r.isActive === 1, createdAt: r.createdAt, updatedAt: r.updatedAt })),
+    providerConnections: db.all(`SELECT * FROM providerConnections`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, provider: r.provider, authType: r.authType, name: r.name, email: r.email, priority: r.priority, isActive: r.isActive === 1, createdAt: r.createdAt, updatedAt: r.updatedAt, ownerManagementKeyId: r.ownerManagementKeyId || null })),
     providerNodes: db.all(`SELECT * FROM providerNodes`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, type: r.type, name: r.name, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     proxyPools: db.all(`SELECT * FROM proxyPools`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, isActive: r.isActive === 1, testStatus: r.testStatus, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     notificationChannels: db.all(`SELECT * FROM notificationChannels`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, name: r.name, type: r.type, isActive: r.isActive === 1, createdAt: r.createdAt, updatedAt: r.updatedAt })),
-    apiKeys: db.all(`SELECT * FROM apiKeys`).map((r) => ({ id: r.id, key: r.key, name: r.name, machineId: r.machineId, isActive: r.isActive === 1, limitHold: r.limitHold === null || r.limitHold === undefined ? null : r.limitHold === 1, createdAt: r.createdAt })),
+    apiKeys: db.all(`SELECT * FROM apiKeys`).map(rowToKey),
     combos: db.all(`SELECT * FROM combos`).map((r) => ({ id: r.id, name: r.name, kind: r.kind, models: parseJson(r.models, []), createdAt: r.createdAt, updatedAt: r.updatedAt })),
     modelAliases: {},
     customModels: [],
@@ -114,6 +130,15 @@ export async function importDb(payload) {
   const db = await getAdapter();
 
   db.transaction(() => {
+    // Management keys aren't in backups and aren't wiped. A row keeps the
+    // management key it names only if that key exists here: ownership is never
+    // invented for a key this install doesn't have.
+    const liveManagementKeys = new Set(db.all(`SELECT id FROM managementKeys`).map((r) => r.id));
+    const ownerOrNull = (id) => (typeof id === "string" && liveManagementKeys.has(id) ? id : null);
+    // "dashboard", or a management key that exists here; anything else is dropped,
+    // and a key that is off (or has an expiry) with no actor then counts as the dashboard's.
+    const actorOrNull = (a) => (a === "dashboard" ? a : ownerOrNull(a));
+
     // Wipe all tables (keep _meta)
     db.run(`DELETE FROM settings`);
     db.run(`DELETE FROM providerConnections`);
@@ -131,10 +156,10 @@ export async function importDb(payload) {
     }
 
     for (const c of payload.providerConnections || []) {
-      const { id, provider, authType, name, email, priority, isActive, createdAt, updatedAt, ...rest } = c;
+      const { id, provider, authType, name, email, priority, isActive, createdAt, updatedAt, ownerManagementKeyId, ...rest } = c;
       db.run(
-        `INSERT OR REPLACE INTO providerConnections(id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, provider, authType || "oauth", name || null, email || null, priority || null, isActive === false ? 0 : 1, stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
+        `INSERT OR REPLACE INTO providerConnections(id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt, ownerManagementKeyId) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, provider, authType || "oauth", name || null, email || null, priority || null, isActive === false ? 0 : 1, stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString(), ownerOrNull(ownerManagementKeyId)]
       );
     }
     for (const n of payload.providerNodes || []) {
@@ -160,12 +185,26 @@ export async function importDb(payload) {
     }
     for (const k of payload.apiKeys || []) {
       db.run(
-        `INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, limitHold, createdAt) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, limitHold, createdAt,
+           budgetUsd, allowedModels, expiresAt, spendOffsetUsd, spendResetAt, spentUsd, requestCount, lastUsedAt,
+           ownerManagementKeyId, disabledBy, expiresAtSetBy)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         // limitHold: null (or a pre-override backup) inherits the global setting.
+        // A backup from before key limits has none of the limit fields: no limits.
+        // The running totals come along (lifetimeSpentUsd, not the since-reset spentUsd).
         [k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1,
-          k.limitHold === null || k.limitHold === undefined ? null : (k.limitHold ? 1 : 0), k.createdAt || new Date().toISOString()]
+          toLimitHoldColumn(k.limitHold), k.createdAt || new Date().toISOString(),
+          numberOrNull(k.budgetUsd) !== null && k.budgetUsd >= 0 ? k.budgetUsd : null,
+          toAllowedModelsColumn(k.allowedModels),
+          k.expiresAt && !Number.isNaN(new Date(k.expiresAt).getTime()) ? new Date(k.expiresAt).toISOString() : null,
+          numberOrNull(k.spendOffsetUsd) ?? 0, k.spendResetAt || null,
+          Math.max(0, numberOrNull(k.lifetimeSpentUsd) ?? 0), Math.max(0, Math.floor(numberOrNull(k.requestCount) ?? 0)), k.lastUsedAt || null,
+          ownerOrNull(k.ownerManagementKeyId), actorOrNull(k.disabledBy), actorOrNull(k.expiresAtSetBy)]
       );
     }
+    // A restore onto another install has none of the keys' history, so the
+    // exported totals stand; history this install does have can only raise them.
+    reseedApiKeySpend(db);
     for (const c of payload.combos || []) {
       db.run(
         `INSERT OR REPLACE INTO combos(id, name, kind, models, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
@@ -189,6 +228,7 @@ export async function importDb(payload) {
   invalidatePricingCache();
   // Settings were replaced wholesale above, bypassing updateSettings.
   invalidateSettingsCache();
+  bumpConnectionsVersion();
 
   // A restore can switch "Show full request details" off; drop any stored
   // full payloads so they don't outlive the setting.

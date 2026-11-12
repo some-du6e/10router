@@ -41,6 +41,8 @@ export default function Input({
   onChange,
   error,
   hint,
+  // Announce hint changes to screen readers (role="status", always mounted).
+  hintLive = false,
   icon,
   disabled = false,
   required = false,
@@ -98,8 +100,10 @@ export default function Input({
           {error}
         </p>
       )}
-      {hint && !error && (
-        <p className="text-xs text-text-muted">{hint}</p>
+      {((hint && !error) || hintLive) && (
+        <p role={hintLive ? "status" : undefined} className={hint && !error ? "text-xs text-text-muted" : "sr-only"}>
+          {!error && hint}
+        </p>
       )}
     </div>
   );

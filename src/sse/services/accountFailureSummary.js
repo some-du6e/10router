@@ -1,4 +1,4 @@
-function extractProviderMessage(error) {
+export function extractProviderMessage(error) {
   const text = typeof error === "string" ? error : JSON.stringify(error || "Provider error");
   const jsonStart = text.indexOf("{");
   if (jsonStart === -1) return text;

@@ -4,6 +4,9 @@ import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { verifyDashboardAuthToken, getDashboardAuthSession } from "@/lib/auth/dashboardSession";
 import { needsSetup } from "@/lib/auth/setupState";
 import { hasTrustedPeerHeaders } from "@/lib/auth/trustedPeer";
+import { extractClientApiKey } from "@/shared/utils/clientApiKey.js";
+import { containsManagementKey } from "@/shared/utils/managementKey.js";
+import { isManagementApiPath, authenticateManagementKey } from "@/lib/management/auth.js";
 
 const CLI_TOKEN_HEADER = "x-9r-cli-token";
 const CLI_TOKEN_SALT = "9r-cli-auth";
@@ -38,7 +41,9 @@ const PUBLIC_API_PATHS = [
 
 // Public top-level prefixes (LLM API endpoints with their own API key auth).
 // Keep root-level rewrites here too: middleware runs before Next.js rewrites.
-const PUBLIC_PREFIXES = ["/v1", "/v1beta", "/api/v1", "/api/v1beta", "/codex", "/responses", "/systemone"];
+// Every source of a next.config.mjs rewrite to /api/v1* belongs here; the
+// guard test checks that against the config.
+const PUBLIC_PREFIXES = ["/v1", "/v1beta", "/api/v1", "/api/v1beta", "/codex", "/responses", "/systemone", "/backend-api"];
 
 // Always require JWT token regardless of requireLogin setting
 const ALWAYS_PROTECTED = [
@@ -84,9 +89,6 @@ const LOCAL_ONLY_PATHS = [
   "/api/oauth/cursor/auto-import",
   "/api/oauth/kiro/auto-import",
   "/api/auth/reset-password",
-  "/api/headroom/start",
-  "/api/headroom/stop",
-  "/api/headroom/proxy",
 ];
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
@@ -138,15 +140,7 @@ function isPublicLlmApi(pathname) {
   return PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
-function extractApiKey(request) {
-  const authHeader = request.headers.get("Authorization");
-  if (authHeader?.startsWith("Bearer ")) return authHeader.slice(7);
-  const apiKeyHeader = request.headers.get("x-api-key");
-  if (apiKeyHeader) return apiKeyHeader;
-  const googleApiKeyHeader = request.headers.get("x-goog-api-key");
-  if (googleApiKeyHeader) return googleApiKeyHeader;
-  return request.nextUrl.searchParams?.get("key") || null;
-}
+const extractApiKey = extractClientApiKey;
 
 async function hasValidApiKey(request) {
   const apiKey = extractApiKey(request);
@@ -220,10 +214,21 @@ export const __test__ = {
   extractApiKey,
   canAccessPublicLlmApi,
   canAccessLocalOnlyRoute,
+  isPublicApi,
 };
 
 export async function proxy(request) {
   const { pathname } = request.nextUrl;
+
+  // The management API takes a management key and nothing else: no session,
+  // no CLI token, no requireLogin=false. It is the only place a management
+  // key is accepted; everywhere below, one counts for nothing. The routes
+  // authenticate it again to act as it.
+  if (isManagementApiPath(pathname)) {
+    const auth = await authenticateManagementKey(request);
+    if (auth.ok) return NextResponse.next();
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
+  }
 
   // First-run gate: until someone claims the instance with the console setup
   // token, every dashboard/login page funnels to /setup.
@@ -270,6 +275,12 @@ export async function proxy(request) {
   }
 
   if (isPublicLlmApi(pathname)) {
+    // Refused even from loopback: a handler would otherwise record usage
+    // against the presented token, writing the management secret to the log.
+    // Anywhere in the token, so padding ("Bearer  10r-mgmt-…") can't slip one past.
+    if (containsManagementKey(extractApiKey(request))) {
+      return NextResponse.json({ error: "A management key can't be used for inference. Use a client API key." }, { status: 401 });
+    }
     if (await canAccessPublicLlmApi(request)) return NextResponse.next();
     return NextResponse.json({ error: "API key required for remote API access" }, { status: 401 });
   }

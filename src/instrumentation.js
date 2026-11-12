@@ -10,5 +10,11 @@ export async function register() {
 
     const { startModelCatalogSync } = await import("@/lib/modelCatalog/sync.js");
     startModelCatalogSync();
+
+    // Bare model ids route across providers from this list; build it before
+    // the first request asks.
+    import("@/sse/services/autoCombo.js")
+      .then(({ warmAutoComboCatalog }) => warmAutoComboCatalog())
+      .catch(() => {});
   }
 }

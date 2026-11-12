@@ -160,15 +160,22 @@ function createWsDecoder(onMessage, onClose, onPing) {
   };
 }
 
-// Run one `response.create` through this process's own HTTP endpoint and relay
-// each SSE event back as a text frame.
-function bridgeCodexTurn(request, port, headers, peerIp, send, done) {
-  const { type, ...body } = request;
-  void type;
-  body.stream = true; // the WS transport is inherently streaming
+function isLoopbackSocketIp(ip) {
+  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+}
 
-  const payload = Buffer.from(JSON.stringify(body), "utf8");
-  const forwarded = { "content-type": "application/json", "content-length": payload.length };
+/**
+ * The headers a bridged Codex turn is POSTed to loopback with. The POST always
+ * comes from 127.0.0.1, so the HTTP wrapper below would read it as local; the
+ * forwarding header decides that instead, by the same rule the wrapper uses
+ * for the handshake. A client on this machine (loopback socket, no forwarding
+ * headers) stays local, so a keyless local install keeps working. Anything
+ * else stays remote: a direct remote peer, or a local reverse proxy or tunnel
+ * that forwarded the handshake. The value is the socket address, never the
+ * handshake's own forwarding header, which a remote client can partly set.
+ */
+function bridgeForwardHeaders(handshakeHeaders, socketIp, payloadLength) {
+  const forwarded = { "content-type": "application/json", "content-length": payloadLength };
   // Carry through auth and Codex's own request metadata, but drop:
   //   - hop-by-hop / websocket-specific headers, meaningless on a POST;
   //   - forwarding headers — the bridged request originates from 127.0.0.1, so
@@ -177,12 +184,44 @@ function bridgeCodexTurn(request, port, headers, peerIp, send, done) {
   //     rate limiting. The real peer is attached below instead;
   //   - cookie, so a browser-initiated handshake cannot ride a session cookie
   //     into a route that accepts one.
-  for (const [name, value] of Object.entries(headers)) {
+  for (const [name, value] of Object.entries(handshakeHeaders)) {
     if (/^(host|connection|upgrade|sec-websocket-|content-length|content-type)/i.test(name)) continue;
     if (/^(x-forwarded-for|x-real-ip|x-9r-|cookie)/i.test(name)) continue;
     forwarded[name] = value;
   }
-  if (peerIp) forwarded["x-forwarded-for"] = peerIp;
+  const xff = handshakeHeaders["x-forwarded-for"];
+  const xRealIp = handshakeHeaders["x-real-ip"];
+  const loopback = isLoopbackSocketIp(socketIp);
+  if (!loopback || xff || xRealIp) forwarded["x-forwarded-for"] = socketIp || "unknown";
+  return forwarded;
+}
+
+/**
+ * The WebSocket error frame for a rejected turn. Codex reads `error` as an
+ * object; the gateway's own refusals (a missing key, a management key) carry
+ * it as a string, which is wrapped.
+ */
+function bridgeErrorFrame(raw, statusCode) {
+  let error;
+  try {
+    error = JSON.parse(raw).error;
+  } catch {
+    error = null;
+  }
+  if (typeof error === "string") error = { message: error, type: "invalid_request_error" };
+  if (!error || typeof error !== "object") error = { message: `Request failed with status ${statusCode}`, type: "server_error" };
+  return JSON.stringify({ type: "error", error });
+}
+
+// Run one `response.create` through this process's own HTTP endpoint and relay
+// each SSE event back as a text frame.
+function bridgeCodexTurn(request, port, headers, peerIp, send, done) {
+  const { type, ...body } = request;
+  void type;
+  body.stream = true; // the WS transport is inherently streaming
+
+  const payload = Buffer.from(JSON.stringify(body), "utf8");
+  const forwarded = bridgeForwardHeaders(headers, peerIp, payload.length);
 
   const req = http.request(
     { host: "127.0.0.1", port, path: CODEX_WS_PATH, method: "POST", headers: forwarded },
@@ -197,16 +236,7 @@ function bridgeCodexTurn(request, port, headers, peerIp, send, done) {
         let raw = "";
         res.on("data", (chunk) => { raw += chunk; });
         res.on("end", () => {
-          let error;
-          try {
-            error = JSON.parse(raw).error;
-          } catch {
-            error = null;
-          }
-          send(JSON.stringify({
-            type: "error",
-            error: error || { message: `Request failed with status ${res.statusCode}`, type: "server_error" },
-          }));
+          send(bridgeErrorFrame(raw, res.statusCode));
           done(null, res.statusCode);
         });
         res.on("error", (error) => done(error));
@@ -448,7 +478,7 @@ http.createServer = (...args) => {
     const xff = req.headers["x-forwarded-for"];
     const xRealIp = req.headers["x-real-ip"];
     const viaProxy = !!(xff || xRealIp);
-    const isLoopbackProxy = socketIp === "127.0.0.1" || socketIp === "::1" || socketIp === "::ffff:127.0.0.1";
+    const isLoopbackProxy = isLoopbackSocketIp(socketIp);
     // Trust forwarding headers only when the TCP peer is a local reverse proxy.
     // Direct/public sockets remain keyed by the unspoofable peer address.
     const proxyIp = xRealIp || (xff ? String(xff).split(",")[0].trim() : "");
@@ -526,6 +556,8 @@ http.createServer = (...args) => {
   };
   return server;
 };
+
+module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn } };
 
 if (require.main === module) {
   const standalone = path.join(__dirname, "server.js");

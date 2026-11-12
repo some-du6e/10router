@@ -28,7 +28,8 @@ Primary runtime model:
 ### In Scope
 
 - Local gateway runtime
-- Dashboard management APIs
+- Dashboard configuration APIs (`/api/*`, behind the session login)
+- The scoped management-key API (`/api/management/v1/*`, bearer management keys)
 - Provider authentication and token refresh
 - Request translation and SSE streaming
 - Local state + usage persistence
@@ -54,7 +55,7 @@ flowchart LR
 
     subgraph Router[10router Local Process]
         API[V1 Compatibility API\n/v1/*]
-        DASH[Dashboard + Management API\n/api/*]
+        DASH[Dashboard config API\n/api/*]
         CORE[SSE + Translation Core\nopen-sse + src/sse]
         DB[(db.json)]
         UDB[(usage.json + log.txt)]
@@ -95,7 +96,11 @@ flowchart LR
 Main directories:
 
 - `src/app/api/v1/*` and `src/app/api/v1beta/*` for compatibility APIs
-- `src/app/api/*` for management/configuration APIs
+- `src/app/api/*` for the dashboard's configuration APIs (session login)
+- `src/app/api/management/v1/*` for the management-key API: scoped
+  `10r-mgmt-…` bearer keys that list, create and delete client keys and
+  provider keys (see `docs/MANAGEMENT_KEYS.md`). Not the same thing as the
+  dashboard's configuration APIs above, which a management key can't reach.
 - Next rewrites in `next.config.mjs` map `/v1/*` to `/api/v1/*`, and
   `/backend-api/codex/*` (plus the duplicated `/backend-api/codex/v1/*` some
   clients emit) to `/api/v1/codex/*` — the Codex-native ingress
@@ -111,12 +116,19 @@ Important compatibility routes:
   the routed catalog in Codex's `{ "models": [...] }` shape, `[...path]`
   acknowledges Codex's advisory side-calls)
 - `src/app/api/v1/messages/count_tokens/route.js`
+- `src/app/api/v1/key/route.js` — `GET /v1/key`: the calling key's own budget,
+  spend, allowed models and expiry (see `docs/API_KEY_BUDGETS.md`)
 - `src/app/api/v1beta/models/route.js`
 - `src/app/api/v1beta/models/[...path]/route.js`
 
 Management domains:
 
 - Auth/settings: `src/app/api/auth/*`, `src/app/api/settings/*`
+- Management keys: `src/app/api/management-keys/*` (dashboard side, session
+  checked in the route too) and `src/app/api/management/v1/*` (the keys' own
+  API). In `src/dashboardGuard.js`, `/api/management/v1/*` is the only path
+  that takes a management key, as `Authorization: Bearer`, and nothing else; a
+  token carrying `10r-mgmt-` is refused on every inference prefix, loopback included.
 - Providers/connections: `src/app/api/providers*`
 - Provider nodes: `src/app/api/provider-nodes*`
 - OAuth: `src/app/api/oauth/*`
@@ -135,7 +147,7 @@ Main flow modules:
 - Format detection/provider config: `open-sse/services/provider.js`
 - Model parse/resolve: `src/sse/services/model.js`, `open-sse/services/model.js`
 - Account fallback logic: `open-sse/services/accountFallback.js`
-- Translation registry: `open-sse/translator/index.js`
+- Translation registry: `open-sse/translator/index.ts`
 - Stream transformations: `open-sse/utils/stream.js`, `open-sse/utils/streamHandler.js`
 - Usage extraction/normalization: `open-sse/utils/usageTracking.js`
 
@@ -157,6 +169,10 @@ Usage DB:
 
 - Dashboard cookie auth: `src/proxy.js`, `src/app/api/auth/login/route.js`
 - API key generation/verification: `src/shared/utils/apiKey.js`
+- Client API key limits (budget, model allowlist, expiry), checked by every
+  `/v1` handler before any upstream call: `src/sse/services/keyLimits.js`.
+  Spend is a running total per key, updated with each usage row
+  (`docs/API_KEY_BUDGETS.md`)
 - Provider secrets persisted in `providerConnections` entries
 - Optional proxy support for upstream calls via env proxy variables (`open-sse/utils/proxyFetch.js`)
 
@@ -184,6 +200,7 @@ sequenceDiagram
 
     Client->>Route: POST /v1/chat/completions
     Route->>Chat: handleChat(request)
+    Chat->>Chat: API key check, then the key's limits (budget, model allowlist, expiry; keyLimits.js)
     Chat->>Model: parse/resolve model or combo
 
     alt Combo model
@@ -244,6 +261,8 @@ flowchart TD
 ```
 
 Fallback decisions are driven by `open-sse/services/accountFallback.js` using status codes and error-message heuristics.
+
+Prompt-cache affinity (`open-sse/services/cacheAffinity.js`) shapes step G for requests that ask for a prompt cache. Upstream caches are per account, so each conversation remembers its warm keys: the ones that served it within the cache TTL. A conversation is identified by a hash of the client key, session id, system prompt, instructions and first message. In `getProviderCredentials`, fill-first and soonest-reset keep their own pick, so a better usable key is never skipped. Fill-first ranks by priority. Soonest-reset ranks by reset, then priority; a known reset ranks ahead of an unknown one, and two unknown resets fall to priority. Round-robin takes the conversation's most recently used usable warm key and doesn't update the rotation for it. When the pick isn't warm and the prompt is large (`CACHE_AFFINITY_MIN_TOKENS`), it goes through the servable warm keys that are only limit-locked, soonest lock end first. Each one's retry time is lock end + `lockSlackMs` + jitter (one draw per selection). It returns `warmRetryAtMs` for the first one whose earliest retry, lock end + `lockSlackMs`, fits the remaining `CACHE_AFFINITY_MAX_WAIT_MS` (counted per request and model). It skips a candidate when a servable key the strategy ranks ahead of it is usable or frees up (lock or quota block over) within another `lockSlackMs` of that earliest retry. The jitter is then cut to the budget, and to `lockSlackMs` before the first better-ranked key frees up. The same margin on both sides absorbs late timers and the time selection takes before it reads the locks. Round-robin ranks none, so nothing overtakes there. The account loop in `src/sse/handlers/chat.ts` then sleeps until that time (abort-aware) and selects again. A warm key's own short 429 is recorded as a failure but not excluded, so the next selection can wait for it. Codex uses its own opt-in session pin (`open-sse/services/sessionAffinity.js`) instead.
 
 ## OAuth Onboarding and Token Refresh Lifecycle
 
@@ -443,7 +462,7 @@ flowchart LR
 
 ### Translation Registry and Format Converters
 
-- `open-sse/translator/index.js`: translator registry and orchestration
+- `open-sse/translator/index.ts`: translator registry and orchestration
 - Request translators: `open-sse/translator/request/*`
 - Response translators: `open-sse/translator/response/*`
 - Format constants: `open-sse/translator/formats.js`

@@ -387,6 +387,69 @@ export function formatUsage(inputTokens, outputTokens, targetFormat) {
   });
 }
 
+// ---- Billing estimates -------------------------------------------------------
+// What a request is charged when the provider never reports its usage (a
+// stream cut short, an upstream with no usage). Unlike estimateUsage (the
+// client-facing context meter) there is no safety buffer, base64 images are
+// not read as text, and non-ASCII text (CJK, emoji) counts about one token per
+// character instead of a quarter.
+
+const BILLING_IMAGE_TOKENS = 1600;
+const NON_ASCII = /[^\x00-\x7f]/g;
+const DATA_URL = /^data:([^;,]+);base64,/;
+
+/** Tokens a base64 payload is billed at: an image flat, any other file by its decoded size. */
+function inlinePayloadTokens(mime, base64) {
+  if (/^image\//i.test(mime || "")) return BILLING_IMAGE_TOKENS;
+  return Math.ceil((base64.length * 3) / 4 / 4);
+}
+
+/**
+ * Weighted length of streamed text: estimateOutputTokens(weighChars(s)) is
+ * about s's token count (ASCII / 4 + non-ASCII).
+ */
+export function weighChars(text) {
+  if (typeof text !== "string" || !text) return 0;
+  const nonAscii = (text.match(NON_ASCII) || []).length;
+  return text.length + nonAscii * 3;
+}
+
+/** Input tokens a request body is billed at when the provider reports none. */
+export function estimateBillingInputTokens(body) {
+  if (!body || typeof body !== "object") return 0;
+  let inline = 0;
+  let json;
+  try {
+    // Inline files: a data: URL (OpenAI), a { type: "base64", media_type, data }
+    // source (Anthropic image/document), { mimeType, data } (Gemini inlineData),
+    // { data, format } (OpenAI input_audio). Billed by kind and size, not as text.
+    json = JSON.stringify(body, function replacer(key, value) {
+      if (typeof value !== "string" || value.length <= 256) return value;
+      const url = DATA_URL.exec(value);
+      if (url) { inline += inlinePayloadTokens(url[1], value.slice(url[0].length)); return ""; }
+      if (key === "data" && this && typeof this === "object") {
+        const mime = this.media_type || this.mimeType || this.mime_type || (this.format ? `audio/${this.format}` : null);
+        if (this.type === "base64" || mime) { inline += inlinePayloadTokens(mime, value); return ""; }
+      }
+      return value;
+    });
+  } catch {
+    return 0;
+  }
+  return Math.ceil(weighChars(json) / 4) + inline;
+}
+
+/**
+ * Usage to bill when the provider reported none: input from the request body,
+ * output from the weighted streamed length. Marked `estimated`, no buffer.
+ */
+export function estimateBillingUsage(body, outputWeight, targetFormat = FORMATS.OPENAI) {
+  const input = estimateBillingInputTokens(body);
+  const output = estimateOutputTokens(outputWeight);
+  if (targetFormat === FORMATS.CLAUDE) return { input_tokens: input, output_tokens: output, estimated: true };
+  return { prompt_tokens: input, completion_tokens: output, total_tokens: input + output, estimated: true };
+}
+
 /**
  * Estimate full usage when provider doesn't return it
  * @param {object} body - Request body for input token estimation

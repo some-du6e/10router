@@ -1,4 +1,4 @@
-import { SEARXNG_URL } from "../../config/runtimeConfig.js";
+import { SEARXNG_CONFIGURED, SEARXNG_URL } from "../../config/runtimeConfig.js";
 
 export default {
   id: "searxng",
@@ -16,6 +16,7 @@ export default {
     "webSearch"
   ],
   noAuth: true,
+  configured: SEARXNG_CONFIGURED,
   searchConfig: {
     baseUrl: SEARXNG_URL,
     method: "GET",

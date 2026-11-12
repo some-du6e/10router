@@ -7,6 +7,9 @@ import { resolveSessionId } from "../../utils/sessionManager.js";
 import { isValidClaudeSignature } from "../../utils/claudeSignature.js";
 import { PROVIDERS } from "../../providers/index.js";
 import { getCapabilitiesForModel } from "../../providers/capabilities.js";
+import { applyThinking } from "../concerns/thinkingUnified.js";
+import { FORMATS } from "../formats.js";
+import { isLastMessageFromUser } from "../../services/provider.js";
 import { DEFAULT_MAX_TOKENS } from "../../config/runtimeConfig.js";
 import {
   CLAUDE_INTERRUPTED_TOOL_RESULT_TEXT,
@@ -127,7 +130,7 @@ export function repairUnsupportedAssistantPrefill(messages, model = "") {
   return [...messages, { role: ROLE.USER, content }];
 }
 
-// Models that reject thinking.type "adaptive" + output_config.effort (Opus 4.5+/Sonnet 4.6+ only)
+// Models that reject thinking.type "adaptive" + output_config.effort, unless capabilities mark them adaptive (Haiku 5.5)
 const ADAPTIVE_THINKING_UNSUPPORTED = /haiku/i;
 
 function handlesThinkingBlocks(provider) {
@@ -163,20 +166,30 @@ function hasForeignServerToolUseId(block) {
 
 // Normalize a native Claude passthrough body to match Anthropic Messages API spec.
 // Newer Cowork/Claude Code clients emit beta-only shapes that OAuth endpoints reject:
-// 1. thinking.type "adaptive" → unsupported on Haiku
-// 2. output_config.effort → unsupported on Haiku
+// 0. thinking.type "enabled" → rejected by adaptive models that dropped budget_tokens (all but Opus/Sonnet 4.6)
+// 1. thinking.type "adaptive" → unsupported on Haiku 4.x
+// 2. output_config.effort → unsupported on Haiku 4.x
 // 3. role "system" messages (mid-conversation-system beta) → only top-level system is allowed
 // 4. server_tool_use blocks carrying a foreign (non-srvtoolu_) id → rejected outright
-export function normalizeClaudePassthrough(body, model = "") {
+export function normalizeClaudePassthrough(body, model = "", provider = null) {
   if (!body || typeof body !== "object") return body;
 
+  const caps = getCapabilitiesForModel(provider, model);
+  const adaptiveOnly = caps.thinkingFormat === "claude-adaptive";
+  const adaptiveUnsupported = !adaptiveOnly && ADAPTIVE_THINKING_UNSUPPORTED.test(model);
+
+  // 0. Upgrade budget thinking to adaptive + effort for models that reject budget_tokens
+  if (adaptiveOnly && !caps.thinkingBudgetAccepted && body.thinking?.type === "enabled") {
+    applyThinking(FORMATS.CLAUDE, model, body, provider);
+  }
+
   // 1. Downgrade adaptive thinking for models that don't support it
-  if (body.thinking?.type === "adaptive" && ADAPTIVE_THINKING_UNSUPPORTED.test(model)) {
+  if (body.thinking?.type === "adaptive" && adaptiveUnsupported) {
     body.thinking = { type: "enabled", budget_tokens: 10000 };
   }
 
   // 2. Strip effort param for models that don't support it (keep other output_config fields)
-  if (ADAPTIVE_THINKING_UNSUPPORTED.test(model) && body.output_config?.effort != null) {
+  if (adaptiveUnsupported && body.output_config?.effort != null) {
     delete body.output_config.effort;
     if (Object.keys(body.output_config).length === 0) delete body.output_config;
   }
@@ -297,7 +310,7 @@ function markLastCacheableBlock(msg) {
 // prepareClaudeRequest): last tool + last system block at 1h, last assistant at 5m.
 // The client's own markers point at pre-normalization offsets, so they are dropped.
 // Must run LAST, after every step that can reshape system/tools/messages
-// (normalize, tool dedupe, token savers) — otherwise the anchor drifts off the tail.
+// (normalize, tool dedupe) — otherwise the anchor drifts off the tail.
 export function anchorClaudeCache(body) {
   if (!body || typeof body !== "object") return body;
 
@@ -378,7 +391,13 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
     }
   }
 
-  // 1. System: remove all cache_control, add only to last block with ttl 1h
+  // 1. System: drop blank text blocks (Anthropic rejects them), remove all
+  // cache_control, add only to last block with ttl 1h
+  if (typeof body.system === "string" && !body.system.trim()) delete body.system;
+  if (Array.isArray(body.system)) {
+    body.system = body.system.filter((block) => block && (block.type !== "text" || block.text?.trim()));
+    if (body.system.length === 0) delete body.system;
+  }
   if (body.system && Array.isArray(body.system)) {
     body.system = body.system.map((block, i) => {
       const { cache_control, ...rest } = block;
@@ -422,10 +441,7 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
 
     body.messages = filtered;
 
-    // Check if thinking is enabled AND last message is from user
-    const lastMessage = filtered[filtered.length - 1];
-    const lastMessageIsUser = lastMessage?.role === "user";
-    const thinkingEnabled = body.thinking?.type === "enabled" && lastMessageIsUser;
+    const thinkingEnabled = body.thinking?.type === "enabled" && isLastMessageFromUser({ messages: filtered });
 
     // Pass 2 (reverse): add cache_control to last assistant + handle thinking for Anthropic
     let lastAssistantProcessed = false;

@@ -84,22 +84,6 @@ vi.mock("../../open-sse/utils/toolDeduper.js", () => ({
   dedupeTools: vi.fn((tools) => ({ tools, stripped: [] })),
 }));
 
-vi.mock("../../open-sse/rtk/caveman.js", () => ({ injectCaveman: vi.fn() }));
-vi.mock("../../open-sse/rtk/ponytail.js", () => ({ injectPonytail: vi.fn() }));
-vi.mock("../../open-sse/rtk/index.js", () => ({
-  compressMessages: vi.fn(() => null),
-  formatRtkLog: vi.fn(() => ""),
-}));
-vi.mock("../../open-sse/rtk/headroom.js", () => ({
-  compressWithHeadroom: vi.fn(async () => null),
-  formatHeadroomLog: vi.fn(() => ""),
-  formatHeadroomSizeLog: vi.fn(() => ""),
-  isHeadroomPhantomSavings: vi.fn(() => false),
-}));
-vi.mock("../../open-sse/rtk/pxpipe.js", () => ({
-  compressWithPxpipe: vi.fn(async () => ({ body: null, summary: null })),
-}));
-
 vi.mock("../../open-sse/translator/concerns/prefetch.js", () => ({
   prefetchRemoteImages: vi.fn(async () => 0),
 }));
@@ -185,6 +169,30 @@ describe("chatCore transport selection", () => {
     expect(request.body._translatedFrom).toBe("openai-responses");
     expect(request.body._translatedTo).toBe("openai");
     expect(request.credentials.runtimeTransport).toBeUndefined();
+  });
+
+  // deepseek doesn't forceStream, so the client's request alone decides the upstream shape.
+  it("fetches stream: true with Accept: application/json upstream as a stream", async () => {
+    executeMock.mockResolvedValue({
+      response: new Response("data: {}\n\n", { status: 200, headers: { "content-type": "text/event-stream" } }),
+      url: "https://upstream.example.test/mock",
+      headers: {},
+      transformedBody: {},
+    });
+    const body = { model: "deepseek-chat", stream: true, messages: [{ role: "user", content: "Hello" }] };
+    const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
+    await handleChatCore(makeOptions(body, "deepseek", "deepseek-chat"));
+
+    expect(executeMock.mock.calls[0][0].stream).toBe(true);
+    expect(handleNonStreamingResponseMock).not.toHaveBeenCalled();
+  });
+
+  it("fetches a stream-less body with Accept: application/json upstream as JSON", async () => {
+    const body = { model: "deepseek-chat", messages: [{ role: "user", content: "Hello" }] };
+    const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
+    await handleChatCore(makeOptions(body, "deepseek", "deepseek-chat"));
+
+    expect(executeMock.mock.calls[0][0].stream).toBe(false);
   });
 
   // Regression: https://github.com/decolua/9router/issues/3418

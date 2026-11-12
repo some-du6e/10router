@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 
 const originalDataDir = process.env.DATA_DIR;
 let tempDir;
@@ -286,5 +286,131 @@ describe("API route contract — validation boundary", () => {
     expect(detail.response.content).toBe("answer");
 
     await db.updateSettings({ showSensitiveRequestDetails: false });
+  });
+});
+
+describe("API route contract — labels, summary list, single request", () => {
+  let GET;
+  let GET_ONE;
+  let GET_PROVIDERS;
+  let nodeId;
+  let connectionId;
+  let oauthConnectionId;
+  let displayNameConnectionId;
+  const getOne = (id) => GET_ONE(new Request("http://localhost/x"), { params: Promise.resolve({ id }) });
+  const insertDetail = (id, provider, connId, extra = {}) => adapter.run(
+    `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+    [id, new Date().toISOString(), provider, "m", connId, "success", JSON.stringify({ id, provider, connectionId: connId, ...extra })]
+  );
+
+  beforeAll(async () => {
+    ({ GET } = await import("@/app/api/usage/request-details/route.js"));
+    ({ GET: GET_ONE } = await import("@/app/api/usage/request-details/[id]/route.ts"));
+    ({ GET: GET_PROVIDERS } = await import("@/app/api/usage/providers/route.js"));
+    const node = await db.createProviderNode({ id: "openai-compatible-chat-label-test", type: "openai-compatible", name: "Snowflake", prefix: "snow", apiType: "chat", baseUrl: "https://example.test/v1" });
+    nodeId = node.id;
+    connectionId = (await db.createProviderConnection({ provider: nodeId, authType: "apikey", name: "key…L09w", apiKey: "sk-test" })).id;
+    oauthConnectionId = (await db.createProviderConnection({ provider: "codex", authType: "oauth", email: "someone@example.test", accessToken: "at" })).id;
+    // createProviderConnection names an OAuth account after its email; older rows may have no name.
+    adapter.run(`UPDATE providerConnections SET name = NULL WHERE id = ?`, [oauthConnectionId]);
+    displayNameConnectionId = (await db.createProviderConnection({ provider: nodeId, authType: "apikey", name: "key…AAAA", displayName: "Team key", apiKey: "sk-test-2" })).id;
+    insertDetail("labelled-1", nodeId, connectionId, {
+      request: { messages: [{ role: "user", content: "hi" }] },
+      providerRequest: { messages: [{ role: "user", content: "hi" }] },
+      providerResponse: { raw: "big" },
+      response: { content: "yo" },
+    });
+    insertDetail("labelled-oauth", "codex", oauthConnectionId);
+    insertDetail("labelled-deleted-key", "codex", "11111111-dead-key");
+    insertDetail("labelled-display-name", nodeId, displayNameConnectionId);
+    adapter.run(
+      `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+      ["labelled-corrupt", new Date().toISOString(), "label-corrupt", "m", null, "success", "{not-valid-json"]
+    );
+    adapter.run(
+      `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+      ["labelled-null", new Date().toISOString(), "label-null", "m", null, "success", "null"]
+    );
+    // Valid JSON nested past SQLite's depth limit, so json_valid() rejects it.
+    const deep = "[".repeat(1100) + "]".repeat(1100);
+    adapter.run(
+      `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+      ["labelled-deep", new Date().toISOString(), "label-deep", "m", null, "success",
+        `{"id":"labelled-deep","provider":"label-deep","request":{"messages":[{"role":"user","content":"SECRET"}],"tools":${deep}}}`]
+    );
+    adapter.run(`UPDATE requestDetails SET fullData = ? WHERE id = ?`, ["{}", "labelled-1"]);
+  });
+
+  afterEach(async () => {
+    await db.updateSettings({ showSensitiveRequestDetails: false });
+  });
+
+  it("names a custom endpoint and its key on every row", async () => {
+    const res = await GET(new Request(`http://localhost/api/usage/request-details?provider=${nodeId}`));
+    const { details } = await res.json();
+    const detail = details.find((d) => d.id === "labelled-1");
+    expect(detail.providerName).toBe("Snowflake");
+    expect(detail.connectionName).toBe("key…L09w");
+    expect(details.find((d) => d.id === "labelled-display-name").connectionName).toBe("Team key");
+  });
+
+  it("names built-in providers, falls back to an OAuth account's email, and leaves a deleted key unnamed", async () => {
+    const res = await GET(new Request("http://localhost/api/usage/request-details?provider=codex&pageSize=100"));
+    const { details } = await res.json();
+    const oauth = details.find((d) => d.id === "labelled-oauth");
+    const deleted = details.find((d) => d.id === "labelled-deleted-key");
+    expect(oauth.providerName).toBe("OpenAI Codex");
+    expect(oauth.connectionName).toBe("someone@example.test");
+    expect(deleted.connectionName).toBeNull();
+  });
+
+  it("summary=1 leaves out every payload, even with full details on", async () => {
+    await db.updateSettings({ showSensitiveRequestDetails: true });
+    const res = await GET(new Request(`http://localhost/api/usage/request-details?summary=1&provider=${nodeId}`));
+    const detail = (await res.json()).details.find((d) => d.id === "labelled-1");
+    expect(detail.hasFullData).toBe(true);
+    for (const key of ["request", "providerRequest", "providerResponse", "response"]) {
+      expect(detail[key]).toBeUndefined();
+    }
+  });
+
+  it("summary=1 survives a row whose data isn't JSON", async () => {
+    const res = await GET(new Request("http://localhost/api/usage/request-details?summary=1&provider=label-corrupt"));
+    expect(res.status).toBe(200);
+    const { details } = await res.json();
+    expect(details).toHaveLength(1);
+    expect(details[0].id).toBeUndefined();
+
+    const nullRow = await GET(new Request("http://localhost/api/usage/request-details?summary=1&provider=label-null"));
+    expect(nullRow.status).toBe(200);
+    expect((await nullRow.json()).details).toHaveLength(1);
+  });
+
+  it("summary=1 drops payloads from rows SQLite can't parse as JSON", async () => {
+    const res = await GET(new Request("http://localhost/api/usage/request-details?summary=1&provider=label-deep"));
+    const [detail] = (await res.json()).details;
+    expect(detail.id).toBe("labelled-deep");
+    expect(detail.request).toBeUndefined();
+  });
+
+  it("serves one request by id, redacted unless full details are on", async () => {
+    let body = await (await getOne("labelled-1")).json();
+    expect(body.request).toEqual({ redacted: true });
+    expect(body.providerName).toBe("Snowflake");
+    expect(body.connectionName).toBe("key…L09w");
+    expect(body.hasFullData).toBe(true);
+
+    await db.updateSettings({ showSensitiveRequestDetails: true });
+    body = await (await getOne("labelled-1")).json();
+    expect(body.request.messages[0].content).toBe("hi");
+
+    expect((await (await getOne("labelled-oauth")).json()).hasFullData).toBe(false);
+    expect((await getOne("nope")).status).toBe(404);
+  });
+
+  it("/api/usage/providers names custom endpoints and built-in providers", async () => {
+    const { providers } = await (await GET_PROVIDERS()).json();
+    expect(providers).toContainEqual({ id: nodeId, name: "Snowflake" });
+    expect(providers).toContainEqual({ id: "codex", name: "OpenAI Codex" });
   });
 });

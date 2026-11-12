@@ -3,8 +3,8 @@ import {
   getProviderConnections,
   updateProviderConnection,
 } from "@/lib/localDb";
-
-const MODEL_LOCK_PREFIX = "modelLock_";
+import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey } from "@/lib/db/index.js";
+import { MODEL_LOCK_PREFIX } from "open-sse/services/accountFallback.js";
 
 function getActiveModelLocks(connection) {
   const now = Date.now();
@@ -38,7 +38,28 @@ export async function GET() {
         });
       }
 
-      if (locks.length === 0 && connection.testStatus === "unavailable") {
+      // Models an active key is demoted on: other keys go first until it
+      // serves again. Past its probe time it waits for the next request.
+      let demotions = 0;
+      for (const [key, demotion] of Object.entries(connection)) {
+        if (connection.isActive === false || !key.startsWith(AUTH_DEMOTE_PREFIX) || !demotion?.demotedAt) continue;
+        const model = key.slice(AUTH_DEMOTE_PREFIX.length);
+        if (locks.some((lock) => lock.model === model)) continue;
+        const nextTry = Math.max(new Date(demotion.nextProbeAt).getTime(), new Date(demotion.leaseUntil || 0).getTime());
+        const probeDue = !(nextTry > Date.now());
+        models.push({
+          provider: connection.provider,
+          model,
+          status: "cooldown",
+          until: probeDue ? null : new Date(nextTry).toISOString(),
+          connectionId: connection.id,
+          connectionName: connection.name || connection.email || connection.id,
+          lastError: `Demoted after repeated ${demotion.reason}${probeDue ? " (probe due)" : ""}`,
+        });
+        demotions++;
+      }
+
+      if (locks.length === 0 && demotions === 0 && connection.testStatus === "unavailable") {
         models.push({
           provider: connection.provider,
           model: "__all",
@@ -73,13 +94,15 @@ export async function POST(request) {
 
     const connections = await getProviderConnections({ provider });
     const lockKey = `${MODEL_LOCK_PREFIX}${model}`;
+    const demoteKey = getAuthDemoteKey(model);
 
     await Promise.all(
       connections
-        .filter((connection) => connection[lockKey])
+        .filter((connection) => connection[lockKey] || connection[demoteKey])
         .map((connection) =>
           updateProviderConnection(connection.id, {
             [lockKey]: null,
+            [demoteKey]: null,
             ...(connection.testStatus === "unavailable"
               ? {
                   testStatus: "active",

@@ -17,13 +17,26 @@ import EndpointRow from "./components/EndpointRow";
 import StatusAlert from "./components/StatusAlert";
 import Tooltip from "./components/Tooltip";
 import SecurityWarning from "./components/SecurityWarning";
+import KeySpendSummary from "./components/KeySpendSummary";
+import KeyLimitsModal from "./components/KeyLimitsModal";
+import KeyUsageModal from "./components/KeyUsageModal";
+import ManagementKeysCard from "./components/ManagementKeysCard";
+import CreatedSecretModal from "./components/CreatedSecretModal";
 export default function APIPageClient({ machineId }) {
   const [keys, setKeys] = useState([]);
+  // Management key id → name, for the "made by" line on keys a management key
+  // created. Null until loaded: no label rather than a wrong "deleted" one.
+  const [managementKeyNames, setManagementKeyNames] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
   const [createdKey, setCreatedKey] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
+  // Which key's limits dialog / spend view is open (by id, so they follow list updates).
+  const [limitsKeyId, setLimitsKeyId] = useState(null);
+  const [usageKeyId, setUsageKeyId] = useState(null);
+  const limitsKey = limitsKeyId ? keys.find((k) => k.id === limitsKeyId) : null;
+  const usageKey = usageKeyId ? keys.find((k) => k.id === usageKeyId) : null;
 
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [limitHoldEnabled, setLimitHoldEnabled] = useState(false);
@@ -1114,12 +1127,32 @@ export default function APIPageClient({ machineId }) {
                   </div>
                   <p className="text-xs text-text-muted mt-1">
                     Created {new Date(key.createdAt).toLocaleDateString()}
+                    {key.ownerManagementKeyId && managementKeyNames
+                      ? ` · made by ${managementKeyNames[key.ownerManagementKeyId] ? `management key "${managementKeyNames[key.ownerManagementKeyId]}"` : "a deleted management key"}`
+                      : ""}
                   </p>
                   {key.isActive === false && (
                     <p className="text-xs text-orange-500 mt-1">Paused</p>
                   )}
+                  <KeySpendSummary apiKey={key} />
                 </div>
                 <div className="flex items-center gap-2 ml-auto">
+                  <button
+                    onClick={() => setUsageKeyId(key.id)}
+                    className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary transition-all"
+                    title="Spend"
+                    aria-label={`Spend for ${key.name}`}
+                  >
+                    <span className="material-symbols-outlined text-[18px]">monitoring</span>
+                  </button>
+                  <button
+                    onClick={() => setLimitsKeyId(key.id)}
+                    className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary transition-all"
+                    title="Budget and limits"
+                    aria-label={`Budget and limits for ${key.name}`}
+                  >
+                    <span className="material-symbols-outlined text-[18px]">tune</span>
+                  </button>
                   <SegmentedControl
                     size="sm"
                     className="[&>button]:px-3"
@@ -1163,6 +1196,20 @@ export default function APIPageClient({ machineId }) {
         )}
       </Card>
 
+      <ManagementKeysCard onKeysLoaded={setManagementKeyNames} onRowsChanged={fetchData} />
+
+      {limitsKey && (
+        <KeyLimitsModal
+          key={limitsKey.id}
+          apiKey={limitsKey}
+          requireApiKey={requireApiKey}
+          onClose={() => setLimitsKeyId(null)}
+          onSaved={(updated) => updated && setKeys((prev) => prev.map((k) => (k.id === updated.id ? updated : k)))}
+        />
+      )}
+
+      {usageKey && <KeyUsageModal key={usageKey.id} apiKey={usageKey} onClose={() => setUsageKeyId(null)} />}
+
       {/* Add Key Modal */}
       <Modal
         isOpen={showAddModal}
@@ -1198,39 +1245,12 @@ export default function APIPageClient({ machineId }) {
       </Modal>
 
       {/* Created Key Modal */}
-      <Modal
-        isOpen={!!createdKey}
+      <CreatedSecretModal
+        secret={createdKey}
         title="API Key Created"
+        note="This is the only time you will see this key. Store it securely."
         onClose={() => setCreatedKey(null)}
-      >
-        <div className="flex flex-col gap-4">
-          <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4">
-            <p className="text-sm text-yellow-800 dark:text-yellow-200 mb-2 font-medium">
-              Save this key now!
-            </p>
-            <p className="text-sm text-yellow-700 dark:text-yellow-300">
-              This is the only time you will see this key. Store it securely.
-            </p>
-          </div>
-          <div className="flex gap-2">
-            <Input
-              value={createdKey || ""}
-              readOnly
-              className="flex-1 font-mono text-sm"
-            />
-            <Button
-              variant="secondary"
-              icon={copied === "created_key" ? "check" : "content_copy"}
-              onClick={() => copy(createdKey, "created_key")}
-            >
-              {copied === "created_key" ? "Copied!" : "Copy"}
-            </Button>
-          </div>
-          <Button onClick={() => setCreatedKey(null)} fullWidth>
-            Done
-          </Button>
-        </div>
-      </Modal>
+      />
 
       {/* Enable Tunnel Modal */}
       <Modal

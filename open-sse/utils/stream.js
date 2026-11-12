@@ -1,11 +1,11 @@
 import { translateResponse, initState } from "../translator/index.js";
 import { FORMATS } from "../translator/formats.js";
 import { trackPendingRequest, appendRequestLog } from "@/lib/usageDb.js";
-import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
+import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, estimateOutputTokens, estimateBillingUsage, weighChars, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
 import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE } from "./streamHelpers.js";
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
-import { RESPONSES_COMPLETION_WAIT_MS } from "../config/runtimeConfig.js";
+import { RESPONSES_COMPLETION_WAIT_MS, STREAM_ABORT_FLOOR_TPS } from "../config/runtimeConfig.js";
 
 import { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER } from "./sseConstants.js";
 
@@ -81,25 +81,50 @@ export function createSSEStream(options = {}) {
   let openAIResponsesDoneSent = false;
   let streamDoneSent = false;  // track duplicate [DONE] across transform + flush
   let finalized = false;
+  // The upstream sent its finish chunk: the answer is complete, even if the
+  // client closes before the stream ends.
+  let finishSeen = false;
+  // The upstream's final usage has arrived (Claude message_delta/message_stop,
+  // Responses response.completed, the OpenAI usage chunk or [DONE], Gemini's
+  // finishReason with usageMetadata, Ollama's done). Until then a reported
+  // output count is a placeholder (message_start says output_tokens: 1).
+  let finalUsageSeen = false;
+  // A stream cut short is charged at least STREAM_ABORT_FLOOR_TPS output
+  // tokens per second, from the upstream's first byte (prefill isn't billed;
+  // hidden thinking is, since thinking and ping events stream during it) to
+  // the cut, or to the last upstream byte when the stall watchdog ended it.
+  // An executor that reads ahead of us (codex's peek, kiro's integrity gate)
+  // sets sse.upstreamStartedAt to when its fetch returned.
+  let floorEndAt = null;
+  // The client is gone but the upstream is still read (an opted-in drain).
+  let clientGone = false;
+  // The pending-request count goes down once per request, whoever ends it.
+  let pendingEnded = false;
+  const endPending = () => {
+    if (pendingEnded) return;
+    pendingEnded = true;
+    if (sse.endPending) sse.endPending();
+    else trackPendingRequest(model, provider, connectionId, false);
+  };
   let completionFlushTimer = null;
 
   const collectResponsesContent = (parsed, eventName) => {
     const type = eventName || parsed?.type;
     if (type === "response.output_text.delta" && typeof parsed?.delta === "string") {
       accumulatedContent += parsed.delta;
-      totalContentLength += parsed.delta.length;
+      totalContentLength += weighChars(parsed.delta);
       responsesTextSeen = true;
     } else if (type === "response.reasoning_summary_text.delta" && typeof parsed?.delta === "string") {
       accumulatedThinking += parsed.delta;
-      totalContentLength += parsed.delta.length;
+      totalContentLength += weighChars(parsed.delta);
       responsesThinkingSeen = true;
     } else if (type === "response.output_text.done" && !responsesTextSeen && typeof parsed?.text === "string") {
       accumulatedContent += parsed.text;
-      totalContentLength += parsed.text.length;
+      totalContentLength += weighChars(parsed.text);
       responsesTextSeen = true;
     } else if (type === "response.reasoning_summary_text.done" && !responsesThinkingSeen && typeof parsed?.text === "string") {
       accumulatedThinking += parsed.text;
-      totalContentLength += parsed.text.length;
+      totalContentLength += weighChars(parsed.text);
       responsesThinkingSeen = true;
     } else if (type === "response.output_item.done" && parsed?.item?.type === "function_call") {
       accumulatedToolCalls.push({
@@ -113,16 +138,130 @@ export function createSSEStream(options = {}) {
         for (const part of output.content || []) {
           if (part?.type === "output_text" && typeof part.text === "string") {
             accumulatedContent += part.text;
-            totalContentLength += part.text.length;
+            totalContentLength += weighChars(part.text);
           }
         }
       }
     }
   };
 
+  let toolArgsDeltaSeen = false;
+  // Count the output a chunk streamed, in any client or provider shape, so a
+  // stream cut short can be charged for it: text, thinking and tool-call
+  // arguments (Claude text/thinking/input_json deltas, OpenAI content,
+  // reasoning and tool_calls, Responses function-call arguments).
+  const countStreamed = (parsed, eventName) => {
+    if (!parsed || typeof parsed !== "object") return;
+    const d = parsed.delta;
+    if (d && typeof d === "object") {
+      if (typeof d.text === "string") { totalContentLength += weighChars(d.text); accumulatedContent += d.text; }
+      if (typeof d.thinking === "string") { totalContentLength += weighChars(d.thinking); accumulatedThinking += d.thinking; }
+      if (typeof d.partial_json === "string") totalContentLength += weighChars(d.partial_json);
+    }
+    const choiceDelta = parsed.choices?.[0]?.delta;
+    if (choiceDelta && typeof choiceDelta === "object") {
+      if (typeof choiceDelta.content === "string") { totalContentLength += weighChars(choiceDelta.content); accumulatedContent += choiceDelta.content; }
+      for (const field of ["reasoning_content", "reasoning"]) {
+        if (typeof choiceDelta[field] === "string") { totalContentLength += weighChars(choiceDelta[field]); accumulatedThinking += choiceDelta[field]; }
+      }
+      for (const call of Array.isArray(choiceDelta.tool_calls) ? choiceDelta.tool_calls : []) {
+        if (typeof call?.function?.arguments === "string") totalContentLength += weighChars(call.function.arguments);
+      }
+    }
+    // Ollama
+    if (parsed.message && typeof parsed.message === "object" && !parsed.choices) {
+      if (typeof parsed.message.content === "string") { totalContentLength += weighChars(parsed.message.content); accumulatedContent += parsed.message.content; }
+      if (typeof parsed.message.thinking === "string") { totalContentLength += weighChars(parsed.message.thinking); accumulatedThinking += parsed.message.thinking; }
+    }
+    const type = eventName || parsed.type;
+    // commandcode NDJSON
+    if (type === "text-delta" && typeof parsed.text === "string") { totalContentLength += weighChars(parsed.text); accumulatedContent += parsed.text; }
+    if ((type === "response.function_call_arguments.delta" || type === "response.custom_tool_call_input.delta") && typeof d === "string") {
+      totalContentLength += weighChars(d);
+      toolArgsDeltaSeen = true;
+    } else if (type === "response.output_item.done" && !toolArgsDeltaSeen) {
+      const item = parsed.item;
+      if (item?.type === "function_call" && typeof item.arguments === "string") totalContentLength += weighChars(item.arguments);
+      if (item?.type === "custom_tool_call" && typeof item.input === "string") totalContentLength += weighChars(item.input);
+    }
+  };
+
+  // Note an upstream chunk that ends the answer or carries its final usage, in
+  // any provider shape.
+  const noteTerminal = (parsed, eventName) => {
+    if (!parsed || typeof parsed !== "object") return;
+    const type = eventName || parsed.type;
+    if (type === "message_delta" || type === "message_stop") { finishSeen = true; finalUsageSeen = true; return; }
+    if (isOpenAIResponsesTerminalEvent(eventName, parsed)) {
+      finishSeen = true;
+      // response.completed / incomplete / failed carry the usage; a bare error doesn't.
+      if (String(type || "").startsWith("response.")) finalUsageSeen = true;
+      return;
+    }
+    if (parsed.done === true) { finishSeen = true; finalUsageSeen = true; return; }
+    if (parsed.choices?.[0]?.finish_reason) finishSeen = true;
+    // Gemini, or antigravity's wrapped { response: { candidates, usageMetadata } }.
+    const gemini = Array.isArray(parsed.candidates) ? parsed : Array.isArray(parsed.response?.candidates) ? parsed.response : null;
+    if (gemini?.candidates.some((c) => c?.finishReason)) {
+      finishSeen = true;
+      if (gemini.usageMetadata) finalUsageSeen = true;
+    }
+    // OpenAI's usage chunk: on the finish chunk itself, or after it (include_usage).
+    if (finishSeen && hasValidUsage(parsed.usage)) finalUsageSeen = true;
+  };
+
+  // The output cap, which an estimate never exceeds. When a body was sent
+  // upstream, only its cap counts: a translator may raise the client's
+  // (Claude's max_tokens for tools or a thinking budget, Kiro's fixed
+  // maxTokens) or drop it (Codex), and then the client's number says nothing
+  // about how much was generated. No cap upstream means no cap on the floor.
+  const capOf = (b) => {
+    const cap = b?.max_tokens ?? b?.max_output_tokens ?? b?.max_completion_tokens
+      ?? b?.generationConfig?.maxOutputTokens ?? b?.request?.generationConfig?.maxOutputTokens
+      ?? b?.inferenceConfig?.maxTokens;
+    return typeof cap === "number" && cap > 0 ? cap : null;
+  };
+  const sentBody = () => {
+    const b = sse.upstreamBody;
+    if (typeof b !== "string") return b || null;
+    try { return JSON.parse(b); } catch { return {}; }
+  };
+  const maxOutputTokens = () => { const up = sentBody(); return up ? capOf(up) : capOf(body); };
+
+  /**
+   * The usage to bill when the final usage never arrived: input as reported
+   * (Anthropic's message_start) or estimated from the request; output the
+   * largest of what was reported (not message_start's placeholder 1), what
+   * visibly streamed, and, for an answer cut off, a time floor that hidden
+   * thinking can't dodge. Capped at the request's max tokens.
+   */
+  const billCutShort = (reported, answerCut) => {
+    const fmt = mode === STREAM_MODE.PASSTHROUGH ? FORMATS.OPENAI : sourceFormat;
+    const outKeys = reported ? ["completion_tokens", "output_tokens"].filter((k) => k in reported) : [];
+    const reportedOut = Math.max(0, ...outKeys.map((k) => (Number(reported[k]) > 1 ? Number(reported[k]) : 0)));
+    const startedAt = sse.upstreamStartedAt ?? ttftAt;
+    const endedAt = floorEndAt ?? Date.now();
+    const floor = answerCut && startedAt ? Math.floor((Math.max(0, endedAt - startedAt) / 1000) * STREAM_ABORT_FLOOR_TPS) : 0;
+    const visible = estimateOutputTokens(totalContentLength);
+    let out = Math.max(reportedOut, visible, floor);
+    // The cap bounds the floor only: what was reported or visibly streamed stands.
+    const cap = maxOutputTokens();
+    if (cap) out = Math.max(Math.min(out, cap), reportedOut, visible);
+    const billed = reported ? { ...reported } : estimateBillingUsage(body, 0, fmt);
+    const keys = outKeys.length ? outKeys : ["completion_tokens" in billed ? "completion_tokens" : "output_tokens"];
+    for (const k of keys) billed[k] = out;
+    if ("total_tokens" in billed) billed.total_tokens = (Number(billed.prompt_tokens) || 0) + out;
+    if (out !== reportedOut) billed.estimated = true;
+    return billed;
+  };
+
   // Usage/logging tail, callable from transform() as well as flush(): a client that
   // closes right after the terminal event cancels the reader, and flush() never runs.
-  const finalizeStream = () => {
+  // Runs once: a terminal event followed by a cancel records the usage once.
+  // `aborted`: the stream ended before its terminal event (client hang-up, stall,
+  // upstream reset), so a usage that came early (input tokens at message_start)
+  // has no output count yet; the output is estimated from what was streamed.
+  const finalizeStream = ({ aborted = false } = {}) => {
     if (completionFlushTimer) { clearTimeout(completionFlushTimer); completionFlushTimer = null; }
     if (finalized) return;
     finalized = true;
@@ -130,14 +269,21 @@ export function createSSEStream(options = {}) {
     const isPassthrough = mode === STREAM_MODE.PASSTHROUGH;
     let finalUsage = isPassthrough ? usage : state?.usage;
 
-    if (!hasValidUsage(finalUsage) && totalContentLength > 0) {
-      finalUsage = estimateUsage(body, totalContentLength, isPassthrough ? FORMATS.OPENAI : sourceFormat);
-      if (isPassthrough) usage = finalUsage; else state.usage = finalUsage;
+    // Ended before the provider's final usage, with the client gone (hang-up,
+    // stall, upstream error, or a drain that ran out): recorded as an error.
+    const lostClient = aborted || clientGone;
+    const recordAsError = lostClient && !finalUsageSeen;
+    const reported = hasValidUsage(finalUsage) ? finalUsage : null;
+    if (!finalUsageSeen ? (reported || totalContentLength > 0 || lostClient) : (!reported && (totalContentLength > 0 || finishSeen))) {
+      // Only computed here, once: the final usage never came (or came empty).
+      const billed = billCutShort(reported, !finalUsageSeen && !finishSeen);
+      if (hasValidUsage(billed)) finalUsage = billed;
     }
+    if (isPassthrough) usage = finalUsage; else if (state) state.usage = finalUsage;
 
     if (hasValidUsage(finalUsage)) {
       logUsage(isPassthrough ? provider : (state?.provider || targetFormat), finalUsage, model, connectionId, apiKey);
-    } else {
+    } else if (!recordAsError) {
       appendRequestLog({ model, provider, connectionId, tokens: null, status: "200 OK" }).catch(() => { });
     }
 
@@ -146,7 +292,7 @@ export function createSSEStream(options = {}) {
         content: accumulatedContent,
         thinking: accumulatedThinking,
         toolCalls: accumulatedToolCalls,
-      }, finalUsage, ttftAt);
+      }, finalUsage, ttftAt, { aborted: recordAsError });
     }
   };
 
@@ -164,7 +310,7 @@ export function createSSEStream(options = {}) {
     finalizeStream();
   };
 
-  return new TransformStream({
+  const sse = new TransformStream({
     transform(chunk, controller) {
       if (!ttftAt) ttftAt = Date.now();
       const text = decoder.decode(chunk, { stream: true });
@@ -195,12 +341,18 @@ export function createSSEStream(options = {}) {
           let injectedUsage = false;
           let responsesTerminal = false;
 
+          if (trimmed.startsWith("data:") && trimmed.slice(5).trim() === "[DONE]") {
+            finishSeen = true;
+            finalUsageSeen = true;
+          }
           if (trimmed.startsWith("data:") && trimmed.slice(5).trim() !== "[DONE]") {
             const responseEventName = currentOpenAIResponsesEvent;
             currentOpenAIResponsesEvent = null;
             try {
               const parsed = JSON.parse(trimmed.slice(5).trim());
               collectResponsesContent(parsed, responseEventName);
+              countStreamed(parsed, responseEventName);
+              noteTerminal(parsed, responseEventName);
 
               const idFixed = fixInvalidId(parsed);
 
@@ -243,31 +395,26 @@ export function createSSEStream(options = {}) {
                 continue;
               }
 
-              const delta = parsed.choices?.[0]?.delta;
-              const content = delta?.content;
-              const reasoning = delta?.reasoning_content;
-              if (content && typeof content === "string") {
-                totalContentLength += content.length;
-                accumulatedContent += content;
-              }
-              if (reasoning && typeof reasoning === "string") {
-                totalContentLength += reasoning.length;
-                accumulatedThinking += reasoning;
-              }
-
               const extracted = extractUsage(parsed);
               if (extracted) {
                 usage = mergeUsage(usage, extracted);
+              }
+              // OpenAI's usage-only chunk, sent because 10router asked for it
+              // (default.js adds include_usage): keep the usage, don't forward.
+              if (provider === "openai" && Array.isArray(parsed.choices) && parsed.choices.length === 0 && parsed.usage
+                && body?.stream_options?.include_usage !== true) {
+                continue;
               }
 
               responsesTerminal = isOpenAIResponsesTerminalEvent(responseEventName, parsed);
 
               const isFinishChunk = parsed.choices?.[0]?.finish_reason;
               if (isFinishChunk && !hasValidUsage(parsed.usage)) {
+                // The client sees the context-meter estimate; billing waits for
+                // the real usage chunk (or estimates once, at the end).
                 const estimated = estimateUsage(body, totalContentLength, FORMATS.OPENAI);
                 parsed.usage = filterUsageForFormat(estimated, FORMATS.OPENAI);
                 output = `data: ${JSON.stringify(parsed)}\n`;
-                usage = estimated;
                 injectedUsage = true;
               } else if (isFinishChunk && usage) {
                 const buffered = addBufferToUsage(usage);
@@ -322,6 +469,8 @@ export function createSSEStream(options = {}) {
         // For Ollama: done=true is the final chunk with finish_reason/usage, must translate
         // For other formats: done=true is the [DONE] sentinel, skip
         if (parsed && parsed.done && targetFormat !== FORMATS.OLLAMA) {
+          finishSeen = true;
+          finalUsageSeen = true;
           // A clean end of stream. Translators may finish a message the upstream
           // never closed with finish_reason, but only after this (not on a cut-off).
           state.upstreamDone = true;
@@ -330,7 +479,7 @@ export function createSSEStream(options = {}) {
           // upstream never closed with finish_reason). Emit the final events and
           // end the client stream now instead of waiting for the socket to close.
           if (targetFormat === FORMATS.OPENAI && sourceFormat !== FORMATS.OPENAI) {
-            trackPendingRequest(model, provider, connectionId, false);
+            endPending();
             flushPendingCompletion(controller);
             controller.terminate();
             return;
@@ -355,33 +504,15 @@ export function createSSEStream(options = {}) {
           continue;
         }
 
-        // Claude format - content
-        if (parsed.delta?.text) {
-          totalContentLength += parsed.delta.text.length;
-          accumulatedContent += parsed.delta.text;
-        }
-        // Claude format - thinking
-        if (parsed.delta?.thinking) {
-          totalContentLength += parsed.delta.thinking.length;
-          accumulatedThinking += parsed.delta.thinking;
-        }
-        
-        // OpenAI format - content
-        if (parsed.choices?.[0]?.delta?.content) {
-          totalContentLength += parsed.choices[0].delta.content.length;
-          accumulatedContent += parsed.choices[0].delta.content;
-        }
-        // OpenAI format - reasoning
-        if (parsed.choices?.[0]?.delta?.reasoning_content) {
-          totalContentLength += parsed.choices[0].delta.reasoning_content.length;
-          accumulatedThinking += parsed.choices[0].delta.reasoning_content;
-        }
+        // Claude / OpenAI / Responses text, thinking and tool-call arguments
+        countStreamed(parsed, openAIResponsesEventName);
+        noteTerminal(parsed, openAIResponsesEventName);
         
         // Gemini format
         if (parsed.candidates?.[0]?.content?.parts) {
           for (const part of parsed.candidates[0].content.parts) {
             if (part.text && typeof part.text === "string") {
-              totalContentLength += part.text.length;
+              totalContentLength += weighChars(part.text);
               // Check if this is thinking content
               if (part.thought === true) {
                 accumulatedThinking += part.text;
@@ -411,7 +542,15 @@ export function createSSEStream(options = {}) {
         currentOpenAIResponsesEvent = null;
 
         // Translate: targetFormat -> openai -> sourceFormat
+        const hadFinish = !!state.finishReason;
         const translated = translateResponse(targetFormat, sourceFormat, parsed, state);
+        // The translator saw the upstream finish (any client shape, e.g. a
+        // Responses client on a Claude upstream). A finish that brought its
+        // usage along (commandcode's finish-step) is the final usage too.
+        if (state.finishReason) {
+          finishSeen = true;
+          if (!hadFinish && state.usage) finalUsageSeen = true;
+        }
 
         // Log OpenAI intermediate chunks (if available)
         if (translated?._openaiIntermediate) {
@@ -434,7 +573,7 @@ export function createSSEStream(options = {}) {
             if (state.finishReason && isFinishChunk && !hasValidUsage(item.usage) && totalContentLength > 0) {
               const estimated = estimateUsage(body, totalContentLength, sourceFormat);
               item.usage = filterUsageForFormat(estimated, sourceFormat); // Filter + already has buffer
-              state.usage = estimated;
+
             } else if (state.finishReason && isFinishChunk && state.usage) {
               // Add buffer and filter usage for client (but keep original in state.usage for logging)
               const buffered = addBufferToUsage(state.usage);
@@ -465,7 +604,7 @@ export function createSSEStream(options = {}) {
     flush(controller) {
       const evtSummary = Object.entries(eventTypeCounts).map(([k, v]) => `${k}=${v}`).join(",") || "none";
       dbg("SSE", `flush | provider=${provider} | model=${model} | recvLines=${sseLineCount} | emitted=${sseEmittedCount} | events=[${evtSummary}]`);
-      trackPendingRequest(model, provider, connectionId, false);
+      endPending();
       try {
         const remaining = decoder.decode();
         if (remaining) buffer += remaining;
@@ -574,8 +713,24 @@ export function createSSEStream(options = {}) {
         console.log("Error in flush:", error);
         finalizeStream();
       }
+    },
+
+    // Where the runtime supports it, a cancelled readable lands here.
+    cancel() {
+      finalizeStream({ aborted: true });
     }
   });
+  // For the pipe (streamHandler.js), which ends the stream on a hang-up, a
+  // stall or an upstream error without flush() ever running.
+  sse.finalizeOnAbort = () => finalizeStream({ aborted: true });
+  // For the drain (a budgeted key's client hung up): has the final usage
+  // arrived, and record it now without waiting for the upstream to close.
+  sse.finalUsageSeen = () => finalUsageSeen;
+  sse.markClientGone = () => { clientGone = true; };
+  // The stall watchdog ended the stream: the floor stops at the last upstream byte.
+  sse.markStalled = (lastByteAt) => { floorEndAt = lastByteAt; };
+  sse.finalizeNow = () => finalizeStream();
+  return sse;
 }
 
 export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider = null, reqLogger = null, toolNameMap = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, customToolNames = null, toolNamespaces = null) {

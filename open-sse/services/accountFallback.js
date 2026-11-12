@@ -1,8 +1,8 @@
-import { ERROR_RULES, BACKOFF_CONFIG, TRANSIENT_COOLDOWN_MS } from "../config/errorConfig.js";
+import { ERROR_RULES, BACKOFF_CONFIG, TRANSIENT_COOLDOWN_MS, BAD_KEY_TEXTS, BILLING_TEXTS } from "../config/errorConfig.js";
 
 /**
  * Calculate exponential backoff cooldown for rate limits (429)
- * Level 1: 1s, Level 2: 2s, Level 3: 4s... → max 4 min
+ * Level 1: 2s, Level 2: 4s, Level 3: 8s... → max 5 min (BACKOFF_CONFIG)
  * @param {number} backoffLevel - Current backoff level
  * @returns {number} Cooldown in milliseconds
  */
@@ -53,21 +53,16 @@ export function checkFallbackError(status, errorText, backoffLevel = 0) {
 // same body, so locking the key only takes the whole pool down. Text rules (rate
 // limit, quota, ...) still win, since some gateways send those as 400.
 const REQUEST_ERROR_STATUSES = new Set([400, 404, 422]);
-// ...except errors about the account some upstreams send as 400: a bad key
-// (Gemini: "API key not valid", API_KEY_INVALID) or no money left (Anthropic:
-// "Your credit balance is too low"; Cursor usage limits). Those still lock.
-const BAD_KEY_TEXTS = [
-  "api key not valid", "api_key_invalid", "invalid api key", "invalid_api_key", "invalid x-api-key",
-  "credit balance", "insufficient_quota", "insufficient balance", "billing_hard_limit_reached",
-  "billing account", "billing details", "usage limit reached", "usage limit exceeded",
-];
+// ...except errors about the account some upstreams send as 400 (a bad key or
+// no money left). Those still lock.
+const ACCOUNT_ERROR_TEXTS = [...BAD_KEY_TEXTS, ...BILLING_TEXTS];
 
 export function isRequestError(status, errorText) {
   if (!REQUEST_ERROR_STATUSES.has(status)) return false;
   const lowerError = errorText
     ? (typeof errorText === "string" ? errorText : JSON.stringify(errorText)).toLowerCase()
     : "";
-  if (BAD_KEY_TEXTS.some((t) => lowerError.includes(t))) return false;
+  if (ACCOUNT_ERROR_TEXTS.some((t) => lowerError.includes(t))) return false;
   return !ERROR_RULES.some((rule) => rule.text && lowerError.includes(rule.text));
 }
 
@@ -136,14 +131,19 @@ export function getModelLockKey(model) {
 }
 
 /**
- * Check if a model lock on a connection is still active.
- * Reads flat field `modelLock_${model}` (or `modelLock___all` when model=null).
+ * When a model's lock on a connection ends, in ms: the later of `modelLock_${model}`
+ * and the account-wide `modelLock___all`. 0 when neither is set or parses.
  */
+export function getModelLockUntil(connection, model) {
+  const ends = [connection?.[getModelLockKey(model)], connection?.[MODEL_LOCK_ALL]]
+    .map(until => (until ? new Date(until).getTime() : 0))
+    .filter(Number.isFinite);
+  return Math.max(0, ...ends);
+}
+
+/** Check if a model lock (its own or the account-wide one) on a connection is still active. */
 export function isModelLockActive(connection, model) {
-  const key = getModelLockKey(model);
-  const expiry = connection[key] || connection[MODEL_LOCK_ALL];
-  if (!expiry) return false;
-  return new Date(expiry).getTime() > Date.now();
+  return getModelLockUntil(connection, model) > Date.now();
 }
 
 /**

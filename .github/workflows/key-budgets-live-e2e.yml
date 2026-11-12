@@ -1,0 +1,81 @@
+name: Key budgets live E2E
+
+# Real Claude Code and Codex CLIs against a real 10router build and a mock
+# upstream (Anthropic Messages + OpenAI Responses, streamed with usage). Keys
+# are made through the dashboard API; it checks the budget 402, the model
+# allowlist 403, GET /v1/key, the dashboard spend, and that neither refusal
+# reaches the upstream. Tool versions are pinned so a new release can't turn
+# this red on its own. All keys are fake and made per run.
+on:
+  pull_request:
+    paths:
+      - "open-sse/handlers/chatCore/streamingHandler.js"
+      - "src/lib/db/index.js"
+      - "src/sse/services/model.js"
+      - "open-sse/utils/usageTracking.js"
+      - "open-sse/providers/pricing.js"
+      - "open-sse/utils/stream.js"
+      - "open-sse/handlers/chatCore/sseToJsonHandler.js"
+      - "open-sse/utils/streamHandler.js"
+      - "open-sse/handlers/chatCore.js"
+      - "src/sse/handlers/chat.ts"
+      - "src/sse/services/keyLimits.js"
+      - "src/sse/services/auth.js"
+      - "src/shared/utils/apiKeyLimits.js"
+      - "src/shared/utils/clientApiKey.js"
+      - "src/dashboardGuard.js"
+      - "src/lib/db/repos/apiKeysRepo.js"
+      - "src/lib/db/repos/usageRepo.js"
+      - "src/lib/db/schema.js"
+      - "src/lib/db/migrations/**"
+      - "src/app/api/keys/**"
+      - "src/app/api/v1/key/**"
+      - ".github/e2e/key-budgets/**"
+      - ".github/workflows/key-budgets-live-e2e.yml"
+  workflow_dispatch:
+
+env:
+  CLAUDE_CODE_VERSION: "2.1.318"
+  CODEX_VERSION: "0.167.0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: key-budgets-live-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: bun install --ignore-scripts
+      - name: Build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build
+      - name: Install Claude Code and Codex
+        run: |
+          npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}"
+          claude --version
+          codex --version
+      - name: E2E
+        env:
+          OUT_DIR: ${{ runner.temp }}/e2e-out
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: bash .github/e2e/key-budgets/run.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: key-budgets-live-e2e
+          path: |
+            ${{ runner.temp }}/e2e-out/*.out
+            ${{ runner.temp }}/e2e-out/mock.log
+            ${{ runner.temp }}/e2e-out/server.log

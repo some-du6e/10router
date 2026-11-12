@@ -1,6 +1,7 @@
 import { getApiKeys } from "@/lib/localDb";
 import { UPDATER_CONFIG } from "@/shared/constants/config";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
+import { pickInternalKey } from "@/shared/utils/apiKeyLimits.js";
 
 const CLI_TOKEN_SALT = "9r-cli-auth";
 
@@ -41,7 +42,7 @@ async function getInternalHeaders() {
   let apiKey = null;
   try {
     const keys = await getApiKeys();
-    apiKey = keys.find((k) => k.isActive !== false)?.key || null;
+    apiKey = pickInternalKey(keys);
   } catch {}
 
   const headers = { "Content-Type": "application/json" };

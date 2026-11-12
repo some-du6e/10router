@@ -47,7 +47,7 @@ After touching the provider registry, aliases, or OAuth URLs, also run the match
 
 ### Translators (`open-sse/translator/`)
 - Translation pivots through OpenAI format. A translator registered on an exact pair (e.g. `claude:kiro`) is a **direct route** that skips the lossy double hop; use one for fragile pairs (thinking blocks, tool ids, non-base64 images, `is_error`).
-- Translators self-register as an import side effect, so a new translator file runs only once it is imported in `open-sse/translator/index.js`.
+- Translators self-register as an import side effect, so a new translator file runs only once it is imported in `open-sse/translator/index.ts`.
 - Take role, block, and model strings from the constants in `open-sse/translator/schema/` and `open-sse/config/`.
 - Binary upstreams (kiro EventStream, cursor protobuf, commandcode NDJSON) are decoded inside their own executor, outside the translator.
 
@@ -59,9 +59,6 @@ State lives in SQLite under `src/lib/db/` (the old `db.json` is gone). `driver.j
 - Import from `@/lib/db/index.js`. `src/lib/localDb.js` is a compatibility shim. Per-entity logic lives in `src/lib/db/repos/`, migrations in `src/lib/db/migrations/`.
 - The DB path comes from `src/lib/db/paths.js`: `DATA_DIR`, else `~/.9router/`. The directory keeps that name for existing installs.
 - Usage and logs (`src/lib/usageDb.js`) always write to `~/.9router` and ignore `DATA_DIR`.
-
-### RTK token saver (`open-sse/rtk/`)
-Pre-translate hooks that compress `tool_result` content in place. They are **fail-open**: on any error, return null and leave the body untouched. They leave `is_error` / `status:"error"` results intact so error traces survive.
 
 ### Icons
 The dashboard draws Material Symbols from a subset font, `src/app/fonts/material-symbols-outlined.woff2`, holding only the icons the source names (listed in the `.icons.txt` beside it). An icon outside the subset renders as its raw name, so after using a new icon name, rerun `node scripts/subset-icon-font.mjs` (needs python3 with `fonttools` and `brotli`) and commit both files; `tests/unit/icon-font-subset.test.js` goes red until you do. The font loads through `next/font/local` in `src/app/layout.js`. Importing `material-symbols/*.css` would pull the full 3.9 MB font back in. The logo is an inline SVG (`src/shared/components/LogoMark.tsx`) so it paints before the font arrives; use it rather than a `hub` icon for the brand mark.

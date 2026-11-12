@@ -25,9 +25,6 @@ vi.mock("@/sse/services/model.js", () => ({
   comboLookupName: (model) => model,
 }));
 vi.mock("open-sse/handlers/chatCore.js", () => ({ handleChatCore: mocks.handleChatCore }));
-vi.mock("@/lib/headroom/detect", () => ({ DEFAULT_HEADROOM_URL: "http://headroom.test" }));
-vi.mock("@/lib/pxpipe/loader.js", () => ({ getTransform: vi.fn() }));
-vi.mock("@/lib/pxpipe/events.js", () => ({ appendPxpipeEvent: vi.fn() }));
 vi.mock("open-sse/services/combo.js", async (importOriginal) => ({
   handleComboChat: (await importOriginal()).handleComboChat,
   handleFusionChat: (await importOriginal()).handleFusionChat,
@@ -106,6 +103,18 @@ describe("chat account failure responses", () => {
     expect(body.error.message).toContain("Primary (HTTP 429): Weekly usage limit reached.");
     expect(body.error.message).toContain("Backup (HTTP 429): Monthly usage limit reached.");
     expect(body.error.message).toContain("reset after 5m");
+  });
+
+  it("tells markAccountUnavailable which key the failed request used", async () => {
+    mocks.getProviderCredentials
+      .mockResolvedValueOnce(account("only", "Only account"))
+      .mockResolvedValueOnce(null);
+    mocks.handleChatCore.mockResolvedValueOnce({ success: false, status: 401, error: "Invalid API key" });
+
+    await handleChat(request());
+
+    expect(mocks.markAccountUnavailable.mock.calls[0][0]).toBe("only");
+    expect(mocks.markAccountUnavailable.mock.calls[0][6]).toBe("only-key");
   });
 
   it("summarizes attempted accounts when no more credentials remain", async () => {

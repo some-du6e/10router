@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Card, Button, Input, Toggle, ModelSelectModal } from "@/shared/components";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import { AI_PROVIDERS, MEDIA_PROVIDER_KINDS } from "@/shared/constants/providers";
+import { pickInternalKey } from "@/shared/utils/apiKeyLimits.js";
 
 // Parse "providerId/model" or just "providerId" → { providerId, model }
 function parseModelEntry(entry) {
@@ -75,7 +76,7 @@ export default function ComboDetailPage() {
       if (aliasesRes.ok) setModelAliases((await aliasesRes.json()).aliases || {});
       if (keysRes.ok) {
         const k = await keysRes.json();
-        setApiKey((k.keys || []).find((x) => x.isActive !== false)?.key || "");
+        setApiKey(pickInternalKey(k.keys) || "");
       }
       if (connsRes.ok) setConnections((await connsRes.json()).connections || []);
       if (!comboRes.ok) { setCombo(null); setLoading(false); return; }

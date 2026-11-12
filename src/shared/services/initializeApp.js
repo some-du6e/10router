@@ -13,6 +13,7 @@ import {
 import { killAllBridges } from "@/lib/mcp/stdioSseBridge";
 import { ensureSetupToken } from "@/lib/auth/setupBootstrap";
 import { retireIdeProxy } from "@/lib/upgrades/retireIdeProxy.js";
+import { retireTokenSaver } from "@/lib/upgrades/retireTokenSaver.js";
 
 process.setMaxListeners(20);
 
@@ -51,6 +52,7 @@ export async function initializeApp() {
     // so the console banner is the first thing the operator sees on a fresh install.
     await ensureSetupToken().catch((e) => console.error("[InitApp] setup token failed:", e.message));
     retireIdeProxy().catch(() => {});
+    try { retireTokenSaver(); } catch { /* best effort */ }
 
     setTunnelUnexpectedExitCallback(() => {
       safeRestartTunnel("unexpected-exit").catch(() => {});

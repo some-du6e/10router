@@ -104,6 +104,12 @@ function sanitizeHeaders(headers) {
   return sanitized;
 }
 
+// A streaming request is saved twice under one id, when it starts and when it
+// ends, with the same request objects both times. Capping and packing a ~1 MB
+// body is the costly part of a flush, so the second save reuses the first's.
+const cappedPayloads = new WeakMap();   // payload object → its capped copy
+const packedFullData = new WeakMap();   // first capped field → its packed full copy
+
 // Returns the untruncated payloads that truncateField cut, gzipped, or null.
 // Compression runs on the libuv pool so a big payload doesn't stall streams.
 // `fieldJson` holds the compact JSON truncateField already built for each
@@ -122,11 +128,18 @@ async function packFullData(item, record, fieldJson = {}) {
   // UTF-8 never takes fewer bytes than characters, so this skips oversized
   // payloads without serializing them a second time.
   if (chars > FULL_DATA_MAX_BYTES) return null;
+  // Same capped objects as an earlier save (truncateField's cache): same bytes.
+  const keys = parts.map(([key]) => key).join();
+  const capped = parts.map(([key]) => record[key]);
+  const prior = packedFullData.get(capped[0]);
+  if (prior?.keys === keys && prior.capped.every((c, i) => c === capped[i])) return prior.packed;
   try {
     const json = `{${parts.map(([key, value]) => `${JSON.stringify(key)}:${value ?? JSON.stringify(item[key])}`).join(",")}}`;
     // A UTF-16 code unit is at most 3 UTF-8 bytes, so only count bytes when that bound could exceed the limit.
     if (json.length * 3 > FULL_DATA_MAX_BYTES && Buffer.byteLength(json, "utf8") > FULL_DATA_MAX_BYTES) return null;
-    return (await gzipAsync(json)).toString("base64");
+    const packed = (await gzipAsync(json)).toString("base64");
+    packedFullData.set(capped[0], { keys, capped, packed });
+    return packed;
   } catch {
     return null;
   }
@@ -189,6 +202,10 @@ function prettyJsonPrefix(json, limit) {
 
 function truncateField(obj, maxSize, fieldJson, key) {
   if (obj === undefined || obj === null) return {};
+  const cached = typeof obj === "object" ? cappedPayloads.get(obj) : undefined;
+  // No JSON is kept with it (1 MB per body while the stream runs): packFullData
+  // reuses its earlier full copy, or serializes again when it can't.
+  if (cached?.maxSize === maxSize) return cached.truncated;
   let str;
   try {
     str = JSON.stringify(obj);
@@ -209,6 +226,7 @@ function truncateField(obj, maxSize, fieldJson, key) {
     }
     const remaining = maxSize - JSON.stringify(truncated).length;
     truncated._structuredPreview = structuredPreview(obj, remaining);
+    if (typeof obj === "object") cappedPayloads.set(obj, { maxSize, truncated });
     return truncated;
   }
   return obj;
@@ -249,7 +267,7 @@ async function flushToDatabase({ skipFullData = false } = {}) {
           providerRequest: truncateField(item.providerRequest, config.maxJsonSize, fieldJson, "providerRequest"),
           providerResponse: truncateField(item.providerResponse, config.maxJsonSize, fieldJson, "providerResponse"),
           response: truncateField(item.response, config.maxJsonSize, fieldJson, "response"),
-          pxpipe: item.pxpipe || undefined,
+          errorClass: item.errorClass || undefined,
         };
         rows.push({ record, fullData: keepFull ? await packFullData(item, record, fieldJson) : null });
       }
@@ -308,6 +326,8 @@ export async function saveRequestDetail(detail) {
   }
 }
 
+const SUMMARY_DROPPED_KEYS = ["request", "providerRequest", "providerResponse", "response"];
+
 export async function getRequestDetails(filter = {}) {
   const db = await getAdapter();
   const conds = [];
@@ -329,12 +349,19 @@ export async function getRequestDetails(filter = {}) {
   const totalPages = Math.ceil(totalItems / pageSize);
   const offset = (page - 1) * pageSize;
 
+  // summary: strip the payloads in SQL so a polled page doesn't parse them.
+  const dataCol = filter.summary
+    ? `CASE WHEN json_valid(data) THEN json_remove(data, '$.request', '$.providerRequest', '$.providerResponse', '$.response') ELSE data END AS data`
+    : "data";
   const rows = db.all(
-    `SELECT data, fullData IS NOT NULL AS hasFullData FROM requestDetails ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+    `SELECT ${dataCol}, fullData IS NOT NULL AS hasFullData FROM requestDetails ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
     [...params, pageSize, offset]
   );
   const details = rows.map((r) => {
-    const detail = parseJson(r.data, {});
+    const detail = parseJson(r.data, {}) || {};
+    // A row SQLite's JSON parser rejects (e.g. nested past its depth limit)
+    // comes back whole; drop its payloads here.
+    if (filter.summary) for (const key of SUMMARY_DROPPED_KEYS) delete detail[key];
     if (r.hasFullData) detail.hasFullData = true;
     return detail;
   });
@@ -353,8 +380,11 @@ export async function getDistinctProviders() {
 
 export async function getRequestDetailById(id) {
   const db = await getAdapter();
-  const row = db.get(`SELECT data FROM requestDetails WHERE id = ?`, [id]);
-  return row ? parseJson(row.data, null) : null;
+  const row = db.get(`SELECT data, fullData IS NOT NULL AS hasFullData FROM requestDetails WHERE id = ?`, [id]);
+  if (!row) return null;
+  const detail = parseJson(row.data, null);
+  if (detail) detail.hasFullData = Boolean(row.hasFullData);
+  return detail;
 }
 
 // Drops every stored full payload, e.g. when "Show full request details" is

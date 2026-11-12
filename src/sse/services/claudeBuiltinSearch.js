@@ -5,6 +5,7 @@ import { saveRequestDetail } from "@/lib/usageDb.js";
 import { buildRequestDetail, extractRequestConfig } from "open-sse/handlers/chatCore/requestDetail.js";
 import { handleSearch } from "../handlers/search.js";
 import { buildSideSearchMessage, getSideSearchQuery, sideSearchResponse } from "./claudeSearchShortcut.js";
+import { connectionBilling } from "./autoCombo.js";
 
 const enrichmentCache = new WeakMap();
 
@@ -14,7 +15,7 @@ const NATIVE_SEARCH_PROVIDERS = new Set(["claude", "anthropic"]);
 // The search model only changes when combos or connections are edited, so a
 // short TTL saves two table reads on every search without going stale for long.
 const MODEL_TTL_MS = 30_000;
-let modelCache = null;
+const modelCache = new Map();
 
 // Agents often repeat a query within a session (retries, subagents). Results
 // are kept briefly; only searches that returned results are cached.
@@ -64,27 +65,48 @@ export function buildGatewaySearchBody(model, searchRequest) {
   };
 }
 
-export async function resolveBuiltinSearchModel() {
-  if (modelCache && modelCache.expires > Date.now()) return modelCache.value;
-  const value = await lookupBuiltinSearchModel();
+/**
+ * The search provider or combo to answer Claude's web_search with. With
+ * blockedBilling (an auto combo's request), a provider qualifies only if every
+ * one of its accounts is allowed, since the search may pick any of them.
+ */
+export async function resolveBuiltinSearchModel(blockedBilling = null) {
+  const key = blockedBilling ? [...blockedBilling].sort().join(",") : "";
+  const cached = modelCache.get(key);
+  if (cached && cached.expires > Date.now()) return cached.value;
+  const value = await lookupBuiltinSearchModel(blockedBilling);
   // Not caching "none configured", so a newly added provider is used at once.
-  modelCache = value ? { value, expires: Date.now() + MODEL_TTL_MS } : null;
+  if (value) modelCache.set(key, { value, expires: Date.now() + MODEL_TTL_MS });
+  else modelCache.delete(key);
   return value;
 }
 
-async function lookupBuiltinSearchModel() {
+async function lookupBuiltinSearchModel(blockedBilling) {
   const combos = await getCombos();
   const combo = combos.find((candidate) => candidate.kind === "webSearch" && candidate.models?.length);
   if (combo) return combo.name;
 
+  const allowed = (conn) => !blockedBilling || !blockedBilling.has(connectionBilling(conn));
+  const searchable = (provider) => provider?.serviceKinds?.includes("webSearch") && provider.configured !== false;
   const connections = await getProviderConnections({ isActive: true });
-  const connection = connections.find(({ provider }) => AI_PROVIDERS[provider]?.serviceKinds?.includes("webSearch"));
+  const connection = connections.find(({ provider }) =>
+    searchable(AI_PROVIDERS[provider]) &&
+    connections.filter((c) => c.provider === provider).every(allowed));
   if (connection) return connection.provider;
 
   const noAuth = Object.values(AI_PROVIDERS).find(
-    (provider) => provider.noAuth && provider.serviceKinds?.includes("webSearch")
+    (provider) => provider.noAuth && searchable(provider) && allowed({ provider: provider.id })
   );
   return noAuth?.id || null;
+}
+
+async function noSearchProviderMessage(blockedBilling, resolveSearchModel) {
+  const base = "Claude built-in web search requested, but no web-search provider is";
+  if (blockedBilling?.size && await resolveSearchModel(null)) {
+    return `${base} allowed by auto-combo billing (blocked: ${[...blockedBilling].join(", ")}). ` +
+      "Add a Web Search combo to allow one";
+  }
+  return `${base} configured (connect one, or set SEARXNG_URL to a publicly reachable SearXNG)`;
 }
 
 function formatSearchContext(data) {
@@ -139,6 +161,7 @@ export async function enrichClaudeBuiltinSearch(body, {
   log,
   search = runGatewaySearch,
   resolveSearchModel = resolveBuiltinSearchModel,
+  blockedBilling = null,
 } = {}) {
   if (NATIVE_SEARCH_PROVIDERS.has(provider)) return body;
   const searchRequest = getBuiltinSearchRequest(body);
@@ -147,9 +170,9 @@ export async function enrichClaudeBuiltinSearch(body, {
 
   const task = (async () => {
     try {
-      const model = await resolveSearchModel();
+      const model = await resolveSearchModel(blockedBilling);
       if (!model) {
-        log?.warn?.("SEARCH", "Claude built-in web search requested, but no web-search provider is configured");
+        log?.warn?.("SEARCH", await noSearchProviderMessage(blockedBilling, resolveSearchModel));
         return body;
       }
       const data = await search({ model, searchRequest, request, apiKey });
@@ -201,6 +224,7 @@ export async function answerClaudeSideSearch(body, {
   search = runGatewaySearch,
   resolveSearchModel = resolveBuiltinSearchModel,
   recordDetail = saveRequestDetail,
+  blockedBilling = null,
 } = {}) {
   if (NATIVE_SEARCH_PROVIDERS.has(provider)) return null;
   const query = getSideSearchQuery(body);
@@ -209,7 +233,7 @@ export async function answerClaudeSideSearch(body, {
 
   let searchModel;
   try {
-    searchModel = await resolveSearchModel();
+    searchModel = await resolveSearchModel(blockedBilling);
   } catch (error) {
     log?.warn?.("SEARCH", `Web search side request skipped: model lookup failed: ${error.message}`);
     return null;

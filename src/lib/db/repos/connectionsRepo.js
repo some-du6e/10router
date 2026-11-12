@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { DEMOTE_PREFIX } from "../../../shared/utils/connectionStatus.js";
 
 const OPTIONAL_FIELDS = [
   "displayName", "email", "globalPriority", "defaultModel",
@@ -9,6 +10,71 @@ const OPTIONAL_FIELDS = [
   "lastTested", "lastError", "lastErrorAt", "rateLimitedUntil", "expiresIn", "errorCode",
   "consecutiveUseCount", "idToken", "lastRefreshAt",
 ];
+
+// Written by sse/services/auth.js when a key keeps failing auth and is turned
+// off. Turning the connection back on, by any path, starts it clean; turning it
+// off again keeps its reason unless a new key came with it.
+const AUTH_STREAK_FIELDS = [
+  "authFailCount", "authFailFirstAt", "authFailLastAt", "authFailModels", "authFailAll401", "authFailSameUpstream",
+  "authFailRunCount", "authFailRunStartAt", "authFailBursts",
+];
+const AUTO_DISABLE_FIELDS = ["autoDisabledAt", "autoDisabledReason", ...AUTH_STREAK_FIELDS];
+
+// authDemote_<model>: sse/services/auth.js's count of a key's 403s on that
+// model, and its demotion there once they trip. authDemoteOkAt: when the key
+// last served anything while it had such a record (compared with its firstAt).
+export const AUTH_DEMOTE_PREFIX = DEMOTE_PREFIX;
+export const getAuthDemoteKey = (model) => `${AUTH_DEMOTE_PREFIX}${model}`;
+
+// Keys that died on a connection before it got a new one, as usage windows
+// ({ since, until }) the key lifespan estimate counts as dead keys.
+export const PAST_KEYS_CAP = 50;
+
+function applyAutoDisableTransition(existing, merged, data) {
+  const newKey = String(data.apiKey ?? "").trim();
+  const keyChanged = newKey !== "" && newKey !== String(existing.apiKey ?? "").trim();
+  if (keyChanged && existing.isActive === false && existing.autoDisabledAt) {
+    const past = Array.isArray(existing.pastKeys) ? existing.pastKeys : [];
+    merged.pastKeys = [...past, { since: existing.keySetAt || "", until: existing.autoDisabledAt }].slice(-PAST_KEYS_CAP);
+  }
+  // A different key pasted into a connection the router turned off fixes it.
+  if (existing.autoDisabledAt && data.isActive === undefined && keyChanged) merged.isActive = true;
+  const reEnabled = existing.isActive === false && merged.isActive === true;
+  if (reEnabled || keyChanged) {
+    // A new key or turning the key back on clears its demotions too.
+    for (const k of Object.keys(merged)) if (k.startsWith(AUTH_DEMOTE_PREFIX)) merged[k] = null;
+  }
+  if (reEnabled) {
+    for (const f of AUTO_DISABLE_FIELDS) delete merged[f];
+  } else if (data.isActive === false && data.autoDisabledAt === undefined && keyChanged) {
+    delete merged.autoDisabledAt;
+    delete merged.autoDisabledReason;
+  }
+  // The old key's failures say nothing about the new one.
+  if (keyChanged) for (const f of AUTH_STREAK_FIELDS) delete merged[f];
+  // Nor its spend: the key lifespan estimate counts usage from here on.
+  if (keyChanged) merged.keySetAt = new Date().toISOString();
+}
+
+function apiKeyReplaced(existing, data) {
+  const newKey = String(data.apiKey ?? "").trim();
+  return newKey !== "" && newKey !== String(existing.apiKey ?? "").trim();
+}
+
+// A connection a management key added stops being its once someone puts a
+// different key in it (the dashboard's edit or overwrite): the management key
+// must not own, or be able to delete, a row holding the admin's secret.
+function releaseOwnerIfKeyReplaced(db, existing, data) {
+  if (apiKeyReplaced(existing, data)) db.run(`UPDATE providerConnections SET ownerManagementKeyId = NULL WHERE id = ?`, [existing.id]);
+}
+
+export function bumpConnectionsVersion() {
+  global._connectionsVersion = (global._connectionsVersion || 0) + 1;
+}
+
+export function connectionsVersion() {
+  return global._connectionsVersion || 0;
+}
 
 function rowToConn(row) {
   if (!row) return null;
@@ -184,7 +250,11 @@ export async function createProviderConnection(data) {
       }
       const updates = Object.fromEntries(Object.entries(data).filter(([key, value]) => key !== "allowOverwrite" && value !== undefined));
       const merged = { ...existing, ...updates, updatedAt: now };
+      // Re-adding or re-logging a key the router turned off means it was fixed.
+      if (existing.autoDisabledAt && updates.isActive === undefined) merged.isActive = true;
+      applyAutoDisableTransition(existing, merged, updates);
       upsert(db, merged);
+      releaseOwnerIfKeyReplaced(db, existing, updates);
       result = merged;
       return;
     }
@@ -225,35 +295,93 @@ export async function createProviderConnection(data) {
     result = conn;
   });
 
+  bumpConnectionsVersion();
   return result;
 }
 
-// Critical: OAuth refresh token race — atomic merge inside transaction
-export async function updateProviderConnection(id, data) {
+// Critical: OAuth refresh token race — atomic merge inside transaction.
+// autoDisable fields are applied only if the connection is still on and another
+// connection of its provider is too, decided in the same transaction as the write.
+// demote ({ model, from, to, data, probeNow }) replaces the model's demotion
+// record `from` with `to`, applies `data`, and makes the demotions on the
+// probeNow models due, only if the record is still `from`. liftDemote
+// is a model that just succeeded: its record goes, whenever it was written; with
+// noteServed, authDemoteOkAt marks the success for the stored records.
+// apiKeyUsed is the key a failing request used: if another key has been stored
+// since, the request's auth streak fields, autoDisable and demote are dropped.
+export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, noteServed = false, apiKeyUsed } = {}) {
   const db = await getAdapter();
   let result;
+  let servesChanged = false;
   db.transaction(() => {
     const row = db.get(`SELECT * FROM providerConnections WHERE id = ?`, [id]);
     if (!row) { result = null; return; }
     const existing = rowToConn(row);
     const merged = { ...existing, ...data, updatedAt: new Date().toISOString() };
+    const staleKey = apiKeyUsed !== undefined && existing.apiKey !== apiKeyUsed;
+    if (staleKey) {
+      for (const f of AUTH_STREAK_FIELDS) {
+        if (f in existing) merged[f] = existing[f];
+        else delete merged[f];
+      }
+    }
+    if (autoDisable && !staleKey && existing.isActive && db.get(
+      `SELECT 1 FROM providerConnections WHERE provider = ? AND id != ? AND isActive = 1 LIMIT 1`, [existing.provider, id],
+    )) Object.assign(merged, autoDisable);
+    const demoteKey = demote && getAuthDemoteKey(demote.model);
+    if (demote && !staleKey && JSON.stringify(existing[demoteKey] ?? null) === JSON.stringify(demote.from ?? null)) {
+      Object.assign(merged, demote.data, { [demoteKey]: demote.to });
+      // Other models' demotions to probe right away (still no sooner than the
+      // last probe's lease ends).
+      const now = new Date().toISOString();
+      for (const model of demote.probeNow || []) {
+        const record = existing[getAuthDemoteKey(model)];
+        if (record?.demotedAt && record.nextProbeAt > now) merged[getAuthDemoteKey(model)] = { ...record, nextProbeAt: now };
+      }
+    }
+    if (liftDemote && existing[getAuthDemoteKey(liftDemote)]) merged[getAuthDemoteKey(liftDemote)] = null;
+    if (noteServed) merged.authDemoteOkAt = new Date().toISOString();
+    applyAutoDisableTransition(existing, merged, data);
     upsert(db, merged);
+    releaseOwnerIfKeyReplaced(db, existing, data);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
     result = merged;
+    // Token refreshes and rate-limit stamps write here constantly; only a
+    // change to what the connection serves counts.
+    const psdBefore = existing.providerSpecificData || {};
+    const psdAfter = merged.providerSpecificData || {};
+    servesChanged =
+      existing.isActive !== merged.isActive ||
+      existing.keySetAt !== merged.keySetAt ||
+      existing.authType !== merged.authType ||
+      psdBefore.prefix !== psdAfter.prefix ||
+      psdBefore.baseUrl !== psdAfter.baseUrl ||
+      JSON.stringify(psdBefore.enabledModels) !== JSON.stringify(psdAfter.enabledModels);
   });
+  if (servesChanged) bumpConnectionsVersion();
   return result;
 }
 
 export async function deleteProviderConnection(id) {
+  return deleteProviderConnectionIf(id, () => true);
+}
+
+/**
+ * Delete a connection only if `guard(db, row)` (row: id, provider, authType,
+ * ownerManagementKeyId) is true, decided inside the delete's own transaction.
+ * The guard may throw to abort. False when there's no such row or the guard said no.
+ */
+export async function deleteProviderConnectionIf(id, guard) {
   const db = await getAdapter();
   let ok = false;
   db.transaction(() => {
-    const row = db.get(`SELECT provider FROM providerConnections WHERE id = ?`, [id]);
-    if (!row) return;
+    const row = db.get(`SELECT id, provider, authType, ownerManagementKeyId FROM providerConnections WHERE id = ?`, [id]);
+    if (!row || !guard(db, row)) return;
     db.run(`DELETE FROM providerConnections WHERE id = ?`, [id]);
     reorderInTx(db, row.provider);
     ok = true;
   });
+  if (ok) bumpConnectionsVersion();
   return ok;
 }
 
@@ -261,6 +389,7 @@ export async function deleteProviderConnectionsByProvider(providerId) {
   const db = await getAdapter();
   const before = db.get(`SELECT COUNT(*) AS n FROM providerConnections WHERE provider = ?`, [providerId]);
   db.run(`DELETE FROM providerConnections WHERE provider = ?`, [providerId]);
+  bumpConnectionsVersion();
   return before?.n || 0;
 }
 

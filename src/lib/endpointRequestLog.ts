@@ -73,8 +73,8 @@ export const isCustomEndpoint = (provider: unknown) =>
   isOpenAICompatibleProvider(provider) || isAnthropicCompatibleProvider(provider);
 
 // Run `fn` (one routed request) with logging on, when `provider` is a custom
-// endpoint. Only requests to the endpoint's own host are kept (not a token-saver
-// proxy or anything else the request happens to call).
+// endpoint. Only requests to the endpoint's own host are kept (not anything
+// else the request happens to call).
 export function recordEndpointRequests<T>(provider: string, credentials: { apiKey?: unknown; providerSpecificData?: { baseUrl?: unknown } | null } | null | undefined, fn: () => T): T {
   if (!isCustomEndpoint(provider)) return fn();
   let origin = "";

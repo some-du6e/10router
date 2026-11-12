@@ -219,6 +219,18 @@ describe("detectEndpoint", () => {
     }
   });
 
+  it("skipModels checks the API and key but asks about no models", async () => {
+    const { fetchFn, calls } = upstream({
+      "POST /api/v2/cortex/v1/messages": ({ auth, body }) => !keyOk(auth) ? [401, { message: "Invalid OAuth access token. null" }]
+        : body.model === "claude-haiku-4-5" ? [400, { message: "'messages' must not be empty" }] : [400, { message: `unknown model "${body.model}"` }],
+    });
+    const r = await detectEndpoint({ url: "https://acme.snowflakecomputing.com/api/v2/cortex/v1", apiKey: GOOD, fetchFn, catalog: CATALOG, skipModels: true });
+    expect(r).toMatchObject({ ok: true, protocol: "anthropic", models: [], modelsSource: "none", keyConfirmed: "confirmed" });
+    expect(r.checks).toBeUndefined();
+    const asked = calls.filter((c) => c.method === "POST").map((c) => c.body.model);
+    expect(asked.filter((m) => m === "claude-haiku-4-5" || m === "claude-sonnet-4-5")).toEqual([]);
+  });
+
   it("OpenAI-style gateway with a model list", async () => {
     const { fetchFn } = upstream({
       "GET /api/v1/models": () => [200, { data: [{ id: "openai/gpt-5" }, { id: "anthropic/claude-sonnet-5" }] }],

@@ -54,7 +54,7 @@ Only add a dedicated test when a provider has a special format that does not rou
 
 ## 5. `registerAll.js` — why it is required
 
-`translator/index.js` uses `require(...)` (bundler-only) to lazy-load translators. Under vitest/ESM, `require` **silently no-ops** → empty registry → `translateRequest` skips the translation step → **false pass** (data is lost but the test goes green by mistake).
+`translator/index.ts` uses `require(...)` (bundler-only) to lazy-load translators. Under vitest/ESM, `require` **silently no-ops** → empty registry → `translateRequest` skips the translation step → **false pass** (data is lost but the test goes green by mistake).
 
 → Every test calling `translateRequest`/`translateResponse` MUST `import "./registerAll.js"` at the top of the file.
 
@@ -85,10 +85,9 @@ Grouped per CLI/provider test file. Each row is an `it.fails` case.
 **OpenAI → Claude (`bugs-toClaude-context.test.js`)**
 | Bug | Source |
 |---|---|
-| Always injects "You are Claude Code" system prompt | `request/openai-to-claude.js:124-134` |
-| `reasoning_content` not mapped to a thinking block | `request/openai-to-claude.js:268-273` |
-| `tool_choice:"none"` → `auto` | `request/openai-to-claude.js:298` |
-| `input_audio` dropped | `request/openai-to-claude.js` (no audio branch) |
+| `reasoning_content` not mapped to a thinking block | `request/openai-to-claude.ts:268-273` |
+| `tool_choice:"none"` → `auto` | `request/openai-to-claude.ts:298` |
+| `input_audio` dropped | `request/openai-to-claude.ts` (no audio branch) |
 
 **Codex Responses (`bugs-codexCli-responses.test.js`)**
 | Bug | Source |

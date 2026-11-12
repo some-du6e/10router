@@ -10,11 +10,82 @@ const T = (body) =>
   translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, "m", body, true, null, "anthropic-compatible-x");
 
 describe("OpenAI → Claude context mapping", () => {
-  // openai-to-claude.js:124-134 — always injects CLAUDE_SYSTEM_PROMPT ("You are Claude Code")
-  // KNOWN BUG: pollutes requests for non-official Claude-compatible providers
-  it.fails("does not inject Claude Code system prompt for compatible providers", () => {
+  it("does not inject Claude Code system prompt for compatible providers", () => {
     const out = T({ messages: [{ role: "user", content: "hi" }] });
-    expect(JSON.stringify(out.system), "Claude Code prompt injected").not.toContain("Claude Code");
+    expect(JSON.stringify(out.system ?? null), "Claude Code prompt injected").not.toContain("Claude Code");
+  });
+
+  it("still injects the Claude Code prompt for the Claude Code OAuth provider", () => {
+    const out = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, "m", {
+      messages: [{ role: "system", content: "be brief" }, { role: "user", content: "hi" }],
+    }, true, null, "claude");
+    expect(out.system[0].text).toContain("You are Claude Code");
+    expect(out.system.at(-1).text).toBe("be brief");
+  });
+
+  it("sends the Claude Code prompt once, as its own first block", () => {
+    const CC = "You are Claude Code, Anthropic's official CLI for Claude.";
+    const out = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, "m", {
+      messages: [{ role: "system", content: CC }, { role: "user", content: "hi" }],
+    }, true, null, "claude");
+    expect(out.system.filter((b) => b.text.includes("Claude Code"))).toHaveLength(1);
+    expect(out.system[0].text).toBe(CC);
+
+    const quoted = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, "m", {
+      messages: [{ role: "system", content: `be brief. ${CC}` }, { role: "user", content: "hi" }],
+    }, true, null, "claude");
+    expect(quoted.system[0].text).toBe(CC);
+  });
+
+  it("adds the Claude Code prompt to Claude-format requests for the Claude Code provider", () => {
+    const out = translateRequest(FORMATS.CLAUDE, FORMATS.CLAUDE, "m", {
+      system: "be brief", messages: [{ role: "user", content: "hi" }],
+    }, true, null, "claude");
+    expect(out.system[0].text).toContain("You are Claude Code");
+    expect(out.system.at(-1).text).toBe("be brief");
+  });
+
+  it("adds the Claude Code prompt for an Anthropic OAuth token on a compatible provider", () => {
+    const out = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, "m", {
+      messages: [{ role: "user", content: "hi" }],
+    }, true, { accessToken: "sk-ant-oat01-test" }, "anthropic-compatible-x");
+    expect(JSON.stringify(out.system)).toContain("You are Claude Code");
+  });
+
+  it("sends no empty system block when the client's system prompt is empty", () => {
+    const messages = [{ role: "system", content: "" }, { role: "user", content: "hi" }];
+    const plain = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, "m", { messages }, true, null, "anthropic-compatible-x");
+    expect(plain.system).toBeUndefined();
+    const claude = translateRequest(FORMATS.CLAUDE, FORMATS.CLAUDE, "m", {
+      system: [{ type: "text", text: "" }], messages: [{ role: "user", content: "hi" }],
+    }, true, null, "claude");
+    expect(claude.system).toHaveLength(1);
+    expect(claude.system[0].text).toContain("You are Claude Code");
+  });
+
+  it.each([[""], ["  "], [[{ type: "text", text: "" }]], [[]]])("drops an empty Claude client system %j on a compatible provider", (system) => {
+    const out = translateRequest(FORMATS.CLAUDE, FORMATS.CLAUDE, "m", {
+      system, messages: [{ role: "user", content: "hi" }],
+    }, true, null, "anthropic-compatible-x");
+    expect(out.system).toBeUndefined();
+  });
+
+  it("keeps non-text system blocks and drops null or blank ones", () => {
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "x" } };
+    const out = translateRequest(FORMATS.CLAUDE, FORMATS.CLAUDE, "m", {
+      system: [null, { type: "text", text: " \n " }, image, { type: "text", text: "real" }],
+      messages: [{ role: "user", content: "hi" }],
+    }, true, null, "claude");
+    expect(out.system.map((b) => b.type)).toEqual(["text", "image", "text"]);
+    expect(out.system[0].text).toContain("You are Claude Code");
+    expect(out.system[2].text).toBe("real");
+  });
+
+  it("sends no system for whitespace-only OpenAI system messages", () => {
+    const out = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, "m", {
+      messages: [{ role: "system", content: "  \n " }, { role: "system", content: "" }, { role: "user", content: "hi" }],
+    }, true, null, "anthropic-compatible-x");
+    expect(out.system).toBeUndefined();
   });
 
   it.each(["anthropic", "anthropic-compatible-x"])("does not create unsigned thinking history for %s", (provider) => {
@@ -217,5 +288,38 @@ describe("OpenAI → Claude context mapping", () => {
     expect(assistant.content[0]).toEqual({ type: "thinking", thinking: "." });
     expect(assistant.content[1]).toEqual(expect.objectContaining({ type: "tool_use", id: "toolu_1" }));
     expect(assistant.content[0].signature).toBeUndefined();
+  });
+
+  it("still adds the placeholder when Claude Code's trailing system reminder follows the tool_result", () => {
+    const out = prepareClaudeRequest({
+      model: "deepseek-v4-pro",
+      thinking: { type: "enabled" },
+      messages: [
+        { role: "user", content: [{ type: "text", text: "q" }] },
+        { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "Read", input: { file_path: "x" } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }] },
+        { role: "system", content: "<system-reminder>x</system-reminder>" },
+      ],
+    }, "deepseek");
+
+    const assistant = out.messages.find((m) => m.role === "assistant");
+    expect(assistant.content[0]).toEqual({ type: "thinking", thinking: "." });
+  });
+
+  it("does not add the placeholder when an assistant turn comes before the trailing system reminder", () => {
+    const out = prepareClaudeRequest({
+      model: "deepseek-v4-pro",
+      thinking: { type: "enabled" },
+      messages: [
+        { role: "user", content: [{ type: "text", text: "q" }] },
+        { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "Read", input: { file_path: "x" } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }] },
+        { role: "assistant", content: [{ type: "text", text: "partial" }] },
+        { role: "system", content: "<system-reminder>x</system-reminder>" },
+      ],
+    }, "deepseek");
+
+    const toolTurn = out.messages.find((m) => m.role === "assistant" && m.content.some((b) => b.type === "tool_use"));
+    expect(toolTurn.content[0].type).toBe("tool_use");
   });
 });

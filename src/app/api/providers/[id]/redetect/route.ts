@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { makeProbeFetch } from "@/lib/probeFetch.js";
-import { detectEndpoint, normalizeUrl, outdatedModels } from "@/lib/endpointDetect.js";
+import { DETECT_DEADLINE_MS, detectEndpoint, normalizeUrl, outdatedModels } from "@/lib/endpointDetect.js";
 import type { DetectProgress, DetectResult, Protocol } from "@/lib/endpointDetect.js";
 import { getEndpointCatalog } from "@/lib/endpointCatalog.js";
 import { retryAsClient } from "@/lib/endpointImpersonate.js";
@@ -9,19 +9,61 @@ import { mergeConnectionData, mergeQuirks } from "@/shared/utils/nodeQuirkMerge.
 import { isCustomEndpoint } from "@/lib/endpointRequestLog.js";
 import { guardTarget, respond } from "@/app/api/provider-nodes/detect/ndjson.js";
 import { redetectDiff, savedProtocol, savedSettingsFetch } from "./diff.js";
-import type { SavedEndpoint } from "./diff.js";
+import type { RedetectPart, SavedEndpoint } from "./diff.js";
 
 export const dynamic = "force-dynamic";
 
-type Connection = { id: string; isActive?: boolean; apiKey?: string; providerSpecificData?: { ownBaseUrl?: boolean } };
+type Connection = { id: string; isActive?: boolean; apiKey?: string; providerSpecificData?: { ownBaseUrl?: boolean; baseUrl?: string } };
+type Candidate = { apiKey: string; url: string; own: boolean };
+type Run = { candidate: Candidate; result: DetectResult & { gate?: unknown } };
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,160}$/;
+// How many active keys the re-detect check will try before it gives up: enough
+// to skip a few dead-but-still-on keys without probing a whole large pool.
+const MAX_KEY_ATTEMPTS = 5;
+// Every key tried shares one detection's time budget (the page gives up at
+// 60s); another key isn't started with less than this left.
+const MIN_ATTEMPT_MS = 5_000;
+// With another key waiting, one key's run (a rate-limited key sitting out its
+// Retry-After waits, say) can't take more than this of the budget.
+const MAX_RUN_MS = 30_000;
 type CustomModel = { id?: string; providerAlias?: string; type?: string; kind?: string };
 
+// Detection says what each run showed about its key (see KeyVerdict). Rate
+// limits and quota are usually per key, as inference's failover assumes.
+const keyRefused = (r: DetectResult) => r.keyVerdict === "refused";
+const rateLimited = (r: DetectResult) => r.keyVerdict === "rate-limited";
+const worked = (r: DetectResult) => r.ok && r.keyVerdict === "accepted";
+// It answered, but nothing it said is about the key (the model probes were cut
+// short, or it could use none of the models asked about): worth trying another
+// key, and shown if none does better.
+const unsure = (r: DetectResult) => r.ok && !r.keyVerdict;
+// Only GET /models refused the key and no API path answered: it may be an
+// admin-only list, so another key gets a try, and no key is blamed.
+const listOnly = (r: DetectResult) => !r.ok && r.failure === "key" && !r.keyVerdict;
+// A web server's own 401 page (nginx in front of the API refusing the token):
+// not an API answer, but a sign the next key may get through.
+// Only the HTML 401 counts: every run also has GET /models's plain JSON 401
+// without a key, and a 403 page is usually a WAF or bot block, the same for
+// every key.
+const pageRefused = (r: DetectResult) => !r.ok && r.failure === "html" && r.steps.some((s) => s.html && s.status === 401);
+// Cut off by the shared time or the user: it says nothing about its key.
+const cutOff = (r: DetectResult) => r.failure === "timeout" || r.failure === "cancelled";
+const clause = (s: string | undefined) => String(s || "").replace(/\s*\.*\s*$/, "");
+
+// Which half of the page asked (see RedetectPart).
+const partOf = (request: Request): RedetectPart => {
+  const q = new URL(request.url).searchParams.get("part");
+  return q === "endpoint" || q === "models" ? q : "all";
+};
+
 // POST /api/providers/[id]/redetect - the endpoint page's "Re-detect": run the
-// same free-probe detection as "Add endpoint" on the saved URL with the first
-// active key, and answer with what would change. Nothing is saved here; the
-// page applies the changes the user accepts through the usual routes.
+// same free-probe detection as "Add endpoint", trying the active keys in turn
+// (each at its own URL if it has one) until one works, and answer with what
+// would change. Nothing is saved here; the page applies the changes the user
+// accepts through the usual routes.
 // [id] is the endpoint's node id. Streams progress as NDJSON when asked.
+// ?part=endpoint checks the API, URL and fixes without asking about models;
+// ?part=models reports only models (it still finds which APIs answer, to ask each).
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   if (!isCustomEndpoint(id)) return NextResponse.json({ ok: false, error: "Not a custom endpoint" }, { status: 400 });
@@ -32,34 +74,141 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const guard = await guardTarget(request, base);
   if (guard instanceof NextResponse) return guard;
 
+  const part = partOf(request);
   const conns = (await getProviderConnections({ provider: id })) as Connection[];
-  const conn = conns.find((c) => c.isActive !== false && !c.providerSpecificData?.ownBaseUrl) || null;
+  // Active keys with a credential, in priority order, the ones on the
+  // endpoint's own URL first. A key with its own URL (another account or region
+  // of the same API) is asked at that URL; the probe fetch checks every hop
+  // against the SSRF rules for remote callers, as it does the endpoint's URL.
+  // A key still flagged with its own URL after the endpoint moved to that URL
+  // is on the endpoint's URL.
+  const urlOf = (c: Connection) => (c.providerSpecificData?.ownBaseUrl ? normalizeUrl(c.providerSpecificData?.baseUrl) : base);
+  const active = conns.filter((c) => c.isActive !== false && c.apiKey);
+  const all: Candidate[] = active.flatMap((c): Candidate[] => {
+    const url = urlOf(c);
+    return url ? [{ apiKey: c.apiKey as string, url, own: url !== base }] : [];
+  });
+  // The endpoint half asks about the endpoint's URL: a key with its own URL
+  // can't speak for it, so those are only tried when no key uses that URL.
+  const pool = part === "endpoint" && all.some((c) => !c.own) ? all.filter((c) => !c.own) : all;
+  const candidates = [...pool.filter((c) => !c.own), ...pool.filter((c) => c.own)].slice(0, MAX_KEY_ATTEMPTS);
+  // Keys exist but none has a usable URL: say that, rather than probing with no
+  // key and blaming a key.
+  if (active.length && !candidates.length) return NextResponse.json({ ok: false, error: "None of the active keys has a valid URL of its own", steps: [] }, { status: 400 });
+  if (!candidates.length) candidates.push({ apiKey: "", url: base, own: false });
   const current = ((await getCustomModels()) as CustomModel[])
     .filter((m) => m.providerAlias === id && (m.kind || m.type || "llm") === "llm" && m.id)
     .map((m) => m.id as string);
-  const apiKey = conn?.apiKey || "";
   const rawFetch = makeProbeFetch(guard.remote);
-  // Probe with the endpoint's saved identity and auth style, as requests go out.
-  const fetchFn = savedSettingsFetch(rawFetch, node, apiKey);
+  const skipModels = part === "endpoint";
   return respond(request, "re-detecting endpoint", async (signal, send) => {
     const catalog = await getEndpointCatalog();
-    // As in the detect route: the client-identity retry is a second run whose
-    // request numbers restart at 1, so shift them past the first run's.
+    // As in the detect route: each extra run (the client-identity retry, and
+    // each fall-through to the next key) restarts its request numbers at 1, so
+    // shift them past every run before it.
     let maxN = 0, offset = 0, sentBase = 0, maxSent = 0;
+    const deadlineAt = Date.now() + DETECT_DEADLINE_MS;
+    const left = () => Math.max(0, deadlineAt - Date.now());
     const onProgress = (e: DetectProgress) => {
       const ev = { ...e } as DetectProgress & { n?: number; sent?: number };
       if (typeof ev.n === "number") { ev.n += offset; maxN = Math.max(maxN, ev.n); }
       if (typeof ev.sent === "number") { ev.sent += sentBase; maxSent = Math.max(maxSent, ev.sent); }
       send(ev);
     };
-    const first = await detectEndpoint({ url: base, apiKey, fetchFn, catalog, signal, onProgress });
-    // Still client-gated (no saved identity, or it stopped working): try the
-    // known clients, as Add endpoint does. Their headers replace the saved ones.
-    const result: DetectResult & { gate?: unknown } = await retryAsClient(first, {
-      url: base, apiKey, fetchFn: savedSettingsFetch(rawFetch, node, apiKey, { identity: false }), signal,
-      detect: (f) => { offset = maxN; sentBase = maxSent; return detectEndpoint({ url: base, apiKey, fetchFn: f, catalog, signal, onProgress }); },
-    });
-    return { ...redetectDiff(node, current, result, outdatedModels(current, catalog)), steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!conn, ...(result.gate ? { gate: result.gate } : {}) };
+    const runWith = async ({ apiKey: key, url }: Candidate, more: boolean): Promise<Run["result"]> => {
+      offset = maxN; sentBase = maxSent;
+      const runEnd = more ? Math.min(deadlineAt, Date.now() + MAX_RUN_MS) : deadlineAt;
+      const runLeft = () => Math.max(0, runEnd - Date.now());
+      // Probe with the endpoint's saved identity and auth style, as requests go out.
+      const first = await detectEndpoint({ url, apiKey: key, fetchFn: savedSettingsFetch(rawFetch, node), catalog, signal, onProgress, skipModels, deadlineMs: runLeft() });
+      // Still client-gated (no saved identity, or it stopped working): try the
+      // known clients, as Add endpoint does. Their headers replace the saved ones.
+      // The identity search stays inside the budget too.
+      return retryAsClient(first, {
+        url, apiKey: key, fetchFn: savedSettingsFetch(rawFetch, node, { identity: false }), signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, runLeft()))]),
+        detect: (f) => { offset = maxN; sentBase = maxSent; return detectEndpoint({ url, apiKey: key, fetchFn: f, catalog, signal, onProgress, skipModels, deadlineMs: runLeft() }); },
+      });
+    };
+    // The next key gets a try after a refusal, a rate limit, or an answer that
+    // said nothing about the key. After anything else (down, gated) only when
+    // this key had its own URL: a key on the endpoint's URL would just meet the
+    // same server, while another account's server may be fine.
+    const runs: Run[] = [];
+    let unstarted = 0; // keys left in line when the time ran out
+    for (const [i, candidate] of candidates.entries()) {
+      if (runs.length && !signal.aborted && left() < MIN_ATTEMPT_MS) { unstarted = candidates.length - i; break; }
+      if (runs.length && signal.aborted) break;
+      const result = await runWith(candidate, i < candidates.length - 1);
+      runs.push({ candidate, result });
+      if (worked(result) || (!keyRefused(result) && !rateLimited(result) && !unsure(result) && !listOnly(result) && !pageRefused(result) && !candidate.own)) break;
+    }
+    // A key that worked, else the first that answered without a verdict.
+    const atBase = (r: Run) => !r.candidate.own;
+    const win = runs.find((r) => worked(r.result)) || runs.find((r) => unsure(r.result)) || null;
+    // None worked: report the first key's verdict (the endpoint's own URL when
+    // a key uses it), as a failure even when its refusal came after the free
+    // probes passed, and say how many keys were tried. A run with no key keeps
+    // its result, a refusal reworded as needing a key: there is no key to blame.
+    const shown = win || runs[0];
+    if (shown.candidate.apiKey && listOnly(shown.result)) shown.result = { ...shown.result, error: "The model list refused the key, and no API answered" };
+    // Listed models with it, but every API refused it: the detector's own
+    // message ("no API found") is about the URL.
+    else if (shown.candidate.apiKey && !shown.result.ok && keyRefused(shown.result) && shown.result.failure !== "key") shown.result = { ...shown.result, error: "The key can list models, but every API refused it" };
+    // A later key on the endpoint's URL that met a failing server: that is
+    // about the endpoint, so it's named too (not a cut-off run's timeout).
+    const later = runs.find((r, i) => i > 0 && atBase(r) && !r.result.ok && !r.result.keyVerdict && !listOnly(r.result) && !pageRefused(r.result) && !cutOff(r.result));
+    // Keys whose run finished: one cut off by the shared time wasn't really tried.
+    const tried = runs.filter((r, i) => i === 0 || !cutOff(r.result));
+    const refused = keyRefused(shown.result);
+    const verdict = clause(shown.result.error) || (refused ? "The key was rejected"
+      : rateLimited(shown.result) ? "The endpoint kept rate-limiting the model checks. Try again in a minute"
+      : clause(shown.result.partialReason || undefined) || "No answer");
+    if (!shown.candidate.apiKey && !shown.result.ok && shown.result.failure === "key") {
+      const on = conns.some((c) => c.isActive !== false);
+      shown.result = { ...shown.result, error: on ? "It needs a key, and no switched-on key has one set" : conns.length ? "It needs a key, and none of its keys is switched on" : "It needs a key, and this endpoint has none" };
+    }
+    const settled = win || (tried.length === 1 && (!shown.result.ok || !shown.candidate.apiKey)) ? shown.result : {
+      ...shown.result, ok: false as const,
+      error: tried.length === 1 ? verdict
+        : tried.every((r) => keyRefused(r.result)) ? `None of the ${tried.length} keys it tried was accepted`
+        : `None of the ${tried.length} keys it tried worked. The first: ${verdict}${later ? `. A later one: ${clause(later.result.error)}` : ""}`,
+    };
+    // A lone failure at a key's own URL happened there, not at the endpoint's;
+    // and a key the shared time cut off wasn't really checked.
+    const atOwn = shown.candidate.own && tried.length === 1, cut = tried.length < runs.length;
+    const untried = unstarted ? `. ${unstarted === 1 ? "1 more key wasn't" : `${unstarted} more keys weren't`} tried: no time was left` : "";
+    const result = !settled.ok && settled.error && (atOwn || cut || untried)
+      ? { ...settled, error: `${clause(settled.error)}${atOwn ? " (at the key's own URL)" : ""}${cut ? ". Another key ran out of time before it was checked" : ""}${untried}` }
+      : settled;
+    // What a key on its own URL sees is that account's: redetectDiff keeps its
+    // URL, missing models, routes and auth style out of the endpoint's changes.
+    const via = shown.candidate.own;
+    // A key's own URL speaks for the endpoint's API and fixes only when every
+    // active key uses that same URL: the PUT writes them onto every key, and
+    // keys on other URLs (the endpoint's, or other accounts') may differ.
+    // Switched-off keys count: the apply writes onto them too.
+    const scoped = via && conns.some((c) => { const u = urlOf(c); return !!u && u !== shown.candidate.url; });
+    // Gateways can list models per key: a fallback key's shorter list isn't
+    // proof the first key's models are gone, so only the first key removes.
+    const removals = shown === runs[0];
+    const diff = redetectDiff(node, current, result, outdatedModels(current, catalog), part, { keyScoped: scoped, ownUrl: via, removals, checkedUrl: shown.candidate.url });
+    // The other keys tried, when one got through: a dead key still switched on
+    // is worth knowing about, and a win at a key's own URL after the endpoint's
+    // URL refused its keys mustn't read as "the URL wasn't asked".
+    // Runs that were only cut short did get through to the server.
+    const others = win ? runs.filter((r) => r !== win && !unsure(r.result) && !cutOff(r.result)) : [];
+    const baseTried = win ? runs.filter((r) => r !== win && !r.candidate.own).length : 0;
+    const failed = { ...(others.length ? { otherKeysFailed: others.length } : {}), ...(baseTried ? { baseKeysTried: baseTried } : {}) };
+    // Why the model checks stopped early, so "nothing changed" doesn't overclaim.
+    // A stop on "the key" is reworded: a key shown here wasn't refused (the
+    // refusals were about models), and with no key there is none to blame.
+    const reason = !result.partialReason ? null
+      : result.stopReason !== "auth" ? result.partialReason
+      : shown.candidate.apiKey ? "The endpoint refused the models it was asked about, so some weren't checked." : null;
+    const why = reason ? { partialReason: reason } : {};
+    // Its full list removed nothing because another key came first: say so.
+    const held = !removals && !via && result.ok && result.modelsSource === "models" && part !== "endpoint" ? { removalsHeld: true } : {};
+    return { ...diff, steps: result.steps, protocols: result.protocols || [], models: result.models || [], usedKey: !!shown.candidate.apiKey, ...failed, ...why, ...held, ...(via ? { viaKeyUrl: true } : {}), ...(scoped ? { keyScoped: true } : {}), ...(result.gate ? { gate: result.gate } : {}) };
   }, { ok: false, error: "Re-detect failed", steps: [] });
 }
 
@@ -102,7 +251,17 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     updates.apiType = body.apiType;
   }
   if (typeof body.modelsNote === "string") updates.modelsNote = body.modelsNote.slice(0, 200);
-  const { quirks, removed } = mergeQuirks(node, { quirks: ownRoutesOnly(body.quirks, finalProtocol(node, updates.apiType)) });
+  // Switching API without a route offer (Re-detect's endpoint half): models
+  // that rode the old API implicitly keep it, as explicit routes.
+  let offered = body.quirks;
+  const oldProto = savedProtocol({ type: node.type, apiType: node.apiType });
+  const hasRoutes = !!offered && typeof offered === "object" && "modelRoutes" in (offered as object);
+  if (updates.apiType !== undefined && finalProtocol(node, updates.apiType) !== oldProto && !hasRoutes) {
+    const saved = (node.modelRoutes || {}) as Record<string, string>;
+    const mine = ((await getCustomModels()) as CustomModel[]).filter((m) => m.providerAlias === id && (m.kind || m.type || "llm") === "llm" && m.id).map((m) => m.id as string);
+    offered = { ...(offered && typeof offered === "object" ? offered : {}), modelRoutes: Object.fromEntries(mine.map((m) => [m, saved[m] || oldProto])) };
+  }
+  const { quirks, removed } = mergeQuirks(node, { quirks: ownRoutesOnly(offered, finalProtocol(node, updates.apiType)) });
   Object.assign(updates, quirks);
   const updated = (await updateProviderNode(id, updates)) as unknown as Record<string, unknown> & { baseUrl?: string; apiType?: string; prefix?: string; name?: string };
 

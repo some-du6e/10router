@@ -14,6 +14,12 @@ function generateBillingHeader(payload) {
   return `x-anthropic-billing-header: cc_version=${CLAUDE_CLI_VERSION}.${buildHash}; cc_entrypoint=${CC_ENTRYPOINT}; cch=${cch};`;
 }
 
+// Drop a leading billing header line: its cch hash changes on every request.
+export function stripAnthropicBillingHeader(text) {
+  if (typeof text !== "string") return "";
+  return text.replace(/^x-anthropic-billing-header:[^\n]*(?:\r?\n)?/i, "");
+}
+
 // Derive a deterministic UUID-v4-shaped string from a seed (stable per account)
 function deriveUuid(seed) {
   const h = createHash("sha256").update(seed).digest("hex");

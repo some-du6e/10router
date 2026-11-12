@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { Button } from "@/shared/components";
+import LogoMark from "@/shared/components/LogoMark";
 import useThemeStore from "@/store/themeStore";
 import styles from "./login.module.css";
 
@@ -210,13 +211,7 @@ export default function LoginPage() {
       <div className={styles.content}>
         <div className={styles.brand}>
           <div className={styles.mark}>
-            <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
-              <path d="M16 12V6m-3 12-6 4m12-4 6 4m-9-4v8M12 14 7 10m13 4 5-4" />
-              <circle cx="16" cy="16" r="4" /><circle cx="16" cy="4" r="2" />
-              <circle cx="5" cy="9" r="2" /><circle cx="27" cy="9" r="2" />
-              <circle cx="5" cy="23" r="2" /><circle cx="27" cy="23" r="2" />
-              <circle cx="16" cy="28" r="2" />
-            </svg>
+            <LogoMark />
           </div>
           <span>10router</span>
         </div>
