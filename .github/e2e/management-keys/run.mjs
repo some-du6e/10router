@@ -129,7 +129,7 @@ await card.scrollIntoViewIfNeeded();
 await card.screenshot({ path: `${outDir}/management-keys-card.png` });
 
 await card.getByRole("button", { name: "Create Key" }).click();
-await page.getByPlaceholder("Snowflake top-up").fill("e2e from the UI");
+await page.getByPlaceholder("e.g. Key rotation script").fill("e2e from the UI");
 await page.getByRole("switch", { name: "Provider keys" }).click();
 await page.waitForTimeout(500); // the toggle's transition
 await page.screenshot({ path: `${outDir}/create-modal.png`, fullPage: false });
