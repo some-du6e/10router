@@ -1,51 +1,65 @@
-// Anthropic rejects a forced tool while thinking is on: "Thinking may not be
-// enabled when tool_choice forces tool use." Codex sends a reasoning effort on
-// every request, so a forced tool_choice plus that effort would 400 on every
-// thinking-capable Claude model. Thinking is kept and the choice becomes auto.
+// A forced tool_choice ("any"/"tool" on Claude, "required"/{type:"function"} on
+// Chat) that the Claude model behind the request would reject with a 400 is
+// sent as auto instead, so the request still runs:
+// - Opus/Sonnet 5.5 and Fable/Mythos 5.1 reject a forced tool whatever the
+//   thinking setting (capability forcedToolChoice: false);
+// - Claude 4.x rejects one while thinking is on ("Thinking may not be enabled
+//   when tool_choice forces tool use"; forcedToolChoiceWithThinking: false, and
+//   every claude-budget model).
+// Fable 5, Mythos 5, Opus 5, Sonnet 5 and Haiku 5.5 accept a forced tool, thinking
+// or not. Only Claude models are touched: other models on Claude-format or Chat
+// endpoints (GLM, Kimi, MiniMax, DeepSeek, ...) keep the choice as sent.
 import { getCapabilitiesForModel } from "../../providers/capabilities.js";
 
 const CLAUDE_FORCED = new Set(["any", "tool"]);
-const CLAUDE_THINKING_ON = new Set(["enabled", "adaptive"]);
-const THINKING_OFF = "disabled";
+const THINKING_ON = new Set(["enabled", "adaptive"]);
 const EFFORT_OFF = "none";
+const AUTO = "auto";
 
-// A Claude model that always thinks (permanently adaptive): it takes no
-// `thinking` field, so the body alone doesn't show that thinking is on.
-function alwaysThinks(provider, model) {
+const RULE = { NONE: 0, ALWAYS: 1, WITH_THINKING: 2 };
+
+function forcedToolRule(provider, model) {
   const caps = getCapabilitiesForModel(provider, model);
-  return !!caps?.reasoning && !!caps.thinkingFormat?.startsWith("claude") && caps.thinkingCanDisable === false;
+  if (!caps?.thinkingFormat?.startsWith("claude")) return RULE.NONE;
+  if (caps.forcedToolChoice === false) return RULE.ALWAYS;
+  if (caps.forcedToolChoiceWithThinking === false || caps.thinkingFormat === "claude-budget") return RULE.WITH_THINKING;
+  return RULE.NONE;
 }
 
-function isClaudeModel(provider, model) {
-  return !!getCapabilitiesForModel(provider, model)?.thinkingFormat?.startsWith("claude");
-}
-
-// Claude Messages body, after thinking is final.
+// Claude Messages body. Run it once thinking is final: at the end of
+// prepareClaudeRequest, and on the outgoing body in DefaultExecutor.finalizeBody.
 export function relaxForcedToolChoiceForThinking(body, provider = null) {
   if (!body || typeof body !== "object") return body;
   const choice = body.tool_choice;
   if (!CLAUDE_FORCED.has(choice?.type)) return body;
-  const thinking = CLAUDE_THINKING_ON.has(body.thinking?.type)
-    || (body.thinking?.type !== THINKING_OFF && alwaysThinks(provider, body.model));
-  if (!thinking) return body;
+  const rule = forcedToolRule(provider, body.model);
+  const reject = rule === RULE.ALWAYS || (rule === RULE.WITH_THINKING && THINKING_ON.has(body.thinking?.type));
+  if (!reject) return body;
   body.tool_choice = {
-    type: "auto",
+    type: AUTO,
     ...(choice.disable_parallel_tool_use !== undefined ? { disable_parallel_tool_use: choice.disable_parallel_tool_use } : {}),
   };
   return body;
 }
 
-// Chat Completions body for a Claude model behind a Chat endpoint: the gateway
-// turns the effort into Claude thinking and gets the same rejection.
-export function relaxForcedChatToolChoiceForClaude(body, provider, model) {
+// Chat Completions body for a Claude model behind a Chat endpoint, whose gateway
+// turns a reasoning effort into Claude thinking. With `thinkingIsFinal` false
+// (translateRequest, before an executor may strip reasoning fields) only the
+// thinking-independent rule applies; DefaultExecutor.finalizeBody passes true
+// on the outgoing body.
+export function relaxForcedChatToolChoiceForClaude(body, provider, model, thinkingIsFinal = true) {
   if (!body || typeof body !== "object") return body;
   const choice = body.tool_choice;
   const forced = choice === "required" || (choice && typeof choice === "object" && choice.type === "function");
-  if (!forced || !isClaudeModel(provider, model)) return body;
-  const effort = body.reasoning_effort ?? body.reasoning?.effort;
-  const thinking = (typeof effort === "string" && effort !== EFFORT_OFF)
-    || CLAUDE_THINKING_ON.has(body.thinking?.type)
-    || alwaysThinks(provider, model);
-  if (thinking) body.tool_choice = "auto";
+  if (!forced) return body;
+  const rule = forcedToolRule(provider, model || body.model);
+  if (rule === RULE.NONE) return body;
+  if (rule === RULE.WITH_THINKING) {
+    if (!thinkingIsFinal) return body;
+    const effort = body.reasoning_effort ?? body.reasoning?.effort;
+    const thinking = (typeof effort === "string" && effort !== EFFORT_OFF) || THINKING_ON.has(body.thinking?.type);
+    if (!thinking) return body;
+  }
+  body.tool_choice = AUTO;
   return body;
 }

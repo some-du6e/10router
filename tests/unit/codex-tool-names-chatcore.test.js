@@ -18,10 +18,12 @@ vi.mock("@/lib/usageDb.js", () => ({
 
 const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
 
-// Thinks on every request (its thinking can't be turned off).
+// Rejects a forced tool_choice whatever the thinking setting.
 const MODEL = "claude-opus-5-5";
-// Thinks only when asked to.
+// Accepts a forced tool_choice, thinking or not.
 const SWITCHABLE_MODEL = "claude-opus-5";
+// Rejects a forced tool_choice only while thinking is on.
+const CLAUDE_4_MODEL = "claude-sonnet-4-6";
 const PATCH = "*** Begin Patch\n*** End Patch\n";
 const schema = { type: "object", properties: {} };
 const fn = (name) => ({ type: "function", name, description: name, parameters: schema });
@@ -151,8 +153,7 @@ describe.each(ROUTES)("Codex through chatCore to a Claude model ($label)", (rout
     expect(items).toEqual([expect.objectContaining({ type: "custom_tool_call", name: "apply_patch", input: PATCH })]);
   });
 
-  // Forcing a tool only works with thinking off, so these use a Claude model
-  // whose thinking can be off, and send no reasoning effort.
+  // The plain forcing tests use Opus 5, which accepts a forced tool.
   const forced = (name) => (route.upstream === "chat" ? { type: "function", function: { name } } : { type: "tool", name });
   const auto = route.upstream === "chat" ? "auto" : { type: "auto" };
 
@@ -179,9 +180,19 @@ describe.each(ROUTES)("Codex through chatCore to a Claude model ($label)", (rout
     expect(sentBody().tool_choice).toEqual(forced("apply_patch"));
   });
 
-  it("lets the model choose when Codex forces a tool and sends a reasoning effort", async () => {
+  it("keeps the forced tool on Opus 5 when Codex sends a reasoning effort", async () => {
     fetchMock.mockResolvedValueOnce(upstreamCall(route, "mcp__cua_repl__js", "{}"));
     await runCodex(route, { model: SWITCHABLE_MODEL, tool_choice: { type: "function", name: "js", namespace: "mcp__cua_repl" }, reasoning: { effort: "high" } });
+    const sent = sentBody();
+
+    if (route.upstream === "chat") expect(sent.reasoning_effort).toBe("high");
+    else expect(sent.thinking?.type).toBe("adaptive");
+    expect(sent.tool_choice).toEqual(forced("mcp__cua_repl__js"));
+  });
+
+  it("lets a Claude 4.x model choose when Codex forces a tool and sends a reasoning effort", async () => {
+    fetchMock.mockResolvedValueOnce(upstreamCall(route, "exec_command", "{}"));
+    await runCodex(route, { model: CLAUDE_4_MODEL, tool_choice: { type: "function", name: "exec_command" }, reasoning: { effort: "high" } });
     const sent = sentBody();
 
     if (route.upstream === "chat") expect(sent.reasoning_effort).toBe("high");
@@ -189,7 +200,14 @@ describe.each(ROUTES)("Codex through chatCore to a Claude model ($label)", (rout
     expect(sent.tool_choice).toEqual(auto);
   });
 
-  it("lets the model choose when Codex forces a tool on a model that always thinks", async () => {
+  it("keeps the forced tool on a Claude 4.x model without a reasoning effort", async () => {
+    fetchMock.mockResolvedValueOnce(upstreamCall(route, "exec_command", "{}"));
+    await runCodex(route, { model: CLAUDE_4_MODEL, tool_choice: { type: "function", name: "exec_command" } });
+
+    expect(sentBody().tool_choice).toEqual(forced("exec_command"));
+  });
+
+  it("lets Opus 5.5 choose when Codex forces a tool, since it rejects forced tools", async () => {
     fetchMock.mockResolvedValueOnce(upstreamCall(route, "apply_patch", JSON.stringify({ input: PATCH })));
     await runCodex(route, { model: MODEL, tool_choice: { type: "custom", name: "apply_patch" } });
 

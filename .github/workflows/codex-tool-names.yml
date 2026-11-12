@@ -51,6 +51,8 @@ jobs:
           open-sse/translator/formats/claude.js
           open-sse/translator/concerns/toolCall.js
           open-sse/translator/concerns/toolChoice.js
+          open-sse/translator/concerns/finishReason.js
+          open-sse/providers/capabilities.js
           open-sse/translator/index.ts
           open-sse/translator/schema/blocks.js
           open-sse/translator/schema/finishReasons.js

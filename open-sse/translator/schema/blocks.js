@@ -41,6 +41,13 @@ export const RESPONSES_ITEM = {
   NAMESPACE: "namespace",
 };
 
+// OpenAI Responses `status` values, on a response and on its output items.
+export const RESPONSES_STATUS = {
+  IN_PROGRESS: "in_progress",
+  COMPLETED: "completed",
+  INCOMPLETE: "incomplete",
+};
+
 // Tool declaration `type` values for client-defined tools.
 export const TOOL_TYPE = {
   FUNCTION: OPENAI_BLOCK.FUNCTION,

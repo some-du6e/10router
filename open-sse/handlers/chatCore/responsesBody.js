@@ -1,19 +1,10 @@
 // Chat Completions JSON body → OpenAI Responses body, for a Responses client
 // (Codex) whose non-streaming request went to a Chat, Claude, Gemini or Ollama
 // upstream. The non-streaming and forced-SSE-to-JSON paths both use it.
-import {
-  ROLE, RESPONSES_ITEM, OPENAI_FINISH, CLAUDE_STOP, RESPONSES_STATUS, RESPONSES_INCOMPLETE_REASON,
-} from "../../translator/schema/index.js";
+import { ROLE, RESPONSES_ITEM, RESPONSES_STATUS } from "../../translator/schema/index.js";
 import { customToolInput } from "../../translator/concerns/toolCall.js";
 import { clientToolFields } from "../../translator/concerns/toolNamespace.js";
-
-// Finish reasons that cut the reply short, and the Responses reason for each.
-// Anything else (stop, tool_calls, end_turn, ...) is a completed reply.
-const INCOMPLETE_REASON = new Map([
-  [OPENAI_FINISH.LENGTH, RESPONSES_INCOMPLETE_REASON.MAX_OUTPUT_TOKENS],
-  [CLAUDE_STOP.MAX_TOKENS, RESPONSES_INCOMPLETE_REASON.MAX_OUTPUT_TOKENS],
-  [OPENAI_FINISH.CONTENT_FILTER, RESPONSES_INCOMPLETE_REASON.CONTENT_FILTER],
-]);
+import { toResponsesIncompleteReason } from "../../translator/concerns/finishReason.js";
 
 /**
  * @param {object} responseBody Chat Completions body (`choices[0].message`)
@@ -61,7 +52,7 @@ export function chatCompletionToResponses(responseBody, customToolNames = null, 
     });
   }
 
-  const incompleteReason = INCOMPLETE_REASON.get(choice.finish_reason);
+  const incompleteReason = toResponsesIncompleteReason(choice.finish_reason);
   const usage = responseBody.usage || {};
   return {
     id: `resp_${responseBody.id || ""}`.replace(/^resp_chatcmpl-/, "resp_"),

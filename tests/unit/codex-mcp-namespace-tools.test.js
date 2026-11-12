@@ -550,44 +550,115 @@ describe("a forced tool_choice that names no declared tool", () => {
   });
 });
 
-describe("a forced tool with thinking on, for a Claude model", () => {
+describe("a forced tool_choice on a Claude model", () => {
   const PROVIDER = "anthropic-compatible-acme";
-  const claudeBody = (thinking, model = "claude-opus-5") => ({
-    model, ...(thinking ? { thinking } : {}), tool_choice: { type: "tool", name: "shell", disable_parallel_tool_use: true },
+  const CHAT_PROVIDER = "openai-compatible-chat-acme";
+  const ADAPTIVE = { type: "adaptive" };
+  const ENABLED = { type: "enabled", budget_tokens: 2048 };
+  const claudeBody = (model, thinking, choice = { type: "tool", name: "shell", disable_parallel_tool_use: true }) => ({
+    model, ...(thinking ? { thinking } : {}), tool_choice: choice,
+  });
+  const claudeChoice = (model, thinking, choice) => relaxForcedToolChoiceForThinking(claudeBody(model, thinking, choice), PROVIDER).tool_choice;
+  const chatChoice = (model, extra = {}, choice = { type: "function", function: { name: "shell" } }, final = true) =>
+    relaxForcedChatToolChoiceForClaude({ model, tool_choice: choice, ...extra }, CHAT_PROVIDER, model, final).tool_choice;
+
+  // These reject "any"/"tool" whatever the thinking setting.
+  it.each(["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-mythos-5-1", "claude-opus-5.5", "claude-sonnet-5.5", "claude-fable-5.1"])(
+    "%s always gets auto", (model) => {
+      expect(claudeChoice(model, null)).toEqual({ type: "auto", disable_parallel_tool_use: true });
+      expect(claudeChoice(model, ADAPTIVE).type).toBe("auto");
+      expect(claudeChoice(model, null, { type: "any" })).toEqual({ type: "auto" });
+      expect(chatChoice(model)).toBe("auto");
+      expect(chatChoice(model, {}, "required")).toBe("auto");
+    },
+  );
+
+  // These think by default (or on request) and still accept a forced tool.
+  it.each(["claude-opus-5", "claude-fable-5", "claude-mythos-5", "claude-sonnet-5", "claude-haiku-5-5"])(
+    "%s keeps the forced tool with thinking on", (model) => {
+      expect(claudeChoice(model, ADAPTIVE).type).toBe("tool");
+      expect(claudeChoice(model, null, { type: "any" }).type).toBe("any");
+      expect(chatChoice(model, { reasoning_effort: "high" })).toEqual({ type: "function", function: { name: "shell" } });
+      expect(chatChoice(model, { reasoning_effort: "high" }, "required")).toBe("required");
+    },
+  );
+
+  // Claude 4.x rejects a forced tool only while thinking is on.
+  it.each(["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-8"])("%s gets auto only with thinking on", (model) => {
+    expect(claudeChoice(model, null).type).toBe("tool");
+    expect(claudeChoice(model, { type: "disabled" }).type).toBe("tool");
+    expect(claudeChoice(model, ENABLED).type).toBe("auto");
+    expect(claudeChoice(model, ENABLED, { type: "any" })).toEqual({ type: "auto" });
+    expect(chatChoice(model)).toEqual({ type: "function", function: { name: "shell" } });
+    expect(chatChoice(model, { reasoning_effort: "none" })).toEqual({ type: "function", function: { name: "shell" } });
+    expect(chatChoice(model, { reasoning_effort: "high" })).toBe("auto");
+    expect(chatChoice(model, { reasoning_effort: "high" }, "required")).toBe("auto");
+    // Before an executor has had its say, a thinking-dependent choice is left alone.
+    expect(chatChoice(model, { reasoning_effort: "high" }, "required", false)).toBe("required");
   });
 
-  it.each([
-    ["enabled", { type: "enabled", budget_tokens: 2048 }],
-    ["adaptive", { type: "adaptive" }],
-  ])("becomes auto when thinking is %s", (_label, thinking) => {
-    expect(relaxForcedToolChoiceForThinking(claudeBody(thinking), PROVIDER).tool_choice)
-      .toEqual({ type: "auto", disable_parallel_tool_use: true });
+  it.each(["glm-5.2", "kimi-k3", "deepseek-v4", "gpt-6-sol"])("leaves %s alone", (model) => {
+    expect(claudeChoice(model, ADAPTIVE).type).toBe("tool");
+    expect(chatChoice(model, { reasoning_effort: "high" }, "required")).toBe("required");
   });
 
-  it("becomes auto on a model that always thinks", () => {
-    expect(relaxForcedToolChoiceForThinking(claudeBody(null, "claude-opus-5-5"), PROVIDER).tool_choice.type).toBe("auto");
-  });
-
-  it("stays forced when thinking is off", () => {
-    expect(relaxForcedToolChoiceForThinking(claudeBody(null), PROVIDER).tool_choice.type).toBe("tool");
-    expect(relaxForcedToolChoiceForThinking(claudeBody({ type: "disabled" }), PROVIDER).tool_choice.type).toBe("tool");
-  });
-
-  it("is applied to the body the executor sends", async () => {
+  it("is applied to the body the executor sends, on both wires", async () => {
     const { DefaultExecutor } = await import("../../open-sse/executors/default.js");
-    const sent = new DefaultExecutor(PROVIDER).finalizeBody(claudeBody({ type: "adaptive" }), {}, { apiKey: "key-a" });
+    const claudeSent = new DefaultExecutor(PROVIDER).finalizeBody(claudeBody("claude-opus-5-5", null), {}, { apiKey: "key-a" });
+    const chatSent = new DefaultExecutor(CHAT_PROVIDER).finalizeBody(
+      { model: "claude-sonnet-4-6", reasoning_effort: "high", tool_choice: "required" }, {}, { apiKey: "key-a", providerSpecificData: { baseUrl: "https://acme.example/v1" } },
+    );
 
-    expect(sent.tool_choice.type).toBe("auto");
+    expect(claudeSent.tool_choice.type).toBe("auto");
+    expect(chatSent.tool_choice).toBe("auto");
   });
 
-  it("becomes auto on a Chat endpoint when a reasoning effort goes with it", () => {
-    const chat = (extra) => ({ model: "claude-opus-5", tool_choice: { type: "function", function: { name: "shell" } }, ...extra });
-    const provider = "openai-compatible-chat-acme";
+  it("keeps the forced tool on a Claude-backed kimchi model whose reasoning the executor strips", async () => {
+    const { KimchiExecutor } = await import("../../open-sse/executors/kimchi.js");
+    const executor = new KimchiExecutor();
+    const credentials = { apiKey: "key-a" };
+    const model = "claude-sonnet-4-6";
+    const chat = translateRequest(FORMATS.OPENAI, FORMATS.OPENAI, model, {
+      model, stream: true, reasoning_effort: "high",
+      messages: [{ role: "user", content: "run it" }],
+      tools: [{ type: "function", function: { name: "shell", parameters: { type: "object", properties: {} } } }],
+      tool_choice: { type: "function", function: { name: "shell" } },
+    }, true, credentials, "kimchi", null, [], null, null);
+    expect(chat.tool_choice).toEqual({ type: "function", function: { name: "shell" } });
 
-    expect(relaxForcedChatToolChoiceForClaude(chat({ reasoning_effort: "high" }), provider, "claude-opus-5").tool_choice).toBe("auto");
-    expect(relaxForcedChatToolChoiceForClaude(chat({}), provider, "claude-opus-5").tool_choice).toEqual({ type: "function", function: { name: "shell" } });
-    expect(relaxForcedChatToolChoiceForClaude(chat({ reasoning_effort: "none" }), provider, "claude-opus-5").tool_choice.type).toBe("function");
-    // Not a Claude model: left alone.
-    expect(relaxForcedChatToolChoiceForClaude({ ...chat({ reasoning_effort: "high" }), model: "gpt-6-sol" }, provider, "gpt-6-sol").tool_choice.type).toBe("function");
+    const sent = executor.finalizeBody(executor.transformRequest(model, chat, true, credentials), {}, credentials);
+    expect(sent.reasoning_effort).toBeUndefined();
+    expect(sent.tool_choice).toEqual({ type: "function", function: { name: "shell" } });
+  });
+
+  describe("through translateRequest to a Claude body, with no executor", () => {
+    const toClaude = (model, extra) => translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, model, {
+      model, stream: true,
+      messages: [{ role: "user", content: "run it" }],
+      tools: [{ type: "function", function: { name: "shell", parameters: { type: "object", properties: {} } } }],
+      ...extra,
+    }, true, { apiKey: "key-a" }, PROVIDER, null, [], null, null);
+
+    it("sends auto for a model that rejects a forced tool", () => {
+      expect(toClaude("claude-opus-5-5", { tool_choice: { type: "function", function: { name: "shell" } } }).tool_choice).toEqual({ type: "auto" });
+      expect(toClaude("claude-sonnet-5-5", { tool_choice: "required" }).tool_choice).toEqual({ type: "auto" });
+    });
+
+    it("keeps the forced tool on Opus 5 with a reasoning effort", () => {
+      const out = toClaude("claude-opus-5", { tool_choice: { type: "function", function: { name: "shell" } }, reasoning_effort: "high" });
+
+      expect(out.thinking?.type).toBe("adaptive");
+      expect(out.tool_choice).toEqual({ type: "tool", name: "shell" });
+    });
+
+    it("sends auto on Haiku 4.5 only when a reasoning effort turns thinking on", () => {
+      const withThinking = toClaude("claude-haiku-4-5", { tool_choice: "required", reasoning_effort: "high" });
+      const without = toClaude("claude-haiku-4-5", { tool_choice: "required" });
+
+      expect(withThinking.thinking?.type).toBe("enabled");
+      expect(withThinking.tool_choice).toEqual({ type: "auto" });
+      expect(without.thinking).toBeUndefined();
+      expect(without.tool_choice).toEqual({ type: "any" });
+    });
   });
 });

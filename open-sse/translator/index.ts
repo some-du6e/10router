@@ -176,7 +176,8 @@ export function translateRequest(
     result = filterToOpenAIFormat(result, {
       preserveCacheControl: !!providerQuirks(provider)?.preserveCacheControl,
     });
-    relaxForcedChatToolChoiceForClaude(result, provider, model);
+    // Thinking-dependent cases wait for DefaultExecutor.finalizeBody: an executor may still strip reasoning.
+    relaxForcedChatToolChoiceForClaude(result, provider, model, false);
   }
 
   // Final step: prepare request for Claude format endpoints

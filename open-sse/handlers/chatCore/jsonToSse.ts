@@ -88,8 +88,8 @@ function responsesEvents(body: Json): string {
     }
     out.push(ev({ type: "response.output_item.done", output_index, item }));
   });
-  // A reply cut short (max_output_tokens, content filter) ends the way a live
-  // stream does: response.incomplete, never response.completed.
+  // A reply cut short (max_output_tokens, content filter) ends with
+  // response.incomplete, the Responses API's terminal event for it.
   const incomplete = body.status === RESPONSES_STATUS.INCOMPLETE;
   out.push(ev({
     type: incomplete ? "response.incomplete" : "response.completed",
