@@ -69,8 +69,9 @@ function responsesEvents(body: Json): string {
     ev({ type: "response.in_progress", response: { ...body, status: RESPONSES_STATUS.IN_PROGRESS, output: [] } }),
   ];
   // Every item event names its item. A body item without an id (from an
-  // upstream's own Responses JSON) gets one as the live stream would name it,
-  // and the closing response carries the same ids.
+  // upstream's own Responses JSON) gets one in the live stream's format, keyed
+  // on its output index (a choice index would give two messages one id), and
+  // the closing response carries the same ids.
   const items: Json[] = (body.output || []).map((bodyItem: Json, output_index: number) => withItemId(bodyItem, body.id, output_index));
   items.forEach((item: Json, output_index: number) => {
     // Each item opens empty and fills through deltas, so a client that
