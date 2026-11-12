@@ -14,6 +14,8 @@ const { translateNonStreamingResponse } = await import("../../open-sse/handlers/
 const { handleForcedSSEToJson } = await import("../../open-sse/handlers/chatCore/sseToJsonHandler.js");
 const { takeToolMetadata } = await import("../../open-sse/translator/concerns/toolNamespace.js");
 const { openaiResponsesToOpenAIRequest, openaiToOpenAIResponsesRequest } = await import("../../open-sse/translator/request/openai-responses.js");
+const { jsonReplyToSse } = await import("../../open-sse/handlers/chatCore/jsonToSse.js");
+const { relaxForcedToolChoiceForThinking, relaxForcedChatToolChoiceForClaude } = await import("../../open-sse/translator/concerns/toolChoice.js");
 
 const MODEL = "claude-opus-5-5";
 const WIRE_NAME = /^[a-zA-Z0-9_-]{1,64}$/;
@@ -489,6 +491,17 @@ describe("non-streaming reply status for a Codex request", () => {
     expect(out.status).toBe("completed");
   });
 
+  it("replays an incomplete Responses body to a streaming client as response.incomplete", () => {
+    const req = translate(ROUTES[0], codexRequest({ stream: false }));
+    const { out } = nonStreamCall(ROUTES[0], req, "exec_command", "{}", "length");
+    const events = jsonReplyToSse(out, FORMATS.OPENAI_RESPONSES).split("\n\n").filter(Boolean)
+      .map((block) => block.split("\n").find((l) => l.startsWith("event: ")).slice(7));
+
+    expect(events.at(-1)).toBe("response.incomplete");
+    expect(events).not.toContain("response.completed");
+    expect(jsonReplyToSse({ ...out, status: "completed" }, FORMATS.OPENAI_RESPONSES)).toContain("event: response.completed");
+  });
+
   it("turns a Gemini reply into a Responses body with the client's tool name", () => {
     const req = translate({ target: FORMATS.GEMINI, provider: "gemini" }, codexRequest({ stream: false }));
     const { customToolNames, toolNamespaces } = takeToolMetadata(req);
@@ -505,5 +518,76 @@ describe("non-streaming reply status for a Codex request", () => {
     expect(out.output).toEqual([expect.objectContaining({
       type: "function_call", name: "js", namespace: "mcp__cua_repl", arguments: "{\"code\":\"1\"}",
     })]);
+  });
+});
+
+describe("a forced tool_choice that names no declared tool", () => {
+  const choiceFor = (choice, tools = codexTools()) =>
+    openaiResponsesToOpenAIRequest(MODEL, { ...codexRequest(), tools, tool_choice: choice }, true, null).tool_choice;
+
+  it.each([
+    ["a bare name only declared qualified", { type: "function", name: "js" }],
+    ["a hosted tool", { type: "function", name: "web_search" }],
+    ["a namespace that doesn't have it", { type: "function", name: "js", namespace: "mcp__other" }],
+    ["an unknown custom tool", { type: "custom", name: "old_patch" }],
+  ])("falls back to auto for %s", (_label, choice) => {
+    expect(choiceFor(choice)).toBe("auto");
+  });
+
+  it("falls back to auto for a deferred tool", () => {
+    const tools = [fn("shell"), { ...fn("later"), defer_loading: true }];
+
+    expect(choiceFor({ type: "function", name: "later" }, tools)).toBe("auto");
+  });
+
+  it("falls back to auto for a blank tool", () => {
+    expect(choiceFor({ type: "function", name: " " }, [fn("shell"), fn(" ")])).toBe("auto");
+  });
+
+  it("still forces a declared tool", () => {
+    expect(choiceFor({ type: "function", name: "js_add_node_module_dir", namespace: "mcp__node_repl" }))
+      .toEqual({ type: "function", function: { name: "js_add_node_module_dir" } });
+  });
+});
+
+describe("a forced tool with thinking on, for a Claude model", () => {
+  const PROVIDER = "anthropic-compatible-acme";
+  const claudeBody = (thinking, model = "claude-opus-5") => ({
+    model, ...(thinking ? { thinking } : {}), tool_choice: { type: "tool", name: "shell", disable_parallel_tool_use: true },
+  });
+
+  it.each([
+    ["enabled", { type: "enabled", budget_tokens: 2048 }],
+    ["adaptive", { type: "adaptive" }],
+  ])("becomes auto when thinking is %s", (_label, thinking) => {
+    expect(relaxForcedToolChoiceForThinking(claudeBody(thinking), PROVIDER).tool_choice)
+      .toEqual({ type: "auto", disable_parallel_tool_use: true });
+  });
+
+  it("becomes auto on a model that always thinks", () => {
+    expect(relaxForcedToolChoiceForThinking(claudeBody(null, "claude-opus-5-5"), PROVIDER).tool_choice.type).toBe("auto");
+  });
+
+  it("stays forced when thinking is off", () => {
+    expect(relaxForcedToolChoiceForThinking(claudeBody(null), PROVIDER).tool_choice.type).toBe("tool");
+    expect(relaxForcedToolChoiceForThinking(claudeBody({ type: "disabled" }), PROVIDER).tool_choice.type).toBe("tool");
+  });
+
+  it("is applied to the body the executor sends", async () => {
+    const { DefaultExecutor } = await import("../../open-sse/executors/default.js");
+    const sent = new DefaultExecutor(PROVIDER).finalizeBody(claudeBody({ type: "adaptive" }), {}, { apiKey: "key-a" });
+
+    expect(sent.tool_choice.type).toBe("auto");
+  });
+
+  it("becomes auto on a Chat endpoint when a reasoning effort goes with it", () => {
+    const chat = (extra) => ({ model: "claude-opus-5", tool_choice: { type: "function", function: { name: "shell" } }, ...extra });
+    const provider = "openai-compatible-chat-acme";
+
+    expect(relaxForcedChatToolChoiceForClaude(chat({ reasoning_effort: "high" }), provider, "claude-opus-5").tool_choice).toBe("auto");
+    expect(relaxForcedChatToolChoiceForClaude(chat({}), provider, "claude-opus-5").tool_choice).toEqual({ type: "function", function: { name: "shell" } });
+    expect(relaxForcedChatToolChoiceForClaude(chat({ reasoning_effort: "none" }), provider, "claude-opus-5").tool_choice.type).toBe("function");
+    // Not a Claude model: left alone.
+    expect(relaxForcedChatToolChoiceForClaude({ ...chat({ reasoning_effort: "high" }), model: "gpt-6-sol" }, provider, "gpt-6-sol").tool_choice.type).toBe("function");
   });
 });

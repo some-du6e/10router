@@ -243,7 +243,7 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
     const wire = wireByRef.get(toolRefKey(namespace, name)) ?? name;
     if (!declared.has(wire)) customToolNames.add(wire);
   }
-  if (result.tool_choice !== undefined) result.tool_choice = wireToolChoice(result.tool_choice, wireByRef);
+  if (result.tool_choice !== undefined) result.tool_choice = wireToolChoice(result.tool_choice, wireByRef, declared);
   if (customToolNames.size > 0) result._customToolNames = [...customToolNames];
   if (toolNamespaces.size > 0) result._toolNamespaces = Object.fromEntries(toolNamespaces);
 
@@ -372,14 +372,18 @@ function renameHistoryCalls(messages, byRef) {
 
 // Responses forces a tool with `{ type: "function" | "custom", name, namespace? }`;
 // Chat (and the Claude translator after it) take `{ type: "function", function: { name } }`,
-// naming the tool as it is declared upstream.
-function wireToolChoice(choice, byRef) {
+// naming the tool as it is declared upstream. A forced tool that isn't declared
+// (dropped as deferred, hosted or nameless, or a bare name only declared
+// qualified) becomes "auto", as in the codex executor: upstreams 400 on it.
+function wireToolChoice(choice, byRef, declared) {
   const isForced = (choice?.type === TOOL_TYPE.FUNCTION || choice?.type === TOOL_TYPE.CUSTOM)
     && typeof choice.name === "string";
   if (!isForced) return choice;
   const name = byRef.get(toolRefKey(choice.namespace, choice.name)) ?? choice.name;
-  return { type: OPENAI_BLOCK.FUNCTION, function: { name } };
+  return declared.has(name) ? { type: OPENAI_BLOCK.FUNCTION, function: { name } } : TOOL_CHOICE_AUTO;
 }
+
+const TOOL_CHOICE_AUTO = "auto";
 
 /**
  * Ensure object schema always has properties field (required by Codex Responses API)

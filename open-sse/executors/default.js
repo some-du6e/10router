@@ -7,6 +7,7 @@ import { buildClineHeaders } from "../shared/clineAuth.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
+import { relaxForcedToolChoiceForThinking } from "../translator/concerns/toolChoice.js";
 import {
   dropFirstPartyBetas, dropFirstPartyFieldsWithoutBeta, filterBetaHeaders, isAnthropicApiUrl, parseRejectedBetas, sentBetas, stripBetaBodyFields, splitBetas,
   BETA_HEADER_KEYS,
@@ -136,7 +137,9 @@ export class DefaultExecutor extends BaseExecutor {
   // beta is unverified; the claude and anthropic providers' fixed beta lists
   // lack it, so they never send it. headers = null (unknown) drops it.
   finalizeBody(body, headers, credentials) {
-    return this.targetFormat(credentials) === "claude" ? dropFirstPartyFieldsWithoutBeta(body, headers) : body;
+    if (this.targetFormat(credentials) !== "claude") return body;
+    // Last look at the outgoing body: whatever set thinking, a forced tool can't go with it.
+    return relaxForcedToolChoiceForThinking(dropFirstPartyFieldsWithoutBeta(body, headers), this.provider);
   }
 
   // Fallback json_schema → json_object for openai-compatible providers without native Structured Output.

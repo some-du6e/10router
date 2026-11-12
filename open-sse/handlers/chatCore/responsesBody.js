@@ -1,18 +1,18 @@
 // Chat Completions JSON body → OpenAI Responses body, for a Responses client
 // (Codex) whose non-streaming request went to a Chat, Claude, Gemini or Ollama
 // upstream. The non-streaming and forced-SSE-to-JSON paths both use it.
-import { ROLE, RESPONSES_ITEM, OPENAI_FINISH, CLAUDE_STOP } from "../../translator/schema/index.js";
+import {
+  ROLE, RESPONSES_ITEM, OPENAI_FINISH, CLAUDE_STOP, RESPONSES_STATUS, RESPONSES_INCOMPLETE_REASON,
+} from "../../translator/schema/index.js";
 import { customToolInput } from "../../translator/concerns/toolCall.js";
 import { clientToolFields } from "../../translator/concerns/toolNamespace.js";
-
-const RESPONSE_STATUS = { COMPLETED: "completed", INCOMPLETE: "incomplete" };
 
 // Finish reasons that cut the reply short, and the Responses reason for each.
 // Anything else (stop, tool_calls, end_turn, ...) is a completed reply.
 const INCOMPLETE_REASON = new Map([
-  [OPENAI_FINISH.LENGTH, "max_output_tokens"],
-  [CLAUDE_STOP.MAX_TOKENS, "max_output_tokens"],
-  [OPENAI_FINISH.CONTENT_FILTER, "content_filter"],
+  [OPENAI_FINISH.LENGTH, RESPONSES_INCOMPLETE_REASON.MAX_OUTPUT_TOKENS],
+  [CLAUDE_STOP.MAX_TOKENS, RESPONSES_INCOMPLETE_REASON.MAX_OUTPUT_TOKENS],
+  [OPENAI_FINISH.CONTENT_FILTER, RESPONSES_INCOMPLETE_REASON.CONTENT_FILTER],
 ]);
 
 /**
@@ -68,7 +68,7 @@ export function chatCompletionToResponses(responseBody, customToolNames = null, 
     object: "response",
     created_at: responseBody.created || Math.floor(Date.now() / 1000),
     model: responseBody.model || "unknown",
-    status: incompleteReason ? RESPONSE_STATUS.INCOMPLETE : RESPONSE_STATUS.COMPLETED,
+    status: incompleteReason ? RESPONSES_STATUS.INCOMPLETE : RESPONSES_STATUS.COMPLETED,
     ...(incompleteReason ? { incomplete_details: { reason: incompleteReason } } : {}),
     background: false,
     error: null,

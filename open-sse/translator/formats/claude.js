@@ -8,6 +8,7 @@ import { isValidClaudeSignature } from "../../utils/claudeSignature.js";
 import { PROVIDERS } from "../../providers/index.js";
 import { getCapabilitiesForModel } from "../../providers/capabilities.js";
 import { applyThinking } from "../concerns/thinkingUnified.js";
+import { relaxForcedToolChoiceForThinking } from "../concerns/toolChoice.js";
 import { FORMATS } from "../formats.js";
 import { isLastMessageFromUser } from "../../services/provider.js";
 import { DEFAULT_MAX_TOKENS } from "../../config/runtimeConfig.js";
@@ -541,6 +542,9 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
       delete body.tool_choice;
     }
   }
+
+  // Thinking is final here (applyThinking runs before this), so a forced tool can be checked against it.
+  relaxForcedToolChoiceForThinking(body, provider);
 
   // Apply cloaking for OAuth tokens (billing header + fake user ID)
   // session_id in user_id must match X-Claude-Code-Session-Id for fingerprint consistency

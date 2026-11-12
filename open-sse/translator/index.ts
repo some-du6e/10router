@@ -3,6 +3,7 @@ import { ensureToolCallIds, fixMissingToolResponses } from "./concerns/toolCall.
 import { prepareClaudeRequest } from "./formats/claude.js";
 import { cloakClaudeTools, decloakStreamChunk } from "../utils/claudeCloaking.js";
 import { filterToOpenAIFormat } from "./formats/openai.js";
+import { relaxForcedChatToolChoiceForClaude } from "./concerns/toolChoice.js";
 import { normalizeThinkingConfig } from "../services/provider.js";
 import { applyThinking, captureThinking } from "./concerns/thinkingUnified.js";
 import { captureSessionId } from "../utils/sessionManager.js";
@@ -175,6 +176,7 @@ export function translateRequest(
     result = filterToOpenAIFormat(result, {
       preserveCacheControl: !!providerQuirks(provider)?.preserveCacheControl,
     });
+    relaxForcedChatToolChoiceForClaude(result, provider, model);
   }
 
   // Final step: prepare request for Claude format endpoints

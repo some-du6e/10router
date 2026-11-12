@@ -50,7 +50,12 @@ jobs:
           open-sse/translator/concerns/toolNamespace.ts
           open-sse/translator/formats/claude.js
           open-sse/translator/concerns/toolCall.js
+          open-sse/translator/concerns/toolChoice.js
+          open-sse/translator/index.ts
           open-sse/translator/schema/blocks.js
+          open-sse/translator/schema/finishReasons.js
+          open-sse/executors/default.js
+          open-sse/handlers/chatCore/jsonToSse.ts
           open-sse/handlers/chatCore.js
           open-sse/handlers/chatCore/nonStreamingHandler.js
           open-sse/handlers/chatCore/sseToJsonHandler.js
@@ -61,9 +66,9 @@ jobs:
           tests/unit/codex-tool-names-chatcore.test.js
           tests/unit/openai-responses-namespace-tools.test.js
           tests/unit/claude-custom-tool-type.test.js
-      # Fails only on errors in the .ts file this change touches, so unrelated
+      # Fails only on errors in the .ts files this change touches, so unrelated
       # type errors elsewhere don't block it.
-      - name: Type check toolNamespace.ts
+      - name: Type check the .ts files this change touches
         run: |
           set +e
           ./node_modules/.bin/tsc --noEmit -p . > tsc.log 2>&1
@@ -71,7 +76,7 @@ jobs:
           set -e
           tail -5 tsc.log
           if [ "$code" -gt 2 ] || ! [ -x ./node_modules/.bin/tsc ]; then echo "tsc did not run (exit $code)"; exit 1; fi
-          if grep -F "open-sse/translator/concerns/toolNamespace.ts" tsc.log; then exit 1; fi
+          if grep -F -e "open-sse/translator/concerns/toolNamespace.ts" -e "open-sse/translator/index.ts" -e "open-sse/handlers/chatCore/jsonToSse.ts" tsc.log; then exit 1; fi
 
   # The suite is not all-green on master (see AGENTS.md), so this runs it on
   # both the base and this branch and fails only on tests that pass on the base

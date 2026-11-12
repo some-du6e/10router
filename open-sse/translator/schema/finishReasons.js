@@ -8,6 +8,17 @@ export const OPENAI_FINISH = {
   CONTENT_FILTER: "content_filter",
 };
 
+// OpenAI Responses `status` values, and `incomplete_details.reason` for an incomplete one.
+export const RESPONSES_STATUS = {
+  IN_PROGRESS: "in_progress",
+  COMPLETED: "completed",
+  INCOMPLETE: "incomplete",
+};
+export const RESPONSES_INCOMPLETE_REASON = {
+  MAX_OUTPUT_TOKENS: "max_output_tokens",
+  CONTENT_FILTER: "content_filter",
+};
+
 // Claude stop_reason values.
 export const CLAUDE_STOP = {
   END_TURN: "end_turn",

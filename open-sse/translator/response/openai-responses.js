@@ -9,7 +9,9 @@ import { buildUsage } from "../concerns/usage.js";
 import { fallbackToolCallId, customToolInput } from "../concerns/toolCall.js";
 import { clientToolFields } from "../concerns/toolNamespace.js";
 import { reasoningDelta, extractReasoningText } from "../concerns/reasoning.js";
-import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM, OPENAI_FINISH, MODEL_FALLBACK } from "../schema/index.js";
+import {
+  ROLE, OPENAI_BLOCK, RESPONSES_ITEM, OPENAI_FINISH, MODEL_FALLBACK, RESPONSES_STATUS, RESPONSES_INCOMPLETE_REASON,
+} from "../schema/index.js";
 
 /**
  * Translate OpenAI chunk to Responses API events
@@ -85,7 +87,7 @@ export function openaiToOpenAIResponsesResponse(chunk, state) {
         id: state.responseId,
         object: "response",
         created_at: state.created,
-        status: "in_progress",
+        status: RESPONSES_STATUS.IN_PROGRESS,
         background: false,
         error: null,
         output: []
@@ -98,7 +100,7 @@ export function openaiToOpenAIResponsesResponse(chunk, state) {
         id: state.responseId,
         object: "response",
         created_at: state.created,
-        status: "in_progress"
+        status: RESPONSES_STATUS.IN_PROGRESS
       }
     });
   }
@@ -472,7 +474,7 @@ function sendCompleted(state, emit) {
         id: state.responseId,
         object: "response",
         created_at: state.created,
-        status: "completed",
+        status: RESPONSES_STATUS.COMPLETED,
         background: false,
         error: null,
         output: collectCompletedOutputItems(state),
@@ -642,7 +644,7 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
     if (state.finishReasonSent) return null;
     const reason = data.response?.incomplete_details?.reason;
     state.finishReasonSent = true;
-    state.finishReason = reason === "content_filter" ? OPENAI_FINISH.CONTENT_FILTER : OPENAI_FINISH.LENGTH;
+    state.finishReason = reason === RESPONSES_INCOMPLETE_REASON.CONTENT_FILTER ? OPENAI_FINISH.CONTENT_FILTER : OPENAI_FINISH.LENGTH;
     const responseUsage = data.response?.usage;
     if (responseUsage && typeof responseUsage === "object") {
       const inputTokens = responseUsage.input_tokens || 0;
