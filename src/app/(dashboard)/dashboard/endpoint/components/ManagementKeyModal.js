@@ -7,6 +7,7 @@ import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { isoToLocalInput, localInputToIso } from "./keyFormat";
 import StatusAlert from "./StatusAlert";
 import ModelAllowlistField from "./ModelAllowlistField";
+import { MANAGEMENT_KEYS_DOCS_URL } from "@/shared/utils/managementKey.js";
 
 function Chips({ items, onRemove, empty }) {
   if (!items.length) return <p className="text-xs text-text-muted">{empty}</p>;
@@ -244,6 +245,12 @@ export default function ManagementKeyModal({ managementKey, onClose, onSaved }) 
             onChange={(e) => setExpiry(e.target.value)}
             hint="Leave empty for a key that never expires."
           />
+
+          <p className="text-sm text-text-muted">
+            <a href={MANAGEMENT_KEYS_DOCS_URL} target="_blank" rel="noopener noreferrer" className="text-primary underline">
+              What each scope allows
+            </a>
+          </p>
 
           {error && <StatusAlert status={{ type: "error", message: error }} />}
 
