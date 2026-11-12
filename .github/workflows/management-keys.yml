@@ -106,6 +106,9 @@ jobs:
           unit/custom-server-peer-headers.test.js
           unit/auto-disable-dead-keys.test.js
           unit/compatible-multi-endpoint.test.js
+      # The dialog's scope helpers are TypeScript (managementScopeForm.ts).
+      - name: Typecheck
+        run: ./node_modules/.bin/tsc --noEmit
       - name: Lint
         run: >
           ./node_modules/.bin/eslint
@@ -127,7 +130,7 @@ jobs:
           "src/app/(dashboard)/dashboard/endpoint/components/ManagementKeysCard.js"
           "src/app/(dashboard)/dashboard/endpoint/components/ManagementKeyModal.js"
           "src/app/(dashboard)/dashboard/endpoint/components/ModelAllowlistField.js"
-          "src/app/(dashboard)/dashboard/endpoint/components/managementScopeForm.js"
+          "src/app/(dashboard)/dashboard/endpoint/components/managementScopeForm.ts"
           "src/app/(dashboard)/dashboard/endpoint/components/CreatedSecretModal.js"
           "src/app/(dashboard)/dashboard/endpoint/components/KeyLimitsModal.js"
           "src/app/api/keys/[id]/route.js"

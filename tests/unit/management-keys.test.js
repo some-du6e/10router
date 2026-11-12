@@ -512,6 +512,12 @@ describe("provider keys with their own URL", () => {
     expect(scopeForm.isDeletedEndpoint(NODE_B, new Set([NODE]))).toBe(true);
     expect(scopeForm.isDeletedEndpoint(NODE_B, null)).toBe(false);
     expect(scopeForm.ownUrlHostsPayload({ ...pk, baseUrlHosts: {} })).toBeNull();
+
+    // Ids compare without case, as the server's checks do, so an unrelated edit keeps them.
+    const mixed = { ...pk, providers: [NODE], baseUrlHosts: { [NODE.replace("acme", "ACME")]: WILDCARD } };
+    expect(scopeForm.ownUrlHostsPayload(mixed, new Set([NODE]))).toEqual(mixed.baseUrlHosts);
+    expect(scopeForm.withProviders(mixed, [NODE]).baseUrlHosts).toEqual(mixed.baseUrlHosts);
+    expect(scopeForm.isDeletedEndpoint(NODE.toUpperCase(), new Set([NODE]))).toBe(false);
   });
 
   it("saving a key whose endpoint was deleted works once the dialog drops that endpoint's hosts", async () => {

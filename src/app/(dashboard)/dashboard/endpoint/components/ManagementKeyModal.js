@@ -7,7 +7,7 @@ import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { isoToLocalInput, localInputToIso } from "./keyFormat";
 import StatusAlert from "./StatusAlert";
 import ModelAllowlistField from "./ModelAllowlistField";
-import { fromSaved, toPayload, withProviders, isDeletedEndpoint } from "./managementScopeForm";
+import { fromSaved, toPayload, withProviders, isDeletedEndpoint } from "./managementScopeForm.js";
 import { MANAGEMENT_KEYS_DOCS_URL, hostPatternError, isCompatibleEndpointId } from "@/shared/utils/managementKey.js";
 
 function Chips({ items, onRemove, empty }) {
