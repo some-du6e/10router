@@ -151,11 +151,14 @@ The dashboard checks the list when it saves it:
 - each pattern is lowercase, has no bare `*`, has a wildcard only as its first
   label with at least two labels after it, and has no IP address, port or
   `localhost`;
-- an endpoint has at most 50 patterns.
+- an endpoint has at most 50 patterns, and the list at most 200 endpoints.
 
 Only the dashboard can set them; no management API route takes scopes. Without
 hosts for an endpoint (the default) a `baseUrl` for its keys is refused, and
-they use the endpoint's own URL.
+they use the endpoint's own URL. When an endpoint is deleted, the key's dialog
+shows its hosts under "Deleted endpoint" and drops them when you save; until
+then the scope still names it, and saving it unchanged through the API is
+refused as an unknown provider.
 
 With hosts listed for the endpoint, `POST /provider-keys` takes a top-level
 `baseUrl` (at most 2048 characters; `null` is the same as leaving it out)
