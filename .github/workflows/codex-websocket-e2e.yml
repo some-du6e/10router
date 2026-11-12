@@ -30,6 +30,8 @@ on:
       # key through it; the proxied run is the e2e of the bridged remote-key path.
       - "src/lib/dataDir.js"
       - "src/lib/db/**"
+      - "src/lib/localDb.js"
+      - "src/shared/utils/clientApiKey.js"
       - "src/dashboardGuard.js"
       - "src/proxy.js"
       - "src/lib/auth/trustedPeer.js"

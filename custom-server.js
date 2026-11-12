@@ -64,7 +64,9 @@ const CODEX_WS_PATH = "/backend-api/codex/responses";
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const MAX_WS_MESSAGE_BYTES = 64 * 1024 * 1024;
 const MAX_ERROR_TEXT = 2000;
-const MAX_ERROR_BODY = 64 * 1024;
+// Big enough for a JSON error envelope that echoes a long request, so it still
+// parses; small enough to bound what one rejected turn holds (UTF-16 units).
+const MAX_ERROR_BODY = 1024 * 1024;
 
 function wsAccept(key) {
   return crypto.createHash("sha1").update(key + WS_GUID).digest("base64");
@@ -248,7 +250,7 @@ function bridgeLocalErrorFrame(status, message, type, code) {
 
 // Run one `response.create` through this process's own HTTP endpoint and relay
 // each SSE event back as a text frame.
-function bridgeCodexTurn(request, port, headers, peerIp, send, done) {
+function bridgeCodexTurn(request, port, headers, peerIp, send, done, { errorFrame = bridgeErrorFrame } = {}) {
   const { type, ...body } = request;
   void type;
   body.stream = true; // the WS transport is inherently streaming
@@ -270,7 +272,7 @@ function bridgeCodexTurn(request, port, headers, peerIp, send, done) {
         let raw = "";
         res.on("data", (chunk) => { if (raw.length < MAX_ERROR_BODY) raw += chunk; });
         res.on("end", () => {
-          send(bridgeErrorFrame(raw, res.statusCode));
+          send(errorFrame(raw, res.statusCode));
           done(null, res.statusCode);
         });
         res.on("error", (error) => done(error));
@@ -588,7 +590,7 @@ http.createServer = (...args) => {
   return server;
 };
 
-module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn } };
+module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn, MAX_ERROR_BODY } };
 
 if (require.main === module) {
   const standalone = path.join(__dirname, "server.js");

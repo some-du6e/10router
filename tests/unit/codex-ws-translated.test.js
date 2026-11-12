@@ -216,17 +216,24 @@ function expectFullTurn(events) {
     "response.output_item.done",
     "response.completed",
   ]) expect(seen, `missing ${type}`).toContain(type);
-  // In stream order: created, items opened, their deltas, items closed, completed.
-  const first = (type) => seen.indexOf(type);
-  const last = (type) => seen.lastIndexOf(type);
-  expect(first("response.created")).toBe(0);
-  expect(first("response.created")).toBeLessThan(first("response.output_item.added"));
-  expect(first("response.output_item.added")).toBeLessThan(first("response.output_text.delta"));
-  expect(first("response.output_item.added")).toBeLessThan(first("response.function_call_arguments.delta"));
-  expect(last("response.output_text.delta")).toBeLessThan(last("response.output_item.done"));
-  expect(last("response.function_call_arguments.delta")).toBeLessThan(last("response.output_item.done"));
-  expect(last("response.output_item.done")).toBeLessThan(first("response.completed"));
-  expect(first("response.completed")).toBe(seen.length - 1);
+  // Created first, completed last, and for each output item (by output_index):
+  // added, then its deltas, then done.
+  expect(seen[0]).toBe("response.created");
+  expect(seen.indexOf("response.completed")).toBe(seen.length - 1);
+  const at = (type, index) => events.map((e, i) => (e.type === type && e.output_index === index ? i : -1)).filter((i) => i >= 0);
+  const added = events.filter((e) => e.type === "response.output_item.added");
+  expect(added.map((e) => e.item.type).sort()).toEqual(["function_call", "message"]);
+  for (const { output_index: index, item } of added) {
+    const [open] = at("response.output_item.added", index);
+    const done = at("response.output_item.done", index);
+    const deltas = [...at("response.output_text.delta", index), ...at("response.function_call_arguments.delta", index)];
+    expect(done, `${item.type} item has no output_item.done`).toHaveLength(1);
+    expect(deltas.length, `${item.type} item has no deltas`).toBeGreaterThan(0);
+    for (const d of deltas) {
+      expect(d).toBeGreaterThan(open);
+      expect(d).toBeLessThan(done[0]);
+    }
+  }
   const text = events.filter((e) => e.type === "response.output_text.delta").map((e) => e.delta).join("");
   expect(text).toBe("ok");
   const args = events.filter((e) => e.type === "response.function_call_arguments.delta").map((e) => e.delta).join("");
@@ -294,6 +301,7 @@ describe("Codex WebSocket turn on a translated endpoint", { timeout: 15_000 }, (
     const spread = vi.spyOn(Array, "from");
     try {
       expect(JSON.parse(__test__.bridgeErrorFrame(huge, 500)).error.message).toBe("e".repeat(2000));
+      expect(spread).toHaveBeenCalled();
       for (const [arg] of spread.mock.calls) expect(arg?.length ?? 0).toBeLessThanOrEqual(4000);
       // A JSON error object is used as is, without building the text at all.
       spread.mockClear();
@@ -309,6 +317,30 @@ describe("Codex WebSocket turn on a translated endpoint", { timeout: 15_000 }, (
     const events = await ws.until((e) => e.some((x) => "close" in x));
     ws.close();
     expect(events[0]).toEqual({ type: "error", status: 502, error: { message: "e".repeat(2000), type: "server_error" } });
+  });
+
+  it("keeps at most the cap plus one chunk of an error body", async () => {
+    const cap = __test__.MAX_ERROR_BODY;
+    reply = () => new Response("q".repeat(8 * cap), { status: 400, headers: { "content-type": "text/plain" } });
+    const kept = await new Promise((resolve) => {
+      let length = 0;
+      __test__.bridgeCodexTurn(TURN, port, VIA_PROXY, "127.0.0.1", () => {}, () => resolve(length), {
+        errorFrame: (raw, status) => { length = raw.length; return __test__.bridgeErrorFrame(raw, status); },
+      });
+    });
+    expect(kept).toBeGreaterThanOrEqual(cap);
+    // One HTTP chunk past the cap at most (Node reads in 64 KB pieces).
+    expect(kept).toBeLessThanOrEqual(cap + 64 * 1024);
+  });
+
+  it("keeps a large JSON error envelope structured", async () => {
+    const message = `rejected: ${"x".repeat(200 * 1024)}`;
+    reply = () => new Response(JSON.stringify({ error: { message, type: "invalid_request_error", code: "invalid_value" } }), { status: 422, headers: { "content-type": "application/json" } });
+    const ws = await connect(VIA_PROXY);
+    ws.send(TURN);
+    const events = await ws.until((e) => e.some((x) => "close" in x));
+    ws.close();
+    expect(events[0]).toEqual({ type: "error", status: 422, error: { message, type: "invalid_request_error", code: "invalid_value" } });
   });
 
   it("reports a loopback request that died as a 502, which Codex retries", async () => {
