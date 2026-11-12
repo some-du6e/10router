@@ -108,9 +108,13 @@ ping (`/api/providers/validate`), then the create route (`/api/providers`).
 - The management key is checked again after the probe, so a key revoked or
   narrowed while the probe ran adds nothing.
 - `apiKey` can be at most 8192 characters.
-- An Anthropic-compatible endpoint's probe sends a real request, so it names
-  a model: the key's `defaultModel` if given, else one listed for the
-  endpoint. Give `defaultModel` when each key may only use some models.
+- A custom endpoint's probe is the request routing would send on that key:
+  its URL, headers and body come from the same code, with the endpoint's
+  advanced settings. An Anthropic-compatible endpoint's probe sends a real
+  message, so it names a model: the key's `defaultModel` if given (a
+  `(level)` suffix dropped), else one listed for the endpoint, preferring
+  one the endpoint doesn't route to another API. Give `defaultModel` when
+  each key may only use some models.
 - The new row is claimed for the management key right after the create,
   only while that key is still on; if it was revoked in between, the row is
   removed and the response is a `401`.
@@ -161,10 +165,12 @@ hosts for an endpoint (the default) a `baseUrl` for its keys is refused, and
 they use the endpoint's own URL. When an endpoint is deleted, the key's dialog
 marks it as a deleted endpoint and, when you save, drops it from `providers`
 and its hosts from `baseUrlHosts`. If it was the only provider the scope was
-limited to, the dialog asks you to pick another (or turn provider keys off)
-instead, since an empty `providers` would mean any provider. Until then the
-scope still names it, and saving it unchanged through the API is refused as
-an unknown provider.
+limited to, it is kept, since an empty `providers` would mean any provider:
+with provider keys on, the dialog asks you to pick another provider; with
+them off, the save goes through (an off scope grants nothing, and its
+`providers` aren't checked), and turning them back on asks again. Through the
+API, a scope that is on and names a deleted endpoint is refused as an unknown
+provider.
 
 With hosts listed for the endpoint, `POST /provider-keys` takes a top-level
 `baseUrl` (at most 2048 characters; `null` is the same as leaving it out)
