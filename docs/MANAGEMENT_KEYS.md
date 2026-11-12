@@ -107,7 +107,8 @@ ping (`/api/providers/validate`), then the create route (`/api/providers`).
   works (a 429, a 5xx or another unexpected status on the fallback probe
   below), or one of its probe requests gets no answer within 8 seconds,
   nothing is added and the response is a `502` naming the status or the
-  timeout. Try again later.
+  timeout, or a `504` if the two requests together take longer than the
+  15-second management timeout below. Try again later.
 - A probe that doesn't answer in 15 seconds is given up on with a `504`, and
   nothing is added. An OpenAI-compatible endpoint's probe is cancelled then,
   so it sends no request after the `504`; other providers' probes may still
@@ -131,9 +132,13 @@ ping (`/api/providers/validate`), then the create route (`/api/providers`).
   for a key with its own URL. That body skips the body edits and names no
   model, so the upstream refuses it before running anything and no tokens are
   spent. Each of these two requests gives up after 8 seconds (the `502`
-  above). An endpoint that is starting up cold and takes longer than that to
-  answer gets the `502` ("couldn't check the key, try again"); retry once it
-  is warm. On that post:
+  above, or a `504` if the two together pass 15 seconds). An endpoint that is
+  starting up cold and takes longer than that to answer gets that answer
+  ("couldn't check the key, try again"); retry once it is warm. The
+  `GET /models` still follows redirects (any on a key without its own URL,
+  same-origin ones on a key's own URL), so a login wall in front of every
+  path, where `/models` redirects to a login page that answers 200, passes
+  any key before the post runs. On that post:
   - a 2xx, 400 or 422 is valid (the key got past auth and the body was
     refused);
   - a 401 or 403 is a refused key;

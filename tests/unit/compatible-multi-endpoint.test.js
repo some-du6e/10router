@@ -646,6 +646,52 @@ describe("validating a key at its own URL", () => {
   });
 });
 
+describe("the probe fetch's redirect rules", () => {
+  // The real makeProbeFetch on loopback servers. checkPublic is off (a test can
+  // only reach loopback), so the SSRF check and DNS pin are not exercised here.
+  it("follows a same-origin redirect on a GET, but not one to another origin, a POST 302, or any with redirect: manual", async () => {
+    const http = await import("node:http");
+    const { makeProbeFetch: realProbeFetch } = await vi.importActual("@/lib/probeFetch.js");
+    const hits = [];
+    const listen = (handler) => new Promise((resolve) => {
+      const s = http.createServer((rq, rs) => { hits.push(`${s.address().port} ${rq.method} ${rq.url}`); handler(rq, rs); });
+      s.listen(0, "127.0.0.1", () => resolve(s));
+    });
+    const other = await listen((_rq, rs) => { rs.writeHead(200); rs.end("other"); });
+    const otherPort = other.address().port;
+    const main = await listen((rq, rs) => {
+      const to = { "/same": [307, "/landed"], "/cross": [302, `http://127.0.0.1:${otherPort}/elsewhere`], "/post": [302, "/landed"] }[rq.url];
+      if (to) { rs.writeHead(to[0], { location: to[1] }); return rs.end(); }
+      rs.writeHead(200);
+      rs.end("landed");
+    });
+    const base = `http://127.0.0.1:${main.address().port}`;
+    const probeFetch = realProbeFetch(false);
+    const landedHits = () => hits.filter((h) => h.endsWith(" /landed")).length;
+    try {
+      const followed = await probeFetch(`${base}/same`, { method: "GET" });
+      expect(followed.status).toBe(200);
+      expect(await followed.text()).toBe("landed");
+      expect(landedHits()).toBe(1);
+
+      const cross = await probeFetch(`${base}/cross`, { method: "GET" });
+      expect(cross.status).toBe(302);
+      expect(hits.some((h) => h.startsWith(`${otherPort} `))).toBe(false);
+
+      const post = await probeFetch(`${base}/post`, { method: "POST", body: "{}" });
+      expect(post.status).toBe(302);
+
+      const manual = await probeFetch(`${base}/same`, { method: "GET", redirect: "manual" });
+      expect(manual.status).toBe(307);
+      expect(manual.headers.get("location")).toBe("/landed");
+      expect(landedHits()).toBe(1);
+    } finally {
+      main.close();
+      other.close();
+    }
+  });
+});
+
 describe("node edits and a key's learned beta flags", () => {
   it("does not copy the node's flags onto a key with its own endpoint", async () => {
     const { mergeConnectionData } = await import("../../src/shared/utils/nodeQuirkMerge.ts");
