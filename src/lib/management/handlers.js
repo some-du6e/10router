@@ -24,6 +24,7 @@ import {
 } from "./policy.js";
 import { serializeClientKey, serializeProviderKey, serializeManagementKey } from "./serialize.js";
 import { json, fail, readBody } from "./http.js";
+import { MANAGEMENT_KEY_CHECK } from "@/shared/constants/keyCheck.js";
 
 // Provider-specific fields a management key may set. URL fields (baseUrl,
 // azureEndpoint, proxies) are left out: they decide where the gateway sends a
@@ -340,13 +341,17 @@ export function createProviderKey(request) {
     if (probe.body.valid !== true) {
       // The validator's own error text is not passed on: it can quote the upstream.
       // With its own URL, the host the probe went to.
-      const noRoute = probe.body.reason === "no-api-route";
+      // A wrong URL or an inconclusive answer is worded from its reason; only
+      // the upstream's status number goes into the message.
+      const check = Object.hasOwn(MANAGEMENT_KEY_CHECK, probe.body.reason) ? MANAGEMENT_KEY_CHECK[probe.body.reason] : null;
       await audit(mk, "provider_key.create.denied", "providerKey", null, {
-        provider, reason: noRoute ? "no API route at the endpoint URL" : "the provider did not accept the key", ...(keyUrl.host ? { baseUrlHost: keyUrl.host } : {}),
+        provider, reason: check ? check.audit : "the provider did not accept the key", ...(keyUrl.host ? { baseUrlHost: keyUrl.host } : {}),
       }, { denied: true });
-      return fail(422, noRoute
-        ? "The endpoint URL looks wrong: it has no /models and no chat route, so the key was not added"
-        : "The provider did not accept this key, so it was not added");
+      if (check) {
+        const upstreamStatus = Number.isInteger(probe.body.upstreamStatus) ? probe.body.upstreamStatus : "an unexpected status";
+        return fail(check.status, check.error(upstreamStatus));
+      }
+      return fail(422, "The provider did not accept this key, so it was not added");
     }
 
     // The probe can take seconds; the key may have been revoked or narrowed meanwhile.

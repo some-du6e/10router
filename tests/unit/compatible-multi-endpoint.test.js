@@ -411,12 +411,65 @@ describe("validating a key at its own URL", () => {
       }
     });
 
+    it("a key the chat path answers with 2xx or a body refusal (400, 422) is valid", async () => {
+      for (const status of [200, 201, 400, 422]) {
+        upstream(404, status);
+        expect((await validate()).body, String(status)).toEqual({ valid: true, error: null });
+      }
+    });
+
+    const WRONG_URL = { valid: false, reason: "no-api-route", error: "The endpoint URL looks wrong: it has no /models and no chat route" };
+
     it("no /models and no chat route either is a wrong URL, not a valid key", async () => {
-      for (const [modelsStatus, chatStatus] of [[404, 404], [404, 405], [405, 404]]) {
+      for (const [modelsStatus, chatStatus] of [[404, 404], [404, 405], [405, 404], [405, 405]]) {
         const sent = upstream(modelsStatus, chatStatus);
         const res = await validate();
-        expect(res.body, `${modelsStatus}/${chatStatus}`).toEqual({ valid: false, reason: "no-api-route", error: "The endpoint URL looks wrong: it has no /models and no chat route" });
+        expect(res.body, `${modelsStatus}/${chatStatus}`).toEqual(WRONG_URL);
         expect(sent).toHaveLength(2);
+      }
+    });
+
+    it("a redirect from the chat path proves nothing about the key: a wrong URL", async () => {
+      // The probe fetch hands these back unfollowed: a POST 301/302/303, and any off-origin hop.
+      for (const [status, location] of [[302, `${PUBLIC_URL}/login`], [307, "https://elsewhere.example/v1/chat/completions"]]) {
+        mocks.probeFetch.mockResolvedValueOnce(answer(404)).mockResolvedValueOnce(new Response(null, { status, headers: { location } }));
+        expect((await validate()).body, String(status)).toEqual(WRONG_URL);
+      }
+    });
+
+    it("a chat-path answer that shows nothing about the key (429, 5xx, other 4xx) fails it as unverified", async () => {
+      for (const status of [429, 500, 502, 409]) {
+        upstream(404, status);
+        expect((await validate()).body, String(status)).toEqual({
+          valid: false, reason: "unverified", upstreamStatus: status,
+          error: `Couldn't check the key: the endpoint answered ${status} to the check. Try again.`,
+        });
+      }
+    });
+
+    it("both probes give up after 8s or when the caller goes away", async () => {
+      const timeout = vi.spyOn(AbortSignal, "timeout");
+      // A fetch that hangs until its signal aborts.
+      const hang = (_url, init) => new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+      });
+      try {
+        for (const step of ["/models", "chat"]) {
+          const caller = new AbortController();
+          mocks.probeFetch.mockReset();
+          if (step === "/models") mocks.probeFetch.mockImplementationOnce(hang);
+          else mocks.probeFetch.mockResolvedValueOnce(answer(404)).mockImplementationOnce(hang);
+          timeout.mockClear();
+          const pending = validateRoute.POST({ ...req({ provider: NODE_ID, apiKey: "sk-b", baseUrl: PUBLIC_URL }), signal: caller.signal });
+          await vi.waitFor(() => expect(mocks.probeFetch).toHaveBeenCalledTimes(step === "/models" ? 1 : 2));
+          caller.abort(new Error("caller gone"));
+          const res = await pending;
+          expect(res.body, step).toEqual({ valid: false, error: "caller gone" });
+          expect(timeout, step).toHaveBeenCalledWith(8000);
+          expect(timeout, step).toHaveBeenCalledTimes(step === "/models" ? 1 : 2);
+        }
+      } finally {
+        timeout.mockRestore();
       }
     });
 
@@ -427,12 +480,11 @@ describe("validating a key at its own URL", () => {
     });
 
     it("a /models answer other than 404/405 decides alone", async () => {
-      let sent = upstream(200, 401);
-      expect((await validate()).body.valid).toBe(true);
-      expect(sent).toHaveLength(1);
-      sent = upstream(401, 400);
-      expect((await validate()).body.valid).toBe(false);
-      expect(sent).toHaveLength(1);
+      for (const [status, valid] of [[200, true], [401, false], [403, false], [429, false], [500, false], [502, false]]) {
+        const sent = upstream(status, 400);
+        expect((await validate()).body.valid, String(status)).toBe(valid);
+        expect(sent, String(status)).toHaveLength(1);
+      }
     });
 
     it("a network error on the chat path fails the key like one on /models", async () => {

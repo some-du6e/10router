@@ -25,7 +25,7 @@ vi.mock("@/app/api/providers/validate/route.js", () => ({
   POST: async (request) => {
     const body = await request.json();
     validation.calls.push(body);
-    if (validation.handler) return validation.handler(body);
+    if (validation.handler) return validation.handler(body, request);
     return Response.json({ valid: validation.valid, error: validation.valid ? null : `upstream said no to ${body.apiKey}` });
   },
 }));
@@ -1216,7 +1216,39 @@ describe("provider key validation on the management path", () => {
     // A plain refusal keeps the key message.
     validation.handler = () => Response.json({ valid: false, error: "Invalid API key" });
     const refused = await api.createProvider(mk.secret, { provider: "openai", apiKey: providerSecret("refused"), name: "refused" });
+    expect(refused.status).toBe(422);
     expect(refused.body.error).toBe("The provider did not accept this key, so it was not added");
+  });
+
+  it("an answer that shows nothing about the key is a 502 naming only its status, and adds nothing", async () => {
+    const mk = await newManagementKey(scope);
+    const before = (await db.getProviderConnections()).length;
+    const audited = async () => (await db.getManagementAudit({ managementKeyId: mk.id, limit: 10 })).filter((r) => r.action === "provider_key.create.denied")[0].detail;
+    for (const status of [429, 502]) {
+      validation.handler = () => Response.json({ valid: false, reason: "unverified", upstreamStatus: status, error: "upstream text that is not passed on" });
+      const res = await api.createProvider(mk.secret, { provider: "openai", apiKey: providerSecret(`unverified-${status}`), name: `unverified ${status}` });
+      expect(res.status, String(status)).toBe(502);
+      expect(res.body.error).toBe(`Couldn't check the key: the endpoint answered ${status} to the check, so the key was not added. Try again.`);
+      expect(await audited()).toEqual({ provider: "openai", reason: "the endpoint's answer did not show whether the key works" });
+    }
+    // Only a status number goes into the message.
+    validation.handler = () => Response.json({ valid: false, reason: "unverified", upstreamStatus: "<b>upstream</b>" });
+    const odd = await api.createProvider(mk.secret, { provider: "openai", apiKey: providerSecret("unverified-odd"), name: "unverified odd" });
+    expect(odd.body.error).toBe("Couldn't check the key: the endpoint answered an unexpected status to the check, so the key was not added. Try again.");
+    // A reason it doesn't know is a plain refusal.
+    validation.handler = () => Response.json({ valid: false, reason: "toString" });
+    expect((await api.createProvider(mk.secret, { provider: "openai", apiKey: providerSecret("unverified-proto"), name: "unverified proto" })).status).toBe(422);
+    expect((await db.getProviderConnections()).length).toBe(before);
+  });
+
+  it("a probe given up on is aborted in the validator too, so it sends nothing more", async () => {
+    const mk = await newManagementKey(scope);
+    process.env.MANAGEMENT_PROBE_TIMEOUT_MS = "50";
+    let signal;
+    validation.handler = (_body, request) => { signal = request.signal; return new Promise(() => {}); };
+    const res = await api.createProvider(mk.secret, { provider: "openai", apiKey: providerSecret("abort"), name: "abort" });
+    expect(res.status).toBe(504);
+    await vi.waitFor(() => expect(signal.aborted).toBe(true));
   });
 
   it("checks the key again after the probe: revoked or narrowed meanwhile adds nothing", async () => {

@@ -17,6 +17,8 @@ import { getExecutor } from "open-sse/executors/index.js";
 import { resolveKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
 import { isLocalRequest } from "@/dashboardGuard";
 import { makeProbeFetch } from "@/lib/probeFetch.js";
+import { discardBody } from "@/lib/endpointDetect.js";
+import { NO_API_ROUTE, UNVERIFIED, KEY_CHECK_ERRORS } from "@/shared/constants/keyCheck.js";
 
 // A compatible key may bring its own endpoint URL (another account or region);
 // check it there, with the same SSRF rules as saving it. The result carries the
@@ -32,10 +34,19 @@ async function compatibleBaseUrl(request, body, node) {
   return { ...keyUrl, fetch: keyUrl.own && remote ? makeProbeFetch(true) : plainFetch };
 }
 
-// Only a probe's status is used. Drop its body so the connection (a pinned
-// probe fetch's agent waits for it) closes now.
-async function discardBody(res) {
-  try { await res.body?.cancel(); } catch { /* already read or closed */ }
+// A probe gives up after 8s, or when the caller goes away (the management
+// API's own probe timeout aborts its request).
+const probeSignal = (request) => AbortSignal.any([request.signal, AbortSignal.timeout(8000)].filter(Boolean));
+
+// What the chat-path probe's answer says about a key. `{}` names no model, so
+// a key that gets past auth gets the body refused (400/422), or a 2xx. A
+// 404/405 or a redirect (the probe fetch hands back the ones it won't follow)
+// means no API at this URL. Anything else (429, 5xx, other 4xx) shows nothing.
+function chatProbeVerdict(status) {
+  if ((status >= 200 && status < 300) || status === 400 || status === 422) return { valid: true, error: null };
+  if (status === 401 || status === 403) return { valid: false, error: "Invalid API key" };
+  if (status === 404 || status === 405 || (status >= 300 && status < 400)) return { valid: false, reason: NO_API_ROUTE, error: KEY_CHECK_ERRORS[NO_API_ROUTE]() };
+  return { valid: false, reason: UNVERIFIED, upstreamStatus: status, error: KEY_CHECK_ERRORS[UNVERIFIED](status) };
 }
 
 // A node's quirks, picked the way the create route copies them onto a new key.
@@ -191,25 +202,19 @@ export async function POST(request) {
         const modelsUrl = applyUrlOverrides(appendUrlPath(keyUrl.baseUrl, "/models"), node.overrides, { replacePath: false });
         const credentials = { apiKey, providerSpecificData: { ...nodeQuirksOf(node), apiType: node.apiType, baseUrl: keyUrl.baseUrl } };
         const { "Content-Type": _json, ...modelsHeaders } = executor.buildHeaders(credentials, false, modelsUrl, null);
-        const res = await keyUrl.fetch(modelsUrl, { headers: modelsHeaders });
-        await discardBody(res);
+        const res = await keyUrl.fetch(modelsUrl, { headers: modelsHeaders, signal: probeSignal(request) });
+        discardBody(res);
         if (res.status === 404 || res.status === 405) {
-          // No /models route: POST {} to the chat path routing uses (the
-          // executor's URL, with the node's path and query overrides). With no
-          // model, the upstream refuses it before inference, so no tokens are
-          // spent: 401/403 is a bad key, 404/405 means nothing answers at this
-          // URL (likely mistyped), any other answer means the key got in.
+          // No /models route: POST a literal {} to the chat path routing uses
+          // (the executor's URL, with the node's path and query overrides; the
+          // body skips the body transform). With no model, the upstream
+          // refuses it before inference, so no tokens are spent.
           const chatUrl = executor.buildUrl(null, false, 0, credentials);
-          const chatRes = await keyUrl.fetch(chatUrl, { method: "POST", headers: executor.buildHeaders(credentials, false, chatUrl, null), body: "{}" });
-          await discardBody(chatRes);
-          if (chatRes.status === 404 || chatRes.status === 405) {
-            // reason: the management API words its own error from it.
-            return NextResponse.json({ valid: false, reason: "no-api-route", error: "The endpoint URL looks wrong: it has no /models and no chat route" });
-          }
-          isValid = chatRes.status !== 401 && chatRes.status !== 403;
-        } else {
-          isValid = res.ok;
+          const chatRes = await keyUrl.fetch(chatUrl, { method: "POST", headers: executor.buildHeaders(credentials, false, chatUrl, null), body: "{}", signal: probeSignal(request) });
+          discardBody(chatRes);
+          return NextResponse.json(chatProbeVerdict(chatRes.status));
         }
+        isValid = res.ok;
         return NextResponse.json({
           valid: isValid,
           error: isValid ? null : "Invalid API key",
