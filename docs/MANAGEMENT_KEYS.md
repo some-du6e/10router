@@ -108,9 +108,12 @@ ping (`/api/providers/validate`), then the create route (`/api/providers`).
 - The management key is checked again after the probe, so a key revoked or
   narrowed while the probe ran adds nothing.
 - `apiKey` can be at most 8192 characters.
-- A custom endpoint's probe is the request routing would send on that key:
-  its URL, headers and body come from the same code, with the endpoint's
-  advanced settings. An Anthropic-compatible endpoint's probe sends a real
+- A custom endpoint's probe is built like the request routing would send on
+  that key: its URL, headers and body come from the same code, with the
+  endpoint's advanced settings (auth header style, client identity, header
+  lines, path and query overrides, model renames, body edits). The
+  endpoint's proxy, timeout and retries are not used for the probe. An
+  Anthropic-compatible endpoint's probe sends a real
   message, so it names a model: the key's `defaultModel` if given (a
   `(level)` suffix dropped), else one listed for the endpoint, preferring
   one the endpoint doesn't route to another API. Give `defaultModel` when
@@ -192,6 +195,13 @@ refused), and it's stored as the key's own URL (`providerSpecificData.baseUrl`
 with `ownBaseUrl`), so requests on that key go there and fail over to the next
 key as usual. The hosts are checked again after the probe, so taking a host off
 the list while a key is being added adds nothing.
+
+Everything the endpoint sends with a key goes to that key's own URL too: its
+header lines and custom headers (Advanced settings), both when the key is
+checked and every time it is used. Allowing a host lets whoever runs it see
+those values, so don't put a secret in them unless you trust every host the
+endpoint's list allows. A refused key's audit entry names the host the check
+went to (`baseUrlHost`).
 
 ### What a key can see
 

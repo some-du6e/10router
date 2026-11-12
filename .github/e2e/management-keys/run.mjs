@@ -206,6 +206,15 @@ await page.getByRole("button", { name: "Check", exact: true }).click();
 const sentBody = (await validateCall).postDataJSON();
 check("the edit dialog's key check sends the key's default model", sentBody?.defaultModel === "acme-small", JSON.stringify(Object.keys(sentBody || {})));
 await page.keyboard.press("Escape");
+await page.getByPlaceholder("Enter new API key").waitFor({ state: "hidden", timeout: 10000 }).catch(() => {});
+
+// Saving a new key without clicking Check checks it on save, with the default model too.
+await dmRow.locator("xpath=ancestor::*[.//button[contains(., 'Edit')]][1]").getByRole("button", { name: "Edit" }).click();
+await page.getByPlaceholder("Enter new API key").fill(`sk-e2e-dm-save-${Date.now()}`);
+const saveValidate = page.waitForRequest((r) => r.url().endsWith("/api/providers/validate") && r.method() === "POST", { timeout: 30000 });
+await page.getByRole("button", { name: "Save", exact: true }).click();
+const saveBody = (await saveValidate).postDataJSON();
+check("saving a new key in the edit dialog checks it with the key's default model", saveBody?.defaultModel === "acme-small", JSON.stringify(Object.keys(saveBody || {})));
 
 await browser.close();
 await anon.dispose();

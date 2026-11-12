@@ -56,6 +56,8 @@ on:
       - "open-sse/translator/concerns/thinkingUnified.js"
       - "src/app/api/keys/**"
       - "src/app/(dashboard)/dashboard/endpoint/**"
+      # The e2e drives the endpoint page (providers/[id]); ** covers the [id] folder.
+      - "src/app/(dashboard)/dashboard/providers/**"
       - "docs/MANAGEMENT_KEYS.md"
       - "tests/package.json"
       - "tests/vitest.config.js"
