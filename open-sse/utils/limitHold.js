@@ -9,6 +9,7 @@ import { FORMATS } from "../translator/formats.js";
 import { ROLE, OPENAI_FINISH } from "../translator/schema/index.js";
 import { formatSSE } from "./stream.js";
 import { abortableSleep } from "./abortableSleep.js";
+import { isRequestError } from "../services/accountFallback.js";
 
 // Present in every banner we emit. Later requests carry the banner back inside
 // their history; detecting this marker is what triggers the "ignore that line"
@@ -360,7 +361,8 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
 // The status and error a request gets when every account is locked. A 401/403
 // this pass hit on one key loses to a retryable code the reported key got on
 // this model (lastErrorOwn), or to a 429/5xx another key hit in the same pass,
-// so the client waits instead of reporting an auth failure.
+// so the client waits instead of reporting an auth failure. Failing that, it
+// loses to a request error (400/404/422) another key got.
 export function allLockedError(lastStatus, lastError, credentials, failures = []) {
   const soonest = Number(credentials?.lastErrorCode) || null;
   const retryable = status => status === 429 || status >= 500;
@@ -369,6 +371,11 @@ export function allLockedError(lastStatus, lastError, credentials, failures = []
     // By status: a bodyless 403 reads "You exceeded your current quota".
     const retry = failures.find(f => retryable(f.status));
     if (retry) return { status: retry.status, error: retry.error || null, swapped: true };
+    // A key that got through and was refused the body beats keys that couldn't
+    // authenticate: the client can fix the body (Claude Code drops a beta block
+    // and resends on a 400), but reads a 403 as "log in again".
+    const refused = failures.find(f => isRequestError(f.status, f.error));
+    if (refused) return { status: refused.status, error: refused.error || null, swapped: true };
   }
   return { status: lastStatus || soonest || 503, error: lastError || credentials?.lastError || null, swapped: false };
 }
