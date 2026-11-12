@@ -183,12 +183,20 @@ function bridgeForwardHeaders(handshakeHeaders, socketIp, payloadLength) {
   //     remote client's own x-forwarded-for, letting it pick the IP used for
   //     rate limiting. The real peer is attached below instead;
   //   - cookie, so a browser-initiated handshake cannot ride a session cookie
-  //     into a route that accepts one.
+  //     into a route that accepts one;
+  //   - accept / accept-encoding. A proxy in front (Cloudflare among them) adds
+  //     `accept-encoding: gzip` to the upgrade request; forwarded, it makes Next
+  //     gzip the event stream, which the line parser below cannot read, so the
+  //     client gets no events at all. The bridge reads plain SSE, so it asks
+  //     for exactly that.
   for (const [name, value] of Object.entries(handshakeHeaders)) {
     if (/^(host|connection|upgrade|sec-websocket-|content-length|content-type)/i.test(name)) continue;
+    if (/^accept(-encoding)?$/i.test(name)) continue;
     if (/^(x-forwarded-for|x-real-ip|x-9r-|cookie)/i.test(name)) continue;
     forwarded[name] = value;
   }
+  forwarded.accept = "text/event-stream";
+  forwarded["accept-encoding"] = "identity";
   const xff = handshakeHeaders["x-forwarded-for"];
   const xRealIp = handshakeHeaders["x-real-ip"];
   const loopback = isLoopbackSocketIp(socketIp);
