@@ -9,15 +9,17 @@
 // Free probes can't see this (body validation runs first), so it's learned from
 // the first real request: drop the named flags, retry once, remember them.
 
-import { CLAUDE_BETA_BODY_FIELDS, CLAUDE_FIRST_PARTY_BETA_FIELDS } from "../config/claudeMessageCompat.js";
+import { CLAUDE_BETA_BODY_FIELDS, CLAUDE_FIRST_PARTY_BETA_FIELDS, CLAUDE_TOOL_CHANGE_BETAS } from "../config/claudeMessageCompat.js";
 import { ANTHROPIC_API_HOST } from "../providers/shared.js";
+import { inlineToolChanges } from "../translator/concerns/toolChanges.js";
 
 export const BETA_HEADER_KEYS = ["anthropic-beta", "Anthropic-Beta"];
 
 // Never sent to non-Anthropic hosts: it marks the request as first-party Claude Code.
 const ALWAYS_STRIPPED = ["claude-code-20250219"];
 
-const FIRST_PARTY_BETAS = Object.keys(CLAUDE_FIRST_PARTY_BETA_FIELDS);
+const TOOL_CHANGE_BETAS = [...new Set(Object.values(CLAUDE_TOOL_CHANGE_BETAS).flat())];
+const FIRST_PARTY_BETAS = [...Object.keys(CLAUDE_FIRST_PARTY_BETA_FIELDS), ...TOOL_CHANGE_BETAS];
 const isBetaHeader = (key: string) => key.toLowerCase() === BETA_HEADER_KEYS[0];
 
 export const splitBetas = (value: unknown): string[] =>
@@ -97,6 +99,18 @@ export function dropFirstPartyFieldsWithoutBeta<T>(body: T, headers: Record<stri
     .filter(([flag]) => !sent.has(flag))
     .flatMap(([, f]) => f);
   return withoutFields(body, fields);
+}
+
+// A copy of body with each tool_addition / tool_removal block that no beta in
+// `headers` lets through (none known: every one) folded into tools[]; the same
+// body when every block can go as it is.
+export function inlineToolChangesWithoutBeta<T>(body: T, headers: Record<string, unknown> | null | undefined): T {
+  const sent = sentBetas(headers);
+  const gating = (type: unknown): readonly string[] =>
+    typeof type === "string" && Object.prototype.hasOwnProperty.call(CLAUDE_TOOL_CHANGE_BETAS, type)
+      ? CLAUDE_TOOL_CHANGE_BETAS[type as keyof typeof CLAUDE_TOOL_CHANGE_BETAS]
+      : TOOL_CHANGE_BETAS;
+  return inlineToolChanges(body, (block: { tool?: { type?: unknown } }) => gating(block?.tool?.type).some((f) => sent.has(f)));
 }
 
 // A copy of body without `fields`; the same body when none of them is present.
