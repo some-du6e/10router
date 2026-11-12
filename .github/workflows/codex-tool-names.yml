@@ -3,15 +3,15 @@ name: Codex tool names
 on:
   pull_request:
     paths:
-      - "open-sse/translator/**"
-      - "open-sse/handlers/chatCore/**"
-      - "open-sse/utils/claudeCloaking.js"
+      - "open-sse/**"
       - "tests/package.json"
       - "tests/vitest.config.js"
       - "tests/unit/codex-mcp-namespace-tools.test.js"
+      - "tests/unit/codex-tool-names-chatcore.test.js"
       - "tests/unit/openai-responses-namespace-tools.test.js"
       - "tests/unit/claude-custom-tool-type.test.js"
       - "tests/unit/openai-responses-nonstream.test.js"
+      - "tests/unit/openai-responses-custom-tools.test.js"
       - ".github/workflows/codex-tool-names.yml"
   workflow_dispatch:
 
@@ -37,6 +37,7 @@ jobs:
         run: >
           ./node_modules/.bin/vitest run
           unit/codex-mcp-namespace-tools.test.js
+          unit/codex-tool-names-chatcore.test.js
           unit/openai-responses-namespace-tools.test.js
           unit/claude-custom-tool-type.test.js
           unit/openai-responses-nonstream.test.js
@@ -48,10 +49,16 @@ jobs:
           open-sse/translator/response/openai-responses.js
           open-sse/translator/concerns/toolNamespace.ts
           open-sse/translator/formats/claude.js
+          open-sse/translator/concerns/toolCall.js
+          open-sse/translator/schema/blocks.js
+          open-sse/handlers/chatCore.js
           open-sse/handlers/chatCore/nonStreamingHandler.js
           open-sse/handlers/chatCore/sseToJsonHandler.js
+          open-sse/handlers/chatCore/responsesBody.js
           open-sse/utils/claudeCloaking.js
+          open-sse/utils/stream.js
           tests/unit/codex-mcp-namespace-tools.test.js
+          tests/unit/codex-tool-names-chatcore.test.js
           tests/unit/openai-responses-namespace-tools.test.js
           tests/unit/claude-custom-tool-type.test.js
       # Fails only on errors in the .ts file this change touches, so unrelated

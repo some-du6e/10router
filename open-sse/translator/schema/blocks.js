@@ -43,7 +43,7 @@ export const RESPONSES_ITEM = {
 
 // Tool declaration `type` values for client-defined tools.
 export const TOOL_TYPE = {
-  FUNCTION: "function",
+  FUNCTION: OPENAI_BLOCK.FUNCTION,
   CUSTOM: "custom",
 };
 

@@ -61,7 +61,7 @@ export function createSSEStream(options = {}) {
   const decoder = new TextDecoder("utf-8", { fatal: false });
 
   const state = mode === STREAM_MODE.TRANSLATE
-    ? { ...initState(sourceFormat), provider, toolNameMap, customToolNames: new Set(customToolNames || []), toolNamespaces: new Map(Object.entries(toolNamespaces || {})), model, targetFormat }
+    ? { ...initState(sourceFormat), provider, toolNameMap, customToolNames, toolNamespaces, model, targetFormat }
     : null;
 
   let totalContentLength = 0;

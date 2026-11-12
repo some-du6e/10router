@@ -35,9 +35,11 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
   let pendingReasoningEncrypted = "";
   const additionalTools = [];
   const customToolNames = new Set();
-  // wire name → namespace, or → { namespace, name } for a renamed tool, so the
-  // response hop can hand the client back the name and namespace it declared
+  // wire name → { namespace, name }, so the response hop can hand the client back
+  // the name and namespace it declared (only for namespaced or renamed tools)
   const toolNamespaces = new Map();
+  // Prior turns' custom tool calls, by the client's { namespace, name }
+  const historyCustomCalls = [];
 
   const inputItems = normalizeResponsesInput(body.input);
   if (!inputItems) return body;
@@ -114,9 +116,10 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
       }
       // Skip items with empty/missing name — Codex/OpenAI reject nameless tool calls (#444)
       if (!item.name || typeof item.name !== "string" || item.name.trim() === "") continue;
-      if (itemType === RESPONSES_ITEM.CUSTOM_TOOL_CALL) customToolNames.add(item.name);
+      const namespace = typeof item.namespace === "string" && item.namespace ? item.namespace : null;
+      if (itemType === RESPONSES_ITEM.CUSTOM_TOOL_CALL) historyCustomCalls.push({ namespace, name: item.name });
       // A prior turn's call carries its namespace; keep it so the next hop can restore it
-      if (typeof item.namespace === "string" && item.namespace) toolNamespaces.set(item.name, item.namespace);
+      if (namespace) toolNamespaces.set(item.name, { namespace, name: item.name });
       const toolInput = itemType === RESPONSES_ITEM.CUSTOM_TOOL_CALL
         ? { input: typeof item.input === "string" ? item.input : JSON.stringify(item.input ?? "") }
         : item.arguments;
@@ -178,20 +181,15 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
   }
 
   // Convert tools format.
-  // Responses API supports "hosted" tools (e.g. { type: "request_user_input" }) that carry no
-  // explicit `name` field and cannot be represented as Chat Completions function declarations.
-  // Filter them out to avoid sending nameless functionDeclarations to downstream providers
-  // such as Gemini, which strictly validates function names.
   const responseTools = assignWireNames(flattenNamespaceTools([
     ...(Array.isArray(body.tools) ? body.tools : []),
     ...additionalTools,
   ]), toolNamespaces);
   const wireByRef = wireNamesByRef(toolNamespaces);
-  renameNamespacedCalls(result.messages, wireByRef);
+  renameHistoryCalls(result.messages, wireByRef);
   if (Array.isArray(body.tools) || additionalTools.length > 0) {
     result.tools = responseTools
       .map(({ tool, name }) => {
-        if (!name || typeof name !== "string" || name.trim() === "") return null;
         // Already in Chat Completions format: { type: "function", function: { name, ... } }
         if (tool.function) return name === tool.function.name ? tool : { ...tool, function: { ...tool.function, name } };
         // Responses API function/custom tool: { type, name, description, parameters|format }.
@@ -230,13 +228,20 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
             strict: tool.strict
           }
         };
-      })
-      .filter(Boolean);
+      });
     // Only hosted or deferred tools: upstreams reject an empty list or a choice with nothing to call.
     if (result.tools.length === 0) {
       delete result.tools;
       delete result.tool_choice;
     }
+  }
+  // A prior turn's custom call to a tool no longer declared still comes back as
+  // custom. A declared tool's own type wins, so a plain function that shares a
+  // custom tool's client name is never turned into a custom call.
+  const declared = new Set(responseTools.map(({ name }) => name));
+  for (const { namespace, name } of historyCustomCalls) {
+    const wire = wireByRef.get(toolRefKey(namespace, name)) ?? name;
+    if (!declared.has(wire)) customToolNames.add(wire);
   }
   if (result.tool_choice !== undefined) result.tool_choice = wireToolChoice(result.tool_choice, wireByRef);
   if (customToolNames.size > 0) result._customToolNames = [...customToolNames];
@@ -310,29 +315,27 @@ function assignWireNames(flat, namespaces) {
   const entries = [];
   for (const entry of flat) {
     const name = entry.tool.function?.name ?? entry.tool.name;
-    if (typeof name === "string" && name) {
-      const ns = entry.namespace ?? "";
-      if (!seen.has(ns)) seen.set(ns, new Set());
-      if (seen.get(ns).has(name)) continue;
-      seen.get(ns).add(name);
-    }
+    // Nameless or blank: nothing an upstream could declare or call.
+    if (typeof name !== "string" || !name.trim()) continue;
+    const ns = entry.namespace ?? "";
+    if (!seen.has(ns)) seen.set(ns, new Set());
+    if (seen.get(ns).has(name)) continue;
+    seen.get(ns).add(name);
     entries.push({ ...entry, name });
   }
 
   const counts = new Map();
-  for (const { name } of entries) if (typeof name === "string" && name) counts.set(name, (counts.get(name) || 0) + 1);
-  const keepsName = ({ name, namespace }) => typeof name === "string" && isWireToolName(name)
-    && (!namespace || counts.get(name) === 1);
+  for (const { name } of entries) counts.set(name, (counts.get(name) || 0) + 1);
+  const keepsName = ({ name, namespace }) => isWireToolName(name) && (!namespace || counts.get(name) === 1);
   const taken = new Set(entries.filter(keepsName).map((e) => e.name));
 
   // Drop any namespace a prior turn's call recorded under a name declared now.
-  for (const { name } of entries) if (typeof name === "string") namespaces.delete(name);
+  for (const { name } of entries) namespaces.delete(name);
 
   return entries.map((entry) => {
     const { name, namespace } = entry;
-    if (typeof name !== "string" || !name) return entry;
     if (keepsName(entry)) {
-      if (namespace) namespaces.set(name, namespace);
+      if (namespace) namespaces.set(name, { namespace, name });
       return entry;
     }
     let wire = qualifyToolName(namespace, name);
@@ -345,31 +348,37 @@ function assignWireNames(flat, namespaces) {
 
 const toolRefKey = (namespace, name) => `${namespace || ""}\u0000${name}`;
 
-// Reverse lookup from the client's (namespace, name) to the renamed wire name.
+// Reverse lookup from the client's (namespace, name) to the wire name.
 function wireNamesByRef(namespaces) {
   const byRef = new Map();
-  for (const [wire, entry] of namespaces) {
-    if (typeof entry === "object") byRef.set(toolRefKey(entry.namespace, entry.name), wire);
-  }
+  for (const [wire, { namespace, name }] of namespaces) byRef.set(toolRefKey(namespace, name), wire);
   return byRef;
 }
 
-// History calls must use the same upstream names as the declarations.
-function renameNamespacedCalls(messages, byRef) {
+// History calls must use the same upstream names as the declarations. A renamed
+// call drops its namespace: the wire name already carries it, and a Chat → Responses
+// hop (github, zed executors) would otherwise replay a namespace on a flat tool.
+function renameHistoryCalls(messages, byRef) {
   if (byRef.size === 0) return;
   for (const msg of messages) {
     for (const tc of msg.tool_calls || []) {
       const wire = tc.function && byRef.get(toolRefKey(tc.namespace, tc.function.name));
-      if (wire) tc.function.name = wire;
+      if (!wire || wire === tc.function.name) continue;
+      tc.function.name = wire;
+      delete tc.namespace;
     }
   }
 }
 
-// A forced `{ type: "function", name, namespace }` must name the tool as declared upstream.
+// Responses forces a tool with `{ type: "function" | "custom", name, namespace? }`;
+// Chat (and the Claude translator after it) take `{ type: "function", function: { name } }`,
+// naming the tool as it is declared upstream.
 function wireToolChoice(choice, byRef) {
-  if (choice?.type !== OPENAI_BLOCK.FUNCTION || typeof choice.name !== "string") return choice;
-  const wire = byRef.get(toolRefKey(choice.namespace, choice.name));
-  return wire ? { ...choice, name: wire } : choice;
+  const isForced = (choice?.type === TOOL_TYPE.FUNCTION || choice?.type === TOOL_TYPE.CUSTOM)
+    && typeof choice.name === "string";
+  if (!isForced) return choice;
+  const name = byRef.get(toolRefKey(choice.namespace, choice.name)) ?? choice.name;
+  return { type: OPENAI_BLOCK.FUNCTION, function: { name } };
 }
 
 /**

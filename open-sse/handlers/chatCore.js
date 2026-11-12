@@ -29,6 +29,7 @@ import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
 import { defaultClaudeToolType } from "../translator/concerns/toolCall.js";
+import { takeToolMetadata } from "../translator/concerns/toolNamespace.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 import { streamOverride } from "./chatCore/endpointOverrides.js";
 
@@ -274,10 +275,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     }
     toolNameMap = translatedBody._toolNameMap;
     delete translatedBody._toolNameMap;
-    customToolNames = translatedBody._customToolNames;
-    delete translatedBody._customToolNames;
-    toolNamespaces = translatedBody._toolNamespaces;
-    delete translatedBody._toolNamespaces;
+    ({ customToolNames, toolNamespaces } = takeToolMetadata(translatedBody));
     translatedBody.model = stripThinkingSuffix(upstreamModel);
     stripContinuityFields(translatedBody);
   }

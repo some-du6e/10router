@@ -12,6 +12,8 @@ const { FORMATS } = await import("../../open-sse/translator/formats.js");
 const { initState, translateRequest, translateResponse } = await import("../../open-sse/translator/index.js");
 const { translateNonStreamingResponse } = await import("../../open-sse/handlers/chatCore/nonStreamingHandler.js");
 const { handleForcedSSEToJson } = await import("../../open-sse/handlers/chatCore/sseToJsonHandler.js");
+const { takeToolMetadata } = await import("../../open-sse/translator/concerns/toolNamespace.js");
+const { openaiResponsesToOpenAIRequest, openaiToOpenAIResponsesRequest } = await import("../../open-sse/translator/request/openai-responses.js");
 
 const MODEL = "claude-opus-5-5";
 const WIRE_NAME = /^[a-zA-Z0-9_-]{1,64}$/;
@@ -89,13 +91,9 @@ function translate(route, request = codexRequest()) {
 
 const toolName = (tool) => tool.function?.name ?? tool.name;
 
-// How chatCore and stream.js seed the response state from the translated request.
+// How chatCore pulls the metadata off the translated request, and stream.js seeds the state with it.
 function responsesState(req) {
-  return {
-    ...initState(FORMATS.OPENAI_RESPONSES),
-    customToolNames: new Set(req._customToolNames || []),
-    toolNamespaces: new Map(Object.entries(req._toolNamespaces || {})),
-  };
+  return { ...initState(FORMATS.OPENAI_RESPONSES), ...takeToolMetadata(req) };
 }
 
 function claudeToolUseStream(name, inputJson) {
@@ -129,21 +127,21 @@ function streamCall(route, req, wireName, args) {
   return { done, added, completed };
 }
 
-function nonStreamCall(route, req, wireName, args) {
+function nonStreamCall(route, req, wireName, args, finish = null) {
   const callId = route.target === FORMATS.CLAUDE ? "toolu_1" : "call_1";
   const body = route.target === FORMATS.CLAUDE
     ? {
       id: "msg_1", type: "message", role: "assistant", model: MODEL,
       content: [{ type: "tool_use", id: callId, name: wireName, input: JSON.parse(args) }],
-      stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 3 },
+      stop_reason: finish || "tool_use", usage: { input_tokens: 1, output_tokens: 3 },
     }
     : {
       id: "chatcmpl-1", object: "chat.completion", model: MODEL,
-      choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [{ id: callId, type: "function", function: { name: wireName, arguments: args } }] }, finish_reason: "tool_calls" }],
+      choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [{ id: callId, type: "function", function: { name: wireName, arguments: args } }] }, finish_reason: finish || "tool_calls" }],
       usage: { prompt_tokens: 1, completion_tokens: 3, total_tokens: 4 },
     };
-  // chatCore hands these over exactly as the request translator left them.
-  const out = translateNonStreamingResponse(body, route.target, FORMATS.OPENAI_RESPONSES, req._customToolNames, req._toolNamespaces);
+  const { customToolNames, toolNamespaces } = takeToolMetadata(req);
+  const out = translateNonStreamingResponse(body, route.target, FORMATS.OPENAI_RESPONSES, customToolNames, toolNamespaces);
   return { out, callId };
 }
 
@@ -258,8 +256,7 @@ describe("Codex MCP namespaces with shared tool names", () => {
       requestStartTime: Date.now(),
       connectionId: "conn-a",
       clientRawRequest: { endpoint: "/v1/responses" },
-      customToolNames: req._customToolNames,
-      toolNamespaces: req._toolNamespaces,
+      ...takeToolMetadata(req),
       trackDone: vi.fn(),
       appendLog: vi.fn(),
     });
@@ -389,5 +386,124 @@ describe("Codex tool names that would still collide after qualifying", () => {
       expect(new Set(names).size).toBe(2);
       for (const n of names) expect(n).toMatch(WIRE_NAME);
     });
+
+    it("drops tools whose name is blank", () => {
+      const names = translate(route, request([fn(" "), fn(""), ns("mcp__a", [fn("\t")]), fn("shell")])).tools.map(toolName);
+
+      expect(names).toEqual(["shell"]);
+    });
+  });
+});
+
+describe("Codex history replay", () => {
+  const request = (tools, input) => ({ ...codexRequest(), tools, input });
+
+  it("drops the namespace from a renamed call, so a Chat → Responses hop replays it flat", () => {
+    const chat = openaiResponsesToOpenAIRequest(MODEL, request(codexTools(), [
+      userTurn("run it"),
+      { type: "function_call", call_id: "call_a", name: "js", namespace: "mcp__node_repl", arguments: "{}" },
+      { type: "function_call", call_id: "call_b", name: "js_add_node_module_dir", namespace: "mcp__node_repl", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_a", output: "ok" },
+      { type: "function_call_output", call_id: "call_b", output: "ok" },
+    ]), true, null);
+    const calls = chat.messages.flatMap((m) => m.tool_calls || []);
+
+    expect(calls[0]).not.toHaveProperty("namespace");
+    expect(calls[0].function.name).toBe("mcp__node_repl__js");
+    // A call that kept its name keeps its namespace.
+    expect(calls[1].namespace).toBe("mcp__node_repl");
+
+    // How the github and zed executors send a Chat body to a Responses upstream.
+    const replayed = openaiToOpenAIResponsesRequest(MODEL, chat, true, null).input.filter((i) => i.type === "function_call");
+    expect(replayed[0]).toMatchObject({ name: "mcp__node_repl__js" });
+    expect(replayed[0]).not.toHaveProperty("namespace");
+    expect(replayed[1]).toMatchObject({ name: "js_add_node_module_dir", namespace: "mcp__node_repl" });
+  });
+
+  describe.each(ROUTES)("$label", (route) => {
+    const custom = (name) => ({ type: "custom", name, description: name, format: { type: "text" } });
+    const TOOLS = [fn("run"), ns("mcp__x", [custom("run")])];
+
+    it.each([
+      ["with its namespace", { namespace: "mcp__x" }],
+      ["without a namespace", {}],
+    ])("keeps a plain function call plain after an earlier custom call of the same name %s", (_label, extra) => {
+      const req = translate(route, request(TOOLS, [
+        userTurn("go"),
+        { type: "custom_tool_call", call_id: "call_c", name: "run", input: "x", ...extra },
+        { type: "custom_tool_call_output", call_id: "call_c", output: "ok" },
+      ]));
+      const names = req.tools.map(toolName);
+
+      expect(names).toEqual(["run", "mcp__x__run"]);
+      expect(req._customToolNames).toEqual(["mcp__x__run"]);
+      const { done } = streamCall(route, req, "run", "{}");
+      expect(done[0]).toMatchObject({ type: "function_call", name: "run", arguments: "{}" });
+      expect(done[0]).not.toHaveProperty("namespace");
+    });
+
+    it("still returns a custom call to a tool only an earlier turn declared", () => {
+      const req = translate(route, request([fn("shell")], [
+        userTurn("go"),
+        { type: "custom_tool_call", call_id: "call_c", name: "old_patch", input: "x" },
+        { type: "custom_tool_call_output", call_id: "call_c", output: "ok" },
+      ]));
+
+      expect(req._customToolNames).toEqual(["old_patch"]);
+    });
+  });
+});
+
+describe("non-streaming reply status for a Codex request", () => {
+  describe.each(ROUTES)("$label", (route) => {
+    const finish = route.target === FORMATS.CLAUDE ? "max_tokens" : "length";
+
+    it(`reports a reply cut off by ${finish} as incomplete`, () => {
+      const req = translate(route, codexRequest({ stream: false }));
+      const { out } = nonStreamCall(route, req, "exec_command", "{\"cmd\":\"ls\"}", finish);
+
+      expect(out.status).toBe("incomplete");
+      expect(out.incomplete_details).toEqual({ reason: "max_output_tokens" });
+    });
+
+    it("reports a finished tool call as completed", () => {
+      const req = translate(route, codexRequest({ stream: false }));
+      const { out } = nonStreamCall(route, req, "exec_command", "{\"cmd\":\"ls\"}");
+
+      expect(out.status).toBe("completed");
+      expect(out).not.toHaveProperty("incomplete_details");
+    });
+  });
+
+  it("reports a filtered Chat reply as incomplete with content_filter", () => {
+    const req = translate(ROUTES[0], codexRequest({ stream: false }));
+    const { out } = nonStreamCall(ROUTES[0], req, "exec_command", "{}", "content_filter");
+
+    expect(out).toMatchObject({ status: "incomplete", incomplete_details: { reason: "content_filter" } });
+  });
+
+  it("reports an unknown finish reason as completed", () => {
+    const req = translate(ROUTES[0], codexRequest({ stream: false }));
+    const { out } = nonStreamCall(ROUTES[0], req, "exec_command", "{}", "something_new");
+
+    expect(out.status).toBe("completed");
+  });
+
+  it("turns a Gemini reply into a Responses body with the client's tool name", () => {
+    const req = translate({ target: FORMATS.GEMINI, provider: "gemini" }, codexRequest({ stream: false }));
+    const { customToolNames, toolNamespaces } = takeToolMetadata(req);
+    const out = translateNonStreamingResponse({
+      candidates: [{
+        content: { role: "model", parts: [{ functionCall: { name: "mcp__cua_repl__js", args: { code: "1" } } }] },
+        finishReason: "STOP",
+      }],
+      usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 2, totalTokenCount: 3 },
+      modelVersion: MODEL,
+    }, FORMATS.GEMINI, FORMATS.OPENAI_RESPONSES, customToolNames, toolNamespaces);
+
+    expect(out).toMatchObject({ object: "response", status: "completed" });
+    expect(out.output).toEqual([expect.objectContaining({
+      type: "function_call", name: "js", namespace: "mcp__cua_repl", arguments: "{\"code\":\"1\"}",
+    })]);
   });
 });
