@@ -28,8 +28,13 @@ const REASONING_LEVELS = [
   { effort: "high", description: "Maximizes reasoning depth for complex problems." },
 ];
 
-// What Codex 0.137 decodes; 0.167 takes any non-empty effort.
-const LEGACY_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+// Before 0.138.0 a reasoning effort had to be one of these; from 0.138.0 any
+// other non-empty string decodes as a custom effort.
+const STRICT_EFFORTS_BEFORE = [0, 138, 0];
+const STRICT_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+// Before 0.147.0 every entry needed a `base_instructions` string; from 0.147.0
+// it is optional next to `model_messages.instructions_template`.
+const REQUIRED_BASE_INSTRUCTIONS_BEFORE = [0, 147, 0];
 
 // Spelled the way Codex's own catalog spells it: 0.137 reads it as the
 // `shell_command` tool, 0.167 as an alias of `unified_exec`.
@@ -61,9 +66,11 @@ function inputModalities(caps) {
   return modalities;
 }
 
+// A source build of Codex reports its workspace version, 0.0.0: newest, not oldest.
 const parseVersion = (value) => {
   const match = typeof value === "string" ? value.match(/^(\d+)\.(\d+)\.(\d+)/) : null;
-  return match ? match.slice(1).map(Number) : null;
+  const version = match ? match.slice(1).map(Number) : null;
+  return version && version.some((n) => n > 0) ? version : null;
 };
 
 const older = (a, b) => {
@@ -71,36 +78,37 @@ const older = (a, b) => {
   return false;
 };
 
-const VENDORED = parseVersion(CODEX_CATALOG_VERSION);
-
 /**
  * Codex's bundled entries as a given Codex client can use them: entries newer
  * than the client (`minimal_client_version`) are left out, the way the ChatGPT
- * backend leaves them out, and clients older than the vendored release get
- * only the reasoning efforts they can decode.
+ * backend leaves them out, and each entry is shaped for what that client
+ * decodes. A missing or 0.0.0 version means the newest Codex.
  * @param {string|null} [clientVersion] the `client_version` Codex sent
  */
 export function codexModelsFor(clientVersion) {
   const client = parseVersion(clientVersion);
-  const legacy = client && older(client, VENDORED);
-  const usable = client
-    ? CODEX_BUNDLED_MODELS.filter((m) => {
-      const minimal = parseVersion(m.minimal_client_version);
-      return !minimal || !older(client, minimal);
-    })
-    : CODEX_BUNDLED_MODELS;
+  if (!client) return CODEX_BUNDLED_MODELS;
+  const strictEfforts = older(client, STRICT_EFFORTS_BEFORE);
+  const needsBase = older(client, REQUIRED_BASE_INSTRUCTIONS_BEFORE);
+  const usable = CODEX_BUNDLED_MODELS.filter((m) => {
+    const minimal = parseVersion(m.minimal_client_version);
+    return !minimal || !older(client, minimal);
+  });
   return usable.map((model) => {
-    // 0.137 requires the field; with an instructions template present neither
-    // version reads it, so the prompt isn't sent twice.
-    const entry = { ...model, base_instructions: model.base_instructions ?? "" };
-    if (!legacy) return entry;
-    const levels = model.supported_reasoning_levels.filter((l) => LEGACY_EFFORTS.has(l.effort));
-    const keepDefault = levels.some((l) => l.effort === model.default_reasoning_level);
-    return {
-      ...entry,
-      supported_reasoning_levels: levels,
-      default_reasoning_level: keepDefault ? model.default_reasoning_level : levels.at(-1)?.effort ?? null,
-    };
+    let entry = model;
+    // With an instructions template present the field isn't read, so the
+    // prompt isn't sent twice.
+    if (needsBase && entry.base_instructions === undefined) entry = { ...entry, base_instructions: "" };
+    if (strictEfforts) {
+      const levels = entry.supported_reasoning_levels.filter((l) => STRICT_EFFORTS.has(l.effort));
+      const keepDefault = levels.some((l) => l.effort === entry.default_reasoning_level);
+      entry = {
+        ...entry,
+        supported_reasoning_levels: levels,
+        default_reasoning_level: keepDefault ? entry.default_reasoning_level : levels.at(-1)?.effort ?? null,
+      };
+    }
+    return entry;
   });
 }
 
@@ -163,6 +171,18 @@ export function toCodexEntry(model) {
     truncation_policy: truncationPolicyFor(model.id),
     experimental_supported_tools: [],
   };
+}
+
+// Codex refuses a whole catalog with a repeated or empty slug
+// (model-provider/src/models_endpoint.rs). The first entry for a slug wins.
+export function uniqueBySlug(entries) {
+  const seen = new Set();
+  return entries.filter((entry) => {
+    const slug = typeof entry?.slug === "string" ? entry.slug.trim() : "";
+    if (!slug || seen.has(entry.slug)) return false;
+    seen.add(entry.slug);
+    return true;
+  });
 }
 
 /**

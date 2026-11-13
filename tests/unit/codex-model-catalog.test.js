@@ -21,8 +21,8 @@ const { buildModelsList } = await import("@/app/api/v1/models/route.js");
 const { getCapabilitiesForModel } = await import("open-sse/providers/capabilities.js");
 const { PROVIDER_ID_TO_ALIAS } = await import("@/shared/constants/models");
 const {
-  buildCodexCatalog, findCodexModel, toCodexEntry, codexModelsFor,
-  CODEX_BASE_INSTRUCTIONS, CODEX_BUNDLED_MODELS,
+  buildCodexCatalog, findCodexModel, toCodexEntry, codexModelsFor, uniqueBySlug,
+  CODEX_BASE_INSTRUCTIONS, CODEX_BUNDLED_MODELS, CODEX_CATALOG_VERSION,
 } = await import("@/lib/codex/modelCatalog.js");
 
 beforeAll(async () => {
@@ -233,15 +233,35 @@ describe("Codex's own models", () => {
     expect(body.models.map((m) => m.slug)).toEqual(["catalog-combo"]);
   });
 
-  it("are left out for a Codex older than the model, and shaped for what an older Codex decodes", () => {
-    const astra = bundled("gpt-6-astra");
-    expect(astra.minimal_client_version).toBe("0.153.0");
-    expect(codexModelsFor("0.137.0").map((m) => m.slug)).not.toContain("gpt-6-astra");
-    expect(codexModelsFor("0.167.2").map((m) => m.slug)).toContain("gpt-6-astra");
-    expect(astra.supported_reasoning_levels.map((l) => l.effort)).toContain("max");
-    const old = codexModelsFor("0.160.0").find((m) => m.slug === "gpt-6-astra");
-    expect(old.supported_reasoning_levels.map((l) => l.effort)).not.toContain("max");
-    expect(old.supported_reasoning_levels.map((l) => l.effort)).toContain("xhigh");
+  it("are left out for a Codex older than the model", () => {
+    expect(bundled("gpt-6-astra").minimal_client_version).toBe("0.153.0");
+    expect(codexModelsFor("0.152.9").map((m) => m.slug)).not.toContain("gpt-6-astra");
+    expect(codexModelsFor("0.153.0").map((m) => m.slug)).toContain("gpt-6-astra");
+  });
+
+  const efforts = (version, slug) => codexModelsFor(version).find((m) => m.slug === slug).supported_reasoning_levels.map((l) => l.effort);
+
+  it("keep every reasoning effort from Codex 0.138, which reads unknown efforts as custom ones", () => {
+    expect(efforts("0.138.0", "codex-auto-review")).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(efforts("0.160.0", "gpt-6-astra")).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+  });
+
+  it("keep only the efforts Codex 0.137 knows for 0.137", () => {
+    expect(efforts("0.137.0", "codex-auto-review")).toEqual(["low", "medium", "high", "xhigh"]);
+    expect(codexModelsFor("0.137.0").find((m) => m.slug === "codex-auto-review").default_reasoning_level).toBe("medium");
+  });
+
+  it("carry an empty base_instructions only for Codex before 0.147, which requires the field", () => {
+    expect(bundled("gpt-5.5").base_instructions).toBeUndefined();
+    expect(codexModelsFor("0.146.0").find((m) => m.slug === "gpt-5.5").base_instructions).toBe("");
+    expect(codexModelsFor("0.147.0").find((m) => m.slug === "gpt-5.5").base_instructions).toBeUndefined();
+  });
+
+  it("treat a source build's 0.0.0 like the newest Codex", async () => {
+    expect(codexModelsFor("0.0.0")).toEqual(CODEX_BUNDLED_MODELS);
+    expect(codexModelsFor(null)).toEqual(CODEX_BUNDLED_MODELS);
+    const body = await catalog("0.0.0");
+    expect(body.models.find((m) => m.slug === "cx/gpt-6-astra")?.model_messages).toEqual(bundled("gpt-6-astra").model_messages);
   });
 
   it("match the way Codex's own lookup does", () => {
@@ -253,6 +273,39 @@ describe("Codex's own models", () => {
     expect(findCodexModel("openrouter/openai/gpt-5.5", candidates)).toBeNull();
     expect(findCodexModel("my.ns/gpt-5.5", candidates)).toBeNull();
     expect(findCodexModel("acme/claude-opus-5-5", candidates)).toBeNull();
+  });
+});
+
+describe("slugs", () => {
+  it("drops repeated and empty slugs, keeping the first", () => {
+    const entries = [{ slug: "a", n: 1 }, { slug: "" }, { slug: "  " }, {}, { slug: "a", n: 2 }, { slug: "b" }];
+    expect(uniqueBySlug(entries)).toEqual([{ slug: "a", n: 1 }, { slug: "b" }]);
+  });
+
+  it("keeps a routed model over Codex's hidden model of the same name", async () => {
+    await db.createCombo({ name: "codex-auto-review", models: ["openai/gpt-a"] });
+    const body = await catalog("0.167.2");
+    const matches = body.models.filter((m) => m.slug === "codex-auto-review");
+    expect(matches.map((m) => m.visibility)).toEqual(["list"]);
+    const slugs = body.models.map((m) => m.slug);
+    expect(new Set(slugs).size).toBe(slugs.length);
+    await db.deleteCombo((await db.getComboByName("codex-auto-review")).id);
+  });
+});
+
+describe("the vendored Codex files", () => {
+  it("come from the Codex release CODEX_CATALOG_VERSION names", () => {
+    const tag = `rust-v${CODEX_CATALOG_VERSION}`;
+    const prompt = JSON.parse(fs.readFileSync(new URL("../../open-sse/config/codex/prompt.json", import.meta.url), "utf8"));
+    expect(prompt.source).toContain(`/${tag}/`);
+    const notices = fs.readFileSync(new URL("../../THIRD_PARTY_NOTICES.md", import.meta.url), "utf8");
+    expect(notices.match(/rust-v\d+\.\d+\.\d+/g)).toEqual([tag]);
+    // No model in the catalog needs a newer Codex than the release it came from.
+    const version = CODEX_CATALOG_VERSION.split(".").map(Number);
+    for (const model of CODEX_BUNDLED_MODELS) {
+      const minimal = (model.minimal_client_version || "0.0.0").split(".").map(Number);
+      expect(minimal[0] * 1e6 + minimal[1] * 1e3 + minimal[2]).toBeLessThanOrEqual(version[0] * 1e6 + version[1] * 1e3 + version[2]);
+    }
   });
 });
 

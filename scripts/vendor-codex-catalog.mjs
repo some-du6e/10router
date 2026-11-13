@@ -7,19 +7,21 @@
 // open-sse/config/codex/models.json is Codex's bundled catalog
 // (codex-rs/models-manager/models.json), byte for byte. prompt.json wraps
 // Codex's generic prompt (codex-rs/models-manager/prompt.md), text unchanged.
-// Both are Apache-2.0; see THIRD_PARTY_NOTICES.md. Afterwards, bump the tag
-// there and in CODEX_CATALOG_VERSION (src/lib/codex/modelCatalog.js), then run
-// tests/unit/codex-model-catalog.test.js and the Codex model catalog workflow.
-import { writeFileSync } from "node:fs";
+// Both are Apache-2.0. The tag also goes into CODEX_CATALOG_VERSION
+// (src/lib/codex/modelCatalog.js) and THIRD_PARTY_NOTICES.md;
+// tests/unit/codex-model-catalog.test.js checks they agree. Then run that test
+// and the Codex model catalog workflow.
+import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const tag = process.argv[2];
-if (!/^rust-v\d+\.\d+\.\d+$/.test(tag || "")) {
+const version = /^rust-v(\d+\.\d+\.\d+)$/.exec(tag || "")?.[1];
+if (!version) {
   console.error("usage: node scripts/vendor-codex-catalog.mjs rust-vX.Y.Z");
   process.exit(1);
 }
 
-const outDir = fileURLToPath(new URL("../open-sse/config/codex/", import.meta.url));
+const root = (path) => fileURLToPath(new URL(`../${path}`, import.meta.url));
 const raw = (path) => `https://raw.githubusercontent.com/openai/codex/${tag}/${path}`;
 
 async function get(path) {
@@ -28,15 +30,30 @@ async function get(path) {
   return response.text();
 }
 
-const models = await get("codex-rs/models-manager/models.json");
+// Fetch everything before writing anything, so a failed download leaves the
+// vendored files as they were.
+const [models, instructions] = await Promise.all([
+  get("codex-rs/models-manager/models.json"),
+  get("codex-rs/models-manager/prompt.md"),
+]);
 const count = JSON.parse(models).models.length;
-writeFileSync(`${outDir}models.json`, models);
-
-const instructions = await get("codex-rs/models-manager/prompt.md");
-writeFileSync(`${outDir}prompt.json`, JSON.stringify({
+const prompt = JSON.stringify({
   source: `https://github.com/openai/codex/blob/${tag}/codex-rs/models-manager/prompt.md`,
   license: "Apache-2.0, Copyright 2025 OpenAI",
   instructions,
-}, null, 2) + "\n");
+}, null, 2) + "\n";
+const replaceIn = (path, pattern, replacement) => {
+  const text = readFileSync(root(path), "utf8");
+  if (!pattern.test(text)) throw new Error(`${path}: nothing matches ${pattern}`);
+  return [path, text.replace(pattern, replacement)];
+};
+const edits = [
+  replaceIn("src/lib/codex/modelCatalog.js", /CODEX_CATALOG_VERSION = "[^"]+"/, `CODEX_CATALOG_VERSION = "${version}"`),
+  replaceIn("THIRD_PARTY_NOTICES.md", /rust-v\d+\.\d+\.\d+/g, tag),
+];
+
+writeFileSync(root("open-sse/config/codex/models.json"), models);
+writeFileSync(root("open-sse/config/codex/prompt.json"), prompt);
+for (const [path, text] of edits) writeFileSync(root(path), text);
 
 console.log(`${tag}: ${count} models, ${instructions.length}-char prompt`);

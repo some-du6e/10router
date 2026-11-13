@@ -1,6 +1,6 @@
 import { buildModelsList } from "../../models/route.js";
 import { filterModelsForRequest } from "@/sse/services/keyLimits.js";
-import { buildCodexCatalog, codexModelsFor, CODEX_ALIAS } from "@/lib/codex/modelCatalog.js";
+import { buildCodexCatalog, codexModelsFor, uniqueBySlug, CODEX_ALIAS } from "@/lib/codex/modelCatalog.js";
 
 // Codex clients pointed at a `/backend-api/codex` base URL fetch their catalog
 // from `<base_url>/models` and expect the Codex shape (`{ "models": [...] }`).
@@ -31,7 +31,8 @@ function toOpenAIEntry(entry, created) {
 
 // Most generic entries carry the same 21k-character prompt, so the body runs
 // to megabytes. Codex asks for it again every few minutes with the same
-// models, so reuse the last body while its inputs are the same.
+// models, so keep the last serialized body (one slot) and reuse it while its
+// inputs are the same. The entries themselves are rebuilt on every request.
 let lastBody = { key: null, models: null, data: null };
 
 export async function OPTIONS() {
@@ -70,10 +71,11 @@ export async function GET(request) {
     const key = JSON.stringify([clientVersion, models, bare.map((model) => model.slug)]);
     if (lastBody.key !== key) {
       const created = Math.floor(Date.now() / 1000);
+      const routed = uniqueBySlug(entries);
       lastBody = {
         key,
-        models: JSON.stringify([...entries, ...bare.map((model) => ({ ...model, visibility: "hide" }))]),
-        data: JSON.stringify(entries.map((entry) => toOpenAIEntry(entry, created))),
+        models: JSON.stringify(uniqueBySlug([...routed, ...bare.map((model) => ({ ...model, visibility: "hide" }))])),
+        data: JSON.stringify(routed.map((entry) => toOpenAIEntry(entry, created))),
       };
     }
     return new Response(`{"models":${lastBody.models},"object":"list","data":${lastBody.data}}`, {

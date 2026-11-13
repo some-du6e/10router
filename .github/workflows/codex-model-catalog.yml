@@ -68,7 +68,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        codex: ["0.167.2", "0.137.0"]
+        # 0.137/0.138: reasoning efforts turn lenient. 0.146/0.147:
+        # base_instructions turns optional. See codexModelsFor().
+        codex: ["0.167.2", "0.147.0", "0.146.0", "0.138.0", "0.137.0"]
     steps:
       - uses: actions/checkout@v5
         with:

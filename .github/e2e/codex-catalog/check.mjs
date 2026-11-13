@@ -41,7 +41,9 @@ function codex(home, args, input) {
 }
 
 const version = (await codex(tmpdir(), ["--version"])).stdout.trim();
-const supportsCatalogUrl = !/ 0\.13\d\./.test(version);
+// model_catalog_url arrived in 0.156; the API-key discovery checked here is 0.167's.
+const minor = Number(/ 0\.(\d+)\./.exec(version)?.[1]);
+const supportsCatalogUrl = minor >= 167;
 const catalogFile = (side) => join(workDir, side, "catalog.json");
 const catalog = (side) => JSON.parse(readFileSync(catalogFile(side), "utf8")).models;
 const sides = existsSync(catalogFile("base")) ? ["base", "head"] : ["head"];
