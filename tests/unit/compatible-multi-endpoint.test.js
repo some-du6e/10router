@@ -374,6 +374,258 @@ describe("validating a key at its own URL", () => {
     }
   });
 
+  describe("an OpenAI-compatible upstream without a /models route", () => {
+    const answer = (status, body = { code: "x", message: "m" }) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    // /models answers `modelsStatus`; the chat path answers `chatStatus`.
+    const upstream = (modelsStatus, chatStatus) => {
+      const sent = [];
+      mocks.probeFetch.mockImplementation(async (url, init) => {
+        const res = answer(String(url).includes("/models") ? modelsStatus : chatStatus);
+        sent.push({ url, init, res });
+        return res;
+      });
+      return sent;
+    };
+    const validate = (body) => validateRoute.POST(req({ provider: NODE_ID, apiKey: "sk-b", baseUrl: PUBLIC_URL, ...body }));
+    beforeEach(() => { db.local = false; });
+
+    it("a key the chat path refuses only for the missing model is valid", async () => {
+      const sent = upstream(404, 400);
+      const res = await validate();
+      expect(res.body).toEqual({ valid: true, error: null });
+      expect(sent).toHaveLength(2);
+      // At the key's own URL, through the pinned probe fetch, with no model: nothing to run.
+      const [, chat] = sent;
+      expect(chat.url).toBe(`${PUBLIC_URL}/chat/completions`);
+      expect(chat.init).toMatchObject({ method: "POST", body: "{}" });
+      expect(chat.init.headers).toMatchObject({ Authorization: "Bearer sk-b", "Content-Type": "application/json" });
+      // Both bodies are dropped, so the pinned connections close.
+      for (const { res: r } of sent) expect(r.bodyUsed).toBe(true);
+    });
+
+    it("a key the chat path answers with 401 or 403 is invalid", async () => {
+      for (const status of [401, 403]) {
+        upstream(404, status);
+        const res = await validate();
+        expect(res.body, String(status)).toEqual({ valid: false, error: "Invalid API key" });
+      }
+    });
+
+    it("a key the chat path answers with 2xx or a body refusal (400, 422) is valid", async () => {
+      for (const status of [200, 201, 400, 422]) {
+        upstream(404, status);
+        expect((await validate()).body, String(status)).toEqual({ valid: true, error: null });
+      }
+    });
+
+    const WRONG_URL = { valid: false, reason: "no-api-route", error: "The endpoint URL looks wrong: it has no /models and no chat route" };
+
+    it("no /models and no chat route either is a wrong URL, not a valid key", async () => {
+      for (const [modelsStatus, chatStatus] of [[404, 404], [404, 405], [405, 404], [405, 405]]) {
+        const sent = upstream(modelsStatus, chatStatus);
+        const res = await validate();
+        expect(res.body, `${modelsStatus}/${chatStatus}`).toEqual(WRONG_URL);
+        expect(sent).toHaveLength(2);
+      }
+    });
+
+    it("a redirect from the chat path proves nothing about the key: a wrong URL", async () => {
+      // The probe fetch hands these back unfollowed: a POST 301/302/303, and any off-origin hop.
+      for (const [status, location] of [[302, `${PUBLIC_URL}/login`], [307, "https://elsewhere.example/v1/chat/completions"]]) {
+        mocks.probeFetch.mockResolvedValueOnce(answer(404)).mockResolvedValueOnce(new Response(null, { status, headers: { location } }));
+        expect((await validate()).body, String(status)).toEqual(WRONG_URL);
+      }
+    });
+
+    it("a chat-path answer that shows nothing about the key (429, 5xx, other 4xx) fails it as unverified", async () => {
+      for (const status of [429, 500, 502, 409]) {
+        upstream(404, status);
+        expect((await validate()).body, String(status)).toEqual({
+          valid: false, reason: "unverified", upstreamStatus: status,
+          error: `Couldn't check the key: the endpoint answered ${status} to the check. Try again.`,
+        });
+      }
+    });
+
+    it("both probes give up after 8s or when the caller goes away", async () => {
+      const timeout = vi.spyOn(AbortSignal, "timeout");
+      // A fetch that hangs until its signal aborts.
+      const hang = (_url, init) => new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+      });
+      try {
+        for (const step of ["/models", "chat"]) {
+          const caller = new AbortController();
+          mocks.probeFetch.mockReset();
+          if (step === "/models") mocks.probeFetch.mockImplementationOnce(hang);
+          else mocks.probeFetch.mockResolvedValueOnce(answer(404)).mockImplementationOnce(hang);
+          timeout.mockClear();
+          const pending = validateRoute.POST({ ...req({ provider: NODE_ID, apiKey: "sk-b", baseUrl: PUBLIC_URL }), signal: caller.signal });
+          await vi.waitFor(() => expect(mocks.probeFetch).toHaveBeenCalledTimes(step === "/models" ? 1 : 2));
+          caller.abort(new Error("caller gone"));
+          const res = await pending;
+          expect(res.body, step).toEqual({ valid: false, error: "caller gone" });
+          expect(timeout, step).toHaveBeenCalledWith(8000);
+          expect(timeout, step).toHaveBeenCalledTimes(step === "/models" ? 1 : 2);
+        }
+      } finally {
+        timeout.mockRestore();
+      }
+    });
+
+    it("a probe that times out is unverified (the endpoint didn't answer), not a refused key", async () => {
+      // The validator's 8s timeouts, fired by hand.
+      const timeouts = [];
+      const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => {
+        const c = new AbortController();
+        timeouts.push(c);
+        return c.signal;
+      });
+      const hang = (_url, init) => new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+      });
+      try {
+        for (const step of ["/models", "chat"]) {
+          mocks.probeFetch.mockReset();
+          if (step === "/models") mocks.probeFetch.mockImplementationOnce(hang);
+          else mocks.probeFetch.mockResolvedValueOnce(answer(404)).mockImplementationOnce(hang);
+          const pending = validate();
+          await vi.waitFor(() => expect(mocks.probeFetch).toHaveBeenCalledTimes(step === "/models" ? 1 : 2));
+          timeouts.at(-1).abort(new DOMException("The operation timed out.", "TimeoutError"));
+          expect((await pending).body, step).toEqual({
+            valid: false, reason: "unverified", error: "Couldn't check the key: the endpoint didn't answer within 8 seconds. Try again.",
+          });
+        }
+        // The caller went away and the timeout fired too: the caller's abort wins,
+        // so the management API's 504 isn't overtaken by a 502.
+        mocks.probeFetch.mockReset().mockImplementationOnce(hang);
+        const caller = new AbortController();
+        const pending = validateRoute.POST({ ...req({ provider: NODE_ID, apiKey: "sk-b", baseUrl: PUBLIC_URL }), signal: caller.signal });
+        await vi.waitFor(() => expect(mocks.probeFetch).toHaveBeenCalledTimes(1));
+        caller.abort(new Error("caller gone"));
+        timeouts.at(-1).abort(new DOMException("The operation timed out.", "TimeoutError"));
+        expect((await pending).body).toEqual({ valid: false, error: "caller gone" });
+      } finally {
+        timeout.mockRestore();
+      }
+    });
+
+    it("with the pinned probe fetch (a remote caller's own URL), a same-origin 307/308 on the chat path is not followed", async () => {
+      const http = await import("node:http");
+      const { makeProbeFetch: realProbeFetch } = await vi.importActual("@/lib/probeFetch.js");
+      const hits = [];
+      const server = await new Promise((resolve) => {
+        const s = http.createServer((rq, rs) => {
+          hits.push(`${rq.method} ${rq.url}`);
+          if (rq.url.endsWith("/models")) { rs.writeHead(404); return rs.end(); }
+          const redirect = { "/v1/chat/completions": [307, "/login"] }[rq.url] || { "/v2/chat/completions": [308, "/login"] }[rq.url];
+          if (redirect) { rs.writeHead(redirect[0], { location: redirect[1] }); return rs.end(); }
+          // A login page that would pass for a working key.
+          rs.writeHead(200, { "content-type": "text/html" });
+          rs.end("<html>login</html>");
+        });
+        s.listen(0, "127.0.0.1", () => resolve(s));
+      });
+      const loopback = `http://127.0.0.1:${server.address().port}`;
+      // The real probe fetch and its redirect handling, sent to the loopback
+      // server in place of the public host (the SSRF check is the only part left out).
+      const toLoopback = (url, init) => fetch(String(url).replace("https://8.8.8.8", loopback), init);
+      mocks.makeProbeFetch.mockImplementation(() => realProbeFetch(false, { fetchImpl: toLoopback }));
+      try {
+        for (const [version, status] of [["v1", 307], ["v2", 308]]) {
+          hits.length = 0;
+          const res = await validate({ baseUrl: `https://8.8.8.8/${version}` });
+          expect(res.body, String(status)).toEqual(WRONG_URL);
+          expect(mocks.makeProbeFetch).toHaveBeenLastCalledWith(true);
+          expect(hits, String(status)).toEqual([`GET /${version}/models`, `POST /${version}/chat/completions`]);
+        }
+      } finally {
+        server.close();
+      }
+    });
+
+    it("with the plain fetch (no own URL, or a local caller's own URL), a chat-path redirect is not followed", async () => {
+      const http = await import("node:http");
+      const hits = [];
+      const listen = (handler) => new Promise((resolve) => {
+        const server = http.createServer((rq, rs) => { hits.push(`${server.address().port} ${rq.method} ${rq.url}`); handler(rq, rs); });
+        server.listen(0, "127.0.0.1", () => resolve(server));
+      });
+      // Another host: a 307 there would re-send the POST and its headers.
+      const other = await listen((_rq, rs) => { rs.writeHead(400); rs.end("{}"); });
+      const otherUrl = `http://127.0.0.1:${other.address().port}`;
+      const redirects = { "/a/v1/chat/completions": [302, "/login"], "/b/v1/chat/completions": [307, `${otherUrl}/v1/chat/completions`] };
+      const main = await listen((rq, rs) => {
+        if (rq.url.endsWith("/models")) { rs.writeHead(404); return rs.end(); }
+        if (redirects[rq.url]) { const [status, location] = redirects[rq.url]; rs.writeHead(status, { location }); return rs.end(); }
+        rs.writeHead(200, { "content-type": "text/html" });
+        rs.end("<html>login</html>");
+      });
+      const base = `http://127.0.0.1:${main.address().port}`;
+      try {
+        db.local = true;
+        db.nodes.push(
+          { id: "openai-compatible-chat-a", type: "openai-compatible", prefix: "pa", apiType: "chat", baseUrl: `${base}/a/v1`, name: "A" },
+          { id: "openai-compatible-chat-b", type: "openai-compatible", prefix: "pb", apiType: "chat", baseUrl: `${base}/b/v1`, name: "B" },
+        );
+        for (const id of ["openai-compatible-chat-a", "openai-compatible-chat-b"]) {
+          const res = await validateRoute.POST(req({ provider: id, apiKey: "sk-p" }));
+          expect(res.body, id).toEqual(WRONG_URL);
+        }
+        // A local caller's key with its own URL takes the plain fetch too.
+        const own = await validateRoute.POST(req({ provider: NODE_ID, apiKey: "sk-p", baseUrl: `${base}/b/v1` }));
+        expect(own.body).toEqual(WRONG_URL);
+        expect(mocks.makeProbeFetch).not.toHaveBeenCalled();
+        expect(hits.filter((h) => h.includes("/b/v1/chat/completions"))).toHaveLength(2);
+        expect(hits.some((h) => h.includes("/login"))).toBe(false);
+        expect(hits.some((h) => h.startsWith(`${other.address().port} `))).toBe(false);
+      } finally {
+        main.close();
+        other.close();
+      }
+    });
+
+    it("a 405 on /models falls back to the chat path too", async () => {
+      const sent = upstream(405, 400);
+      expect((await validate()).body.valid).toBe(true);
+      expect(sent.map((s) => s.url)).toEqual([`${PUBLIC_URL}/models`, `${PUBLIC_URL}/chat/completions`]);
+    });
+
+    it("a /models answer other than 404/405 decides alone", async () => {
+      for (const [status, valid] of [[200, true], [401, false], [403, false], [429, false], [500, false], [502, false]]) {
+        const sent = upstream(status, 400);
+        expect((await validate()).body.valid, String(status)).toBe(valid);
+        expect(sent, String(status)).toHaveLength(1);
+      }
+    });
+
+    it("a network error on the chat path fails the key like one on /models", async () => {
+      mocks.probeFetch.mockResolvedValueOnce(answer(404)).mockRejectedValueOnce(new Error("connect ECONNREFUSED"));
+      const res = await validate();
+      expect(res.body).toEqual({ valid: false, error: "connect ECONNREFUSED" });
+    });
+
+    it("posts where routing posts: the node's path and query overrides, its auth header style, /responses for a Responses node", async () => {
+      const overrides = { path: "/chat", query: "api-version=2" };
+      db.nodes.push(
+        { id: "openai-compatible-chat-ovr", type: "openai-compatible", prefix: "ov", apiType: "chat", baseUrl: "https://api.example.com/v1", name: "OV", overrides, apiKeyHeader: "api-key" },
+        // No "responses" in the id: the node's apiType alone must pick the path.
+        { id: "openai-compatible-acme", type: "openai-compatible", prefix: "ac", apiType: "responses", baseUrl: "https://api.example.com/v1", name: "AC" },
+      );
+      let sent = upstream(404, 400);
+      await validateRoute.POST(req({ provider: "openai-compatible-chat-ovr", apiKey: "sk-o", baseUrl: PUBLIC_URL }));
+      expect(sent.map((s) => s.url)).toEqual([`${PUBLIC_URL}/models?api-version=2`, `${PUBLIC_URL}/chat?api-version=2`]);
+      expect(sent[1].init.headers["api-key"]).toBe("sk-o");
+      expect(sent[1].init.headers.Authorization).toBeUndefined();
+      // The URL a request on that key goes to.
+      expect(getExecutor("openai-compatible-chat-ovr").buildUrl("m", false, 0, { providerSpecificData: { baseUrl: PUBLIC_URL, overrides } })).toBe(sent[1].url);
+
+      sent = upstream(404, 400);
+      await validateRoute.POST(req({ provider: "openai-compatible-acme", apiKey: "sk-r", baseUrl: PUBLIC_URL }));
+      expect(sent[1].url).toBe(`${PUBLIC_URL}/responses`);
+    });
+  });
+
   it("an internal URL from a remote caller is refused before any request", async () => {
     db.local = false;
     const res = await validateRoute.POST(req({ provider: NODE_ID, apiKey: "sk-b", baseUrl: "http://169.254.169.254/latest" }));
@@ -390,6 +642,52 @@ describe("validating a key at its own URL", () => {
       expect(mocks.makeProbeFetch).not.toHaveBeenCalled();
     } finally {
       spy.mockRestore();
+    }
+  });
+});
+
+describe("the probe fetch's redirect rules", () => {
+  // The real makeProbeFetch on loopback servers. checkPublic is off (a test can
+  // only reach loopback), so the SSRF check and DNS pin are not exercised here.
+  it("follows a same-origin redirect on a GET, but not one to another origin, a POST 302, or any with redirect: manual", async () => {
+    const http = await import("node:http");
+    const { makeProbeFetch: realProbeFetch } = await vi.importActual("@/lib/probeFetch.js");
+    const hits = [];
+    const listen = (handler) => new Promise((resolve) => {
+      const s = http.createServer((rq, rs) => { hits.push(`${s.address().port} ${rq.method} ${rq.url}`); handler(rq, rs); });
+      s.listen(0, "127.0.0.1", () => resolve(s));
+    });
+    const other = await listen((_rq, rs) => { rs.writeHead(200); rs.end("other"); });
+    const otherPort = other.address().port;
+    const main = await listen((rq, rs) => {
+      const to = { "/same": [307, "/landed"], "/cross": [302, `http://127.0.0.1:${otherPort}/elsewhere`], "/post": [302, "/landed"] }[rq.url];
+      if (to) { rs.writeHead(to[0], { location: to[1] }); return rs.end(); }
+      rs.writeHead(200);
+      rs.end("landed");
+    });
+    const base = `http://127.0.0.1:${main.address().port}`;
+    const probeFetch = realProbeFetch(false);
+    const landedHits = () => hits.filter((h) => h.endsWith(" /landed")).length;
+    try {
+      const followed = await probeFetch(`${base}/same`, { method: "GET" });
+      expect(followed.status).toBe(200);
+      expect(await followed.text()).toBe("landed");
+      expect(landedHits()).toBe(1);
+
+      const cross = await probeFetch(`${base}/cross`, { method: "GET" });
+      expect(cross.status).toBe(302);
+      expect(hits.some((h) => h.startsWith(`${otherPort} `))).toBe(false);
+
+      const post = await probeFetch(`${base}/post`, { method: "POST", body: "{}" });
+      expect(post.status).toBe(302);
+
+      const manual = await probeFetch(`${base}/same`, { method: "GET", redirect: "manual" });
+      expect(manual.status).toBe(307);
+      expect(manual.headers.get("location")).toBe("/landed");
+      expect(landedHits()).toBe(1);
+    } finally {
+      main.close();
+      other.close();
     }
   });
 });
