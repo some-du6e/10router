@@ -248,25 +248,29 @@ describe("rate-limit hold wiring", () => {
     });
   });
 
-  it("returns a request error at once instead of holding for dead keys that read like a quota", async () => {
+  it("holds, as before, for a bodyless 403 next to a refused request", async () => {
     const refusal = "messages.1.content.0: unknown block type 'example_block'";
     const quotaText = DEFAULT_ERROR_MESSAGES[403];
+    const limited = { allRateLimited: true, retryAfter: new Date(Date.now() + 7_200_000).toISOString(), retryAfterHuman: "reset after 2h", lastError: quotaText, lastErrorCode: 403 };
     const steps = [
       { connectionId: "live", connectionName: "live", accessToken: "t" },
       { connectionId: "dead", connectionName: "dead", accessToken: "t" },
-      { allRateLimited: true, retryAfter: new Date(Date.now() + 7_200_000).toISOString(), retryAfterHuman: "reset after 2h", lastError: quotaText, lastErrorCode: 403 },
     ];
     let call = 0;
     const auth = await import("@/sse/services/auth.js");
-    vi.spyOn(auth, "getProviderCredentials").mockImplementation(async () => steps[call++] ?? null);
+    vi.spyOn(auth, "getProviderCredentials").mockImplementation(async () => steps[call++] ?? limited);
     state.coreResults = [
       { success: false, status: 400, error: refusal },
       { success: false, status: 403, error: quotaText },
     ];
 
-    const res = await handleChat(makeRequest({ model: "openai-compatible-example/demo", stream: true, messages: [{ role: "user", content: "hi" }] }));
-    expect(res.status).toBe(400);
-    expect(await res.text()).toContain(refusal);
+    const res = await handleChat(makeRequest({ model: "gpt-5", stream: true, messages: [{ role: "user", content: "hi" }] }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+    const reader = res.body.getReader();
+    const { value } = await reader.read();
+    expect(new TextDecoder().decode(value)).toContain(LIMIT_HOLD_SENTINEL);
+    await reader.cancel();
   });
 
   it("holds for a key on a quota limit when the other key's account lacks the model", async () => {

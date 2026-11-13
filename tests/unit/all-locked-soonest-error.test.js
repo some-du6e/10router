@@ -364,33 +364,37 @@ describe("status sent when every key is locked", () => {
     });
   });
 
-  describe("a key held on a limit keeps the 401/403 over a key that can't serve the model", () => {
+  describe("a limit anywhere in the pass keeps master's answer", () => {
     const refusal = "messages.1.content.0: unknown block type 'example_block'";
     const lacksModel = { status: 404, error: "The model example-model does not exist or you do not have access to it." };
     const modelRefusal = { status: 400, error: "The requested model is not available on this account" };
+    const rateLimited = { status: 429, error: "rate_limit_error" };
     const quota = { status: 403, error: "Quota for this key is used up, try again later" };
+    const dead = { status: 403, error: "Not authorized" };
 
-    it("keeps the limited 403 over a 404 or a model-refusal 400/422", () => {
+    it("keeps a 404 pass's 404 when another key got a 429", () => {
+      expect(allLockedError(404, lacksModel.error, null, [rateLimited, modelRefusal, lacksModel])).toEqual({ status: 404, error: lacksModel.error, swapped: false });
+      expect(allLockedError(404, lacksModel.error, null, [rateLimited, { status: 400, error: refusal }, lacksModel])).toEqual({ status: 404, error: lacksModel.error, swapped: false });
+    });
+
+    it("counts a limit worded on a 400", () => {
+      expect(allLockedError(401, "bad key", null, [{ status: 400, error: "rate limit exceeded" }, lacksModel, { status: 401, error: "bad key" }])).toEqual({ status: 401, error: "bad key", swapped: false });
+    });
+
+    it("keeps a quota-worded 403 over a 404 or a refused body", () => {
       expect(allLockedError(403, quota.error, null, [lacksModel, quota])).toEqual({ status: 403, error: quota.error, swapped: false });
-      expect(allLockedError(403, quota.error, null, [modelRefusal, quota])).toEqual({ status: 403, error: quota.error, swapped: false });
-      expect(allLockedError(403, quota.error, null, [{ ...modelRefusal, status: 422 }, quota]).status).toBe(403);
-    });
-
-    it("counts a bodyless 403, whose default text reads like a quota, as a limit", () => {
+      expect(allLockedError(403, quota.error, null, [{ status: 400, error: refusal }, quota])).toEqual({ status: 403, error: quota.error, swapped: false });
       const bodyless = { status: 403, error: DEFAULT_ERROR_MESSAGES[403] };
-      expect(allLockedError(403, bodyless.error, null, [lacksModel, bodyless])).toEqual({ status: 403, error: bodyless.error, swapped: false });
+      expect(allLockedError(403, bodyless.error, null, [{ status: 400, error: refusal }, bodyless]).status).toBe(403);
     });
 
-    it("counts the soonest key's limit on this model", () => {
-      const dead = { status: 403, error: "Not authorized" };
-      expect(allLockedError(403, dead.error, { lastErrorCode: 403, lastError: quota.error }, [lacksModel, dead]).status).toBe(403);
-      expect(allLockedError(403, dead.error, { lastErrorCode: 403, lastError: quota.error, lastErrorOwn: false }, [lacksModel, dead]).status).toBe(404);
-    });
-
-    it("still reports a refused body, which no wait can fix", () => {
-      expect(allLockedError(403, quota.error, null, [{ status: 400, error: refusal }, quota])).toEqual({ status: 400, error: refusal, swapped: true });
-      expect(allLockedError(404, lacksModel.error, null, [{ status: 400, error: refusal }, quota, lacksModel]).status).toBe(400);
-      expect(allLockedError(404, lacksModel.error, null, [modelRefusal, quota, lacksModel]).status).toBe(404);
+    it("swaps when no key hit a limit", () => {
+      expect(allLockedError(403, dead.error, null, [{ status: 400, error: refusal }, dead])).toEqual({ status: 400, error: refusal, swapped: true });
+      expect(allLockedError(403, dead.error, null, [lacksModel, { status: 400, error: refusal }, dead]).status).toBe(400);
+      expect(allLockedError(403, dead.error, null, [lacksModel, dead])).toEqual({ status: 404, error: lacksModel.error, swapped: true });
+      expect(allLockedError(404, lacksModel.error, null, [{ status: 400, error: refusal }, dead, lacksModel]).status).toBe(400);
+      // The soonest key's stored error isn't part of this pass.
+      expect(allLockedError(403, dead.error, { lastErrorCode: 403, lastError: quota.error }, [lacksModel, dead]).status).toBe(404);
     });
   });
 

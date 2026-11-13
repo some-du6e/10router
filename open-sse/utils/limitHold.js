@@ -10,7 +10,6 @@ import { ROLE, OPENAI_FINISH } from "../translator/schema/index.js";
 import { formatSSE } from "./stream.js";
 import { abortableSleep } from "./abortableSleep.js";
 import { isRequestError } from "../services/accountFallback.js";
-import { MODEL_REFUSAL } from "../config/errorConfig.js";
 
 // Present in every banner we emit. Later requests carry the banner back inside
 // their history; detecting this marker is what triggers the "ignore that line"
@@ -362,32 +361,21 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
 // The status and error a request gets when every account is locked. A 401/403
 // this pass hit on one key loses to a retryable code the reported key got on
 // this model (lastErrorOwn), or to a 429/5xx another key hit in the same pass,
-// so the client waits instead of reporting an auth failure. Failing that, it
-// loses to a request error another key got (400/422 first, then 404): the
-// client can fix a request error but reads a 401/403 as an auth failure. A pass
-// that ended on a 404 likewise reports a 400/422 another key got.
-//
-// A 404 or a model refusal only says one key can't serve the model. While a
-// 401/403 reads as a limit (a bodyless 403 included), waiting for that key can
-// still succeed, so those don't replace it; a refused body still does.
+// so the client waits instead of reporting an auth failure. Unless a key in the
+// pass hit a limit, a 401/403 or 404 pass then reports a request error.
 export function allLockedError(lastStatus, lastError, credentials, failures = []) {
   const soonest = Number(credentials?.lastErrorCode) || null;
   const retryable = status => status === 429 || status >= 500;
-  const authFailed = status => status === 401 || status === 403;
-  if (authFailed(lastStatus) || lastStatus === 404) {
-    if (authFailed(lastStatus)) {
-      if (soonest && retryable(soonest) && credentials.lastErrorOwn !== false) return { status: soonest, error: credentials.lastError || null, swapped: true };
-      // By status: a bodyless 403 reads "You exceeded your current quota".
-      const retry = failures.find(f => retryable(f.status));
-      if (retry) return { status: retry.status, error: retry.error || null, swapped: true };
-    }
-    const own = credentials?.lastErrorOwn === false ? [] : [{ status: soonest, error: credentials?.lastError }];
-    const keyLimited = [{ status: lastStatus, error: lastError }, ...own, ...failures]
-      .some(f => authFailed(f.status) && isLimitError(f.status, f.error));
-    const modelOnly = f => f.status === 404 || MODEL_REFUSAL.test(typeof f.error === "string" ? f.error : JSON.stringify(f.error ?? ""));
-    const fixable = f => isRequestError(f.status, f.error) && !(keyLimited && modelOnly(f));
-    const pick = failures.find(f => f.status !== 404 && fixable(f))
-      ?? (lastStatus === 404 ? null : failures.find(fixable));
+  const authFailed = lastStatus === 401 || lastStatus === 403;
+  if (authFailed) {
+    if (soonest && retryable(soonest) && credentials.lastErrorOwn !== false) return { status: soonest, error: credentials.lastError || null, swapped: true };
+    // By status: a bodyless 403 reads "You exceeded your current quota".
+    const retry = failures.find(f => retryable(f.status));
+    if (retry) return { status: retry.status, error: retry.error || null, swapped: true };
+  }
+  if ((authFailed || lastStatus === 404) && !failures.some(f => isLimitError(f.status, f.error))) {
+    const fixable = failures.filter(f => isRequestError(f.status, f.error));
+    const pick = fixable.find(f => f.status !== 404) ?? (authFailed ? fixable[0] : null);
     if (pick) return { status: pick.status, error: pick.error || null, swapped: true };
   }
   return { status: lastStatus || soonest || 503, error: lastError || credentials?.lastError || null, swapped: false };
