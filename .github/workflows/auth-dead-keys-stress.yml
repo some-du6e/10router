@@ -23,7 +23,7 @@ permissions:
 jobs:
   stress:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
         with:
@@ -43,17 +43,17 @@ jobs:
           STRESS_PIN: "1"
           STRESS_OUT: ${{ runner.temp }}/stress-branch.json
         run: ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-stress.test.js
-      # For comparison only: master's numbers never fail the job.
-      - name: Stress, master's auth code
-        if: always()
+      # For comparison only, on a manual run: the base's numbers never fail the job.
+      - name: Stress, base branch's auth code
+        if: always() && github.event_name == 'workflow_dispatch'
         continue-on-error: true
         env:
           STRESS_OUT: ${{ runner.temp }}/stress-master.json
         run: |
-          git checkout origin/master -- src open-sse
+          git checkout origin/${{ github.base_ref || 'master' }} -- src open-sse
           cd tests && ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-stress.test.js
       - name: Results
         if: always()
         run: |
           echo "this branch:"; cat "$RUNNER_TEMP/stress-branch.json" || true
-          echo; echo "master:"; cat "$RUNNER_TEMP/stress-master.json" || true
+          echo; echo "base:"; cat "$RUNNER_TEMP/stress-master.json" 2>/dev/null || echo "(manual runs only)"

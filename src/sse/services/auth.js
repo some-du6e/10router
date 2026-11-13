@@ -265,14 +265,13 @@ const isDeadClass = (conn, r) => !!r?.demotedAt && refusedForItself(conn, r);
 const isFirm = (conn, r) => isDeadClass(conn, r)
   && !(new Date(r.servedAt).getTime() >= new Date(r.firstAt).getTime() - AUTH_DEAD_CONFIG.minWindowMs);
 
-// Demoted on another model the way isDeadClass says. Callers check the key
-// isn't demoted on `model` itself first.
+// Demoted on another model the way isDeadClass says.
 const demotedElsewhere = (conn, model) => demoteRecords(conn).some(([m, r]) => m !== model && isDeadClass(conn, r));
 // Has refusedForItself counts on 2 models or more, each demoted or still
 // running (countRuns): a count that has lapsed is only a stray refusal. A key
 // that lacks one model is refused only there.
 const refusedOnTwo = (conn) => demoteRecords(conn)
-  .filter(([, r]) => refusedForItself(conn, r) && (r.demotedAt || countRuns(r, Date.now()))).length >= 2;
+  .filter(([, r]) => refusedForItself(conn, r) && (r.demotedAt || countRuns(r, Date.now()))).length >= AUTH_DEAD_CONFIG.minModels;
 
 // Refused, in ways the turn-off rule counts, on 2 models with nothing served in
 // between, the key is dead (tests/unit/auto-disable-stress.test.js replays it).
@@ -480,28 +479,19 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // for its next probe.
     const usableConnections = connections.filter(usable);
     const demotions = new Map(usableConnections.map(c => [c.id, demotionOf(c, model)]));
-    // One dead-key try per pass through this model's keys (one exclude set):
-    // once the caller has excluded a key demoted on this model (a probe), a key
-    // demoted on another model (demotedElsewhere) that this process saw refused
-    // on this model within minWindowMs with a 401 or 403 refusing the key
-    // itself (isAuthRejection: not a limit or a refusal of one model), and
-    // whose stored error code is still a 401 or 403, or an id that isn't one of
-    // this provider's active keys (turned off or deleted since, or another
-    // provider's key in a shared exclude set), later calls with that set skip
-    // keys demoted on this model, and keys demoted on another model that were
-    // refused here like that too or are refusedOnTwo, while a key that is none
-    // of these can serve. Any other key keeps its place, so one that lacks just
-    // the model it is demoted on can still serve this one where it would have.
+    // One dead-key try per pass (one exclude set). Once it's used, skip keys
+    // demoted here, and keys demoted elsewhere that were refused here or are
+    // refusedOnTwo, while another key can serve. Every other key keeps its place.
     const activeIds = new Set(allConnections.map(c => c.id));
     const refusedHere = (c) => (c.errorCode === 401 || c.errorCode === 403)
       && refusedSince(`${c.id}|${model}`, Date.now() - AUTH_DEAD_CONFIG.minWindowMs);
     const deadTriedThisPass = [...excludeSet].some(id => !activeIds.has(id))
       || allConnections.some(c => excludeSet.has(c.id) && (demotionOf(c, model) || (refusedHere(c) && demotedElsewhere(c, model))));
     const skippedThisPass = (c) => deadTriedThisPass && demotedElsewhere(c, model) && (refusedHere(c) || refusedOnTwo(c));
-    const preferred = usableConnections.filter(c => !demotions.get(c.id) && !skippedThisPass(c));
+    const notDemotedHere = usableConnections.filter(c => !demotions.get(c.id));
+    const preferred = notDemotedHere.filter(c => !skippedThisPass(c));
     // Failing that (every such key rate-limited, excluded or off), keys demoted
     // on another model go before keys demoted on this one.
-    const notDemotedHere = usableConnections.filter(c => !demotions.get(c.id));
     let availableConnections = preferred.length > 0 ? preferred : notDemotedHere.length > 0 ? notDemotedHere : usableConnections;
     let probing = false;
     if (preferred.length > 0 && !deadTriedThisPass) {

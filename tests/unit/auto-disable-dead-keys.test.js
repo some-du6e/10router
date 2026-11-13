@@ -1860,7 +1860,7 @@ describe("a key refused on only one model", () => {
       count: 5, lastAt: new Date().toISOString(), lastCountedAt: new Date().toISOString(), demotedAt: new Date().toISOString(),
       probeLevel: 0, nextProbeAt: new Date(Date.now() + 10 * MIN).toISOString(),
     })],
-    ...[["null", null], ["a number", Date.now() - MIN], ["true", true]].map(([label, firstAt]) => [`a demotion whose firstAt is ${label}`, () => ({
+    ...[["null", null], ["a number", Date.parse("2026-10-23T00:43:00Z")], ["a year number", 2026], ["true", true]].map(([label, firstAt]) => [`a demotion whose firstAt is ${label}`, () => ({
       count: 5, firstAt, lastAt: new Date().toISOString(), lastCountedAt: new Date().toISOString(), demotedAt: new Date().toISOString(),
       probeLevel: 0, nextProbeAt: new Date(Date.now() + 10 * MIN).toISOString(),
     })]),
@@ -1872,7 +1872,7 @@ describe("a key refused on only one model", () => {
   });
 
   // A demotion without a readable firstAt is no evidence for the turn-off rules
-  // either. Master took it as firm, so the second m2 refusal turned the key off.
+  // either.
   it.each([
     ["turns a key off", "a firstAt", () => new Date(Date.now() - 30 * MIN).toISOString(), false],
     ["keeps a key on", "no firstAt", () => undefined, true],
