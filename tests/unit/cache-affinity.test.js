@@ -328,6 +328,40 @@ describe("cache affinity routing", () => {
       expect(cacheWaits()).toHaveLength(1);
     });
 
+    it("moves on once its waits add up past the larger cap", async () => {
+      const { a, b } = await addKeys("a", "b");
+      await chat(body());
+
+      // Waits of 125, 225 and 425ms leave 725ms; the 800ms lock doesn't fit.
+      upstream.script = [...escalating(), limited(800)];
+      expect((await chat(body())).status).toBe(200);
+      expect(upstream.calls).toEqual([a, a, a, a, a, b]);
+    });
+
+    it("moves on after maxWarmAttempts waits when the lock keeps resetting", async () => {
+      Object.assign(CACHE_AFFINITY, { maxWarmAttempts: 3 });
+      const { a, b } = await addKeys("a", "b");
+      await chat(body());
+
+      // Other requests' successes keep resetting the backoff: every lock is the shortest.
+      upstream.script = Array.from({ length: 10 }, () => limited(100));
+      expect((await chat(body())).status).toBe(200);
+      expect(upstream.calls).toEqual([a, a, a, a, a, b]);
+      expect(cacheWaits()).toHaveLength(3);
+    });
+
+    it("counts waits for a lock another request set toward maxWarmAttempts", async () => {
+      Object.assign(CACHE_AFFINITY, { maxWarmAttempts: 1 });
+      const { a, b } = await addKeys("a", "b");
+      await chat(body());
+      await lockForLimit(a, 100);
+
+      upstream.script = [limited(100)];
+      expect((await chat(body())).status).toBe(200);
+      expect(upstream.calls).toEqual([a, a, b]);
+      expect(cacheWaits()).toHaveLength(1);
+    });
+
     it("moves on once the lock outlasts the larger cap", async () => {
       const { a, b } = await addKeys("a", "b");
       await chat(body());
@@ -882,11 +916,17 @@ describe("wait sizing", () => {
     Object.assign(CACHE_AFFINITY, { maxWaitMs: 0, largeMaxWaitMs: 3000 });
     expect(affinity.warmWaitBudget({ waitedMs: 0, promptTokens: () => 1e9 })).toBe(0);
   });
+
+  it("gives no budget once the request has waited maxWarmAttempts times", () => {
+    Object.assign(CACHE_AFFINITY, { maxWarmAttempts: 2 });
+    expect(affinity.warmWaitBudget({ waitedMs: 0, waits: 1, promptTokens: () => 1000 })).toBe(1000);
+    expect(affinity.warmWaitBudget({ waitedMs: 0, waits: 2, promptTokens: () => 1e9 })).toBe(0);
+  });
 });
 
 describe("env settings", () => {
   const NAMES = ["CACHE_AFFINITY_TTL_MS", "CACHE_AFFINITY_MAX_WAIT_MS", "CACHE_AFFINITY_MIN_TOKENS",
-    "CACHE_AFFINITY_LARGE_TOKENS", "CACHE_AFFINITY_LARGE_MAX_WAIT_MS"];
+    "CACHE_AFFINITY_LARGE_TOKENS", "CACHE_AFFINITY_LARGE_MAX_WAIT_MS", "CACHE_AFFINITY_MAX_WARM_ATTEMPTS"];
   const saved = Object.fromEntries(NAMES.map((n) => [n, process.env[n]]));
   afterEach(() => {
     for (const n of NAMES) {
@@ -934,6 +974,17 @@ describe("env settings", () => {
     Object.assign(process.env, { CACHE_AFFINITY_LARGE_TOKENS: "1e5", CACHE_AFFINITY_LARGE_MAX_WAIT_MS: "1m" });
     ({ config } = await fresh());
     expect(config).toMatchObject({ largePromptTokens: 200 * 1000, largeMaxWaitMs: 60 * 1000 });
+  });
+
+  it("waits at most 5 times per request, unless set otherwise", async () => {
+    let { config } = await fresh();
+    expect(config.maxWarmAttempts).toBe(5);
+    process.env.CACHE_AFFINITY_MAX_WARM_ATTEMPTS = "2";
+    ({ config } = await fresh());
+    expect(config.maxWarmAttempts).toBe(2);
+    process.env.CACHE_AFFINITY_MAX_WARM_ATTEMPTS = "two";
+    ({ config } = await fresh());
+    expect(config.maxWarmAttempts).toBe(5);
   });
 
   it("keeps the token threshold for a blank or non-decimal value", async () => {
