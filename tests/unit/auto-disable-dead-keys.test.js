@@ -34,6 +34,7 @@ process.env.DATA_DIR = tempDir;
 
 const PROVIDER = "openai-compatible-chat-test-dead-keys";
 const DEAD_403 = '[403]: {"code":"003001","message":"Not authorized for this endpoint"}';
+const KEY_REFUSED_403 = '[403]: {"message":"This key is not accepted here"}';
 const MIN = 60 * 1000;
 
 let db, auth, testSingleConnection, testBatch, putConnection, withToggledActive, connectionsToTest;
@@ -1193,7 +1194,7 @@ describe("a key refused on only one model", () => {
     const { deadKeys, healthy } = await fourDemotedAhead();
     vi.advanceTimersByTime(11 * MIN);
     await succeed(healthy.id, "m3");
-    for (const key of deadKeys) await failOnce(key.id, "m3");
+    for (const key of deadKeys) await failOnce(key.id, "m3", 403, KEY_REFUSED_403);
     for (const key of deadKeys) expect(await load(key.id)).toMatchObject({ isActive: true, authDemote_m3: { count: 1 } });
     return { deadKeys, healthy };
   }
@@ -1859,6 +1860,10 @@ describe("a key refused on only one model", () => {
       count: 5, lastAt: new Date().toISOString(), lastCountedAt: new Date().toISOString(), demotedAt: new Date().toISOString(),
       probeLevel: 0, nextProbeAt: new Date(Date.now() + 10 * MIN).toISOString(),
     })],
+    ...[["null", null], ["a number", Date.now() - MIN], ["true", true]].map(([label, firstAt]) => [`a demotion whose firstAt is ${label}`, () => ({
+      count: 5, firstAt, lastAt: new Date().toISOString(), lastCountedAt: new Date().toISOString(), demotedAt: new Date().toISOString(),
+      probeLevel: 0, nextProbeAt: new Date(Date.now() + 10 * MIN).toISOString(),
+    })]),
   ])("does not take a record on a third model that is %s as a refusal there", async (_label, corrupt) => {
     const { d, k, l } = await mixedPlans();
     await db.updateProviderConnection(k.id, { authDemote_m3: corrupt() });
@@ -1866,10 +1871,28 @@ describe("a key refused on only one model", () => {
     expect(await request("m2", new Set([d.id, l.id]))).toEqual({ tried: [d.id, k.id], served: k.id });
   });
 
+  // A demotion without a readable firstAt is no evidence for the turn-off rules
+  // either. Master took it as firm, so the second m2 refusal turned the key off.
+  it.each([
+    ["turns a key off", "a firstAt", () => new Date(Date.now() - 30 * MIN).toISOString(), false],
+    ["keeps a key on", "no firstAt", () => undefined, true],
+  ])("%s refused twice on m2 within 10 minutes while demoted on m1 with %s", async (_verdict, _label, firstAt, staysOn) => {
+    const dead = await addKey("key-a");
+    const healthy = await addKey("key-e");
+    const now = new Date().toISOString();
+    await db.updateProviderConnection(dead.id, { authDemote_m1: {
+      count: 5, firstAt: firstAt(), lastAt: now, lastCountedAt: now, demotedAt: now,
+      probeLevel: 0, nextProbeAt: new Date(Date.now() + 10 * MIN).toISOString(),
+    } });
+    expect(demoted(await load(dead.id))).toBe(true);
+    await fail(dead.id, { times: 2, models: ["m2"], peers: [healthy], text: KEY_REFUSED_403 });
+    expect((await load(dead.id)).isActive).toBe(staysOn);
+  });
+
   it("takes a 401 refusing the key on a new model as the pass's dead-key try too", async () => {
     const { deadKeys, healthy } = await fourDeadAhead();
     const result = await request("m2", new Set(deadKeys.map((k) => k.id)), {
-      refusal: (id) => (id === deadKeys[0].id ? [401, "Invalid API key"] : [403, DEAD_403]),
+      refusal: (id) => (id === deadKeys[0].id ? [401, "Invalid API key"] : [403, KEY_REFUSED_403]),
     });
     expect(result).toEqual({ tried: [deadKeys[0].id, healthy.id], served: healthy.id });
   });
@@ -1890,7 +1913,7 @@ describe("a key refused on only one model", () => {
   it("goes on to the next key demoted on another model when the first fails a new model with a 503", async () => {
     const { deadKeys, healthy } = await fourDeadAhead();
     const result = await request("m2", new Set(deadKeys.map((k) => k.id)), {
-      refusal: (id) => (id === deadKeys[0].id ? [503, "[503]: Service Unavailable"] : [403, DEAD_403]),
+      refusal: (id) => (id === deadKeys[0].id ? [503, "[503]: Service Unavailable"] : [403, KEY_REFUSED_403]),
     });
     expect(result).toEqual({ tried: [deadKeys[0].id, deadKeys[1].id, healthy.id], served: healthy.id });
   });
@@ -1908,7 +1931,7 @@ describe("a key refused on only one model", () => {
     expect(await request("m2", dead)).toEqual({ tried: [deadKeys[0].id, healthy.id], served: healthy.id });
     vi.advanceTimersByTime(3 * MIN);
     const result = await request("m2", dead, {
-      refusal: (id) => (id === deadKeys[0].id ? [503, "[503]: Service Unavailable"] : [403, DEAD_403]),
+      refusal: (id) => (id === deadKeys[0].id ? [503, "[503]: Service Unavailable"] : [403, KEY_REFUSED_403]),
     });
     expect(result).toEqual({ tried: [deadKeys[0].id, deadKeys[1].id, healthy.id], served: healthy.id });
   });
@@ -2028,16 +2051,16 @@ describe("a key refused on only one model", () => {
     const healthy = await addKey("key-e");
     await succeed(dead.id, "m3");
     vi.advanceTimersByTime(MIN);
-    await fail(dead.id, { times: 5, models: ["m1"], peers: [healthy] });
+    await fail(dead.id, { times: 5, models: ["m1"], peers: [healthy], text: KEY_REFUSED_403 });
     vi.advanceTimersByTime(61 * MIN);
-    await fail(dead.id, { times: 5, models: ["m2"], peers: [healthy] });
+    await fail(dead.id, { times: 5, models: ["m2"], peers: [healthy], text: KEY_REFUSED_403 });
     const conn = await load(dead.id);
     expect([demoted(conn, "m1"), demoted(conn, "m2"), conn.isActive]).toEqual([true, true, true]);
     return { dead, healthy };
   }
   // The key's next probe on `model`, `minutes` after the previous one is due at
   // the earliest, answered with `answer` ([status, text]) or a success.
-  async function probe(dead, healthy, model, { answer = [403, DEAD_403], minutes = 0 } = {}) {
+  async function probe(dead, healthy, model, { answer = [403, KEY_REFUSED_403], minutes = 0 } = {}) {
     const due = Date.parse(record(await load(dead.id), model).nextProbeAt);
     vi.setSystemTime(new Date(Math.max(due, Date.now() + minutes * MIN)));
     expect(await pick(model)).toBe(dead.id);
@@ -2051,7 +2074,7 @@ describe("a key refused on only one model", () => {
     await probe(dead, healthy, "m1", { minutes: 30 });
     expect(await load(dead.id)).toMatchObject({ isActive: true, authDemote_m1: { probeLevel: 1 } });
     await probe(dead, healthy, "m2", { minutes: 90 });
-    expect(await load(dead.id)).toMatchObject({ isActive: false, autoDisabledReason: '403 "Not authorized for this endpoint" on m1, m2' });
+    expect(await load(dead.id)).toMatchObject({ isActive: false, autoDisabledReason: '403 "This key is not accepted here" on m1, m2' });
   });
 
   it.each([
@@ -2075,7 +2098,7 @@ describe("a key refused on only one model", () => {
     await probe(dead, healthy, "m2", { minutes: 30 });
     expect((await load(dead.id)).isActive).toBe(true);
     await probe(dead, healthy, "m1", { minutes: 30 });
-    expect(await load(dead.id)).toMatchObject({ isActive: false, autoDisabledReason: '403 "Not authorized for this endpoint" on m2, m1' });
+    expect(await load(dead.id)).toMatchObject({ isActive: false, autoDisabledReason: '403 "This key is not accepted here" on m2, m1' });
   });
 
   it("keeps a key demoted on one model on through hours of refused probes", async () => {
@@ -2141,12 +2164,12 @@ describe("a key refused on only one model", () => {
     for (let minute = 1; minute <= 12 * 60; minute++) {
       vi.advanceTimersByTime(MIN);
       if (minute % 60 >= 15) continue;
-      const { tried } = await request(Math.floor(minute / 60) % 2 ? "m2" : "m1", dead);
+      const { tried } = await request(Math.floor(minute / 60) % 2 ? "m2" : "m1", dead, { refusal: () => [403, KEY_REFUSED_403] });
       refusals += tried.filter((id) => dead.has(id)).length;
       for (const [i, key] of deadKeys.entries()) if (offAt[i] === null && !(await load(key.id)).isActive) offAt[i] = minute;
     }
     expect({ offAt, refusals }).toEqual({ offAt: [180, 181, 300, 301], refusals: 65 });
-    for (const key of deadKeys) expect((await load(key.id)).autoDisabledReason).toMatch(/^403 "Not authorized for this endpoint" on m[12], m[12]$/);
+    for (const key of deadKeys) expect((await load(key.id)).autoDisabledReason).toMatch(/^403 "This key is not accepted here" on m[12], m[12]$/);
     expect((await load(healthy.id)).isActive).toBe(true);
   });
 });

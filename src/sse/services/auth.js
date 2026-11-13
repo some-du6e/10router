@@ -257,8 +257,9 @@ const demotionOf = (conn, model) => {
 // A count of refusals the turn-off rule counts, with nothing served since it
 // began; a dead-class demotion once it demotes the key, firm if nothing was
 // served in the minWindowMs before the count began either. A record without a
-// readable firstAt is none of these: no success could ever clear it.
-const refusedForItself = (conn, r) => Number.isFinite(new Date(r?.firstAt).getTime()) && !r.modelScoped
+// readable firstAt (an ISO string) is none of these: no success could ever
+// clear it.
+const refusedForItself = (conn, r) => typeof r?.firstAt === "string" && Number.isFinite(Date.parse(r.firstAt)) && !r.modelScoped
   && !(conn.authDemoteOkAt >= r.firstAt) && !succeededSince(conn.id, new Date(r.firstAt).getTime() + 1);
 const isDeadClass = (conn, r) => !!r?.demotedAt && refusedForItself(conn, r);
 const isFirm = (conn, r) => isDeadClass(conn, r)
