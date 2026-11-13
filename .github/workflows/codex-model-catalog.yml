@@ -12,6 +12,7 @@ on:
       - "src/sse/services/keyLimits.js"
       - "src/shared/constants/models.js"
       - "open-sse/providers/capabilities.js"
+      - "open-sse/providers/catalogOverride.js"
       - "open-sse/config/providerModels.js"
       - "open-sse/providers/registry/**"
       - "tests/package.json"
@@ -53,6 +54,9 @@ jobs:
           ./node_modules/.bin/eslint
           src/app/api/v1/codex/models/route.js
           src/lib/codex/modelCatalog.js
+          src/lib/codex/routedModels.js
+          open-sse/providers/catalogOverride.js
+          src/app/api/v1/models/route.js
           scripts/vendor-codex-catalog.mjs
           src/app/api/cli-tools/codex-settings/route.js
           tests/unit/codex-model-catalog.test.js
@@ -71,8 +75,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 0.137/0.138: reasoning efforts turn lenient. 0.146/0.147:
-        # base_instructions turns optional. See codexShapeFor().
+        # Both sides of each cut-off in codexShapeFor(). 0.137/0.138: reasoning
+        # efforts turn lenient. 0.146/0.147: below 0.147 Codex needs
+        # base_instructions and falls back to it when personality = false
+        # clears the template, so those get the prompt there; 0.147+ get "".
         codex: ["0.167.2", "0.147.0", "0.146.0", "0.138.0", "0.137.0"]
     steps:
       - uses: actions/checkout@v5

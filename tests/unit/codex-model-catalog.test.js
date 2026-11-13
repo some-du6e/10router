@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-model-catalog-"));
 const originalDataDir = process.env.DATA_DIR;
@@ -24,9 +24,15 @@ const {
   buildCodexCatalog, findCodexModel, toCodexEntry, codexModelsFor, codexShapeFor, uniqueBySlug,
   CODEX_BASE_INSTRUCTIONS, CODEX_BUNDLED_MODELS, CODEX_CATALOG_VERSION,
 } = await import("@/lib/codex/modelCatalog.js");
+const { resetRoutedModels } = await import("@/lib/codex/routedModels.js");
 
 beforeAll(async () => {
   await getAdapter();
+});
+
+// The route caches the routed model list; these tests change it (combos, keys).
+beforeEach(() => {
+  resetRoutedModels();
 });
 
 afterAll(() => {
@@ -251,12 +257,27 @@ describe("Codex's own models", () => {
     expect(codexModelsFor("0.137.0").find((m) => m.slug === "codex-auto-review").default_reasoning_level).toBe("medium");
   });
 
-  it("carry an empty base_instructions for every Codex, next to the prompt template every version reads instead", () => {
-    expect(CODEX_BUNDLED_MODELS.every((m) => m.model_messages?.instructions_template)).toBe(true);
+  // Codex before 0.147 drops the template when `[features] personality = false`
+  // and runs on base_instructions alone.
+  it("carry the prompt itself in base_instructions for Codex before 0.147", () => {
     expect(bundled("gpt-5.5").base_instructions).toBeUndefined();
-    for (const version of ["0.137.0", "0.146.0", "0.147.0", "0.167.2", null]) {
+    for (const version of ["0.137.0", "0.146.0", "0.146.9"]) {
+      for (const entry of codexModelsFor(version)) {
+        expect(entry.base_instructions, `${version} ${entry.slug}`).toBe(entry.model_messages.instructions_template);
+        expect(entry.base_instructions.length, entry.slug).toBeGreaterThan(1000);
+      }
+    }
+  });
+
+  it("carry an empty base_instructions from Codex 0.147, which keeps the template", () => {
+    expect(CODEX_BUNDLED_MODELS.every((m) => m.model_messages?.instructions_template)).toBe(true);
+    for (const version of ["0.147.0", "0.167.2", "0.0.0", null]) {
       expect(codexModelsFor(version).every((m) => m.base_instructions === ""), String(version)).toBe(true);
     }
+  });
+
+  it("have no personality placeholder Codex would fill in, so the template text is the prompt as is", () => {
+    for (const entry of CODEX_BUNDLED_MODELS) expect(entry.model_messages.instructions_template, entry.slug).not.toContain("{{ personality }}");
   });
 
   it("treat a source build's 0.0.0, a missing version and an unreadable one like the newest Codex", async () => {

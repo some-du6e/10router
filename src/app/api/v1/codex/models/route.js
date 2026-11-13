@@ -1,4 +1,5 @@
-import { buildModelsList } from "../../models/route.js";
+import { getRoutedModels } from "@/lib/codex/routedModels.js";
+import { getCatalogStamp } from "open-sse/providers/catalogOverride.js";
 import { filterModelsForRequest } from "@/sse/services/keyLimits.js";
 import { buildCodexCatalog, codexShapeFor, codexModelsForShape, uniqueBySlug, CODEX_ALIAS } from "@/lib/codex/modelCatalog.js";
 
@@ -51,7 +52,8 @@ export async function OPTIONS() {
 export async function GET(request) {
   try {
     // A key with a model allowlist sees only the models it may use.
-    const models = await filterModelsForRequest(request, await buildModelsList(["llm"]));
+    // Cached and bounded in time (see routedModels.js); the key's allowlist applies after.
+    const models = await filterModelsForRequest(request, await getRoutedModels());
     const shape = codexShapeFor(new URL(request.url).searchParams.get("client_version"));
     const codexModels = codexModelsForShape(shape);
     const entries = buildCodexCatalog(models, codexModels);
@@ -70,7 +72,9 @@ export async function GET(request) {
 
     // Keyed on what shapes the body, not the raw client_version, so any number
     // of version strings that shape it the same way share one build.
-    const key = JSON.stringify([shape, models, bare.map((model) => model.slug)]);
+    // getCatalogStamp: generic entries read capabilities from the synced
+    // models.dev catalog for models that carry none of their own.
+    const key = JSON.stringify([shape, getCatalogStamp(), models, bare.map((model) => model.slug)]);
     if (lastBody.key !== key) {
       const created = Math.floor(Date.now() / 1000);
       const routed = uniqueBySlug(entries);

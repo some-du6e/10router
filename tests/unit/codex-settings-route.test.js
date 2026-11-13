@@ -19,6 +19,14 @@ vi.mock("os", async (importOriginal) => {
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-settings-"));
 fakeHome.dir = home;
+// Backstop in case the mock ever stops applying.
+const originalEnv = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+process.env.HOME = home;
+process.env.USERPROFILE = home;
+
+// Refuse to run a single test unless the route's home is this temp dir.
+const routeHome = (await import("os")).homedir();
+if (routeHome !== home) throw new Error(`codex-settings test: os.homedir() is ${routeHome}, not the temp dir; refusing to write a Codex config`);
 
 const { POST } = await import("@/app/api/cli-tools/codex-settings/route.js");
 
@@ -30,6 +38,10 @@ const apply = (body) => POST(new Request("http://localhost/api/cli-tools/codex-s
 const provider = () => parseTOML(fs.readFileSync(configPath, "utf8")).model_providers["10router"];
 
 afterAll(() => {
+  for (const [name, value] of Object.entries(originalEnv)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
   fs.rmSync(home, { recursive: true, force: true });
 });
 

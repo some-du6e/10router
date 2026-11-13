@@ -35,9 +35,14 @@ const REASONING_LEVELS = [
 const STRICT_EFFORTS_BEFORE = [0, 138, 0];
 const STRICT_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 
-// Codex up to 0.146 (and its 0.147.0 alphas, which report 0.147.0) requires a
-// `base_instructions` string. Every version reads `model_messages.instructions_template`
-// instead when there is one, which every bundled entry has, so "" costs nothing.
+// Codex up to 0.146 requires a `base_instructions` string, and falls back to
+// it when `[features] personality = false` clears the entry's template
+// (with_config_overrides in models-manager/src/model_info.rs). So clients
+// before 0.147.0 get the template's own text there, the way Codex 0.167's
+// serialize_model_infos_with_legacy_base writes it. From 0.147.0 the field is
+// optional and the template is kept, so the rest get "": still accepted by the
+// 0.147.0 alphas, which report 0.147.0 too.
+const FULL_BASE_INSTRUCTIONS_BEFORE = [0, 147, 0];
 const NATIVE_MODELS = bundled.models.map((model) => ({ ...model, base_instructions: model.base_instructions ?? "" }));
 
 // Spelled the way Codex's own catalog spells it: 0.137 reads it as the
@@ -86,10 +91,11 @@ const older = (a, b) => {
  * How a given Codex client gets Codex's bundled entries: which ones it can
  * use (an entry newer than the client, by `minimal_client_version`, is left
  * out the way the ChatGPT backend leaves it out) and whether it needs the
- * strict reasoning efforts. A missing, 0.0.0 or unreadable version means the
- * newest Codex. Two versions with the same shape get the same entries.
+ * strict reasoning efforts and the prompt in `base_instructions`. A missing,
+ * 0.0.0 or unreadable version means the newest Codex. Two versions with the
+ * same shape get the same entries.
  * @param {string|null} [clientVersion] the `client_version` Codex sent
- * @returns {{ strictEfforts: boolean, slugs: string[] }}
+ * @returns {{ strictEfforts: boolean, fullBaseInstructions: boolean, slugs: string[] }}
  */
 export function codexShapeFor(clientVersion) {
   const client = parseVersion(clientVersion);
@@ -99,24 +105,34 @@ export function codexShapeFor(clientVersion) {
       return !client || !minimal || !older(client, minimal);
     })
     .map((m) => m.slug);
-  return { strictEfforts: Boolean(client) && older(client, STRICT_EFFORTS_BEFORE), slugs };
+  return {
+    strictEfforts: Boolean(client) && older(client, STRICT_EFFORTS_BEFORE),
+    fullBaseInstructions: Boolean(client) && older(client, FULL_BASE_INSTRUCTIONS_BEFORE),
+    slugs,
+  };
 }
 
 /**
  * Codex's bundled entries, shaped for one client (see codexShapeFor).
- * @param {{ strictEfforts: boolean, slugs: string[] }} shape
+ * @param {{ strictEfforts: boolean, fullBaseInstructions: boolean, slugs: string[] }} shape
  */
-export function codexModelsForShape({ strictEfforts, slugs }) {
+export function codexModelsForShape({ strictEfforts, fullBaseInstructions, slugs }) {
   const usable = NATIVE_MODELS.filter((m) => slugs.includes(m.slug));
-  if (!strictEfforts) return usable;
-  return usable.map((entry) => {
-    const levels = entry.supported_reasoning_levels.filter((l) => STRICT_EFFORTS.has(l.effort));
-    const keepDefault = levels.some((l) => l.effort === entry.default_reasoning_level);
-    return {
-      ...entry,
-      supported_reasoning_levels: levels,
-      default_reasoning_level: keepDefault ? entry.default_reasoning_level : levels.at(-1)?.effort ?? null,
-    };
+  return usable.map((model) => {
+    let entry = model;
+    if (fullBaseInstructions) {
+      entry = { ...entry, base_instructions: entry.model_messages?.instructions_template ?? entry.base_instructions };
+    }
+    if (strictEfforts) {
+      const levels = entry.supported_reasoning_levels.filter((l) => STRICT_EFFORTS.has(l.effort));
+      const keepDefault = levels.some((l) => l.effort === entry.default_reasoning_level);
+      entry = {
+        ...entry,
+        supported_reasoning_levels: levels,
+        default_reasoning_level: keepDefault ? entry.default_reasoning_level : levels.at(-1)?.effort ?? null,
+      };
+    }
+    return entry;
   });
 }
 
