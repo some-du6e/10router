@@ -362,20 +362,19 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
 // this pass hit on one key loses to a retryable code the reported key got on
 // this model (lastErrorOwn), or to a 429/5xx another key hit in the same pass,
 // so the client waits instead of reporting an auth failure. Failing that, it
-// loses to a request error (400/404/422) another key got.
+// loses to a request error another key got (400/422 first, then 404): the
+// client can fix a request error but reads a 401/403 as an auth failure.
 export function allLockedError(lastStatus, lastError, credentials, failures = []) {
   const soonest = Number(credentials?.lastErrorCode) || null;
   const retryable = status => status === 429 || status >= 500;
   if (lastStatus === 401 || lastStatus === 403) {
     if (soonest && retryable(soonest) && credentials.lastErrorOwn !== false) return { status: soonest, error: credentials.lastError || null, swapped: true };
+    const requestError = f => isRequestError(f.status, f.error);
     // By status: a bodyless 403 reads "You exceeded your current quota".
-    const retry = failures.find(f => retryable(f.status));
-    if (retry) return { status: retry.status, error: retry.error || null, swapped: true };
-    // A key that got through and was refused the body beats keys that couldn't
-    // authenticate: the client can fix the body (Claude Code drops a beta block
-    // and resends on a 400), but reads a 403 as "log in again".
-    const refused = failures.find(f => isRequestError(f.status, f.error));
-    if (refused) return { status: refused.status, error: refused.error || null, swapped: true };
+    const pick = failures.find(f => retryable(f.status))
+      ?? failures.find(f => f.status !== 404 && requestError(f))
+      ?? failures.find(requestError);
+    if (pick) return { status: pick.status, error: pick.error || null, swapped: true };
   }
   return { status: lastStatus || soonest || 503, error: lastError || credentials?.lastError || null, swapped: false };
 }
