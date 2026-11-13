@@ -281,13 +281,7 @@ const refusedOnTwo = (conn) => demoteRecords(conn)
 // - or this refusal demotes `model`, and that demotion was last refused within
 //   its probe interval and minWindowMs;
 // - or the key is firmly demoted on `model` (this was a probe or a fallback)
-//   and the other model was refused within minWindowMs;
-// - or the key is demoted on `model` and on the other model the way
-//   isDeadClass says, and was refused on each again after its demotion there
-//   (a probe, a fallback use, or a request already on its way) in a way the
-//   turn-off rule counts (lastCountedAt; a refusal of just that model doesn't
-//   move it), with nothing served since either count began, however far apart
-//   the refusals come.
+//   and the other model was refused within minWindowMs.
 function deadElsewhere(conn, records, model, current, demoting) {
   const now = Date.now();
   const since = (r) => now - new Date(r?.lastCountedAt).getTime();
@@ -297,7 +291,6 @@ function deadElsewhere(conn, records, model, current, demoting) {
   return (since(current) <= AUTH_DEAD_CONFIG.minWindowMs && found(r => firm(r) && since(r) <= AUTH_DEAD_CONFIG.minWindowMs))
     || (demoting && found(r => firm(r) && since(r) <= probeMs(r.probeLevel || 0) + AUTH_DEAD_CONFIG.minWindowMs))
     || (firm(current) && found(r => since(r) <= AUTH_DEAD_CONFIG.minWindowMs))
-    || (isDeadClass(conn, current) && found(r => isDeadClass(conn, r) && r.lastCountedAt > r.demotedAt))
     || null;
 }
 

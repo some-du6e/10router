@@ -2069,36 +2069,10 @@ describe("a key refused on only one model", () => {
     await failOnce(dead.id, model, ...answer);
   }
 
-  it("turns a key off once its probes on 2 demoted models have each been refused, however far apart", async () => {
+  it("keeps a key demoted on 2 models on while its probes there, hours apart, are refused, as master does", async () => {
     const { dead, healthy } = await deadOnTwo();
-    await probe(dead, healthy, "m1", { minutes: 30 });
-    expect(await load(dead.id)).toMatchObject({ isActive: true, authDemote_m1: { probeLevel: 1 } });
-    await probe(dead, healthy, "m2", { minutes: 90 });
-    expect(await load(dead.id)).toMatchObject({ isActive: false, autoDisabledReason: '403 "This key is not accepted here" on m1, m2' });
-  });
-
-  it.each([
-    ["429s", [429, "Too many requests"]],
-    ["5xx", [503, "[503]: Service Unavailable"]],
-  ])("keeps a key one refused probe from being turned off on while its probes get %s, and turns it off on the next refusal", async (
-    _label, answer,
-  ) => {
-    const { dead, healthy } = await deadOnTwo();
-    await probe(dead, healthy, "m1", { minutes: 30 });
-    for (let i = 0; i < 6; i++) await probe(dead, healthy, i % 2 ? "m1" : "m2", { answer, minutes: 30 });
-    expect(await load(dead.id)).toMatchObject({ isActive: true, authDemote_m2: { probeLevel: 0 } });
-    await probe(dead, healthy, "m2", { minutes: 30 });
-    expect((await load(dead.id)).isActive).toBe(false);
-  });
-
-  it("does not take a probe refused for just that model as the other model's refused probe", async () => {
-    const { dead, healthy } = await deadOnTwo();
-    await probe(dead, healthy, "m1", { answer: [403, NO_ACCESS], minutes: 30 });
-    expect(record(await load(dead.id), "m1")).toMatchObject({ probeLevel: 1 });
-    await probe(dead, healthy, "m2", { minutes: 30 });
-    expect((await load(dead.id)).isActive).toBe(true);
-    await probe(dead, healthy, "m1", { minutes: 30 });
-    expect(await load(dead.id)).toMatchObject({ isActive: false, autoDisabledReason: '403 "This key is not accepted here" on m2, m1' });
+    for (const model of ["m1", "m2", "m1", "m2"]) await probe(dead, healthy, model, { minutes: 90 });
+    expect(await load(dead.id)).toMatchObject({ isActive: true, authDemote_m1: { probeLevel: 2 }, authDemote_m2: { probeLevel: 2 } });
   });
 
   it("keeps a key demoted on one model on through hours of refused probes", async () => {
@@ -2107,53 +2081,35 @@ describe("a key refused on only one model", () => {
     expect(await load(dead.id)).toMatchObject({ isActive: true, authDemote_m1: { probeLevel: 8 } });
   });
 
-  it("lifts the demotion on a probe that serves m2, so later refused probes on m1 alone keep the key on", async () => {
-    const { dead, healthy } = await deadOnTwo();
-    await probe(dead, healthy, "m1", { minutes: 30 });
-    await probe(dead, healthy, "m2", { answer: null, minutes: 30 });
-    expect(record(await load(dead.id), "m2")).toBeNull();
-    for (let i = 0; i < 3; i++) await probe(dead, healthy, "m1", { minutes: 30 });
-    expect((await load(dead.id)).isActive).toBe(true);
-  });
-
-  it("keeps a key demoted on 2 models on when it serves m3 in between", async () => {
-    const { dead, healthy } = await deadOnTwo();
-    await probe(dead, healthy, "m1", { minutes: 30 });
-    await succeed(dead.id, "m3");
-    for (const model of ["m2", "m1"]) await probe(dead, healthy, model, { minutes: 30 });
-    expect((await load(dead.id)).isActive).toBe(true);
-  });
-
-  it("keeps a key on whose first demotion's count saw it serve, when the other model's probe and then the first's are refused", async () => {
-    const dead = await addKey("key-a");
-    const healthy = await addKey("key-e");
-    await fail(dead.id, { times: 5, models: ["m1"], peers: [healthy] });
-    vi.advanceTimersByTime(MIN);
-    await succeed(dead.id, "m3");
-    vi.advanceTimersByTime(MIN);
-    await fail(dead.id, { times: 5, models: ["m2"], peers: [healthy] });
-    expect([demoted(await load(dead.id), "m1"), demoted(await load(dead.id), "m2")]).toEqual([true, true]);
-    await probe(dead, healthy, "m2", { minutes: 30 });
-    await probe(dead, healthy, "m1", { minutes: 30 });
-    expect(await load(dead.id)).toMatchObject({ isActive: true, authDemote_m1: { probeLevel: 1 }, authDemote_m2: { probeLevel: 1 } });
-  });
-
-  it("keeps a key on whose demotions on 2 models are for refusals of just those models, when its probes get plain refusals", async () => {
-    const dead = await addKey("key-a");
-    const healthy = await addKey("key-e");
-    await fail(dead.id, { times: 5, models: ["m1"], peers: [healthy], text: NO_ACCESS });
-    vi.advanceTimersByTime(61 * MIN);
-    await fail(dead.id, { times: 5, models: ["m2"], peers: [healthy], text: NO_ACCESS });
-    expect([record(await load(dead.id), "m1").modelScoped, record(await load(dead.id), "m2").modelScoped]).toEqual([true, true]);
-    for (let i = 0; i < 4; i++) await probe(dead, healthy, i % 2 ? "m2" : "m1", { minutes: 30 });
-    expect((await load(dead.id)).isActive).toBe(true);
+  // A backup that lacks m1 (a plain 403, not worded as a refusal of one
+  // model), with refused probes there, then 3 hours later a 27-minute incident
+  // on the key itself while it serves m2. Its history looks like a dead key's,
+  // and it isn't one.
+  it("keeps a key on that lacks one model through an incident on another hours later, and it serves that model again", async () => {
+    const k = await addKey("key-k");
+    const peer = await addKey("key-p");
+    await fail(k.id, { times: 5, models: ["m1"], peers: [peer], text: KEY_REFUSED_403 });
+    for (let i = 0; i < 2; i++) await probe(k, peer, "m1");
+    const lacked = record(await load(k.id), "m1");
+    expect(Date.parse(lacked.lastCountedAt)).toBeGreaterThan(Date.parse(lacked.demotedAt));
+    vi.advanceTimersByTime(3 * 60 * MIN);
+    const refusing = new Set([k.id]);
+    const served = [];
+    for (let minute = 1; minute <= 90; minute++) {
+      vi.advanceTimersByTime(MIN);
+      if (minute === 28) refusing.delete(k.id);
+      served.push((await request("m2", refusing, { refusal: () => [403, KEY_REFUSED_403] })).served);
+      expect((await load(k.id)).isActive).toBe(true);
+    }
+    expect(served.slice(0, 27).filter((id) => id === peer.id)).toHaveLength(27);
+    expect([demoted(await load(k.id), "m2"), served.at(-1)]).toEqual([false, k.id]);
   });
 
   // The live shape over 12 hours: key-a..key-d were serving m1 and m2 when
   // their account went; key-e works. The user works 15 minutes an hour on one
   // model, m1 and m2 in turn. Once demoted, the dead keys are refused only by
   // probes, hours apart.
-  it("turns off keys that died while serving once probes hours apart are refused on 2 models", async () => {
+  it("keeps keys that died while serving on through 12 hours of probes, as master does", async () => {
     const deadKeys = [];
     for (const name of ["key-a", "key-b", "key-c", "key-d"]) deadKeys.push(await addKey(name));
     const healthy = await addKey("key-e");
@@ -2168,8 +2124,7 @@ describe("a key refused on only one model", () => {
       refusals += tried.filter((id) => dead.has(id)).length;
       for (const [i, key] of deadKeys.entries()) if (offAt[i] === null && !(await load(key.id)).isActive) offAt[i] = minute;
     }
-    expect({ offAt, refusals }).toEqual({ offAt: [180, 181, 300, 301], refusals: 65 });
-    for (const key of deadKeys) expect((await load(key.id)).autoDisabledReason).toMatch(/^403 "This key is not accepted here" on m[12], m[12]$/);
+    expect({ offAt, refusals }).toEqual({ offAt: [null, null, null, null], refusals: 88 });
     expect((await load(healthy.id)).isActive).toBe(true);
   });
 });
@@ -2719,7 +2674,7 @@ describe("keys of one endpoint on different upstreams", () => {
   it.each([
     ["sonnet, then opus", 0, null, 210],
     ["sonnet, then opus", 1, 186, 186],
-    ["sessions alternating sonnet and opus", 0, null, 115],
+    ["sessions alternating sonnet and opus", 0, null, null],
     ["sessions alternating sonnet and opus", 1, 69, 69],
     ["opus, and sonnet every 2 hours", 0, 190, 184],
     ["opus, and sonnet every 2 hours", 1, 180, 180],

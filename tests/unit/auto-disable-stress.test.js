@@ -6,7 +6,8 @@
 // Set STRESS_OUT=<file> to also write the results as JSON, and STRESS_PIN=1 to
 // fail when they drift from the pinned numbers. To regenerate those, run from
 // tests/ with STRESS_OUT=unit/auto-disable-stress.pinned.json. The Dead-key
-// stress workflow runs it pinned, and on master's auth code for comparison.
+// stress workflow runs it pinned; a manual run of it also runs it on master's
+// auth code for comparison.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
