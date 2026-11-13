@@ -32,12 +32,16 @@
     "same account: opus, then haiku": 207,
     "same account: one model at a time, 2 h each": 124,
     "same account: bursty, 2 models": 92,
+    "same account: sonnet until 220, then opus": 253,
+    "same account: every 5 min, sonnet until 191, then opus": 220,
     "other account: sonnet, then opus": null,
     "other account: sessions alternating sonnet and opus": 69,
     "other account: opus, plus sonnet every 2 h": 184,
     "other account: opus, then haiku": null,
     "other account: one model at a time, 2 h each": 122,
-    "other account: bursty, 2 models": 62
+    "other account: bursty, 2 models": 62,
+    "other account: sonnet until 220, then opus": 276,
+    "other account: every 5 min, sonnet until 191, then opus": 260
   },
   "deadOnEveryModelRefusals": {
     "same account: sonnet, then opus": 15,
@@ -46,12 +50,16 @@
     "same account: opus, then haiku": 15,
     "same account: one model at a time, 2 h each": 12,
     "same account: bursty, 2 models": 15,
+    "same account: sonnet until 220, then opus": 16,
+    "same account: every 5 min, sonnet until 191, then opus": 16,
     "other account: sonnet, then opus": 20,
     "other account: sessions alternating sonnet and opus": 16,
     "other account: opus, plus sonnet every 2 h": 12,
     "other account: opus, then haiku": 20,
     "other account: one model at a time, 2 h each": 11,
-    "other account: bursty, 2 models": 11
+    "other account: bursty, 2 models": 11,
+    "other account: sonnet until 220, then opus": 21,
+    "other account: every 5 min, sonnet until 191, then opus": 23
   },
   "lacksOpus": {
     "E1, main key, sonnet flaky 0%": "0/30 off",
