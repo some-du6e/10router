@@ -161,15 +161,18 @@ export function estimatePromptTokens(body) {
 
 /**
  * How much longer this request may wait for a warm key, or 0 when it may not:
- * a small request rebuilds its cache cheaply elsewhere. `promptTokens` is
- * called only when there is time left to wait.
+ * a small request rebuilds its cache cheaply elsewhere, and a very large one
+ * may wait longer (largeMaxWaitMs). A maxWaitMs of 0 turns waiting off.
  * @param {{ waitedMs?: number, promptTokens: () => number }} args
  * @returns {number}
  */
 export function warmWaitBudget({ waitedMs = 0, promptTokens }) {
-  const left = CACHE_AFFINITY.maxWaitMs - waitedMs;
-  if (!(left > 0)) return 0;
-  return promptTokens() >= CACHE_AFFINITY.minPromptTokens ? left : 0;
+  const { maxWaitMs, largeMaxWaitMs, minPromptTokens, largePromptTokens } = CACHE_AFFINITY;
+  const largeCap = Math.max(maxWaitMs, largeMaxWaitMs);
+  if (!(maxWaitMs > 0) || !(largeCap - waitedMs > 0)) return 0;
+  const tokens = promptTokens();
+  if (!(tokens >= minPromptTokens)) return 0;
+  return Math.max(0, (tokens >= largePromptTokens ? largeCap : maxWaitMs) - waitedMs);
 }
 
 /**

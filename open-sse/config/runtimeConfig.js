@@ -80,6 +80,11 @@ export const CACHE_AFFINITY = {
   // Only a request at least this big (estimated prompt tokens) waits; a smaller
   // one rebuilds its cache cheaply on another key. Env: CACHE_AFFINITY_MIN_TOKENS.
   minPromptTokens: envInt("CACHE_AFFINITY_MIN_TOKENS", 32 * 1000),
+  // A request at least this big waits up to largeMaxWaitMs in all instead:
+  // rebuilding its cache on a cold key takes minutes, not seconds.
+  // Env: CACHE_AFFINITY_LARGE_TOKENS, CACHE_AFFINITY_LARGE_MAX_WAIT_MS.
+  largePromptTokens: envInt("CACHE_AFFINITY_LARGE_TOKENS", 200 * 1000),
+  largeMaxWaitMs: envInt("CACHE_AFFINITY_LARGE_MAX_WAIT_MS", 60 * 1000, { max: MAX_TIMER_MS }),
   // Conversations remembered at once; the least recently used goes first.
   maxEntries: 10 * 1000,
   // Warm keys remembered per conversation; the least recently used goes first.
