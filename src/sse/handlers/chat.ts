@@ -730,10 +730,12 @@ async function routeSingleModelChat(
       if (credentials?.allRateLimited) {
         const locked = allLockedError(lastStatus, lastError, credentials, accountFailures);
         const { status } = locked;
-        const summarized = accountFailures.length > 0 && !(locked.swapped && locked.error);
-        const errorMsg = summarized ? summarizeAccountFailures(provider, model, accountFailures) : (locked.error || "Unavailable");
+        const summary = accountFailures.length > 0 ? summarizeAccountFailures(provider, model, accountFailures) : null;
+        const summarized = summary !== null && !(locked.swapped && locked.error);
+        const errorMsg = summarized ? summary : (locked.error || "Unavailable");
         const prefixedError = summarized ? errorMsg : `[${provider}/${model}] ${errorMsg}`;
         log.warn("CHAT", `${prefixedError} (${credentials.retryAfterHuman})`);
+        if (summary && !summarized) log.warn("CHAT", summary);
         const retryAtMs = credentials.retryAfter ? new Date(credentials.retryAfter).getTime() : 0;
         const limited = isLimitError(status, errorMsg);
         return {

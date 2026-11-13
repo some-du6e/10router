@@ -9,6 +9,7 @@ import { FORMATS } from "../translator/formats.js";
 import { ROLE, OPENAI_FINISH } from "../translator/schema/index.js";
 import { formatSSE } from "./stream.js";
 import { abortableSleep } from "./abortableSleep.js";
+import { isRequestError } from "../services/accountFallback.js";
 
 // Present in every banner we emit. Later requests carry the banner back inside
 // their history; detecting this marker is what triggers the "ignore that line"
@@ -360,15 +361,22 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
 // The status and error a request gets when every account is locked. A 401/403
 // this pass hit on one key loses to a retryable code the reported key got on
 // this model (lastErrorOwn), or to a 429/5xx another key hit in the same pass,
-// so the client waits instead of reporting an auth failure.
+// so the client waits instead of reporting an auth failure. Unless a key in the
+// pass hit a limit, a 401/403 or 404 pass then reports a request error.
 export function allLockedError(lastStatus, lastError, credentials, failures = []) {
   const soonest = Number(credentials?.lastErrorCode) || null;
   const retryable = status => status === 429 || status >= 500;
-  if (lastStatus === 401 || lastStatus === 403) {
+  const authFailed = lastStatus === 401 || lastStatus === 403;
+  if (authFailed) {
     if (soonest && retryable(soonest) && credentials.lastErrorOwn !== false) return { status: soonest, error: credentials.lastError || null, swapped: true };
     // By status: a bodyless 403 reads "You exceeded your current quota".
     const retry = failures.find(f => retryable(f.status));
     if (retry) return { status: retry.status, error: retry.error || null, swapped: true };
+  }
+  if ((authFailed || lastStatus === 404) && !failures.some(f => isLimitError(f.status, f.error))) {
+    const fixable = failures.filter(f => isRequestError(f.status, f.error));
+    const pick = fixable.find(f => f.status !== 404) ?? (authFailed ? fixable[0] : null);
+    if (pick) return { status: pick.status, error: pick.error || null, swapped: true };
   }
   return { status: lastStatus || soonest || 503, error: lastError || credentials?.lastError || null, swapped: false };
 }
