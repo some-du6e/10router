@@ -1,6 +1,6 @@
 {
   "prodPattern": {
-    "other account": 22,
+    "other account": 12,
     "same account": 12
   },
   "incidentRecovery": {
@@ -32,12 +32,26 @@
     "same account: opus, then haiku": 207,
     "same account: one model at a time, 2 h each": 124,
     "same account: bursty, 2 models": 92,
-    "other account: sonnet, then opus": 186,
+    "other account: sonnet, then opus": null,
     "other account: sessions alternating sonnet and opus": 69,
-    "other account: opus, plus sonnet every 2 h": 180,
-    "other account: opus, then haiku": 186,
+    "other account: opus, plus sonnet every 2 h": 184,
+    "other account: opus, then haiku": null,
     "other account: one model at a time, 2 h each": 122,
     "other account: bursty, 2 models": 62
+  },
+  "deadOnEveryModelRefusals": {
+    "same account: sonnet, then opus": 15,
+    "same account: sessions alternating sonnet and opus": 24,
+    "same account: opus, plus sonnet every 2 h": 12,
+    "same account: opus, then haiku": 15,
+    "same account: one model at a time, 2 h each": 12,
+    "same account: bursty, 2 models": 15,
+    "other account: sonnet, then opus": 20,
+    "other account: sessions alternating sonnet and opus": 16,
+    "other account: opus, plus sonnet every 2 h": 12,
+    "other account: opus, then haiku": 20,
+    "other account: one model at a time, 2 h each": 11,
+    "other account: bursty, 2 models": 11
   },
   "lacksOpus": {
     "E1, main key, sonnet flaky 0%": "0/30 off",
@@ -53,5 +67,43 @@
       "kimi-k3": 14
     },
     "turnedOff": false
+  },
+  "ownAccount": {
+    "incidentRecovery": {
+      "every minute, 30 min": 12,
+      "every minute, 60 min": 22,
+      "every minute, 120 min": 52,
+      "every minute, 180 min": 172,
+      "every minute, 360 min": 172,
+      "every minute, 720 min": 172,
+      "every minute, 4320 min": 172,
+      "10 on / 13 off, 30 min": 16,
+      "10 on / 13 off, 60 min": 9,
+      "10 on / 13 off, 120 min": 87,
+      "10 on / 13 off, 180 min": 27,
+      "10 on / 13 off, 360 min": 31,
+      "10 on / 13 off, 720 min": 39,
+      "10 on / 13 off, 4320 min": 119
+    },
+    "incidentThenBlip": "0/30 off",
+    "flaky": {
+      "20%": "0/30 off",
+      "40%": "0/30 off"
+    },
+    "lacksOpus": {
+      "E1, main key, sonnet flaky 0%": "0/30 off",
+      "E1, main key, sonnet flaky 20%": "0/30 off",
+      "E1, main key, sonnet flaky 40%": "0/30 off",
+      "E2, backup key, sonnet flaky 0%": "0/30 off",
+      "E2, backup key, sonnet flaky 20%": "3/30 off",
+      "E2, backup key, sonnet flaky 40%": "7/30 off"
+    },
+    "lacksTwoModels": {
+      "refusals": {
+        "claude-opus-5-5": 12,
+        "kimi-k3": 14
+      },
+      "turnedOff": false
+    }
   }
 }

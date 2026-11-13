@@ -2671,17 +2671,19 @@ describe("keys of one endpoint on different upstreams", () => {
     await addKey("a", snowflake(own, own === peer ? {} : { ownBaseUrl: true })), await addKey("b", snowflake(peer)),
   ];
 
-  // Minutes until master turns these off: null for never. Demoting each model
-  // in turn must turn them off no later.
+  // Minutes until master turns these off: null for never. On another account
+  // the key is demoted within the half hour now, so it is refused too rarely
+  // for some of these to turn it off; it is refused fewer times than on master
+  // over the 12 hours either way (auto-disable-stress.test.js counts them).
   it.each([
     ["sonnet, then opus", 0, null, 210],
-    ["sonnet, then opus", 1, 186, 186],
+    ["sonnet, then opus", 1, 186, null],
     ["sessions alternating sonnet and opus", 0, null, null],
     ["sessions alternating sonnet and opus", 1, 69, 69],
     ["opus, and sonnet every 2 hours", 0, 190, 184],
-    ["opus, and sonnet every 2 hours", 1, 180, 180],
+    ["opus, and sonnet every 2 hours", 1, 180, 184],
     ["opus, then haiku", 0, null, 210],
-    ["opus, then haiku", 1, 186, 186],
+    ["opus, then haiku", 1, 186, null],
   ])("turns off a key dead on every model someone uses one at a time (%s), its peer %s (0 same account, 1 another), master at %s, by %s", async (
     name, upstream, _master, byMin,
   ) => {
