@@ -52,6 +52,9 @@ on:
       # GitHub reads [id] as a one-character class, so the folder is matched with *.
       - "src/app/api/providers/*/route.js"
       - "src/app/api/providers/validate/route.js"
+      # Why a key check failed (the validator's reason, the management API's answer).
+      - "src/shared/constants/keyCheck.js"
+      - "src/lib/endpointDetect.ts"
       - "src/shared/components/EditConnectionModal.js"
       - "open-sse/translator/concerns/thinkingUnified.js"
       - "src/app/api/keys/**"
@@ -150,6 +153,7 @@ jobs:
           tests/unit/management-keys-migration.test.js
           tests/unit/compatible-multi-endpoint.test.js
           src/app/api/providers/validate/route.js
+          src/shared/constants/keyCheck.js
           .github/e2e/management-keys/run.mjs
 
   # The built app: the real proxy in front of the management API, /v1 and the

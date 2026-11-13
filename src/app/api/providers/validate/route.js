@@ -17,6 +17,8 @@ import { getExecutor } from "open-sse/executors/index.js";
 import { resolveKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
 import { isLocalRequest } from "@/dashboardGuard";
 import { makeProbeFetch } from "@/lib/probeFetch.js";
+import { discardBody } from "@/lib/endpointDetect.js";
+import { NO_API_ROUTE, UNVERIFIED, KEY_CHECK_ERRORS, INVALID_KEY, PROBE_TIMEOUT_MS } from "@/shared/constants/keyCheck.js";
 
 // A compatible key may bring its own endpoint URL (another account or region);
 // check it there, with the same SSRF rules as saving it. The result carries the
@@ -30,6 +32,33 @@ async function compatibleBaseUrl(request, body, node) {
   const keyUrl = await resolveKeyBaseUrl(body.baseUrl, node.baseUrl, { remote });
   if (!keyUrl.ok) return keyUrl;
   return { ...keyUrl, fetch: keyUrl.own && remote ? makeProbeFetch(true) : plainFetch };
+}
+
+// One probe request. It gives up after PROBE_TIMEOUT_MS, which comes back as
+// null (the endpoint didn't answer), or when the caller goes away (the
+// management API's own probe timeout aborts its request), which throws.
+async function probeRequest(doFetch, url, init, request) {
+  const timeout = AbortSignal.timeout(PROBE_TIMEOUT_MS);
+  try {
+    return await doFetch(url, { ...init, signal: AbortSignal.any([request.signal, timeout].filter(Boolean)) });
+  } catch (err) {
+    if (timeout.aborted && !request.signal?.aborted) return null;
+    throw err;
+  }
+}
+
+const UNANSWERED = { valid: false, reason: UNVERIFIED, error: KEY_CHECK_ERRORS[UNVERIFIED]() };
+
+// What the chat-path probe's answer says about a key. `{}` names no model, so
+// a key that gets past auth gets the body refused (400/422), or a 2xx. A
+// 404/405 or a redirect (the probe never follows one, on either fetch: it asks
+// for redirect: "manual") means no API at this URL. Anything else (429, 5xx,
+// other 4xx) shows nothing.
+function chatProbeVerdict(status) {
+  if ((status >= 200 && status < 300) || status === 400 || status === 422) return { valid: true, error: null };
+  if (status === 401 || status === 403) return { valid: false, error: INVALID_KEY };
+  if (status === 404 || status === 405 || (status >= 300 && status < 400)) return { valid: false, reason: NO_API_ROUTE, error: KEY_CHECK_ERRORS[NO_API_ROUTE]() };
+  return { valid: false, reason: UNVERIFIED, upstreamStatus: status, error: KEY_CHECK_ERRORS[UNVERIFIED](status) };
 }
 
 // A node's quirks, picked the way the create route copies them onto a new key.
@@ -181,14 +210,31 @@ export async function POST(request) {
         // The only key in them is the one being checked; any other value the
         // admin put in the node's header lines goes too, as it does in
         // routing, to this URL (a key's own URL when it has one).
+        const executor = getExecutor(provider);
         const modelsUrl = applyUrlOverrides(appendUrlPath(keyUrl.baseUrl, "/models"), node.overrides, { replacePath: false });
-        const credentials = { apiKey, providerSpecificData: { ...nodeQuirksOf(node), baseUrl: keyUrl.baseUrl } };
-        const { "Content-Type": _json, ...modelsHeaders } = getExecutor(provider).buildHeaders(credentials, false, modelsUrl, null);
-        const res = await keyUrl.fetch(modelsUrl, { headers: modelsHeaders });
+        const credentials = { apiKey, providerSpecificData: { ...nodeQuirksOf(node), apiType: node.apiType, baseUrl: keyUrl.baseUrl } };
+        const { "Content-Type": _json, ...modelsHeaders } = executor.buildHeaders(credentials, false, modelsUrl, null);
+        const res = await probeRequest(keyUrl.fetch, modelsUrl, { headers: modelsHeaders }, request);
+        if (!res) return NextResponse.json(UNANSWERED);
+        discardBody(res);
+        if (res.status === 404 || res.status === 405) {
+          // No /models route: POST a literal {} to the chat path routing uses
+          // (the executor's URL, with the node's path and query overrides; the
+          // body skips the body transform). With no model, the upstream
+          // refuses it before inference, so no tokens are spent. No redirect
+          // is followed, same-origin or not, on the plain or the pinned probe
+          // fetch, so a login page or another host can't answer for the key.
+          const chatUrl = executor.buildUrl(null, false, 0, credentials);
+          const chatHeaders = executor.buildHeaders(credentials, false, chatUrl, null);
+          const chatRes = await probeRequest(keyUrl.fetch, chatUrl, { method: "POST", headers: chatHeaders, body: "{}", redirect: "manual" }, request);
+          if (!chatRes) return NextResponse.json(UNANSWERED);
+          discardBody(chatRes);
+          return NextResponse.json(chatProbeVerdict(chatRes.status));
+        }
         isValid = res.ok;
         return NextResponse.json({
           valid: isValid,
-          error: isValid ? null : "Invalid API key",
+          error: isValid ? null : INVALID_KEY,
         });
       }
 

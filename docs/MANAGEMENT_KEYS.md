@@ -100,9 +100,19 @@ Without `providers` it can add keys for any provider that takes an API key.
 Adding a key goes through the same code the dashboard uses: the validation
 ping (`/api/providers/validate`), then the create route (`/api/providers`).
 
-- A key the provider refuses is not added, and the response is a `422`.
+- A key the provider refuses is not added, and the response is a `422`. A
+  custom endpoint URL with no API on it (see the probe below) is a `422` too,
+  saying the endpoint URL looks wrong instead of that the key was refused.
+- When an OpenAI-compatible endpoint's answer doesn't show whether the key
+  works (a 429, a 5xx or another unexpected status on the fallback probe
+  below), or one of its probe requests gets no answer within 8 seconds,
+  nothing is added and the response is a `502` naming the status or the
+  timeout, or a `504` if the two requests together take longer than the
+  15-second management timeout below. Try again later.
 - A probe that doesn't answer in 15 seconds is given up on with a `504`, and
-  nothing is added.
+  nothing is added. An OpenAI-compatible endpoint's probe is cancelled then,
+  so it sends no request after the `504`; other providers' probes may still
+  finish in the background.
 - An error from the validator itself (a custom endpoint that no longer exists,
   a bad field) comes back with its own status.
 - The management key is checked again after the probe, so a key revoked or
@@ -112,8 +122,31 @@ ping (`/api/providers/validate`), then the create route (`/api/providers`).
   that key: its URL, headers and body come from the same code, with the
   endpoint's advanced settings (auth header style, client identity, header
   lines, path and query overrides, model renames, body edits). The
-  endpoint's proxy, timeout and retries are not used for the probe. An
-  Anthropic-compatible endpoint's probe sends a real
+  endpoint's proxy, timeout and retries are not used for the probe.
+- An OpenAI-compatible endpoint's probe is `GET /models` (with the query
+  override; no model is sent). A 2xx is valid; any other answer but a 404 or
+  405 is a refused key. When it answers 404 or 405 (the endpoint has no model
+  list), the probe posts a literal `{}` to the chat path routing uses
+  (`/responses` on a Responses endpoint, with the path and query overrides and
+  the same headers). It never follows a redirect, same-origin or not, also
+  for a key with its own URL. That body skips the body edits and names no
+  model, so the upstream refuses it before running anything and no tokens are
+  spent. Each of these two requests gives up after 8 seconds (the `502`
+  above, or a `504` if the two together pass 15 seconds). An endpoint that is
+  starting up cold and takes longer than that to answer gets that answer
+  ("couldn't check the key, try again"); retry once it is warm. The
+  `GET /models` still follows redirects (any on a key without its own URL,
+  same-origin ones on a key's own URL), so a login wall in front of every
+  path, where `/models` redirects to a login page that answers 200, passes
+  any key before the post runs. On that post:
+  - a 2xx, 400 or 422 is valid (the key got past auth and the body was
+    refused);
+  - a 401 or 403 is a refused key;
+  - a 404, 405 or any redirect (it is not followed) means no API answers at
+    that URL (most likely a typo), so the endpoint URL looks wrong;
+  - anything else (a 429, a 5xx, another 4xx) shows nothing about the key,
+    so it is not added (the `502` above).
+- An Anthropic-compatible endpoint's probe sends a real
   message, so it names a model: the key's `defaultModel` if given (a
   `(level)` suffix dropped), else one listed for the endpoint, preferring
   one the endpoint doesn't route to another API. Give `defaultModel` when
@@ -128,7 +161,9 @@ ping (`/api/providers/validate`), then the create route (`/api/providers`).
 The probe is only as strict as the dashboard's. Some providers have no real
 check: a keyless self-hosted endpoint passes on any answer, the generic fallback
 counts anything but a 401 or 403 as valid, and a few media providers are
-accepted without a probe. Those keys are added and fail later, at use.
+accepted without a probe. Those keys are added and fail later, at use. An
+OpenAI-compatible endpoint without `/models` that checks the body before the
+key answers any key's `{}` with a 400, so there any key passes.
 
 The management API takes `provider`, `apiKey`, `name`, `defaultModel`, a few
 `providerSpecificData` fields (`accountId`, `region`, `deployment`,
@@ -315,8 +350,10 @@ These go into the log:
 - a create or edit refused for being outside the scope, a provider-key create
   for a provider outside the scope, a `baseUrl` refused because the scope lists
   no hosts for that endpoint or not its host (also when the dashboard narrowed
-  the list during the probe), and a provider key the provider refused, each
-  with the reason;
+  the list during the probe), and a provider key the probe failed, each with
+  the reason: `the provider did not accept the key`, `no API route at the
+  endpoint URL` (the URL looks wrong), or `the endpoint's answer did not show
+  whether the key works` (the `502`);
 - creating, changing and revoking management keys in the dashboard.
 
 These don't: failed authentication (no key, a wrong key, a key that's off,
