@@ -200,6 +200,14 @@ function autoDisableReason(status, errorText, streak) {
 
 const probeMs = (level) => AUTH_DEMOTE_CONFIG.probeMs[Math.min(level, AUTH_DEMOTE_CONFIG.probeMs.length - 1)];
 
+// A count that isn't demoted yet still runs at nowMs: its last refusal is no
+// more than crossUpstreamWindowMs back. Past that, the next refusal on the
+// model starts it over.
+const countRuns = (record, nowMs) => {
+  const sinceLast = nowMs - new Date(record?.lastAt).getTime();
+  return sinceLast >= 0 && sinceLast <= AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
+};
+
 // A key's demotion record for a model after one more counted 403 on it at
 // nowMs (see AUTH_DEMOTE_CONFIG); lastCountedAt is its last refusal the turn-off
 // rule counts too. It doesn't trip while the key was refused, in a way that rule
@@ -215,8 +223,7 @@ function nextDemoteRecord(record, nowMs, { sameUpstream, otherRefusalAt = -Infin
     const nextProbeAt = new Date(nowMs + probeMs(probeLevel)).toISOString();
     return { ...record, count: record.count + 1, lastAt: now, lastCountedAt, probeLevel, nextProbeAt };
   }
-  const sinceLast = nowMs - new Date(record?.lastAt).getTime();
-  const restart = !(sinceLast >= 0 && sinceLast <= AUTH_DEAD_CONFIG.crossUpstreamWindowMs);
+  const restart = !countRuns(record, nowMs);
   const count = (restart ? 0 : record.count) + 1;
   const firstAt = restart ? now : record.firstAt;
   const allSameUpstream = sameUpstream && (restart || record.sameUpstream === true);
@@ -249,9 +256,10 @@ const demotionOf = (conn, model) => {
 
 // A count of refusals the turn-off rule counts, with nothing served since it
 // began; a dead-class demotion once it demotes the key, firm if nothing was
-// served in the minWindowMs before the count began either.
-const refusedForItself = (conn, r) => !!r && !r.modelScoped && !(conn.authDemoteOkAt >= r.firstAt)
-  && !succeededSince(conn.id, new Date(r.firstAt).getTime() + 1);
+// served in the minWindowMs before the count began either. A record without a
+// readable firstAt is none of these: no success could ever clear it.
+const refusedForItself = (conn, r) => Number.isFinite(new Date(r?.firstAt).getTime()) && !r.modelScoped
+  && !(conn.authDemoteOkAt >= r.firstAt) && !succeededSince(conn.id, new Date(r.firstAt).getTime() + 1);
 const isDeadClass = (conn, r) => !!r?.demotedAt && refusedForItself(conn, r);
 const isFirm = (conn, r) => isDeadClass(conn, r)
   && !(new Date(r.servedAt).getTime() >= new Date(r.firstAt).getTime() - AUTH_DEAD_CONFIG.minWindowMs);
@@ -259,9 +267,11 @@ const isFirm = (conn, r) => isDeadClass(conn, r)
 // Demoted on another model the way isDeadClass says. Callers check the key
 // isn't demoted on `model` itself first.
 const demotedElsewhere = (conn, model) => demoteRecords(conn).some(([m, r]) => m !== model && isDeadClass(conn, r));
-// Has refusedForItself counts on 2 models or more: what rule (d) of
-// deadElsewhere turns a key off on. A key that lacks one model is refused only there.
-const refusedOnTwo = (conn) => demoteRecords(conn).filter(([, r]) => refusedForItself(conn, r)).length >= 2;
+// Has refusedForItself counts on 2 models or more, each demoted or still
+// running (countRuns): a count that has lapsed is only a stray refusal. A key
+// that lacks one model is refused only there.
+const refusedOnTwo = (conn) => demoteRecords(conn)
+  .filter(([, r]) => refusedForItself(conn, r) && (r.demotedAt || countRuns(r, Date.now()))).length >= 2;
 
 // Refused, in ways the turn-off rule counts, on 2 models with nothing served in
 // between, the key is dead (tests/unit/auto-disable-stress.test.js replays it).
