@@ -2081,10 +2081,10 @@ describe("a key refused on only one model", () => {
     expect(await load(dead.id)).toMatchObject({ isActive: true, authDemote_m1: { probeLevel: 8 } });
   });
 
-  // A backup that lacks m1 (a plain 403, not worded as a refusal of one
-  // model), with refused probes there, then 3 hours later a 27-minute incident
-  // on the key itself while it serves m2. Its history looks like a dead key's,
-  // and it isn't one.
+  // A key that lacks m1 (a plain 403, not worded as a refusal of one model),
+  // with refused probes there and idle since, then 3 hours later a 27-minute
+  // incident on the key itself on m2, a model it can serve. Its history looks
+  // like a dead key's, and it isn't one.
   it("keeps a key on that lacks one model through an incident on another hours later, and it serves that model again", async () => {
     const k = await addKey("key-k");
     const peer = await addKey("key-p");
