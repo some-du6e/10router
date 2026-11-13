@@ -2834,8 +2834,8 @@ describe("a key refused on one model while keys on other accounts serve it", () 
     } });
     await fail(dead.id, { times: 6, models: [KIMI], peers, stepMs: 2 * MIN, text: KEY_REFUSED_403 });
     const conn = await load(dead.id);
-    expect(record(conn, KIMI)).toMatchObject({ demotedAt: new Date().toISOString() });
     expect(conn.isActive).toBe(true);
+    expect(record(conn, KIMI)).toMatchObject({ demotedAt: new Date().toISOString() });
   });
 
   it("demotes a key that lacks the model there and keeps it on, serving the others", async () => {
