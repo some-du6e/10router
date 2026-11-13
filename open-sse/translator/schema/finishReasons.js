@@ -8,6 +8,12 @@ export const OPENAI_FINISH = {
   CONTENT_FILTER: "content_filter",
 };
 
+// OpenAI Responses `incomplete_details.reason` values (why a reply stopped short).
+export const RESPONSES_INCOMPLETE_REASON = {
+  MAX_OUTPUT_TOKENS: "max_output_tokens",
+  CONTENT_FILTER: "content_filter",
+};
+
 // Claude stop_reason values.
 export const CLAUDE_STOP = {
   END_TURN: "end_turn",

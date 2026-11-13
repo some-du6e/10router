@@ -1,6 +1,9 @@
 import { createHash, randomBytes, randomUUID } from "crypto";
-import { CLAUDE_TOOL_SUFFIX, CC_DEFAULT_TOOLS } from "../config/appConstants.js";
+import { CLAUDE_TOOL_SUFFIX, CC_DEFAULT_TOOLS, MAX_TOOL_NAME_LENGTH } from "../config/appConstants.js";
 import { CLAUDE_CLI_VERSION } from "../providers/shared.js";
+import { CLAUDE_BLOCK, CLAUDE_TOOL_REF, TOOL_TYPE, TOOL_CHOICE } from "../translator/schema/index.js";
+import { capToolName } from "../translator/concerns/toolNamespace.js";
+import { isToolChangeBlock } from "../translator/concerns/toolChanges.js";
 
 const CC_ENTRYPOINT = "sdk-cli";
 
@@ -48,31 +51,51 @@ export function cloakClaudeTools(body) {
   const tools = body.tools;
   if (!tools || tools.length === 0) return { body, toolNameMap: null };
 
-  const suffix = (name) => `${name}${CLAUDE_TOOL_SUFFIX}`;
+  // A name too long for the suffix is cut (with a hash) first, so the cloaked
+  // name stays within MAX_TOOL_NAME_LENGTH; toolNameMap maps it back.
+  // A missing or non-string name (a malformed history block) passes through unchanged.
+  const suffix = (name) => (typeof name === "string"
+    ? `${capToolName(name, MAX_TOOL_NAME_LENGTH - CLAUDE_TOOL_SUFFIX.length)}${CLAUDE_TOOL_SUFFIX}`
+    : name);
   const toolNameMap = new Map();
   const clientToolNames = new Set();
   const clientDeclarations = [];
 
   // All client tools get renamed with suffix.
-  // Built-in server tools (web_search_20250305, etc.) carry a `type` and require
-  // an exact reserved `name` — never suffix those or Claude rejects the request.
-  for (const tool of tools) {
-    if (tool.type) { clientDeclarations.push(tool); continue; }
+  // Built-in server tools (web_search_20250305, etc.) carry a `type` other than
+  // "custom" and require an exact reserved `name` — never suffix those or Claude
+  // rejects the request.
+  const isClientTool = (tool) => !(tool?.type && tool.type !== TOOL_TYPE.CUSTOM) && typeof tool?.name === "string";
+  const cloakTool = (tool) => {
     const suffixed = suffix(tool.name);
     toolNameMap.set(suffixed, tool.name);
     clientToolNames.add(tool.name);
-    clientDeclarations.push({ ...tool, name: suffixed });
-  }
+    return { ...tool, name: suffixed };
+  };
+  for (const tool of tools) clientDeclarations.push(isClientTool(tool) ? cloakTool(tool) : tool);
 
   // Client tools first, then CC decoy tools (no overlap: client tools all have _cc suffix)
   const allTools = [...clientDeclarations, ...CC_DECOY_TOOLS];
 
+  // A mid-conversation tool change names its tool too. It may be folded into
+  // tools[] after this (the executor's finalizeBody), so a tool added by value
+  // is cloaked like a declared one, and a reference names the suffixed tool.
+  const cloakToolChange = (block) => {
+    const tool = block.tool;
+    if (tool?.type === CLAUDE_TOOL_REF.REFERENCE) {
+      return clientToolNames.has(tool.name) ? { ...block, tool: { ...tool, name: suffix(tool.name) } } : block;
+    }
+    const def = tool?.type === CLAUDE_TOOL_REF.DEFINITION ? tool.definition : null;
+    return isClientTool(def) ? { ...block, tool: { ...tool, definition: cloakTool(def) } } : block;
+  };
+
   // Rename tool_use in message history (all client tools get suffix)
   const renamedMessages = body.messages?.map(msg => {
     if (!Array.isArray(msg.content)) return msg;
-    const renamedContent = msg.content.map(block =>
-      block.type === "tool_use" ? { ...block, name: suffix(block.name) } : block
-    );
+    const renamedContent = msg.content.map(block => {
+      if (block?.type === CLAUDE_BLOCK.TOOL_USE) return { ...block, name: suffix(block.name) };
+      return isToolChangeBlock(block) ? cloakToolChange(block) : block;
+    });
     return { ...msg, content: renamedContent };
   });
 
@@ -83,7 +106,7 @@ export function cloakClaudeTools(body) {
   // Only rewrite when the choice targets one of the client tools we actually
   // renamed — never a decoy/built-in name (those are sent unsuffixed).
   if (
-    body.tool_choice?.type === "tool" &&
+    body.tool_choice?.type === TOOL_CHOICE.TOOL &&
     clientToolNames.has(body.tool_choice.name)
   ) {
     cloakedBody.tool_choice = { ...body.tool_choice, name: suffix(body.tool_choice.name) };

@@ -9,6 +9,7 @@ import { FORMATS } from "../translator/formats.js";
 import { parseSSELine, formatSSE } from "../utils/streamHelpers.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
+import { relaxForcedToolChoiceForThinking } from "../translator/concerns/toolChoice.js";
 import { SSE_DONE } from "../utils/sseConstants.js";
 import { ANTHROPIC_API_VERSION } from "../providers/shared.js";
 import crypto from "crypto";
@@ -258,6 +259,8 @@ export class GithubExecutor extends BaseExecutor {
     // knows how to buffer an SSE response into a single JSON reply when the client
     // asked for stream:false.
     const transformedBody = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, model, body, true, credentials, "github");
+    // This route skips finalizeBody, so the forced-tool check on the final body runs here.
+    relaxForcedToolChoiceForThinking(transformedBody, this.provider);
     // _toolNameMap is internal bookkeeping (see openai-to-claude.js) — chatCore.js
     // normally strips it before dispatch and threads it into the response state to
     // restore original tool names; we must do the same here, or Anthropic's strict
