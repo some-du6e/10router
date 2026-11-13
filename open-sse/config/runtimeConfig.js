@@ -73,13 +73,24 @@ export const CACHE_AFFINITY = {
   ttlMs: envInt("CACHE_AFFINITY_TTL_MS", 5 * 60 * 1000),
   // Used instead when the request's cache_control asks for ttl: "1h".
   longTtlMs: 60 * 60 * 1000,
-  // Longest one request waits, in all per model it tries, for a warm key's
-  // rate-limit lock to clear instead of moving to a cold key. 0: never wait.
-  // Env: CACHE_AFFINITY_MAX_WAIT_MS.
+  // The request's wait budget: how long it waits, in all per model it tries,
+  // for a warm key's rate-limit lock to clear instead of moving to a cold key.
+  // A very large prompt gets largeMaxWaitMs instead (below). 0 turns all
+  // waiting off, the large budget included. Env: CACHE_AFFINITY_MAX_WAIT_MS.
   maxWaitMs: envInt("CACHE_AFFINITY_MAX_WAIT_MS", 10 * 1000, { max: MAX_TIMER_MS }),
+  // At most this many waits for a warm key per request and model, whatever
+  // is left of the budget: a lock that keeps resetting to its shortest
+  // backoff must not mean an upload of the whole prompt every few seconds.
+  // 0: never wait. Env: CACHE_AFFINITY_MAX_WARM_ATTEMPTS.
+  maxWarmAttempts: envInt("CACHE_AFFINITY_MAX_WARM_ATTEMPTS", 5),
   // Only a request at least this big (estimated prompt tokens) waits; a smaller
   // one rebuilds its cache cheaply on another key. Env: CACHE_AFFINITY_MIN_TOKENS.
   minPromptTokens: envInt("CACHE_AFFINITY_MIN_TOKENS", 32 * 1000),
+  // A request at least this big waits up to largeMaxWaitMs in all instead:
+  // rebuilding its cache on a cold key takes minutes, not seconds.
+  // Env: CACHE_AFFINITY_LARGE_TOKENS, CACHE_AFFINITY_LARGE_MAX_WAIT_MS.
+  largePromptTokens: envInt("CACHE_AFFINITY_LARGE_TOKENS", 200 * 1000),
+  largeMaxWaitMs: envInt("CACHE_AFFINITY_LARGE_MAX_WAIT_MS", 60 * 1000, { max: MAX_TIMER_MS }),
   // Conversations remembered at once; the least recently used goes first.
   maxEntries: 10 * 1000,
   // Warm keys remembered per conversation; the least recently used goes first.
