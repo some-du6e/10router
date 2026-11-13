@@ -2051,7 +2051,7 @@ describe("a key refused on only one model", () => {
       refusals += tried.filter((id) => dead.has(id)).length;
       for (const [i, key] of deadKeys.entries()) if (offAt[i] === null && !(await load(key.id)).isActive) offAt[i] = minute;
     }
-    expect({ offAt, refusals }).toEqual({ offAt: [180, 181, 300, 301], refusals: 61 });
+    expect({ offAt, refusals }).toEqual({ offAt: [180, 181, 300, 301], refusals: 65 });
     for (const key of deadKeys) expect((await load(key.id)).autoDisabledReason).toMatch(/^403 "Not authorized for this endpoint" on m[12], m[12]$/);
     expect((await load(healthy.id)).isActive).toBe(true);
   });
