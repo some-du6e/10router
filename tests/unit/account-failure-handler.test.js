@@ -53,6 +53,7 @@ vi.mock("@/sse/services/claudeBuiltinSearch.js", () => ({
 }));
 
 const { handleChat } = await import("../../src/sse/handlers/chat.js");
+const logger = await import("@/sse/utils/logger.js");
 
 function request(client = null) {
   return new Request("http://router.test/v1/messages", {
@@ -135,7 +136,59 @@ describe("chat account failure responses", () => {
     expect(body.error.message).toBe(
       "All 1 accounts unavailable for [opencode-go/glm-5.2]. Only account (HTTP 503): Upstream unavailable"
     );
-  });  it("automatically stops Codex after trying every limited account", async () => {
+  });  describe("a custom endpoint where one key is refused the request and the rest are dead", () => {
+    const provider = "openai-compatible-example";
+    const refusal = "messages.1.content.0: unknown block type 'example_block'";
+
+    beforeEach(() => {
+      mocks.getModelInfo.mockResolvedValue({ provider, model: "demo" });
+      mocks.handleChatCore
+        .mockResolvedValueOnce({ success: false, status: 400, error: refusal })
+        .mockResolvedValueOnce({ success: false, status: 403, error: "Not authorized" });
+    });
+
+    it("reports the 400 when the dead key is locked", async () => {
+      mocks.getProviderCredentials
+        .mockResolvedValueOnce(account("live", "Live"))
+        .mockResolvedValueOnce(account("dead", "Dead"))
+        .mockResolvedValueOnce({
+          allRateLimited: true,
+          retryAfter: "2026-08-23T12:05:00.000Z",
+          retryAfterHuman: "reset after 5m",
+          lastErrorCode: 403,
+          lastError: "Not authorized",
+        });
+
+      const response = await handleChat(request());
+      const body = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(response.headers.get("Retry-After")).toBe("300");
+      expect(body.error.message).toBe(`[${provider}/demo] ${refusal} (reset after 5m)`);
+      // The refused key isn't locked; the server log still lists every key.
+      expect(mocks.markAccountUnavailable).toHaveBeenCalledTimes(1);
+      const logged = logger.warn.mock.calls.map((call) => call.join(" ")).join("\n");
+      expect(logged).toContain(`All 2 accounts unavailable for [${provider}/demo]`);
+      expect(logged).toContain("Dead (HTTP 403): Not authorized");
+    });
+
+    it("reports the 400 when no key is left", async () => {
+      mocks.getProviderCredentials
+        .mockResolvedValueOnce(account("live", "Live"))
+        .mockResolvedValueOnce(account("dead", "Dead"))
+        .mockResolvedValueOnce(null);
+
+      const response = await handleChat(request());
+      const body = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(response.headers.get("Retry-After")).toBeNull();
+      expect(body.error.message).toContain(`Live (HTTP 400): ${refusal}`);
+      expect(body.error.message).toContain("Dead (HTTP 403): Not authorized");
+    });
+  });
+
+  it("automatically stops Codex after trying every limited account", async () => {
     mocks.getProviderCredentials
       .mockResolvedValueOnce(account("primary", "Primary"))
       .mockResolvedValueOnce(account("backup", "Backup"))

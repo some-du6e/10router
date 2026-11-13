@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { LIMIT_HOLD_SENTINEL, DEFAULT_TIMING } from "open-sse/utils/limitHold.js";
+import { DEFAULT_ERROR_MESSAGES } from "open-sse/config/errorConfig.js";
 
 // Exercises the real account loop in src/sse/handlers/chat.js with the
 // provider/credential layer stubbed, so the hold wiring itself is under test.
@@ -245,6 +246,27 @@ describe("rate-limit hold wiring", () => {
 
       expect((await send()).status).toBe(429);
     });
+  });
+
+  it("returns a request error at once instead of holding for dead keys that read like a quota", async () => {
+    const refusal = "messages.1.content.0: unknown block type 'example_block'";
+    const quotaText = DEFAULT_ERROR_MESSAGES[403];
+    const steps = [
+      { connectionId: "live", connectionName: "live", accessToken: "t" },
+      { connectionId: "dead", connectionName: "dead", accessToken: "t" },
+      { allRateLimited: true, retryAfter: new Date(Date.now() + 7_200_000).toISOString(), retryAfterHuman: "reset after 2h", lastError: quotaText, lastErrorCode: 403 },
+    ];
+    let call = 0;
+    const auth = await import("@/sse/services/auth.js");
+    vi.spyOn(auth, "getProviderCredentials").mockImplementation(async () => steps[call++] ?? null);
+    state.coreResults = [
+      { success: false, status: 400, error: refusal },
+      { success: false, status: 403, error: quotaText },
+    ];
+
+    const res = await handleChat(makeRequest({ model: "openai-compatible-example/demo", stream: true, messages: [{ role: "user", content: "hi" }] }));
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain(refusal);
   });
 
   it("holds a combo once every model in it is rate-limited", async () => {

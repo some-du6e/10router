@@ -322,20 +322,38 @@ describe("status sent when every key is locked", () => {
     expect(allLockedError(403, "Not authorized", null, [{ status: 403, error: "You exceeded your current quota" }])).toEqual({ status: 403, error: "Not authorized", swapped: false });
   });
 
-  it("reports a body another key was refused over keys that could not authenticate", () => {
-    // Prod 2026-11-12: three keys 400 on a tool_addition block, four dead keys 403. A 403 made
-    // Claude Code say "Failed to authenticate"; a 400 naming the block lets it drop the beta and resend.
-    const refusal = "messages.208.content.1: Input tag 'tool_addition' found using 'type' does not match any of the expected tags";
-    const failures = [
-      { status: 400, error: refusal },
-      { status: 403, error: "Not authorized for this endpoint" },
-    ];
-    expect(allLockedError(403, "Not authorized for this endpoint", { lastErrorCode: 403 }, failures)).toEqual({ status: 400, error: refusal, swapped: true });
-    expect(allLockedError(401, "bad key", null, [{ status: 404, error: "model not found" }]).status).toBe(404);
-    // A 429/5xx elsewhere in the pass still comes first.
-    expect(allLockedError(403, "Not authorized", null, [...failures, { status: 429, error: "rate_limit_error" }]).status).toBe(429);
-    // A 400 about the key itself is an auth failure too.
-    expect(allLockedError(403, "Not authorized", null, [{ status: 400, error: "invalid api key" }]).status).toBe(403);
+  describe("a request error another key got beats keys that could not authenticate", () => {
+    const refusal = "messages.1.content.0: unknown block type 'example_block'";
+    const dead = { status: 403, error: "Not authorized" };
+    const failures = [{ status: 400, error: refusal }, dead];
+
+    it("reports a 400 or 422 over a 401/403", () => {
+      expect(allLockedError(403, "Not authorized", { lastErrorCode: 403 }, failures)).toEqual({ status: 400, error: refusal, swapped: true });
+      expect(allLockedError(403, "Not authorized", null, [{ status: 422, error: "unprocessable field" }, dead])).toEqual({ status: 422, error: "unprocessable field", swapped: true });
+      expect(allLockedError(401, "bad key", null, [{ status: 404, error: "model not found" }]).status).toBe(404);
+    });
+
+    it("prefers a 400/422 over a 404 tried before it", () => {
+      expect(allLockedError(403, "Not authorized", null, [{ status: 404, error: "model not found" }, ...failures])).toEqual({ status: 400, error: refusal, swapped: true });
+    });
+
+    it("keeps a bodyless 400 with no error", () => {
+      expect(allLockedError(403, "Not authorized", null, [{ status: 400 }, dead])).toEqual({ status: 400, error: null, swapped: true });
+    });
+
+    it("still puts a 429/5xx first", () => {
+      expect(allLockedError(403, "Not authorized", null, [...failures, { status: 429, error: "rate_limit_error" }]).status).toBe(429);
+      expect(allLockedError(403, "Not authorized", { lastErrorCode: 429, lastError: "rate_limit_error", lastErrorOwn: true }, failures)).toEqual({ status: 429, error: "rate_limit_error", swapped: true });
+    });
+
+    it("uses the request error when the soonest key's 429 was on another model", () => {
+      expect(allLockedError(403, "Not authorized", { lastErrorCode: 429, lastError: "other model", lastErrorOwn: false }, failures)).toEqual({ status: 400, error: refusal, swapped: true });
+    });
+
+    it("treats a 400 about the key or its billing as an auth failure", () => {
+      expect(allLockedError(403, "Not authorized", null, [{ status: 400, error: "invalid api key" }]).status).toBe(403);
+      expect(allLockedError(403, "Not authorized", null, [{ status: 400, error: "example: credit balance is empty" }, dead])).toEqual({ status: 403, error: "Not authorized", swapped: false });
+    });
   });
 
   it("keeps the old order otherwise", () => {
