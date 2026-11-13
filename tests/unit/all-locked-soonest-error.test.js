@@ -34,6 +34,7 @@ vi.spyOn(console, "error").mockImplementation(() => {});
 
 const { markAccountUnavailable, getProviderCredentials } = await import("../../src/sse/services/auth.js");
 const { allLockedError } = await import("../../open-sse/utils/limitHold.js");
+const { DEFAULT_ERROR_MESSAGES } = await import("../../open-sse/config/errorConfig.js");
 
 const PROVIDER = "openai-compatible-chat-test";
 const MODEL = "claude-opus-5-5";
@@ -320,6 +321,78 @@ describe("status sent when every key is locked", () => {
     expect(allLockedError(403, "Not authorized", null, [{ status: 502, error: "Bad gateway" }]).status).toBe(502);
     // A bodyless 403 gets "You exceeded your current quota" as its text.
     expect(allLockedError(403, "Not authorized", null, [{ status: 403, error: "You exceeded your current quota" }])).toEqual({ status: 403, error: "Not authorized", swapped: false });
+  });
+
+  describe("a request error another key got beats keys that could not authenticate", () => {
+    const refusal = "messages.1.content.0: unknown block type 'example_block'";
+    const dead = { status: 403, error: "Not authorized" };
+    const failures = [{ status: 400, error: refusal }, dead];
+
+    it("reports a 400 or 422 over a 401/403", () => {
+      expect(allLockedError(403, "Not authorized", { lastErrorCode: 403 }, failures)).toEqual({ status: 400, error: refusal, swapped: true });
+      expect(allLockedError(403, "Not authorized", null, [{ status: 422, error: "unprocessable field" }, dead])).toEqual({ status: 422, error: "unprocessable field", swapped: true });
+      expect(allLockedError(401, "bad key", null, [{ status: 404, error: "model not found" }]).status).toBe(404);
+    });
+
+    it("prefers a 400/422 over a 404 tried before it", () => {
+      expect(allLockedError(403, "Not authorized", null, [{ status: 404, error: "model not found" }, ...failures])).toEqual({ status: 400, error: refusal, swapped: true });
+    });
+
+    it("keeps a bodyless 400 with no error", () => {
+      expect(allLockedError(403, "Not authorized", null, [{ status: 400 }, dead])).toEqual({ status: 400, error: null, swapped: true });
+    });
+
+    it("still puts a 429/5xx first", () => {
+      expect(allLockedError(403, "Not authorized", null, [...failures, { status: 429, error: "rate_limit_error" }]).status).toBe(429);
+      expect(allLockedError(403, "Not authorized", { lastErrorCode: 429, lastError: "rate_limit_error", lastErrorOwn: true }, failures)).toEqual({ status: 429, error: "rate_limit_error", swapped: true });
+    });
+
+    it("uses the request error when the soonest key's 429 was on another model", () => {
+      expect(allLockedError(403, "Not authorized", { lastErrorCode: 429, lastError: "other model", lastErrorOwn: false }, failures)).toEqual({ status: 400, error: refusal, swapped: true });
+    });
+
+    it("treats a 400 about the key or its billing as an auth failure", () => {
+      expect(allLockedError(403, "Not authorized", null, [{ status: 400, error: "invalid api key" }]).status).toBe(403);
+      expect(allLockedError(403, "Not authorized", null, [{ status: 400, error: "example: credit balance is empty" }, dead])).toEqual({ status: 403, error: "Not authorized", swapped: false });
+    });
+
+    it("prefers a 400/422 over a 404 the pass ended on", () => {
+      expect(allLockedError(404, "model not found", null, [{ status: 400, error: refusal }, dead, { status: 404, error: "model not found" }])).toEqual({ status: 400, error: refusal, swapped: true });
+      expect(allLockedError(404, "model not found", null, [{ status: 422, error: "unprocessable field" }, { status: 404, error: "model not found" }]).status).toBe(422);
+      // Only a request error: a 429 before the 404 doesn't change what a 404 pass reports.
+      expect(allLockedError(404, "model not found", null, [{ status: 429, error: "rate_limit_error" }, { status: 404, error: "model not found" }])).toEqual({ status: 404, error: "model not found", swapped: false });
+    });
+  });
+
+  describe("a limit anywhere in the pass keeps the last key's answer", () => {
+    const refusal = "messages.1.content.0: unknown block type 'example_block'";
+    const lacksModel = { status: 404, error: "example-model isn't available to this account" };
+    const modelRefusal = { status: 400, error: "The requested model is not available on this account" };
+    const rateLimited = { status: 429, error: "rate_limit_error" };
+    const quota = { status: 403, error: "Quota for this key is used up, try again later" };
+    const dead = { status: 403, error: "Not authorized" };
+
+    it("keeps a 404 pass's 404 when another key got a 429", () => {
+      expect(allLockedError(404, lacksModel.error, null, [rateLimited, modelRefusal, lacksModel])).toEqual({ status: 404, error: lacksModel.error, swapped: false });
+      expect(allLockedError(404, lacksModel.error, null, [rateLimited, { status: 400, error: refusal }, lacksModel])).toEqual({ status: 404, error: lacksModel.error, swapped: false });
+    });
+
+    it("counts a limit worded on a 400", () => {
+      expect(allLockedError(401, "bad key", null, [{ status: 400, error: "rate limit exceeded" }, lacksModel, { status: 401, error: "bad key" }])).toEqual({ status: 401, error: "bad key", swapped: false });
+    });
+
+    it("keeps a quota-worded 403 over a 404 or a refused body", () => {
+      expect(allLockedError(403, quota.error, null, [lacksModel, quota])).toEqual({ status: 403, error: quota.error, swapped: false });
+      expect(allLockedError(403, quota.error, null, [{ status: 400, error: refusal }, quota])).toEqual({ status: 403, error: quota.error, swapped: false });
+      const bodyless = { status: 403, error: DEFAULT_ERROR_MESSAGES[403] };
+      expect(allLockedError(403, bodyless.error, null, [{ status: 400, error: refusal }, bodyless]).status).toBe(403);
+    });
+
+    it("swaps when no key hit a limit", () => {
+      expect(allLockedError(403, dead.error, null, [lacksModel, dead])).toEqual({ status: 404, error: lacksModel.error, swapped: true });
+      // The soonest key's stored error isn't part of this pass.
+      expect(allLockedError(403, dead.error, { lastErrorCode: 403, lastError: quota.error }, [lacksModel, dead]).status).toBe(404);
+    });
   });
 
   it("keeps the old order otherwise", () => {

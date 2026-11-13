@@ -6,9 +6,13 @@ import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
 import { buildChunk } from "../concerns/chunk.js";
 import { buildUsage } from "../concerns/usage.js";
-import { fallbackToolCallId } from "../concerns/toolCall.js";
+import { fallbackToolCallId, customToolInput } from "../concerns/toolCall.js";
+import { clientToolFields } from "../concerns/toolNamespace.js";
+import { responsesItemId, toolCallItemId } from "../concerns/responsesItemId.js";
 import { reasoningDelta, extractReasoningText } from "../concerns/reasoning.js";
-import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM, OPENAI_FINISH, MODEL_FALLBACK } from "../schema/index.js";
+import {
+  ROLE, OPENAI_BLOCK, RESPONSES_ITEM, RESPONSES_ITEM_ID_PREFIX, OPENAI_FINISH, MODEL_FALLBACK, RESPONSES_STATUS, RESPONSES_INCOMPLETE_REASON,
+} from "../schema/index.js";
 
 /**
  * Translate OpenAI chunk to Responses API events
@@ -84,7 +88,7 @@ export function openaiToOpenAIResponsesResponse(chunk, state) {
         id: state.responseId,
         object: "response",
         created_at: state.created,
-        status: "in_progress",
+        status: RESPONSES_STATUS.IN_PROGRESS,
         background: false,
         error: null,
         output: []
@@ -97,7 +101,7 @@ export function openaiToOpenAIResponsesResponse(chunk, state) {
         id: state.responseId,
         object: "response",
         created_at: state.created,
-        status: "in_progress"
+        status: RESPONSES_STATUS.IN_PROGRESS
       }
     });
   }
@@ -185,7 +189,7 @@ function outputIndexFor(state, kind, index) {
 // Helper functions
 function startReasoning(state, emit, idx) {
   if (!state.reasoningId) {
-    state.reasoningId = `rs_${state.responseId}_${idx}`;
+    state.reasoningId = responsesItemId(RESPONSES_ITEM_ID_PREFIX.REASONING, state.responseId, idx);
     state.reasoningIndex = outputIndexFor(state, RESPONSES_ITEM.REASONING, idx);
     
     emit("response.output_item.added", {
@@ -257,7 +261,7 @@ function emitTextContent(state, emit, idx, content) {
   const outputIndex = outputIndexFor(state, RESPONSES_ITEM.MESSAGE, idx);
   if (!state.msgItemAdded[idx]) {
     state.msgItemAdded[idx] = true;
-    const msgId = `msg_${state.responseId}_${idx}`;
+    const msgId = responsesItemId(RESPONSES_ITEM_ID_PREFIX.MESSAGE, state.responseId, idx);
     
     emit("response.output_item.added", {
       type: "response.output_item.added",
@@ -271,7 +275,7 @@ function emitTextContent(state, emit, idx, content) {
     
     emit("response.content_part.added", {
       type: "response.content_part.added",
-      item_id: `msg_${state.responseId}_${idx}`,
+      item_id: responsesItemId(RESPONSES_ITEM_ID_PREFIX.MESSAGE, state.responseId, idx),
       output_index: outputIndex,
       content_index: 0,
       part: { type: RESPONSES_ITEM.OUTPUT_TEXT, annotations: [], logprobs: [], text: "" }
@@ -280,7 +284,7 @@ function emitTextContent(state, emit, idx, content) {
 
   emit("response.output_text.delta", {
     type: "response.output_text.delta",
-    item_id: `msg_${state.responseId}_${idx}`,
+    item_id: responsesItemId(RESPONSES_ITEM_ID_PREFIX.MESSAGE, state.responseId, idx),
     output_index: outputIndex,
     content_index: 0,
     delta: content,
@@ -296,7 +300,7 @@ function closeMessage(state, emit, idx) {
     const outputIndex = outputIndexFor(state, RESPONSES_ITEM.MESSAGE, idx);
     state.msgItemDone[idx] = true;
     const fullText = state.msgTextBuf[idx] || "";
-    const msgId = `msg_${state.responseId}_${idx}`;
+    const msgId = responsesItemId(RESPONSES_ITEM_ID_PREFIX.MESSAGE, state.responseId, idx);
 
     emit("response.output_text.done", {
       type: "response.output_text.done",
@@ -336,20 +340,6 @@ function isCustomTool(state, name) {
   return !!name && state.customToolNames?.has(name);
 }
 
-// Responses clients resolve a namespaced tool by the `namespace` field on the call,
-// not by a qualified name — without it they reject the call as unsupported.
-function toolNamespace(state, name) {
-  return (name && state.toolNamespaces?.get(name)) || null;
-}
-
-function extractCustomToolInput(argumentsText) {
-  if (typeof argumentsText !== "string") return "";
-  try {
-    const parsed = JSON.parse(argumentsText);
-    if (parsed && typeof parsed === "object" && typeof parsed.input === "string") return parsed.input;
-  } catch { /* incomplete or raw freeform input */ }
-  return argumentsText;
-}
 
 function emitToolCall(state, emit, tc) {
   const tcIdx = tc.index ?? 0;
@@ -367,18 +357,16 @@ function emitToolCall(state, emit, tc) {
   if (!state.funcItemAdded[tcIdx] && callId && state.funcNames[tcIdx]) {
     state.funcItemAdded[tcIdx] = true;
     const custom = isCustomTool(state, state.funcNames[tcIdx]);
-    const ns = toolNamespace(state, state.funcNames[tcIdx]);
 
     emit("response.output_item.added", {
       type: "response.output_item.added",
       output_index: outputIndex,
       item: {
-        id: `${custom ? "ctc" : "fc"}_${callId}`,
+        id: toolCallItemId(custom, callId),
         type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,
         ...(custom ? { input: "" } : { arguments: "" }),
         call_id: callId,
-        name: state.funcNames[tcIdx] || "",
-        ...(ns ? { namespace: ns } : {})
+        ...clientToolFields(state.toolNamespaces, state.funcNames[tcIdx])
       }
     });
   }
@@ -390,7 +378,7 @@ function emitToolCall(state, emit, tc) {
     if (state.funcItemAdded[tcIdx] && refCallId && !isCustomTool(state, state.funcNames[tcIdx])) {
       emit("response.function_call_arguments.delta", {
         type: "response.function_call_arguments.delta",
-        item_id: `fc_${refCallId}`,
+        item_id: toolCallItemId(false, refCallId),
         output_index: outputIndex,
         delta: tc.function.arguments
       });
@@ -409,37 +397,36 @@ function closeToolCall(state, emit, idx) {
     const args = state.funcArgsBuf[idx] || "{}";
     const custom = isCustomTool(state, state.funcNames[idx]);
 
+    const input = custom ? customToolInput(args) : null;
     if (custom) {
-      const input = extractCustomToolInput(args);
       emit("response.custom_tool_call_input.delta", {
         type: "response.custom_tool_call_input.delta",
-        item_id: `ctc_${callId}`,
+        item_id: toolCallItemId(true, callId),
         output_index: outputIndex,
         delta: input
       });
       emit("response.custom_tool_call_input.done", {
         type: "response.custom_tool_call_input.done",
-        item_id: `ctc_${callId}`,
+        item_id: toolCallItemId(true, callId),
         output_index: outputIndex,
         input
       });
     } else {
       emit("response.function_call_arguments.done", {
         type: "response.function_call_arguments.done",
-        item_id: `fc_${callId}`,
+        item_id: toolCallItemId(false, callId),
         output_index: outputIndex,
         arguments: args
       });
     }
 
-    const ns = toolNamespace(state, state.funcNames[idx]);
     const item = {
-      id: `${custom ? "ctc" : "fc"}_${callId}`,
+      id: toolCallItemId(custom, callId),
       type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,
-      ...(custom ? { input: extractCustomToolInput(args) } : { arguments: args }),
+      ...(custom ? { input } : { arguments: args }),
       call_id: callId,
-      name: state.funcNames[idx] || "",
-      ...(ns ? { namespace: ns } : {})
+      // Responses clients reject a namespaced tool's call that arrives without its namespace.
+      ...clientToolFields(state.toolNamespaces, state.funcNames[idx])
     };
 
     emit("response.output_item.done", {
@@ -488,7 +475,7 @@ function sendCompleted(state, emit) {
         id: state.responseId,
         object: "response",
         created_at: state.created,
-        status: "completed",
+        status: RESPONSES_STATUS.COMPLETED,
         background: false,
         error: null,
         output: collectCompletedOutputItems(state),
@@ -658,7 +645,7 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
     if (state.finishReasonSent) return null;
     const reason = data.response?.incomplete_details?.reason;
     state.finishReasonSent = true;
-    state.finishReason = reason === "content_filter" ? OPENAI_FINISH.CONTENT_FILTER : OPENAI_FINISH.LENGTH;
+    state.finishReason = reason === RESPONSES_INCOMPLETE_REASON.CONTENT_FILTER ? OPENAI_FINISH.CONTENT_FILTER : OPENAI_FINISH.LENGTH;
     const responseUsage = data.response?.usage;
     if (responseUsage && typeof responseUsage === "object") {
       const inputTokens = responseUsage.input_tokens || 0;

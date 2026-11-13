@@ -1,6 +1,6 @@
 // Claude helper functions for translator
 import { DEFAULT_THINKING_CLAUDE_SIGNATURE } from "../../config/defaultThinkingSignature.js";
-import { ROLE, CLAUDE_BLOCK } from "../schema/index.js";
+import { ROLE, CLAUDE_BLOCK, TOOL_TYPE } from "../schema/index.js";
 import { adjustMaxTokens } from "./maxTokens.js";
 import { applyCloaking } from "../../utils/claudeCloaking.js";
 import { resolveSessionId } from "../../utils/sessionManager.js";
@@ -8,6 +8,7 @@ import { isValidClaudeSignature } from "../../utils/claudeSignature.js";
 import { PROVIDERS } from "../../providers/index.js";
 import { getCapabilitiesForModel } from "../../providers/capabilities.js";
 import { applyThinking } from "../concerns/thinkingUnified.js";
+import { relaxForcedToolChoiceForThinking } from "../concerns/toolChoice.js";
 import { FORMATS } from "../formats.js";
 import { isLastMessageFromUser } from "../../services/provider.js";
 import { DEFAULT_MAX_TOKENS } from "../../config/runtimeConfig.js";
@@ -353,12 +354,13 @@ export function anchorClaudeCache(body) {
   return body;
 }
 
-// Strip built-in tools (e.g. web_search_20250305) and normalize to Anthropic-native shape
+// Strip built-in tools (e.g. web_search_20250305) and custom tools with no schema, and normalize to Anthropic-native shape
 // (drop `type` field, fold `function.{name,description,parameters}`) for non-Anthropic providers
 function toProviderClaudeTools(tools, provider) {
   if (provider === "claude") return tools;
   return tools
-    .filter(tool => !tool.type || tool.type === "function")
+    .filter(tool => !tool.type || tool.type === TOOL_TYPE.FUNCTION
+      || (tool.type === TOOL_TYPE.CUSTOM && typeof tool.name === "string" && !!tool.input_schema))
     .map(tool => {
       if (tool.function) {
         return {
@@ -543,6 +545,10 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
       delete body.tool_choice;
     }
   }
+
+  // Only the thinking-independent rule here: an endpoint's overrides can still
+  // drop `thinking` or rename the model, so the thinking check runs on the outgoing body.
+  relaxForcedToolChoiceForThinking(body, provider, false);
 
   // Apply cloaking for OAuth tokens (billing header + fake user ID)
   // session_id in user_id must match X-Claude-Code-Session-Id for fingerprint consistency

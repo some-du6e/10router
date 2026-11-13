@@ -461,6 +461,56 @@ describe("Claude Code through chatCore", () => {
   });
 });
 
+// The claude provider with an OAuth token cloaks tools (suffix, 60-character
+// cap, decoys) in translateRequest; its fixed beta list has neither tool-change
+// beta, so finalizeBody folds the blocks afterwards.
+describe("OAuth-cloaked claude provider: tool changes folded after cloaking", () => {
+  const OAUTH = { accessToken: "sk-ant-oat01-test" };
+  const LONG_NAME = `mcp__${"x".repeat(70)}`;
+  const cloakThenFold = async (body) => {
+    const { translateRequest } = await import("../../open-sse/translator/index.js");
+    const translated = translateRequest("claude", "claude", MODEL, body, false, { ...OAUTH }, "claude");
+    const toolNameMap = translated._toolNameMap;
+    delete translated._toolNameMap;
+    return { out: new DefaultExecutor("claude").finalizeBody(translated, {}, OAUTH), toolNameMap };
+  };
+
+  it("cloaks tools added by value or reference like tools[]: unique names, within 64, mapped back", async () => {
+    // Bash is also a Claude Code decoy tool, which cloaking sends unsuffixed.
+    const bash = { name: "Bash", description: "Run a command", input_schema: schema };
+    const long = { name: LONG_NAME, description: "A long-named MCP tool", input_schema: schema };
+    const { out, toolNameMap } = await cloakThenFold(claudeCodeBody([
+      user(text("look it up")),
+      system(addRef("mcp__docs__search"), addDef(bash), addDef(long)),
+      user(text("go")),
+    ]));
+
+    noToolChanges(out);
+    const names = out.tools.map((t) => t.name);
+    expect(new Set(names).size).toBe(names.length);
+    expect(names.every((n) => n.length <= 64)).toBe(true);
+    expect(toolNamed(out, "Bash_ide")).toMatchObject({ description: "Run a command" });
+    expect(toolNameMap.get("Bash_ide")).toBe("Bash");
+    const longWire = names.find((n) => n !== LONG_NAME && toolNameMap.get(n) === LONG_NAME);
+    expect(longWire).toMatch(/^mcp__x+_[0-9a-f]{8}_ide$/);
+    expect(longWire).toHaveLength(64);
+    // The reference names the suffixed deferred tool, so folding un-defers it.
+    expect(toolNamed(out, "mcp__docs__search_ide")).not.toHaveProperty("defer_loading");
+    expect(toolNamed(out, "mcp__docs__fetch_ide").defer_loading).toBe(true);
+  });
+
+  it("a forced choice of a tool added by value points at its cloaked name", async () => {
+    const { cloakClaudeTools } = await import("../../open-sse/utils/claudeCloaking.js");
+    const body = claudeCodeBody([user(text("note it")), system(addDef(NEW_TOOL))], { tool_choice: { type: "tool", name: NEW_TOOL.name } });
+    const { body: cloaked } = cloakClaudeTools(body);
+    expect(cloaked.tool_choice).toEqual({ type: "tool", name: `${NEW_TOOL.name}_ide` });
+    expect(cloaked.messages[1]).toEqual(system(addDef({ ...NEW_TOOL, name: `${NEW_TOOL.name}_ide` })));
+    // A reference to a tool that isn't a declared client tool is left alone.
+    const { body: other } = cloakClaudeTools(claudeCodeBody([user(text("hi")), system(addRef("web_search"))]));
+    expect(other.messages[1]).toEqual(system(addRef("web_search")));
+  });
+});
+
 describe("translateRequest", () => {
   it("claude→claude keeps the blocks for the executor to decide on", async () => {
     const { translateRequest } = await import("../../open-sse/translator/index.js");
