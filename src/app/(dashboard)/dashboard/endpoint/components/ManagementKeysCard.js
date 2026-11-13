@@ -238,6 +238,7 @@ export default function ManagementKeysCard({ onKeysLoaded, onRowsChanged }) {
                 {" "}{ACTION_LABELS[a.action] || a.action}
                 {a.detail?.name && a.targetType !== "managementKey" ? ` "${a.detail.name}"` : ""}
                 {a.detail?.provider ? ` (${a.detail.provider})` : ""}
+                {a.detail?.baseUrlHost ? ` at ${a.detail.baseUrlHost}` : ""}
                 {a.detail?.reason ? `: ${a.detail.reason}` : ""}
               </li>
             ))}

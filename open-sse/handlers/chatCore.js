@@ -29,6 +29,7 @@ import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
 import { defaultClaudeToolType } from "../translator/concerns/toolCall.js";
+import { mapToolDefinitions } from "../translator/concerns/toolChanges.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 import { streamOverride } from "./chatCore/endpointOverrides.js";
 
@@ -325,6 +326,8 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   if (finalFormat === FORMATS.CLAUDE && Array.isArray(translatedBody.tools)) {
     translatedBody.tools = defaultClaudeToolType(translatedBody.tools);
   }
+  // Tools added by value mid-conversation too, so they're sent the same way.
+  if (finalFormat === FORMATS.CLAUDE) translatedBody = mapToolDefinitions(translatedBody, (def) => defaultClaudeToolType([def])[0]);
 
   // Pin cache breakpoints to the final body; a stale anchor costs a full prefix rewrite.
   if (passthrough && clientTool === "claude") anchorClaudeCache(translatedBody);

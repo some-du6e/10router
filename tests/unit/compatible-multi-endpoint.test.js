@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // URL (providerSpecificData.baseUrl + ownBaseUrl), and key failover then fails
 // over between endpoints.
 
-const db = vi.hoisted(() => ({ nodes: [], connections: [], local: true }));
+const db = vi.hoisted(() => ({ nodes: [], connections: [], customModels: [], local: true }));
 const mocks = vi.hoisted(() => ({
   json: vi.fn((body, init) => ({ status: init?.status || 200, body })),
   upstream: vi.fn(),
@@ -24,6 +24,7 @@ vi.mock("@/dashboardGuard", () => ({ isLocalRequest: () => db.local }));
 
 vi.mock("@/models", () => ({
   getProviderNodes: vi.fn(async () => db.nodes),
+  getCustomModels: vi.fn(async () => db.customModels),
   getProviderNodeById: vi.fn(async (id) => db.nodes.find((n) => n.id === id) || null),
   updateProviderNode: vi.fn(async (id, data) => {
     const i = db.nodes.findIndex((n) => n.id === id);
@@ -67,6 +68,7 @@ beforeEach(() => {
   mocks.makeProbeFetch.mockReset().mockReturnValue(mocks.probeFetch);
   db.local = true;
   db.connections = [];
+  db.customModels = [];
   db.nodes = [{ id: NODE_ID, type: "openai-compatible", prefix: "snow", apiType: "chat", baseUrl: URL_A, name: "Snowflake", stripBeta: false }];
 });
 
@@ -208,7 +210,168 @@ describe("validating a key at its own URL", () => {
     mocks.probeFetch.mockResolvedValue({ ...okRes(), ok: false, status: 400 });
     const res = await validateRoute.POST(req({ provider: "anthropic-compatible-x", apiKey: "sk-x", baseUrl: PUBLIC_URL }));
     expect(res.body.valid).toBe(true);
-    expect(mocks.probeFetch).toHaveBeenCalledWith(`${PUBLIC_URL}/v1/messages`, expect.objectContaining({ method: "POST" }));
+    expect(mocks.probeFetch).toHaveBeenCalledWith(`${PUBLIC_URL}/messages`, expect.objectContaining({ method: "POST" }));
+  });
+
+  it("probes an anthropic-compatible key at the URL routing posts to, with or without /v1 and a query", async () => {
+    db.local = false;
+    const id = "anthropic-compatible-shapes";
+    db.nodes.push({ id, type: "anthropic-compatible", prefix: "as", baseUrl: "https://api.example.com/v1", name: "Shapes" });
+    mocks.probeFetch.mockResolvedValue(okRes());
+    const origin = PUBLIC_URL.replace(/\/v1$/, "");
+    for (const [base, probed] of [
+      [PUBLIC_URL, `${PUBLIC_URL}/messages`],
+      [`${PUBLIC_URL}?k=1`, `${PUBLIC_URL}/messages?k=1`],
+      [origin, `${origin}/messages`],
+      [`${origin}?k=1`, `${origin}/messages?k=1`],
+    ]) {
+      await validateRoute.POST(req({ provider: id, apiKey: "sk-s", baseUrl: base }));
+      expect(mocks.probeFetch, base).toHaveBeenLastCalledWith(probed, expect.objectContaining({ method: "POST" }));
+      // The same URL a request on that key goes to.
+      expect(getExecutor(id).buildUrl("m", false, 0, { providerSpecificData: { baseUrl: base } }), base).toBe(probed);
+    }
+    // A key on the endpoint's own URL (stored with its /v1) is probed there too.
+    db.local = true;
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(okRes());
+    try {
+      await validateRoute.POST(req({ provider: id, apiKey: "sk-s" }));
+      expect(spy).toHaveBeenCalledWith("https://api.example.com/v1/messages", expect.objectContaining({ method: "POST" }));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("probes the API path before a query string in the key's URL, like routing", async () => {
+    db.local = false;
+    db.nodes.push({ id: "anthropic-compatible-q", type: "anthropic-compatible", prefix: "aq", baseUrl: "https://api.example.com", name: "Q" });
+    mocks.probeFetch.mockResolvedValue(okRes());
+    await validateRoute.POST(req({ provider: NODE_ID, apiKey: "sk-q", baseUrl: `${PUBLIC_URL}?token=t1` }));
+    expect(mocks.probeFetch).toHaveBeenLastCalledWith(`${PUBLIC_URL}/models?token=t1`, expect.anything());
+    await validateRoute.POST(req({ provider: "anthropic-compatible-q", apiKey: "sk-q", baseUrl: `${PUBLIC_URL}/messages?token=t2` }));
+    expect(mocks.probeFetch).toHaveBeenLastCalledWith(`${PUBLIC_URL}/messages?token=t2`, expect.anything());
+  });
+
+  // A gateway that limits each key to some models answers any other one with a 403.
+  const modelGateway = (allowed) => async (_url, init) => {
+    const { model } = JSON.parse(init.body);
+    return { ...okRes(), ok: allowed.includes(model), status: allowed.includes(model) ? 200 : 403 };
+  };
+
+  it("probes an anthropic-compatible key with a model the endpoint lists, not a stock one", async () => {
+    db.local = false;
+    const id = "anthropic-compatible-models";
+    db.nodes.push({ id, type: "anthropic-compatible", prefix: "am", baseUrl: "https://api.example.com/v1", name: "Models" });
+    // Decoys that look small, so dropping the endpoint or llm-only filter picks them.
+    db.customModels = [
+      { providerAlias: "anthropic-compatible-other", id: "other-mini", type: "llm" },
+      { providerAlias: id, id: "acme-embed-small", type: "embedding" },
+      { providerAlias: id, id: "acme-opus", type: "llm" },
+      { providerAlias: id, id: "acme-haiku", type: "llm" },
+    ];
+    mocks.probeFetch.mockImplementation(modelGateway(["acme-opus", "acme-haiku"]));
+    const res = await validateRoute.POST(req({ provider: id, apiKey: "sk-m", baseUrl: PUBLIC_URL }));
+    expect(res.body.valid).toBe(true);
+    // A small listed model, as "Send test message" picks.
+    expect(JSON.parse(mocks.probeFetch.mock.calls.at(-1)[1].body).model).toBe("acme-haiku");
+
+    // The key's own default model comes first.
+    mocks.probeFetch.mockImplementation(modelGateway(["acme-opus"]));
+    const own = await validateRoute.POST(req({ provider: id, apiKey: "sk-m", baseUrl: PUBLIC_URL, defaultModel: "acme-opus" }));
+    expect(own.body.valid).toBe(true);
+    expect(JSON.parse(mocks.probeFetch.mock.calls.at(-1)[1].body).model).toBe("acme-opus");
+
+    // With no models listed, the stock fallback.
+    db.customModels = [];
+    await validateRoute.POST(req({ provider: id, apiKey: "sk-m", baseUrl: PUBLIC_URL }));
+    expect(JSON.parse(mocks.probeFetch.mock.calls.at(-1)[1].body).model).toBe("claude-3-haiku-20240307");
+  });
+
+  it("probes with the endpoint's path and query overrides and model renames, as routing sends them", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(okRes());
+    try {
+      db.nodes.push(
+        { id: "anthropic-compatible-path", type: "anthropic-compatible", prefix: "ap", baseUrl: "https://api.example.com", name: "Path", overrides: { path: "/v1/messages" } },
+        { id: "anthropic-compatible-query", type: "anthropic-compatible", prefix: "aq2", baseUrl: "https://api.example.com/v1", name: "Query", overrides: { query: "api-version=2", models: "acme-haiku => upstream-haiku" } },
+        { id: "openai-compatible-chat-query", type: "openai-compatible", prefix: "oq", apiType: "chat", baseUrl: "https://api.example.com/v1", name: "OQ", overrides: { query: "api-version=2", path: "/v2/chat" } },
+      );
+      db.customModels = [{ providerAlias: "anthropic-compatible-query", id: "acme-haiku", type: "llm" }];
+      await validateRoute.POST(req({ provider: "anthropic-compatible-path", apiKey: "sk-p" }));
+      expect(spy).toHaveBeenLastCalledWith("https://api.example.com/v1/messages", expect.objectContaining({ method: "POST" }));
+      await validateRoute.POST(req({ provider: "anthropic-compatible-query", apiKey: "sk-p" }));
+      expect(spy).toHaveBeenLastCalledWith("https://api.example.com/v1/messages?api-version=2", expect.objectContaining({ method: "POST" }));
+      expect(JSON.parse(spy.mock.calls.at(-1)[1].body).model).toBe("upstream-haiku");
+      // /models takes the query override; the path override is for the chat path.
+      await validateRoute.POST(req({ provider: "openai-compatible-chat-query", apiKey: "sk-p" }));
+      expect(spy).toHaveBeenLastCalledWith("https://api.example.com/v1/models?api-version=2", expect.anything());
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("probes with the headers routing sends: the node's auth header style and header lines, and only the probed key", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(okRes());
+    try {
+      db.nodes.push(
+        { id: "openai-compatible-chat-azure", type: "openai-compatible", prefix: "az", apiType: "chat", baseUrl: "https://api.example.com/openai", name: "AZ", apiKeyHeader: "api-key" },
+        { id: "anthropic-compatible-hdr", type: "anthropic-compatible", prefix: "ah", baseUrl: "https://api.example.com/v1", name: "HDR", overrides: { headers: "x-acme-team: blue" } },
+      );
+      // Another key on the same endpoint, which must never ride along.
+      db.connections.push({ id: "other", provider: "anthropic-compatible-hdr", apiKey: "sk-other-key", providerSpecificData: { baseUrl: "https://api.example.com/v1" } });
+
+      await validateRoute.POST(req({ provider: "openai-compatible-chat-azure", apiKey: "sk-az" }));
+      const [modelsUrl, modelsInit] = spy.mock.calls.at(-1);
+      expect(modelsUrl).toBe("https://api.example.com/openai/models");
+      expect(modelsInit.headers).toEqual({ "api-key": "sk-az" });
+
+      await validateRoute.POST(req({ provider: "anthropic-compatible-hdr", apiKey: "sk-probed" }));
+      const [, init] = spy.mock.calls.at(-1);
+      expect(init.headers["x-acme-team"]).toBe("blue");
+      expect(init.headers["x-api-key"]).toBe("sk-probed");
+      const sent = JSON.stringify(init);
+      expect(sent).not.toContain("sk-other-key");
+      // Every header carrying a key carries the probed one.
+      for (const [name, value] of Object.entries(init.headers)) {
+        if (/sk-/.test(value)) expect(value, name).toMatch(/^(Bearer )?sk-probed$/);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("follows the node's model routes, prefers a model on the probe's own path, and drops a thinking suffix", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(okRes());
+    try {
+      const id = "anthropic-compatible-routes";
+      db.nodes.push({ id, type: "anthropic-compatible", prefix: "ar", baseUrl: "https://api.example.com/v1", name: "Routes", modelRoutes: { "acme-gpt": "openai-chat", "acme-resp": "openai-responses" } });
+      db.customModels = [
+        { providerAlias: id, id: "acme-gpt", type: "llm" },
+        { providerAlias: id, id: "acme-sonnet", type: "llm" },
+      ];
+      // A listed model the node sends elsewhere is passed over for one on /messages.
+      await validateRoute.POST(req({ provider: id, apiKey: "sk-r" }));
+      expect(spy.mock.calls.at(-1)[0]).toBe("https://api.example.com/v1/messages");
+      expect(JSON.parse(spy.mock.calls.at(-1)[1].body).model).toBe("acme-sonnet");
+
+      // A default model routed to Chat Completions is probed there, "(high)" dropped as routing does.
+      await validateRoute.POST(req({ provider: id, apiKey: "sk-r", defaultModel: "acme-gpt(high)" }));
+      const [chatUrl, chatInit] = spy.mock.calls.at(-1);
+      expect(chatUrl).toBe("https://api.example.com/v1/chat/completions");
+      expect(JSON.parse(chatInit.body).model).toBe("acme-gpt");
+      expect(chatInit.headers.Authorization).toBe("Bearer sk-r");
+
+      // And one routed to the Responses API gets a Responses body.
+      await validateRoute.POST(req({ provider: id, apiKey: "sk-r", defaultModel: "acme-resp" }));
+      const [respUrl, respInit] = spy.mock.calls.at(-1);
+      expect(respUrl).toBe("https://api.example.com/v1/responses");
+      expect(JSON.parse(respInit.body)).toMatchObject({ model: "acme-resp", input: "test" });
+
+      // Only routed models listed: one of them, at its route.
+      db.customModels = [{ providerAlias: id, id: "acme-gpt", type: "llm" }];
+      await validateRoute.POST(req({ provider: id, apiKey: "sk-r" }));
+      expect(spy.mock.calls.at(-1)[0]).toBe("https://api.example.com/v1/chat/completions");
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("an internal URL from a remote caller is refused before any request", async () => {

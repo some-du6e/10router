@@ -5,6 +5,8 @@ import { isModelAllowed } from "@/sse/services/keyLimits.js";
 import { getModelInfo } from "@/sse/services/model.js";
 import { resolveProviderAlias, stripContextWindowSuffix } from "open-sse/services/model.js";
 import { normalizeProviderId } from "@/lib/providerNormalization";
+import { normalizeEndpointUrl } from "@/shared/utils/endpointUrl";
+import { hostMatchesPattern, baseUrlHostsFor } from "@/shared/utils/managementKey.js";
 // Checked again inside the write that applies it (updateApiKeyAs).
 export { dashboardChoiceViolation } from "@/lib/db/repos/managementKeysRepo.js";
 
@@ -98,6 +100,44 @@ export function providerInScope(scope, provider) {
   if (!scope?.enabled) return false;
   if (!scope.providers?.length) return true;
   return providerSet(scope.providers).has(canonicalProviderId(provider));
+}
+
+export const MAX_BASE_URL_LENGTH = 2048;
+const IPV4_HOST = /^\d{1,3}(\.\d{1,3}){3}$/;
+
+/**
+ * Check a provider key's own baseUrl against the host patterns the dashboard
+ * gave this scope for that provider. The path is free; the host, scheme and
+ * port are not.
+ * Errors never quote the URL, which can carry a token in its query.
+ *
+ * @returns {{ url: string, host: string } | { error: string, host?: string, outsideScope?: true }}
+ *   outsideScope marks the refusals that are about the scope (audited), not the URL's shape.
+ */
+export function keyBaseUrlCheck(scope, provider, raw) {
+  const patterns = baseUrlHostsFor(scope, provider);
+  if (!patterns.length) {
+    return { error: `This management key can't set baseUrl: the dashboard hasn't allowed it any hosts for "${provider}"`, outsideScope: true };
+  }
+  if (typeof raw !== "string" || !raw.trim()) return { error: "baseUrl must be a URL" };
+  if (raw.length > MAX_BASE_URL_LENGTH) return { error: `baseUrl can be at most ${MAX_BASE_URL_LENGTH} characters` };
+  let parsed;
+  try { parsed = new URL(raw.trim()); } catch { return { error: "baseUrl isn't a valid URL" }; }
+  if (parsed.protocol !== "https:") return { error: "baseUrl must use https" };
+  if (parsed.username || parsed.password) return { error: "baseUrl can't contain a user name or password" };
+  // The URL parser drops a default :443, so any port left is another one.
+  if (parsed.port) return { error: "baseUrl can't name a port other than 443" };
+  const host = parsed.hostname;
+  if (host.startsWith("[") || IPV4_HOST.test(host)) return { error: "baseUrl can't be an IP address" };
+  const bare = host.replace(/\.$/, "");
+  if (bare === "localhost" || bare.endsWith(".localhost")) return { error: "baseUrl can't point at localhost" };
+  if (!patterns.some((p) => hostMatchesPattern(host, p))) {
+    return { error: `baseUrl host "${host}" isn't one this management key may use (${patterns.join(", ")})`, host, outsideScope: true };
+  }
+  // Stored in the parser's own serialization, so what routing later parses is what was checked.
+  // No fragment: routing appends its API path, which would land after it.
+  parsed.hash = "";
+  return { url: normalizeEndpointUrl(parsed.href), host };
 }
 
 /** Rows it created, or every row when manageExisting is on. */
