@@ -46,16 +46,16 @@ const rng = (seed) => () => {
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 };
 
-// Keys of one provider, on a shared account but for one on its own: the first
-// when `cross` is true, the one named `cross` when it is a name.
-async function setup(names, cross = false) {
+// Keys of one provider on a shared account, but for the one named `ownName`,
+// on its own.
+async function setup(names, ownName = null) {
   provider = `auth-stress-${++seq}`;
   global._authEvents?.success?.clear();
   global._authEvents?.refused?.clear();
   vi.setSystemTime(new Date("2026-10-23T00:00:00.000Z"));
   const keys = [];
-  for (const [i, name] of names.entries()) {
-    const own = cross === true ? i === 0 : cross === name;
+  for (const name of names) {
+    const own = name === ownName;
     keys.push(await db.createProviderConnection({
       provider, authType: "apikey", name, apiKey: `sk-test-${name}-0123456789`,
       providerSpecificData: {
@@ -115,7 +115,7 @@ const tenOnThirteenOff = session(10, 13);
 // Scenarios for one key that works, or lacks some models, beside a healthy
 // peer: on the peer's account, or on its own when `ownAccount`.
 async function keyScenarios(ownAccount) {
-  const keysOf = (names, key) => setup(names, ownAccount ? key : false);
+  const keysOf = (names, key) => setup(names, ownAccount ? key : null);
   const out = {};
 
   // An incident on opus that ends: minutes from its end until the key serves opus again.
@@ -204,7 +204,7 @@ it("replays the dead-key scenarios", async () => {
   // on its own account or the peer's.
   out.prodPattern = {};
   for (const cross of [true, false]) {
-    const [dead] = await setup(["dead", "peer"], cross);
+    const [dead] = await setup(["dead", "peer"], cross ? "dead" : null);
     const { refusals } = await run([dead], 12 * 60, (m) => (tenOnThirteenOff(m) ? [[OPUS, (id) => id === dead.id]] : []));
     out.prodPattern[cross ? "other account" : "same account"] = refusals[dead.id]?.[OPUS]?.length ?? 0;
   }
@@ -238,7 +238,7 @@ it("replays the dead-key scenarios", async () => {
   out.deadOnEveryModelRefusals = {};
   for (const cross of [false, true]) {
     for (const [name, modelAt] of Object.entries(patterns)) {
-      const [dead] = await setup(["dead", "peer"], cross);
+      const [dead] = await setup(["dead", "peer"], cross ? "dead" : null);
       const { offAt, refusals } = await run([dead], 12 * 60, (m) => (modelAt(m) ? [[modelAt(m), (id) => id === dead.id]] : []));
       const label = `${cross ? "other account" : "same account"}: ${name}`;
       out.deadOnEveryModel[label] = offAt[dead.id] ?? null;

@@ -65,15 +65,14 @@ export const AUTH_DEAD_CONFIG = {
 // An API key refused with 403s on one model, which may be all it lacks, is
 // demoted on that model instead: other keys are tried first. It counts the
 // 403s AUTH_DEAD_CONFIG would count, and 403s refusing just that model, on that
-// model alone: minFailures of them spanning minWindowMs, a gap over
-// crossUpstreamWindowMs starting the count over, and only a success on that
-// model clearing it. Each counted 403 had another key serving that model, so
-// the count is this key's even when that key is on another upstream; a
-// demotion counts toward turning the key off only once its count also spans
-// the window AUTH_DEAD_CONFIG would wait for. A
-// demoted key still gets one request probeMs[0] after demotion, and each refused
-// probe waits for the next of probeMs (the last repeating); a probe left
-// unanswered is retaken after probeLeaseMs. A success brings the key back.
+// model alone: minFailures of them spanning minWindowMs, whichever upstream the
+// key that served is on, a gap over crossUpstreamWindowMs starting the count
+// over, and only a success on that model clearing it. A demotion counts toward
+// turning the key off only once its count also spans the window
+// AUTH_DEAD_CONFIG would wait for. A demoted key still gets one request
+// probeMs[0] after demotion, and each refused probe waits for the next of
+// probeMs (the last repeating); a probe left unanswered is retaken after
+// probeLeaseMs. A success brings the key back.
 export const AUTH_DEMOTE_CONFIG = {
   probeMs: [10, 20, 40, 90, 180].map(min => min * 60 * 1000),
   probeLeaseMs: 10 * 60 * 1000,

@@ -2671,27 +2671,27 @@ describe("keys of one endpoint on different upstreams", () => {
     await addKey("a", snowflake(own, own === peer ? {} : { ownBaseUrl: true })), await addKey("b", snowflake(peer)),
   ];
 
-  // Minutes until master turns these off: null for never. On another account
-  // the key is demoted within the half hour now, so it is refused too rarely
-  // for some of these to turn it off; it is refused fewer times than on master
-  // over the 12 hours either way (auto-disable-stress.test.js counts them).
+  // Minutes until master's auth code and this one turn these off, null for
+  // never. A manual run of the Dead-key stress workflow checks the master
+  // column (DEAD_KEY_BASELINE=master).
   it.each([
-    ["sonnet, then opus", 0, null, 210],
+    ["sonnet, then opus", 0, 207, 207],
     ["sonnet, then opus", 1, 186, null],
     ["sessions alternating sonnet and opus", 0, null, null],
     ["sessions alternating sonnet and opus", 1, 69, 69],
-    ["opus, and sonnet every 2 hours", 0, 190, 184],
+    ["opus, and sonnet every 2 hours", 0, 184, 184],
     ["opus, and sonnet every 2 hours", 1, 180, 184],
-    ["opus, then haiku", 0, null, 210],
+    ["opus, then haiku", 0, 207, 207],
     ["opus, then haiku", 1, 186, null],
-  ])("turns off a key dead on every model someone uses one at a time (%s), its peer %s (0 same account, 1 another), master at %s, by %s", async (
-    name, upstream, _master, byMin,
+  ])("turns off a key dead on every model someone uses one at a time (%s), its peer %s (0 same account, 1 another), master at %s, here at %s", async (
+    name, upstream, master, here,
   ) => {
     const [, own, peer] = UPSTREAMS[upstream];
     const [dead] = await keysOn(own, peer);
     const minutes = await drive(dead, { modelAt: PATTERNS[name], totalMin: 12 * 60 });
-    if (byMin === null) expect(minutes).toBeNull();
-    else expect(minutes).toBeLessThanOrEqual(byMin);
+    expect(minutes).toBe(process.env.DEAD_KEY_BASELINE === "master" ? master : here);
+    // Never sooner than master.
+    if (here !== null) expect(master !== null && here >= master).toBe(true);
   }, 60000);
 
   it.each([
@@ -2806,8 +2806,12 @@ describe("a key refused on one model while keys on other accounts serve it", () 
     expect((await load(dead.id)).isActive).toBe(false);
   });
 
+  // The second kimi refusal comes 3 minutes after opus's last one: at 59 the
+  // count there spans 59 minutes, though it began 62 minutes before.
   it.each([
     ["keeps it on", 30, true],
+    ["keeps it on", 59, true],
+    ["turns it off", 60, false],
     ["turns it off", 61, false],
   ])("%s when refused twice on kimi while demoted on opus, its count there begun %i minutes ago", async (_verdict, minutes, staysOn) => {
     const [dead, ...peers] = await accounts("b", "c");
@@ -2818,6 +2822,20 @@ describe("a key refused on one model while keys on other accounts serve it", () 
     } });
     await fail(dead.id, { times: 2, models: [KIMI], peers, text: KEY_REFUSED_403 });
     expect((await load(dead.id)).isActive).toBe(staysOn);
+  });
+
+  // Master keeps it on too: there kimi isn't demoted within the hour.
+  it("keeps it on when 10 minutes of kimi refusals demote it there while its opus demotion's last probe was refused 65 minutes ago", async () => {
+    const [dead, ...peers] = await accounts("b", "c");
+    const ago = (min) => new Date(Date.now() - min * MIN).toISOString();
+    await db.updateProviderConnection(dead.id, { [`authDemote_${OPUS}`]: {
+      count: 9, firstAt: ago(310), lastAt: ago(65), lastCountedAt: ago(65), demotedAt: ago(300),
+      sameUpstream: false, probeLevel: 3, nextProbeAt: ago(65 - 90),
+    } });
+    await fail(dead.id, { times: 6, models: [KIMI], peers, stepMs: 2 * MIN, text: KEY_REFUSED_403 });
+    const conn = await load(dead.id);
+    expect(record(conn, KIMI)).toMatchObject({ demotedAt: new Date().toISOString() });
+    expect(conn.isActive).toBe(true);
   });
 
   it("demotes a key that lacks the model there and keeps it on, serving the others", async () => {

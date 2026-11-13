@@ -141,6 +141,10 @@ async function authFailEvidence(connections, conn, model, status, errorText, cou
   return evidence;
 }
 
+// The window the turn-off rule needs a count to span: minWindowMs when every
+// refusal in it had a peer on the same upstream, else crossUpstreamWindowMs.
+const turnOffWindowMs = (sameUpstream) => (sameUpstream ? AUTH_DEAD_CONFIG.minWindowMs : AUTH_DEAD_CONFIG.crossUpstreamWindowMs);
+
 function nextAuthFailStreak(conn, model, status, sameUpstream) {
   const now = Date.now();
   const firstAt = new Date(conn.authFailFirstAt || NaN).getTime();
@@ -151,7 +155,7 @@ function nextAuthFailStreak(conn, model, status, sameUpstream) {
   // when this key succeeded after the streak began on a request whose snapshot
   // predates it, or when a timestamp is unreadable or in the future (the
   // negated range check is also false for NaN).
-  const maxGapMs = conn.authFailSameUpstream === true ? AUTH_DEAD_CONFIG.minWindowMs : AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
+  const maxGapMs = turnOffWindowMs(conn.authFailSameUpstream === true);
   const fresh = !(now - firstAt >= 0)
     || !(sinceLast >= 0 && sinceLast <= maxGapMs)
     || succeededSince(conn.id, firstAt + 1);
@@ -180,7 +184,7 @@ function nextAuthFailStreak(conn, model, status, sameUpstream) {
 // the streak has 2 bursts and spans the window: a few refusals spread thinly
 // over an hour, or one burst followed by them, can't trip it.
 function isAuthDead(streak) {
-  const windowMs = streak.authFailSameUpstream ? AUTH_DEAD_CONFIG.minWindowMs : AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
+  const windowMs = turnOffWindowMs(streak.authFailSameUpstream);
   const spans = (at) => Date.now() - new Date(at).getTime() >= windowMs;
   const runAlone = streak.authFailRunCount >= AUTH_DEAD_CONFIG.minFailures && spans(streak.authFailRunStartAt);
   const bursts = streak.authFailBursts >= 2 && spans(streak.authFailFirstAt);
@@ -208,9 +212,8 @@ const countRuns = (record, nowMs) => {
   return sinceLast >= 0 && sinceLast <= AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
 };
 
-// The window the turn-off rule needs a count to span: minWindowMs when every
-// refusal in it had a peer on the same upstream, else crossUpstreamWindowMs.
-const turnOffWindowMs = (sameUpstream) => (sameUpstream ? AUTH_DEAD_CONFIG.minWindowMs : AUTH_DEAD_CONFIG.crossUpstreamWindowMs);
+// A demotion record whose count spans the turn-off window, as every one
+// demoted only after that window does.
 const spansTurnOffWindow = (r) => r?.sameUpstream !== false
   || new Date(r?.lastCountedAt).getTime() - new Date(r?.firstAt).getTime() >= AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
 
@@ -261,13 +264,13 @@ const demotionOf = (conn, model) => {
 
 // A count of refusals the turn-off rule counts, with nothing served since it
 // began; a dead-class demotion once it demotes the key, firm if nothing was
-// served in the minWindowMs before the count began either. A record without a
-// readable firstAt (an ISO string) is none of these: no success could ever
-// clear it.
+// served in the minWindowMs before the count began either and the count spans
+// the turn-off window. A record without a readable firstAt (an ISO string) is
+// none of these: no success could ever clear it.
 const refusedForItself = (conn, r) => typeof r?.firstAt === "string" && Number.isFinite(Date.parse(r.firstAt)) && !r.modelScoped
   && !(conn.authDemoteOkAt >= r.firstAt) && !succeededSince(conn.id, new Date(r.firstAt).getTime() + 1);
 const isDeadClass = (conn, r) => !!r?.demotedAt && refusedForItself(conn, r);
-const isFirm = (conn, r) => isDeadClass(conn, r)
+const isFirm = (conn, r) => isDeadClass(conn, r) && spansTurnOffWindow(r)
   && !(new Date(r.servedAt).getTime() >= new Date(r.firstAt).getTime() - AUTH_DEAD_CONFIG.minWindowMs);
 
 // Demoted on another model the way isDeadClass says.
@@ -283,15 +286,14 @@ const refusedOnTwo = (conn) => demoteRecords(conn)
 // `model` is refused now and returns the other model when:
 // - the key is demoted on it, last refused there within minWindowMs, and
 //   `model` was refused that way within minWindowMs before this refusal too;
-// - or this refusal demotes `model`, and that demotion was last refused within
-//   its probe interval and minWindowMs;
+// - or this refusal demotes `model` over the turn-off window, and that
+//   demotion was last refused within its probe interval and minWindowMs;
 // - or the key is firmly demoted on `model` (this was a probe or a fallback)
 //   and the other model was refused within minWindowMs.
-// A demotion counts here once its count spans the turn-off window.
 function deadElsewhere(conn, records, model, current, demoting) {
   const now = Date.now();
   const since = (r) => now - new Date(r?.lastCountedAt).getTime();
-  const firm = (r) => isFirm(conn, r) && spansTurnOffWindow(r);
+  const firm = (r) => isFirm(conn, r);
   const others = records.filter(([m]) => m !== model);
   const found = (test) => others.find(([, r]) => test(r))?.[0] ?? null;
   return (since(current) <= AUTH_DEAD_CONFIG.minWindowMs && found(r => firm(r) && since(r) <= AUTH_DEAD_CONFIG.minWindowMs))
