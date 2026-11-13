@@ -44,6 +44,12 @@ jobs:
           STRESS_PIN: "1"
           STRESS_OUT: ${{ runner.temp }}/stress-branch.json
         run: ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-stress.test.js
+      # On a manual run, the demotion tests for keys on other upstreams, here
+      # and (for comparison, never failing the job) on master's auth code.
+      - name: Demotion tests, this branch
+        if: always() && github.event_name == 'workflow_dispatch'
+        working-directory: tests
+        run: ./node_modules/.bin/vitest run unit/auto-disable-dead-keys.test.js -t "other accounts serve it|cross-upstream"
       # For comparison only, on a manual run: master's numbers never fail the job.
       - name: Stress, master's auth code
         if: always() && github.event_name == 'workflow_dispatch'
@@ -53,6 +59,11 @@ jobs:
         run: |
           git checkout origin/master -- src open-sse
           cd tests && ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-stress.test.js
+      - name: Demotion tests, master's auth code
+        if: always() && github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        working-directory: tests
+        run: ./node_modules/.bin/vitest run unit/auto-disable-dead-keys.test.js -t "other accounts serve it|cross-upstream"
       - name: Results
         if: always()
         run: |
