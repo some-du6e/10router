@@ -21,7 +21,7 @@ const { buildModelsList } = await import("@/app/api/v1/models/route.js");
 const { getCapabilitiesForModel } = await import("open-sse/providers/capabilities.js");
 const { PROVIDER_ID_TO_ALIAS } = await import("@/shared/constants/models");
 const {
-  buildCodexCatalog, findCodexModel, toCodexEntry, codexModelsFor, uniqueBySlug,
+  buildCodexCatalog, findCodexModel, toCodexEntry, codexModelsFor, codexShapeFor, uniqueBySlug,
   CODEX_BASE_INSTRUCTIONS, CODEX_BUNDLED_MODELS, CODEX_CATALOG_VERSION,
 } = await import("@/lib/codex/modelCatalog.js");
 
@@ -251,15 +251,19 @@ describe("Codex's own models", () => {
     expect(codexModelsFor("0.137.0").find((m) => m.slug === "codex-auto-review").default_reasoning_level).toBe("medium");
   });
 
-  it("carry an empty base_instructions only for Codex before 0.147, which requires the field", () => {
+  it("carry an empty base_instructions for every Codex, next to the prompt template every version reads instead", () => {
+    expect(CODEX_BUNDLED_MODELS.every((m) => m.model_messages?.instructions_template)).toBe(true);
     expect(bundled("gpt-5.5").base_instructions).toBeUndefined();
-    expect(codexModelsFor("0.146.0").find((m) => m.slug === "gpt-5.5").base_instructions).toBe("");
-    expect(codexModelsFor("0.147.0").find((m) => m.slug === "gpt-5.5").base_instructions).toBeUndefined();
+    for (const version of ["0.137.0", "0.146.0", "0.147.0", "0.167.2", null]) {
+      expect(codexModelsFor(version).every((m) => m.base_instructions === ""), String(version)).toBe(true);
+    }
   });
 
-  it("treat a source build's 0.0.0 like the newest Codex", async () => {
-    expect(codexModelsFor("0.0.0")).toEqual(CODEX_BUNDLED_MODELS);
-    expect(codexModelsFor(null)).toEqual(CODEX_BUNDLED_MODELS);
+  it("treat a source build's 0.0.0, a missing version and an unreadable one like the newest Codex", async () => {
+    const newest = codexShapeFor("0.167.2");
+    expect(newest.slugs).toEqual(CODEX_BUNDLED_MODELS.map((m) => m.slug));
+    for (const version of ["0.0.0", null, "x1", "0.168.0"]) expect(codexShapeFor(version), String(version)).toEqual(newest);
+    expect(codexModelsFor("0.0.0").map((m) => m.supported_reasoning_levels)).toEqual(CODEX_BUNDLED_MODELS.map((m) => m.supported_reasoning_levels));
     const body = await catalog("0.0.0");
     expect(body.models.find((m) => m.slug === "cx/gpt-6-astra")?.model_messages).toEqual(bundled("gpt-6-astra").model_messages);
   });

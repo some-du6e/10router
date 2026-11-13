@@ -9,8 +9,10 @@ import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 import prompt from "open-sse/config/codex/prompt.json" with { type: "json" };
 import bundled from "open-sse/config/codex/models.json" with { type: "json" };
 
-// The Codex release open-sse/config/codex/ was vendored from
-// (scripts/vendor-codex-catalog.mjs).
+// Label for the Codex release tag (rust-v<this>) that open-sse/config/codex/
+// was vendored from. scripts/vendor-codex-catalog.mjs rewrites it, and
+// tests/unit/codex-model-catalog.test.js checks it against the vendored files.
+// Nothing derives version rules from it.
 export const CODEX_CATALOG_VERSION = "0.167.2";
 
 // Codex's generic agent prompt, the one it uses for a model it has no metadata for.
@@ -32,9 +34,11 @@ const REASONING_LEVELS = [
 // other non-empty string decodes as a custom effort.
 const STRICT_EFFORTS_BEFORE = [0, 138, 0];
 const STRICT_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
-// Before 0.147.0 every entry needed a `base_instructions` string; from 0.147.0
-// it is optional next to `model_messages.instructions_template`.
-const REQUIRED_BASE_INSTRUCTIONS_BEFORE = [0, 147, 0];
+
+// Codex up to 0.146 (and its 0.147.0 alphas, which report 0.147.0) requires a
+// `base_instructions` string. Every version reads `model_messages.instructions_template`
+// instead when there is one, which every bundled entry has, so "" costs nothing.
+const NATIVE_MODELS = bundled.models.map((model) => ({ ...model, base_instructions: model.base_instructions ?? "" }));
 
 // Spelled the way Codex's own catalog spells it: 0.137 reads it as the
 // `shell_command` tool, 0.167 as an alias of `unified_exec`.
@@ -79,38 +83,44 @@ const older = (a, b) => {
 };
 
 /**
- * Codex's bundled entries as a given Codex client can use them: entries newer
- * than the client (`minimal_client_version`) are left out, the way the ChatGPT
- * backend leaves them out, and each entry is shaped for what that client
- * decodes. A missing or 0.0.0 version means the newest Codex.
+ * How a given Codex client gets Codex's bundled entries: which ones it can
+ * use (an entry newer than the client, by `minimal_client_version`, is left
+ * out the way the ChatGPT backend leaves it out) and whether it needs the
+ * strict reasoning efforts. A missing, 0.0.0 or unreadable version means the
+ * newest Codex. Two versions with the same shape get the same entries.
  * @param {string|null} [clientVersion] the `client_version` Codex sent
+ * @returns {{ strictEfforts: boolean, slugs: string[] }}
  */
-export function codexModelsFor(clientVersion) {
+export function codexShapeFor(clientVersion) {
   const client = parseVersion(clientVersion);
-  if (!client) return CODEX_BUNDLED_MODELS;
-  const strictEfforts = older(client, STRICT_EFFORTS_BEFORE);
-  const needsBase = older(client, REQUIRED_BASE_INSTRUCTIONS_BEFORE);
-  const usable = CODEX_BUNDLED_MODELS.filter((m) => {
-    const minimal = parseVersion(m.minimal_client_version);
-    return !minimal || !older(client, minimal);
-  });
-  return usable.map((model) => {
-    let entry = model;
-    // With an instructions template present the field isn't read, so the
-    // prompt isn't sent twice.
-    if (needsBase && entry.base_instructions === undefined) entry = { ...entry, base_instructions: "" };
-    if (strictEfforts) {
-      const levels = entry.supported_reasoning_levels.filter((l) => STRICT_EFFORTS.has(l.effort));
-      const keepDefault = levels.some((l) => l.effort === entry.default_reasoning_level);
-      entry = {
-        ...entry,
-        supported_reasoning_levels: levels,
-        default_reasoning_level: keepDefault ? entry.default_reasoning_level : levels.at(-1)?.effort ?? null,
-      };
-    }
-    return entry;
+  const slugs = NATIVE_MODELS
+    .filter((m) => {
+      const minimal = parseVersion(m.minimal_client_version);
+      return !client || !minimal || !older(client, minimal);
+    })
+    .map((m) => m.slug);
+  return { strictEfforts: Boolean(client) && older(client, STRICT_EFFORTS_BEFORE), slugs };
+}
+
+/**
+ * Codex's bundled entries, shaped for one client (see codexShapeFor).
+ * @param {{ strictEfforts: boolean, slugs: string[] }} shape
+ */
+export function codexModelsForShape({ strictEfforts, slugs }) {
+  const usable = NATIVE_MODELS.filter((m) => slugs.includes(m.slug));
+  if (!strictEfforts) return usable;
+  return usable.map((entry) => {
+    const levels = entry.supported_reasoning_levels.filter((l) => STRICT_EFFORTS.has(l.effort));
+    const keepDefault = levels.some((l) => l.effort === entry.default_reasoning_level);
+    return {
+      ...entry,
+      supported_reasoning_levels: levels,
+      default_reasoning_level: keepDefault ? entry.default_reasoning_level : levels.at(-1)?.effort ?? null,
+    };
   });
 }
+
+export const codexModelsFor = (clientVersion) => codexModelsForShape(codexShapeFor(clientVersion));
 
 function longestSlugPrefix(id, candidates) {
   let best = null;

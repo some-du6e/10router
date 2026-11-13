@@ -17,6 +17,7 @@ on:
       - "tests/package.json"
       - "tests/vitest.config.js"
       - "tests/unit/codex-model-catalog.test.js"
+      - "tests/unit/codex-model-catalog-route.test.js"
       - "tests/unit/codex-settings-route.test.js"
       - ".github/e2e/codex-catalog/**"
       - ".github/workflows/codex-model-catalog.yml"
@@ -44,6 +45,7 @@ jobs:
         run: >
           ./node_modules/.bin/vitest run
           unit/codex-model-catalog.test.js
+          unit/codex-model-catalog-route.test.js
           unit/codex-settings-route.test.js
           unit/api-key-budgets.test.js
       - name: Lint
@@ -54,6 +56,7 @@ jobs:
           scripts/vendor-codex-catalog.mjs
           src/app/api/cli-tools/codex-settings/route.js
           tests/unit/codex-model-catalog.test.js
+          tests/unit/codex-model-catalog-route.test.js
           tests/unit/codex-settings-route.test.js
           .github/e2e/codex-catalog/check.mjs
           .github/e2e/codex-catalog/dump-catalog.test.js
@@ -69,7 +72,7 @@ jobs:
       fail-fast: false
       matrix:
         # 0.137/0.138: reasoning efforts turn lenient. 0.146/0.147:
-        # base_instructions turns optional. See codexModelsFor().
+        # base_instructions turns optional. See codexShapeFor().
         codex: ["0.167.2", "0.147.0", "0.146.0", "0.138.0", "0.137.0"]
     steps:
       - uses: actions/checkout@v5
