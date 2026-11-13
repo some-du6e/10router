@@ -80,6 +80,9 @@ function checkDecoded(label, models) {
     if (!prompt || prompt.startsWith("You are a coding agent running in the Codex CLI")) fail(`${label}: ${c.slug} lost its own prompt`);
     else pass(`${label}: ${c.slug} keeps Codex's own metadata (${prompt.length}-char prompt, apply_patch_tool_type=${c.apply_patch_tool_type})`);
   }
+  const bare = ["gpt-5.5", "codex-auto-review"].map((slug) => bySlug.get(slug));
+  if (bare.some((m) => m?.visibility !== "hide")) fail(`${label}: Codex's bare models missing or not hidden`);
+  else pass(`${label}: bare ${bare.map((m) => m.slug).join(", ")} decoded, hidden`);
 }
 
 // 1. From a file.

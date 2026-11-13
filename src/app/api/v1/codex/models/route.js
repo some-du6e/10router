@@ -1,7 +1,6 @@
 import { buildModelsList } from "../../models/route.js";
 import { filterModelsForRequest } from "@/sse/services/keyLimits.js";
-import { buildCodexCatalog } from "@/lib/codex/modelCatalog.js";
-import { getCodexUpstreamModels } from "@/sse/services/codexUpstreamCatalog.js";
+import { buildCodexCatalog, codexModelsFor, CODEX_ALIAS } from "@/lib/codex/modelCatalog.js";
 
 // Codex clients pointed at a `/backend-api/codex` base URL fetch their catalog
 // from `<base_url>/models` and expect the Codex shape (`{ "models": [...] }`).
@@ -30,6 +29,11 @@ function toOpenAIEntry(entry, created) {
   };
 }
 
+// Most generic entries carry the same 21k-character prompt, so the body runs
+// to megabytes. Codex asks for it again every few minutes with the same
+// models, so reuse the last body while its inputs are the same.
+let lastBody = { key: null, models: null, data: null };
+
 export async function OPTIONS() {
   return new Response(null, {
     headers: {
@@ -47,8 +51,9 @@ export async function GET(request) {
   try {
     // A key with a model allowlist sees only the models it may use.
     const models = await filterModelsForRequest(request, await buildModelsList(["llm"]));
-    const upstream = await getCodexUpstreamModels(new URL(request.url).searchParams.get("client_version"));
-    const entries = buildCodexCatalog(models, upstream);
+    const clientVersion = new URL(request.url).searchParams.get("client_version");
+    const codexModels = codexModelsFor(clientVersion);
+    const entries = buildCodexCatalog(models, codexModels);
 
     // Codex looks up its own models by their bare names: a bare model in the
     // config (routed to `cx/` by the Codex ingress) and the ones it picks for
@@ -57,20 +62,23 @@ export async function GET(request) {
     const listed = new Set(entries.map((entry) => entry.slug));
     const bare = await filterModelsForRequest(
       request,
-      upstream.filter((model) => !listed.has(model.slug)),
-      (model) => `cx/${model.slug}`,
+      codexModels.filter((model) => !listed.has(model.slug)),
+      (model) => `${CODEX_ALIAS}/${model.slug}`,
       (model) => model,
     );
 
-    const created = Math.floor(Date.now() / 1000);
-    return Response.json(
-      {
-        models: [...entries, ...bare.map((model) => ({ ...model, visibility: "hide" }))],
-        object: "list",
-        data: entries.map((entry) => toOpenAIEntry(entry, created)),
-      },
-      { headers: { "Access-Control-Allow-Origin": "*" } }
-    );
+    const key = JSON.stringify([clientVersion, models, bare.map((model) => model.slug)]);
+    if (lastBody.key !== key) {
+      const created = Math.floor(Date.now() / 1000);
+      lastBody = {
+        key,
+        models: JSON.stringify([...entries, ...bare.map((model) => ({ ...model, visibility: "hide" }))]),
+        data: JSON.stringify(entries.map((entry) => toOpenAIEntry(entry, created))),
+      };
+    }
+    return new Response(`{"models":${lastBody.models},"object":"list","data":${lastBody.data}}`, {
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+    });
   } catch (error) {
     console.log("Error building codex models catalog:", error);
     return Response.json(

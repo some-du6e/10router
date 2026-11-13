@@ -6,9 +6,9 @@ on:
       - "src/app/api/v1/codex/models/**"
       - "src/app/api/v1/models/route.js"
       - "src/app/api/cli-tools/codex-settings/**"
-      - "src/app/api/providers/*/models/route.js"
+      - "open-sse/config/codex/**"
+      - "scripts/vendor-codex-catalog.mjs"
       - "src/lib/codex/**"
-      - "src/sse/services/codexUpstreamCatalog.js"
       - "src/sse/services/keyLimits.js"
       - "src/shared/constants/models.js"
       - "open-sse/providers/capabilities.js"
@@ -17,7 +17,6 @@ on:
       - "tests/package.json"
       - "tests/vitest.config.js"
       - "tests/unit/codex-model-catalog.test.js"
-      - "tests/unit/codex-upstream-catalog.test.js"
       - "tests/unit/codex-settings-route.test.js"
       - ".github/e2e/codex-catalog/**"
       - ".github/workflows/codex-model-catalog.yml"
@@ -45,7 +44,6 @@ jobs:
         run: >
           ./node_modules/.bin/vitest run
           unit/codex-model-catalog.test.js
-          unit/codex-upstream-catalog.test.js
           unit/codex-settings-route.test.js
           unit/api-key-budgets.test.js
       - name: Lint
@@ -53,11 +51,9 @@ jobs:
           ./node_modules/.bin/eslint
           src/app/api/v1/codex/models/route.js
           src/lib/codex/modelCatalog.js
-          src/sse/services/codexUpstreamCatalog.js
+          scripts/vendor-codex-catalog.mjs
           src/app/api/cli-tools/codex-settings/route.js
-          "src/app/api/providers/[id]/models/route.js"
           tests/unit/codex-model-catalog.test.js
-          tests/unit/codex-upstream-catalog.test.js
           tests/unit/codex-settings-route.test.js
           .github/e2e/codex-catalog/check.mjs
           .github/e2e/codex-catalog/dump-catalog.test.js
@@ -65,7 +61,7 @@ jobs:
   # A real Codex reads the catalog this branch serves, from a file and over
   # HTTP with the config the dashboard writes, next to what the base serves.
   # The local server only serves that catalog; no model or account is called.
-  # Codex's own bundled catalog stands in for the ChatGPT backend's.
+  # Each Codex version gets the catalog served for its own client_version.
   codex-decode:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -92,20 +88,18 @@ jobs:
         run: |
           npm install -g "@openai/codex@${{ matrix.codex }}"
           codex --version
-          codex debug models --bundled > "$RUNNER_TEMP/bundled.json"
       - name: Write each side's catalog and dashboard config
         env:
           CODEX_ROUTER_URL: http://127.0.0.1:18801
+          CODEX_CLIENT_VERSION: ${{ matrix.codex }}
         run: |
           for side in head base; do
             dir=.; [ "$side" = base ] && dir=../base
             mkdir -p "$RUNNER_TEMP/work/$side/home"
             cp .github/e2e/codex-catalog/dump-catalog.test.js "$dir/tests/unit/zz-dump-codex-catalog.test.js"
-            fixture=""; [ "$side" = head ] && fixture="$RUNNER_TEMP/bundled.json"
             (cd "$dir/tests" && \
               CODEX_CATALOG_OUT="$RUNNER_TEMP/work/$side/catalog.json" \
               CODEX_SETUP_HOME="$RUNNER_TEMP/work/$side/home" \
-              CODEX_UPSTREAM_FIXTURE="$fixture" \
               ./node_modules/.bin/vitest run unit/zz-dump-codex-catalog.test.js)
             echo "--- $side config.toml"; cat "$RUNNER_TEMP/work/$side/home/.codex/config.toml"
           done

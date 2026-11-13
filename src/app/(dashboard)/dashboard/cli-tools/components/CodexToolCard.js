@@ -285,7 +285,7 @@ model_provider = "10router"
 
 ${providerSection}
 
-[model_providers.9router.http_headers]
+[model_providers.10router.http_headers]
 Authorization = "Bearer ${keyToUse}"
 
 [agents]

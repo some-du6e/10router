@@ -1,15 +1,25 @@
 // The `{ "models": [...] }` catalog Codex reads from `<base_url>/models` (or a
 // provider's `model_catalog_url`). Codex rejects the whole body if one entry
-// fails to decode, and once a catalog decodes it can stand in for the metadata
-// Codex ships with, so every entry must be complete. Field rules come from
-// Codex's `ModelInfo` (codex-rs/protocol/src/openai_models.rs);
+// fails to decode, and once a catalog decodes it replaces the one Codex ships
+// with, so every entry must be complete. Field rules come from Codex's
+// `ModelInfo` (codex-rs/protocol/src/openai_models.rs);
 // tests/unit/codex-model-catalog.test.js pins them for 0.137 and 0.167.
 import { PROVIDER_ID_TO_ALIAS } from "@/shared/constants/models";
 import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
-import baseInstructions from "./baseInstructions.json" with { type: "json" };
+import prompt from "open-sse/config/codex/prompt.json" with { type: "json" };
+import bundled from "open-sse/config/codex/models.json" with { type: "json" };
+
+// The Codex release open-sse/config/codex/ was vendored from
+// (scripts/vendor-codex-catalog.mjs).
+export const CODEX_CATALOG_VERSION = "0.167.2";
 
 // Codex's generic agent prompt, the one it uses for a model it has no metadata for.
-export const CODEX_BASE_INSTRUCTIONS = baseInstructions.instructions;
+export const CODEX_BASE_INSTRUCTIONS = prompt.instructions;
+
+// Codex's own catalog, as shipped in the release above.
+export const CODEX_BUNDLED_MODELS = bundled.models;
+
+export const CODEX_ALIAS = PROVIDER_ID_TO_ALIAS.codex;
 
 const REASONING_LEVELS = [
   { effort: "minimal", description: "Fastest responses with limited reasoning." },
@@ -17,6 +27,9 @@ const REASONING_LEVELS = [
   { effort: "medium", description: "Default reasoning depth." },
   { effort: "high", description: "Maximizes reasoning depth for complex problems." },
 ];
+
+// What Codex 0.137 decodes; 0.167 takes any non-empty effort.
+const LEGACY_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 
 // Spelled the way Codex's own catalog spells it: 0.137 reads it as the
 // `shell_command` tool, 0.167 as an alias of `unified_exec`.
@@ -46,6 +59,49 @@ function inputModalities(caps) {
   const modalities = ["text"];
   if (caps?.vision) modalities.push("image");
   return modalities;
+}
+
+const parseVersion = (value) => {
+  const match = typeof value === "string" ? value.match(/^(\d+)\.(\d+)\.(\d+)/) : null;
+  return match ? match.slice(1).map(Number) : null;
+};
+
+const older = (a, b) => {
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] < b[i];
+  return false;
+};
+
+const VENDORED = parseVersion(CODEX_CATALOG_VERSION);
+
+/**
+ * Codex's bundled entries as a given Codex client can use them: entries newer
+ * than the client (`minimal_client_version`) are left out, the way the ChatGPT
+ * backend leaves them out, and clients older than the vendored release get
+ * only the reasoning efforts they can decode.
+ * @param {string|null} [clientVersion] the `client_version` Codex sent
+ */
+export function codexModelsFor(clientVersion) {
+  const client = parseVersion(clientVersion);
+  const legacy = client && older(client, VENDORED);
+  const usable = client
+    ? CODEX_BUNDLED_MODELS.filter((m) => {
+      const minimal = parseVersion(m.minimal_client_version);
+      return !minimal || !older(client, minimal);
+    })
+    : CODEX_BUNDLED_MODELS;
+  return usable.map((model) => {
+    // 0.137 requires the field; with an instructions template present neither
+    // version reads it, so the prompt isn't sent twice.
+    const entry = { ...model, base_instructions: model.base_instructions ?? "" };
+    if (!legacy) return entry;
+    const levels = model.supported_reasoning_levels.filter((l) => LEGACY_EFFORTS.has(l.effort));
+    const keepDefault = levels.some((l) => l.effort === model.default_reasoning_level);
+    return {
+      ...entry,
+      supported_reasoning_levels: levels,
+      default_reasoning_level: keepDefault ? model.default_reasoning_level : levels.at(-1)?.effort ?? null,
+    };
+  });
 }
 
 function longestSlugPrefix(id, candidates) {
@@ -87,6 +143,8 @@ export function toCodexEntry(model) {
     shell_type: tools ? SHELL_TOOL : "disabled",
     apply_patch_tool_type: tools ? "freeform" : null,
     web_search_tool_type: "text",
+    // Defaults to true; Codex's own fallback for unknown models turns it off.
+    include_apps_usage_instructions: false,
     supported_in_api: true,
     priority: 0,
     minimal_client_version: null,
@@ -109,16 +167,18 @@ export function toCodexEntry(model) {
 
 /**
  * Codex catalog entries for the routed models, in order. A model that matches
- * an entry of Codex's own catalog (`upstream`, as the ChatGPT backend serves
- * it) the way Codex itself would match it gets that entry under its routed
- * id, so ChatGPT-backed models keep their real prompt, tools and limits.
+ * one of Codex's own entries (`codexModels`) the way Codex itself would match
+ * it gets that entry under its routed id, so `cx/gpt-5.5` or `gh/gpt-5.5`
+ * keeps the prompt, tools and limits Codex ships for `gpt-5.5`.
  * @param {object[]} models routed models ({ id, owned_by, capabilities? })
- * @param {object[]} [upstream] Codex catalog entries from the ChatGPT backend
+ * @param {object[]} [codexModels] Codex catalog entries, from codexModelsFor()
  */
-export function buildCodexCatalog(models, upstream = []) {
+export function buildCodexCatalog(models, codexModels = []) {
   return models.map((model) => {
-    const native = findCodexModel(model.id, upstream);
+    const native = findCodexModel(model.id, codexModels);
     if (!native) return toCodexEntry(model);
-    return { ...native, slug: model.id, display_name: model.id, visibility: "list" };
+    // `upgrade` names a bare Codex model; offered on `kr/gpt-5.6-sol` it would
+    // move the session to another provider.
+    return { ...native, slug: model.id, display_name: model.id, visibility: "list", upgrade: null };
   });
 }
