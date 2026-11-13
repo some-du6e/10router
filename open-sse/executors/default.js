@@ -142,10 +142,11 @@ export class DefaultExecutor extends BaseExecutor {
   // have stripped reasoning fields: a forced tool_choice the Claude model would
   // reject (see concerns/toolChoice.js) goes out as auto.
   finalizeBody(body, headers, credentials) {
+    const out = super.finalizeBody(body, headers, credentials);
     const format = this.targetFormat(credentials);
-    if (format === FORMATS.OPENAI) return relaxForcedChatToolChoiceForClaude(body, this.provider, body?.model);
-    if (format !== FORMATS.CLAUDE) return body;
-    return relaxForcedToolChoiceForThinking(dropFirstPartyFieldsWithoutBeta(body, headers), this.provider);
+    if (format === FORMATS.OPENAI) return relaxForcedChatToolChoiceForClaude(out, this.provider, out?.model);
+    if (format !== FORMATS.CLAUDE) return out;
+    return relaxForcedToolChoiceForThinking(dropFirstPartyFieldsWithoutBeta(out, headers), this.provider);
   }
 
   // Fallback json_schema → json_object for openai-compatible providers without native Structured Output.

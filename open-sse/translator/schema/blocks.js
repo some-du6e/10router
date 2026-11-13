@@ -23,6 +23,15 @@ export const CLAUDE_BLOCK = {
   WEB_SEARCH_TOOL: "web_search_20250305",
   SERVER_TOOL_USE: "server_tool_use",
   WEB_SEARCH_TOOL_RESULT: "web_search_tool_result",
+  // Mid-conversation tool changes, carried by a role "system" message in messages[].
+  TOOL_ADDITION: "tool_addition",
+  TOOL_REMOVAL: "tool_removal",
+};
+
+// How a tool_addition / tool_removal names its tool (block.tool.type).
+export const CLAUDE_TOOL_REF = {
+  REFERENCE: "tool_reference",
+  DEFINITION: "tool_definition",
 };
 
 // OpenAI Responses API item types.
