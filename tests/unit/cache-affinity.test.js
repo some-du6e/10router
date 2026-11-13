@@ -344,7 +344,7 @@ describe("cache affinity routing", () => {
       await chat(body());
 
       // Other requests' successes keep resetting the backoff: every lock is the shortest.
-      upstream.script = Array.from({ length: 10 }, () => limited(100));
+      upstream.script = Array.from({ length: 4 }, () => limited(100));
       expect((await chat(body())).status).toBe(200);
       expect(upstream.calls).toEqual([a, a, a, a, a, b]);
       expect(cacheWaits()).toHaveLength(3);
