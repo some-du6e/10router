@@ -269,6 +269,30 @@ describe("rate-limit hold wiring", () => {
     expect(await res.text()).toContain(refusal);
   });
 
+  it("holds for a key on a quota limit when the other key's account lacks the model", async () => {
+    const quotaText = "Quota for this key is used up, try again later";
+    const limited = { allRateLimited: true, retryAfter: new Date(Date.now() + 7_200_000).toISOString(), retryAfterHuman: "reset after 2h", lastError: quotaText, lastErrorCode: 403 };
+    const steps = [
+      { connectionId: "lacks-model", connectionName: "lacks-model", accessToken: "t" },
+      { connectionId: "limited", connectionName: "limited", accessToken: "t" },
+    ];
+    let call = 0;
+    const auth = await import("@/sse/services/auth.js");
+    vi.spyOn(auth, "getProviderCredentials").mockImplementation(async () => steps[call++] ?? limited);
+    state.coreResults = [
+      { success: false, status: 404, error: "The model example-model does not exist or you do not have access to it." },
+      { success: false, status: 403, error: quotaText },
+    ];
+
+    const res = await handleChat(makeRequest({ model: "gpt-5", stream: true, messages: [{ role: "user", content: "hi" }] }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+    const reader = res.body.getReader();
+    const { value } = await reader.read();
+    expect(new TextDecoder().decode(value)).toContain(LIMIT_HOLD_SENTINEL);
+    await reader.cancel();
+  });
+
   it("holds a combo once every model in it is rate-limited", async () => {
     state.combos = { "free-opus": ["opus-a", "opus-b"] };
     state.credentials = LIMITED();

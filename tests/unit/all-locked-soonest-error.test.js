@@ -34,6 +34,7 @@ vi.spyOn(console, "error").mockImplementation(() => {});
 
 const { markAccountUnavailable, getProviderCredentials } = await import("../../src/sse/services/auth.js");
 const { allLockedError } = await import("../../open-sse/utils/limitHold.js");
+const { DEFAULT_ERROR_MESSAGES } = await import("../../open-sse/config/errorConfig.js");
 
 const PROVIDER = "openai-compatible-chat-test";
 const MODEL = "claude-opus-5-5";
@@ -353,6 +354,43 @@ describe("status sent when every key is locked", () => {
     it("treats a 400 about the key or its billing as an auth failure", () => {
       expect(allLockedError(403, "Not authorized", null, [{ status: 400, error: "invalid api key" }]).status).toBe(403);
       expect(allLockedError(403, "Not authorized", null, [{ status: 400, error: "example: credit balance is empty" }, dead])).toEqual({ status: 403, error: "Not authorized", swapped: false });
+    });
+
+    it("prefers a 400/422 over a 404 the pass ended on", () => {
+      expect(allLockedError(404, "model not found", null, [{ status: 400, error: refusal }, dead, { status: 404, error: "model not found" }])).toEqual({ status: 400, error: refusal, swapped: true });
+      expect(allLockedError(404, "model not found", null, [{ status: 422, error: "unprocessable field" }, { status: 404, error: "model not found" }]).status).toBe(422);
+      // Only a request error: a 429 before the 404 doesn't change what a 404 pass reports.
+      expect(allLockedError(404, "model not found", null, [{ status: 429, error: "rate_limit_error" }, { status: 404, error: "model not found" }])).toEqual({ status: 404, error: "model not found", swapped: false });
+    });
+  });
+
+  describe("a key held on a limit keeps the 401/403 over a key that can't serve the model", () => {
+    const refusal = "messages.1.content.0: unknown block type 'example_block'";
+    const lacksModel = { status: 404, error: "The model example-model does not exist or you do not have access to it." };
+    const modelRefusal = { status: 400, error: "The requested model is not available on this account" };
+    const quota = { status: 403, error: "Quota for this key is used up, try again later" };
+
+    it("keeps the limited 403 over a 404 or a model-refusal 400/422", () => {
+      expect(allLockedError(403, quota.error, null, [lacksModel, quota])).toEqual({ status: 403, error: quota.error, swapped: false });
+      expect(allLockedError(403, quota.error, null, [modelRefusal, quota])).toEqual({ status: 403, error: quota.error, swapped: false });
+      expect(allLockedError(403, quota.error, null, [{ ...modelRefusal, status: 422 }, quota]).status).toBe(403);
+    });
+
+    it("counts a bodyless 403, whose default text reads like a quota, as a limit", () => {
+      const bodyless = { status: 403, error: DEFAULT_ERROR_MESSAGES[403] };
+      expect(allLockedError(403, bodyless.error, null, [lacksModel, bodyless])).toEqual({ status: 403, error: bodyless.error, swapped: false });
+    });
+
+    it("counts the soonest key's limit on this model", () => {
+      const dead = { status: 403, error: "Not authorized" };
+      expect(allLockedError(403, dead.error, { lastErrorCode: 403, lastError: quota.error }, [lacksModel, dead]).status).toBe(403);
+      expect(allLockedError(403, dead.error, { lastErrorCode: 403, lastError: quota.error, lastErrorOwn: false }, [lacksModel, dead]).status).toBe(404);
+    });
+
+    it("still reports a refused body, which no wait can fix", () => {
+      expect(allLockedError(403, quota.error, null, [{ status: 400, error: refusal }, quota])).toEqual({ status: 400, error: refusal, swapped: true });
+      expect(allLockedError(404, lacksModel.error, null, [{ status: 400, error: refusal }, quota, lacksModel]).status).toBe(400);
+      expect(allLockedError(404, lacksModel.error, null, [modelRefusal, quota, lacksModel]).status).toBe(404);
     });
   });
 
