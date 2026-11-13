@@ -293,12 +293,11 @@ const refusedOnTwo = (conn) => demoteRecords(conn)
 function deadElsewhere(conn, records, model, current, demoting) {
   const now = Date.now();
   const since = (r) => now - new Date(r?.lastCountedAt).getTime();
-  const firm = (r) => isFirm(conn, r);
   const others = records.filter(([m]) => m !== model);
   const found = (test) => others.find(([, r]) => test(r))?.[0] ?? null;
-  return (since(current) <= AUTH_DEAD_CONFIG.minWindowMs && found(r => firm(r) && since(r) <= AUTH_DEAD_CONFIG.minWindowMs))
-    || (demoting && found(r => firm(r) && since(r) <= probeMs(r.probeLevel || 0) + AUTH_DEAD_CONFIG.minWindowMs))
-    || (firm(current) && found(r => since(r) <= AUTH_DEAD_CONFIG.minWindowMs))
+  return (since(current) <= AUTH_DEAD_CONFIG.minWindowMs && found(r => isFirm(conn, r) && since(r) <= AUTH_DEAD_CONFIG.minWindowMs))
+    || (demoting && found(r => isFirm(conn, r) && since(r) <= probeMs(r.probeLevel || 0) + AUTH_DEAD_CONFIG.minWindowMs))
+    || (isFirm(conn, current) && found(r => since(r) <= AUTH_DEAD_CONFIG.minWindowMs))
     || null;
 }
 

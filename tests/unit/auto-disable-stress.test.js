@@ -233,6 +233,10 @@ it("replays the dead-key scenarios", async () => {
     "opus, then haiku": (m) => (s(m) ? (m < 180 ? OPUS : HAIKU) : null),
     "one model at a time, 2 h each": (m) => (s(m) ? MODELS[Math.floor(m / 120) % 3] : null),
     "bursty, 2 models": (m) => (m % 30 < 4 ? (m % 2 ? OPUS : SONNET) : null),
+    // On another account, master never turns these off and this branch does:
+    // the streak rule sees the moved probes.
+    "sonnet until 220, then opus": (m) => (s(m) ? (m < 220 ? SONNET : OPUS) : null),
+    "every 5 min, sonnet until 191, then opus": (m) => (m % 5 === 0 ? (m < 191 ? SONNET : OPUS) : null),
   };
   out.deadOnEveryModel = {};
   out.deadOnEveryModelRefusals = {};

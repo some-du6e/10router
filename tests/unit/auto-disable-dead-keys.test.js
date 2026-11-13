@@ -2672,8 +2672,9 @@ describe("keys of one endpoint on different upstreams", () => {
   ];
 
   // Minutes until master's auth code and this one turn these off, null for
-  // never. A manual run of the Dead-key stress workflow checks the master
-  // column (DEAD_KEY_BASELINE=master).
+  // never. The Dead-key stress workflow's manual run checks the master column
+  // on master's code (DEAD_KEY_BASELINE=master). None of these rows turns off
+  // sooner than on master; auto-disable-stress.test.js has patterns that do.
   it.each([
     ["sonnet, then opus", 0, 207, 207],
     ["sonnet, then opus", 1, 186, null],
@@ -2690,7 +2691,6 @@ describe("keys of one endpoint on different upstreams", () => {
     const [dead] = await keysOn(own, peer);
     const minutes = await drive(dead, { modelAt: PATTERNS[name], totalMin: 12 * 60 });
     expect(minutes).toBe(process.env.DEAD_KEY_BASELINE === "master" ? master : here);
-    // Never sooner than master.
     if (here !== null) expect(master !== null && here >= master).toBe(true);
   }, 60000);
 

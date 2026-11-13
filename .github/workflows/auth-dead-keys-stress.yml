@@ -44,8 +44,8 @@ jobs:
           STRESS_PIN: "1"
           STRESS_OUT: ${{ runner.temp }}/stress-branch.json
         run: ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-stress.test.js
-      # On a manual run, the demotion tests for keys on other upstreams, here
-      # and (for comparison, never failing the job) on master's auth code.
+      # Manual runs only from here. The demotion tests for keys on other
+      # upstreams and the turn-off minutes table, on this branch.
       - name: Demotion tests, this branch
         if: always() && github.event_name == 'workflow_dispatch'
         working-directory: tests
@@ -59,15 +59,24 @@ jobs:
         run: |
           git checkout origin/master -- src open-sse
           cd tests && ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-stress.test.js
-      # The turn-off minutes test checks its master column here.
+      # For comparison only: the same demotion tests on master's auth code,
+      # where the ones this branch changes fail. Never fails the job.
       - name: Demotion tests, master's auth code
         if: always() && github.event_name == 'workflow_dispatch'
         continue-on-error: true
+        run: |
+          git checkout origin/master -- src open-sse
+          cd tests && ./node_modules/.bin/vitest run unit/auto-disable-dead-keys.test.js -t "other accounts serve it|cross-upstream"
+      # The turn-off minutes table's master column, checked on master's auth
+      # code; this one fails the job. When a change to the auth code merges,
+      # copy its minutes into the master column, or this step fails.
+      - name: Turn-off minutes, master's auth code
+        if: always() && github.event_name == 'workflow_dispatch'
         env:
           DEAD_KEY_BASELINE: master
         run: |
           git checkout origin/master -- src open-sse
-          cd tests && ./node_modules/.bin/vitest run unit/auto-disable-dead-keys.test.js -t "other accounts serve it|cross-upstream|one at a time"
+          cd tests && ./node_modules/.bin/vitest run unit/auto-disable-dead-keys.test.js -t "one at a time"
       - name: Results
         if: always()
         run: |
