@@ -271,6 +271,7 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
       ? `[model_providers.10router]
 name = "openai"
 base_url = "${getEffectiveBaseUrl()}"
+model_catalog_url = "${getEffectiveBaseUrl()}/models"
 wire_api = "responses"
 requires_openai_auth = true`
       : `[model_providers.10router]

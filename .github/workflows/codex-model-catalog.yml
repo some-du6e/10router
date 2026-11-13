@@ -1,0 +1,173 @@
+name: Codex model catalog
+
+on:
+  pull_request:
+    paths:
+      - "src/app/api/v1/codex/models/**"
+      - "src/app/api/v1/models/route.js"
+      - "src/app/api/cli-tools/codex-settings/**"
+      - "src/app/api/providers/*/models/route.js"
+      - "src/lib/codex/**"
+      - "src/sse/services/codexUpstreamCatalog.js"
+      - "src/sse/services/keyLimits.js"
+      - "src/shared/constants/models.js"
+      - "open-sse/providers/capabilities.js"
+      - "open-sse/config/providerModels.js"
+      - "open-sse/providers/registry/**"
+      - "tests/package.json"
+      - "tests/vitest.config.js"
+      - "tests/unit/codex-model-catalog.test.js"
+      - "tests/unit/codex-upstream-catalog.test.js"
+      - "tests/unit/codex-settings-route.test.js"
+      - ".github/e2e/codex-catalog/**"
+      - ".github/workflows/codex-model-catalog.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Unit tests
+        working-directory: tests
+        run: >
+          ./node_modules/.bin/vitest run
+          unit/codex-model-catalog.test.js
+          unit/codex-upstream-catalog.test.js
+          unit/codex-settings-route.test.js
+          unit/api-key-budgets.test.js
+      - name: Lint
+        run: >
+          ./node_modules/.bin/eslint
+          src/app/api/v1/codex/models/route.js
+          src/lib/codex/modelCatalog.js
+          src/sse/services/codexUpstreamCatalog.js
+          src/app/api/cli-tools/codex-settings/route.js
+          "src/app/api/providers/[id]/models/route.js"
+          tests/unit/codex-model-catalog.test.js
+          tests/unit/codex-upstream-catalog.test.js
+          tests/unit/codex-settings-route.test.js
+          .github/e2e/codex-catalog/check.mjs
+          .github/e2e/codex-catalog/dump-catalog.test.js
+
+  # A real Codex reads the catalog this branch serves, from a file and over
+  # HTTP with the config the dashboard writes, next to what the base serves.
+  # The local server only serves that catalog; no model or account is called.
+  # Codex's own bundled catalog stands in for the ChatGPT backend's.
+  codex-decode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        codex: ["0.167.2", "0.137.0"]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Check out the base branch next to this one
+        run: git worktree add ../base "origin/${{ github.base_ref || 'master' }}"
+      - name: Install dependencies (branch and base)
+        run: |
+          for dir in . ../base; do
+            (cd "$dir" && bun install --ignore-scripts && cd tests && bun install --ignore-scripts)
+          done
+      - name: Install Codex ${{ matrix.codex }}
+        run: |
+          npm install -g "@openai/codex@${{ matrix.codex }}"
+          codex --version
+          codex debug models --bundled > "$RUNNER_TEMP/bundled.json"
+      - name: Write each side's catalog and dashboard config
+        env:
+          CODEX_ROUTER_URL: http://127.0.0.1:18801
+        run: |
+          for side in head base; do
+            dir=.; [ "$side" = base ] && dir=../base
+            mkdir -p "$RUNNER_TEMP/work/$side/home"
+            cp .github/e2e/codex-catalog/dump-catalog.test.js "$dir/tests/unit/zz-dump-codex-catalog.test.js"
+            fixture=""; [ "$side" = head ] && fixture="$RUNNER_TEMP/bundled.json"
+            (cd "$dir/tests" && \
+              CODEX_CATALOG_OUT="$RUNNER_TEMP/work/$side/catalog.json" \
+              CODEX_SETUP_HOME="$RUNNER_TEMP/work/$side/home" \
+              CODEX_UPSTREAM_FIXTURE="$fixture" \
+              ./node_modules/.bin/vitest run unit/zz-dump-codex-catalog.test.js)
+            echo "--- $side config.toml"; cat "$RUNNER_TEMP/work/$side/home/.codex/config.toml"
+          done
+      - name: Codex reads the catalog
+        run: node .github/e2e/codex-catalog/check.mjs "$(command -v codex)" "$RUNNER_TEMP/work" 18801
+
+  # The suite is not all-green on master (see AGENTS.md), so this runs it on
+  # both the base and this branch and fails only on tests that pass on the base
+  # and fail here.
+  no-new-failures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Check out the base branch next to this one
+        run: git worktree add ../base "origin/${{ github.base_ref || 'master' }}"
+      - name: Install dependencies (branch and base)
+        run: |
+          for dir in . ../base; do
+            (cd "$dir" && bun install --ignore-scripts && cd tests && bun install --ignore-scripts)
+          done
+      - name: Run the suite on the base
+        working-directory: ../base/tests
+        # Each run gets its own HOME: tests without a DATA_DIR use ~/.9router,
+        # and one run's database must not leak into the other.
+        run: |
+          mkdir -p "$RUNNER_TEMP/home-base"
+          HOME="$RUNNER_TEMP/home-base" ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/base.json" > /dev/null 2>&1 || true
+      - name: Run the suite on this branch
+        working-directory: tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/home-head"
+          HOME="$RUNNER_TEMP/home-head" ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/head.json" > /dev/null 2>&1 || true
+      - name: Compare
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const load = (file, root) => {
+              const r = JSON.parse(readFileSync(file, "utf8"));
+              const status = new Map();
+              for (const f of r.testResults) {
+                const rel = f.name.slice(f.name.indexOf("/tests/") + 1);
+                for (const a of f.assertionResults) status.set(`${rel} :: ${a.fullName}`, a.status);
+                // A file that failed to load has no assertions; count it as one failure.
+                if (!f.assertionResults.length && f.status === "failed") status.set(`${rel} :: (file failed to load)`, "failed");
+              }
+              return { status, total: r.numTotalTests, failed: r.numFailedTests };
+            };
+            const base = load(process.env.RUNNER_TEMP + "/base.json");
+            const head = load(process.env.RUNNER_TEMP + "/head.json");
+            console.log(`base: ${base.failed}/${base.total} failed, head: ${head.failed}/${head.total} failed`);
+            const regressions = [...head.status].filter(([k, s]) => s === "failed" && base.status.get(k) === "passed").map(([k]) => k);
+            const fixed = [...base.status].filter(([k, s]) => s === "failed" && head.status.get(k) === "passed").map(([k]) => k);
+            const newFailing = [...head.status].filter(([k, s]) => s === "failed" && !base.status.has(k)).map(([k]) => k);
+            if (fixed.length) console.log("Now passing:\n  " + fixed.join("\n  "));
+            if (newFailing.length) console.log("New tests failing:\n  " + newFailing.join("\n  "));
+            if (regressions.length) console.log("Passed on the base, fail here:\n  " + regressions.join("\n  "));
+            if (regressions.length || newFailing.length) process.exit(1);
+          '

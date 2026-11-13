@@ -44,9 +44,14 @@ For a manual `~/.codex/config.toml`, the provider needs the native Codex setting
 [model_providers.10router]
 name = "openai"
 base_url = "http://127.0.0.1:20128/backend-api/codex"
+model_catalog_url = "http://127.0.0.1:20128/backend-api/codex/models"
 wire_api = "responses"
 requires_openai_auth = true
 ```
+
+`model_catalog_url` matters when Codex is signed in with an API key (`codex login --with-api-key`).
+Without it, Codex never reads 10router's model list, uses generic settings for any model it
+doesn't know, and gives that model no `apply_patch` tool, so it edits files through the shell.
 
 The regular `/v1` endpoint is a separate OpenAI-compatible mode. It is not the native
 Codex backend.

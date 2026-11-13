@@ -30,10 +30,14 @@ const resolveCodexBaseUrl = (baseUrl, native) => {
 
 // `name` must be the lowercase "openai" for recent Codex versions to accept the
 // native ChatGPT wire; the OpenAI-compatible endpoint keeps the 10router label.
+// Signed in with an API key, Codex only reads a custom base URL's catalog from
+// `model_catalog_url`; without the catalog it has no apply_patch tool for
+// models it doesn't know.
 const buildProviderSection = (baseUrl, native) => (native
   ? {
     name: "openai",
     base_url: baseUrl,
+    model_catalog_url: `${baseUrl}/models`,
     wire_api: "responses",
     requires_openai_auth: true,
   }
