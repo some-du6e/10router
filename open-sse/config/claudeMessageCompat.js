@@ -1,5 +1,7 @@
 // Claude model-specific message compatibility.
 // Keep wire-shape exceptions here rather than scattering model checks through translators.
+import { CLAUDE_TOOL_REF } from "../translator/schema/blocks.js";
+
 const NO_ASSISTANT_PREFILL_MODELS = /^claude-opus-5(?:$|-)/i;
 
 export function supportsClaudeAssistantPrefill(model = "") {
@@ -18,6 +20,18 @@ export const CLAUDE_INTERRUPTED_TOOL_RESULT_TEXT =
 // not permitted".
 export const CLAUDE_FIRST_PARTY_BETA_FIELDS = {
   "dangerous-tool-use-2026-09-03": ["safeguards"],
+};
+
+// Beta flags that let a tool_addition / tool_removal block through, keyed by
+// how the block names its tool. Like the flags above, third-party hosts don't
+// get them; without one, the block is folded into tools[] before sending
+// (translator/concerns/toolChanges.js), because strict gateways 400 on the
+// unknown block type.
+export const CLAUDE_MID_CONVERSATION_TOOLS_BETA = "mid-conversation-tool-changes-2026-07-01";
+export const CLAUDE_INLINE_TOOLS_BETA = "inline-tools-2026-09-15";
+export const CLAUDE_TOOL_CHANGE_BETAS = {
+  [CLAUDE_TOOL_REF.REFERENCE]: [CLAUDE_MID_CONVERSATION_TOOLS_BETA, CLAUDE_INLINE_TOOLS_BETA],
+  [CLAUDE_TOOL_REF.DEFINITION]: [CLAUDE_INLINE_TOOLS_BETA],
 };
 
 // Top-level Messages body fields that only exist behind an anthropic-beta flag.

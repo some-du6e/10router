@@ -391,13 +391,15 @@ Returns the calling key's own budget (`limit`), spend (`usage`), what's left
 GET  http://localhost:20128/api/management/v1/me
 GET  http://localhost:20128/api/management/v1/client-keys
 POST http://localhost:20128/api/management/v1/client-keys     {"name", "allowedModels", "budgetUsd", "expiresAt"}
-POST http://localhost:20128/api/management/v1/provider-keys   {"provider", "apiKey", "name"}
+POST http://localhost:20128/api/management/v1/provider-keys   {"provider", "apiKey", "name", "baseUrl"}
 Authorization: Bearer 10r-mgmt-...
 ```
 
 Create a management key on the Endpoint page and pick what it may do: client keys
 (optionally only for some providers or models, under a budget cap) and/or provider keys
-(optionally only for some providers). By default it sees and deletes only the keys it
+(optionally only for some providers). For an upstream where each key has its own host,
+the dashboard can also list, per custom endpoint, the hosts a key it adds may use for its
+own `baseUrl` (`*.acme.example`, https only). By default it sees and deletes only the keys it
 created. Responses never include provider secrets, and a new client key's full value
 appears only in the response that created it. Management keys can't be created or listed
 through this API. See [docs/MANAGEMENT_KEYS.md](docs/MANAGEMENT_KEYS.md).
