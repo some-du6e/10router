@@ -4,6 +4,7 @@ import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { dbg } from "../utils/debugLog.js";
 import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from "../providers/shared.js";
 import { appendUrlPath, resolveOpenAICompatibleApiType } from "../services/provider.js";
+import { inlineToolChangesWithoutBeta } from "../utils/anthropicBeta.js";
 
 /**
  * BaseExecutor - Base class for provider executors
@@ -84,8 +85,10 @@ export class BaseExecutor {
   // with the headers it shows; and by chatCore with headers = null for its
   // error log. An executor that overrides execute() and sends Claude-format
   // bodies must call it itself.
+  // Here: mid-conversation tool changes go out only with a beta that allows
+  // them; otherwise they're folded into tools[].
   finalizeBody(body, headers, credentials) {
-    return body;
+    return inlineToolChangesWithoutBeta(body, headers);
   }
 
   shouldRetry(status, urlIndex) {

@@ -136,7 +136,8 @@ export class DefaultExecutor extends BaseExecutor {
   // beta is unverified; the claude and anthropic providers' fixed beta lists
   // lack it, so they never send it. headers = null (unknown) drops it.
   finalizeBody(body, headers, credentials) {
-    return this.targetFormat(credentials) === "claude" ? dropFirstPartyFieldsWithoutBeta(body, headers) : body;
+    const out = super.finalizeBody(body, headers, credentials);
+    return this.targetFormat(credentials) === "claude" ? dropFirstPartyFieldsWithoutBeta(out, headers) : out;
   }
 
   // Fallback json_schema → json_object for openai-compatible providers without native Structured Output.

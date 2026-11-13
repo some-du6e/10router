@@ -24,6 +24,7 @@ import {
 } from "./policy.js";
 import { serializeClientKey, serializeProviderKey, serializeManagementKey } from "./serialize.js";
 import { json, fail, readBody } from "./http.js";
+import { MANAGEMENT_KEY_CHECK, MANAGEMENT_KEY_REFUSED } from "@/shared/constants/keyCheck.js";
 
 // Provider-specific fields a management key may set. URL fields (baseUrl,
 // azureEndpoint, proxies) are left out: they decide where the gateway sends a
@@ -300,7 +301,9 @@ async function probeKey(validate, payload) {
   const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve(PROBE_TIMED_OUT), ms); });
   try {
     const res = await Promise.race([validate(internalJsonRequest("/api/providers/validate", payload, signal)), timeout]);
-    if (res === PROBE_TIMED_OUT) return res;
+    // The signal can fire just before the timer: the validator's aborted
+    // request then answers first, which is still a probe that timed out.
+    if (res === PROBE_TIMED_OUT || signal.aborted) return PROBE_TIMED_OUT;
     return { res, body: await res.json().catch(() => ({})) };
   } finally {
     clearTimeout(timer);
@@ -340,10 +343,13 @@ export function createProviderKey(request) {
     if (probe.body.valid !== true) {
       // The validator's own error text is not passed on: it can quote the upstream.
       // With its own URL, the host the probe went to.
+      // A wrong URL or an inconclusive answer is worded from its reason; only
+      // the upstream's status number (when an integer) goes into the message.
+      const check = Object.hasOwn(MANAGEMENT_KEY_CHECK, probe.body.reason) ? MANAGEMENT_KEY_CHECK[probe.body.reason] : MANAGEMENT_KEY_REFUSED;
       await audit(mk, "provider_key.create.denied", "providerKey", null, {
-        provider, reason: "the provider did not accept the key", ...(keyUrl.host ? { baseUrlHost: keyUrl.host } : {}),
+        provider, reason: check.audit, ...(keyUrl.host ? { baseUrlHost: keyUrl.host } : {}),
       }, { denied: true });
-      return fail(422, "The provider did not accept this key, so it was not added");
+      return fail(check.status, check.error(probe.body.upstreamStatus));
     }
 
     // The probe can take seconds; the key may have been revoked or narrowed meanwhile.
