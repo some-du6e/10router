@@ -208,13 +208,19 @@ const countRuns = (record, nowMs) => {
   return sinceLast >= 0 && sinceLast <= AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
 };
 
+// The window the turn-off rule needs a count to span: minWindowMs when every
+// refusal in it had a peer on the same upstream, else crossUpstreamWindowMs.
+const turnOffWindowMs = (sameUpstream) => (sameUpstream ? AUTH_DEAD_CONFIG.minWindowMs : AUTH_DEAD_CONFIG.crossUpstreamWindowMs);
+const spansTurnOffWindow = (r) => r?.sameUpstream !== false
+  || new Date(r?.lastCountedAt).getTime() - new Date(r?.firstAt).getTime() >= AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
+
 // A key's demotion record for a model after one more counted 403 on it at
 // nowMs (see AUTH_DEMOTE_CONFIG); lastCountedAt is its last refusal the turn-off
 // rule counts too. It doesn't trip while the key was refused, in a way that rule
-// counts, on another model (lastly at otherRefusalAt) within the window: that
-// rule decides then. A new count keeps the key's last success before it
-// (lastServedAt) as servedAt. A demoted record counts on and moves its next
-// probe out, keeping the lease of the probe just answered.
+// counts, on another model (lastly at otherRefusalAt) within the turn-off
+// window: that rule decides then. A new count keeps the key's last success
+// before it (lastServedAt) as servedAt. A demoted record counts on and moves its
+// next probe out, keeping the lease of the probe just answered.
 function nextDemoteRecord(record, nowMs, { sameUpstream, otherRefusalAt = -Infinity, modelScoped = false, lastServedAt, reason }) {
   const now = new Date(nowMs).toISOString();
   const lastCountedAt = modelScoped ? record?.lastCountedAt : now;
@@ -227,14 +233,13 @@ function nextDemoteRecord(record, nowMs, { sameUpstream, otherRefusalAt = -Infin
   const count = (restart ? 0 : record.count) + 1;
   const firstAt = restart ? now : record.firstAt;
   const allSameUpstream = sameUpstream && (restart || record.sameUpstream === true);
-  const windowMs = allSameUpstream ? AUTH_DEAD_CONFIG.minWindowMs : AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
   const servedAt = restart ? (Number.isFinite(lastServedAt) ? new Date(lastServedAt).toISOString() : undefined) : record.servedAt;
   const next = {
     count, firstAt, lastAt: now, lastCountedAt, servedAt,
     sameUpstream: allSameUpstream, modelScoped: modelScoped || (!restart && record.modelScoped === true),
   };
-  const enough = count >= AUTH_DEAD_CONFIG.minFailures && nowMs - new Date(firstAt).getTime() >= windowMs;
-  const refusedElsewhere = nowMs - otherRefusalAt <= windowMs;
+  const enough = count >= AUTH_DEAD_CONFIG.minFailures && nowMs - new Date(firstAt).getTime() >= AUTH_DEAD_CONFIG.minWindowMs;
+  const refusedElsewhere = nowMs - otherRefusalAt <= turnOffWindowMs(allSameUpstream);
   if (!enough || refusedElsewhere) return next;
   return { ...next, demotedAt: now, reason, probeLevel: 0, nextProbeAt: new Date(nowMs + probeMs(0)).toISOString() };
 }
@@ -282,10 +287,11 @@ const refusedOnTwo = (conn) => demoteRecords(conn)
 //   its probe interval and minWindowMs;
 // - or the key is firmly demoted on `model` (this was a probe or a fallback)
 //   and the other model was refused within minWindowMs.
+// A demotion counts here once its count spans the turn-off window.
 function deadElsewhere(conn, records, model, current, demoting) {
   const now = Date.now();
   const since = (r) => now - new Date(r?.lastCountedAt).getTime();
-  const firm = (r) => isFirm(conn, r);
+  const firm = (r) => isFirm(conn, r) && spansTurnOffWindow(r);
   const others = records.filter(([m]) => m !== model);
   const found = (test) => others.find(([, r]) => test(r))?.[0] ?? null;
   return (since(current) <= AUTH_DEAD_CONFIG.minWindowMs && found(r => firm(r) && since(r) <= AUTH_DEAD_CONFIG.minWindowMs))
@@ -325,7 +331,7 @@ async function planDemotion(connections, conn, model, status, errorText, evidenc
       data: demoting ? { lastError: `${model} demoted after repeated ${to.reason}` } : null,
     },
     demoting,
-    deadWith: evidence ? deadElsewhere(conn, records, model, current, demoting) : null,
+    deadWith: evidence ? deadElsewhere(conn, records, model, current, demoting && spansTurnOffWindow(to)) : null,
   };
 }
 

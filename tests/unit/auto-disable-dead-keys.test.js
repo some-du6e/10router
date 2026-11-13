@@ -595,8 +595,10 @@ describe("a key refused on only one model", () => {
     ["4 refusals over 12 minutes", [R(0), R(4), R(8), R(12)], 4, false],
     ["5 refusals over 9 minutes", [R(0), R(2), R(4), R(6), R(9)], 5, false],
     ["5 refusals over 10 minutes", [R(0), R(2), R(4), R(6), R(10)], 5, true],
-    ["5 over 59 minutes, one cross-upstream", [R(0), R(15, false), R(30), R(45), R(59)], 5, false],
-    ["5 over 60 minutes, one cross-upstream", [R(0), R(15, false), R(30), R(45), R(60)], 5, true],
+    ["5 over 9 minutes cross-upstream", [R(0, false), R(2, false), R(4, false), R(6, false), R(9, false)], 5, false],
+    ["5 over 10 minutes cross-upstream", [R(0, false), R(2, false), R(4, false), R(6, false), R(10, false)], 5, true],
+    ["5 over 59 minutes, one cross-upstream", [R(0), R(15, false), R(30), R(45), R(59)], 5, true],
+    ["5 over 12 minutes cross-upstream, another model refused at minute 1", [R(0, false), R(2), R(4), R(6), R(12, true, 1)], 5, false],
     ["a 60-minute gap", [R(0), R(2), R(4), R(64), R(66)], 5, true],
     ["a gap of 60 minutes and 1 ms", [R(0), R(2), R(4), R(6), R(66 + 1 / 60000)], 1, false],
     ["0, 2, 4, 6, then 67 to 71", [R(0), R(2), R(4), R(6), R(67), R(68), R(69), R(70), R(71)], 5, false],
@@ -2609,7 +2611,7 @@ describe("keys of one endpoint on different upstreams", () => {
   // The live case of 2026-10-28: only claude-opus-5-5 in use, someone working
   // 10 minutes and pausing 13; master refuses the dead key 159 times in 12 hours.
   it.each([
-    ["on another account", "acct-dead", "acct-live", 60, 75, 16, 22],
+    ["on another account", "acct-dead", "acct-live", 20, 30, 7, 13],
     ["on the same account", "acct-shared", "acct-shared", 20, 30, 7, 13],
   ])("demotes a dead key refused on the only model in use, its peer %s, and keeps trying it rarely", async (
     _label, own, peer, minDemoteMin, maxDemoteMin, maxBefore, maxTotal,
@@ -2739,6 +2741,96 @@ describe("keys of one endpoint on different upstreams", () => {
     expect(demotions.map(([, model]) => model)).toEqual([OPUS]);
     expect(refusals[OPUS].length).toBeLessThanOrEqual(maxRefusals);
   }, 60000);
+});
+
+// One endpoint whose keys each belong to their own account, on its own base
+// URL: every peer of a refused key is on another upstream.
+describe("a key refused on one model while keys on other accounts serve it", () => {
+  const OPUS = "claude-opus-5-5";
+  const KIMI = "kimi-k3";
+  const record = (conn, model = OPUS) => conn[`authDemote_${model}`] ?? null;
+  const pick = async (model) => (await auth.getProviderCredentials(provider, null, model))?.connectionId;
+  async function accounts(...names) {
+    const keys = [];
+    for (const name of names) {
+      keys.push(await addKey(name, { providerSpecificData: { baseUrl: `https://acct-${name}.acme.test/v1`, ownBaseUrl: true } }));
+    }
+    return keys;
+  }
+
+  it("demotes it there once 5 refusals span 10 minutes, not an hour", async () => {
+    const [dead, ...peers] = await accounts("b", "c", "d");
+    await fail(dead.id, { times: 5, models: [OPUS], peers, stepMs: 2.25 * MIN });
+    expect(record(await load(dead.id))).toMatchObject({ count: 5, sameUpstream: false });
+    expect(record(await load(dead.id))).not.toHaveProperty("demotedAt");
+
+    vi.advanceTimersByTime(MIN);
+    await fail(dead.id, { times: 1, models: [OPUS], peers });
+    const conn = await load(dead.id);
+    expect(conn.isActive).toBe(true);
+    expect(record(conn)).toMatchObject({ count: 6, demotedAt: new Date().toISOString() });
+    vi.advanceTimersByTime(3 * MIN);
+    expect(await pick(OPUS)).toBe(peers[0].id);
+    expect(await pick(KIMI)).toBe(dead.id);
+  });
+
+  it("demotes no key while every key is refused on that model", async () => {
+    const all = await accounts("b", "c", "d");
+    for (const k of all) await succeed(k.id, OPUS);
+    vi.advanceTimersByTime(MIN);
+    for (let i = 0; i < 30; i++) {
+      for (const k of all) await failOnce(k.id, OPUS);
+      vi.advanceTimersByTime(2.5 * MIN);
+    }
+    for (const k of all) {
+      const conn = await load(k.id);
+      expect(conn.isActive).toBe(true);
+      expect(record(conn)?.demotedAt).toBeUndefined();
+    }
+  });
+
+  it("turns it off no sooner than the hour once it is refused on a second model too", async () => {
+    const [dead, ...peers] = await accounts("b", "c");
+    await fail(dead.id, { times: 6, models: [OPUS], peers, stepMs: 2 * MIN });
+    expect(record(await load(dead.id))).toMatchObject({ demotedAt: new Date().toISOString() });
+
+    vi.advanceTimersByTime(2 * MIN);
+    await fail(dead.id, { times: 24, models: [KIMI, OPUS], peers, stepMs: 2 * MIN });
+    expect(await load(dead.id)).toMatchObject({ isActive: true, authFailSameUpstream: false });
+    expect(record(await load(dead.id), KIMI)).not.toHaveProperty("demotedAt");
+
+    vi.advanceTimersByTime(2 * MIN);
+    await fail(dead.id, { times: 1, models: [OPUS], peers });
+    expect((await load(dead.id)).isActive).toBe(false);
+  });
+
+  it.each([
+    ["keeps it on", 30, true],
+    ["turns it off", 61, false],
+  ])("%s when refused twice on kimi while demoted on opus, its count there begun %i minutes ago", async (_verdict, minutes, staysOn) => {
+    const [dead, ...peers] = await accounts("b", "c");
+    const now = new Date().toISOString();
+    await db.updateProviderConnection(dead.id, { [`authDemote_${OPUS}`]: {
+      count: 5, firstAt: new Date(Date.now() - minutes * MIN).toISOString(), lastAt: now, lastCountedAt: now, demotedAt: now,
+      sameUpstream: false, probeLevel: 0, nextProbeAt: new Date(Date.now() + 10 * MIN).toISOString(),
+    } });
+    await fail(dead.id, { times: 2, models: [KIMI], peers, text: KEY_REFUSED_403 });
+    expect((await load(dead.id)).isActive).toBe(staysOn);
+  });
+
+  it("demotes a key that lacks the model there and keeps it on, serving the others", async () => {
+    const [partial, ...peers] = await accounts("b", "c");
+    for (let i = 0; i < 60; i++) {
+      if (i > 0) vi.advanceTimersByTime(3 * MIN);
+      for (const peer of peers) await succeed(peer.id, OPUS);
+      await failOnce(partial.id, OPUS);
+      await succeed(partial.id, KIMI);
+    }
+    const conn = await load(partial.id);
+    expect(conn.isActive).toBe(true);
+    expect(record(conn)).toMatchObject({ demotedAt: expect.any(String) });
+    expect(await pick(KIMI)).toBe(partial.id);
+  });
 });
 
 describe("an auto-disabled key", () => {

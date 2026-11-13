@@ -46,8 +46,8 @@ const rng = (seed) => () => {
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 };
 
-// Keys of one provider, the first on its own account when `cross`, the rest on
-// a shared one.
+// Keys of one provider, on a shared account but for one on its own: the first
+// when `cross` is true, the one named `cross` when it is a name.
 async function setup(names, cross = false) {
   provider = `auth-stress-${++seq}`;
   global._authEvents?.success?.clear();
@@ -55,7 +55,7 @@ async function setup(names, cross = false) {
   vi.setSystemTime(new Date("2026-10-23T00:00:00.000Z"));
   const keys = [];
   for (const [i, name] of names.entries()) {
-    const own = cross && i === 0;
+    const own = cross === true ? i === 0 : cross === name;
     keys.push(await db.createProviderConnection({
       provider, authType: "apikey", name, apiKey: `sk-test-${name}-0123456789`,
       providerSpecificData: {
@@ -112,24 +112,17 @@ async function run(keys, totalMin, requests) {
 const session = (workMin, idleMin) => (m) => m % (workMin + idleMin) < workMin;
 const tenOnThirteenOff = session(10, 13);
 
-it("replays the dead-key scenarios", async () => {
-  vi.useFakeTimers({ toFake: ["Date"] });
+// Scenarios for one key that works, or lacks some models, beside a healthy
+// peer: on the peer's account, or on its own when `ownAccount`.
+async function keyScenarios(ownAccount) {
+  const keysOf = (names, key) => setup(names, ownAccount ? key : false);
   const out = {};
-
-  // The live case: only opus, 10 minutes on and 13 off, 12 hours, the dead key
-  // on its own account or the peer's.
-  out.prodPattern = {};
-  for (const cross of [true, false]) {
-    const [dead] = await setup(["dead", "peer"], cross);
-    const { refusals } = await run([dead], 12 * 60, (m) => (tenOnThirteenOff(m) ? [[OPUS, (id) => id === dead.id]] : []));
-    out.prodPattern[cross ? "other account" : "same account"] = refusals[dead.id]?.[OPUS]?.length ?? 0;
-  }
 
   // An incident on opus that ends: minutes from its end until the key serves opus again.
   out.incidentRecovery = {};
   for (const [pattern, active] of [["every minute", () => true], ["10 on / 13 off", tenOnThirteenOff]]) {
     for (const incidentMin of [30, 60, 120, 180, 360, 720, 4320]) {
-      const [k] = await setup(["k", "peer"]);
+      const [k] = await keysOf(["k", "peer"], "k");
       const { served } = await run([k], incidentMin + 12 * 60, (m) => (active(m) ? [[OPUS, (id) => id === k.id && m < incidentMin]] : []));
       const back = served.find(([minute, , id]) => minute >= incidentMin && id === k.id)?.[0];
       out.incidentRecovery[`${pattern}, ${incidentMin} min`] = back === undefined ? null : back - incidentMin;
@@ -141,7 +134,7 @@ it("replays the dead-key scenarios", async () => {
   let blipOff = 0;
   for (let seed = 1; seed <= 30; seed++) {
     const r = rng(seed);
-    const [k] = await setup(["k", "peer"]);
+    const [k] = await keysOf(["k", "peer"], "k");
     const incidentMin = 30 + Math.floor(r() * 91);
     const blipAt = incidentMin + 5 + Math.floor(r() * 56);
     const { offAt } = await run([k], incidentMin + 4 * 60, (m) => [
@@ -158,7 +151,7 @@ it("replays the dead-key scenarios", async () => {
     let off = 0;
     for (let seed = 1; seed <= 30; seed++) {
       const r = rng(seed * 7);
-      const [k] = await setup(["k", "peer"]);
+      const [k] = await keysOf(["k", "peer"], "k");
       const { offAt } = await run([k], 12 * 60, () => {
         const model = MODELS[Math.floor(r() * 3)];
         const refused = r() < share;
@@ -168,6 +161,58 @@ it("replays the dead-key scenarios", async () => {
     }
     out.flaky[`${share * 100}%`] = `${off}/30 off`;
   }
+
+  // E1: a key lacking opus (a 403 not saying so), flaky on sonnet, a healthy
+  // peer; requests on either model, 6 hours.
+  // E2: the same key as a backup, tried only when the primary is rate limited
+  // (on 20% of requests).
+  out.lacksOpus = {};
+  for (const [label, backup] of [["E1, main key", false], ["E2, backup key", true]]) {
+    for (const share of [0, 0.2, 0.4]) {
+      let off = 0;
+      for (let seed = 1; seed <= 30; seed++) {
+        const r = rng(seed * 17 + (backup ? 5 : 0));
+        const keys = await keysOf(backup ? ["primary", "k"] : ["k", "peer"], "k");
+        const k = keys[backup ? 1 : 0];
+        const { offAt } = await run([k], 6 * 60, () => {
+          const model = r() < 0.5 ? OPUS : SONNET;
+          const flaky = r() < share;
+          const limited = r() < 0.2;
+          return [[model, (id) => (id === k.id ? model === OPUS || flaky : backup && limited ? 429 : false)]];
+        });
+        if (offAt[k.id] !== undefined) off++;
+      }
+      out.lacksOpus[`${label}, sonnet flaky ${share * 100}%`] = `${off}/30 off`;
+    }
+  }
+
+  // A key refused on opus and kimi that serves sonnet, every model each minute, 6 hours.
+  const [partial] = await keysOf(["partial", "peer"], "partial");
+  const partialRun = await run([partial], 6 * 60, () => [OPUS, KIMI, SONNET].map((model) => [model, (id) => id === partial.id && model !== SONNET]));
+  out.lacksTwoModels = {
+    refusals: Object.fromEntries(Object.entries(partialRun.refusals[partial.id] ?? {}).map(([m, at]) => [m, at.length])),
+    turnedOff: partialRun.offAt[partial.id] !== undefined,
+  };
+  return out;
+}
+
+it("replays the dead-key scenarios", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const out = {};
+
+  // The live case: only opus, 10 minutes on and 13 off, 12 hours, the dead key
+  // on its own account or the peer's.
+  out.prodPattern = {};
+  for (const cross of [true, false]) {
+    const [dead] = await setup(["dead", "peer"], cross);
+    const { refusals } = await run([dead], 12 * 60, (m) => (tenOnThirteenOff(m) ? [[OPUS, (id) => id === dead.id]] : []));
+    out.prodPattern[cross ? "other account" : "same account"] = refusals[dead.id]?.[OPUS]?.length ?? 0;
+  }
+
+  const sameAccount = await keyScenarios(false);
+  out.incidentRecovery = sameAccount.incidentRecovery;
+  out.incidentThenBlip = sameAccount.incidentThenBlip;
+  out.flaky = sameAccount.flaky;
 
   // 4 keys, every one refused at random on 40% of tries.
   let peersOff = 0;
@@ -198,41 +243,15 @@ it("replays the dead-key scenarios", async () => {
     }
   }
 
-  // E1: a key lacking opus (a 403 not saying so), flaky on sonnet, a healthy
-  // peer; requests on either model, 6 hours.
-  // E2: the same key as a backup, tried only when the primary is rate limited
-  // (on 20% of requests).
-  out.lacksOpus = {};
-  for (const [label, backup] of [["E1, main key", false], ["E2, backup key", true]]) {
-    for (const share of [0, 0.2, 0.4]) {
-      let off = 0;
-      for (let seed = 1; seed <= 30; seed++) {
-        const r = rng(seed * 17 + (backup ? 5 : 0));
-        const keys = await setup(backup ? ["primary", "k"] : ["k", "peer"]);
-        const k = keys[backup ? 1 : 0];
-        const { offAt } = await run([k], 6 * 60, () => {
-          const model = r() < 0.5 ? OPUS : SONNET;
-          const flaky = r() < share;
-          const limited = r() < 0.2;
-          return [[model, (id) => (id === k.id ? model === OPUS || flaky : backup && limited ? 429 : false)]];
-        });
-        if (offAt[k.id] !== undefined) off++;
-      }
-      out.lacksOpus[`${label}, sonnet flaky ${share * 100}%`] = `${off}/30 off`;
-    }
-  }
-
-  // A key refused on opus and kimi that serves sonnet, every model each minute, 6 hours.
-  const [partial] = await setup(["partial", "peer"]);
-  const partialRun = await run([partial], 6 * 60, () => [OPUS, KIMI, SONNET].map((model) => [model, (id) => id === partial.id && model !== SONNET]));
-  out.lacksTwoModels = {
-    refusals: Object.fromEntries(Object.entries(partialRun.refusals[partial.id] ?? {}).map(([m, at]) => [m, at.length])),
-    turnedOff: partialRun.offAt[partial.id] !== undefined,
-  };
+  out.lacksOpus = sameAccount.lacksOpus;
+  out.lacksTwoModels = sameAccount.lacksTwoModels;
+  // The same with the key on its own account and its peers on another.
+  out.ownAccount = await keyScenarios(true);
 
   console.log(JSON.stringify(out, null, 2));
   if (process.env.STRESS_OUT) fs.writeFileSync(process.env.STRESS_OUT, JSON.stringify(out, null, 2));
   expect(out.lacksTwoModels.turnedOff).toBe(false);
+  expect(out.ownAccount.lacksTwoModels.turnedOff).toBe(false);
   if (process.env.STRESS_PIN === "1") {
     const pinned = JSON.parse(fs.readFileSync(new URL("./auto-disable-stress.pinned.json", import.meta.url), "utf8"));
     expect(out).toEqual(pinned);
