@@ -343,7 +343,7 @@ describe("cache affinity routing", () => {
       const { a, b } = await addKeys("a", "b");
       await chat(body());
 
-      // Other requests' successes keep resetting the backoff: every lock is the shortest.
+      // Every lock is the shortest, as when other requests' successes keep resetting the backoff.
       upstream.script = Array.from({ length: 4 }, () => limited(100));
       expect((await chat(body())).status).toBe(200);
       expect(upstream.calls).toEqual([a, a, a, a, a, b]);
@@ -920,6 +920,7 @@ describe("wait sizing", () => {
   it("gives no budget once the request has waited maxWarmAttempts times", () => {
     Object.assign(CACHE_AFFINITY, { maxWarmAttempts: 2 });
     expect(affinity.warmWaitBudget({ waitedMs: 0, waits: 1, promptTokens: () => 1000 })).toBe(1000);
+    expect(affinity.warmWaitBudget({ waitedMs: 0, waits: 2, promptTokens: () => 1000 })).toBe(0);
     expect(affinity.warmWaitBudget({ waitedMs: 0, waits: 2, promptTokens: () => 1e9 })).toBe(0);
   });
 });
