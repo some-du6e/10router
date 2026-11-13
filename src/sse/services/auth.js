@@ -67,6 +67,7 @@ function recordSuccess(connectionId, model) {
 }
 
 const succeededSince = (key, sinceMs) => (authEvents.success.get(key)?.at ?? -Infinity) >= sinceMs;
+const refusedSince = (key, sinceMs) => (authEvents.refused.get(key)?.at ?? -Infinity) >= sinceMs;
 
 // LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL: a limit or a refusal of one
 // model or operation; the key itself is fine.
@@ -199,6 +200,14 @@ function autoDisableReason(status, errorText, streak) {
 
 const probeMs = (level) => AUTH_DEMOTE_CONFIG.probeMs[Math.min(level, AUTH_DEMOTE_CONFIG.probeMs.length - 1)];
 
+// A count that isn't demoted yet still runs at nowMs: its last refusal is no
+// more than crossUpstreamWindowMs back. Past that, the next refusal on the
+// model starts it over.
+const countRuns = (record, nowMs) => {
+  const sinceLast = nowMs - new Date(record?.lastAt).getTime();
+  return sinceLast >= 0 && sinceLast <= AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
+};
+
 // A key's demotion record for a model after one more counted 403 on it at
 // nowMs (see AUTH_DEMOTE_CONFIG); lastCountedAt is its last refusal the turn-off
 // rule counts too. It doesn't trip while the key was refused, in a way that rule
@@ -214,8 +223,7 @@ function nextDemoteRecord(record, nowMs, { sameUpstream, otherRefusalAt = -Infin
     const nextProbeAt = new Date(nowMs + probeMs(probeLevel)).toISOString();
     return { ...record, count: record.count + 1, lastAt: now, lastCountedAt, probeLevel, nextProbeAt };
   }
-  const sinceLast = nowMs - new Date(record?.lastAt).getTime();
-  const restart = !(sinceLast >= 0 && sinceLast <= AUTH_DEAD_CONFIG.crossUpstreamWindowMs);
+  const restart = !countRuns(record, nowMs);
   const count = (restart ? 0 : record.count) + 1;
   const firstAt = restart ? now : record.firstAt;
   const allSameUpstream = sameUpstream && (restart || record.sameUpstream === true);
@@ -246,11 +254,24 @@ const demotionOf = (conn, model) => {
   return record?.demotedAt ? record : null;
 };
 
-// A demotion for refusals the turn-off rule counts, with nothing served since
-// minWindowMs before its count began.
-const isFirm = (conn, r) => !!r?.demotedAt && !r.modelScoped && !(conn.authDemoteOkAt >= r.firstAt)
-  && !succeededSince(conn.id, new Date(r.firstAt).getTime() + 1)
+// A count of refusals the turn-off rule counts, with nothing served since it
+// began; a dead-class demotion once it demotes the key, firm if nothing was
+// served in the minWindowMs before the count began either. A record without a
+// readable firstAt (an ISO string) is none of these: no success could ever
+// clear it.
+const refusedForItself = (conn, r) => typeof r?.firstAt === "string" && Number.isFinite(Date.parse(r.firstAt)) && !r.modelScoped
+  && !(conn.authDemoteOkAt >= r.firstAt) && !succeededSince(conn.id, new Date(r.firstAt).getTime() + 1);
+const isDeadClass = (conn, r) => !!r?.demotedAt && refusedForItself(conn, r);
+const isFirm = (conn, r) => isDeadClass(conn, r)
   && !(new Date(r.servedAt).getTime() >= new Date(r.firstAt).getTime() - AUTH_DEAD_CONFIG.minWindowMs);
+
+// Demoted on another model the way isDeadClass says.
+const demotedElsewhere = (conn, model) => demoteRecords(conn).some(([m, r]) => m !== model && isDeadClass(conn, r));
+// Has refusedForItself counts on 2 models or more, each demoted or still
+// running (countRuns): a count that has lapsed is only a stray refusal. A key
+// that lacks one model is refused only there.
+const refusedOnTwo = (conn) => demoteRecords(conn)
+  .filter(([, r]) => refusedForItself(conn, r) && (r.demotedAt || countRuns(r, Date.now()))).length >= AUTH_DEAD_CONFIG.minModels;
 
 // Refused, in ways the turn-off rule counts, on 2 models with nothing served in
 // between, the key is dead (tests/unit/auto-disable-stress.test.js replays it).
@@ -451,18 +472,22 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // for its next probe.
     const usableConnections = connections.filter(usable);
     const demotions = new Map(usableConnections.map(c => [c.id, demotionOf(c, model)]));
-    const preferred = usableConnections.filter(c => !demotions.get(c.id));
-    let availableConnections = preferred.length > 0 ? preferred : usableConnections;
-    let probing = false;
-    // One probe per pass through this model's keys (one exclude set): once
-    // the caller has excluded a key demoted on this model, or an id that isn't
-    // one of this provider's active keys (turned off or deleted since, or
-    // another provider's key in a shared exclude set), later calls with that
-    // set go to the keys that serve.
+    // One dead-key try per pass (one exclude set). Once it's used, skip keys
+    // demoted here, and keys demoted elsewhere that were refused here or are
+    // refusedOnTwo, while another key can serve. Every other key keeps its place.
     const activeIds = new Set(allConnections.map(c => c.id));
-    const probedThisPass = [...excludeSet].some(id => !activeIds.has(id))
-      || allConnections.some(c => excludeSet.has(c.id) && demotionOf(c, model));
-    if (preferred.length > 0 && !probedThisPass) {
+    const refusedHere = (c) => (c.errorCode === 401 || c.errorCode === 403)
+      && refusedSince(`${c.id}|${model}`, Date.now() - AUTH_DEAD_CONFIG.minWindowMs);
+    const deadTriedThisPass = [...excludeSet].some(id => !activeIds.has(id))
+      || allConnections.some(c => excludeSet.has(c.id) && (demotionOf(c, model) || (refusedHere(c) && demotedElsewhere(c, model))));
+    const skippedThisPass = (c) => deadTriedThisPass && demotedElsewhere(c, model) && (refusedHere(c) || refusedOnTwo(c));
+    const notDemotedHere = usableConnections.filter(c => !demotions.get(c.id));
+    const preferred = notDemotedHere.filter(c => !skippedThisPass(c));
+    // Failing that (every such key rate-limited, excluded or off), keys demoted
+    // on another model go before keys demoted on this one.
+    let availableConnections = preferred.length > 0 ? preferred : notDemotedHere.length > 0 ? notDemotedHere : usableConnections;
+    let probing = false;
+    if (preferred.length > 0 && !deadTriedThisPass) {
       // Under fill-first a key behind a usable one wouldn't be tried anyway
       // (a backup), so only demoted keys ahead of them are probed.
       const ahead = strategy === "fill-first" ? usableConnections.slice(0, usableConnections.indexOf(preferred[0])) : usableConnections;
@@ -596,7 +621,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           const [l, r] = [resetStates.get(x.id), resetStates.get(y.id)];
           return ((l.weeklyReset - r.weeklyReset || l.sessionReset - r.sessionReset || 0) || byPriority(x, y)) < 0;
         };
-        const servable = c => !excludeSet.has(c.id) && !quotaBlocked(c) && !demotionOf(c, model) && planCanServeModel(providerId, c, model);
+        const servable = c => !excludeSet.has(c.id) && !quotaBlocked(c) && !demotionOf(c, model) && !skippedThisPass(c)
+          && planCanServeModel(providerId, c, model);
         const freeAt = c => Math.max(getModelLockUntil(c, model), resetStates.get(c.id).blockedUntil || 0);
         const jitterMs = warmJitterMs();
         const candidates = connections

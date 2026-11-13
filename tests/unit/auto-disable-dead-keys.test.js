@@ -34,6 +34,7 @@ process.env.DATA_DIR = tempDir;
 
 const PROVIDER = "openai-compatible-chat-test-dead-keys";
 const DEAD_403 = '[403]: {"code":"003001","message":"Not authorized for this endpoint"}';
+const KEY_REFUSED_403 = '[403]: {"message":"This key is not accepted here"}';
 const MIN = 60 * 1000;
 
 let db, auth, testSingleConnection, testBatch, putConnection, withToggledActive, connectionsToTest;
@@ -1187,6 +1188,16 @@ describe("a key refused on only one model", () => {
     vi.setSystemTime(new Date(due));
     return { deadKeys, healthy };
   }
+  // The same keys, also refused once on m3 (11 minutes on, so that's a new
+  // streak), as the live keys were on 2-3 models.
+  async function fourDeadAhead() {
+    const { deadKeys, healthy } = await fourDemotedAhead();
+    vi.advanceTimersByTime(11 * MIN);
+    await succeed(healthy.id, "m3");
+    for (const key of deadKeys) await failOnce(key.id, "m3", 403, KEY_REFUSED_403);
+    for (const key of deadKeys) expect(await load(key.id)).toMatchObject({ isActive: true, authDemote_m3: { count: 1 } });
+    return { deadKeys, healthy };
+  }
   const probed = async (keys) => (await Promise.all(keys.map((k) => load(k.id)))).filter((c) => record(c).probeId).map((c) => c.id);
 
   it("probes one due demoted key per request, then goes straight to the key that serves", async () => {
@@ -1724,6 +1735,397 @@ describe("a key refused on only one model", () => {
     expect((await load(dead.id)).lastError).toBe(DEAD_403.slice(0, 100));
     await failOnce(dead.id, "m2", 429, "Too many requests");
     expect(await load(dead.id)).toMatchObject({ lastError: "Too many requests", authDemote_m1: { demotedAt: expect.any(String) } });
+  });
+
+  // The live shape: key-a..key-d, whose account is gone, are demoted on m1
+  // ahead of a working key-e and were refused on m3 too, and the first request
+  // on m2 comes in.
+  it("sends a request on a model the dead keys aren't demoted on to the working key after one refusal", async () => {
+    const { deadKeys, healthy } = await fourDeadAhead();
+    const dead = new Set(deadKeys.map((k) => k.id));
+    expect(await request("m2", dead)).toEqual({ tried: [deadKeys[0].id, healthy.id], served: healthy.id });
+    // key-a is locked on m2 now; the next request tries key-b, and only key-b.
+    expect(await request("m2", dead)).toEqual({ tried: [deadKeys[1].id, healthy.id], served: healthy.id });
+  });
+
+  // A key demoted on one model, idle since, may lack just that model: until it
+  // is refused on a second one, it keeps its place as on master.
+  it("tries dead keys refused on one model only in turn on a new model, as master does, and one of them after that", async () => {
+    const { deadKeys, healthy } = await fourDemotedAhead();
+    const dead = new Set(deadKeys.map((k) => k.id));
+    expect(await request("m2", dead)).toEqual({ tried: [...dead, healthy.id], served: healthy.id });
+    vi.advanceTimersByTime(3 * MIN);
+    expect(await request("m2", dead)).toEqual({ tried: [deadKeys[0].id, healthy.id], served: healthy.id });
+  });
+
+  it("skips a key demoted on another model whose earlier refusal here was counted, after the window", async () => {
+    const { deadKeys, healthy } = await fourDemotedAhead();
+    const dead = new Set(deadKeys.map((k) => k.id));
+    vi.advanceTimersByTime(11 * MIN);
+    await succeed(healthy.id, "m2");
+    for (const key of deadKeys) await failOnce(key.id, "m2");
+    expect(record(await load(deadKeys[1].id), "m2")).toMatchObject({ count: 1 });
+    vi.advanceTimersByTime(11 * MIN);
+    expect(await request("m2", dead)).toEqual({ tried: [deadKeys[0].id, healthy.id], served: healthy.id });
+  });
+
+  // The PR's mixed-plans shape, fill-first, a new model m2: key-d is dead
+  // (demoted on m1, refused on m3 too), key-k lacks only m1 with the same 403
+  // and has been idle since, key-l lacks m2, key-p works. Master tries key-d,
+  // key-k; skipping every key demoted elsewhere tried key-d, key-l, key-p.
+  it("keeps a key demoted on one other model in its place once the pass's dead-key try is used", async () => {
+    const d = await addKey("key-d");
+    const k = await addKey("key-k");
+    const l = await addKey("key-l");
+    const p = await addKey("key-p");
+    for (const key of [d, k]) await fail(key.id, { times: 5, models: ["m1"], peers: [p] });
+    vi.advanceTimersByTime(11 * MIN);
+    await succeed(p.id, "m3");
+    await failOnce(d.id, "m3");
+    expect([demoted(await load(d.id)), demoted(await load(k.id))]).toEqual([true, true]);
+    expect(await request("m2", new Set([d.id, l.id]))).toEqual({ tried: [d.id, k.id], served: k.id });
+  });
+
+  it("skips the dead keys refused on 2 models and keeps the one demoted on one in its place", async () => {
+    const a = await addKey("key-a");
+    const b = await addKey("key-b");
+    const k = await addKey("key-k");
+    const l = await addKey("key-l");
+    const p = await addKey("key-p");
+    for (const key of [a, b, k]) await fail(key.id, { times: 5, models: ["m1"], peers: [p] });
+    vi.advanceTimersByTime(11 * MIN);
+    await succeed(p.id, "m3");
+    for (const key of [a, b]) await failOnce(key.id, "m3");
+    // Master tries key-a, key-b, key-k.
+    expect(await request("m2", new Set([a.id, b.id, l.id]))).toEqual({ tried: [a.id, k.id], served: k.id });
+  });
+
+  // The mixed-plans keys: key-d and key-k demoted on m1 (after `before` runs),
+  // key-d refused on m3 too, 11 minutes on.
+  async function mixedPlans(before = async () => {}) {
+    const keys = {};
+    for (const name of ["d", "k", "l", "p"]) keys[name] = await addKey(`key-${name}`);
+    const { d, k, p } = keys;
+    await before(keys);
+    for (const key of [d, k]) await fail(key.id, { times: 5, models: ["m1"], peers: [p] });
+    await refusedOnM3([d], p);
+    expect([demoted(await load(d.id)), demoted(await load(k.id))]).toEqual([true, true]);
+    return keys;
+  }
+
+  // A count that isn't demoted runs for an hour after its last refusal; past
+  // that it is a stray refusal, and key-k may lack only m1.
+  it.each([
+    ["keeps in its place", "24 hours", 24 * 60],
+    ["keeps in its place", "61 minutes", 61],
+    ["skips", "59 minutes", 59],
+  ])("%s a key demoted on one other model whose one counted refusal on a third model is %s old", async (verdict, _age, minutes) => {
+    const { d, k, l, p } = await mixedPlans(async ({ k, p }) => {
+      await succeed(p.id, "m3");
+      await failOnce(k.id, "m3");
+      // key-d's and key-k's m1 refusals take 12 minutes each, and key-d's m3
+      // refusal comes 11 minutes after.
+      vi.advanceTimersByTime((minutes - 35) * MIN);
+    });
+    expect(await load(k.id)).toMatchObject({ isActive: true, authDemote_m3: { count: 1 } });
+    expect(await request("m2", new Set([d.id, l.id]))).toEqual(verdict === "skips"
+      ? { tried: [d.id, l.id, p.id], served: p.id }
+      : { tried: [d.id, k.id], served: k.id });
+  });
+
+  it.each([
+    ["was refused for itself on m3, then served m4", false],
+    ["was refused on m3 for just that model", true],
+  ])("keeps a key demoted on one other model in its place when it %s", async (_label, modelScoped) => {
+    const { d, k, l } = await mixedPlans(async ({ k, p }) => {
+      await succeed(p.id, "m3");
+      if (modelScoped) {
+        await failOnce(k.id, "m3", 403, NO_ACCESS);
+      } else {
+        await failOnce(k.id, "m3");
+        vi.advanceTimersByTime(MIN);
+        await succeed(k.id, "m4");
+      }
+      vi.advanceTimersByTime(11 * MIN);
+    });
+    expect(record(await load(k.id), "m3")).toMatchObject({ count: 1, modelScoped });
+    expect(await request("m2", new Set([d.id, l.id]))).toEqual({ tried: [d.id, k.id], served: k.id });
+  });
+
+  it.each([
+    ["a string", () => "garbage"],
+    ["an empty object", () => ({})],
+    ["a count with no firstAt", () => ({ count: 1, lastAt: new Date().toISOString(), lastCountedAt: new Date().toISOString() })],
+    ["a demotion with no firstAt", () => ({
+      count: 5, lastAt: new Date().toISOString(), lastCountedAt: new Date().toISOString(), demotedAt: new Date().toISOString(),
+      probeLevel: 0, nextProbeAt: new Date(Date.now() + 10 * MIN).toISOString(),
+    })],
+    ...[["null", null], ["a number", Date.parse("2026-10-23T00:43:00Z")], ["a year number", 2026], ["true", true]].map(([label, firstAt]) => [`a demotion whose firstAt is ${label}`, () => ({
+      count: 5, firstAt, lastAt: new Date().toISOString(), lastCountedAt: new Date().toISOString(), demotedAt: new Date().toISOString(),
+      probeLevel: 0, nextProbeAt: new Date(Date.now() + 10 * MIN).toISOString(),
+    })]),
+  ])("does not take a record on a third model that is %s as a refusal there", async (_label, corrupt) => {
+    const { d, k, l } = await mixedPlans();
+    await db.updateProviderConnection(k.id, { authDemote_m3: corrupt() });
+    expect(record(await load(k.id), "m3")).toEqual(corrupt());
+    expect(await request("m2", new Set([d.id, l.id]))).toEqual({ tried: [d.id, k.id], served: k.id });
+  });
+
+  // A demotion without a readable firstAt is no evidence for the turn-off rules
+  // either.
+  it.each([
+    ["turns a key off", "a firstAt", () => new Date(Date.now() - 30 * MIN).toISOString(), false],
+    ["keeps a key on", "no firstAt", () => undefined, true],
+  ])("%s refused twice on m2 within 10 minutes while demoted on m1 with %s", async (_verdict, _label, firstAt, staysOn) => {
+    const dead = await addKey("key-a");
+    const healthy = await addKey("key-e");
+    const now = new Date().toISOString();
+    await db.updateProviderConnection(dead.id, { authDemote_m1: {
+      count: 5, firstAt: firstAt(), lastAt: now, lastCountedAt: now, demotedAt: now,
+      probeLevel: 0, nextProbeAt: new Date(Date.now() + 10 * MIN).toISOString(),
+    } });
+    expect(demoted(await load(dead.id))).toBe(true);
+    await fail(dead.id, { times: 2, models: ["m2"], peers: [healthy], text: KEY_REFUSED_403 });
+    expect((await load(dead.id)).isActive).toBe(staysOn);
+  });
+
+  it("takes a 401 refusing the key on a new model as the pass's dead-key try too", async () => {
+    const { deadKeys, healthy } = await fourDeadAhead();
+    const result = await request("m2", new Set(deadKeys.map((k) => k.id)), {
+      refusal: (id) => (id === deadKeys[0].id ? [401, "Invalid API key"] : [403, KEY_REFUSED_403]),
+    });
+    expect(result).toEqual({ tried: [deadKeys[0].id, healthy.id], served: healthy.id });
+  });
+
+  it("falls back to the skipped keys on a new model, as master does, when the working keys are all rate-limited", async () => {
+    const { deadKeys, healthy } = await fourDeadAhead();
+    const other = await addKey("key-f");
+    for (const key of [healthy, other]) await failOnce(key.id, "m2", 429, "Too many requests");
+    expect(await request("m2", new Set(deadKeys.map((k) => k.id)))).toEqual({ tried: deadKeys.map((k) => k.id), served: null });
+  });
+
+  it("still tries a key demoted on another model first on a new model, and lets it serve", async () => {
+    const { deadKeys } = await fourDemotedAhead();
+    const result = await request("m2", new Set(deadKeys.slice(1).map((k) => k.id)));
+    expect(result).toEqual({ tried: [deadKeys[0].id], served: deadKeys[0].id });
+  });
+
+  it("goes on to the next key demoted on another model when the first fails a new model with a 503", async () => {
+    const { deadKeys, healthy } = await fourDeadAhead();
+    const result = await request("m2", new Set(deadKeys.map((k) => k.id)), {
+      refusal: (id) => (id === deadKeys[0].id ? [503, "[503]: Service Unavailable"] : [403, KEY_REFUSED_403]),
+    });
+    expect(result).toEqual({ tried: [deadKeys[0].id, deadKeys[1].id, healthy.id], served: healthy.id });
+  });
+
+  it("still falls back through keys demoted on another model when no other key can serve a new model", async () => {
+    const { deadKeys, healthy } = await fourDeadAhead();
+    await takePeerAway(healthy);
+    const result = await request("m2", new Set(deadKeys.slice(0, 3).map((k) => k.id)));
+    expect(result).toEqual({ tried: deadKeys.map((k) => k.id), served: deadKeys[3].id });
+  });
+
+  it("goes on to the next key demoted on another model when the first, refused here earlier, now fails with a 503", async () => {
+    const { deadKeys, healthy } = await fourDeadAhead();
+    const dead = new Set(deadKeys.map((k) => k.id));
+    expect(await request("m2", dead)).toEqual({ tried: [deadKeys[0].id, healthy.id], served: healthy.id });
+    vi.advanceTimersByTime(3 * MIN);
+    const result = await request("m2", dead, {
+      refusal: (id) => (id === deadKeys[0].id ? [503, "[503]: Service Unavailable"] : [403, KEY_REFUSED_403]),
+    });
+    expect(result).toEqual({ tried: [deadKeys[0].id, deadKeys[1].id, healthy.id], served: healthy.id });
+  });
+
+  // With the keys also refused on m3, only the trigger's window keeps key-b
+  // from being skipped at 11 minutes: it isn't refused here, but it is
+  // refused on 2 models.
+  it.each([
+    [9, 4, "on m1", fourDemotedAhead],
+    [11, 1, "on m1", fourDemotedAhead],
+    [9, 4, "on m1 and m3", fourDeadAhead],
+    [11, 1, "on m1 and m3", fourDeadAhead],
+  ])("takes an excluded key's refusal here %i minutes ago as the pass's dead-key try only within 10 minutes (picks key %i, keys refused %s)", async (
+    minutes, picked, _label, setup,
+  ) => {
+    const { deadKeys, healthy } = await setup();
+    await request("m2", new Set(deadKeys.map((k) => k.id)));
+    vi.advanceTimersByTime(minutes * MIN);
+    const creds = await auth.getProviderCredentials(provider, new Set([deadKeys[0].id]), "m2");
+    expect(creds.connectionId).toBe([...deadKeys, healthy][picked].id);
+  });
+
+  it("skips keys refused here 9 minutes ago once the pass's dead-key try is used, and tries them again at 11", async () => {
+    const { deadKeys, healthy } = await fourDemotedAhead();
+    const dead = new Set(deadKeys.map((k) => k.id));
+    expect(await request("m2", dead)).toEqual({ tried: [...dead, healthy.id], served: healthy.id });
+    vi.advanceTimersByTime(9 * MIN);
+    expect(await request("m2", dead)).toEqual({ tried: [deadKeys[0].id, healthy.id], served: healthy.id });
+    vi.advanceTimersByTime(2 * MIN);
+    expect(await request("m2", dead)).toEqual({ tried: [...dead, healthy.id], served: healthy.id });
+  });
+
+  // A refusal here only skips a key whose last error is still a 401 or 403:
+  // a 429 since means the upstream knew the key.
+  it("tries a key refused here again once the pass's dead-key try is used when its last error is now a 429 on another model", async () => {
+    const { deadKeys, healthy } = await fourDemotedAhead();
+    const dead = new Set(deadKeys.map((k) => k.id));
+    await request("m2", dead);
+    await failOnce(deadKeys[1].id, "m3", 429, "Too many requests");
+    expect(await load(deadKeys[1].id)).toMatchObject({ errorCode: 429 });
+    vi.advanceTimersByTime(3 * MIN);
+    expect(await request("m2", dead)).toEqual({ tried: [deadKeys[0].id, deadKeys[1].id, healthy.id], served: healthy.id });
+  });
+
+  // One counted refusal on m3, 11 minutes on (a new streak), with key `peer`
+  // serving m3 first.
+  async function refusedOnM3(keys, peer) {
+    vi.advanceTimersByTime(11 * MIN);
+    await succeed(peer.id, "m3");
+    for (const key of keys) await failOnce(key.id, "m3");
+  }
+
+  it("skips a key demoted on another model after a probe of a key demoted on this one is refused", async () => {
+    const p = await addKey("key-p");
+    const q = await addKey("key-q");
+    const e = await addKey("key-e");
+    await fail(q.id, { times: 5, models: ["m2"], peers: [e] });
+    await refusedOnM3([q], e);
+    await fail(p.id, { times: 5, models: ["m1"], peers: [e] });
+    await atProbe(p.id);
+    expect(await request("m1", new Set([p.id, q.id]))).toEqual({ tried: [p.id, e.id], served: e.id });
+  });
+
+  it("tries a key demoted on another model before one demoted on this model once the pass's dead-key try is used", async () => {
+    // key-x is demoted on m2 with no probe due; key-a and key-b (dead, key-b
+    // also refused on m3) are demoted on m1; key-e is rate-limited on m2.
+    const x = await addKey("key-x");
+    const a = await addKey("key-a");
+    const b = await addKey("key-b");
+    const e = await addKey("key-e");
+    for (const key of [a, b]) await fail(key.id, { times: 5, models: ["m1"], peers: [e] });
+    await refusedOnM3([b], e);
+    await fail(x.id, { times: 5, models: ["m2"], peers: [e] });
+    vi.advanceTimersByTime(3 * MIN);
+    await failOnce(e.id, "m2", 429, "Too many requests");
+    expect(await request("m2", new Set([x.id, a.id]))).toEqual({ tried: [a.id, b.id], served: b.id });
+  });
+
+  it("falls back to a key demoted on another model before one demoted on this model when the working key is off", async () => {
+    // key-a and key-c (dead, key-c also refused on m3) are demoted on m1,
+    // key-b (dead) on m2.
+    const a = await addKey("key-a");
+    const b = await addKey("key-b");
+    const c = await addKey("key-c");
+    const e = await addKey("key-e");
+    for (const key of [a, c]) await fail(key.id, { times: 5, models: ["m1"], peers: [e] });
+    await refusedOnM3([c], e);
+    await fail(b.id, { times: 5, models: ["m2"], peers: [e] });
+    vi.advanceTimersByTime(3 * MIN);
+    await takePeerAway(e);
+    expect(await request("m2", new Set([a.id, b.id]))).toEqual({ tried: [a.id, c.id], served: c.id });
+  });
+
+  it.each([
+    ["does not wait for", true],
+    ["waits, as master does, for", false],
+  ])("%s a warm key demoted on another model (refused on m3 too: %s) once the pass's dead-key try is used", async (
+    _label, onM3,
+  ) => {
+    const a = await addKey("key-a");
+    const warm = await addKey("key-w");
+    const e = await addKey("key-e");
+    for (const key of [a, warm]) await fail(key.id, { times: 5, models: ["m1"], peers: [e] });
+    if (onM3) await refusedOnM3([warm], e);
+    else vi.advanceTimersByTime(11 * MIN);
+    await failOnce(a.id, "m2");
+    await failOnce(warm.id, "m2", 429, "Too many requests");
+    const creds = await auth.getProviderCredentials(provider, new Set([a.id]), "m2", { warmConnectionIds: [warm.id], maxWarmWaitMs: 10_000 });
+    if (onM3) expect(creds).toMatchObject({ connectionId: e.id });
+    else expect(creds).toEqual({ warmRetryAtMs: expect.any(Number) });
+  });
+
+  // key-a served m3 until its account went (so neither demotion is evidence
+  // for the 10-minute rules), was demoted on m1, and an hour later on m2.
+  async function deadOnTwo() {
+    const dead = await addKey("key-a");
+    const healthy = await addKey("key-e");
+    await succeed(dead.id, "m3");
+    vi.advanceTimersByTime(MIN);
+    await fail(dead.id, { times: 5, models: ["m1"], peers: [healthy], text: KEY_REFUSED_403 });
+    vi.advanceTimersByTime(61 * MIN);
+    await fail(dead.id, { times: 5, models: ["m2"], peers: [healthy], text: KEY_REFUSED_403 });
+    const conn = await load(dead.id);
+    expect([demoted(conn, "m1"), demoted(conn, "m2"), conn.isActive]).toEqual([true, true, true]);
+    return { dead, healthy };
+  }
+  // The key's next probe on `model`, `minutes` after the previous one is due at
+  // the earliest, answered with `answer` ([status, text]) or a success.
+  async function probe(dead, healthy, model, { answer = [403, KEY_REFUSED_403], minutes = 0 } = {}) {
+    const due = Date.parse(record(await load(dead.id), model).nextProbeAt);
+    vi.setSystemTime(new Date(Math.max(due, Date.now() + minutes * MIN)));
+    expect(await pick(model)).toBe(dead.id);
+    if (!answer) return succeed(dead.id, model);
+    await succeed(healthy.id, model);
+    await failOnce(dead.id, model, ...answer);
+  }
+
+  it("keeps a key demoted on 2 models on while its probes there, hours apart, are refused, as master does", async () => {
+    const { dead, healthy } = await deadOnTwo();
+    for (const model of ["m1", "m2", "m1", "m2"]) await probe(dead, healthy, model, { minutes: 90 });
+    expect(await load(dead.id)).toMatchObject({ isActive: true, authDemote_m1: { probeLevel: 2 }, authDemote_m2: { probeLevel: 2 } });
+  });
+
+  it("keeps a key demoted on one model on through hours of refused probes", async () => {
+    const { dead, healthy } = await demotedKey();
+    for (let i = 0; i < 8; i++) await probe(dead, healthy, "m1");
+    expect(await load(dead.id)).toMatchObject({ isActive: true, authDemote_m1: { probeLevel: 8 } });
+  });
+
+  // A key that lacks m1 (a plain 403, not worded as a refusal of one model),
+  // with refused probes there and idle since, then 3 hours later a 27-minute
+  // incident on the key itself on m2, a model it can serve. Its history looks
+  // like a dead key's, and it isn't one.
+  it("keeps a key on that lacks one model through an incident on another hours later, and it serves that model again", async () => {
+    const k = await addKey("key-k");
+    const peer = await addKey("key-p");
+    await fail(k.id, { times: 5, models: ["m1"], peers: [peer], text: KEY_REFUSED_403 });
+    for (let i = 0; i < 2; i++) await probe(k, peer, "m1");
+    const lacked = record(await load(k.id), "m1");
+    expect(Date.parse(lacked.lastCountedAt)).toBeGreaterThan(Date.parse(lacked.demotedAt));
+    vi.advanceTimersByTime(3 * 60 * MIN);
+    const refusing = new Set([k.id]);
+    const served = [];
+    for (let minute = 1; minute <= 90; minute++) {
+      vi.advanceTimersByTime(MIN);
+      if (minute === 28) refusing.delete(k.id);
+      served.push((await request("m2", refusing, { refusal: () => [403, KEY_REFUSED_403] })).served);
+      expect((await load(k.id)).isActive).toBe(true);
+    }
+    expect(served.slice(0, 27).filter((id) => id === peer.id)).toHaveLength(27);
+    expect([demoted(await load(k.id), "m2"), served.at(-1)]).toEqual([false, k.id]);
+  });
+
+  // The live shape over 12 hours: key-a..key-d were serving m1 and m2 when
+  // their account went; key-e works. The user works 15 minutes an hour on one
+  // model, m1 and m2 in turn. Once demoted, the dead keys are refused only by
+  // probes, hours apart.
+  it("keeps keys that died while serving on through 12 hours of probes, as master does", async () => {
+    const deadKeys = [];
+    for (const name of ["key-a", "key-b", "key-c", "key-d"]) deadKeys.push(await addKey(name));
+    const healthy = await addKey("key-e");
+    for (const key of [...deadKeys, healthy]) for (const model of ["m1", "m2"]) await succeed(key.id, model);
+    const dead = new Set(deadKeys.map((k) => k.id));
+    const offAt = deadKeys.map(() => null);
+    let refusals = 0;
+    for (let minute = 1; minute <= 12 * 60; minute++) {
+      vi.advanceTimersByTime(MIN);
+      if (minute % 60 >= 15) continue;
+      const { tried } = await request(Math.floor(minute / 60) % 2 ? "m2" : "m1", dead, { refusal: () => [403, KEY_REFUSED_403] });
+      refusals += tried.filter((id) => dead.has(id)).length;
+      for (const [i, key] of deadKeys.entries()) if (offAt[i] === null && !(await load(key.id)).isActive) offAt[i] = minute;
+    }
+    expect({ offAt, refusals }).toEqual({ offAt: [null, null, null, null], refusals: 88 });
+    expect((await load(healthy.id)).isActive).toBe(true);
   });
 });
 
