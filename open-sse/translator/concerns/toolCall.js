@@ -1,4 +1,5 @@
 // Tool call helper functions for translator
+import { TOOL_TYPE } from "../schema/index.js";
 
 // Anthropic tool_use.id must match: ^[a-zA-Z0-9_-]+$
 const TOOL_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
@@ -168,6 +169,18 @@ export function fixMissingToolResponses(body) {
 // overwrite the default. `{ type: "custom", ...tool }` would let `type: null` survive.
 export function defaultClaudeToolType(tools) {
   if (!Array.isArray(tools)) return tools;
-  return tools.map(tool => tool?.type ? tool : { ...tool, type: "custom" });
+  return tools.map(tool => tool?.type ? tool : { ...tool, type: TOOL_TYPE.CUSTOM });
+}
+
+// A custom (freeform) tool is declared upstream as a function taking one string
+// `input`; return the raw text the client expects from the call's arguments.
+export function customToolInput(args) {
+  if (args && typeof args === "object" && typeof args.input === "string") return args.input;
+  const text = typeof args === "string" ? args : JSON.stringify(args ?? {});
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && typeof parsed.input === "string") return parsed.input;
+  } catch { /* incomplete or raw freeform input */ }
+  return text;
 }
 

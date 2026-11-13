@@ -7,6 +7,8 @@ import { buildClineHeaders } from "../shared/clineAuth.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
+import { relaxForcedToolChoiceForThinking, relaxForcedChatToolChoiceForClaude } from "../translator/concerns/toolChoice.js";
+import { FORMATS } from "../translator/formats.js";
 import {
   dropFirstPartyBetas, dropFirstPartyFieldsWithoutBeta, filterBetaHeaders, isAnthropicApiUrl, parseRejectedBetas, sentBetas, stripBetaBodyFields, splitBetas,
   BETA_HEADER_KEYS,
@@ -135,9 +137,16 @@ export class DefaultExecutor extends BaseExecutor {
   // adds it back. Whether Anthropic 400s or ignores safeguards without the
   // beta is unverified; the claude and anthropic providers' fixed beta lists
   // lack it, so they never send it. headers = null (unknown) drops it.
+  //
+  // It is also the last look at the outgoing body, after transformRequest may
+  // have stripped reasoning fields: a forced tool_choice the Claude model would
+  // reject (see concerns/toolChoice.js) goes out as auto.
   finalizeBody(body, headers, credentials) {
     const out = super.finalizeBody(body, headers, credentials);
-    return this.targetFormat(credentials) === "claude" ? dropFirstPartyFieldsWithoutBeta(out, headers) : out;
+    const format = this.targetFormat(credentials);
+    if (format === FORMATS.OPENAI) return relaxForcedChatToolChoiceForClaude(out, this.provider, out?.model);
+    if (format !== FORMATS.CLAUDE) return out;
+    return relaxForcedToolChoiceForThinking(dropFirstPartyFieldsWithoutBeta(out, headers), this.provider);
   }
 
   // Fallback json_schema → json_object for openai-compatible providers without native Structured Output.

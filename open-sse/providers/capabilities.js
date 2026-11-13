@@ -60,6 +60,10 @@ export const DEFAULT_CAPABILITIES = {
   thinkingRange: null,       // { min, max } for budget formats; null = no clamp
   thinkingEffortSupported: false, // zai format only: model accepts a reasoning_effort level (GLM-5.2+; older GLM ignores it)
   thinkingBudgetAccepted: false,  // claude-adaptive only: model still accepts budget_tokens (Opus/Sonnet 4.6), so passthrough leaves budgets alone
+  // Claude only. false → tool_choice "any"/"tool" is a 400 whatever the thinking setting (Opus/Sonnet 5.5, Fable/Mythos 5.1).
+  forcedToolChoice: true,
+  // Claude only. false → a forced tool_choice is a 400 while thinking is on (Claude 4.x; claude-budget models count as false too).
+  forcedToolChoiceWithThinking: true,
   // limits (tokens)
   contextWindow: 200000,
   maxOutput: 64000,
@@ -89,23 +93,23 @@ export const MODEL_CAPABILITIES = {
   "gpt-6-astra": { vision: true, reasoning: true, search: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1050000, maxOutput: 128000 },
   "gpt-6-sol": { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 1050000, maxOutput: 128000 },
   "gpt-6-luna": { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 1050000, maxOutput: 128000 },
-  "claude-opus-5-5": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 128000 },
+  "claude-opus-5-5": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingCanDisable: false, forcedToolChoice: false, contextWindow: 1000000, maxOutput: 128000 },
   // Claude Fable 5.1, Opus 5, 4.6/4.7/4.8, and Kiro Sonnet 5 have 1M context + adaptive thinking (override generic claude pattern)
-  "claude-fable-5-1": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 128000 },
+  "claude-fable-5-1": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingCanDisable: false, forcedToolChoice: false, contextWindow: 1000000, maxOutput: 128000 },
   "claude-opus-5":     { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
   "claude-opus-5-thinking": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
   "claude-opus-5-agentic": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
   "claude-opus-5-thinking-agentic": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
-  "claude-opus-4.6":   { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingBudgetAccepted: true, contextWindow: 1000000, maxOutput: 128000 },
-  "claude-opus-4.7":   { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
-  "claude-opus-4-7":   { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
-  "claude-opus-4.8":   { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
-  "claude-opus-4-6":   { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingBudgetAccepted: true, contextWindow: 1000000, maxOutput: 128000 },
-  "claude-opus-4-8":   { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
-  "claude-opus-4.8-thinking": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
-  "claude-opus-4-8-thinking": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
-  "claude-sonnet-4.6": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingBudgetAccepted: true, contextWindow: 1000000, maxOutput: 128000 },
-  "claude-sonnet-4-6": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingBudgetAccepted: true, contextWindow: 1000000, maxOutput: 128000 },
+  "claude-opus-4.6":   { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingBudgetAccepted: true, forcedToolChoiceWithThinking: false, contextWindow: 1000000, maxOutput: 128000 },
+  "claude-opus-4.7":   { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", forcedToolChoiceWithThinking: false, contextWindow: 1000000, maxOutput: 128000 },
+  "claude-opus-4-7":   { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", forcedToolChoiceWithThinking: false, contextWindow: 1000000, maxOutput: 128000 },
+  "claude-opus-4.8":   { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", forcedToolChoiceWithThinking: false, contextWindow: 1000000, maxOutput: 128000 },
+  "claude-opus-4-6":   { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingBudgetAccepted: true, forcedToolChoiceWithThinking: false, contextWindow: 1000000, maxOutput: 128000 },
+  "claude-opus-4-8":   { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", forcedToolChoiceWithThinking: false, contextWindow: 1000000, maxOutput: 128000 },
+  "claude-opus-4.8-thinking": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", forcedToolChoiceWithThinking: false, contextWindow: 1000000, maxOutput: 128000 },
+  "claude-opus-4-8-thinking": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", forcedToolChoiceWithThinking: false, contextWindow: 1000000, maxOutput: 128000 },
+  "claude-sonnet-4.6": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingBudgetAccepted: true, forcedToolChoiceWithThinking: false, contextWindow: 1000000, maxOutput: 128000 },
+  "claude-sonnet-4-6": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingBudgetAccepted: true, forcedToolChoiceWithThinking: false, contextWindow: 1000000, maxOutput: 128000 },
   "claude-sonnet-5": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
   "claude-sonnet-5-thinking": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
   "claude-sonnet-5-agentic": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
@@ -232,20 +236,29 @@ export const PROVIDER_CAPABILITIES = {
 export const PATTERN_CAPABILITIES = [
   // ── Claude (4.6+ = adaptive thinking; older/haiku-4 = budget) ────
   // Fable, Mythos, Opus 5.5 and Sonnet 5.5 reject thinking "disabled" (canDisable false).
-  { pattern: "*claude*opus-5-5*",   caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 128000 } },
+  // Opus/Sonnet 5.5 and Fable/Mythos 5.1 also reject a forced tool_choice (forcedToolChoice false);
+  // Claude 4.x rejects one only while thinking is on (forcedToolChoiceWithThinking false).
+  // Dotted ids (claude-opus-5.5) are listed too, ahead of the 5 patterns that would swallow them.
+  { pattern: "*claude*opus-5-5*",   caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingCanDisable: false, forcedToolChoice: false, contextWindow: 1000000, maxOutput: 128000 } },
+  { pattern: "*claude*opus-5.5*",   caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingCanDisable: false, forcedToolChoice: false, contextWindow: 1000000, maxOutput: 128000 } },
   { pattern: "*claude*opus-5*",     caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 } },
-  { pattern: "*claude*opus-4.6*",   caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingBudgetAccepted: true } },
-  { pattern: "*claude*opus-4.7*",   caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive" } },
-  { pattern: "*claude*opus-4.8*",   caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive" } },
-  { pattern: "*claude*sonnet-5-5*", caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 128000 } },
+  { pattern: "*claude*opus-4.6*",   caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingBudgetAccepted: true, forcedToolChoiceWithThinking: false } },
+  { pattern: "*claude*opus-4.7*",   caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", forcedToolChoiceWithThinking: false } },
+  { pattern: "*claude*opus-4.8*",   caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", forcedToolChoiceWithThinking: false } },
+  { pattern: "*claude*sonnet-5-5*", caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingCanDisable: false, forcedToolChoice: false, contextWindow: 1000000, maxOutput: 128000 } },
+  { pattern: "*claude*sonnet-5.5*", caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingCanDisable: false, forcedToolChoice: false, contextWindow: 1000000, maxOutput: 128000 } },
   { pattern: "*claude*sonnet-5*",   caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 } },
-  { pattern: "*claude*sonnet-4.6*", caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingBudgetAccepted: true } },
-  { pattern: "*claude*sonnet-4.7*", caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive" } },
+  { pattern: "*claude*sonnet-4.6*", caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingBudgetAccepted: true, forcedToolChoiceWithThinking: false } },
+  { pattern: "*claude*sonnet-4.7*", caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", forcedToolChoiceWithThinking: false } },
   { pattern: "*claude*haiku-5*",    caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 } },
   { pattern: "*claude*haiku*",  caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-budget" } },
   { pattern: "*claude*opus*",   caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-budget" } },
   { pattern: "*claude*sonnet*", caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-budget" } },
+  { pattern: "*claude*fable-5-1*",  caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingCanDisable: false, forcedToolChoice: false, contextWindow: 1000000, maxOutput: 128000 } },
+  { pattern: "*claude*fable-5.1*",  caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingCanDisable: false, forcedToolChoice: false, contextWindow: 1000000, maxOutput: 128000 } },
   { pattern: "*claude*fable*",  caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 128000 } },
+  { pattern: "*claude*mythos-5-1*", caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingCanDisable: false, forcedToolChoice: false, contextWindow: 1000000, maxOutput: 128000 } },
+  { pattern: "*claude*mythos-5.1*", caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingCanDisable: false, forcedToolChoice: false, contextWindow: 1000000, maxOutput: 128000 } },
   { pattern: "*claude*mythos*", caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 128000 } },
   { pattern: "*claude-3*",      caps: { vision: true } },
   { pattern: "*claude*",        caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-budget" } },

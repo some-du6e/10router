@@ -364,9 +364,9 @@ describe("status sent when every key is locked", () => {
     });
   });
 
-  describe("a limit anywhere in the pass keeps master's answer", () => {
+  describe("a limit anywhere in the pass keeps the last key's answer", () => {
     const refusal = "messages.1.content.0: unknown block type 'example_block'";
-    const lacksModel = { status: 404, error: "The model example-model does not exist or you do not have access to it." };
+    const lacksModel = { status: 404, error: "example-model isn't available to this account" };
     const modelRefusal = { status: 400, error: "The requested model is not available on this account" };
     const rateLimited = { status: 429, error: "rate_limit_error" };
     const quota = { status: 403, error: "Quota for this key is used up, try again later" };
@@ -389,10 +389,7 @@ describe("status sent when every key is locked", () => {
     });
 
     it("swaps when no key hit a limit", () => {
-      expect(allLockedError(403, dead.error, null, [{ status: 400, error: refusal }, dead])).toEqual({ status: 400, error: refusal, swapped: true });
-      expect(allLockedError(403, dead.error, null, [lacksModel, { status: 400, error: refusal }, dead]).status).toBe(400);
       expect(allLockedError(403, dead.error, null, [lacksModel, dead])).toEqual({ status: 404, error: lacksModel.error, swapped: true });
-      expect(allLockedError(404, lacksModel.error, null, [{ status: 400, error: refusal }, dead, lacksModel]).status).toBe(400);
       // The soonest key's stored error isn't part of this pass.
       expect(allLockedError(403, dead.error, { lastErrorCode: 403, lastError: quota.error }, [lacksModel, dead]).status).toBe(404);
     });

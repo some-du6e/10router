@@ -4,6 +4,7 @@ import { inlineToolChanges } from "./concerns/toolChanges.js";
 import { prepareClaudeRequest } from "./formats/claude.js";
 import { cloakClaudeTools, decloakStreamChunk } from "../utils/claudeCloaking.js";
 import { filterToOpenAIFormat } from "./formats/openai.js";
+import { relaxForcedChatToolChoiceForClaude } from "./concerns/toolChoice.js";
 import { normalizeThinkingConfig } from "../services/provider.js";
 import { applyThinking, captureThinking } from "./concerns/thinkingUnified.js";
 import { captureSessionId } from "../utils/sessionManager.js";
@@ -180,6 +181,8 @@ export function translateRequest(
     result = filterToOpenAIFormat(result, {
       preserveCacheControl: !!providerQuirks(provider)?.preserveCacheControl,
     });
+    // Thinking-dependent cases wait for DefaultExecutor.finalizeBody: an executor may still strip reasoning.
+    relaxForcedChatToolChoiceForClaude(result, provider, model, false);
   }
 
   // Final step: prepare request for Claude format endpoints

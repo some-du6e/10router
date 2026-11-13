@@ -50,6 +50,36 @@ export const RESPONSES_ITEM = {
   NAMESPACE: "namespace",
 };
 
+// Prefixes of the output item ids 10router makes up (`msg_…`, `rs_…`, `fc_…`, `ctc_…`).
+export const RESPONSES_ITEM_ID_PREFIX = {
+  MESSAGE: "msg",
+  REASONING: "rs",
+  FUNCTION_CALL: "fc",
+  CUSTOM_TOOL_CALL: "ctc",
+};
+
+// Tool choice values shared by Chat Completions and Claude.
+export const TOOL_CHOICE = {
+  AUTO: "auto",
+  NONE: "none",
+  REQUIRED: "required", // Chat: call some tool
+  ANY: "any",           // Claude: call some tool
+  TOOL: "tool",         // Claude: call the named tool
+};
+
+// OpenAI Responses `status` values, on a response and on its output items.
+export const RESPONSES_STATUS = {
+  IN_PROGRESS: "in_progress",
+  COMPLETED: "completed",
+  INCOMPLETE: "incomplete",
+};
+
+// Tool declaration `type` values for client-defined tools.
+export const TOOL_TYPE = {
+  FUNCTION: OPENAI_BLOCK.FUNCTION,
+  CUSTOM: "custom",
+};
+
 // Valid OpenAI block types (used by filterToOpenAIFormat).
 export const VALID_OPENAI_CONTENT_TYPES = [
   OPENAI_BLOCK.TEXT, OPENAI_BLOCK.IMAGE_URL, OPENAI_BLOCK.IMAGE, OPENAI_BLOCK.INPUT_AUDIO, OPENAI_BLOCK.AUDIO_URL, OPENAI_BLOCK.FILE,

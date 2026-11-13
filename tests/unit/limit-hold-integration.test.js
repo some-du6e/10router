@@ -248,7 +248,7 @@ describe("rate-limit hold wiring", () => {
     });
   });
 
-  it("holds, as before, for a bodyless 403 next to a refused request", async () => {
+  it("holds for a bodyless 403 next to a refused request", async () => {
     const refusal = "messages.1.content.0: unknown block type 'example_block'";
     const quotaText = DEFAULT_ERROR_MESSAGES[403];
     const limited = { allRateLimited: true, retryAfter: new Date(Date.now() + 7_200_000).toISOString(), retryAfterHuman: "reset after 2h", lastError: quotaText, lastErrorCode: 403 };
@@ -284,7 +284,7 @@ describe("rate-limit hold wiring", () => {
     const auth = await import("@/sse/services/auth.js");
     vi.spyOn(auth, "getProviderCredentials").mockImplementation(async () => steps[call++] ?? limited);
     state.coreResults = [
-      { success: false, status: 404, error: "The model example-model does not exist or you do not have access to it." },
+      { success: false, status: 404, error: "example-model isn't available to this account" },
       { success: false, status: 403, error: quotaText },
     ];
 
