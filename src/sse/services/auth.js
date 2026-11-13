@@ -287,7 +287,8 @@ const refusedOnTwo = (conn) => demoteRecords(conn)
 //   its probe interval and minWindowMs;
 // - or the key is firmly demoted on `model` (this was a probe or a fallback)
 //   and the other model was refused within minWindowMs.
-// A demotion counts here once its count spans the turn-off window.
+// A demotion counts here once its count spans the turn-off window, and one
+// demoted sooner "demotes" `model` at the refusal that first spans it.
 function deadElsewhere(conn, records, model, current, demoting) {
   const now = Date.now();
   const since = (r) => now - new Date(r?.lastCountedAt).getTime();
@@ -319,6 +320,8 @@ async function planDemotion(connections, conn, model, status, errorText, evidenc
     reason: refusalText(status, errorText),
   });
   const demoting = !!to.demotedAt && !current?.demotedAt;
+  // The demotion counts toward turning the key off from this refusal on.
+  const firmsUp = !!to.demotedAt && spansTurnOffWindow(to) && !(current?.demotedAt && spansTurnOffWindow(current));
   // Refused here while demoted elsewhere: probe there now, once its last
   // probe's lease is over, to tell a key dead on both from one that has
   // recovered there. That includes demotions the key served since: a key
@@ -331,7 +334,7 @@ async function planDemotion(connections, conn, model, status, errorText, evidenc
       data: demoting ? { lastError: `${model} demoted after repeated ${to.reason}` } : null,
     },
     demoting,
-    deadWith: evidence ? deadElsewhere(conn, records, model, current, demoting && spansTurnOffWindow(to)) : null,
+    deadWith: evidence ? deadElsewhere(conn, records, model, current, firmsUp) : null,
   };
 }
 

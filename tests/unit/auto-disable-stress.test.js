@@ -235,11 +235,14 @@ it("replays the dead-key scenarios", async () => {
     "bursty, 2 models": (m) => (m % 30 < 4 ? (m % 2 ? OPUS : SONNET) : null),
   };
   out.deadOnEveryModel = {};
+  out.deadOnEveryModelRefusals = {};
   for (const cross of [false, true]) {
     for (const [name, modelAt] of Object.entries(patterns)) {
       const [dead] = await setup(["dead", "peer"], cross);
-      const { offAt } = await run([dead], 12 * 60, (m) => (modelAt(m) ? [[modelAt(m), (id) => id === dead.id]] : []));
-      out.deadOnEveryModel[`${cross ? "other account" : "same account"}: ${name}`] = offAt[dead.id] ?? null;
+      const { offAt, refusals } = await run([dead], 12 * 60, (m) => (modelAt(m) ? [[modelAt(m), (id) => id === dead.id]] : []));
+      const label = `${cross ? "other account" : "same account"}: ${name}`;
+      out.deadOnEveryModel[label] = offAt[dead.id] ?? null;
+      out.deadOnEveryModelRefusals[label] = Object.values(refusals[dead.id] ?? {}).reduce((n, at) => n + at.length, 0);
     }
   }
 
