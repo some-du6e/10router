@@ -81,11 +81,6 @@ export const AUTH_DEMOTE_CONFIG = {
 // lock on that model.
 export const HEADERS_TIMEOUT = {
   text: "upstream sent no response headers",
-  // Attempts again on the same key: none for a stream, whose one attempt is as
-  // long as four were (UPSTREAM_STREAM_HEADERS_TIMEOUT_MS); one for a
-  // non-streaming call, which may finish once the upstream has cached the prompt.
-  sameKeyRetries: { stream: 0, nonStream: 1 },
-  retryDelayMs: 3000,
   // Keys one request tries from its first header timeout on, that one included,
   // so one request too slow for the model can't lock every key.
   maxKeysPerRequest: 2,
@@ -103,8 +98,10 @@ export const HEADERS_TIMEOUT = {
   // Header timeouts further apart than this don't add up, and a probe this long
   // after its window ended starts the windows over.
   resetAfterMs: 60 * 60 * 1000,
-  // A probe that never reported back (the process lost it) frees the slot after this.
+  // A probe that never reported back (the process lost it) frees the slot after
+  // its headers budget plus probeLeaseMarginMs, and no sooner than probeLeaseMs.
   probeLeaseMs: 10 * 60 * 1000,
+  probeLeaseMarginMs: 60 * 1000,
 };
 
 // Cooldown durations (ms)

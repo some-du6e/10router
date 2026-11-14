@@ -343,6 +343,9 @@ async function claimProbe(conn, model, from) {
   return JSON.stringify(saved?.[getAuthDemoteKey(model)]) === JSON.stringify(to);
 }
 
+// When the key's own lock on this model ends, in ms (0: none).
+const ownLockEndMs = (conn, model) => new Date(conn?.[getModelLockKey(model)] || 0).getTime() || 0;
+
 // Locked on this model for a limit: a key that serves again once it clears.
 // The lock that ends last decides, so a short limit lock can't hide a longer
 // account-wide refusal.
@@ -388,6 +391,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
   // Drops connections the caller may not use at all (auto combos skip blocked
   // billing), as if they were not connected.
   const connectionFilter = typeof options?.connectionFilter === "function" ? options.connectionFilter : null;
+  // Keys to try after every other healthy key, but before keys demoted on this
+  // model (a stream on them just got no headers for it: modelHang.js).
+  const avoidIds = new Set(Array.isArray(options?.avoidConnectionIds) ? options.avoidConnectionIds : []);
   // Resolve alias to provider ID (e.g., "kc" -> "kilocode") so aliases share a lock
   const providerId = resolveProviderId(provider);
 
@@ -485,9 +491,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const skippedThisPass = (c) => deadTriedThisPass && demotedElsewhere(c, model) && (refusedHere(c) || refusedOnTwo(c));
     const notDemotedHere = usableConnections.filter(c => !demotions.get(c.id));
     const preferred = notDemotedHere.filter(c => !skippedThisPass(c));
+    const notAvoided = preferred.filter(c => !avoidIds.has(c.id));
     // Failing that (every such key rate-limited, excluded or off), keys demoted
     // on another model go before keys demoted on this one.
-    let availableConnections = preferred.length > 0 ? preferred : notDemotedHere.length > 0 ? notDemotedHere : usableConnections;
+    let availableConnections = notAvoided.length > 0 ? notAvoided
+      : preferred.length > 0 ? preferred : notDemotedHere.length > 0 ? notDemotedHere : usableConnections;
     let probing = false;
     if (preferred.length > 0 && !deadTriedThisPass) {
       // Under fill-first a key behind a usable one wouldn't be tried anyway
@@ -541,7 +549,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         const reportOf = c => {
           const limited = limitLocked(c);
           // A header timeout's lock: the stored error may be another model's.
-          const ownLockUntil = new Date(c[getModelLockKey(model)] || 0).getTime() || 0;
+          const ownLockUntil = ownLockEndMs(c, model);
           const noHeadersLock = ownLockUntil > Date.now() && ownLockUntil >= getModelLockUntil(c, model)
             && c[`${NO_HEADERS_PREFIX}${model || "__all"}`] === true;
           if (!limited && noHeadersLock) {
@@ -787,12 +795,12 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     // the model's own lock (and its provider reset) is kept, never shortened.
     if (newBackoffLevel != null && conn && isModelLockActive(conn, model)) {
       newBackoffLevel = backoffLevel;
-      const ownLockUntil = new Date(conn[getModelLockKey(model)] || 0).getTime() || 0;
+      const ownLockUntil = ownLockEndMs(conn, model);
       inOwnLock = ownLockUntil > Date.now();
       cooldownMs = Math.max(ownLockUntil - Date.now(), getQuotaCooldown(backoffLevel));
     }
     // Nor does a header timeout shorten a longer lock on the model.
-    const ownLockMs = (new Date(conn?.[getModelLockKey(model)] || 0).getTime() || 0) - Date.now();
+    const ownLockMs = ownLockEndMs(conn, model) - Date.now();
     if (isHeadersTimeout(status, errorText) && ownLockMs > cooldownMs) {
       keptLock = inOwnLock = true;
       cooldownMs = ownLockMs;
@@ -839,9 +847,8 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
         Number.isFinite(providerResetAtMs) && providerResetAtMs > Date.now() ? new Date(providerResetAtMs).toISOString() : null,
     }),
     testStatus: "unavailable",
-    lastError: reason,
-    errorCode: status,
-    lastErrorAt: new Date().toISOString(),
+    // A kept lock keeps the error it was set for, which the all-locked answer reports.
+    ...(keptLock ? {} : { lastError: reason, errorCode: status, lastErrorAt: new Date().toISOString() }),
     backoffLevel: newBackoffLevel ?? backoffLevel,
     ...authFailStreak,
   };

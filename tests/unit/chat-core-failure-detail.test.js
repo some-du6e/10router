@@ -177,6 +177,14 @@ describe("chatCore failure request details", () => {
     expect(row.response.status).toBe(504);
   });
 
+  it("tells the account loop a non-streaming call's header timeout didn't stream", async () => {
+    const { UpstreamHeadersTimeoutError } = await import("../../open-sse/utils/headersTimeout.js");
+    executeMock.mockRejectedValue(new UpstreamHeadersTimeoutError(240_000, { stream: false, setBy: "4x FETCH_CONNECT_TIMEOUT_MS" }));
+    const result = await run();
+    expect(result.status).toBe(504);
+    expect(result.headersTimeout).toEqual({ stream: false });
+  });
+
   it("records timeout when undici reports it only in the error cause", async () => {
     const cause = Object.assign(new Error("Connect Timeout Error"), { code: "UND_ERR_CONNECT_TIMEOUT" });
     executeMock.mockRejectedValue(new TypeError("fetch failed", { cause }));

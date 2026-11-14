@@ -425,7 +425,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     if (isClientAbort(error, clientSignal)) return endAsHangUp();
     trackPendingRequest(model, provider, connectionId, false, true);
     const failStatus = error?.name === "AbortError" ? HTTP_STATUS.CLIENT_CLOSED_REQUEST
-      : isUpstreamHeadersTimeout(error) ? HTTP_STATUS.GATEWAY_TIMEOUT : HTTP_STATUS.BAD_GATEWAY;
+      : isUpstreamHeadersTimeout(error) ? error.status : HTTP_STATUS.BAD_GATEWAY;
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${failStatus}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,

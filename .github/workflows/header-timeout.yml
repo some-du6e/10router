@@ -103,9 +103,9 @@ jobs:
       - name: Run this branch's tests on it
         working-directory: tests
         run: |
-          ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/before.json" \
+          ./node_modules/.bin/vitest run --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/before.json" \
             unit/headers-timeout-executor.test.js unit/headers-timeout-routing.test.js \
-            unit/model-hang.test.js unit/chat-core-failure-detail.test.js > /dev/null 2>&1 || true
+            unit/model-hang.test.js unit/chat-core-failure-detail.test.js || true
           node --input-type=module -e '
             import { readFileSync, appendFileSync } from "node:fs";
             const r = JSON.parse(readFileSync(process.env.RUNNER_TEMP + "/before.json", "utf8"));

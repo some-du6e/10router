@@ -9,7 +9,6 @@ export class UpstreamHeadersTimeoutError extends Error {
     super(`${HEADERS_TIMEOUT.text} in ${Math.round(timeoutMs / 1000)}s (headers timeout${setBy ? `, set by ${setBy}` : ""})`);
     this.name = NAME;
     this.status = HTTP_STATUS.GATEWAY_TIMEOUT;
-    this.timeoutMs = timeoutMs;
     this.stream = stream;
   }
 }

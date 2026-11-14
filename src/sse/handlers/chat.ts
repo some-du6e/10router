@@ -25,9 +25,9 @@ import { checkApiKeyLimits, apiKeyLimitDenial, keepAllowedAdapterModels, keyHasB
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
-import { HTTP_STATUS, NON_STREAM_EARLY_HEADERS_MS, STREAM_EARLY_HEADERS_MS } from "open-sse/config/runtimeConfig.js";
-import { isRequestError, isHeadersTimeout } from "open-sse/services/accountFallback.js";
-import { checkModelHang, noteHeadersTimeout, noteModelServed, releaseProbe } from "open-sse/services/modelHang.js";
+import { HTTP_STATUS, NON_STREAM_EARLY_HEADERS_MS, STREAM_EARLY_HEADERS_MS, upstreamHeadersBudget } from "open-sse/config/runtimeConfig.js";
+import { isRequestError } from "open-sse/services/accountFallback.js";
+import { checkModelHang, hasModelHang, noteHeadersTimeout, noteModelServed, releaseProbe } from "open-sse/services/modelHang.js";
 import { HEADERS_TIMEOUT } from "open-sse/config/errorConfig.js";
 import { detectFormatByEndpoint, FORMATS } from "open-sse/translator/formats.js";
 import { detectFormat } from "open-sse/services/provider.js";
@@ -728,15 +728,13 @@ async function routeSingleModelChat(
     const preferredConnectionId = affinityKey ? getAffinity(affinityKey) : null;
     const warmConnectionIds = cacheKey ? getWarmKeys(cacheKey) : [];
     // connectionId is always set on a selected account (real or the "noauth" virtual one).
-    const pick = async (excluded: Set<string>) => (await getProviderCredentials(provider, excluded, model, {
+    const credentials = (await getProviderCredentials(provider, excludeConnectionIds, model, {
       preferredConnectionId,
       connectionFilter,
       warmConnectionIds,
       maxWarmWaitMs: warmConnectionIds.length > 0 ? waitBudget() : 0,
+      avoidConnectionIds: avoidKeys,
     })) as (Credentials & { connectionId: string } & Record<string, any>) | null;
-    const avoiding = avoidKeys.filter(id => !excludeConnectionIds.has(id));
-    let credentials = avoiding.length > 0 ? await pick(new Set([...excludeConnectionIds, ...avoiding])) : null;
-    if (!credentials || credentials.allRateLimited) credentials = await pick(excludeConnectionIds);
 
     // The strategy's pick is cold, a warm key it would rank no worse is briefly
     // rate-limited, and the prompt is big: waiting is cheaper than rebuilding
@@ -913,9 +911,9 @@ async function routeSingleModelChat(
 
     // No response headers in time: this request may be too slow for the model,
     // or the model hung. Either way it tries few keys, and none once it's hung.
-    const headersTimedOut = isHeadersTimeout(result.status, result.error);
-    const hang = headersTimedOut
-      ? noteHeadersTimeout(provider, model, { requestId, connectionId: credentials.connectionId, stream: result.headersTimeout?.stream === true, reason: withoutStatus(result.error) })
+    const headersTimedOut = !!result.headersTimeout;
+    const hang = result.headersTimeout
+      ? noteHeadersTimeout(provider, model, { requestId, connectionId: credentials.connectionId, stream: result.headersTimeout.stream, reason: withoutStatus(result.error) })
       : null;
     if (keysSinceHeadersTimeout > 0 || headersTimedOut) keysSinceHeadersTimeout++;
 
@@ -924,7 +922,7 @@ async function routeSingleModelChat(
       const seen = failureIndex.get(credentials.connectionId);
       if (seen === undefined) failureIndex.set(credentials.connectionId, accountFailures.push(failure) - 1);
       else accountFailures[seen] = failure;
-      if (hang?.hung && hang.retryAtMs) return modelHungResult(provider, model, { retryAtMs: hang.retryAtMs, checking: false, reason: withoutStatus(result.error) });
+      if (hang?.hung) return modelHungResult(provider, model, hang);
       if (keysSinceHeadersTimeout >= HEADERS_TIMEOUT.maxKeysPerRequest) {
         const errorMsg = summarizeAccountFailures(provider, model, accountFailures);
         log.warn("CHAT", `${errorMsg} (no more keys for this request)`);
@@ -969,8 +967,15 @@ async function routeSingleModelChat(
   // Tells this request's header timeouts from other requests' (modelHang.js).
   const requestId = randomUUID();
   // A model hung upstream fails at once, but for one request at a time probing it.
+  // This request's headers budget, which a probe's lease goes by. A custom
+  // endpoint's Timeout setting comes from its node.
+  const headersBudgetMs = async (): Promise<number> => {
+    const timeout = Number((await nodeSettings(provider) as Record<string, any> | null)?.providerSpecificData?.overrides?.timeout);
+    return upstreamHeadersBudget({ stream: body.stream === true, timeoutMs: timeout > 0 ? timeout * 1000 : 0 }).ms;
+  };
   const runAccountLoop = async (): Promise<PassResult> => {
-    const hang = checkModelHang(provider, model, requestId);
+    const budgetMs = hasModelHang(provider, model) ? await headersBudgetMs() : undefined;
+    const hang = checkModelHang(provider, model, requestId, { budgetMs });
     if (hang.blocked) return modelHungResult(provider, model, hang);
     try {
       return await accountPass(hang.avoidKeys);

@@ -135,18 +135,26 @@ export const RESPONSES_COMPLETION_WAIT_MS = 3000;
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_MS", 200 * 1000);
 
 // Fetch connect timeout: abort if upstream doesn't return response headers within this duration.
-// A non-streaming chat call's headers come with the whole reply. How a chat
-// call that times out is retried: HEADERS_TIMEOUT (errorConfig.js).
 export const FETCH_CONNECT_TIMEOUT_MS = envMs("FETCH_CONNECT_TIMEOUT_MS", 60 * 1000);
 
-// A streaming chat call, whose headers can wait on a long prompt's prefill, gets
-// one attempt as long as the STREAM_HEADERS_ATTEMPTS attempts it got while a
-// header timeout was retried on the same key: of FETCH_CONNECT_TIMEOUT_MS by
-// default (UPSTREAM_STREAM_HEADERS_TIMEOUT_MS), or of an endpoint's own Timeout.
-export const STREAM_HEADERS_ATTEMPTS = 4;
-export const streamHeadersBudgetMs = (attemptMs) => Math.min(STREAM_HEADERS_ATTEMPTS * attemptMs, MAX_TIMER_MS);
-// Env: UPSTREAM_STREAM_HEADERS_TIMEOUT_MS.
-export const UPSTREAM_STREAM_HEADERS_TIMEOUT_MS = envMs("UPSTREAM_STREAM_HEADERS_TIMEOUT_MS", streamHeadersBudgetMs(FETCH_CONNECT_TIMEOUT_MS));
+// A chat call waits for headers on a long prompt's prefill (and a non-streaming
+// one on its whole reply), so it gets one attempt as long as the
+// HEADERS_TIMEOUT_ATTEMPTS attempts of FETCH_CONNECT_TIMEOUT_MS (or of an
+// endpoint's own Timeout) it got while a header timeout was retried on the same
+// key. A stream's default can be set apart. Env: UPSTREAM_STREAM_HEADERS_TIMEOUT_MS.
+export const HEADERS_TIMEOUT_ATTEMPTS = 4;
+const allAttemptsMs = (attemptMs) => Math.min(HEADERS_TIMEOUT_ATTEMPTS * attemptMs, MAX_TIMER_MS);
+export const UPSTREAM_STREAM_HEADERS_TIMEOUT_MS = envMs("UPSTREAM_STREAM_HEADERS_TIMEOUT_MS", allAttemptsMs(FETCH_CONNECT_TIMEOUT_MS));
+
+/**
+ * How long a chat call waits for the upstream's response headers, and the
+ * setting behind it. timeoutMs: the provider's or endpoint's own timeout.
+ */
+export function upstreamHeadersBudget({ stream = false, timeoutMs = 0 } = {}) {
+  if (timeoutMs > 0) return { ms: allAttemptsMs(timeoutMs), setBy: `${HEADERS_TIMEOUT_ATTEMPTS}x the endpoint's Timeout setting` };
+  if (stream) return { ms: UPSTREAM_STREAM_HEADERS_TIMEOUT_MS, setBy: "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS" };
+  return { ms: allAttemptsMs(FETCH_CONNECT_TIMEOUT_MS), setBy: `${HEADERS_TIMEOUT_ATTEMPTS}x FETCH_CONNECT_TIMEOUT_MS` };
+}
 
 // Gemini native TTS fetch timeout: abort if Google does not return response headers in time.
 export const GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS = envMs("GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS", 45 * 1000);

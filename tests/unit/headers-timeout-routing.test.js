@@ -62,6 +62,10 @@ const PAST_KEY_LOCK_MS = TRANSIENT_COOLDOWN_MS + 1000;
 let providerSeq = 0;
 let provider;
 
+function serverError() {
+  return { success: false, status: 500, error: "[500]: upstream error", response: new Response('{"error":{"message":"upstream error"}}', { status: 500 }) };
+}
+
 function noHeaders(stream) {
   return {
     success: false,
@@ -330,5 +334,60 @@ describe("hung model", () => {
     expect((await chat("big-combo")).status).toBe(200);
     expect(upstream.calls).toHaveLength(4);
     expect(upstream.calls.at(-1)).toBe(`${keys.a}:${OTHER_MODEL}`);
+  });
+
+  it("lets the next request probe at once when the probe ends some other way", async () => {
+    const keys = await addKeys("a", "b", "c", "d");
+    await hangModel(keys);
+    later(FIRST_WINDOW_MS + 1000);
+
+    upstream.script = Array(4).fill(serverError);
+    expect((await chat()).status).not.toBe(200);
+    expect(upstream.calls).toHaveLength(7);
+    later(PAST_KEY_LOCK_MS);
+    upstream.stalled = new Set();
+    expect((await chat()).status).toBe(200);
+    expect(upstream.calls).toHaveLength(8);
+  });
+});
+
+describe("keys a stream just stalled on", () => {
+  it("are still used when the only other key is rate-limited", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const { a, b } = await addKeys("a", "b");
+    await markAccountUnavailable(b, 429, "rate limit exceeded", provider, MODEL, Date.now() + 10 * 60 * 1000);
+    upstream.script = [noHeaders];
+    await chat();
+    later(PAST_KEY_LOCK_MS);
+
+    expect((await chat()).status).toBe(200);
+    expect(upstream.calls).toEqual(calls(a, a));
+  });
+
+  it("go before a key demoted on the model", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const { a, d } = await addKeys("a", "d");
+    // Request 1: a's stream gets no headers, d fails some other way.
+    upstream.script = [noHeaders, serverError];
+    await chat();
+    later(PAST_KEY_LOCK_MS);
+    const iso = (ms) => new Date(Date.now() + ms).toISOString();
+    await db.updateProviderConnection(d, {
+      [`authDemote_${MODEL}`]: { firstAt: iso(-60 * 60 * 1000), demotedAt: iso(-30 * 60 * 1000), count: 5, reason: "403", probeLevel: 0, nextProbeAt: iso(60 * 60 * 1000) },
+    });
+
+    expect((await chat()).status).toBe(200);
+    expect(upstream.calls).toEqual(calls(a, d, a));
+  });
+});
+
+describe("a header timeout inside a longer rate-limit lock", () => {
+  it("leaves the all-locked answer the rate limit's", async () => {
+    const { a } = await addKeys("a");
+    await markAccountUnavailable(a, 429, "rate limit exceeded", provider, MODEL, Date.now() + 10 * 60 * 1000);
+    await markAccountUnavailable(a, 504, NO_HEADERS, provider, MODEL);
+
+    expect((await chat(undefined, { stream: false })).status).toBe(429);
+    expect(upstream.calls).toEqual([]);
   });
 });

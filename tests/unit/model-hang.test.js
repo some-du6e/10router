@@ -9,9 +9,12 @@ const { UPSTREAM_STREAM_HEADERS_TIMEOUT_MS } = await import("../../open-sse/conf
 const P = "acme";
 const M = "big-model";
 const T0 = 1_000_000_000_000;
-const [W0, W1] = HEADERS_TIMEOUT.hungWindowMs;
+const WINDOWS = HEADERS_TIMEOUT.hungWindowMs;
+const [W0, W1] = WINDOWS;
+const END = T0 + W0;
 const timeout = (requestId, connectionId, now, stream = true) => noteHeadersTimeout(P, M, { requestId, connectionId, stream, reason: "no headers" }, now);
-const blocked = (requestId, now) => checkModelHang(P, M, requestId, now).blocked;
+const check = (requestId, now, options = {}) => checkModelHang(P, M, requestId, options, now);
+const blocked = (requestId, now) => check(requestId, now).blocked;
 
 // Hung at T0 by requests r1 and r2 on keys a and b.
 function hang() {
@@ -22,9 +25,9 @@ function hang() {
 beforeEach(() => clearModelHang());
 
 describe("what marks a model hung", () => {
-  it("takes timeouts from two requests on two keys", () => {
+  it("takes stream timeouts from two requests on two keys", () => {
     expect(timeout("r1", "a", T0).hung).toBe(false);
-    expect(hang()).toEqual({ hung: true, retryAtMs: T0 + W0 });
+    expect(hang()).toEqual({ hung: true, checking: false, retryAtMs: END, reason: "no headers" });
     expect(blocked("r3", T0 + 1)).toBe(true);
   });
 
@@ -52,63 +55,86 @@ describe("what marks a model hung", () => {
 
   it("has the next request try the keys that timed out last", () => {
     timeout("r1", "a", T0);
-    expect(checkModelHang(P, M, "r2", T0 + 1)).toEqual({ blocked: false, probe: false, avoidKeys: ["a"] });
-    expect(checkModelHang(P, M, "r2", T0 + HEADERS_TIMEOUT.resetAfterMs + 1).avoidKeys).toEqual([]);
+    expect(check("r2", T0 + 1)).toEqual({ blocked: false, probe: false, avoidKeys: ["a"] });
+    expect(check("r2", T0 + HEADERS_TIMEOUT.resetAfterMs + 1).avoidKeys).toEqual([]);
   });
 
   it("forgets earlier timeouts once the model serves", () => {
     timeout("r1", "a", T0);
     noteModelServed(P, M);
-    expect(checkModelHang(P, M, "r2", T0).avoidKeys).toEqual([]);
+    expect(check("r2", T0).avoidKeys).toEqual([]);
     expect(timeout("r2", "b", T0).hung).toBe(false);
   });
 });
 
 describe("a hung model's windows and probes", () => {
-  it("lets one probe through after the window, and blocks the rest while it runs", () => {
+  it("lets one probe through after the window, and tells the rest when its budget runs out", () => {
     hang();
-    const end = T0 + W0;
-    expect(checkModelHang(P, M, "p1", end)).toEqual({ blocked: false, probe: true, avoidKeys: ["a", "b"] });
-    expect(checkModelHang(P, M, "p1", end + 1).probe).toBe(true);
-    expect(checkModelHang(P, M, "r3", end + 1)).toMatchObject({ blocked: true, checking: true, retryAtMs: end + UPSTREAM_STREAM_HEADERS_TIMEOUT_MS });
+    expect(check("p1", END, { budgetMs: 90_000 })).toEqual({ blocked: false, probe: true, avoidKeys: ["a", "b"] });
+    expect(check("p1", END + 1).probe).toBe(true);
+    expect(check("r3", END + 1)).toEqual({ blocked: true, checking: true, retryAtMs: END + 90_000, reason: "no headers" });
   });
 
   it("frees the probe slot when the probe is released, or when its lease runs out", () => {
     hang();
-    const end = T0 + W0;
-    checkModelHang(P, M, "p1", end);
+    check("p1", END);
     releaseProbe(P, M, "p1");
-    expect(checkModelHang(P, M, "p2", end).probe).toBe(true);
-    expect(blocked("p3", end + HEADERS_TIMEOUT.probeLeaseMs - 1)).toBe(true);
-    expect(checkModelHang(P, M, "p3", end + HEADERS_TIMEOUT.probeLeaseMs).probe).toBe(true);
+    expect(check("p2", END).probe).toBe(true);
+    expect(blocked("p3", END + HEADERS_TIMEOUT.probeLeaseMs - 1)).toBe(true);
+    expect(check("p3", END + HEADERS_TIMEOUT.probeLeaseMs).probe).toBe(true);
+  });
+
+  it("holds the slot for a probe with a long budget until that budget and a margin are past", () => {
+    hang();
+    const budgetMs = 2 * HEADERS_TIMEOUT.probeLeaseMs;
+    check("p1", END, { budgetMs });
+    expect(blocked("p2", END + budgetMs + HEADERS_TIMEOUT.probeLeaseMarginMs - 1)).toBe(true);
+    expect(check("p2", END + budgetMs + HEADERS_TIMEOUT.probeLeaseMarginMs).probe).toBe(true);
   });
 
   it("moves to the next window only on the probe's own timeout", () => {
     hang();
-    const end = T0 + W0;
-    checkModelHang(P, M, "p1", end);
-    // A request sent before the hang times out now: nothing changes.
-    expect(timeout("r9", "c", end + 1)).toEqual({ hung: true, retryAtMs: end });
-    expect(timeout("p1", "c", end + 2)).toEqual({ hung: true, retryAtMs: end + 2 + W1 });
+    check("p1", END, { budgetMs: 90_000 });
+    // A request sent before the hang times out after the window: a check is running.
+    expect(timeout("r9", "c", END + 1)).toEqual({ hung: true, checking: true, retryAtMs: END + 90_000, reason: "no headers" });
+    expect(timeout("p1", "c", END + 2)).toMatchObject({ hung: true, checking: false, retryAtMs: END + 2 + W1 });
   });
 
-  it("keeps the probe's slot after its non-streaming timeout", () => {
+  it("moves to the next window on the probe's non-streaming timeout too", () => {
     hang();
-    const end = T0 + W0;
-    checkModelHang(P, M, "p1", end);
-    expect(timeout("p1", "c", end + 1, false)).toEqual({ hung: true, retryAtMs: end });
+    check("p1", END);
+    expect(timeout("p1", "c", END + 1, false)).toMatchObject({ hung: true, checking: false, retryAtMs: END + 1 + W1 });
+  });
+
+  it("never tells a late request to come back at a time already past", () => {
+    hang();
+    const now = END + 5000;
+    expect(timeout("r9", "c", now).retryAtMs).toBe(now + UPSTREAM_STREAM_HEADERS_TIMEOUT_MS);
+  });
+
+  it("stays at the last window once the probes have timed out past it", () => {
+    hang();
+    let now = END;
+    const waits = [];
+    for (let i = 0; i < WINDOWS.length + 2; i++) {
+      check(`p${i}`, now);
+      const { retryAtMs } = timeout(`p${i}`, "c", now);
+      waits.push(retryAtMs - now);
+      now = retryAtMs;
+    }
+    expect(waits).toEqual([...WINDOWS.slice(1), WINDOWS.at(-1), WINDOWS.at(-1), WINDOWS.at(-1)]);
   });
 
   it("has the probe try keys that timed out during the hang last", () => {
     hang();
     timeout("r9", "c", T0 + 1);
-    expect(checkModelHang(P, M, "p1", T0 + W0).avoidKeys).toEqual(["a", "b", "c"]);
+    expect(check("p1", END).avoidKeys).toEqual(["a", "b", "c"]);
   });
 
   it("starts the windows over for a probe that times out long after its window", () => {
     hang();
-    const late = T0 + W0 + HEADERS_TIMEOUT.resetAfterMs + 1;
-    checkModelHang(P, M, "p1", late);
+    const late = END + HEADERS_TIMEOUT.resetAfterMs + 1;
+    check("p1", late);
     expect(timeout("p1", "a", late).retryAtMs).toBe(late + W0);
   });
 
