@@ -95,13 +95,16 @@ export const CACHE_AFFINITY = {
 // a peer on another upstream served, goes after the other keys there, with
 // tries on AUTH_DEMOTE_CONFIG's probe schedule, until it serves that model;
 // meanwhile its refusals there don't count toward demoting it, the ones before
-// it are forgotten as a success would, and the usual rules don't turn the key
-// off. Stored on the connection (authSoft_<model>). Env: AUTH_SOFT_DEMOTE=0
-// turns it off; anything else leaves it on.
-// A key soft-demoted for refusals of the key itself for deadAfterMs, with at
-// least deadAfterTries of its tries there refused and nothing served on any
-// model since, is turned off. Env: AUTH_SOFT_DEMOTE_DEAD_AFTER_MS (0: never),
-// AUTH_SOFT_DEMOTE_DEAD_AFTER_TRIES.
+// it are forgotten as a success would, and, if those were refusals of the key
+// itself, the usual rules don't turn the key off. Stored on the connection
+// (authSoft_<model>). Env: AUTH_SOFT_DEMOTE=0 turns it off; anything else
+// leaves it on.
+// A key soft-demoted that way that has served nothing on any model for
+// deadAfterMs (from its last success, or its first such soft demotion if
+// later), with at least deadAfterTries of its tries refused for the key itself
+// in that time, and refused for itself on AUTH_DEAD_CONFIG.minModels models in
+// that time, is turned off at its next refusal of the key itself. Env:
+// AUTH_SOFT_DEMOTE_DEAD_AFTER_MS (0: never), AUTH_SOFT_DEMOTE_DEAD_AFTER_TRIES.
 export const AUTH_SOFT_DEMOTE = {
   enabled: envInt("AUTH_SOFT_DEMOTE", 1, { max: 1 }) !== 0,
   deadAfterMs: envInt("AUTH_SOFT_DEMOTE_DEAD_AFTER_MS", 24 * 60 * 60 * 1000),

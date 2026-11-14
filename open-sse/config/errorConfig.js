@@ -56,8 +56,9 @@ export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 // gap span the window on their own, or once it has 2 bursts (2+ counted
 // failures with no such gap between them) and spans the window. A key
 // soft-demoted on any model for refusals of the key itself (AUTH_SOFT_DEMOTE)
-// builds no streak and isn't turned off by this rule; AUTH_SOFT_DEMOTE turns it
-// off after a day of that instead.
+// builds no streak and isn't turned off by this rule; instead, after a day with
+// nothing served, refused for itself on minModels models in that time, it is
+// turned off (AUTH_SOFT_DEMOTE).
 export const AUTH_DEAD_CONFIG = {
   minFailures: 5,
   minWindowMs: 10 * 60 * 1000,

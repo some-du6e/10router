@@ -61,7 +61,9 @@ jobs:
         if: always()
         working-directory: tests
         run: ./node_modules/.bin/vitest run unit/auth-soft-demote.test.js unit/auto-disable-dead-keys.test.js
-      # 48 hours of a dead key: soft-demoted, it goes off after a day.
+      # 48 hours of a dead key: soft-demoted, it goes off a day after the later
+      # of its soft demotion and its last success if refused on two models or
+      # more, and stays on, as on master, if refused on one only.
       - name: A dead key over two days, this branch
         if: always()
         working-directory: tests

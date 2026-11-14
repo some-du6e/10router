@@ -751,7 +751,8 @@ describe("after a long soft demotion", () => {
 
   it("turns it off at a refusal, not at an upstream error", async () => {
     const { key, peer } = await softDemoted();
-    expect((await run(key, 23, undefined, OPUS_ONLY)).off).toBeNull();
+    // Refused for itself on opus and kimi, so only the trigger is missing.
+    expect((await run(key, 23)).off).toBeNull();
     vi.advanceTimersByTime(2 * 60 * MIN);
     await auth.markAccountUnavailable(key.id, 500, "Internal server error", provider, KIMI);
     expect((await load(key.id)).isActive).toBe(true);
@@ -771,6 +772,86 @@ describe("after a long soft demotion", () => {
     const conn = await load(key.id);
     expect(conn.isActive).toBe(false);
     expect(conn.autoDisabledReason).toBe(`401 "Invalid API key" on ${OPUS}, ${KIMI} for 24h while soft-demoted`);
+  }, 120000);
+
+  // Refusals of just the model ("does not have access") on a model the key is
+  // soft-demoted on for itself: refused tries, but not of the key.
+  const lacksText = (m) => `[403]: {"error":{"message":"Your organization does not have access to model ${m}"}}`;
+  async function requestWith(model, textFor) {
+    const tried = new Set();
+    for (;;) {
+      const creds = await auth.getProviderCredentials(provider, tried, model);
+      if (!creds?.connectionId) return null;
+      const text = textFor(creds.connectionId);
+      if (!text) {
+        await auth.clearAccountError(creds.connectionId, creds, model);
+        return creds.connectionId;
+      }
+      await auth.markAccountUnavailable(creds.connectionId, 403, text, provider, model);
+      tried.add(creds.connectionId);
+    }
+  }
+
+  it("doesn't count a soft try refused for just that model as a refusal of the key", async () => {
+    const { key, peer } = await softDemoted();
+    vi.advanceTimersByTime(11 * MIN);
+    await succeed(peer.id, OPUS);
+    await auth.markAccountUnavailable(key.id, 403, lacksText(OPUS), provider, OPUS);
+    const rec = (await load(key.id))[`authSoft_${OPUS}`];
+    expect(rec).toMatchObject({ level: 1, lastRefusedAt: new Date().toISOString() });
+    expect(rec.tries ?? 0).toBe(0);
+    expect(rec.keyRefusedAt ?? rec.since).toBe(rec.since);
+  });
+
+  it("keeps a key on whose soft tries after its last success were refusals of just that model, then refused for itself once elsewhere", async () => {
+    const [key, peer] = await accounts(["k", "peer"]);
+    let text = REFUSED_403;
+    for (let m = 0; m < 40; m++) {
+      if (m > 0) vi.advanceTimersByTime(MIN);
+      await requestWith(OPUS, (id) => (id === key.id ? text : null));
+    }
+    expect((await load(key.id))[`authSoft_${OPUS}`]).toMatchObject({ keyRefused: true });
+    vi.advanceTimersByTime(MIN);
+    expect(await requestWith("claude-sonnet-5-5", () => null)).toBe(key.id);
+    text = lacksText(OPUS);
+    for (let m = 0; m < 25 * 60; m++) {
+      vi.advanceTimersByTime(MIN);
+      await requestWith(OPUS, (id) => (id === key.id ? text : null));
+    }
+    expect((await load(key.id))[`authSoft_${OPUS}`].level).toBeGreaterThanOrEqual(6);
+    vi.advanceTimersByTime(MIN);
+    await succeed(peer.id, KIMI);
+    await failOnce(key.id, KIMI);
+    expect((await load(key.id)).isActive).toBe(true);
+  }, 120000);
+
+  it("keeps a key on soft-demoted for itself on two models whose tries after its last success are refusals of just those models", async () => {
+    const [key] = await accounts(["k", "peer"]);
+    let lacks = false;
+    const textFor = (model) => (id) => (id !== key.id ? null : lacks ? lacksText(model) : REFUSED_403);
+    for (let m = 0; m < 40; m++) {
+      if (m > 0) vi.advanceTimersByTime(MIN);
+      await requestWith(OPUS, textFor(OPUS));
+    }
+    vi.advanceTimersByTime(3 * 60 * MIN);
+    for (let m = 0; m < 40; m++) {
+      vi.advanceTimersByTime(MIN);
+      await requestWith(KIMI, textFor(KIMI));
+    }
+    const conn = await load(key.id);
+    expect(conn[`authSoft_${OPUS}`]).toMatchObject({ keyRefused: true });
+    expect(conn[`authSoft_${KIMI}`]).toMatchObject({ keyRefused: true });
+    vi.advanceTimersByTime(MIN);
+    expect(await requestWith("claude-sonnet-5-5", () => null)).toBe(key.id);
+    lacks = true;
+    let off = null;
+    for (let m = 0; m < 30 * 60 && off === null; m++) {
+      vi.advanceTimersByTime(MIN);
+      await requestWith(OPUS, textFor(OPUS));
+      if (m % 7 === 0) await requestWith(KIMI, textFor(KIMI));
+      if (!(await load(key.id)).isActive) off = m;
+    }
+    expect(off).toBeNull();
   }, 120000);
 
   it("counts only the tries since the key last served", async () => {
@@ -941,6 +1022,8 @@ describe("the key's last success while soft-demoted", () => {
       const offDb = await import("@/lib/db/index.js");
       const offAuth = await import("@/sse/services/auth.js");
       vi.advanceTimersByTime(2 * 60 * MIN);
+      // The stored record alone, not this process's memory of soft-demoting it.
+      global._authEvents.softKeys.clear();
       await offAuth.clearAccountError(key.id, await offDb.getProviderConnectionById(key.id), KIMI);
       expect((await offDb.getProviderConnectionById(key.id)).authServedAt).toBe(new Date().toISOString());
       // Back on, after a restart.
