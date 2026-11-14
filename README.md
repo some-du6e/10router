@@ -255,7 +255,7 @@ container.
 | `REQUIRE_API_KEY` | `false` | Enforce Bearer API key on `/v1/*` (recommended for internet-exposed deploys) |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` | empty | Outbound proxy for upstream provider calls |
 | `SEARXNG_URL` | `http://localhost:8888/search` | Endpoint for the built-in unauthenticated SearXNG web-search provider. Must resolve to a public address (the SSRF guard blocks private hosts). Claude Code's WebSearch only falls back to SearXNG when this is set. |
-| `DETECT_ANTHROPIC_FIRST_HINTS` | empty | Comma-separated URL substrings (any case) for gateways whose Anthropic Messages API Add endpoint should probe first. URLs naming Anthropic or Claude and `sk-ant-` keys already do. A hint matches anywhere in the whole URL, path included, so use a distinctive piece of the host. Read once, the first time detection runs. |
+| `DETECT_ANTHROPIC_FIRST_HINTS` | empty | URL substrings that make Add endpoint probe Anthropic Messages first. Comma-separated, any case. URLs naming Anthropic or Claude and `sk-ant-` keys already do. A hint matches anywhere in the whole URL, path included, so use a distinctive piece of the host. Restart after changing it. |
 
 Notes:
 

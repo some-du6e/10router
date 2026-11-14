@@ -1038,8 +1038,10 @@ export interface DetectOptions {
 
 // DETECT_ANTHROPIC_FIRST_HINTS: comma-separated URL substrings (any case) for
 // gateways whose Anthropic Messages API should be probed first. Empty by
-// default. Read on first use, so this module stays safe to import in the browser.
-export const parseHintList = (raw: unknown): string[] => String(raw ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+// default. Quotes around an entry or the whole list (an env-file habit) are
+// dropped. Read on first use, so this module stays safe to import in the browser.
+export const parseHintList = (raw: unknown): string[] => String(raw ?? "").split(",")
+  .map((s) => s.trim().replace(/^['"]+|['"]+$/g, "").trim().toLowerCase()).filter(Boolean);
 let hintCache: string[] | null = null;
 export function anthropicFirstHints(): string[] {
   return (hintCache ??= parseHintList(typeof process === "undefined" ? "" : process.env?.DETECT_ANTHROPIC_FIRST_HINTS));

@@ -1155,6 +1155,7 @@ docker pull decolua/9router:latest   # actualiza a la última versión
 | `REQUIRE_API_KEY`                                    | `false`                                    | Aplica clave API Bearer en las rutas `/v1/*` (recomendado para despliegues expuestos a Internet) |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` | vacío                                      | Proxy saliente opcional para las llamadas a proveedores externos                     |
 | `SEARXNG_URL`                                        | `http://localhost:8888/search`             | Endpoint del proveedor de búsqueda web SearXNG integrado sin autenticación           |
+| `DETECT_ANTHROPIC_FIRST_HINTS`                       | vacío                                      | Fragmentos de URL que hacen que «Añadir endpoint» pruebe primero Anthropic Messages. Separados por comas, sin distinguir mayúsculas. Las URL que nombran Anthropic o Claude y las claves `sk-ant-` ya lo hacen. Cada fragmento se busca en toda la URL, ruta incluida: usa una parte distintiva del host. Reinicia tras cambiarlo. |
 
 Notas:
 

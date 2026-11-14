@@ -1,11 +1,18 @@
 // Two-path custom endpoints: one node, each model routed to the API that
 // serves it best (some gateways answer on both Messages and Chat).
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 
 const fetchMock = vi.fn();
 vi.mock("../../open-sse/utils/proxyFetch.js", () => ({ proxyAwareFetch: (...a) => fetchMock(...a) }));
 
-const { chooseRoute, buildRoutes, detectEndpoint } = await import("@/lib/endpointDetect.js");
+// No configured Anthropic-first hints, whatever the shell has: the no-hint
+// tests below depend on it. Set before the import, which reads it once.
+const NO_HINTS = () => vi.stubEnv("DETECT_ANTHROPIC_FIRST_HINTS", "");
+NO_HINTS();
+afterAll(() => vi.unstubAllEnvs());
+
+const { chooseRoute, buildRoutes, detectEndpoint, anthropicFirstHints } = await import("@/lib/endpointDetect.js");
+anthropicFirstHints(); // read (and cache) the empty list now
 const { sanitizeNodeQuirks } = await import("@/shared/utils/nodeQuirks.js");
 const { resolveCompatibleRoute } = await import("../../open-sse/services/provider.js");
 const { DefaultExecutor } = await import("../../open-sse/executors/default.js");
@@ -134,10 +141,10 @@ describe("detectEndpoint on a two-path endpoint", () => {
   // API still comes from how many models each path serves.
   describe("with no hint in the URL", () => {
     const PLAIN = "https://acme.contoso-cloud.example/api/v1";
+    // A Chat-only id comes first, so in the tie case Chat is counted first and
+    // only the explicit tie-break makes Messages win.
     const catalog = { providers: [{ id: "contoso-ai", name: "Contoso AI", api: "https://${ACCOUNT}.contoso-cloud.example/api/v1", models: ["openai-gpt-5", "claude-opus-5", "claude-haiku-4-5", "claude-sonnet-5", "kimi-k3", "glm-5"] }], labs: [] };
     it.each([
-      // A Chat-only id comes first, so Chat is counted first: only the explicit
-      // tie-break makes Messages win.
       ["a tie goes to Messages", ["claude-opus-5", "claude-haiku-4-5"], ["openai-gpt-5", "claude-opus-5", "kimi-k3"],
         "anthropic", { "openai-gpt-5": "openai-chat", "kimi-k3": "openai-chat" }],
       ["more models on Messages", ["claude-opus-5", "claude-haiku-4-5", "claude-sonnet-5"], ["openai-gpt-5"],
@@ -173,7 +180,7 @@ describe("Anthropic-first hints from the environment", () => {
       await fresh.detectEndpoint({ url: PLAIN, apiKey: "good-key", fetchFn, skipModels: true });
       expect(posts[0]).toMatch(/\/chat\/completions$/);
     } finally {
-      vi.unstubAllEnvs();
+      NO_HINTS();
       vi.resetModules();
     }
   });
@@ -182,6 +189,14 @@ describe("Anthropic-first hints from the environment", () => {
     const { parseHintList } = await import("@/lib/endpointDetect.js");
     expect(parseHintList(" Contoso-Cloud , ,Other ")).toEqual(["contoso-cloud", "other"]);
     expect(parseHintList(undefined)).toEqual([]);
+  });
+
+  it("drops quotes around an entry or the whole list", async () => {
+    const { parseHintList } = await import("@/lib/endpointDetect.js");
+    expect(parseHintList(`"contoso-cloud"`)).toEqual(["contoso-cloud"]);
+    expect(parseHintList(`'contoso-cloud', "other"`)).toEqual(["contoso-cloud", "other"]);
+    expect(parseHintList(`"contoso-cloud,other"`)).toEqual(["contoso-cloud", "other"]);
+    expect(parseHintList(`"", ''`)).toEqual([]);
   });
 
   it("a configured hint makes an unhinted URL probe Messages first", async () => {
@@ -196,7 +211,7 @@ describe("Anthropic-first hints from the environment", () => {
       await fresh.detectEndpoint({ url: PLAIN, apiKey: "good-key", fetchFn, skipModels: true });
       expect(posts[0]).toMatch(/\/messages$/);
     } finally {
-      vi.unstubAllEnvs();
+      NO_HINTS();
       vi.resetModules();
     }
   });
