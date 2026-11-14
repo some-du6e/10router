@@ -75,6 +75,13 @@ describe("soft-demoted key label", () => {
     expect(label.title).not.toContain("replace the key");
   });
 
+  it("suggests replacing it when it was refused for itself again after serving", () => {
+    const label = demotedLabel({
+      [SOFT_OPUS]: { ...soft(), keyRefused: true, keyRefusedAt: "2026-11-02T03:00:00.000Z" }, authServedAt: "2026-11-02T02:50:00.000Z",
+    });
+    expect(label.title).toContain("replace the key");
+  });
+
   // A soft demotion beginning on another model writes authDemoteOkAt too.
   it("still suggests replacing it when it has only been soft-demoted elsewhere since", () => {
     const label = demotedLabel({ [SOFT_OPUS]: { ...soft(), keyRefused: true }, authDemoteOkAt: "2026-11-02T02:50:00.000Z" });

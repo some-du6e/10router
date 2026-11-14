@@ -796,12 +796,142 @@ describe("after a long soft demotion", () => {
     const { key, peer } = await softDemoted();
     vi.advanceTimersByTime(11 * MIN);
     await succeed(peer.id, OPUS);
+    await failOnce(key.id, OPUS);
+    const keyRefusedAt = new Date().toISOString();
+    vi.advanceTimersByTime(21 * MIN);
+    await succeed(peer.id, OPUS);
     await auth.markAccountUnavailable(key.id, 403, lacksText(OPUS), provider, OPUS);
     const rec = (await load(key.id))[`authSoft_${OPUS}`];
-    expect(rec).toMatchObject({ level: 1, lastRefusedAt: new Date().toISOString() });
-    expect(rec.tries ?? 0).toBe(0);
-    expect(rec.keyRefusedAt ?? rec.since).toBe(rec.since);
+    expect(rec).toMatchObject({ level: 2, lastRefusedAt: new Date().toISOString(), tries: 1, keyRefusedAt });
   });
+
+  // A 401: the key revoked once its budget ran out.
+  it("counts a 401 as a refused try, on the probe schedule", async () => {
+    const { key, peer } = await softDemoted();
+    vi.advanceTimersByTime(11 * MIN);
+    await succeed(peer.id, OPUS);
+    await auth.markAccountUnavailable(key.id, 401, "Invalid API key", provider, OPUS);
+    expect((await load(key.id))[`authSoft_${OPUS}`]).toMatchObject({
+      level: 1, tries: 1, keyRefusedAt: new Date().toISOString(), tryAt: new Date(Date.now() + 20 * MIN).toISOString(),
+    });
+  });
+
+  it("counts a 401 as a refused try on a model the key lacks, on the probe schedule", async () => {
+    const [key, peer] = await accounts(["a", "b"]);
+    for (let i = 0; i < 6; i++) {
+      if (i > 0) vi.advanceTimersByTime(2 * MIN);
+      await succeed(peer.id, OPUS);
+      await auth.markAccountUnavailable(key.id, 403, lacksText(OPUS), provider, OPUS);
+    }
+    expect((await load(key.id))[`authSoft_${OPUS}`]).toMatchObject({ keyRefused: false });
+    vi.advanceTimersByTime(11 * MIN);
+    await succeed(peer.id, OPUS);
+    await auth.markAccountUnavailable(key.id, 401, "Invalid API key", provider, OPUS);
+    expect((await load(key.id))[`authSoft_${OPUS}`]).toMatchObject({ level: 1, tryAt: new Date(Date.now() + 20 * MIN).toISOString() });
+  });
+
+  // The reviewer's replay: refused with 403s, soft-demoted on opus, then 401s
+  // on every model from `switchAt` (kimi served by the key before that, or not
+  // asked for).
+  it.each([[30, false], [30, true], [180, true]])("turns off a key refused with 403s, then 401s on every model from minute %i (kimi served before: %s), a day after its last success", async (switchAt, kimiServes) => {
+    const [key] = await accounts(["k", "peer"]);
+    let off = null, lastServed = null, refusals = 0;
+    for (let m = 0; m < 48 * 60 && off === null; m++) {
+      if (m > 0) vi.advanceTimersByTime(MIN);
+      for (const model of (m < switchAt && !kimiServes ? [OPUS] : [OPUS, KIMI])) {
+        const tried = new Set();
+        for (;;) {
+          const creds = await auth.getProviderCredentials(provider, tried, model);
+          if (!creds?.connectionId) break;
+          if (creds.connectionId !== key.id || (kimiServes && model === KIMI && m < switchAt)) {
+            await auth.clearAccountError(creds.connectionId, creds, model);
+            if (creds.connectionId === key.id) lastServed = m;
+            break;
+          }
+          refusals++;
+          if (m >= switchAt) await auth.markAccountUnavailable(key.id, 401, "Invalid API key", provider, model);
+          else await failOnce(key.id, model);
+          tried.add(key.id);
+        }
+      }
+      if (!(await load(key.id)).isActive) off = m;
+    }
+    const from = Math.max(12, lastServed ?? -Infinity);
+    expect(off).toBeGreaterThanOrEqual(from + 24 * 60);
+    expect(off).toBeLessThanOrEqual(from + 24 * 60 + 180);
+    // Tried on the probe schedule on both models, not first on kimi all day.
+    expect(refusals).toBeLessThanOrEqual(60);
+    expect((await load(key.id)).autoDisabledReason).toBe(`401 "Invalid API key" on ${OPUS}, ${KIMI} for 24h while soft-demoted`);
+  }, 120000);
+
+  // Mutations: the two-model check reading lastRefusedAt, the rule checked at
+  // a soft try refused for just that model, and tries counted from `level`.
+  it("keeps a key on refused for itself on opus only since its last success, kimi refusing just that model", async () => {
+    const [key] = await accounts(["k", "peer"]);
+    let lacks = false;
+    const textFor = (model) => (id) => (id !== key.id ? null : lacks && model === KIMI ? lacksText(model) : REFUSED_403);
+    for (let m = 0; m < 40; m++) {
+      if (m > 0) vi.advanceTimersByTime(MIN);
+      await requestWith(OPUS, textFor(OPUS));
+    }
+    vi.advanceTimersByTime(3 * 60 * MIN);
+    for (let m = 0; m < 40; m++) {
+      vi.advanceTimersByTime(MIN);
+      await requestWith(KIMI, textFor(KIMI));
+    }
+    expect((await load(key.id))[`authSoft_${KIMI}`]).toMatchObject({ keyRefused: true });
+    vi.advanceTimersByTime(MIN);
+    expect(await requestWith("claude-sonnet-5-5", () => null)).toBe(key.id);
+    lacks = true;
+    let off = null;
+    for (let m = 0; m < 30 * 60 && off === null; m++) {
+      vi.advanceTimersByTime(MIN);
+      await requestWith(OPUS, textFor(OPUS));
+      if (m % 7 === 0) await requestWith(KIMI, textFor(KIMI));
+      if (!(await load(key.id)).isActive) off = m;
+    }
+    expect((await load(key.id))[`authSoft_${OPUS}`].tries).toBeGreaterThanOrEqual(6);
+    expect(off).toBeNull();
+  }, 120000);
+
+  it("keeps a key on whose only refusal on a second model is a soft try for a model it lacks", async () => {
+    const { key, peer } = await softDemoted();
+    for (let i = 0; i < 6; i++) {
+      vi.advanceTimersByTime(2 * MIN);
+      await succeed(peer.id, KIMI);
+      await auth.markAccountUnavailable(key.id, 403, lacksText(KIMI), provider, KIMI);
+    }
+    expect((await load(key.id))[`authSoft_${KIMI}`]).toMatchObject({ keyRefused: false });
+    expect((await run(key, 25, undefined, OPUS_ONLY)).off).toBeNull();
+    expect((await load(key.id))[`authSoft_${OPUS}`].tries).toBeGreaterThanOrEqual(6);
+    vi.advanceTimersByTime(181 * MIN);
+    await succeed(peer.id, KIMI);
+    await auth.markAccountUnavailable(key.id, 403, lacksText(KIMI), provider, KIMI);
+    expect((await load(key.id))[`authSoft_${KIMI}`].level).toBe(1);
+    expect((await load(key.id)).isActive).toBe(true);
+  }, 120000);
+
+  it("keeps a key on whose soft tries were all refusals of just that model, refused for itself elsewhere after the day", async () => {
+    const [key, peer] = await accounts(["k", "peer"]);
+    let text = REFUSED_403;
+    for (let m = 0; m < 40; m++) {
+      if (m > 0) vi.advanceTimersByTime(MIN);
+      await requestWith(OPUS, (id) => (id === key.id ? text : null));
+      if ((await load(key.id))[`authSoft_${OPUS}`]) text = lacksText(OPUS);
+    }
+    for (let m = 0; m < 25 * 60; m++) {
+      vi.advanceTimersByTime(MIN);
+      await requestWith(OPUS, (id) => (id === key.id ? text : null));
+    }
+    const rec = (await load(key.id))[`authSoft_${OPUS}`];
+    expect(rec).toMatchObject({ keyRefused: true });
+    expect(rec.level).toBeGreaterThanOrEqual(6);
+    expect(rec.tries ?? 0).toBe(0);
+    vi.advanceTimersByTime(MIN);
+    await succeed(peer.id, KIMI);
+    await failOnce(key.id, KIMI);
+    expect((await load(key.id)).isActive).toBe(true);
+  }, 120000);
 
   it("keeps a key on whose soft tries after its last success were refusals of just that model, then refused for itself once elsewhere", async () => {
     const [key, peer] = await accounts(["k", "peer"]);

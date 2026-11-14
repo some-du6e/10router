@@ -25,7 +25,10 @@ const AUTO_DISABLE_FIELDS = ["autoDisabledAt", "autoDisabledReason", ...AUTH_STR
 
 // authDemote_<model>: sse/services/auth.js's count of a key's 403s on that
 // model, and its demotion there once they trip. authSoft_<model>: its soft
-// demotion there, { level, since, tryAt, lastRefusedAt, keyRefused }.
+// demotion there, { level, since, tryAt, lastRefusedAt, keyRefused, tries,
+// triesFrom, keyRefusedAt }: tries counts its tries refused for the key itself
+// from triesFrom (the key's last success, or since), and keyRefusedAt is the
+// last of them.
 // authDemoteOkAt: when the key last served anything while it had such a
 // record (compared with its firstAt or since). authServedAt: when it last
 // served while soft-demoted for refusals of the key itself.
@@ -39,12 +42,14 @@ export const getAuthSoftKey = (model) => `${AUTH_SOFT_PREFIX}${model}`;
 export const PAST_KEYS_CAP = 50;
 
 // A dead key the router left on: soft-demoted for refusals of the key itself,
-// and it has served nothing since (authServedAt). When it was last refused, or null.
+// and refused for itself (keyRefusedAt, else since) after its last success
+// (authServedAt). When it was last refused for itself, or null.
+const keyRefusedAt = (r) => r.keyRefusedAt || r.since;
 function softDeadUntil(c) {
   if (!AUTH_SOFT_DEMOTE.enabled) return null;
   const records = Object.entries(c).filter(([k, r]) => k.startsWith(AUTH_SOFT_PREFIX) && r?.keyRefused && r.since
-    && !(c.authServedAt > r.since));
-  return records.length ? records.map(([, r]) => r.lastRefusedAt || r.since).sort().at(-1) : null;
+    && !(c.authServedAt > keyRefusedAt(r)));
+  return records.length ? records.map(([, r]) => keyRefusedAt(r)).sort().at(-1) : null;
 }
 
 function applyAutoDisableTransition(db, existing, merged, data) {

@@ -412,11 +412,12 @@ function deadElsewhere(conn, records, model, current, demoting) {
 
 // The demotion side of a refusal: the record update for its model, whether it
 // demotes the key there, and whether it shows the key dead on 2 models.
-async function planDemotion(connections, conn, model, status, errorText, evidence, streakModels = []) {
+async function planDemotion(connections, conn, model, status, errorText, evidence, streakModels = [], held = false) {
   if (!conn) return { demote: null, demoting: false, deadWith: null };
   const modelEvidence = isModelRefusal(status, errorText)
     ? await authFailEvidence(connections, conn, model, status, errorText, isModelRefusal, authEvents.modelRefused) : null;
-  const demoteEvidence = (Number(status) === 403 && evidence) || modelEvidence;
+  // A key held for itself (it builds no streak) is demoted on 401s as on 403s.
+  const demoteEvidence = ((Number(status) === 403 || (held && Number(status) === 401)) && evidence) || modelEvidence;
   if (!demoteEvidence) return { demote: null, demoting: false, deadWith: null };
   const records = demoteRecords(conn);
   const current = records.find(([m]) => m === model)?.[1] ?? null;
@@ -938,14 +939,16 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   } : null;
   // The same 403s, and ones refusing just this model, count on this model
   // alone toward demoting the key on it.
-  const plan = await planDemotion(connections, conn, model, status, errorText, evidence, authFailStreak?.authFailModels);
+  const plan = await planDemotion(connections, conn, model, status, errorText, evidence, authFailStreak?.authFailModels, held);
   const { demote, demoting, deadWith } = paused ? { demote: null, demoting: false, deadWith: null } : plan;
   const deadOnTwo = deadWith && !held ? {
     isActive: false,
     autoDisabledAt: new Date().toISOString(),
     autoDisabledReason: `${refusalText(status, errorText)} on ${deadWith}, ${model}`,
   } : null;
-  const softTry = paused && plan.demote ? { [getAuthSoftKey(model)]: softTryRefused(softRecord(conn, model), conn, !!evidence) } : {};
+  // A refused try: a refusal the demotion would count (a 403, or a refusal of
+  // just this model), or any refusal of the key itself, 401s included.
+  const softTry = paused && (plan.demote || evidence) ? { [getAuthSoftKey(model)]: softTryRefused(softRecord(conn, model), conn, !!evidence) } : {};
   // Held, refused for itself, and the day rule met: turned off. A refusal of
   // just this model says nothing about the key, so it doesn't check.
   const deadModels = held && evidence
