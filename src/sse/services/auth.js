@@ -87,8 +87,10 @@ function softRecord(c, model) {
   return rec;
 }
 const softDemoted = (c, model) => !!softRecord(c, model);
-const softDemotedAnywhere = (c) => AUTH_SOFT_DEMOTE.enabled
-  && Object.entries(c).some(([k, r]) => k.startsWith(AUTH_SOFT_PREFIX) && r?.since);
+// Soft-demoted for refusals of the key itself on some model. One for a model
+// the key lacks (keyRefused false) only orders keys: it would never end.
+const softDemotedForItself = (c) => AUTH_SOFT_DEMOTE.enabled
+  && Object.entries(c).some(([k, r]) => k.startsWith(AUTH_SOFT_PREFIX) && r?.since && r.keyRefused === true);
 const storedSoft = ({ level, since, tryAt, lastRefusedAt, keyRefused }) => ({ level, since, tryAt, lastRefusedAt, keyRefused });
 
 // Its tries follow AUTH_DEMOTE_CONFIG's probe schedule: one is taken when due
@@ -862,13 +864,13 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   // Auth rejections build a streak that only a success clears; other errors
   // leave it alone. A dead key is turned off unless it is the provider's last.
   // Soft-demoted on this model: the refusal counts toward neither, and the
-  // authDemote_<model> record isn't written. Soft-demoted on any model: the key
-  // isn't tried where it would be, so whatever it would have served there goes
-  // unseen; no streak builds (authFail* aren't written) and nothing turns it
-  // off. The memory of the refusal (authEvents, other keys' evidence) and the
-  // model lock are kept.
+  // authDemote_<model> record isn't written. Soft-demoted for refusals of the
+  // key itself on any model: the key isn't tried where it would be, so whatever
+  // it would have served there goes unseen; no streak builds (authFail* aren't
+  // written) and nothing turns it off. The memory of the refusal (authEvents,
+  // other keys' evidence) and the model lock are kept.
   const paused = !!conn && softDemoted(conn, model);
-  const held = !!conn && softDemotedAnywhere(conn);
+  const held = !!conn && softDemotedForItself(conn);
   const evidence = conn ? await authFailEvidence(connections, conn, model, status, errorText) : null;
   const softDue = evidence && !paused && !demotionOf(conn, model) ? softTriesDue(conn, model) : {};
   const authFailStreak = evidence && !held ? nextAuthFailStreak(conn, model, status, evidence === "same-upstream") : null;

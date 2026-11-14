@@ -2682,8 +2682,8 @@ describe("keys of one endpoint on different upstreams", () => {
 
   // Minutes until master turns these off: null for never. On the same account,
   // demoting each model in turn turns them off no later. On another account
-  // the key is soft-demoted on the first model, its refusals there stop
-  // counting, and it stays on unless refused on 2 models in one streak.
+  // the key is soft-demoted on the first model, and a soft-demoted key is
+  // never turned off automatically.
   it.each([
     ["sonnet, then opus", 0, null, 210],
     ["sonnet, then opus", 1, 186, null],

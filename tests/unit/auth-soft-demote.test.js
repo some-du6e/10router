@@ -248,12 +248,15 @@ describe("soft demotion", () => {
     expect(await pick(OPUS)).toBe(key.id);
   });
 
-  it("ends when the key is switched off and on", async () => {
+  it("ends when the key is switched off and on, after a refusal's cooldown on that model", async () => {
     const { key, peer } = await softDemoted();
     vi.advanceTimersByTime(3 * MIN);
     expect(await pick(OPUS)).toBe(peer.id);
     await db.updateProviderConnection(key.id, { isActive: false });
     await db.updateProviderConnection(key.id, { isActive: true });
+    expect(await pick(KIMI)).toBe(key.id);
+    expect(await pick(OPUS)).toBe(peer.id);
+    vi.advanceTimersByTime(2 * MIN);
     expect(await pick(OPUS)).toBe(key.id);
   });
 
@@ -286,6 +289,9 @@ describe("soft demotion", () => {
     const [far] = await accounts(["far"]);
     await refuse(key.id, far, { times: 6 });
     expect(auth.__test__.softDemoted(await load(key.id), OPUS)).toBe(true);
+    // Its demotions there begin over 10 minutes after anything it served, so
+    // they would be firm.
+    vi.advanceTimersByTime(11 * MIN);
     // Then refused on two models its near peer serves, a minute apart, for 3 hours.
     for (let i = 0; i < 180; i++) {
       vi.advanceTimersByTime(MIN);
@@ -459,6 +465,35 @@ describe("soft demotion", () => {
     await db.updateProviderConnection(key.id, { isActive: false });
     await db.updateProviderConnection(key.id, { apiKey: "sk-test-a-replaced-0123456789" });
     expect((await load(key.id)).pastKeys).toEqual([{ since: expect.any(String), until: new Date().toISOString() }]);
+  });
+
+  it("starts the key afresh when its soft-demoted model's cooldown is cleared", async () => {
+    const { key, peer } = await softDemoted();
+    await refuse(key.id, peer, { times: 3, model: KIMI });
+    expect((await load(key.id))[`authDemote_${KIMI}`]).toMatchObject({ count: 3 });
+    await availability.POST(new Request("http://localhost/api/models/availability", {
+      method: "POST", body: JSON.stringify({ action: "clearCooldown", provider, model: OPUS }),
+    }));
+    const conn = await load(key.id);
+    expect(conn[`authDemote_${KIMI}`] ?? null).toBeNull();
+    expect(conn[`authSoft_${OPUS}`] ?? null).toBeNull();
+  });
+
+  it("still turns off a key soft-demoted only on a model it lacks", async () => {
+    const [key, near] = await accounts(["k", "near"], { shared: true });
+    const [far] = await accounts(["far"]);
+    const lacks = `[403]: {"error":{"message":"Your organization does not have access to model ${OPUS}"}}`;
+    for (let i = 0; i < 6; i++) {
+      if (i > 0) vi.advanceTimersByTime(2 * MIN);
+      await succeed(far.id, OPUS);
+      await auth.markAccountUnavailable(key.id, 403, lacks, provider, OPUS);
+    }
+    expect((await load(key.id))[`authSoft_${OPUS}`]).toMatchObject({ keyRefused: false });
+    for (let i = 0; i < 12 && (await load(key.id)).isActive; i++) {
+      vi.advanceTimersByTime(2 * MIN);
+      await refuse(key.id, near, { times: 1, model: i % 2 ? KIMI : "claude-sonnet-5-5" });
+    }
+    expect((await load(key.id)).isActive).toBe(false);
   });
 
   it("ends on that model when its cooldown is cleared", async () => {

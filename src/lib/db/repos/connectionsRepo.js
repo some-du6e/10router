@@ -4,6 +4,7 @@ import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { DEMOTE_PREFIX, SOFT_DEMOTE_PREFIX } from "../../../shared/utils/connectionStatus.js";
 import { clearSoftDemotions } from "../../softDemotions.js";
 import { AUTH_SOFT_DEMOTE } from "../../../../open-sse/config/runtimeConfig.js";
+import { COOLDOWN_MS } from "../../../../open-sse/config/errorConfig.js";
 
 const OPTIONAL_FIELDS = [
   "displayName", "email", "globalPriority", "defaultModel",
@@ -16,7 +17,7 @@ const OPTIONAL_FIELDS = [
 // Written by sse/services/auth.js when a key keeps failing auth and is turned
 // off. Turning the connection back on, by any path, starts it clean; turning it
 // off again keeps its reason unless a new key came with it.
-const AUTH_STREAK_FIELDS = [
+export const AUTH_STREAK_FIELDS = [
   "authFailCount", "authFailFirstAt", "authFailLastAt", "authFailModels", "authFailAll401", "authFailSameUpstream",
   "authFailRunCount", "authFailRunStartAt", "authFailBursts",
 ];
@@ -58,6 +59,16 @@ function applyAutoDisableTransition(existing, merged, data) {
   // A different key pasted into a connection the router turned off fixes it.
   if (existing.autoDisabledAt && data.isActive === undefined && keyChanged) merged.isActive = true;
   const reEnabled = existing.isActive === false && merged.isActive === true;
+  if (reEnabled && AUTH_SOFT_DEMOTE.enabled) {
+    // A key switched back on from a soft demotion waits out a refusal's
+    // cooldown on that model, as it would had it been tried there all along.
+    const until = new Date(Date.now() + COOLDOWN_MS.unauthorized).toISOString();
+    for (const [k, r] of Object.entries(existing)) {
+      if (!k.startsWith(AUTH_SOFT_PREFIX) || !r?.since) continue;
+      const lockKey = `modelLock_${k.slice(AUTH_SOFT_PREFIX.length)}`;
+      if (!(existing[lockKey] > until)) merged[lockKey] = until;
+    }
+  }
   if (reEnabled || keyChanged) {
     // A new key or turning the key back on clears its demotions too.
     for (const k of Object.keys(merged)) if (k.startsWith(AUTH_DEMOTE_PREFIX) || k.startsWith(AUTH_SOFT_PREFIX)) merged[k] = null;

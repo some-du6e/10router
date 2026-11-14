@@ -20,11 +20,12 @@ process.env.DATA_DIR = tempDir;
 const MIN = 60 * 1000;
 const REFUSED_403 = '[403]: {"code":"000000","message":"Key barred from this endpoint"}';
 const MODELS = ["opus", "sonnet", "haiku"];
-let db, auth, provider, seq = 0;
+let db, auth, availability, provider, seq = 0;
 
 beforeAll(async () => {
   db = await import("@/lib/db/index.js");
   auth = await import("@/sse/services/auth.js");
+  availability = await import("@/app/api/models/availability/route.js");
 });
 afterAll(() => {
   fs.rmSync(tempDir, { recursive: true, force: true });
@@ -74,15 +75,30 @@ async function serve(model, refused) {
   }
 }
 
+// What someone does to K at a minute: clear opus's cooldown in model
+// availability, or switch K off and on.
+const ACTIONS = {
+  clear: () => availability.POST(new Request("http://localhost/api/models/availability", {
+    method: "POST", body: JSON.stringify({ action: "clearCooldown", provider, model: "opus" }),
+  })),
+  toggle: async (k) => {
+    await db.updateProviderConnection(k.id, { isActive: false });
+    await db.updateProviderConnection(k.id, { isActive: true });
+  },
+};
+
 // traffic(minute) gives the models asked for; refused(minute, model) whether K
-// is. The minute K went off, or null.
-async function offMinute(layout, totalMin, traffic, refused, nearLacks = null) {
+// is. With `parallel`, one minute's requests are served at once; `action` runs
+// at each minute of `actionAt`. The minute K went off, or null.
+async function offMinute(layout, totalMin, traffic, refused, nearLacks = null, { action, actionAt = [], parallel = false } = {}) {
   const keys = await setup(layout);
   const refuses = (minute, model) => (id) => (id === keys.k.id && refused(minute, model))
     || (id === keys.near?.id && model === nearLacks);
   for (let minute = 0; minute < totalMin; minute++) {
     if (minute > 0) vi.advanceTimersByTime(MIN);
-    for (const model of traffic(minute)) await serve(model, refuses(minute, model));
+    if (actionAt.includes(minute)) await ACTIONS[action](keys.k);
+    if (parallel) await Promise.all(traffic(minute).map((model) => serve(model, refuses(minute, model))));
+    else for (const model of traffic(minute)) await serve(model, refuses(minute, model));
     if ((await db.getProviderConnectionById(keys.k.id)).isActive === false) return minute;
   }
   return null;
@@ -189,6 +205,32 @@ for (const every of [7, 8, 9]) {
       }
     }
   }
+}
+// The same flapping key, with opus's cooldown cleared, or K switched off and
+// on, at `C` minutes; one request at a time, or 2-4 a minute at once.
+const together = (every) => (m) => (m >= 12 && (m - 12) % every === 0 ? ["opus", "sonnet", "opus", "haiku"] : ["opus", "opus"]);
+for (const action of Object.keys(ACTIONS)) {
+  for (const C of [60, 120]) {
+    const at = { action, actionAt: [C] };
+    for (const [every, P, ph] of [[7, 15, 0], [7, 20, 4], [9, 15, 4], [9, 20, 0]]) {
+      cases[`${action} at ${C}, works now and then ${every},${P},${ph}`] = (layout) => offMinute(layout, 360, allEvery(every),
+        (m) => !(m >= 15 && (m - 15 + ph) % P < 1), "opus", at);
+    }
+    for (const [every, a, w] of [[5, 20, 1], [5, 40, 2], [9, 20, 2], [9, 70, 1]]) {
+      cases[`${action} at ${C}, works once ${every},${a},${w}`] = (layout) => offMinute(layout, 360, allEvery(every),
+        (m) => !(m >= a && m < a + w), "opus", at);
+    }
+    for (const [every, a, w] of [[3, 20, 1], [3, 50, 2], [8, 20, 2], [8, 100, 1]]) {
+      cases[`${action} at ${C}, works once at once ${every},${a},${w}`] = (layout) => offMinute(layout, 360, together(every),
+        (m) => !(m >= a && m < a + w), "opus", { ...at, parallel: true });
+    }
+    for (const [every, ph] of [[3, 0], [3, 3], [8, 0]]) {
+      cases[`${action} at ${C}, works now and then at once ${every},20,${ph}`] = (layout) => offMinute(layout, 360, together(every),
+        (m) => !(m >= 15 && (m - 15 + ph) % 20 < 1), "opus", { ...at, parallel: true });
+    }
+  }
+  cases[`${action} at 60, works every 20, one at a time`] = (layout) => offMinute(layout, 360, together(3),
+    (m) => !(m >= 15 && (m - 15) % 20 < 1), "opus", { action, actionAt: [60] });
 }
 // The same, with bursts alternating between two pairs of models.
 cases["idle then near, rotating"] = (layout) => offMinute(layout, 260,

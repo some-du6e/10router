@@ -18,7 +18,9 @@ export function demotedModels(connection) {
       return [{ model: key.slice(DEMOTE_PREFIX.length), reason: record.reason || null }];
     }
     if (key.startsWith(SOFT_DEMOTE_PREFIX) && record?.since) {
-      return [{ model: key.slice(SOFT_DEMOTE_PREFIX.length), soft: true, lastRefusedAt: record.lastRefusedAt || record.since, keyRefused: record.keyRefused === true }];
+      // Refused for itself and served nothing since: likely dead.
+      const keyRefused = record.keyRefused === true && !(connection.authDemoteOkAt > record.since);
+      return [{ model: key.slice(SOFT_DEMOTE_PREFIX.length), soft: true, lastRefusedAt: record.lastRefusedAt || record.since, keyRefused }];
     }
     return [];
   });

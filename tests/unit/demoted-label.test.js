@@ -70,6 +70,11 @@ describe("soft-demoted key label", () => {
     expect(demotedModels({ [SOFT_OPUS]: soft() })).toEqual([{ model: "claude-opus-5-5", soft: true, lastRefusedAt: "2026-11-02T02:40:00.000Z", keyRefused: false }]);
   });
 
+  it("doesn't suggest replacing a key refused for itself that has served something since", () => {
+    const label = demotedLabel({ [SOFT_OPUS]: { ...soft(), keyRefused: true }, authDemoteOkAt: "2026-11-02T02:50:00.000Z" });
+    expect(label.title).not.toContain("replace the key");
+  });
+
   it("suggests replacing a key whose refusals are of the key itself", () => {
     expect(demotedLabel({ [SOFT_OPUS]: { ...soft(), keyRefused: true } }).title).toBe(
       `Soft-demoted on claude-opus-5-5: last refused ${new Date("2026-11-02T02:40:00.000Z").toLocaleString()}. `

@@ -3,7 +3,7 @@ import {
   getProviderConnections,
   updateProviderConnection,
 } from "@/lib/localDb";
-import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey, AUTH_SOFT_PREFIX, getAuthSoftKey } from "@/lib/db/index.js";
+import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey, AUTH_SOFT_PREFIX, getAuthSoftKey, AUTH_STREAK_FIELDS } from "@/lib/db/index.js";
 import { MODEL_LOCK_PREFIX } from "open-sse/services/accountFallback.js";
 import { clearSoftDemotions } from "@/lib/softDemotions.js";
 import { AUTH_SOFT_DEMOTE } from "open-sse/config/runtimeConfig.js";
@@ -122,6 +122,12 @@ export async function POST(request) {
         .filter((connection) => connection[lockKey] || connection[demoteKey] || connection[softKey])
         .map((connection) =>
           updateProviderConnection(connection.id, {
+            // Ending a soft demotion without a success gives the key a fresh
+            // start, as switching it off and on does: no demotions, no streak.
+            ...(connection[softKey]?.since ? {
+              ...Object.fromEntries(Object.keys(connection).filter((k) => k.startsWith(AUTH_DEMOTE_PREFIX)).map((k) => [k, null])),
+              ...Object.fromEntries(AUTH_STREAK_FIELDS.map((f) => [f, null])),
+            } : {}),
             [lockKey]: null,
             [demoteKey]: null,
             [softKey]: null,
