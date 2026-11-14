@@ -16,6 +16,7 @@ on:
       - "tests/unit/auto-disable-stress.pinned.json"
       - "tests/unit/auth-soft-demote.test.js"
       - "tests/unit/auto-disable-compare-stress.test.js"
+      - "tests/unit/auto-disable-long-stress.test.js"
       - "tests/unit/auto-disable-dead-keys.test.js"
       - "tests/vitest.stress.config.js"
       - "tests/vitest.shared.js"
@@ -60,6 +61,13 @@ jobs:
         if: always()
         working-directory: tests
         run: ./node_modules/.bin/vitest run unit/auth-soft-demote.test.js unit/auto-disable-dead-keys.test.js
+      # 48 hours of a dead key: soft-demoted, it goes off after a day.
+      - name: A dead key over two days, this branch
+        if: always()
+        working-directory: tests
+        env:
+          LONG_OUT: ${{ runner.temp }}/long-branch.json
+        run: ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-long-stress.test.js
       # Clean checkouts of the base (the PR's base branch, else master, unless a
       # manual run names another) and, on a manual run that names one, of an
       # older head to compare instead of this one (only in the turn-off step),
@@ -75,7 +83,7 @@ jobs:
             git worktree add --detach "$RUNNER_TEMP/$side" "$ref"
             ln -s "$PWD/node_modules" "$RUNNER_TEMP/$side/node_modules"
             ln -s "$PWD/tests/node_modules" "$RUNNER_TEMP/$side/tests/node_modules"
-            cp tests/unit/auto-disable-compare-stress.test.js tests/unit/auto-disable-stress.test.js "$RUNNER_TEMP/$side/tests/unit/"
+            cp tests/unit/auto-disable-compare-stress.test.js tests/unit/auto-disable-stress.test.js tests/unit/auto-disable-long-stress.test.js "$RUNNER_TEMP/$side/tests/unit/"
           done
       # The same scenarios on the base's auth code, then on the head's: no key
       # off sooner than on the base, or where the base keeps it on. After this
@@ -93,12 +101,17 @@ jobs:
         working-directory: ${{ runner.temp }}/base/tests
         env:
           STRESS_OUT: ${{ runner.temp }}/stress-base.json
-        run: ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-stress.test.js
+          LONG_OUT: ${{ runner.temp }}/long-base.json
+        run: |
+          ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-stress.test.js
+          ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-long-stress.test.js
       - name: Results
         if: always()
         run: |
           echo "this branch:"; cat "$RUNNER_TEMP/stress-branch.json" || true
           echo; echo "base:"; cat "$RUNNER_TEMP/stress-base.json" 2>/dev/null || echo "(manual runs only)"
+          echo; echo "a dead key over two days, this branch:"; cat "$RUNNER_TEMP/long-branch.json" 2>/dev/null || echo "(not run)"
+          echo; echo "a dead key over two days, base:"; cat "$RUNNER_TEMP/long-base.json" 2>/dev/null || echo "(manual runs only)"
           echo; echo "turn-offs, head against base:"
           node -e '
             const fs = require("fs");

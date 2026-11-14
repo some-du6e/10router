@@ -508,6 +508,100 @@ describe("soft demotion", () => {
   });
 });
 
+describe("after a long soft demotion", () => {
+  // Opus every minute for `hours`, the key refused on it; `onMinute(m)` runs
+  // first each minute. The minute the key went off (from soft entry), or null,
+  // and its refusals.
+  async function run(key, hours, onMinute = async () => {}) {
+    let refusals = 0;
+    for (let m = 1; m <= hours * 60; m++) {
+      vi.advanceTimersByTime(MIN);
+      await onMinute(m);
+      const tried = new Set();
+      for (;;) {
+        const creds = await auth.getProviderCredentials(provider, tried, OPUS);
+        if (!creds?.connectionId) break;
+        if (creds.connectionId !== key.id) {
+          await succeed(creds.connectionId, OPUS);
+          break;
+        }
+        refusals++;
+        await failOnce(key.id, OPUS);
+        tried.add(key.id);
+      }
+      if (!(await load(key.id)).isActive) return { off: m, refusals };
+    }
+    return { off: null, refusals };
+  }
+
+  it("turns off a key refused for itself, at its first refused try after 24 hours", async () => {
+    const { key } = await softDemoted();
+    const { off, refusals } = await run(key, 30);
+    expect(off).toBeGreaterThanOrEqual(24 * 60);
+    expect(off).toBeLessThanOrEqual(24 * 60 + 180);
+    expect(refusals).toBeGreaterThanOrEqual(6);
+    const conn = await load(key.id);
+    expect(conn.autoDisabledAt).toBe(new Date().toISOString());
+    expect(conn.autoDisabledReason).toBe(`403 "Key barred from this endpoint" on ${OPUS} for 24h while soft-demoted`);
+    // A key lifespan sample, as for any key turned off automatically.
+    await db.updateProviderConnection(key.id, { apiKey: "sk-test-a-replaced-0123456789" });
+    expect((await load(key.id)).pastKeys).toEqual([{ since: expect.any(String), until: conn.autoDisabledAt }]);
+  });
+
+  it("keeps a key on that serves anything in that time", async () => {
+    const { key } = await softDemoted();
+    const { off } = await run(key, 30, async (m) => { if (m === 12 * 60) await succeed(key.id, KIMI); });
+    expect(off).toBeNull();
+  });
+
+  it("keeps a key on that is soft-demoted only on a model it lacks", async () => {
+    const [key, peer] = await accounts(["a", "b"]);
+    const lacks = `[403]: {"error":{"message":"Your organization does not have access to model ${OPUS}"}}`;
+    for (let i = 0; i < 6; i++) {
+      if (i > 0) vi.advanceTimersByTime(2 * MIN);
+      await succeed(peer.id, OPUS);
+      await auth.markAccountUnavailable(key.id, 403, lacks, provider, OPUS);
+    }
+    expect((await load(key.id))[`authSoft_${OPUS}`]).toMatchObject({ keyRefused: false });
+    const { off } = await run(key, 30);
+    expect(off).toBeNull();
+  });
+
+  it("keeps a key on with AUTH_SOFT_DEMOTE_DEAD_AFTER_MS=0", async () => {
+    vi.stubEnv("AUTH_SOFT_DEMOTE_DEAD_AFTER_MS", "0");
+    vi.resetModules();
+    const freshDb = await import("@/lib/db/index.js");
+    const freshAuth = await import("@/sse/services/auth.js");
+    const keys = [];
+    for (const name of ["a", "b"]) {
+      keys.push(await freshDb.createProviderConnection({
+        provider, authType: "apikey", name, apiKey: `sk-test-${name}-0123456789`,
+        providerSpecificData: { baseUrl: `https://acct-${name}.acme.test/v1`, ownBaseUrl: true },
+      }));
+    }
+    const [key, peer] = keys;
+    const ok = async (id) => freshAuth.clearAccountError(id, await freshDb.getProviderConnectionById(id), OPUS);
+    for (let m = 0; m < 30 * 60; m++) {
+      if (m > 0) vi.advanceTimersByTime(MIN);
+      const tried = new Set();
+      for (;;) {
+        const creds = await freshAuth.getProviderCredentials(provider, tried, OPUS);
+        if (!creds?.connectionId) break;
+        if (creds.connectionId !== key.id) {
+          await ok(creds.connectionId);
+          break;
+        }
+        if (m === 0) await ok(peer.id);
+        await freshAuth.markAccountUnavailable(key.id, 403, REFUSED_403, provider, OPUS);
+        tried.add(key.id);
+      }
+    }
+    const conn = await freshDb.getProviderConnectionById(key.id);
+    expect(conn[`authSoft_${OPUS}`]).toBeTruthy();
+    expect(conn.isActive).toBe(true);
+  });
+});
+
 describe("AUTH_SOFT_DEMOTE", () => {
   it.each([
     [undefined, true],
@@ -521,7 +615,18 @@ describe("AUTH_SOFT_DEMOTE", () => {
     if (raw !== undefined) vi.stubEnv("AUTH_SOFT_DEMOTE", raw);
     vi.resetModules();
     const { AUTH_SOFT_DEMOTE } = await import("open-sse/config/runtimeConfig.js");
-    expect(AUTH_SOFT_DEMOTE).toEqual({ enabled });
+    expect(AUTH_SOFT_DEMOTE).toEqual({ enabled, deadAfterMs: 24 * 60 * MIN, deadAfterTries: 6 });
+  });
+
+  it.each([
+    [{ AUTH_SOFT_DEMOTE_DEAD_AFTER_MS: "0" }, { deadAfterMs: 0, deadAfterTries: 6 }],
+    [{ AUTH_SOFT_DEMOTE_DEAD_AFTER_MS: "3600000", AUTH_SOFT_DEMOTE_DEAD_AFTER_TRIES: "3" }, { deadAfterMs: 60 * MIN, deadAfterTries: 3 }],
+    [{ AUTH_SOFT_DEMOTE_DEAD_AFTER_MS: "1d", AUTH_SOFT_DEMOTE_DEAD_AFTER_TRIES: "0" }, { deadAfterMs: 24 * 60 * MIN, deadAfterTries: 6 }],
+  ])("reads %j for the turn-off after a long soft demotion", async (env, expected) => {
+    for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
+    vi.resetModules();
+    const { AUTH_SOFT_DEMOTE } = await import("open-sse/config/runtimeConfig.js");
+    expect(AUTH_SOFT_DEMOTE).toMatchObject(expected);
   });
 
   it("set to 0, leaves the key first and counting, as before", async () => {

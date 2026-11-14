@@ -95,11 +95,17 @@ export const CACHE_AFFINITY = {
 // a peer on another upstream served, goes after the other keys there, with
 // tries on AUTH_DEMOTE_CONFIG's probe schedule, until it serves that model;
 // meanwhile its refusals there don't count toward demoting it, the ones before
-// it are forgotten as a success would, and nothing turns the key off. Stored on the
-// connection (authSoft_<model>). Env: AUTH_SOFT_DEMOTE=0 turns it off;
-// anything else leaves it on.
+// it are forgotten as a success would, and the usual rules don't turn the key
+// off. Stored on the connection (authSoft_<model>). Env: AUTH_SOFT_DEMOTE=0
+// turns it off; anything else leaves it on.
+// A key soft-demoted for refusals of the key itself for deadAfterMs, with at
+// least deadAfterTries of its tries there refused and nothing served on any
+// model since, is turned off. Env: AUTH_SOFT_DEMOTE_DEAD_AFTER_MS (0: never),
+// AUTH_SOFT_DEMOTE_DEAD_AFTER_TRIES.
 export const AUTH_SOFT_DEMOTE = {
   enabled: envInt("AUTH_SOFT_DEMOTE", 1, { max: 1 }) !== 0,
+  deadAfterMs: envInt("AUTH_SOFT_DEMOTE_DEAD_AFTER_MS", 24 * 60 * 60 * 1000),
+  deadAfterTries: envInt("AUTH_SOFT_DEMOTE_DEAD_AFTER_TRIES", 6, { min: 1 }),
 };
 
 // Inter-chunk stall timeout (once tokens are flowing). Generous headroom so
