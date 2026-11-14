@@ -139,12 +139,12 @@ for (const [end, off, every, forMin] of [
     (m) => (m >= end + off && (m - end - off) % every === 0 ? ["opus", "sonnet", "haiku"] : ["opus"]),
     (m, model) => (model === "opus" ? m < end : m >= end + off && m < end + off + forMin), "opus");
 }
-// Opus, which only the far peer serves, every minute until K is refused on it
-// for 10 minutes; then sonnet and haiku in turn, a minute apart, which the near
-// peer serves and K is refused on until `end`; 4 hours.
+// Opus, which only the far peer serves, every minute for 13 minutes, K refused
+// on it; then sonnet and haiku in turn, a minute apart, which the near peer
+// serves and K is refused on until `end`; 4 hours.
 for (const end of [40, 70]) {
   cases[`near after far ${end}`] = (layout) => offMinute(layout, 240,
-    (m) => (m < 11 ? ["opus"] : [m % 2 ? "sonnet" : "haiku"]), (m, model) => (model === "opus" ? m < 11 : m < end), "opus");
+    (m) => (m < 13 ? ["opus"] : [m % 2 ? "sonnet" : "haiku"]), (m, model) => (model === "opus" ? m < 13 : m < end), "opus");
 }
 
 it("turns no key off sooner than master, or where master keeps it on", async () => {
