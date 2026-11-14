@@ -30,7 +30,7 @@ const { checkFallbackError, isModelLockActive, getModelLockUntil } = await impor
 
 const PROVIDER = "openai-compatible-chat-test";
 const MODEL = "claude-opus-5-5";
-const RATE_LIMIT = '{"type":"error","error":{"type":"rate_limit_error","message":"The upstream enforces per-account per-model rate limits."}}';
+const RATE_LIMIT = '{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit reached for this model on this account."}}';
 const NOW = new Date("2026-10-31T03:21:26.000Z").getTime();
 
 const lockSeconds = () => (new Date(store.rows.get("key-a")[`modelLock_${MODEL}`]).getTime() - Date.now()) / 1000;

@@ -38,7 +38,7 @@ const { DEFAULT_ERROR_MESSAGES } = await import("../../open-sse/config/errorConf
 
 const PROVIDER = "openai-compatible-chat-test";
 const MODEL = "claude-opus-5-5";
-const RATE_LIMIT = '{"type":"error","error":{"type":"rate_limit_error","message":"The upstream enforces per-account per-model rate limits."}}';
+const RATE_LIMIT = '{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit reached for this model on this account."}}';
 const DEMOTED = `${MODEL} demoted after repeated 403 "Key barred from this endpoint"`;
 const NOW = new Date("2026-11-01T17:49:47.000Z").getTime();
 const lockKey = `modelLock_${MODEL}`;

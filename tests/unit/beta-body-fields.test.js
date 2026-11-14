@@ -1,6 +1,6 @@
 // Body fields that only exist behind an anthropic-beta flag must go when the
-// endpoint drops that flag. Live failure (2026-10-22, custom gateway node with
-// stripBeta, claude-opus-5-5 routed to /messages):
+// endpoint drops that flag. A custom gateway node with stripBeta, claude-opus-5-5
+// routed to /messages, answered:
 //   400 {"message":"context_management: Extra inputs are not permitted"}
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -14,7 +14,7 @@ const { resolveCompatibleRoute } = await import("../../open-sse/services/provide
 const { translateRequest } = await import("../../open-sse/translator/index.js");
 const { stripBetaBodyFields } = await import("../../open-sse/utils/anthropicBeta.js");
 
-const CONTOSO = "openai-compatible-chat-eea96964-59c9-40ee-b64e-9e3bed15b7cb";
+const CONTOSO = "openai-compatible-chat-00000000-0000-4000-8000-000000000001";
 const MODEL = "claude-opus-5-5";
 const CONTEXT_MANAGEMENT = { edits: [{ type: "clear_thinking_20251015", keep: "all" }] };
 const BETA_400 = "{\"message\":\"Unexpected value(s) `context-management-2025-06-27` for the `anthropic-beta` header. Please consult our documentation at platform.claude.com/docs or try again without the header.\"}";

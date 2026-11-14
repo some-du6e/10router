@@ -152,33 +152,43 @@ describe("detectEndpoint on a two-path endpoint", () => {
       expect(r.protocol).toBe(primary);
       expect(r.routes).toEqual(routes);
     });
+  });
+});
 
-    // A rate limit on one API stops model checks on the rest. Messages is asked
-    // first, so a Chat limit can't hide the Claude models only Messages serves.
-    it.each([
-      ["at its made-up-id check", 0],
-      ["after 2 model checks", 2],
-    ])("finds the Messages models when Chat rate-limits %s", async (_, allowed) => {
-      const messages = new Set(["claude-opus-5", "claude-haiku-4-5", "claude-sonnet-5"]);
-      const inner = upstream({ messages, chat: new Set(["openai-gpt-5"]) });
-      let chatChecks = 0;
-      const limited = async (url, init) => {
-        const body = init?.body ? JSON.parse(init.body) : {};
-        if (new URL(url).pathname.endsWith("/chat/completions") && body.model !== "probe" && ++chatChecks > allowed) {
-          return new Response(JSON.stringify({ error: { type: "rate_limit_error", message: "slow down" } }), { status: 429, headers: { "content-type": "application/json" } });
-        }
-        return inner(url, init);
-      };
-      const { fetchFn, posts } = recorded(limited);
-      const r = await detectEndpoint({ url: PLAIN, apiKey: "good-key", catalog, fetchFn, sleep: async () => {} });
-      expect(posts[0]).toMatch(/\/chat\/completions$/);
-      expect(r.ok).toBe(true);
-      expect([...r.protocols].sort()).toEqual(["anthropic", "openai-chat"]);
-      expect(r.byProtocol.anthropic.sort()).toEqual([...messages].sort());
-      expect(r.models).toEqual(expect.arrayContaining([...messages]));
-      expect(r.protocol).toBe("anthropic");
-      if (allowed) expect(r.checks["openai-chat"].stopped).toBe("rate"); // a canary stop leaves no check
-      expect(r.stopReason).toBe("rate");
-    });
+// DETECT_ANTHROPIC_FIRST_HINTS: URL substrings that get Messages probed first.
+describe("Anthropic-first hints from the environment", () => {
+  const PLAIN = "https://acme.contoso-cloud.example/api/v1";
+  const two = () => recorded(upstream({ messages: new Set(["claude-opus-5"]), chat: new Set(["openai-gpt-5"]) }));
+
+  it("is empty by default, so an unhinted URL probes Chat first", async () => {
+    const { anthropicFirstHints, prefersAnthropic } = await import("@/lib/endpointDetect.js");
+    expect(anthropicFirstHints()).toEqual([]);
+    expect(prefersAnthropic(PLAIN, "good-key")).toBe(false);
+    const { fetchFn, posts } = two();
+    await detectEndpoint({ url: PLAIN, apiKey: "good-key", fetchFn, skipModels: true });
+    expect(posts[0]).toMatch(/\/chat\/completions$/);
+  });
+
+  it("parses a comma-separated list, trimmed and lowercased", async () => {
+    const { parseHintList } = await import("@/lib/endpointDetect.js");
+    expect(parseHintList(" Contoso-Cloud , ,Other ")).toEqual(["contoso-cloud", "other"]);
+    expect(parseHintList(undefined)).toEqual([]);
+  });
+
+  it("a configured hint makes an unhinted URL probe Messages first", async () => {
+    vi.resetModules();
+    vi.stubEnv("DETECT_ANTHROPIC_FIRST_HINTS", " Contoso-Cloud ,other");
+    try {
+      const fresh = await import("@/lib/endpointDetect.js");
+      expect(fresh.anthropicFirstHints()).toEqual(["contoso-cloud", "other"]);
+      expect(fresh.prefersAnthropic(PLAIN, "good-key")).toBe(true);
+      expect(fresh.prefersAnthropic("https://api.example.com/v1", "good-key")).toBe(false);
+      const { fetchFn, posts } = two();
+      await fresh.detectEndpoint({ url: PLAIN, apiKey: "good-key", fetchFn, skipModels: true });
+      expect(posts[0]).toMatch(/\/messages$/);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
   });
 });

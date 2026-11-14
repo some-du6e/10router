@@ -202,7 +202,7 @@ describe("detectEndpoint", () => {
     const { fetchFn, calls } = upstream({
       "POST /api/claude/v1/messages": ({ auth, body }) => !keyOk(auth) ? [401, { message: "Invalid token" }]
         : known.has(body.model) ? [400, { message: "'messages' must not be empty" }] : [400, { message: `unknown model "${body.model}"` }],
-      "POST /api/claude/v1/chat/completions": ({ auth }) => keyOk(auth) ? [400, { message: "max_tokens is deprecated in favor of max_completion_tokens" }] : [401, {}],
+      "POST /api/claude/v1/chat/completions": ({ auth }) => keyOk(auth) ? [400, { message: "use max_completion_tokens instead of max_tokens" }] : [401, {}],
     });
     const r = await detectEndpoint({ url: "https://acme.contoso-cloud.example/api/claude", apiKey: GOOD, fetchFn, catalog: CATALOG });
     expect(r.ok).toBe(true);

@@ -52,7 +52,7 @@ const ACTIVE_BILLING = {
 };
 
 const USER_PROFILE = {
-  userId: "d84768dd-224d-4052-ba49-0d336fa9160c",
+  userId: "00000000-0000-4000-8000-000000000003",
   email: "user@example.com",
   hasGrokCodeAccess: true,
   subscriptionTier: null,
@@ -250,7 +250,7 @@ describe("getUsageForProvider(grok-cli)", () => {
       accessToken: "test-token",
       providerSpecificData: {
         email: "user@example.com",
-        userId: "d84768dd-224d-4052-ba49-0d336fa9160c",
+        userId: "00000000-0000-4000-8000-000000000003",
       },
     });
 
@@ -275,7 +275,7 @@ describe("getUsageForProvider(grok-cli)", () => {
     expect(billingCall[1].headers["x-grok-client-version"]).toBe("0.2.99");
     expect(billingCall[1].headers["x-grok-client-identifier"]).toBe("grok-shell");
     expect(billingCall[1].headers["x-userid"]).toBe(
-      "d84768dd-224d-4052-ba49-0d336fa9160c",
+      "00000000-0000-4000-8000-000000000003",
     );
     // REST already has numeric quotas — do not hit gRPC fallback
     expect(proxyAwareFetch.mock.calls).toHaveLength(2);

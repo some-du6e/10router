@@ -781,8 +781,8 @@ function makeProber({ fetchFn, key, steps, timeoutMs, sleep = defaultSleep, sign
 
 // Model probes carry only the model, the empty conversation and a 1-token cap,
 // so the model name is the first thing validated. OpenAI-style gateways can
-// reject max_tokens first ("deprecated in favor of max_completion_tokens"):
-// then the cap moves to max_completion_tokens.
+// reject max_tokens first and ask for max_completion_tokens: then the cap
+// moves to max_completion_tokens.
 // stream:false stays explicit: a gateway that streams by default would otherwise
 // answer with an SSE stream.
 function modelBody(p: ProbeSpec, model: string, { maxCompletionTokens = false }: DetectQuirks = {}): Record<string, unknown> {
@@ -926,11 +926,6 @@ export function chooseRoute<P extends string>(model: string, protocols: P[]): P 
   return ["openai-responses", "openai-chat", "anthropic"].find(has) || protocols[0];
 }
 
-// The same entries with their keys in `order`.
-function inOrder<T>(o: Partial<Record<Protocol, T>>, order: Protocol[]): Partial<Record<Protocol, T>> {
-  return Object.fromEntries(order.filter((p) => p in o).map((p) => [p, o[p]])) as Partial<Record<Protocol, T>>;
-}
-
 // model -> route, from { protocol: [models] }. `primary` = the protocol serving
 // the most models (the node's own type); routes only list models that leave it.
 export function buildRoutes<P extends string>(byProtocol: Partial<Record<P, string[]>>, fixedPrimary: P | null = null): { primary: P | null; models: string[]; routes: Record<string, P>; counts: Record<string, number> } {
@@ -1040,6 +1035,22 @@ export interface DetectOptions {
   // Re-detect checks only the API, URL and fixes; models have their own check.
   skipModels?: boolean;
 }
+
+// DETECT_ANTHROPIC_FIRST_HINTS: comma-separated URL substrings (any case) for
+// gateways whose Anthropic Messages API should be probed first. Empty by
+// default. Read on first use, so this module stays safe to import in the browser.
+export const parseHintList = (raw: unknown): string[] => String(raw ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+let hintCache: string[] | null = null;
+export function anthropicFirstHints(): string[] {
+  return (hintCache ??= parseHintList(typeof process === "undefined" ? "" : process.env?.DETECT_ANTHROPIC_FIRST_HINTS));
+}
+// Probe Messages first: the URL names Anthropic or Claude or matches a
+// configured hint, or the key is an Anthropic one.
+export function prefersAnthropic(base: unknown, key: string, hints: readonly string[] = anthropicFirstHints()): boolean {
+  const url = String(base).toLowerCase();
+  return /anthropic|claude/.test(url) || hints.some((h) => url.includes(h)) || /^sk-ant-/.test(key);
+}
+
 export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS, sleep, signal = null, deadlineMs = DETECT_DEADLINE_MS, onProgress = null, skipModels = false }: DetectOptions): Promise<DetectResult> {
   const key = cleanKey(apiKey);
   const base0 = normalizeUrl(url);
@@ -1105,7 +1116,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   // 2. Protocol: empty-body probes. Anthropic first when the URL/key hints at it.
   // Found = an API-shaped 400/422 (or an unknown-model error, vLLM/Ollama answer
   // that with 404). 5xx, HTML, plain "Not Found" and auth errors are not.
-  const preferAnthropic = /anthropic|claude/i.test(base0) || /^sk-ant-/.test(key);
+  const preferAnthropic = prefersAnthropic(base0, key);
   const order: Protocol[] = preferAnthropic ? ["anthropic", "openai-chat", "openai-responses"] : ["openai-chat", "openai-responses", "anthropic"];
   // A model-access 401/403 on model "probe" counts too: the path and key work.
   const found: { proto: Protocol; base: string; shape: ErrorShape | null; sig: string }[] = [];
@@ -1223,11 +1234,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   const checks: Partial<Record<Protocol, ModelCheck>> = {};
   if (!models.length && !skipModels) {
     byProtocol = {};
-    // Messages first when it answered: a stop on the first API skips the rest,
-    // and Claude models served only on Messages would go missing behind a
-    // Chat rate limit. Results keep the step-2 order.
-    const askOrder = protocols.includes("anthropic") ? ["anthropic" as Protocol, ...protocols.filter((p) => p !== "anthropic")] : protocols;
-    for (const proto of askOrder) {
+    for (const proto of protocols) {
       if (generatesOnEmpty.has(proto)) { byProtocol[proto] = []; partialReason ||= PARTIAL_REASON.generated; stopReason ||= "generated"; continue; }
       if (blocked) {
         // Never asked on this API (same key / limiter / clock on every path).
@@ -1244,7 +1251,6 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
       if (!res.stopped && !res.complete && candidates.length) partialReason ||= PARTIAL_REASON.failing;
       if (res.stopped && res.stopped !== "generated" && res.stopped !== "failing") blocked = res.stopped;
     }
-    byProtocol = inOrder(byProtocol, protocols);
     const built = buildRoutes(byProtocol);
     if (built.models.length) {
       models = built.models;
@@ -1304,7 +1310,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
     suggestedName: name,
     suggestedPrefix: makePrefix(name),
     stopReason,
-    ...(Object.keys(checks).length ? { checks: inOrder(checks, protocols) } : {}),
+    ...(Object.keys(checks).length ? { checks } : {}),
     steps,
   };
 }
