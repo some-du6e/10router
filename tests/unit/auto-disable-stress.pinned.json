@@ -1,7 +1,17 @@
 {
   "prodPattern": {
-    "other account": 22,
+    "other account": 12,
     "same account": 12
+  },
+  "prodEveryMinute": {
+    "other account": {
+      "firstHour": 9,
+      "total": 14
+    },
+    "same account": {
+      "firstHour": 9,
+      "total": 14
+    }
   },
   "incidentRecovery": {
     "every minute, 30 min": 12,
@@ -32,11 +42,11 @@
     "same account: opus, then haiku": 207,
     "same account: one model at a time, 2 h each": 124,
     "same account: bursty, 2 models": 92,
-    "other account: sonnet, then opus": 186,
+    "other account: sonnet, then opus": null,
     "other account: sessions alternating sonnet and opus": 69,
-    "other account: opus, plus sonnet every 2 h": 180,
-    "other account: opus, then haiku": 186,
-    "other account: one model at a time, 2 h each": 122,
+    "other account: opus, plus sonnet every 2 h": null,
+    "other account: opus, then haiku": null,
+    "other account: one model at a time, 2 h each": null,
     "other account: bursty, 2 models": 62
   },
   "lacksOpus": {

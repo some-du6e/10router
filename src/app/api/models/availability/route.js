@@ -3,8 +3,10 @@ import {
   getProviderConnections,
   updateProviderConnection,
 } from "@/lib/localDb";
-import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey } from "@/lib/db/index.js";
+import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey, AUTH_SOFT_PREFIX, getAuthSoftKey, AUTH_STREAK_FIELDS } from "@/lib/db/index.js";
 import { MODEL_LOCK_PREFIX } from "open-sse/services/accountFallback.js";
+import { clearSoftDemotions } from "@/lib/softDemotions.js";
+import { AUTH_SOFT_DEMOTE } from "open-sse/config/runtimeConfig.js";
 
 function getActiveModelLocks(connection) {
   const now = Date.now();
@@ -43,6 +45,7 @@ export async function GET() {
       let demotions = 0;
       for (const [key, demotion] of Object.entries(connection)) {
         if (connection.isActive === false || !key.startsWith(AUTH_DEMOTE_PREFIX) || !demotion?.demotedAt) continue;
+        if (demotion.held401 && !AUTH_SOFT_DEMOTE.enabled) continue;
         const model = key.slice(AUTH_DEMOTE_PREFIX.length);
         if (locks.some((lock) => lock.model === model)) continue;
         const nextTry = Math.max(new Date(demotion.nextProbeAt).getTime(), new Date(demotion.leaseUntil || 0).getTime());
@@ -55,6 +58,23 @@ export async function GET() {
           connectionId: connection.id,
           connectionName: connection.name || connection.email || connection.id,
           lastError: `Demoted after repeated ${demotion.reason}${probeDue ? " (probe due)" : ""}`,
+        });
+        demotions++;
+      }
+      // Soft demotions: other keys go first there until it serves again.
+      for (const [key, soft] of Object.entries(connection)) {
+        if (!AUTH_SOFT_DEMOTE.enabled || connection.isActive === false || !key.startsWith(AUTH_SOFT_PREFIX) || !soft?.since) continue;
+        const model = key.slice(AUTH_SOFT_PREFIX.length);
+        if (locks.some((lock) => lock.model === model)) continue;
+        const tryDue = !(new Date(soft.tryAt).getTime() > Date.now());
+        models.push({
+          provider: connection.provider,
+          model,
+          status: "cooldown",
+          until: tryDue ? null : soft.tryAt,
+          connectionId: connection.id,
+          connectionName: connection.name || connection.email || connection.id,
+          lastError: `Soft-demoted: last refused ${soft.lastRefusedAt || soft.since}${tryDue ? " (try due)" : ""}`,
         });
         demotions++;
       }
@@ -95,14 +115,26 @@ export async function POST(request) {
     const connections = await getProviderConnections({ provider });
     const lockKey = `${MODEL_LOCK_PREFIX}${model}`;
     const demoteKey = getAuthDemoteKey(model);
+    const softKey = getAuthSoftKey(model);
+    // Ending a soft demotion for refusals of the key itself without a success
+    // gives the key a fresh start, as switching it off and on does: no
+    // demotions or soft demotions on any model, no streak.
+    const freshStart = (connection) => AUTH_SOFT_DEMOTE.enabled && connection[softKey]?.since && connection[softKey].keyRefused === true;
+    for (const connection of connections) clearSoftDemotions(connection.id, freshStart(connection) ? null : model);
 
     await Promise.all(
       connections
-        .filter((connection) => connection[lockKey] || connection[demoteKey])
+        .filter((connection) => connection[lockKey] || connection[demoteKey] || connection[softKey])
         .map((connection) =>
           updateProviderConnection(connection.id, {
+            ...(freshStart(connection) ? {
+              ...Object.fromEntries(Object.keys(connection)
+                .filter((k) => k.startsWith(AUTH_DEMOTE_PREFIX) || k.startsWith(AUTH_SOFT_PREFIX)).map((k) => [k, null])),
+              ...Object.fromEntries(AUTH_STREAK_FIELDS.map((f) => [f, null])),
+            } : {}),
             [lockKey]: null,
             [demoteKey]: null,
+            [softKey]: null,
             ...(connection.testStatus === "unavailable"
               ? {
                   testStatus: "active",

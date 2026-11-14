@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { demotedLabel, demotedModels, isDemotionError } from "../../src/shared/utils/connectionStatus.js";
 // Keys built the way the repo writes them.
-import { getAuthDemoteKey } from "../../src/lib/db/repos/connectionsRepo.js";
+import { getAuthDemoteKey, getAuthSoftKey } from "../../src/lib/db/repos/connectionsRepo.js";
 import { withToggledActive } from "../../src/app/(dashboard)/dashboard/providers/utils.js";
 
 const OPUS = getAuthDemoteKey("claude-opus-5-5");
@@ -54,6 +54,83 @@ describe("demoted key label", () => {
     expect(isDemotionError({ lastError: `upstream says: ${message}` })).toBe(false);
     expect(isDemotionError({})).toBe(false);
     expect(isDemotionError(null)).toBe(false);
+  });
+});
+
+describe("soft-demoted key label", () => {
+  const SOFT_OPUS = getAuthSoftKey("claude-opus-5-5");
+  const SOFT_KIMI = getAuthSoftKey("kimi-k3");
+  const soft = (lastRefusedAt = "2026-11-02T02:40:00.000Z") => ({ level: 1, since: "2026-11-02T02:20:00.000Z", tryAt: "2026-11-02T03:00:00.000Z", lastRefusedAt });
+
+  it("names the models and when the key was last refused there", () => {
+    const label = demotedLabel({ [SOFT_OPUS]: soft() });
+    expect(label.text).toBe("Soft-demoted on claude-opus-5-5");
+    expect(label.title).toBe(`Soft-demoted on claude-opus-5-5: last refused ${new Date("2026-11-02T02:40:00.000Z").toLocaleString()}. `
+      + "Other keys go first there until it serves claude-opus-5-5 again. Switching the key off and on clears it.");
+    expect(demotedModels({ [SOFT_OPUS]: soft() })).toEqual([{ model: "claude-opus-5-5", soft: true, lastRefusedAt: "2026-11-02T02:40:00.000Z", keyRefused: false }]);
+  });
+
+  // Refused for itself on opus and kimi, as the turn-off rule needs.
+  const both = (extra = {}) => ({ [SOFT_OPUS]: { ...soft(), keyRefused: true, ...extra }, [SOFT_KIMI]: { ...soft(), keyRefused: true, ...extra } });
+
+  it("doesn't suggest replacing a key refused for itself that has served something since", () => {
+    const label = demotedLabel({ ...both(), authServedAt: "2026-11-02T02:50:00.000Z" });
+    expect(label.title).not.toContain("replace the key");
+  });
+
+  it("suggests replacing it when it was refused for itself again after serving", () => {
+    const label = demotedLabel({ ...both({ keyRefusedAt: "2026-11-02T03:00:00.000Z" }), authServedAt: "2026-11-02T02:50:00.000Z" });
+    expect(label.title).toContain("replace the key");
+  });
+
+  it("doesn't suggest replacing it when it was refused for itself on one model only since serving", () => {
+    const label = demotedLabel({
+      [SOFT_OPUS]: { ...soft(), keyRefused: true, keyRefusedAt: "2026-11-02T03:00:00.000Z" }, [SOFT_KIMI]: { ...soft(), keyRefused: true },
+      authServedAt: "2026-11-02T02:50:00.000Z",
+    });
+    expect(label.title).not.toContain("replace the key");
+  });
+
+  it("suggests replacing it when refused on one model only, with 401s in a row", () => {
+    expect(demotedLabel({ [SOFT_OPUS]: { ...soft(), keyRefused: true }, authHeld401s: 5 }).title).toContain("replace the key");
+    expect(demotedLabel({ [SOFT_OPUS]: { ...soft(), keyRefused: true }, authHeld401s: 4 }).title).not.toContain("replace the key");
+  });
+
+  // Records from before keyRefusedAt was kept: their last refusal, with refused tries.
+  it("reads a record without keyRefusedAt by its last refusal if it had refused tries", () => {
+    const old = { ...soft("2026-11-02T03:00:00.000Z"), keyRefused: true, tries: 1 };
+    expect(demotedLabel({ [SOFT_OPUS]: old, [SOFT_KIMI]: old, authServedAt: "2026-11-02T02:50:00.000Z" }).title).toContain("replace the key");
+    const none = { ...soft("2026-11-02T03:00:00.000Z"), keyRefused: true };
+    expect(demotedLabel({ [SOFT_OPUS]: none, [SOFT_KIMI]: none, authServedAt: "2026-11-02T02:50:00.000Z" }).title).not.toContain("replace the key");
+  });
+
+  // Counted from the later of its last success and its soft demotion, as the day rule.
+  it("doesn't suggest replacing it for a count on another model from before its soft demotion", () => {
+    const stale = { count: 3, firstAt: "2026-11-02T01:50:00.000Z", lastCountedAt: "2026-11-02T02:00:00.000Z" };
+    expect(demotedLabel({ [SOFT_OPUS]: { ...soft(), keyRefused: true }, [getAuthDemoteKey("kimi-k3")]: stale }).title).not.toContain("replace the key");
+  });
+
+  // A soft demotion beginning on another model writes authDemoteOkAt too.
+  it("still suggests replacing it when it has only been soft-demoted elsewhere since", () => {
+    const label = demotedLabel({ ...both(), authDemoteOkAt: "2026-11-02T02:50:00.000Z" });
+    expect(label.title).toContain("replace the key");
+  });
+
+  it("suggests replacing a key whose refusals are of the key itself", () => {
+    expect(demotedLabel({ [SOFT_OPUS]: { ...soft(), keyRefused: true }, [getAuthDemoteKey("kimi-k3")]: { count: 1, firstAt: "2026-11-02T02:30:00.000Z", lastCountedAt: "2026-11-02T02:30:00.000Z" } }).title).toBe(
+      `Soft-demoted on claude-opus-5-5: last refused ${new Date("2026-11-02T02:40:00.000Z").toLocaleString()}. `
+      + "Other keys go first there until it serves claude-opus-5-5 again. The upstream keeps refusing the key itself: if that goes on, "
+      + "replace the key. Switching the key off and on clears it.");
+  });
+
+  it("lists demotions and soft demotions together", () => {
+    expect(demotedLabel({ [OPUS]: demoted(), [SOFT_KIMI]: soft() }).text).toBe("Demoted on claude-opus-5-5, soft-demoted on kimi-k3");
+    expect(demotedLabel({ isActive: false, [SOFT_KIMI]: soft() })).toBeNull();
+    expect(demotedLabel({ [SOFT_KIMI]: null })).toBeNull();
+  });
+
+  it("follows the server's soft demotions on a toggle", () => {
+    expect(demotedLabel(withToggledActive({ id: "k", isActive: false, [SOFT_OPUS]: soft() }, true, { id: "k", isActive: true }))).toBeNull();
   });
 });
 

@@ -9,6 +9,7 @@ import {
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { resolveKeyBaseUrl, withKeyBaseUrl, withoutKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
 import { isLocalRequest } from "@/dashboardGuard";
+import { withSoftDemotionsShown } from "@/lib/softDemotions.js";
 
 function normalizeProxyConfig(body = {}) {
   const hasAnyProxyField =
@@ -74,7 +75,7 @@ export async function GET(request, { params }) {
     }
 
     // Hide sensitive fields
-    const result = { ...connection };
+    const result = { ...withSoftDemotionsShown(connection) };
     delete result.apiKey;
     delete result.accessToken;
     delete result.refreshToken;

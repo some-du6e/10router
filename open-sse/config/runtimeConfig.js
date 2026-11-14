@@ -91,6 +91,29 @@ export const CACHE_AFFINITY = {
   jitterMs: 250,
 };
 
+// Soft demotion (sse/services/auth.js): an API key whose demotion count on a
+// model would demote it in minWindowMs, but needs crossUpstreamWindowMs because
+// a peer on another upstream served, goes after the other keys there, with
+// tries on AUTH_DEMOTE_CONFIG's probe schedule, until it serves that model;
+// meanwhile its refusals there don't count toward demoting it, the ones before
+// it are forgotten as a success would, and, if those were refusals of the key
+// itself, the usual rules don't turn the key off. Stored on the connection
+// (authSoft_<model>). Env: AUTH_SOFT_DEMOTE=0 turns it off; anything else
+// leaves it on.
+// A key soft-demoted that way that has served nothing on any model for
+// deadAfterMs (from its last success, or its first such soft demotion if
+// later), with at least deadAfterTries of its tries refused for the key itself
+// in that time, and refused for itself on AUTH_DEAD_CONFIG.minModels models in
+// that time or with minFailures 401s in a row (as AUTH_DEAD_CONFIG needs), is
+// turned off at its next refusal of the key itself. While held, its 401s
+// count toward demoting it on a model as 403s do. Env:
+// AUTH_SOFT_DEMOTE_DEAD_AFTER_MS (0: never), AUTH_SOFT_DEMOTE_DEAD_AFTER_TRIES.
+export const AUTH_SOFT_DEMOTE = {
+  enabled: envInt("AUTH_SOFT_DEMOTE", 1, { max: 1 }) !== 0,
+  deadAfterMs: envInt("AUTH_SOFT_DEMOTE_DEAD_AFTER_MS", 24 * 60 * 60 * 1000),
+  deadAfterTries: envInt("AUTH_SOFT_DEMOTE_DEAD_AFTER_TRIES", 6, { min: 1 }),
+};
+
 // Inter-chunk stall timeout (once tokens are flowing). Generous headroom so
 // slow reasoning models aren't aborted mid-stream. Env: STREAM_STALL_TIMEOUT_MS.
 export const STREAM_STALL_TIMEOUT_MS = envMs("STREAM_STALL_TIMEOUT_MS", 360 * 1000);
