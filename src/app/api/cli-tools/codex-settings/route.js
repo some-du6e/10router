@@ -7,8 +7,25 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { parseTOML, stringifyTOML } from "confbox";
+import { parseCodexVersion } from "@/shared/utils/codexCatalog.js";
+import { decideCatalogUrl } from "@/lib/codex/catalogUrlDecision.js";
 
 const execAsync = promisify(exec);
+
+const codexEnv = () => (os.platform() === "win32"
+  ? { ...process.env, PATH: `${process.env.APPDATA}\\npm;${process.env.PATH}` }
+  : process.env);
+
+// The installed Codex's version, or null when it can't be told.
+const installedCodexVersion = async () => {
+  try {
+    const { stdout } = await execAsync("codex --version", { windowsHide: true, timeout: 3000, env: codexEnv() });
+    return parseCodexVersion(stdout);
+  } catch {
+    return null;
+  }
+};
+
 
 // Codex-native ingress path (mirrors chatgpt.com/backend-api/codex). Pointing the
 // CLI here instead of /v1 makes it use the ChatGPT wire: native model catalog with
@@ -30,10 +47,14 @@ const resolveCodexBaseUrl = (baseUrl, native) => {
 
 // `name` must be the lowercase "openai" for recent Codex versions to accept the
 // native ChatGPT wire; the OpenAI-compatible endpoint keeps the 10router label.
-const buildProviderSection = (baseUrl, native) => (native
+// Signed in with an API key, Codex only reads a custom base URL's catalog from
+// `model_catalog_url`; without the catalog it has no apply_patch tool for
+// models it doesn't know.
+const buildProviderSection = (baseUrl, native, catalog) => (native
   ? {
     name: "openai",
     base_url: baseUrl,
+    ...(catalog ? { model_catalog_url: `${baseUrl}/models` } : {}),
     wire_api: "responses",
     requires_openai_auth: true,
   }
@@ -154,6 +175,14 @@ export async function POST(request) {
     const codexDir = getCodexDir();
     const configPath = getCodexConfigPath();
 
+    // Decided before the file is read: this can take several seconds, and the
+    // file may change meanwhile (a Reset, or Codex itself writing to it).
+    const useNative = native !== false;
+    const normalizedBaseUrl = resolveCodexBaseUrl(baseUrl, useNative);
+    const catalog = useNative
+      ? await decideCatalogUrl({ apiKey, ids: [model, subagentModel || model], codexVersion: installedCodexVersion() })
+      : { write: false, reason: "not-native" };
+
     // Ensure directory exists
     await fs.mkdir(codexDir, { recursive: true });
 
@@ -170,9 +199,7 @@ export async function POST(request) {
 
     // Update or create 10router provider section (no api_key - Codex reads from auth.json).
     // The Codex-native endpoint is the default; pass native:false for plain /v1.
-    const useNative = native !== false;
-    const normalizedBaseUrl = resolveCodexBaseUrl(baseUrl, useNative);
-    setNestedSection(parsed, "model_providers.10router", buildProviderSection(normalizedBaseUrl, useNative));
+    setNestedSection(parsed, "model_providers.10router", buildProviderSection(normalizedBaseUrl, useNative, catalog.write));
 
     // Subagent model is a scalar under [agents]; agents.<role> now means a custom role
     deleteNestedSection(parsed, "agents.subagent");
@@ -188,6 +215,10 @@ export async function POST(request) {
       configPath,
       baseUrl: normalizedBaseUrl,
       native: useNative,
+      // Whether model_catalog_url was written, and why not: "codex-version"
+      // (older or unknown Codex), "not-listed" (the key's list doesn't have the
+      // models under these ids), "lookup-failed", "not-native".
+      catalogUrl: { written: catalog.write, reason: catalog.reason },
     });
   } catch (error) {
     console.log("Error updating codex settings:", error);

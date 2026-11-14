@@ -195,18 +195,22 @@ async function fetchCompatibleModelIds(connection) {
 
   try {
     const controller = new AbortController();
+    // Armed until the body is read: a body that stalls after its headers
+    // would otherwise hold up the whole model list.
     const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const response = await fetch(url, {
-      method: "GET",
-      headers: { ...headers, [INTERNAL_MODELS_FETCH_HEADER]: "1" },
-      cache: "no-store",
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    if (!response.ok) return [];
-
-    const data = await response.json();
+    let data;
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        headers: { ...headers, [INTERNAL_MODELS_FETCH_HEADER]: "1" },
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok) return [];
+      data = await response.json();
+    } finally {
+      clearTimeout(timeoutId);
+    }
     const rawModels = parseOpenAIStyleModels(data);
 
     return Array.from(
@@ -247,6 +251,8 @@ export async function buildModelsList(kindFilter, options = {}) {
   // 10router instance's fetchCompatibleModelIds — skip dynamic fetch to break
   // cross-instance recursive loops.
   const skipDynamicFetch = options.skipDynamicFetch === true;
+  // Static lists only, no live provider catalogs: for callers that can't wait.
+  const skipLiveCatalogs = options.skipLiveCatalogs === true;
   let connections = [];
   try {
     connections = await getProviderConnections();
@@ -384,7 +390,7 @@ export async function buildModelsList(kindFilter, options = {}) {
       // -thinking/-agentic variants per account). On failure, fall back to
       // whatever rawModelIds already holds.
       const liveResolver = LIVE_MODEL_RESOLVERS[providerId];
-      if (liveResolver && !hasExplicitEnabledModels) {
+      if (liveResolver && !hasExplicitEnabledModels && !skipLiveCatalogs) {
         try {
           const live = await liveResolver(conn);
           if (live?.models?.length) {

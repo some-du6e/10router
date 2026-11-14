@@ -161,6 +161,27 @@ with an allowlisted key, list only the models it may use, and
 have no readable model, so an allowlisted key can't create them. Polling an
 existing video job checks only expiry.
 
+A model allowed by a bare id is listed under that id only, never under the
+provider ids behind it. For Codex this matters: with `model_catalog_url` set,
+Codex matches its configured `model` (a provider id like `cx/gpt-5.5`) against
+the catalog exactly, and wouldn't find it. So the dashboard's Codex setup
+writes `model_catalog_url` only when the key's catalog lists the configured
+models under the ids it writes (and the installed Codex is 0.166 or newer). It
+checks the key picked in the dashboard, so that's only right when Codex logs in
+with that same router key. An alias isn't listed under its own name, so a
+model set to an alias gets no line either. For
+a key allowed a model by its bare id it leaves the line out (unless the
+configured ids are the bare names themselves), and Codex keeps
+its own model list, as before the catalog: GPT models keep Codex's own
+settings, but other models (Claude, for one) don't get the `apply_patch` tool
+with such a key yet.
+
+The line is written when Codex settings are applied, so after changing a key's
+allowlist, apply them again on the CLI Tools page (or delete the
+`model_catalog_url` line from `~/.codex/config.toml`). A line written for the
+old allowlist stays otherwise, and Codex runs a model it can no longer find
+there on generic settings.
+
 ## Error bodies
 
 On `/v1/messages` (Anthropic format):

@@ -8,6 +8,7 @@ import ApiKeySelect from "./ApiKeySelect";
 import { matchKnownEndpoint } from "./cliEndpointMatch";
 import { AI_MODELS, PROVIDER_ID_TO_ALIAS } from "@/shared/constants/models";
 import { rememberEndpoint } from "./cliEndpointPresets";
+import { manualCatalogLines, catalogUrlNote } from "@/shared/utils/codexCatalog";
 
 // The models Codex may ask for on its own. Read from the provider registry
 // rather than written out here, so a change to the Codex line-up updates this
@@ -218,7 +219,7 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
       if (res.ok) {
         // Remember the endpoint so it stays selectable next time
         rememberEndpoint(getEffectiveBaseUrl(), { tunnelPublicUrl, tailscaleUrl });
-        setMessage({ type: "success", text: "Settings applied successfully!" });
+        setMessage({ type: "success", text: ["Settings applied successfully!", catalogUrlNote(data.catalogUrl)].filter(Boolean).join(" ") });
         checkCodexStatus();
       } else {
         setMessage({ type: "error", text: data.error || "Failed to apply settings" });
@@ -267,11 +268,13 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
 
     const effectiveSubagentModel = subagentModel || selectedModel;
 
+    const catalogLine = manualCatalogLines(getEffectiveBaseUrl());
+
     const providerSection = useNative
       ? `[model_providers.10router]
 name = "openai"
 base_url = "${getEffectiveBaseUrl()}"
-wire_api = "responses"
+${catalogLine}wire_api = "responses"
 requires_openai_auth = true`
       : `[model_providers.10router]
 name = "10router"
@@ -284,7 +287,7 @@ model_provider = "10router"
 
 ${providerSection}
 
-[model_providers.9router.http_headers]
+[model_providers.10router.http_headers]
 Authorization = "Bearer ${keyToUse}"
 
 [agents]
@@ -532,10 +535,10 @@ default_subagent_model = "${effectiveSubagentModel}"
               )}
 
               <div className="grid grid-cols-1 gap-2 sm:flex sm:items-center">
-                <Button variant="primary" size="sm" onClick={handleApplySettings} disabled={(!selectedApiKey && (cloudEnabled && apiKeys.length > 0)) || !selectedModel} loading={applying}>
+                <Button variant="primary" size="sm" onClick={handleApplySettings} disabled={(!selectedApiKey && (cloudEnabled && apiKeys.length > 0)) || !selectedModel || restoring} loading={applying}>
                   <span className="material-symbols-outlined text-[14px] mr-1">save</span>Apply
                 </Button>
-                <Button variant="outline" size="sm" onClick={handleResetSettings} disabled={restoring} loading={restoring}>
+                <Button variant="outline" size="sm" onClick={handleResetSettings} disabled={restoring || applying} loading={restoring}>
                   <span className="material-symbols-outlined text-[14px] mr-1">restore</span>Reset
                 </Button>
                 <Button variant="ghost" size="sm" onClick={() => setShowManualConfigModal(true)}>

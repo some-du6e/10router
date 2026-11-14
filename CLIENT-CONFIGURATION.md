@@ -44,9 +44,49 @@ For a manual `~/.codex/config.toml`, the provider needs the native Codex setting
 [model_providers.10router]
 name = "openai"
 base_url = "http://127.0.0.1:20128/backend-api/codex"
+# Uncomment on Codex 0.166 or newer (see below):
+# model_catalog_url = "http://127.0.0.1:20128/backend-api/codex/models"
 wire_api = "responses"
 requires_openai_auth = true
 ```
+
+`model_catalog_url` matters when Codex is signed in with an API key (`codex login --with-api-key`).
+Without it, Codex never reads 10router's model list, uses generic settings for any model it
+doesn't know, and gives that model no `apply_patch` tool, so it edits files through the shell.
+What the line does depends on the Codex version:
+
+- **0.166 and newer:** Codex uses only 10router's list, signed in with an API key or with
+  ChatGPT, and looks up its `model` there by exact name. This is the version the line is for.
+- **0.160 to 0.165:** the same exact-name mode, but Codex refuses a list over 1 MiB, which
+  10router's usually is (each model carries Codex's prompt), and then has no models at all.
+  It also needs `[features] api_key_model_discovery = true` before 0.161. Leave the line out.
+- **0.156 to 0.159:** Codex merges the list into its own, but also refuses one over 1 MiB, and
+  needs `api_key_model_discovery`. Leave the line out.
+- **Before 0.156:** there's no such setting.
+
+The dashboard's Codex setup writes the line only when the installed `codex` is 0.166 or newer and
+the router's model list, seen through the key you apply with, has both `model` and
+`default_subagent_model` under the exact ids being written. A model set to an alias, or to an
+id 10router doesn't list, gets no line (the list has what an alias points to, not the alias).
+The card says after Apply whether it wrote the line, and if not, why. That check is only right when Codex logs in with that same router key: Codex
+sends its own login, not the config's `Authorization` header. A Codex IDE extension or desktop
+app reading the same `~/.codex/config.toml` may run its own bundled Codex version; check that
+one too. The manual config on the Codex card has the line commented out; uncomment it only when
+all of this holds.
+
+- If your API key has a model allowlist that names a model by its bare id (`gpt-5.5` rather
+  than `cx/gpt-5.5`), leave `model_catalog_url` out. The list shows that model under the bare
+  id only, and routing a bare id differs from routing the provider id you picked, so Codex
+  wouldn't find the model it's set to. Without the line, Codex keeps its own list as before:
+  GPT models get Codex's own settings, but other models (Claude, for one) don't get
+  `apply_patch` yet. The dashboard leaves the line out for such a key, unless the configured
+  ids are the bare names themselves.
+- After changing an allowlist, apply the Codex settings again on the CLI Tools page, or delete
+  the line yourself: a line written for the old allowlist stays in `config.toml`, and with a
+  model the key now sees under another name, Codex runs it on generic settings.
+- A context-window suffix such as `cc/claude-opus-5[1m]` isn't in the list (the router doesn't
+  know which models take one), so Codex runs such a model on generic settings with no
+  `apply_patch`. Use the id without the suffix.
 
 The regular `/v1` endpoint is a separate OpenAI-compatible mode. It is not the native
 Codex backend.

@@ -1,77 +1,12 @@
-import { buildModelsList } from "../../models/route.js";
+import { getRoutedModels } from "@/lib/codex/routedModels.js";
+import { getCatalogStamp } from "open-sse/providers/catalogOverride.js";
 import { filterModelsForRequest } from "@/sse/services/keyLimits.js";
-import { PROVIDER_ID_TO_ALIAS } from "@/shared/constants/models";
-import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
+import { buildCodexCatalog, codexShapeFor, codexModelsForShape, uniqueBySlug, CODEX_ALIAS } from "@/lib/codex/modelCatalog.js";
 
 // Codex clients pointed at a `/backend-api/codex` base URL fetch their catalog
 // from `<base_url>/models` and expect the Codex shape (`{ "models": [...] }`).
-// The OpenAI-compatible `{ object, data }` shape fails to parse client-side and
-// Codex silently falls back to its bundled metadata (stale context windows and
-// reasoning levels), so serve both shapes in one body: `models` for Codex,
-// `data` for anything else that follows the OpenAI list contract.
-
-const REASONING_LEVELS = [
-  { effort: "minimal", description: "Fastest responses with limited reasoning." },
-  { effort: "low", description: "Balances speed with some reasoning." },
-  { effort: "medium", description: "Default reasoning depth." },
-  { effort: "high", description: "Maximizes reasoning depth for complex problems." },
-];
-
-// Codex truncates tool output client-side using this policy. Tokens/10k matches
-// the upstream default for every model except gpt-5.2 (which is byte-based).
-const truncationPolicyFor = (slug) => (
-  slug.endsWith("/gpt-5.2") || slug === "gpt-5.2"
-    ? { mode: "bytes", limit: 10000 }
-    : { mode: "tokens", limit: 10000 }
-);
-
-const ALIAS_TO_PROVIDER_ID = Object.fromEntries(
-  Object.entries(PROVIDER_ID_TO_ALIAS).map(([id, alias]) => [alias, id])
-);
-
-// "cx/gpt-5.6-sol" -> capabilities for provider `codex`, model `gpt-5.6-sol`.
-// Combos and unprefixed ids fall back to the capability defaults.
-function capabilitiesFor(modelId) {
-  const slash = modelId.indexOf("/");
-  if (slash === -1) return getCapabilitiesForModel(null, modelId);
-  const alias = modelId.slice(0, slash);
-  const bareId = modelId.slice(slash + 1);
-  return getCapabilitiesForModel(ALIAS_TO_PROVIDER_ID[alias] || alias, bareId);
-}
-
-function inputModalities(caps) {
-  const modalities = ["text"];
-  if (caps?.vision) modalities.push("image");
-  return modalities;
-}
-
-function toCodexEntry(model) {
-  const caps = model.capabilities?.contextWindow ? model.capabilities : capabilitiesFor(model.id);
-  const reasoning = caps?.reasoning === true;
-  return {
-    slug: model.id,
-    display_name: model.id,
-    description: `${model.owned_by || "10router"} via 10router`,
-    base_instructions: "",
-    default_reasoning_level: reasoning ? "medium" : null,
-    supported_reasoning_levels: reasoning ? REASONING_LEVELS : [],
-    supported_in_api: true,
-    priority: 0,
-    minimal_client_version: null,
-    supports_reasoning_summaries: reasoning,
-    support_verbosity: false,
-    default_verbosity: null,
-    supports_parallel_tool_calls: caps?.tools !== false,
-    context_window: caps?.contextWindow || 200000,
-    max_output_tokens: caps?.maxOutput || undefined,
-    input_modalities: inputModalities(caps),
-    available_in_plans: [],
-    prefer_websockets: false,
-    visibility: "list",
-    truncation_policy: truncationPolicyFor(model.id),
-    experimental_supported_tools: [],
-  };
-}
+// Serve both shapes in one body: `models` for Codex, `data` for anything else
+// that follows the OpenAI list contract.
 
 function toOpenAIEntry(entry, created) {
   return {
@@ -95,6 +30,12 @@ function toOpenAIEntry(entry, created) {
   };
 }
 
+// Most generic entries carry the same 21k-character prompt, so the body runs
+// to megabytes. Codex asks for it again every few minutes with the same
+// models, so keep the last serialized body (one slot) and reuse it while its
+// inputs are the same. The entries themselves are rebuilt on every request.
+let lastBody = { key: null, models: null, data: null };
+
 export async function OPTIONS() {
   return new Response(null, {
     headers: {
@@ -110,18 +51,43 @@ export async function OPTIONS() {
  */
 export async function GET(request) {
   try {
-    // A key with a model allowlist sees only the models it may use.
-    const models = await filterModelsForRequest(request, await buildModelsList(["llm"]));
-    const created = Math.floor(Date.now() / 1000);
-    const entries = models.map(toCodexEntry);
-    return Response.json(
-      {
-        models: entries,
-        object: "list",
-        data: entries.map((entry) => toOpenAIEntry(entry, created)),
-      },
-      { headers: { "Access-Control-Allow-Origin": "*" } }
+    // A key with a model allowlist sees only the models it may use (a model
+    // allowed by a bare name, under that name only), from the list cached and
+    // bounded in time in routedModels.js.
+    const models = await filterModelsForRequest(request, await getRoutedModels());
+    const shape = codexShapeFor(new URL(request.url).searchParams.get("client_version"));
+    const codexModels = codexModelsForShape(shape);
+    const entries = buildCodexCatalog(models, codexModels);
+
+    // Codex looks up its own models by their bare names: a bare model in the
+    // config (routed to `cx/` by the Codex ingress) and the ones it picks for
+    // side requests. Once this catalog decodes it replaces the one Codex ships,
+    // so those stay in, hidden from the picker.
+    const listed = new Set(entries.map((entry) => entry.slug));
+    const bare = await filterModelsForRequest(
+      request,
+      codexModels.filter((model) => !listed.has(model.slug)),
+      (model) => `${CODEX_ALIAS}/${model.slug}`,
+      (model) => model,
     );
+
+    // Keyed on what shapes the body, not the raw client_version, so any number
+    // of version strings that shape it the same way share one build.
+    // getCatalogStamp: generic entries read capabilities from the synced
+    // models.dev catalog for models that carry none of their own.
+    const key = JSON.stringify([shape, getCatalogStamp(), models, bare.map((model) => model.slug)]);
+    if (lastBody.key !== key) {
+      const created = Math.floor(Date.now() / 1000);
+      const routed = uniqueBySlug(entries);
+      lastBody = {
+        key,
+        models: JSON.stringify(uniqueBySlug([...routed, ...bare.map((model) => ({ ...model, visibility: "hide" }))])),
+        data: JSON.stringify(routed.map((entry) => toOpenAIEntry(entry, created))),
+      };
+    }
+    return new Response(`{"models":${lastBody.models},"object":"list","data":${lastBody.data}}`, {
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+    });
   } catch (error) {
     console.log("Error building codex models catalog:", error);
     return Response.json(

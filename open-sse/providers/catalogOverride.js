@@ -61,6 +61,16 @@ export function getCatalogLimits(provider, model) {
   return byProvider[model] || byProvider[baseId(model)] || null;
 }
 
+// Changes whenever the synced catalog does (its file's mtime; -1 with no file),
+// for callers caching something derived from capabilities.
+export function getCatalogStamp() {
+  try {
+    return fs.statSync(CATALOG_FILE).mtimeMs;
+  } catch {
+    return -1;
+  }
+}
+
 // Force a re-read on the next lookup (called right after a sync writes the file).
 export function invalidateCatalog() {
   cachedMtime = -1;
