@@ -175,6 +175,14 @@ export async function POST(request) {
     const codexDir = getCodexDir();
     const configPath = getCodexConfigPath();
 
+    // Decided before the file is read: this can take several seconds, and the
+    // file may change meanwhile (a Reset, or Codex itself writing to it).
+    const useNative = native !== false;
+    const normalizedBaseUrl = resolveCodexBaseUrl(baseUrl, useNative);
+    const catalog = useNative
+      ? await decideCatalogUrl({ apiKey, ids: [model, subagentModel || model], codexVersion: installedCodexVersion() })
+      : { write: false, reason: "not-native" };
+
     // Ensure directory exists
     await fs.mkdir(codexDir, { recursive: true });
 
@@ -191,11 +199,6 @@ export async function POST(request) {
 
     // Update or create 10router provider section (no api_key - Codex reads from auth.json).
     // The Codex-native endpoint is the default; pass native:false for plain /v1.
-    const useNative = native !== false;
-    const normalizedBaseUrl = resolveCodexBaseUrl(baseUrl, useNative);
-    const catalog = useNative
-      ? await decideCatalogUrl({ apiKey, ids: [model, subagentModel || model], codexVersion: installedCodexVersion() })
-      : { write: false, reason: "not-native" };
     setNestedSection(parsed, "model_providers.10router", buildProviderSection(normalizedBaseUrl, useNative, catalog.write));
 
     // Subagent model is a scalar under [agents]; agents.<role> now means a custom role

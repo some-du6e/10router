@@ -84,6 +84,43 @@ describe("model_catalog_url decision", () => {
   });
 });
 
+describe("what the decision waits for", () => {
+  it("answers codex-version without waiting for the list", async () => {
+    const listIds = vi.fn(() => new Promise(() => {}));
+    expect(await decideCatalogUrl({ apiKey: null, ids: ["cx/gpt-5.5"], codexVersion: [0, 165, 0], listIds }))
+      .toEqual({ write: false, reason: "codex-version" });
+    expect(listIds).toHaveBeenCalledTimes(1);
+  });
+
+  it("doesn't wait for a fresh list when the held one doesn't predate a write", async () => {
+    const listIds = vi.fn(async () => new Set(["cx/gpt-5.5"]));
+    const decision = await decideCatalogUrl({ apiKey: null, ids: ["gpt-5.5"], codexVersion: NEW, listIds, listBehind: () => false });
+    expect(decision).toEqual({ write: false, reason: "not-listed" });
+    expect(listIds).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks for a fresh list when the held one predates a write", async () => {
+    const listIds = vi.fn(async (_key, options) => new Set(options?.fresh ? ["newp/model-x"] : []));
+    const decision = await decideCatalogUrl({ apiKey: null, ids: ["newp/model-x"], codexVersion: NEW, listIds, listBehind: () => true });
+    expect(decision).toEqual({ write: true, reason: "listed" });
+    expect(listIds.mock.calls.map((call) => Boolean(call[1]?.fresh))).toEqual([false, true]);
+  });
+
+  it("follows a build that started before the write with one that sees it", async () => {
+    const { getFreshRoutedModels } = await import("@/lib/codex/routedModels.js");
+    routed.models = list("cx/gpt-5.5");
+    routed.delayMs = 200;
+    warmRoutedModels();
+    await settle();
+    // Written while that build runs: it can't include it.
+    bumpConnectionsVersion();
+    routed.models = list("cx/gpt-5.5", "newp/model-x");
+    const models = await getFreshRoutedModels(5_000);
+    expect(models.map((m) => m.id)).toEqual(["cx/gpt-5.5", "newp/model-x"]);
+    expect(routed.calls).toBe(2);
+  });
+});
+
 describe("the routed list's state", () => {
   it("is shared by two copies of the module, as the instrumentation and route bundles are", async () => {
     routed.models = list("cx/gpt-5.5");

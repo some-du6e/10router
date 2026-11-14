@@ -79,7 +79,8 @@ all of this holds.
   id only, and routing a bare id differs from routing the provider id you picked, so Codex
   wouldn't find the model it's set to. Without the line, Codex keeps its own list as before:
   GPT models get Codex's own settings, but other models (Claude, for one) don't get
-  `apply_patch` yet. The dashboard leaves the line out for such a key.
+  `apply_patch` yet. The dashboard leaves the line out for such a key, unless the configured
+  ids are the bare names themselves.
 - After changing an allowlist, apply the Codex settings again on the CLI Tools page, or delete
   the line yourself: a line written for the old allowlist stays in `config.toml`, and with a
   model the key now sees under another name, Codex runs it on generic settings.

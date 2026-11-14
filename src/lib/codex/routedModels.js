@@ -88,7 +88,7 @@ async function waitFor(promise, ms) {
  */
 export async function getRoutedModels() {
   // A write that bumps connectionsVersion since the list was built (a
-  // connection, alias, custom model, disabled model or restore; not a combo)
+  // connection, combo, alias, custom model, disabled model or restore)
   // makes it as old as a list past SERVE_STALE_MS: rebuilt, with the grace.
   const connectionsChanged = state.models && state.connections !== connectionsVersion();
   const age = !state.models ? Infinity : connectionsChanged ? ROUTED_MODELS_TIMING.SERVE_STALE_MS : now() - state.builtAt;
@@ -135,6 +135,11 @@ export async function getFreshRoutedModels(maxWaitMs) {
     await waitFor(state.inflight, left);
   }
   return state.models ?? getRoutedModels();
+}
+
+/** Does the held list predate a write (or is there none yet)? */
+export function routedModelsBehind() {
+  return !state.models || state.connections !== connectionsVersion();
 }
 
 /** Start building the list at server boot, so Codex's first request finds one. */

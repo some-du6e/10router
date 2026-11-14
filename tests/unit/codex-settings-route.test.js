@@ -19,12 +19,13 @@ vi.mock("os", async (importOriginal) => {
 });
 
 // The route asks the installed Codex for its version; this stands in for it.
-const codex = vi.hoisted(() => ({ version: "codex-cli 0.167.2" }));
+const codex = vi.hoisted(() => ({ version: "codex-cli 0.167.2", onAsk: null }));
 vi.mock("child_process", async (importOriginal) => {
   const actual = await importOriginal();
   const { promisify: p } = await import("node:util");
   const run = async (command) => {
     if (command === "codex --version") {
+      if (codex.onAsk) await codex.onAsk();
       if (codex.version === null) throw new Error("codex: command not found");
       return { stdout: `${codex.version}\n`, stderr: "" };
     }
@@ -86,6 +87,7 @@ afterAll(() => {
 
 beforeEach(() => {
   codex.version = "codex-cli 0.167.2";
+  codex.onAsk = null;
   // The decision reads the routed model list, which these tests change.
   resetRoutedModels();
   fs.rmSync(path.join(home, ".codex"), { recursive: true, force: true });
@@ -122,6 +124,19 @@ describe("Codex CLI settings", () => {
     codex.version = "codex-cli 0.167.2";
     expect((await answer({ model: "acme/not-a-model" })).catalogUrl).toEqual({ written: false, reason: "not-listed" });
     expect((await answer({ native: false })).catalogUrl).toEqual({ written: false, reason: "not-native" });
+  });
+
+  it("keeps what was written to config.toml while it was deciding", async () => {
+    fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+    fs.writeFileSync(configPath, 'model = "old"\n');
+    // Codex (or a Reset) writes to the file while Apply checks the version.
+    codex.onAsk = async () => {
+      fs.writeFileSync(configPath, 'model = "old"\n[projects."/work/repo"]\ntrust_level = "trusted"\n');
+    };
+    await apply({ baseUrl: "http://127.0.0.1:20128" });
+    expect(config().projects["/work/repo"]).toEqual({ trust_level: "trusted" });
+    expect(config().model).toBe("cx/gpt-5.5");
+    expect(provider().model_catalog_url).toBe(URL_LINE);
   });
 
   it("drops the catalog URL when switching to the OpenAI-compatible endpoint", async () => {

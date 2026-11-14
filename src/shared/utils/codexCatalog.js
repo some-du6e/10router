@@ -38,7 +38,7 @@ export function catalogUrlNote(catalogUrl) {
     "not-listed": "this key's model list doesn't have both models under these exact ids",
     "lookup-failed": "this key's model list couldn't be read",
   }[catalogUrl.reason] || "it couldn't be checked";
-  return `model_catalog_url left out: ${why}. Codex keeps its own model list.`;
+  return `model_catalog_url left out: ${why}. With an API-key login, Codex keeps its own model list.`;
 }
 
 /**

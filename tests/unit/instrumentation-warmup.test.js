@@ -16,7 +16,10 @@ vi.mock("@/lib/codex/routedModels.js", () => ({ warmRoutedModels: () => { calls.
 
 const { register } = await import("@/instrumentation.js");
 const originalRuntime = process.env.NEXT_RUNTIME;
-const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+const settle = async () => {
+  await vi.dynamicImportSettled();
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+};
 
 beforeEach(() => {
   calls.order = [];

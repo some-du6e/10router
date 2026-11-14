@@ -9,7 +9,7 @@
 // listed at all (only what it points to is). Anything uncertain answers no,
 // and Codex keeps its own list, as before the catalog.
 import { filterModelsForRequest } from "@/sse/services/keyLimits.js";
-import { getRoutedModels, getFreshRoutedModels } from "@/lib/codex/routedModels.js";
+import { getRoutedModels, getFreshRoutedModels, routedModelsBehind } from "@/lib/codex/routedModels.js";
 import { codexReadsCatalogUrl } from "@/shared/utils/codexCatalog.js";
 
 // How long Apply waits for a model list that reflects a provider just added.
@@ -33,18 +33,22 @@ export async function listedIds(apiKey, { fresh = false } = {}) {
  * @param {string[]} options.ids the model and subagent model it sets
  * @param {number[]|null|Promise<number[]|null>} options.codexVersion the installed Codex's version
  * @param {typeof listedIds} [options.listIds] for tests
+ * @param {() => boolean} [options.listBehind] for tests: does the list predate a write?
  * @returns {Promise<{ write: boolean, reason: "listed"|"codex-version"|"not-listed"|"lookup-failed" }>}
  */
-export async function decideCatalogUrl({ apiKey, ids, codexVersion, listIds = listedIds }) {
+export async function decideCatalogUrl({ apiKey, ids, codexVersion, listIds = listedIds, listBehind = routedModelsBehind }) {
   const wanted = ids.filter(Boolean);
   const key = apiKey || null;
   const lookup = (options) => listIds(key, options).then((set) => ({ set }), (error) => ({ error }));
-  // The version check and the list lookup don't depend on each other.
-  const [version, first] = await Promise.all([codexVersion, lookup()]);
-  if (!codexReadsCatalogUrl(version)) return { write: false, reason: "codex-version" };
-  let result = first;
-  // Missing an id right after a provider was added: the list may predate it.
-  if (!result.error && !wanted.every((id) => result.set.has(id))) result = await lookup({ fresh: true });
+  // The version check and the list lookup don't depend on each other: start
+  // both, and don't wait for the list when the version already says no.
+  const pending = lookup();
+  if (!codexReadsCatalogUrl(await codexVersion)) return { write: false, reason: "codex-version" };
+  let result = await pending;
+  // Missing an id while the list predates a write (a provider or combo added
+  // just before Apply): wait for the build that includes it. A list that's
+  // merely old isn't waited on; an alias or a bare name would still miss.
+  if (!result.error && !wanted.every((id) => result.set.has(id)) && listBehind()) result = await lookup({ fresh: true });
   if (result.error) return { write: false, reason: "lookup-failed" };
   if (wanted.length === 0 || !wanted.every((id) => result.set.has(id))) return { write: false, reason: "not-listed" };
   return { write: true, reason: "listed" };
