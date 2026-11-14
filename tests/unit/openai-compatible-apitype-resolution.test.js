@@ -12,7 +12,7 @@ import { BaseExecutor } from "open-sse/executors/base.js";
 
 const CHAT_ID = "openai-compatible-chat-00000000-0000-4000-8000-000000000002";
 const RESPONSES_ID = "openai-compatible-responses-11111111-2222-3333-4444-555555555555";
-const BASE = "https://api.ericding.io.vn/v1";
+const BASE = "https://api.gateway.example/v1";
 
 function creds(apiType) {
   return { providerSpecificData: apiType === undefined ? { baseUrl: BASE } : { baseUrl: BASE, apiType } };

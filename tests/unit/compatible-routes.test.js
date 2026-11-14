@@ -134,9 +134,11 @@ describe("detectEndpoint on a two-path endpoint", () => {
   // API still comes from how many models each path serves.
   describe("with no hint in the URL", () => {
     const PLAIN = "https://acme.contoso-cloud.example/api/v1";
-    const catalog = { providers: [{ id: "contoso-ai", name: "Contoso AI", api: "https://${ACCOUNT}.contoso-cloud.example/api/v1", models: ["claude-opus-5", "claude-haiku-4-5", "claude-sonnet-5", "openai-gpt-5", "kimi-k3", "glm-5"] }], labs: [] };
+    const catalog = { providers: [{ id: "contoso-ai", name: "Contoso AI", api: "https://${ACCOUNT}.contoso-cloud.example/api/v1", models: ["openai-gpt-5", "claude-opus-5", "claude-haiku-4-5", "claude-sonnet-5", "kimi-k3", "glm-5"] }], labs: [] };
     it.each([
-      ["a tie goes to Messages", ["claude-opus-5", "claude-haiku-4-5"], ["claude-opus-5", "openai-gpt-5", "kimi-k3"],
+      // A Chat-only id comes first, so Chat is counted first: only the explicit
+      // tie-break makes Messages win.
+      ["a tie goes to Messages", ["claude-opus-5", "claude-haiku-4-5"], ["openai-gpt-5", "claude-opus-5", "kimi-k3"],
         "anthropic", { "openai-gpt-5": "openai-chat", "kimi-k3": "openai-chat" }],
       ["more models on Messages", ["claude-opus-5", "claude-haiku-4-5", "claude-sonnet-5"], ["openai-gpt-5"],
         "anthropic", { "openai-gpt-5": "openai-chat" }],
@@ -161,12 +163,19 @@ describe("Anthropic-first hints from the environment", () => {
   const two = () => recorded(upstream({ messages: new Set(["claude-opus-5"]), chat: new Set(["openai-gpt-5"]) }));
 
   it("is empty by default, so an unhinted URL probes Chat first", async () => {
-    const { anthropicFirstHints, prefersAnthropic } = await import("@/lib/endpointDetect.js");
-    expect(anthropicFirstHints()).toEqual([]);
-    expect(prefersAnthropic(PLAIN, "good-key")).toBe(false);
-    const { fetchFn, posts } = two();
-    await detectEndpoint({ url: PLAIN, apiKey: "good-key", fetchFn, skipModels: true });
-    expect(posts[0]).toMatch(/\/chat\/completions$/);
+    vi.resetModules();
+    vi.stubEnv("DETECT_ANTHROPIC_FIRST_HINTS", "");
+    try {
+      const fresh = await import("@/lib/endpointDetect.js");
+      expect(fresh.anthropicFirstHints()).toEqual([]);
+      expect(fresh.prefersAnthropic(PLAIN, "good-key")).toBe(false);
+      const { fetchFn, posts } = two();
+      await fresh.detectEndpoint({ url: PLAIN, apiKey: "good-key", fetchFn, skipModels: true });
+      expect(posts[0]).toMatch(/\/chat\/completions$/);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
   });
 
   it("parses a comma-separated list, trimmed and lowercased", async () => {

@@ -106,7 +106,7 @@ function makeRequest(method = "POST", body = null, authHeader = `Bearer ${VALID_
   const headers = { "Content-Type": "application/json" };
   if (authHeader) headers["Authorization"] = authHeader;
 
-  return new Request("https://9cli.hxd.app/v1/embeddings", {
+  return new Request("https://cloud.example/v1/embeddings", {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
@@ -242,7 +242,7 @@ describe("handleEmbeddings — body validation", () => {
   });
 
   it("invalid JSON body → 400", async () => {
-    const req = new Request("https://9cli.hxd.app/v1/embeddings", {
+    const req = new Request("https://cloud.example/v1/embeddings", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -361,7 +361,7 @@ describe("handleEmbeddings — valid request (happy path)", () => {
 
   it("machineId-override path: /{machineId}/v1/embeddings works", async () => {
     // Direct call with machineId override (old format URL path)
-    const req = new Request(`https://9cli.hxd.app/${MACHINE_ID}/v1/embeddings`, {
+    const req = new Request(`https://cloud.example/${MACHINE_ID}/v1/embeddings`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -491,7 +491,7 @@ describe("handleEmbeddings — machineId override path", () => {
 
   it("with machineIdOverride, still validates API key via Authorization header", async () => {
     // Key IS in the machine's apiKeys → should succeed
-    const req = new Request(`https://9cli.hxd.app/${MACHINE_ID}/v1/embeddings`, {
+    const req = new Request(`https://cloud.example/${MACHINE_ID}/v1/embeddings`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -509,7 +509,7 @@ describe("handleEmbeddings — machineId override path", () => {
       apiKeys: [{ key: "sk-correct-key" }],
     }));
 
-    const req = new Request(`https://9cli.hxd.app/${MACHINE_ID}/v1/embeddings`, {
+    const req = new Request(`https://cloud.example/${MACHINE_ID}/v1/embeddings`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
