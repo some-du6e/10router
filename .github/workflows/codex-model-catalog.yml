@@ -60,6 +60,8 @@ jobs:
           src/app/api/v1/codex/models/route.js
           src/lib/codex/modelCatalog.js
           src/lib/codex/routedModels.js
+          src/lib/codex/catalogUrlDecision.js
+          src/instrumentation.js
           open-sse/providers/catalogOverride.js
           src/app/api/v1/models/route.js
           scripts/vendor-codex-catalog.mjs

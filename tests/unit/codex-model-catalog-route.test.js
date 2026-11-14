@@ -292,6 +292,17 @@ describe("the routed model list behind it", () => {
     log.mockRestore();
   });
 
+  it("is built at server boot, so the first request doesn't wait for it", async () => {
+    const { warmRoutedModels } = await import("@/lib/codex/routedModels.js");
+    routed.models = list("warm");
+    warmRoutedModels();
+    expect(routed.calls).toHaveLength(1);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(ids(await catalog())).toEqual(["acme/warm"]);
+    expect(routed.calls).toHaveLength(1);
+  });
+
   it("rebuilds on the next request after a connection changes, with the short grace", async () => {
     vi.useFakeTimers({ toFake: CLOCK });
     const { bumpConnectionsVersion } = await import("@/lib/db/repos/connectionsRepo.js");

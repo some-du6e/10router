@@ -16,5 +16,10 @@ export async function register() {
     import("@/sse/services/autoCombo.js")
       .then(({ warmAutoComboCatalog }) => warmAutoComboCatalog())
       .catch(() => {});
+
+    // Codex's catalog request gets 5 seconds in all; have its model list ready.
+    import("@/lib/codex/routedModels.js")
+      .then(({ warmRoutedModels }) => warmRoutedModels())
+      .catch(() => {});
   }
 }

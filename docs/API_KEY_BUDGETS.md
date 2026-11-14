@@ -166,7 +166,10 @@ provider ids behind it. For Codex this matters: with `model_catalog_url` set,
 Codex matches its configured `model` (a provider id like `cx/gpt-5.5`) against
 the catalog exactly, and wouldn't find it. So the dashboard's Codex setup
 writes `model_catalog_url` only when the key's catalog lists the configured
-models under the ids it writes (and the installed Codex is 0.166 or newer). For
+models under the ids it writes (and the installed Codex is 0.166 or newer). It
+checks the key picked in the dashboard, so that's only right when Codex logs in
+with that same router key. An alias isn't listed under its own name, so a
+model set to an alias gets no line either. For
 a key allowed a model by its bare id it leaves the line out, and Codex keeps
 its own model list, as before the catalog: GPT models keep Codex's own
 settings, but other models (Claude, for one) don't get the `apply_patch` tool

@@ -268,8 +268,7 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
 
     const effectiveSubagentModel = subagentModel || selectedModel;
 
-    const knownKey = apiKeys?.find((k) => k.key === keyToUse) || null;
-    const catalogLine = manualCatalogLines(getEffectiveBaseUrl(), knownKey, [selectedModel, effectiveSubagentModel]);
+    const catalogLine = manualCatalogLines(getEffectiveBaseUrl());
 
     const providerSection = useNative
       ? `[model_providers.10router]

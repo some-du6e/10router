@@ -193,8 +193,10 @@ if (!supportsCatalogUrl) {
       if (before("0.160.0")) {
         if (forced.shown.length === 0 || forced.routedShown > 0) fail(`model_catalog_url over 1 MiB: expected Codex's own list, got: ${forced.text}`);
         else pass("model_catalog_url over 1 MiB: Codex refuses the body and keeps its own list");
+      } else if (forced.shown.length !== 0) {
+        fail(`model_catalog_url over 1 MiB: expected explicit catalog mode to leave Codex with no models, got: ${forced.text}`);
       } else {
-        pass(`model_catalog_url over 1 MiB: explicit catalog mode leaves Codex with ${forced.shown.length} models`);
+        pass("model_catalog_url over 1 MiB: explicit catalog mode leaves Codex with no models");
       }
 
       // A catalog under the cap, with the entries that matter, decodes over HTTP.

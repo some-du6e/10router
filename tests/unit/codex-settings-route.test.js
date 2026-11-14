@@ -57,6 +57,8 @@ const db = await import("@/lib/db/index.js");
 await (await import("@/lib/db/driver.js")).getAdapter();
 
 const { POST } = await import("@/app/api/cli-tools/codex-settings/route.js");
+const { resetRoutedModels } = await import("@/lib/codex/routedModels.js");
+const { wantsCatalogUrl } = await import("@/lib/codex/catalogUrlDecision.js");
 
 const configPath = path.join(home, ".codex", "config.toml");
 const config = () => parseTOML(fs.readFileSync(configPath, "utf8"));
@@ -67,7 +69,7 @@ const keyWith = async (name, allowedModels) => {
 };
 const apply = (body) => POST(new Request("http://localhost/api/cli-tools/codex-settings", {
   method: "POST",
-  body: JSON.stringify({ apiKey: "sk-test", model: "acme/claude-opus-5-5", ...body }),
+  body: JSON.stringify({ apiKey: "sk-test", model: "cx/gpt-5.5", ...body }),
 }));
 const provider = () => config().model_providers["10router"];
 const URL_LINE = "http://127.0.0.1:20128/backend-api/codex/models";
@@ -84,6 +86,8 @@ afterAll(() => {
 
 beforeEach(() => {
   codex.version = "codex-cli 0.167.2";
+  // The decision reads the routed model list, which these tests change.
+  resetRoutedModels();
   fs.rmSync(path.join(home, ".codex"), { recursive: true, force: true });
 });
 
@@ -123,6 +127,7 @@ describe("the catalog URL for the installed Codex", () => {
   it.each([
     ["codex-cli 0.166.0", URL_LINE],
     ["codex-cli 0.167.2", URL_LINE],
+    ["codex-cli 0.0.0", URL_LINE],
     ["codex-cli 0.165.0", null],
     ["codex-cli 0.160.0", null],
     ["codex-cli 0.156.0", null],
@@ -181,11 +186,24 @@ describe("the catalog URL for a key with a model allowlist", () => {
     expect(written().catalog).toBe(URL_LINE);
   });
 
-  it("is written for an alias the key is allowed, picked by its name", async () => {
+  // The catalog lists what an alias points to, not the alias itself.
+  it("is left out for an alias picked by its name, which the catalog doesn't list", async () => {
     await db.setModelAlias("team-opus", "cc/claude-opus-5-5");
     const key = await keyWith("alias-only", ["team-opus"]);
     await setup(key, "team-opus", "team-opus");
-    expect(written()).toEqual({ model: "team-opus", subagent: "team-opus", catalog: URL_LINE });
+    expect(written()).toEqual({ model: "team-opus", subagent: "team-opus", catalog: null });
+  });
+
+  it("is left out for a model the router doesn't list at all", async () => {
+    await setup("sk_10router", "acme/not-a-model", "acme/not-a-model");
+    expect(written().catalog).toBeNull();
+  });
+
+  it("is left out when the key's allowlist can't be read", async () => {
+    const listIds = async () => { throw new Error("database is locked"); };
+    expect(await wantsCatalogUrl({ apiKey: "k", ids: ["cx/gpt-5.5"], codexVersion: [0, 167, 2], listIds })).toBe(false);
+    expect(await wantsCatalogUrl({ apiKey: "k", ids: ["cx/gpt-5.5"], codexVersion: [0, 167, 2], listIds: async () => new Set(["cx/gpt-5.5"]) })).toBe(true);
+    expect(await wantsCatalogUrl({ apiKey: "k", ids: ["", ""], codexVersion: [0, 167, 2], listIds: async () => new Set() })).toBe(false);
   });
 
   it("never writes the key into config.toml", async () => {

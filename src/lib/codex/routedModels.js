@@ -33,7 +33,11 @@ const now = () => performance.now();
 // `written` is the sequence number of the build the held list came from, so a
 // slow build that was abandoned can't replace a newer one when it lands late.
 // `connections` is the connectionsVersion() the held list was built at.
-const state = { models: null, builtAt: 0, inflight: null, generation: 0, started: 0, written: 0, connections: -1 };
+// On globalThis: instrumentation (warmRoutedModels) and the route handlers
+// are separate bundles and must share one list, as autoCombo's does.
+const state = (globalThis._codexRoutedModels ??= {
+  models: null, builtAt: 0, inflight: null, generation: 0, started: 0, written: 0, connections: -1,
+});
 
 function refresh() {
   if (state.inflight) return state.inflight;
@@ -108,6 +112,11 @@ export async function getRoutedModels() {
     state.builtAt = now() - ROUTED_MODELS_TIMING.SERVE_STALE_MS;
   }
   return fallback;
+}
+
+/** Start building the list at server boot, so Codex's first request finds one. */
+export function warmRoutedModels() {
+  if (!state.models) refresh().catch(() => {});
 }
 
 export function resetRoutedModels() {

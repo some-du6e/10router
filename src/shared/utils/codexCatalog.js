@@ -15,36 +15,28 @@ export function parseCodexVersion(text) {
   return match ? match.slice(1).map(Number) : null;
 }
 
-/** Can this Codex version use model_catalog_url? False for an unknown version. */
+/**
+ * Can this Codex version use model_catalog_url? False for an unknown version.
+ * A source build reports 0.0.0 and counts as the newest, as in the catalog.
+ */
 export function codexReadsCatalogUrl(version) {
   if (!Array.isArray(version)) return false;
+  if (version.every((n) => n === 0)) return true;
   for (let i = 0; i < 3; i++) if (version[i] !== CATALOG_URL_FROM[i]) return version[i] > CATALOG_URL_FROM[i];
   return true;
 }
 
 /**
- * Would a key with this allowlist find each of `ids` in the catalog under that
- * exact id? Without an allowlist, yes. With one, only when the allowlist names
- * the id itself; a bare entry ("gpt-5.5") lists the model under the bare name,
- * not "cx/gpt-5.5". This is the browser's view of a key: it can't resolve
- * combos or aliases, so it answers no when unsure.
- */
-export function allowlistListsIds(allowedModels, ids) {
-  if (!Array.isArray(allowedModels) || allowedModels.length === 0) return true;
-  const allowed = new Set(allowedModels.map((entry) => String(entry).trim()));
-  return ids.filter(Boolean).every((id) => allowed.has(id));
-}
-
-/**
- * The model_catalog_url lines for the Codex card's manual config.
+ * The model_catalog_url lines for the Codex card's manual config: always
+ * commented out, so a config pasted as is behaves as without the catalog. The
+ * card can't tell which Codex will read it or which key it will log in with.
  * @param {string} baseUrl the Codex base URL (…/backend-api/codex)
- * @param {{ allowedModels?: string[] } | null} key the key, if the card knows it
- * @param {string[]} ids the model and subagent model the config sets
- * @returns {string} lines ending in "\n", or "" to leave the setting out
+ * @returns {string} lines ending in "\n"
  */
-export function manualCatalogLines(baseUrl, key, ids) {
-  if (key && !allowlistListsIds(key.allowedModels, ids)) return "";
-  const notes = ["# Needs Codex 0.166 or newer; remove for older Codex."];
-  if (!key) notes.push("# Remove too if your key's model allowlist doesn't name these models by these exact ids.");
-  return `${notes.join("\n")}\nmodel_catalog_url = "${baseUrl}/models"\n`;
+export function manualCatalogLines(baseUrl) {
+  return [
+    "# Uncomment on Codex 0.166 or newer when the key Codex logs in with lists your model",
+    "# under the exact id set above (no bare-name allowlist entry for it):",
+    `# model_catalog_url = "${baseUrl}/models"`,
+  ].join("\n") + "\n";
 }

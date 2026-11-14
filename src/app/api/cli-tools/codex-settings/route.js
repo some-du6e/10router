@@ -7,8 +7,8 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { parseTOML, stringifyTOML } from "confbox";
-import { filterModelsForRequest } from "@/sse/services/keyLimits.js";
-import { codexReadsCatalogUrl, parseCodexVersion } from "@/shared/utils/codexCatalog.js";
+import { parseCodexVersion } from "@/shared/utils/codexCatalog.js";
+import { wantsCatalogUrl } from "@/lib/codex/catalogUrlDecision.js";
 
 const execAsync = promisify(exec);
 
@@ -26,24 +26,6 @@ const installedCodexVersion = async () => {
   }
 };
 
-// With model_catalog_url Codex looks `model` up in the router's catalog by
-// exact name, so the line is written only when this key's catalog lists each
-// configured model under the id written here. A model the key was allowed by
-// a bare name is listed under that name only. Otherwise, or if that can't be
-// told, the line is left out and Codex keeps its own list, as before.
-const keyListsIdsAsWritten = async (apiKey, ids) => {
-  try {
-    const request = { headers: new Headers({ Authorization: `Bearer ${apiKey}` }) };
-    const listed = await filterModelsForRequest(request, ids.map((id) => ({ id })));
-    return ids.every((id) => listed.some((model) => model.id === id));
-  } catch {
-    return false;
-  }
-};
-
-// See src/shared/utils/codexCatalog.js for why it takes Codex 0.166.
-const wantsCatalogUrl = async (apiKey, ids) => codexReadsCatalogUrl(await installedCodexVersion())
-  && (!apiKey || await keyListsIdsAsWritten(apiKey, ids));
 
 // Codex-native ingress path (mirrors chatgpt.com/backend-api/codex). Pointing the
 // CLI here instead of /v1 makes it use the ChatGPT wire: native model catalog with
@@ -211,7 +193,7 @@ export async function POST(request) {
     // The Codex-native endpoint is the default; pass native:false for plain /v1.
     const useNative = native !== false;
     const normalizedBaseUrl = resolveCodexBaseUrl(baseUrl, useNative);
-    setNestedSection(parsed, "model_providers.10router", buildProviderSection(normalizedBaseUrl, useNative, useNative && await wantsCatalogUrl(apiKey, [model, subagentModel || model])));
+    setNestedSection(parsed, "model_providers.10router", buildProviderSection(normalizedBaseUrl, useNative, useNative && await wantsCatalogUrl({ apiKey, ids: [model, subagentModel || model], codexVersion: await installedCodexVersion() })));
 
     // Subagent model is a scalar under [agents]; agents.<role> now means a custom role
     deleteNestedSection(parsed, "agents.subagent");

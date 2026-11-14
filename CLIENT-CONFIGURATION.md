@@ -44,8 +44,8 @@ For a manual `~/.codex/config.toml`, the provider needs the native Codex setting
 [model_providers.10router]
 name = "openai"
 base_url = "http://127.0.0.1:20128/backend-api/codex"
-# Needs Codex 0.166 or newer; remove for older Codex.
-model_catalog_url = "http://127.0.0.1:20128/backend-api/codex/models"
+# Uncomment on Codex 0.166 or newer (see below):
+# model_catalog_url = "http://127.0.0.1:20128/backend-api/codex/models"
 wire_api = "responses"
 requires_openai_auth = true
 ```
@@ -64,9 +64,13 @@ What the line does depends on the Codex version:
   needs `api_key_model_discovery`. Leave the line out.
 - **Before 0.156:** there's no such setting.
 
-The dashboard's Codex setup writes the line only when the installed Codex is 0.166 or newer and
-the key you apply with lists your models under the ids being written. In the manual config
-above, the comment on the line says the same; delete the line for an older Codex.
+The dashboard's Codex setup writes the line only when the installed `codex` is 0.166 or newer and
+the router's model list, seen through the key you apply with, has your models under the ids
+being written. That check is only right when Codex logs in with that same router key: Codex
+sends its own login, not the config's `Authorization` header. A Codex IDE extension or desktop
+app reading the same `~/.codex/config.toml` may run its own bundled Codex version; check that
+one too. The manual config on the Codex card has the line commented out; uncomment it only when
+all of this holds.
 
 - If your API key has a model allowlist that names a model by its bare id (`gpt-5.5` rather
   than `cx/gpt-5.5`), leave `model_catalog_url` out. The list shows that model under the bare
