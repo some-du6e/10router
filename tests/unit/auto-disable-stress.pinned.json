@@ -113,5 +113,25 @@
       },
       "turnedOff": false
     }
+  },
+  "awayAndBack": {
+    "same account": {
+      "good, refused 0-14 and 80-87": 84,
+      "good, refused 0-14 and 130-137": 134,
+      "good, refused 0-14 and 200-207": 204,
+      "good, refused 0-149": 134,
+      "lacks opus, haiku refused 130-135": 134,
+      "dead, back at 130": 134,
+      "dead, back at 200": 204
+    },
+    "other account": {
+      "good, refused 0-14 and 80-87": null,
+      "good, refused 0-14 and 130-137": null,
+      "good, refused 0-14 and 200-207": null,
+      "good, refused 0-149": null,
+      "lacks opus, haiku refused 130-135": null,
+      "dead, back at 130": 190,
+      "dead, back at 200": 260
+    }
   }
 }
