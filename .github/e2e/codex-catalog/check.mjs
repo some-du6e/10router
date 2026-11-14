@@ -9,7 +9,7 @@
 // come from dump-catalog.test.js, with CODEX_ROUTER_URL=http://127.0.0.1:<port>.
 // "base" is the branch the PR targets, kept to show what Codex did before.
 import { spawn } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -75,11 +75,11 @@ const generic = routed.find((m) => m.slug.startsWith("cc/claude-"));
 const chatgptBacked = routed.find((m) => m.slug === "cx/gpt-5.5");
 console.log(`${version}: head catalog has ${head.length} entries (${routed.length} listed), ${readFileSync(catalogFile("head")).length} bytes`);
 
-function checkDecoded(label, models) {
+function checkDecoded(label, models, served = head) {
   if (!models) return fail(`${label}: Codex printed no catalog`);
   const bySlug = new Map(models.map((m) => [m.slug, m]));
   // Every entry served, hidden ones included (Codex's bare and older models).
-  const missing = head.filter((m) => !bySlug.has(m.slug));
+  const missing = served.filter((m) => !bySlug.has(m.slug));
   if (missing.length) return fail(`${label}: ${missing.length} served models missing, e.g. ${missing[0].slug}`);
   // The models this Codex bundles and 0.167.2 doesn't (legacy-models.json servedBefore).
   const expectedOlder = Object.entries(legacy.servedBefore).filter(([, cutoff]) => before(cutoff)).map(([slug]) => slug);
@@ -121,17 +121,21 @@ for (const side of sides) {
 }
 
 // 2. Over HTTP, with the dashboard's config, from 0.156.0 (the first with model_catalog_url).
+// 0.156 to 0.165 refuse a model_catalog_url body over 1 MiB
+// (MAX_MODEL_CATALOG_BYTES in model-provider/src/models_endpoint.rs) and keep
+// their own list; 0.166 dropped the limit.
+const CATALOG_URL_LIMIT = before("0.166.0") ? 1024 * 1024 : Infinity;
 if (supportsCatalogUrl) {
-  let served = "head";
+  let servedFile = catalogFile("head");
   const requests = [];
   const server = createServer((req, res) => {
     requests.push(req.url);
     if (!req.url.startsWith("/backend-api/codex/models")) { res.writeHead(404).end(); return; }
-    res.writeHead(200, { "content-type": "application/json" }).end(readFileSync(catalogFile(served)));
+    res.writeHead(200, { "content-type": "application/json" }).end(readFileSync(servedFile));
   });
   await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
-  const fetchWith = async (catalogSide, configSide) => {
-    served = catalogSide;
+  const fetchWith = async (file, configSide) => {
+    servedFile = file;
     const home = await freshHome(configSide);
     requests.length = 0;
     const run = await codex(home, [...discoveryFlag, "debug", "models"]);
@@ -139,19 +143,38 @@ if (supportsCatalogUrl) {
   };
 
   if (sides.includes("base")) {
-    const before = await fetchWith("base", "base");
-    const shown = before.run.models || [];
+    const baseRun = await fetchWith(catalogFile("base"), "base");
+    const shown = baseRun.run.models || [];
     const listedBefore = shown.filter((m) => routed.some((r) => r.slug === m.slug)).length;
-    console.log(`base config + base catalog: Codex asked for the catalog ${before.asked.length} times and lists ${listedBefore} routed models (${shown.length} in all: ${shown.map((m) => m.slug).slice(0, 3).join(", ")}, ...)`);
+    console.log(`base config + base catalog: Codex asked for the catalog ${baseRun.asked.length} times and lists ${listedBefore} routed models (${shown.length} in all: ${shown.map((m) => m.slug).slice(0, 3).join(", ")}, ...)`);
 
-    const undecodable = await fetchWith("base", "head");
+    const undecodable = await fetchWith(catalogFile("base"), "head");
     console.log(`head config + base catalog: Codex asked ${undecodable.asked.length} times and lists ${(undecodable.run.models || []).length} models`);
   }
 
-  const after = await fetchWith("head", "head");
+  const headBytes = readFileSync(catalogFile("head")).length;
+  const after = await fetchWith(catalogFile("head"), "head");
   if (after.asked.length === 0) fail("model_catalog_url: Codex never asked for the catalog");
   else pass(`model_catalog_url: Codex asked ${after.asked[0]}`);
-  checkDecoded("model_catalog_url", after.run.models);
+
+  if (headBytes <= CATALOG_URL_LIMIT) {
+    checkDecoded("model_catalog_url", after.run.models);
+  } else {
+    // Over the cap: Codex must fall back to its own list, not to nothing.
+    const shown = after.run.models || [];
+    const routedShown = shown.filter((m) => routed.some((r) => r.slug === m.slug)).length;
+    if (shown.length === 0 || routedShown > 0) fail(`model_catalog_url: a ${headBytes}-byte catalog should leave Codex on its own list, got ${shown.length} models (${routedShown} routed)`);
+    else pass(`model_catalog_url: the ${headBytes}-byte catalog is over this Codex's 1 MiB limit, so it keeps its own ${shown.length} models`);
+
+    // A catalog under the cap, with the entries that matter, decodes over HTTP.
+    const keep = new Set([generic.slug, chatgptBacked?.slug, "gpt-5.5", "codex-auto-review", ...Object.keys(legacy.servedBefore)]);
+    const small = head.filter((m) => keep.has(m.slug));
+    const smallFile = join(mkdtempSync(join(tmpdir(), "codex-small-")), "catalog.json");
+    writeFileSync(smallFile, JSON.stringify({ models: small }));
+    const smallRun = await fetchWith(smallFile, "head");
+    console.log(`model_catalog_url: a ${readFileSync(smallFile).length}-byte catalog of ${small.length} entries:`);
+    checkDecoded("model_catalog_url (under 1 MiB)", smallRun.run.models, small);
+  }
   server.close();
 }
 

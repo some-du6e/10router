@@ -53,7 +53,9 @@ requires_openai_auth = true
 Without it, Codex never reads 10router's model list, uses generic settings for any model it
 doesn't know, and gives that model no `apply_patch` tool, so it edits files through the shell.
 Codex has the setting from 0.156; with an API key it reads it by default from 0.161 (0.156 to
-0.160 also need `[features] api_key_model_discovery = true`).
+0.160 also need `[features] api_key_model_discovery = true`). Codex 0.156 to 0.165 refuse a list
+over 1 MiB from it (about 45 models, since each carries Codex's 21k-character prompt) and keep
+their own list instead; use Codex 0.166 or later with a larger setup.
 
 With `model_catalog_url` set, Codex uses only that list, whether it's signed in with an API
 key or with ChatGPT, and looks up its `model` there by exact name:
