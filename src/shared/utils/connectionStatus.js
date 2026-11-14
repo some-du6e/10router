@@ -5,22 +5,36 @@ export function getStatusVariant(isActive, effectiveStatus) {
   return "default";
 }
 
-// authDemote_<model>: a key's demotion record on that model (see connectionsRepo.js).
+// authDemote_<model>: a key's demotion record on that model; authSoft_<model>:
+// its soft demotion there (see connectionsRepo.js).
 export const DEMOTE_PREFIX = "authDemote_";
+export const SOFT_DEMOTE_PREFIX = "authSoft_";
 
-// Models an active key is demoted on: records with demotedAt.
+// Models an active key is demoted on: records with demotedAt, and soft demotions.
 export function demotedModels(connection) {
   if (!connection || connection.isActive === false) return [];
-  return Object.entries(connection)
-    .filter(([key, record]) => key.startsWith(DEMOTE_PREFIX) && record?.demotedAt)
-    .map(([key, record]) => ({ model: key.slice(DEMOTE_PREFIX.length), reason: record.reason || null }));
+  return Object.entries(connection).flatMap(([key, record]) => {
+    if (key.startsWith(DEMOTE_PREFIX) && record?.demotedAt) {
+      return [{ model: key.slice(DEMOTE_PREFIX.length), reason: record.reason || null }];
+    }
+    if (key.startsWith(SOFT_DEMOTE_PREFIX) && record?.since) {
+      return [{ model: key.slice(SOFT_DEMOTE_PREFIX.length), soft: true, lastRefusedAt: record.lastRefusedAt || record.since }];
+    }
+    return [];
+  });
 }
 
 export function demotedLabel(connection) {
   const demoted = demotedModels(connection);
   if (!demoted.length) return null;
-  const line = ({ model, reason }) => `Demoted on ${model} after repeated ${reason || "refusals"}. Switching the key off and on clears it.`;
-  return { text: `Demoted on ${demoted.map(d => d.model).join(", ")}`, title: demoted.map(line).join("\n") };
+  const line = ({ model, reason, soft, lastRefusedAt }) => (soft
+    ? `Soft-demoted on ${model}: last refused ${new Date(lastRefusedAt).toLocaleString()}. Other keys go first there until it serves ${model} again. Switching the key off and on clears it.`
+    : `Demoted on ${model} after repeated ${reason || "refusals"}. Switching the key off and on clears it.`);
+  const hard = demoted.filter(d => !d.soft).map(d => d.model);
+  const soft = demoted.filter(d => d.soft).map(d => d.model);
+  const text = [hard.length && `Demoted on ${hard.join(", ")}`, soft.length && `${hard.length ? "soft-demoted" : "Soft-demoted"} on ${soft.join(", ")}`]
+    .filter(Boolean).join(", ");
+  return { text, title: demoted.map(line).join("\n") };
 }
 
 // The lastError auth.js writes on demotion: the label shows it while the key

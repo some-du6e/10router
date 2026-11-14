@@ -241,6 +241,94 @@ describe("soft demotion", () => {
     expect(await pick(OPUS)).toBe(key.id);
   });
 
+  it("is stored on the connection, without the key, and survives a restart", async () => {
+    const { key, peer } = await softDemoted();
+    const record = (await load(key.id))[`authSoft_${OPUS}`];
+    expect(record).toEqual({
+      level: 0, since: new Date().toISOString(), tryAt: new Date(Date.now() + 10 * MIN).toISOString(),
+      lastRefusedAt: new Date().toISOString(), keyRefused: true,
+    });
+    global._softDemotions.clear();
+    for (const map of ["success", "refused", "modelRefused"]) global._authEvents[map].clear();
+    vi.advanceTimersByTime(3 * MIN);
+    expect(await pick(OPUS)).toBe(peer.id);
+  });
+
+  it("lists the soft demotion in model availability", async () => {
+    const { key } = await softDemoted();
+    const refusedAt = new Date().toISOString();
+    vi.advanceTimersByTime(3 * MIN);
+    const { models } = await (await availability.GET()).json();
+    expect(models.filter((m) => m.connectionId === key.id && m.model === OPUS)).toEqual([expect.objectContaining({
+      status: "cooldown", until: new Date(Date.parse(refusedAt) + 10 * MIN).toISOString(), lastError: `Soft-demoted: last refused ${refusedAt}`,
+    })]);
+  });
+
+  it("keeps the hour of the streak it clears for the next one", async () => {
+    // A and the key on one upstream; only the key on the other serves opus.
+    const [key, near] = await accounts(["k", "near"], { shared: true });
+    const [far] = await accounts(["far"]);
+    await refuse(key.id, far, { times: 6 });
+    expect(auth.__test__.softDemoted(await load(key.id), OPUS)).toBe(true);
+    // Then refused on two models its same-upstream peer serves, a minute apart.
+    for (let i = 0; i < 40; i++) {
+      vi.advanceTimersByTime(MIN);
+      await refuse(key.id, near, { times: 1, model: i % 2 ? KIMI : "claude-sonnet-5-5" });
+      expect(await load(key.id)).toMatchObject({ isActive: true, authFailSameUpstream: false });
+    }
+  });
+
+  it("drops the hour it kept once the key serves anything", async () => {
+    const [key, near] = await accounts(["k", "near"], { shared: true });
+    const [far] = await accounts(["far"]);
+    await refuse(key.id, far, { times: 6 });
+    expect((await load(key.id)).authFailCarryCross).toBe(true);
+    vi.advanceTimersByTime(MIN);
+    await succeed(key.id, KIMI);
+    expect((await load(key.id)).authFailCarryCross ?? null).toBeNull();
+    vi.advanceTimersByTime(MIN);
+    await refuse(key.id, near, { times: 1, model: KIMI });
+    expect((await load(key.id)).authFailSameUpstream).toBe(true);
+  });
+
+  it("refuses a key dead on two models no more often than the demotion did over 8 hours", async () => {
+    const [dead, peer] = await accounts(["a", "b"]);
+    for (const model of [OPUS, KIMI]) await refuse(dead.id, peer, { times: 6, model });
+    let refusals = 0;
+    for (let minute = 0; minute < 8 * 60; minute++) {
+      vi.advanceTimersByTime(MIN);
+      for (const model of [OPUS, KIMI]) {
+        const tried = new Set();
+        for (;;) {
+          const creds = await auth.getProviderCredentials(provider, tried, model);
+          if (!creds?.connectionId) break;
+          if (creds.connectionId !== dead.id) {
+            await succeed(creds.connectionId, model);
+            break;
+          }
+          refusals++;
+          await failOnce(dead.id, model);
+          tried.add(dead.id);
+        }
+      }
+    }
+    expect(refusals).toBeLessThanOrEqual(12);
+  });
+
+  it("counts a soft-demoted key that served nothing since as dead in the key lifespan estimate when it is replaced", async () => {
+    const { key } = await softDemoted();
+    await db.updateProviderConnection(key.id, { apiKey: "sk-test-a-replaced-0123456789" });
+    expect((await load(key.id)).pastKeys).toEqual([{ since: expect.any(String), until: new Date().toISOString() }]);
+  });
+
+  it("doesn't count a key soft-demoted on one model that serves another", async () => {
+    const { key } = await softDemoted();
+    vi.advanceTimersByTime(MIN);
+    await succeed(key.id, KIMI);
+    await db.updateProviderConnection(key.id, { apiKey: "sk-test-a-replaced-0123456789" });
+    expect((await load(key.id)).pastKeys).toBeUndefined();
+  });
+
   it("ends on that model when its cooldown is cleared", async () => {
     const { key, peer } = await softDemoted();
     vi.advanceTimersByTime(3 * MIN);

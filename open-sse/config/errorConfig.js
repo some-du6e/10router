@@ -73,7 +73,8 @@ export const AUTH_DEAD_CONFIG = {
 // probe waits for the next of probeMs (the last repeating); a probe left
 // unanswered is retaken after probeLeaseMs. A success brings the key back.
 // Where a count needs crossUpstreamWindowMs, AUTH_SOFT_DEMOTE (runtimeConfig.js)
-// acts at minWindowMs instead, in routing only, on the same probe schedule.
+// soft-demotes the key at minWindowMs instead: other keys go first, its tries
+// follow the same probe schedule, and its refusals there stop counting.
 export const AUTH_DEMOTE_CONFIG = {
   probeMs: [10, 20, 40, 90, 180].map(min => min * 60 * 1000),
   probeLeaseMs: 10 * 60 * 1000,

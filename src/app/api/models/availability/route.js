@@ -3,7 +3,7 @@ import {
   getProviderConnections,
   updateProviderConnection,
 } from "@/lib/localDb";
-import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey } from "@/lib/db/index.js";
+import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey, AUTH_SOFT_PREFIX, getAuthSoftKey } from "@/lib/db/index.js";
 import { MODEL_LOCK_PREFIX } from "open-sse/services/accountFallback.js";
 import { clearSoftDemotions } from "@/lib/softDemotions.js";
 
@@ -59,6 +59,23 @@ export async function GET() {
         });
         demotions++;
       }
+      // Soft demotions: other keys go first there until it serves again.
+      for (const [key, soft] of Object.entries(connection)) {
+        if (connection.isActive === false || !key.startsWith(AUTH_SOFT_PREFIX) || !soft?.since) continue;
+        const model = key.slice(AUTH_SOFT_PREFIX.length);
+        if (locks.some((lock) => lock.model === model)) continue;
+        const tryDue = !(new Date(soft.tryAt).getTime() > Date.now());
+        models.push({
+          provider: connection.provider,
+          model,
+          status: "cooldown",
+          until: tryDue ? null : soft.tryAt,
+          connectionId: connection.id,
+          connectionName: connection.name || connection.email || connection.id,
+          lastError: `Soft-demoted: last refused ${soft.lastRefusedAt || soft.since}${tryDue ? " (try due)" : ""}`,
+        });
+        demotions++;
+      }
 
       if (locks.length === 0 && demotions === 0 && connection.testStatus === "unavailable") {
         models.push({
@@ -96,15 +113,17 @@ export async function POST(request) {
     const connections = await getProviderConnections({ provider });
     const lockKey = `${MODEL_LOCK_PREFIX}${model}`;
     const demoteKey = getAuthDemoteKey(model);
+    const softKey = getAuthSoftKey(model);
     for (const connection of connections) clearSoftDemotions(connection.id, model);
 
     await Promise.all(
       connections
-        .filter((connection) => connection[lockKey] || connection[demoteKey])
+        .filter((connection) => connection[lockKey] || connection[demoteKey] || connection[softKey])
         .map((connection) =>
           updateProviderConnection(connection.id, {
             [lockKey]: null,
             [demoteKey]: null,
+            [softKey]: null,
             ...(connection.testStatus === "unavailable"
               ? {
                   testStatus: "active",

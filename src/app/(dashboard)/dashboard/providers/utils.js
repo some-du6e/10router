@@ -1,4 +1,4 @@
-import { DEMOTE_PREFIX } from "@/shared/utils/connectionStatus.js";
+import { DEMOTE_PREFIX, SOFT_DEMOTE_PREFIX } from "@/shared/utils/connectionStatus.js";
 
 export const STATUS_FILTER_OPTIONS = [
   { value: "all", label: "All" },
@@ -25,7 +25,7 @@ export function matchesStatusFilter(statusFilter, stats, isNoAuth = false) {
 // Demotions (authDemote_<model>) follow the server too: turning a key on drops them.
 export function withToggledActive(connection, isActive, saved) {
   const demotions = saved ? Object.fromEntries(Object.keys({ ...connection, ...saved })
-    .filter((key) => key.startsWith(DEMOTE_PREFIX)).map((key) => [key, saved[key] ?? null])) : {};
+    .filter((key) => key.startsWith(DEMOTE_PREFIX) || key.startsWith(SOFT_DEMOTE_PREFIX)).map((key) => [key, saved[key] ?? null])) : {};
   return { ...connection, ...demotions, isActive, autoDisabledAt: saved?.autoDisabledAt ?? null, autoDisabledReason: saved?.autoDisabledReason ?? null };
 }
 

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools } from "@/lib/localDb";
 import { extractClientApiKey } from "@/shared/utils/clientApiKey.js";
-import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey } from "@/lib/db/index.js";
+import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey, AUTH_SOFT_PREFIX, getAuthSoftKey } from "@/lib/db/index.js";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, getQuotaCooldown, isModelLockActive, getModelLockUntil, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG, AUTH_DEMOTE_CONFIG, LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL } from "open-sse/config/errorConfig.js";
@@ -36,6 +36,7 @@ function githubMonthlyResetMs(status, errorText, provider) {
 const AUTH_FAIL_CLEARED = {
   authFailCount: null, authFailFirstAt: null, authFailLastAt: null, authFailModels: null, authFailAll401: null,
   authFailSameUpstream: null, authFailRunCount: null, authFailRunStartAt: null, authFailBursts: null,
+  authFailCarryCross: null,
 };
 const MAX_TRACKED_MODELS = 5;
 const REASON_MAX_CHARS = 80;
@@ -70,13 +71,24 @@ function recordSuccess(connectionId, model) {
 const succeededSince = (key, sinceMs) => (authEvents.success.get(key)?.at ?? -Infinity) >= sinceMs;
 const refusedSince = (key, sinceMs) => (authEvents.refused.get(key)?.at ?? -Infinity) >= sinceMs;
 
-// A soft demotion (AUTH_SOFT_DEMOTE) of the key that holds it; one stored for
-// a key since replaced is none.
-const softRecord = (c, model) => {
-  const rec = softDemotions.get(`${c.id}|${model}`);
-  return rec?.apiKey === c.apiKey ? rec : null;
-};
+// A key's soft demotion (AUTH_SOFT_DEMOTE) on a model: its authSoft_<model>
+// record (cleared with a new key, a toggle or the model's Clear), cached in
+// memory with the lease of a try that is out.
+function softRecord(c, model) {
+  const key = `${c.id}|${model}`;
+  const stored = c[getAuthSoftKey(model)];
+  if (!stored?.since) {
+    softDemotions.delete(key);
+    return null;
+  }
+  const cached = softDemotions.get(key);
+  if (cached?.since === stored.since && cached.level >= stored.level) return cached;
+  const rec = { ...stored };
+  softDemotions.set(key, rec);
+  return rec;
+}
 const softDemoted = (c, model) => !!softRecord(c, model);
+const storedSoft = ({ level, since, tryAt, lastRefusedAt, keyRefused }) => ({ level, since, tryAt, lastRefusedAt, keyRefused });
 
 // Its tries follow AUTH_DEMOTE_CONFIG's probe schedule: one is taken when due
 // and no other has been out for probeLeaseMs; a counted refusal moves the next
@@ -85,20 +97,30 @@ const softDemoted = (c, model) => !!softRecord(c, model);
 function claimSoftTry(c, model) {
   const rec = softRecord(c, model);
   const now = Date.now();
-  if (!rec || now < rec.tryAt || now < rec.leaseUntil) return false;
+  if (!rec || now < new Date(rec.tryAt).getTime() || now < rec.leaseUntil) return false;
   rec.leaseUntil = now + AUTH_DEMOTE_CONFIG.probeLeaseMs;
   return true;
 }
 
 function softTryRefused(rec) {
+  const now = Date.now();
   rec.level++;
-  rec.tryAt = Date.now() + probeMs(rec.level);
+  rec.tryAt = new Date(now + probeMs(rec.level)).toISOString();
+  rec.lastRefusedAt = new Date(now).toISOString();
+  return storedSoft(rec);
 }
 
+// The key's soft demotions on other models, made due now.
 function softTriesDue(conn, model) {
-  for (const [key, rec] of softDemotions) {
-    if (key.startsWith(`${conn.id}|`) && key !== `${conn.id}|${model}`) rec.tryAt = Math.min(rec.tryAt, Date.now());
-  }
+  const now = new Date().toISOString();
+  return Object.fromEntries(Object.keys(conn)
+    .filter(k => k.startsWith(AUTH_SOFT_PREFIX) && k !== getAuthSoftKey(model))
+    .map(k => [k, softRecord(conn, k.slice(AUTH_SOFT_PREFIX.length))])
+    .filter(([, rec]) => rec && rec.tryAt > now)
+    .map(([k, rec]) => {
+      rec.tryAt = now;
+      return [k, storedSoft(rec)];
+    }));
 }
 
 // LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL: a limit or a refusal of one
@@ -204,7 +226,10 @@ function nextAuthFailStreak(conn, model, status, sameUpstream) {
     authFailLastAt: new Date(now).toISOString(),
     authFailModels: models.includes(model) ? models : [...models, model].slice(-MAX_TRACKED_MODELS),
     authFailAll401: Number(status) === 401 && (fresh || conn.authFailAll401 === true),
-    authFailSameUpstream: sameUpstream && (fresh || conn.authFailSameUpstream === true),
+    // A streak cleared when the key was soft-demoted on a model hands its
+    // crossUpstreamWindowMs on to the next one (authFailCarryCross).
+    authFailSameUpstream: sameUpstream && conn.authFailCarryCross !== true && (fresh || conn.authFailSameUpstream === true),
+    authFailCarryCross: null,
   };
 }
 
@@ -843,7 +868,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   // of the refusal (authEvents, other keys' evidence) and the model lock are.
   const paused = !!conn && softDemoted(conn, model);
   const evidence = conn ? await authFailEvidence(connections, conn, model, status, errorText) : null;
-  if (evidence && !demotionOf(conn, model)) softTriesDue(conn, model);
+  const softDue = evidence && !paused && !demotionOf(conn, model) ? softTriesDue(conn, model) : {};
   const authFailStreak = evidence && !paused ? nextAuthFailStreak(conn, model, status, evidence === "same-upstream") : null;
   const autoDisable = authFailStreak && isAuthDead(authFailStreak) ? {
     isActive: false,
@@ -860,19 +885,26 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     autoDisabledReason: `${refusalText(status, errorText)} on ${deadWith}, ${model}`,
   } : null;
   const disabling = autoDisable || deadOnTwo;
-  if (paused && plan.demote) softTryRefused(softRecord(conn, model));
+  const softTry = paused && plan.demote ? { [getAuthSoftKey(model)]: softTryRefused(softRecord(conn, model)) } : {};
   // Soft-demoted where the count would demote the key if its window were
-  // minWindowMs (it had a refusal only a peer on another upstream served), the
-  // key refused on this model alone and not turned off. Its untried requests
-  // might serve, so the turn-off rules forget its refusals as a success on this
-  // model would make them: authFail* cleared, authDemote_<model> lifted,
-  // authDemoteOkAt noted.
+  // minWindowMs (it is not demoted: it had a refusal only a peer on another
+  // upstream served), the key refused on this model alone and not turned off.
+  // Its untried requests might serve, so the turn-off rules forget its refusals
+  // as a success on this model would make them (authFail* cleared,
+  // authDemote_<model> lifted, authDemoteOkAt noted), keeping the hour the
+  // cleared streak needed for the next one.
   const tally = plan.demote?.to;
-  const entersSoft = AUTH_SOFT_DEMOTE.enabled && !paused && !!tally && !tally.demotedAt && tally.sameUpstream === false
+  const entersSoft = AUTH_SOFT_DEMOTE.enabled && !paused && !!tally && !tally.demotedAt
     && countSpans(tally, plan.nowMs, AUTH_DEAD_CONFIG.minWindowMs)
     && (authFailStreak?.authFailModels ?? conn.authFailModels ?? []).every(m => m === model)
     && !disabling && (requestApiKey ?? conn.apiKey) === conn.apiKey;
-  if (entersSoft) softDemotions.set(`${conn.id}|${model}`, { apiKey: conn.apiKey, level: 0, tryAt: Date.now() + probeMs(0) });
+  const since = entersSoft ? new Date(plan.nowMs).toISOString() : null;
+  const softEntry = entersSoft ? {
+    ...AUTH_FAIL_CLEARED,
+    authFailCarryCross: (authFailStreak ?? conn).authFailSameUpstream === false || conn.authFailCarryCross === true || null,
+    authDemoteOkAt: since,
+    [getAuthSoftKey(model)]: { level: 0, since, tryAt: new Date(plan.nowMs + probeMs(0)).toISOString(), lastRefusedAt: since, keyRefused: !tally.modelScoped },
+  } : null;
 
   const update = {
     ...lockUpdate,
@@ -887,10 +919,12 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     errorCode: status,
     lastErrorAt: new Date().toISOString(),
     backoffLevel: newBackoffLevel ?? backoffLevel,
-    ...(entersSoft ? AUTH_FAIL_CLEARED : authFailStreak),
+    ...(softEntry ?? authFailStreak),
+    ...softDue,
+    ...softTry,
   };
   // A key pasted in while this request was on its way isn't blamed for it.
-  const options = entersSoft ? [{ liftDemote: model, noteServed: true, apiKeyUsed: requestApiKey ?? conn.apiKey }]
+  const options = entersSoft ? [{ liftDemote: model, apiKeyUsed: requestApiKey ?? conn.apiKey }]
     : authFailStreak || demote ? [{ autoDisable: disabling, demote, apiKeyUsed: requestApiKey ?? conn.apiKey }] : [];
   const saved = await updateProviderConnection(connectionId, update, ...options);
   const turnedOff = disabling && saved?.isActive === false && saved.autoDisabledAt === disabling.autoDisabledAt;
@@ -925,9 +959,9 @@ export async function clearAccountError(connectionId, currentConnection, model =
   if (!connectionId || connectionId === "noauth") return;
   recordSuccess(connectionId, model);
   const conn = currentConnection._connection || currentConnection;
-  if (model && softDemotions.delete(`${connectionId}|${model}`)) {
-    log.info("AUTH", `${conn.displayName || conn.name || conn.email || connectionId.slice(0, 8)} soft demotion on ${model} lifted`);
-  }
+  const softHere = !!model && !!conn[getAuthSoftKey(model)];
+  if (model) softDemotions.delete(`${connectionId}|${model}`);
+  if (softHere) log.info("AUTH", `${conn.displayName || conn.name || conn.email || connectionId.slice(0, 8)} soft demotion on ${model} lifted`);
   const now = Date.now();
   // A cleared lock stays as modelLock_<model>: null and needs no write, unless
   // whatever cleared it left its reset time or limit flag behind.
@@ -940,14 +974,16 @@ export async function clearAccountError(connectionId, currentConnection, model =
   // process last wrote a record (which the snapshot may predate), and once on
   // the key's first success since the process started, which a count starting
   // soon after a restart can't otherwise see.
-  const demoteRecord = !!model && !!conn[getAuthDemoteKey(model)];
+  const demoteRecord = !!model && (!!conn[getAuthDemoteKey(model)] || softHere);
   const otherRecords = Object.entries(conn).filter(([k, r]) => k.startsWith(AUTH_DEMOTE_PREFIX) && k !== getAuthDemoteKey(model) && r);
+  const otherSoft = Object.entries(conn).filter(([k, r]) => k.startsWith(AUTH_SOFT_PREFIX) && k !== getAuthSoftKey(model) && r?.since);
   const firstThisBoot = !authEvents.servedKeys.has(connectionId);
   if (firstThisBoot) authEvents.servedKeys.add(connectionId);
   const noteServed = authEvents.demoteKeys.delete(connectionId) || firstThisBoot
-    || otherRecords.some(([, r]) => !(conn.authDemoteOkAt >= r.firstAt));
+    || otherRecords.some(([, r]) => !(conn.authDemoteOkAt >= r.firstAt))
+    || otherSoft.some(([, r]) => !(conn.authDemoteOkAt > r.since));
   const demoteWrite = demoteRecord || noteServed;
-  if (!conn.testStatus && !conn.lastError && !conn.errorCode && allLockKeys.length === 0 && !conn.authFailCount && !demoteWrite) return;
+  if (!conn.testStatus && !conn.lastError && !conn.errorCode && allLockKeys.length === 0 && !conn.authFailCount && !conn.authFailCarryCross && !demoteWrite) return;
 
   // Keys to clear: current model's lock + all expired locks
   const keysToClear = allLockKeys.filter(k => {
@@ -958,7 +994,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
     return expiry && new Date(expiry).getTime() <= now;   // expired
   });
 
-  if (keysToClear.length === 0 && conn.testStatus !== "unavailable" && !conn.lastError && !conn.errorCode && !conn.authFailCount && !demoteWrite) return;
+  if (keysToClear.length === 0 && conn.testStatus !== "unavailable" && !conn.lastError && !conn.errorCode && !conn.authFailCount && !conn.authFailCarryCross && !demoteWrite) return;
 
   // Check if any active locks remain after clearing
   const remainingActiveLocks = allLockKeys.filter(k => {
@@ -969,7 +1005,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
 
   const clearObj = Object.fromEntries(keysToClear.map(k => [k, null]));
   // Any success proves the key works, whatever model failed before.
-  if (conn.authFailCount) Object.assign(clearObj, AUTH_FAIL_CLEARED);
+  if (conn.authFailCount || conn.authFailCarryCross) Object.assign(clearObj, AUTH_FAIL_CLEARED);
   for (const key of keysToClear) {
     clearObj[key.replace("modelLock_", PROVIDER_RESET_PREFIX)] = null;
     clearObj[key.replace("modelLock_", MODEL_LIMIT_PREFIX)] = null;

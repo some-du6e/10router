@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
-import { DEMOTE_PREFIX } from "../../../shared/utils/connectionStatus.js";
+import { DEMOTE_PREFIX, SOFT_DEMOTE_PREFIX } from "../../../shared/utils/connectionStatus.js";
 import { clearSoftDemotions } from "../../softDemotions.js";
 
 const OPTIONAL_FIELDS = [
@@ -17,43 +17,51 @@ const OPTIONAL_FIELDS = [
 // off again keeps its reason unless a new key came with it.
 const AUTH_STREAK_FIELDS = [
   "authFailCount", "authFailFirstAt", "authFailLastAt", "authFailModels", "authFailAll401", "authFailSameUpstream",
-  "authFailRunCount", "authFailRunStartAt", "authFailBursts",
+  "authFailRunCount", "authFailRunStartAt", "authFailBursts", "authFailCarryCross",
 ];
 const AUTO_DISABLE_FIELDS = ["autoDisabledAt", "autoDisabledReason", ...AUTH_STREAK_FIELDS];
 
 // authDemote_<model>: sse/services/auth.js's count of a key's 403s on that
-// model, and its demotion there once they trip. authDemoteOkAt: when the key
-// last served anything while it had such a record (compared with its firstAt).
+// model, and its demotion there once they trip. authSoft_<model>: its soft
+// demotion there, { level, since, tryAt, lastRefusedAt, keyRefused }.
+// authDemoteOkAt: when the key last served anything while it had such a
+// record (compared with its firstAt or since).
 export const AUTH_DEMOTE_PREFIX = DEMOTE_PREFIX;
+export const AUTH_SOFT_PREFIX = SOFT_DEMOTE_PREFIX;
 export const getAuthDemoteKey = (model) => `${AUTH_DEMOTE_PREFIX}${model}`;
+export const getAuthSoftKey = (model) => `${AUTH_SOFT_PREFIX}${model}`;
 
 // Keys that died on a connection before it got a new one, as usage windows
 // ({ since, until }) the key lifespan estimate counts as dead keys.
 export const PAST_KEYS_CAP = 50;
 
-// The key's last answer refused it, after it was set: a dead key the router
-// left on (soft-demoted, say) when it is replaced or switched off by hand.
-const refusedLast = (c) => (c.errorCode === 401 || c.errorCode === 403) && c.testStatus === "unavailable"
-  && typeof c.lastErrorAt === "string" && c.lastErrorAt > (c.keySetAt || "");
+// A dead key the router left on: soft-demoted for refusals of the key itself,
+// and it has served nothing since. When it was last refused, or null.
+function softDeadUntil(c) {
+  const records = Object.entries(c).filter(([k, r]) => k.startsWith(AUTH_SOFT_PREFIX) && r?.keyRefused && r.since
+    && !(c.authDemoteOkAt > r.since));
+  return records.length ? records.map(([, r]) => r.lastRefusedAt || r.since).sort().at(-1) : null;
+}
 
 function applyAutoDisableTransition(existing, merged, data) {
   const newKey = String(data.apiKey ?? "").trim();
   const keyChanged = newKey !== "" && newKey !== String(existing.apiKey ?? "").trim();
   const switchedOff = !keyChanged && existing.isActive !== false && data.isActive === false && data.autoDisabledAt === undefined;
   const until = existing.isActive === false && existing.autoDisabledAt ? existing.autoDisabledAt
-    : (keyChanged || switchedOff) && refusedLast(existing) ? existing.lastErrorAt : null;
+    : keyChanged || switchedOff ? softDeadUntil(existing) : null;
   if ((keyChanged || switchedOff) && until) {
     const past = Array.isArray(existing.pastKeys) ? existing.pastKeys : [];
     merged.pastKeys = [...past, { since: existing.keySetAt || "", until }].slice(-PAST_KEYS_CAP);
     // Its spend so far is that window's; the key, if switched back on, counts from here.
     if (switchedOff) merged.keySetAt = new Date().toISOString();
   }
+  if (switchedOff) for (const k of Object.keys(merged)) if (k.startsWith(AUTH_SOFT_PREFIX)) merged[k] = null;
   // A different key pasted into a connection the router turned off fixes it.
   if (existing.autoDisabledAt && data.isActive === undefined && keyChanged) merged.isActive = true;
   const reEnabled = existing.isActive === false && merged.isActive === true;
   if (reEnabled || keyChanged) {
     // A new key or turning the key back on clears its demotions too.
-    for (const k of Object.keys(merged)) if (k.startsWith(AUTH_DEMOTE_PREFIX)) merged[k] = null;
+    for (const k of Object.keys(merged)) if (k.startsWith(AUTH_DEMOTE_PREFIX) || k.startsWith(AUTH_SOFT_PREFIX)) merged[k] = null;
     clearSoftDemotions(existing.id);
   }
   if (reEnabled) {
@@ -317,7 +325,8 @@ export async function createProviderConnection(data) {
 // demote ({ model, from, to, data, probeNow }) replaces the model's demotion
 // record `from` with `to`, applies `data`, and makes the demotions on the
 // probeNow models due, only if the record is still `from`. liftDemote
-// is a model that just succeeded: its record goes, whenever it was written; with
+// is a model that just succeeded: its record and soft demotion go (a soft
+// demotion `data` writes stays), whenever they were written; with
 // noteServed, authDemoteOkAt marks the success for the stored records.
 // apiKeyUsed is the key a failing request used: if another key has been stored
 // since, the request's auth streak fields, autoDisable and demote are dropped.
@@ -352,6 +361,7 @@ export async function updateProviderConnection(id, data, { autoDisable = null, d
       }
     }
     if (liftDemote && existing[getAuthDemoteKey(liftDemote)]) merged[getAuthDemoteKey(liftDemote)] = null;
+    if (liftDemote && existing[getAuthSoftKey(liftDemote)] && !(getAuthSoftKey(liftDemote) in data)) merged[getAuthSoftKey(liftDemote)] = null;
     if (noteServed) merged.authDemoteOkAt = new Date().toISOString();
     applyAutoDisableTransition(existing, merged, data);
     upsert(db, merged);
@@ -393,6 +403,7 @@ export async function deleteProviderConnectionIf(id, guard) {
     reorderInTx(db, row.provider);
     ok = true;
   });
+  if (ok) clearSoftDemotions(id);
   if (ok) bumpConnectionsVersion();
   return ok;
 }

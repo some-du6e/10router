@@ -9,6 +9,7 @@ import {
   estimateKeyLifespans, lifespanLabel, percentile,
 } from "../../src/shared/utils/keyLifespan.js";
 import { withLifespans, withToggledActive } from "../../src/app/(dashboard)/dashboard/providers/utils.js";
+import { SOFT_DEMOTE_PREFIX } from "../../src/shared/utils/connectionStatus.js";
 
 const NOW = Date.parse("2026-11-04T12:00:00.000Z");
 const HOUR = 60 * 60 * 1000;
@@ -396,10 +397,15 @@ describe("getKeyLifespans", () => {
       expect((await repo.getKeyLifespans(provider, { now: NOW })).estimate).toBeNull();
     });
 
-    // A key the router left on (soft-demoted, say) after it died.
-    const refusedAt = (id, ms) => db.updateProviderConnection(id, { errorCode: 403, testStatus: "unavailable", lastErrorAt: iso(ms) });
+    // A dead key the router left on: soft-demoted, as auth.js writes it, at
+    // `since`, last refused at `lastMs`.
+    const soft = (sinceMs, lastMs, extra = {}) => ({
+      [`${SOFT_DEMOTE_PREFIX}m`]: { level: 2, since: iso(sinceMs), tryAt: iso(lastMs + HOUR), lastRefusedAt: iso(lastMs), keyRefused: true, ...extra },
+      authDemoteOkAt: iso(sinceMs),
+    });
+    const refusedAt = (id, ms) => db.updateProviderConnection(id, soft(ms - HOUR, ms));
 
-    it("keeps a key whose last answer refused it as a dead key when it is replaced", async () => {
+    it("keeps a soft-demoted key that served nothing since as a dead key when it is replaced", async () => {
       await withDeadPeers();
       const x = await addKey("left-on");
       record(x, { at: NOW - 10 * HOUR, cost: 450 });
@@ -429,9 +435,9 @@ describe("getKeyLifespans", () => {
     });
 
     it.each([
-      ["served last", { testStatus: "active" }],
-      ["last refused before this key was set", { errorCode: 403, testStatus: "unavailable", lastErrorAt: "2000-01-01T00:00:00.000Z" }],
-      ["last rate-limited", { errorCode: 429, testStatus: "unavailable", lastErrorAt: iso(NOW - 9 * HOUR) }],
+      ["was last refused, with no soft demotion (an outage, say)", { errorCode: 403, testStatus: "unavailable", lastErrorAt: iso(NOW - 9 * HOUR) }],
+      ["is soft-demoted for refusals of one model only", soft(NOW - 12 * HOUR, NOW - 9 * HOUR, { keyRefused: false })],
+      ["served after it was soft-demoted", { ...soft(NOW - 12 * HOUR, NOW - 9 * HOUR), authDemoteOkAt: iso(NOW - 11 * HOUR) }],
     ])("adds no dead key when a key that %s is replaced or switched off by hand", async (_label, state) => {
       const x = await addKey("fine");
       const y = await addKey("fine-too");

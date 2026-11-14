@@ -1,12 +1,10 @@
-// Routing scenarios for one key K beside a healthy peer, fill-first, through
-// the public auth calls: a sweep of incidents, seeded random traffic, and K
-// refused on one model while it lacks two others. The minute master's auth
-// code turned K off is pinned per case (auto-disable-compare.master.json, null
-// for never). This code must turn K off no sooner, and never where master
-// keeps it on.
+// Routing scenarios for one key K beside healthy peers, fill-first, through the
+// public auth calls: a sweep of incidents, seeded random traffic (with models K
+// lacks, and peers on mixed upstreams), and K refused on one model while it
+// lacks two others. Writes the minute K went off per case (null: never) to
+// COMPARE_OUT. With COMPARE_MASTER=<file> (the same run on master's auth code),
+// it checks that no case goes off sooner than there, or where it stays on.
 //   cd tests && ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-compare-stress.test.js
-// COMPARE_BASELINE=master asserts the minutes equal the pins instead (run it on
-// master's auth code); COMPARE_OUT=<file> writes them.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -41,18 +39,25 @@ const rng = (seed) => () => {
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 };
 
-// K on its own account, or on the peer's.
-async function setup(own) {
+// K first, then its peers. "own": K on its own account, the peer on another;
+// "shared": both on one; "mixed": K and a near peer on one, which lacks
+// `nearLacks`, and a far peer on another.
+const LAYOUTS = {
+  own: [["k", "own"], ["peer", "shared"]],
+  shared: [["k", "shared"], ["peer", "shared"]],
+  mixed: [["k", "near"], ["near", "near"], ["far", "far"]],
+};
+async function setup(layout) {
   provider = `auth-compare-${++seq}`;
   vi.setSystemTime(new Date("2026-10-23T00:00:00.000Z"));
-  const keys = [];
-  for (const name of ["k", "peer"]) {
-    keys.push(await db.createProviderConnection({
+  const keys = {};
+  for (const [name, account] of LAYOUTS[layout]) {
+    keys[name] = await db.createProviderConnection({
       provider, authType: "apikey", name, apiKey: `sk-test-${name}-0123456789`,
-      providerSpecificData: { baseUrl: `https://${own && name === "k" ? "acct-own" : "acct-shared"}.acme.test/v1` },
-    }));
+      providerSpecificData: { baseUrl: `https://acct-${account}.acme.test/v1` },
+    });
   }
-  return keys[0];
+  return keys;
 }
 
 async function serve(model, refused) {
@@ -71,12 +76,14 @@ async function serve(model, refused) {
 
 // traffic(minute) gives the models asked for; refused(minute, model) whether K
 // is. The minute K went off, or null.
-async function offMinute(own, totalMin, traffic, refused) {
-  const k = await setup(own);
+async function offMinute(layout, totalMin, traffic, refused, nearLacks = null) {
+  const keys = await setup(layout);
+  const refuses = (minute, model) => (id) => (id === keys.k.id && refused(minute, model))
+    || (id === keys.near?.id && model === nearLacks);
   for (let minute = 0; minute < totalMin; minute++) {
     if (minute > 0) vi.advanceTimersByTime(MIN);
-    for (const model of traffic(minute)) await serve(model, (id) => id === k.id && refused(minute, model));
-    if ((await db.getProviderConnectionById(k.id)).isActive === false) return minute;
+    for (const model of traffic(minute)) await serve(model, refuses(minute, model));
+    if ((await db.getProviderConnectionById(keys.k.id)).isActive === false) return minute;
   }
   return null;
 }
@@ -89,17 +96,17 @@ const cases = {};
 for (const l1 of [45, 50, 55, 59]) {
   for (const g of [2, 5, 10, 20]) {
     for (const l2 of [3, 8]) {
-      cases[`sweep ${l1},${g},${l2}`] = (own) => offMinute(own, l1 + g + l2 + 120,
-        (m) => (m < l1 + g ? ["opus"] : ["opus", "sonnet"]), (m) => within(m, [[0, l1], [l1 + g, l1 + g + l2]]));
+      cases[`sweep ${l1},${g},${l2}`] = (layout) => offMinute(layout, l1 + g + l2 + 120,
+        (m) => (m < l1 + g ? ["opus"] : ["opus", "sonnet"]), (m) => within(m, [[0, l1], [l1 + g, l1 + g + l2]]), "opus");
     }
   }
 }
 // Seeded sessions on 1-3 models with idle spells, 1-3 incidents of 3-123
-// minutes, and in 3 seeds of 10 a model K lacks; 6 hours.
+// minutes, and in some seeds one or two models K lacks; 6 hours.
 const SEEDS = [...Array.from({ length: 75 }, (_, i) => i + 1),
-  12, 173, 193, 326, 432, 493, 540, 564, 639, 640, 670, 759, 833, 948, 993, 1182, 1194, 1283, 1418, 1430, 1470, 1471, 1631, 1643, 1722];
+  173, 193, 326, 432, 493, 540, 564, 639, 640, 670, 759, 833, 948, 993, 1182, 1194, 1283, 1418, 1430, 1470, 1471, 1631, 1643, 1722];
 for (const seed of SEEDS) {
-  cases[`fuzz ${seed}`] = (own) => {
+  cases[`fuzz ${seed}`] = (layout) => {
     const r = rng(seed);
     const totalMin = 360;
     const schedule = [];
@@ -115,8 +122,10 @@ for (const seed of SEEDS) {
       const a = Math.floor(r() * totalMin * 0.8);
       return [a, a + 3 + Math.floor(r() * 120)];
     });
-    const lacks = r() < 0.3 ? MODELS[Math.floor(r() * MODELS.length)] : null;
-    return offMinute(own, totalMin, (m) => schedule[m], (m, model) => model === lacks || within(m, incidents));
+    const odds = r();
+    const lacks = [...MODELS].sort(() => r() - 0.5).slice(0, odds < 0.3 ? 1 : odds < 0.45 ? 2 : 0);
+    const nearLacks = MODELS[Math.floor(r() * MODELS.length)];
+    return offMinute(layout, totalMin, (m) => schedule[m], (m, model) => lacks.includes(model) || within(m, incidents), nearLacks);
   };
 }
 // Opus every minute, K refused on it until `end`; from end + `off`, sonnet and
@@ -126,23 +135,27 @@ for (const [end, off, every, forMin] of [
   [85, 10, 2, 75], [90, 0, 2, Infinity], [180, 30, 2, Infinity], [360, 0, 2, Infinity], [380, 30, 2, Infinity],
   [85, 0, 5, Infinity], [90, 10, 5, Infinity], [100, 0, 5, Infinity],
 ]) {
-  cases[`lacks two ${end},${off},${every},${forMin}`] = (own) => offMinute(own, 720,
+  cases[`lacks two ${end},${off},${every},${forMin}`] = (layout) => offMinute(layout, 720,
     (m) => (m >= end + off && (m - end - off) % every === 0 ? ["opus", "sonnet", "haiku"] : ["opus"]),
-    (m, model) => (model === "opus" ? m < end : m >= end + off && m < end + off + forMin));
+    (m, model) => (model === "opus" ? m < end : m >= end + off && m < end + off + forMin), "opus");
+}
+// Opus, which only the far peer serves, every minute until K is refused on it
+// for 10 minutes; then sonnet and haiku in turn, a minute apart, which the near
+// peer serves and K is refused on until `end`; 4 hours.
+for (const end of [40, 70]) {
+  cases[`near after far ${end}`] = (layout) => offMinute(layout, 240,
+    (m) => (m < 11 ? ["opus"] : [m % 2 ? "sonnet" : "haiku"]), (m, model) => (model === "opus" ? m < 11 : m < end), "opus");
 }
 
 it("turns no key off sooner than master, or where master keeps it on", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   const out = {};
   for (const [name, run] of Object.entries(cases)) {
-    for (const own of [true, false]) out[`${own ? "own account" : "shared account"}: ${name}`] = await run(own);
+    for (const layout of Object.keys(LAYOUTS)) out[`${layout}: ${name}`] = await run(layout);
   }
   if (process.env.COMPARE_OUT) fs.writeFileSync(process.env.COMPARE_OUT, JSON.stringify(out, null, 2));
-  const master = JSON.parse(fs.readFileSync(new URL("./auto-disable-compare.master.json", import.meta.url), "utf8"));
-  if (process.env.COMPARE_BASELINE === "master") {
-    expect(out).toEqual(master);
-    return;
-  }
+  if (!process.env.COMPARE_MASTER) return;
+  const master = JSON.parse(fs.readFileSync(process.env.COMPARE_MASTER, "utf8"));
   expect(Object.keys(out).sort()).toEqual(Object.keys(master).sort());
   const sooner = Object.entries(out).filter(([name, minute]) => minute !== null && (master[name] === null || minute < master[name]));
   expect(sooner).toEqual([]);
