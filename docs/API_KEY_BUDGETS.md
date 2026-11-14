@@ -164,11 +164,19 @@ existing video job checks only expiry.
 A model allowed by a bare id is listed under that id only, never under the
 provider ids behind it. For Codex this matters: with `model_catalog_url` set,
 Codex matches its configured `model` (a provider id like `cx/gpt-5.5`) against
-the catalog exactly, and wouldn't find it. So for a key whose allowlist has any
-bare id, the dashboard's Codex setup leaves `model_catalog_url` out and Codex
-keeps its own model list, as before the catalog: GPT models keep Codex's own
+the catalog exactly, and wouldn't find it. So the dashboard's Codex setup
+writes `model_catalog_url` only when the key's catalog lists the configured
+models under the ids it writes (and the installed Codex is 0.166 or newer). For
+a key allowed a model by its bare id it leaves the line out, and Codex keeps
+its own model list, as before the catalog: GPT models keep Codex's own
 settings, but other models (Claude, for one) don't get the `apply_patch` tool
 with such a key yet.
+
+The line is written when Codex settings are applied, so after changing a key's
+allowlist, apply them again on the CLI Tools page (or delete the
+`model_catalog_url` line from `~/.codex/config.toml`). A line written for the
+old allowlist stays otherwise, and Codex runs a model it can no longer find
+there on generic settings.
 
 ## Error bodies
 

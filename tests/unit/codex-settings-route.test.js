@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { parseTOML } from "confbox";
 
@@ -17,6 +18,25 @@ vi.mock("os", async (importOriginal) => {
   return { ...actual, homedir, default: { ...(actual.default ?? actual), homedir } };
 });
 
+// The route asks the installed Codex for its version; this stands in for it.
+const codex = vi.hoisted(() => ({ version: "codex-cli 0.167.2" }));
+vi.mock("child_process", async (importOriginal) => {
+  const actual = await importOriginal();
+  const { promisify: p } = await import("node:util");
+  const run = async (command) => {
+    if (command === "codex --version") {
+      if (codex.version === null) throw new Error("codex: command not found");
+      return { stdout: `${codex.version}\n`, stderr: "" };
+    }
+    return { stdout: "", stderr: "" };
+  };
+  const exec = (command, options, callback) => {
+    run(command).then(({ stdout, stderr }) => callback(null, stdout, stderr), (error) => callback(error));
+  };
+  exec[p.custom] = run;
+  return { ...actual, exec, default: { ...(actual.default ?? actual), exec } };
+});
+
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-settings-"));
 fakeHome.dir = home;
 // Backstop in case the mock ever stops applying.
@@ -27,6 +47,7 @@ process.env.USERPROFILE = home;
 // Refuse to run a single test unless the route's home is this temp dir.
 const routeHome = (await import("os")).homedir();
 if (routeHome !== home) throw new Error(`codex-settings test: os.homedir() is ${routeHome}, not the temp dir; refusing to write a Codex config`);
+if (!(await import("child_process")).exec[promisify.custom]) throw new Error("codex-settings test: child_process mock not applied");
 
 // The route looks the API key's allowlist up in the router's database.
 const originalDataDir = process.env.DATA_DIR;
@@ -48,7 +69,8 @@ const apply = (body) => POST(new Request("http://localhost/api/cli-tools/codex-s
   method: "POST",
   body: JSON.stringify({ apiKey: "sk-test", model: "acme/claude-opus-5-5", ...body }),
 }));
-const provider = () => parseTOML(fs.readFileSync(configPath, "utf8")).model_providers["10router"];
+const provider = () => config().model_providers["10router"];
+const URL_LINE = "http://127.0.0.1:20128/backend-api/codex/models";
 
 afterAll(() => {
   if (originalDataDir === undefined) delete process.env.DATA_DIR;
@@ -61,6 +83,7 @@ afterAll(() => {
 });
 
 beforeEach(() => {
+  codex.version = "codex-cli 0.167.2";
   fs.rmSync(path.join(home, ".codex"), { recursive: true, force: true });
 });
 
@@ -71,12 +94,12 @@ describe("Codex CLI settings", () => {
     expect(home.startsWith(os.tmpdir())).toBe(true);
   });
 
-  it("points an API-key login at the router's catalog on the native endpoint", async () => {
+  it("points Codex 0.166 or newer at the router's catalog on the native endpoint", async () => {
     expect((await apply({ baseUrl: "http://127.0.0.1:20128" })).status).toBe(200);
     expect(provider()).toEqual({
       name: "openai",
       base_url: "http://127.0.0.1:20128/backend-api/codex",
-      model_catalog_url: "http://127.0.0.1:20128/backend-api/codex/models",
+      model_catalog_url: URL_LINE,
       wire_api: "responses",
       requires_openai_auth: true,
     });
@@ -94,8 +117,27 @@ describe("Codex CLI settings", () => {
   });
 });
 
+describe("the catalog URL for the installed Codex", () => {
+  // 0.160 to 0.165 drop their own list for it and end up with none when the
+  // fetch fails or the body is over 1 MiB; 0.156 to 0.159 merge it, capped.
+  it.each([
+    ["codex-cli 0.166.0", URL_LINE],
+    ["codex-cli 0.167.2", URL_LINE],
+    ["codex-cli 0.165.0", null],
+    ["codex-cli 0.160.0", null],
+    ["codex-cli 0.156.0", null],
+    ["codex-cli 0.137.0", null],
+    ["something else", null],
+    [null, null],
+  ])("%s gets %s", async (version, expected) => {
+    codex.version = version;
+    await apply({ baseUrl: "http://127.0.0.1:20128" });
+    expect(provider().model_catalog_url ?? null).toBe(expected);
+  });
+});
+
 describe("the catalog URL for a key with a model allowlist", () => {
-  const setup = (apiKey, model = "cx/gpt-5.5", subagentModel = "cc/claude-opus-5-5") =>
+  const setup = (apiKey, model, subagentModel) =>
     apply({ baseUrl: "http://127.0.0.1:20128", apiKey, model, subagentModel });
   const written = () => ({
     model: config().model,
@@ -103,26 +145,52 @@ describe("the catalog URL for a key with a model allowlist", () => {
     catalog: provider().model_catalog_url ?? null,
   });
 
-  // Codex with model_catalog_url looks `model` up by exact name, and such a
-  // key's catalog lists the model under the bare name only; without the URL
-  // Codex keeps its own list and prefix matching, as before the catalog.
-  it("is left out when the allowlist names a model without a provider prefix", async () => {
+  // Codex with model_catalog_url looks `model` up by exact name, so the line
+  // goes in only when the key's catalog lists both models under these ids.
+  it("is left out when the key was allowed the model by its bare name", async () => {
     const key = await keyWith("bare-allowlist", ["gpt-5.5", "cc/claude-opus-5-5"]);
-    await setup(key);
+    await setup(key, "cx/gpt-5.5", "cc/claude-opus-5-5");
     expect(written()).toEqual({ model: "cx/gpt-5.5", subagent: "cc/claude-opus-5-5", catalog: null });
   });
 
-  it("is written for a prefixed-only allowlist, no allowlist, or a key not on file", async () => {
-    const url = "http://127.0.0.1:20128/backend-api/codex/models";
-    for (const key of [await keyWith("prefixed-allowlist", ["cx/gpt-5.5"]), await keyWith("no-allowlist"), "sk_10router"]) {
-      await setup(key);
-      expect(written()).toEqual({ model: "cx/gpt-5.5", subagent: "cc/claude-opus-5-5", catalog: url });
+  it("is written when the allowlist names both models by these ids, and for an open key or one not on file", async () => {
+    const prefixed = await keyWith("prefixed-allowlist", ["cx/gpt-5.5", "cc/claude-opus-5-5"]);
+    for (const key of [prefixed, await keyWith("no-allowlist"), "sk_10router"]) {
+      await setup(key, "cx/gpt-5.5", "cc/claude-opus-5-5");
+      expect(written()).toEqual({ model: "cx/gpt-5.5", subagent: "cc/claude-opus-5-5", catalog: URL_LINE });
     }
+  });
+
+  it("is left out when the allowlist doesn't cover the subagent model", async () => {
+    const key = await keyWith("partial-allowlist", ["cx/gpt-5.5"]);
+    await setup(key, "cx/gpt-5.5", "cc/claude-opus-5-5");
+    expect(written().catalog).toBeNull();
+  });
+
+  it("is written for a combo the key is allowed, picked by its name", async () => {
+    await db.createCombo({ name: "codex-team", models: ["cx/gpt-5.5", "cc/claude-opus-5-5"] });
+    const key = await keyWith("combo-only", ["codex-team"]);
+    await setup(key, "codex-team", "codex-team");
+    expect(written()).toEqual({ model: "codex-team", subagent: "codex-team", catalog: URL_LINE });
+  });
+
+  it("is written for a prefixed model next to a combo in the allowlist", async () => {
+    await db.createCombo({ name: "mixed-team", models: ["cx/gpt-5.5"] });
+    const key = await keyWith("combo-and-model", ["mixed-team", "cc/claude-opus-5-5"]);
+    await setup(key, "cc/claude-opus-5-5", "cc/claude-opus-5-5");
+    expect(written().catalog).toBe(URL_LINE);
+  });
+
+  it("is written for an alias the key is allowed, picked by its name", async () => {
+    await db.setModelAlias("team-opus", "cc/claude-opus-5-5");
+    const key = await keyWith("alias-only", ["team-opus"]);
+    await setup(key, "team-opus", "team-opus");
+    expect(written()).toEqual({ model: "team-opus", subagent: "team-opus", catalog: URL_LINE });
   });
 
   it("never writes the key into config.toml", async () => {
     const key = await keyWith("secret-check", ["gpt-5.5"]);
-    await setup(key);
+    await setup(key, "cx/gpt-5.5", "cx/gpt-5.5");
     expect(fs.readFileSync(configPath, "utf8")).not.toContain(key);
   });
 });

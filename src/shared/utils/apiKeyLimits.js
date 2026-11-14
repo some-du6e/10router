@@ -46,16 +46,6 @@ export function keyHasLimits(key) {
 }
 
 /**
- * Does this key's model allowlist name any model without a provider prefix
- * ("gpt-5.5" rather than "cx/gpt-5.5")? The model lists show such a model under
- * the bare name only, which Codex can't find by the prefixed id it's set to.
- */
-export function hasBareAllowedModel(key) {
-  return Array.isArray(key?.allowedModels)
-    && key.allowedModels.some((entry) => typeof entry === "string" && entry.trim() !== "" && !entry.includes("/"));
-}
-
-/**
  * The key the dashboard uses for its own calls through /v1 (model tests,
  * endpoint tests, media examples): an active key with no limits, so those calls
  * neither get refused by someone's allowlist nor spend someone's budget. With

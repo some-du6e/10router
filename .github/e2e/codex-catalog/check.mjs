@@ -59,10 +59,17 @@ const sides = existsSync(catalogFile("base")) ? ["base", "head"] : ["head"];
 
 // A Codex home with a side's dashboard config, signed in the way the docs say:
 // `codex login --with-api-key`. The key is a stand-in; nothing checks it.
-async function freshHome(side) {
+const configText = (side) => readFileSync(join(workDir, side, "home", ".codex", "config.toml"), "utf8");
+// `withCatalogUrl` adds the line by hand, to see what this Codex does with it
+// when the dashboard (rightly) didn't write it.
+async function freshHome(side, { withCatalogUrl = false } = {}) {
   const home = mkdtempSync(join(tmpdir(), "codex-home-"));
   if (side) {
     copyFileSync(join(workDir, side, "home", ".codex", "config.toml"), join(home, "config.toml"));
+    if (withCatalogUrl && !configText(side).includes("model_catalog_url")) {
+      const text = configText(side).replace(/^(base_url = "([^"]+)")$/m, `$1\nmodel_catalog_url = "$2/models"`);
+      writeFileSync(join(home, "config.toml"), text);
+    }
     const login = await codex(home, ["login", "--with-api-key"], "sk-placeholder");
     if (login.status !== 0) fail(`codex login --with-api-key: exit ${login.status}: ${login.stderr}`);
   }
@@ -120,62 +127,81 @@ for (const side of sides) {
   }
 }
 
-// 2. Over HTTP, with the dashboard's config, from 0.156.0 (the first with model_catalog_url).
-// 0.156 to 0.165 refuse a model_catalog_url body over 1 MiB
-// (MAX_MODEL_CATALOG_BYTES in model-provider/src/models_endpoint.rs) and keep
-// their own list; 0.166 dropped the limit.
-const CATALOG_URL_LIMIT = before("0.166.0") ? 1024 * 1024 : Infinity;
-if (supportsCatalogUrl) {
-  let servedFile = catalogFile("head");
-  const requests = [];
-  const server = createServer((req, res) => {
-    requests.push(req.url);
-    if (!req.url.startsWith("/backend-api/codex/models")) { res.writeHead(404).end(); return; }
-    res.writeHead(200, { "content-type": "application/json" }).end(readFileSync(servedFile));
-  });
-  await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
-  const fetchWith = async (file, configSide) => {
-    servedFile = file;
-    const home = await freshHome(configSide);
-    requests.length = 0;
-    const run = await codex(home, [...discoveryFlag, "debug", "models"]);
-    return { run, asked: requests.filter((u) => u.startsWith("/backend-api/codex/models")) };
-  };
+// 2. Over HTTP, with the dashboard's config and an API-key login.
+//
+// The dashboard writes model_catalog_url only for Codex 0.166 or newer
+// (src/shared/utils/codexCatalog.js). Below that:
+// - 0.156 to 0.159 merge the URL's list with their own and refuse a body over
+//   1 MiB (MAX_MODEL_CATALOG_BYTES), keeping their own list;
+// - 0.160 to 0.165 switch to explicit catalog mode (with_provider_catalog):
+//   their own list is dropped, and a failed fetch, an over-1 MiB body among
+//   them, leaves no models at all;
+// - before 0.156 there is no such setting.
+// The over-cap error isn't printed by `codex debug models`, so it's seen here
+// by its effect.
+const expectUrl = !before("0.166.0");
+const headHasUrl = configText("head").includes("model_catalog_url");
+if (headHasUrl === expectUrl) pass(`dashboard config ${expectUrl ? "has" : "leaves out"} model_catalog_url for ${version}`);
+else fail(`dashboard config ${headHasUrl ? "has" : "lacks"} model_catalog_url for ${version}`);
 
-  if (sides.includes("base")) {
-    const baseRun = await fetchWith(catalogFile("base"), "base");
-    const shown = baseRun.run.models || [];
-    const listedBefore = shown.filter((m) => routed.some((r) => r.slug === m.slug)).length;
-    console.log(`base config + base catalog: Codex asked for the catalog ${baseRun.asked.length} times and lists ${listedBefore} routed models (${shown.length} in all: ${shown.map((m) => m.slug).slice(0, 3).join(", ")}, ...)`);
+let servedFile = catalogFile("head");
+const requests = [];
+const server = createServer((req, res) => {
+  requests.push(req.url);
+  if (!req.url.startsWith("/backend-api/codex/models")) { res.writeHead(404).end(); return; }
+  res.writeHead(200, { "content-type": "application/json" }).end(readFileSync(servedFile));
+});
+await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
+const fetchWith = async (file, configSide, options) => {
+  servedFile = file;
+  const home = await freshHome(configSide, options);
+  requests.length = 0;
+  const run = await codex(home, [...discoveryFlag, "debug", "models"]);
+  return { run, asked: requests.filter((u) => u.startsWith("/backend-api/codex/models")) };
+};
+const describeRun = ({ run, asked }) => {
+  const shown = run.models || [];
+  const routedShown = shown.filter((m) => routed.some((r) => r.slug === m.slug)).length;
+  return { shown, routedShown, text: `asked ${asked.length} times, lists ${shown.length} models (${routedShown} routed)` };
+};
 
-    const undecodable = await fetchWith(catalogFile("base"), "head");
-    console.log(`head config + base catalog: Codex asked ${undecodable.asked.length} times and lists ${(undecodable.run.models || []).length} models`);
-  }
+if (sides.includes("base")) {
+  console.log(`base config + base catalog: Codex ${describeRun(await fetchWith(catalogFile("base"), "base")).text}`);
+}
 
-  const headBytes = readFileSync(catalogFile("head")).length;
-  const after = await fetchWith(catalogFile("head"), "head");
+const headBytes = readFileSync(catalogFile("head")).length;
+const after = await fetchWith(catalogFile("head"), "head");
+if (expectUrl) {
   if (after.asked.length === 0) fail("model_catalog_url: Codex never asked for the catalog");
   else pass(`model_catalog_url: Codex asked ${after.asked[0]}`);
+  checkDecoded("model_catalog_url", after.run.models);
+} else {
+  // Without the line Codex keeps its own models, as with master's config.
+  const d = describeRun(after);
+  if (d.shown.length === 0 || d.routedShown > 0) fail(`dashboard config: Codex ${d.text}; expected its own list`);
+  else pass(`dashboard config: Codex keeps its own ${d.shown.length} models (${d.text})`);
 
-  if (headBytes <= CATALOG_URL_LIMIT) {
-    checkDecoded("model_catalog_url", after.run.models);
-  } else {
-    // Over the cap: Codex must fall back to its own list, not to nothing.
-    const shown = after.run.models || [];
-    const routedShown = shown.filter((m) => routed.some((r) => r.slug === m.slug)).length;
-    if (shown.length === 0 || routedShown > 0) fail(`model_catalog_url: a ${headBytes}-byte catalog should leave Codex on its own list, got ${shown.length} models (${routedShown} routed)`);
-    else pass(`model_catalog_url: the ${headBytes}-byte catalog is over this Codex's 1 MiB limit, so it keeps its own ${shown.length} models`);
+  if (supportsCatalogUrl) {
+    // What the line would do here, to pin why it's left out.
+    const forced = describeRun(await fetchWith(catalogFile("head"), "head", { withCatalogUrl: true }));
+    console.log(`with model_catalog_url added by hand, a ${headBytes}-byte catalog: Codex ${forced.text}`);
+    if (before("0.160.0")) {
+      if (forced.shown.length === 0 || forced.routedShown > 0) fail(`model_catalog_url over 1 MiB: expected Codex's own list, got: ${forced.text}`);
+      else pass("model_catalog_url over 1 MiB: Codex refuses the body and keeps its own list");
+    } else {
+      pass(`model_catalog_url over 1 MiB: explicit catalog mode leaves Codex with ${forced.shown.length} models`);
+    }
 
     // A catalog under the cap, with the entries that matter, decodes over HTTP.
     const keep = new Set([generic.slug, chatgptBacked?.slug, "gpt-5.5", "codex-auto-review", ...Object.keys(legacy.servedBefore)]);
     const small = head.filter((m) => keep.has(m.slug));
     const smallFile = join(mkdtempSync(join(tmpdir(), "codex-small-")), "catalog.json");
     writeFileSync(smallFile, JSON.stringify({ models: small }));
-    const smallRun = await fetchWith(smallFile, "head");
-    console.log(`model_catalog_url: a ${readFileSync(smallFile).length}-byte catalog of ${small.length} entries:`);
+    const smallRun = await fetchWith(smallFile, "head", { withCatalogUrl: true });
+    console.log(`model_catalog_url added by hand, a ${readFileSync(smallFile).length}-byte catalog of ${small.length} entries:`);
     checkDecoded("model_catalog_url (under 1 MiB)", smallRun.run.models, small);
   }
-  server.close();
 }
+server.close();
 
 process.exit(failed ? 1 : 0);

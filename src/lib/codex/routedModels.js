@@ -83,8 +83,9 @@ async function waitFor(promise, ms) {
  * @returns {Promise<object[]>}
  */
 export async function getRoutedModels() {
-  // A connection added, removed or changed since the list was built makes it
-  // as old as a list past SERVE_STALE_MS: rebuilt, with the short grace.
+  // A write that bumps connectionsVersion since the list was built (a
+  // connection, alias, custom model, disabled model or restore; not a combo)
+  // makes it as old as a list past SERVE_STALE_MS: rebuilt, with the grace.
   const connectionsChanged = state.models && state.connections !== connectionsVersion();
   const age = !state.models ? Infinity : connectionsChanged ? ROUTED_MODELS_TIMING.SERVE_STALE_MS : now() - state.builtAt;
   if (age < ROUTED_MODELS_TIMING.FRESH_MS) return state.models;
