@@ -1,6 +1,6 @@
 // "Add endpoint" detection: URL cleanup, model-list parsing, and the free-probe
-// decision table. The Contoso fixture mirrors real responses from a gateway with
-// no model list (2026-10-19).
+// decision table. The Contoso fixture is modeled on a gateway with no model
+// list (2026-10-19).
 import { describe, it, expect } from "vitest";
 import { normalizeUrl, cleanKey, parseModelList, makePrefix, suggestName, detectEndpoint, discoverModels, matchCatalogProvider, majorVersion, recentLabModels, candidateModels, outdatedModels } from "@/lib/endpointDetect.js";
 

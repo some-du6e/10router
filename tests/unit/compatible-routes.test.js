@@ -109,6 +109,12 @@ function upstream({ messages, chat }) {
   };
 }
 
+// Wraps a fetch and records the URL of every POST, in order.
+function recorded(fetchFn) {
+  const posts = [];
+  return { posts, fetchFn: async (url, init = {}) => { if ((init.method || "GET") === "POST") posts.push(String(url)); return fetchFn(url, init); } };
+}
+
 describe("detectEndpoint on a two-path endpoint", () => {
   it("discovers on both paths and returns routes", async () => {
     const catalog = { providers: [{ id: "contoso-ai", name: "Contoso AI", api: "https://${ACCOUNT}.contoso-cloud.example/api/claude/v1", models: ["claude-opus-5", "claude-haiku-4-5", "openai-gpt-5", "kimi-k3"] }], labs: [] };
@@ -137,12 +143,42 @@ describe("detectEndpoint on a two-path endpoint", () => {
       ["more models on Chat", ["claude-opus-5", "claude-haiku-4-5"], ["openai-gpt-5", "kimi-k3", "glm-5"],
         "openai-chat", { "claude-opus-5": "anthropic", "claude-haiku-4-5": "anthropic" }],
     ])("%s", async (_, messages, chat, primary, routes) => {
-      const r = await detectEndpoint({ url: PLAIN, apiKey: "good-key", catalog, fetchFn: upstream({ messages: new Set(messages), chat: new Set(chat) }) });
+      const { fetchFn, posts } = recorded(upstream({ messages: new Set(messages), chat: new Set(chat) }));
+      const r = await detectEndpoint({ url: PLAIN, apiKey: "good-key", catalog, fetchFn });
+      expect(posts[0]).toMatch(/\/chat\/completions$/); // no hint: Chat is probed first
       expect(r.ok).toBe(true);
       expect([...r.protocols].sort()).toEqual(["anthropic", "openai-chat"]);
       expect(r.models.sort()).toEqual([...new Set([...messages, ...chat])].sort());
       expect(r.protocol).toBe(primary);
       expect(r.routes).toEqual(routes);
+    });
+
+    // A rate limit on one API stops model checks on the rest. Messages is asked
+    // first, so a Chat limit can't hide the Claude models only Messages serves.
+    it.each([
+      ["at its made-up-id check", 0],
+      ["after 2 model checks", 2],
+    ])("finds the Messages models when Chat rate-limits %s", async (_, allowed) => {
+      const messages = new Set(["claude-opus-5", "claude-haiku-4-5", "claude-sonnet-5"]);
+      const inner = upstream({ messages, chat: new Set(["openai-gpt-5"]) });
+      let chatChecks = 0;
+      const limited = async (url, init) => {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        if (new URL(url).pathname.endsWith("/chat/completions") && body.model !== "probe" && ++chatChecks > allowed) {
+          return new Response(JSON.stringify({ error: { type: "rate_limit_error", message: "slow down" } }), { status: 429, headers: { "content-type": "application/json" } });
+        }
+        return inner(url, init);
+      };
+      const { fetchFn, posts } = recorded(limited);
+      const r = await detectEndpoint({ url: PLAIN, apiKey: "good-key", catalog, fetchFn, sleep: async () => {} });
+      expect(posts[0]).toMatch(/\/chat\/completions$/);
+      expect(r.ok).toBe(true);
+      expect([...r.protocols].sort()).toEqual(["anthropic", "openai-chat"]);
+      expect(r.byProtocol.anthropic.sort()).toEqual([...messages].sort());
+      expect(r.models).toEqual(expect.arrayContaining([...messages]));
+      expect(r.protocol).toBe("anthropic");
+      if (allowed) expect(r.checks["openai-chat"].stopped).toBe("rate"); // a canary stop leaves no check
+      expect(r.stopReason).toBe("rate");
     });
   });
 });
