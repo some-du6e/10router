@@ -116,7 +116,8 @@ describe("what the decision waits for", () => {
     const listIds = vi.fn(async () => new Set(["cx/gpt-5.5"]));
     const decision = await decideCatalogUrl({ apiKey: null, ids: ["gpt-5.5"], codexVersion: NEW, listIds, listBehind: () => false });
     expect(decision).toEqual({ write: false, reason: "not-listed" });
-    // Looked at again (the held list, at once), never waited on.
+    // Looked at again, but not as a fresh lookup: that's the held list (at
+    // once while it's under 5 minutes old, else after at most the 1s grace).
     expect(listIds.mock.calls.map((call) => Boolean(call[1]?.fresh))).toEqual([false, false]);
   });
 
@@ -163,6 +164,38 @@ describe("what the decision waits for", () => {
     const models = await getFreshRoutedModels(5_000);
     expect(models.map((m) => m.id)).toEqual(["cx/gpt-5.5", "newp/model-x"]);
     expect(routed.calls).toBe(2);
+  });
+});
+
+describe("combo writes", () => {
+  // Auto-combo rebuilds (and holds bare-id requests) when connectionsVersion
+  // moves (autoCombo.ts: attemptedVersion !== connectionsVersion()), and its
+  // list doesn't change with combos. So combos keep a counter of their own.
+  it("move combosVersion, not connectionsVersion", async () => {
+    const { connectionsVersion, combosVersion } = db;
+    const connections = connectionsVersion();
+    const combos = combosVersion();
+    const combo = await db.createCombo({ name: "counter-check", models: ["cx/gpt-5.5"] });
+    await db.updateCombo(combo.id, { models: ["cx/gpt-5.5", "cc/claude-opus-5-5"] });
+    await db.deleteCombo(combo.id);
+    expect(connectionsVersion()).toBe(connections);
+    expect(combosVersion()).toBe(combos + 3);
+  });
+
+  it("don't make auto-combo rebuild its list", async () => {
+    const autoCombo = await import("@/sse/services/autoCombo.js");
+    await autoCombo.warmAutoComboCatalog();
+    // Auto-combo starts a rebuild whenever the version it last built at isn't
+    // the current one (attemptedVersion !== connectionsVersion()).
+    const upToDate = () => globalThis._autoComboCatalog.attemptedVersion === db.connectionsVersion();
+    expect(upToDate()).toBe(true);
+    await db.createCombo({ name: "auto-combo-check", models: ["cx/gpt-5.5"] });
+    expect(upToDate()).toBe(true);
+    await db.deleteCombo((await db.getComboByName("auto-combo-check")).id);
+    expect(upToDate()).toBe(true);
+    // While a connection write does trigger one.
+    bumpConnectionsVersion();
+    expect(upToDate()).toBe(false);
   });
 });
 

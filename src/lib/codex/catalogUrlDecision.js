@@ -47,9 +47,11 @@ export async function decideCatalogUrl({ apiKey, ids, codexVersion, listIds = li
   let result = await pending;
   // Missing an id: look again, since a rebuild may have landed while the
   // version check ran. While the held list predates a write (a provider or
-  // combo added just before Apply), wait for the build that includes it;
-  // otherwise this returns the held list at once. A list that's merely old
-  // isn't waited on; an alias or a bare name would still miss.
+  // combo added just before Apply), wait for the build that includes it.
+  // Otherwise this is the catalog route's own lookup: the held list at once
+  // while it's under 5 minutes old, else up to the 1-second grace for a
+  // rebuild. A list that's merely old isn't waited on beyond that; an alias or
+  // a bare name would still miss.
   if (!result.error && !wanted.every((id) => result.set.has(id))) result = await lookup({ fresh: listBehind() });
   if (result.error) return { write: false, reason: "lookup-failed" };
   if (wanted.length === 0 || !wanted.every((id) => result.set.has(id))) return { write: false, reason: "not-listed" };
