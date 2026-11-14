@@ -257,11 +257,11 @@ describe("Codex's own models", () => {
     expect(codexModelsFor("0.137.0").find((m) => m.slug === "codex-auto-review").default_reasoning_level).toBe("medium");
   });
 
-  // Codex before 0.147 drops the template when `[features] personality = false`
-  // and runs on base_instructions alone.
-  it("carry the prompt itself in base_instructions for Codex before 0.147", () => {
+  // Codex before 0.147, and the 0.147.0 alphas (which report 0.147.0), drop the
+  // template when `[features] personality = false` and run on base_instructions alone.
+  it("carry the prompt itself in base_instructions for Codex before 0.148", () => {
     expect(bundled("gpt-5.5").base_instructions).toBeUndefined();
-    for (const version of ["0.137.0", "0.146.0", "0.146.9"]) {
+    for (const version of ["0.137.0", "0.146.0", "0.147.0", "0.147.9"]) {
       for (const entry of codexModelsFor(version)) {
         expect(entry.base_instructions, `${version} ${entry.slug}`).toBe(entry.model_messages.instructions_template);
         expect(entry.base_instructions.length, entry.slug).toBeGreaterThan(1000);
@@ -269,9 +269,9 @@ describe("Codex's own models", () => {
     }
   });
 
-  it("carry an empty base_instructions from Codex 0.147, which keeps the template", () => {
+  it("carry an empty base_instructions from Codex 0.148, which keeps the template", () => {
     expect(CODEX_BUNDLED_MODELS.every((m) => m.model_messages?.instructions_template)).toBe(true);
-    for (const version of ["0.147.0", "0.167.2", "0.0.0", null]) {
+    for (const version of ["0.148.0", "0.167.2", "0.0.0", null]) {
       expect(codexModelsFor(version).every((m) => m.base_instructions === ""), String(version)).toBe(true);
     }
   });

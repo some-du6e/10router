@@ -76,9 +76,10 @@ jobs:
       fail-fast: false
       matrix:
         # Both sides of each cut-off in codexShapeFor(). 0.137/0.138: reasoning
-        # efforts turn lenient. 0.146/0.147: below 0.147 Codex needs
-        # base_instructions and falls back to it when personality = false
-        # clears the template, so those get the prompt there; 0.147+ get "".
+        # efforts turn lenient. Before 0.147 (and in the 0.147.0 alphas, which
+        # report 0.147.0) Codex needs base_instructions and falls back to it
+        # when personality = false clears the template, so clients before
+        # 0.148 get the prompt there (0.146 and 0.147 run here); 0.148+ get "".
         codex: ["0.167.2", "0.147.0", "0.146.0", "0.138.0", "0.137.0"]
     steps:
       - uses: actions/checkout@v5

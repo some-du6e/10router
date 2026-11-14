@@ -81,9 +81,9 @@ function checkDecoded(label, models) {
     const prompt = c.model_messages?.instructions_template ?? c.base_instructions ?? "";
     if (!prompt || prompt.startsWith("You are a coding agent running in the Codex CLI")) fail(`${label}: ${c.slug} lost its own prompt`);
     else pass(`${label}: ${c.slug} keeps Codex's own metadata (${prompt.length}-char prompt, apply_patch_tool_type=${c.apply_patch_tool_type})`);
-    // Before 0.147, `[features] personality = false` drops the template and
+    // Before 0.148 (0.147.0 alphas report 0.147.0), `[features] personality = false` drops the template and
     // Codex runs on base_instructions alone (with_config_overrides).
-    if (minor < 147) {
+    if (minor < 148) {
       const fallback = c.base_instructions ?? "";
       if (fallback !== prompt) fail(`${label}: ${c.slug} base_instructions (${fallback.length} chars) isn't its prompt; personality = false would leave it with ${fallback ? "another" : "no"} system prompt`);
       else pass(`${label}: ${c.slug} with its template cleared still has its ${fallback.length}-char prompt in base_instructions`);

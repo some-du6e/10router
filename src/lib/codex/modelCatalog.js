@@ -35,14 +35,14 @@ const REASONING_LEVELS = [
 const STRICT_EFFORTS_BEFORE = [0, 138, 0];
 const STRICT_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 
-// Codex up to 0.146 requires a `base_instructions` string, and falls back to
-// it when `[features] personality = false` clears the entry's template
-// (with_config_overrides in models-manager/src/model_info.rs). So clients
-// before 0.147.0 get the template's own text there, the way Codex 0.167's
-// serialize_model_infos_with_legacy_base writes it. From 0.147.0 the field is
-// optional and the template is kept, so the rest get "": still accepted by the
-// 0.147.0 alphas, which report 0.147.0 too.
-const FULL_BASE_INSTRUCTIONS_BEFORE = [0, 147, 0];
+// Codex up to 0.146, and the 0.147.0 alphas, require a `base_instructions`
+// string and fall back to it when `[features] personality = false` clears the
+// entry's template (with_config_overrides in models-manager/src/model_info.rs).
+// The alphas report 0.147.0, so everything before 0.148.0 gets the template's
+// own text there, the way Codex 0.167's serialize_model_infos_with_legacy_base
+// writes it. 0.147.0 itself keeps the template and ignores the copy. From
+// 0.148.0 the copy would only add bytes, so those get "".
+const FULL_BASE_INSTRUCTIONS_BEFORE = [0, 148, 0];
 const NATIVE_MODELS = bundled.models.map((model) => ({ ...model, base_instructions: model.base_instructions ?? "" }));
 
 // Spelled the way Codex's own catalog spells it: 0.137 reads it as the
