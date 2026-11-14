@@ -367,6 +367,8 @@ function isLimitLocked(c, model) {
  *   session affinity), used when usable.
  * @param {((c: any) => boolean) | null} [options.connectionFilter] - drops
  *   connections the caller may not use at all.
+ * @param {string[]} [options.avoidConnectionIds] - keys to rank after every other
+ *   healthy key, but before keys demoted on this model.
  * @param {string[]} [options.warmConnectionIds] - keys holding this conversation's
  *   prompt cache, most recently used last. One is picked when it ranks with the
  *   strategy's own pick (round-robin: the most recent usable one).
