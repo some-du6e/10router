@@ -1025,9 +1025,15 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   // Soft demotion writes apply only to the record the refusal saw, as `demote`
   // does: not to one a success lifted meanwhile, nor over one written meanwhile.
   const softSince = Object.fromEntries(Object.keys(update).filter(k => k.startsWith(AUTH_SOFT_PREFIX)).map(k => [k, conn?.[k]?.since ?? null]));
+  // The day rule's turn-off holds only while its soft demotions and last
+  // success are as it saw them: not after a success or a Clear meanwhile.
+  const autoDisableIf = deadWhileSoft ? {
+    authServedAt: conn.authServedAt ?? null,
+    ...Object.fromEntries(softModelsForItself(conn).map(m => [getAuthSoftKey(m), conn[getAuthSoftKey(m)].since])),
+  } : null;
   const options = entersSoft ? [{ liftDemote: model, apiKeyUsed, softSince }]
-    : authFailStreak || demote ? [{ autoDisable: disabling, demote, apiKeyUsed, softSince }]
-      : Object.keys(softDue).length || Object.keys(softTry).length || disabling ? [{ autoDisable: disabling, apiKeyUsed, softSince }] : [];
+    : authFailStreak || demote ? [{ autoDisable: disabling, demote, apiKeyUsed, softSince, autoDisableIf }]
+      : Object.keys(softDue).length || Object.keys(softTry).length || disabling ? [{ autoDisable: disabling, apiKeyUsed, softSince, autoDisableIf }] : [];
   const saved = await updateProviderConnection(connectionId, update, ...options);
   const turnedOff = disabling && saved?.isActive === false && saved.autoDisabledAt === disabling.autoDisabledAt;
   const recorded = demote && JSON.stringify(saved?.[getAuthDemoteKey(model)]) === JSON.stringify(demote.to);

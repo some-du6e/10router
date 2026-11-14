@@ -354,8 +354,10 @@ export async function createProviderConnection(data) {
 // autoDisable, demote and liftDemote are dropped. softSince ({ field: since })
 // gives the `since` the request saw for each soft demotion field it writes
 // (null: none): one whose stored record has since changed, say lifted by a
-// success, is left as stored.
-export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, noteServed = false, apiKeyUsed, softSince = null } = {}) {
+// success, is left as stored. autoDisableIf ({ field: since or value }) holds
+// what a turn-off was decided on (sse/services/auth.js's day rule: the soft
+// demotions' since and authServedAt); autoDisable is dropped if any changed.
+export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, noteServed = false, apiKeyUsed, softSince = null, autoDisableIf = null } = {}) {
   const db = await getAdapter();
   let result;
   let servesChanged = false;
@@ -377,7 +379,9 @@ export async function updateProviderConnection(id, data, { autoDisable = null, d
         else delete merged[f];
       }
     }
-    if (autoDisable && !staleKey && existing.isActive && db.get(
+    const decidedOn = Object.entries(autoDisableIf ?? {})
+      .every(([f, v]) => (f.startsWith(AUTH_SOFT_PREFIX) ? existing[f]?.since ?? null : existing[f] ?? null) === v);
+    if (autoDisable && !staleKey && decidedOn && existing.isActive && db.get(
       `SELECT 1 FROM providerConnections WHERE provider = ? AND id != ? AND isActive = 1 LIMIT 1`, [existing.provider, id],
     )) Object.assign(merged, autoDisable);
     const demoteKey = demote && getAuthDemoteKey(demote.model);

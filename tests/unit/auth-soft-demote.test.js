@@ -815,6 +815,22 @@ describe("after a long soft demotion", () => {
     expect((await load(key.id)).isActive).toBe(false);
   });
 
+  it.each([
+    // Another router instance's: this process's memory doesn't see it.
+    ["a success stored by another instance", (key) => db.updateProviderConnection(key.id, { authServedAt: new Date().toISOString() })],
+    ["a Clear", () => availability.POST(new Request("http://localhost/api/models/availability", {
+      method: "POST", body: JSON.stringify({ action: "clearCooldown", provider, model: OPUS }),
+    }))],
+  ])("keeps it on when %s lands while the refusal that would turn it off is on its way", async (_label, landing) => {
+    const { key, peer } = await softDemoted();
+    expect((await run(key, 23)).off).toBeNull();
+    vi.advanceTimersByTime(2 * 60 * MIN);
+    await succeed(peer.id, KIMI);
+    beforeProxyLookup(() => landing(key));
+    await failOnce(key.id, KIMI);
+    expect((await load(key.id)).isActive).toBe(true);
+  }, 120000);
+
   // 401s count toward the day rule only in a row (5, as master's all-401 streak).
   it("turns it off at the fifth 401 in a row on another model, once the day is up", async () => {
     const { key, peer } = await softDemoted();
