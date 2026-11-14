@@ -125,6 +125,15 @@ it("replays the dead-key scenarios", async () => {
     out.prodPattern[cross ? "other account" : "same account"] = refusals[dead.id]?.[OPUS]?.length ?? 0;
   }
 
+  // The same with opus in use every minute: refusals in the first hour and in 12.
+  out.prodEveryMinute = {};
+  for (const cross of [true, false]) {
+    const [dead] = await setup(["dead", "peer"], cross);
+    const { refusals } = await run([dead], 12 * 60, () => [[OPUS, (id) => id === dead.id]]);
+    const at = refusals[dead.id]?.[OPUS] ?? [];
+    out.prodEveryMinute[cross ? "other account" : "same account"] = { firstHour: at.filter((m) => m < 60).length, total: at.length };
+  }
+
   // An incident on opus that ends: minutes from its end until the key serves opus again.
   out.incidentRecovery = {};
   for (const [pattern, active] of [["every minute", () => true], ["10 on / 13 off", tenOnThirteenOff]]) {

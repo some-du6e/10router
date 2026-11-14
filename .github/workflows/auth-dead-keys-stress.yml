@@ -12,6 +12,8 @@ on:
       - "open-sse/**"
       - "tests/unit/auto-disable-stress.test.js"
       - "tests/unit/auto-disable-stress.pinned.json"
+      - "tests/unit/auth-soft-demote.test.js"
+      - "tests/unit/auto-disable-dead-keys.test.js"
       - "tests/vitest.stress.config.js"
       - "tests/vitest.shared.js"
       - "tests/package.json"
@@ -44,6 +46,10 @@ jobs:
           STRESS_PIN: "1"
           STRESS_OUT: ${{ runner.temp }}/stress-branch.json
         run: ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-stress.test.js
+      - name: Soft demotion and dead-key tests
+        if: always()
+        working-directory: tests
+        run: ./node_modules/.bin/vitest run unit/auth-soft-demote.test.js unit/auto-disable-dead-keys.test.js
       # For comparison only, on a manual run: master's numbers never fail the job.
       - name: Stress, master's auth code
         if: always() && github.event_name == 'workflow_dispatch'

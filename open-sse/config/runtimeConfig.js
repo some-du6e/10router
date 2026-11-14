@@ -18,6 +18,7 @@ export const HTTP_STATUS = {
 
 // Re-export error config (backward compat)
 export { ERROR_TYPES, DEFAULT_ERROR_MESSAGES, BACKOFF_CONFIG, COOLDOWN_MS } from "./errorConfig.js";
+import { AUTH_DEMOTE_CONFIG } from "./errorConfig.js";
 
 // Cache TTLs (seconds)
 export const CACHE_TTL = {
@@ -89,6 +90,18 @@ export const CACHE_AFFINITY = {
   // Up to this much more, at random, so requests waiting on one key don't all
   // retry it at once and escalate its backoff.
   jitterMs: 250,
+};
+
+// An API key refused for itself on a model (refusals AUTH_DEAD_CONFIG counts)
+// minFailures times spanning minWindowMs is soft-demoted there until it serves
+// that model: it goes after the provider's other keys, but for one try on the
+// schedule of AUTH_DEMOTE_CONFIG's probes, and its refusals there no longer
+// count toward demoting or turning it off. Kept in memory. Env:
+// AUTH_SOFT_DEMOTE, 1 (on) or 0 (off).
+export const AUTH_SOFT_DEMOTE = {
+  enabled: envInt("AUTH_SOFT_DEMOTE", 1, { max: 1 }) === 1,
+  probeMs: AUTH_DEMOTE_CONFIG.probeMs,
+  probeLeaseMs: AUTH_DEMOTE_CONFIG.probeLeaseMs,
 };
 
 // Inter-chunk stall timeout (once tokens are flowing). Generous headroom so
