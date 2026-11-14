@@ -775,7 +775,6 @@ describe("after a long soft demotion", () => {
     expect((await load(key.id)).isActive).toBe(false);
   });
 
-  // With its opus try due already, nothing else here writes with autoDisable.
   // 401s count toward the day rule only in a row (5, as master's all-401 streak).
   it("turns it off at the fifth 401 in a row on another model, once the day is up", async () => {
     const { key, peer } = await softDemoted();
@@ -795,12 +794,14 @@ describe("after a long soft demotion", () => {
     ["one 401", [[401, "Invalid API key"]]],
     ["two 401s", [[401, "Invalid API key"], [401, "Invalid API key"]]],
   ])("keeps a key on refused on opus for a day, then refused with %s on kimi", async (_label, refusals) => {
-    const [key] = await accounts(["k", "peer"]);
+    const [key, peer] = await accounts(["k", "peer"]);
     const pending = [...refusals];
     let off = null;
     for (let m = 0; m < 27 * 60 + 240 && off === null; m++) {
       if (m > 0) vi.advanceTimersByTime(MIN);
       await requestAnswered(OPUS, (id) => (id === key.id ? [403, REFUSED_403] : null));
+      // The peer serves kimi first, so the key's refusals there count.
+      if (m === 27 * 60) await succeed(peer.id, KIMI);
       if (m >= 27 * 60) {
         for (let i = 0; i < 2; i++) await requestAnswered(KIMI, (id) => (id === key.id && pending.length ? pending.shift() : null));
       }
@@ -956,10 +957,52 @@ describe("after a long soft demotion", () => {
     expect((await load(key.id)).authServedAt).toBe(new Date().toISOString());
   });
 
+  it("stores a success right after a 401 on a soft-demoted model, within the minute", async () => {
+    const { key, peer } = await softDemoted();
+    vi.advanceTimersByTime(11 * MIN);
+    await succeed(key.id, KIMI);
+    vi.advanceTimersByTime(10 * 1000);
+    await succeed(peer.id, OPUS);
+    await auth.markAccountUnavailable(key.id, 401, "Invalid API key", provider, OPUS);
+    expect((await load(key.id))[`authSoft_${OPUS}`]).toMatchObject({ level: 1, tries: 1 });
+    vi.advanceTimersByTime(10 * 1000);
+    global._authEvents.softKeys.delete(key.id);
+    await succeed(key.id, KIMI);
+    expect((await load(key.id)).authServedAt).toBe(new Date().toISOString());
+  });
+
+  // The reviewers' sequence: 403s on opus, one 403 then 401s on kimi more than
+  // 10 minutes apart (so kimi's soft demotion began with a 403 its 401s
+  // completed), a success on sonnet, then the same every `period` minutes.
+  // Master leaves the key on; 401s on kimi don't make it a second model.
+  it.each([[22], [30]])("keeps a key on refused on opus with 403s and on kimi with 401s, every %i minutes", async (period) => {
+    const [key, peer] = await accounts(["k", "peer"]);
+    for (const model of [OPUS, KIMI]) await succeed(peer.id, model);
+    const schedule = new Map();
+    const add = (m, model, answer) => schedule.set(m, [...(schedule.get(m) || []), [model, answer]]);
+    for (const m of [0, 11, 22, 33, 44]) add(m, OPUS, [403, REFUSED_403]);
+    add(55, KIMI, [403, REFUSED_403]);
+    add(60, "claude-sonnet-5-5", null);
+    for (const m of [71, 82, 93, 104]) add(m, KIMI, [401, "Invalid API key"]);
+    for (let m = 115; m < 48 * 60; m += period) {
+      add(m, OPUS, [403, REFUSED_403]);
+      add(m + Math.floor(period / 2), KIMI, [401, "Invalid API key"]);
+    }
+    let last = 0;
+    for (const m of [...schedule.keys()].sort((a, b) => a - b)) {
+      vi.advanceTimersByTime((m - last) * MIN);
+      last = m;
+      if (m === 55) await succeed(peer.id, KIMI);
+      for (const [model, answer] of schedule.get(m)) await requestAnswered(model, (id) => (id === key.id ? answer : null));
+      expect([m, (await load(key.id)).isActive]).toEqual([m, true]);
+    }
+    expect((await load(key.id))[`authSoft_${KIMI}`]).toMatchObject({ keyRefused: true });
+  }, 120000);
+
   // The reviewer's replay: refused with 403s, soft-demoted on opus, then 401s
   // on every model from `switchAt` (kimi served by the key before that, or not
   // asked for).
-  it.each([[30, false], [30, true], [180, true]])("turns off a key refused with 403s, then 401s on every model from minute %i (kimi served before: %s), a day after its last success", async (switchAt, kimiServes) => {
+  it.each([[30, false, `${OPUS}, ${KIMI}`], [30, true, OPUS], [180, true, OPUS]])("turns off a key refused with 403s, then 401s on every model from minute %i (kimi served before: %s), a day after its last success", async (switchAt, kimiServes, reasonModels) => {
     const [key] = await accounts(["k", "peer"]);
     let off = null, lastServed = null, refusals = 0;
     for (let m = 0; m < 48 * 60 && off === null; m++) {
@@ -988,7 +1031,7 @@ describe("after a long soft demotion", () => {
     // Tried on the probe schedule on both models, not first on kimi all day.
     expect(refusals).toBeLessThanOrEqual(60);
     // By 401s in a row: the models refused other than with 401s since the last success, and this one.
-    expect((await load(key.id)).autoDisabledReason).toMatch(new RegExp(`^401 "Invalid API key" on (${OPUS}|${KIMI}|${OPUS}, ${KIMI}) for 24h while soft-demoted$`));
+    expect((await load(key.id)).autoDisabledReason).toBe(`401 "Invalid API key" on ${reasonModels} for 24h while soft-demoted`);
   }, 120000);
 
   // Mutations: the two-model check reading lastRefusedAt, the rule checked at

@@ -451,6 +451,13 @@ describe("getKeyLifespans", () => {
 
     it.each([
       ["on one model, with 401s in a row", { [`${SOFT_DEMOTE_PREFIX}m`]: softRecord(NOW - 10 * HOUR, NOW - 8 * HOUR), authHeld401s: 5 }],
+      // Its last refusals were 401s, which keyRefusedAt doesn't follow: until its last refusal.
+      ["on one model, with 401s in a row after a 403", {
+        [`${SOFT_DEMOTE_PREFIX}m`]: softRecord(NOW - 10 * HOUR, NOW - 8 * HOUR, { keyRefusedAt: iso(NOW - 9.5 * HOUR) }), authHeld401s: 5,
+      }],
+      ["on one model, with 401s only", {
+        [`${SOFT_DEMOTE_PREFIX}m`]: softRecord(NOW - 10 * HOUR, NOW - 8 * HOUR, { keyRefusedAt: null }), authHeld401s: 5,
+      }],
       // Records from before keyRefusedAt was kept: their last refusal, with refused tries.
       ["on two models, its records without keyRefusedAt", Object.fromEntries(["m", "m2"].map((m) => [`${SOFT_DEMOTE_PREFIX}${m}`,
         { ...softRecord(NOW - 10 * HOUR, NOW - 8 * HOUR), keyRefusedAt: undefined }])),

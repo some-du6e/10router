@@ -996,9 +996,9 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     authDemoteOkAt: since,
     [getAuthSoftKey(model)]: {
       level: 0, since, tryAt: new Date(plan.nowMs + probeMs(0)).toISOString(), lastRefusedAt: since, keyRefused: !tally.modelScoped,
-      // A count held 401s began: refused for itself, other than with a 401,
-      // when it last counted a 403 (lastCountedAt), if ever.
-      ...(tally.held401 ? { tries: 0, triesFrom: since, keyRefusedAt: tally.lastCountedAt ?? null } : {}),
+      // Held, its count may hold 401s: refused for itself, other than with a
+      // 401, when it last counted a 403 (lastCountedAt, which 401s don't move), if ever.
+      ...(held ? { tries: 0, triesFrom: since, keyRefusedAt: tally.lastCountedAt ?? null } : {}),
     },
   } : null;
 
