@@ -38,8 +38,8 @@ const { DEFAULT_ERROR_MESSAGES } = await import("../../open-sse/config/errorConf
 
 const PROVIDER = "openai-compatible-chat-test";
 const MODEL = "claude-opus-5-5";
-const RATE_LIMIT = '{"type":"error","error":{"type":"rate_limit_error","message":"Snowflake enforces per-account per-model rate limits."}}';
-const DEMOTED = `${MODEL} demoted after repeated 403 "Not authorized for this endpoint"`;
+const RATE_LIMIT = '{"type":"error","error":{"type":"rate_limit_error","message":"The upstream enforces per-account per-model rate limits."}}';
+const DEMOTED = `${MODEL} demoted after repeated 403 "Not permitted for this endpoint"`;
 const NOW = new Date("2026-11-01T17:49:47.000Z").getTime();
 const lockKey = `modelLock_${MODEL}`;
 
@@ -105,7 +105,7 @@ describe("every key locked, the working one only for a moment", () => {
   it("reports a 429 when the limited key's last error was a 403 on another model", async () => {
     store.rows = new Map([["dead", deadKey()], ["live", liveKey()]]);
     await markAccountUnavailable("live", 429, RATE_LIMIT, PROVIDER, MODEL);
-    store.rows.set("live", { ...store.rows.get("live"), errorCode: 403, lastError: "Not authorized for this endpoint" });
+    store.rows.set("live", { ...store.rows.get("live"), errorCode: 403, lastError: "Not permitted for this endpoint" });
 
     const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
 
@@ -137,12 +137,12 @@ describe("every key locked, the working one only for a moment", () => {
 
   it("does not report a 5xx from another model for a key refused on this one", async () => {
     store.rows = new Map([["dead", deadKey()], ["refused", { ...liveKey(), id: "refused", name: "refused" }]]);
-    await markAccountUnavailable("refused", 403, "Not authorized for this endpoint", PROVIDER, MODEL);
+    await markAccountUnavailable("refused", 403, "Not permitted for this endpoint", PROVIDER, MODEL);
     store.rows.set("refused", { ...store.rows.get("refused"), [lockKey]: new Date(NOW + 10_000).toISOString(), errorCode: 503, lastError: "overloaded on other-model" });
 
     const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
 
-    expect(allLockedError(403, "Not authorized for this endpoint", creds).status).toBe(403);
+    expect(allLockedError(403, "Not permitted for this endpoint", creds).status).toBe(403);
   });
 
   it("reports a 429 for a rate-limited key whose stored error was cleared", async () => {
@@ -152,7 +152,7 @@ describe("every key locked, the working one only for a moment", () => {
 
     const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
 
-    expect(allLockedError(403, "Not authorized for this endpoint", creds).status).toBe(429);
+    expect(allLockedError(403, "Not permitted for this endpoint", creds).status).toBe(429);
   });
 
   it("reports a 429 when the limited key's last error was a 400 on another model", async () => {
@@ -163,7 +163,7 @@ describe("every key locked, the working one only for a moment", () => {
     const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
 
     expect(Number(creds.lastErrorCode)).toBe(429);
-    expect(allLockedError(403, "Not authorized for this endpoint", creds).status).toBe(429);
+    expect(allLockedError(403, "Not permitted for this endpoint", creds).status).toBe(429);
   });
 
   it("under soonest-reset, reports the dead key's 403 over a quota-only key that frees up first", async () => {
@@ -200,7 +200,7 @@ describe("every key locked, the working one only for a moment", () => {
 
   it("prefers the dead key's 403 over another model's 429 when no key was tried yet", async () => {
     store.rows = new Map([["dead", deadKey()], ["refused", { ...liveKey(), id: "refused", name: "refused" }]]);
-    await markAccountUnavailable("refused", 403, "Not authorized for this endpoint", PROVIDER, MODEL);
+    await markAccountUnavailable("refused", 403, "Not permitted for this endpoint", PROVIDER, MODEL);
     store.rows.set("refused", { ...store.rows.get("refused"), [lockKey]: new Date(NOW + 60_000).toISOString(), errorCode: 429, lastError: "rate limited on other" });
 
     const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
@@ -221,7 +221,7 @@ describe("every key locked, the working one only for a moment", () => {
   it("with no other error to report, keeps a refused key's stored error over a quota-only key", async () => {
     dbMocks.getSettings.mockImplementation(async () => ({ fallbackStrategy: "soonest-reset" }));
     store.rows = new Map([["quota", { ...liveKey(), id: "quota", name: "quota" }], ["refused", { ...liveKey(), id: "refused", name: "refused" }]]);
-    await markAccountUnavailable("refused", 403, "Not authorized for this endpoint", PROVIDER, MODEL);
+    await markAccountUnavailable("refused", 403, "Not permitted for this endpoint", PROVIDER, MODEL);
     store.rows.set("refused", { ...store.rows.get("refused"), errorCode: 429, lastError: "rate limited on other" });
     blocked.set("quota", NOW + 10_000);
 
@@ -229,7 +229,7 @@ describe("every key locked, the working one only for a moment", () => {
 
     expect(creds.lastError).toBe("rate limited on other");
     expect(creds.lastErrorOwn).toBe(false);
-    expect(allLockedError(403, "Not authorized for this endpoint", creds).status).toBe(403);
+    expect(allLockedError(403, "Not permitted for this endpoint", creds).status).toBe(403);
   });
 
   it("keeps a 402 plan limit's own code and message", async () => {
@@ -245,13 +245,13 @@ describe("every key locked, the working one only for a moment", () => {
 
   it("does not report a 429 from another model for a key refused on this one", async () => {
     store.rows = new Map([["dead", deadKey()], ["refused", { ...liveKey(), id: "refused", name: "refused" }]]);
-    await markAccountUnavailable("refused", 403, "Not authorized for this endpoint", PROVIDER, MODEL);
+    await markAccountUnavailable("refused", 403, "Not permitted for this endpoint", PROVIDER, MODEL);
     // It frees up before the dead key, so it is the one reported.
     store.rows.set("refused", { ...store.rows.get("refused"), [lockKey]: new Date(NOW + 10_000).toISOString(), errorCode: 429, lastError: "rate_limit_error on other-model" });
 
     const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
 
-    expect(allLockedError(403, "Not authorized for this endpoint", creds).status).toBe(403);
+    expect(allLockedError(403, "Not permitted for this endpoint", creds).status).toBe(403);
   });
 
   it("counts the dead key's account-wide lock, not just its lock on the model", async () => {

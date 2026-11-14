@@ -1,5 +1,5 @@
 // Body fields that only exist behind an anthropic-beta flag must go when the
-// endpoint drops that flag. Live failure (2026-10-22, Snowflake Cortex node with
+// endpoint drops that flag. Live failure (2026-10-22, custom gateway node with
 // stripBeta, claude-opus-5-5 routed to /messages):
 //   400 {"message":"context_management: Extra inputs are not permitted"}
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -14,7 +14,7 @@ const { resolveCompatibleRoute } = await import("../../open-sse/services/provide
 const { translateRequest } = await import("../../open-sse/translator/index.js");
 const { stripBetaBodyFields } = await import("../../open-sse/utils/anthropicBeta.js");
 
-const SNOWFLAKE = "openai-compatible-chat-eea96964-59c9-40ee-b64e-9e3bed15b7cb";
+const CONTOSO = "openai-compatible-chat-eea96964-59c9-40ee-b64e-9e3bed15b7cb";
 const MODEL = "claude-opus-5-5";
 const CONTEXT_MANAGEMENT = { edits: [{ type: "clear_thinking_20251015", keep: "all" }] };
 const BETA_400 = "{\"message\":\"Unexpected value(s) `context-management-2025-06-27` for the `anthropic-beta` header. Please consult our documentation at platform.claude.com/docs or try again without the header.\"}";
@@ -34,17 +34,17 @@ const claudeCodeBody = () => ({
   output_config: { effort: "medium" },
 });
 
-function snowflakeCreds(psd = {}) {
+function contosoCreds(psd = {}) {
   const credentials = {
     apiKey: "k",
     providerSpecificData: {
       apiType: "chat",
-      baseUrl: "https://acme.snowflakecomputing.com/api/v2/cortex/v1",
+      baseUrl: "https://acme.contoso-cloud.example/api/v1",
       modelRoutes: { [MODEL]: "anthropic" },
       ...psd,
     },
   };
-  credentials.runtimeTransport = resolveCompatibleRoute(SNOWFLAKE, MODEL, credentials);
+  credentials.runtimeTransport = resolveCompatibleRoute(CONTOSO, MODEL, credentials);
   return credentials;
 }
 
@@ -73,14 +73,14 @@ describe("stripBetaBodyFields", () => {
 });
 
 describe("DefaultExecutor — beta-gated body fields on Messages paths", () => {
-  it("drops context_management for the live Snowflake route (stripBeta, claude model → /messages)", async () => {
+  it("drops context_management for the live gateway route (stripBeta, claude model → /messages)", async () => {
     fetchMock.mockResolvedValueOnce(res(200));
-    const credentials = snowflakeCreds({ stripBeta: true });
+    const credentials = contosoCreds({ stripBeta: true });
     expect(credentials.runtimeTransport.format).toBe("claude");
 
-    await new DefaultExecutor(SNOWFLAKE).execute({ model: MODEL, body: claudeCodeBody(), stream: true, credentials });
+    await new DefaultExecutor(CONTOSO).execute({ model: MODEL, body: claudeCodeBody(), stream: true, credentials });
 
-    expect(fetchMock.mock.calls[0][0]).toBe("https://acme.snowflakecomputing.com/api/v2/cortex/v1/messages");
+    expect(fetchMock.mock.calls[0][0]).toBe("https://acme.contoso-cloud.example/api/v1/messages");
     const body = sentBody();
     expect(body).not.toHaveProperty("context_management");
     expect(body.output_config).toEqual({ effort: "medium" });
@@ -113,35 +113,35 @@ describe("DefaultExecutor — beta-gated body fields on Messages paths", () => {
 
   it("keeps context_management when only unrelated betas are dropped", async () => {
     fetchMock.mockResolvedValueOnce(res(200));
-    const credentials = snowflakeCreds({ droppedBetas: ["oauth-2025-04-20", "redact-thinking-2026-02-12"] });
-    await new DefaultExecutor(SNOWFLAKE).execute({ model: MODEL, body: claudeCodeBody(), stream: true, credentials });
+    const credentials = contosoCreds({ droppedBetas: ["oauth-2025-04-20", "redact-thinking-2026-02-12"] });
+    await new DefaultExecutor(CONTOSO).execute({ model: MODEL, body: claudeCodeBody(), stream: true, credentials });
     expect(sentBody().context_management).toEqual(CONTEXT_MANAGEMENT);
   });
 
   it("leaves the same node's Chat Completions route alone (stripBeta, non-claude model)", async () => {
     fetchMock.mockResolvedValueOnce(res(200));
     const model = "gpt-6";
-    const credentials = { apiKey: "k", providerSpecificData: { ...snowflakeCreds().providerSpecificData, stripBeta: true } };
-    credentials.runtimeTransport = resolveCompatibleRoute(SNOWFLAKE, model, credentials);
+    const credentials = { apiKey: "k", providerSpecificData: { ...contosoCreds().providerSpecificData, stripBeta: true } };
+    credentials.runtimeTransport = resolveCompatibleRoute(CONTOSO, model, credentials);
     const body = { model, messages: [{ role: "user", content: "hi" }], stream: true, context_management: CONTEXT_MANAGEMENT };
 
-    await new DefaultExecutor(SNOWFLAKE).execute({ model, body, stream: true, credentials });
+    await new DefaultExecutor(CONTOSO).execute({ model, body, stream: true, credentials });
 
-    expect(fetchMock.mock.calls[0][0]).toBe("https://acme.snowflakecomputing.com/api/v2/cortex/v1/chat/completions");
+    expect(fetchMock.mock.calls[0][0]).toBe("https://acme.contoso-cloud.example/api/v1/chat/completions");
     expect(sentBody().context_management).toEqual(CONTEXT_MANAGEMENT);
   });
 
   it("does not mutate the caller's body", async () => {
     fetchMock.mockResolvedValueOnce(res(200));
     const body = claudeCodeBody();
-    await new DefaultExecutor(SNOWFLAKE).execute({ model: MODEL, body, stream: true, credentials: snowflakeCreds({ stripBeta: true }) });
+    await new DefaultExecutor(CONTOSO).execute({ model: MODEL, body, stream: true, credentials: contosoCreds({ stripBeta: true }) });
     expect(body.context_management).toEqual(CONTEXT_MANAGEMENT);
   });
 });
 
 describe("claude → openai translation", () => {
   it("never carries context_management to a Chat Completions body", () => {
-    const out = translateRequest("claude", "openai", MODEL, claudeCodeBody(), true, null, SNOWFLAKE);
+    const out = translateRequest("claude", "openai", MODEL, claudeCodeBody(), true, null, CONTOSO);
     expect(out).not.toHaveProperty("context_management");
   });
 });

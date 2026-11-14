@@ -1,7 +1,7 @@
 // anthropic-beta handling for user-added Anthropic-compatible endpoints.
 //
 // The header is one comma-separated list of flags. Third-party gateways
-// (Snowflake Cortex, checked 2026-10-19) accept some flags and 400 on the rest,
+// (one checked 2026-10-19) accept some flags and 400 on the rest,
 // naming them:
 //   Unexpected value(s) `oauth-2025-04-20`, `redact-thinking-2026-02-12` for the
 //   `anthropic-beta` header. Please consult our documentation ... or try again

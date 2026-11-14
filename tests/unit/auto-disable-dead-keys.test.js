@@ -33,7 +33,7 @@ const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "10router-auto-disable-"))
 process.env.DATA_DIR = tempDir;
 
 const PROVIDER = "openai-compatible-chat-test-dead-keys";
-const DEAD_403 = '[403]: {"code":"003001","message":"Not authorized for this endpoint"}';
+const DEAD_403 = '[403]: {"code":"000000","message":"Not permitted for this endpoint"}';
 const KEY_REFUSED_403 = '[403]: {"message":"This key is not accepted here"}';
 const MIN = 60 * 1000;
 
@@ -99,7 +99,7 @@ describe("auth-dead keys turn off", () => {
     const conn = await load(dead.id);
     expect(conn.isActive).toBe(false);
     expect(conn.autoDisabledAt).toBe(new Date().toISOString());
-    expect(conn.autoDisabledReason).toBe('403 "Not authorized for this endpoint" on claude-opus-5-5, kimi-k3');
+    expect(conn.autoDisabledReason).toBe('403 "Not permitted for this endpoint" on claude-opus-5-5, kimi-k3');
     expect((await load(healthy.id)).isActive).toBe(true);
   });
 
@@ -475,7 +475,7 @@ describe("auth-dead keys turn off", () => {
   });
 
   it.each([
-    [403, "Not authorized for this endpoint"],
+    [403, "Not permitted for this endpoint"],
     [403, "Copilot is not enabled for this account"],
     [401, "Invalid API key"],
     [401, "Incorrect API key provided: sk-test-****. You can find your API key at https://platform.openai.com/account/api-keys."],
@@ -577,7 +577,7 @@ describe("a key refused on only one model", () => {
   const pick = async (model) => (await auth.getProviderCredentials(provider, null, model))?.connectionId;
   const takePeerAway = (healthy) => db.updateProviderConnection(healthy.id, { isActive: false });
   const atProbe = async (id, model = "m1") => vi.setSystemTime(new Date(record(await load(id), model).nextProbeAt));
-  const MESSAGE = 'm1 demoted after repeated 403 "Not authorized for this endpoint"';
+  const MESSAGE = 'm1 demoted after repeated 403 "Not permitted for this endpoint"';
 
   async function demotedKey(model = "m1") {
     const dead = await addKey("a");
@@ -652,8 +652,8 @@ describe("a key refused on only one model", () => {
     const conn = await load(dead.id);
     expect(conn).toMatchObject({
       isActive: true,
-      "authDemote_claude-opus-5-5": { count: 5, reason: '403 "Not authorized for this endpoint"' },
-      lastError: 'claude-opus-5-5 demoted after repeated 403 "Not authorized for this endpoint"',
+      "authDemote_claude-opus-5-5": { count: 5, reason: '403 "Not permitted for this endpoint"' },
+      lastError: 'claude-opus-5-5 demoted after repeated 403 "Not permitted for this endpoint"',
     });
     expect(conn).not.toHaveProperty("autoDisabledAt");
     expect(warn).toHaveBeenCalledWith("AUTH", "a demoted on claude-opus-5-5 after repeated 403s");
@@ -869,7 +869,7 @@ describe("a key refused on only one model", () => {
     const listed = (await (await GET()).json()).models.filter((m) => m.connectionId === dead.id);
     expect(listed).toEqual([expect.objectContaining({
       model: "m1", status: "cooldown", until: record(await load(dead.id)).nextProbeAt,
-      lastError: 'Demoted after repeated 403 "Not authorized for this endpoint"',
+      lastError: 'Demoted after repeated 403 "Not permitted for this endpoint"',
     })]);
     await succeed(dead.id, "m2");
     expect((await load(dead.id)).modelLock_m1).toBeNull();
@@ -955,8 +955,8 @@ describe("a key refused on only one model", () => {
     expect((await load(dead.id)).isActive).toBe(true);
     vi.advanceTimersByTime(2 * MIN);
     await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
-    expect(await load(dead.id)).toMatchObject({ isActive: false, autoDisabledReason: '403 "Not authorized for this endpoint" on m1, m2' });
-    expect(warn).toHaveBeenCalledWith("AUTH", 'a turned off automatically: 403 "Not authorized for this endpoint" on m1, m2');
+    expect(await load(dead.id)).toMatchObject({ isActive: false, autoDisabledReason: '403 "Not permitted for this endpoint" on m1, m2' });
+    expect(warn).toHaveBeenCalledWith("AUTH", 'a turned off automatically: 403 "Not permitted for this endpoint" on m1, m2');
   });
 
   it.each([
@@ -971,7 +971,7 @@ describe("a key refused on only one model", () => {
   });
 
   it.each([
-    ["refused", false, '403 "Not authorized for this endpoint" on m2, m1'],
+    ["refused", false, '403 "Not permitted for this endpoint" on m2, m1'],
     ["served", true, undefined],
   ])("probes a demoted model right after another model refuses the key, and turns it off only if the probe is %s too", async (
     _label, recovered, reason,
@@ -1002,7 +1002,7 @@ describe("a key refused on only one model", () => {
     expect(await load(dead.id)).toMatchObject({ isActive: true, authDemote_m2: { count: 4 } });
     vi.advanceTimersByTime(4 * MIN);
     await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
-    expect(await load(dead.id)).toMatchObject({ isActive: false, autoDisabledReason: '403 "Not authorized for this endpoint" on m1, m2' });
+    expect(await load(dead.id)).toMatchObject({ isActive: false, autoDisabledReason: '403 "Not permitted for this endpoint" on m1, m2' });
   });
 
   it("does not let 401s on another model turn a demoted key off without the turn-off rule's own count", async () => {
@@ -1270,7 +1270,7 @@ describe("a key refused on only one model", () => {
     const rows = async () => (await (await GET()).json()).models.filter((m) => m.connectionId === dead.id);
     await atProbe(dead.id);
     expect(await rows()).toEqual([expect.objectContaining({
-      model: "m1", until: null, lastError: 'Demoted after repeated 403 "Not authorized for this endpoint" (probe due)',
+      model: "m1", until: null, lastError: 'Demoted after repeated 403 "Not permitted for this endpoint" (probe due)',
     })]);
     await db.updateProviderConnection(dead.id, { isActive: false, authDemote_m2: record(await load(dead.id)) });
     expect((await rows()).filter((m) => m.model === "m1" || m.model === "m2")).toEqual([]);
@@ -2327,19 +2327,19 @@ describe("a refusal only counts when another key serves that model", () => {
   });
 });
 
-// The live case: two keys of one custom endpoint on different Snowflake
+// The live case: two keys of one custom endpoint on different upstream
 // accounts, each with its own base URL, behind the same proxy settings.
 describe("keys of one endpoint on different upstreams", () => {
-  const snowflake = (host, extra = {}) => ({
+  const account = (host, extra = {}) => ({
     providerSpecificData: {
-      baseUrl: `https://${host}.snowflakecomputing.test/api/v2/cortex/v1`, connectionProxyEnabled: false, ...extra,
+      baseUrl: `https://${host}.contoso-cloud.test/api/v1`, connectionProxyEnabled: false, ...extra,
     },
   });
   const models = ["claude-opus-5-5", "kimi-k3"];
 
   it("turns off the dead key after an hour of 403s, not at 15 minutes", async () => {
-    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
-    const healthy = await addKey("b", snowflake("acct-live"));
+    const dead = await addKey("a", account("acct-dead", { ownBaseUrl: true }));
+    const healthy = await addKey("b", account("acct-live"));
     await fail(dead.id, { times: 7, models, peers: [healthy], stepMs: 2.5 * MIN });
     expect(await load(dead.id)).toMatchObject({ isActive: true, authFailCount: 7, authFailSameUpstream: false });
 
@@ -2351,12 +2351,12 @@ describe("keys of one endpoint on different upstreams", () => {
     await fail(dead.id, { times: 1, models, peers: [healthy] });
     const conn = await load(dead.id);
     expect(conn.isActive).toBe(false);
-    expect(conn.autoDisabledReason).toBe('403 "Not authorized for this endpoint" on claude-opus-5-5, kimi-k3');
+    expect(conn.autoDisabledReason).toBe('403 "Not permitted for this endpoint" on claude-opus-5-5, kimi-k3');
   });
 
   it("turns off the dead key within 10-12 minutes when its peer is on the same base URL", async () => {
-    const dead = await addKey("a", snowflake("acct-shared"));
-    const healthy = await addKey("b", snowflake("acct-shared"));
+    const dead = await addKey("a", account("acct-shared"));
+    const healthy = await addKey("b", account("acct-shared"));
     await fail(dead.id, { times: 4, models, peers: [healthy], stepMs: 2.5 * MIN });
     expect((await load(dead.id)).isActive).toBe(true);
     vi.advanceTimersByTime(2.5 * MIN);
@@ -2365,9 +2365,9 @@ describe("keys of one endpoint on different upstreams", () => {
   });
 
   it("needs the hour once any counted failure had only a peer on another upstream", async () => {
-    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
-    const other = await addKey("b", snowflake("acct-live"));
-    const same = await addKey("c", snowflake("acct-dead"));
+    const dead = await addKey("a", account("acct-dead", { ownBaseUrl: true }));
+    const other = await addKey("b", account("acct-live"));
+    const same = await addKey("c", account("acct-dead"));
     await fail(dead.id, { times: 1, models, peers: [other] });
     vi.advanceTimersByTime(3 * MIN);
     await fail(dead.id, { times: 6, models, peers: [other, same] });
@@ -2417,16 +2417,16 @@ describe("keys of one endpoint on different upstreams", () => {
     [45, 11],
     [45, 15],
   ])("turns off the dead key within 60-90 minutes when someone works %i minutes and pauses %i", async (workMin, idleMin) => {
-    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
-    await addKey("b", snowflake("acct-live"));
+    const dead = await addKey("a", account("acct-dead", { ownBaseUrl: true }));
+    await addKey("b", account("acct-live"));
     const minutes = await drive(dead, { workMin, idleMin, totalMin: 6 * 60 });
     expect(minutes).toBeGreaterThanOrEqual(60);
     expect(minutes).toBeLessThanOrEqual(90);
   });
 
   it("still turns off the dead key within 60-90 minutes when the router restarts mid-streak under light traffic", async () => {
-    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
-    await addKey("b", snowflake("acct-live"));
+    const dead = await addKey("a", account("acct-dead", { ownBaseUrl: true }));
+    await addKey("b", account("acct-live"));
     const restart = (minute) => {
       if (minute !== 30) return;
       global._authEvents.success.clear();
@@ -2459,8 +2459,8 @@ describe("keys of one endpoint on different upstreams", () => {
     const bySeed = {};
     for (let seed = 1; seed <= 40; seed++) {
       provider = `${PROVIDER}-${++seq}`;
-      const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
-      await addKey("b", snowflake("acct-live"));
+      const dead = await addKey("a", account("acct-dead", { ownBaseUrl: true }));
+      await addKey("b", account("acct-live"));
       bySeed[seed] = await drive(dead, { totalMin, modelAt: steadyTraffic(seed, minMin, maxMin) });
     }
     return bySeed;
@@ -2478,8 +2478,8 @@ describe("keys of one endpoint on different upstreams", () => {
   // The first session leaves one counted failure: under fill-first a model's
   // first refusal comes before its peer serves it, so only the retry counts.
   it("turns off the dead key when a lone early failure is followed by a pause and then steady work", async () => {
-    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
-    await addKey("b", snowflake("acct-live"));
+    const dead = await addKey("a", account("acct-dead", { ownBaseUrl: true }));
+    await addKey("b", account("acct-live"));
     const modelAt = (minute, i) => (minute < 3 || minute >= 18 ? models[i % 2] : null);
     const minutes = await drive(dead, { totalMin: 3 * 60, modelAt });
     expect(minutes).toBeGreaterThanOrEqual(60);
@@ -2487,8 +2487,8 @@ describe("keys of one endpoint on different upstreams", () => {
   }, 60000);
 
   it("keeps the streak through a 15-minute idle gap, but starts over after a gap of more than an hour", async () => {
-    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
-    const healthy = await addKey("b", snowflake("acct-live"));
+    const dead = await addKey("a", account("acct-dead", { ownBaseUrl: true }));
+    const healthy = await addKey("b", account("acct-live"));
     await fail(dead.id, { times: 4, models, peers: [healthy] });
     const firstAt = (await load(dead.id)).authFailFirstAt;
     vi.advanceTimersByTime(15 * MIN);
@@ -2501,8 +2501,8 @@ describe("keys of one endpoint on different upstreams", () => {
   });
 
   it("takes the full hour for a streak saved before runs had a start", async () => {
-    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
-    const healthy = await addKey("b", snowflake("acct-live"));
+    const dead = await addKey("a", account("acct-dead", { ownBaseUrl: true }));
+    const healthy = await addKey("b", account("acct-live"));
     // A lone refusal 36 minutes ago, then a run of 3 ending 6 minutes ago.
     await db.updateProviderConnection(dead.id, {
       authFailCount: 4, authFailRunCount: 3, authFailBursts: 1, authFailModels: models,
@@ -2518,15 +2518,15 @@ describe("keys of one endpoint on different upstreams", () => {
   });
 
   it("never trips on single refusals spread thinly over more than an hour", async () => {
-    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
-    const healthy = await addKey("b", snowflake("acct-live"));
+    const dead = await addKey("a", account("acct-dead", { ownBaseUrl: true }));
+    const healthy = await addKey("b", account("acct-live"));
     await fail(dead.id, { times: 8, models, peers: [healthy], stepMs: 15 * MIN });
     expect(await load(dead.id)).toMatchObject({ isActive: true, authFailCount: 8, authFailBursts: 0 });
   });
 
   it("never trips on one burst followed by single refusals spread over more than an hour", async () => {
-    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
-    const healthy = await addKey("b", snowflake("acct-live"));
+    const dead = await addKey("a", account("acct-dead", { ownBaseUrl: true }));
+    const healthy = await addKey("b", account("acct-live"));
     await fail(dead.id, { times: 2, models, peers: [healthy], stepMs: 2.5 * MIN });
     vi.advanceTimersByTime(17.5 * MIN);
     await fail(dead.id, { times: 5, models, peers: [healthy], stepMs: 15 * MIN });
@@ -2534,8 +2534,8 @@ describe("keys of one endpoint on different upstreams", () => {
   });
 
   it("never trips on single refusals followed by one short burst, however long ago the first was", async () => {
-    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
-    const healthy = await addKey("b", snowflake("acct-live"));
+    const dead = await addKey("a", account("acct-dead", { ownBaseUrl: true }));
+    const healthy = await addKey("b", account("acct-live"));
     await fail(dead.id, { times: 4, models, peers: [healthy], stepMs: 15 * MIN });
     vi.advanceTimersByTime(12 * MIN);
     await fail(dead.id, { times: 5, models, peers: [healthy], stepMs: 2.5 * MIN });
@@ -2543,8 +2543,8 @@ describe("keys of one endpoint on different upstreams", () => {
   });
 
   it("trips over an hour once the refusals include 2 bursts", async () => {
-    const dead = await addKey("a", snowflake("acct-dead", { ownBaseUrl: true }));
-    const healthy = await addKey("b", snowflake("acct-live"));
+    const dead = await addKey("a", account("acct-dead", { ownBaseUrl: true }));
+    const healthy = await addKey("b", account("acct-live"));
     await fail(dead.id, { times: 2, models, peers: [healthy], stepMs: 2.5 * MIN });
     vi.advanceTimersByTime(17.5 * MIN);
     await fail(dead.id, { times: 2, models, peers: [healthy], stepMs: 20 * MIN });
@@ -2557,8 +2557,8 @@ describe("keys of one endpoint on different upstreams", () => {
   });
 
   it("never counts a peer behind a different proxy, even after an hour", async () => {
-    const dead = await addKey("a", snowflake("acct-dead", { connectionProxyEnabled: true, connectionProxyUrl: "http://proxy-x.test:8080" }));
-    const healthy = await addKey("b", snowflake("acct-live", { connectionProxyEnabled: true, connectionProxyUrl: "http://proxy-y.test:8080" }));
+    const dead = await addKey("a", account("acct-dead", { connectionProxyEnabled: true, connectionProxyUrl: "http://proxy-x.test:8080" }));
+    const healthy = await addKey("b", account("acct-live", { connectionProxyEnabled: true, connectionProxyUrl: "http://proxy-y.test:8080" }));
     await fail(dead.id, { times: 30, models, peers: [healthy], stepMs: 2.5 * MIN });
     const conn = await load(dead.id);
     expect(conn.isActive).toBe(true);
@@ -2614,8 +2614,8 @@ describe("keys of one endpoint on different upstreams", () => {
   ])("demotes a dead key refused on the only model in use, its peer %s, and keeps trying it rarely", async (
     _label, own, peer, minDemoteMin, maxDemoteMin, maxBefore, maxTotal,
   ) => {
-    const dead = await addKey("a", snowflake(own, own === peer ? {} : { ownBaseUrl: true }));
-    const healthy = await addKey("b", snowflake(peer));
+    const dead = await addKey("a", account(own, own === peer ? {} : { ownBaseUrl: true }));
+    const healthy = await addKey("b", account(peer));
     const { refusals, demotions } = await watch(dead, { modelsAt: opusOnly(10, 13), totalMin: 12 * 60 });
     const [[demotedAt]] = demotions;
     expect(demotedAt - refusals[OPUS][0]).toBeGreaterThanOrEqual(minDemoteMin);
@@ -2631,8 +2631,8 @@ describe("keys of one endpoint on different upstreams", () => {
   ])("demotes a key that lacks opus but serves kimi, its peer %s, and keeps serving kimi", async (
     _label, own, peer, kimiEveryMin, totalMin, maxOpusRefusals,
   ) => {
-    const partial = await addKey("a", snowflake(own, own === peer ? {} : { ownBaseUrl: true }));
-    await addKey("b", snowflake(peer));
+    const partial = await addKey("a", account(own, own === peer ? {} : { ownBaseUrl: true }));
+    await addKey("b", account(peer));
     const modelsAt = (minute) => [OPUS, minute % kimiEveryMin === kimiEveryMin - 1 ? KIMI : null];
     const { refusals, demotions, served } = await watch(partial, {
       modelsAt, totalMin, refuses: (model) => model === OPUS,
@@ -2643,8 +2643,8 @@ describe("keys of one endpoint on different upstreams", () => {
   }, 60000);
 
   it("brings a key back within a probe of a 30-minute incident on one model ending, through 403s elsewhere", async () => {
-    const key = await addKey("a", snowflake("acct-shared"));
-    await addKey("b", snowflake("acct-shared"));
+    const key = await addKey("a", account("acct-shared"));
+    await addKey("b", account("acct-shared"));
     const modelsAt = (minute) => ["m1", minute === 48 || minute === 52 ? "m2" : null];
     const refuses = (model, minute) => (model === "m1" ? minute < 30 : minute === 48 || minute === 52);
     const { demotions, served } = await watch(key, { modelsAt, totalMin: 90, refuses });
@@ -2666,7 +2666,7 @@ describe("keys of one endpoint on different upstreams", () => {
   };
   const UPSTREAMS = [["on the same account", "acct-shared", "acct-shared"], ["on another account", "acct-dead", "acct-live"]];
   const keysOn = async (own, peer) => [
-    await addKey("a", snowflake(own, own === peer ? {} : { ownBaseUrl: true })), await addKey("b", snowflake(peer)),
+    await addKey("a", account(own, own === peer ? {} : { ownBaseUrl: true })), await addKey("b", account(peer)),
   ];
 
   // Minutes until master turns these off: null for never. Demoting each model

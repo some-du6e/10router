@@ -81,7 +81,7 @@ export class DefaultExecutor extends BaseExecutor {
   transformRequest(model, body, _stream, credentials) {
     let transformed = this.applyJsonSchemaFallback(body);
 
-    // Snowflake's Cortex OpenAI-compatible endpoint rejects the legacy
+    // Some OpenAI-compatible gateways reject the legacy
     // `max_tokens` field even though the rest of the Chat Completions shape is
     // compatible. Keep this opt-in so other OpenAI-compatible gateways retain
     // their existing request contract.

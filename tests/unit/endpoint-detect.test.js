@@ -1,11 +1,12 @@
 // "Add endpoint" detection: URL cleanup, model-list parsing, and the free-probe
-// decision table. The Snowflake fixture mirrors real responses (2026-10-19).
+// decision table. The Contoso fixture mirrors real responses from a gateway with
+// no model list (2026-10-19).
 import { describe, it, expect } from "vitest";
 import { normalizeUrl, cleanKey, parseModelList, makePrefix, suggestName, detectEndpoint, discoverModels, matchCatalogProvider, majorVersion, recentLabModels, candidateModels, outdatedModels } from "@/lib/endpointDetect.js";
 
 // Shape of the models.dev index the catalog sync writes: providers + lab models.
 const PROVIDERS = [
-  { id: "snowflake-cortex", name: "Snowflake Cortex", api: "https://${SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/cortex/v1", models: ["claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-1"] },
+  { id: "contoso-ai", name: "Contoso AI", api: "https://${CONTOSO_ACCOUNT}.contoso-cloud.example/api/claude/v1", models: ["claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-1"] },
   { id: "openrouter", name: "OpenRouter", api: "https://openrouter.ai/api/v1", models: ["anthropic/claude-haiku-4-5", "openai/gpt-5"] },
   { id: "together", name: "Together", api: "https://api.together.xyz/v1", models: ["openai/gpt-5", "meta/llama-4"] },
 ];
@@ -23,7 +24,7 @@ describe("normalizeUrl", () => {
   it.each([
     ["api.example.com/v1/", "https://api.example.com/v1"],
     ["  https://api.example.com/v1/chat/completions ", "https://api.example.com/v1"],
-    ["https://x.snowflakecomputing.com/api/v2/cortex/v1/messages", "https://x.snowflakecomputing.com/api/v2/cortex/v1"],
+    ["https://x.contoso-cloud.example/api/claude/v1/messages", "https://x.contoso-cloud.example/api/claude/v1"],
     ["https://gw.example.com/openai/v1/models", "https://gw.example.com/openai/v1"],
     ["https://az.example.com/openai/v1/chat/completions?api-version=2024-10-01", "https://az.example.com/openai/v1?api-version=2024-10-01"],
     ["localhost:11434/v1", "http://localhost:11434/v1"],
@@ -51,8 +52,8 @@ describe("names and prefixes", () => {
   it("builds prefixes from the name", () => {
     expect(makePrefix("OpenRouter")).toBe("or");
     expect(makePrefix("Acme AI Gateway")).toBe("aag");
-    expect(makePrefix("Snowflake")).toBe("snow");
-    expect(makePrefix("Snowflake", ["snow"])).toBe("snow2");
+    expect(makePrefix("Contoso")).toBe("cont");
+    expect(makePrefix("Contoso", ["cont"])).toBe("cont2");
   });
   it("suggests a name from the host", () => {
     expect(suggestName("https://api.together.xyz/v1")).toBe("Together");
@@ -62,7 +63,7 @@ describe("names and prefixes", () => {
 
 describe("catalog matching", () => {
   it("matches a templated API URL to the user's host", () => {
-    expect(matchCatalogProvider("https://acme-xy1.snowflakecomputing.com/api/v2/cortex/v1", PROVIDERS)?.id).toBe("snowflake-cortex");
+    expect(matchCatalogProvider("https://acme-xy1.contoso-cloud.example/api/claude/v1", PROVIDERS)?.id).toBe("contoso-ai");
     expect(matchCatalogProvider("https://openrouter.ai/api/v1", PROVIDERS)?.id).toBe("openrouter");
     expect(matchCatalogProvider("https://unknown.example.com/v1", PROVIDERS)).toBeNull();
   });
@@ -107,13 +108,13 @@ describe("recentLabModels", () => {
 });
 
 describe("candidateModels", () => {
-  it("adds the gateway's own vendor prefix (Snowflake: openai-*)", () => {
+  it("adds the gateway's own vendor prefix (Contoso: openai-*)", () => {
     const catalog = {
-      providers: [{ id: "snowflake-cortex", name: "Snowflake Cortex", api: "https://${SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/cortex/v1", models: ["claude-haiku-4-5", "openai-gpt-5"] }],
+      providers: [{ id: "contoso-ai", name: "Contoso AI", api: "https://${CONTOSO_ACCOUNT}.contoso-cloud.example/api/claude/v1", models: ["claude-haiku-4-5", "openai-gpt-5"] }],
       labs: LABS,
     };
-    const { matched, ids } = candidateModels("https://acme.snowflakecomputing.com/api/v2/cortex/v1", catalog);
-    expect(matched.id).toBe("snowflake-cortex");
+    const { matched, ids } = candidateModels("https://acme.contoso-cloud.example/api/claude/v1", catalog);
+    expect(matched.id).toBe("contoso-ai");
     expect(ids.slice(0, 2)).toEqual(["claude-haiku-4-5", "openai-gpt-5"]); // its own list first
     expect(ids).toContain("openai-gpt-6-sol");
     expect(ids).toContain("claude-opus-5-5");
@@ -130,8 +131,8 @@ describe("candidateModels", () => {
       { id: "gpt-5.4", lab: "openai", family: "gpt", date: "2026-03-05" },
       { id: "gpt-5.2", lab: "openai", family: "gpt", date: "2025-12-11" },
     ];
-    const catalog = { providers: [{ id: "snowflake-cortex", name: "Snowflake Cortex", api: "https://${SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/cortex/v1", models: ["claude-opus-4-5", "openai-gpt-4.1", "openai-gpt-5.5", "deepseek-r1", "mistral-large2"] }], labs };
-    const { ids } = candidateModels("https://acme.snowflakecomputing.com/api/v2/cortex/v1", catalog);
+    const catalog = { providers: [{ id: "contoso-ai", name: "Contoso AI", api: "https://${CONTOSO_ACCOUNT}.contoso-cloud.example/api/claude/v1", models: ["claude-opus-4-5", "openai-gpt-4.1", "openai-gpt-5.5", "deepseek-r1", "mistral-large2"] }], labs };
+    const { ids } = candidateModels("https://acme.contoso-cloud.example/api/claude/v1", catalog);
     expect(ids).not.toContain("claude-opus-4-5");
     expect(ids).not.toContain("openai-gpt-4.1");
     expect(ids.slice(0, 3)).toEqual(["openai-gpt-5.5", "deepseek-r1", "mistral-large2"]); // not in the labs: kept
@@ -196,22 +197,22 @@ describe("detectEndpoint", () => {
     expect(r2.models).toEqual(["a"]);
     expect(r2.listComplete).toBe(false);
   });
-  it("Snowflake: no /models, Anthropic found, key confirmed, catalog models confirmed for free", async () => {
+  it("Contoso: no /models, Anthropic found, key confirmed, catalog models confirmed for free", async () => {
     const known = new Set(["claude-sonnet-4-5", "claude-haiku-4-5"]); // claude-opus-4-1 is in the catalog but not served
     const { fetchFn, calls } = upstream({
-      "POST /api/v2/cortex/v1/messages": ({ auth, body }) => !keyOk(auth) ? [401, { message: "Invalid OAuth access token. null" }]
+      "POST /api/claude/v1/messages": ({ auth, body }) => !keyOk(auth) ? [401, { message: "Invalid OAuth access token. null" }]
         : known.has(body.model) ? [400, { message: "'messages' must not be empty" }] : [400, { message: `unknown model "${body.model}"` }],
-      "POST /api/v2/cortex/v1/chat/completions": ({ auth }) => keyOk(auth) ? [400, { message: "max_tokens is deprecated in favor of max_completion_tokens" }] : [401, {}],
+      "POST /api/claude/v1/chat/completions": ({ auth }) => keyOk(auth) ? [400, { message: "max_tokens is deprecated in favor of max_completion_tokens" }] : [401, {}],
     });
-    const r = await detectEndpoint({ url: "https://acme.snowflakecomputing.com/api/v2/cortex", apiKey: GOOD, fetchFn, catalog: CATALOG });
+    const r = await detectEndpoint({ url: "https://acme.contoso-cloud.example/api/claude", apiKey: GOOD, fetchFn, catalog: CATALOG });
     expect(r.ok).toBe(true);
     expect(r.protocol).toBe("anthropic");
     expect(r.protocols).toContain("openai-chat");
-    expect(r.baseUrl).toBe("https://acme.snowflakecomputing.com/api/v2/cortex/v1");
+    expect(r.baseUrl).toBe("https://acme.contoso-cloud.example/api/claude/v1");
     expect(r.keyConfirmed).toBe("confirmed");
     expect(r.modelsSource).toBe("catalog");
     expect(r.models).toEqual(["claude-sonnet-4-5", "claude-haiku-4-5"]);
-    expect(r.suggestedName).toBe("Snowflake Cortex");
+    expect(r.suggestedName).toBe("Contoso AI");
     expect(r.quirks.maxCompletionTokens).toBe(true);
     // Free only: every chat probe carried an empty messages array.
     for (const c of calls.filter((x) => x.method === "POST")) {
@@ -221,10 +222,10 @@ describe("detectEndpoint", () => {
 
   it("skipModels checks the API and key but asks about no models", async () => {
     const { fetchFn, calls } = upstream({
-      "POST /api/v2/cortex/v1/messages": ({ auth, body }) => !keyOk(auth) ? [401, { message: "Invalid OAuth access token. null" }]
+      "POST /api/claude/v1/messages": ({ auth, body }) => !keyOk(auth) ? [401, { message: "Invalid OAuth access token. null" }]
         : body.model === "claude-haiku-4-5" ? [400, { message: "'messages' must not be empty" }] : [400, { message: `unknown model "${body.model}"` }],
     });
-    const r = await detectEndpoint({ url: "https://acme.snowflakecomputing.com/api/v2/cortex/v1", apiKey: GOOD, fetchFn, catalog: CATALOG, skipModels: true });
+    const r = await detectEndpoint({ url: "https://acme.contoso-cloud.example/api/claude/v1", apiKey: GOOD, fetchFn, catalog: CATALOG, skipModels: true });
     expect(r).toMatchObject({ ok: true, protocol: "anthropic", models: [], modelsSource: "none", keyConfirmed: "confirmed" });
     expect(r.checks).toBeUndefined();
     const asked = calls.filter((c) => c.method === "POST").map((c) => c.body.model);
@@ -296,13 +297,13 @@ describe("discoverModels (Import models button)", () => {
     expect(r).toMatchObject({ models: ["a", "b"], source: "models" });
   });
 
-  it("falls back to the catalog probe when there's no /models (Snowflake)", async () => {
+  it("falls back to the catalog probe when there's no /models (Contoso)", async () => {
     const known = new Set(["claude-haiku-4-5"]);
     const { fetchFn, calls } = upstream({
-      "POST /api/v2/cortex/v1/messages": ({ body }) => known.has(body.model) ? [400, { message: "'messages' must not be empty" }] : [400, { message: `unknown model "${body.model}"` }],
+      "POST /api/claude/v1/messages": ({ body }) => known.has(body.model) ? [400, { message: "'messages' must not be empty" }] : [400, { message: `unknown model "${body.model}"` }],
     });
-    const r = await discoverModels({ baseUrl: "https://acme.snowflakecomputing.com/api/v2/cortex/v1", apiKey: GOOD, protocol: "anthropic", fetchFn, catalog: CATALOG });
-    expect(r).toMatchObject({ models: ["claude-haiku-4-5"], source: "catalog", catalogName: "Snowflake Cortex" });
+    const r = await discoverModels({ baseUrl: "https://acme.contoso-cloud.example/api/claude/v1", apiKey: GOOD, protocol: "anthropic", fetchFn, catalog: CATALOG });
+    expect(r).toMatchObject({ models: ["claude-haiku-4-5"], source: "catalog", catalogName: "Contoso AI" });
     for (const c of calls.filter((x) => x.method === "POST")) expect(c.body.messages).toEqual([]);
   });
 
@@ -310,16 +311,16 @@ describe("discoverModels (Import models button)", () => {
   it("marks two-path discovery incomplete when a path errors mid-probe, so routes aren't saved", async () => {
     const msg = ({ body }) => body.model === "claude-haiku-4-5" ? [400, { message: "'messages' must not be empty" }] : [400, { message: `unknown model "${body.model}"` }];
     const chatDown = ({ body }) => body.model === "10router-no-such-model" ? [400, { message: `unknown model "${body.model}"` }] : [503, { message: "upstream busy" }];
-    const { fetchFn } = upstream({ "POST /api/v2/cortex/v1/messages": msg, "POST /api/v2/cortex/v1/chat/completions": chatDown });
-    const r = await discoverModels({ baseUrl: "https://acme.snowflakecomputing.com/api/v2/cortex/v1", apiKey: GOOD, protocol: "anthropic", protocols: ["anthropic", "openai-chat"], fetchFn, catalog: CATALOG });
+    const { fetchFn } = upstream({ "POST /api/claude/v1/messages": msg, "POST /api/claude/v1/chat/completions": chatDown });
+    const r = await discoverModels({ baseUrl: "https://acme.contoso-cloud.example/api/claude/v1", apiKey: GOOD, protocol: "anthropic", protocols: ["anthropic", "openai-chat"], fetchFn, catalog: CATALOG });
     expect(r.complete).toEqual({ anthropic: true, "openai-chat": false });
     expect(r.allComplete).toBe(false);
   });
 
   it("counts an empty but finished path as complete", async () => {
     const unknown = ({ body }) => [400, { message: `unknown model "${body.model}"` }];
-    const { fetchFn } = upstream({ "POST /api/v2/cortex/v1/messages": unknown, "POST /api/v2/cortex/v1/chat/completions": unknown });
-    const r = await discoverModels({ baseUrl: "https://acme.snowflakecomputing.com/api/v2/cortex/v1", apiKey: GOOD, protocol: "anthropic", protocols: ["anthropic", "openai-chat"], fetchFn, catalog: CATALOG });
+    const { fetchFn } = upstream({ "POST /api/claude/v1/messages": unknown, "POST /api/claude/v1/chat/completions": unknown });
+    const r = await discoverModels({ baseUrl: "https://acme.contoso-cloud.example/api/claude/v1", apiKey: GOOD, protocol: "anthropic", protocols: ["anthropic", "openai-chat"], fetchFn, catalog: CATALOG });
     expect(r.allComplete).toBe(true);
     expect(r.models).toEqual([]);
   });

@@ -16,12 +16,12 @@ const iso = (ms) => new Date(ms).toISOString();
 const dead = (id) => ({ id, isActive: false, autoDisabledAt: "2026-11-03T00:00:00.000Z" });
 const live = (id) => ({ id, isActive: true });
 
-// The Snowflake keys: nine died between $419 and $717, one died early at $42
+// The Contoso keys: nine died between $419 and $717, one died early at $42
 // (an "account locked" 401), and the live key is at $230.
-const SNOWFLAKE = [419, 419, 454, 529, 552, 565, 646, 655, 717];
-function snowflake(liveUsage = { cost: 230, tokens: 1e6, recentCost: 0, recentTokens: 0, firstAt: iso(NOW - 30 * HOUR) }) {
-  const connections = [...SNOWFLAKE.map((_, i) => dead(`d${i}`)), dead("locked"), live("k")];
-  const usage = Object.fromEntries(SNOWFLAKE.map((cost, i) => [`d${i}`, { cost, tokens: cost * 1000 }]));
+const CONTOSO = [419, 419, 454, 529, 552, 565, 646, 655, 717];
+function contoso(liveUsage = { cost: 230, tokens: 1e6, recentCost: 0, recentTokens: 0, firstAt: iso(NOW - 30 * HOUR) }) {
+  const connections = [...CONTOSO.map((_, i) => dead(`d${i}`)), dead("locked"), live("k")];
+  const usage = Object.fromEntries(CONTOSO.map((cost, i) => [`d${i}`, { cost, tokens: cost * 1000 }]));
   usage.locked = { cost: 42, tokens: 42000 };
   usage.k = liveUsage;
   return { connections, usage };
@@ -37,7 +37,7 @@ describe("percentile", () => {
 
 describe("estimateKeyLifespans", () => {
   it("uses the median and p25-p75 of the dead keys, ignoring the one that died early", () => {
-    const { connections, usage } = snowflake();
+    const { connections, usage } = contoso();
     const { estimate, keys } = estimateKeyLifespans(connections, usage, { now: NOW });
     expect(estimate).toEqual({ metric: "cost", median: 552, low: 454, high: 646, sampleSize: 9, excluded: 1 });
     expect(keys.k).toMatchObject({ used: 230, budget: 552, remaining: 322, low: 454, high: 646 });
@@ -98,7 +98,7 @@ describe("estimateKeyLifespans", () => {
   });
 
   it("gives no estimate for an active key whose usage has no cost when the unit is cost", () => {
-    const { connections, usage } = snowflake({ cost: 0, tokens: 5e6, recentCost: 0, recentTokens: 1e5 });
+    const { connections, usage } = contoso({ cost: 0, tokens: 5e6, recentCost: 0, recentTokens: 1e5 });
     const { estimate, keys } = estimateKeyLifespans([...connections, live("fresh")], usage, { now: NOW });
     expect(estimate.metric).toBe("cost");
     expect(keys).not.toHaveProperty("k");
@@ -118,33 +118,33 @@ describe("estimateKeyLifespans", () => {
 
   it("projects an ETA from the key's recent burn rate", () => {
     // $36 over the 6h window, key in use for longer than that: $6/h.
-    const { keys } = estimateKeyLifespans(...Object.values(snowflake({ cost: 230, recentCost: 36, firstAt: iso(NOW - 30 * HOUR) })), { now: NOW });
+    const { keys } = estimateKeyLifespans(...Object.values(contoso({ cost: 230, recentCost: 36, firstAt: iso(NOW - 30 * HOUR) })), { now: NOW });
     expect(keys.k.ratePerHour).toBeCloseTo(6);
     expect(keys.k.etaHours).toBeCloseTo(322 / 6);
   });
 
   it("measures the rate from the key's first use when that is inside the window", () => {
-    const { keys } = estimateKeyLifespans(...Object.values(snowflake({ cost: 20, recentCost: 20, firstAt: iso(NOW - 2 * HOUR) })), { now: NOW });
+    const { keys } = estimateKeyLifespans(...Object.values(contoso({ cost: 20, recentCost: 20, firstAt: iso(NOW - 2 * HOUR) })), { now: NOW });
     expect(keys.k.ratePerHour).toBeCloseTo(10);
   });
 
   it("measures the rate over at least 15 minutes for a key that just started", () => {
     // $1 in its first minute: $4/h, not $60/h.
-    const { keys } = estimateKeyLifespans(...Object.values(snowflake({ cost: 1, recentCost: 1, firstAt: iso(NOW - 60 * 1000) })), { now: NOW });
+    const { keys } = estimateKeyLifespans(...Object.values(contoso({ cost: 1, recentCost: 1, firstAt: iso(NOW - 60 * 1000) })), { now: NOW });
     expect(keys.k.ratePerHour).toBeCloseTo(4);
     // Past the floor, the real span counts.
-    const later = estimateKeyLifespans(...Object.values(snowflake({ cost: 1, recentCost: 1, firstAt: iso(NOW - 30 * 60 * 1000) })), { now: NOW });
+    const later = estimateKeyLifespans(...Object.values(contoso({ cost: 1, recentCost: 1, firstAt: iso(NOW - 30 * 60 * 1000) })), { now: NOW });
     expect(later.keys.k.ratePerHour).toBeCloseTo(2);
   });
 
   it("has no ETA for an idle key", () => {
-    const { keys } = estimateKeyLifespans(...Object.values(snowflake()), { now: NOW });
+    const { keys } = estimateKeyLifespans(...Object.values(contoso()), { now: NOW });
     expect(keys.k.ratePerHour).toBeNull();
     expect(keys.k.etaHours).toBeNull();
   });
 
   it("estimates a key with no usage yet at 100% left", () => {
-    const { connections, usage } = snowflake();
+    const { connections, usage } = contoso();
     delete usage.k;
     const { keys } = estimateKeyLifespans(connections, usage, { now: NOW });
     expect(keys.k).toMatchObject({ used: 0, percentLeft: 100, remaining: 552, etaHours: null });
@@ -153,7 +153,7 @@ describe("estimateKeyLifespans", () => {
 
 describe("lifespan label", () => {
   it("reads percent left and time at the current pace", () => {
-    const { keys } = estimateKeyLifespans(...Object.values(snowflake({ cost: 230, recentCost: 36 * 6, firstAt: iso(NOW - 30 * HOUR) })), { now: NOW });
+    const { keys } = estimateKeyLifespans(...Object.values(contoso({ cost: 230, recentCost: 36 * 6, firstAt: iso(NOW - 30 * HOUR) })), { now: NOW });
     // $36/h, $322 left: ~9h.
     const label = lifespanLabel({ lifespan: keys.k });
     expect(label.text).toBe("~58% left · ~9h at current pace");
@@ -161,23 +161,23 @@ describe("lifespan label", () => {
   });
 
   it("says there's no time estimate for an idle key", () => {
-    const { keys } = estimateKeyLifespans(...Object.values(snowflake()), { now: NOW });
+    const { keys } = estimateKeyLifespans(...Object.values(contoso()), { now: NOW });
     expect(lifespanLabel({ lifespan: keys.k }).text).toBe("~58% left");
     expect(lifespanLabel({ lifespan: keys.k }).title).toMatch(/No recent traffic, so no time estimate\.$/);
   });
 
   it("flags a key past the typical budget", () => {
-    const { keys } = estimateKeyLifespans(...Object.values(snowflake({ cost: 600, recentCost: 10 })), { now: NOW });
+    const { keys } = estimateKeyLifespans(...Object.values(contoso({ cost: 600, recentCost: 10 })), { now: NOW });
     expect(lifespanLabel({ lifespan: keys.k }).text).toBe("Past typical lifespan");
   });
 
   it("reads <1% left rather than ~0% while some budget remains", () => {
-    const { keys } = estimateKeyLifespans(...Object.values(snowflake({ cost: 550, recentCost: 6, firstAt: iso(NOW - 30 * HOUR) })), { now: NOW });
+    const { keys } = estimateKeyLifespans(...Object.values(contoso({ cost: 550, recentCost: 6, firstAt: iso(NOW - 30 * HOUR) })), { now: NOW });
     expect(lifespanLabel({ lifespan: keys.k }).text).toBe("<1% left · ~2h at current pace");
-    const almost = estimateKeyLifespans(...Object.values(snowflake({ cost: 548, firstAt: iso(NOW - 30 * HOUR) })), { now: NOW });
+    const almost = estimateKeyLifespans(...Object.values(contoso({ cost: 548, firstAt: iso(NOW - 30 * HOUR) })), { now: NOW });
     expect(lifespanLabel({ lifespan: almost.keys.k }).text).toBe("~1% left");
     // 0.47% left still rounds to 0, so it reads <1% too.
-    const edge = estimateKeyLifespans(...Object.values(snowflake({ cost: 549.4, firstAt: iso(NOW - 30 * HOUR) })), { now: NOW });
+    const edge = estimateKeyLifespans(...Object.values(contoso({ cost: 549.4, firstAt: iso(NOW - 30 * HOUR) })), { now: NOW });
     expect(edge.keys.k.percentLeft).toBeCloseTo(0.47, 2);
     expect(lifespanLabel({ lifespan: edge.keys.k }).text).toBe("<1% left");
   });
@@ -209,7 +209,7 @@ describe("lifespan label", () => {
   });
 
   it("gives a key past the typical budget no time-estimate note", () => {
-    const { keys } = estimateKeyLifespans(...Object.values(snowflake({ cost: 600 })), { now: NOW });
+    const { keys } = estimateKeyLifespans(...Object.values(contoso({ cost: 600 })), { now: NOW });
     expect(keys.k.etaHours).toBeNull();
     expect(lifespanLabel({ lifespan: keys.k }).title).not.toMatch(/No recent traffic/);
   });
@@ -217,7 +217,7 @@ describe("lifespan label", () => {
   it("shows nothing without an estimate or for a key that is off", () => {
     expect(lifespanLabel(null)).toBeNull();
     expect(lifespanLabel({ id: "k", isActive: true, lifespan: null })).toBeNull();
-    const { keys } = estimateKeyLifespans(...Object.values(snowflake()), { now: NOW });
+    const { keys } = estimateKeyLifespans(...Object.values(contoso()), { now: NOW });
     const row = withLifespans([{ id: "k", isActive: true }, { id: "other", isActive: true }], keys);
     expect(lifespanLabel(row[0]).text).toBe("~58% left");
     expect(lifespanLabel(row[1])).toBeNull();

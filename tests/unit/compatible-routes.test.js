@@ -1,5 +1,5 @@
 // Two-path custom endpoints: one node, each model routed to the API that
-// serves it best (Snowflake Cortex answers on both Messages and Chat).
+// serves it best (some gateways answer on both Messages and Chat).
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const fetchMock = vi.fn();
@@ -10,7 +10,7 @@ const { sanitizeNodeQuirks } = await import("@/shared/utils/nodeQuirks.js");
 const { resolveCompatibleRoute } = await import("../../open-sse/services/provider.js");
 const { DefaultExecutor } = await import("../../open-sse/executors/default.js");
 
-const BASE = "https://acme.snowflakecomputing.com/api/v2/cortex/v1";
+const BASE = "https://acme.contoso-cloud.example/api/claude/v1";
 
 describe("chooseRoute", () => {
   it("keeps Claude on Messages and sends the rest to OpenAI", () => {
@@ -96,7 +96,7 @@ describe("DefaultExecutor on a routed model", () => {
   });
 });
 
-// Scripted two-path upstream (Snowflake-shaped).
+// Scripted two-path upstream (Messages + Chat on one base).
 function upstream({ messages, chat }) {
   return async (url, init) => {
     const { pathname } = new URL(url);
@@ -111,7 +111,7 @@ function upstream({ messages, chat }) {
 
 describe("detectEndpoint on a two-path endpoint", () => {
   it("discovers on both paths and returns routes", async () => {
-    const catalog = { providers: [{ id: "snowflake-cortex", name: "Snowflake Cortex", api: "https://${SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/cortex/v1", models: ["claude-opus-5", "claude-haiku-4-5", "openai-gpt-5", "kimi-k3"] }], labs: [] };
+    const catalog = { providers: [{ id: "contoso-ai", name: "Contoso AI", api: "https://${CONTOSO_ACCOUNT}.contoso-cloud.example/api/claude/v1", models: ["claude-opus-5", "claude-haiku-4-5", "openai-gpt-5", "kimi-k3"] }], labs: [] };
     const r = await detectEndpoint({
       url: BASE, apiKey: "good-key", catalog,
       fetchFn: upstream({ messages: new Set(["claude-opus-5", "claude-haiku-4-5"]), chat: new Set(["claude-opus-5", "openai-gpt-5", "kimi-k3"]) }),

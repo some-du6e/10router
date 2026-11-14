@@ -59,7 +59,7 @@ describe("1. model-not-found 404 (vLLM / Ollama) is not a missing route", () => 
     expect(r.ok).toBe(true);
     expect(r.models).toEqual(["qwen3.8-max"]);
   });
-  it("Snowflake: 'not eligible for this model' and 'is unavailable' are not served", async () => {
+  it("gateway: 'not eligible for this model' and 'is unavailable' are not served", async () => {
     const { fetchFn } = upstream((m, path, body) => {
       if (path !== "/v1/chat/completions") return;
       if (body.model === "llama-4-scout") return [400, { message: "required field 'messages' is zero value." }];
@@ -67,7 +67,7 @@ describe("1. model-not-found 404 (vLLM / Ollama) is not a missing route", () => 
       if (body.model === "claude-opus-5-5") return [400, { message: `Model "${body.model}-global" is unavailable` }];
       return [400, { message: `unknown model "${body.model}"` }];
     });
-    const r = await detectEndpoint({ url: "https://acct.snowflakecomputing.com/v1", apiKey: KEY, fetchFn, catalog: CATALOG, sleep: noSleep });
+    const r = await detectEndpoint({ url: "https://claude.contoso-cloud.example/v1", apiKey: KEY, fetchFn, catalog: CATALOG, sleep: noSleep });
     expect(r.models).toEqual(["llama-4-scout"]);
   });
 });
@@ -137,12 +137,12 @@ describe("5. probe volume, auth and rate limits", () => {
   it("401 mid-probe stops at once and isn't read as 'not served'", async () => {
     let n = 0;
     const { fetchFn, calls } = upstream((m, path, body) => {
-      if (path !== "/api/v2/cortex/v1/messages") return;
+      if (path !== "/api/v1/messages") return;
       if (body.model === "10router-no-such-model") return [400, { message: `unknown model "${body.model}"` }];
       if (body.model === "probe") return [400, { type: "error", error: { type: "invalid_request_error", message: "messages empty" } }];
       return ++n > 2 ? [401, { error: { message: "Invalid API key" } }] : [400, { message: "'messages' must not be empty" }];
     });
-    const r = await discoverModels({ baseUrl: "https://acme.snowflakecomputing.com/api/v2/cortex/v1", apiKey: KEY, protocol: "anthropic", fetchFn, catalog: big, sleep: noSleep });
+    const r = await discoverModels({ baseUrl: "https://acme.contoso-cloud.example/api/v1", apiKey: KEY, protocol: "anthropic", fetchFn, catalog: big, sleep: noSleep });
     expect(r.partial).toBe(true);
     expect(r.authRejected).toBe(true);
     expect(r.complete).toBe(false);

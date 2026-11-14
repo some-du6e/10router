@@ -36,7 +36,7 @@ describe("embeddings, every key locked after the dead key's 403", () => {
       { apiKey: "stub", connectionId: "dead", connectionName: "dead" },
       { allRateLimited: true, retryAfter: new Date(Date.now() + 2_000).toISOString(), retryAfterHuman: "reset after 2s", lastError: "rate_limit_error", lastErrorCode: 429 },
     ];
-    mocks.handleEmbeddingsCore.mockResolvedValue({ success: false, status: 403, error: "Not authorized for this endpoint" });
+    mocks.handleEmbeddingsCore.mockResolvedValue({ success: false, status: 403, error: "Not permitted for this endpoint" });
 
     const res = await handleEmbeddings(new Request("http://localhost/v1/embeddings", {
       method: "POST",

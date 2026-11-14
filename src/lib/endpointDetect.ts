@@ -381,12 +381,12 @@ export function makePrefix(name: unknown, taken: readonly unknown[] = []): strin
   for (let i = 2; ; i++) if (!used.has(`${p}${i}`)) return `${p}${i}`;
 }
 
-// Endpoints with no model list (Snowflake Cortex: /v1/models 404) can still be
+// Endpoints with no model list (/v1/models 404) can still be
 // asked about one model at a time for free, when they reject an unknown model id
 // before anything else. Candidate ids come from the models.dev catalog, synced
 // daily: `catalog` is [{ id, name, api, models: [ids] }] (see modelCatalog/sync.js).
 
-// "https://${SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/cortex/v1" ->
+// "https://${ACCOUNT}.gateway.example/api/v1" ->
 // host regex (placeholders match one label) + path.
 function apiPattern(api: unknown): { host: RegExp; path: string } | null {
   const m = /^https?:\/\/([^/]+)(\/[^?#]*)?/i.exec(String(api || ""));
@@ -471,7 +471,7 @@ export function recentLabModels(labs: CatalogLabModel[] = [], gens = 3, maxAgeDa
   return [...new Set(out.sort((a, b) => b.date.localeCompare(a.date)).map((m) => m.id))];
 }
 
-// Gateways often prefix a vendor's ids with its name (Snowflake: "openai-gpt-5").
+// Gateways often prefix a vendor's ids with its name ("openai-gpt-5").
 // Learn the prefixes from the matched provider's own list.
 // Only a real prefix counts: "openai-gpt-5" is, "deepseek-r1" and "mistral-large2" aren't.
 function vendorPrefixes(models: string[] = []): Set<string> {
@@ -535,7 +535,7 @@ export function candidateModels(base: string, catalog: CatalogInput = {}): { mat
 // Error-body fragments that mean "your request reached a real model endpoint".
 const UNKNOWN_MODEL_RE = /unknown model|model[^"]{0,40}(not found|does not exist|not supported|invalid|is not available|not available)|model\s+[\\]?["'`][^"'`]{1,100}[\\]?["'`]\s+(not found|does not exist|is not available)|no such model|invalid model|model_not_found|无可用渠道/i;
 // Known to the endpoint but not usable here.
-// Snowflake Cortex: "not eligible for this model" (account tier), "Model ... is unavailable".
+// Seen on a gateway: "not eligible for this model" (account tier), "Model ... is unavailable".
 const NOT_SERVABLE_RE = /legacy|does not support this endpoint|deprecated model|not eligible for this model|model\b.{0,120}?\bis unavailable/i;
 const CLIENT_GATE_RE = /unauthorized client|client (is )?not allowed|unsupported client/i;
 // Auth complaints, including the ones sent as 400 (Gemini: API_KEY_INVALID).
@@ -781,7 +781,7 @@ function makeProber({ fetchFn, key, steps, timeoutMs, sleep = defaultSleep, sign
 
 // Model probes carry only the model, the empty conversation and a 1-token cap,
 // so the model name is the first thing validated. OpenAI-style gateways can
-// reject max_tokens first (Snowflake: "deprecated in favor of
+// reject max_tokens first ("deprecated in favor of
 // max_completion_tokens"): then the cap moves to max_completion_tokens.
 // stream:false stays explicit: a gateway that streams by default would otherwise
 // answer with an SSE stream.
@@ -1412,7 +1412,7 @@ function tagAttrs(tag: string): Record<string, string> {
   return out;
 }
 
-// Cut a tagline: "Snowflake | The AI Data Cloud" -> "Snowflake".
+// Cut a tagline: "Acme | Fast inference" -> "Acme".
 export function cleanSiteName(raw: unknown): string | null {
   let t = decodeEntities(String(raw || "")).replace(/\s+/g, " ").trim();
   if (!t) return null;
@@ -1500,7 +1500,7 @@ export function siteRoots(base: string): string[] {
   if (isLanHost(u.hostname) || /^\d+\.\d+\.\d+\.\d+$|^\[/.test(u.hostname)) return [];
   const roots = [u.origin];
   const labels = u.hostname.split(".");
-  // acme-xy12345.snowflakecomputing.com -> snowflakecomputing.com; api.x.ai -> x.ai
+  // acme-xy12345.gateway.example -> gateway.example; api.x.ai -> x.ai
   if (labels.length > 2) {
     const tail = labels.slice(-2);
     const keep = tail[0].length <= 3 && SECOND_LEVEL.has(tail[0]) ? labels.slice(-3) : tail;
