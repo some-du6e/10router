@@ -32,6 +32,20 @@ vi.mock("@/lib/network/connectionProxy", async (importOriginal) => {
   };
 });
 
+// Writes auth.js makes through localDb, and the fields of the last one.
+const localDbWrites = vi.hoisted(() => ({ count: 0, last: null }));
+vi.mock("@/lib/localDb", async (importOriginal) => {
+  const real = await importOriginal();
+  return {
+    ...real,
+    updateProviderConnection: async (id, data, ...rest) => {
+      localDbWrites.count++;
+      localDbWrites.last = data;
+      return real.updateProviderConnection(id, data, ...rest);
+    },
+  };
+});
+
 const originalDataDir = process.env.DATA_DIR;
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "10router-soft-demote-"));
 process.env.DATA_DIR = tempDir;
@@ -559,32 +573,36 @@ describe("soft demotion", () => {
 });
 
 describe("after a long soft demotion", () => {
-  // Opus every minute for `hours`, the key refused on it; `onMinute(m)` runs
-  // first each minute. The minute the key went off (from soft entry), or null,
-  // and its refusals.
-  async function run(key, hours, onMinute = async () => {}) {
+  // `models(m)` each minute for `hours` (opus alone, or with kimi every 9
+  // minutes), the key refused on them; `onMinute(m)` runs first each minute.
+  // The minute the key went off (from soft entry), or null, and its refusals.
+  const OPUS_ONLY = () => [OPUS];
+  const WITH_KIMI = (m) => (m % 9 === 0 ? [OPUS, KIMI] : [OPUS]);
+  async function run(key, hours, onMinute = async () => {}, models = WITH_KIMI) {
     let refusals = 0;
     for (let m = 1; m <= hours * 60; m++) {
       vi.advanceTimersByTime(MIN);
       await onMinute(m);
-      const tried = new Set();
-      for (;;) {
-        const creds = await auth.getProviderCredentials(provider, tried, OPUS);
-        if (!creds?.connectionId) break;
-        if (creds.connectionId !== key.id) {
-          await succeed(creds.connectionId, OPUS);
-          break;
+      for (const model of models(m)) {
+        const tried = new Set();
+        for (;;) {
+          const creds = await auth.getProviderCredentials(provider, tried, model);
+          if (!creds?.connectionId) break;
+          if (creds.connectionId !== key.id) {
+            await succeed(creds.connectionId, model);
+            break;
+          }
+          refusals++;
+          await failOnce(key.id, model);
+          tried.add(key.id);
         }
-        refusals++;
-        await failOnce(key.id, OPUS);
-        tried.add(key.id);
       }
       if (!(await load(key.id)).isActive) return { off: m, refusals };
     }
     return { off: null, refusals };
   }
 
-  it("turns off a key refused for itself, at its first refused try after 24 hours", async () => {
+  it("turns off a key refused for itself on two models, at its first refusal after 24 hours", async () => {
     const { key } = await softDemoted();
     const { off, refusals } = await run(key, 30);
     expect(off).toBeGreaterThanOrEqual(24 * 60);
@@ -592,11 +610,39 @@ describe("after a long soft demotion", () => {
     expect(refusals).toBeGreaterThanOrEqual(6);
     const conn = await load(key.id);
     expect(conn.autoDisabledAt).toBe(new Date().toISOString());
-    expect(conn.autoDisabledReason).toBe(`403 "Key barred from this endpoint" on ${OPUS} for 24h while soft-demoted`);
+    expect(conn.autoDisabledReason).toMatch(new RegExp(`^403 "Key barred from this endpoint" on (${OPUS}, ${KIMI}|${KIMI}, ${OPUS}) for 24h while soft-demoted$`));
     // A key lifespan sample, as for any key turned off automatically.
     await db.updateProviderConnection(key.id, { apiKey: "sk-test-a-replaced-0123456789" });
     expect((await load(key.id)).pastKeys).toEqual([{ since: expect.any(String), until: conn.autoDisabledAt }]);
   });
+
+  // As master leaves on a key refused on one model only (it needs minModels).
+  it("keeps a key on that is refused for itself on one model only", async () => {
+    const { key } = await softDemoted();
+    const { off, refusals } = await run(key, 48, undefined, OPUS_ONLY);
+    expect(off).toBeNull();
+    expect(refusals).toBeGreaterThanOrEqual(6);
+  }, 120000);
+
+  // The reviewer's replay: refused on opus alone, it serves sonnet whenever
+  // asked, until sonnet goes idle.
+  it.each([
+    ["every 5 minutes for 2 hours", 120, 5],
+    ["every 5 minutes for 12 hours", 720, 5],
+    ["every 30 minutes for 20 hours", 1200, 30],
+  ])("keeps a key on that serves sonnet %s, then sonnet goes idle", async (_label, idleFrom, every) => {
+    const [key] = await accounts(["k", "peer"]);
+    let off = null, served = 0;
+    for (let m = 0; m < 48 * 60 && off === null; m++) {
+      if (m > 0) vi.advanceTimersByTime(MIN);
+      await request(OPUS, (id) => id === key.id);
+      if (m < idleFrom && m % every === 0 && await request("claude-sonnet-5-5", () => false) === key.id) served++;
+      if (!(await load(key.id)).isActive) off = m;
+    }
+    expect(served).toBeGreaterThan(0);
+    expect((await load(key.id))[`authSoft_${OPUS}`]).toMatchObject({ keyRefused: true });
+    expect(off).toBeNull();
+  }, 120000);
 
   it("keeps a key on that serves anything in that time", async () => {
     const { key } = await softDemoted();
@@ -613,7 +659,7 @@ describe("after a long soft demotion", () => {
       await auth.markAccountUnavailable(key.id, 403, lacks, provider, OPUS);
     }
     expect((await load(key.id))[`authSoft_${OPUS}`]).toMatchObject({ keyRefused: false });
-    const { off } = await run(key, 30);
+    const { off } = await run(key, 30, undefined, OPUS_ONLY);
     expect(off).toBeNull();
   });
 
@@ -697,22 +743,50 @@ describe("after a long soft demotion", () => {
     await refuse(key.id, peer, { times: 6, model: KIMI });
     expect((await load(key.id))[`authSoft_${KIMI}`]).toMatchObject({ keyRefused: true });
     // A day from the opus demotion is about 4 hours on; from kimi's, 24.
-    const { off } = await run(key, 12);
+    const { off } = await run(key, 12, undefined, OPUS_ONLY);
     expect(off).not.toBeNull();
     expect(off).toBeLessThanOrEqual(4 * 60 + 2 * 180);
-    expect((await load(key.id)).autoDisabledReason).toBe(`403 "Key barred from this endpoint" on ${OPUS} for 24h while soft-demoted`);
+    expect((await load(key.id)).autoDisabledReason).toBe(`403 "Key barred from this endpoint" on ${OPUS}, ${KIMI} for 24h while soft-demoted`);
   });
 
   it("turns it off at a refusal, not at an upstream error", async () => {
     const { key, peer } = await softDemoted();
-    expect((await run(key, 23)).off).toBeNull();
+    expect((await run(key, 23, undefined, OPUS_ONLY)).off).toBeNull();
     vi.advanceTimersByTime(2 * 60 * MIN);
-    await auth.markAccountUnavailable(key.id, 500, "Internal server error", provider, OPUS);
+    await auth.markAccountUnavailable(key.id, 500, "Internal server error", provider, KIMI);
     expect((await load(key.id)).isActive).toBe(true);
-    await succeed(peer.id, OPUS);
-    await failOnce(key.id, OPUS);
+    await succeed(peer.id, KIMI);
+    await failOnce(key.id, KIMI);
     expect((await load(key.id)).isActive).toBe(false);
   });
+
+  // With its opus try due already, nothing else here writes with autoDisable.
+  it("turns it off at a 401 on another model, once the day is up", async () => {
+    const { key, peer } = await softDemoted();
+    expect((await run(key, 25, undefined, OPUS_ONLY)).off).toBeNull();
+    vi.advanceTimersByTime(181 * MIN);
+    expect((await load(key.id))[`authSoft_${OPUS}`].tryAt <= new Date().toISOString()).toBe(true);
+    await succeed(peer.id, KIMI);
+    await auth.markAccountUnavailable(key.id, 401, "Invalid API key", provider, KIMI);
+    const conn = await load(key.id);
+    expect(conn.isActive).toBe(false);
+    expect(conn.autoDisabledReason).toBe(`401 "Invalid API key" on ${OPUS}, ${KIMI} for 24h while soft-demoted`);
+  }, 120000);
+
+  it("counts only the tries since the key last served", async () => {
+    const { key, peer } = await softDemoted();
+    await run(key, 12, undefined, OPUS_ONLY);
+    expect((await load(key.id))[`authSoft_${OPUS}`].level).toBeGreaterThanOrEqual(6);
+    await succeed(key.id, "claude-sonnet-5-5");
+    vi.advanceTimersByTime(25 * 60 * MIN);
+    await succeed(peer.id, KIMI);
+    await failOnce(key.id, KIMI);
+    await succeed(peer.id, OPUS);
+    await failOnce(key.id, OPUS);
+    const conn = await load(key.id);
+    expect(conn[`authSoft_${OPUS}`]).toMatchObject({ tries: 1 });
+    expect(conn.isActive).toBe(true);
+  }, 120000);
 
   it("keeps a key on that is tried too seldom in the day to tell", async () => {
     const { key, peer } = await softDemoted();
@@ -740,7 +814,7 @@ describe("after a long soft demotion", () => {
       let off = null;
       for (let m = 1; m <= 30 * 60 && off === null; m++) {
         vi.advanceTimersByTime(MIN);
-        await request(OPUS, (id) => id === key.id, freshAuth);
+        for (const model of WITH_KIMI(m)) await request(model, (id) => id === key.id, freshAuth);
         if (!(await freshDb.getProviderConnectionById(key.id)).isActive) off = Date.now() - servedAt;
       }
       expect(off).toBeGreaterThanOrEqual(24 * 60 * MIN);
@@ -778,7 +852,111 @@ describe("after a long soft demotion", () => {
     await freshAuth.markAccountUnavailable(key.id, 403, REFUSED_403, provider, OPUS);
     const conn = await freshDb.getProviderConnectionById(key.id);
     expect(conn.isActive).toBe(false);
-    expect(conn.autoDisabledReason).toBe(`403 "Key barred from this endpoint" on ${OPUS} for ${shown} while soft-demoted`);
+    expect(conn.autoDisabledReason).toBe(`403 "Key barred from this endpoint" on ${OPUS}, ${KIMI} for ${shown} while soft-demoted`);
+  });
+
+  // Names the models refused since the key last served, not one refused only before.
+  it("names only the models it was refused on since its last success", async () => {
+    vi.stubEnv("AUTH_SOFT_DEMOTE_DEAD_AFTER_TRIES", "1");
+    vi.resetModules();
+    const freshAuth = await import("@/sse/services/auth.js");
+    const freshDb = await import("@/lib/db/index.js");
+    const loadFresh = (id) => freshDb.getProviderConnectionById(id);
+    const [key, peer] = await accounts(["a", "b"]);
+    const refuseOn = async (model) => {
+      await freshAuth.clearAccountError(peer.id, await loadFresh(peer.id), model);
+      await freshAuth.markAccountUnavailable(key.id, 403, REFUSED_403, provider, model);
+    };
+    for (let i = 0; i < 6; i++) {
+      if (i > 0) vi.advanceTimersByTime(2 * MIN);
+      await refuseOn(OPUS);
+    }
+    vi.advanceTimersByTime(MIN);
+    await refuseOn(KIMI);
+    vi.advanceTimersByTime(MIN);
+    await freshAuth.clearAccountError(key.id, await loadFresh(key.id), "claude-sonnet-5-5");
+    vi.advanceTimersByTime(25 * 60 * MIN);
+    await refuseOn("claude-haiku-5-5");
+    await refuseOn(OPUS);
+    const conn = await loadFresh(key.id);
+    expect(conn.isActive).toBe(false);
+    expect(conn.autoDisabledReason).toBe(`403 "Key barred from this endpoint" on ${OPUS}, claude-haiku-5-5 for 24h while soft-demoted`);
+  });
+});
+
+describe("the key's last success while soft-demoted", () => {
+  it("is stored at most once a minute", async () => {
+    const { key } = await softDemoted();
+    // Past the refusal's lock, so a success has nothing else to write.
+    vi.advanceTimersByTime(3 * MIN);
+    await succeed(key.id, KIMI);
+    const first = new Date().toISOString();
+    expect((await load(key.id)).authServedAt).toBe(first);
+    const before = localDbWrites.count;
+    vi.advanceTimersByTime(59 * 1000);
+    await succeed(key.id, KIMI);
+    expect(localDbWrites.count).toBe(before);
+    // A restart now would lose under a minute of it.
+    expect(Date.now() - Date.parse((await load(key.id)).authServedAt)).toBeLessThan(MIN);
+    vi.advanceTimersByTime(2 * 1000);
+    await succeed(key.id, KIMI);
+    expect(localDbWrites.count).toBe(before + 1);
+    expect(localDbWrites.last.authServedAt).toBe(new Date().toISOString());
+  });
+
+  it("is stored within the minute when a soft demotion began after it was", async () => {
+    const { key } = await softDemoted();
+    const { since } = (await load(key.id))[`authSoft_${OPUS}`];
+    await db.updateProviderConnection(key.id, { authServedAt: new Date(Date.parse(since) - 10 * 1000).toISOString() });
+    global._authEvents.softKeys.delete(key.id);
+    vi.advanceTimersByTime(10 * 1000);
+    await succeed(key.id, KIMI);
+    expect((await load(key.id)).authServedAt).toBe(new Date().toISOString());
+  });
+
+  it("is stored when the success's snapshot predates the soft demotion", async () => {
+    const [key, peer] = await accounts(["a", "b"]);
+    await refuse(key.id, peer, { times: 5 });
+    const snapshot = await load(key.id);
+    vi.advanceTimersByTime(2 * MIN);
+    await refuse(key.id, peer, { times: 1 });
+    expect((await load(key.id))[`authSoft_${OPUS}`]).toMatchObject({ keyRefused: true });
+    vi.advanceTimersByTime(MIN);
+    await auth.clearAccountError(key.id, snapshot, KIMI);
+    expect((await load(key.id)).authServedAt).toBe(new Date().toISOString());
+  });
+
+  it("is stored with AUTH_SOFT_DEMOTE=0, so turning it back on doesn't turn off a key that served meanwhile", async () => {
+    const { key, peer } = await softDemoted();
+    for (let i = 0; i < 6; i++) {
+      vi.advanceTimersByTime(3 * 60 * MIN);
+      await succeed(peer.id, OPUS);
+      await failOnce(key.id, OPUS);
+    }
+    expect((await load(key.id))[`authSoft_${OPUS}`]).toMatchObject({ tries: 6 });
+    const events = global._authEvents;
+    try {
+      vi.stubEnv("AUTH_SOFT_DEMOTE", "0");
+      vi.resetModules();
+      const offDb = await import("@/lib/db/index.js");
+      const offAuth = await import("@/sse/services/auth.js");
+      vi.advanceTimersByTime(2 * 60 * MIN);
+      await offAuth.clearAccountError(key.id, await offDb.getProviderConnectionById(key.id), KIMI);
+      expect((await offDb.getProviderConnectionById(key.id)).authServedAt).toBe(new Date().toISOString());
+      // Back on, after a restart.
+      vi.stubEnv("AUTH_SOFT_DEMOTE", "1");
+      delete global._authEvents;
+      global._softDemotions.clear();
+      vi.resetModules();
+      const onDb = await import("@/lib/db/index.js");
+      const onAuth = await import("@/sse/services/auth.js");
+      vi.advanceTimersByTime(6 * 60 * MIN);
+      await onAuth.clearAccountError(peer.id, await onDb.getProviderConnectionById(peer.id), KIMI);
+      await onAuth.markAccountUnavailable(key.id, 403, REFUSED_403, provider, KIMI);
+      expect((await onDb.getProviderConnectionById(key.id)).isActive).toBe(true);
+    } finally {
+      global._authEvents = events;
+    }
   });
 });
 

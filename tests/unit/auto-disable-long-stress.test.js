@@ -3,9 +3,10 @@
 // 9 minutes from minute 12; or K serving sonnet every 9 minutes until it dies
 // at minute 180. Writes when K was soft-demoted, last served and went off, and
 // its refusals in the first 24 and 48 hours, to LONG_OUT. On code with soft
-// demotion, K must go off at its first refused try a day after the later of
-// its soft demotion and its last success: between that and that plus the
-// longest try interval.
+// demotion, K refused on two models or more must go off at its first refusal
+// a day after the later of its soft demotion and its last success: between
+// that and that plus the longest try interval. Refused on opus only, it stays
+// on, as on master.
 //   cd tests && ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-long-stress.test.js
 import fs from "node:fs";
 import os from "node:os";
@@ -111,6 +112,11 @@ it("turns a soft-demoted dead key off a day after its soft demotion or last succ
   if (!soft?.deadAfterMs) return;
   const longestTryMin = Math.max(...errors.AUTH_DEMOTE_CONFIG.probeMs) / MIN;
   for (const [name, { softAt, lastServed, off }] of Object.entries(out)) {
+    // Refused on one model only, it stays on, as on master (minModels).
+    if (name.endsWith("opus only")) {
+      expect([name, softAt !== null && off === null]).toEqual([name, true]);
+      continue;
+    }
     const from = Math.max(softAt, lastServed ?? -Infinity);
     expect([name, softAt !== null && off - from >= soft.deadAfterMs / MIN && off - from <= soft.deadAfterMs / MIN + longestTryMin]).toEqual([name, true]);
   }
