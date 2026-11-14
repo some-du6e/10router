@@ -22,7 +22,7 @@ const { getCapabilitiesForModel } = await import("open-sse/providers/capabilitie
 const { PROVIDER_ID_TO_ALIAS } = await import("@/shared/constants/models");
 const {
   buildCodexCatalog, findCodexModel, toCodexEntry, codexModelsFor, codexShapeFor, uniqueBySlug,
-  CODEX_BASE_INSTRUCTIONS, CODEX_BUNDLED_MODELS, CODEX_CATALOG_VERSION,
+  CODEX_BASE_INSTRUCTIONS, CODEX_BUNDLED_MODELS, CODEX_LEGACY_MODELS, CODEX_CATALOG_VERSION,
 } = await import("@/lib/codex/modelCatalog.js");
 const { resetRoutedModels } = await import("@/lib/codex/routedModels.js");
 
@@ -230,6 +230,22 @@ describe("Codex's own models", () => {
     expect(body.data.map((m) => m.id)).not.toContain("gpt-5.5");
   });
 
+  it("are listed under both the bare name a key was allowed by and the prefixed id the dashboard writes", async () => {
+    const created = await db.createApiKey("catalog-bare-allowlist", "machine-test-0001");
+    await db.updateApiKey(created.id, { allowedModels: ["claude-opus-5-5", "gpt-5.5"] });
+    const key = await db.getApiKeyById(created.id);
+    const body = await catalog("0.167.2", { Authorization: `Bearer ${key.key}` });
+    const bySlug = new Map(body.models.map((m) => [m.slug, m]));
+    for (const slug of ["claude-opus-5-5", "cc/claude-opus-5-5", "gpt-5.5", "cx/gpt-5.5"]) expect(bySlug.has(slug), slug).toBe(true);
+    expect(bySlug.get("cc/claude-opus-5-5").apply_patch_tool_type).toBe("freeform");
+    expect(bySlug.get("cc/claude-opus-5-5").shell_type).toBe("shell_command");
+    expect(bySlug.get("cx/gpt-5.5").model_messages).toEqual(bundled("gpt-5.5").model_messages);
+    expect(bySlug.get("gpt-5.5").visibility).toBe("list");
+    expect(body.models.flatMap((entry) => decodeErrors(entry, "0.167.2"))).toEqual([]);
+    const slugs = body.models.map((m) => m.slug);
+    expect(new Set(slugs).size).toBe(slugs.length);
+  });
+
   it("are hidden from a key whose allowlist doesn't allow them", async () => {
     await db.createCombo({ name: "catalog-combo", models: ["openai/gpt-a", "anthropic/claude-x"] });
     const created = await db.createApiKey("catalog-allowlist", "machine-test-0001");
@@ -263,7 +279,9 @@ describe("Codex's own models", () => {
     expect(bundled("gpt-5.5").base_instructions).toBeUndefined();
     for (const version of ["0.137.0", "0.146.0", "0.147.0", "0.147.9"]) {
       for (const entry of codexModelsFor(version)) {
-        expect(entry.base_instructions, `${version} ${entry.slug}`).toBe(entry.model_messages.instructions_template);
+        // Older catalogs' entries keep the base_instructions they shipped with.
+        const own = CODEX_LEGACY_MODELS.find((l) => l.model.slug === entry.slug)?.model.base_instructions;
+        expect(entry.base_instructions, `${version} ${entry.slug}`).toBe(own || entry.model_messages.instructions_template);
         expect(entry.base_instructions.length, entry.slug).toBeGreaterThan(1000);
       }
     }
@@ -271,8 +289,37 @@ describe("Codex's own models", () => {
 
   it("carry an empty base_instructions from Codex 0.148, which keeps the template", () => {
     expect(CODEX_BUNDLED_MODELS.every((m) => m.model_messages?.instructions_template)).toBe(true);
+    const current = new Set(CODEX_BUNDLED_MODELS.map((m) => m.slug));
     for (const version of ["0.148.0", "0.167.2", "0.0.0", null]) {
-      expect(codexModelsFor(version).every((m) => m.base_instructions === ""), String(version)).toBe(true);
+      const entries = codexModelsFor(version).filter((m) => current.has(m.slug));
+      expect(entries.every((m) => m.base_instructions === ""), String(version)).toBe(true);
+    }
+  });
+
+  it("include, for older Codex, the models it bundles and the vendored release doesn't", () => {
+    const slugsFor = (version) => codexModelsFor(version).map((m) => m.slug);
+    const old = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"];
+    expect(old.filter((s) => slugsFor("0.137.0").includes(s))).toEqual(old);
+    expect(old.filter((s) => slugsFor("0.143.0").includes(s))).toEqual(old);
+    expect(old.filter((s) => slugsFor("0.144.0").includes(s))).toEqual(["gpt-5.4", "gpt-5.4-mini", "gpt-5.2"]);
+    expect(old.filter((s) => slugsFor("0.154.0").includes(s))).toEqual(["gpt-5.4", "gpt-5.4-mini", "gpt-5.2"]);
+    expect(old.filter((s) => slugsFor("0.157.1").includes(s))).toEqual(["gpt-5.4"]);
+    for (const version of ["0.158.0", "0.167.2", "0.0.0", null]) {
+      expect(old.filter((s) => slugsFor(version).includes(s)), String(version)).toEqual([]);
+    }
+  });
+
+  it("never put a `{{ personality }}` placeholder where Codex reads the prompt as plain text", () => {
+    for (const version of ["0.137.0", "0.143.0", "0.146.0", "0.147.0"]) {
+      for (const entry of codexModelsFor(version)) {
+        expect(entry.base_instructions, `${version} ${entry.slug}`).not.toContain("{{ personality }}");
+        expect(entry.base_instructions.length, `${version} ${entry.slug}`).toBeGreaterThan(1000);
+      }
+    }
+    // A template with one goes only to clients that bundled that same entry;
+    // none reaches a client newer than every legacy source.
+    for (const version of ["0.158.0", "0.167.2", null]) {
+      for (const entry of codexModelsFor(version)) expect(entry.model_messages?.instructions_template ?? "", `${version} ${entry.slug}`).not.toContain("{{ personality }}");
     }
   });
 
@@ -324,7 +371,13 @@ describe("the vendored Codex files", () => {
     const prompt = JSON.parse(fs.readFileSync(new URL("../../open-sse/config/codex/prompt.json", import.meta.url), "utf8"));
     expect(prompt.source).toContain(`/${tag}/`);
     const notices = fs.readFileSync(new URL("../../THIRD_PARTY_NOTICES.md", import.meta.url), "utf8");
-    expect(notices.match(/rust-v\d+\.\d+\.\d+/g)).toEqual([tag]);
+    const block = /<!-- vendored-codex:start[\s\S]*?<!-- vendored-codex:end -->/.exec(notices)?.[0] ?? "";
+    expect(block).toContain(`tag \`${tag}\`. Unmodified.`);
+    const legacy = JSON.parse(fs.readFileSync(new URL("../../open-sse/config/codex/legacy-models.json", import.meta.url), "utf8"));
+    const listed = [...block.matchAll(/- `([^`]+)`: tag `(rust-v[\d.]+)`/g)].map((m) => [m[1], m[2]]);
+    expect(listed).toEqual(Object.entries(legacy.sources));
+    expect(legacy.models.map((m) => m.slug)).toEqual(Object.keys(legacy.sources));
+    expect(notices.match(/rust-v\d+\.\d+\.\d+/g).every((t) => t === tag || Object.values(legacy.sources).includes(t))).toBe(true);
     // No model in the catalog needs a newer Codex than the release it came from.
     const version = CODEX_CATALOG_VERSION.split(".").map(Number);
     for (const model of CODEX_BUNDLED_MODELS) {

@@ -210,8 +210,11 @@ const renameOpenAIEntry = (model, id) => ({ ...model, id, owned_by: "10router" }
  * @param {object[]} models
  * @param {(model: object) => string} [idOf] the entry's model id
  * @param {(model: object, id: string) => object} [rename] the entry listed as `id`
+ * @param {{ everyId?: boolean }} [options] everyId: also list each allowed
+ *   entry under its own id, next to the allowlist name, for a client that
+ *   looks models up by the exact id it was configured with (Codex's catalog)
  */
-export async function filterModelsForRequest(request, models, idOf = (m) => m?.id, rename = renameOpenAIEntry) {
+export async function filterModelsForRequest(request, models, idOf = (m) => m?.id, rename = renameOpenAIEntry, { everyId = false } = {}) {
   const apiKey = request?.headers ? extractApiKey(request) : null;
   if (!apiKey || !Array.isArray(models)) return models;
   const key = await getApiKeyPolicy(apiKey);
@@ -231,9 +234,13 @@ export async function filterModelsForRequest(request, models, idOf = (m) => m?.i
         if (await isModelAllowed(id, [entry], lookup)) { shownAs = entry; break; }
       }
     }
-    if (listed.has(shownAs)) continue;
-    listed.add(shownAs);
-    visible.push(shownAs === id ? model : rename(model, shownAs));
+    const names = shownAs === id ? [[id, model]] : [[shownAs, rename(model, shownAs)]];
+    if (everyId && shownAs !== id) names.push([id, model]);
+    for (const [name, entry] of names) {
+      if (listed.has(name)) continue;
+      listed.add(name);
+      visible.push(entry);
+    }
   }
   return visible;
 }

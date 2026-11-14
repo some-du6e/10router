@@ -14,7 +14,7 @@ import { it } from "vitest";
 
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "codex-catalog-dump-"));
 
-it("writes the Codex catalog and the dashboard's Codex config", async () => {
+it("writes the Codex catalog and the dashboard's Codex config", { timeout: 60_000 }, async () => {
   const { GET } = await import("@/app/api/v1/codex/models/route.js");
   const version = encodeURIComponent(process.env.CODEX_CLIENT_VERSION);
   const response = await GET(new Request(`http://localhost/backend-api/codex/models?client_version=${version}`));

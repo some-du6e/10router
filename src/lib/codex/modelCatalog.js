@@ -8,6 +8,7 @@ import { PROVIDER_ID_TO_ALIAS } from "@/shared/constants/models";
 import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 import prompt from "open-sse/config/codex/prompt.json" with { type: "json" };
 import bundled from "open-sse/config/codex/models.json" with { type: "json" };
+import legacy from "open-sse/config/codex/legacy-models.json" with { type: "json" };
 
 // Label for the Codex release tag (rust-v<this>) that open-sse/config/codex/
 // was vendored from. scripts/vendor-codex-catalog.mjs rewrites it, and
@@ -41,9 +42,30 @@ const STRICT_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhi
 // The alphas report 0.147.0, so everything before 0.148.0 gets the template's
 // own text there, the way Codex 0.167's serialize_model_infos_with_legacy_base
 // writes it. 0.147.0 itself keeps the template and ignores the copy. From
-// 0.148.0 the copy would only add bytes, so those get "".
+// 0.148.0 the copy would only add bytes, so those get "". An entry with its
+// own base_instructions (older catalogs' entries) keeps it: their templates
+// can carry a `{{ personality }}` placeholder, which the text must not.
 const FULL_BASE_INSTRUCTIONS_BEFORE = [0, 148, 0];
-const NATIVE_MODELS = bundled.models.map((model) => ({ ...model, base_instructions: model.base_instructions ?? "" }));
+
+// Models older Codex releases bundle and the vendored one doesn't, each from
+// the newest release that still bundled it (scripts/vendor-codex-catalog.mjs).
+// Only clients up to that release get one: they know the model and its
+// template, and once this catalog decodes they have lost their own copy.
+// Later clients never bundled it, and render a `{{ personality }}`
+// placeholder some of these templates carry as literal text.
+export const CODEX_LEGACY_MODELS = legacy.models.map((model) => {
+  const [major, minor] = /^rust-v(\d+)\.(\d+)\./.exec(legacy.sources[model.slug]).slice(1).map(Number);
+  return { model, servedBefore: [major, minor + 1, 0] };
+});
+
+const withBase = (model) => ({ ...model, base_instructions: model.base_instructions ?? "" });
+const bundledSlugs = new Set(bundled.models.map((m) => m.slug));
+const NATIVE_MODELS = [
+  ...bundled.models.map((model) => ({ entry: withBase(model), servedBefore: null })),
+  ...CODEX_LEGACY_MODELS
+    .filter(({ model }) => !bundledSlugs.has(model.slug))
+    .map(({ model, servedBefore }) => ({ entry: withBase(model), servedBefore })),
+];
 
 // Spelled the way Codex's own catalog spells it: 0.137 reads it as the
 // `shell_command` tool, 0.167 as an alias of `unified_exec`.
@@ -100,11 +122,12 @@ const older = (a, b) => {
 export function codexShapeFor(clientVersion) {
   const client = parseVersion(clientVersion);
   const slugs = NATIVE_MODELS
-    .filter((m) => {
-      const minimal = parseVersion(m.minimal_client_version);
+    .filter(({ entry, servedBefore }) => {
+      if (servedBefore && !(client && older(client, servedBefore))) return false;
+      const minimal = parseVersion(entry.minimal_client_version);
       return !client || !minimal || !older(client, minimal);
     })
-    .map((m) => m.slug);
+    .map(({ entry }) => entry.slug);
   return {
     strictEfforts: Boolean(client) && older(client, STRICT_EFFORTS_BEFORE),
     fullBaseInstructions: Boolean(client) && older(client, FULL_BASE_INSTRUCTIONS_BEFORE),
@@ -117,11 +140,11 @@ export function codexShapeFor(clientVersion) {
  * @param {{ strictEfforts: boolean, fullBaseInstructions: boolean, slugs: string[] }} shape
  */
 export function codexModelsForShape({ strictEfforts, fullBaseInstructions, slugs }) {
-  const usable = NATIVE_MODELS.filter((m) => slugs.includes(m.slug));
-  return usable.map((model) => {
+  const usable = NATIVE_MODELS.filter(({ entry }) => slugs.includes(entry.slug));
+  return usable.map(({ entry: model }) => {
     let entry = model;
-    if (fullBaseInstructions) {
-      entry = { ...entry, base_instructions: entry.model_messages?.instructions_template ?? entry.base_instructions };
+    if (fullBaseInstructions && !entry.base_instructions) {
+      entry = { ...entry, base_instructions: entry.model_messages?.instructions_template ?? "" };
     }
     if (strictEfforts) {
       const levels = entry.supported_reasoning_levels.filter((l) => STRICT_EFFORTS.has(l.effort));

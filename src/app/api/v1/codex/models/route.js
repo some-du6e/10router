@@ -51,9 +51,12 @@ export async function OPTIONS() {
  */
 export async function GET(request) {
   try {
-    // A key with a model allowlist sees only the models it may use.
-    // Cached and bounded in time (see routedModels.js); the key's allowlist applies after.
-    const models = await filterModelsForRequest(request, await getRoutedModels());
+    // A key with a model allowlist sees only the models it may use, cached and
+    // bounded in time (routedModels.js), allowlist applied after. A model it
+    // was allowed by a bare name is listed under that name and its routed id:
+    // with model_catalog_url Codex looks up only the exact id in its config,
+    // which the dashboard writes prefixed.
+    const models = await filterModelsForRequest(request, await getRoutedModels(), undefined, undefined, { everyId: true });
     const shape = codexShapeFor(new URL(request.url).searchParams.get("client_version"));
     const codexModels = codexModelsForShape(shape);
     const entries = buildCodexCatalog(models, codexModels);

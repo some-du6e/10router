@@ -5,14 +5,24 @@ material under its own license.
 
 ## OpenAI Codex
 
+<!-- vendored-codex:start (written by scripts/vendor-codex-catalog.mjs) -->
 - `open-sse/config/codex/models.json`: Codex's bundled model catalog,
   `codex-rs/models-manager/models.json` from https://github.com/openai/codex at
   tag `rust-v0.167.2`. Unmodified.
 - `open-sse/config/codex/prompt.json`: Codex's generic prompt,
   `codex-rs/models-manager/prompt.md` at the same tag. Modified: converted to
   JSON (the `instructions` string), text unchanged.
+- `open-sse/config/codex/legacy-models.json`: entries of
+  `codex-rs/models-manager/models.json` that older Codex releases bundle,
+  each from the newest tag that still has it. Modified: collected into one
+  file, entries unchanged.
+  - `gpt-5.4`: tag `rust-v0.157.1`
+  - `gpt-5.4-mini`: tag `rust-v0.154.0`
+  - `gpt-5.2`: tag `rust-v0.154.0`
+  - `gpt-5.3-codex`: tag `rust-v0.143.0`
+<!-- vendored-codex:end -->
 
-`scripts/vendor-codex-catalog.mjs` regenerates both from a Codex release tag.
+`scripts/vendor-codex-catalog.mjs` regenerates these from Codex release tags.
 The router serves this material from `/backend-api/codex/models`, and it is
 compiled into the built app.
 

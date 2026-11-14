@@ -28,14 +28,6 @@ const ids = (body) => body.data.map((m) => m.id);
 const list = (...names) => names.map((name) => ({ id: `acme/${name}`, owned_by: "acme" }));
 const START = Date.parse("2026-01-01T00:00:00Z");
 const at = (ms) => vi.setSystemTime(new Date(START + ms));
-// A build the test finishes by hand: `finish(list)`.
-const pendingBuild = () => {
-  const handle = {};
-  routed.build = (options) => (options.skipLiveCatalogs
-    ? list("static")
-    : new Promise((resolve) => { handle.finish = resolve; }));
-  return handle;
-};
 
 beforeEach(() => {
   resetRoutedModels();
@@ -103,93 +95,157 @@ describe("Codex catalog route", () => {
 });
 
 describe("the routed model list behind it", () => {
+  const CLOCK = ["setTimeout", "clearTimeout", "Date", "performance"];
+  const advance = (ms) => vi.advanceTimersByTimeAsync(ms);
+  // Builds the test finishes by hand, in the order they start: builds[i].finish(list).
+  const pendingBuilds = () => {
+    const builds = [];
+    routed.build = (options) => {
+      if (options.skipLiveCatalogs) return list("static");
+      return new Promise((resolve) => { builds.push({ finish: resolve }); });
+    };
+    return builds;
+  };
+
+  it("keeps its timings inside Codex's 5 seconds and 5-minute refresh", () => {
+    expect(T.SERVE_STALE_MS).toBeLessThanOrEqual(300_000);
+    expect(T.STALE_GRACE_MS).toBeLessThanOrEqual(1_500);
+    expect(T.WAIT_MS).toBeLessThanOrEqual(4_000);
+  });
+
   it("is built once a minute, not per request", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    at(0);
+    vi.useFakeTimers({ toFake: CLOCK });
     routed.models = list("one");
     expect(ids(await catalog())).toEqual(["acme/one"]);
     routed.models = list("two");
-    at(T.FRESH_MS - 1_000);
+    await advance(T.FRESH_MS - 1_000);
     expect(ids(await catalog())).toEqual(["acme/one"]);
     expect(routed.calls).toHaveLength(1);
   });
 
   it("serves a list up to five minutes old at once, while rebuilding it", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    at(0);
+    vi.useFakeTimers({ toFake: CLOCK });
     routed.models = list("one");
     await catalog();
-    const build = pendingBuild();
-    at(T.SERVE_STALE_MS - 1_000);
+    const builds = pendingBuilds();
+    await advance(T.SERVE_STALE_MS - 1_000);
     expect(ids(await catalog())).toEqual(["acme/one"]);
-    build.finish(list("two"));
-    await vi.waitFor(async () => expect(ids(await catalog())).toEqual(["acme/two"]));
+    builds[0].finish(list("two"));
+    await advance(0);
+    expect(ids(await catalog())).toEqual(["acme/two"]);
   });
 
-  it("waits for the rebuild of a list older than five minutes, so a new model isn't missed", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-    at(0);
+  it("gives an older list's rebuild a short grace, so a quick one isn't missed", async () => {
+    vi.useFakeTimers({ toFake: CLOCK });
     routed.models = list("one");
     await catalog();
-    const build = pendingBuild();
-    at(T.SERVE_STALE_MS + 60_000);
+    const builds = pendingBuilds();
+    await advance(T.SERVE_STALE_MS + 60_000);
     const pending = catalog();
-    await vi.advanceTimersByTimeAsync(500);
-    build.finish(list("one", "added"));
+    await advance(T.STALE_GRACE_MS / 2);
+    builds[0].finish(list("one", "added"));
     expect(ids(await pending)).toEqual(["acme/one", "acme/added"]);
   });
 
-  it("serves the old list, not the static one, when that rebuild takes too long", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-    at(0);
+  it("serves the old list after the grace, not the static one, and keeps rebuilding", async () => {
+    vi.useFakeTimers({ toFake: CLOCK });
     routed.models = list("one");
     await catalog();
-    pendingBuild();
-    at(T.SERVE_STALE_MS + 60_000);
-    const pending = catalog();
-    await vi.advanceTimersByTimeAsync(T.WAIT_MS);
+    const builds = pendingBuilds();
+    await advance(T.SERVE_STALE_MS + 60_000);
+    let answered = false;
+    const pending = catalog().then((body) => { answered = true; return body; });
+    await advance(T.STALE_GRACE_MS);
+    expect(answered).toBe(true);
     expect(ids(await pending)).toEqual(["acme/one"]);
+    builds[0].finish(list("one", "added"));
+    await advance(0);
+    expect(ids(await catalog())).toEqual(["acme/one", "acme/added"]);
   });
 
-  it("answers a cold start from the static lists within the wait, and the live list after", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-    expect(T.WAIT_MS).toBeLessThanOrEqual(4_000);
-    const build = pendingBuild();
+  it("answers a cold start from the static lists within the longer wait, and the live list after", async () => {
+    vi.useFakeTimers({ toFake: CLOCK });
+    const builds = pendingBuilds();
     const pending = catalog();
-    await vi.advanceTimersByTimeAsync(T.WAIT_MS);
+    await advance(T.WAIT_MS);
     expect(ids(await pending)).toEqual(["acme/static"]);
     expect(routed.calls.map((o) => Boolean(o.skipLiveCatalogs))).toEqual([false, true]);
-    build.finish(list("live"));
-    await vi.advanceTimersByTimeAsync(0);
+    builds[0].finish(list("live"));
+    await advance(0);
     expect(ids(await catalog())).toEqual(["acme/live"]);
   });
 
   it("gives up on a rebuild that hangs, so the next one can start", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.useFakeTimers({ toFake: CLOCK });
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    pendingBuild();
+    pendingBuilds();
     const pending = catalog();
-    await vi.advanceTimersByTimeAsync(T.WAIT_MS);
+    await advance(T.WAIT_MS);
     await pending;
-    expect(routed.calls.filter((o) => !o.skipLiveCatalogs)).toHaveLength(1);
-    await vi.advanceTimersByTimeAsync(T.BUILD_DEADLINE_MS);
+    await advance(T.BUILD_DEADLINE_MS);
     expect(log.mock.calls.flat().join(" ")).toContain(`no list after ${T.BUILD_DEADLINE_MS}ms`);
-
     routed.build = null;
     routed.models = list("recovered");
     expect(ids(await catalog())).toEqual(["acme/recovered"]);
     log.mockRestore();
   });
 
+  it("doesn't let an abandoned build that lands late replace a newer list", async () => {
+    vi.useFakeTimers({ toFake: CLOCK });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const builds = pendingBuilds();
+    const first = catalog();
+    await advance(T.WAIT_MS);
+    expect(ids(await first)).toEqual(["acme/static"]);
+    await advance(T.BUILD_DEADLINE_MS);
+    const second = catalog();
+    await advance(0);
+    builds[1].finish(list("newer"));
+    expect(ids(await second)).toEqual(["acme/newer"]);
+    builds[0].finish(list("older"));
+    await advance(0);
+    expect(ids(await catalog())).toEqual(["acme/newer"]);
+    log.mockRestore();
+  });
+
+  it("still fills a cold cache with a build that lands after its deadline", async () => {
+    vi.useFakeTimers({ toFake: CLOCK });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const builds = pendingBuilds();
+    const first = catalog();
+    await advance(T.WAIT_MS);
+    await first;
+    await advance(T.BUILD_DEADLINE_MS + 5_000);
+    builds[0].finish(list("late"));
+    await advance(0);
+    routed.build = () => { throw new Error("should not rebuild a fresh list"); };
+    expect(ids(await catalog())).toEqual(["acme/late"]);
+    log.mockRestore();
+  });
+
   it("keeps serving the last good list when a rebuild fails", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    at(0);
+    vi.useFakeTimers({ toFake: CLOCK });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
     routed.models = list("good");
     await catalog();
     routed.build = () => { throw new Error("provider down"); };
-    at(T.FRESH_MS + 1_000);
+    await advance(T.FRESH_MS + 1_000);
     expect(ids(await catalog())).toEqual(["acme/good"]);
-    await vi.waitFor(() => expect(routed.calls).toHaveLength(2));
+    await advance(0);
+    expect(routed.calls).toHaveLength(2);
     expect(ids(await catalog())).toEqual(["acme/good"]);
+    log.mockRestore();
+  });
+
+  it("measures age on a monotonic clock, so moving the wall clock back doesn't freeze the list", async () => {
+    vi.useFakeTimers({ toFake: CLOCK });
+    routed.models = list("one");
+    await catalog();
+    routed.models = list("two");
+    await advance(T.FRESH_MS + 1_000);
+    vi.setSystemTime(new Date(Date.now() - 3_600_000));
+    await catalog();
+    await advance(0);
+    expect(ids(await catalog())).toEqual(["acme/two"]);
   });
 });

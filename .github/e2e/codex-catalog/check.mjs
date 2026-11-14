@@ -69,8 +69,11 @@ console.log(`${version}: head catalog has ${head.length} entries (${routed.lengt
 function checkDecoded(label, models) {
   if (!models) return fail(`${label}: Codex printed no catalog`);
   const bySlug = new Map(models.map((m) => [m.slug, m]));
-  const missing = routed.filter((m) => !bySlug.has(m.slug));
-  if (missing.length) return fail(`${label}: ${missing.length} routed models missing, e.g. ${missing[0].slug}`);
+  // Every entry served, hidden ones included (Codex's bare and older models).
+  const missing = head.filter((m) => !bySlug.has(m.slug));
+  if (missing.length) return fail(`${label}: ${missing.length} served models missing, e.g. ${missing[0].slug}`);
+  const older = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"].filter((s) => bySlug.has(s));
+  if (older.length) pass(`${label}: older Codex models ${older.join(", ")} decoded`);
   const g = bySlug.get(generic.slug);
   const instructions = g.model_messages?.instructions_template ?? g.base_instructions ?? "";
   if (g.apply_patch_tool_type !== "freeform") fail(`${label}: ${g.slug} apply_patch_tool_type = ${g.apply_patch_tool_type}`);

@@ -157,7 +157,10 @@ key to a model outside its list.
 `GET /v1/models`, `GET /v1/models/{kind}`, the Codex catalog
 (`/backend-api/codex/models`) and the Gemini list (`/v1beta/models`), called
 with an allowlisted key, list only the models it may use, and
-`GET /v1/models/{id}` answers 404 for the rest. Video jobs sent as multipart
+`GET /v1/models/{id}` answers 404 for the rest. A model allowed by a bare name
+is listed under that name; the Codex catalog also lists it under each routed
+id the key can use (`cx/gpt-5.5`), because Codex looks up the exact id in its
+config. Video jobs sent as multipart
 have no readable model, so an allowlisted key can't create them. Polling an
 existing video job checks only expiry.
 
