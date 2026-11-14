@@ -144,64 +144,70 @@ const headHasUrl = configText("head").includes("model_catalog_url");
 if (headHasUrl === expectUrl) pass(`dashboard config ${expectUrl ? "has" : "leaves out"} model_catalog_url for ${version}`);
 else fail(`dashboard config ${headHasUrl ? "has" : "lacks"} model_catalog_url for ${version}`);
 
-let servedFile = catalogFile("head");
-const requests = [];
-const server = createServer((req, res) => {
-  requests.push(req.url);
-  if (!req.url.startsWith("/backend-api/codex/models")) { res.writeHead(404).end(); return; }
-  res.writeHead(200, { "content-type": "application/json" }).end(readFileSync(servedFile));
-});
-await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
-const fetchWith = async (file, configSide, options) => {
-  servedFile = file;
-  const home = await freshHome(configSide, options);
-  requests.length = 0;
-  const run = await codex(home, [...discoveryFlag, "debug", "models"]);
-  return { run, asked: requests.filter((u) => u.startsWith("/backend-api/codex/models")) };
-};
-const describeRun = ({ run, asked }) => {
-  const shown = run.models || [];
-  const routedShown = shown.filter((m) => routed.some((r) => r.slug === m.slug)).length;
-  return { shown, routedShown, text: `asked ${asked.length} times, lists ${shown.length} models (${routedShown} routed)` };
-};
-
-if (sides.includes("base")) {
-  console.log(`base config + base catalog: Codex ${describeRun(await fetchWith(catalogFile("base"), "base")).text}`);
-}
-
-const headBytes = readFileSync(catalogFile("head")).length;
-const after = await fetchWith(catalogFile("head"), "head");
-if (expectUrl) {
-  if (after.asked.length === 0) fail("model_catalog_url: Codex never asked for the catalog");
-  else pass(`model_catalog_url: Codex asked ${after.asked[0]}`);
-  checkDecoded("model_catalog_url", after.run.models);
+// Before 0.156 there is no model_catalog_url to fetch, and `codex login` there
+// doesn't read a key from stdin, so the HTTP checks start at 0.156.
+if (!supportsCatalogUrl) {
+  pass(`no model_catalog_url before 0.156.0; ${version} keeps its own list`);
 } else {
-  // Without the line Codex keeps its own models, as with master's config.
-  const d = describeRun(after);
-  if (d.shown.length === 0 || d.routedShown > 0) fail(`dashboard config: Codex ${d.text}; expected its own list`);
-  else pass(`dashboard config: Codex keeps its own ${d.shown.length} models (${d.text})`);
+  let servedFile = catalogFile("head");
+  const requests = [];
+  const server = createServer((req, res) => {
+    requests.push(req.url);
+    if (!req.url.startsWith("/backend-api/codex/models")) { res.writeHead(404).end(); return; }
+    res.writeHead(200, { "content-type": "application/json" }).end(readFileSync(servedFile));
+  });
+  await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
+  const fetchWith = async (file, configSide, options) => {
+    servedFile = file;
+    const home = await freshHome(configSide, options);
+    requests.length = 0;
+    const run = await codex(home, [...discoveryFlag, "debug", "models"]);
+    return { run, asked: requests.filter((u) => u.startsWith("/backend-api/codex/models")) };
+  };
+  const describeRun = ({ run, asked }) => {
+    const shown = run.models || [];
+    const routedShown = shown.filter((m) => routed.some((r) => r.slug === m.slug)).length;
+    return { shown, routedShown, text: `asked ${asked.length} times, lists ${shown.length} models (${routedShown} routed)` };
+  };
 
-  if (supportsCatalogUrl) {
-    // What the line would do here, to pin why it's left out.
-    const forced = describeRun(await fetchWith(catalogFile("head"), "head", { withCatalogUrl: true }));
-    console.log(`with model_catalog_url added by hand, a ${headBytes}-byte catalog: Codex ${forced.text}`);
-    if (before("0.160.0")) {
-      if (forced.shown.length === 0 || forced.routedShown > 0) fail(`model_catalog_url over 1 MiB: expected Codex's own list, got: ${forced.text}`);
-      else pass("model_catalog_url over 1 MiB: Codex refuses the body and keeps its own list");
-    } else {
-      pass(`model_catalog_url over 1 MiB: explicit catalog mode leaves Codex with ${forced.shown.length} models`);
-    }
-
-    // A catalog under the cap, with the entries that matter, decodes over HTTP.
-    const keep = new Set([generic.slug, chatgptBacked?.slug, "gpt-5.5", "codex-auto-review", ...Object.keys(legacy.servedBefore)]);
-    const small = head.filter((m) => keep.has(m.slug));
-    const smallFile = join(mkdtempSync(join(tmpdir(), "codex-small-")), "catalog.json");
-    writeFileSync(smallFile, JSON.stringify({ models: small }));
-    const smallRun = await fetchWith(smallFile, "head", { withCatalogUrl: true });
-    console.log(`model_catalog_url added by hand, a ${readFileSync(smallFile).length}-byte catalog of ${small.length} entries:`);
-    checkDecoded("model_catalog_url (under 1 MiB)", smallRun.run.models, small);
+  if (sides.includes("base")) {
+    console.log(`base config + base catalog: Codex ${describeRun(await fetchWith(catalogFile("base"), "base")).text}`);
   }
+
+  const headBytes = readFileSync(catalogFile("head")).length;
+  const after = await fetchWith(catalogFile("head"), "head");
+  if (expectUrl) {
+    if (after.asked.length === 0) fail("model_catalog_url: Codex never asked for the catalog");
+    else pass(`model_catalog_url: Codex asked ${after.asked[0]}`);
+    checkDecoded("model_catalog_url", after.run.models);
+  } else {
+    // Without the line Codex keeps its own models, as with master's config.
+    const d = describeRun(after);
+    if (d.shown.length === 0 || d.routedShown > 0) fail(`dashboard config: Codex ${d.text}; expected its own list`);
+    else pass(`dashboard config: Codex keeps its own ${d.shown.length} models (${d.text})`);
+
+    if (supportsCatalogUrl) {
+      // What the line would do here, to pin why it's left out.
+      const forced = describeRun(await fetchWith(catalogFile("head"), "head", { withCatalogUrl: true }));
+      console.log(`with model_catalog_url added by hand, a ${headBytes}-byte catalog: Codex ${forced.text}`);
+      if (before("0.160.0")) {
+        if (forced.shown.length === 0 || forced.routedShown > 0) fail(`model_catalog_url over 1 MiB: expected Codex's own list, got: ${forced.text}`);
+        else pass("model_catalog_url over 1 MiB: Codex refuses the body and keeps its own list");
+      } else {
+        pass(`model_catalog_url over 1 MiB: explicit catalog mode leaves Codex with ${forced.shown.length} models`);
+      }
+
+      // A catalog under the cap, with the entries that matter, decodes over HTTP.
+      const keep = new Set([generic.slug, chatgptBacked?.slug, "gpt-5.5", "codex-auto-review", ...Object.keys(legacy.servedBefore)]);
+      const small = head.filter((m) => keep.has(m.slug));
+      const smallFile = join(mkdtempSync(join(tmpdir(), "codex-small-")), "catalog.json");
+      writeFileSync(smallFile, JSON.stringify({ models: small }));
+      const smallRun = await fetchWith(smallFile, "head", { withCatalogUrl: true });
+      console.log(`model_catalog_url added by hand, a ${readFileSync(smallFile).length}-byte catalog of ${small.length} entries:`);
+      checkDecoded("model_catalog_url (under 1 MiB)", smallRun.run.models, small);
+    }
+  }
+  server.close();
 }
-server.close();
 
 process.exit(failed ? 1 : 0);
