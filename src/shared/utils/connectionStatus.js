@@ -1,3 +1,5 @@
+import { AUTH_DEAD_CONFIG } from "../../../open-sse/config/errorConfig.js";
+
 export function getStatusVariant(isActive, effectiveStatus) {
   if (isActive === false) return "default";
   if (effectiveStatus === "active" || effectiveStatus === "success") return "success";
@@ -10,6 +12,36 @@ export function getStatusVariant(isActive, effectiveStatus) {
 export const DEMOTE_PREFIX = "authDemote_";
 export const SOFT_DEMOTE_PREFIX = "authSoft_";
 
+// When a soft demotion was last refused for the key itself: keyRefusedAt; on
+// a record from before it was kept, its last refusal if it had refused tries
+// (`tries`), else when it began.
+export const keyRefusedAtOf = (r) => r.keyRefusedAt ?? (r.tries > 0 ? r.lastRefusedAt : r.since);
+
+// The models a key was refused for itself on at or after fromMs: its soft
+// demotions for refusals of the key itself, and its demotion counts that
+// aren't of one model (authDemote_<model>, by lastCountedAt).
+export function modelsRefusedForItself(connection, fromMs) {
+  const at = (iso) => Date.parse(iso) >= fromMs;
+  const entries = Object.entries(connection);
+  return [...new Set([
+    ...entries.filter(([key, r]) => key.startsWith(SOFT_DEMOTE_PREFIX) && r?.since && r.keyRefused === true && at(keyRefusedAtOf(r)))
+      .map(([key]) => key.slice(SOFT_DEMOTE_PREFIX.length)),
+    ...entries.filter(([key, r]) => key.startsWith(DEMOTE_PREFIX) && r && !r.modelScoped && at(r.lastCountedAt))
+      .map(([key]) => key.slice(DEMOTE_PREFIX.length)),
+  ])];
+}
+
+// Refused the way the turn-off rule (isAuthDead) needs: for itself on
+// minModels models, or minFailures 401s in a row while soft-demoted for itself
+// (authHeld401s, counted since its last success and its last other refusal).
+export const refusedLikeDead = (connection, models) => new Set(models).size >= AUTH_DEAD_CONFIG.minModels
+  || connection.authHeld401s >= AUTH_DEAD_CONFIG.minFailures;
+
+// Soft-demoted for refusals of the key itself and, since its last success
+// (authServedAt), refused like a dead key.
+export const softLooksDead = (connection) => refusedLikeDead(connection,
+  modelsRefusedForItself(connection, Date.parse(connection.authServedAt) || -Infinity));
+
 // Models an active key is demoted on: records with demotedAt, and soft demotions.
 export function demotedModels(connection) {
   if (!connection || connection.isActive === false) return [];
@@ -18,8 +50,8 @@ export function demotedModels(connection) {
       return [{ model: key.slice(DEMOTE_PREFIX.length), reason: record.reason || null }];
     }
     if (key.startsWith(SOFT_DEMOTE_PREFIX) && record?.since) {
-      // Refused for itself (keyRefusedAt, else since) after its last success: likely dead.
-      const keyRefused = record.keyRefused === true && !(connection.authServedAt > (record.keyRefusedAt || record.since));
+      // Refused for itself, and like a dead key since its last success: likely dead.
+      const keyRefused = record.keyRefused === true && softLooksDead(connection);
       return [{ model: key.slice(SOFT_DEMOTE_PREFIX.length), soft: true, lastRefusedAt: record.lastRefusedAt || record.since, keyRefused }];
     }
     return [];

@@ -120,6 +120,13 @@ async function softDemoted() {
   return { key, peer };
 }
 
+// Then 6 refusals on kimi too: soft-demoted for itself on both.
+async function softDemotedOnTwo() {
+  const { key, peer } = await softDemoted();
+  await refuse(key.id, peer, { times: 6, model: KIMI });
+  return { key, peer };
+}
+
 describe("soft demotion", () => {
   it("tries the key after its peer on that model, and first on the others", async () => {
     const [key, peer] = await accounts(["a", "b"]);
@@ -377,9 +384,16 @@ describe("soft demotion", () => {
   });
 
   it("counts a soft-demoted key that served nothing since as dead in the key lifespan estimate when it is replaced", async () => {
-    const { key } = await softDemoted();
+    const { key } = await softDemotedOnTwo();
     await db.updateProviderConnection(key.id, { apiKey: "sk-test-a-replaced-0123456789" });
     expect((await load(key.id)).pastKeys).toEqual([{ since: expect.any(String), until: new Date().toISOString() }]);
+  });
+
+  // As the turn-off rule, which needs two models (or 401s in a row).
+  it("doesn't count a key refused for itself on one model only as dead", async () => {
+    const { key } = await softDemoted();
+    await db.updateProviderConnection(key.id, { apiKey: "sk-test-a-replaced-0123456789" });
+    expect((await load(key.id)).pastKeys).toBeUndefined();
   });
 
   it("doesn't count a key soft-demoted on one model that serves another", async () => {
@@ -492,7 +506,7 @@ describe("soft demotion", () => {
   });
 
   it("counts a key switched off and then replaced while soft-demoted as dead in the key lifespan estimate", async () => {
-    const { key } = await softDemoted();
+    const { key } = await softDemotedOnTwo();
     await db.updateProviderConnection(key.id, { isActive: false });
     await db.updateProviderConnection(key.id, { apiKey: "sk-test-a-replaced-0123456789" });
     expect((await load(key.id)).pastKeys).toEqual([{ since: expect.any(String), until: new Date().toISOString() }]);
@@ -816,18 +830,91 @@ describe("after a long soft demotion", () => {
     });
   });
 
-  it("counts a 401 as a refused try on a model the key lacks, on the probe schedule", async () => {
-    const [key, peer] = await accounts(["a", "b"]);
-    for (let i = 0; i < 6; i++) {
-      if (i > 0) vi.advanceTimersByTime(2 * MIN);
-      await succeed(peer.id, OPUS);
-      await auth.markAccountUnavailable(key.id, 403, lacksText(OPUS), provider, OPUS);
+  // Soft-demoted for a model it lacks, the key isn't held: its 401s leave the
+  // try due, so the turn-off rule sees them as master would.
+  it("turns off a key soft-demoted for a model it lacks, then revoked, within about an hour, opus only", async () => {
+    const [key] = await accounts(["a", "b"]);
+    let text = lacksText(OPUS);
+    let revokedAt = null, off = null;
+    for (let m = 0; m < 6 * 60 && off === null; m++) {
+      if (m > 0) vi.advanceTimersByTime(MIN);
+      const tried = new Set();
+      for (;;) {
+        const creds = await auth.getProviderCredentials(provider, tried, OPUS);
+        if (!creds?.connectionId) break;
+        if (creds.connectionId !== key.id) {
+          await auth.clearAccountError(creds.connectionId, creds, OPUS);
+          break;
+        }
+        if (text === "401") await auth.markAccountUnavailable(key.id, 401, "Invalid API key", provider, OPUS);
+        else await auth.markAccountUnavailable(key.id, 403, text, provider, OPUS);
+        tried.add(key.id);
+      }
+      if (revokedAt === null && (await load(key.id))[`authSoft_${OPUS}`]?.keyRefused === false) {
+        revokedAt = m;
+        text = "401";
+      }
+      if (!(await load(key.id)).isActive) off = m;
     }
-    expect((await load(key.id))[`authSoft_${OPUS}`]).toMatchObject({ keyRefused: false });
+    expect(revokedAt).not.toBeNull();
+    expect(off).not.toBeNull();
+    expect(off - revokedAt).toBeLessThanOrEqual(90);
+  });
+
+  it("counts a held key's 401s in a row, until another refusal of the key or a success", async () => {
+    const { key, peer } = await softDemoted();
+    const tryOpus = async (status, text) => {
+      vi.advanceTimersByTime(200 * MIN);
+      await succeed(peer.id, OPUS);
+      await auth.markAccountUnavailable(key.id, status, text, provider, OPUS);
+      return (await load(key.id)).authHeld401s ?? null;
+    };
+    expect(await tryOpus(401, "Invalid API key")).toBe(1);
+    expect(await tryOpus(401, "Invalid API key")).toBe(2);
+    expect(await tryOpus(403, REFUSED_403)).toBeNull();
+    expect(await tryOpus(401, "Invalid API key")).toBe(1);
+    await succeed(key.id, KIMI);
+    expect((await load(key.id)).authHeld401s ?? null).toBeNull();
+  });
+
+  // Master's streak turns a key refused only with 401s off on one model.
+  it("turns off a key soft-demoted on opus only whose 403s turn into 401s, a day after its soft demotion", async () => {
+    const [key] = await accounts(["k", "peer"]);
+    let softAt = null, off = null;
+    for (let m = 0; m < 48 * 60 && off === null; m++) {
+      if (m > 0) vi.advanceTimersByTime(MIN);
+      const tried = new Set();
+      for (;;) {
+        const creds = await auth.getProviderCredentials(provider, tried, OPUS);
+        if (!creds?.connectionId) break;
+        if (creds.connectionId !== key.id) {
+          await auth.clearAccountError(creds.connectionId, creds, OPUS);
+          break;
+        }
+        if (m >= 180) await auth.markAccountUnavailable(key.id, 401, "Invalid API key", provider, OPUS);
+        else await failOnce(key.id, OPUS);
+        tried.add(key.id);
+      }
+      const conn = await load(key.id);
+      if (softAt === null && conn[`authSoft_${OPUS}`]?.since) softAt = m;
+      if (!conn.isActive) off = m;
+    }
+    expect(off).toBeGreaterThanOrEqual(softAt + 24 * 60);
+    expect(off).toBeLessThanOrEqual(softAt + 24 * 60 + 180);
+    expect((await load(key.id)).autoDisabledReason).toBe(`401 "Invalid API key" on ${OPUS} for 24h while soft-demoted`);
+  }, 120000);
+
+  it("stores a success right after a refusal of the key itself, within the minute", async () => {
+    const { key, peer } = await softDemoted();
     vi.advanceTimersByTime(11 * MIN);
+    await succeed(key.id, KIMI);
+    vi.advanceTimersByTime(10 * 1000);
     await succeed(peer.id, OPUS);
-    await auth.markAccountUnavailable(key.id, 401, "Invalid API key", provider, OPUS);
-    expect((await load(key.id))[`authSoft_${OPUS}`]).toMatchObject({ level: 1, tryAt: new Date(Date.now() + 20 * MIN).toISOString() });
+    await failOnce(key.id, OPUS);
+    vi.advanceTimersByTime(10 * 1000);
+    global._authEvents.softKeys.delete(key.id);
+    await succeed(key.id, KIMI);
+    expect((await load(key.id)).authServedAt).toBe(new Date().toISOString());
   });
 
   // The reviewer's replay: refused with 403s, soft-demoted on opus, then 401s
@@ -1258,6 +1345,32 @@ describe("AUTH_SOFT_DEMOTE", () => {
     // A success on it removes it.
     await freshAuth.clearAccountError(key.id, await loadFresh(key.id), OPUS);
     expect((await loadFresh(key.id))[`authSoft_${OPUS}`] ?? null).toBeNull();
+  });
+
+  it("set to 0, ignores a demotion 401s built while the key was soft-demoted", async () => {
+    const [key, near] = await accounts(["k", "near"], { shared: true });
+    const [far] = await accounts(["far"]);
+    await refuse(key.id, far, { times: 6 });
+    expect((await load(key.id))[`authSoft_${OPUS}`]).toMatchObject({ keyRefused: true });
+    for (let i = 0; i < 8; i++) {
+      vi.advanceTimersByTime(2 * MIN);
+      await succeed(near.id, KIMI);
+      await auth.markAccountUnavailable(key.id, 401, "Invalid API key", provider, KIMI);
+    }
+    expect((await load(key.id))[`authDemote_${KIMI}`]).toMatchObject({ held401: true, demotedAt: expect.any(String) });
+    vi.advanceTimersByTime(3 * MIN);
+    expect(await pick(KIMI)).not.toBe(key.id);
+    vi.stubEnv("AUTH_SOFT_DEMOTE", "0");
+    vi.resetModules();
+    const freshAuth = await import("@/sse/services/auth.js");
+    const freshAvailability = await import("@/app/api/models/availability/route.js");
+    const freshProviders = await import("@/app/api/providers/route.js");
+    global._softDemotions.clear();
+    expect((await freshAuth.getProviderCredentials(provider, null, KIMI)).connectionId).toBe(key.id);
+    const { models } = await (await freshAvailability.GET()).json();
+    expect(models.filter((m) => m.connectionId === key.id && m.model === KIMI)).toEqual([]);
+    const { connections } = await (await freshProviders.GET()).json();
+    expect(connections.find((c) => c.id === key.id)).not.toHaveProperty(`authDemote_${KIMI}`);
   });
 
   it("set to 0, records no dead key for a key replaced while soft-demoted", async () => {

@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
-import { DEMOTE_PREFIX, SOFT_DEMOTE_PREFIX } from "../../../shared/utils/connectionStatus.js";
+import { DEMOTE_PREFIX, SOFT_DEMOTE_PREFIX, keyRefusedAtOf, softLooksDead } from "../../../shared/utils/connectionStatus.js";
 import { clearSoftDemotions } from "../../softDemotions.js";
 import { AUTH_SOFT_DEMOTE } from "../../../../open-sse/config/runtimeConfig.js";
 import { COOLDOWN_MS } from "../../../../open-sse/config/errorConfig.js";
@@ -17,9 +17,11 @@ const OPTIONAL_FIELDS = [
 // Written by sse/services/auth.js when a key keeps failing auth and is turned
 // off. Turning the connection back on, by any path, starts it clean; turning it
 // off again keeps its reason unless a new key came with it.
+// authHeld401s: 401s in a row (sse/services/auth.js) while the key is
+// soft-demoted for refusals of itself.
 export const AUTH_STREAK_FIELDS = [
   "authFailCount", "authFailFirstAt", "authFailLastAt", "authFailModels", "authFailAll401", "authFailSameUpstream",
-  "authFailRunCount", "authFailRunStartAt", "authFailBursts",
+  "authFailRunCount", "authFailRunStartAt", "authFailBursts", "authHeld401s",
 ];
 const AUTO_DISABLE_FIELDS = ["autoDisabledAt", "autoDisabledReason", ...AUTH_STREAK_FIELDS];
 
@@ -42,14 +44,12 @@ export const getAuthSoftKey = (model) => `${AUTH_SOFT_PREFIX}${model}`;
 export const PAST_KEYS_CAP = 50;
 
 // A dead key the router left on: soft-demoted for refusals of the key itself,
-// and refused for itself (keyRefusedAt, else since) after its last success
-// (authServedAt). When it was last refused for itself, or null.
-const keyRefusedAt = (r) => r.keyRefusedAt || r.since;
+// and refused like a dead key since its last success (softLooksDead). When its
+// soft demotions were last refused for the key itself, or null.
 function softDeadUntil(c) {
-  if (!AUTH_SOFT_DEMOTE.enabled) return null;
-  const records = Object.entries(c).filter(([k, r]) => k.startsWith(AUTH_SOFT_PREFIX) && r?.keyRefused && r.since
-    && !(c.authServedAt > keyRefusedAt(r)));
-  return records.length ? records.map(([, r]) => keyRefusedAt(r)).sort().at(-1) : null;
+  if (!AUTH_SOFT_DEMOTE.enabled || !softLooksDead(c)) return null;
+  const records = Object.entries(c).filter(([k, r]) => k.startsWith(AUTH_SOFT_PREFIX) && r?.keyRefused === true && r.since);
+  return records.length ? records.map(([, r]) => keyRefusedAtOf(r)).sort().at(-1) : null;
 }
 
 function applyAutoDisableTransition(db, existing, merged, data) {

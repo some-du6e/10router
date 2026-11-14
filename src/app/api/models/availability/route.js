@@ -45,6 +45,7 @@ export async function GET() {
       let demotions = 0;
       for (const [key, demotion] of Object.entries(connection)) {
         if (connection.isActive === false || !key.startsWith(AUTH_DEMOTE_PREFIX) || !demotion?.demotedAt) continue;
+        if (demotion.held401 && !AUTH_SOFT_DEMOTE.enabled) continue;
         const model = key.slice(AUTH_DEMOTE_PREFIX.length);
         if (locks.some((lock) => lock.model === model)) continue;
         const nextTry = Math.max(new Date(demotion.nextProbeAt).getTime(), new Date(demotion.leaseUntil || 0).getTime());

@@ -103,7 +103,9 @@ export const CACHE_AFFINITY = {
 // deadAfterMs (from its last success, or its first such soft demotion if
 // later), with at least deadAfterTries of its tries refused for the key itself
 // in that time, and refused for itself on AUTH_DEAD_CONFIG.minModels models in
-// that time, is turned off at its next refusal of the key itself. Env:
+// that time or with minFailures 401s in a row (as AUTH_DEAD_CONFIG needs), is
+// turned off at its next refusal of the key itself. While held, its 401s
+// count toward demoting it on a model as 403s do. Env:
 // AUTH_SOFT_DEMOTE_DEAD_AFTER_MS (0: never), AUTH_SOFT_DEMOTE_DEAD_AFTER_TRIES.
 export const AUTH_SOFT_DEMOTE = {
   enabled: envInt("AUTH_SOFT_DEMOTE", 1, { max: 1 }) !== 0,

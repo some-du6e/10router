@@ -57,8 +57,8 @@ export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 // failures with no such gap between them) and spans the window. A key
 // soft-demoted on any model for refusals of the key itself (AUTH_SOFT_DEMOTE)
 // builds no streak and isn't turned off by this rule; instead, after a day with
-// nothing served, refused for itself on minModels models in that time, it is
-// turned off (AUTH_SOFT_DEMOTE).
+// nothing served, refused for itself on minModels models in that time or with
+// minFailures 401s in a row, it is turned off (AUTH_SOFT_DEMOTE).
 export const AUTH_DEAD_CONFIG = {
   minFailures: 5,
   minWindowMs: 10 * 60 * 1000,
