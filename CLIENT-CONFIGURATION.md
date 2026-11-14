@@ -53,6 +53,10 @@ requires_openai_auth = true
 Without it, Codex never reads 10router's model list, uses generic settings for any model it
 doesn't know, and gives that model no `apply_patch` tool, so it edits files through the shell.
 
+With `model_catalog_url` set, Codex looks up its `model` in that list by exact name. If your
+API key has a model allowlist with bare names (`gpt-5.5`, `claude-opus-5-5`), the list shows
+those models under the bare names only, so set `model = "gpt-5.5"` rather than `cx/gpt-5.5`.
+
 The regular `/v1` endpoint is a separate OpenAI-compatible mode. It is not the native
 Codex backend.
 

@@ -230,16 +230,21 @@ describe("Codex's own models", () => {
     expect(body.data.map((m) => m.id)).not.toContain("gpt-5.5");
   });
 
-  it("are listed under both the bare name a key was allowed by and the prefixed id the dashboard writes", async () => {
+  // Codex with model_catalog_url matches its configured model exactly, so a
+  // bare-name key sets `model` to the bare name; the list must not name the
+  // providers behind it (keyLimits.filterModelsForRequest).
+  it("are listed for a bare-name allowlist under the bare names only, with the right metadata", async () => {
     const created = await db.createApiKey("catalog-bare-allowlist", "machine-test-0001");
     await db.updateApiKey(created.id, { allowedModels: ["claude-opus-5-5", "gpt-5.5"] });
     const key = await db.getApiKeyById(created.id);
     const body = await catalog("0.167.2", { Authorization: `Bearer ${key.key}` });
     const bySlug = new Map(body.models.map((m) => [m.slug, m]));
-    for (const slug of ["claude-opus-5-5", "cc/claude-opus-5-5", "gpt-5.5", "cx/gpt-5.5"]) expect(bySlug.has(slug), slug).toBe(true);
-    expect(bySlug.get("cc/claude-opus-5-5").apply_patch_tool_type).toBe("freeform");
-    expect(bySlug.get("cc/claude-opus-5-5").shell_type).toBe("shell_command");
-    expect(bySlug.get("cx/gpt-5.5").model_messages).toEqual(bundled("gpt-5.5").model_messages);
+    expect(body.models.filter((m) => m.visibility === "list").map((m) => m.slug).sort()).toEqual(["claude-opus-5-5", "gpt-5.5"]);
+    expect(body.models.filter((m) => m.slug.includes("/"))).toEqual([]);
+    expect(JSON.stringify(body)).not.toMatch(/"(cc|cx)\/(claude-opus-5-5|gpt-5\.5)"/);
+    expect(bySlug.get("claude-opus-5-5").apply_patch_tool_type).toBe("freeform");
+    expect(bySlug.get("claude-opus-5-5").shell_type).toBe("shell_command");
+    expect(bySlug.get("gpt-5.5").model_messages).toEqual(bundled("gpt-5.5").model_messages);
     expect(bySlug.get("gpt-5.5").visibility).toBe("list");
     expect(body.models.flatMap((entry) => decodeErrors(entry, "0.167.2"))).toEqual([]);
     const slugs = body.models.map((m) => m.slug);

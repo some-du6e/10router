@@ -157,12 +157,16 @@ key to a model outside its list.
 `GET /v1/models`, `GET /v1/models/{kind}`, the Codex catalog
 (`/backend-api/codex/models`) and the Gemini list (`/v1beta/models`), called
 with an allowlisted key, list only the models it may use, and
-`GET /v1/models/{id}` answers 404 for the rest. A model allowed by a bare name
-is listed under that name; the Codex catalog also lists it under each routed
-id the key can use (`cx/gpt-5.5`), because Codex looks up the exact id in its
-config. Video jobs sent as multipart
+`GET /v1/models/{id}` answers 404 for the rest. Video jobs sent as multipart
 have no readable model, so an allowlisted key can't create them. Polling an
 existing video job checks only expiry.
+
+A model allowed by a bare id is listed under that id only, never under the
+provider ids behind it. For Codex this matters: with `model_catalog_url` set
+(as the dashboard's Codex setup writes it), Codex matches its configured
+`model` against the catalog exactly. With a key allowed `gpt-5.5`, set Codex's
+`model = "gpt-5.5"`, not `cx/gpt-5.5`, or Codex finds no entry for it and runs
+it without its `apply_patch` tool.
 
 ## Error bodies
 
