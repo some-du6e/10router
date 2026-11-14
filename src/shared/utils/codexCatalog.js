@@ -43,8 +43,10 @@ export function catalogUrlNote(catalogUrl) {
 
 /**
  * The model_catalog_url lines for the Codex card's manual config: always
- * commented out, so a config pasted as is behaves as without the catalog. The
- * card can't tell which Codex will read it or which key it will log in with.
+ * commented out, so with an API-key login a config pasted as is behaves as
+ * without the catalog (signed in with ChatGPT, Codex reads <base_url>/models
+ * either way). The card can't tell which Codex will read it or which key it
+ * will log in with.
  * @param {string} baseUrl the Codex base URL (…/backend-api/codex)
  * @returns {string} lines ending in "\n"
  */

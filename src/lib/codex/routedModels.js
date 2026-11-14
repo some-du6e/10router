@@ -18,7 +18,11 @@
 // doesn't advance while the machine sleeps, which only makes a list look
 // younger by the time asleep, when little can have changed.
 import { buildModelsList } from "@/app/api/v1/models/route.js";
-import { connectionsVersion } from "@/lib/db/index.js";
+import { connectionsVersion, combosVersion } from "@/lib/db/index.js";
+
+// Writes that change the routed list: connections, aliases, custom and
+// disabled models, restores (connectionsVersion), and combos (combosVersion).
+const writesVersion = () => `${connectionsVersion()}:${combosVersion()}`;
 
 export const ROUTED_MODELS_TIMING = {
   FRESH_MS: 60_000,
@@ -32,7 +36,7 @@ const now = () => performance.now();
 
 // `written` is the sequence number of the build the held list came from, so a
 // slow build that was abandoned can't replace a newer one when it lands late.
-// `connections` is the connectionsVersion() the held list was built at.
+// `connections` is the writesVersion() the held list was built at.
 // On globalThis: instrumentation (warmRoutedModels) and the route handlers
 // are separate bundles and must share one list, as autoCombo's does.
 const state = (globalThis._codexRoutedModels ??= {
@@ -44,7 +48,7 @@ function refresh() {
   const generation = state.generation;
   const seq = ++state.started;
   // Read before the build, so a change made while it runs triggers another.
-  const version = connectionsVersion();
+  const version = writesVersion();
   let deadline;
   const build = buildModelsList(["llm"]).then((models) => {
     if (generation !== state.generation || seq < state.written) return;
@@ -87,10 +91,10 @@ async function waitFor(promise, ms) {
  * @returns {Promise<object[]>}
  */
 export async function getRoutedModels() {
-  // A write that bumps connectionsVersion since the list was built (a
-  // connection, combo, alias, custom model, disabled model or restore)
+  // A write since the list was built (writesVersion: a connection, combo,
+  // alias, custom model, disabled model or restore)
   // makes it as old as a list past SERVE_STALE_MS: rebuilt, with the grace.
-  const connectionsChanged = state.models && state.connections !== connectionsVersion();
+  const connectionsChanged = state.models && state.connections !== writesVersion();
   const age = !state.models ? Infinity : connectionsChanged ? ROUTED_MODELS_TIMING.SERVE_STALE_MS : now() - state.builtAt;
   if (age < ROUTED_MODELS_TIMING.FRESH_MS) return state.models;
   refresh();
@@ -117,7 +121,7 @@ export async function getRoutedModels() {
 /**
  * The list once the build that reflects the latest writes is done: waits up
  * to `maxWaitMs` for a running build, or for one started now when the held
- * list predates a write (connectionsVersion). For the Codex settings route,
+ * list predates a write (writesVersion). For the Codex settings route,
  * which may run right after a provider was added.
  * @param {number} maxWaitMs
  * @returns {Promise<object[]>}
@@ -127,7 +131,7 @@ export async function getFreshRoutedModels(maxWaitMs) {
   // Twice at most: a build already running when the write landed is followed
   // by one that sees it.
   for (let pass = 0; pass < 2; pass++) {
-    const behind = !state.models || state.connections !== connectionsVersion();
+    const behind = !state.models || state.connections !== writesVersion();
     if (!behind && !state.inflight) break;
     refresh();
     const left = deadline - now();
@@ -139,7 +143,7 @@ export async function getFreshRoutedModels(maxWaitMs) {
 
 /** Does the held list predate a write (or is there none yet)? */
 export function routedModelsBehind() {
-  return !state.models || state.connections !== connectionsVersion();
+  return !state.models || state.connections !== writesVersion();
 }
 
 /** Start building the list at server boot, so Codex's first request finds one. */

@@ -45,10 +45,12 @@ export async function decideCatalogUrl({ apiKey, ids, codexVersion, listIds = li
   const pending = lookup();
   if (!codexReadsCatalogUrl(await codexVersion)) return { write: false, reason: "codex-version" };
   let result = await pending;
-  // Missing an id while the list predates a write (a provider or combo added
-  // just before Apply): wait for the build that includes it. A list that's
-  // merely old isn't waited on; an alias or a bare name would still miss.
-  if (!result.error && !wanted.every((id) => result.set.has(id)) && listBehind()) result = await lookup({ fresh: true });
+  // Missing an id: look again, since a rebuild may have landed while the
+  // version check ran. While the held list predates a write (a provider or
+  // combo added just before Apply), wait for the build that includes it;
+  // otherwise this returns the held list at once. A list that's merely old
+  // isn't waited on; an alias or a bare name would still miss.
+  if (!result.error && !wanted.every((id) => result.set.has(id))) result = await lookup({ fresh: listBehind() });
   if (result.error) return { write: false, reason: "lookup-failed" };
   if (wanted.length === 0 || !wanted.every((id) => result.set.has(id))) return { write: false, reason: "not-listed" };
   return { write: true, reason: "listed" };

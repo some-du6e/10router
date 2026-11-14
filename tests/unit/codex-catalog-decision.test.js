@@ -1,15 +1,27 @@
 // The settings route's model_catalog_url decision on its real path: the
 // routed list (stubbed build), the key's allowlist through keyLimits, and the
 // wait for a list that reflects a provider just added.
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
+
+// Combos come from the real database: keep it in a temp dir.
+const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-catalog-decision-"));
+const originalDataDir = process.env.DATA_DIR;
+process.env.DATA_DIR = tempDir;
+delete global._dbAdapter;
 
 const routed = vi.hoisted(() => ({ models: [], calls: 0, policy: null, delayMs: 0 }));
 vi.mock("@/app/api/v1/models/route.js", () => ({
   buildModelsList: async () => {
     routed.calls += 1;
     const models = routed.models;
+    // Combos are listed under their names, as buildModelsList lists them.
+    const { getCombos } = await import("@/lib/db/index.js");
+    const combos = (await getCombos()).map((combo) => ({ id: combo.name, owned_by: "combo" }));
     if (routed.delayMs) await new Promise((resolve) => setTimeout(resolve, routed.delayMs));
-    return models;
+    return [...combos, ...models];
   },
 }));
 vi.mock("@/lib/db/index.js", async (importOriginal) => ({
@@ -20,6 +32,14 @@ vi.mock("@/lib/db/index.js", async (importOriginal) => ({
 const { decideCatalogUrl } = await import("@/lib/codex/catalogUrlDecision.js");
 const { resetRoutedModels, warmRoutedModels } = await import("@/lib/codex/routedModels.js");
 const { bumpConnectionsVersion } = await import("@/lib/db/repos/connectionsRepo.js");
+const db = await import("@/lib/db/index.js");
+await (await import("@/lib/db/driver.js")).getAdapter();
+
+afterAll(() => {
+  if (originalDataDir === undefined) delete process.env.DATA_DIR;
+  else process.env.DATA_DIR = originalDataDir;
+  fs.rmSync(tempDir, { recursive: true, force: true });
+});
 
 const NEW = [0, 167, 2];
 const list = (...ids) => ids.map((id) => ({ id, owned_by: id.split("/")[0] }));
@@ -96,7 +116,32 @@ describe("what the decision waits for", () => {
     const listIds = vi.fn(async () => new Set(["cx/gpt-5.5"]));
     const decision = await decideCatalogUrl({ apiKey: null, ids: ["gpt-5.5"], codexVersion: NEW, listIds, listBehind: () => false });
     expect(decision).toEqual({ write: false, reason: "not-listed" });
-    expect(listIds).toHaveBeenCalledTimes(1);
+    // Looked at again (the held list, at once), never waited on.
+    expect(listIds.mock.calls.map((call) => Boolean(call[1]?.fresh))).toEqual([false, false]);
+  });
+
+  it("looks again after a slow version check, when a rebuild landed meanwhile", async () => {
+    let rebuilt = false;
+    const listIds = vi.fn(async () => new Set(rebuilt ? ["cx/gpt-5.5", "newp/model-x"] : ["cx/gpt-5.5"]));
+    // `codex --version` is slow (a Windows npm shim, say); the rebuild lands
+    // during it, so by the check the held list no longer predates the write.
+    const codexVersion = new Promise((resolve) => setTimeout(() => { rebuilt = true; resolve(NEW); }, 50));
+    const decision = await decideCatalogUrl({ apiKey: null, ids: ["newp/model-x"], codexVersion, listIds, listBehind: () => false });
+    expect(decision).toEqual({ write: true, reason: "listed" });
+  });
+
+  it("lists a combo created just before Apply", async () => {
+    routed.models = list("cx/gpt-5.5");
+    const { getRoutedModels } = await import("@/lib/codex/routedModels.js");
+    // The held list is built (without the combo) before the combo exists.
+    expect((await getRoutedModels()).map((m) => m.id)).toEqual(["cx/gpt-5.5"]);
+    await db.createCombo({ name: "fresh-team", models: ["cx/gpt-5.5"] });
+    try {
+      expect(await decideCatalogUrl({ apiKey: null, ids: ["fresh-team"], codexVersion: NEW }))
+        .toEqual({ write: true, reason: "listed" });
+    } finally {
+      await db.deleteCombo((await db.getComboByName("fresh-team")).id);
+    }
   });
 
   it("asks for a fresh list when the held one predates a write", async () => {

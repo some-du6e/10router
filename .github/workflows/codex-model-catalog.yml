@@ -10,6 +10,7 @@ on:
       - "scripts/vendor-codex-catalog.mjs"
       - "src/lib/codex/**"
       - "src/sse/services/keyLimits.js"
+      - "src/lib/db/repos/combosRepo.js"
       - "src/shared/constants/models.js"
       - "open-sse/providers/capabilities.js"
       - "open-sse/providers/catalogOverride.js"
