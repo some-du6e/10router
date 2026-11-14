@@ -27,6 +27,21 @@ export function codexReadsCatalogUrl(version) {
 }
 
 /**
+ * One line for the Codex card after Apply: whether model_catalog_url was
+ * written, and why not. `catalogUrl` is the settings route's { written, reason }.
+ */
+export function catalogUrlNote(catalogUrl) {
+  if (!catalogUrl || catalogUrl.reason === "not-native") return "";
+  if (catalogUrl.written) return "Codex will read 10router's model list (model_catalog_url).";
+  const why = {
+    "codex-version": "the installed Codex is older than 0.166 or its version couldn't be read",
+    "not-listed": "this key's model list doesn't have both models under these exact ids",
+    "lookup-failed": "this key's model list couldn't be read",
+  }[catalogUrl.reason] || "it couldn't be checked";
+  return `model_catalog_url left out: ${why}. Codex keeps its own model list.`;
+}
+
+/**
  * The model_catalog_url lines for the Codex card's manual config: always
  * commented out, so a config pasted as is behaves as without the catalog. The
  * card can't tell which Codex will read it or which key it will log in with.
@@ -35,8 +50,9 @@ export function codexReadsCatalogUrl(version) {
  */
 export function manualCatalogLines(baseUrl) {
   return [
-    "# Uncomment on Codex 0.166 or newer when the key Codex logs in with lists your model",
-    "# under the exact id set above (no bare-name allowlist entry for it):",
+    "# Uncomment on Codex 0.166 or newer when the key Codex logs in with lists both `model`",
+    "# and `default_subagent_model` under these exact ids (no bare-name allowlist entry for",
+    "# them; an alias or a model 10router doesn't list won't match):",
     `# model_catalog_url = "${baseUrl}/models"`,
   ].join("\n") + "\n";
 }

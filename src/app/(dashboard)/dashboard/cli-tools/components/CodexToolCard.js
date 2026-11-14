@@ -8,7 +8,7 @@ import ApiKeySelect from "./ApiKeySelect";
 import { matchKnownEndpoint } from "./cliEndpointMatch";
 import { AI_MODELS, PROVIDER_ID_TO_ALIAS } from "@/shared/constants/models";
 import { rememberEndpoint } from "./cliEndpointPresets";
-import { manualCatalogLines } from "@/shared/utils/codexCatalog";
+import { manualCatalogLines, catalogUrlNote } from "@/shared/utils/codexCatalog";
 
 // The models Codex may ask for on its own. Read from the provider registry
 // rather than written out here, so a change to the Codex line-up updates this
@@ -219,7 +219,7 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
       if (res.ok) {
         // Remember the endpoint so it stays selectable next time
         rememberEndpoint(getEffectiveBaseUrl(), { tunnelPublicUrl, tailscaleUrl });
-        setMessage({ type: "success", text: "Settings applied successfully!" });
+        setMessage({ type: "success", text: ["Settings applied successfully!", catalogUrlNote(data.catalogUrl)].filter(Boolean).join(" ") });
         checkCodexStatus();
       } else {
         setMessage({ type: "error", text: data.error || "Failed to apply settings" });

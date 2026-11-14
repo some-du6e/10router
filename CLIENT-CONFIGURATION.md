@@ -65,8 +65,10 @@ What the line does depends on the Codex version:
 - **Before 0.156:** there's no such setting.
 
 The dashboard's Codex setup writes the line only when the installed `codex` is 0.166 or newer and
-the router's model list, seen through the key you apply with, has your models under the ids
-being written. That check is only right when Codex logs in with that same router key: Codex
+the router's model list, seen through the key you apply with, has both `model` and
+`default_subagent_model` under the exact ids being written. A model set to an alias, or to an
+id 10router doesn't list, gets no line (the list has what an alias points to, not the alias).
+The card says after Apply whether it wrote the line, and if not, why. That check is only right when Codex logs in with that same router key: Codex
 sends its own login, not the config's `Authorization` header. A Codex IDE extension or desktop
 app reading the same `~/.codex/config.toml` may run its own bundled Codex version; check that
 one too. The manual config on the Codex card has the line commented out; uncomment it only when

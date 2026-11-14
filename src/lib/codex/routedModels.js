@@ -114,6 +114,29 @@ export async function getRoutedModels() {
   return fallback;
 }
 
+/**
+ * The list once the build that reflects the latest writes is done: waits up
+ * to `maxWaitMs` for a running build, or for one started now when the held
+ * list predates a write (connectionsVersion). For the Codex settings route,
+ * which may run right after a provider was added.
+ * @param {number} maxWaitMs
+ * @returns {Promise<object[]>}
+ */
+export async function getFreshRoutedModels(maxWaitMs) {
+  const deadline = now() + maxWaitMs;
+  // Twice at most: a build already running when the write landed is followed
+  // by one that sees it.
+  for (let pass = 0; pass < 2; pass++) {
+    const behind = !state.models || state.connections !== connectionsVersion();
+    if (!behind && !state.inflight) break;
+    refresh();
+    const left = deadline - now();
+    if (left <= 0) break;
+    await waitFor(state.inflight, left);
+  }
+  return state.models ?? getRoutedModels();
+}
+
 /** Start building the list at server boot, so Codex's first request finds one. */
 export function warmRoutedModels() {
   if (!state.models) refresh().catch(() => {});

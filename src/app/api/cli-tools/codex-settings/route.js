@@ -8,7 +8,7 @@ import path from "path";
 import os from "os";
 import { parseTOML, stringifyTOML } from "confbox";
 import { parseCodexVersion } from "@/shared/utils/codexCatalog.js";
-import { wantsCatalogUrl } from "@/lib/codex/catalogUrlDecision.js";
+import { decideCatalogUrl } from "@/lib/codex/catalogUrlDecision.js";
 
 const execAsync = promisify(exec);
 
@@ -193,7 +193,10 @@ export async function POST(request) {
     // The Codex-native endpoint is the default; pass native:false for plain /v1.
     const useNative = native !== false;
     const normalizedBaseUrl = resolveCodexBaseUrl(baseUrl, useNative);
-    setNestedSection(parsed, "model_providers.10router", buildProviderSection(normalizedBaseUrl, useNative, useNative && await wantsCatalogUrl({ apiKey, ids: [model, subagentModel || model], codexVersion: await installedCodexVersion() })));
+    const catalog = useNative
+      ? await decideCatalogUrl({ apiKey, ids: [model, subagentModel || model], codexVersion: installedCodexVersion() })
+      : { write: false, reason: "not-native" };
+    setNestedSection(parsed, "model_providers.10router", buildProviderSection(normalizedBaseUrl, useNative, catalog.write));
 
     // Subagent model is a scalar under [agents]; agents.<role> now means a custom role
     deleteNestedSection(parsed, "agents.subagent");
@@ -209,6 +212,10 @@ export async function POST(request) {
       configPath,
       baseUrl: normalizedBaseUrl,
       native: useNative,
+      // Whether model_catalog_url was written, and why not: "codex-version"
+      // (older or unknown Codex), "not-listed" (the key's list doesn't have the
+      // models under these ids), "lookup-failed", "not-native".
+      catalogUrl: { written: catalog.write, reason: catalog.reason },
     });
   } catch (error) {
     console.log("Error updating codex settings:", error);

@@ -114,6 +114,16 @@ describe("Codex CLI settings", () => {
     expect(provider().model_catalog_url).toBe("https://router.example/backend-api/codex/models");
   });
 
+  it("says in its answer whether it wrote the catalog URL, and why not", async () => {
+    const answer = async (body) => (await apply({ baseUrl: "http://127.0.0.1:20128", ...body })).json();
+    expect((await answer({})).catalogUrl).toEqual({ written: true, reason: "listed" });
+    codex.version = "codex-cli 0.165.0";
+    expect((await answer({})).catalogUrl).toEqual({ written: false, reason: "codex-version" });
+    codex.version = "codex-cli 0.167.2";
+    expect((await answer({ model: "acme/not-a-model" })).catalogUrl).toEqual({ written: false, reason: "not-listed" });
+    expect((await answer({ native: false })).catalogUrl).toEqual({ written: false, reason: "not-native" });
+  });
+
   it("drops the catalog URL when switching to the OpenAI-compatible endpoint", async () => {
     await apply({ baseUrl: "http://127.0.0.1:20128" });
     await apply({ baseUrl: "http://127.0.0.1:20128", native: false });

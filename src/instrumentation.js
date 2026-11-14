@@ -13,12 +13,15 @@ export async function register() {
 
     // Bare model ids route across providers from this list; build it before
     // the first request asks.
-    import("@/sse/services/autoCombo.js")
+    const autoComboWarm = import("@/sse/services/autoCombo.js")
       .then(({ warmAutoComboCatalog }) => warmAutoComboCatalog())
       .catch(() => {});
 
     // Codex's catalog request gets 5 seconds in all; have its model list ready.
-    import("@/lib/codex/routedModels.js")
+    // After the auto-combo build, so providers aren't asked for their models
+    // twice at once.
+    autoComboWarm
+      .then(() => import("@/lib/codex/routedModels.js"))
       .then(({ warmRoutedModels }) => warmRoutedModels())
       .catch(() => {});
   }

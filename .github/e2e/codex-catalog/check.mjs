@@ -177,6 +177,10 @@ if (!supportsCatalogUrl) {
   const headBytes = readFileSync(catalogFile("head")).length;
   const after = await fetchWith(catalogFile("head"), "head");
   if (expectUrl) {
+    if (sides.includes("base")) {
+      // This branch's config against master's catalog: what the line alone would do.
+      console.log(`head config + base catalog: Codex ${describeRun(await fetchWith(catalogFile("base"), "head")).text}`);
+    }
     if (after.asked.length === 0) fail("model_catalog_url: Codex never asked for the catalog");
     else pass(`model_catalog_url: Codex asked ${after.asked[0]}`);
     checkDecoded("model_catalog_url", after.run.models);

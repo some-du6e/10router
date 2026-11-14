@@ -1,6 +1,6 @@
 // When the Codex config the dashboard shows or writes gets model_catalog_url.
 import { describe, it, expect } from "vitest";
-import { parseCodexVersion, codexReadsCatalogUrl, manualCatalogLines } from "@/shared/utils/codexCatalog.js";
+import { parseCodexVersion, codexReadsCatalogUrl, manualCatalogLines, catalogUrlNote } from "@/shared/utils/codexCatalog.js";
 
 const BASE = "http://127.0.0.1:20128/backend-api/codex";
 
@@ -35,6 +35,20 @@ describe("the manual config's catalog lines", () => {
     expect(lines.split("\n").filter((l) => l && !l.startsWith("#"))).toEqual([]);
     expect(lines).toContain(`# model_catalog_url = "${BASE}/models"`);
     expect(lines).toContain("0.166");
+    expect(lines).toContain("`model`");
+    expect(lines).toContain("`default_subagent_model`");
+    expect(lines).toContain("alias");
     expect(lines.endsWith("\n")).toBe(true);
+  });
+});
+
+describe("the note after Apply", () => {
+  it("says whether the catalog URL was written, and why not", () => {
+    expect(catalogUrlNote({ written: true, reason: "listed" })).toContain("model_catalog_url");
+    expect(catalogUrlNote({ written: false, reason: "codex-version" })).toContain("0.166");
+    expect(catalogUrlNote({ written: false, reason: "not-listed" })).toContain("exact ids");
+    expect(catalogUrlNote({ written: false, reason: "lookup-failed" })).toContain("couldn't be read");
+    expect(catalogUrlNote({ written: false, reason: "not-native" })).toBe("");
+    expect(catalogUrlNote(undefined)).toBe("");
   });
 });

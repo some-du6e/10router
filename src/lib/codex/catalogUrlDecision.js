@@ -9,13 +9,21 @@
 // listed at all (only what it points to is). Anything uncertain answers no,
 // and Codex keeps its own list, as before the catalog.
 import { filterModelsForRequest } from "@/sse/services/keyLimits.js";
-import { getRoutedModels } from "@/lib/codex/routedModels.js";
+import { getRoutedModels, getFreshRoutedModels } from "@/lib/codex/routedModels.js";
 import { codexReadsCatalogUrl } from "@/shared/utils/codexCatalog.js";
 
-/** The ids the catalog lists for this key. */
-async function listedIds(apiKey) {
+// How long Apply waits for a model list that reflects a provider just added.
+export const FRESH_LIST_WAIT_MS = 10_000;
+
+/**
+ * The ids the catalog lists for this key.
+ * @param {string|null} apiKey
+ * @param {{ fresh?: boolean }} [options] fresh: wait for a build that reflects recent writes
+ */
+export async function listedIds(apiKey, { fresh = false } = {}) {
   const request = { headers: new Headers(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) };
-  const models = await filterModelsForRequest(request, await getRoutedModels());
+  const routed = fresh ? await getFreshRoutedModels(FRESH_LIST_WAIT_MS) : await getRoutedModels();
+  const models = await filterModelsForRequest(request, routed);
   return new Set(models.map((model) => model.id));
 }
 
@@ -23,16 +31,26 @@ async function listedIds(apiKey) {
  * @param {object} options
  * @param {string|null} options.apiKey the router key the config is applied with
  * @param {string[]} options.ids the model and subagent model it sets
- * @param {number[]|null} options.codexVersion the installed Codex's version
- * @param {(apiKey: string|null) => Promise<Set<string>>} [options.listIds] for tests
- * @returns {Promise<boolean>}
+ * @param {number[]|null|Promise<number[]|null>} options.codexVersion the installed Codex's version
+ * @param {typeof listedIds} [options.listIds] for tests
+ * @returns {Promise<{ write: boolean, reason: "listed"|"codex-version"|"not-listed"|"lookup-failed" }>}
  */
-export async function wantsCatalogUrl({ apiKey, ids, codexVersion, listIds = listedIds }) {
-  if (!codexReadsCatalogUrl(codexVersion)) return false;
-  try {
-    const listed = await listIds(apiKey || null);
-    return ids.filter(Boolean).length > 0 && ids.filter(Boolean).every((id) => listed.has(id));
-  } catch {
-    return false;
-  }
+export async function decideCatalogUrl({ apiKey, ids, codexVersion, listIds = listedIds }) {
+  const wanted = ids.filter(Boolean);
+  const key = apiKey || null;
+  const lookup = (options) => listIds(key, options).then((set) => ({ set }), (error) => ({ error }));
+  // The version check and the list lookup don't depend on each other.
+  const [version, first] = await Promise.all([codexVersion, lookup()]);
+  if (!codexReadsCatalogUrl(version)) return { write: false, reason: "codex-version" };
+  let result = first;
+  // Missing an id right after a provider was added: the list may predate it.
+  if (!result.error && !wanted.every((id) => result.set.has(id))) result = await lookup({ fresh: true });
+  if (result.error) return { write: false, reason: "lookup-failed" };
+  if (wanted.length === 0 || !wanted.every((id) => result.set.has(id))) return { write: false, reason: "not-listed" };
+  return { write: true, reason: "listed" };
+}
+
+/** Just the yes or no of decideCatalogUrl. */
+export async function wantsCatalogUrl(options) {
+  return (await decideCatalogUrl(options)).write;
 }

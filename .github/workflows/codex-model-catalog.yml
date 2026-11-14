@@ -22,6 +22,9 @@ on:
       - "tests/unit/models-compatible-stall.test.js"
       - "tests/unit/codex-settings-route.test.js"
       - "tests/unit/codex-catalog-line.test.js"
+      - "tests/unit/codex-catalog-decision.test.js"
+      - "tests/unit/instrumentation-warmup.test.js"
+      - "src/instrumentation.js"
       - "src/shared/utils/codexCatalog.js"
       - ".github/e2e/codex-catalog/**"
       - ".github/workflows/codex-model-catalog.yml"
@@ -53,6 +56,8 @@ jobs:
           unit/models-compatible-stall.test.js
           unit/codex-settings-route.test.js
           unit/codex-catalog-line.test.js
+          unit/codex-catalog-decision.test.js
+          unit/instrumentation-warmup.test.js
           unit/api-key-budgets.test.js
       - name: Lint
         run: >
@@ -72,6 +77,8 @@ jobs:
           src/sse/services/keyLimits.js
           tests/unit/codex-settings-route.test.js
           tests/unit/codex-catalog-line.test.js
+          tests/unit/codex-catalog-decision.test.js
+          tests/unit/instrumentation-warmup.test.js
           src/shared/utils/codexCatalog.js
           .github/e2e/codex-catalog/check.mjs
           .github/e2e/codex-catalog/dump-catalog.test.js
