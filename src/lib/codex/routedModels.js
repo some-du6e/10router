@@ -12,9 +12,11 @@
 //   serving the old list. Codex asks about every 5 minutes, so this is the
 //   usual case, and the wait is kept short to leave Codex time for the body.
 // - None yet (cold start): the request waits up to WAIT_MS, then gets the
-//   static lists (no live catalogs).
+//   static lists (no live catalogs), which are then held as a stale list.
 // A rebuild that hangs is abandoned after BUILD_DEADLINE_MS. Ages use a
-// monotonic clock, so a wall-clock step can't freeze or expire the list.
+// monotonic clock, so a wall-clock step can't freeze or expire the list; it
+// doesn't advance while the machine sleeps, which only makes a list look
+// younger by the time asleep, when little can have changed.
 import { buildModelsList } from "@/app/api/v1/models/route.js";
 
 export const ROUTED_MODELS_TIMING = {
@@ -49,15 +51,15 @@ function refresh() {
     );
     deadline.unref?.();
   });
-  // A late result still lands through `build` above.
-  build.catch(() => {});
+  // After the deadline the build is no longer waited on, but a late result
+  // still lands through its `.then` above.
   state.inflight = Promise.race([build, timedOut])
     .catch((error) => {
       console.log(`[codex catalog] model list refresh failed: ${error?.message || error}`);
     })
     .finally(() => {
       clearTimeout(deadline);
-      if (generation === state.generation && state.started === seq) state.inflight = null;
+      if (generation === state.generation) state.inflight = null;
     });
   return state.inflight;
 }
@@ -87,7 +89,16 @@ export async function getRoutedModels() {
   }
   await waitFor(state.inflight, ROUTED_MODELS_TIMING.WAIT_MS);
   if (state.models) return state.models;
-  return buildModelsList(["llm"], { skipDynamicFetch: true, skipLiveCatalogs: true });
+  const generation = state.generation;
+  const fallback = await buildModelsList(["llm"], { skipDynamicFetch: true, skipLiveCatalogs: true });
+  // Held as an already-stale list, so the next request gets it after the
+  // short grace (not the full wait again) while the real build runs, and any
+  // real build replaces it.
+  if (!state.models && generation === state.generation) {
+    state.models = fallback;
+    state.builtAt = now() - ROUTED_MODELS_TIMING.SERVE_STALE_MS;
+  }
+  return fallback;
 }
 
 export function resetRoutedModels() {

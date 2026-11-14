@@ -19,6 +19,7 @@ on:
       - "tests/vitest.config.js"
       - "tests/unit/codex-model-catalog.test.js"
       - "tests/unit/codex-model-catalog-route.test.js"
+      - "tests/unit/models-compatible-stall.test.js"
       - "tests/unit/codex-settings-route.test.js"
       - ".github/e2e/codex-catalog/**"
       - ".github/workflows/codex-model-catalog.yml"
@@ -47,6 +48,7 @@ jobs:
           ./node_modules/.bin/vitest run
           unit/codex-model-catalog.test.js
           unit/codex-model-catalog-route.test.js
+          unit/models-compatible-stall.test.js
           unit/codex-settings-route.test.js
           unit/api-key-budgets.test.js
       - name: Lint
@@ -61,6 +63,8 @@ jobs:
           src/app/api/cli-tools/codex-settings/route.js
           tests/unit/codex-model-catalog.test.js
           tests/unit/codex-model-catalog-route.test.js
+          tests/unit/models-compatible-stall.test.js
+          src/sse/services/keyLimits.js
           tests/unit/codex-settings-route.test.js
           .github/e2e/codex-catalog/check.mjs
           .github/e2e/codex-catalog/dump-catalog.test.js

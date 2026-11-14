@@ -28,9 +28,22 @@ process.env.USERPROFILE = home;
 const routeHome = (await import("os")).homedir();
 if (routeHome !== home) throw new Error(`codex-settings test: os.homedir() is ${routeHome}, not the temp dir; refusing to write a Codex config`);
 
+// The route looks the API key's allowlist up in the router's database.
+const originalDataDir = process.env.DATA_DIR;
+process.env.DATA_DIR = path.join(home, "data");
+delete global._dbAdapter;
+const db = await import("@/lib/db/index.js");
+await (await import("@/lib/db/driver.js")).getAdapter();
+
 const { POST } = await import("@/app/api/cli-tools/codex-settings/route.js");
 
 const configPath = path.join(home, ".codex", "config.toml");
+const config = () => parseTOML(fs.readFileSync(configPath, "utf8"));
+const keyWith = async (name, allowedModels) => {
+  const created = await db.createApiKey(name, "machine-test-0001");
+  if (allowedModels) await db.updateApiKey(created.id, { allowedModels });
+  return (await db.getApiKeyById(created.id)).key;
+};
 const apply = (body) => POST(new Request("http://localhost/api/cli-tools/codex-settings", {
   method: "POST",
   body: JSON.stringify({ apiKey: "sk-test", model: "acme/claude-opus-5-5", ...body }),
@@ -38,6 +51,8 @@ const apply = (body) => POST(new Request("http://localhost/api/cli-tools/codex-s
 const provider = () => parseTOML(fs.readFileSync(configPath, "utf8")).model_providers["10router"];
 
 afterAll(() => {
+  if (originalDataDir === undefined) delete process.env.DATA_DIR;
+  else process.env.DATA_DIR = originalDataDir;
   for (const [name, value] of Object.entries(originalEnv)) {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
@@ -76,5 +91,42 @@ describe("Codex CLI settings", () => {
     await apply({ baseUrl: "http://127.0.0.1:20128" });
     await apply({ baseUrl: "http://127.0.0.1:20128", native: false });
     expect(provider()).toEqual({ name: "10router", base_url: "http://127.0.0.1:20128/v1", wire_api: "responses" });
+  });
+});
+
+describe("the model Codex is set to", () => {
+  const setup = (apiKey, model, subagentModel) => apply({ baseUrl: "http://127.0.0.1:20128", apiKey, model, subagentModel });
+
+  it("is the bare name a key's allowlist lists, since Codex matches the catalog exactly", async () => {
+    const key = await keyWith("bare-allowlist", ["gpt-5.5", "claude-opus-5-5"]);
+    await setup(key, "cx/gpt-5.5", "cc/claude-opus-5-5");
+    expect(config().model).toBe("gpt-5.5");
+    expect(config().agents.default_subagent_model).toBe("claude-opus-5-5");
+  });
+
+  it("stays prefixed for a key allowed the prefixed id, with no allowlist, or with no key on file", async () => {
+    const prefixed = await keyWith("prefixed-allowlist", ["cx/gpt-5.5"]);
+    await setup(prefixed, "cx/gpt-5.5");
+    expect(config().model).toBe("cx/gpt-5.5");
+
+    const open = await keyWith("no-allowlist");
+    await setup(open, "cx/gpt-5.5");
+    expect(config().model).toBe("cx/gpt-5.5");
+
+    await setup("sk_10router", "cx/gpt-5.5");
+    expect(config().model).toBe("cx/gpt-5.5");
+    expect(config().agents.default_subagent_model).toBe("cx/gpt-5.5");
+  });
+
+  it("stays as chosen when the key's allowlist doesn't cover it", async () => {
+    const key = await keyWith("other-allowlist", ["claude-opus-5-5"]);
+    await setup(key, "cx/gpt-5.5");
+    expect(config().model).toBe("cx/gpt-5.5");
+  });
+
+  it("never writes the key into config.toml", async () => {
+    const key = await keyWith("secret-check", ["gpt-5.5"]);
+    await setup(key, "cx/gpt-5.5");
+    expect(fs.readFileSync(configPath, "utf8")).not.toContain(key);
   });
 });

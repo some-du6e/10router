@@ -49,14 +49,15 @@ const FULL_BASE_INSTRUCTIONS_BEFORE = [0, 148, 0];
 
 // Models older Codex releases bundle and the vendored one doesn't, each from
 // the newest release that still bundled it (scripts/vendor-codex-catalog.mjs).
-// Only clients up to that release get one: they know the model and its
-// template, and once this catalog decodes they have lost their own copy.
-// Later clients never bundled it, and render a `{{ personality }}`
-// placeholder some of these templates carry as literal text.
-export const CODEX_LEGACY_MODELS = legacy.models.map((model) => {
-  const [major, minor] = /^rust-v(\d+)\.(\d+)\./.exec(legacy.sources[model.slug]).slice(1).map(Number);
-  return { model, servedBefore: [major, minor + 1, 0] };
-});
+// Only clients that bundled it get one (up to legacy.servedBefore, which
+// counts the next release's alphas): they know the model and its template,
+// and once this catalog decodes they have lost their own copy. Later clients
+// never bundled it, and render a `{{ personality }}` placeholder some of
+// these templates carry as literal text.
+export const CODEX_LEGACY_MODELS = legacy.models.map((model) => ({
+  model,
+  servedBefore: legacy.servedBefore[model.slug].split(".").map(Number),
+}));
 
 const withBase = (model) => ({ ...model, base_instructions: model.base_instructions ?? "" });
 const bundledSlugs = new Set(bundled.models.map((m) => m.slug));

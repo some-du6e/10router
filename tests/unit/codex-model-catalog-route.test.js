@@ -175,6 +175,37 @@ describe("the routed model list behind it", () => {
     expect(ids(await catalog())).toEqual(["acme/live"]);
   });
 
+  it("gives a cold-start build that takes longer than the grace the live list", async () => {
+    vi.useFakeTimers({ toFake: CLOCK });
+    expect(T.WAIT_MS).toBeGreaterThan(T.STALE_GRACE_MS + 1_000);
+    const builds = pendingBuilds();
+    const pending = catalog();
+    await advance(T.STALE_GRACE_MS + 1_000);
+    builds[0].finish(list("live"));
+    expect(ids(await pending)).toEqual(["acme/live"]);
+    expect(routed.calls.filter((o) => o.skipLiveCatalogs)).toHaveLength(0);
+  });
+
+  it("holds the static fallback, so the next request waits only the grace while the build hangs", async () => {
+    vi.useFakeTimers({ toFake: CLOCK });
+    const builds = pendingBuilds();
+    const first = catalog();
+    await advance(T.WAIT_MS);
+    expect(ids(await first)).toEqual(["acme/static"]);
+
+    let answered = false;
+    const second = catalog().then((body) => { answered = true; return body; });
+    await advance(T.STALE_GRACE_MS);
+    expect(answered).toBe(true);
+    expect(ids(await second)).toEqual(["acme/static"]);
+    // One live build so far (still running), and one static fallback.
+    expect(routed.calls.map((o) => Boolean(o.skipLiveCatalogs))).toEqual([false, true]);
+
+    builds[0].finish(list("live"));
+    await advance(0);
+    expect(ids(await catalog())).toEqual(["acme/live"]);
+  });
+
   it("gives up on a rebuild that hangs, so the next one can start", async () => {
     vi.useFakeTimers({ toFake: CLOCK });
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -187,6 +218,30 @@ describe("the routed model list behind it", () => {
     routed.build = null;
     routed.models = list("recovered");
     expect(ids(await catalog())).toEqual(["acme/recovered"]);
+    log.mockRestore();
+  });
+
+  it("lets an abandoned build that lands while a newer one still runs fill the list", async () => {
+    vi.useFakeTimers({ toFake: CLOCK });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const builds = pendingBuilds();
+    const first = catalog();
+    await advance(T.WAIT_MS);
+    await first;
+    await advance(T.BUILD_DEADLINE_MS);
+    const second = catalog();
+    await advance(T.STALE_GRACE_MS);
+    await second;
+    expect(builds).toHaveLength(2);
+    builds[0].finish(list("first"));
+    await advance(0);
+    expect(ids(await catalog())).toEqual(["acme/first"]);
+    builds[1].finish(list("second"));
+    await advance(0);
+    await advance(T.FRESH_MS);
+    // The newer build replaced it when it landed.
+    routed.build = () => new Promise(() => {});
+    expect(ids(await catalog())).toEqual(["acme/second"]);
     log.mockRestore();
   });
 

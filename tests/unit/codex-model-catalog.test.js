@@ -306,10 +306,14 @@ describe("Codex's own models", () => {
     const old = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"];
     expect(old.filter((s) => slugsFor("0.137.0").includes(s))).toEqual(old);
     expect(old.filter((s) => slugsFor("0.143.0").includes(s))).toEqual(old);
-    expect(old.filter((s) => slugsFor("0.144.0").includes(s))).toEqual(["gpt-5.4", "gpt-5.4-mini", "gpt-5.2"]);
+    // 0.144.0 alphas, which report 0.144.0, still bundle gpt-5.3-codex.
+    expect(old.filter((s) => slugsFor("0.144.0").includes(s))).toEqual(old);
+    expect(old.filter((s) => slugsFor("0.145.0").includes(s))).toEqual(["gpt-5.4", "gpt-5.4-mini", "gpt-5.2"]);
     expect(old.filter((s) => slugsFor("0.154.0").includes(s))).toEqual(["gpt-5.4", "gpt-5.4-mini", "gpt-5.2"]);
-    expect(old.filter((s) => slugsFor("0.157.1").includes(s))).toEqual(["gpt-5.4"]);
-    for (const version of ["0.158.0", "0.167.2", "0.0.0", null]) {
+    expect(old.filter((s) => slugsFor("0.155.0").includes(s))).toEqual(["gpt-5.4"]);
+    // So do 0.158.0 alphas with gpt-5.4.
+    expect(old.filter((s) => slugsFor("0.158.0").includes(s))).toEqual(["gpt-5.4"]);
+    for (const version of ["0.159.0", "0.167.2", "0.0.0", null]) {
       expect(old.filter((s) => slugsFor(version).includes(s)), String(version)).toEqual([]);
     }
   });
@@ -321,9 +325,10 @@ describe("Codex's own models", () => {
         expect(entry.base_instructions.length, `${version} ${entry.slug}`).toBeGreaterThan(1000);
       }
     }
-    // A template with one goes only to clients that bundled that same entry;
-    // none reaches a client newer than every legacy source.
-    for (const version of ["0.158.0", "0.167.2", null]) {
+    // A template with one goes only to clients that bundled that same entry
+    // (gpt-5.4-mini up to 0.154, gpt-5.3-codex up to the 0.144.0 alphas, both
+    // of which fill the placeholder in); none reaches a later client.
+    for (const version of ["0.155.0", "0.158.0", "0.167.2", null]) {
       for (const entry of codexModelsFor(version)) expect(entry.model_messages?.instructions_template ?? "", `${version} ${entry.slug}`).not.toContain("{{ personality }}");
     }
   });

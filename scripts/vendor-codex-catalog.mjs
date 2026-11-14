@@ -20,12 +20,21 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-// slug -> newest Codex tag whose bundled catalog still has it.
+// slug -> newest Codex release tag whose bundled catalog still has it.
 const LEGACY = {
   "gpt-5.4": "rust-v0.157.1",
   "gpt-5.4-mini": "rust-v0.154.0",
   "gpt-5.2": "rust-v0.154.0",
   "gpt-5.3-codex": "rust-v0.143.0",
+};
+// slug -> first client_version that never bundles it. Alphas report their
+// release's version: rust-v0.158.0-alpha.1 still bundles gpt-5.4, and
+// rust-v0.144.0-alpha.1 gpt-5.3-codex; no 0.155.0 alpha has gpt-5.4-mini or gpt-5.2.
+const SERVED_BEFORE = {
+  "gpt-5.4": "0.159.0",
+  "gpt-5.4-mini": "0.155.0",
+  "gpt-5.2": "0.155.0",
+  "gpt-5.3-codex": "0.145.0",
 };
 
 const tag = process.argv[2];
@@ -67,6 +76,7 @@ for (const [slug, ref] of Object.entries(LEGACY)) {
 }
 const legacy = JSON.stringify({
   sources: LEGACY,
+  servedBefore: SERVED_BEFORE,
   models: Object.keys(LEGACY).map((slug) => legacyBySlug.get(slug)),
 }, null, 2) + "\n";
 

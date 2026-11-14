@@ -5,6 +5,12 @@
     "gpt-5.2": "rust-v0.154.0",
     "gpt-5.3-codex": "rust-v0.143.0"
   },
+  "servedBefore": {
+    "gpt-5.4": "0.159.0",
+    "gpt-5.4-mini": "0.155.0",
+    "gpt-5.2": "0.155.0",
+    "gpt-5.3-codex": "0.145.0"
+  },
   "models": [
     {
       "slug": "gpt-5.4",

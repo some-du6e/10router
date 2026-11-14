@@ -72,8 +72,13 @@ function checkDecoded(label, models) {
   // Every entry served, hidden ones included (Codex's bare and older models).
   const missing = head.filter((m) => !bySlug.has(m.slug));
   if (missing.length) return fail(`${label}: ${missing.length} served models missing, e.g. ${missing[0].slug}`);
-  const older = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"].filter((s) => bySlug.has(s));
-  if (older.length) pass(`${label}: older Codex models ${older.join(", ")} decoded`);
+  // The models this Codex bundles and 0.167.2 doesn't (legacy-models.json servedBefore).
+  const expectedOlder = [
+    ["gpt-5.4", 159], ["gpt-5.4-mini", 155], ["gpt-5.3-codex", 145], ["gpt-5.2", 155],
+  ].filter(([, before]) => minor < before).map(([slug]) => slug);
+  const missingOlder = expectedOlder.filter((s) => !bySlug.has(s));
+  if (missingOlder.length) fail(`${label}: older Codex models not served: ${missingOlder.join(", ")}`);
+  else if (expectedOlder.length) pass(`${label}: older Codex models ${expectedOlder.join(", ")} decoded`);
   const g = bySlug.get(generic.slug);
   const instructions = g.model_messages?.instructions_template ?? g.base_instructions ?? "";
   if (g.apply_patch_tool_type !== "freeform") fail(`${label}: ${g.slug} apply_patch_tool_type = ${g.apply_patch_tool_type}`);
