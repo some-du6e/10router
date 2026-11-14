@@ -52,13 +52,18 @@ requires_openai_auth = true
 `model_catalog_url` matters when Codex is signed in with an API key (`codex login --with-api-key`).
 Without it, Codex never reads 10router's model list, uses generic settings for any model it
 doesn't know, and gives that model no `apply_patch` tool, so it edits files through the shell.
+Codex has the setting from 0.156; with an API key it reads it by default from 0.161 (0.156 to
+0.160 also need `[features] api_key_model_discovery = true`).
 
-With `model_catalog_url` set, Codex 0.167 uses only that list, whether it's signed in with an API
+With `model_catalog_url` set, Codex uses only that list, whether it's signed in with an API
 key or with ChatGPT, and looks up its `model` there by exact name:
 
-- If your API key has a model allowlist with bare names (`gpt-5.5`, `claude-opus-5-5`), the list
-  shows those models under the bare names only, so set `model = "gpt-5.5"` rather than
-  `cx/gpt-5.5`. The dashboard's Codex setup writes the right spelling for the key you pick.
+- If your API key has a model allowlist with bare names (`gpt-5.5`, `claude-opus-5-5`), leave
+  `model_catalog_url` out. The list shows those models under the bare names only, and routing
+  a bare name differs from routing the provider id you picked, so Codex wouldn't find the
+  model it's set to. Without the line, Codex keeps its own list as before: GPT models get
+  Codex's own settings, but other models (Claude, for one) don't get `apply_patch` yet. The
+  dashboard's Codex setup leaves it out for such a key.
 - A context-window suffix such as `cc/claude-opus-5[1m]` isn't in the list (the router doesn't
   know which models take one), so Codex runs such a model on generic settings with no
   `apply_patch`. Use the id without the suffix.

@@ -84,7 +84,9 @@ jobs:
         # report 0.147.0) Codex needs base_instructions and falls back to it
         # when personality = false clears the template, so clients before
         # 0.148 get the prompt there (0.146 and 0.147 run here); 0.148+ get "".
-        codex: ["0.167.2", "0.147.0", "0.146.0", "0.138.0", "0.137.0"]
+        # 0.156.0 is the first with model_catalog_url (read over HTTP here, with
+        # api_key_model_discovery switched on: it's off by default until 0.161).
+        codex: ["0.167.2", "0.156.0", "0.147.0", "0.146.0", "0.138.0", "0.137.0"]
     steps:
       - uses: actions/checkout@v5
         with:

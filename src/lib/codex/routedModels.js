@@ -18,6 +18,7 @@
 // doesn't advance while the machine sleeps, which only makes a list look
 // younger by the time asleep, when little can have changed.
 import { buildModelsList } from "@/app/api/v1/models/route.js";
+import { connectionsVersion } from "@/lib/db/index.js";
 
 export const ROUTED_MODELS_TIMING = {
   FRESH_MS: 60_000,
@@ -31,18 +32,22 @@ const now = () => performance.now();
 
 // `written` is the sequence number of the build the held list came from, so a
 // slow build that was abandoned can't replace a newer one when it lands late.
-const state = { models: null, builtAt: 0, inflight: null, generation: 0, started: 0, written: 0 };
+// `connections` is the connectionsVersion() the held list was built at.
+const state = { models: null, builtAt: 0, inflight: null, generation: 0, started: 0, written: 0, connections: -1 };
 
 function refresh() {
   if (state.inflight) return state.inflight;
   const generation = state.generation;
   const seq = ++state.started;
+  // Read before the build, so a change made while it runs triggers another.
+  const version = connectionsVersion();
   let deadline;
   const build = buildModelsList(["llm"]).then((models) => {
     if (generation !== state.generation || seq < state.written) return;
     state.models = models;
     state.builtAt = now();
     state.written = seq;
+    state.connections = version;
   });
   const timedOut = new Promise((_, reject) => {
     deadline = setTimeout(
@@ -78,7 +83,10 @@ async function waitFor(promise, ms) {
  * @returns {Promise<object[]>}
  */
 export async function getRoutedModels() {
-  const age = state.models ? now() - state.builtAt : Infinity;
+  // A connection added, removed or changed since the list was built makes it
+  // as old as a list past SERVE_STALE_MS: rebuilt, with the short grace.
+  const connectionsChanged = state.models && state.connections !== connectionsVersion();
+  const age = !state.models ? Infinity : connectionsChanged ? ROUTED_MODELS_TIMING.SERVE_STALE_MS : now() - state.builtAt;
   if (age < ROUTED_MODELS_TIMING.FRESH_MS) return state.models;
   refresh();
   if (age < ROUTED_MODELS_TIMING.SERVE_STALE_MS) return state.models;

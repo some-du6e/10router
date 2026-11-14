@@ -7,19 +7,21 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { parseTOML, stringifyTOML } from "confbox";
-import { listedModelIdForKey } from "@/sse/services/keyLimits.js";
+import { getApiKeyPolicy } from "@/lib/db/index.js";
+import { hasBareAllowedModel } from "@/shared/utils/apiKeyLimits.js";
 
 const execAsync = promisify(exec);
 
-// The model id as Codex will find it in the router's catalog for this key.
-// Codex looks its `model` up there by exact name, and a key with a bare-name
-// allowlist sees "gpt-5.5", not the "cx/gpt-5.5" the picker hands us.
-const codexModelId = async (apiKey, model) => {
-  if (!apiKey || !model) return model;
+// With model_catalog_url Codex looks its `model` up in the router's catalog by
+// exact name, and a key with a bare allowlist entry sees that model only under
+// the bare name, not the prefixed id written here. Such a key gets no catalog
+// URL, so Codex keeps its own list and its prefix matching, as before.
+const keyWantsCatalog = async (apiKey) => {
+  if (!apiKey) return true;
   try {
-    return (await listedModelIdForKey(apiKey, model)) ?? model;
+    return !hasBareAllowedModel(await getApiKeyPolicy(apiKey));
   } catch {
-    return model;
+    return true;
   }
 };
 
@@ -46,11 +48,11 @@ const resolveCodexBaseUrl = (baseUrl, native) => {
 // Signed in with an API key, Codex only reads a custom base URL's catalog from
 // `model_catalog_url`; without the catalog it has no apply_patch tool for
 // models it doesn't know.
-const buildProviderSection = (baseUrl, native) => (native
+const buildProviderSection = (baseUrl, native, catalog) => (native
   ? {
     name: "openai",
     base_url: baseUrl,
-    model_catalog_url: `${baseUrl}/models`,
+    ...(catalog ? { model_catalog_url: `${baseUrl}/models` } : {}),
     wire_api: "responses",
     requires_openai_auth: true,
   }
@@ -182,18 +184,18 @@ export async function POST(request) {
     } catch { /* No existing config */ }
 
     // Update only 10router related fields (api_key goes to auth.json, not config.toml)
-    parsed.model = await codexModelId(apiKey, model);
+    parsed.model = model;
     parsed.model_provider = "10router";
 
     // Update or create 10router provider section (no api_key - Codex reads from auth.json).
     // The Codex-native endpoint is the default; pass native:false for plain /v1.
     const useNative = native !== false;
     const normalizedBaseUrl = resolveCodexBaseUrl(baseUrl, useNative);
-    setNestedSection(parsed, "model_providers.10router", buildProviderSection(normalizedBaseUrl, useNative));
+    setNestedSection(parsed, "model_providers.10router", buildProviderSection(normalizedBaseUrl, useNative, await keyWantsCatalog(apiKey)));
 
     // Subagent model is a scalar under [agents]; agents.<role> now means a custom role
     deleteNestedSection(parsed, "agents.subagent");
-    setNestedSection(parsed, "agents.default_subagent_model", await codexModelId(apiKey, subagentModel || model));
+    setNestedSection(parsed, "agents.default_subagent_model", subagentModel || model);
 
     // Write merged config
     const configContent = stringifyTOML(parsed);

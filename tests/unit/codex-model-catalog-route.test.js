@@ -292,6 +292,32 @@ describe("the routed model list behind it", () => {
     log.mockRestore();
   });
 
+  it("rebuilds on the next request after a connection changes, with the short grace", async () => {
+    vi.useFakeTimers({ toFake: CLOCK });
+    const { bumpConnectionsVersion } = await import("@/lib/db/repos/connectionsRepo.js");
+    routed.models = list("one");
+    await catalog();
+    await advance(1_000);
+    // Fresh, so no rebuild yet.
+    routed.models = list("one", "added");
+    expect(ids(await catalog())).toEqual(["acme/one"]);
+    bumpConnectionsVersion();
+    expect(ids(await catalog())).toEqual(["acme/one", "acme/added"]);
+    expect(routed.calls).toHaveLength(2);
+
+    // A slow rebuild: the held list after the grace.
+    const builds = pendingBuilds();
+    bumpConnectionsVersion();
+    let answered = false;
+    const pending = catalog().then((body) => { answered = true; return body; });
+    await advance(T.STALE_GRACE_MS);
+    expect(answered).toBe(true);
+    expect(ids(await pending)).toEqual(["acme/one", "acme/added"]);
+    builds[0].finish(list("two"));
+    await advance(0);
+    expect(ids(await catalog())).toEqual(["acme/two"]);
+  });
+
   it("measures age on a monotonic clock, so moving the wall clock back doesn't freeze the list", async () => {
     vi.useFakeTimers({ toFake: CLOCK });
     routed.models = list("one");

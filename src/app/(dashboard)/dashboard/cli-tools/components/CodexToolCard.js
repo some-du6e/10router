@@ -8,6 +8,7 @@ import ApiKeySelect from "./ApiKeySelect";
 import { matchKnownEndpoint } from "./cliEndpointMatch";
 import { AI_MODELS, PROVIDER_ID_TO_ALIAS } from "@/shared/constants/models";
 import { rememberEndpoint } from "./cliEndpointPresets";
+import { hasBareAllowedModel } from "@/shared/utils/apiKeyLimits";
 
 // The models Codex may ask for on its own. Read from the provider registry
 // rather than written out here, so a change to the Codex line-up updates this
@@ -267,12 +268,18 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
 
     const effectiveSubagentModel = subagentModel || selectedModel;
 
+    // Same rule as the settings route: a key allowed models by bare name gets
+    // no catalog URL. A key the card doesn't know gets it, with a note.
+    const knownKey = apiKeys?.find((k) => k.key === keyToUse);
+    const catalogLine = knownKey && hasBareAllowedModel(knownKey)
+      ? ""
+      : `${knownKey ? "" : "# Leave this line out if your key's model allowlist has names without a provider prefix (gpt-5.5).\n"}model_catalog_url = "${getEffectiveBaseUrl()}/models"\n`;
+
     const providerSection = useNative
       ? `[model_providers.10router]
 name = "openai"
 base_url = "${getEffectiveBaseUrl()}"
-model_catalog_url = "${getEffectiveBaseUrl()}/models"
-wire_api = "responses"
+${catalogLine}wire_api = "responses"
 requires_openai_auth = true`
       : `[model_providers.10router]
 name = "10router"

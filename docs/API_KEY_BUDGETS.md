@@ -162,11 +162,13 @@ have no readable model, so an allowlisted key can't create them. Polling an
 existing video job checks only expiry.
 
 A model allowed by a bare id is listed under that id only, never under the
-provider ids behind it. For Codex this matters: with `model_catalog_url` set
-(as the dashboard's Codex setup writes it), Codex matches its configured
-`model` against the catalog exactly. With a key allowed `gpt-5.5`, set Codex's
-`model = "gpt-5.5"`, not `cx/gpt-5.5`, or Codex finds no entry for it and runs
-it without its `apply_patch` tool.
+provider ids behind it. For Codex this matters: with `model_catalog_url` set,
+Codex matches its configured `model` (a provider id like `cx/gpt-5.5`) against
+the catalog exactly, and wouldn't find it. So for a key whose allowlist has any
+bare id, the dashboard's Codex setup leaves `model_catalog_url` out and Codex
+keeps its own model list, as before the catalog: GPT models keep Codex's own
+settings, but other models (Claude, for one) don't get the `apply_patch` tool
+with such a key yet.
 
 ## Error bodies
 

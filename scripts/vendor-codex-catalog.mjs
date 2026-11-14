@@ -27,15 +27,26 @@ const LEGACY = {
   "gpt-5.2": "rust-v0.154.0",
   "gpt-5.3-codex": "rust-v0.143.0",
 };
-// slug -> first client_version that never bundles it. Alphas report their
-// release's version: rust-v0.158.0-alpha.1 still bundles gpt-5.4, and
-// rust-v0.144.0-alpha.1 gpt-5.3-codex; no 0.155.0 alpha has gpt-5.4-mini or gpt-5.2.
+// slug -> first client_version it isn't served to. Alphas report their
+// release's version, so a cut-off has to cover an alpha that still bundles it,
+// at the cost of the stable release with the same version:
+// rust-v0.158.0-alpha.1 bundles gpt-5.4 (so all of 0.158.0 gets it, stable
+// and later alphas too), rust-v0.144.0-alpha.1 bundles gpt-5.3-codex (so
+// 0.144.0 gets it, not 0.144.1 to 0.144.6), and no 0.155.0 alpha has
+// gpt-5.4-mini or gpt-5.2.
 const SERVED_BEFORE = {
   "gpt-5.4": "0.159.0",
   "gpt-5.4-mini": "0.155.0",
   "gpt-5.2": "0.155.0",
-  "gpt-5.3-codex": "0.145.0",
+  "gpt-5.3-codex": "0.144.1",
 };
+
+const legacySlugs = Object.keys(LEGACY).sort().join(", ");
+const servedSlugs = Object.keys(SERVED_BEFORE).sort().join(", ");
+if (legacySlugs !== servedSlugs) {
+  console.error(`LEGACY (${legacySlugs}) and SERVED_BEFORE (${servedSlugs}) must name the same models.`);
+  process.exit(1);
+}
 
 const tag = process.argv[2];
 const version = /^rust-v(\d+\.\d+\.\d+)$/.exec(tag || "")?.[1];

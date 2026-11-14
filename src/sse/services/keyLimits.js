@@ -193,20 +193,6 @@ export async function keepAllowedAdapterModels(apiKey, augmented, original) {
   return kept;
 }
 
-/**
- * The id this key's model lists show `modelId` under: its bare allowlist name
- * when it was allowed by one, else the id itself. Null when the key may not
- * use it. Same rules as filterModelsForRequest.
- * @param {string} apiKey
- * @param {string} modelId
- * @returns {Promise<string|null>}
- */
-export async function listedModelIdForKey(apiKey, modelId) {
-  const request = { headers: new Headers({ Authorization: `Bearer ${apiKey}` }) };
-  const [entry] = await filterModelsForRequest(request, [{ id: modelId }]);
-  return entry?.id ?? null;
-}
-
 /** An OpenAI-style entry listed under the allowlist's own name. */
 const renameOpenAIEntry = (model, id) => ({ ...model, id, owned_by: "10router" });
 

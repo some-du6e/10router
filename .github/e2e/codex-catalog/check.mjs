@@ -41,9 +41,18 @@ function codex(home, args, input) {
 }
 
 const version = (await codex(tmpdir(), ["--version"])).stdout.trim();
-// model_catalog_url arrived in 0.156; the API-key discovery checked here is 0.167's.
-const minor = Number(/ 0\.(\d+)\./.exec(version)?.[1]);
-const supportsCatalogUrl = minor >= 167;
+const parse = (v) => (/(\d+)\.(\d+)\.(\d+)/.exec(v) || []).slice(1).map(Number);
+const client = parse(version);
+const before = (v) => {
+  const other = parse(v);
+  for (let i = 0; i < 3; i++) if (client[i] !== other[i]) return client[i] < other[i];
+  return false;
+};
+// model_catalog_url arrived in 0.156.0. Reading it with an API key is the
+// api_key_model_discovery feature, off by default until 0.161.0.
+const supportsCatalogUrl = !before("0.156.0");
+const discoveryFlag = before("0.161.0") ? ["-c", "features.api_key_model_discovery=true"] : [];
+const legacy = JSON.parse(readFileSync(new URL("../../../open-sse/config/codex/legacy-models.json", import.meta.url), "utf8"));
 const catalogFile = (side) => join(workDir, side, "catalog.json");
 const catalog = (side) => JSON.parse(readFileSync(catalogFile(side), "utf8")).models;
 const sides = existsSync(catalogFile("base")) ? ["base", "head"] : ["head"];
@@ -73,9 +82,7 @@ function checkDecoded(label, models) {
   const missing = head.filter((m) => !bySlug.has(m.slug));
   if (missing.length) return fail(`${label}: ${missing.length} served models missing, e.g. ${missing[0].slug}`);
   // The models this Codex bundles and 0.167.2 doesn't (legacy-models.json servedBefore).
-  const expectedOlder = [
-    ["gpt-5.4", 159], ["gpt-5.4-mini", 155], ["gpt-5.3-codex", 145], ["gpt-5.2", 155],
-  ].filter(([, before]) => minor < before).map(([slug]) => slug);
+  const expectedOlder = Object.entries(legacy.servedBefore).filter(([, cutoff]) => before(cutoff)).map(([slug]) => slug);
   const missingOlder = expectedOlder.filter((s) => !bySlug.has(s));
   if (missingOlder.length) fail(`${label}: older Codex models not served: ${missingOlder.join(", ")}`);
   else if (expectedOlder.length) pass(`${label}: older Codex models ${expectedOlder.join(", ")} decoded`);
@@ -91,7 +98,7 @@ function checkDecoded(label, models) {
     else pass(`${label}: ${c.slug} keeps Codex's own metadata (${prompt.length}-char prompt, apply_patch_tool_type=${c.apply_patch_tool_type})`);
     // Before 0.148 (0.147.0 alphas report 0.147.0), `[features] personality = false` drops the template and
     // Codex runs on base_instructions alone (with_config_overrides).
-    if (minor < 148) {
+    if (before("0.148.0")) {
       const fallback = c.base_instructions ?? "";
       if (fallback !== prompt) fail(`${label}: ${c.slug} base_instructions (${fallback.length} chars) isn't its prompt; personality = false would leave it with ${fallback ? "another" : "no"} system prompt`);
       else pass(`${label}: ${c.slug} with its template cleared still has its ${fallback.length}-char prompt in base_instructions`);
@@ -113,7 +120,7 @@ for (const side of sides) {
   }
 }
 
-// 2. Over HTTP, with the dashboard's config. Codex 0.137 has no model_catalog_url.
+// 2. Over HTTP, with the dashboard's config, from 0.156.0 (the first with model_catalog_url).
 if (supportsCatalogUrl) {
   let served = "head";
   const requests = [];
@@ -127,7 +134,7 @@ if (supportsCatalogUrl) {
     served = catalogSide;
     const home = await freshHome(configSide);
     requests.length = 0;
-    const run = await codex(home, ["debug", "models"]);
+    const run = await codex(home, [...discoveryFlag, "debug", "models"]);
     return { run, asked: requests.filter((u) => u.startsWith("/backend-api/codex/models")) };
   };
 

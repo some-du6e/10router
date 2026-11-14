@@ -94,39 +94,35 @@ describe("Codex CLI settings", () => {
   });
 });
 
-describe("the model Codex is set to", () => {
-  const setup = (apiKey, model, subagentModel) => apply({ baseUrl: "http://127.0.0.1:20128", apiKey, model, subagentModel });
-
-  it("is the bare name a key's allowlist lists, since Codex matches the catalog exactly", async () => {
-    const key = await keyWith("bare-allowlist", ["gpt-5.5", "claude-opus-5-5"]);
-    await setup(key, "cx/gpt-5.5", "cc/claude-opus-5-5");
-    expect(config().model).toBe("gpt-5.5");
-    expect(config().agents.default_subagent_model).toBe("claude-opus-5-5");
+describe("the catalog URL for a key with a model allowlist", () => {
+  const setup = (apiKey, model = "cx/gpt-5.5", subagentModel = "cc/claude-opus-5-5") =>
+    apply({ baseUrl: "http://127.0.0.1:20128", apiKey, model, subagentModel });
+  const written = () => ({
+    model: config().model,
+    subagent: config().agents.default_subagent_model,
+    catalog: provider().model_catalog_url ?? null,
   });
 
-  it("stays prefixed for a key allowed the prefixed id, with no allowlist, or with no key on file", async () => {
-    const prefixed = await keyWith("prefixed-allowlist", ["cx/gpt-5.5"]);
-    await setup(prefixed, "cx/gpt-5.5");
-    expect(config().model).toBe("cx/gpt-5.5");
-
-    const open = await keyWith("no-allowlist");
-    await setup(open, "cx/gpt-5.5");
-    expect(config().model).toBe("cx/gpt-5.5");
-
-    await setup("sk_10router", "cx/gpt-5.5");
-    expect(config().model).toBe("cx/gpt-5.5");
-    expect(config().agents.default_subagent_model).toBe("cx/gpt-5.5");
+  // Codex with model_catalog_url looks `model` up by exact name, and such a
+  // key's catalog lists the model under the bare name only; without the URL
+  // Codex keeps its own list and prefix matching, as before the catalog.
+  it("is left out when the allowlist names a model without a provider prefix", async () => {
+    const key = await keyWith("bare-allowlist", ["gpt-5.5", "cc/claude-opus-5-5"]);
+    await setup(key);
+    expect(written()).toEqual({ model: "cx/gpt-5.5", subagent: "cc/claude-opus-5-5", catalog: null });
   });
 
-  it("stays as chosen when the key's allowlist doesn't cover it", async () => {
-    const key = await keyWith("other-allowlist", ["claude-opus-5-5"]);
-    await setup(key, "cx/gpt-5.5");
-    expect(config().model).toBe("cx/gpt-5.5");
+  it("is written for a prefixed-only allowlist, no allowlist, or a key not on file", async () => {
+    const url = "http://127.0.0.1:20128/backend-api/codex/models";
+    for (const key of [await keyWith("prefixed-allowlist", ["cx/gpt-5.5"]), await keyWith("no-allowlist"), "sk_10router"]) {
+      await setup(key);
+      expect(written()).toEqual({ model: "cx/gpt-5.5", subagent: "cc/claude-opus-5-5", catalog: url });
+    }
   });
 
   it("never writes the key into config.toml", async () => {
     const key = await keyWith("secret-check", ["gpt-5.5"]);
-    await setup(key, "cx/gpt-5.5");
+    await setup(key);
     expect(fs.readFileSync(configPath, "utf8")).not.toContain(key);
   });
 });
