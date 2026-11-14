@@ -36,7 +36,6 @@ function githubMonthlyResetMs(status, errorText, provider) {
 const AUTH_FAIL_CLEARED = {
   authFailCount: null, authFailFirstAt: null, authFailLastAt: null, authFailModels: null, authFailAll401: null,
   authFailSameUpstream: null, authFailRunCount: null, authFailRunStartAt: null, authFailBursts: null,
-  authFailCarryCross: null,
 };
 const MAX_TRACKED_MODELS = 5;
 const REASON_MAX_CHARS = 80;
@@ -88,6 +87,8 @@ function softRecord(c, model) {
   return rec;
 }
 const softDemoted = (c, model) => !!softRecord(c, model);
+const softDemotedAnywhere = (c) => AUTH_SOFT_DEMOTE.enabled
+  && Object.entries(c).some(([k, r]) => k.startsWith(AUTH_SOFT_PREFIX) && r?.since);
 const storedSoft = ({ level, since, tryAt, lastRefusedAt, keyRefused }) => ({ level, since, tryAt, lastRefusedAt, keyRefused });
 
 // Its tries follow AUTH_DEMOTE_CONFIG's probe schedule: one is taken when due
@@ -205,11 +206,11 @@ function nextAuthFailStreak(conn, model, status, sameUpstream) {
   // when this key succeeded after the streak began on a request whose snapshot
   // predates it, or when a timestamp is unreadable or in the future (the
   // negated range check is also false for NaN).
-  // Since a soft demotion forgot the key's refusals (authFailCarryCross), its
-  // streaks need crossUpstreamWindowMs but start over after a gap over
-  // minWindowMs, until it serves: whether its untried requests would have
+  // While the key is soft-demoted on a model, whose refusals it forgot and no
+  // longer counts, its streaks need crossUpstreamWindowMs but start over after
+  // a gap over minWindowMs: whether its untried requests there would have
   // served or been refused, they trip no sooner than either would have.
-  const carry = AUTH_SOFT_DEMOTE.enabled && !!conn.authFailCarryCross;
+  const carry = softDemotedAnywhere(conn);
   const maxGapMs = conn.authFailSameUpstream === true || carry ? AUTH_DEAD_CONFIG.minWindowMs : AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
   const fresh = !(now - firstAt >= 0)
     || !(sinceLast >= 0 && sinceLast <= maxGapMs)
@@ -232,7 +233,6 @@ function nextAuthFailStreak(conn, model, status, sameUpstream) {
     authFailModels: models.includes(model) ? models : [...models, model].slice(-MAX_TRACKED_MODELS),
     authFailAll401: Number(status) === 401 && (fresh || conn.authFailAll401 === true),
     authFailSameUpstream: sameUpstream && !carry && (fresh || conn.authFailSameUpstream === true),
-    authFailCarryCross: carry ? conn.authFailCarryCross : null,
   };
 }
 
@@ -894,8 +894,8 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   // upstream served), the key refused on this model alone and not turned off.
   // Its untried requests might serve, so the turn-off rules forget its refusals
   // as a success on this model would make them (authFail* cleared,
-  // authDemote_<model> lifted, authDemoteOkAt noted), and marks the key's later
-  // streaks (authFailCarryCross, see nextAuthFailStreak).
+  // authDemote_<model> lifted, authDemoteOkAt noted); see nextAuthFailStreak
+  // for its later streaks.
   const tally = plan.demote?.to;
   const entersSoft = AUTH_SOFT_DEMOTE.enabled && !paused && !!tally && !tally.demotedAt
     && countSpans(tally, plan.nowMs, AUTH_DEAD_CONFIG.minWindowMs)
@@ -904,7 +904,6 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const since = entersSoft ? new Date(plan.nowMs).toISOString() : null;
   const softEntry = entersSoft ? {
     ...AUTH_FAIL_CLEARED,
-    authFailCarryCross: since,
     authDemoteOkAt: since,
     [getAuthSoftKey(model)]: { level: 0, since, tryAt: new Date(plan.nowMs + probeMs(0)).toISOString(), lastRefusedAt: since, keyRefused: !tally.modelScoped },
   } : null;
@@ -964,9 +963,11 @@ export async function clearAccountError(connectionId, currentConnection, model =
   if (!connectionId || connectionId === "noauth") return;
   recordSuccess(connectionId, model);
   const conn = currentConnection._connection || currentConnection;
-  const softHere = !!model && softDemoted(conn, model);
+  // A stored soft demotion goes on a success there, even one left from while
+  // AUTH_SOFT_DEMOTE was on.
+  const softHere = !!model && !!conn[getAuthSoftKey(model)]?.since;
   if (model) softDemotions.delete(`${connectionId}|${model}`);
-  if (softHere) log.info("AUTH", `${conn.displayName || conn.name || conn.email || connectionId.slice(0, 8)} soft demotion on ${model} lifted`);
+  if (softHere && AUTH_SOFT_DEMOTE.enabled) log.info("AUTH", `${conn.displayName || conn.name || conn.email || connectionId.slice(0, 8)} soft demotion on ${model} lifted`);
   const now = Date.now();
   // A cleared lock stays as modelLock_<model>: null and needs no write, unless
   // whatever cleared it left its reset time or limit flag behind.
@@ -989,7 +990,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
     || otherRecords.some(([, r]) => !(conn.authDemoteOkAt >= r.firstAt))
     || otherSoft.some(([, r]) => !(conn.authDemoteOkAt > r.since));
   const demoteWrite = demoteRecord || noteServed;
-  if (!conn.testStatus && !conn.lastError && !conn.errorCode && allLockKeys.length === 0 && !conn.authFailCount && !conn.authFailCarryCross && !demoteWrite) return;
+  if (!conn.testStatus && !conn.lastError && !conn.errorCode && allLockKeys.length === 0 && !conn.authFailCount && !demoteWrite) return;
 
   // Keys to clear: current model's lock + all expired locks
   const keysToClear = allLockKeys.filter(k => {
@@ -1000,7 +1001,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
     return expiry && new Date(expiry).getTime() <= now;   // expired
   });
 
-  if (keysToClear.length === 0 && conn.testStatus !== "unavailable" && !conn.lastError && !conn.errorCode && !conn.authFailCount && !conn.authFailCarryCross && !demoteWrite) return;
+  if (keysToClear.length === 0 && conn.testStatus !== "unavailable" && !conn.lastError && !conn.errorCode && !conn.authFailCount && !demoteWrite) return;
 
   // Check if any active locks remain after clearing
   const remainingActiveLocks = allLockKeys.filter(k => {
@@ -1011,7 +1012,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
 
   const clearObj = Object.fromEntries(keysToClear.map(k => [k, null]));
   // Any success proves the key works, whatever model failed before.
-  if (conn.authFailCount || conn.authFailCarryCross) Object.assign(clearObj, AUTH_FAIL_CLEARED);
+  if (conn.authFailCount) Object.assign(clearObj, AUTH_FAIL_CLEARED);
   for (const key of keysToClear) {
     clearObj[key.replace("modelLock_", PROVIDER_RESET_PREFIX)] = null;
     clearObj[key.replace("modelLock_", MODEL_LIMIT_PREFIX)] = null;

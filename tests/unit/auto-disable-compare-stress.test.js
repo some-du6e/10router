@@ -157,6 +157,18 @@ for (const [start, gap, totalMin, stop = Infinity] of [
     (m) => (m < 13 ? ["opus"] : m >= start && m < stop && (m - start) % gap === 0 ? ["sonnet", "haiku"] : []),
     (m, model) => (model === "opus" ? m < 13 : true), "opus");
 }
+// Opus, which only the far peer serves, every minute, K refused on it until
+// `opusEnd`; sonnet and haiku every minute from `from`, which K serves but for
+// [a, b), the near peer serving them.
+for (const opusEnd of [Infinity, 40]) {
+  for (const from of [0, 11]) {
+    for (const [a, b] of [[13, 24], [13, 25], [13, 30], [14, 26]]) {
+      cases[`served elsewhere then near ${opusEnd},${from},${a}-${b}`] = (layout) => offMinute(layout, 200,
+        (m) => (m >= from ? ["opus", "sonnet", "haiku"] : ["opus"]),
+        (m, model) => (model === "opus" ? m < opusEnd : within(m, [[a, b]])), "opus");
+    }
+  }
+}
 // The same, with bursts alternating between two pairs of models.
 cases["idle then near, rotating"] = (layout) => offMinute(layout, 260,
   (m) => (m < 13 ? ["opus"] : m >= 80 && (m - 80) % 15 === 0 ? (((m - 80) / 15) % 2 ? ["sonnet", "haiku"] : ["m4", "m5"]) : []),

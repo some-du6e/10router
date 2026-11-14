@@ -27,7 +27,7 @@ on:
         description: "Auth code to compare turn-offs against"
         default: "origin/master"
       head_ref:
-        description: "Auth code to test instead of this branch's (an older head, say)"
+        description: "Auth code to compare instead of this branch's (an older head, say); the other steps test this branch"
         default: ""
 
 permissions:
@@ -60,13 +60,14 @@ jobs:
         if: always()
         working-directory: tests
         run: ./node_modules/.bin/vitest run unit/auth-soft-demote.test.js unit/auto-disable-dead-keys.test.js
-      # Clean checkouts of the base (master unless a manual run names another)
-      # and, on a manual run that names one, of an older head to test instead of
-      # this one, each running this branch's scenario files.
+      # Clean checkouts of the base (the PR's base branch, else master, unless a
+      # manual run names another) and, on a manual run that names one, of an
+      # older head to compare instead of this one (only in the turn-off step),
+      # each running this branch's scenario files.
       - name: Base and head checkouts
         if: always()
         env:
-          BASE_REF: ${{ inputs.base_ref || 'origin/master' }}
+          BASE_REF: ${{ inputs.base_ref || (github.base_ref && format('origin/{0}', github.base_ref)) || 'origin/master' }}
           HEAD_REF: ${{ inputs.head_ref || '' }}
         run: |
           for side in base head; do

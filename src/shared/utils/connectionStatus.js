@@ -18,7 +18,7 @@ export function demotedModels(connection) {
       return [{ model: key.slice(DEMOTE_PREFIX.length), reason: record.reason || null }];
     }
     if (key.startsWith(SOFT_DEMOTE_PREFIX) && record?.since) {
-      return [{ model: key.slice(SOFT_DEMOTE_PREFIX.length), soft: true, lastRefusedAt: record.lastRefusedAt || record.since }];
+      return [{ model: key.slice(SOFT_DEMOTE_PREFIX.length), soft: true, lastRefusedAt: record.lastRefusedAt || record.since, keyRefused: record.keyRefused === true }];
     }
     return [];
   });
@@ -27,8 +27,10 @@ export function demotedModels(connection) {
 export function demotedLabel(connection) {
   const demoted = demotedModels(connection);
   if (!demoted.length) return null;
-  const line = ({ model, reason, soft, lastRefusedAt }) => (soft
-    ? `Soft-demoted on ${model}: last refused ${new Date(lastRefusedAt).toLocaleString()}. Other keys go first there until it serves ${model} again. Clearing ${model}'s cooldown in model availability ends it.`
+  const line = ({ model, reason, soft, lastRefusedAt, keyRefused }) => (soft
+    ? `Soft-demoted on ${model}: last refused ${new Date(lastRefusedAt).toLocaleString()}. Other keys go first there until it serves ${model} again. `
+      + (keyRefused ? "The upstream keeps refusing the key itself: if that goes on, replace the key. " : "")
+      + `Clearing ${model}'s cooldown in model availability ends it.`
     : `Demoted on ${model} after repeated ${reason || "refusals"}. Switching the key off and on clears it.`);
   const hard = demoted.filter(d => !d.soft).map(d => d.model);
   const soft = demoted.filter(d => d.soft).map(d => d.model);

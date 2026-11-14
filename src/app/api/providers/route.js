@@ -12,6 +12,7 @@ import { AI_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, isOpenAICompat
 import { normalizeProviderId, normalizeProviderSpecificData } from "@/lib/providerNormalization";
 import { resolveKeyBaseUrl, withKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
 import { isLocalRequest } from "@/dashboardGuard";
+import { withSoftDemotionsShown } from "@/lib/softDemotions.js";
 
 export const dynamic = "force-dynamic";
 
@@ -70,7 +71,7 @@ export async function GET() {
         ? (c.name || nodeNameMap[c.provider] || c.providerSpecificData?.nodeName || c.provider)
         : c.name;
       return {
-        ...c,
+        ...withSoftDemotionsShown(c),
         name,
         apiKey: undefined,
         accessToken: undefined,

@@ -294,14 +294,17 @@ describe("soft demotion", () => {
     }
   });
 
-  it("drops the hour it kept once the key serves anything", async () => {
+  it("keeps the hour through a success on another model, and drops it once the key serves the soft-demoted one", async () => {
     const [key, near] = await accounts(["k", "near"], { shared: true });
     const [far] = await accounts(["far"]);
     await refuse(key.id, far, { times: 6 });
-    expect((await load(key.id)).authFailCarryCross).toBe(new Date().toISOString());
     vi.advanceTimersByTime(MIN);
     await succeed(key.id, KIMI);
-    expect((await load(key.id)).authFailCarryCross ?? null).toBeNull();
+    vi.advanceTimersByTime(MIN);
+    await refuse(key.id, near, { times: 1, model: KIMI });
+    expect((await load(key.id)).authFailSameUpstream).toBe(false);
+    vi.advanceTimersByTime(MIN);
+    await succeed(key.id, OPUS);
     vi.advanceTimersByTime(MIN);
     await refuse(key.id, near, { times: 1, model: KIMI });
     expect((await load(key.id)).authFailSameUpstream).toBe(true);
@@ -416,6 +419,41 @@ describe("soft demotion", () => {
     expect(await pick(OPUS)).toBe(key.id);
   });
 
+  it.each([
+    ["a refused soft try", async (key, peer) => {
+      vi.advanceTimersByTime(10 * MIN);
+      expect(await pick(OPUS)).toBe(key.id);
+      await succeed(peer.id, OPUS);
+      return OPUS;
+    }],
+    ["a refusal on another model, which makes the try due", async (key, peer) => {
+      vi.advanceTimersByTime(3 * MIN);
+      await succeed(peer.id, KIMI);
+      return KIMI;
+    }],
+  ])("gives a key pasted in while %s was on its way no soft demotion", async (_label, setUp) => {
+    const { key, peer } = await softDemoted();
+    const model = await setUp(key, peer);
+    beforeProxyLookup(() => db.updateProviderConnection(key.id, { apiKey: "sk-test-a-pasted-0123456789" }));
+    await failOnce(key.id, model, "sk-test-a-0123456789");
+    const conn = await load(key.id);
+    expect(conn.apiKey).toBe("sk-test-a-pasted-0123456789");
+    expect(conn[`authSoft_${OPUS}`] ?? null).toBeNull();
+  });
+
+  it("leaves a demotion the pasted key got alone when the refusal that would soft-demote the old one lands", async () => {
+    const [key, peer] = await accounts(["a", "b"]);
+    await refuse(key.id, peer, { times: 5 });
+    vi.advanceTimersByTime(2 * MIN);
+    await succeed(peer.id, OPUS);
+    beforeProxyLookup(async () => {
+      await db.updateProviderConnection(key.id, { apiKey: "sk-test-a-pasted-0123456789" });
+      await db.updateProviderConnection(key.id, { [`authDemote_${OPUS}`]: { count: 1, firstAt: new Date().toISOString() } });
+    });
+    await failOnce(key.id, OPUS, "sk-test-a-0123456789");
+    expect((await load(key.id))[`authDemote_${OPUS}`]).toMatchObject({ count: 1 });
+  });
+
   it("ends on that model when its cooldown is cleared", async () => {
     const { key, peer } = await softDemoted();
     vi.advanceTimersByTime(3 * MIN);
@@ -465,6 +503,49 @@ describe("AUTH_SOFT_DEMOTE", () => {
     vi.advanceTimersByTime(3 * MIN);
     expect((await freshAuth.getProviderCredentials(provider, null, OPUS)).connectionId).toBe(key.id);
     expect((await freshDb.getProviderConnectionById(key.id)).authFailCount).toBe(6);
+  });
+
+  it("set to 0, hides a stored soft demotion everywhere else too, and a success there still removes it", async () => {
+    const [key, near] = await accounts(["k", "near"], { shared: true });
+    const [far] = await accounts(["far"]);
+    await refuse(key.id, far, { times: 6 });
+    expect((await load(key.id))[`authSoft_${OPUS}`]).toMatchObject({ keyRefused: true });
+    await succeed(key.id, "claude-haiku-5-5");
+    vi.stubEnv("AUTH_SOFT_DEMOTE", "0");
+    vi.resetModules();
+    const freshDb = await import("@/lib/db/index.js");
+    const freshAuth = await import("@/sse/services/auth.js");
+    const freshAvailability = await import("@/app/api/models/availability/route.js");
+    const freshProviders = await import("@/app/api/providers/route.js");
+    const loadFresh = (id) => freshDb.getProviderConnectionById(id);
+    vi.advanceTimersByTime(3 * MIN);
+    // Not listed or sent to the dashboard.
+    const { models } = await (await freshAvailability.GET()).json();
+    expect(models.filter((m) => m.connectionId === key.id && m.model === OPUS)).toEqual([]);
+    const { connections } = await (await freshProviders.GET()).json();
+    expect(connections.find((c) => c.id === key.id)).not.toHaveProperty(`authSoft_${OPUS}`);
+    // A same-upstream streak gets the 10-minute window, as before (a 401: it
+    // writes no demotion count).
+    await freshAuth.clearAccountError(near.id, await loadFresh(near.id), KIMI);
+    await freshAuth.markAccountUnavailable(key.id, 401, "Invalid API key", provider, KIMI);
+    expect((await loadFresh(key.id)).authFailSameUpstream).toBe(true);
+    // A success on another model notes nothing for it.
+    const okAt = (await loadFresh(key.id)).authDemoteOkAt;
+    vi.advanceTimersByTime(MIN);
+    await freshAuth.clearAccountError(key.id, await loadFresh(key.id), "claude-sonnet-5-5");
+    expect((await loadFresh(key.id)).authDemoteOkAt).toBe(okAt);
+    // A success on it removes it.
+    await freshAuth.clearAccountError(key.id, await loadFresh(key.id), OPUS);
+    expect((await loadFresh(key.id))[`authSoft_${OPUS}`] ?? null).toBeNull();
+  });
+
+  it("set to 0, records no dead key for a key replaced while soft-demoted", async () => {
+    const { key } = await softDemoted();
+    vi.stubEnv("AUTH_SOFT_DEMOTE", "0");
+    vi.resetModules();
+    const freshDb = await import("@/lib/db/index.js");
+    await freshDb.updateProviderConnection(key.id, { apiKey: "sk-test-a-replaced-0123456789" });
+    expect((await freshDb.getProviderConnectionById(key.id)).pastKeys).toBeUndefined();
   });
 
   it("set to 0, ignores a soft demotion stored while it was on", async () => {
