@@ -3,7 +3,8 @@ name: Dead-key stress
 # Replays the dead-key routing scenarios (tests/unit/auto-disable-stress.test.js)
 # on this branch, pinned, and checks no key goes off sooner than on master's auth
 # code, run in the same job (auto-disable-compare-stress.test.js). A manual run
-# also replays the pinned scenarios on master's auth code for comparison.
+# also replays the pinned scenarios on the base's auth code for comparison, and
+# can compare other refs (base_ref, head_ref).
 on:
   pull_request:
     paths:
@@ -21,6 +22,13 @@ on:
       - "tests/package.json"
       - ".github/workflows/auth-dead-keys-stress.yml"
   workflow_dispatch:
+    inputs:
+      base_ref:
+        description: "Auth code to compare turn-offs against"
+        default: "origin/master"
+      head_ref:
+        description: "Auth code to test instead of this branch's (an older head, say)"
+        default: ""
 
 permissions:
   contents: read
@@ -52,26 +60,58 @@ jobs:
         if: always()
         working-directory: tests
         run: ./node_modules/.bin/vitest run unit/auth-soft-demote.test.js unit/auto-disable-dead-keys.test.js
-      # The same scenarios on master's auth code, then here: no key off sooner
-      # than there, or where master keeps it on.
-      - name: Turn-offs against master's auth code
+      # Clean checkouts of the base (master unless a manual run names another)
+      # and, on a manual run that names one, of an older head to test instead of
+      # this one, each running this branch's scenario files.
+      - name: Base and head checkouts
+        if: always()
+        env:
+          BASE_REF: ${{ inputs.base_ref || 'origin/master' }}
+          HEAD_REF: ${{ inputs.head_ref || '' }}
+        run: |
+          for side in base head; do
+            ref="$BASE_REF"; [ "$side" = head ] && ref="${HEAD_REF:-HEAD}"
+            git worktree add --detach "$RUNNER_TEMP/$side" "$ref"
+            ln -s "$PWD/node_modules" "$RUNNER_TEMP/$side/node_modules"
+            ln -s "$PWD/tests/node_modules" "$RUNNER_TEMP/$side/tests/node_modules"
+            cp tests/unit/auto-disable-compare-stress.test.js tests/unit/auto-disable-stress.test.js "$RUNNER_TEMP/$side/tests/unit/"
+          done
+      # The same scenarios on the base's auth code, then on the head's: no key
+      # off sooner than on the base, or where the base keeps it on. After this
+      # merges it is a ratchet against the new master: a change meant to turn
+      # keys off sooner must say so and change this check with it.
+      - name: Turn-offs against the base's auth code
         if: always()
         run: |
-          git checkout origin/master -- src open-sse
-          (cd tests && COMPARE_OUT="$RUNNER_TEMP/compare-master.json" ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-compare-stress.test.js)
-          git checkout HEAD -- src open-sse
-          cd tests && COMPARE_MASTER="$RUNNER_TEMP/compare-master.json" COMPARE_OUT="$RUNNER_TEMP/compare-branch.json" ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-compare-stress.test.js
-      # For comparison only, on a manual run: master's numbers never fail the job.
-      - name: Stress, master's auth code
+          (cd "$RUNNER_TEMP/base/tests" && COMPARE_OUT="$RUNNER_TEMP/compare-base.json" ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-compare-stress.test.js)
+          cd "$RUNNER_TEMP/head/tests" && COMPARE_MASTER="$RUNNER_TEMP/compare-base.json" COMPARE_OUT="$RUNNER_TEMP/compare-head.json" ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-compare-stress.test.js
+      # For comparison only, on a manual run: the base's numbers never fail the job.
+      - name: Stress, the base's auth code
         if: always() && github.event_name == 'workflow_dispatch'
         continue-on-error: true
+        working-directory: ${{ runner.temp }}/base/tests
         env:
-          STRESS_OUT: ${{ runner.temp }}/stress-master.json
-        run: |
-          git checkout origin/master -- src open-sse
-          cd tests && ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-stress.test.js
+          STRESS_OUT: ${{ runner.temp }}/stress-base.json
+        run: ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-stress.test.js
       - name: Results
         if: always()
         run: |
           echo "this branch:"; cat "$RUNNER_TEMP/stress-branch.json" || true
-          echo; echo "master:"; cat "$RUNNER_TEMP/stress-master.json" 2>/dev/null || echo "(manual runs only)"
+          echo; echo "base:"; cat "$RUNNER_TEMP/stress-base.json" 2>/dev/null || echo "(manual runs only)"
+          echo; echo "turn-offs, head against base:"
+          node -e '
+            const fs = require("fs");
+            const read = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return null; } };
+            const base = read(process.argv[1]), head = read(process.argv[2]);
+            if (!base || !head) { console.log("(not run)"); process.exit(0); }
+            const n = { same: 0, later: 0, never: 0, sooner: 0, offWhereBaseOn: 0 };
+            for (const [k, b] of Object.entries(base)) {
+              const h = head[k];
+              if (h === b) n.same++;
+              else if (b === null) n.offWhereBaseOn++;
+              else if (h === null) n.never++;
+              else if (h < b) n.sooner++;
+              else n.later++;
+            }
+            console.log(JSON.stringify(n));
+          ' "$RUNNER_TEMP/compare-base.json" "$RUNNER_TEMP/compare-head.json"

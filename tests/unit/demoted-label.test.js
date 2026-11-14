@@ -66,7 +66,7 @@ describe("soft-demoted key label", () => {
     const label = demotedLabel({ [SOFT_OPUS]: soft() });
     expect(label.text).toBe("Soft-demoted on claude-opus-5-5");
     expect(label.title).toBe(`Soft-demoted on claude-opus-5-5: last refused ${new Date("2026-11-02T02:40:00.000Z").toLocaleString()}. `
-      + "Other keys go first there until it serves claude-opus-5-5 again. Switching the key off and on clears it.");
+      + "Other keys go first there until it serves claude-opus-5-5 again. Clearing claude-opus-5-5's cooldown in model availability ends it.");
     expect(demotedModels({ [SOFT_OPUS]: soft() })).toEqual([{ model: "claude-opus-5-5", soft: true, lastRefusedAt: "2026-11-02T02:40:00.000Z" }]);
   });
 

@@ -73,10 +73,10 @@ const refusedSince = (key, sinceMs) => (authEvents.refused.get(key)?.at ?? -Infi
 
 // A key's soft demotion (AUTH_SOFT_DEMOTE) on a model: its authSoft_<model>
 // record (cleared with a new key, a toggle or the model's Clear), cached in
-// memory with the lease of a try that is out.
+// memory with the lease of a try that is out. None while AUTH_SOFT_DEMOTE is off.
 function softRecord(c, model) {
   const key = `${c.id}|${model}`;
-  const stored = c[getAuthSoftKey(model)];
+  const stored = AUTH_SOFT_DEMOTE.enabled ? c[getAuthSoftKey(model)] : null;
   if (!stored?.since) {
     softDemotions.delete(key);
     return null;
@@ -205,7 +205,12 @@ function nextAuthFailStreak(conn, model, status, sameUpstream) {
   // when this key succeeded after the streak began on a request whose snapshot
   // predates it, or when a timestamp is unreadable or in the future (the
   // negated range check is also false for NaN).
-  const maxGapMs = conn.authFailSameUpstream === true ? AUTH_DEAD_CONFIG.minWindowMs : AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
+  // Since a soft demotion forgot the key's refusals (authFailCarryCross), its
+  // streaks need crossUpstreamWindowMs but start over after a gap over
+  // minWindowMs, until it serves: whether its untried requests would have
+  // served or been refused, they trip no sooner than either would have.
+  const carry = AUTH_SOFT_DEMOTE.enabled && !!conn.authFailCarryCross;
+  const maxGapMs = conn.authFailSameUpstream === true || carry ? AUTH_DEAD_CONFIG.minWindowMs : AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
   const fresh = !(now - firstAt >= 0)
     || !(sinceLast >= 0 && sinceLast <= maxGapMs)
     || succeededSince(conn.id, firstAt + 1);
@@ -226,10 +231,8 @@ function nextAuthFailStreak(conn, model, status, sameUpstream) {
     authFailLastAt: new Date(now).toISOString(),
     authFailModels: models.includes(model) ? models : [...models, model].slice(-MAX_TRACKED_MODELS),
     authFailAll401: Number(status) === 401 && (fresh || conn.authFailAll401 === true),
-    // A streak cleared when the key was soft-demoted on a model hands its
-    // crossUpstreamWindowMs on to the next one (authFailCarryCross).
-    authFailSameUpstream: sameUpstream && conn.authFailCarryCross !== true && (fresh || conn.authFailSameUpstream === true),
-    authFailCarryCross: null,
+    authFailSameUpstream: sameUpstream && !carry && (fresh || conn.authFailSameUpstream === true),
+    authFailCarryCross: carry ? conn.authFailCarryCross : null,
   };
 }
 
@@ -891,8 +894,8 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   // upstream served), the key refused on this model alone and not turned off.
   // Its untried requests might serve, so the turn-off rules forget its refusals
   // as a success on this model would make them (authFail* cleared,
-  // authDemote_<model> lifted, authDemoteOkAt noted), keeping the hour the
-  // cleared streak needed for the next one.
+  // authDemote_<model> lifted, authDemoteOkAt noted), and marks the key's later
+  // streaks (authFailCarryCross, see nextAuthFailStreak).
   const tally = plan.demote?.to;
   const entersSoft = AUTH_SOFT_DEMOTE.enabled && !paused && !!tally && !tally.demotedAt
     && countSpans(tally, plan.nowMs, AUTH_DEAD_CONFIG.minWindowMs)
@@ -901,7 +904,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const since = entersSoft ? new Date(plan.nowMs).toISOString() : null;
   const softEntry = entersSoft ? {
     ...AUTH_FAIL_CLEARED,
-    authFailCarryCross: (authFailStreak ?? conn).authFailSameUpstream === false || conn.authFailCarryCross === true || null,
+    authFailCarryCross: since,
     authDemoteOkAt: since,
     [getAuthSoftKey(model)]: { level: 0, since, tryAt: new Date(plan.nowMs + probeMs(0)).toISOString(), lastRefusedAt: since, keyRefused: !tally.modelScoped },
   } : null;
@@ -924,8 +927,10 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     ...softTry,
   };
   // A key pasted in while this request was on its way isn't blamed for it.
-  const options = entersSoft ? [{ liftDemote: model, apiKeyUsed: requestApiKey ?? conn.apiKey }]
-    : authFailStreak || demote ? [{ autoDisable: disabling, demote, apiKeyUsed: requestApiKey ?? conn.apiKey }] : [];
+  const apiKeyUsed = requestApiKey ?? conn?.apiKey;
+  const options = entersSoft ? [{ liftDemote: model, apiKeyUsed }]
+    : authFailStreak || demote ? [{ autoDisable: disabling, demote, apiKeyUsed }]
+      : Object.keys(softDue).length || Object.keys(softTry).length ? [{ apiKeyUsed }] : [];
   const saved = await updateProviderConnection(connectionId, update, ...options);
   const turnedOff = disabling && saved?.isActive === false && saved.autoDisabledAt === disabling.autoDisabledAt;
   const recorded = demote && JSON.stringify(saved?.[getAuthDemoteKey(model)]) === JSON.stringify(demote.to);
@@ -959,7 +964,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
   if (!connectionId || connectionId === "noauth") return;
   recordSuccess(connectionId, model);
   const conn = currentConnection._connection || currentConnection;
-  const softHere = !!model && !!conn[getAuthSoftKey(model)];
+  const softHere = !!model && softDemoted(conn, model);
   if (model) softDemotions.delete(`${connectionId}|${model}`);
   if (softHere) log.info("AUTH", `${conn.displayName || conn.name || conn.email || connectionId.slice(0, 8)} soft demotion on ${model} lifted`);
   const now = Date.now();
@@ -976,7 +981,8 @@ export async function clearAccountError(connectionId, currentConnection, model =
   // soon after a restart can't otherwise see.
   const demoteRecord = !!model && (!!conn[getAuthDemoteKey(model)] || softHere);
   const otherRecords = Object.entries(conn).filter(([k, r]) => k.startsWith(AUTH_DEMOTE_PREFIX) && k !== getAuthDemoteKey(model) && r);
-  const otherSoft = Object.entries(conn).filter(([k, r]) => k.startsWith(AUTH_SOFT_PREFIX) && k !== getAuthSoftKey(model) && r?.since);
+  const otherSoft = AUTH_SOFT_DEMOTE.enabled
+    ? Object.entries(conn).filter(([k, r]) => k.startsWith(AUTH_SOFT_PREFIX) && k !== getAuthSoftKey(model) && r?.since) : [];
   const firstThisBoot = !authEvents.servedKeys.has(connectionId);
   if (firstThisBoot) authEvents.servedKeys.add(connectionId);
   const noteServed = authEvents.demoteKeys.delete(connectionId) || firstThisBoot

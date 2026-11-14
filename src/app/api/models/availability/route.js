@@ -6,6 +6,7 @@ import {
 import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey, AUTH_SOFT_PREFIX, getAuthSoftKey } from "@/lib/db/index.js";
 import { MODEL_LOCK_PREFIX } from "open-sse/services/accountFallback.js";
 import { clearSoftDemotions } from "@/lib/softDemotions.js";
+import { AUTH_SOFT_DEMOTE } from "open-sse/config/runtimeConfig.js";
 
 function getActiveModelLocks(connection) {
   const now = Date.now();
@@ -61,7 +62,7 @@ export async function GET() {
       }
       // Soft demotions: other keys go first there until it serves again.
       for (const [key, soft] of Object.entries(connection)) {
-        if (connection.isActive === false || !key.startsWith(AUTH_SOFT_PREFIX) || !soft?.since) continue;
+        if (!AUTH_SOFT_DEMOTE.enabled || connection.isActive === false || !key.startsWith(AUTH_SOFT_PREFIX) || !soft?.since) continue;
         const model = key.slice(AUTH_SOFT_PREFIX.length);
         if (locks.some((lock) => lock.model === model)) continue;
         const tryDue = !(new Date(soft.tryAt).getTime() > Date.now());

@@ -15,6 +15,22 @@ vi.mock("@/sse/utils/logger.js", () => ({
   debug: vi.fn(), error: vi.fn(),
   warn: (...args) => logged.warn.push(args.join(" ")), info: (...args) => logged.info.push(args.join(" ")),
 }));
+// beforeProxyLookup(fn) runs fn inside the next refusal, after auth.js read the
+// connection and before it writes.
+const proxyHook = vi.hoisted(() => ({ fn: null }));
+const beforeProxyLookup = (fn) => { proxyHook.fn = fn; };
+vi.mock("@/lib/network/connectionProxy", async (importOriginal) => {
+  const real = await importOriginal();
+  return {
+    ...real,
+    resolveConnectionProxyConfig: async (psd) => {
+      const fn = proxyHook.fn;
+      proxyHook.fn = null;
+      await fn?.();
+      return real.resolveConnectionProxyConfig(psd);
+    },
+  };
+});
 
 const originalDataDir = process.env.DATA_DIR;
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "10router-soft-demote-"));
@@ -282,7 +298,7 @@ describe("soft demotion", () => {
     const [key, near] = await accounts(["k", "near"], { shared: true });
     const [far] = await accounts(["far"]);
     await refuse(key.id, far, { times: 6 });
-    expect((await load(key.id)).authFailCarryCross).toBe(true);
+    expect((await load(key.id)).authFailCarryCross).toBe(new Date().toISOString());
     vi.advanceTimersByTime(MIN);
     await succeed(key.id, KIMI);
     expect((await load(key.id)).authFailCarryCross ?? null).toBeNull();
@@ -312,7 +328,10 @@ describe("soft demotion", () => {
         }
       }
     }
+    // A try 10, 30, 70, 160 and 340 minutes in on each model.
+    expect(refusals).toBeGreaterThanOrEqual(8);
     expect(refusals).toBeLessThanOrEqual(12);
+    expect((await load(dead.id)).isActive).toBe(true);
   });
 
   it("counts a soft-demoted key that served nothing since as dead in the key lifespan estimate when it is replaced", async () => {
@@ -327,6 +346,74 @@ describe("soft demotion", () => {
     await succeed(key.id, KIMI);
     await db.updateProviderConnection(key.id, { apiKey: "sk-test-a-replaced-0123456789" });
     expect((await load(key.id)).pastKeys).toBeUndefined();
+  });
+
+  it("stores a refused try, so a restart keeps its next wait", async () => {
+    const { key, peer } = await softDemoted();
+    vi.advanceTimersByTime(10 * MIN);
+    expect(await pick(OPUS)).toBe(key.id);
+    await succeed(peer.id, OPUS);
+    await failOnce(key.id, OPUS);
+    expect((await load(key.id))[`authSoft_${OPUS}`]).toMatchObject({
+      level: 1, tryAt: new Date(Date.now() + 20 * MIN).toISOString(), lastRefusedAt: new Date().toISOString(),
+    });
+    global._softDemotions.clear();
+    vi.advanceTimersByTime(19 * MIN);
+    expect(await pick(OPUS)).toBe(peer.id);
+    vi.advanceTimersByTime(MIN);
+    expect(await pick(OPUS)).toBe(key.id);
+  });
+
+  it("starts its later streaks over after a gap of more than 10 minutes, as on its upstream", async () => {
+    const [key, near] = await accounts(["k", "near"], { shared: true });
+    const [far] = await accounts(["far"]);
+    await refuse(key.id, far, { times: 6 });
+    vi.advanceTimersByTime(61 * MIN);
+    await refuse(key.id, near, { times: 2, model: KIMI, stepMs: 10 * MIN });
+    expect(await load(key.id)).toMatchObject({ authFailCount: 2, authFailSameUpstream: false });
+    vi.advanceTimersByTime(11 * MIN);
+    await refuse(key.id, near, { times: 1, model: KIMI });
+    expect(await load(key.id)).toMatchObject({ authFailCount: 1, authFailSameUpstream: false });
+  });
+
+  it("soft-demotes a key refused on a model only its far peer serves, its near peer lacking it", async () => {
+    const [key, near] = await accounts(["k", "near"], { shared: true });
+    const [far] = await accounts(["far"]);
+    for (let i = 0; i < 6; i++) {
+      if (i > 0) vi.advanceTimersByTime(2 * MIN);
+      await failOnce(near.id, OPUS);
+      await succeed(far.id, OPUS);
+      await failOnce(key.id, OPUS);
+    }
+    expect(auth.__test__.softDemoted(await load(key.id), OPUS)).toBe(true);
+  });
+
+  it("marks a soft demotion for refusals of just that model, and keeps it out of the key lifespan estimate", async () => {
+    const [key, peer] = await accounts(["a", "b"]);
+    const lacks = `[403]: {"error":{"message":"Your organization does not have access to model ${OPUS}"}}`;
+    for (let i = 0; i < 6; i++) {
+      if (i > 0) vi.advanceTimersByTime(2 * MIN);
+      await succeed(peer.id, OPUS);
+      await auth.markAccountUnavailable(key.id, 403, lacks, provider, OPUS);
+    }
+    expect((await load(key.id))[`authSoft_${OPUS}`]).toMatchObject({ keyRefused: false });
+    await db.updateProviderConnection(key.id, { apiKey: "sk-test-a-replaced-0123456789" });
+    expect((await load(key.id)).pastKeys).toBeUndefined();
+  });
+
+  it("doesn't soft-demote a key pasted in while the refusal that would was on its way", async () => {
+    const [key, peer] = await accounts(["a", "b"]);
+    await refuse(key.id, peer, { times: 5 });
+    vi.advanceTimersByTime(2 * MIN);
+    await succeed(peer.id, OPUS);
+    beforeProxyLookup(() => db.updateProviderConnection(key.id, { apiKey: "sk-test-a-pasted-0123456789" }));
+    await failOnce(key.id, OPUS, "sk-test-a-0123456789");
+    const conn = await load(key.id);
+    expect(conn.apiKey).toBe("sk-test-a-pasted-0123456789");
+    expect(conn[`authSoft_${OPUS}`] ?? null).toBeNull();
+    expect(conn.authDemoteOkAt ?? null).toBeNull();
+    vi.advanceTimersByTime(3 * MIN);
+    expect(await pick(OPUS)).toBe(key.id);
   });
 
   it("ends on that model when its cooldown is cleared", async () => {
@@ -378,5 +465,20 @@ describe("AUTH_SOFT_DEMOTE", () => {
     vi.advanceTimersByTime(3 * MIN);
     expect((await freshAuth.getProviderCredentials(provider, null, OPUS)).connectionId).toBe(key.id);
     expect((await freshDb.getProviderConnectionById(key.id)).authFailCount).toBe(6);
+  });
+
+  it("set to 0, ignores a soft demotion stored while it was on", async () => {
+    const { key, peer } = await softDemoted();
+    expect((await load(key.id))[`authSoft_${OPUS}`]).toBeTruthy();
+    vi.stubEnv("AUTH_SOFT_DEMOTE", "0");
+    vi.resetModules();
+    const freshDb = await import("@/lib/db/index.js");
+    const freshAuth = await import("@/sse/services/auth.js");
+    global._softDemotions.clear();
+    vi.advanceTimersByTime(3 * MIN);
+    expect((await freshAuth.getProviderCredentials(provider, null, OPUS)).connectionId).toBe(key.id);
+    await freshAuth.clearAccountError(peer.id, await freshDb.getProviderConnectionById(peer.id), OPUS);
+    await freshAuth.markAccountUnavailable(key.id, 403, REFUSED_403, provider, OPUS);
+    expect(await freshDb.getProviderConnectionById(key.id)).toMatchObject({ authFailCount: 1, [`authDemote_${OPUS}`]: { count: 1 } });
   });
 });

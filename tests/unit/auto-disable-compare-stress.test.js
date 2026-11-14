@@ -147,6 +147,21 @@ for (const end of [40, 70]) {
     (m) => (m < 13 ? ["opus"] : [m % 2 ? "sonnet" : "haiku"]), (m, model) => (model === "opus" ? m < 13 : m < end), "opus");
 }
 
+// Opus, which only the far peer serves, every minute for 13 minutes, K refused
+// on it; then idle; from `start`, a burst of sonnet and haiku every `gap`
+// minutes, which the near peer serves and K is refused on (until `stop`).
+for (const [start, gap, totalMin, stop = Infinity] of [
+  [80, 20, 200], [80, 15, 200], [75, 12, 200], [80, 30, 220], [80, 20, 145], [1440, 20, 1560], [80, 20, 260, 142],
+]) {
+  cases[`idle then near ${start},${gap},${totalMin},${stop}`] = (layout) => offMinute(layout, totalMin,
+    (m) => (m < 13 ? ["opus"] : m >= start && m < stop && (m - start) % gap === 0 ? ["sonnet", "haiku"] : []),
+    (m, model) => (model === "opus" ? m < 13 : true), "opus");
+}
+// The same, with bursts alternating between two pairs of models.
+cases["idle then near, rotating"] = (layout) => offMinute(layout, 260,
+  (m) => (m < 13 ? ["opus"] : m >= 80 && (m - 80) % 15 === 0 ? (((m - 80) / 15) % 2 ? ["sonnet", "haiku"] : ["m4", "m5"]) : []),
+  (m, model) => (model === "opus" ? m < 13 : true), "opus");
+
 it("turns no key off sooner than master, or where master keeps it on", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   const out = {};

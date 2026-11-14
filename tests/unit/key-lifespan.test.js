@@ -417,21 +417,16 @@ describe("getKeyLifespans", () => {
       expect((await repo.getKeyLifespans(provider, { now: NOW })).estimate).toMatchObject({ sampleSize: 4 });
     });
 
-    it("keeps such a key as a dead key when it is switched off by hand, and counts it afresh if switched back on", async () => {
+    // It may be a good key someone switched off and on to retry it.
+    it("adds no dead key when such a key is switched off and on by hand", async () => {
       await withDeadPeers();
       const x = await addKey("switched-off");
       record(x, { at: NOW - 10 * HOUR, cost: 450 });
       await refusedAt(x, NOW - 9 * HOUR);
-      at(NOW - 5 * HOUR);
       await db.updateProviderConnection(x, { isActive: false });
-      expect(await db.getProviderConnectionById(x)).toMatchObject({
-        pastKeys: [{ since: "", until: iso(NOW - 9 * HOUR) }], keySetAt: iso(NOW - 5 * HOUR),
-      });
       await db.updateProviderConnection(x, { isActive: true });
-      await db.updateProviderConnection(x, { isActive: false });
-      vi.useRealTimers();
-      expect((await db.getProviderConnectionById(x)).pastKeys).toHaveLength(1);
-      expect((await repo.getKeyLifespans(provider, { now: NOW })).estimate).toMatchObject({ sampleSize: 4 });
+      expect((await db.getProviderConnectionById(x)).pastKeys).toBeUndefined();
+      expect((await repo.getKeyLifespans(provider, { now: NOW })).estimate).toMatchObject({ sampleSize: 3 });
     });
 
     it.each([
