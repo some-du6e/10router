@@ -1,6 +1,6 @@
 // anthropic-beta handling for user-added Anthropic-compatible endpoints.
 //
-// The header is one comma-separated list of flags. Some third-party gateways
+// The header is one comma-separated list of flags. Third-party gateways may
 // accept some flags and 400 on the rest, naming them (seen 2026-10-19):
 //   Unexpected value(s) `oauth-2025-04-20`, `redact-thinking-2026-02-12` for the
 //   `anthropic-beta` header. Please consult our documentation ... or try again
