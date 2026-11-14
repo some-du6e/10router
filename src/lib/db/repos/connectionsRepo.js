@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { DEMOTE_PREFIX } from "../../../shared/utils/connectionStatus.js";
+import { clearSoftDemotions } from "../../softDemotions.js";
 
 const OPTIONAL_FIELDS = [
   "displayName", "email", "globalPriority", "defaultModel",
@@ -30,12 +31,22 @@ export const getAuthDemoteKey = (model) => `${AUTH_DEMOTE_PREFIX}${model}`;
 // ({ since, until }) the key lifespan estimate counts as dead keys.
 export const PAST_KEYS_CAP = 50;
 
+// The key's last answer refused it, after it was set: a dead key the router
+// left on (soft-demoted, say) when it is replaced or switched off by hand.
+const refusedLast = (c) => (c.errorCode === 401 || c.errorCode === 403) && c.testStatus === "unavailable"
+  && typeof c.lastErrorAt === "string" && c.lastErrorAt > (c.keySetAt || "");
+
 function applyAutoDisableTransition(existing, merged, data) {
   const newKey = String(data.apiKey ?? "").trim();
   const keyChanged = newKey !== "" && newKey !== String(existing.apiKey ?? "").trim();
-  if (keyChanged && existing.isActive === false && existing.autoDisabledAt) {
+  const switchedOff = !keyChanged && existing.isActive !== false && data.isActive === false && data.autoDisabledAt === undefined;
+  const until = existing.isActive === false && existing.autoDisabledAt ? existing.autoDisabledAt
+    : (keyChanged || switchedOff) && refusedLast(existing) ? existing.lastErrorAt : null;
+  if ((keyChanged || switchedOff) && until) {
     const past = Array.isArray(existing.pastKeys) ? existing.pastKeys : [];
-    merged.pastKeys = [...past, { since: existing.keySetAt || "", until: existing.autoDisabledAt }].slice(-PAST_KEYS_CAP);
+    merged.pastKeys = [...past, { since: existing.keySetAt || "", until }].slice(-PAST_KEYS_CAP);
+    // Its spend so far is that window's; the key, if switched back on, counts from here.
+    if (switchedOff) merged.keySetAt = new Date().toISOString();
   }
   // A different key pasted into a connection the router turned off fixes it.
   if (existing.autoDisabledAt && data.isActive === undefined && keyChanged) merged.isActive = true;
@@ -43,6 +54,7 @@ function applyAutoDisableTransition(existing, merged, data) {
   if (reEnabled || keyChanged) {
     // A new key or turning the key back on clears its demotions too.
     for (const k of Object.keys(merged)) if (k.startsWith(AUTH_DEMOTE_PREFIX)) merged[k] = null;
+    clearSoftDemotions(existing.id);
   }
   if (reEnabled) {
     for (const f of AUTO_DISABLE_FIELDS) delete merged[f];

@@ -1,8 +1,9 @@
 name: Dead-key stress
 
 # Replays the dead-key routing scenarios (tests/unit/auto-disable-stress.test.js)
-# on this branch, pinned. A manual run also replays them on master's auth code
-# for comparison.
+# on this branch, pinned, and checks no key goes off sooner than master's pinned
+# minutes (auto-disable-compare-stress.test.js). A manual run also checks those
+# pins against master's auth code and replays the scenarios there.
 on:
   pull_request:
     paths:
@@ -13,6 +14,8 @@ on:
       - "tests/unit/auto-disable-stress.test.js"
       - "tests/unit/auto-disable-stress.pinned.json"
       - "tests/unit/auth-soft-demote.test.js"
+      - "tests/unit/auto-disable-compare-stress.test.js"
+      - "tests/unit/auto-disable-compare.master.json"
       - "tests/unit/auto-disable-dead-keys.test.js"
       - "tests/vitest.stress.config.js"
       - "tests/vitest.shared.js"
@@ -50,6 +53,21 @@ jobs:
         if: always()
         working-directory: tests
         run: ./node_modules/.bin/vitest run unit/auth-soft-demote.test.js unit/auto-disable-dead-keys.test.js
+      # No key off sooner than master's pinned minute, or where master keeps it on.
+      - name: Turn-offs against master's pins
+        if: always()
+        working-directory: tests
+        run: ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-compare-stress.test.js
+      # On a manual run: the pins must be master's minutes. After an auth change
+      # merges, regenerate them (COMPARE_OUT=unit/auto-disable-compare.master.json
+      # on master) or this step fails.
+      - name: Master's pins, master's auth code
+        if: always() && github.event_name == 'workflow_dispatch'
+        env:
+          COMPARE_BASELINE: master
+        run: |
+          git checkout origin/master -- src open-sse
+          cd tests && ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-compare-stress.test.js
       # For comparison only, on a manual run: master's numbers never fail the job.
       - name: Stress, master's auth code
         if: always() && github.event_name == 'workflow_dispatch'

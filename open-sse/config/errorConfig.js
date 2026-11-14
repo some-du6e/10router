@@ -54,7 +54,8 @@ export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 // that server is down. A gap longer than the streak's window starts it over. A
 // streak with gaps over minWindowMs trips once the failures since the last such
 // gap span the window on their own, or once it has 2 bursts (2+ counted
-// failures with no such gap between them) and spans the window.
+// failures with no such gap between them) and spans the window. A key
+// soft-demoted on a model (AUTH_SOFT_DEMOTE) adds no failures there.
 export const AUTH_DEAD_CONFIG = {
   minFailures: 5,
   minWindowMs: 10 * 60 * 1000,
@@ -71,6 +72,8 @@ export const AUTH_DEAD_CONFIG = {
 // demoted key still gets one request probeMs[0] after demotion, and each refused
 // probe waits for the next of probeMs (the last repeating); a probe left
 // unanswered is retaken after probeLeaseMs. A success brings the key back.
+// Where a count needs crossUpstreamWindowMs, AUTH_SOFT_DEMOTE (runtimeConfig.js)
+// acts at minWindowMs instead, in routing only, on the same probe schedule.
 export const AUTH_DEMOTE_CONFIG = {
   probeMs: [10, 20, 40, 90, 180].map(min => min * 60 * 1000),
   probeLeaseMs: 10 * 60 * 1000,

@@ -18,8 +18,6 @@ export const HTTP_STATUS = {
 
 // Re-export error config (backward compat)
 export { ERROR_TYPES, DEFAULT_ERROR_MESSAGES, BACKOFF_CONFIG, COOLDOWN_MS } from "./errorConfig.js";
-import { AUTH_DEMOTE_CONFIG } from "./errorConfig.js";
-
 // Cache TTLs (seconds)
 export const CACHE_TTL = {
   userInfo: 300,    // 5 minutes
@@ -92,16 +90,14 @@ export const CACHE_AFFINITY = {
   jitterMs: 250,
 };
 
-// An API key refused for itself on a model (refusals AUTH_DEAD_CONFIG counts)
-// minFailures times spanning minWindowMs is soft-demoted there until it serves
-// that model: it goes after the provider's other keys, but for one try on the
-// schedule of AUTH_DEMOTE_CONFIG's probes, and its refusals there no longer
-// count toward demoting or turning it off. Kept in memory. Env:
-// AUTH_SOFT_DEMOTE, 1 (on) or 0 (off).
+// Soft demotion (sse/services/auth.js): an API key whose demotion count on a
+// model would demote it in minWindowMs, but needs crossUpstreamWindowMs because
+// a peer on another upstream served, goes after the other keys there, with
+// tries on AUTH_DEMOTE_CONFIG's probe schedule, until it serves that model;
+// meanwhile its refusals there don't count toward demoting or turning it off.
+// Kept in memory. Env: AUTH_SOFT_DEMOTE=0 turns it off; anything else leaves it on.
 export const AUTH_SOFT_DEMOTE = {
-  enabled: envInt("AUTH_SOFT_DEMOTE", 1, { max: 1 }) === 1,
-  probeMs: AUTH_DEMOTE_CONFIG.probeMs,
-  probeLeaseMs: AUTH_DEMOTE_CONFIG.probeLeaseMs,
+  enabled: envInt("AUTH_SOFT_DEMOTE", 1, { max: 1 }) !== 0,
 };
 
 // Inter-chunk stall timeout (once tokens are flowing). Generous headroom so

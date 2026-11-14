@@ -1290,7 +1290,9 @@ describe("a key refused on only one model", () => {
       }
     }
     // Its own base URL: soft-demoted, as the demotion would after an hour.
-    expect(auth.__test__.softDemoted(await load(dead.id), OPUS_M)).toBe(true);
+    const conn = await load(dead.id);
+    expect(auth.__test__.softDemoted(conn, OPUS_M)).toBe(true);
+    expect(conn.isActive).toBe(true);
   });
 
   it.each([
@@ -2469,14 +2471,15 @@ describe("keys of one endpoint on different upstreams", () => {
     return bySeed;
   }
 
-  // Or soft-demoted, where its refusals stop counting toward turning it off.
+  // A soft-demoted key's refusals stop counting toward turning it off.
   it.each([
     [3, 8, 90],
     [8, 10, 150],
-  ])("turns off the dead key under light steady traffic, a request every %i-%i minutes, within %i minutes", async (minMin, maxMin, limitMin) => {
+  ])("turns off or soft-demotes the dead key under light steady traffic, a request every %i-%i minutes, within %i minutes", async (minMin, maxMin, limitMin) => {
     const bySeed = await tripMinutesBySeed(minMin, maxMin, limitMin + 1);
-    const late = Object.entries(bySeed).filter(([, { minutes, soft }]) => (minutes === null || minutes > limitMin) && !soft);
-    expect(late).toEqual([]);
+    const late = Object.values(bySeed).filter(({ minutes }) => minutes === null || minutes > limitMin);
+    expect(late.filter(({ soft }) => !soft)).toEqual([]);
+    expect(late.length).toBeLessThanOrEqual(3);
   }, 120000);
 
   // The first session leaves one counted failure: under fill-first a model's
@@ -2601,8 +2604,8 @@ describe("keys of one endpoint on different upstreams", () => {
         const conn = await load(key.id);
         expect(conn.isActive).toBe(true);
         if (conn.lastErrorAt && conn.lastErrorAt !== before.lastErrorAt) (refusals[model] ??= []).push(minute);
-        if ((conn[`authDemote_${model}`]?.demotedAt && !before[`authDemote_${model}`]?.demotedAt)
-          || (auth.__test__.softDemoted(conn, model) && !softBefore)) demotions.push([minute, model]);
+        if (conn[`authDemote_${model}`]?.demotedAt && !before[`authDemote_${model}`]?.demotedAt) demotions.push([minute, model, "hard"]);
+        if (auth.__test__.softDemoted(conn, model) && !softBefore) demotions.push([minute, model, "soft"]);
       }
     }
     return { refusals, demotions, served };
@@ -2614,17 +2617,18 @@ describe("keys of one endpoint on different upstreams", () => {
 
   // The live case of 2026-10-28: only claude-opus-5-5 in use, someone working
   // 10 minutes and pausing 13; master refuses the dead key 159 times in 12 hours.
-  // On another account it is soft-demoted, as soon as a demotion on the same.
+  // On another account it is soft-demoted, as soon as it is demoted on the same.
   it.each([
-    ["on another account", "acct-dead", "acct-live", 20, 30, 7, 13],
-    ["on the same account", "acct-shared", "acct-shared", 20, 30, 7, 13],
+    ["on another account", "acct-dead", "acct-live", "soft", 20, 30, 7, 13],
+    ["on the same account", "acct-shared", "acct-shared", "hard", 20, 30, 7, 13],
   ])("demotes a dead key refused on the only model in use, its peer %s, and keeps trying it rarely", async (
-    _label, own, peer, minDemoteMin, maxDemoteMin, maxBefore, maxTotal,
+    _label, own, peer, kind, minDemoteMin, maxDemoteMin, maxBefore, maxTotal,
   ) => {
     const dead = await addKey("a", snowflake(own, own === peer ? {} : { ownBaseUrl: true }));
     const healthy = await addKey("b", snowflake(peer));
     const { refusals, demotions } = await watch(dead, { modelsAt: opusOnly(10, 13), totalMin: 12 * 60 });
-    const [[demotedAt]] = demotions;
+    const [[demotedAt, , demotedKind]] = demotions;
+    expect(demotedKind).toBe(kind);
     expect(demotedAt - refusals[OPUS][0]).toBeGreaterThanOrEqual(minDemoteMin);
     expect(demotedAt - refusals[OPUS][0]).toBeLessThanOrEqual(maxDemoteMin);
     expect(refusals[OPUS].filter((m) => m <= demotedAt).length).toBeLessThanOrEqual(maxBefore);
@@ -2633,10 +2637,10 @@ describe("keys of one endpoint on different upstreams", () => {
   }, 60000);
 
   it.each([
-    ["on the same account, kimi every 3 minutes", "acct-shared", "acct-shared", 3, 3 * 60, 15],
-    ["on another account, kimi every 20 minutes", "acct-dead", "acct-live", 20, 10 * 60, 40],
+    ["on the same account, kimi every 3 minutes", "acct-shared", "acct-shared", "hard", 3, 3 * 60, 15],
+    ["on another account, kimi every 20 minutes", "acct-dead", "acct-live", "soft", 20, 10 * 60, 40],
   ])("demotes a key that lacks opus but serves kimi, its peer %s, and keeps serving kimi", async (
-    _label, own, peer, kimiEveryMin, totalMin, maxOpusRefusals,
+    _label, own, peer, kind, kimiEveryMin, totalMin, maxOpusRefusals,
   ) => {
     const partial = await addKey("a", snowflake(own, own === peer ? {} : { ownBaseUrl: true }));
     await addKey("b", snowflake(peer));
@@ -2644,7 +2648,7 @@ describe("keys of one endpoint on different upstreams", () => {
     const { refusals, demotions, served } = await watch(partial, {
       modelsAt, totalMin, refuses: (model) => model === OPUS,
     });
-    expect(demotions.map(([, model]) => model)).toEqual([OPUS]);
+    expect(demotions.map(([, model, k]) => [model, k])).toEqual([[OPUS, kind]]);
     expect(refusals[OPUS].length).toBeLessThanOrEqual(maxOpusRefusals);
     expect(served.filter(([, model]) => model === KIMI).every(([, , id]) => id === partial.id)).toBe(true);
   }, 60000);
@@ -2656,7 +2660,7 @@ describe("keys of one endpoint on different upstreams", () => {
     const refuses = (model, minute) => (model === "m1" ? minute < 30 : minute === 48 || minute === 52);
     const { demotions, served } = await watch(key, { modelsAt, totalMin: 90, refuses });
     // Its first refusal has no peer success before it, so counting starts at minute 2.
-    expect(demotions).toEqual([[12, "m1"]]);
+    expect(demotions).toEqual([[12, "m1", "hard"]]);
     // The probe at 22 is refused; the next, 20 minutes on, finds m1 working.
     const back = served.find(([minute, model, id]) => minute >= 30 && model === "m1" && id === key.id)[0];
     expect(back).toBe(42);
@@ -2689,7 +2693,7 @@ describe("keys of one endpoint on different upstreams", () => {
     ["opus, and sonnet every 2 hours", 1, 180, null],
     ["opus, then haiku", 0, null, 210],
     ["opus, then haiku", 1, 186, null],
-  ])("turns off a key dead on every model someone uses one at a time (%s), its peer %s (0 same account, 1 another), master at %s, by %s", async (
+  ])("turns off a key dead on every model someone uses one at a time (%s), its peer %s (0 same account, 1 another), master at %s, here by %s (null: never)", async (
     name, upstream, _master, byMin,
   ) => {
     const [, own, peer] = UPSTREAMS[upstream];

@@ -396,6 +396,53 @@ describe("getKeyLifespans", () => {
       expect((await repo.getKeyLifespans(provider, { now: NOW })).estimate).toBeNull();
     });
 
+    // A key the router left on (soft-demoted, say) after it died.
+    const refusedAt = (id, ms) => db.updateProviderConnection(id, { errorCode: 403, testStatus: "unavailable", lastErrorAt: iso(ms) });
+
+    it("keeps a key whose last answer refused it as a dead key when it is replaced", async () => {
+      await withDeadPeers();
+      const x = await addKey("left-on");
+      record(x, { at: NOW - 10 * HOUR, cost: 450 });
+      await refusedAt(x, NOW - 9 * HOUR);
+      at(NOW - 5 * HOUR);
+      await db.updateProviderConnection(x, { apiKey: "sk-test-left-on-NEW-0123456789" });
+      vi.useRealTimers();
+      expect((await db.getProviderConnectionById(x)).pastKeys).toEqual([{ since: "", until: iso(NOW - 9 * HOUR) }]);
+      expect((await repo.getKeyLifespans(provider, { now: NOW })).estimate).toMatchObject({ sampleSize: 4 });
+    });
+
+    it("keeps such a key as a dead key when it is switched off by hand, and counts it afresh if switched back on", async () => {
+      await withDeadPeers();
+      const x = await addKey("switched-off");
+      record(x, { at: NOW - 10 * HOUR, cost: 450 });
+      await refusedAt(x, NOW - 9 * HOUR);
+      at(NOW - 5 * HOUR);
+      await db.updateProviderConnection(x, { isActive: false });
+      expect(await db.getProviderConnectionById(x)).toMatchObject({
+        pastKeys: [{ since: "", until: iso(NOW - 9 * HOUR) }], keySetAt: iso(NOW - 5 * HOUR),
+      });
+      await db.updateProviderConnection(x, { isActive: true });
+      await db.updateProviderConnection(x, { isActive: false });
+      vi.useRealTimers();
+      expect((await db.getProviderConnectionById(x)).pastKeys).toHaveLength(1);
+      expect((await repo.getKeyLifespans(provider, { now: NOW })).estimate).toMatchObject({ sampleSize: 4 });
+    });
+
+    it.each([
+      ["served last", { testStatus: "active" }],
+      ["last refused before this key was set", { errorCode: 403, testStatus: "unavailable", lastErrorAt: "2000-01-01T00:00:00.000Z" }],
+      ["last rate-limited", { errorCode: 429, testStatus: "unavailable", lastErrorAt: iso(NOW - 9 * HOUR) }],
+    ])("adds no dead key when a key that %s is replaced or switched off by hand", async (_label, state) => {
+      const x = await addKey("fine");
+      const y = await addKey("fine-too");
+      at(NOW - 10 * HOUR);
+      for (const id of [x, y]) await db.updateProviderConnection(id, { keySetAt: iso(NOW - 20 * HOUR), ...state });
+      await db.updateProviderConnection(x, { apiKey: "sk-test-fine-NEW-0123456789" });
+      await db.updateProviderConnection(y, { isActive: false });
+      vi.useRealTimers();
+      for (const id of [x, y]) expect((await db.getProviderConnectionById(id)).pastKeys).toBeUndefined();
+    });
+
     it("keeps only the last 50 replaced keys", async () => {
       const x = await addKey("many");
       for (let i = 0; i < 55; i++) {

@@ -5,6 +5,7 @@ import {
 } from "@/lib/localDb";
 import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey } from "@/lib/db/index.js";
 import { MODEL_LOCK_PREFIX } from "open-sse/services/accountFallback.js";
+import { clearSoftDemotions } from "@/lib/softDemotions.js";
 
 function getActiveModelLocks(connection) {
   const now = Date.now();
@@ -95,6 +96,7 @@ export async function POST(request) {
     const connections = await getProviderConnections({ provider });
     const lockKey = `${MODEL_LOCK_PREFIX}${model}`;
     const demoteKey = getAuthDemoteKey(model);
+    for (const connection of connections) clearSoftDemotions(connection.id, model);
 
     await Promise.all(
       connections

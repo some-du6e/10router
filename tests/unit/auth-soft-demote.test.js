@@ -1,7 +1,7 @@
-// A key refused for itself on a model while other keys serve it is soft-demoted
-// there: tried after them, but for one try on the probe schedule, and its
-// refusals there stop counting toward turning it off. Runs against the real
-// SQLite repo.
+// A key on its own account, refused for itself on a model while other keys
+// serve it, is soft-demoted there: tried after them but for a try on the probe
+// schedule, and its refusals there stop counting toward turning it off. Runs
+// against the real SQLite repo.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,13 +10,17 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 vi.mock("next/server", () => ({
   NextResponse: { json: (body, init = {}) => new Response(JSON.stringify(body), { status: init.status || 200 }) },
 }));
-vi.mock("@/sse/utils/logger.js", () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
+const logged = vi.hoisted(() => ({ warn: [], info: [] }));
+vi.mock("@/sse/utils/logger.js", () => ({
+  debug: vi.fn(), error: vi.fn(),
+  warn: (...args) => logged.warn.push(args.join(" ")), info: (...args) => logged.info.push(args.join(" ")),
+}));
 
 const originalDataDir = process.env.DATA_DIR;
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "10router-soft-demote-"));
 process.env.DATA_DIR = tempDir;
 
-const DEAD_403 = '[403]: {"code":"003001","message":"Not authorized for this endpoint"}';
+const REFUSED_403 = '[403]: {"code":"000000","message":"Key barred from this endpoint"}';
 const MIN = 60 * 1000;
 const OPUS = "claude-opus-5-5";
 const KIMI = "kimi-k3";
@@ -25,12 +29,13 @@ const STREAK_FIELDS = [
   "authFailSameUpstream", "authFailRunCount", "authFailRunStartAt", "authFailBursts",
 ];
 
-let db, auth, provider;
+let db, auth, availability, provider;
 let seq = 0;
 
 beforeAll(async () => {
   db = await import("@/lib/db/index.js");
   auth = await import("@/sse/services/auth.js");
+  availability = await import("@/app/api/models/availability/route.js");
 });
 
 afterAll(() => {
@@ -50,22 +55,23 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-// Each key on its own account, its own base URL.
-async function accounts(...names) {
+// Each key on its own account (`own`), or all on one shared account.
+async function accounts(names, { shared = false } = {}) {
   const keys = [];
   for (const name of names) {
     keys.push(await db.createProviderConnection({
       provider, authType: "apikey", name, apiKey: `sk-test-${name}-0123456789`,
-      providerSpecificData: { baseUrl: `https://acct-${name}.acme.test/v1`, ownBaseUrl: true },
+      providerSpecificData: shared ? { baseUrl: "https://acct-shared.acme.test/v1" }
+        : { baseUrl: `https://acct-${name}.acme.test/v1`, ownBaseUrl: true },
     }));
   }
   return keys;
 }
 
 const load = (id) => db.getProviderConnectionById(id);
-const pick = async (model) => (await auth.getProviderCredentials(provider, null, model))?.connectionId;
+const pick = async (model, tried = null) => (await auth.getProviderCredentials(provider, tried, model))?.connectionId;
 const succeed = async (id, model) => auth.clearAccountError(id, await load(id), model);
-const failOnce = (id, model) => auth.markAccountUnavailable(id, 403, DEAD_403, provider, model);
+const failOnce = (id, model, apiKey) => auth.markAccountUnavailable(id, 403, REFUSED_403, provider, model, null, apiKey);
 const evidenceOf = (conn, model) => Object.fromEntries([...STREAK_FIELDS, `authDemote_${model}`].map((f) => [f, conn[f] ?? null]));
 
 // The peer serves the model, then the key is refused: every `stepMs`.
@@ -79,14 +85,14 @@ async function refuse(id, peer, { times, model = OPUS, stepMs = 2 * MIN }) {
 
 // 6 refusals over 10 minutes: soft-demoted at the last.
 async function softDemoted() {
-  const [key, peer] = await accounts("a", "b");
+  const [key, peer] = await accounts(["a", "b"]);
   await refuse(key.id, peer, { times: 6 });
   return { key, peer };
 }
 
 describe("soft demotion", () => {
   it("tries the key after its peer on that model, and first on the others", async () => {
-    const [key, peer] = await accounts("a", "b");
+    const [key, peer] = await accounts(["a", "b"]);
     await refuse(key.id, peer, { times: 5 });
     vi.advanceTimersByTime(3 * MIN);
     expect(await pick(OPUS)).toBe(key.id);
@@ -96,6 +102,15 @@ describe("soft demotion", () => {
     expect(await pick(OPUS)).toBe(peer.id);
     expect(await pick(KIMI)).toBe(key.id);
     expect((await load(key.id)).isActive).toBe(true);
+    expect(logged.warn).toContain(`AUTH a soft-demoted on ${OPUS} after repeated 403s`);
+  });
+
+  it("leaves a key whose peer shares its upstream to the demotion", async () => {
+    const [key, peer] = await accounts(["a", "b"], { shared: true });
+    await refuse(key.id, peer, { times: 6 });
+    const conn = await load(key.id);
+    expect(auth.__test__.softDemoted(conn, OPUS)).toBe(false);
+    expect(conn[`authDemote_${OPUS}`]).toMatchObject({ demotedAt: expect.any(String) });
   });
 
   it("lifts on a success of the key on that model", async () => {
@@ -104,6 +119,7 @@ describe("soft demotion", () => {
     expect(await pick(OPUS)).toBe(peer.id);
     await succeed(key.id, OPUS);
     expect(await pick(OPUS)).toBe(key.id);
+    expect(logged.info).toContain(`AUTH a soft demotion on ${OPUS} lifted`);
   });
 
   it("gives the key one try 10 minutes on, then 20, 40, 90 and 180 after each refused one", async () => {
@@ -123,8 +139,18 @@ describe("soft demotion", () => {
     expect((await load(key.id)).isActive).toBe(true);
   });
 
+  it("makes the try due at once on a counted refusal on another model", async () => {
+    const { key, peer } = await softDemoted();
+    vi.advanceTimersByTime(3 * MIN);
+    expect(await pick(OPUS)).toBe(peer.id);
+    await refuse(key.id, peer, { times: 1, model: KIMI });
+    expect(await pick(OPUS)).toBe(key.id);
+    // That try is out: no other for its lease.
+    expect(await pick(OPUS)).toBe(peer.id);
+  });
+
   it("takes one soft try per pass", async () => {
-    const [a, b, peer] = await accounts("a", "b", "c");
+    const [a, b, peer] = await accounts(["a", "b", "c"]);
     for (let i = 0; i < 6; i++) {
       if (i > 0) vi.advanceTimersByTime(2 * MIN);
       for (const key of [a, b]) {
@@ -145,14 +171,31 @@ describe("soft demotion", () => {
     expect(order).toEqual([a.id, peer.id]);
   });
 
-  it("forgets the key's counted refusals on that model when it soft-demotes it", async () => {
-    const [key, peer] = await accounts("a", "b");
+  it("takes no soft try in a pass that used its dead-key try", async () => {
+    const [soft] = await accounts(["a"]);
+    const [dead, peer] = await accounts(["d", "p"], { shared: true });
+    for (let i = 0; i < 6; i++) {
+      if (i > 0) vi.advanceTimersByTime(2 * MIN);
+      await succeed(peer.id, OPUS);
+      await failOnce(soft.id, OPUS);
+      await failOnce(dead.id, OPUS);
+    }
+    expect((await load(dead.id))[`authDemote_${OPUS}`]).toMatchObject({ demotedAt: expect.any(String) });
+    vi.advanceTimersByTime(10 * MIN);
+    expect(await pick(OPUS, new Set([dead.id]))).toBe(peer.id);
+    expect(await pick(OPUS)).toBe(soft.id);
+  });
+
+  it("forgets the key's counted refusals on that model when it soft-demotes it, as a success there would", async () => {
+    const [key, peer] = await accounts(["a", "b"]);
     await refuse(key.id, peer, { times: 5 });
     expect(await load(key.id)).toMatchObject({ authFailCount: 5, [`authDemote_${OPUS}`]: { count: 5 } });
 
     vi.advanceTimersByTime(2 * MIN);
     await refuse(key.id, peer, { times: 1 });
-    expect(evidenceOf(await load(key.id), OPUS)).toEqual(evidenceOf({}, OPUS));
+    const conn = await load(key.id);
+    expect(evidenceOf(conn, OPUS)).toEqual(evidenceOf({}, OPUS));
+    expect(conn.authDemoteOkAt).toBe(new Date().toISOString());
   });
 
   it("doesn't count a refusal while soft-demoted toward turning the key off or demoting it", async () => {
@@ -171,11 +214,41 @@ describe("soft demotion", () => {
     expect(conn[`modelLock_${OPUS}`]).toBeTruthy();
   });
 
+  it("doesn't soft-demote on a refusal sent with a key since replaced", async () => {
+    const [key, peer] = await accounts(["a", "b"]);
+    await refuse(key.id, peer, { times: 5 });
+    vi.advanceTimersByTime(2 * MIN);
+    await succeed(peer.id, OPUS);
+    await failOnce(key.id, OPUS, "sk-test-a-older-0123456789");
+    vi.advanceTimersByTime(3 * MIN);
+    expect(await pick(OPUS)).toBe(key.id);
+  });
+
   it("starts over for a new key pasted in", async () => {
     const { key, peer } = await softDemoted();
     vi.advanceTimersByTime(3 * MIN);
     expect(await pick(OPUS)).toBe(peer.id);
     await db.updateProviderConnection(key.id, { apiKey: "sk-test-a-replaced-0123456789" });
+    expect(await pick(OPUS)).toBe(key.id);
+  });
+
+  it("ends when the key is switched off and on", async () => {
+    const { key, peer } = await softDemoted();
+    vi.advanceTimersByTime(3 * MIN);
+    expect(await pick(OPUS)).toBe(peer.id);
+    await db.updateProviderConnection(key.id, { isActive: false });
+    await db.updateProviderConnection(key.id, { isActive: true });
+    expect(await pick(OPUS)).toBe(key.id);
+  });
+
+  it("ends on that model when its cooldown is cleared", async () => {
+    const { key, peer } = await softDemoted();
+    vi.advanceTimersByTime(3 * MIN);
+    expect(await pick(OPUS)).toBe(peer.id);
+    const res = await availability.POST(new Request("http://localhost/api/models/availability", {
+      method: "POST", body: JSON.stringify({ action: "clearCooldown", provider, model: OPUS }),
+    }));
+    expect(res.status).toBe(200);
     expect(await pick(OPUS)).toBe(key.id);
   });
 });
@@ -193,9 +266,29 @@ describe("AUTH_SOFT_DEMOTE", () => {
     if (raw !== undefined) vi.stubEnv("AUTH_SOFT_DEMOTE", raw);
     vi.resetModules();
     const { AUTH_SOFT_DEMOTE } = await import("open-sse/config/runtimeConfig.js");
-    const { AUTH_DEMOTE_CONFIG } = await import("open-sse/config/errorConfig.js");
-    expect(AUTH_SOFT_DEMOTE).toEqual({
-      enabled, probeMs: AUTH_DEMOTE_CONFIG.probeMs, probeLeaseMs: AUTH_DEMOTE_CONFIG.probeLeaseMs,
-    });
+    expect(AUTH_SOFT_DEMOTE).toEqual({ enabled });
+  });
+
+  it("set to 0, leaves the key first and counting, as before", async () => {
+    vi.stubEnv("AUTH_SOFT_DEMOTE", "0");
+    vi.resetModules();
+    const freshDb = await import("@/lib/db/index.js");
+    const freshAuth = await import("@/sse/services/auth.js");
+    const keys = [];
+    for (const name of ["a", "b"]) {
+      keys.push(await freshDb.createProviderConnection({
+        provider, authType: "apikey", name, apiKey: `sk-test-${name}-0123456789`,
+        providerSpecificData: { baseUrl: `https://acct-${name}.acme.test/v1`, ownBaseUrl: true },
+      }));
+    }
+    const [key, peer] = keys;
+    for (let i = 0; i < 6; i++) {
+      if (i > 0) vi.advanceTimersByTime(2 * MIN);
+      await freshAuth.clearAccountError(peer.id, await freshDb.getProviderConnectionById(peer.id), OPUS);
+      await freshAuth.markAccountUnavailable(key.id, 403, REFUSED_403, provider, OPUS);
+    }
+    vi.advanceTimersByTime(3 * MIN);
+    expect((await freshAuth.getProviderCredentials(provider, null, OPUS)).connectionId).toBe(key.id);
+    expect((await freshDb.getProviderConnectionById(key.id)).authFailCount).toBe(6);
   });
 });
