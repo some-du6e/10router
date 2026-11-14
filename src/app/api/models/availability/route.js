@@ -122,9 +122,10 @@ export async function POST(request) {
         .filter((connection) => connection[lockKey] || connection[demoteKey] || connection[softKey])
         .map((connection) =>
           updateProviderConnection(connection.id, {
-            // Ending a soft demotion without a success gives the key a fresh
-            // start, as switching it off and on does: no demotions, no streak.
-            ...(connection[softKey]?.since ? {
+            // Ending a soft demotion for refusals of the key itself without a
+            // success gives the key a fresh start, as switching it off and on
+            // does: no demotions, no streak.
+            ...(AUTH_SOFT_DEMOTE.enabled && connection[softKey]?.since && connection[softKey].keyRefused === true ? {
               ...Object.fromEntries(Object.keys(connection).filter((k) => k.startsWith(AUTH_DEMOTE_PREFIX)).map((k) => [k, null])),
               ...Object.fromEntries(AUTH_STREAK_FIELDS.map((f) => [f, null])),
             } : {}),

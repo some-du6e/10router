@@ -417,6 +417,18 @@ describe("getKeyLifespans", () => {
       expect((await repo.getKeyLifespans(provider, { now: NOW })).estimate).toMatchObject({ sampleSize: 4 });
     });
 
+    // Its soft demotion on a second model wrote authDemoteOkAt; that isn't a success.
+    it("keeps it as a dead key when it was soft-demoted on a second model since", async () => {
+      await withDeadPeers();
+      const x = await addKey("left-on-two");
+      record(x, { at: NOW - 10 * HOUR, cost: 450 });
+      await db.updateProviderConnection(x, { ...soft(NOW - 10 * HOUR, NOW - 9 * HOUR), authDemoteOkAt: iso(NOW - 9.5 * HOUR) });
+      at(NOW - 5 * HOUR);
+      await db.updateProviderConnection(x, { apiKey: "sk-test-left-on-two-NEW-0123456789" });
+      vi.useRealTimers();
+      expect((await db.getProviderConnectionById(x)).pastKeys).toEqual([{ since: "", until: iso(NOW - 9 * HOUR) }]);
+    });
+
     // It may be a good key someone switched off and on to retry it.
     it("adds no dead key when such a key is switched off and on by hand", async () => {
       await withDeadPeers();
@@ -432,7 +444,7 @@ describe("getKeyLifespans", () => {
     it.each([
       ["was last refused, with no soft demotion (an outage, say)", { errorCode: 403, testStatus: "unavailable", lastErrorAt: iso(NOW - 9 * HOUR) }],
       ["is soft-demoted for refusals of one model only", soft(NOW - 12 * HOUR, NOW - 9 * HOUR, { keyRefused: false })],
-      ["served after it was soft-demoted", { ...soft(NOW - 12 * HOUR, NOW - 9 * HOUR), authDemoteOkAt: iso(NOW - 11 * HOUR) }],
+      ["served after it was soft-demoted", { ...soft(NOW - 12 * HOUR, NOW - 9 * HOUR), authServedAt: iso(NOW - 11 * HOUR) }],
     ])("adds no dead key when a key that %s is replaced or switched off by hand", async (_label, state) => {
       const x = await addKey("fine");
       const y = await addKey("fine-too");

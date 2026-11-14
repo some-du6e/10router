@@ -27,7 +27,8 @@ const AUTO_DISABLE_FIELDS = ["autoDisabledAt", "autoDisabledReason", ...AUTH_STR
 // model, and its demotion there once they trip. authSoft_<model>: its soft
 // demotion there, { level, since, tryAt, lastRefusedAt, keyRefused }.
 // authDemoteOkAt: when the key last served anything while it had such a
-// record (compared with its firstAt or since).
+// record (compared with its firstAt or since). authServedAt: when it last
+// served while soft-demoted for refusals of the key itself.
 export const AUTH_DEMOTE_PREFIX = DEMOTE_PREFIX;
 export const AUTH_SOFT_PREFIX = SOFT_DEMOTE_PREFIX;
 export const getAuthDemoteKey = (model) => `${AUTH_DEMOTE_PREFIX}${model}`;
@@ -38,15 +39,15 @@ export const getAuthSoftKey = (model) => `${AUTH_SOFT_PREFIX}${model}`;
 export const PAST_KEYS_CAP = 50;
 
 // A dead key the router left on: soft-demoted for refusals of the key itself,
-// and it has served nothing since. When it was last refused, or null.
+// and it has served nothing since (authServedAt). When it was last refused, or null.
 function softDeadUntil(c) {
   if (!AUTH_SOFT_DEMOTE.enabled) return null;
   const records = Object.entries(c).filter(([k, r]) => k.startsWith(AUTH_SOFT_PREFIX) && r?.keyRefused && r.since
-    && !(c.authDemoteOkAt > r.since));
+    && !(c.authServedAt > r.since));
   return records.length ? records.map(([, r]) => r.lastRefusedAt || r.since).sort().at(-1) : null;
 }
 
-function applyAutoDisableTransition(existing, merged, data) {
+function applyAutoDisableTransition(db, existing, merged, data) {
   const newKey = String(data.apiKey ?? "").trim();
   const keyChanged = newKey !== "" && newKey !== String(existing.apiKey ?? "").trim();
   // A key replaced after it died counts as a dead key of its own.
@@ -59,9 +60,12 @@ function applyAutoDisableTransition(existing, merged, data) {
   // A different key pasted into a connection the router turned off fixes it.
   if (existing.autoDisabledAt && data.isActive === undefined && keyChanged) merged.isActive = true;
   const reEnabled = existing.isActive === false && merged.isActive === true;
-  if (reEnabled && AUTH_SOFT_DEMOTE.enabled) {
+  if (reEnabled && AUTH_SOFT_DEMOTE.enabled && !keyChanged && db.get(
+    `SELECT 1 FROM providerConnections WHERE provider = ? AND id != ? AND isActive = 1 LIMIT 1`, [existing.provider, existing.id],
+  )) {
     // A key switched back on from a soft demotion waits out a refusal's
-    // cooldown on that model, as it would had it been tried there all along.
+    // cooldown on that model, as it would had it been tried there all along,
+    // while another key of the provider serves it.
     const until = new Date(Date.now() + COOLDOWN_MS.unauthorized).toISOString();
     for (const [k, r] of Object.entries(existing)) {
       if (!k.startsWith(AUTH_SOFT_PREFIX) || !r?.since) continue;
@@ -81,7 +85,7 @@ function applyAutoDisableTransition(existing, merged, data) {
     delete merged.autoDisabledReason;
   }
   // The old key's failures say nothing about the new one.
-  if (keyChanged) for (const f of AUTH_STREAK_FIELDS) delete merged[f];
+  if (keyChanged) for (const f of [...AUTH_STREAK_FIELDS, "authServedAt"]) delete merged[f];
   // Nor its spend: the key lifespan estimate counts usage from here on.
   if (keyChanged) merged.keySetAt = new Date().toISOString();
 }
@@ -282,7 +286,7 @@ export async function createProviderConnection(data) {
       const merged = { ...existing, ...updates, updatedAt: now };
       // Re-adding or re-logging a key the router turned off means it was fixed.
       if (existing.autoDisabledAt && updates.isActive === undefined) merged.isActive = true;
-      applyAutoDisableTransition(existing, merged, updates);
+      applyAutoDisableTransition(db, existing, merged, updates);
       upsert(db, merged);
       releaseOwnerIfKeyReplaced(db, existing, updates);
       result = merged;
@@ -375,7 +379,7 @@ export async function updateProviderConnection(id, data, { autoDisable = null, d
     if (liftDemote && !staleKey && existing[getAuthDemoteKey(liftDemote)]) merged[getAuthDemoteKey(liftDemote)] = null;
     if (liftDemote && !staleKey && existing[getAuthSoftKey(liftDemote)] && !(getAuthSoftKey(liftDemote) in data)) merged[getAuthSoftKey(liftDemote)] = null;
     if (noteServed) merged.authDemoteOkAt = new Date().toISOString();
-    applyAutoDisableTransition(existing, merged, data);
+    applyAutoDisableTransition(db, existing, merged, data);
     upsert(db, merged);
     releaseOwnerIfKeyReplaced(db, existing, data);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);

@@ -2682,8 +2682,8 @@ describe("keys of one endpoint on different upstreams", () => {
 
   // Minutes until master turns these off: null for never. On the same account,
   // demoting each model in turn turns them off no later. On another account
-  // the key is soft-demoted on the first model, and a soft-demoted key is
-  // never turned off automatically.
+  // the key is soft-demoted on the first model, and a soft-demoted key isn't
+  // turned off automatically within the first 24 hours (AUTH_SOFT_DEMOTE.deadAfterMs).
   it.each([
     ["sonnet, then opus", 0, null, 210],
     ["sonnet, then opus", 1, 186, null],
@@ -2693,7 +2693,7 @@ describe("keys of one endpoint on different upstreams", () => {
     ["opus, and sonnet every 2 hours", 1, 180, null],
     ["opus, then haiku", 0, null, 210],
     ["opus, then haiku", 1, 186, null],
-  ])("turns off a key dead on every model someone uses one at a time (%s), its peer %s (0 same account, 1 another), master at %s, here by %s (null: never)", async (
+  ])("turns off a key dead on every model someone uses one at a time (%s), its peer %s (0 same account, 1 another), master at %s, here by %s (null: not within 12 hours)", async (
     name, upstream, _master, byMin,
   ) => {
     const [, own, peer] = UPSTREAMS[upstream];
