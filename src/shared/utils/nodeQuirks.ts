@@ -3,7 +3,7 @@
 // providerSpecificData, which is where the executor reads them.
 //   stripBeta            send no anthropic-beta header at all
 //   droppedBetas         beta flags this endpoint rejected (learned at runtime)
-//   maxCompletionTokens  rename max_tokens → max_completion_tokens (some gateways' chat)
+//   maxCompletionTokens  rename max_tokens → max_completion_tokens (gateways whose Chat Completions rejects max_tokens)
 //   modelRoutes          model → API path, for endpoints that answer on both
 //                        Anthropic Messages and OpenAI (see resolveCompatibleRoute)
 //   apiKeyHeader         "api-key": send the key in an api-key header, not Bearer (Azure)

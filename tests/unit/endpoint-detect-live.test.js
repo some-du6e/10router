@@ -166,7 +166,7 @@ describe("site name and icon", () => {
   });
 
   it("tries the bare domain, skips LAN hosts", () => {
-    expect(siteRoots("https://acme-xy12345.contoso-cloud.example/api/v1")).toEqual(["https://acme-xy12345.contoso-cloud.example", "https://contoso-cloud.example"]);
+    expect(siteRoots("https://acme-1234.contoso-cloud.example/api/v1")).toEqual(["https://acme-1234.contoso-cloud.example", "https://contoso-cloud.example"]);
     expect(siteRoots("http://192.168.1.40:8000/v1")).toEqual([]);
     expect(siteRoots("http://localhost:11434/v1")).toEqual([]);
   });
@@ -211,14 +211,14 @@ describe("site name and icon", () => {
 
   it("skips a 32px favicon on the API host for the bare domain's sharp icon", async () => {
     const fetchFn = site({
-      "https://acme-xy1.contosocloud.example/": { body: "<title>Sign in</title>", headers: { "content-type": "text/html" } },
-      "https://acme-xy1.contosocloud.example/favicon.ico": { body: png(32), headers: { "content-type": "image/png" } },
-      "https://contosocloud.example/": { body: `<title>Contoso Cloud</title><link rel="apple-touch-icon" href="/touch.png">`, headers: { "content-type": "text/html" } },
-      "https://contosocloud.example/touch.png": { body: png(180), headers: { "content-type": "image/png" } },
+      "https://acme-1234.apisite.example/": { body: "<title>Sign in</title>", headers: { "content-type": "text/html" } },
+      "https://acme-1234.apisite.example/favicon.ico": { body: png(32), headers: { "content-type": "image/png" } },
+      "https://apisite.example/": { body: `<title>API Site</title><link rel="apple-touch-icon" href="/touch.png">`, headers: { "content-type": "text/html" } },
+      "https://apisite.example/touch.png": { body: png(180), headers: { "content-type": "image/png" } },
     });
-    const r = await fetchSiteInfo("https://acme-xy1.contosocloud.example/api/v1", fetchFn);
+    const r = await fetchSiteInfo("https://acme-1234.apisite.example/api/v1", fetchFn);
     expect(r.icon).toBe(`data:image/png;base64,${Buffer.from(png(180)).toString("base64")}`);
-    expect(r.host).toBe("contosocloud.example");
+    expect(r.host).toBe("apisite.example");
   });
 
   it("an HTML 200 for /favicon.ico is not an icon", async () => {

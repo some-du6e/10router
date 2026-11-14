@@ -33,7 +33,7 @@ const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "10router-auto-disable-"))
 process.env.DATA_DIR = tempDir;
 
 const PROVIDER = "openai-compatible-chat-test-dead-keys";
-const DEAD_403 = '[403]: {"code":"000000","message":"Not permitted for this endpoint"}';
+const DEAD_403 = '[403]: {"code":"000000","message":"Key barred from this endpoint"}';
 const KEY_REFUSED_403 = '[403]: {"message":"This key is not accepted here"}';
 const MIN = 60 * 1000;
 
@@ -99,7 +99,7 @@ describe("auth-dead keys turn off", () => {
     const conn = await load(dead.id);
     expect(conn.isActive).toBe(false);
     expect(conn.autoDisabledAt).toBe(new Date().toISOString());
-    expect(conn.autoDisabledReason).toBe('403 "Not permitted for this endpoint" on claude-opus-5-5, kimi-k3');
+    expect(conn.autoDisabledReason).toBe('403 "Key barred from this endpoint" on claude-opus-5-5, kimi-k3');
     expect((await load(healthy.id)).isActive).toBe(true);
   });
 
@@ -475,7 +475,7 @@ describe("auth-dead keys turn off", () => {
   });
 
   it.each([
-    [403, "Not permitted for this endpoint"],
+    [403, "Key barred from this endpoint"],
     [403, "Copilot is not enabled for this account"],
     [401, "Invalid API key"],
     [401, "Incorrect API key provided: sk-test-****. You can find your API key at https://platform.openai.com/account/api-keys."],
@@ -577,7 +577,7 @@ describe("a key refused on only one model", () => {
   const pick = async (model) => (await auth.getProviderCredentials(provider, null, model))?.connectionId;
   const takePeerAway = (healthy) => db.updateProviderConnection(healthy.id, { isActive: false });
   const atProbe = async (id, model = "m1") => vi.setSystemTime(new Date(record(await load(id), model).nextProbeAt));
-  const MESSAGE = 'm1 demoted after repeated 403 "Not permitted for this endpoint"';
+  const MESSAGE = 'm1 demoted after repeated 403 "Key barred from this endpoint"';
 
   async function demotedKey(model = "m1") {
     const dead = await addKey("a");
@@ -652,8 +652,8 @@ describe("a key refused on only one model", () => {
     const conn = await load(dead.id);
     expect(conn).toMatchObject({
       isActive: true,
-      "authDemote_claude-opus-5-5": { count: 5, reason: '403 "Not permitted for this endpoint"' },
-      lastError: 'claude-opus-5-5 demoted after repeated 403 "Not permitted for this endpoint"',
+      "authDemote_claude-opus-5-5": { count: 5, reason: '403 "Key barred from this endpoint"' },
+      lastError: 'claude-opus-5-5 demoted after repeated 403 "Key barred from this endpoint"',
     });
     expect(conn).not.toHaveProperty("autoDisabledAt");
     expect(warn).toHaveBeenCalledWith("AUTH", "a demoted on claude-opus-5-5 after repeated 403s");
@@ -869,7 +869,7 @@ describe("a key refused on only one model", () => {
     const listed = (await (await GET()).json()).models.filter((m) => m.connectionId === dead.id);
     expect(listed).toEqual([expect.objectContaining({
       model: "m1", status: "cooldown", until: record(await load(dead.id)).nextProbeAt,
-      lastError: 'Demoted after repeated 403 "Not permitted for this endpoint"',
+      lastError: 'Demoted after repeated 403 "Key barred from this endpoint"',
     })]);
     await succeed(dead.id, "m2");
     expect((await load(dead.id)).modelLock_m1).toBeNull();
@@ -955,8 +955,8 @@ describe("a key refused on only one model", () => {
     expect((await load(dead.id)).isActive).toBe(true);
     vi.advanceTimersByTime(2 * MIN);
     await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
-    expect(await load(dead.id)).toMatchObject({ isActive: false, autoDisabledReason: '403 "Not permitted for this endpoint" on m1, m2' });
-    expect(warn).toHaveBeenCalledWith("AUTH", 'a turned off automatically: 403 "Not permitted for this endpoint" on m1, m2');
+    expect(await load(dead.id)).toMatchObject({ isActive: false, autoDisabledReason: '403 "Key barred from this endpoint" on m1, m2' });
+    expect(warn).toHaveBeenCalledWith("AUTH", 'a turned off automatically: 403 "Key barred from this endpoint" on m1, m2');
   });
 
   it.each([
@@ -971,7 +971,7 @@ describe("a key refused on only one model", () => {
   });
 
   it.each([
-    ["refused", false, '403 "Not permitted for this endpoint" on m2, m1'],
+    ["refused", false, '403 "Key barred from this endpoint" on m2, m1'],
     ["served", true, undefined],
   ])("probes a demoted model right after another model refuses the key, and turns it off only if the probe is %s too", async (
     _label, recovered, reason,
@@ -1002,7 +1002,7 @@ describe("a key refused on only one model", () => {
     expect(await load(dead.id)).toMatchObject({ isActive: true, authDemote_m2: { count: 4 } });
     vi.advanceTimersByTime(4 * MIN);
     await fail(dead.id, { times: 1, models: ["m2"], peers: [healthy] });
-    expect(await load(dead.id)).toMatchObject({ isActive: false, autoDisabledReason: '403 "Not permitted for this endpoint" on m1, m2' });
+    expect(await load(dead.id)).toMatchObject({ isActive: false, autoDisabledReason: '403 "Key barred from this endpoint" on m1, m2' });
   });
 
   it("does not let 401s on another model turn a demoted key off without the turn-off rule's own count", async () => {
@@ -1270,7 +1270,7 @@ describe("a key refused on only one model", () => {
     const rows = async () => (await (await GET()).json()).models.filter((m) => m.connectionId === dead.id);
     await atProbe(dead.id);
     expect(await rows()).toEqual([expect.objectContaining({
-      model: "m1", until: null, lastError: 'Demoted after repeated 403 "Not permitted for this endpoint" (probe due)',
+      model: "m1", until: null, lastError: 'Demoted after repeated 403 "Key barred from this endpoint" (probe due)',
     })]);
     await db.updateProviderConnection(dead.id, { isActive: false, authDemote_m2: record(await load(dead.id)) });
     expect((await rows()).filter((m) => m.model === "m1" || m.model === "m2")).toEqual([]);
@@ -2351,7 +2351,7 @@ describe("keys of one endpoint on different upstreams", () => {
     await fail(dead.id, { times: 1, models, peers: [healthy] });
     const conn = await load(dead.id);
     expect(conn.isActive).toBe(false);
-    expect(conn.autoDisabledReason).toBe('403 "Not permitted for this endpoint" on claude-opus-5-5, kimi-k3');
+    expect(conn.autoDisabledReason).toBe('403 "Key barred from this endpoint" on claude-opus-5-5, kimi-k3');
   });
 
   it("turns off the dead key within 10-12 minutes when its peer is on the same base URL", async () => {

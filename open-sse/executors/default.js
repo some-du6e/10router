@@ -81,10 +81,10 @@ export class DefaultExecutor extends BaseExecutor {
   transformRequest(model, body, _stream, credentials) {
     let transformed = this.applyJsonSchemaFallback(body);
 
-    // Some OpenAI-compatible gateways reject the legacy
-    // `max_tokens` field even though the rest of the Chat Completions shape is
-    // compatible. Keep this opt-in so other OpenAI-compatible gateways retain
-    // their existing request contract.
+    // Some OpenAI-compatible gateways reject the legacy `max_tokens` field even
+    // though the rest of the Chat Completions shape is compatible. Keep this
+    // opt-in so other OpenAI-compatible gateways retain their existing request
+    // contract.
     // Chat Completions only: Anthropic Messages requires max_tokens, and a
     // two-path node can route some models there.
     if (

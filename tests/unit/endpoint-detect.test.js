@@ -6,7 +6,7 @@ import { normalizeUrl, cleanKey, parseModelList, makePrefix, suggestName, detect
 
 // Shape of the models.dev index the catalog sync writes: providers + lab models.
 const PROVIDERS = [
-  { id: "contoso-ai", name: "Contoso AI", api: "https://${CONTOSO_ACCOUNT}.contoso-cloud.example/api/claude/v1", models: ["claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-1"] },
+  { id: "contoso-ai", name: "Contoso AI", api: "https://${ACCOUNT}.contoso-cloud.example/api/claude/v1", models: ["claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-1"] },
   { id: "openrouter", name: "OpenRouter", api: "https://openrouter.ai/api/v1", models: ["anthropic/claude-haiku-4-5", "openai/gpt-5"] },
   { id: "together", name: "Together", api: "https://api.together.xyz/v1", models: ["openai/gpt-5", "meta/llama-4"] },
 ];
@@ -63,7 +63,7 @@ describe("names and prefixes", () => {
 
 describe("catalog matching", () => {
   it("matches a templated API URL to the user's host", () => {
-    expect(matchCatalogProvider("https://acme-xy1.contoso-cloud.example/api/claude/v1", PROVIDERS)?.id).toBe("contoso-ai");
+    expect(matchCatalogProvider("https://acme-1234.contoso-cloud.example/api/claude/v1", PROVIDERS)?.id).toBe("contoso-ai");
     expect(matchCatalogProvider("https://openrouter.ai/api/v1", PROVIDERS)?.id).toBe("openrouter");
     expect(matchCatalogProvider("https://unknown.example.com/v1", PROVIDERS)).toBeNull();
   });
@@ -110,7 +110,7 @@ describe("recentLabModels", () => {
 describe("candidateModels", () => {
   it("adds the gateway's own vendor prefix (Contoso: openai-*)", () => {
     const catalog = {
-      providers: [{ id: "contoso-ai", name: "Contoso AI", api: "https://${CONTOSO_ACCOUNT}.contoso-cloud.example/api/claude/v1", models: ["claude-haiku-4-5", "openai-gpt-5"] }],
+      providers: [{ id: "contoso-ai", name: "Contoso AI", api: "https://${ACCOUNT}.contoso-cloud.example/api/claude/v1", models: ["claude-haiku-4-5", "openai-gpt-5"] }],
       labs: LABS,
     };
     const { matched, ids } = candidateModels("https://acme.contoso-cloud.example/api/claude/v1", catalog);
@@ -131,7 +131,7 @@ describe("candidateModels", () => {
       { id: "gpt-5.4", lab: "openai", family: "gpt", date: "2026-03-05" },
       { id: "gpt-5.2", lab: "openai", family: "gpt", date: "2025-12-11" },
     ];
-    const catalog = { providers: [{ id: "contoso-ai", name: "Contoso AI", api: "https://${CONTOSO_ACCOUNT}.contoso-cloud.example/api/claude/v1", models: ["claude-opus-4-5", "openai-gpt-4.1", "openai-gpt-5.5", "deepseek-r1", "mistral-large2"] }], labs };
+    const catalog = { providers: [{ id: "contoso-ai", name: "Contoso AI", api: "https://${ACCOUNT}.contoso-cloud.example/api/claude/v1", models: ["claude-opus-4-5", "openai-gpt-4.1", "openai-gpt-5.5", "deepseek-r1", "mistral-large2"] }], labs };
     const { ids } = candidateModels("https://acme.contoso-cloud.example/api/claude/v1", catalog);
     expect(ids).not.toContain("claude-opus-4-5");
     expect(ids).not.toContain("openai-gpt-4.1");
@@ -200,7 +200,7 @@ describe("detectEndpoint", () => {
   it("Contoso: no /models, Anthropic found, key confirmed, catalog models confirmed for free", async () => {
     const known = new Set(["claude-sonnet-4-5", "claude-haiku-4-5"]); // claude-opus-4-1 is in the catalog but not served
     const { fetchFn, calls } = upstream({
-      "POST /api/claude/v1/messages": ({ auth, body }) => !keyOk(auth) ? [401, { message: "Invalid OAuth access token. null" }]
+      "POST /api/claude/v1/messages": ({ auth, body }) => !keyOk(auth) ? [401, { message: "Invalid token" }]
         : known.has(body.model) ? [400, { message: "'messages' must not be empty" }] : [400, { message: `unknown model "${body.model}"` }],
       "POST /api/claude/v1/chat/completions": ({ auth }) => keyOk(auth) ? [400, { message: "max_tokens is deprecated in favor of max_completion_tokens" }] : [401, {}],
     });
@@ -222,7 +222,7 @@ describe("detectEndpoint", () => {
 
   it("skipModels checks the API and key but asks about no models", async () => {
     const { fetchFn, calls } = upstream({
-      "POST /api/claude/v1/messages": ({ auth, body }) => !keyOk(auth) ? [401, { message: "Invalid OAuth access token. null" }]
+      "POST /api/claude/v1/messages": ({ auth, body }) => !keyOk(auth) ? [401, { message: "Invalid token" }]
         : body.model === "claude-haiku-4-5" ? [400, { message: "'messages' must not be empty" }] : [400, { message: `unknown model "${body.model}"` }],
     });
     const r = await detectEndpoint({ url: "https://acme.contoso-cloud.example/api/claude/v1", apiKey: GOOD, fetchFn, catalog: CATALOG, skipModels: true });

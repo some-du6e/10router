@@ -381,10 +381,10 @@ export function makePrefix(name: unknown, taken: readonly unknown[] = []): strin
   for (let i = 2; ; i++) if (!used.has(`${p}${i}`)) return `${p}${i}`;
 }
 
-// Endpoints with no model list (/v1/models 404) can still be
-// asked about one model at a time for free, when they reject an unknown model id
-// before anything else. Candidate ids come from the models.dev catalog, synced
-// daily: `catalog` is [{ id, name, api, models: [ids] }] (see modelCatalog/sync.js).
+// Endpoints with no model list (/v1/models 404) can still be asked about one
+// model at a time for free, when they reject an unknown model id before
+// anything else. Candidate ids come from the models.dev catalog, synced daily:
+// `catalog` is [{ id, name, api, models: [ids] }] (see modelCatalog/sync.js).
 
 // "https://${ACCOUNT}.gateway.example/api/v1" ->
 // host regex (placeholders match one label) + path.
@@ -781,8 +781,8 @@ function makeProber({ fetchFn, key, steps, timeoutMs, sleep = defaultSleep, sign
 
 // Model probes carry only the model, the empty conversation and a 1-token cap,
 // so the model name is the first thing validated. OpenAI-style gateways can
-// reject max_tokens first ("deprecated in favor of
-// max_completion_tokens"): then the cap moves to max_completion_tokens.
+// reject max_tokens first ("deprecated in favor of max_completion_tokens"):
+// then the cap moves to max_completion_tokens.
 // stream:false stays explicit: a gateway that streams by default would otherwise
 // answer with an SSE stream.
 function modelBody(p: ProbeSpec, model: string, { maxCompletionTokens = false }: DetectQuirks = {}): Record<string, unknown> {
@@ -1100,7 +1100,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   // 2. Protocol: empty-body probes. Anthropic first when the host/key hints at it.
   // Found = an API-shaped 400/422 (or an unknown-model error, vLLM/Ollama answer
   // that with 404). 5xx, HTML, plain "Not Found" and auth errors are not.
-  const preferAnthropic = /anthropic|claude|cortex|snowflake/i.test(base0) || /^sk-ant-/.test(key);
+  const preferAnthropic = /anthropic|claude/i.test(base0) || /^sk-ant-/.test(key);
   const order: Protocol[] = preferAnthropic ? ["anthropic", "openai-chat", "openai-responses"] : ["openai-chat", "openai-responses", "anthropic"];
   // A model-access 401/403 on model "probe" counts too: the path and key work.
   const found: { proto: Protocol; base: string; shape: ErrorShape | null; sig: string }[] = [];
@@ -1500,7 +1500,7 @@ export function siteRoots(base: string): string[] {
   if (isLanHost(u.hostname) || /^\d+\.\d+\.\d+\.\d+$|^\[/.test(u.hostname)) return [];
   const roots = [u.origin];
   const labels = u.hostname.split(".");
-  // acme-xy12345.gateway.example -> gateway.example; api.x.ai -> x.ai
+  // acme-1234.gateway.example -> gateway.example; api.x.ai -> x.ai
   if (labels.length > 2) {
     const tail = labels.slice(-2);
     const keep = tail[0].length <= 3 && SECOND_LEVEL.has(tail[0]) ? labels.slice(-3) : tail;

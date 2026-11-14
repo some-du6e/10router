@@ -21,7 +21,7 @@ const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "10router-auth-stress-"));
 process.env.DATA_DIR = tempDir;
 
 const MIN = 60 * 1000;
-const DEAD_403 = '[403]: {"code":"000000","message":"Not permitted for this endpoint"}';
+const DEAD_403 = '[403]: {"code":"000000","message":"Key barred from this endpoint"}';
 const OPUS = "claude-opus-5-5";
 const SONNET = "claude-sonnet-5-5";
 const HAIKU = "claude-haiku-5-5";

@@ -230,7 +230,7 @@ describe("rate-limit hold wiring", () => {
 
     it("sends the soonest key's 429 when this pass hit the dead key first", async () => {
       await seq([dead, { allRateLimited: true, retryAfter: new Date(Date.now() + 2_000).toISOString(), retryAfterHuman: "reset after 2s", lastError: "rate_limit_error", lastErrorCode: 429 }]);
-      state.coreResults = [{ success: false, status: 403, error: "Not permitted for this endpoint" }];
+      state.coreResults = [{ success: false, status: 403, error: "Key barred from this endpoint" }];
 
       const res = await send();
       expect(res.status).toBe(429);
@@ -241,7 +241,7 @@ describe("rate-limit hold wiring", () => {
       await seq([{ connectionId: "live", connectionName: "live", accessToken: "t" }, dead, null]);
       state.coreResults = [
         { success: false, status: 429, error: "rate_limit_error" },
-        { success: false, status: 403, error: "Not permitted for this endpoint" },
+        { success: false, status: 403, error: "Key barred from this endpoint" },
       ];
 
       expect((await send()).status).toBe(429);

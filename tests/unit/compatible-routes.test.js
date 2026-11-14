@@ -111,7 +111,7 @@ function upstream({ messages, chat }) {
 
 describe("detectEndpoint on a two-path endpoint", () => {
   it("discovers on both paths and returns routes", async () => {
-    const catalog = { providers: [{ id: "contoso-ai", name: "Contoso AI", api: "https://${CONTOSO_ACCOUNT}.contoso-cloud.example/api/claude/v1", models: ["claude-opus-5", "claude-haiku-4-5", "openai-gpt-5", "kimi-k3"] }], labs: [] };
+    const catalog = { providers: [{ id: "contoso-ai", name: "Contoso AI", api: "https://${ACCOUNT}.contoso-cloud.example/api/claude/v1", models: ["claude-opus-5", "claude-haiku-4-5", "openai-gpt-5", "kimi-k3"] }], labs: [] };
     const r = await detectEndpoint({
       url: BASE, apiKey: "good-key", catalog,
       fetchFn: upstream({ messages: new Set(["claude-opus-5", "claude-haiku-4-5"]), chat: new Set(["claude-opus-5", "openai-gpt-5", "kimi-k3"]) }),
@@ -122,5 +122,27 @@ describe("detectEndpoint on a two-path endpoint", () => {
     // 2 Claude on Messages vs 2 others on Chat: tie goes to Messages as primary.
     expect(r.protocol).toBe("anthropic");
     expect(r.routes).toEqual({ "openai-gpt-5": "openai-chat", "kimi-k3": "openai-chat" });
+  });
+
+  // No Anthropic hint in the URL or key: Chat is probed first, but the primary
+  // API still comes from how many models each path serves.
+  describe("with no hint in the URL", () => {
+    const PLAIN = "https://acme.contoso-cloud.example/api/v1";
+    const catalog = { providers: [{ id: "contoso-ai", name: "Contoso AI", api: "https://${ACCOUNT}.contoso-cloud.example/api/v1", models: ["claude-opus-5", "claude-haiku-4-5", "claude-sonnet-5", "openai-gpt-5", "kimi-k3", "glm-5"] }], labs: [] };
+    it.each([
+      ["a tie goes to Messages", ["claude-opus-5", "claude-haiku-4-5"], ["claude-opus-5", "openai-gpt-5", "kimi-k3"],
+        "anthropic", { "openai-gpt-5": "openai-chat", "kimi-k3": "openai-chat" }],
+      ["more models on Messages", ["claude-opus-5", "claude-haiku-4-5", "claude-sonnet-5"], ["openai-gpt-5"],
+        "anthropic", { "openai-gpt-5": "openai-chat" }],
+      ["more models on Chat", ["claude-opus-5", "claude-haiku-4-5"], ["openai-gpt-5", "kimi-k3", "glm-5"],
+        "openai-chat", { "claude-opus-5": "anthropic", "claude-haiku-4-5": "anthropic" }],
+    ])("%s", async (_, messages, chat, primary, routes) => {
+      const r = await detectEndpoint({ url: PLAIN, apiKey: "good-key", catalog, fetchFn: upstream({ messages: new Set(messages), chat: new Set(chat) }) });
+      expect(r.ok).toBe(true);
+      expect([...r.protocols].sort()).toEqual(["anthropic", "openai-chat"]);
+      expect(r.models.sort()).toEqual([...new Set([...messages, ...chat])].sort());
+      expect(r.protocol).toBe(primary);
+      expect(r.routes).toEqual(routes);
+    });
   });
 });

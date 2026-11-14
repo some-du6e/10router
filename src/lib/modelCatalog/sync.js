@@ -82,7 +82,7 @@ function slim(catalog) {
 // "Add endpoint" matches the user's URL against `api` and probes these ids.
 // `labs` holds the model makers' own chat models with family + release date,
 // so detection can also try the latest generations on a gateway models.dev
-// doesn't know (or knows only partly: some entries lag the gateway's docs).
+// doesn't know (or knows only partly: its entry can lag the gateway's docs).
 const LABS = ["anthropic", "openai", "google", "xai", "mistral", "meta", "cohere",
   "deepseek", "alibaba", "moonshotai", "zai", "minimax", "xiaomi", "stepfun", "volcengine"];
 

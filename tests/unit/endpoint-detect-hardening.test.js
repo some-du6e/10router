@@ -62,9 +62,9 @@ describe("1. model-not-found 404 (vLLM / Ollama) is not a missing route", () => 
   it("gateway: 'not eligible for this model' and 'is unavailable' are not served", async () => {
     const { fetchFn } = upstream((m, path, body) => {
       if (path !== "/v1/chat/completions") return;
-      if (body.model === "llama-4-scout") return [400, { message: "required field 'messages' is zero value." }];
-      if (body.model === "gpt-6.1-sol") return [400, { message: "Due to model provider requirements, this account is not eligible for this model at this time." }];
-      if (body.model === "claude-opus-5-5") return [400, { message: `Model "${body.model}-global" is unavailable` }];
+      if (body.model === "llama-4-scout") return [400, { message: "field 'messages' must not be empty" }];
+      if (body.model === "gpt-6.1-sol") return [400, { message: "This account is not eligible for this model." }];
+      if (body.model === "claude-opus-5-5") return [400, { message: `Model "${body.model}" is unavailable in this region` }];
       return [400, { message: `unknown model "${body.model}"` }];
     });
     const r = await detectEndpoint({ url: "https://claude.contoso-cloud.example/v1", apiKey: KEY, fetchFn, catalog: CATALOG, sleep: noSleep });

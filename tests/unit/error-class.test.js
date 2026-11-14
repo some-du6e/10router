@@ -40,7 +40,7 @@ describe("classifyError", () => {
     ["400 bad key", 400, json({ error: { code: 400, message: "API key not valid. Please pass a valid API key.", status: "INVALID_ARGUMENT", details: [{ reason: "API_KEY_INVALID" }] } }), "auth_error"],
     ["400 credit balance", 400, json({ type: "error", error: { type: "invalid_request_error", message: "Your credit balance is too low to access the Anthropic API." } }), "rate_limited"],
     ["400 context capacity", 400, json({ error: { message: "prompt exceeds context capacity" } }), "client_error"],
-    ["coded 403 refusal", 403, json({ code: "000000", message: "Not permitted for this endpoint." }), "auth_error"],
+    ["coded 403 refusal", 403, json({ code: "000000", message: "Key barred from this endpoint." }), "auth_error"],
     ["Codex 401 token_expired", 401, json({ error: { message: "Provided authentication token is expired. Please try signing in again.", type: "invalid_request_error", code: "token_expired" } }), "auth_error"],
     ["Codex 401 refresh reused", 401, json({ error: { message: "Your refresh token has already been used to generate a new access token. Please try signing in again.", code: "refresh_token_reused" } }), "auth_error"],
     ["Codex 429 usage limit", 429, json({ error: { type: "usage_limit_reached", message: "The usage limit has been reached", resets_in_seconds: 3600 } }), "rate_limited"],
