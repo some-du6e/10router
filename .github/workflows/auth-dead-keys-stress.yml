@@ -1,8 +1,8 @@
 name: Dead-key stress
 
 # Replays the dead-key routing scenarios (tests/unit/auto-disable-stress.test.js)
-# on this branch, pinned. A manual run also replays them on master's auth code
-# for comparison.
+# on the branch under test, pinned. A manual run also replays them, and the
+# demotion tests, on master's auth code for comparison.
 on:
   pull_request:
     paths:
@@ -45,7 +45,7 @@ jobs:
           STRESS_OUT: ${{ runner.temp }}/stress-branch.json
         run: ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-stress.test.js
       # Manual runs only from here. The demotion tests for keys on other
-      # upstreams and the turn-off minutes table, on this branch.
+      # upstreams and the turn-off minutes table, on the branch under test.
       - name: Demotion tests, this branch
         if: always() && github.event_name == 'workflow_dispatch'
         working-directory: tests
@@ -60,7 +60,7 @@ jobs:
           git checkout origin/master -- src open-sse
           cd tests && ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-stress.test.js
       # For comparison only: the same demotion tests on master's auth code,
-      # where the ones this branch changes fail. Never fails the job.
+      # where tests of behaviour master doesn't have yet fail. Never fails the job.
       - name: Demotion tests, master's auth code
         if: always() && github.event_name == 'workflow_dispatch'
         continue-on-error: true
@@ -68,8 +68,9 @@ jobs:
           git checkout origin/master -- src open-sse
           cd tests && ./node_modules/.bin/vitest run unit/auto-disable-dead-keys.test.js -t "other accounts serve it|cross-upstream"
       # The turn-off minutes table's master column, checked on master's auth
-      # code; this one fails the job. When a change to the auth code merges,
-      # copy its minutes into the master column, or this step fails.
+      # code; this one fails the job. Right after a change to those minutes
+      # merges, a follow-up must copy them into the master column, or this
+      # step fails.
       - name: Turn-off minutes, master's auth code
         if: always() && github.event_name == 'workflow_dispatch'
         env:

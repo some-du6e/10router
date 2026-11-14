@@ -634,6 +634,24 @@ describe("a key refused on only one model", () => {
     expect(rec).toMatchObject({ count: 11, reason: "403", demotedAt: new Date(at(12)).toISOString() });
   });
 
+  // A cross-upstream demotion at minute 10, then refusals at these minutes:
+  // whether it spans the turn-off window after them.
+  it.each([
+    ["30 and 60", [30, 60], true],
+    ["70", [70], true],
+    ["71", [71], false],
+    ["71 and 130", [71, 130], false],
+    ["71 and 131", [71, 131], true],
+    ["30, 60 and, after a gap of 2 hours, 180", [30, 60, 180], true],
+  ])("counts a cross-upstream demotion refused at %s as spanning the hour: %s", (_label, minutes, spans) => {
+    let rec = null;
+    for (const minute of [0, 2, 4, 6, 10, ...minutes]) {
+      rec = auth.__test__.nextDemoteRecord(rec, at(minute), { sameUpstream: false, reason: "403" });
+    }
+    expect(rec.demotedAt).toBe(new Date(at(10)).toISOString());
+    expect(auth.__test__.spansTurnOffWindow(rec)).toBe(spans);
+  });
+
   it("keeps a count's model-scoped mark until it starts over", () => {
     let rec = auth.__test__.nextDemoteRecord(null, at(0), { sameUpstream: true, modelScoped: true, reason: "403" });
     rec = auth.__test__.nextDemoteRecord(rec, at(2), { sameUpstream: true, reason: "403" });
@@ -2673,8 +2691,8 @@ describe("keys of one endpoint on different upstreams", () => {
 
   // Minutes until master's auth code and this one turn these off, null for
   // never. The Dead-key stress workflow's manual run checks the master column
-  // on master's code (DEAD_KEY_BASELINE=master). None of these rows turns off
-  // sooner than on master; auto-disable-stress.test.js has patterns that do.
+  // on master's code (DEAD_KEY_BASELINE=master). Each row turns off no sooner
+  // than on master; that holds for these rows, not every traffic pattern.
   it.each([
     ["sonnet, then opus", 0, 207, 207],
     ["sonnet, then opus", 1, 186, null],
@@ -2808,6 +2826,16 @@ describe("a key refused on one model while keys on other accounts serve it", () 
 
   // The second kimi refusal comes 3 minutes after opus's last one: at 59 the
   // count there spans 59 minutes, though it began 62 minutes before.
+  it("keeps it on when refused for 15 minutes, then again on 2 models on its return 2 hours later", async () => {
+    const [key, ...peers] = await accounts("b", "c");
+    await fail(key.id, { times: 8, models: [OPUS], peers, stepMs: 2 * MIN });
+    expect(record(await load(key.id))).toMatchObject({ demotedAt: expect.any(String) });
+
+    vi.advanceTimersByTime(116 * MIN);
+    await fail(key.id, { times: 4, models: [OPUS, KIMI], peers, stepMs: 2 * MIN });
+    expect((await load(key.id)).isActive).toBe(true);
+  });
+
   it.each([
     ["keeps it on", 30, true],
     ["keeps it on", 59, true],
@@ -2824,7 +2852,8 @@ describe("a key refused on one model while keys on other accounts serve it", () 
     expect((await load(dead.id)).isActive).toBe(staysOn);
   });
 
-  // Master keeps it on too: there kimi isn't demoted within the hour.
+  // Kimi's demotion spans 10 minutes, short of the hour, so it doesn't join the
+  // opus demotion's refused probe to turn the key off.
   it("keeps it on when 10 minutes of kimi refusals demote it there while its opus demotion's last probe was refused 65 minutes ago", async () => {
     const [dead, ...peers] = await accounts("b", "c");
     const ago = (min) => new Date(Date.now() - min * MIN).toISOString();

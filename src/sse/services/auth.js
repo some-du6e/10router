@@ -212,10 +212,11 @@ const countRuns = (record, nowMs) => {
   return sinceLast >= 0 && sinceLast <= AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
 };
 
-// A demotion record whose count spans the turn-off window, as every one
-// demoted only after that window does.
+// A demotion record whose counted refusals span the turn-off window with no gap
+// over crossUpstreamWindowMs, from spanAt (firstAt until such a gap moves it)
+// to lastCountedAt. Every one demoted only after that window does.
 const spansTurnOffWindow = (r) => r?.sameUpstream !== false
-  || new Date(r?.lastCountedAt).getTime() - new Date(r?.firstAt).getTime() >= AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
+  || new Date(r?.lastCountedAt).getTime() - new Date(r?.spanAt ?? r?.firstAt).getTime() >= AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
 
 // A key's demotion record for a model after one more counted 403 on it at
 // nowMs (see AUTH_DEMOTE_CONFIG); lastCountedAt is its last refusal the turn-off
@@ -223,14 +224,19 @@ const spansTurnOffWindow = (r) => r?.sameUpstream !== false
 // counts, on another model (lastly at otherRefusalAt) within the turn-off
 // window: that rule decides then. A new count keeps the key's last success
 // before it (lastServedAt) as servedAt. A demoted record counts on and moves its
-// next probe out, keeping the lease of the probe just answered.
+// next probe out, keeping the lease of the probe just answered. Its span starts
+// over at a counted refusal more than crossUpstreamWindowMs after the last one,
+// unless it already spans the turn-off window.
 function nextDemoteRecord(record, nowMs, { sameUpstream, otherRefusalAt = -Infinity, modelScoped = false, lastServedAt, reason }) {
   const now = new Date(nowMs).toISOString();
   const lastCountedAt = modelScoped ? record?.lastCountedAt : now;
   if (record?.demotedAt) {
     const probeLevel = (record.probeLevel || 0) + 1;
     const nextProbeAt = new Date(nowMs + probeMs(probeLevel)).toISOString();
-    return { ...record, count: record.count + 1, lastAt: now, lastCountedAt, probeLevel, nextProbeAt };
+    const gap = nowMs - new Date(record.lastCountedAt).getTime();
+    const spanAt = !modelScoped && !spansTurnOffWindow(record) && !(gap >= 0 && gap <= AUTH_DEAD_CONFIG.crossUpstreamWindowMs)
+      ? now : record.spanAt;
+    return { ...record, count: record.count + 1, lastAt: now, lastCountedAt, probeLevel, nextProbeAt, ...(spanAt ? { spanAt } : {}) };
   }
   const restart = !countRuns(record, nowMs);
   const count = (restart ? 0 : record.count) + 1;
@@ -247,7 +253,7 @@ function nextDemoteRecord(record, nowMs, { sameUpstream, otherRefusalAt = -Infin
   return { ...next, demotedAt: now, reason, probeLevel: 0, nextProbeAt: new Date(nowMs + probeMs(0)).toISOString() };
 }
 
-export const __test__ = { nextDemoteRecord };
+export const __test__ = { nextDemoteRecord, spansTurnOffWindow };
 
 // The key's demotion records, [model, record], skipping any a success on that
 // model since the count began has lifted (one whose write the success's

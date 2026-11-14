@@ -112,6 +112,30 @@ async function run(keys, totalMin, requests) {
 const session = (workMin, idleMin) => (m) => m % (workMin + idleMin) < workMin;
 const tenOnThirteenOff = session(10, 13);
 
+// Someone works on opus for 15 minutes, is away, and comes back at `back` on
+// opus and haiku, the key refused when refused(minute, model). Minutes until
+// the key went off, null for never.
+async function awayAndBack(ownAccount) {
+  const alsoIn = (from, to) => (m) => m < 15 || (m >= from && m < to);
+  const cases = {
+    "good, refused 0-14 and 80-87": [80, alsoIn(80, 88)],
+    "good, refused 0-14 and 130-137": [130, alsoIn(130, 138)],
+    "good, refused 0-14 and 200-207": [200, alsoIn(200, 208)],
+    "good, refused 0-149": [130, (m) => m < 150],
+    "lacks opus, haiku refused 130-135": [130, (m, model) => model === OPUS || (m >= 130 && m < 136)],
+    "dead, back at 130": [130, () => true],
+    "dead, back at 200": [200, () => true],
+  };
+  const out = {};
+  for (const [name, [back, refused]] of Object.entries(cases)) {
+    const [k] = await setup(["k", "peer"], ownAccount ? "k" : null);
+    const { offAt } = await run([k], 6 * 60, (m) => (m < 15 ? [OPUS] : m >= back ? [OPUS, HAIKU] : [])
+      .map((model) => [model, (id) => id === k.id && refused(m, model)]));
+    out[name] = offAt[k.id] ?? null;
+  }
+  return out;
+}
+
 // Scenarios for one key that works, or lacks some models, beside a healthy
 // peer: on the peer's account, or on its own when `ownAccount`.
 async function keyScenarios(ownAccount) {
@@ -233,8 +257,8 @@ it("replays the dead-key scenarios", async () => {
     "opus, then haiku": (m) => (s(m) ? (m < 180 ? OPUS : HAIKU) : null),
     "one model at a time, 2 h each": (m) => (s(m) ? MODELS[Math.floor(m / 120) % 3] : null),
     "bursty, 2 models": (m) => (m % 30 < 4 ? (m % 2 ? OPUS : SONNET) : null),
-    // On another account, master never turns these off and this branch does:
-    // the streak rule sees the moved probes.
+    // A switch soon after a refused sonnet probe, which the next opus
+    // refusals can join into one streak over 2 models.
     "sonnet until 220, then opus": (m) => (s(m) ? (m < 220 ? SONNET : OPUS) : null),
     "every 5 min, sonnet until 191, then opus": (m) => (m % 5 === 0 ? (m < 191 ? SONNET : OPUS) : null),
   };
@@ -254,6 +278,7 @@ it("replays the dead-key scenarios", async () => {
   out.lacksTwoModels = sameAccount.lacksTwoModels;
   // The same with the key on its own account and its peers on another.
   out.ownAccount = await keyScenarios(true);
+  out.awayAndBack = { "same account": await awayAndBack(false), "other account": await awayAndBack(true) };
 
   console.log(JSON.stringify(out, null, 2));
   if (process.env.STRESS_OUT) fs.writeFileSync(process.env.STRESS_OUT, JSON.stringify(out, null, 2));
