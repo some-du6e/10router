@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
-import { DEMOTE_PREFIX, SOFT_DEMOTE_PREFIX, keyRefusedAtOf, softLooksDead } from "../../../shared/utils/connectionStatus.js";
+import { DEMOTE_PREFIX, SOFT_DEMOTE_PREFIX, keyRefusedAtOf, softLooksDead, softRecordsForItself } from "../../../shared/utils/connectionStatus.js";
 import { clearSoftDemotions } from "../../softDemotions.js";
 import { AUTH_SOFT_DEMOTE } from "../../../../open-sse/config/runtimeConfig.js";
 import { COOLDOWN_MS } from "../../../../open-sse/config/errorConfig.js";
@@ -45,11 +45,13 @@ export const PAST_KEYS_CAP = 50;
 
 // A dead key the router left on: soft-demoted for refusals of the key itself,
 // and refused like a dead key since its last success (softLooksDead). When its
-// soft demotions were last refused for the key itself, or null.
+// soft demotions were last refused for the key itself (with 401s in a row,
+// lastRefusedAt too), or null.
 function softDeadUntil(c) {
   if (!AUTH_SOFT_DEMOTE.enabled || !softLooksDead(c)) return null;
-  const records = Object.entries(c).filter(([k, r]) => k.startsWith(AUTH_SOFT_PREFIX) && r?.keyRefused === true && r.since);
-  return records.length ? records.map(([, r]) => keyRefusedAtOf(r)).sort().at(-1) : null;
+  const records = softRecordsForItself(c).map(([, r]) => r);
+  const at = records.flatMap((r) => [keyRefusedAtOf(r), c.authHeld401s ? r.lastRefusedAt : null]).filter(Boolean);
+  return at.length ? at.sort().at(-1) : records.map((r) => r.since).sort().at(-1);
 }
 
 function applyAutoDisableTransition(db, existing, merged, data) {

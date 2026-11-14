@@ -104,6 +104,12 @@ describe("soft-demoted key label", () => {
     expect(demotedLabel({ [SOFT_OPUS]: none, [SOFT_KIMI]: none, authServedAt: "2026-11-02T02:50:00.000Z" }).title).not.toContain("replace the key");
   });
 
+  // Counted from the later of its last success and its soft demotion, as the day rule.
+  it("doesn't suggest replacing it for a count on another model from before its soft demotion", () => {
+    const stale = { count: 3, firstAt: "2026-11-02T01:50:00.000Z", lastCountedAt: "2026-11-02T02:00:00.000Z" };
+    expect(demotedLabel({ [SOFT_OPUS]: { ...soft(), keyRefused: true }, [getAuthDemoteKey("kimi-k3")]: stale }).title).not.toContain("replace the key");
+  });
+
   // A soft demotion beginning on another model writes authDemoteOkAt too.
   it("still suggests replacing it when it has only been soft-demoted elsewhere since", () => {
     const label = demotedLabel({ ...both(), authDemoteOkAt: "2026-11-02T02:50:00.000Z" });

@@ -776,17 +776,56 @@ describe("after a long soft demotion", () => {
   });
 
   // With its opus try due already, nothing else here writes with autoDisable.
-  it("turns it off at a 401 on another model, once the day is up", async () => {
+  // 401s count toward the day rule only in a row (5, as master's all-401 streak).
+  it("turns it off at the fifth 401 in a row on another model, once the day is up", async () => {
     const { key, peer } = await softDemoted();
     expect((await run(key, 25, undefined, OPUS_ONLY)).off).toBeNull();
-    vi.advanceTimersByTime(181 * MIN);
-    expect((await load(key.id))[`authSoft_${OPUS}`].tryAt <= new Date().toISOString()).toBe(true);
-    await succeed(peer.id, KIMI);
-    await auth.markAccountUnavailable(key.id, 401, "Invalid API key", provider, KIMI);
-    const conn = await load(key.id);
-    expect(conn.isActive).toBe(false);
-    expect(conn.autoDisabledReason).toBe(`401 "Invalid API key" on ${OPUS}, ${KIMI} for 24h while soft-demoted`);
+    for (let i = 1; i <= 5; i++) {
+      vi.advanceTimersByTime(3 * MIN);
+      await succeed(peer.id, KIMI);
+      await auth.markAccountUnavailable(key.id, 401, "Invalid API key", provider, KIMI);
+      expect([i, (await load(key.id)).isActive]).toEqual([i, i < 5]);
+    }
+    expect((await load(key.id)).autoDisabledReason).toBe(`401 "Invalid API key" on ${OPUS}, ${KIMI} for 24h while soft-demoted`);
   }, 120000);
+
+  // The reviewer's replay: refused on opus with 403s (as if it lacked it),
+  // kimi idle for 27 hours, then a refusal or two of the key on kimi.
+  it.each([
+    ["one 401", [[401, "Invalid API key"]]],
+    ["two 401s", [[401, "Invalid API key"], [401, "Invalid API key"]]],
+  ])("keeps a key on refused on opus for a day, then refused with %s on kimi", async (_label, refusals) => {
+    const [key] = await accounts(["k", "peer"]);
+    const pending = [...refusals];
+    let off = null;
+    for (let m = 0; m < 27 * 60 + 240 && off === null; m++) {
+      if (m > 0) vi.advanceTimersByTime(MIN);
+      await requestAnswered(OPUS, (id) => (id === key.id ? [403, REFUSED_403] : null));
+      if (m >= 27 * 60) {
+        for (let i = 0; i < 2; i++) await requestAnswered(KIMI, (id) => (id === key.id && pending.length ? pending.shift() : null));
+      }
+      if (!(await load(key.id)).isActive) off = m;
+    }
+    expect(pending).toEqual([]);
+    expect(off).toBeNull();
+  }, 120000);
+
+  // One request: keys in routing order until one serves; answer(id) is
+  // [status, text] for a refusal, or null.
+  async function requestAnswered(model, answer) {
+    const tried = new Set();
+    for (;;) {
+      const creds = await auth.getProviderCredentials(provider, tried, model);
+      if (!creds?.connectionId) return null;
+      const a = answer(creds.connectionId);
+      if (!a) {
+        await auth.clearAccountError(creds.connectionId, creds, model);
+        return creds.connectionId;
+      }
+      await auth.markAccountUnavailable(creds.connectionId, a[0], a[1], provider, model);
+      tried.add(creds.connectionId);
+    }
+  }
 
   // Refusals of just the model ("does not have access") on a model the key is
   // soft-demoted on for itself: refused tries, but not of the key.
@@ -825,9 +864,9 @@ describe("after a long soft demotion", () => {
     vi.advanceTimersByTime(11 * MIN);
     await succeed(peer.id, OPUS);
     await auth.markAccountUnavailable(key.id, 401, "Invalid API key", provider, OPUS);
-    expect((await load(key.id))[`authSoft_${OPUS}`]).toMatchObject({
-      level: 1, tries: 1, keyRefusedAt: new Date().toISOString(), tryAt: new Date(Date.now() + 20 * MIN).toISOString(),
-    });
+    const rec = (await load(key.id))[`authSoft_${OPUS}`];
+    // A 401 is no refusal on a second model for the day rule: keyRefusedAt stays.
+    expect(rec).toMatchObject({ level: 1, tries: 1, keyRefusedAt: rec.since, tryAt: new Date(Date.now() + 20 * MIN).toISOString() });
   });
 
   // Soft-demoted for a model it lacks, the key isn't held: its 401s leave the
@@ -948,7 +987,8 @@ describe("after a long soft demotion", () => {
     expect(off).toBeLessThanOrEqual(from + 24 * 60 + 180);
     // Tried on the probe schedule on both models, not first on kimi all day.
     expect(refusals).toBeLessThanOrEqual(60);
-    expect((await load(key.id)).autoDisabledReason).toBe(`401 "Invalid API key" on ${OPUS}, ${KIMI} for 24h while soft-demoted`);
+    // By 401s in a row: the models refused other than with 401s since the last success, and this one.
+    expect((await load(key.id)).autoDisabledReason).toMatch(new RegExp(`^401 "Invalid API key" on (${OPUS}|${KIMI}|${OPUS}, ${KIMI}) for 24h while soft-demoted$`));
   }, 120000);
 
   // Mutations: the two-model check reading lastRefusedAt, the rule checked at
@@ -1371,6 +1411,63 @@ describe("AUTH_SOFT_DEMOTE", () => {
     expect(models.filter((m) => m.connectionId === key.id && m.model === KIMI)).toEqual([]);
     const { connections } = await (await freshProviders.GET()).json();
     expect(connections.find((c) => c.id === key.id)).not.toHaveProperty(`authDemote_${KIMI}`);
+  });
+
+  const loadShown = async (id) => {
+    vi.stubEnv("AUTH_SOFT_DEMOTE", "0");
+    vi.resetModules();
+    const { connections } = await (await (await import("@/app/api/providers/route.js")).GET()).json();
+    return connections.find((c) => c.id === id);
+  };
+
+  it("set to 0, ignores a count held 401s began, also once a 403 joined it", async () => {
+    const { key, peer } = await softDemoted();
+    for (const [status, text] of [...Array(4).fill([401, "Invalid API key"]), [403, REFUSED_403]]) {
+      vi.advanceTimersByTime(2 * MIN);
+      await succeed(peer.id, KIMI);
+      await auth.markAccountUnavailable(key.id, status, text, provider, KIMI);
+    }
+    const record = (await load(key.id))[`authDemote_${KIMI}`];
+    expect(record).toMatchObject({ count: 5, held401: true, lastCountedAt: new Date().toISOString() });
+    expect(await loadShown(key.id)).not.toHaveProperty(`authDemote_${KIMI}`);
+  });
+
+  it("set to 0, still honours a demotion 403s made before the key was held, after a held 401 probe", async () => {
+    // Kimi demoted by 403s its near peer served; then soft-demoted on opus, which only the far peer serves.
+    const [key, near] = await accounts(["k", "near"], { shared: true });
+    const [far] = await accounts(["far"]);
+    await refuse(key.id, near, { times: 6, model: KIMI });
+    const demoted = (await load(key.id))[`authDemote_${KIMI}`];
+    expect(demoted).toMatchObject({ count: 6, demotedAt: expect.any(String) });
+    vi.advanceTimersByTime(MIN);
+    await succeed(key.id, "claude-sonnet-5-5");
+    await refuse(key.id, far, { times: 6 });
+    expect((await load(key.id))[`authSoft_${OPUS}`]).toMatchObject({ keyRefused: true });
+    vi.advanceTimersByTime(30 * MIN);
+    await succeed(near.id, KIMI);
+    await auth.markAccountUnavailable(key.id, 401, "Invalid API key", provider, KIMI);
+    const record = (await load(key.id))[`authDemote_${KIMI}`];
+    expect(record).toMatchObject({ count: 7, demotedAt: demoted.demotedAt, lastCountedAt: demoted.lastCountedAt });
+    expect(record.held401).toBeUndefined();
+    expect((await loadShown(key.id))[`authDemote_${KIMI}`]).toMatchObject({ count: 7, demotedAt: demoted.demotedAt });
+  });
+
+  it("clears the 401s in a row with a new key or a toggle", async () => {
+    const { key, peer } = await softDemoted();
+    const held401 = async () => {
+      vi.advanceTimersByTime(2 * MIN);
+      await succeed(peer.id, KIMI);
+      await auth.markAccountUnavailable(key.id, 401, "Invalid API key", provider, KIMI);
+      expect((await load(key.id)).authHeld401s).toBe(1);
+    };
+    await held401();
+    await db.updateProviderConnection(key.id, { isActive: false });
+    await db.updateProviderConnection(key.id, { isActive: true });
+    expect((await load(key.id)).authHeld401s ?? null).toBeNull();
+    await refuse(key.id, peer, { times: 6 });
+    await held401();
+    await db.updateProviderConnection(key.id, { apiKey: "sk-test-a-new-0123456789" });
+    expect((await load(key.id)).authHeld401s ?? null).toBeNull();
   });
 
   it("set to 0, records no dead key for a key replaced while soft-demoted", async () => {

@@ -483,6 +483,10 @@ describe("getKeyLifespans", () => {
       ["is soft-demoted for refusals of one model only", soft(NOW - 12 * HOUR, NOW - 9 * HOUR, { keyRefused: false })],
       ["served after it was last refused for itself", { ...soft(NOW - 12 * HOUR, NOW - 9 * HOUR), authServedAt: iso(NOW - 8 * HOUR) }],
       // As the turn-off rule, which needs two models (or 401s in a row).
+      ["has a count on another model only from before its soft demotion", {
+        [`${SOFT_DEMOTE_PREFIX}m`]: softRecord(NOW - 12 * HOUR, NOW - 9 * HOUR),
+        authDemote_m2: { count: 3, firstAt: iso(NOW - 14 * HOUR), lastCountedAt: iso(NOW - 13 * HOUR) },
+      }],
       ["was refused for itself on one model only since it last served", {
         [`${SOFT_DEMOTE_PREFIX}m`]: softRecord(NOW - 12 * HOUR, NOW - 9 * HOUR), authServedAt: iso(NOW - 10 * HOUR),
       }],

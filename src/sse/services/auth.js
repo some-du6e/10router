@@ -16,7 +16,7 @@ import { isLimitError } from "open-sse/utils/limitHold.js";
 import { warmJitterMs, warmRetryAt } from "open-sse/services/cacheAffinity.js";
 import { CACHE_AFFINITY, AUTH_SOFT_DEMOTE } from "open-sse/config/runtimeConfig.js";
 import { softDemotions } from "@/lib/softDemotions.js";
-import { keyRefusedAtOf, modelsRefusedForItself, refusedLikeDead } from "@/shared/utils/connectionStatus.js";
+import { modelsRefusedForItself, refusedLikeDead, softRecordsForItself } from "@/shared/utils/connectionStatus.js";
 
 // Per-provider mutexes for account selection. Picks for the same provider stay
 // serialized (round-robin sticky counters read-then-write lastUsedAt and
@@ -104,7 +104,8 @@ const lastServedMs = (conn) => Math.max(Date.parse(conn.authServedAt) || -Infini
 
 // A soft record's tries refused for the key itself since the key last served
 // (or since it began): `tries`, counted from `triesFrom`. None if the key
-// served after that. keyRefusedAt is the last of them (or `since`).
+// served after that. keyRefusedAt is the last of them other than a 401 (or
+// `since`; null for one a 401 began with none since).
 const triesSinceServed = (rec, servedMs) => (Date.parse(rec.triesFrom ?? rec.since) >= servedMs ? rec.tries ?? 0 : 0);
 
 // A key held for itself (softModelsForItself, `records`), refused for itself
@@ -112,19 +113,20 @@ const triesSinceServed = (rec, servedMs) => (Date.parse(rec.triesFrom ?? rec.sin
 // counted from its last success or, if later, from the earliest of those soft
 // demotions; with deadAfterTries of their tries refused for the key itself
 // since then. Like the turn-off rule (isAuthDead), refusedLikeDead: refused
-// for itself on minModels models since then (modelsRefusedForItself, and
-// `model`), or minFailures 401s in a row (`held401s`, this one included).
-// Those models, or null.
-function softDeadModels(conn, records, model, held401s) {
+// for itself, other than with 401s, on minModels models since then
+// (modelsRefusedForItself, and `model` unless this is a 401), or minFailures
+// 401s in a row (`held401s`, this one included). Those models and `model`, or
+// null.
+function softDeadModels(conn, records, model, held401s, is401) {
   if (!(AUTH_SOFT_DEMOTE.deadAfterMs > 0) || records.length === 0) return null;
   const servedMs = lastServedMs(conn);
   const fromMs = Math.max(servedMs, Math.min(...records.map(([, r]) => Date.parse(r.since))));
   const tries = records.reduce((sum, [, r]) => sum + triesSinceServed(r, servedMs), 0);
   // The soft demotions as this process has them (a try just refused included).
   const current = { ...conn, ...Object.fromEntries(records.map(([m, r]) => [getAuthSoftKey(m), r])) };
-  const models = [...new Set([...modelsRefusedForItself(current, fromMs), model])];
+  const models = [...new Set([...modelsRefusedForItself(current, fromMs), ...(is401 ? [] : [model])])];
   return Date.now() - fromMs >= AUTH_SOFT_DEMOTE.deadAfterMs && tries >= AUTH_SOFT_DEMOTE.deadAfterTries
-    && refusedLikeDead({ authHeld401s: held401s }, models) ? models : null;
+    && refusedLikeDead({ authHeld401s: held401s }, models) ? [...new Set([...models, model])] : null;
 }
 
 const duration = (ms) => (ms % 3600000 === 0 ? `${ms / 3600000}h` : ms % 60000 === 0 ? `${ms / 60000}m` : `${ms / 1000}s`);
@@ -146,8 +148,8 @@ function claimSoftTry(c, model) {
 }
 
 // A refused try; `keyRefusal`: a refusal of the key itself, which counts in
-// `tries` and keyRefusedAt.
-function softTryRefused(rec, conn, keyRefusal) {
+// `tries` and, unless a 401, keyRefusedAt.
+function softTryRefused(rec, conn, keyRefusal, is401) {
   const now = Date.now();
   if (keyRefusal) {
     const servedMs = lastServedMs(conn);
@@ -159,7 +161,8 @@ function softTryRefused(rec, conn, keyRefusal) {
       rec.triesFrom = rec.triesFrom ?? rec.since;
     }
     rec.tries++;
-    rec.keyRefusedAt = new Date(now).toISOString();
+    if (!is401) rec.keyRefusedAt = new Date(now).toISOString();
+    else if (rec.keyRefusedAt === undefined) rec.keyRefusedAt = rec.since;
   }
   rec.level++;
   rec.tryAt = new Date(now + probeMs(rec.level)).toISOString();
@@ -430,9 +433,19 @@ async function planDemotion(connections, conn, model, status, errorText, evidenc
     sameUpstream: demoteEvidence === "same-upstream", otherRefusalAt, modelScoped: !!modelEvidence, lastServedAt,
     reason: refusalText(status, errorText),
   });
-  // A record a 401 counted toward is tagged held401: with AUTH_SOFT_DEMOTE off
-  // the router ignores it (master counts no 401s).
-  const to = held && Number(status) === 401 && !modelEvidence ? { ...counted, held401: true } : counted;
+  // A held 401 counts like a 403 but, like a refusal of one model, doesn't move
+  // lastCountedAt: the turn-off rules count no 401 here (the day rule counts
+  // them only in a row, authHeld401s). A count a held 401 began is tagged
+  // held401 for as long as it runs on: with AUTH_SOFT_DEMOTE off the router
+  // ignores it, as master counts no 401s. One that 403s began isn't tagged.
+  const held401 = held && Number(status) === 401 && !modelEvidence;
+  const restart = !current || counted.firstAt !== current.firstAt;
+  const tagged = restart ? held401 : current.held401 === true;
+  const to = {
+    ...counted,
+    ...(held401 ? { lastCountedAt: restart ? null : current.lastCountedAt ?? null } : {}),
+    ...(tagged ? { held401: true } : {}),
+  };
   const demoting = !!to.demotedAt && !current?.demotedAt;
   // Refused here while demoted elsewhere: probe there now, once its last
   // probe's lease is over, to tell a key dead on both from one that has
@@ -953,13 +966,13 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   // this model, or while held a 401). Not a 401 on a soft demotion for a model
   // the key lacks with the key not held: its try stays due, so the turn-off
   // rule sees its 401s as master would.
-  const softTry = paused && plan.demote ? { [getAuthSoftKey(model)]: softTryRefused(softRecord(conn, model), conn, !!evidence) } : {};
+  const softTry = paused && plan.demote ? { [getAuthSoftKey(model)]: softTryRefused(softRecord(conn, model), conn, !!evidence, Number(status) === 401) } : {};
   // 401s in a row while held, since the last success and the last other refusal of the key.
   const held401s = held && evidence ? (Number(status) === 401 ? (conn.authHeld401s ?? 0) + 1 : 0) : null;
   // Held, refused for itself, and the day rule met: turned off. A refusal of
   // just this model says nothing about the key, so it doesn't check.
   const deadModels = held && evidence
-    ? softDeadModels(conn, softModelsForItself(conn).map(m => [m, softRecord(conn, m)]), model, held401s) : null;
+    ? softDeadModels(conn, softModelsForItself(conn).map(m => [m, softRecord(conn, m)]), model, held401s, Number(status) === 401) : null;
   const deadWhileSoft = deadModels ? {
     isActive: false,
     autoDisabledAt: new Date().toISOString(),
@@ -981,7 +994,12 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const softEntry = entersSoft ? {
     ...AUTH_FAIL_CLEARED,
     authDemoteOkAt: since,
-    [getAuthSoftKey(model)]: { level: 0, since, tryAt: new Date(plan.nowMs + probeMs(0)).toISOString(), lastRefusedAt: since, keyRefused: !tally.modelScoped },
+    [getAuthSoftKey(model)]: {
+      level: 0, since, tryAt: new Date(plan.nowMs + probeMs(0)).toISOString(), lastRefusedAt: since, keyRefused: !tally.modelScoped,
+      // A count held 401s began: refused for itself, other than with a 401,
+      // when it last counted a 403 (lastCountedAt), if ever.
+      ...(tally.held401 ? { tries: 0, triesFrom: since, keyRefusedAt: tally.lastCountedAt ?? null } : {}),
+    },
   } : null;
 
   const update = {
@@ -1069,11 +1087,10 @@ export async function clearAccountError(connectionId, currentConnection, model =
     || otherSoft.some(([, r]) => !(conn.authDemoteOkAt > r.since));
   // With a soft demotion for refusals of the key itself stored (whether or not
   // AUTH_SOFT_DEMOTE is on now), authServedAt notes the success: at most once
-  // a minute, unless the key was refused for itself (or a demotion began)
-  // since it was last written, and once after this process soft-demoted the
-  // key (which the snapshot may predate). The 401s in a row (authHeld401s) end.
-  const heldRefusedAt = Object.entries(conn)
-    .filter(([k, r]) => k.startsWith(AUTH_SOFT_PREFIX) && r?.since && r.keyRefused === true).map(([, r]) => keyRefusedAtOf(r));
+  // a minute, unless a try was refused (or a demotion began) since it was last
+  // written, and once after this process soft-demoted the key (which the
+  // snapshot may predate). The 401s in a row (authHeld401s) end.
+  const heldRefusedAt = softRecordsForItself(conn).map(([, r]) => r.lastRefusedAt || r.since);
   const servedWrite = authEvents.softKeys.delete(connectionId) || (heldRefusedAt.length > 0
     && (!(conn.authServedAt > new Date(now - 60 * 1000).toISOString()) || heldRefusedAt.some(at => !(conn.authServedAt > at))));
   const demoteWrite = demoteRecord || noteServed || servedWrite || !!conn.authHeld401s;
