@@ -357,7 +357,12 @@ export async function createProviderConnection(data) {
 // success, is left as stored. autoDisableIf ({ field: since or value }) holds
 // what a turn-off was decided on (sse/services/auth.js's day rule: the soft
 // demotions' since and authServedAt); autoDisable is dropped if any changed.
-export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, noteServed = false, apiKeyUsed, softSince = null, autoDisableIf = null } = {}) {
+// softEntry ({ model, from }) marks `data` as a soft demotion's entry, decided
+// on the model's demotion count `from`: if that count has changed since (a
+// success or a Clear lifted it), the entry (its soft record, streak fields,
+// authDemoteOkAt and liftDemote) is dropped, and the fields `fallback` holds
+// (the refusal's streak) are written instead.
+export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, noteServed = false, apiKeyUsed, softSince = null, autoDisableIf = null, softEntry = null } = {}) {
   const db = await getAdapter();
   let result;
   let servesChanged = false;
@@ -372,12 +377,16 @@ export async function updateProviderConnection(id, data, { autoDisable = null, d
       else delete merged[f];
     }
     const staleKey = apiKeyUsed !== undefined && existing.apiKey !== apiKeyUsed;
-    if (staleKey) {
+    const staleEntry = !!softEntry
+      && JSON.stringify(existing[getAuthDemoteKey(softEntry.model)] ?? null) !== JSON.stringify(softEntry.from ?? null);
+    if (staleKey || staleEntry) {
       const softFields = Object.keys(data).filter(f => f.startsWith(AUTH_SOFT_PREFIX));
       for (const f of [...AUTH_STREAK_FIELDS, ...softFields, "authDemoteOkAt"]) {
         if (f in existing) merged[f] = existing[f];
         else delete merged[f];
       }
+      // An entry dropped for its count: the refusal's streak, as without it.
+      if (!staleKey && softEntry.fallback) Object.assign(merged, softEntry.fallback);
     }
     const decidedOn = Object.entries(autoDisableIf ?? {})
       .every(([f, v]) => (f.startsWith(AUTH_SOFT_PREFIX) ? existing[f]?.since ?? null : existing[f] ?? null) === v);
@@ -395,8 +404,9 @@ export async function updateProviderConnection(id, data, { autoDisable = null, d
         if (record?.demotedAt && record.nextProbeAt > now) merged[getAuthDemoteKey(model)] = { ...record, nextProbeAt: now };
       }
     }
-    if (liftDemote && !staleKey && existing[getAuthDemoteKey(liftDemote)]) merged[getAuthDemoteKey(liftDemote)] = null;
-    if (liftDemote && !staleKey && existing[getAuthSoftKey(liftDemote)] && !(getAuthSoftKey(liftDemote) in data)) merged[getAuthSoftKey(liftDemote)] = null;
+    const lift = liftDemote && !staleKey && !staleEntry;
+    if (lift && existing[getAuthDemoteKey(liftDemote)]) merged[getAuthDemoteKey(liftDemote)] = null;
+    if (lift && existing[getAuthSoftKey(liftDemote)] && !(getAuthSoftKey(liftDemote) in data)) merged[getAuthSoftKey(liftDemote)] = null;
     if (noteServed) merged.authDemoteOkAt = new Date().toISOString();
     applyAutoDisableTransition(db, existing, merged, data);
     upsert(db, merged);

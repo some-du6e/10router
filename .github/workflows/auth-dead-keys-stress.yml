@@ -11,6 +11,8 @@ on:
       - "src/sse/**"
       - "src/lib/**"
       - "src/shared/**"
+      - "src/app/api/models/availability/**"
+      - "src/app/api/providers/**"
       - "open-sse/**"
       - "tests/unit/auto-disable-stress.test.js"
       - "tests/unit/auto-disable-stress.pinned.json"

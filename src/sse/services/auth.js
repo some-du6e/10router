@@ -1031,7 +1031,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     authServedAt: conn.authServedAt ?? null,
     ...Object.fromEntries(softModelsForItself(conn).map(m => [getAuthSoftKey(m), conn[getAuthSoftKey(m)].since])),
   } : null;
-  const options = entersSoft ? [{ liftDemote: model, apiKeyUsed, softSince }]
+  const options = entersSoft ? [{ liftDemote: model, apiKeyUsed, softSince, softEntry: { model, from: conn[getAuthDemoteKey(model)] ?? null, fallback: authFailStreak } }]
     : authFailStreak || demote ? [{ autoDisable: disabling, demote, apiKeyUsed, softSince, autoDisableIf }]
       : Object.keys(softDue).length || Object.keys(softTry).length || disabling ? [{ autoDisable: disabling, apiKeyUsed, softSince, autoDisableIf }] : [];
   const saved = await updateProviderConnection(connectionId, update, ...options);

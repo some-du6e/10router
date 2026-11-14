@@ -527,6 +527,10 @@ describe("soft demotion", () => {
   it("ends its soft demotions on every model when one's cooldown is cleared", async () => {
     const { key, peer } = await softDemotedOnTwo();
     expect((await load(key.id))[`authSoft_${KIMI}`]).toMatchObject({ keyRefused: true });
+    // Routing on kimi caches its soft demotion there.
+    vi.advanceTimersByTime(3 * MIN);
+    expect(await pick(KIMI)).toBe(peer.id);
+    expect(global._softDemotions.has(`${key.id}|${KIMI}`)).toBe(true);
     await availability.POST(new Request("http://localhost/api/models/availability", {
       method: "POST", body: JSON.stringify({ action: "clearCooldown", provider, model: OPUS }),
     }));
@@ -547,6 +551,19 @@ describe("soft demotion", () => {
     beforeProxyLookup(() => succeed(key.id, OPUS));
     await failOnce(key.id, OPUS);
     expect((await load(key.id))[`authSoft_${OPUS}`] ?? null).toBeNull();
+  });
+
+  // As another instance's success there, or a Clear, would: the count goes.
+  it("doesn't soft-demote a key whose count was lifted while the entering refusal was on its way", async () => {
+    const [key, peer] = await accounts(["a", "b"]);
+    await refuse(key.id, peer, { times: 5 });
+    vi.advanceTimersByTime(2 * MIN);
+    await succeed(peer.id, OPUS);
+    beforeProxyLookup(() => db.updateProviderConnection(key.id, { [`authDemote_${OPUS}`]: null }));
+    await failOnce(key.id, OPUS);
+    const conn = await load(key.id);
+    expect(conn[`authSoft_${OPUS}`] ?? null).toBeNull();
+    expect(conn.authFailCount).toBe(6);
   });
 
   it("doesn't soft-demote over a soft demotion written while the entering refusal was on its way", async () => {
@@ -817,18 +834,20 @@ describe("after a long soft demotion", () => {
 
   it.each([
     // Another router instance's: this process's memory doesn't see it.
-    ["a success stored by another instance", (key) => db.updateProviderConnection(key.id, { authServedAt: new Date().toISOString() })],
+    ["a success stored by another instance", (key) => db.updateProviderConnection(key.id, { authServedAt: new Date().toISOString() }), true],
     ["a Clear", () => availability.POST(new Request("http://localhost/api/models/availability", {
       method: "POST", body: JSON.stringify({ action: "clearCooldown", provider, model: OPUS }),
-    }))],
-  ])("keeps it on when %s lands while the refusal that would turn it off is on its way", async (_label, landing) => {
+    })), true],
+    // The control: with nothing landing, that refusal turns it off.
+    ["nothing", () => {}, false],
+  ])("leaves it on when %s lands while the refusal that would turn it off is on its way", async (_label, landing, stays) => {
     const { key, peer } = await softDemoted();
     expect((await run(key, 23)).off).toBeNull();
     vi.advanceTimersByTime(2 * 60 * MIN);
     await succeed(peer.id, KIMI);
     beforeProxyLookup(() => landing(key));
     await failOnce(key.id, KIMI);
-    expect((await load(key.id)).isActive).toBe(true);
+    expect((await load(key.id)).isActive).toBe(stays);
   }, 120000);
 
   // 401s count toward the day rule only in a row (5, as master's all-401 streak).
