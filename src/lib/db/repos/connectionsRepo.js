@@ -351,8 +351,11 @@ export async function createProviderConnection(data) {
 // noteServed, authDemoteOkAt marks the success for the stored records.
 // apiKeyUsed is the key a failing request used: if another key has been stored
 // since, the request's auth streak fields, soft demotions, authDemoteOkAt,
-// autoDisable, demote and liftDemote are dropped.
-export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, noteServed = false, apiKeyUsed } = {}) {
+// autoDisable, demote and liftDemote are dropped. softSince ({ field: since })
+// gives the `since` the request saw for each soft demotion field it writes
+// (null: none): one whose stored record has since changed, say lifted by a
+// success, is left as stored.
+export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, noteServed = false, apiKeyUsed, softSince = null } = {}) {
   const db = await getAdapter();
   let result;
   let servesChanged = false;
@@ -361,6 +364,11 @@ export async function updateProviderConnection(id, data, { autoDisable = null, d
     if (!row) { result = null; return; }
     const existing = rowToConn(row);
     const merged = { ...existing, ...data, updatedAt: new Date().toISOString() };
+    for (const [f, since] of Object.entries(softSince ?? {})) {
+      if ((existing[f]?.since ?? null) === since) continue;
+      if (f in existing) merged[f] = existing[f];
+      else delete merged[f];
+    }
     const staleKey = apiKeyUsed !== undefined && existing.apiKey !== apiKeyUsed;
     if (staleKey) {
       const softFields = Object.keys(data).filter(f => f.startsWith(AUTH_SOFT_PREFIX));

@@ -524,6 +524,42 @@ describe("soft demotion", () => {
     expect(conn[`authSoft_${OPUS}`] ?? null).toBeNull();
   });
 
+  it("ends its soft demotions on every model when one's cooldown is cleared", async () => {
+    const { key, peer } = await softDemotedOnTwo();
+    expect((await load(key.id))[`authSoft_${KIMI}`]).toMatchObject({ keyRefused: true });
+    await availability.POST(new Request("http://localhost/api/models/availability", {
+      method: "POST", body: JSON.stringify({ action: "clearCooldown", provider, model: OPUS }),
+    }));
+    expect((await load(key.id))[`authSoft_${KIMI}`] ?? null).toBeNull();
+    expect(global._softDemotions.has(`${key.id}|${KIMI}`)).toBe(false);
+    // Not held: a refusal a day on builds a streak, and nothing turns the key off.
+    vi.advanceTimersByTime(25 * 60 * MIN);
+    await succeed(peer.id, OPUS);
+    await failOnce(key.id, OPUS);
+    const conn = await load(key.id);
+    expect(conn).toMatchObject({ isActive: true, authFailCount: 1 });
+  });
+
+  it("leaves a soft demotion a success lifted while a refusal was on its way", async () => {
+    const { key, peer } = await softDemoted();
+    vi.advanceTimersByTime(11 * MIN);
+    await succeed(peer.id, OPUS);
+    beforeProxyLookup(() => succeed(key.id, OPUS));
+    await failOnce(key.id, OPUS);
+    expect((await load(key.id))[`authSoft_${OPUS}`] ?? null).toBeNull();
+  });
+
+  it("doesn't soft-demote over a soft demotion written while the entering refusal was on its way", async () => {
+    const [key, peer] = await accounts(["a", "b"]);
+    await refuse(key.id, peer, { times: 5 });
+    vi.advanceTimersByTime(2 * MIN);
+    await succeed(peer.id, OPUS);
+    const other = { level: 3, since: "2026-11-12T00:00:00.000Z", tryAt: "2026-11-12T01:00:00.000Z", lastRefusedAt: "2026-11-12T00:00:00.000Z", keyRefused: true };
+    beforeProxyLookup(() => db.updateProviderConnection(key.id, { [`authSoft_${OPUS}`]: other }));
+    await failOnce(key.id, OPUS);
+    expect((await load(key.id))[`authSoft_${OPUS}`]).toEqual(other);
+  });
+
   const clearOpus = (route = availability) => route.POST(new Request("http://localhost/api/models/availability", {
     method: "POST", body: JSON.stringify({ action: "clearCooldown", provider, model: OPUS }),
   }));
@@ -1493,6 +1529,17 @@ describe("AUTH_SOFT_DEMOTE", () => {
     expect(record).toMatchObject({ count: 7, demotedAt: demoted.demotedAt, lastCountedAt: demoted.lastCountedAt });
     expect(record.held401).toBeUndefined();
     expect((await loadShown(key.id))[`authDemote_${KIMI}`]).toMatchObject({ count: 7, demotedAt: demoted.demotedAt });
+  });
+
+  it("keeps the 401s in a row through a refusal of just the model", async () => {
+    const { key, peer } = await softDemoted();
+    const lacks = `[403]: {"error":{"message":"Your organization does not have access to model ${KIMI}"}}`;
+    for (const [status, text] of [...Array(4).fill([401, "Invalid API key"]), [403, lacks], [401, "Invalid API key"]]) {
+      vi.advanceTimersByTime(2 * MIN);
+      await succeed(peer.id, KIMI);
+      await auth.markAccountUnavailable(key.id, status, text, provider, KIMI);
+    }
+    expect((await load(key.id)).authHeld401s).toBe(5);
   });
 
   it("clears the 401s in a row with a new key or a toggle", async () => {

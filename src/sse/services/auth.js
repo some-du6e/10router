@@ -1022,9 +1022,12 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   };
   // A key pasted in while this request was on its way isn't blamed for it.
   const apiKeyUsed = requestApiKey ?? conn?.apiKey;
-  const options = entersSoft ? [{ liftDemote: model, apiKeyUsed }]
-    : authFailStreak || demote ? [{ autoDisable: disabling, demote, apiKeyUsed }]
-      : Object.keys(softDue).length || Object.keys(softTry).length || disabling ? [{ autoDisable: disabling, apiKeyUsed }] : [];
+  // Soft demotion writes apply only to the record the refusal saw, as `demote`
+  // does: not to one a success lifted meanwhile, nor over one written meanwhile.
+  const softSince = Object.fromEntries(Object.keys(update).filter(k => k.startsWith(AUTH_SOFT_PREFIX)).map(k => [k, conn?.[k]?.since ?? null]));
+  const options = entersSoft ? [{ liftDemote: model, apiKeyUsed, softSince }]
+    : authFailStreak || demote ? [{ autoDisable: disabling, demote, apiKeyUsed, softSince }]
+      : Object.keys(softDue).length || Object.keys(softTry).length || disabling ? [{ autoDisable: disabling, apiKeyUsed, softSince }] : [];
   const saved = await updateProviderConnection(connectionId, update, ...options);
   const turnedOff = disabling && saved?.isActive === false && saved.autoDisabledAt === disabling.autoDisabledAt;
   const recorded = demote && JSON.stringify(saved?.[getAuthDemoteKey(model)]) === JSON.stringify(demote.to);

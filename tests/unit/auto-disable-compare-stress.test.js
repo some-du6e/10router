@@ -50,6 +50,10 @@ const LAYOUTS = {
 };
 async function setup(layout) {
   provider = `auth-compare-${++seq}`;
+  // Each case starts with auth.js's memory empty, on base and head alike: the
+  // events of earlier cases would fill its maps, and a full one is cleared.
+  for (const entry of Object.values(global._authEvents ?? {})) if (entry instanceof Map || entry instanceof Set) entry.clear();
+  global._softDemotions?.clear();
   vi.setSystemTime(new Date("2026-10-23T00:00:00.000Z"));
   const keys = {};
   for (const [name, account] of LAYOUTS[layout]) {

@@ -116,18 +116,20 @@ export async function POST(request) {
     const lockKey = `${MODEL_LOCK_PREFIX}${model}`;
     const demoteKey = getAuthDemoteKey(model);
     const softKey = getAuthSoftKey(model);
-    for (const connection of connections) clearSoftDemotions(connection.id, model);
+    // Ending a soft demotion for refusals of the key itself without a success
+    // gives the key a fresh start, as switching it off and on does: no
+    // demotions or soft demotions on any model, no streak.
+    const freshStart = (connection) => AUTH_SOFT_DEMOTE.enabled && connection[softKey]?.since && connection[softKey].keyRefused === true;
+    for (const connection of connections) clearSoftDemotions(connection.id, freshStart(connection) ? null : model);
 
     await Promise.all(
       connections
         .filter((connection) => connection[lockKey] || connection[demoteKey] || connection[softKey])
         .map((connection) =>
           updateProviderConnection(connection.id, {
-            // Ending a soft demotion for refusals of the key itself without a
-            // success gives the key a fresh start, as switching it off and on
-            // does: no demotions, no streak.
-            ...(AUTH_SOFT_DEMOTE.enabled && connection[softKey]?.since && connection[softKey].keyRefused === true ? {
-              ...Object.fromEntries(Object.keys(connection).filter((k) => k.startsWith(AUTH_DEMOTE_PREFIX)).map((k) => [k, null])),
+            ...(freshStart(connection) ? {
+              ...Object.fromEntries(Object.keys(connection)
+                .filter((k) => k.startsWith(AUTH_DEMOTE_PREFIX) || k.startsWith(AUTH_SOFT_PREFIX)).map((k) => [k, null])),
               ...Object.fromEntries(AUTH_STREAK_FIELDS.map((f) => [f, null])),
             } : {}),
             [lockKey]: null,
