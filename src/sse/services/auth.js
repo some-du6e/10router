@@ -206,12 +206,7 @@ function nextAuthFailStreak(conn, model, status, sameUpstream) {
   // when this key succeeded after the streak began on a request whose snapshot
   // predates it, or when a timestamp is unreadable or in the future (the
   // negated range check is also false for NaN).
-  // While the key is soft-demoted on a model, whose refusals it forgot and no
-  // longer counts, its streaks need crossUpstreamWindowMs but start over after
-  // a gap over minWindowMs: whether its untried requests there would have
-  // served or been refused, they trip no sooner than either would have.
-  const carry = softDemotedAnywhere(conn);
-  const maxGapMs = conn.authFailSameUpstream === true || carry ? AUTH_DEAD_CONFIG.minWindowMs : AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
+  const maxGapMs = conn.authFailSameUpstream === true ? AUTH_DEAD_CONFIG.minWindowMs : AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
   const fresh = !(now - firstAt >= 0)
     || !(sinceLast >= 0 && sinceLast <= maxGapMs)
     || succeededSince(conn.id, firstAt + 1);
@@ -232,7 +227,7 @@ function nextAuthFailStreak(conn, model, status, sameUpstream) {
     authFailLastAt: new Date(now).toISOString(),
     authFailModels: models.includes(model) ? models : [...models, model].slice(-MAX_TRACKED_MODELS),
     authFailAll401: Number(status) === 401 && (fresh || conn.authFailAll401 === true),
-    authFailSameUpstream: sameUpstream && !carry && (fresh || conn.authFailSameUpstream === true),
+    authFailSameUpstream: sameUpstream && (fresh || conn.authFailSameUpstream === true),
   };
 }
 
@@ -866,13 +861,17 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
 
   // Auth rejections build a streak that only a success clears; other errors
   // leave it alone. A dead key is turned off unless it is the provider's last.
-  // Soft-demoted on this model: the refusal counts toward neither. The authFail*
-  // streak fields and the authDemote_<model> record aren't written. The memory
-  // of the refusal (authEvents, other keys' evidence) and the model lock are.
+  // Soft-demoted on this model: the refusal counts toward neither, and the
+  // authDemote_<model> record isn't written. Soft-demoted on any model: the key
+  // isn't tried where it would be, so whatever it would have served there goes
+  // unseen; no streak builds (authFail* aren't written) and nothing turns it
+  // off. The memory of the refusal (authEvents, other keys' evidence) and the
+  // model lock are kept.
   const paused = !!conn && softDemoted(conn, model);
+  const held = !!conn && softDemotedAnywhere(conn);
   const evidence = conn ? await authFailEvidence(connections, conn, model, status, errorText) : null;
   const softDue = evidence && !paused && !demotionOf(conn, model) ? softTriesDue(conn, model) : {};
-  const authFailStreak = evidence && !paused ? nextAuthFailStreak(conn, model, status, evidence === "same-upstream") : null;
+  const authFailStreak = evidence && !held ? nextAuthFailStreak(conn, model, status, evidence === "same-upstream") : null;
   const autoDisable = authFailStreak && isAuthDead(authFailStreak) ? {
     isActive: false,
     autoDisabledAt: new Date().toISOString(),
@@ -882,7 +881,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   // alone toward demoting the key on it.
   const plan = await planDemotion(connections, conn, model, status, errorText, evidence, authFailStreak?.authFailModels);
   const { demote, demoting, deadWith } = paused ? { demote: null, demoting: false, deadWith: null } : plan;
-  const deadOnTwo = deadWith ? {
+  const deadOnTwo = deadWith && !held ? {
     isActive: false,
     autoDisabledAt: new Date().toISOString(),
     autoDisabledReason: `${refusalText(status, errorText)} on ${deadWith}, ${model}`,
@@ -894,8 +893,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   // upstream served), the key refused on this model alone and not turned off.
   // Its untried requests might serve, so the turn-off rules forget its refusals
   // as a success on this model would make them (authFail* cleared,
-  // authDemote_<model> lifted, authDemoteOkAt noted); see nextAuthFailStreak
-  // for its later streaks.
+  // authDemote_<model> lifted, authDemoteOkAt noted).
   const tally = plan.demote?.to;
   const entersSoft = AUTH_SOFT_DEMOTE.enabled && !paused && !!tally && !tally.demotedAt
     && countSpans(tally, plan.nowMs, AUTH_DEAD_CONFIG.minWindowMs)

@@ -169,6 +169,27 @@ for (const opusEnd of [Infinity, 40]) {
     }
   }
 }
+// Opus every minute, which only the far peer serves, and all three models
+// every `every` minutes from minute 12; K is refused on all of them but for
+// `w` minutes from `a` (4 hours), or for `w` minutes in every `P` from 15 (6 hours).
+const allEvery = (every) => (m) => (m >= 12 && (m - 12) % every === 0 ? MODELS : ["opus"]);
+for (const every of [5, 8, 9]) {
+  for (const a of [16, 19, 20, 23, 24, 30, 40, 50, 60, 70]) {
+    for (const w of [1, 2, 4]) {
+      cases[`works once ${every},${a},${w}`] = (layout) => offMinute(layout, 240, allEvery(every), (m) => !(m >= a && m < a + w), "opus");
+    }
+  }
+}
+for (const every of [7, 8, 9]) {
+  for (const P of [15, 20, 30]) {
+    for (const w of [1, 2]) {
+      for (const ph of [0, 2, 4, 6]) {
+        cases[`works now and then ${every},${P},${w},${ph}`] = (layout) => offMinute(layout, 360, allEvery(every),
+          (m) => !(m >= 15 && (m - 15 + ph) % P < w), "opus");
+      }
+    }
+  }
+}
 // The same, with bursts alternating between two pairs of models.
 cases["idle then near, rotating"] = (layout) => offMinute(layout, 260,
   (m) => (m < 13 ? ["opus"] : m >= 80 && (m - 80) % 15 === 0 ? (((m - 80) / 15) % 2 ? ["sonnet", "haiku"] : ["m4", "m5"]) : []),

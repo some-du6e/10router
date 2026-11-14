@@ -30,7 +30,7 @@ export function demotedLabel(connection) {
   const line = ({ model, reason, soft, lastRefusedAt, keyRefused }) => (soft
     ? `Soft-demoted on ${model}: last refused ${new Date(lastRefusedAt).toLocaleString()}. Other keys go first there until it serves ${model} again. `
       + (keyRefused ? "The upstream keeps refusing the key itself: if that goes on, replace the key. " : "")
-      + `Clearing ${model}'s cooldown in model availability ends it.`
+      + "Switching the key off and on clears it."
     : `Demoted on ${model} after repeated ${reason || "refusals"}. Switching the key off and on clears it.`);
   const hard = demoted.filter(d => !d.soft).map(d => d.model);
   const soft = demoted.filter(d => d.soft).map(d => d.model);

@@ -94,8 +94,8 @@ export const CACHE_AFFINITY = {
 // model would demote it in minWindowMs, but needs crossUpstreamWindowMs because
 // a peer on another upstream served, goes after the other keys there, with
 // tries on AUTH_DEMOTE_CONFIG's probe schedule, until it serves that model;
-// meanwhile its refusals there don't count toward demoting or turning it off,
-// and the ones before it are forgotten as a success would. Stored on the
+// meanwhile its refusals there don't count toward demoting it, the ones before
+// it are forgotten as a success would, and nothing turns the key off. Stored on the
 // connection (authSoft_<model>). Env: AUTH_SOFT_DEMOTE=0 turns it off;
 // anything else leaves it on.
 export const AUTH_SOFT_DEMOTE = {

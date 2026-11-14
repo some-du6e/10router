@@ -217,8 +217,8 @@ describe("soft demotion", () => {
   it("doesn't count a refusal while soft-demoted toward turning the key off or demoting it", async () => {
     const { key, peer } = await softDemoted();
     await refuse(key.id, peer, { times: 1, model: KIMI });
+    expect((await load(key.id))[`authDemote_${KIMI}`]).toMatchObject({ count: 1 });
     const before = evidenceOf(await load(key.id), OPUS);
-    expect(before.authFailCount).toBe(1);
 
     vi.advanceTimersByTime(10 * MIN);
     expect(await pick(OPUS)).toBe(key.id);
@@ -280,21 +280,23 @@ describe("soft demotion", () => {
     })]);
   });
 
-  it("keeps the hour of the streak it clears for the next one", async () => {
-    // A and the key on one upstream; only the key on the other serves opus.
+  it("never turns it off while it is soft-demoted, however often it is refused elsewhere", async () => {
+    // The key and its near peer on one upstream; only the far peer serves opus.
     const [key, near] = await accounts(["k", "near"], { shared: true });
     const [far] = await accounts(["far"]);
     await refuse(key.id, far, { times: 6 });
     expect(auth.__test__.softDemoted(await load(key.id), OPUS)).toBe(true);
-    // Then refused on two models its same-upstream peer serves, a minute apart.
-    for (let i = 0; i < 40; i++) {
+    // Then refused on two models its near peer serves, a minute apart, for 3 hours.
+    for (let i = 0; i < 180; i++) {
       vi.advanceTimersByTime(MIN);
       await refuse(key.id, near, { times: 1, model: i % 2 ? KIMI : "claude-sonnet-5-5" });
-      expect(await load(key.id)).toMatchObject({ isActive: true, authFailSameUpstream: false });
     }
+    const conn = await load(key.id);
+    expect(conn.isActive).toBe(true);
+    expect(conn.authFailCount ?? null).toBeNull();
   });
 
-  it("keeps the hour through a success on another model, and drops it once the key serves the soft-demoted one", async () => {
+  it("builds a streak again once it serves the soft-demoted model, not after a success elsewhere", async () => {
     const [key, near] = await accounts(["k", "near"], { shared: true });
     const [far] = await accounts(["far"]);
     await refuse(key.id, far, { times: 6 });
@@ -302,12 +304,12 @@ describe("soft demotion", () => {
     await succeed(key.id, KIMI);
     vi.advanceTimersByTime(MIN);
     await refuse(key.id, near, { times: 1, model: KIMI });
-    expect((await load(key.id)).authFailSameUpstream).toBe(false);
+    expect((await load(key.id)).authFailCount ?? null).toBeNull();
     vi.advanceTimersByTime(MIN);
     await succeed(key.id, OPUS);
     vi.advanceTimersByTime(MIN);
     await refuse(key.id, near, { times: 1, model: KIMI });
-    expect((await load(key.id)).authFailSameUpstream).toBe(true);
+    expect(await load(key.id)).toMatchObject({ authFailCount: 1, authFailSameUpstream: true });
   });
 
   it("refuses a key dead on two models no more often than the demotion did over 8 hours", async () => {
@@ -367,17 +369,6 @@ describe("soft demotion", () => {
     expect(await pick(OPUS)).toBe(key.id);
   });
 
-  it("starts its later streaks over after a gap of more than 10 minutes, as on its upstream", async () => {
-    const [key, near] = await accounts(["k", "near"], { shared: true });
-    const [far] = await accounts(["far"]);
-    await refuse(key.id, far, { times: 6 });
-    vi.advanceTimersByTime(61 * MIN);
-    await refuse(key.id, near, { times: 2, model: KIMI, stepMs: 10 * MIN });
-    expect(await load(key.id)).toMatchObject({ authFailCount: 2, authFailSameUpstream: false });
-    vi.advanceTimersByTime(11 * MIN);
-    await refuse(key.id, near, { times: 1, model: KIMI });
-    expect(await load(key.id)).toMatchObject({ authFailCount: 1, authFailSameUpstream: false });
-  });
 
   it("soft-demotes a key refused on a model only its far peer serves, its near peer lacking it", async () => {
     const [key, near] = await accounts(["k", "near"], { shared: true });
@@ -451,7 +442,23 @@ describe("soft demotion", () => {
       await db.updateProviderConnection(key.id, { [`authDemote_${OPUS}`]: { count: 1, firstAt: new Date().toISOString() } });
     });
     await failOnce(key.id, OPUS, "sk-test-a-0123456789");
+    // That refusal would soft-demote the old key, lifting its count.
+    expect(logged.warn).toContain(`AUTH a soft-demoted on ${OPUS} after repeated 403s`);
     expect((await load(key.id))[`authDemote_${OPUS}`]).toMatchObject({ count: 1 });
+  });
+
+  it("sends the soft demotion to the dashboard", async () => {
+    const { key } = await softDemoted();
+    const providers = await import("@/app/api/providers/route.js");
+    const { connections } = await (await providers.GET()).json();
+    expect(connections.find((c) => c.id === key.id)[`authSoft_${OPUS}`]).toMatchObject({ keyRefused: true });
+  });
+
+  it("counts a key switched off and then replaced while soft-demoted as dead in the key lifespan estimate", async () => {
+    const { key } = await softDemoted();
+    await db.updateProviderConnection(key.id, { isActive: false });
+    await db.updateProviderConnection(key.id, { apiKey: "sk-test-a-replaced-0123456789" });
+    expect((await load(key.id)).pastKeys).toEqual([{ since: expect.any(String), until: new Date().toISOString() }]);
   });
 
   it("ends on that model when its cooldown is cleared", async () => {
@@ -510,7 +517,10 @@ describe("AUTH_SOFT_DEMOTE", () => {
     const [far] = await accounts(["far"]);
     await refuse(key.id, far, { times: 6 });
     expect((await load(key.id))[`authSoft_${OPUS}`]).toMatchObject({ keyRefused: true });
-    await succeed(key.id, "claude-haiku-5-5");
+    // As if it had served since the router started, and none of its demotion
+    // counts were written by this process: only a soft demotion could note a success.
+    global._authEvents.servedKeys.add(key.id);
+    global._authEvents.demoteKeys.delete(key.id);
     vi.stubEnv("AUTH_SOFT_DEMOTE", "0");
     vi.resetModules();
     const freshDb = await import("@/lib/db/index.js");
@@ -524,8 +534,8 @@ describe("AUTH_SOFT_DEMOTE", () => {
     expect(models.filter((m) => m.connectionId === key.id && m.model === OPUS)).toEqual([]);
     const { connections } = await (await freshProviders.GET()).json();
     expect(connections.find((c) => c.id === key.id)).not.toHaveProperty(`authSoft_${OPUS}`);
-    // A same-upstream streak gets the 10-minute window, as before (a 401: it
-    // writes no demotion count).
+    // A refusal elsewhere builds a streak, with the 10-minute window, as before
+    // (a 401: it writes no demotion count).
     await freshAuth.clearAccountError(near.id, await loadFresh(near.id), KIMI);
     await freshAuth.markAccountUnavailable(key.id, 401, "Invalid API key", provider, KIMI);
     expect((await loadFresh(key.id)).authFailSameUpstream).toBe(true);

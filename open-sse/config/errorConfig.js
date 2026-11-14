@@ -55,7 +55,8 @@ export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 // streak with gaps over minWindowMs trips once the failures since the last such
 // gap span the window on their own, or once it has 2 bursts (2+ counted
 // failures with no such gap between them) and spans the window. A key
-// soft-demoted on a model (AUTH_SOFT_DEMOTE) adds no failures there.
+// soft-demoted on any model (AUTH_SOFT_DEMOTE) builds no streak and isn't
+// turned off.
 export const AUTH_DEAD_CONFIG = {
   minFailures: 5,
   minWindowMs: 10 * 60 * 1000,
