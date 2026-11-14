@@ -726,20 +726,24 @@ describe("after a long soft demotion", () => {
       }));
     }
     const [key, peer] = keys;
-    const ok = async (id) => freshAuth.clearAccountError(id, await freshDb.getProviderConnectionById(id), OPUS);
+    const ok = async (id, model) => freshAuth.clearAccountError(id, await freshDb.getProviderConnectionById(id), model);
+    // Refused on opus, then once soft-demoted there on kimi too, which turns
+    // the key off a day on with the default (see above).
     for (let m = 0; m < 30 * 60; m++) {
       if (m > 0) vi.advanceTimersByTime(MIN);
-      const tried = new Set();
-      for (;;) {
-        const creds = await freshAuth.getProviderCredentials(provider, tried, OPUS);
-        if (!creds?.connectionId) break;
-        if (creds.connectionId !== key.id) {
-          await ok(creds.connectionId);
-          break;
+      for (const model of m < 20 ? [OPUS] : WITH_KIMI(m)) {
+        const tried = new Set();
+        for (;;) {
+          const creds = await freshAuth.getProviderCredentials(provider, tried, model);
+          if (!creds?.connectionId) break;
+          if (creds.connectionId !== key.id) {
+            await ok(creds.connectionId, model);
+            break;
+          }
+          if (m === 0) await ok(peer.id, model);
+          await freshAuth.markAccountUnavailable(key.id, 403, REFUSED_403, provider, model);
+          tried.add(key.id);
         }
-        if (m === 0) await ok(peer.id);
-        await freshAuth.markAccountUnavailable(key.id, 403, REFUSED_403, provider, OPUS);
-        tried.add(key.id);
       }
     }
     const conn = await freshDb.getProviderConnectionById(key.id);
