@@ -10,9 +10,9 @@ import { resolveOpenAICompatibleApiType, getTargetFormat } from "open-sse/servic
 import { DefaultExecutor } from "open-sse/executors/default.js";
 import { BaseExecutor } from "open-sse/executors/base.js";
 
-const CHAT_ID = "openai-compatible-chat-3d8d3de8-1206-47ee-a42f-22113a5f2387";
+const CHAT_ID = "openai-compatible-chat-00000000-0000-4000-8000-000000000002";
 const RESPONSES_ID = "openai-compatible-responses-11111111-2222-3333-4444-555555555555";
-const BASE = "https://api.ericding.io.vn/v1";
+const BASE = "https://api.gateway.example/v1";
 
 function creds(apiType) {
   return { providerSpecificData: apiType === undefined ? { baseUrl: BASE } : { baseUrl: BASE, apiType } };

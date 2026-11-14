@@ -6,7 +6,7 @@ import { withToggledActive } from "../../src/app/(dashboard)/dashboard/providers
 
 const OPUS = getAuthDemoteKey("claude-opus-5-5");
 const KIMI = getAuthDemoteKey("kimi-k3");
-const REFUSED = '403 "Not authorized for this endpoint"';
+const REFUSED = '403 "Key barred from this endpoint"';
 const demoted = (extra = {}) => ({ count: 37, firstAt: "2026-11-02T01:28:10.416Z", demotedAt: "2026-11-02T02:29:57.665Z", reason: REFUSED, nextProbeAt: "2026-11-02T17:33:27.858Z", ...extra });
 
 describe("demoted key label", () => {
@@ -49,7 +49,7 @@ describe("demoted key label", () => {
     expect(isDemotionError({ [OPUS]: demoted(), lastError: message })).toBe(true);
     // Turned back on or served since: the record is gone and the message no longer holds.
     expect(isDemotionError({ [OPUS]: null, lastError: message })).toBe(true);
-    expect(isDemotionError({ lastError: '[403]: {"code":"003001","message":"Not authorized for this endpoint"}' })).toBe(false);
+    expect(isDemotionError({ lastError: '[403]: {"code":"000000","message":"Key barred from this endpoint"}' })).toBe(false);
     expect(isDemotionError({ lastError: "Request demoted after repeated retries" })).toBe(false);
     expect(isDemotionError({ lastError: `upstream says: ${message}` })).toBe(false);
     expect(isDemotionError({})).toBe(false);

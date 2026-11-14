@@ -30,7 +30,7 @@ const { getProviderCredentials, markAccountUnavailable, clearAccountError } = aw
 
 const PROVIDER = "openai-compatible-chat-bench";
 const MODEL = "claude-opus-5-5";
-const RATE_LIMIT = '{"type":"error","error":{"type":"rate_limit_error","message":"per-account per-model rate limits"}}';
+const RATE_LIMIT = '{"type":"error","error":{"type":"rate_limit_error","message":"rate limit reached for this model"}}';
 const SIM_MS = 15 * 60_000;
 const ARRIVALS_PER_MIN = 126;
 // Upstream allows ~100 requests/min with a burst of 15.

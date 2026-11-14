@@ -1,16 +1,23 @@
 // Two-path custom endpoints: one node, each model routed to the API that
-// serves it best (Snowflake Cortex answers on both Messages and Chat).
-import { describe, it, expect, vi, beforeEach } from "vitest";
+// serves it best (some gateways answer on both Messages and Chat).
+import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 
 const fetchMock = vi.fn();
 vi.mock("../../open-sse/utils/proxyFetch.js", () => ({ proxyAwareFetch: (...a) => fetchMock(...a) }));
 
-const { chooseRoute, buildRoutes, detectEndpoint } = await import("@/lib/endpointDetect.js");
+// No configured Anthropic-first hints, whatever the shell has: the no-hint
+// tests below depend on it. Set before the import, which reads it once.
+const NO_HINTS = () => vi.stubEnv("DETECT_ANTHROPIC_FIRST_HINTS", "");
+NO_HINTS();
+afterAll(() => vi.unstubAllEnvs());
+
+const { chooseRoute, buildRoutes, detectEndpoint, anthropicFirstHints } = await import("@/lib/endpointDetect.js");
+anthropicFirstHints(); // read (and cache) the empty list now
 const { sanitizeNodeQuirks } = await import("@/shared/utils/nodeQuirks.js");
 const { resolveCompatibleRoute } = await import("../../open-sse/services/provider.js");
 const { DefaultExecutor } = await import("../../open-sse/executors/default.js");
 
-const BASE = "https://acme.snowflakecomputing.com/api/v2/cortex/v1";
+const BASE = "https://acme.contoso-cloud.example/api/claude/v1";
 
 describe("chooseRoute", () => {
   it("keeps Claude on Messages and sends the rest to OpenAI", () => {
@@ -96,7 +103,7 @@ describe("DefaultExecutor on a routed model", () => {
   });
 });
 
-// Scripted two-path upstream (Snowflake-shaped).
+// Scripted two-path upstream (Messages + Chat on one base).
 function upstream({ messages, chat }) {
   return async (url, init) => {
     const { pathname } = new URL(url);
@@ -109,9 +116,15 @@ function upstream({ messages, chat }) {
   };
 }
 
+// Wraps a fetch and records the URL of every POST, in order.
+function recorded(fetchFn) {
+  const posts = [];
+  return { posts, fetchFn: async (url, init = {}) => { if ((init.method || "GET") === "POST") posts.push(String(url)); return fetchFn(url, init); } };
+}
+
 describe("detectEndpoint on a two-path endpoint", () => {
   it("discovers on both paths and returns routes", async () => {
-    const catalog = { providers: [{ id: "snowflake-cortex", name: "Snowflake Cortex", api: "https://${SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/cortex/v1", models: ["claude-opus-5", "claude-haiku-4-5", "openai-gpt-5", "kimi-k3"] }], labs: [] };
+    const catalog = { providers: [{ id: "contoso-ai", name: "Contoso AI", api: "https://${ACCOUNT}.contoso-cloud.example/api/claude/v1", models: ["claude-opus-5", "claude-haiku-4-5", "openai-gpt-5", "kimi-k3"] }], labs: [] };
     const r = await detectEndpoint({
       url: BASE, apiKey: "good-key", catalog,
       fetchFn: upstream({ messages: new Set(["claude-opus-5", "claude-haiku-4-5"]), chat: new Set(["claude-opus-5", "openai-gpt-5", "kimi-k3"]) }),
@@ -122,5 +135,84 @@ describe("detectEndpoint on a two-path endpoint", () => {
     // 2 Claude on Messages vs 2 others on Chat: tie goes to Messages as primary.
     expect(r.protocol).toBe("anthropic");
     expect(r.routes).toEqual({ "openai-gpt-5": "openai-chat", "kimi-k3": "openai-chat" });
+  });
+
+  // No Anthropic hint in the URL or key: Chat is probed first, but the primary
+  // API still comes from how many models each path serves.
+  describe("with no hint in the URL", () => {
+    const PLAIN = "https://acme.contoso-cloud.example/api/v1";
+    // A Chat-only id comes first, so in the tie case Chat is counted first and
+    // only the explicit tie-break makes Messages win.
+    const catalog = { providers: [{ id: "contoso-ai", name: "Contoso AI", api: "https://${ACCOUNT}.contoso-cloud.example/api/v1", models: ["openai-gpt-5", "claude-opus-5", "claude-haiku-4-5", "claude-sonnet-5", "kimi-k3", "glm-5"] }], labs: [] };
+    it.each([
+      ["a tie goes to Messages", ["claude-opus-5", "claude-haiku-4-5"], ["openai-gpt-5", "claude-opus-5", "kimi-k3"],
+        "anthropic", { "openai-gpt-5": "openai-chat", "kimi-k3": "openai-chat" }],
+      ["more models on Messages", ["claude-opus-5", "claude-haiku-4-5", "claude-sonnet-5"], ["openai-gpt-5"],
+        "anthropic", { "openai-gpt-5": "openai-chat" }],
+      ["more models on Chat", ["claude-opus-5", "claude-haiku-4-5"], ["openai-gpt-5", "kimi-k3", "glm-5"],
+        "openai-chat", { "claude-opus-5": "anthropic", "claude-haiku-4-5": "anthropic" }],
+    ])("%s", async (_, messages, chat, primary, routes) => {
+      const { fetchFn, posts } = recorded(upstream({ messages: new Set(messages), chat: new Set(chat) }));
+      const r = await detectEndpoint({ url: PLAIN, apiKey: "good-key", catalog, fetchFn });
+      expect(posts[0]).toMatch(/\/chat\/completions$/); // no hint: Chat is probed first
+      expect(r.ok).toBe(true);
+      expect([...r.protocols].sort()).toEqual(["anthropic", "openai-chat"]);
+      expect(r.models.sort()).toEqual([...new Set([...messages, ...chat])].sort());
+      expect(r.protocol).toBe(primary);
+      expect(r.routes).toEqual(routes);
+    });
+  });
+});
+
+// DETECT_ANTHROPIC_FIRST_HINTS: URL substrings that get Messages probed first.
+describe("Anthropic-first hints from the environment", () => {
+  const PLAIN = "https://acme.contoso-cloud.example/api/v1";
+  const two = () => recorded(upstream({ messages: new Set(["claude-opus-5"]), chat: new Set(["openai-gpt-5"]) }));
+
+  it("is empty by default, so an unhinted URL probes Chat first", async () => {
+    vi.resetModules();
+    vi.stubEnv("DETECT_ANTHROPIC_FIRST_HINTS", "");
+    try {
+      const fresh = await import("@/lib/endpointDetect.js");
+      expect(fresh.anthropicFirstHints()).toEqual([]);
+      expect(fresh.prefersAnthropic(PLAIN, "good-key")).toBe(false);
+      const { fetchFn, posts } = two();
+      await fresh.detectEndpoint({ url: PLAIN, apiKey: "good-key", fetchFn, skipModels: true });
+      expect(posts[0]).toMatch(/\/chat\/completions$/);
+    } finally {
+      NO_HINTS();
+      vi.resetModules();
+    }
+  });
+
+  it("parses a comma-separated list, trimmed and lowercased", async () => {
+    const { parseHintList } = await import("@/lib/endpointDetect.js");
+    expect(parseHintList(" Contoso-Cloud , ,Other ")).toEqual(["contoso-cloud", "other"]);
+    expect(parseHintList(undefined)).toEqual([]);
+  });
+
+  it("drops quotes around an entry or the whole list", async () => {
+    const { parseHintList } = await import("@/lib/endpointDetect.js");
+    expect(parseHintList(`"contoso-cloud"`)).toEqual(["contoso-cloud"]);
+    expect(parseHintList(`'contoso-cloud', "other"`)).toEqual(["contoso-cloud", "other"]);
+    expect(parseHintList(`"contoso-cloud,other"`)).toEqual(["contoso-cloud", "other"]);
+    expect(parseHintList(`"", ''`)).toEqual([]);
+  });
+
+  it("a configured hint makes an unhinted URL probe Messages first", async () => {
+    vi.resetModules();
+    vi.stubEnv("DETECT_ANTHROPIC_FIRST_HINTS", " Contoso-Cloud ,other");
+    try {
+      const fresh = await import("@/lib/endpointDetect.js");
+      expect(fresh.anthropicFirstHints()).toEqual(["contoso-cloud", "other"]);
+      expect(fresh.prefersAnthropic(PLAIN, "good-key")).toBe(true);
+      expect(fresh.prefersAnthropic("https://api.example.com/v1", "good-key")).toBe(false);
+      const { fetchFn, posts } = two();
+      await fresh.detectEndpoint({ url: PLAIN, apiKey: "good-key", fetchFn, skipModels: true });
+      expect(posts[0]).toMatch(/\/messages$/);
+    } finally {
+      NO_HINTS();
+      vi.resetModules();
+    }
   });
 });

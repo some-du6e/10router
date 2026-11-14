@@ -10,7 +10,7 @@ const { FORMATS } = await import("../../open-sse/translator/formats.js");
 const { translateNonStreamingResponse } = await import("../../open-sse/handlers/chatCore/nonStreamingHandler.js");
 const { handleForcedSSEToJson } = await import("../../open-sse/handlers/chatCore/sseToJsonHandler.js");
 
-// A chat.completion body as returned by a chat-native upstream (e.g. op-ericding)
+// A chat.completion body as returned by a chat-native upstream (a custom endpoint)
 const CHAT_TOOL_BODY = {
   id: "chatcmpl-abc123",
   object: "chat.completion",
@@ -28,7 +28,7 @@ const CHAT_TOOL_BODY = {
   usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 }
 };
 
-describe("non-stream Chat upstream for a Responses-API client (op-ericding bug)", () => {
+describe("non-stream Chat upstream for a Responses-API client (custom endpoint bug)", () => {
   it("translates chat.completion tool_calls into Responses function_call output", () => {
     // translateNonStreamingResponse(body, targetFormat=PROVIDER format, sourceFormat=CLIENT format)
     const out = translateNonStreamingResponse(CHAT_TOOL_BODY, FORMATS.OPENAI, FORMATS.OPENAI_RESPONSES);

@@ -21,8 +21,8 @@ const { DefaultExecutor } = await import("../../open-sse/executors/default.js");
 const { resolveCompatibleRoute, appendUrlPath } = await import("../../open-sse/services/provider.js");
 const { isRequestError } = await import("../../open-sse/services/accountFallback.js");
 
-const BASE = "https://acme.snowflakecomputing.com/api/v2/cortex/v1";
-const SNOWFLAKE_400 = (flags) => JSON.stringify({ message: `Unexpected value(s) ${flags.map((f) => `\`${f}\``).join(", ")} for the \`anthropic-beta\` header. Please consult our documentation.` });
+const BASE = "https://acme.contoso-cloud.example/api/v1";
+const BETA_REJECT_400 = (flags) => JSON.stringify({ message: `Unexpected value(s) ${flags.map((f) => `\`${f}\``).join(", ")} for the \`anthropic-beta\` header. Please consult our documentation.` });
 
 function res(status, text = "") {
   return { status, ok: status >= 200 && status < 300, headers: { get: () => "" }, clone: () => ({ text: async () => text }), body: { cancel: async () => {} } };
@@ -40,7 +40,7 @@ describe("Claude Code on a two-path node", () => {
     const body = { model: "kimi-k3", max_tokens: 50, stream: false, system: "be nice", messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }] };
     const credentials = { apiKey: "k", providerSpecificData: { baseUrl: BASE, modelRoutes: { "kimi-k3": "openai-chat" } } };
     await handleChatCore({
-      body, modelInfo: { provider: "anthropic-compatible-sf", model: "kimi-k3" }, credentials,
+      body, modelInfo: { provider: "anthropic-compatible-ctso", model: "kimi-k3" }, credentials,
       log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn() }, connectionId: "c",
       clientRawRequest: { endpoint: "/v1/messages", body, headers: { "user-agent": "claude-cli/2.1.0 (external, cli)", accept: "application/json" } },
     });
@@ -62,33 +62,33 @@ describe("anthropic-beta forwarding", () => {
 
   it("forwards the client's flags to an anthropic-compatible node, minus claude-code", async () => {
     fetchMock.mockResolvedValueOnce(res(200));
-    await new DefaultExecutor("anthropic-compatible-sf").execute({ model: "m", body: {}, stream: false, credentials: creds() });
+    await new DefaultExecutor("anthropic-compatible-ctso").execute({ model: "m", body: {}, stream: false, credentials: creds() });
     expect(beta(fetchMock.mock.calls[0])).toBe("context-1m-2025-08-07,oauth-2025-04-20");
   });
 
   it("forwards on an openai node's Messages route, never on its Chat route", async () => {
     fetchMock.mockResolvedValue(res(200));
     const c1 = creds({ modelRoutes: { claude: "anthropic" } });
-    c1.runtimeTransport = resolveCompatibleRoute("openai-compatible-chat-sf", "claude", c1);
-    await new DefaultExecutor("openai-compatible-chat-sf").execute({ model: "claude", body: {}, stream: false, credentials: c1 });
+    c1.runtimeTransport = resolveCompatibleRoute("openai-compatible-chat-ctso", "claude", c1);
+    await new DefaultExecutor("openai-compatible-chat-ctso").execute({ model: "claude", body: {}, stream: false, credentials: c1 });
     expect(beta(fetchMock.mock.calls[0])).toBe("context-1m-2025-08-07,oauth-2025-04-20");
 
     const c2 = creds({ modelRoutes: { gpt: "openai-chat" } });
-    c2.runtimeTransport = resolveCompatibleRoute("anthropic-compatible-sf", "gpt", c2);
-    await new DefaultExecutor("anthropic-compatible-sf").execute({ model: "gpt", body: {}, stream: false, credentials: c2 });
+    c2.runtimeTransport = resolveCompatibleRoute("anthropic-compatible-ctso", "gpt", c2);
+    await new DefaultExecutor("anthropic-compatible-ctso").execute({ model: "gpt", body: {}, stream: false, credentials: c2 });
     expect(beta(fetchMock.mock.calls[1])).toBeUndefined();
 
-    await new DefaultExecutor("openai-compatible-chat-sf").execute({ model: "x", body: {}, stream: false, credentials: creds() });
+    await new DefaultExecutor("openai-compatible-chat-ctso").execute({ model: "x", body: {}, stream: false, credentials: creds() });
     expect(beta(fetchMock.mock.calls[2])).toBeUndefined();
   });
 
   it("keeps dropping flags across rejections, then strips all, and records the union", async () => {
     fetchMock
-      .mockResolvedValueOnce(res(400, SNOWFLAKE_400(["oauth-2025-04-20"])))
-      .mockResolvedValueOnce(res(400, SNOWFLAKE_400(["context-1m-2025-08-07"])))
+      .mockResolvedValueOnce(res(400, BETA_REJECT_400(["oauth-2025-04-20"])))
+      .mockResolvedValueOnce(res(400, BETA_REJECT_400(["context-1m-2025-08-07"])))
       .mockResolvedValueOnce(res(200));
     const onBetasRejected = vi.fn();
-    const out = await new DefaultExecutor("anthropic-compatible-sf").execute({ model: "m", body: {}, stream: false, credentials: creds(), onBetasRejected });
+    const out = await new DefaultExecutor("anthropic-compatible-ctso").execute({ model: "m", body: {}, stream: false, credentials: creds(), onBetasRejected });
     expect(out.response.status).toBe(200);
     expect(fetchMock.mock.calls.map(beta)).toEqual(["context-1m-2025-08-07,oauth-2025-04-20", "context-1m-2025-08-07", undefined]);
     expect(onBetasRejected).toHaveBeenCalledTimes(1);
@@ -98,11 +98,11 @@ describe("anthropic-beta forwarding", () => {
   it("is bounded: a gateway that keeps rejecting gets at most one beta-less retry", async () => {
     fetchMock.mockImplementation(async (_u, init) => {
       const flags = (init.headers["anthropic-beta"] || "").split(",").filter(Boolean);
-      return flags.length ? res(400, SNOWFLAKE_400([flags[0]])) : res(400, "{\"message\":\"bad body\"}");
+      return flags.length ? res(400, BETA_REJECT_400([flags[0]])) : res(400, "{\"message\":\"bad body\"}");
     });
     const onBetasRejected = vi.fn();
     const many = { apiKey: "k", rawHeaders: { "anthropic-beta": "a-1,b-2,c-3,d-4,e-5" }, providerSpecificData: { baseUrl: BASE } };
-    const out = await new DefaultExecutor("anthropic-compatible-sf").execute({ model: "m", body: {}, stream: false, credentials: many, onBetasRejected });
+    const out = await new DefaultExecutor("anthropic-compatible-ctso").execute({ model: "m", body: {}, stream: false, credentials: many, onBetasRejected });
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(beta(fetchMock.mock.calls[2])).toBeUndefined();
     expect(out.response.status).toBe(400);

@@ -123,7 +123,7 @@ describe("sendTestMessage", () => {
         ? [400, { message: "Unexpected value(s) `oauth-2025-04-20` for the `anthropic-beta` header. Please consult our documentation." }]
         : [200, { type: "message", content: [{ type: "text", text: "Hi" }], usage: { input_tokens: 8, output_tokens: 1 } }],
     });
-    const r = await sendTestMessage({ baseUrl: "https://sf.example.com/v1", apiKey: GOOD, protocol: "anthropic", model: "claude-haiku-4-5", betas: ["oauth-2025-04-20", "interleaved-thinking-2025-05-14"], fetchFn, parseRejected: parseRejectedBetas });
+    const r = await sendTestMessage({ baseUrl: "https://gw.example.com/v1", apiKey: GOOD, protocol: "anthropic", model: "claude-haiku-4-5", betas: ["oauth-2025-04-20", "interleaved-thinking-2025-05-14"], fetchFn, parseRejected: parseRejectedBetas });
     expect(r.ok).toBe(true);
     expect(r.dropped).toEqual(["oauth-2025-04-20"]);
     expect(r.sentBetas).toEqual(["interleaved-thinking-2025-05-14"]);
@@ -151,7 +151,7 @@ describe("sendTestMessage", () => {
 
 describe("site name and icon", () => {
   it("cleans titles and rejects walls", () => {
-    expect(cleanSiteName("Snowflake | The AI Data Cloud")).toBe("Snowflake");
+    expect(cleanSiteName("Contoso | Models for every team")).toBe("Contoso");
     expect(cleanSiteName("OpenRouter - A unified interface")).toBe("OpenRouter");
     expect(cleanSiteName("Just a moment...")).toBeNull();
     expect(cleanSiteName("Welcome to nginx!")).toBeNull();
@@ -166,7 +166,7 @@ describe("site name and icon", () => {
   });
 
   it("tries the bare domain, skips LAN hosts", () => {
-    expect(siteRoots("https://acme-xy12345.snowflakecomputing.com/api/v2/cortex/v1")).toEqual(["https://acme-xy12345.snowflakecomputing.com", "https://snowflakecomputing.com"]);
+    expect(siteRoots("https://acme-1234.contoso-cloud.example/api/v1")).toEqual(["https://acme-1234.contoso-cloud.example", "https://contoso-cloud.example"]);
     expect(siteRoots("http://192.168.1.40:8000/v1")).toEqual([]);
     expect(siteRoots("http://localhost:11434/v1")).toEqual([]);
   });
@@ -211,14 +211,14 @@ describe("site name and icon", () => {
 
   it("skips a 32px favicon on the API host for the bare domain's sharp icon", async () => {
     const fetchFn = site({
-      "https://acme-xy1.snowcloud.com/": { body: "<title>Sign in</title>", headers: { "content-type": "text/html" } },
-      "https://acme-xy1.snowcloud.com/favicon.ico": { body: png(32), headers: { "content-type": "image/png" } },
-      "https://snowcloud.com/": { body: `<title>Snowcloud</title><link rel="apple-touch-icon" href="/touch.png">`, headers: { "content-type": "text/html" } },
-      "https://snowcloud.com/touch.png": { body: png(180), headers: { "content-type": "image/png" } },
+      "https://acme-1234.apisite.example/": { body: "<title>Sign in</title>", headers: { "content-type": "text/html" } },
+      "https://acme-1234.apisite.example/favicon.ico": { body: png(32), headers: { "content-type": "image/png" } },
+      "https://apisite.example/": { body: `<title>API Site</title><link rel="apple-touch-icon" href="/touch.png">`, headers: { "content-type": "text/html" } },
+      "https://apisite.example/touch.png": { body: png(180), headers: { "content-type": "image/png" } },
     });
-    const r = await fetchSiteInfo("https://acme-xy1.snowcloud.com/api/v1", fetchFn);
+    const r = await fetchSiteInfo("https://acme-1234.apisite.example/api/v1", fetchFn);
     expect(r.icon).toBe(`data:image/png;base64,${Buffer.from(png(180)).toString("base64")}`);
-    expect(r.host).toBe("snowcloud.com");
+    expect(r.host).toBe("apisite.example");
   });
 
   it("an HTML 200 for /favicon.ico is not an icon", async () => {

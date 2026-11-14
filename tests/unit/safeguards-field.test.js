@@ -1,6 +1,6 @@
 // Claude Code 2.1.312 in auto mode adds a top-level `safeguards` field (its
 // server-side classifier input, behind dangerous-tool-use-2026-09-03). Live
-// failure (2026-10-29 ~00:27 UTC, Snowflake Cortex node, claude-opus-5-5 routed to /messages):
+// failure (2026-10-29 ~00:27 UTC, custom gateway node, claude-opus-5-5 routed to /messages):
 //   400 {"message":"safeguards: Extra inputs are not permitted"}
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -22,8 +22,8 @@ const { DefaultExecutor } = await import("../../open-sse/executors/default.js");
 const { resolveCompatibleRoute } = await import("../../open-sse/services/provider.js");
 const { stripBetaBodyFields, dropFirstPartyFieldsWithoutBeta, isAnthropicApiUrl, sentBetas } = await import("../../open-sse/utils/anthropicBeta.js");
 
-const SNOWFLAKE = "openai-compatible-chat-snowflake-test";
-const BASE = "https://acme.snowflakecomputing.com/api/v2/cortex/v1";
+const CONTOSO = "openai-compatible-chat-contoso-test";
+const BASE = "https://acme.contoso-cloud.example/api/v1";
 const MODEL = "claude-opus-5-5";
 const DANGEROUS_BETA = "dangerous-tool-use-2026-09-03";
 const CLIENT_BETAS = `${DANGEROUS_BETA},effort-2025-11-24`;
@@ -52,9 +52,9 @@ const claudeCodeBody = (extra = {}) => ({
   ...extra,
 });
 
-function snowflakeCreds(psd = {}) {
+function contosoCreds(psd = {}) {
   const credentials = { apiKey: "k", providerSpecificData: { apiType: "chat", baseUrl: BASE, modelRoutes: { [MODEL]: "anthropic" }, ...psd } };
-  credentials.runtimeTransport = resolveCompatibleRoute(SNOWFLAKE, MODEL, credentials);
+  credentials.runtimeTransport = resolveCompatibleRoute(CONTOSO, MODEL, credentials);
   return credentials;
 }
 const compatCreds = (baseUrl, clientBeta = CLIENT_BETAS) => ({
@@ -75,10 +75,10 @@ beforeEach(() => {
 });
 
 describe("safeguards on non-Anthropic upstreams", () => {
-  it("is not sent on the live Snowflake route; everything else is", async () => {
+  it("is not sent on the live gateway route; everything else is", async () => {
     fetchMock.mockResolvedValueOnce(res(200));
     const body = claudeCodeBody();
-    await run(SNOWFLAKE, { ...snowflakeCreds(), rawHeaders: { "anthropic-beta": `context-management-2025-06-27,${CLIENT_BETAS}` } }, body);
+    await run(CONTOSO, { ...contosoCreds(), rawHeaders: { "anthropic-beta": `context-management-2025-06-27,${CLIENT_BETAS}` } }, body);
 
     expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}/messages`);
     const out = sentBody();
@@ -329,8 +329,8 @@ describe("helpers", () => {
   });
 });
 
-const snowflakePsd = (psd = {}) => ({ apiType: "chat", baseUrl: BASE, modelRoutes: { [MODEL]: "anthropic" }, ...psd });
-const chat = (body, { headers = {}, provider = SNOWFLAKE, psd = snowflakePsd() } = {}) => handleChatCore({
+const contosoPsd = (psd = {}) => ({ apiType: "chat", baseUrl: BASE, modelRoutes: { [MODEL]: "anthropic" }, ...psd });
+const chat = (body, { headers = {}, provider = CONTOSO, psd = contosoPsd() } = {}) => handleChatCore({
   body, modelInfo: { provider, model: MODEL },
   credentials: { apiKey: "k", providerSpecificData: psd },
   log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn() }, connectionId: "c",
@@ -345,7 +345,7 @@ const loggedDetail = () => {
   return saveRequestDetail.mock.calls[0][0];
 };
 
-describe("Claude Code → Snowflake through chatCore (claude→claude)", () => {
+describe("Claude Code → custom gateway through chatCore (claude→claude)", () => {
   it("sends no safeguards upstream", async () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
       id: "msg_1", type: "message", role: "assistant", model: MODEL,
@@ -371,7 +371,7 @@ describe("Claude Code → Snowflake through chatCore (claude→claude)", () => {
   // Only the executor's own body has context_management removed for a dropped beta.
   it("logs the executor's body, not chatCore's, when the upstream call throws", async () => {
     fetchMock.mockRejectedValueOnce(abortError());
-    await chat(claudeCodeBody({ stream: false }), { psd: snowflakePsd({ droppedBetas: ["context-management-2025-06-27"] }) });
+    await chat(claudeCodeBody({ stream: false }), { psd: contosoPsd({ droppedBetas: ["context-management-2025-06-27"] }) });
 
     const { providerRequest } = loggedDetail();
     expect(providerRequest).not.toHaveProperty("context_management");

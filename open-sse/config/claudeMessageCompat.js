@@ -36,7 +36,7 @@ export const CLAUDE_TOOL_CHANGE_BETAS = {
 
 // Top-level Messages body fields that only exist behind an anthropic-beta flag.
 // When an endpoint has that flag dropped, the field goes too: strict gateways
-// (Snowflake Cortex) 400 with "context_management: Extra inputs are not permitted".
+// 400 with "context_management: Extra inputs are not permitted".
 export const CLAUDE_BETA_BODY_FIELDS = {
   "context-management-2025-06-27": ["context_management"],
   ...CLAUDE_FIRST_PARTY_BETA_FIELDS,
