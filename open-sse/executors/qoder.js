@@ -30,6 +30,7 @@ import { PROVIDERS } from "../config/providers.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { SSE_DONE } from "../utils/sseConstants.js";
 import { FETCH_CONNECT_TIMEOUT_MS } from "../config/runtimeConfig.js";
+import { headersTimer } from "../utils/headersTimeout.js";
 import {
   QODER_CHAT_URL_ENCODED,
   QODER_CHAT_BASE_ALT,
@@ -537,19 +538,22 @@ export class QoderExecutor extends BaseExecutor {
 
     // Abort if upstream doesn't return response headers within connect timeout.
     const timeoutMs = this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS;
-    const connectCtrl = new AbortController();
-    const connectTimer = setTimeout(() => connectCtrl.abort(new Error("fetch connect timeout")), timeoutMs);
-    const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
+    const headersTimeout = headersTimer(timeoutMs, signal, {
+      stream: true,
+      setBy: this.config?.timeoutMs ? "qoder's provider timeout" : "FETCH_CONNECT_TIMEOUT_MS",
+    });
 
     let response;
     try {
       response = await proxyAwareFetch(
         url,
-        { method: "POST", headers, body: encodedBodyBuf, signal: mergedSignal },
+        { method: "POST", headers, body: encodedBodyBuf, signal: headersTimeout.signal },
         proxyOptions,
       );
+    } catch (error) {
+      throw headersTimeout.error() || error;
     } finally {
-      clearTimeout(connectTimer);
+      headersTimeout.clear();
     }
 
     if (!response.ok) {

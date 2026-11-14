@@ -76,6 +76,37 @@ export const AUTH_DEMOTE_CONFIG = {
   probeLeaseMs: 10 * 60 * 1000,
 };
 
+// A chat call that got no response headers in time (utils/headersTimeout.js)
+// fails as a 504 with this text. The key gets the usual TRANSIENT_COOLDOWN_MS
+// lock on that model.
+export const HEADERS_TIMEOUT = {
+  text: "upstream sent no response headers",
+  // Attempts again on the same key: none for a stream, whose one attempt is as
+  // long as four were (UPSTREAM_STREAM_HEADERS_TIMEOUT_MS); one for a
+  // non-streaming call, which may finish once the upstream has cached the prompt.
+  sameKeyRetries: { stream: 0, nonStream: 1 },
+  retryDelayMs: 3000,
+  // Keys one request tries from its first header timeout on, that one included,
+  // so one request too slow for the model can't lock every key.
+  maxKeysPerRequest: 2,
+  // Streaming header timeouts from this many distinct requests on this many
+  // distinct keys of one provider/model, with no success on it between, mark the
+  // model hung (a non-streaming call's headers wait on its whole reply, so its
+  // timeouts don't count). New requests for it then fail at once with a 504 for
+  // hungWindowMs[0]; after that one request at a time probes it, on keys that
+  // haven't timed out during the hang if there are any. A probe whose stream
+  // times out starts the next window (the last repeating); a success on the
+  // model ends it.
+  hungAfterRequests: 2,
+  hungAfterKeys: 2,
+  hungWindowMs: [2, 5, 10, 20, 30].map(min => min * 60 * 1000),
+  // Header timeouts further apart than this don't add up, and a probe this long
+  // after its window ended starts the windows over.
+  resetAfterMs: 60 * 60 * 1000,
+  // A probe that never reported back (the process lost it) frees the slot after this.
+  probeLeaseMs: 10 * 60 * 1000,
+};
+
 // Cooldown durations (ms)
 const COOLDOWN = {
   long: 2 * 60 * 1000,

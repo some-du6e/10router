@@ -134,8 +134,19 @@ export const RESPONSES_COMPLETION_WAIT_MS = 3000;
 // Time-to-first-token timeout (prompt prefill). Env: STREAM_FIRST_CHUNK_TIMEOUT_MS.
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_MS", 200 * 1000);
 
-// Fetch connect timeout: abort if upstream doesn't return response headers within this duration
+// Fetch connect timeout: abort if upstream doesn't return response headers within this duration.
+// A non-streaming chat call's headers come with the whole reply. How a chat
+// call that times out is retried: HEADERS_TIMEOUT (errorConfig.js).
 export const FETCH_CONNECT_TIMEOUT_MS = envMs("FETCH_CONNECT_TIMEOUT_MS", 60 * 1000);
+
+// A streaming chat call, whose headers can wait on a long prompt's prefill, gets
+// one attempt as long as the STREAM_HEADERS_ATTEMPTS attempts it got while a
+// header timeout was retried on the same key: of FETCH_CONNECT_TIMEOUT_MS by
+// default (UPSTREAM_STREAM_HEADERS_TIMEOUT_MS), or of an endpoint's own Timeout.
+export const STREAM_HEADERS_ATTEMPTS = 4;
+export const streamHeadersBudgetMs = (attemptMs) => Math.min(STREAM_HEADERS_ATTEMPTS * attemptMs, MAX_TIMER_MS);
+// Env: UPSTREAM_STREAM_HEADERS_TIMEOUT_MS.
+export const UPSTREAM_STREAM_HEADERS_TIMEOUT_MS = envMs("UPSTREAM_STREAM_HEADERS_TIMEOUT_MS", streamHeadersBudgetMs(FETCH_CONNECT_TIMEOUT_MS));
 
 // Gemini native TTS fetch timeout: abort if Google does not return response headers in time.
 export const GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS = envMs("GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS", 45 * 1000);

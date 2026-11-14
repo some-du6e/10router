@@ -3,8 +3,8 @@ import { getProviderConnections, validateApiKey, updateProviderConnection, getSe
 import { extractClientApiKey } from "@/shared/utils/clientApiKey.js";
 import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey } from "@/lib/db/index.js";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
-import { formatRetryAfter, checkFallbackError, getQuotaCooldown, isModelLockActive, getModelLockUntil, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL } from "open-sse/services/accountFallback.js";
-import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG, AUTH_DEMOTE_CONFIG, LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL } from "open-sse/config/errorConfig.js";
+import { formatRetryAfter, checkFallbackError, getQuotaCooldown, isModelLockActive, getModelLockUntil, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL, isHeadersTimeout } from "open-sse/services/accountFallback.js";
+import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG, AUTH_DEMOTE_CONFIG, LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL, HEADERS_TIMEOUT } from "open-sse/config/errorConfig.js";
 import { isBackoffText } from "open-sse/utils/errorClass.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { planCanServeModel } from "@/shared/utils/planCapability.js";
@@ -14,7 +14,7 @@ import * as log from "../utils/logger.js";
 import { getNextAccountReset, PROVIDER_RESET_PREFIX, extractProviderMessage } from "./accountFailureSummary.js";
 import { isLimitError } from "open-sse/utils/limitHold.js";
 import { warmJitterMs, warmRetryAt } from "open-sse/services/cacheAffinity.js";
-import { CACHE_AFFINITY } from "open-sse/config/runtimeConfig.js";
+import { CACHE_AFFINITY, HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 
 // Per-provider mutexes for account selection. Picks for the same provider stay
 // serialized (round-robin sticky counters read-then-write lastUsedAt and
@@ -22,6 +22,8 @@ import { CACHE_AFFINITY } from "open-sse/config/runtimeConfig.js";
 // run concurrently. Kept on global so duplicated Next.js module instances share it.
 const selectionMutexes = (global._selectionMutexes ??= new Map());
 const MODEL_LIMIT_PREFIX = "modelLimit_";
+// Set on a model lock written for a header timeout (HEADERS_TIMEOUT).
+const NO_HEADERS_PREFIX = "modelNoHeaders_";
 
 const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit for your plan";
 
@@ -538,6 +540,14 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         // came from another model.
         const reportOf = c => {
           const limited = limitLocked(c);
+          // A header timeout's lock: the stored error may be another model's.
+          const ownLockUntil = new Date(c[getModelLockKey(model)] || 0).getTime() || 0;
+          const noHeadersLock = ownLockUntil > Date.now() && ownLockUntil >= getModelLockUntil(c, model)
+            && c[`${NO_HEADERS_PREFIX}${model || "__all"}`] === true;
+          if (!limited && noHeadersLock) {
+            const error = isHeadersTimeout(c.errorCode, c.lastError) ? c.lastError : `[504]: ${HEADERS_TIMEOUT.text} (headers timeout)`;
+            return { code: HTTP_STATUS.GATEWAY_TIMEOUT, error, limit: false, ranks: true, own: true };
+          }
           const authCode = c.errorCode === 401 || c.errorCode === 403;
           const retryableCode = c.errorCode === 429 || c.errorCode >= 500;
           // A stored error that isn't a limit (an auth refusal, a 400/404) came from another model.
@@ -758,7 +768,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
 
   // Provider-specific precise cooldown (e.g. codex usage_limit_reached resets_at) overrides backoff
-  let shouldFallback, cooldownMs, newBackoffLevel, inOwnLock = false;
+  let shouldFallback, cooldownMs, newBackoffLevel, inOwnLock = false, keptLock = false;
   if (githubResetAtMs) {
     shouldFallback = true;
     cooldownMs = githubResetAtMs - Date.now();
@@ -781,14 +791,21 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
       inOwnLock = ownLockUntil > Date.now();
       cooldownMs = Math.max(ownLockUntil - Date.now(), getQuotaCooldown(backoffLevel));
     }
+    // Nor does a header timeout shorten a longer lock on the model.
+    const ownLockMs = (new Date(conn?.[getModelLockKey(model)] || 0).getTime() || 0) - Date.now();
+    if (isHeadersTimeout(status, errorText) && ownLockMs > cooldownMs) {
+      keptLock = inOwnLock = true;
+      cooldownMs = ownLockMs;
+    }
   }
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 
   const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
-  const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
+  const lockUpdate = keptLock ? { [getModelLockKey(model)]: conn[getModelLockKey(model)] } : buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
   const providerResetAtMs = githubResetAtMs || resetsAtMs;
   const lockScope = githubResetAtMs ? "__all" : model || "__all";
   const limitKey = `${MODEL_LIMIT_PREFIX}${lockScope}`;
+  const noHeadersKey = `${NO_HEADERS_PREFIX}${lockScope}`;
 
   // Auth rejections build a streak that only a success clears; other errors
   // leave it alone. A dead key is turned off unless it is the provider's last.
@@ -809,10 +826,14 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   } : null;
   const disabling = autoDisable || deadOnTwo;
 
+  const limitFlag = (inOwnLock && conn[limitKey] === true) || isLimitError(status, errorText);
   const update = {
     ...lockUpdate,
     // A straggler in the model's own lock can mark it a limit, never unmark it or drop its reset time.
-    [limitKey]: (inOwnLock && conn[limitKey] === true) || isLimitError(status, errorText),
+    [limitKey]: limitFlag,
+    ...(isHeadersTimeout(status, errorText) || conn?.[noHeadersKey] ? {
+      [noHeadersKey]: (keptLock ? conn[noHeadersKey] === true : isHeadersTimeout(status, errorText) && !limitFlag) || null,
+    } : {}),
     ...(inOwnLock ? {} : {
       [`${PROVIDER_RESET_PREFIX}${lockScope}`]:
         Number.isFinite(providerResetAtMs) && providerResetAtMs > Date.now() ? new Date(providerResetAtMs).toISOString() : null,
@@ -862,7 +883,8 @@ export async function clearAccountError(connectionId, currentConnection, model =
   // A cleared lock stays as modelLock_<model>: null and needs no write, unless
   // whatever cleared it left its reset time or limit flag behind.
   const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_")
-    && (conn[k] || conn[k.replace("modelLock_", PROVIDER_RESET_PREFIX)] || conn[k.replace("modelLock_", MODEL_LIMIT_PREFIX)]));
+    && (conn[k] || conn[k.replace("modelLock_", PROVIDER_RESET_PREFIX)] || conn[k.replace("modelLock_", MODEL_LIMIT_PREFIX)]
+      || conn[k.replace("modelLock_", NO_HEADERS_PREFIX)]));
 
   // The model's demotion record goes, even one written after the snapshot. A
   // record on another model stays, and authDemoteOkAt notes the key served
@@ -903,6 +925,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
   for (const key of keysToClear) {
     clearObj[key.replace("modelLock_", PROVIDER_RESET_PREFIX)] = null;
     clearObj[key.replace("modelLock_", MODEL_LIMIT_PREFIX)] = null;
+    clearObj[key.replace("modelLock_", NO_HEADERS_PREFIX)] = null;
   }
 
   // Only reset error state if no active locks remain
