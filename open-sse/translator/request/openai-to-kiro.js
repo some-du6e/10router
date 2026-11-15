@@ -20,7 +20,7 @@ import {
 import { parseDataUri } from "../concerns/image.js";
 import { imagePartUrl, isDataUriImage, isHttpUrl, splitToolContent } from "../concerns/toolContent.js";
 import { capChatImages } from "../concerns/toolImageCap.js";
-import { imageUrlText } from "../../config/mediaConfig.js";
+import { IMAGE_WINDOW, imageUrlText } from "../../config/mediaConfig.js";
 import { DEFAULT_IMAGE_MIME } from "../schema/index.js";
 import { ROLE, OPENAI_BLOCK, CLAUDE_BLOCK } from "../schema/index.js";
 import {
@@ -312,7 +312,7 @@ function convertMessages(messages, model) {
  */
 export function openaiToKiroRequest(model, body, stream, credentials) {
   // A long computer-use session: keep under the upstream's image limits
-  const messages = capChatImages(body.messages || []);
+  const messages = capChatImages(body.messages || [], IMAGE_WINDOW.KIRO);
   const tools = body.tools || [];
   const maxTokens = 32000;
   const temperature = body.temperature;

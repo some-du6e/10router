@@ -52,7 +52,7 @@ async function resolvePinnedIps(hostname) {
 export function sniffImageMime(base64) {
   if (typeof base64 !== "string" || !base64) return null;
   try {
-    return detectImageMime(Buffer.from(base64.slice(0, 64).replace(/\s/g, "").slice(0, 24), "base64"));
+    return detectImageMime(decodeHead(base64, HEAD_BASE64));
   } catch {
     return null;
   }

@@ -42,24 +42,43 @@ export const imageUrlText = (url) => `[Image: ${url}]`;
 export const INLINE_BASE64_MIN_CHARS = 64 * 1024;
 export const SCRUBBED_DATA_URI_MIME = /^(image\/|application\/pdf$)/i;
 
-// Long computer-use sessions. An upstream takes at most 100 images and about
-// 32 MB per request, and no more than 20 images once any of them is over
-// 2000 px on a side. The images are walked oldest first in a window: when the
-// window passes a TRIGGER, its oldest tool-result images are replaced until it
-// is back at TARGET. A new image moves the window only when it crosses a
-// trigger, so the prompt prefix (and its cache) stays the same between trims.
-// Bytes are base64 characters, which is what the request carries.
+// Long computer-use sessions: per-target image limits for the window in
+// translator/concerns/toolImageCap.js. The images are walked oldest first;
+// when the window passes a `trigger`, its oldest images are replaced until it
+// is back at `target`, tool-result images first. User images go only when the
+// window is over a `hard` limit without tool images to drop (then down to
+// `target` too), or when they are the large images the hi-res rule is about.
+// The newest image is always kept. A new image moves the window only when it
+// crosses a trigger, so the prompt prefix (and its cache) stays the same
+// between trims. Bytes are base64 characters, which is what the request
+// carries. A limit left out doesn't apply to that target.
+const ANTHROPIC_IMAGES = { hard: 100, trigger: 80, target: 50 };
+const ANTHROPIC_BASE64_BYTES = { hard: 30_000_000, trigger: 24_000_000, target: 15_000_000 }; // under ~32 MB, with room for text
 export const IMAGE_WINDOW = {
-  HARD_MAX_IMAGES: 100,
-  HARD_MAX_BASE64_BYTES: 30_000_000, // leaves room under ~32 MB for the text
-  TRIGGER_IMAGES: 80,
-  TARGET_IMAGES: 50,
-  TRIGGER_BASE64_BYTES: 24_000_000,
-  TARGET_BASE64_BYTES: 15_000_000,
-  // Over 20 images, every image must be at most MAX_SIDE px on each side.
-  HI_RES_MAX_SIDE: 2000,
-  HI_RES_TRIGGER_IMAGES: 20,
-  HI_RES_TARGET_IMAGES: 16,
+  // Anthropic: 100 images, ~32 MB per request, and no more than 20 images once
+  // any of them is over 2000 px on a side. A URL image is fetched upstream at
+  // a size we can't read, so it counts, as large.
+  CLAUDE: {
+    images: ANTHROPIC_IMAGES,
+    base64Bytes: ANTHROPIC_BASE64_BYTES,
+    hiRes: { maxSide: 2000, trigger: 20, target: 16 },
+    countUrlImages: true,
+  },
+  // Kiro's own image limits aren't documented. It serves the same models, so
+  // count and size are capped like Claude's, without the hi-res rule. A URL
+  // image reaches Kiro as "[Image: <url>]" text, so it doesn't count.
+  KIRO: {
+    images: ANTHROPIC_IMAGES,
+    base64Bytes: ANTHROPIC_BASE64_BYTES,
+    countUrlImages: false,
+  },
+  // Gemini: no image-count or hi-res rule, but inline data has to fit in a
+  // 20 MB request (Gemini API docs, "larger than 20 MB, use the File API").
+  // A URL image goes as fileData or text, so it doesn't count.
+  GEMINI: {
+    base64Bytes: { hard: 18_000_000, trigger: 14_400_000, target: 9_000_000 },
+    countUrlImages: false,
+  },
 };
 
 // Tokens one image counts as in local estimates: the context meter, billing
