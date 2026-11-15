@@ -54,15 +54,26 @@ jobs:
       - name: Lint
         run: >
           ./node_modules/.bin/eslint
-          open-sse/translator/concerns/jsonSchema.js
-          open-sse/config/claudeToolSchema.js
+          open-sse/translator/concerns/jsonSchema.ts
+          open-sse/config/claudeToolSchema.ts
           open-sse/executors/zed.js
-          open-sse/translator/schema/jsonSchema.js
+          open-sse/translator/schema/jsonSchema.ts
           open-sse/translator/schema/index.js
           open-sse/translator/formats/claude.js
           open-sse/translator/formats/gemini.js
           tests/unit/claude-tool-schema-combinators.test.js
           tests/unit/claude-tool-schema-before-after.test.js
+      # Fails only on errors in the .ts files this change adds, so unrelated
+      # type errors elsewhere don't block it.
+      - name: Type check the new TypeScript modules
+        run: |
+          set +e
+          ./node_modules/.bin/tsc --noEmit -p . > tsc.log 2>&1
+          code=$?
+          set -e
+          tail -5 tsc.log
+          if [ "$code" -gt 2 ] || ! [ -x ./node_modules/.bin/tsc ]; then echo "tsc did not run (exit $code)"; exit 1; fi
+          if grep -E "open-sse/(translator/concerns/jsonSchema|translator/schema/jsonSchema|config/claudeToolSchema)\.ts" tsc.log; then exit 1; fi
 
   # The Claude body built for the same Responses request on the base branch and
   # on this one: a top-level anyOf before (rejected upstream), an object schema after.
