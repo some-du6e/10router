@@ -120,6 +120,12 @@ async function softDemoted() {
   return { key, peer };
 }
 
+// A 504 for no response headers in time (HEADERS_TIMEOUT).
+const headersTimeout = async (id, model) => {
+  const { HEADERS_TIMEOUT } = await import("open-sse/config/errorConfig.js");
+  return auth.markAccountUnavailable(id, 504, `[504]: ${HEADERS_TIMEOUT.text} in 240s (headers timeout)`, provider, model);
+};
+
 // Then 6 refusals on kimi too: soft-demoted for itself on both.
 async function softDemotedOnTwo() {
   const { key, peer } = await softDemoted();
@@ -332,11 +338,6 @@ describe("soft demotion", () => {
     expect(order).toEqual([healthy.id, avoided.id, soft.id]);
   });
 
-  const headersTimeout = async (id, model) => {
-    const { HEADERS_TIMEOUT } = await import("open-sse/config/errorConfig.js");
-    return auth.markAccountUnavailable(id, 504, `[504]: ${HEADERS_TIMEOUT.text} in 240s (headers timeout)`, provider, model);
-  };
-
   it("doesn't count a header timeout on a soft-demoted model as a refusal, nor let it end the 401s in a row", async () => {
     const { key, peer } = await softDemoted();
     vi.advanceTimersByTime(11 * MIN);
@@ -353,20 +354,6 @@ describe("soft demotion", () => {
     expect(conn.authFailCount ?? null).toBeNull();
     expect(conn[`authDemote_${OPUS}`] ?? null).toBeNull();
   });
-
-  it("doesn't turn it off at a header timeout once the day is up", async () => {
-    const { key, peer } = await softDemoted();
-    // Refused for itself on opus and kimi, so only the trigger is missing.
-    expect((await run(key, 23)).off).toBeNull();
-    vi.advanceTimersByTime(2 * 60 * MIN);
-    await succeed(peer.id, KIMI);
-    await headersTimeout(key.id, KIMI);
-    expect((await load(key.id)).isActive).toBe(true);
-    vi.advanceTimersByTime(5 * MIN);
-    await succeed(peer.id, KIMI);
-    await failOnce(key.id, KIMI);
-    expect((await load(key.id)).isActive).toBe(false);
-  }, 120000);
 
   // Key d, first by priority, dead and held for refusals of itself on opus. On
   // kimi, where no other key has served yet, its refusal counts for nothing.
@@ -930,6 +917,20 @@ describe("after a long soft demotion", () => {
     expect(off).toBeLessThanOrEqual(4 * 60 + 2 * 180);
     expect((await load(key.id)).autoDisabledReason).toBe(`403 "Key barred from this endpoint" on ${OPUS}, ${KIMI} for 24h while soft-demoted`);
   });
+
+  it("doesn't turn it off at a header timeout once the day is up", async () => {
+    const { key, peer } = await softDemoted();
+    // Refused for itself on opus and kimi, so only the trigger is missing.
+    expect((await run(key, 23)).off).toBeNull();
+    vi.advanceTimersByTime(2 * 60 * MIN);
+    await succeed(peer.id, KIMI);
+    await headersTimeout(key.id, KIMI);
+    expect((await load(key.id)).isActive).toBe(true);
+    vi.advanceTimersByTime(5 * MIN);
+    await succeed(peer.id, KIMI);
+    await failOnce(key.id, KIMI);
+    expect((await load(key.id)).isActive).toBe(false);
+  }, 120000);
 
   it("turns it off at a refusal, not at an upstream error", async () => {
     const { key, peer } = await softDemoted();

@@ -646,11 +646,13 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // Soft-demoted keys go after the others, avoided ones included (an avoided
     // key that is soft-demoted ranks as soft-demoted), but for one due try per
     // pass, which keeps its place unless the key is avoided. So does a key held
-    // (soft-demoted for refusals of itself on another model) that was last
-    // refused for itself here, not served: its refusals here may count for
-    // nothing (no peer served), and the hold keeps the usual rules off it.
+    // (soft-demoted for refusals of itself on another model) refused for itself
+    // here since any key last served here: its refusals here count for nothing
+    // until another key serves (no evidence), and the hold keeps the usual
+    // rules off it. Once one does, it is back in its place and they count.
+    const seqOf = (map, id) => map.get(`${id}|${model}`)?.seq ?? -Infinity;
     const heldRefusedHere = (c) => softDemotedForItself(c)
-      && (authEvents.refused.get(`${c.id}|${model}`)?.seq ?? -Infinity) > (authEvents.success.get(`${c.id}|${model}`)?.seq ?? -Infinity);
+      && allConnections.every(p => seqOf(authEvents.success, p.id) < seqOf(authEvents.refused, c.id));
     const back = (c) => softDemoted(c, model) || heldRefusedHere(c);
     if (!probing && (availableConnections === notAvoided || availableConnections === preferred)
       && preferred.some(back) && preferred.some(c => !back(c))) {
