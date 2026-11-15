@@ -230,6 +230,25 @@ docker run -d --name 10router -p 20128:20128 \
 
 Container defaults: `PORT=20128`, `HOSTNAME=0.0.0.0`.
 
+#### Restarts and deploys
+
+On `SIGTERM` (what `docker stop` sends) the server stops taking new connections and lets
+requests already running finish, long streams included, for up to
+`SHUTDOWN_DRAIN_TIMEOUT_MS` (10 minutes by default), then exits. A request that reaches it
+during that time gets a `503` with `Retry-After`. A second signal exits at once. This needs
+Node (the Docker image and `npm run start`); under Bun (`start:bun`) a signal still exits at once.
+
+That only helps if the container runtime waits for it. Docker's default is 10 seconds before
+it kills the process, so raise the stop grace period to match:
+
+- `docker stop -t 600 10router` (or `docker run --stop-timeout 600 …`)
+- Compose: `stop_grace_period: 10m`
+- A hosting platform: its container stop timeout or grace period setting.
+
+`GET /api/health` answers `200` while serving and `503` while draining, with no auth. The
+image's `HEALTHCHECK` uses it; point a platform's health check at it too, so one that does
+rolling updates can start the new container before stopping the old one.
+
 Data persists at `$HOME/.9router/db/data.sqlite` on the host (the `.9router` directory name
 is retained for compatibility with existing installs) ↔ `/app/data/db/data.sqlite` in the
 container.
@@ -244,6 +263,7 @@ container.
 | `PORT` | framework default | Service port (`20128` in examples) |
 | `HOSTNAME` | framework default | Bind host (Docker defaults to `0.0.0.0`) |
 | `NODE_ENV` | runtime default | Set `production` for deploy |
+| `SHUTDOWN_DRAIN_TIMEOUT_MS` | `600000` | On SIGTERM/SIGINT, how long in-flight requests get to finish before exit; `0` exits at once. Set the container stop grace period at least this long |
 | `BASE_URL` | `http://localhost:20128` | Server-side internal base URL used by cloud sync jobs |
 | `CLOUD_URL` | `https://9router.com` | Server-side cloud sync endpoint base URL |
 | `NEXT_PUBLIC_BASE_URL` | `http://localhost:3000` | Backward-compatible/public base URL (prefer `BASE_URL`) |

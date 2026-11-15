@@ -37,6 +37,7 @@ COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/custom-server.js ./custom-server.js
+COPY --from=builder /app/server-drain.js ./server-drain.js
 COPY --from=builder /app/open-sse ./open-sse
 COPY --from=builder /app/THIRD_PARTY_NOTICES.md ./THIRD_PARTY_NOTICES.md
 COPY --from=builder /app/src/lib/upgrades/retireIdeProxy.cjs ./src/lib/upgrades/retireIdeProxy.cjs
@@ -59,6 +60,11 @@ RUN apk --no-cache upgrade && apk --no-cache add su-exec && \
   chmod +x /entrypoint.sh
 
 EXPOSE 20128
+
+# 503 while draining on shutdown (see server-drain.js). node, not wget/curl, so a
+# different NODE_IMAGE base still has what it needs.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||20128)+'/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["node", "custom-server.js"]

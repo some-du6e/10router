@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const path = require("path");
 const fs = require("fs");
 const { pathToFileURL } = require("url");
+const { createDrain, gateShutdownSignals, parseDrainTimeout } = require("./server-drain.js");
 
 const origCreate = http.createServer.bind(http);
 
@@ -466,6 +467,17 @@ function handleCodexUpgrade(req, socket, head, port) {
 const PEER_TOKEN = crypto.randomBytes(24).toString("hex");
 process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
 
+// Graceful drain on SIGTERM/SIGINT (see server-drain.js). The signal gate is
+// only installed when this file is the entry point, below.
+let runSignalListeners = () => {};
+const drain = createDrain({
+  timeoutMs: parseDrainTimeout(process.env.SHUTDOWN_DRAIN_TIMEOUT_MS),
+  exit: (code, info) => {
+    runSignalListeners(info.signal);
+    process.exit(code);
+  },
+});
+
 let backgroundRefreshStarted = false;
 
 function startBackgroundTokenRefreshFromCustomServer() {
@@ -507,6 +519,7 @@ http.createServer = (...args) => {
   const rest = args.filter((a) => typeof a !== "function");
   if (!handler) return origCreate(...args);
   const wrapped = (req, res) => {
+    if (!drain.track(req, res)) return;
     const socketIp = req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : "";
     const xff = req.headers["x-forwarded-for"];
     const xRealIp = req.headers["x-real-ip"];
@@ -526,6 +539,7 @@ http.createServer = (...args) => {
     return handler(req, res);
   };
   const server = origCreate(...rest, wrapped);
+  drain.addServer(server);
   server.once("listening", () => {
     startBackgroundTokenRefreshFromCustomServer();
   });
@@ -533,6 +547,10 @@ http.createServer = (...args) => {
   // JBR 25 sends h2c upgrades that the HTTP/1.1 server would otherwise close.
   server.emit = function (event, ...eventArgs) {
     const [req, socket, head] = eventArgs;
+    if (event === "upgrade" && drain.draining) {
+      drain.rejectUpgrade(socket);
+      return true;
+    }
     if (event === "upgrade" && String(req.headers.upgrade || "").toLowerCase() === "websocket") {
       const requestPath = String(req.url || "").split("?")[0].replace(/\/+$/, "");
       // Codex appends /v1 to the base URL in some configurations; both spellings
@@ -593,6 +611,10 @@ http.createServer = (...args) => {
 module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn, MAX_ERROR_BODY } };
 
 if (require.main === module) {
+  // Before the app loads: its own signal listeners must not see SIGTERM first.
+  if (drain.timeoutMs > 0) {
+    runSignalListeners = gateShutdownSignals(process, (signal) => drain.start(signal));
+  }
   const standalone = path.join(__dirname, "server.js");
   if (fs.existsSync(standalone)) {
     require(standalone);
