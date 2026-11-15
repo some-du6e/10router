@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "open-sse/**"
+      - "src/shared/utils/**"
       - "CHANGELOG.md"
       - "tests/package.json"
       - "tests/vitest.*.js"
