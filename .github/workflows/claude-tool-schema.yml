@@ -1,0 +1,179 @@
+name: Claude tool schema combinators
+
+on:
+  pull_request:
+    paths:
+      - "open-sse/**"
+      - "src/shared/utils/**"
+      - "CHANGELOG.md"
+      - "tests/package.json"
+      - "tests/vitest.*.js"
+      - "tests/unit/claude-tool-schema-*.test.js"
+      - "tests/unit/claude-custom-tool-type.test.js"
+      - "tests/unit/claude-foreign-server-tool-use.test.js"
+      - "tests/unit/claude-tool-changes.test.js"
+      - "tests/unit/defer-loading-cache-control.test.js"
+      - "tests/unit/openai-to-claude-tools-no-type.test.js"
+      - "tests/unit/translator-helpers-edge.test.js"
+      - "tests/translator/bugs-*.test.js"
+      - ".github/workflows/claude-tool-schema.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Unit tests
+        working-directory: tests
+        run: >
+          ./node_modules/.bin/vitest run
+          unit/claude-tool-schema-combinators.test.js
+          unit/claude-tool-schema-before-after.test.js
+          unit/claude-custom-tool-type.test.js
+          unit/claude-foreign-server-tool-use.test.js
+          unit/claude-tool-changes.test.js
+          unit/defer-loading-cache-control.test.js
+          unit/openai-to-claude-tools-no-type.test.js
+          unit/translator-helpers-edge.test.js
+          translator/bugs-antigravity.test.js
+          translator/bugs-gemini-cursor-commandcode.test.js
+          translator/bugs-toClaude-context.test.js
+      - name: Lint
+        run: >
+          ./node_modules/.bin/eslint
+          open-sse/translator/concerns/jsonSchema.ts
+          open-sse/config/claudeToolSchema.ts
+          open-sse/executors/zed.js
+          open-sse/translator/schema/jsonSchema.ts
+          open-sse/translator/schema/index.js
+          open-sse/translator/formats/claude.js
+          open-sse/translator/formats/gemini.js
+          tests/unit/claude-tool-schema-combinators.test.js
+          tests/unit/claude-tool-schema-before-after.test.js
+      # Fails only on errors in the .ts files this change adds, so unrelated
+      # type errors elsewhere don't block it.
+      - name: Type check the new TypeScript modules
+        run: |
+          set +e
+          ./node_modules/.bin/tsc --noEmit -p . > tsc.log 2>&1
+          code=$?
+          set -e
+          tail -5 tsc.log
+          if [ "$code" -gt 2 ] || ! [ -x ./node_modules/.bin/tsc ]; then echo "tsc did not run (exit $code)"; exit 1; fi
+          if grep -E "open-sse/(translator/concerns/jsonSchema|translator/schema/jsonSchema|config/claudeToolSchema)\.ts" tsc.log; then exit 1; fi
+
+  # The Claude body built for the same Responses request on the base branch and
+  # on this one: a top-level anyOf before (rejected upstream), an object schema after.
+  before-after:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Check out the base branch next to this one
+        run: |
+          git worktree add ../base "origin/${{ github.base_ref || 'master' }}"
+          cp tests/unit/claude-tool-schema-before-after.test.js ../base/tests/unit/
+      - name: Install dependencies (branch and base)
+        run: |
+          for dir in . ../base; do
+            (cd "$dir" && bun install --ignore-scripts && cd tests && bun install --ignore-scripts)
+          done
+      - name: Before (base branch)
+        working-directory: ../base/tests
+        run: ./node_modules/.bin/vitest run unit/claude-tool-schema-before-after.test.js 2>&1 | grep -F CLAUDE_TOOL_SCHEMA_BODY
+      # Fails unless every tool this branch sends has an object schema with no
+      # top-level combinator.
+      - name: After (this branch)
+        working-directory: tests
+        run: |
+          ./node_modules/.bin/vitest run unit/claude-tool-schema-before-after.test.js > "$RUNNER_TEMP/after.log" 2>&1 || { cat "$RUNNER_TEMP/after.log"; exit 1; }
+          grep -F CLAUDE_TOOL_SCHEMA_BODY "$RUNNER_TEMP/after.log" | tee "$RUNNER_TEMP/after.txt"
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const marker = "CLAUDE_TOOL_SCHEMA_BODY ";
+            const line = readFileSync(process.env.RUNNER_TEMP + "/after.txt", "utf8").split("\n").find((l) => l.includes(marker));
+            if (!line) { console.log("no body printed"); process.exit(1); }
+            const { tools } = JSON.parse(line.slice(line.indexOf(marker) + marker.length));
+            const bad = tools.filter((t) => t.input_schema?.type !== "object" || ["allOf", "anyOf", "oneOf"].some((k) => k in t.input_schema));
+            if (!tools.length || bad.length) { console.log("still rejected upstream: " + JSON.stringify(bad)); process.exit(1); }
+            console.log(`${tools.length} tool(s) with a plain object schema`);
+          '
+
+  # The suite is not all-green on master (see AGENTS.md), so this runs it on
+  # both the base and this branch and fails only on tests that pass on the base
+  # and fail here.
+  no-new-failures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Check out the base branch next to this one
+        run: git worktree add ../base "origin/${{ github.base_ref || 'master' }}"
+      - name: Install dependencies (branch and base)
+        run: |
+          for dir in . ../base; do
+            (cd "$dir" && bun install --ignore-scripts && cd tests && bun install --ignore-scripts)
+          done
+      - name: Run the suite on the base
+        working-directory: ../base/tests
+        # Each run gets its own HOME: tests without a DATA_DIR use ~/.9router,
+        # and one run's database must not leak into the other.
+        run: |
+          mkdir -p "$RUNNER_TEMP/home-base"
+          HOME="$RUNNER_TEMP/home-base" ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/base.json" > /dev/null 2>&1 || true
+      - name: Run the suite on this branch
+        working-directory: tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/home-head"
+          HOME="$RUNNER_TEMP/home-head" ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/head.json" > /dev/null 2>&1 || true
+      - name: Compare
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const load = (file, root) => {
+              const r = JSON.parse(readFileSync(file, "utf8"));
+              const status = new Map();
+              for (const f of r.testResults) {
+                const rel = f.name.slice(f.name.indexOf("/tests/") + 1);
+                for (const a of f.assertionResults) status.set(`${rel} :: ${a.fullName}`, a.status);
+                // A file that failed to load has no assertions; count it as one failure.
+                if (!f.assertionResults.length && f.status === "failed") status.set(`${rel} :: (file failed to load)`, "failed");
+              }
+              return { status, total: r.numTotalTests, failed: r.numFailedTests };
+            };
+            const base = load(process.env.RUNNER_TEMP + "/base.json");
+            const head = load(process.env.RUNNER_TEMP + "/head.json");
+            console.log(`base: ${base.failed}/${base.total} failed, head: ${head.failed}/${head.total} failed`);
+            const regressions = [...head.status].filter(([k, s]) => s === "failed" && base.status.get(k) === "passed").map(([k]) => k);
+            const fixed = [...base.status].filter(([k, s]) => s === "failed" && head.status.get(k) === "passed").map(([k]) => k);
+            const newFailing = [...head.status].filter(([k, s]) => s === "failed" && !base.status.has(k)).map(([k]) => k);
+            if (fixed.length) console.log("Now passing:\n  " + fixed.join("\n  "));
+            if (newFailing.length) console.log("New tests failing:\n  " + newFailing.join("\n  "));
+            if (regressions.length) console.log("Passed on the base, fail here:\n  " + regressions.join("\n  "));
+            if (regressions.length || newFailing.length) process.exit(1);
+          '
