@@ -1028,6 +1028,8 @@ describe("image window for long sessions", () => {
         }
         const out = translateRequest(FORMATS.OPENAI, FORMATS.KIRO, CLAUDE_MODEL, { tools, messages }, true, credentials, null);
         const sent = sentKiroImages(out);
+        // the newest image of the turn is always sent
+        expect(sent.has(k % 2 === 0 ? users.at(-1) : uniquePng(k))).toBe(true);
         const all = [...first, ...users, ...Array.from({ length: k }, (_, i) => uniquePng(i + 1))];
         const dropped = new Set(all.filter((b) => !sent.has(b)));
         for (const b of previous) expect(dropped.has(b)).toBe(true); // nothing reappears
