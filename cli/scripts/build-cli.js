@@ -223,6 +223,10 @@ function buildCliPackage() {
     process.exit(1);
   }
 
+  // The built app carries vendored Apache-2.0 material (open-sse/config/codex/).
+  fs.copyFileSync(path.join(appDir, "THIRD_PARTY_NOTICES.md"), path.join(cliAppDir, "THIRD_PARTY_NOTICES.md"));
+  console.log("✅ Copied THIRD_PARTY_NOTICES.md\n");
+
   // Step 3b: Ensure sql.js (pure JS fallback) bundled in app/cli/app/node_modules.
   // Strip better-sqlite3 (native) — it lives in ~/.9router/runtime to avoid
   // (data dir name retained for compatibility with existing installs)
