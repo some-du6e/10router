@@ -10,6 +10,7 @@ import { createRequestLogger } from "../utils/requestLogger.js";
 import { getModelTargetFormat, getModelSupportedFormats, getModelStrip, getModelUpstreamId, getModelType, PROVIDER_ID_TO_ALIAS } from "../config/providerModels.js";
 import { PROVIDERS } from "../config/providers.js";
 import { createErrorResult, parseUpstreamError, formatProviderError, isClientAbort, clientAbortResult } from "../utils/error.js";
+import { isUpstreamHeadersTimeout } from "../utils/headersTimeout.js";
 import { classifyError, classifyThrownError } from "../utils/errorClass.js";
 import { HTTP_STATUS, STREAM_DRAIN_MAX_MS } from "../config/runtimeConfig.js";
 import { handleBypassRequest } from "../utils/bypassHandler.js";
@@ -128,7 +129,7 @@ export async function handleChatCore(args) {
   }
 }
 
-async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onBetasRejected, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, sourceFormatOverride, providerThinking, clientSignal = null, drainOnDisconnect = false }, hangUp) {
+async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onBetasRejected, onHeadersBudget, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, sourceFormatOverride, providerThinking, clientSignal = null, drainOnDisconnect = false }, hangUp) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -412,7 +413,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   // 2s sleeps records over 6s). Upstream-error rows report it as ttft.
   let upstreamRespondedAt = 0;
   try {
-    const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onBetasRejected });
+    const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onBetasRejected, onHeadersBudget });
     upstreamRespondedAt = Date.now();
     providerResponse = result.response;
     providerUrl = result.url;
@@ -423,7 +424,8 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   } catch (error) {
     if (isClientAbort(error, clientSignal)) return endAsHangUp();
     trackPendingRequest(model, provider, connectionId, false, true);
-    const failStatus = error?.name === "AbortError" ? HTTP_STATUS.CLIENT_CLOSED_REQUEST : HTTP_STATUS.BAD_GATEWAY;
+    const failStatus = error?.name === "AbortError" ? HTTP_STATUS.CLIENT_CLOSED_REQUEST
+      : isUpstreamHeadersTimeout(error) ? error.status : HTTP_STATUS.BAD_GATEWAY;
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${failStatus}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
@@ -441,11 +443,12 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
       streamController.handleError(error);
       return clientAbortResult();
     }
-    const errMsg = formatProviderError(error ?? {}, provider, model, HTTP_STATUS.BAD_GATEWAY);
+    const errMsg = formatProviderError(error ?? {}, provider, model, failStatus);
     if (log?.errorLine) {
-      log.errorLine(reqTag, "✗", `ERROR 502 · ${provider}/${model} · ${Date.now() - requestStartTime}ms\n    ${errMsg}${error?.stack ? `\n    ${error.stack}` : ""}`);
+      log.errorLine(reqTag, "✗", `ERROR ${failStatus} · ${provider}/${model} · ${Date.now() - requestStartTime}ms\n    ${errMsg}${error?.stack ? `\n    ${error.stack}` : ""}`);
     }
-    return createErrorResult(HTTP_STATUS.BAD_GATEWAY, errMsg);
+    const failed = createErrorResult(failStatus, errMsg);
+    return isUpstreamHeadersTimeout(error) ? { ...failed, headersTimeout: { stream: error.stream === true } } : failed;
   }
 
   // Handle 401/403 - try token refresh (skip for noAuth providers)
@@ -470,7 +473,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
           try { await onCredentialsRefreshed(newCredentials); } catch (e) { log?.warn?.("TOKEN", `onCredentialsRefreshed failed: ${e.message}`); }
         }
         try {
-          const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions });
+          const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onHeadersBudget });
           if (retryResult.response.ok) {
             providerResponse = retryResult.response;
             providerUrl = retryResult.url;

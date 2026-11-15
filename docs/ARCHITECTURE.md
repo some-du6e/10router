@@ -521,6 +521,7 @@ Translations are selected dynamically based on source payload shape and provider
 - provider account cooldown on transient/rate/auth errors
 - account fallback before failing request
 - combo model fallback when current model/provider path is exhausted
+- an upstream that sends no response headers in time fails as a 504 (`HEADERS_TIMEOUT` in `open-sse/config/errorConfig.js`): one request tries at most one more key after it, and streaming header timeouts from two requests on two keys of one provider/model, with no success between, mark that model hung (`open-sse/services/modelHang.js`, in memory per process), so new requests for it fail at once (a 504 with Retry-After) until a single probe request, sent to keys that haven't stalled, gets an answer; the request that marks it, if it already sent a stream's early headers, ends with a retryable in-stream error instead
 
 ## 2) Token Expiry
 
