@@ -217,6 +217,8 @@ function buildCliPackage() {
   if (fs.existsSync(customServerSrc)) {
     fs.copyFileSync(customServerSrc, path.join(cliAppDir, "custom-server.js"));
     console.log("✅ Copied custom-server.js\n");
+    // custom-server.js requires it at boot.
+    fs.copyFileSync(path.join(appDir, "server-drain.js"), path.join(cliAppDir, "server-drain.js"));
   } else {
     console.error("❌ custom-server.js not found — without it no request can be proven local,");
     console.error("   so the packaged CLI would demand an API key for its own dashboard and /v1.");

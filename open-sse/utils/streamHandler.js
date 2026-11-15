@@ -2,6 +2,7 @@
 import { STREAM_STALL_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 import { SSE_KEEPALIVE } from "./sseConstants.js";
+import { holdShutdown } from "./shutdownHold.js";
 
 const KEEPALIVE_BYTES = new TextEncoder().encode(SSE_KEEPALIVE);
 const LF = 10;
@@ -28,6 +29,12 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
   let draining = false;
   let drainTimer = null;
   let drainStarter = null;
+  // Keeps a graceful shutdown waiting while the drain reads the final usage.
+  let releaseShutdownHold = null;
+  const releaseHold = () => {
+    if (releaseShutdownHold) releaseShutdownHold();
+    releaseShutdownHold = null;
+  };
 
   // Only abnormal terminations are logged; normal completion is covered by "📊 done".
   // isError uses errorLine (always shown, ignores LOG_LEVEL) so failures survive quiet levels.
@@ -54,6 +61,7 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
     // The drain is over (final usage read, upstream ended or failed): drop the upstream.
     endDrain: () => {
       if (drainTimer) { clearTimeout(drainTimer); drainTimer = null; }
+      releaseHold();
       if (!draining) return;
       draining = false;
       abortController.abort();
@@ -67,9 +75,11 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
       if (drainOnDisconnect && drainMaxMs > 0) {
         // The pending slot is released now; only the read loop stays.
         draining = true;
+        releaseShutdownHold = holdShutdown();
         dbg("CTRL", `${provider}/${model} | disconnect=${reason} | draining upstream for final usage`);
         drainTimer = setTimeout(() => {
           drainTimer = null;
+          releaseHold();
           if (!draining) return;
           draining = false;
           dbg("CTRL", `${provider}/${model} | drain cap ${drainMaxMs}ms reached, aborting upstream`);
