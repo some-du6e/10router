@@ -1329,7 +1329,9 @@ describe("scrub threshold, image typing and the text-only consumers", () => {
 
   it("Claude tool_result text and Chat string tool results are scrubbed on every route", () => {
     const shotUrl = `data:image/png;base64,${"A".repeat(70_000)}`;
-    for (const content of [[{ type: "text", text: `saved ${shotUrl}` }], `saved ${shotUrl}`]) {
+    // The last one reaches the JSON fallback: a block with no text or image of its own
+    const searchResult = [{ type: "search_result", source: "https://example.com", title: "t", content: [{ type: "text", text: `saved ${shotUrl}` }] }];
+    for (const content of [[{ type: "text", text: `saved ${shotUrl}` }], `saved ${shotUrl}`, searchResult]) {
       const claudeBody = {
         model: CLAUDE_MODEL,
         max_tokens: 1024,
@@ -1350,20 +1352,30 @@ describe("scrub threshold, image typing and the text-only consumers", () => {
     expect(JSON.stringify(gemini)).not.toContain(shotUrl);
   });
 
-  it("a Chat tool message with a data URL in its text next to an image: no base64 in any text, on every target", () => {
-    const payload = "A".repeat(70_000);
-    const content = [{ type: "text", text: `log: data:image/png;base64,${payload}` }, imagePart(PNG_URL)];
-    for (const [target, model, creds] of [
+  it("a Chat tool message with a data URL in its text: no base64 in any text, on every target", () => {
+    const payload = "A".repeat(200_000);
+    const logText = `log: data:image/png;base64,${payload}`;
+    const contents = [
+      ["text next to an image", [{ type: "text", text: logText }, imagePart(PNG_URL)], true],
+      ["a string", logText, false],
+      ["a text-only array", [{ type: "text", text: logText }], false],
+    ];
+    // Codex providers use the openai-responses format, so it covers them too.
+    const targets = [
       [FORMATS.OPENAI, "gpt-x", null],
+      [FORMATS.OPENAI_RESPONSES, "gpt-x", null],
       [FORMATS.GEMINI, "gemini-x", null],
       [FORMATS.KIRO, CLAUDE_MODEL, {}],
       [FORMATS.OLLAMA, "ollama-x", null],
-    ]) {
-      const out = translateRequest(FORMATS.OPENAI, target, model, chatBody(structuredClone(content)), true, creds, null);
-      const json = JSON.stringify(out);
-      expect(json, target).not.toContain(payload);
-      expect(json, target).toContain(`log: ${MEDIA_OMITTED_TEXT.IMAGE}`);
-      expect(json, target).toContain(PNG_B64); // the real image still goes as an image
+    ];
+    for (const [shape, content, withImage] of contents) {
+      for (const [target, model, creds] of targets) {
+        const out = translateRequest(FORMATS.OPENAI, target, model, chatBody(structuredClone(content)), true, creds, null);
+        const json = JSON.stringify(out);
+        expect(json, `${shape} → ${target}`).not.toContain(payload);
+        expect(json, `${shape} → ${target}`).toContain(`log: ${MEDIA_OMITTED_TEXT.IMAGE}`);
+        if (withImage) expect(json, `${shape} → ${target}`).toContain(PNG_B64); // the real image still goes as an image
+      }
     }
   });
 

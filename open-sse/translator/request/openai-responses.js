@@ -9,7 +9,7 @@ import { FORMATS } from "../formats.js";
 import { normalizeResponsesInput } from "../formats/responsesApi.js";
 import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM, TOOL_TYPE, TOOL_CHOICE } from "../schema/index.js";
 import { isWireToolName, qualifyToolName } from "../concerns/toolNamespace.js";
-import { imagePartUrl, omittedText, responsesContentPartToChat, responsesOutputToChatContent, toolContentText } from "../concerns/toolContent.js";
+import { imagePartUrl, omittedText, responsesContentPartToChat, responsesOutputToChatContent, scrubInlineBase64, toolContentText } from "../concerns/toolContent.js";
 
 // Responses API enforces max 64 chars on call_id (#393)
 const MAX_CALL_ID_LEN = 64;
@@ -517,11 +517,12 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
     }
 
     // Convert tool results: a string, or with images the input_text / input_image
-    // array Responses takes as a tool output
+    // array Responses takes as a tool output. Text gets the same scrub as on
+    // every other target, so a screenshot's data: URL doesn't go out as text.
     if (msg.role === ROLE.TOOL) {
       const hasImages = Array.isArray(msg.content) && msg.content.some(c => c?.type === OPENAI_BLOCK.IMAGE_URL);
       const output = typeof msg.content === "string"
-        ? msg.content
+        ? scrubInlineBase64(msg.content)
         : hasImages
           ? msg.content
             .map(c => (c?.type === OPENAI_BLOCK.IMAGE_URL
@@ -529,8 +530,8 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
               : { type: RESPONSES_ITEM.INPUT_TEXT, text: toolContentText([c]) }))
             .filter(c => c.type !== RESPONSES_ITEM.INPUT_TEXT || c.text)
           : Array.isArray(msg.content)
-            ? msg.content.map(c => c.text || JSON.stringify(c)).join("")
-            : JSON.stringify(msg.content);
+            ? scrubInlineBase64(msg.content.map(c => c.text || JSON.stringify(c)).join(""))
+            : scrubInlineBase64(JSON.stringify(msg.content));
       result.input.push({
         type: RESPONSES_ITEM.FUNCTION_CALL_OUTPUT,
         call_id: clampCallId(msg.tool_call_id),
