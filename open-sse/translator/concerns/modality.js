@@ -92,19 +92,24 @@ function stripClaude(body, caps) {
   });
 }
 
-// OpenAI Responses input[].content[] (input_image / input_file).
+// OpenAI Responses input[].content[] and a tool call's array output[] (input_image / input_file).
+function stripResponsesParts(parts, caps, isLast) {
+  const removed = new Set();
+  const kept = parts.filter((b) => {
+    const cap = b?.type === "input_image" ? "vision" : b?.type === "input_file" ? "pdf" : null;
+    if (cap && caps[cap] === false) { removed.add(cap); return false; }
+    return true;
+  });
+  for (const cap of removed) kept.push({ type: "input_text", text: ph(cap, isLast) });
+  return kept;
+}
+
 function stripResponses(body, caps) {
   if (!Array.isArray(body.input)) return;
   const last = body.input.length - 1;
   body.input.forEach((item, i) => {
-    if (!Array.isArray(item.content)) return;
-    const removed = new Set();
-    item.content = item.content.filter((b) => {
-      const cap = b?.type === "input_image" ? "vision" : b?.type === "input_file" ? "pdf" : null;
-      if (cap && caps[cap] === false) { removed.add(cap); return false; }
-      return true;
-    });
-    for (const cap of removed) item.content.push({ type: "input_text", text: ph(cap, i === last) });
+    if (Array.isArray(item.content)) item.content = stripResponsesParts(item.content, caps, i === last);
+    if (Array.isArray(item.output)) item.output = stripResponsesParts(item.output, caps, i === last);
   });
 }
 

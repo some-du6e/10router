@@ -17,7 +17,9 @@ import {
   cleanJSONSchemaForAntigravity
 } from "../formats/gemini.js";
 import { deriveSessionId, toNumericSessionId } from "../../utils/sessionManager.js";
-import { ROLE, GEMINI_ROLE, OPENAI_BLOCK, CLAUDE_BLOCK } from "../schema/index.js";
+import { ROLE, GEMINI_ROLE, OPENAI_BLOCK, CLAUDE_BLOCK, DEFAULT_IMAGE_MIME } from "../schema/index.js";
+import { omittedText, scrubInlineBase64, splitToolContent } from "../concerns/toolContent.js";
+import { imageAttachedBelowText } from "../../config/mediaConfig.js";
 
 // Sanitize function names for Gemini API.
 // Gemini requires: starts with [a-zA-Z_], followed by [a-zA-Z0-9_.:\-], max 64 chars.
@@ -157,6 +159,8 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
 
           if (hasActualResponses) {
             const toolParts = [];
+            // Images from the results ride as inlineData after the functionResponses
+            const mediaParts = [];
             for (const fid of toolCallIds) {
               if (!toolResponses[fid]) continue;
 
@@ -171,6 +175,11 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
               }
 
               let resp = toolResponses[fid];
+              if (Array.isArray(resp)) {
+                const { text, images } = splitToolContent(resp);
+                resp = text;
+                mediaParts.push(...convertOpenAIContentToParts(images));
+              }
               let parsedResp = tryParseJSON(resp);
               if (parsedResp === null) {
                 parsedResp = { result: resp };
@@ -187,7 +196,7 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
               });
             }
             if (toolParts.length > 0) {
-              result.contents.push({ role: GEMINI_ROLE.USER, parts: toolParts });
+              result.contents.push({ role: GEMINI_ROLE.USER, parts: [...toolParts, ...mediaParts] });
             }
           }
         } else if (parts.length > 0) {
@@ -333,6 +342,8 @@ function wrapInCloudCodeEnvelopeForClaude(model, claudeRequest, credentials = nu
   if (claudeRequest.messages && Array.isArray(claudeRequest.messages)) {
     for (const msg of claudeRequest.messages) {
       const parts = [];
+      // Images from tool results, as inlineData after the functionResponses
+      const resultMedia = [];
 
       if (Array.isArray(msg.content)) {
         for (const block of msg.content) {
@@ -350,7 +361,14 @@ function wrapInCloudCodeEnvelopeForClaude(model, claudeRequest, credentials = nu
           } else if (block.type === CLAUDE_BLOCK.TOOL_RESULT) {
             let content = block.content;
             if (Array.isArray(content)) {
-              content = content.map(c => c.type === CLAUDE_BLOCK.TEXT ? c.text : JSON.stringify(c)).join("\n");
+              content = content.map((c) => {
+                if (c.type === CLAUDE_BLOCK.TEXT) return c.text;
+                if (c.type === CLAUDE_BLOCK.IMAGE && c.source?.type === "base64" && c.source.data) {
+                  resultMedia.push({ inlineData: { mime_type: c.source.media_type || DEFAULT_IMAGE_MIME, data: c.source.data } });
+                  return imageAttachedBelowText(resultMedia.length);
+                }
+                return c.type === CLAUDE_BLOCK.IMAGE ? omittedText(c) : scrubInlineBase64(JSON.stringify(c));
+              }).join("\n");
             }
             // Resolve the original tool name from the id — Gemini requires it to match the functionCall name
             const resolvedName = toolUseIdToName[block.tool_use_id]
@@ -368,6 +386,7 @@ function wrapInCloudCodeEnvelopeForClaude(model, claudeRequest, credentials = nu
       } else if (typeof msg.content === "string") {
         parts.push({ text: msg.content });
       }
+      parts.push(...resultMedia);
 
       if (parts.length > 0) {
         envelope.request.contents.push({

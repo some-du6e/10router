@@ -18,6 +18,7 @@ import {
   usesKiroNativeGptEffort
 } from "../../config/kiroConstants.js";
 import { parseDataUri } from "../concerns/image.js";
+import { splitToolContent } from "../concerns/toolContent.js";
 import { DEFAULT_IMAGE_MIME } from "../schema/index.js";
 import { ROLE, OPENAI_BLOCK, CLAUDE_BLOCK } from "../schema/index.js";
 import {
@@ -154,7 +155,8 @@ function convertMessages(messages, model) {
 
       // Handle tool role (from normalized)
       if (msg.role === ROLE.TOOL) {
-        const toolContent = typeof msg.content === "string" ? msg.content : "";
+        // Images in the content went to pendingImages above; this is the text.
+        const toolContent = splitToolContent(msg.content).text;
         pendingToolResults.push({
           toolUseId: msg.tool_call_id,
           status: msg.is_error || msg.status === "error" ? "error" : "success",

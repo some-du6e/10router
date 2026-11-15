@@ -9,6 +9,7 @@ import { FORMATS } from "../formats.js";
 import { normalizeResponsesInput } from "../formats/responsesApi.js";
 import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM, TOOL_TYPE, TOOL_CHOICE } from "../schema/index.js";
 import { isWireToolName, qualifyToolName } from "../concerns/toolNamespace.js";
+import { imagePartUrl, responsesContentPartToChat, responsesOutputToChatContent, toolContentText } from "../concerns/toolContent.js";
 
 // Responses API enforces max 64 chars on call_id (#393)
 const MAX_CALL_ID_LEN = 64;
@@ -84,17 +85,7 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
       }
 
       // Convert content: input_text → text, output_text → text, input_image → image_url
-      const content = Array.isArray(item.content)
-        ? item.content.map(c => {
-          if (c.type === RESPONSES_ITEM.INPUT_TEXT) return { type: OPENAI_BLOCK.TEXT, text: c.text };
-          if (c.type === RESPONSES_ITEM.OUTPUT_TEXT) return { type: OPENAI_BLOCK.TEXT, text: c.text };
-          if (c.type === RESPONSES_ITEM.INPUT_IMAGE) {
-            const url = c.image_url || c.file_id || "";
-            return { type: OPENAI_BLOCK.IMAGE_URL, image_url: { url, detail: c.detail || "auto" } };
-          }
-          return c;
-        })
-        : item.content;
+      const content = Array.isArray(item.content) ? item.content.map(responsesContentPartToChat) : item.content;
       const msg = { role: item.role, content };
       // Attach buffered reasoning to assistant turn (required by xiaomi-mimo + store=false continuity)
       if (item.role === ROLE.ASSISTANT) attachPendingReasoning(msg);
@@ -150,7 +141,7 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
       result.messages.push({
         role: ROLE.TOOL,
         tool_call_id: item.call_id,
-        content: typeof item.output === "string" ? item.output : JSON.stringify(item.output)
+        content: responsesOutputToChatContent(item.output)
       });
     }
     else if (itemType === RESPONSES_ITEM.ADDITIONAL_TOOLS) {
@@ -429,6 +420,12 @@ function buildReasoningInputItem(msg) {
   return item;
 }
 
+// Chat image_url { url, detail } (or a bare url string) → Responses input_image,
+// whose image_url is the url string.
+function chatImageToResponses(part) {
+  return { type: RESPONSES_ITEM.INPUT_IMAGE, image_url: imagePartUrl(part), detail: part.image_url?.detail || "auto" };
+}
+
 /**
  * Convert OpenAI Chat Completions to OpenAI Responses API format
  */
@@ -483,13 +480,7 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
         : Array.isArray(msg.content)
           ? msg.content.map(c => {
             if (c.type === OPENAI_BLOCK.TEXT) return { type: contentType, text: c.text };
-            // Convert Chat Completions image_url → Responses API input_image
-            // Responses API expects: { type: "input_image", image_url: "<url string>" }
-            // Chat Completions sends: { type: "image_url", image_url: { url: "...", detail: "..." } }
-            if (c.type === OPENAI_BLOCK.IMAGE_URL) {
-              const url = typeof c.image_url === "string" ? c.image_url : c.image_url?.url;
-              return { type: RESPONSES_ITEM.INPUT_IMAGE, image_url: url, detail: c.image_url?.detail || "auto" };
-            }
+            if (c.type === OPENAI_BLOCK.IMAGE_URL) return chatImageToResponses(c);
             if (c.type === RESPONSES_ITEM.INPUT_IMAGE) return c;
             // Serialize any unknown type (tool_use, tool_result, thinking, etc.) as text
             const text = c.text || c.content || JSON.stringify(c);
@@ -523,13 +514,21 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
       }
     }
 
-    // Convert tool results - output must be a string for Responses API
+    // Convert tool results: a string, or with images the input_text / input_image
+    // array Responses takes as a tool output
     if (msg.role === ROLE.TOOL) {
+      const hasImages = Array.isArray(msg.content) && msg.content.some(c => c?.type === OPENAI_BLOCK.IMAGE_URL);
       const output = typeof msg.content === "string"
         ? msg.content
-        : Array.isArray(msg.content)
-          ? msg.content.map(c => c.text || JSON.stringify(c)).join("")
-          : JSON.stringify(msg.content);
+        : hasImages
+          ? msg.content
+            .map(c => (c?.type === OPENAI_BLOCK.IMAGE_URL
+              ? chatImageToResponses(c)
+              : { type: RESPONSES_ITEM.INPUT_TEXT, text: toolContentText([c]) }))
+            .filter(c => c.type !== RESPONSES_ITEM.INPUT_TEXT || c.text)
+          : Array.isArray(msg.content)
+            ? msg.content.map(c => c.text || JSON.stringify(c)).join("")
+            : JSON.stringify(msg.content);
       result.input.push({
         type: RESPONSES_ITEM.FUNCTION_CALL_OUTPUT,
         call_id: clampCallId(msg.tool_call_id),

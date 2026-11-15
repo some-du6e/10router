@@ -4,6 +4,8 @@ import { adjustMaxTokens } from "../formats/maxTokens.js";
 import { encodeDataUri } from "../concerns/image.js";
 import { ROLE, OPENAI_BLOCK, CLAUDE_BLOCK } from "../schema/index.js";
 import { collapseTextParts } from "../concerns/message.js";
+import { imageAttachedBelowText } from "../../config/mediaConfig.js";
+import { scrubInlineBase64 } from "../concerns/toolContent.js";
 import { stripAnthropicBillingHeader } from "../../utils/claudeCloaking.js";
 
 // Convert Claude request to OpenAI format
@@ -208,12 +210,12 @@ function convertClaudeMessage(msg) {
               if (c?.type === CLAUDE_BLOCK.TEXT) texts.push(c.text);
               else if (c?.type === CLAUDE_BLOCK.IMAGE) {
                 const image = toImagePart(c);
-                if (image) { resultImages.push(image); texts.push(`[image ${resultImages.length} attached below]`); }
+                if (image) { resultImages.push(image); texts.push(imageAttachedBelowText(resultImages.length)); }
               }
             }
-            resultContent = texts.join("\n") || JSON.stringify(block.content);
+            resultContent = texts.join("\n") || scrubInlineBase64(JSON.stringify(block.content));
           } else if (block.content) {
-            resultContent = JSON.stringify(block.content);
+            resultContent = scrubInlineBase64(JSON.stringify(block.content));
           }
           if (block.is_error) resultContent = `Error: ${resultContent}`;
 

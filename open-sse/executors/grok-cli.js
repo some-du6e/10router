@@ -6,6 +6,7 @@ import {
   shouldRefreshCredentials,
 } from "../services/oauthCredentialManager.js";
 import { normalizeResponsesInput } from "../translator/formats/responsesApi.js";
+import { toolContentText } from "../translator/concerns/toolContent.js";
 import { getModelUpstreamId } from "../config/providerModels.js";
 import {
   GROK_CLI_CLIENT_IDENTIFIER,
@@ -438,7 +439,7 @@ export class GrokCliExecutor extends BaseExecutor {
         body.input = body.messages.map((m) => ({
           type: "message",
           role: m.role || "user",
-          content: typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? ""),
+          content: toolContentText(m.content),
         }));
         delete body.messages;
       } else {
