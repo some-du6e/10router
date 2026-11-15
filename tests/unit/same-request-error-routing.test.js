@@ -1,10 +1,12 @@
-// A request every key refuses the same way (a prompt longer than the model's
-// context window, a tool schema the upstream rejects) stops the account walk
-// once two keys gave the same 400/413/422 message, instead of costing one
-// upstream call per key before failing with that error anyway.
+// On a custom endpoint, a request every key refuses the same way (a prompt
+// longer than the model's context window, a tool schema the upstream rejects)
+// stops the account walk once two keys gave the same 400/413/422 message,
+// instead of costing one upstream call per key before failing with that error
+// anyway. Built-in providers keep walking every key.
 //
 // Runs the real account loop (handleChat → auth.js against a temporary
-// database); only the upstream call (handleChatCore) is stubbed.
+// database); only the upstream call (handleChatCore) is stubbed, returning what
+// chatCore builds from an upstream error (createErrorResult + formatProviderError).
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -47,23 +49,27 @@ const db = await import("@/lib/db/index.js");
 const { handleChat } = await import("@/sse/handlers/chat.js");
 const { normalizeErrorMessage, requestErrorSignature, createSameRequestErrorTally } = await import("open-sse/services/sameRequestError.js");
 const { SAME_REQUEST_ERROR_STOP_AFTER } = await import("open-sse/config/runtimeConfig.js");
+const { createErrorResult, formatProviderError } = await import("open-sse/utils/error.js");
 
 const MODEL = "big-model";
 const OTHER_MODEL = "big-model-mini";
-const STOP_LINE = "[FALLBACK] same request error from 2 accounts, not trying the rest";
+const TOO_LONG = "prompt is too long: 12345 tokens > 10000 maximum";
 // What chatCore returns when the executor's header timer fired (pinned in chat-core-failure-detail.test.js).
 const NO_HEADERS = "[504]: upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)";
+const stopLine = (account, status = 400) => `[FALLBACK] ⇄ ACC:${account} same request error (${status}) from 2 accounts, not trying the rest`;
+const stopped = () => warnings.some((w) => w.includes("not trying the rest"));
 let providerSeq = 0;
 let provider;
 
-// A failed upstream call as chatCore hands it back: "[status]: message", and the error body.
-function failure(status, message) {
-  return () => ({
-    success: false,
-    status,
-    error: `[${status}]: ${message}`,
-    response: new Response(JSON.stringify({ error: { message: `[${status}]: ${message}` } }), { status }),
-  });
+// A failed upstream call as chatCore hands it back: the upstream body (text or
+// raw JSON, as BaseExecutor.parseError passes it on) behind "[status]: ".
+function failure(status, body) {
+  return () => createErrorResult(status, formatProviderError(new Error(body), provider, MODEL, status));
+}
+
+// A JSON error body, as a Claude-format gateway sends it, with a per-call id.
+function jsonBody(message, requestId) {
+  return JSON.stringify({ type: "error", error: { type: "invalid_request_error", message }, request_id: requestId });
 }
 
 function noHeaders(stream) {
@@ -108,8 +114,8 @@ async function addKeys(count) {
   return ids;
 }
 
-function chat(model = `${provider}/${MODEL}`) {
-  return handleChat(new Request("http://localhost/v1/chat/completions", {
+function chat(model = `${provider}/${MODEL}`, handler = handleChat) {
+  return handler(new Request("http://localhost/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model, stream: false, messages: [{ role: "user", content: "fix the bug" }] }),
@@ -124,61 +130,94 @@ async function lockEnd(id) {
 }
 
 describe("normalizing a request error", () => {
-  it("collapses digits, case and whitespace", () => {
-    expect(normalizeErrorMessage("Input too large:   1353431 units\n> 1000000")).toBe("input too large: # units > #");
-    expect(normalizeErrorMessage("too long: 1353431")).toBe(normalizeErrorMessage("too long: 1353500"));
+  it("collapses digits, case and whitespace, and drops chatCore's status prefix", () => {
+    expect(normalizeErrorMessage("[400]: Prompt is too long:   12345 tokens\n> 10000 maximum")).toBe("prompt is too long: # tokens > # maximum");
+    expect(normalizeErrorMessage("too long: 12345")).toBe(normalizeErrorMessage("too long: 12399"));
   });
 
-  it("cuts the message to 200 characters", () => {
-    expect(normalizeErrorMessage("x".repeat(500))).toHaveLength(200);
-  });
-
-  it("reads an error object as its JSON", () => {
-    expect(normalizeErrorMessage({ error: { message: "Tool definition rejected" } })).toBe('{"error":{"message":"tool definition rejected"}}');
+  it("reads a JSON body's message, so a per-call request id doesn't count", () => {
+    const a = `[400]: ${jsonBody(TOO_LONG, "req_placeholder_aaaa")}`;
+    const b = `[400]: ${jsonBody("prompt is too long: 12399 tokens > 10000 maximum", "req_placeholder_bbbb")}`;
+    expect(normalizeErrorMessage(a)).toBe("prompt is too long: # tokens > # maximum");
+    expect(normalizeErrorMessage(a)).toBe(normalizeErrorMessage(b));
+    // error.message, then message, then error, as parseUpstreamError reads them.
+    expect(normalizeErrorMessage('{"message":"Unknown field","id":"x1"}')).toBe("unknown field");
+    expect(normalizeErrorMessage('{"error":"Unknown field","id":"x1"}')).toBe("unknown field");
+    expect(normalizeErrorMessage('{"id":"x1"}')).toBe('{"id":"x#"}');
     expect(normalizeErrorMessage(undefined)).toBe("");
   });
 
-  it("counts only 400, 413 and 422, and not one about the key or a limit", () => {
+  it("doesn't let two messages that differ late in the text compare equal", () => {
+    const prefix = "x".repeat(500);
+    expect(normalizeErrorMessage(`${prefix} field a`)).not.toBe(normalizeErrorMessage(`${prefix} field b`));
+  });
+
+  it("counts the errors every key would give", () => {
+    expect(requestErrorSignature(400, `[400]: ${TOO_LONG}`)).not.toBeNull();
+    expect(requestErrorSignature(400, "[400]: maximum context length is 10000 tokens, the request has 12345")).not.toBeNull();
+    expect(requestErrorSignature(400, "[400]: tools.0.input_schema: schema rejected")).not.toBeNull();
+  });
+
+  it("counts only 400, 413 and 422, and not one about the key, a limit or one model", () => {
     for (const status of [400, 413, 422]) expect(requestErrorSignature(status, "tool definition rejected")).not.toBeNull();
     for (const status of [401, 403, 404, 429, 500, 502, 503, 504]) expect(requestErrorSignature(status, "tool definition rejected")).toBeNull();
     expect(requestErrorSignature(400, "rate limit exceeded")).toBeNull();
     expect(requestErrorSignature(400, "invalid api key")).toBeNull();
+    expect(requestErrorSignature(400, "insufficient quota")).toBeNull();
+    expect(requestErrorSignature(400, "key limit exceeded for today")).toBeNull();
+    expect(requestErrorSignature(400, "the model example-model is not enabled for this key")).toBeNull();
+    expect(requestErrorSignature(400, "missing required scopes: chat")).toBeNull();
   });
 
   it("stops at the configured count of distinct accounts", () => {
     expect(SAME_REQUEST_ERROR_STOP_AFTER).toBe(2);
     const tally = createSameRequestErrorTally();
+    expect(tally.stopAfter).toBe(2);
     expect(tally.note("a", 400, "too long: 1")).toBe(false);
     // The same account again is still one account.
     expect(tally.note("a", 400, "too long: 2")).toBe(false);
     expect(tally.note("b", 422, "too long: 3")).toBe(false);
     expect(tally.note("b", 400, "too long: 4")).toBe(true);
     expect(createSameRequestErrorTally(0).note("a", 400, "x")).toBe(false);
+    expect(createSameRequestErrorTally(1).note("a", 400, "x")).toBe(true);
   });
 });
 
 describe("the same request error from two accounts", () => {
   it("stops after 2 of 5 keys and answers with the upstream's 400", async () => {
     const keys = await addKeys(5);
-    upstream.script = Array(5).fill(failure(400, "input too large: 12345 units"));
+    upstream.script = Array(5).fill(failure(400, TOO_LONG));
 
     const res = await chat();
     expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
     expect(res.status).toBe(400);
-    expect(await errorOf(res)).toBe("[400]: input too large: 12345 units");
-    expect(warnings).toContain(STOP_LINE);
+    expect(await errorOf(res)).toBe(`[400]: ${TOO_LONG}`);
+    expect(warnings).toContain(stopLine("key-2"));
     // A custom endpoint locks no key for a request error, as before.
     for (const id of keys) expect(await lockEnd(id)).toBe(0);
   });
 
   it("counts the same message with different numbers as the same", async () => {
     const keys = await addKeys(5);
-    upstream.script = [failure(400, "input too large: 1353431 units"), failure(400, "input too large: 1353500 units")];
+    upstream.script = [failure(400, TOO_LONG), failure(400, "prompt is too long: 12399 tokens > 10000 maximum")];
 
     const res = await chat();
     expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
     expect(res.status).toBe(400);
-    expect(await errorOf(res)).toBe("[400]: input too large: 1353500 units");
+    expect(await errorOf(res)).toBe("[400]: prompt is too long: 12399 tokens > 10000 maximum");
+  });
+
+  it("stops on a JSON body with the same message and a different request id", async () => {
+    const keys = await addKeys(5);
+    upstream.script = [
+      failure(400, jsonBody(TOO_LONG, "req_placeholder_aaaa")),
+      failure(400, jsonBody(TOO_LONG, "req_placeholder_bbbb")),
+      failure(400, jsonBody(TOO_LONG, "req_placeholder_cccc")),
+    ];
+
+    const res = await chat();
+    expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
+    expect(res.status).toBe(400);
   });
 
   it("stops the same way on a 413 or a 422", async () => {
@@ -186,7 +225,7 @@ describe("the same request error from two accounts", () => {
       provider = `openai-compatible-gateway-${++providerSeq}`;
       upstream.calls = [];
       const keys = await addKeys(5);
-      upstream.script = Array(5).fill(failure(status, "payload rejected: 98765 bytes"));
+      upstream.script = Array(5).fill(failure(status, "payload rejected: 12345 bytes"));
 
       const res = await chat();
       expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
@@ -198,42 +237,51 @@ describe("the same request error from two accounts", () => {
     const keys = await addKeys(5);
     upstream.script = [
       failure(400, "tool definition rejected"),
-      failure(400, "model not enabled here"),
       failure(400, "unknown field in request"),
       failure(400, "unsupported option"),
+      failure(400, "bad message order"),
     ];
 
     const res = await chat();
     expect(upstream.calls).toEqual(calls(keys));
     expect(res.status).toBe(200);
-    expect(warnings).not.toContain(STOP_LINE);
+    expect(stopped()).toBe(false);
   });
 
-  it("doesn't count a 429 between the two", async () => {
+  it("keeps the tally through a 429 between the two", async () => {
     const keys = await addKeys(5);
     upstream.script = [
-      failure(400, "input too large: 12345 units"),
+      failure(400, TOO_LONG),
       failure(429, "rate limit exceeded"),
-      failure(400, "input too large: 12399 units"),
+      failure(400, "prompt is too long: 12399 tokens > 10000 maximum"),
     ];
 
     const res = await chat();
     expect(upstream.calls).toEqual(calls(keys.slice(0, 3)));
     expect(res.status).toBe(400);
+    expect(warnings).toContain(stopLine("key-3"));
   });
 
-  it("doesn't count a 400 that names a rate limit", async () => {
-    const keys = await addKeys(5);
-    upstream.script = Array(5).fill(failure(400, "rate limit exceeded"));
+  for (const [label, message] of [
+    ["names a rate limit", "rate limit exceeded"],
+    ["reads like a quota (isLimitError)", "insufficient quota"],
+    ["names a limit on the key", "key limit exceeded for today"],
+    ["refuses the model for this key", "the model example-model is not enabled for this key"],
+  ]) {
+    it(`keeps walking on a 400 that ${label}`, async () => {
+      const keys = await addKeys(5);
+      upstream.script = Array(5).fill(failure(400, message));
 
-    await chat();
-    expect(upstream.calls).toEqual(calls(keys));
-  });
+      await chat();
+      expect(upstream.calls).toEqual(calls(keys));
+      expect(stopped()).toBe(false);
+    });
+  }
 
   it("lets a combo move on to its next model", async () => {
     const keys = await addKeys(5);
     combos.set("big-combo", [`${provider}/${MODEL}`, `${provider}/${OTHER_MODEL}`]);
-    upstream.script = Array(2).fill(failure(400, "input too large: 12345 units"));
+    upstream.script = Array(2).fill(failure(400, TOO_LONG));
 
     const res = await chat("big-combo");
     expect(res.status).toBe(200);
@@ -241,7 +289,7 @@ describe("the same request error from two accounts", () => {
   });
 });
 
-describe("errors that don't stop the walk", () => {
+describe("where the walk doesn't stop", () => {
   for (const [label, status, message] of [
     ["401", 401, "invalid credentials"],
     ["403", 403, "not authorized"],
@@ -255,7 +303,7 @@ describe("errors that don't stop the walk", () => {
       const res = await chat();
       expect(upstream.calls).toEqual(calls(keys));
       expect(res.status).toBe(status);
-      expect(warnings).not.toContain(STOP_LINE);
+      expect(stopped()).toBe(false);
     });
   }
 
@@ -266,6 +314,40 @@ describe("errors that don't stop the walk", () => {
     const res = await chat();
     expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
     expect(res.status).toBe(504);
-    expect(warnings).not.toContain(STOP_LINE);
+    expect(stopped()).toBe(false);
+  });
+
+  it("tries every key of a built-in provider", async () => {
+    provider = `builtin-example-${++providerSeq}`;
+    const keys = await addKeys(5);
+    upstream.script = Array(5).fill(failure(400, TOO_LONG));
+
+    const res = await chat();
+    expect(upstream.calls).toEqual(calls(keys));
+    expect(res.status).toBe(400);
+    expect(stopped()).toBe(false);
+  });
+
+  describe("with SAME_REQUEST_ERROR_STOP_AFTER=0", () => {
+    let handleChatOff;
+    beforeAll(async () => {
+      vi.stubEnv("SAME_REQUEST_ERROR_STOP_AFTER", "0");
+      vi.resetModules();
+      ({ handleChat: handleChatOff } = await import("@/sse/handlers/chat.js"));
+    });
+    afterAll(() => {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    });
+
+    it("tries every key, as before", async () => {
+      const keys = await addKeys(5);
+      upstream.script = Array(5).fill(failure(400, TOO_LONG));
+
+      const res = await chat(undefined, handleChatOff);
+      expect(upstream.calls).toEqual(calls(keys));
+      expect(res.status).toBe(400);
+      expect(stopped()).toBe(false);
+    });
   });
 });

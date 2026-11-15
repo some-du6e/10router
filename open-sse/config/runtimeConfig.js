@@ -93,16 +93,16 @@ export const CACHE_AFFINITY = {
   jitterMs: 250,
 };
 
-// A request error every key would refuse (a prompt longer than the model's
-// context window, a tool schema the upstream rejects) stops the account walk
-// once this many accounts of one model answered it with the same message
-// (services/sameRequestError.ts), instead of trying every key.
-// Env: SAME_REQUEST_ERROR_STOP_AFTER (0 tries every key, as before).
+// On a custom (OpenAI-/Anthropic-compatible) endpoint, a request error every
+// key would refuse (a prompt longer than the model's context window, a tool
+// schema the upstream rejects) stops the account walk once this many accounts
+// of one model answered it with the same message (services/sameRequestError.ts),
+// instead of trying every key. 1 stops at the first such error.
+// Env: SAME_REQUEST_ERROR_STOP_AFTER (0 tries every key, as before; anything
+// that isn't a whole number falls back to 2).
 export const SAME_REQUEST_ERROR_STOP_AFTER = envInt("SAME_REQUEST_ERROR_STOP_AFTER", 2);
 // The statuses it counts. 401/403/404/429, 5xx and header timeouts never count.
 export const SAME_REQUEST_ERROR_STATUSES = new Set([HTTP_STATUS.BAD_REQUEST, HTTP_STATUS.PAYLOAD_TOO_LARGE, HTTP_STATUS.UNPROCESSABLE_ENTITY]);
-// Messages are compared on this many characters, after normalizing.
-export const SAME_REQUEST_ERROR_MAX_CHARS = 200;
 
 // Inter-chunk stall timeout (once tokens are flowing). Generous headroom so
 // slow reasoning models aren't aborted mid-stream. Env: STREAM_STALL_TIMEOUT_MS.
