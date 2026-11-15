@@ -161,15 +161,19 @@ export function estimatePromptTokens(body) {
 
 /**
  * How much longer this request may wait for a warm key, or 0 when it may not:
- * a small request rebuilds its cache cheaply elsewhere. `promptTokens` is
- * called only when there is time left to wait.
- * @param {{ waitedMs?: number, promptTokens: () => number }} args
+ * a small request rebuilds its cache cheaply elsewhere, and a very large one
+ * may wait longer (largeMaxWaitMs). 0 too once the request has waited
+ * maxWarmAttempts times. A maxWaitMs of 0 turns waiting off.
+ * @param {{ waitedMs?: number, waits?: number, promptTokens: () => number }} args
  * @returns {number}
  */
-export function warmWaitBudget({ waitedMs = 0, promptTokens }) {
-  const left = CACHE_AFFINITY.maxWaitMs - waitedMs;
-  if (!(left > 0)) return 0;
-  return promptTokens() >= CACHE_AFFINITY.minPromptTokens ? left : 0;
+export function warmWaitBudget({ waitedMs = 0, waits = 0, promptTokens }) {
+  const { maxWaitMs, largeMaxWaitMs, minPromptTokens, largePromptTokens, maxWarmAttempts } = CACHE_AFFINITY;
+  if (!(maxWaitMs > 0) || !(waits < maxWarmAttempts)) return 0;
+  const tokens = promptTokens();
+  if (!(tokens >= minPromptTokens)) return 0;
+  const cap = tokens >= largePromptTokens ? Math.max(maxWaitMs, largeMaxWaitMs) : maxWaitMs;
+  return Math.max(0, cap - waitedMs);
 }
 
 /**
@@ -186,7 +190,7 @@ export function warmJitterMs(random = Math.random) {
  * When to retry a warm key locked until `lockEndMs`: just after the lock
  * (slack + jitter), but no later than `budgetMs` from now. Null when even the
  * lock plus its slack doesn't fit the budget. Keeps a request's waits within
- * CACHE_AFFINITY.maxWaitMs in all.
+ * its wait budget (warmWaitBudget) in all.
  * @param {number} lockEndMs
  * @param {number} budgetMs
  * @param {number} [jitterMs]

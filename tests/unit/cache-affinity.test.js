@@ -299,6 +299,89 @@ describe("cache affinity routing", () => {
     expect(upstream.calls).toEqual([a, a, a, b]);
   });
 
+  describe("a very large prompt", () => {
+    // BIG_PROMPT (~2.4k tokens) counts as very large here, MEDIUM_PROMPT (~1.5k) doesn't.
+    // No jitter, so every wait is the lock plus its slack.
+    beforeEach(() => {
+      Object.assign(CACHE_AFFINITY, { maxWaitMs: 400, largePromptTokens: 2000, largeMaxWaitMs: 1500, jitterMs: 0 });
+    });
+    const MEDIUM_PROMPT = "You are a coding agent. ".repeat(250);
+    // The upstream's backoff on the warm key: 2s, 4s, 8s scaled down.
+    const escalating = () => [limited(100), limited(200), limited(400)];
+
+    it("stays on its warm key through 429s that add up past the normal cap", async () => {
+      const { a } = await addKeys("a", "b");
+      await chat(body());
+
+      upstream.script = escalating();
+      expect((await chat(body())).status).toBe(200);
+      expect(upstream.calls).toEqual([a, a, a, a, a]);
+    });
+
+    it("waits out a lock another request set that outlasts the normal cap", async () => {
+      const { a } = await addKeys("a", "b");
+      await chat(body());
+      await lockForLimit(a, 800);
+
+      expect((await chat(body())).status).toBe(200);
+      expect(upstream.calls).toEqual([a, a]);
+      expect(cacheWaits()).toHaveLength(1);
+    });
+
+    it("moves on once its waits add up past the larger cap", async () => {
+      const { a, b } = await addKeys("a", "b");
+      await chat(body());
+
+      // Waits of 125, 225 and 425ms leave 725ms; the 800ms lock doesn't fit.
+      upstream.script = [...escalating(), limited(800)];
+      expect((await chat(body())).status).toBe(200);
+      expect(upstream.calls).toEqual([a, a, a, a, a, b]);
+    });
+
+    it("moves on after maxWarmAttempts waits when the lock keeps resetting", async () => {
+      Object.assign(CACHE_AFFINITY, { maxWarmAttempts: 3 });
+      const { a, b } = await addKeys("a", "b");
+      await chat(body());
+
+      // Every lock is the shortest, as when other requests' successes keep resetting the backoff.
+      upstream.script = Array.from({ length: 4 }, () => limited(100));
+      expect((await chat(body())).status).toBe(200);
+      expect(upstream.calls).toEqual([a, a, a, a, a, b]);
+      expect(cacheWaits()).toHaveLength(3);
+    });
+
+    it("counts waits for a lock another request set toward maxWarmAttempts", async () => {
+      Object.assign(CACHE_AFFINITY, { maxWarmAttempts: 1 });
+      const { a, b } = await addKeys("a", "b");
+      await chat(body());
+      await lockForLimit(a, 100);
+
+      upstream.script = [limited(100)];
+      expect((await chat(body())).status).toBe(200);
+      expect(upstream.calls).toEqual([a, a, b]);
+      expect(cacheWaits()).toHaveLength(1);
+    });
+
+    it("moves on once the lock outlasts the larger cap", async () => {
+      const { a, b } = await addKeys("a", "b");
+      await chat(body());
+
+      upstream.script = [limited(2_000)];
+      expect((await chat(body())).status).toBe(200);
+      expect(upstream.calls).toEqual([a, a, b]);
+      expect(cacheWaits()).toHaveLength(0);
+    });
+
+    it("leaves a smaller prompt on the normal cap", async () => {
+      const { a, b } = await addKeys("a", "b");
+      await chat(body({ prompt: MEDIUM_PROMPT }));
+
+      upstream.script = escalating();
+      expect((await chat(body({ prompt: MEDIUM_PROMPT }))).status).toBe(200);
+      expect(upstream.calls).toEqual([a, a, a, a, b]);
+    });
+  });
+
   it("moves to the next key for a request too small for a rebuild to matter", async () => {
     const { a, b } = await addKeys("a", "b");
     const small = body({ prompt: "Be brief." });
@@ -819,12 +902,32 @@ describe("wait sizing", () => {
   it("gives a small request no wait budget", () => {
     expect(affinity.warmWaitBudget({ waitedMs: 0, promptTokens: () => 999 })).toBe(0);
     expect(affinity.warmWaitBudget({ waitedMs: 400, promptTokens: () => 1000 })).toBe(600);
-    expect(affinity.warmWaitBudget({ waitedMs: 1000, promptTokens: () => 1e9 })).toBe(0);
+    expect(affinity.warmWaitBudget({ waitedMs: 1000, promptTokens: () => 1000 })).toBe(0);
+  });
+
+  it("gives a very large request the larger budget, unless waiting is off", () => {
+    Object.assign(CACHE_AFFINITY, { largePromptTokens: 5000, largeMaxWaitMs: 3000 });
+    expect(affinity.warmWaitBudget({ waitedMs: 0, promptTokens: () => 4999 })).toBe(1000);
+    expect(affinity.warmWaitBudget({ waitedMs: 1000, promptTokens: () => 5000 })).toBe(2000);
+    expect(affinity.warmWaitBudget({ waitedMs: 3000, promptTokens: () => 1e9 })).toBe(0);
+    // A larger cap set below the normal one doesn't shrink it.
+    Object.assign(CACHE_AFFINITY, { largeMaxWaitMs: 500 });
+    expect(affinity.warmWaitBudget({ waitedMs: 0, promptTokens: () => 1e9 })).toBe(1000);
+    Object.assign(CACHE_AFFINITY, { maxWaitMs: 0, largeMaxWaitMs: 3000 });
+    expect(affinity.warmWaitBudget({ waitedMs: 0, promptTokens: () => 1e9 })).toBe(0);
+  });
+
+  it("gives no budget once the request has waited maxWarmAttempts times", () => {
+    Object.assign(CACHE_AFFINITY, { maxWarmAttempts: 2 });
+    expect(affinity.warmWaitBudget({ waitedMs: 0, waits: 1, promptTokens: () => 1000 })).toBe(1000);
+    expect(affinity.warmWaitBudget({ waitedMs: 0, waits: 2, promptTokens: () => 1000 })).toBe(0);
+    expect(affinity.warmWaitBudget({ waitedMs: 0, waits: 2, promptTokens: () => 1e9 })).toBe(0);
   });
 });
 
 describe("env settings", () => {
-  const NAMES = ["CACHE_AFFINITY_TTL_MS", "CACHE_AFFINITY_MAX_WAIT_MS", "CACHE_AFFINITY_MIN_TOKENS"];
+  const NAMES = ["CACHE_AFFINITY_TTL_MS", "CACHE_AFFINITY_MAX_WAIT_MS", "CACHE_AFFINITY_MIN_TOKENS",
+    "CACHE_AFFINITY_LARGE_TOKENS", "CACHE_AFFINITY_LARGE_MAX_WAIT_MS", "CACHE_AFFINITY_MAX_WARM_ATTEMPTS"];
   const saved = Object.fromEntries(NAMES.map((n) => [n, process.env[n]]));
   afterEach(() => {
     for (const n of NAMES) {
@@ -861,6 +964,28 @@ describe("env settings", () => {
       const { config } = await fresh();
       expect(config).toMatchObject({ ttlMs: 5 * 60 * 1000, maxWaitMs: 10 * 1000 });
     }
+  });
+
+  it("waits up to a minute for a prompt of 200k tokens or more, unless set otherwise", async () => {
+    let { config } = await fresh();
+    expect(config).toMatchObject({ largePromptTokens: 200 * 1000, largeMaxWaitMs: 60 * 1000 });
+    Object.assign(process.env, { CACHE_AFFINITY_LARGE_TOKENS: "100000", CACHE_AFFINITY_LARGE_MAX_WAIT_MS: "30000" });
+    ({ config } = await fresh());
+    expect(config).toMatchObject({ largePromptTokens: 100 * 1000, largeMaxWaitMs: 30 * 1000 });
+    Object.assign(process.env, { CACHE_AFFINITY_LARGE_TOKENS: "1e5", CACHE_AFFINITY_LARGE_MAX_WAIT_MS: "1m" });
+    ({ config } = await fresh());
+    expect(config).toMatchObject({ largePromptTokens: 200 * 1000, largeMaxWaitMs: 60 * 1000 });
+  });
+
+  it("waits at most 5 times per request, unless set otherwise", async () => {
+    let { config } = await fresh();
+    expect(config.maxWarmAttempts).toBe(5);
+    process.env.CACHE_AFFINITY_MAX_WARM_ATTEMPTS = "2";
+    ({ config } = await fresh());
+    expect(config.maxWarmAttempts).toBe(2);
+    process.env.CACHE_AFFINITY_MAX_WARM_ATTEMPTS = "two";
+    ({ config } = await fresh());
+    expect(config.maxWarmAttempts).toBe(5);
   });
 
   it("keeps the token threshold for a blank or non-decimal value", async () => {
