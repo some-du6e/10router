@@ -27,6 +27,8 @@ import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActi
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS, NON_STREAM_EARLY_HEADERS_MS, STREAM_EARLY_HEADERS_MS } from "open-sse/config/runtimeConfig.js";
 import { isRequestError } from "open-sse/services/accountFallback.js";
+import { createSameRequestErrorTally } from "open-sse/services/sameRequestError.js";
+import { SAME_REQUEST_ERROR_STOP_AFTER } from "open-sse/config/runtimeConfig.js";
 import { checkModelHang, noteHeadersTimeout, noteModelServed, noteProbeBudget, releaseProbe } from "open-sse/services/modelHang.js";
 import { HEADERS_TIMEOUT } from "open-sse/config/errorConfig.js";
 import { detectFormatByEndpoint, FORMATS } from "open-sse/translator/formats.js";
@@ -718,6 +720,8 @@ async function routeSingleModelChat(
   let lockedUntil = 0;
   // Keys tried since this request's first header timeout, that one included.
   let keysSinceHeadersTimeout = 0;
+  // 400/413/422 messages per account: the same one from enough keys is the request's fault.
+  const sameRequestErrors = createSameRequestErrorTally();
 
   while (true) {
     // The client is gone: try no more accounts, and lock none for its abort.
@@ -930,6 +934,11 @@ async function routeSingleModelChat(
         const errorMsg = summarizeAccountFailures(provider, model, accountFailures);
         log.warn("CHAT", `${errorMsg} (no more keys for this request)`);
         return { success: false, status: HTTP_STATUS.GATEWAY_TIMEOUT, error: errorMsg, limited: false, response: errorResponse(HTTP_STATUS.GATEWAY_TIMEOUT, errorMsg) };
+      }
+      // Two keys refused this request with the same message: the rest would too.
+      if (sameRequestErrors.note(credentials.connectionId, result.status, result.error)) {
+        log.warn("FALLBACK", `same request error from ${SAME_REQUEST_ERROR_STOP_AFTER} accounts, not trying the rest`);
+        return { ...result, limited: false, response: result.response || errorResponse(result.status as number, result.error || "Bad request") };
       }
       // A warm key just rate-limited for a short while stays in play: the next
       // selection waits for it (or picks another warm key) rather than rebuilding
