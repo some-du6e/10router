@@ -247,6 +247,21 @@ describe("drain: a budgeted key's client hangs up mid-stream", () => {
     expect(completed[0][3]).toEqual({ aborted: true });
   });
 
+  it("holds a graceful shutdown open while it reads, and lets go when the read loop ends", async () => {
+    const work = () => globalThis[Symbol.for("10router.server.backgroundWork")]?.count ?? 0;
+    const before = work();
+    const { up, out, completed } = pipe({ drain: true });
+    const reader = out.getReader();
+    up.push(messageStart + textBlock("hold the shutdown"));
+    await readUntil(reader, "hold the shutdown");
+    await reader.cancel();
+    await tick();
+    expect(work()).toBe(before + 1);
+    up.push(messageDelta(12) + messageStop);
+    await vi.waitFor(() => expect(completed).toHaveLength(1));
+    await vi.waitFor(() => expect(work()).toBe(before));
+  });
+
   it("starts from a hang-up seen on the client signal, not just a cancelled body", async () => {
     const { up, out, completed, controller } = pipe({ drain: true });
     const reader = out.getReader();

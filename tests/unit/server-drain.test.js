@@ -10,23 +10,31 @@ const require = createRequire(import.meta.url);
 const {
   BACKGROUND_WORK_KEY,
   DEFAULT_DRAIN_TIMEOUT_MS,
+  DUPLICATE_SIGNAL_WINDOW_MS,
+  LISTENER_WAIT_MS,
   MAX_DRAIN_TIMEOUT_MS,
   createDrain,
   gateShutdownSignals,
+  installShutdownDrain,
   isLongLived,
   isModelTraffic,
   parseDrainTimeout,
 } = require("../../server-drain.js");
 
 const servers = [];
+const agents = [];
 
 afterEach(async () => {
   delete globalThis[BACKGROUND_WORK_KEY];
+  for (const agent of agents.splice(0)) agent.destroy();
   for (const server of servers.splice(0)) {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(() => resolve()));
   }
 });
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const work = () => globalThis[BACKGROUND_WORK_KEY]?.count ?? 0;
 
 const newDrain = (options = {}) => {
   const exit = vi.fn();
@@ -35,10 +43,10 @@ const newDrain = (options = {}) => {
   return { drain, exit, logs };
 };
 
-// GET /v1/slow?id=x (and any other path ending in /slow?id=x) sends one SSE
-// event, then waits for release(x) before the last one, like a model stream.
-// A POST reads its whole body first. Anything else answers "ok" at once.
-async function startServer(drain) {
+// GET <any>/slow?id=x (or /stream) sends one SSE event, then waits for
+// release(x) before the last one, like a model stream. A POST reads its whole
+// body first. Anything else answers "ok" at once.
+async function startServer(drain, { requestTimeout } = {}) {
   const gates = new Map();
   const gate = (id) => {
     if (!gates.has(id)) {
@@ -69,6 +77,7 @@ async function startServer(drain) {
     }
     res.end("ok");
   });
+  if (requestTimeout !== undefined) server.requestTimeout = requestTimeout;
   drain.addServer(server);
   servers.push(server);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -77,13 +86,13 @@ async function startServer(drain) {
 
 // Starts a GET; `started` resolves on the first bytes, `body` with the rest
 // (`complete: false` when the connection is cut).
-function startStream(port, path) {
+function startStream(port, path, { agent = false } = {}) {
   let onStarted;
   const started = new Promise((resolve) => { onStarted = resolve; });
   let request;
   const body = new Promise((resolve) => {
     let text = "";
-    request = http.get({ host: "127.0.0.1", port, path, agent: false }, (res) => {
+    request = http.get({ host: "127.0.0.1", port, path, agent }, (res) => {
       res.setEncoding("utf8");
       res.on("data", (chunk) => { text += chunk; onStarted(); });
       res.on("end", () => resolve({ text, complete: true }));
@@ -92,7 +101,7 @@ function startStream(port, path) {
     });
     request.on("error", () => resolve({ text, complete: false }));
   });
-  return { started, body, abort: () => request.destroy() };
+  return { started, body, abort: () => request.destroy(), request };
 }
 
 function connect(port) {
@@ -112,6 +121,18 @@ function get(port, path) {
       res.on("end", () => resolve(text));
     }).on("error", reject);
   });
+}
+
+// A raw POST whose body arrives in pieces; returns the socket and what it read.
+async function startUpload(port, length) {
+  const socket = await connect(port);
+  let raw = "";
+  socket.setEncoding("utf8");
+  socket.on("data", (chunk) => { raw += chunk; });
+  socket.on("error", () => {});
+  const closed = new Promise((resolve) => socket.on("close", resolve));
+  socket.write(`POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${length}\r\nConnection: close\r\n\r\n`);
+  return { socket, closed, read: () => raw };
 }
 
 describe("server drain on shutdown", () => {
@@ -150,7 +171,7 @@ describe("server drain on shutdown", () => {
 
     release("a");
     await a.body;
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    await sleep(60);
     expect(drain.inflight).toBe(1);
     expect(exit).not.toHaveBeenCalled();
 
@@ -167,7 +188,8 @@ describe("server drain on shutdown", () => {
     await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0, { reason: "drained", open: 0, signal: "SIGTERM" }), { timeout: 500 });
   });
 
-  it("closes an idle keep-alive socket when the drain starts", async () => {
+  // server.close() does this on Node 19+; the drain relies on it.
+  it("closes a keep-alive socket that is idle when the drain starts", async () => {
     const { drain } = newDrain();
     const { port, release } = await startServer(drain);
     const slow = startStream(port, "/v1/slow");
@@ -185,6 +207,30 @@ describe("server drain on shutdown", () => {
     await closed;
     release();
     await slow.body;
+  });
+
+  it("closes a keep-alive socket that goes idle partway through the drain", async () => {
+    const { drain } = newDrain();
+    const { port, release } = await startServer(drain);
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+    agents.push(agent);
+
+    const other = startStream(port, "/v1/slow?id=other");
+    const kept = startStream(port, "/v1/slow?id=kept", { agent });
+    await Promise.all([other.started, kept.started]);
+    const keptSocket = await new Promise((resolve) => {
+      if (kept.request.socket) resolve(kept.request.socket);
+      else kept.request.once("socket", resolve);
+    });
+    const closed = new Promise((resolve) => keptSocket.once("close", resolve));
+
+    drain.start("SIGTERM");
+    release("kept");
+    expect((await kept.body).complete).toBe(true);
+    // Back in the agent's pool, idle; the drain must close it, not keepAliveTimeout (5 s).
+    await Promise.race([closed, sleep(1000).then(() => { throw new Error("idle socket left open"); })]);
+    release("other");
+    await other.body;
   });
 
   it("answers a request on an open keep-alive socket with 503 + Retry-After + Connection: close", async () => {
@@ -239,7 +285,7 @@ describe("server drain on shutdown", () => {
     drain.start("SIGTERM");
     expect(drain.inflight).toBe(1);
     expect(await usage.body).toEqual({ text: "data: first\n\n", complete: false });
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    await sleep(60);
     expect(exit).not.toHaveBeenCalled();
 
     release();
@@ -247,22 +293,51 @@ describe("server drain on shutdown", () => {
     await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0, { reason: "drained", open: 0, signal: "SIGTERM" }));
   });
 
-  it("cuts a request still trickling its body", async () => {
-    const { drain, exit, logs } = newDrain({ bodyTimeoutMs: 100 });
-    const { port } = await startServer(drain);
+  it("cuts a trickled body at requestTimeout counted from the request's start, not the drain's", async () => {
+    const { drain, exit, logs } = newDrain();
+    const { port } = await startServer(drain, { requestTimeout: 800 });
 
-    const socket = await connect(port);
-    const closed = new Promise((resolve) => socket.on("close", resolve));
-    socket.on("error", () => {});
-    socket.write(`POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{"mo`);
-    await vi.waitFor(() => expect(drain.inflight).toBe(1));
-
+    const startedAt = Date.now();
+    const upload = await startUpload(port, 100_000);
+    const trickle = setInterval(() => upload.socket.write(" "), 20);
+    await sleep(600);
     drain.start("SIGTERM");
-    const trickle = setInterval(() => socket.write(" "), 20);
-    await closed;
+    await upload.closed;
     clearInterval(trickle);
+    // From the drain's start it would be ~1400 ms.
+    expect(Date.now() - startedAt).toBeLessThan(1200);
     await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0, { reason: "drained", open: 0, signal: "SIGTERM" }));
-    expect(logs.join("\n")).toContain("closed 1 request(s) still sending their body");
+    expect(logs.join("\n")).toContain("still sending its body past requestTimeout");
+  });
+
+  it("lets a slow but steady upload that started before the drain finish", async () => {
+    const { drain, exit } = newDrain();
+    const { port } = await startServer(drain, { requestTimeout: 2000 });
+
+    const upload = await startUpload(port, 40);
+    let sent = 0;
+    const steady = setInterval(() => {
+      if (sent < 40) { upload.socket.write("x"); sent++; }
+    }, 20);
+    await sleep(100);
+    drain.start("SIGTERM");
+    await upload.closed;
+    clearInterval(steady);
+    expect(upload.read()).toMatch(/^HTTP\/1\.1 200[\s\S]*posted$/);
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0, { reason: "drained", open: 0, signal: "SIGTERM" }));
+  });
+
+  it("leaves a stream whose body was complete alone, however long it runs past requestTimeout", async () => {
+    const { drain, exit } = newDrain();
+    const { port, release } = await startServer(drain, { requestTimeout: 100 });
+    const slow = startStream(port, "/v1/slow");
+    await slow.started;
+    drain.start("SIGTERM");
+    await sleep(300);
+    expect(drain.inflight).toBe(1);
+    release();
+    expect((await slow.body).complete).toBe(true);
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0, { reason: "drained", open: 0, signal: "SIGTERM" }));
   });
 
   it("exits on timeout with the count still open", async () => {
@@ -281,23 +356,23 @@ describe("server drain on shutdown", () => {
     expect(exit).toHaveBeenCalledTimes(1);
   });
 
-  it("ignores a repeat signal right after the first, and exits at once on a later one", async () => {
-    const { drain, exit } = newDrain({ duplicateWindowMs: 100 });
-    const { port, release } = await startServer(drain);
+  it("ignores a repeat signal inside the default window, saying so, and exits on one after it", async () => {
+    expect(DUPLICATE_SIGNAL_WINDOW_MS).toBe(1500);
+    const { drain, exit, logs } = newDrain({ duplicateWindowMs: undefined });
+    const release = drain.hold();
 
-    const slow = startStream(port, "/v1/slow");
-    await slow.started;
     drain.start("SIGINT");
     drain.start("SIGTERM");
     expect(exit).not.toHaveBeenCalled();
+    expect(logs.at(-1)).toBe("[Shutdown] SIGTERM right after the first signal: already draining, ignored");
 
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await sleep(1300);
+    drain.start("SIGINT");
+    expect(exit).not.toHaveBeenCalled();
+    await sleep(300);
     drain.start("SIGINT");
     expect(exit).toHaveBeenCalledWith(1, { reason: "signal", open: 1, signal: "SIGINT" });
-
     release();
-    await slow.body;
-    expect(exit).toHaveBeenCalledTimes(1);
   });
 
   it("exits at once when SHUTDOWN_DRAIN_TIMEOUT_MS=0", async () => {
@@ -313,26 +388,37 @@ describe("server drain on shutdown", () => {
     await slow.body;
   });
 
-  it("waits for work registered with holdShutdown, like a budgeted key's usage read", async () => {
+  it("waits for work registered with holdShutdown; a second release changes nothing", async () => {
     const { drain, exit } = newDrain();
     const release = holdShutdown();
+    const other = holdShutdown();
     drain.start("SIGTERM");
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    expect(drain.inflight).toBe(1);
-    expect(exit).not.toHaveBeenCalled();
+    await sleep(60);
+    expect(work()).toBe(2);
 
     release();
     release();
+    expect(work()).toBe(1);
+    await sleep(60);
+    expect(exit).not.toHaveBeenCalled();
+
+    other();
+    expect(work()).toBe(0);
     await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0, { reason: "drained", open: 0, signal: "SIGTERM" }));
   });
 
-  it("holds the drain open until a hold is released", async () => {
+  it("holds the drain open until each hold is released, once", async () => {
     const { drain, exit } = newDrain();
-    const release = drain.hold();
+    const a = drain.hold();
+    const b = drain.hold();
     drain.start("SIGTERM");
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    a();
+    a();
+    expect(drain.inflight).toBe(1);
+    await sleep(60);
     expect(exit).not.toHaveBeenCalled();
-    release();
+    b();
+    expect(drain.inflight).toBe(0);
     await vi.waitFor(() => expect(exit).toHaveBeenCalledTimes(1));
   });
 
@@ -349,17 +435,22 @@ describe("server drain on shutdown", () => {
 
 describe("what the drain counts", () => {
   it("counts model traffic, as the socket sees it before rewrites", () => {
-    for (const url of ["/v1/chat/completions", "/v1", "/v1/v1/messages", "/api/v1/messages?beta=true", "/v1beta/models/x:streamGenerateContent",
-      "/api/v1beta/models", "/codex/responses", "/backend-api/codex/responses", "/responses", "/systemone"]) {
+    for (const url of ["/v1/chat/completions", "/v1", "/v1?x=1", "/v1/v1/messages", "/api/v1/messages?beta=true",
+      "/v1beta/models/x:streamGenerateContent", "/api/v1beta/models", "/codex/responses", "/backend-api/codex/responses",
+      "/responses", "/responses?x=1", "/systemone",
+      // Next's rewrites match without regard to case.
+      "/V1/chat/completions", "/Responses", "/Codex/responses", "/API/V1/messages",
+      // Absolute-form request targets.
+      "http://example.test/v1/chat/completions", "https://example.test:8443/responses?x=1"]) {
       expect(isModelTraffic(url), url).toBe(true);
     }
-    for (const url of ["/dashboard", "/api/usage/stream", "/api/health", "/api/v10", "/v1x", "/responsesx"]) {
+    for (const url of ["/dashboard", "/api/usage/stream", "/api/health", "/api/v10", "/v1x", "/responsesx", "http://example.test/dashboard", "http://example.test"]) {
       expect(isModelTraffic(url), url).toBe(false);
     }
   });
 
   it("knows the dashboard streams that never end", () => {
-    for (const url of ["/api/usage/stream", "/api/translator/console-logs/stream", "/api/mcp/browser/sse?x=1"]) {
+    for (const url of ["/api/usage/stream", "/api/translator/console-logs/stream", "/api/mcp/browser/sse?x=1", "/API/Usage/Stream"]) {
       expect(isLongLived(url), url).toBe(true);
     }
     expect(isLongLived("/api/usage/history")).toBe(false);
@@ -393,36 +484,44 @@ describe("SHUTDOWN_DRAIN_TIMEOUT_MS", () => {
   });
 });
 
+const fakeProcess = (versions = { node: "22.0.0" }) => {
+  const proc = new EventEmitter();
+  proc.exit = vi.fn();
+  proc.versions = versions;
+  proc.env = {};
+  return proc;
+};
+
 describe("shutdown signal gate", () => {
-  it("holds the app's own signal listeners until the drain is over, then runs them all", async () => {
-    const proc = new EventEmitter();
-    const exitStub = vi.fn();
-    proc.exit = exitStub;
-    const onSignal = vi.fn();
-    const runSignalListeners = gateShutdownSignals(proc, onSignal);
+  for (const signal of ["SIGTERM", "SIGINT"]) {
+    it(`holds the app's own ${signal} listeners until the drain is over, then runs them all`, async () => {
+      const proc = fakeProcess();
+      const exitStub = proc.exit;
+      const onSignal = vi.fn();
+      const runSignalListeners = gateShutdownSignals(proc, onSignal);
 
-    // Like the database adapters: clean up, then exit straight away.
-    const calls = [];
-    proc.on("SIGTERM", () => { calls.push("db"); proc.exit(0); });
-    proc.on("SIGTERM", () => { calls.push("tunnel"); proc.exit(); });
+      // Like the database adapters: clean up, then exit straight away.
+      const calls = [];
+      proc.on(signal, () => { calls.push("db"); proc.exit(0); });
+      proc.on(signal, () => { calls.push("tunnel"); proc.exit(); });
 
-    proc.emit("SIGTERM", "SIGTERM");
-    expect(onSignal).toHaveBeenCalledWith("SIGTERM");
-    expect(calls).toEqual([]);
+      proc.emit(signal, signal);
+      expect(onSignal).toHaveBeenCalledWith(signal);
+      expect(calls).toEqual([]);
 
-    await runSignalListeners("SIGTERM");
-    expect(calls).toEqual(["db", "tunnel"]);
-    expect(exitStub).not.toHaveBeenCalled();
-    expect(proc.exit).toBe(exitStub);
-  });
+      await runSignalListeners(signal);
+      expect(calls).toEqual(["db", "tunnel"]);
+      expect(exitStub).not.toHaveBeenCalled();
+      expect(proc.exit).toBe(exitStub);
+    });
+  }
 
   it("waits for an async listener before running the next, and a throwing one skips nothing", async () => {
-    const proc = new EventEmitter();
-    proc.exit = vi.fn();
+    const proc = fakeProcess();
     const runSignalListeners = gateShutdownSignals(proc, vi.fn());
     const calls = [];
     proc.on("SIGTERM", async () => {
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await sleep(30);
       calls.push("flush");
     });
     proc.on("SIGTERM", () => { throw new Error("boom"); });
@@ -434,19 +533,22 @@ describe("shutdown signal gate", () => {
     expect(calls).toEqual(["flush", "close"]);
   });
 
-  it("gives async listeners a bounded wait", async () => {
-    const proc = new EventEmitter();
-    proc.exit = vi.fn();
+  it("gives all async listeners one shared wait budget", async () => {
+    expect(LISTENER_WAIT_MS).toBe(2000);
+    const proc = fakeProcess();
     const runSignalListeners = gateShutdownSignals(proc, vi.fn());
-    proc.on("SIGTERM", () => new Promise(() => {}));
+    const calls = [];
+    proc.on("SIGTERM", () => { calls.push("a"); return sleep(150); });
+    proc.on("SIGTERM", () => { calls.push("b"); return sleep(150); });
     const started = Date.now();
-    await runSignalListeners("SIGTERM", { waitMs: 50 });
-    expect(Date.now() - started).toBeLessThan(1000);
+    await runSignalListeners("SIGTERM", { waitMs: 200 });
+    expect(calls).toEqual(["a", "b"]);
+    // 300 ms if each listener got the budget to itself.
+    expect(Date.now() - started).toBeLessThan(270);
   });
 
   it("passes other events through", () => {
-    const proc = new EventEmitter();
-    proc.exit = vi.fn();
+    const proc = fakeProcess();
     gateShutdownSignals(proc, vi.fn());
     const seen = vi.fn();
     proc.on("message", seen);
@@ -455,30 +557,80 @@ describe("shutdown signal gate", () => {
   });
 });
 
-describe("a budgeted key's usage read after a hang-up", () => {
-  const count = () => globalThis[BACKGROUND_WORK_KEY]?.count ?? 0;
+describe("installShutdownDrain", () => {
+  it("drains on SIGTERM, then runs the app's listeners (async ones awaited) and exits 0", async () => {
+    const proc = fakeProcess();
+    const { drain } = newDrain();
+    expect(installShutdownDrain(proc, drain)).toBe(true);
+    expect(proc.env.NEXT_MANUAL_SIG_HANDLE).toBe("true");
+    const calls = [];
+    proc.on("SIGTERM", async () => { await sleep(50); calls.push("flush"); });
 
-  it("holds the shutdown from the hang-up until the read ends", () => {
+    const release = drain.hold();
+    proc.emit("SIGTERM", "SIGTERM");
+    await sleep(30);
+    expect(calls).toEqual([]);
+    release();
+    await vi.waitFor(() => expect(proc.exit).toHaveBeenCalledWith(0));
+    expect(calls).toEqual(["flush"]);
+  });
+
+  it("exits on a second signal without waiting on the listeners", async () => {
+    const proc = fakeProcess();
+    const { drain } = newDrain({ duplicateWindowMs: 0 });
+    installShutdownDrain(proc, drain);
+    const never = vi.fn(() => new Promise(() => {}));
+    proc.on("SIGINT", never);
+
+    drain.hold();
+    proc.emit("SIGTERM", "SIGTERM");
+    proc.emit("SIGINT", "SIGINT");
+    await vi.waitFor(() => expect(proc.exit).toHaveBeenCalledWith(1), { timeout: 500 });
+    expect(never).toHaveBeenCalled();
+  });
+
+  it("changes nothing under Bun, whose signals skip process.emit", () => {
+    const proc = fakeProcess({ node: "22.0.0", bun: "1.2.0" });
+    const emit = proc.emit;
+    const { drain } = newDrain();
+    expect(installShutdownDrain(proc, drain)).toBe(false);
+    expect(proc.emit).toBe(emit);
+    expect(proc.listenerCount("SIGTERM")).toBe(0);
+    expect(proc.env.NEXT_MANUAL_SIG_HANDLE).toBeUndefined();
+  });
+
+  it("changes nothing when the drain is off", () => {
+    const proc = fakeProcess();
+    const emit = proc.emit;
+    const { drain } = newDrain({ timeoutMs: 0 });
+    expect(installShutdownDrain(proc, drain)).toBe(false);
+    expect(proc.emit).toBe(emit);
+    expect(proc.env.NEXT_MANUAL_SIG_HANDLE).toBeUndefined();
+  });
+});
+
+describe("a budgeted key's usage read after a hang-up", () => {
+  it("holds the shutdown from the hang-up until the read ends, once", () => {
     const controller = createStreamController({ drainOnDisconnect: true, drainMaxMs: 5000, log: null, provider: "p", model: "m" });
     controller.handleDisconnect();
-    expect(count()).toBe(1);
+    expect(work()).toBe(1);
     controller.endDrain();
-    expect(count()).toBe(0);
+    expect(work()).toBe(0);
     controller.endDrain();
-    expect(count()).toBe(0);
+    expect(work()).toBe(0);
   });
 
   it("lets go at the read's own cap", async () => {
     const controller = createStreamController({ drainOnDisconnect: true, drainMaxMs: 20, log: null, provider: "p", model: "m" });
     controller.handleDisconnect();
-    expect(count()).toBe(1);
-    await vi.waitFor(() => expect(count()).toBe(0));
+    expect(work()).toBe(1);
+    await vi.waitFor(() => expect(work()).toBe(0));
   });
 
   it("holds nothing for a key without a budget", () => {
     const controller = createStreamController({ drainOnDisconnect: false, log: null, provider: "p", model: "m" });
     controller.handleDisconnect();
-    expect(count()).toBe(0);
+    expect(work()).toBe(0);
     controller.handleComplete();
   });
 });

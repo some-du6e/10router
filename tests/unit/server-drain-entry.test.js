@@ -22,6 +22,7 @@ process.on("SIGTERM", async () => {
   console.log("async-flush-done");
 });
 process.on("SIGTERM", () => { console.log("db-closed"); process.exit(0); });
+process.on("SIGINT", () => { console.log("db-closed-sigint"); process.exit(0); });
 const server = http.createServer((req, res) => {
   if (req.url === "/v1/slow") {
     res.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -65,14 +66,14 @@ function runEntry(env) {
   return { child, port, exited, output: () => stdout };
 }
 
-// GET /v1/slow; sends SIGTERM to `child` as soon as the first event arrives.
-function streamThenSignal(port, child) {
+// GET /v1/slow; sends `signal` to `child` as soon as the first event arrives.
+function streamThenSignal(port, child, signal = "SIGTERM") {
   return new Promise((res) => {
     let text = "";
     http.get({ host: "127.0.0.1", port, path: "/v1/slow", agent: false }, (response) => {
       response.setEncoding("utf8");
       response.on("data", (chunk) => {
-        if (!text) child.kill("SIGTERM");
+        if (!text) child.kill(signal);
         text += chunk;
       });
       response.on("end", () => res({ text, complete: true }));
@@ -101,6 +102,20 @@ describe("custom-server.js drain on SIGTERM", () => {
     const drained = out.indexOf("drained in");
     expect(out.indexOf("async-flush-done")).toBeGreaterThan(drained);
     expect(out.indexOf("db-closed")).toBeGreaterThan(out.indexOf("async-flush-done"));
+  }, 20_000);
+
+  it("drains on SIGINT (Ctrl-C) too: the app's SIGINT listener runs only after the stream ends", async () => {
+    const run = runEntry({ SHUTDOWN_DRAIN_TIMEOUT_MS: "20000" });
+    const port = await run.port;
+
+    const result = await streamThenSignal(port, run.child, "SIGINT");
+    const { code } = await run.exited;
+
+    expect(result).toEqual({ text: "data: first\n\ndata: last\n\n", complete: true });
+    expect(code).toBe(0);
+    const out = run.output();
+    expect(out).toContain("[Shutdown] SIGINT: draining 1 in-flight request(s)");
+    expect(out.indexOf("db-closed-sigint")).toBeGreaterThan(out.indexOf("drained in"));
   }, 20_000);
 
   it("cuts the stream when SHUTDOWN_DRAIN_TIMEOUT_MS=0 (the old behaviour)", async () => {

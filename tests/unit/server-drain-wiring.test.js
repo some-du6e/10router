@@ -2,13 +2,15 @@
 // wrapper makes is closed by the drain, an upgrade during the drain is refused,
 // and a Codex WebSocket turn bridged when the drain starts still delivers its
 // last event before the process exits.
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import http from "node:http";
 import net from "node:net";
 import crypto from "node:crypto";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
+// The drain reads it once, at load; a value from the environment would change it.
+delete process.env.SHUTDOWN_DRAIN_TIMEOUT_MS;
 delete require.cache[require.resolve("../../custom-server.js")];
 const { drain } = require("../../custom-server.js").__test__;
 
@@ -88,9 +90,11 @@ describe("drain wiring in custom-server.js", () => {
 
     const exit = vi.fn(() => [...ws.events]);
     drain.setExit(exit);
-    vi.spyOn(console, "log").mockImplementation(() => {});
+    const quiet = vi.spyOn(console, "log").mockImplementation(() => {});
+    onTestFinished(() => quiet.mockRestore());
     drain.start("SIGTERM");
-    expect(drain.inflight).toBeGreaterThanOrEqual(1);
+    // The bridge's loopback POST, and the WebSocket turn's own hold.
+    expect(drain.inflight).toBe(2);
 
     // The wrapper registered the server with the drain, so the port is closed.
     await expect(new Promise((resolve, reject) => {

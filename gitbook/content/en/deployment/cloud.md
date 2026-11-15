@@ -74,8 +74,10 @@ PM2 keeps your application running and restarts it on crashes:
 # Install PM2 globally
 npm install -g pm2
 
-# Start 10router with PM2
-pm2 start npm --name 10router -- start
+# Start 10router with PM2. --kill-timeout gives requests in flight time to
+# finish on `pm2 restart`/`stop`: it must be longer than SHUTDOWN_DRAIN_TIMEOUT_MS
+# (3 min by default); PM2's own default is 1.6 s.
+pm2 start npm --name 10router --kill-timeout 210000 -- start
 
 # Save PM2 configuration
 pm2 save

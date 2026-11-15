@@ -3,21 +3,13 @@ const crypto = require("crypto");
 const path = require("path");
 const fs = require("fs");
 const { pathToFileURL } = require("url");
-const { createDrain, gateShutdownSignals, parseDrainTimeout } = require("./server-drain.js");
+const { createDrain, installShutdownDrain, parseDrainTimeout } = require("./server-drain.js");
 
 const origCreate = http.createServer.bind(http);
 
-// Graceful drain on SIGTERM/SIGINT (see server-drain.js). The signal gate is
-// only installed when this file is the entry point, at the bottom.
-let runSignalListeners = async () => {};
-const drain = createDrain({
-  timeoutMs: parseDrainTimeout(process.env.SHUTDOWN_DRAIN_TIMEOUT_MS),
-  exit: (code, info) => {
-    // A second signal means now: listeners still run, but nobody waits on them.
-    const waitMs = info.reason === "signal" ? 0 : undefined;
-    runSignalListeners(info.signal, { waitMs }).finally(() => process.exit(code));
-  },
-});
+// Graceful drain on SIGTERM/SIGINT (see server-drain.js). It is wired to the
+// process's signals only when this file is the entry point, at the bottom.
+const drain = createDrain({ timeoutMs: parseDrainTimeout(process.env.SHUTDOWN_DRAIN_TIMEOUT_MS) });
 
 // ─── Codex WebSocket transport ────────────────────────────────────────────────
 //
@@ -439,8 +431,8 @@ function handleCodexUpgrade(req, socket, head, port) {
         );
       }
 
-      // The server is shutting down: start no new upstream work. Codex retries
-      // a failed stream on a fresh connection, which reaches the next server.
+      // The server is shutting down: start no new upstream work. The turn
+      // fails; Codex's retry succeeds only once a server is accepting again.
       if (drain.draining) {
         send(bridgeLocalErrorFrame(503, "Server is restarting; retry shortly.", "server_error", "server_draining"));
         return close(1012, "server restarting");
@@ -498,7 +490,6 @@ function handleCodexUpgrade(req, socket, head, port) {
 // so the request-detail header sanitizer redacts it too.
 const PEER_TOKEN = crypto.randomBytes(24).toString("hex");
 process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
-
 
 let backgroundRefreshStarted = false;
 
@@ -634,12 +625,7 @@ module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCod
 
 if (require.main === module) {
   // Before the app loads: its own signal listeners must not see SIGTERM first.
-  if (drain.timeoutMs > 0) {
-    runSignalListeners = gateShutdownSignals(process, (signal) => drain.start(signal));
-    // Next's start-server would add its own SIGTERM/SIGINT cleanup, which only
-    // repeats the server.close() the drain does and then exits.
-    if (!process.env.NEXT_MANUAL_SIG_HANDLE) process.env.NEXT_MANUAL_SIG_HANDLE = "true";
-  }
+  installShutdownDrain(process, drain);
   const standalone = path.join(__dirname, "server.js");
   if (fs.existsSync(standalone)) {
     require(standalone);

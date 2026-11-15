@@ -12,9 +12,8 @@
 const DEFAULT_DRAIN_TIMEOUT_MS = 180000;
 // setTimeout's ceiling; a longer delay fires at once.
 const MAX_DRAIN_TIMEOUT_MS = 2147483647;
-// A request still uploading its body this long after the drain starts is cut:
-// once the server is closed Node no longer enforces requestTimeout.
-const DRAIN_BODY_TIMEOUT_MS = 30000;
+// Node's own default for server.requestTimeout, used when a server has none.
+const DEFAULT_REQUEST_TIMEOUT_MS = 300000;
 // `npm run start` forwards the signal it got, and a process-group kill reaches
 // both, so one stop can arrive twice. A repeat this soon is not a second ask.
 const DUPLICATE_SIGNAL_WINDOW_MS = 1500;
@@ -27,12 +26,13 @@ const SHUTDOWN_SIGNALS = ["SIGTERM", "SIGINT"];
 // Shared with open-sse/utils/shutdownHold.js: work that outlives its response.
 const BACKGROUND_WORK_KEY = Symbol.for("10router.server.backgroundWork");
 
-// Model traffic, as the socket sees it (before Next's rewrites to /api/v1*).
-// Only these hold the drain; dashboard requests are short or never end.
-const MODEL_TRAFFIC = /^\/(?:api\/)?v1(?:beta)?(?:\/|$)|^\/(?:codex|backend-api\/codex)(?:\/|$)|^\/(?:responses|systemone)\/?$/;
-// Streams that only end when the client leaves. Closed when the drain starts;
-// EventSource reconnects on its own, to the next server.
-const LONG_LIVED = [/^\/api\/usage\/stream\/?$/, /^\/api\/translator\/console-logs\/stream\/?$/, /^\/api\/mcp\/[^/]+\/sse\/?$/];
+// Model traffic, as the socket sees it (before Next's rewrites to /api/v1*,
+// which match case-insensitively). Only these hold the drain; dashboard
+// requests are short or never end.
+const MODEL_TRAFFIC = /^\/(?:api\/)?v1(?:beta)?(?:\/|$)|^\/(?:codex|backend-api\/codex)(?:\/|$)|^\/(?:responses|systemone)\/?$/i;
+// Streams that only end when the client leaves. Closed when the drain starts,
+// so they don't hold it; an open dashboard tab may need a reload afterwards.
+const LONG_LIVED = [/^\/api\/usage\/stream\/?$/i, /^\/api\/translator\/console-logs\/stream\/?$/i, /^\/api\/mcp\/[^/]+\/sse\/?$/i];
 
 function parseDrainTimeout(value, warn = console.warn) {
   if (value === undefined || value === null) return DEFAULT_DRAIN_TIMEOUT_MS;
@@ -44,10 +44,13 @@ function parseDrainTimeout(value, warn = console.warn) {
   return DEFAULT_DRAIN_TIMEOUT_MS;
 }
 
+// The path of a request target, origin-form (`/v1/x?y`) or absolute-form
+// (`http://host/v1/x?y`).
 function pathOf(url) {
-  const text = String(url || "");
+  let text = String(url || "").replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/i, "");
   const end = text.search(/[?#]/);
-  return end === -1 ? text : text.slice(0, end);
+  if (end !== -1) text = text.slice(0, end);
+  return text || "/";
 }
 
 const isModelTraffic = (url) => MODEL_TRAFFIC.test(pathOf(url));
@@ -59,23 +62,22 @@ function backgroundWork() {
 
 function createDrain({
   timeoutMs = DEFAULT_DRAIN_TIMEOUT_MS,
-  exit,
+  exit = () => {},
   log = console.log,
-  bodyTimeoutMs = DRAIN_BODY_TIMEOUT_MS,
   duplicateWindowMs = DUPLICATE_SIGNAL_WINDOW_MS,
   flushMs = EXIT_FLUSH_MS,
 } = {}) {
   let exitFn = exit;
   const servers = new Set();
-  const active = new Set(); // { req, end } per model request in flight
+  const active = new Set(); // { req, startedAt, end } per model request in flight
   const longLived = new Set();
+  const bodyTimers = new Set();
   let holds = 0;
   let draining = false;
   let finished = false;
   let startedAt = 0;
   let drainSignal = null;
   let timer = null;
-  let bodyTimer = null;
   let flushTimer = null;
 
   const open = () => active.size + holds + Math.max(0, backgroundWork().count);
@@ -90,8 +92,9 @@ function createDrain({
   function finish(code, info) {
     if (finished) return;
     finished = true;
-    for (const t of [timer, bodyTimer, flushTimer]) if (t) clearTimeout(t);
-    timer = bodyTimer = flushTimer = null;
+    for (const t of [timer, flushTimer, ...bodyTimers]) if (t) clearTimeout(t);
+    timer = flushTimer = null;
+    bodyTimers.clear();
     if (backgroundWork().onChange === changed) backgroundWork().onChange = null;
     exitFn(code, info);
   }
@@ -106,6 +109,8 @@ function createDrain({
     }, flushMs);
   }
 
+  // A request finished during the drain: its keep-alive socket is idle now
+  // (server.close() only closed the ones idle at the start).
   function changed() {
     if (!draining) return;
     closeIdle();
@@ -125,15 +130,21 @@ function createDrain({
     res.end(body);
   }
 
-  function cutSlowBodies() {
-    let cut = 0;
-    for (const entry of [...active]) {
-      if (entry.req.complete) continue;
-      cut++;
+  // Once the server is closed Node stops enforcing requestTimeout, so a client
+  // trickling its body could hold the drain open. Enforce it here, from when
+  // each request started, as Node would have.
+  function guardBody(entry) {
+    if (entry.req.complete) return;
+    const server = entry.req.socket && entry.req.socket.server;
+    const limit = server && server.requestTimeout > 0 ? server.requestTimeout : DEFAULT_REQUEST_TIMEOUT_MS;
+    const bodyTimer = setTimeout(() => {
+      bodyTimers.delete(bodyTimer);
+      if (entry.req.complete || !active.has(entry)) return;
+      log("[Shutdown] closed a request still sending its body past requestTimeout");
       if (entry.req.socket) entry.req.socket.destroy();
       entry.end();
-    }
-    if (cut) log(`[Shutdown] closed ${cut} request(s) still sending their body`);
+    }, Math.max(0, entry.startedAt + limit - Date.now()));
+    bodyTimers.add(bodyTimer);
   }
 
   return {
@@ -171,6 +182,7 @@ function createDrain({
       let done = false;
       const entry = {
         req,
+        startedAt: Date.now(),
         end: () => {
           if (done) return;
           done = true;
@@ -208,7 +220,10 @@ function createDrain({
     start(signal) {
       if (finished) return;
       if (draining) {
-        if (Date.now() - startedAt < duplicateWindowMs) return;
+        if (Date.now() - startedAt < duplicateWindowMs) {
+          log(`[Shutdown] ${signal} right after the first signal: already draining, ignored`);
+          return;
+        }
         log(`[Shutdown] second ${signal}: exiting now with ${open()} request(s) still open`);
         finish(1, { reason: "signal", open: open(), signal });
         return;
@@ -224,19 +239,11 @@ function createDrain({
         `[Shutdown] ${signal}: draining ${open()} in-flight request(s), up to ${seconds(timeoutMs)}s; ` +
           "new connections are refused meanwhile (send the signal again to exit now)"
       );
+      // Also closes the connections idle right now (Node 19+).
       for (const server of servers) server.close(() => {});
-      closeIdle();
       for (const res of [...longLived]) res.destroy();
+      for (const entry of active) guardBody(entry);
       backgroundWork().onChange = changed;
-
-      let bodyDeadline = bodyTimeoutMs;
-      for (const server of servers) {
-        if (server.requestTimeout > 0) bodyDeadline = Math.min(bodyDeadline, server.requestTimeout);
-      }
-      bodyTimer = setTimeout(() => {
-        bodyTimer = null;
-        cutSlowBodies();
-      }, Math.min(bodyDeadline, timeoutMs));
       timer = setTimeout(() => {
         log(`[Shutdown] drain timed out after ${seconds(timeoutMs)}s with ${open()} request(s) still open, exiting`);
         finish(1, { reason: "timeout", open: open(), signal });
@@ -306,13 +313,36 @@ function logListenerError(error) {
   console.error("[Shutdown] shutdown listener failed:", error && error.message ? error.message : error);
 }
 
+/**
+ * Wire `drain` to the process's shutdown signals. Returns false, changing
+ * nothing, when the drain is off or the runtime is Bun: Bun calls signal
+ * listeners without going through process.emit, so the gate would never see
+ * the signal while still keeping Next's own exit from running.
+ */
+function installShutdownDrain(proc, drain) {
+  if (!(drain.timeoutMs > 0) || (proc.versions && proc.versions.bun)) return false;
+  const runSignalListeners = gateShutdownSignals(proc, (signal) => drain.start(signal));
+  const realExit = proc.exit;
+  drain.setExit((code, info) => {
+    // A second signal means now: listeners still run, but nobody waits on them.
+    const waitMs = info.reason === "signal" ? 0 : LISTENER_WAIT_MS;
+    runSignalListeners(info.signal, { waitMs }).finally(() => realExit.call(proc, code));
+  });
+  // Next's start-server would add its own SIGTERM/SIGINT cleanup, which only
+  // repeats the server.close() the drain does and then exits.
+  if (!proc.env.NEXT_MANUAL_SIG_HANDLE) proc.env.NEXT_MANUAL_SIG_HANDLE = "true";
+  return true;
+}
+
 module.exports = {
   BACKGROUND_WORK_KEY,
   DEFAULT_DRAIN_TIMEOUT_MS,
+  DUPLICATE_SIGNAL_WINDOW_MS,
+  LISTENER_WAIT_MS,
   MAX_DRAIN_TIMEOUT_MS,
-  SHUTDOWN_SIGNALS,
   createDrain,
   gateShutdownSignals,
+  installShutdownDrain,
   isLongLived,
   isModelTraffic,
   parseDrainTimeout,

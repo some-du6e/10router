@@ -237,30 +237,38 @@ On `SIGTERM` or `SIGINT` (`docker stop` sends `SIGTERM`) the server drains befor
 - It closes its listening socket, so **new connections are refused for the whole drain**.
   On a setup that stops the old container before starting the new one, that's the trade-off:
   turns already running finish, and new requests fail until the new instance is up.
-- Model requests already running (`/v1/*`, `/api/v1/*`, the Codex routes and WebSocket turns),
-  long streams included, get up to `SHUTDOWN_DRAIN_TIMEOUT_MS` (3 minutes by default) to
-  finish. Then the app's own shutdown work runs (database flush and close) and it exits.
-  A request held at a provider limit keeps the drain open until that timeout.
+- Model requests already running get up to `SHUTDOWN_DRAIN_TIMEOUT_MS` (3 minutes by default)
+  to finish, long streams included. That covers `/v1*`, `/api/v1*`, `/v1beta*`, `/api/v1beta*`,
+  `/responses`, `/systemone`, `/codex/*`, `/backend-api/codex/*` and Codex WebSocket turns.
+  Then the app's own shutdown work runs (database flush and close) and it exits. A request
+  held at a provider limit keeps the drain open until that timeout.
 - A request sent on a keep-alive connection that was already open gets a `503` with
-  `Retry-After: 5` and `Connection: close`. Dashboard streams that never end (usage, console
-  logs, MCP) are closed at the start and reconnect on their own.
-- A second signal more than 1.5 seconds after the first exits at once. `SHUTDOWN_DRAIN_TIMEOUT_MS=0`
-  turns the drain off.
+  `Retry-After: 5` and `Connection: close`. A Codex turn started during the drain fails; Codex's
+  retry works once a server is accepting again. Dashboard streams that never end (usage,
+  console logs, MCP) are closed at the start, so an open dashboard tab may need a reload after
+  the restart.
+- A repeat signal within 1.5 seconds of the first is ignored (`npm run start` forwards the one
+  it got); a later one exits at once. `SHUTDOWN_DRAIN_TIMEOUT_MS=0` turns the drain off.
 - It needs Node (the Docker image and `npm run start`). Under Bun (`start:bun`) a signal still
   exits at once.
 
-**The drain does nothing unless the container runtime waits for it.** Docker kills the process
-10 seconds after `docker stop` by default, which cuts the drain short and can kill the database
-flush that follows it. Set the stop grace period **longer** than the drain timeout, e.g. drain +
+**The drain does nothing unless whatever stops the process waits for it.** Docker kills the
+process 10 seconds after `docker stop` by default, which cuts the drain short and can kill the
+shutdown work after it. Set the stop timeout **longer** than the drain timeout, e.g. drain +
 30 seconds:
 
 - `docker stop -t 210 10router` (or `docker run --stop-timeout 210 …`)
 - Compose: `stop_grace_period: 3m30s` (the repo's `docker-compose.yml` sets it)
 - A hosting platform: its container stop timeout / grace period setting.
+- PM2: `kill_timeout` (default 1.6 seconds), e.g. `pm2 start npm --name 10router --kill-timeout 210000 -- start`.
+- systemd: `TimeoutStopSec=210` in the unit.
+
+A kill that comes too early loses about the last 5 seconds of buffered request-detail rows
+and, on the sql.js driver, about 100 ms of writes. SQLite itself replays its WAL on the next
+open.
 
 `GET /api/health` answers `200` while the server is up, with no auth, for a platform health
-check. During the drain new connections are refused, so a health check
-fails then. Don't use it to run two instances side by side for a rolling update: two
+check. During the drain new connections are refused, so a health check fails then. Don't use it to run two instances side by side for a rolling update: two
 instances must never share one `DATA_DIR` (SQLite / sql.js writes are last-writer-wins, and
 OAuth refresh tokens rotate, so one instance would lose the other's).
 
