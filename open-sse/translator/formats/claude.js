@@ -160,8 +160,10 @@ function hasForeignServerToolUseId(block) {
 // 1. thinking.type "adaptive" → unsupported on Haiku 4.x
 // 2. output_config.effort → unsupported on Haiku 4.x
 // 3. role "system" messages (mid-conversation-system beta) → only top-level system is allowed
-// 4. server_tool_use blocks carrying a foreign (non-srvtoolu_) id → rejected outright
-// 5. tool input_schema with a top-level allOf/anyOf/oneOf → rejected outright
+// 4. thinking blocks with a foreign signature, and server_tool_use blocks carrying
+//    a foreign (non-srvtoolu_) id → rejected outright
+// 5. empty text blocks, and messages left with no content → rejected outright
+// 6. tool input_schema with a top-level allOf/anyOf/oneOf → rejected outright
 export function normalizeClaudePassthrough(body, model = "", provider = null) {
   if (!body || typeof body !== "object") return body;
 
@@ -185,7 +187,7 @@ export function normalizeClaudePassthrough(body, model = "", provider = null) {
     if (Object.keys(body.output_config).length === 0) delete body.output_config;
   }
 
-  // 2. Fold mid-conversation system messages into the neighbouring turn.
+  // 3. Fold mid-conversation system messages into the neighbouring turn.
   // Hoisting them into body.system would insert volatile content (token counters,
   // reminders) ahead of the whole conversation and invalidate the prefix cache on
   // every request. Folding in place keeps the cached prefix stable.
@@ -226,7 +228,7 @@ export function normalizeClaudePassthrough(body, model = "", provider = null) {
     body.messages = messages;
   }
 
-  // 3. Drop thinking blocks whose signature is not Claude's (combo mixes models,
+  // 4. Drop thinking blocks whose signature is not Claude's (combo mixes models,
   // so foreign signatures leak into history and Anthropic rejects them).
   const thinkingEnabled = body.thinking?.type === "enabled";
   const droppedServerToolUseIds = new Set();

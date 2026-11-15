@@ -10,6 +10,8 @@ import {
 } from "../../open-sse/translator/concerns/jsonSchema.js";
 import { translateRequest } from "../../open-sse/translator/index.js";
 import { normalizeClaudePassthrough } from "../../open-sse/translator/formats/claude.js";
+import { cleanJSONSchemaForAntigravity } from "../../open-sse/translator/formats/gemini.js";
+import { buildProviderRequest } from "../../open-sse/executors/zed.js";
 
 const MODEL = "claude-test-model";
 const CREDS = { apiKey: "test-key" };
@@ -80,7 +82,7 @@ describe("normalizeClaudeInputSchema", () => {
     expect(out.required).toEqual(["limit", "verbose"]);
   });
 
-  it("resolves a local $ref member", () => {
+  it("resolves a local $ref member and drops the $defs nothing points at any more", () => {
     const out = normalizeClaudeInputSchema({
       $defs: { byId },
       anyOf: [{ $ref: "#/$defs/byId" }, byQuery],
@@ -88,7 +90,7 @@ describe("normalizeClaudeInputSchema", () => {
     expectPlainObjectSchema(out);
     expect(out.properties).toHaveProperty("id");
     expect(out.properties).toHaveProperty("query");
-    expect(out.$defs).toEqual({ byId });
+    expect(out).not.toHaveProperty("$defs");
   });
 
   it("falls back to a permissive object schema when a member isn't an object", () => {
@@ -177,10 +179,181 @@ describe("normalizeClaudeInputSchema", () => {
     expectPlainObjectSchema(out);
   });
 
-  it("fails open on a cyclic object", () => {
-    const cyclic = { anyOf: [] };
+  // The summary only comes from the depth-bound fallback; the catch-all keeps the
+  // bare description. So these pin the bound itself, not a caught stack overflow.
+  it("stops at the depth bound and keeps the top-level description", () => {
+    let schema = { type: "object", properties: { leaf: { type: "string" } } };
+    for (let i = 0; i < 40; i++) schema = { title: "Level", anyOf: [schema] };
+    schema.description = "Deep";
+    expect(normalizeClaudeInputSchema(schema)).toEqual({
+      type: "object", properties: {}, additionalProperties: true, description: "Deep\n\nAccepts one of: Level.",
+    });
+  });
+
+  it("stops at the depth bound on a cyclic object", () => {
+    const cyclic = { description: "Loop", title: "Self", anyOf: [] };
     cyclic.anyOf.push(cyclic);
-    expect(normalizeClaudeInputSchema(cyclic)).toMatchObject({ type: "object", properties: {}, additionalProperties: true });
+    expect(normalizeClaudeInputSchema(cyclic)).toEqual({
+      type: "object", properties: {}, additionalProperties: true, description: "Loop\n\nAccepts one of: Self.",
+    });
+  });
+
+  it("treats a malformed % in a $ref as unresolvable and keeps the description", () => {
+    const out = normalizeClaudeInputSchema({ description: "Pick", anyOf: [{ $ref: "#/$defs/%E0%A4%A" }, byQuery] });
+    expect(out).toEqual({
+      type: "object", properties: {}, additionalProperties: true,
+      description: "Pick\n\nAccepts one of: #/$defs/%E0%A4%A; Search by free text.",
+    });
+  });
+
+  it("gives an empty anyOf no summary", () => {
+    expect(normalizeClaudeInputSchema({ description: "Empty", anyOf: [] }).description).toBe("Empty");
+  });
+
+  it("skips a summary that only says 'an object'", () => {
+    const out = normalizeClaudeInputSchema({
+      anyOf: [{ type: "object", properties: { a: { type: "string" } } }, { type: "object", properties: { b: { type: "string" } } }],
+    });
+    expect(out).not.toHaveProperty("description");
+  });
+
+  it("flattens a combinator next to type [object, null]", () => {
+    const out = normalizeClaudeInputSchema({ type: ["object", "null"], anyOf: [byId, byQuery] });
+    expectPlainObjectSchema(out);
+    expect(Object.keys(out.properties)).toEqual(["id", "verbose", "query"]);
+  });
+});
+
+// D0..D6 each an anyOf of N refs to the next, D7 a plain object, and a top-level
+// anyOf of N refs to D0: N^8 paths through 1.6 KB of JSON.
+function fanOutSchema(n) {
+  const $defs = { D7: { type: "object", properties: { leaf: { type: "string" } }, required: ["leaf"] } };
+  for (let k = 0; k < 7; k++) $defs[`D${k}`] = { anyOf: Array.from({ length: n }, () => ({ $ref: `#/$defs/D${k + 1}` })) };
+  return { description: "Fan out", $defs, anyOf: Array.from({ length: n }, () => ({ $ref: "#/$defs/D0" })) };
+}
+
+// Every local $ref in `schema` points at something in `schema`.
+function expectLocalRefsResolve(schema) {
+  const resolve = (ref) => {
+    if (ref === "#") return schema;
+    return ref.slice(2).split("/").map((k) => k.replace(/~1/g, "/").replace(/~0/g, "~"))
+      .reduce((node, key) => (node !== null && typeof node === "object" && Object.hasOwn(node, key) ? node[key] : undefined), schema);
+  };
+  const walk = (node) => {
+    if (node === null || typeof node !== "object") return;
+    if (typeof node.$ref === "string" && node.$ref.startsWith("#")) {
+      expect(resolve(node.$ref), `dangling ${node.$ref}`).toBeDefined();
+    }
+    Object.values(node).forEach(walk);
+  };
+  walk(schema);
+}
+
+describe("normalizeClaudeInputSchema work bound", () => {
+  it("flattens an exponential $ref fan-out in well under 50ms", () => {
+    const schema = fanOutSchema(8);
+    expect(JSON.stringify(schema).length).toBeLessThan(2000);
+    const start = performance.now();
+    const out = normalizeClaudeInputSchema(schema);
+    const elapsed = performance.now() - start;
+    expect(elapsed).toBeLessThan(50);
+    expectPlainObjectSchema(out);
+    expect(out.properties).toEqual({ leaf: { type: "string" } });
+    expect(out.required).toEqual(["leaf"]);
+    expect(out.description).toBe("Fan out");
+    expectLocalRefsResolve(out);
+  });
+
+  it("falls back, keeping the description, once the step budget runs out", () => {
+    const members = Array.from({ length: 600 }, (_, i) => ({ type: "object", properties: { [`p${i}`]: { type: "string" } } }));
+    const out = normalizeClaudeInputSchema({ description: "Too wide", anyOf: members });
+    expect(out).toEqual({ type: "object", properties: {}, additionalProperties: true, description: "Too wide" });
+  });
+});
+
+describe("normalizeClaudeInputSchema $refs", () => {
+  it("points a ref into a removed anyOf member at the merged property", () => {
+    const address = { type: "object", properties: { street: { type: "string" } } };
+    const out = normalizeClaudeInputSchema({
+      anyOf: [
+        { type: "object", properties: { address } },
+        { type: "object", properties: { billing: { $ref: "#/anyOf/0/properties/address" } } },
+      ],
+    });
+    expect(out.properties.billing).toEqual({ $ref: "#/properties/address" });
+    expect(out.properties.address).toEqual(address);
+    expectLocalRefsResolve(out);
+  });
+
+  it("points a ref into a removed allOf member at the merged property", () => {
+    const out = normalizeClaudeInputSchema({
+      allOf: [
+        { properties: { a: { type: "string", minLength: 2 } } },
+        { properties: { b: { $ref: "#/allOf/0/properties/a" } } },
+      ],
+    });
+    expect(out.properties.b).toEqual({ $ref: "#/properties/a" });
+    expectLocalRefsResolve(out);
+  });
+
+  it("inlines the target when the merged property is a different schema", () => {
+    const out = normalizeClaudeInputSchema({
+      oneOf: [
+        { type: "object", properties: { value: { type: "string" } } },
+        { type: "object", properties: { value: { type: "integer" }, copy: { $ref: "#/oneOf/0/properties/value", description: "Copy" } } },
+      ],
+    });
+    expect(out.properties.value).toEqual({ anyOf: [{ type: "string" }, { type: "integer" }] });
+    expect(out.properties.copy).toEqual({ type: "string", description: "Copy" });
+    expectLocalRefsResolve(out);
+  });
+
+  it("inlines a ref to a whole removed member, and its own refs", () => {
+    const out = normalizeClaudeInputSchema({
+      anyOf: [
+        { type: "object", properties: { tag: { type: "string" }, inner: { $ref: "#/anyOf/0/properties/tag" } } },
+        { type: "object", properties: { other: { $ref: "#/anyOf/0" } } },
+      ],
+    });
+    expect(out.properties.other.properties.inner).toEqual({ $ref: "#/properties/tag" });
+    expectLocalRefsResolve(out);
+  });
+
+  it("drops a ref that pointed nowhere", () => {
+    const out = normalizeClaudeInputSchema({
+      anyOf: [byId, { type: "object", properties: { lost: { $ref: "#/nowhere", description: "Lost" } } }],
+    });
+    expect(out.properties.lost).toEqual({ description: "Lost" });
+    expectLocalRefsResolve(out);
+  });
+
+  it("resolves a top-level $ref and drops a definitions block nothing uses", () => {
+    const out = normalizeClaudeInputSchema({ $ref: "#/definitions/Item", definitions: { Item: { anyOf: [byId, byQuery] } } });
+    expectPlainObjectSchema(out);
+    expect(out).not.toHaveProperty("$ref");
+    expect(out).not.toHaveProperty("definitions");
+    expect(Object.keys(out.properties)).toEqual(["id", "verbose", "query"]);
+    expect(out.required).toEqual(["verbose"]);
+  });
+
+  it("keeps the definitions block a top-level $ref's inner refs need", () => {
+    const tag = { type: "string", enum: ["a", "b"] };
+    const out = normalizeClaudeInputSchema({
+      $ref: "#/definitions/Item",
+      definitions: {
+        Tag: tag,
+        Item: { oneOf: [{ ...byId, properties: { ...byId.properties, tag: { $ref: "#/definitions/Tag" } } }, byQuery] },
+      },
+    });
+    expectPlainObjectSchema(out);
+    expect(out.properties.tag).toEqual({ $ref: "#/definitions/Tag" });
+    expect(out.definitions.Tag).toEqual(tag);
+    expectLocalRefsResolve(out);
+  });
+
+  it("gives a top-level $ref to a plain object type object", () => {
+    const out = normalizeClaudeInputSchema({ $ref: "#/$defs/A", $defs: { A: { properties: { q: { type: "string" } } } } });
+    expect(out).toEqual({ type: "object", properties: { q: { type: "string" } } });
   });
 });
 
@@ -299,5 +472,64 @@ describe("claude passthrough", () => {
 
     const addition = sent.messages.flatMap((m) => (Array.isArray(m.content) ? m.content : [])).find((b) => b.type === "tool_addition");
     expectPlainObjectSchema(addition.tool.definition.input_schema);
+  });
+});
+
+const toolAddition = (input_schema) => ({
+  role: "system",
+  content: [{ type: "tool_addition", tool: { type: "tool_definition", definition: { name: "tool_d", description: "Added later", input_schema } } }],
+});
+const findAddition = (body) => body.messages
+  .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+  .find((b) => b.type === "tool_addition");
+
+describe("claude → claude on a Claude-format provider outside the native pairs", () => {
+  it("flattens a tool added by value mid-conversation", () => {
+    const body = routes.claude(SEARCH_SCHEMA);
+    body.messages.push(
+      { role: "assistant", content: [{ type: "text", text: "ok" }] },
+      toolAddition({ description: "Find later", oneOf: [byId, byQuery] }),
+      { role: "user", content: "next" },
+    );
+    const out = translateRequest("claude", "claude", MODEL, body, false, { ...CREDS }, "glm");
+
+    expect(out.tools.map((t) => t.name)).toEqual(NAMES);
+    for (const tool of out.tools) expectPlainObjectSchema(tool.input_schema);
+    const schema = findAddition(out).tool.definition.input_schema;
+    expectPlainObjectSchema(schema);
+    expect(schema.required).toEqual(["verbose"]);
+    expect(schema.description).toBe("Find later\n\nAccepts one of: By id; Search by free text.");
+  });
+});
+
+describe("Zed route to Anthropic", () => {
+  it("sends flattened tool schemas, in order", () => {
+    const out = buildProviderRequest("Anthropic", MODEL, routes.openai(SEARCH_SCHEMA), true, null);
+    expect(out.tools.map((t) => t.name)).toEqual(NAMES);
+    for (const tool of out.tools) expectPlainObjectSchema(tool.input_schema);
+    expect(JSON.stringify(out.tools[0].input_schema)).toBe(JSON.stringify(TOOL_A_SCHEMA));
+  });
+});
+
+describe("cleanJSONSchemaForAntigravity allOf (shared merge)", () => {
+  it("merges allOf next to sibling properties, inside properties too, skipping null members", () => {
+    const out = cleanJSONSchemaForAntigravity({
+      type: "object",
+      properties: {
+        base: { type: "string" },
+        nested: { type: "object", allOf: [{ properties: { x: { type: "integer" } }, required: ["x"] }] },
+      },
+      required: ["base"],
+      allOf: [{ properties: { a: { type: "string" } }, required: ["a"] }, null],
+    });
+    expect(out).toEqual({
+      type: "object",
+      properties: {
+        base: { type: "string" },
+        nested: { type: "object", properties: { x: { type: "integer" } }, required: ["x"] },
+        a: { type: "string" },
+      },
+      required: ["base", "a"],
+    });
   });
 });

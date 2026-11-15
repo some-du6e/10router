@@ -12,3 +12,9 @@ export const JSON_SCHEMA_COMBINATOR = {
 };
 
 export const JSON_SCHEMA_REF = "$ref";
+
+// Where a schema keeps the definitions its $refs point at.
+export const JSON_SCHEMA_DEFS = {
+  DEFS: "$defs",
+  DEFINITIONS: "definitions",
+};
