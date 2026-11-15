@@ -6,6 +6,8 @@ import {
   shouldRefreshCredentials,
 } from "../services/oauthCredentialManager.js";
 import { normalizeResponsesInput } from "../translator/formats/responsesApi.js";
+import { responsesOutputToChatContent, scrubInlineBase64, toolContentText } from "../translator/concerns/toolContent.js";
+import { OPENAI_BLOCK, RESPONSES_ITEM } from "../translator/schema/index.js";
 import { getModelUpstreamId } from "../config/providerModels.js";
 import {
   GROK_CLI_CLIENT_IDENTIFIER,
@@ -154,6 +156,18 @@ function stringifyGrokCliToolOutput(output) {
   return JSON.stringify(output);
 }
 
+const MEDIA_PART_TYPES = new Set([RESPONSES_ITEM.INPUT_IMAGE, RESPONSES_ITEM.INPUT_FILE, OPENAI_BLOCK.IMAGE_URL]);
+
+// A tool output as the string Grok takes. One with an image or file becomes
+// its text with placeholders; any other is scrubbed like every tool result,
+// so no screenshot's data: URL reaches Grok as text.
+function grokCliToolOutputText(output) {
+  if (Array.isArray(output) && output.some((part) => MEDIA_PART_TYPES.has(part?.type))) {
+    return toolContentText(responsesOutputToChatContent(output));
+  }
+  return scrubInlineBase64(stringifyGrokCliToolOutput(output));
+}
+
 function isNativeGrokCliItemId(id) {
   return typeof id === "string" && GROK_CLI_NATIVE_ITEM_ID.test(id);
 }
@@ -185,7 +199,7 @@ function normalizeGrokCliInputItem(item) {
     return {
       type: "function_call_output",
       call_id: callId,
-      output: stringifyGrokCliToolOutput(item.output),
+      output: grokCliToolOutputText(item.output),
     };
   }
 
@@ -438,7 +452,7 @@ export class GrokCliExecutor extends BaseExecutor {
         body.input = body.messages.map((m) => ({
           type: "message",
           role: m.role || "user",
-          content: typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? ""),
+          content: toolContentText(m.content),
         }));
         delete body.messages;
       } else {

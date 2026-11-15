@@ -13,7 +13,7 @@ function baseBody() {
       { role: "system", content: "You are helpful." },
       { role: "user", content: [
         { type: "text", text: "What's in this image?" },
-        { type: "image_url", image_url: { url: "data:image/png;base64,IMGDATA", detail: "high" } },
+        { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=", detail: "high" } },
       ] },
       { role: "assistant", content: "", tool_calls: [
         { id: "call_1", type: "function", function: { name: "get_weather", arguments: '{"city":"NYC"}' } },

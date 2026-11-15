@@ -3,6 +3,7 @@
  */
 
 import { FORMATS } from "../translator/formats.js";
+import { IMAGE_TOKEN_ESTIMATE } from "../config/mediaConfig.js";
 
 // Legacy per-chunk usage console line; off by default (superseded by "📊 done")
 const DEBUG_USAGE = process.env.LOG_USAGE_VERBOSE === "1";
@@ -340,18 +341,10 @@ export function mergeUsage(prev, next) {
  */
 export function estimateInputTokens(body) {
   if (!body || typeof body !== "object") return 0;
-
-  try {
-    // Calculate total body size (includes messages, tools, system, thinking config, etc.)
-    const bodyStr = JSON.stringify(body);
-    const totalChars = bodyStr.length;
-
-    // Estimate: ~4 chars per token (rough average across all tokenizers)
-    return Math.ceil(totalChars / 4);
-  } catch (err) {
-    // Fallback if stringify fails
-    return 0;
-  }
+  // Total body size (messages, tools, system, thinking config, etc.) at ~4 chars
+  // per token, with inline images and files counted by kind, not as base64 text.
+  const measured = measureInlineMedia(body);
+  return measured ? Math.ceil(measured.json.length / 4) + measured.inline : 0;
 }
 
 /**
@@ -390,18 +383,42 @@ export function formatUsage(inputTokens, outputTokens, targetFormat) {
 // ---- Billing estimates -------------------------------------------------------
 // What a request is charged when the provider never reports its usage (a
 // stream cut short, an upstream with no usage). Unlike estimateUsage (the
-// client-facing context meter) there is no safety buffer, base64 images are
-// not read as text, and non-ASCII text (CJK, emoji) counts about one token per
-// character instead of a quarter.
+// client-facing context meter) there is no safety buffer, and non-ASCII text
+// (CJK, emoji) counts about one token per character instead of a quarter. Both
+// count an inline image at a flat rate, not as base64 text.
 
-const BILLING_IMAGE_TOKENS = 1600;
 const NON_ASCII = /[^\x00-\x7f]/g;
 const DATA_URL = /^data:([^;,]+);base64,/;
 
-/** Tokens a base64 payload is billed at: an image flat, any other file by its decoded size. */
+/** Tokens a base64 payload counts as: an image flat, any other file by its decoded size. */
 function inlinePayloadTokens(mime, base64) {
-  if (/^image\//i.test(mime || "")) return BILLING_IMAGE_TOKENS;
+  if (/^image\//i.test(mime || "")) return IMAGE_TOKEN_ESTIMATE;
   return Math.ceil((base64.length * 3) / 4 / 4);
+}
+
+/**
+ * The body as JSON with inline files blanked, and their tokens. Inline files: a
+ * data: URL (OpenAI), a { type: "base64", media_type, data } source (Anthropic
+ * image/document), { mimeType, data } (Gemini inlineData), { data, format }
+ * (OpenAI input_audio). Null when the body can't be serialized.
+ */
+function measureInlineMedia(body) {
+  let inline = 0;
+  try {
+    const json = JSON.stringify(body, function replacer(key, value) {
+      if (typeof value !== "string" || value.length <= 256) return value;
+      const url = DATA_URL.exec(value);
+      if (url) { inline += inlinePayloadTokens(url[1], value.slice(url[0].length)); return ""; }
+      if (key === "data" && this && typeof this === "object") {
+        const mime = this.media_type || this.mimeType || this.mime_type || (this.format ? `audio/${this.format}` : null);
+        if (this.type === "base64" || mime) { inline += inlinePayloadTokens(mime, value); return ""; }
+      }
+      return value;
+    });
+    return typeof json === "string" ? { json, inline } : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -417,26 +434,8 @@ export function weighChars(text) {
 /** Input tokens a request body is billed at when the provider reports none. */
 export function estimateBillingInputTokens(body) {
   if (!body || typeof body !== "object") return 0;
-  let inline = 0;
-  let json;
-  try {
-    // Inline files: a data: URL (OpenAI), a { type: "base64", media_type, data }
-    // source (Anthropic image/document), { mimeType, data } (Gemini inlineData),
-    // { data, format } (OpenAI input_audio). Billed by kind and size, not as text.
-    json = JSON.stringify(body, function replacer(key, value) {
-      if (typeof value !== "string" || value.length <= 256) return value;
-      const url = DATA_URL.exec(value);
-      if (url) { inline += inlinePayloadTokens(url[1], value.slice(url[0].length)); return ""; }
-      if (key === "data" && this && typeof this === "object") {
-        const mime = this.media_type || this.mimeType || this.mime_type || (this.format ? `audio/${this.format}` : null);
-        if (this.type === "base64" || mime) { inline += inlinePayloadTokens(mime, value); return ""; }
-      }
-      return value;
-    });
-  } catch {
-    return 0;
-  }
-  return Math.ceil(weighChars(json) / 4) + inline;
+  const measured = measureInlineMedia(body);
+  return measured ? Math.ceil(weighChars(measured.json) / 4) + measured.inline : 0;
 }
 
 /**
