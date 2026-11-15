@@ -5,7 +5,8 @@
 //
 //   bun tests/scripts/tool-result-images-before-after.mjs <root> [--label Before] [--assert-clean]
 //
-// --assert-clean exits 1 when the image's base64 shows up in any text field.
+// --assert-clean exits 1 when the image's base64 shows up in any text field, or
+// when the image isn't sent as an image.
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -23,8 +24,8 @@ const load = async (rel) => {
 const { translateRequest } = await load("open-sse/translator/index");
 const { FORMATS } = await load("open-sse/translator/formats");
 
-// ~450 KB of image bytes, about the size of a full-screen JPEG screenshot.
-const B64 = randomBytes(450_000).toString("base64");
+// ~450 KB of image bytes behind a JPEG header, about the size of a full-screen screenshot.
+const B64 = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), randomBytes(450_000)]).toString("base64");
 const IMAGE_TOKENS = 1600; // the router's flat per-image estimate
 const body = () => ({
   model: "claude-sonnet-4-5",
@@ -63,11 +64,21 @@ const describeContent = (content) => (typeof content === "string"
   ? `string, ${content.length.toLocaleString("en-US")} chars`
   : `[${content.map((b) => (b.type === "text" ? `text(${b.text.length.toLocaleString("en-US")} chars)` : b.type === "image" ? `image(${b.source?.type}, ${b.source?.media_type ?? b.source?.url})` : b.type)).join(", ")}]`);
 
+// Where the image must be on each target once it's sent as an image.
+const claudeHasImage = (out, tool) => Array.isArray(tool.content)
+  && tool.content.some((b) => b.type === "image" && b.source?.type === "base64" && b.source.data === B64);
+const chatHasImage = (out, tool) => {
+  const after = out.messages[out.messages.indexOf(tool) + 1];
+  return after?.role === "user" && Array.isArray(after.content)
+    && after.content.some((p) => p.type === "image_url" && p.image_url?.url?.endsWith(B64));
+};
+
 let leaked = false;
+let missing = false;
 const lines = [`== ${label}`];
-for (const [name, target, pick] of [
-  ["Claude-format upstream", FORMATS.CLAUDE, (out) => out.messages.flatMap((m) => (Array.isArray(m.content) ? m.content : [])).find((b) => b.type === "tool_result")],
-  ["OpenAI Chat upstream", FORMATS.OPENAI, (out) => out.messages.find((m) => m.role === "tool")],
+for (const [name, target, pick, hasImage] of [
+  ["Claude-format upstream", FORMATS.CLAUDE, (out) => out.messages.flatMap((m) => (Array.isArray(m.content) ? m.content : [])).find((b) => b.type === "tool_result"), claudeHasImage],
+  ["OpenAI Chat upstream", FORMATS.OPENAI, (out) => out.messages.find((m) => m.role === "tool"), chatHasImage],
 ]) {
   const out = translateRequest(FORMATS.OPENAI_RESPONSES, target, "claude-sonnet-4-5", body(), true, null, null);
   const images = { count: 0 };
@@ -85,13 +96,16 @@ for (const [name, target, pick] of [
   lines.push(`  text in body: ${text.length.toLocaleString("en-US")} chars, images: ${images.count}`);
   lines.push(`  estimated input tokens: ~${tokens.toLocaleString("en-US")}`);
   lines.push(`  base64 inside a text field: ${leak ? "YES" : "no"}`);
+  const sent = hasImage(out, tool);
+  missing ||= !sent;
+  lines.push(`  image sent as an image: ${sent ? "yes" : "NO"}`);
 }
 console.log(lines.join("\n"));
 if (process.env.GITHUB_STEP_SUMMARY) {
   const { appendFileSync } = await import("node:fs");
   appendFileSync(process.env.GITHUB_STEP_SUMMARY, "```\n" + lines.join("\n") + "\n```\n");
 }
-if (assertClean && leaked) {
-  console.error("FAIL: the image's base64 was sent as text");
+if (assertClean && (leaked || missing)) {
+  console.error(leaked ? "FAIL: the image's base64 was sent as text" : "FAIL: the image was not sent as an image");
   process.exit(1);
 }
