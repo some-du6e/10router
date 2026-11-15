@@ -9,7 +9,7 @@ import { FORMATS } from "../formats.js";
 import { normalizeResponsesInput } from "../formats/responsesApi.js";
 import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM, TOOL_TYPE, TOOL_CHOICE } from "../schema/index.js";
 import { isWireToolName, qualifyToolName } from "../concerns/toolNamespace.js";
-import { imagePartUrl, responsesContentPartToChat, responsesOutputToChatContent, toolContentText } from "../concerns/toolContent.js";
+import { imagePartUrl, omittedText, responsesContentPartToChat, responsesOutputToChatContent, toolContentText } from "../concerns/toolContent.js";
 
 // Responses API enforces max 64 chars on call_id (#393)
 const MAX_CALL_ID_LEN = 64;
@@ -421,9 +421,11 @@ function buildReasoningInputItem(msg) {
 }
 
 // Chat image_url { url, detail } (or a bare url string) → Responses input_image,
-// whose image_url is the url string.
-function chatImageToResponses(part) {
-  return { type: RESPONSES_ITEM.INPUT_IMAGE, image_url: imagePartUrl(part), detail: part.image_url?.detail || "auto" };
+// whose image_url is the url string. One with no url becomes a placeholder.
+function chatImageToResponses(part, textType = RESPONSES_ITEM.INPUT_TEXT) {
+  const url = imagePartUrl(part);
+  if (!url) return { type: textType, text: omittedText(part) };
+  return { type: RESPONSES_ITEM.INPUT_IMAGE, image_url: url, detail: part.image_url?.detail || "auto" };
 }
 
 /**
@@ -480,7 +482,7 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
         : Array.isArray(msg.content)
           ? msg.content.map(c => {
             if (c.type === OPENAI_BLOCK.TEXT) return { type: contentType, text: c.text };
-            if (c.type === OPENAI_BLOCK.IMAGE_URL) return chatImageToResponses(c);
+            if (c.type === OPENAI_BLOCK.IMAGE_URL) return chatImageToResponses(c, contentType);
             if (c.type === RESPONSES_ITEM.INPUT_IMAGE) return c;
             // Serialize any unknown type (tool_use, tool_result, thinking, etc.) as text
             const text = c.text || c.content || JSON.stringify(c);

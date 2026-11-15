@@ -47,6 +47,17 @@ async function resolvePinnedIps(hostname) {
   }
 }
 
+// Real image type of a base64 payload, from its first bytes (null if none matches).
+// Only the head is decoded, so a large screenshot costs nothing extra.
+export function sniffImageMime(base64) {
+  if (typeof base64 !== "string" || !base64) return null;
+  try {
+    return detectImageMime(Buffer.from(base64.slice(0, 64).replace(/\s/g, "").slice(0, 24), "base64"));
+  } catch {
+    return null;
+  }
+}
+
 // Verify buffer magic bytes match a known image signature; return its mime or null.
 function detectImageMime(buf) {
   for (const { sig, offset, mime, verifyWebp } of IMAGE_SIGNATURES) {

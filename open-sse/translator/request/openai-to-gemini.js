@@ -18,8 +18,8 @@ import {
 } from "../formats/gemini.js";
 import { deriveSessionId, toNumericSessionId } from "../../utils/sessionManager.js";
 import { ROLE, GEMINI_ROLE, OPENAI_BLOCK, CLAUDE_BLOCK, DEFAULT_IMAGE_MIME } from "../schema/index.js";
-import { omittedText, scrubInlineBase64, splitToolContent } from "../concerns/toolContent.js";
-import { imageAttachedBelowText } from "../../config/mediaConfig.js";
+import { isDataUriImage, omittedText, scrubInlineBase64, splitToolContent } from "../concerns/toolContent.js";
+import { MEDIA_OMITTED_TEXT, imageAttachedBelowText, imageUrlText } from "../../config/mediaConfig.js";
 
 // Sanitize function names for Gemini API.
 // Gemini requires: starts with [a-zA-Z_], followed by [a-zA-Z0-9_.:\-], max 64 chars.
@@ -155,7 +155,9 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
           }
 
           // Check if there are actual tool responses in the next messages
-          const hasActualResponses = toolCallIds.some(fid => toolResponses[fid]);
+          // An empty result still answers its call: Gemini wants one functionResponse per functionCall.
+          const hasResponse = (fid) => toolResponses[fid] !== undefined;
+          const hasActualResponses = toolCallIds.some(hasResponse);
 
           if (hasActualResponses) {
             const toolParts = [];
@@ -163,7 +165,7 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
             const mediaParts = [];
             let notedImages = 0;
             for (const fid of toolCallIds) {
-              if (!toolResponses[fid]) continue;
+              if (!hasResponse(fid)) continue;
 
               let name = tcID2Name[fid];
               if (!name) {
@@ -177,13 +179,16 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
 
               let resp = toolResponses[fid];
               if (Array.isArray(resp)) {
-                const { text, images } = splitToolContent(resp, notedImages);
+                // Only inline images go as inlineData; a web URL stays as text.
+                const { text, images } = splitToolContent(resp, { offset: notedImages, carries: isDataUriImage });
                 notedImages += images.length;
                 resp = text;
                 mediaParts.push(...convertOpenAIContentToParts(images));
               }
               let parsedResp = tryParseJSON(resp);
-              if (parsedResp === null) {
+              if (resp === "" || resp == null) {
+                parsedResp = {};
+              } else if (parsedResp === null) {
                 parsedResp = { result: resp };
               } else if (typeof parsedResp !== "object") {
                 parsedResp = { result: parsedResp };
@@ -369,7 +374,9 @@ function wrapInCloudCodeEnvelopeForClaude(model, claudeRequest, credentials = nu
                   resultMedia.push({ inlineData: { mime_type: c.source.media_type || DEFAULT_IMAGE_MIME, data: c.source.data } });
                   return imageAttachedBelowText(resultMedia.length);
                 }
-                return c.type === CLAUDE_BLOCK.IMAGE ? omittedText(c) : scrubInlineBase64(JSON.stringify(c));
+                if (c.type === CLAUDE_BLOCK.IMAGE) return c.source?.url ? imageUrlText(c.source.url) : omittedText(c);
+                if (c.type === CLAUDE_BLOCK.DOCUMENT) return MEDIA_OMITTED_TEXT.FILE;
+                return scrubInlineBase64(JSON.stringify(c));
               }).join("\n");
             }
             // Resolve the original tool name from the id — Gemini requires it to match the functionCall name

@@ -25,6 +25,8 @@ import os from "node:os";
 import fs from "node:fs";
 import { BaseExecutor } from "./base.js";
 import { toolContentText } from "../translator/concerns/toolContent.js";
+import { OPENAI_BLOCK } from "../translator/schema/index.js";
+import { MEDIA_OMITTED_TEXT } from "../config/mediaConfig.js";
 
 // ─── Binary discovery ────────────────────────────────────────────────────────
 
@@ -264,6 +266,9 @@ function buildPromptText(messages) {
       for (const p of m.content) {
         if (!p || typeof p !== "object") continue;
         if (p.type === "text") text += String(p.text || "");
+        // The prompt is text only: an image (a tool's screenshot moved to a
+        // user turn, say) is named, never inlined.
+        else if (p.type === OPENAI_BLOCK.IMAGE_URL || p.type === OPENAI_BLOCK.IMAGE) text += MEDIA_OMITTED_TEXT.IMAGE;
         else if (p.type === "tool_use") {
           text += `\n[Tool call ${p.name} id=${p.id}]\n${JSON.stringify(p.input ?? {})}\n`;
         } else if (p.type === "tool_result") {

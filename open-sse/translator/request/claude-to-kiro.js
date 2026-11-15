@@ -31,10 +31,19 @@ import {
 } from "../../config/kiroConstants.js";
 import { DEFAULT_IMAGE_MIME } from "../schema/index.js";
 import { ROLE, CLAUDE_BLOCK } from "../schema/index.js";
+import { scrubInlineBase64 } from "../concerns/toolContent.js";
+import { MEDIA_OMITTED_TEXT, imageAttachedBelowText, imageUrlText } from "../../config/mediaConfig.js";
 import {
   canonicalizeKiroConversation,
   normalizeKiroToolSpecs,
 } from "../concerns/kiroConversation.js";
+
+// Claude base64 image source → Kiro image.
+function kiroImage(source) {
+  const mediaType = source.media_type || DEFAULT_IMAGE_MIME;
+  const format = mediaType.split("/")[1] || mediaType;
+  return { format, source: { bytes: source.data } };
+}
 
 /**
  * Convert Claude messages to Kiro history + currentMessage.
@@ -89,21 +98,29 @@ function convertClaudeMessagesToKiro(messages, model) {
           if (block.type === CLAUDE_BLOCK.TEXT) {
             pendingUserContent.push(block.text);
           } else if (block.type === CLAUDE_BLOCK.IMAGE && block.source?.type === "base64") {
-            const mediaType = block.source.media_type || DEFAULT_IMAGE_MIME;
-            const format = mediaType.split("/")[1] || mediaType;
-            pendingImages.push({ format, source: { bytes: block.source.data } });
+            pendingImages.push(kiroImage(block.source));
           } else if (block.type === CLAUDE_BLOCK.TOOL_RESULT) {
             let resultContent = "";
             if (typeof block.content === "string") {
               resultContent = block.content;
             } else if (Array.isArray(block.content)) {
-              resultContent =
-                block.content
-                  .filter((c) => c.type === CLAUDE_BLOCK.TEXT)
-                  .map((c) => c.text)
-                  .join("\n") || JSON.stringify(block.content);
+              // A tool's screenshot is attached to this turn as a Kiro image;
+              // its base64 never goes in the result text.
+              const texts = [];
+              for (const c of block.content) {
+                if (c?.type === CLAUDE_BLOCK.TEXT) texts.push(c.text);
+                else if (c?.type === CLAUDE_BLOCK.IMAGE && c.source?.type === "base64" && c.source.data) {
+                  pendingImages.push(kiroImage(c.source));
+                  texts.push(imageAttachedBelowText(pendingImages.length));
+                } else if (c?.type === CLAUDE_BLOCK.IMAGE) {
+                  texts.push(c.source?.url ? imageUrlText(c.source.url) : MEDIA_OMITTED_TEXT.IMAGE);
+                } else if (c?.type === CLAUDE_BLOCK.DOCUMENT) {
+                  texts.push(MEDIA_OMITTED_TEXT.FILE);
+                }
+              }
+              resultContent = texts.filter(Boolean).join("\n") || scrubInlineBase64(JSON.stringify(block.content));
             } else if (block.content) {
-              resultContent = JSON.stringify(block.content);
+              resultContent = scrubInlineBase64(JSON.stringify(block.content));
             }
             pendingToolResults.push({
               toolUseId: block.tool_use_id,

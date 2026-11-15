@@ -18,7 +18,8 @@ import {
   usesKiroNativeGptEffort
 } from "../../config/kiroConstants.js";
 import { parseDataUri } from "../concerns/image.js";
-import { imagePartUrl, splitToolContent } from "../concerns/toolContent.js";
+import { imagePartUrl, isDataUriImage, splitToolContent } from "../concerns/toolContent.js";
+import { imageUrlText } from "../../config/mediaConfig.js";
 import { DEFAULT_IMAGE_MIME } from "../schema/index.js";
 import { ROLE, OPENAI_BLOCK, CLAUDE_BLOCK } from "../schema/index.js";
 import {
@@ -105,6 +106,8 @@ function convertMessages(messages, model) {
     currentRole = role;
 
     if (role === ROLE.USER) {
+      // Images already attached to this user turn, so a tool result's notes keep counting
+      const imagesBefore = pendingImages.length;
       // Extract content
       let content = "";
       if (typeof msg.content === "string") {
@@ -123,7 +126,7 @@ function convertMessages(messages, model) {
               pendingImages.push({ format, source: { bytes: parsed.base64 } });
             } else if (url.startsWith("http://") || url.startsWith("https://")) {
               // Kiro only supports base64 — fallback to URL text
-              textParts.push(`[Image: ${url}]`);
+              textParts.push(imageUrlText(url));
             }
           } else if (c.type === CLAUDE_BLOCK.IMAGE) {
             // Claude format: source.type = "base64", source.media_type, source.data
@@ -155,8 +158,9 @@ function convertMessages(messages, model) {
 
       // Handle tool role (from normalized)
       if (msg.role === ROLE.TOOL) {
-        // Images in the content went to pendingImages above; this is the text.
-        const toolContent = splitToolContent(msg.content).text;
+        // Inline images went to pendingImages above (Kiro takes base64 only); a
+        // web URL stays as text.
+        const toolContent = splitToolContent(msg.content, { offset: imagesBefore, carries: isDataUriImage }).text;
         pendingToolResults.push({
           toolUseId: msg.tool_call_id,
           status: msg.is_error || msg.status === "error" ? "error" : "success",

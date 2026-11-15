@@ -4,7 +4,7 @@ import { adjustMaxTokens } from "../formats/maxTokens.js";
 import { encodeDataUri } from "../concerns/image.js";
 import { ROLE, OPENAI_BLOCK, CLAUDE_BLOCK } from "../schema/index.js";
 import { collapseTextParts } from "../concerns/message.js";
-import { imageAttachedBelowText } from "../../config/mediaConfig.js";
+import { MEDIA_OMITTED_TEXT, imageAttachedBelowText } from "../../config/mediaConfig.js";
 import { scrubInlineBase64 } from "../concerns/toolContent.js";
 import { stripAnthropicBillingHeader } from "../../utils/claudeCloaking.js";
 
@@ -211,6 +211,8 @@ function convertClaudeMessage(msg) {
               else if (c?.type === CLAUDE_BLOCK.IMAGE) {
                 const image = toImagePart(c);
                 if (image) { resultImages.push(image); texts.push(imageAttachedBelowText(resultImages.length)); }
+              } else if (c?.type === CLAUDE_BLOCK.DOCUMENT) {
+                texts.push(MEDIA_OMITTED_TEXT.FILE);
               }
             }
             resultContent = texts.join("\n") || scrubInlineBase64(JSON.stringify(block.content));

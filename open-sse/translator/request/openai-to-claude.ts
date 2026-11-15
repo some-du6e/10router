@@ -2,8 +2,10 @@ import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
 import { adjustMaxTokens } from "../formats/maxTokens.js";
 import { safeParseJSON } from "../concerns/json.js";
-import { parseDataUri } from "../concerns/image.js";
+import { parseDataUri, sniffImageMime } from "../concerns/image.js";
 import { imagePartUrl, omittedText, scrubInlineBase64 } from "../concerns/toolContent.js";
+import { capToolResultImages } from "../concerns/toolImageCap.js";
+import { CLAUDE_IMAGE_MIMES } from "../../config/mediaConfig.js";
 import { extractTextContent } from "../formats/gemini.js";
 import { ROLE, OPENAI_BLOCK, CLAUDE_BLOCK } from "../schema/index.js";
 import { getCapabilitiesForModel } from "../../providers/capabilities.js";
@@ -101,6 +103,9 @@ export function openaiToClaudeRequest(model: string, body: Body, stream: boolean
     }
 
     flushCurrentMessage();
+
+    // A long computer-use session: keep under the upstream's image limits
+    capToolResultImages(messages);
 
     // Add cache_control to last assistant message
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -271,6 +276,15 @@ function getContentBlocksFromMessage(msg: Body, toolNameMap: Map<string, string>
   return blocks;
 }
 
+// A base64 image block typed by its bytes, not the label it came with, or null
+// when they aren't a type Anthropic takes. A wrong type is a 400 on every later
+// turn, since the image stays in the history.
+function base64ImageBlock(data: unknown): ClaudeBlock | null {
+  const mime = sniffImageMime(data);
+  if (!mime || !CLAUDE_IMAGE_MIMES.has(mime)) return null;
+  return { type: CLAUDE_BLOCK.IMAGE, source: { type: "base64", media_type: mime, data } };
+}
+
 // One Chat content part → Claude text, image or document block, or null when
 // Claude has nothing for it. An image Claude can't read becomes a placeholder.
 function openaiPartToClaude(part: Body): ClaudeBlock | null {
@@ -280,16 +294,15 @@ function openaiPartToClaude(part: Body): ClaudeBlock | null {
   if (part.type === OPENAI_BLOCK.IMAGE_URL) {
     const url = imagePartUrl(part);
     const parsed = parseDataUri(url);
-    if (parsed) {
-      return { type: CLAUDE_BLOCK.IMAGE, source: { type: "base64", media_type: parsed.mimeType, data: parsed.base64 } };
-    }
+    if (parsed) return base64ImageBlock(parsed.base64) ?? { type: CLAUDE_BLOCK.TEXT, text: omittedText(part) };
     if (url.startsWith("http://") || url.startsWith("https://")) {
       return { type: CLAUDE_BLOCK.IMAGE, source: { type: "url", url } };
     }
     return { type: CLAUDE_BLOCK.TEXT, text: omittedText(part) };
   }
   if (part.type === OPENAI_BLOCK.IMAGE && part.source) {
-    return { type: CLAUDE_BLOCK.IMAGE, source: part.source };
+    if (part.source.type !== "base64") return { type: CLAUDE_BLOCK.IMAGE, source: part.source };
+    return base64ImageBlock(part.source.data) ?? { type: CLAUDE_BLOCK.TEXT, text: omittedText(part) };
   }
   if (part.type === OPENAI_BLOCK.FILE && part.file) {
     // OpenAI file block -> Claude document (PDF only; Claude rejects other mimes).
@@ -302,9 +315,24 @@ function openaiPartToClaude(part: Body): ClaudeBlock | null {
 }
 
 // A tool message's content → tool_result content, which takes text, image and
-// document blocks. Text-only content goes through as it is.
+// document blocks. Text is scrubbed of image data: URLs, and empty text blocks
+// (which Anthropic rejects) are dropped; otherwise text-only content goes
+// through as it is.
 function toolResultContent(content: unknown): unknown {
-  if (!Array.isArray(content) || content.every((part) => part?.type === OPENAI_BLOCK.TEXT)) return content;
+  if (typeof content === "string") return scrubInlineBase64(content);
+  if (!Array.isArray(content)) return content;
+  if (content.every((part) => part?.type === OPENAI_BLOCK.TEXT)) {
+    let changed = false;
+    const kept = content.flatMap((part) => {
+      const text = scrubInlineBase64(part.text);
+      if (!text) { changed = true; return []; }
+      if (text === part.text) return [part];
+      changed = true;
+      return [{ ...part, text }];
+    });
+    if (!changed) return content;
+    return kept.length > 0 ? kept : "";
+  }
   const blocks: ClaudeBlock[] = [];
   for (const part of content) {
     if (!part || typeof part !== "object") continue;

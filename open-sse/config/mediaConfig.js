@@ -16,20 +16,42 @@ export const IMAGE_SIGNATURES = [
   { sig: [0x42, 0x4d], offset: 0, mime: "image/bmp" },
 ];
 
-// Text that stands in for media a target can't carry. Base64 never goes out as text.
+// Image types Anthropic accepts in an image block. The bytes must match the type.
+export const CLAUDE_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+
+// Text that stands in for media a target can't carry.
 export const MEDIA_OMITTED_TEXT = {
   IMAGE: "[image omitted]",
   FILE: "[file omitted]",
   OTHER: "[content omitted]",
+  // An old tool-result image dropped to keep a long session under the image cap
+  EARLIER_IMAGE: "[earlier image omitted]",
 };
 
 // Note left in a tool result whose nth image was moved to the user turn after it.
 export const imageAttachedBelowText = (n) => `[image ${n} attached below]`;
 
-// A run of at least this many base64 characters in tool-result text is an
-// encoded blob (a screenshot is ~600K), not something a model reads.
-// Shorter runs, like a small icon inlined in a CSS file, are left alone.
+// Text for an image a target gets only as its URL.
+export const imageUrlText = (url) => `[Image: ${url}]`;
+
+// Tool-result text loses image and PDF data: URLs with a payload of at least
+// this many characters (a screenshot is ~600K). Shorter ones, like a small icon
+// inlined in a CSS file, and other types (fonts) are left alone, as is any
+// bare base64 or hex.
 export const INLINE_BASE64_MIN_CHARS = 1024;
+export const SCRUBBED_DATA_URI_MIME = /^(image\/|application\/pdf$)/i;
+
+// Long computer-use sessions: Anthropic takes at most 100 images and about
+// 32 MB per request. Past either limit here, the oldest tool-result images
+// are replaced in chunks of CHUNK, so the prompt prefix (and its cache) stays
+// the same for many turns after each trim. User images and the newest
+// KEEP_RECENT tool images are never dropped.
+export const TOOL_IMAGE_CAP = {
+  MAX_IMAGES: 80,
+  MAX_BYTES: 24 * 1024 * 1024,
+  CHUNK: 40,
+  KEEP_RECENT: 8,
+};
 
 // Tokens one image counts as in local estimates: the context meter, billing
 // and count_tokens. Upstreams charge an image roughly this much, not by the
