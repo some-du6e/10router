@@ -3,10 +3,10 @@ name: Claude tool schema combinators
 on:
   pull_request:
     paths:
-      - "open-sse/translator/**"
-      - "open-sse/handlers/chatCore.js"
+      - "open-sse/**"
+      - "CHANGELOG.md"
       - "tests/package.json"
-      - "tests/vitest.config.js"
+      - "tests/vitest.*.js"
       - "tests/unit/claude-tool-schema-*.test.js"
       - "tests/unit/claude-custom-tool-type.test.js"
       - "tests/unit/claude-foreign-server-tool-use.test.js"
@@ -54,6 +54,8 @@ jobs:
         run: >
           ./node_modules/.bin/eslint
           open-sse/translator/concerns/jsonSchema.js
+          open-sse/config/claudeToolSchema.js
+          open-sse/executors/zed.js
           open-sse/translator/schema/jsonSchema.js
           open-sse/translator/schema/index.js
           open-sse/translator/formats/claude.js
@@ -86,9 +88,23 @@ jobs:
       - name: Before (base branch)
         working-directory: ../base/tests
         run: ./node_modules/.bin/vitest run unit/claude-tool-schema-before-after.test.js 2>&1 | grep -F CLAUDE_TOOL_SCHEMA_BODY
+      # Fails unless every tool this branch sends has an object schema with no
+      # top-level combinator.
       - name: After (this branch)
         working-directory: tests
-        run: ./node_modules/.bin/vitest run unit/claude-tool-schema-before-after.test.js 2>&1 | grep -F CLAUDE_TOOL_SCHEMA_BODY
+        run: |
+          ./node_modules/.bin/vitest run unit/claude-tool-schema-before-after.test.js > "$RUNNER_TEMP/after.log" 2>&1 || { cat "$RUNNER_TEMP/after.log"; exit 1; }
+          grep -F CLAUDE_TOOL_SCHEMA_BODY "$RUNNER_TEMP/after.log" | tee "$RUNNER_TEMP/after.txt"
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const marker = "CLAUDE_TOOL_SCHEMA_BODY ";
+            const line = readFileSync(process.env.RUNNER_TEMP + "/after.txt", "utf8").split("\n").find((l) => l.includes(marker));
+            if (!line) { console.log("no body printed"); process.exit(1); }
+            const { tools } = JSON.parse(line.slice(line.indexOf(marker) + marker.length));
+            const bad = tools.filter((t) => t.input_schema?.type !== "object" || ["allOf", "anyOf", "oneOf"].some((k) => k in t.input_schema));
+            if (!tools.length || bad.length) { console.log("still rejected upstream: " + JSON.stringify(bad)); process.exit(1); }
+            console.log(`${tools.length} tool(s) with a plain object schema`);
+          '
 
   # The suite is not all-green on master (see AGENTS.md), so this runs it on
   # both the base and this branch and fails only on tests that pass on the base
