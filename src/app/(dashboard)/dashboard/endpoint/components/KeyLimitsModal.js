@@ -108,7 +108,7 @@ export default function KeyLimitsModal({ apiKey, onClose, onSaved, requireApiKey
             onChange={setModels}
             emptyText="Every model. Add one to allow only the models listed."
             placeholder="Model id, alias or combo (e.g. claude-opus-5-5)"
-            hint="A bare id allows that model from any provider. An alias or combo is allowed when everything it points to is."
+            hint="A bare id allows that model from any provider. An alias or combo is allowed when everything it points to is. If Codex uses this key, apply its settings again on the CLI Tools page after changing this list."
             pickerTitle="Allow models"
           />
 

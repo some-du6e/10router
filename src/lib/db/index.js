@@ -13,6 +13,7 @@ export {
 } from "./repos/settingsRepo.js";
 import { invalidateSettingsCache } from "./repos/settingsRepo.js";
 import { bumpConnectionsVersion } from "./repos/connectionsRepo.js";
+import { bumpCombosVersion } from "./repos/combosRepo.js";
 
 // Provider connections
 export {
@@ -58,7 +59,7 @@ export {
 // Combos
 export {
   getCombos, getComboById, getComboByName,
-  createCombo, updateCombo, deleteCombo,
+  createCombo, updateCombo, deleteCombo, combosVersion,
 } from "./repos/combosRepo.js";
 
 // Aliases (model + custom)
@@ -229,6 +230,7 @@ export async function importDb(payload) {
   // Settings were replaced wholesale above, bypassing updateSettings.
   invalidateSettingsCache();
   bumpConnectionsVersion();
+  bumpCombosVersion();
 
   // A restore can switch "Show full request details" off; drop any stored
   // full payloads so they don't outlive the setting.

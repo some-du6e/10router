@@ -298,6 +298,41 @@ describe("soft demotion", () => {
     expect(await pick(OPUS)).toBe(key.id);
   });
 
+  // A key whose stream just got no headers (avoidConnectionIds) goes after the
+  // healthy keys but before demoted ones; one also soft-demoted ranks as soft-demoted.
+  it.each([
+    ["avoided", (avoided) => [avoided.id]],
+    ["avoided, the soft-demoted one too", (avoided, soft) => [avoided.id, soft.id]],
+  ])("tries a healthy key first, then an avoided one, then a soft-demoted one (%s)", async (_label, avoid) => {
+    const [soft, avoided, healthy] = await accounts(["s", "a", "h"]);
+    await refuse(soft.id, healthy, { times: 6 });
+    expect((await load(soft.id))[`authSoft_${OPUS}`]).toMatchObject({ keyRefused: true });
+    vi.advanceTimersByTime(3 * MIN);
+    const order = [];
+    const tried = new Set();
+    for (;;) {
+      const id = (await auth.getProviderCredentials(provider, tried, OPUS, { avoidConnectionIds: avoid(avoided, soft) }))?.connectionId;
+      if (!id) break;
+      order.push(id);
+      tried.add(id);
+    }
+    expect(order).toEqual([healthy.id, avoided.id, soft.id]);
+  });
+
+  it("doesn't count a header timeout on a soft-demoted model as a refusal", async () => {
+    const { HEADERS_TIMEOUT } = await import("open-sse/config/errorConfig.js");
+    const { key, peer } = await softDemoted();
+    const before = (await load(key.id))[`authSoft_${OPUS}`];
+    vi.advanceTimersByTime(11 * MIN);
+    await succeed(peer.id, OPUS);
+    await auth.markAccountUnavailable(key.id, 504, `[504]: ${HEADERS_TIMEOUT.text} in 240s (headers timeout)`, provider, OPUS);
+    const conn = await load(key.id);
+    expect(conn[`authSoft_${OPUS}`]).toEqual(before);
+    expect(conn.authHeld401s ?? null).toBeNull();
+    expect(conn.authFailCount ?? null).toBeNull();
+    expect(conn[`authDemote_${OPUS}`] ?? null).toBeNull();
+  });
+
   it("is stored on the connection, without the key, and survives a restart", async () => {
     const { key, peer } = await softDemoted();
     const record = (await load(key.id))[`authSoft_${OPUS}`];

@@ -112,9 +112,17 @@ Important compatibility routes:
 - `src/app/api/v1/responses/route.js`
 - `src/app/api/v1/models/route.js`
 - `src/app/api/v1/codex/*` — Codex-native ingress served at `/backend-api/codex`
-  (`responses` and `responses/compact` reuse the `/v1` handlers, `models` serves
-  the routed catalog in Codex's `{ "models": [...] }` shape, `[...path]`
-  acknowledges Codex's advisory side-calls)
+  (`responses` and `responses/compact` reuse the `/v1` handlers, `[...path]`
+  acknowledges Codex's advisory side-calls). `models` serves the routed models in
+  Codex's `{ "models": [...] }` shape (`src/lib/codex/modelCatalog.js`), which
+  replaces Codex's own catalog once it decodes. A routed model that Codex's own
+  lookup matches to a model in Codex's bundled catalog (vendored in
+  `open-sse/config/codex/`, refreshed with `scripts/vendor-codex-catalog.mjs`),
+  such as `cx/gpt-5.5` or `gh/gpt-5.5`, gets that entry under its routed id.
+  Any other model gets a generic entry with Codex's generic prompt and, if it
+  can call tools, a shell and the freeform `apply_patch` tool. Codex's bundled
+  models also stay in under their bare names, hidden from the picker. The same
+  body carries an OpenAI-shaped `data` list.
 - `src/app/api/v1/messages/count_tokens/route.js`
 - `src/app/api/v1/key/route.js` — `GET /v1/key`: the calling key's own budget,
   spend, allowed models and expiry (see `docs/API_KEY_BUDGETS.md`)
@@ -513,6 +521,7 @@ Translations are selected dynamically based on source payload shape and provider
 - provider account cooldown on transient/rate/auth errors
 - account fallback before failing request
 - combo model fallback when current model/provider path is exhausted
+- an upstream that sends no response headers in time fails as a 504 (`HEADERS_TIMEOUT` in `open-sse/config/errorConfig.js`): one request tries at most one more key after it, and streaming header timeouts from two requests on two keys of one provider/model, with no success between, mark that model hung (`open-sse/services/modelHang.js`, in memory per process), so new requests for it fail at once (a 504 with Retry-After) until a single probe request, sent to keys that haven't stalled, gets an answer; the request that marks it, if it already sent a stream's early headers, ends with a retryable in-stream error instead
 
 ## 2) Token Expiry
 
