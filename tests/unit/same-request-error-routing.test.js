@@ -188,6 +188,9 @@ describe("which errors count", () => {
     [400, "`thinking.budget_tokens` has to be lower than `max_tokens`"],
     [413, "Payload Too Large"],
     [413, ""],
+    // A tool or property name that merely contains a veto word.
+    [400, "Invalid schema for function 'cancel_subscription': additionalProperties has to be false"],
+    [422, "tools.0.input_schema: property 'subscriptionId' is not valid"],
   ];
   const ignored = [
     [400, "The workspace for this key has been disabled."],
@@ -264,6 +267,39 @@ describe("which errors count", () => {
     expect(upstreamMessage(`[400]: ${jsonBody(`${TOO_LONG} (request id: 2026111512000000aaa)`, "req_placeholder_aaaa")}`)).toBe(TOO_LONG);
   });
 
+  it("drops a relay's request id from a body that is a JSON string", () => {
+    const a = `[400]: ${JSON.stringify(`${TOO_LONG} (request id: 20261115120000123456789abcDEF12)`)}`;
+    const b = `[400]: ${JSON.stringify(`${TOO_LONG} (request id: 20261115120005987654321xyzUVW98)`)}`;
+    expect(upstreamMessage(a)).toBe(JSON.stringify(TOO_LONG));
+    expect(requestErrorSignature(400, a)).not.toBeNull();
+    expect(requestErrorSignature(400, a)).toBe(requestErrorSignature(400, b));
+  });
+
+  // Bodies are read up to SAME_REQUEST_ERROR_MAX_TEXT (64 KiB) and matched
+  // synchronously, so no pattern may backtrack badly on a long run.
+  describe("stays fast on a 64 KiB body", () => {
+    const n = 65536;
+    const runs = [" ", "a", "0", "(", "input ", "request ", "model ", "context ", "exceed ", "token limit ", "tools.", "per ", "your ",
+      "(request id: ", "(request id: 1"].map((unit) => unit.repeat(Math.ceil(n / unit.length)).slice(0, n));
+    const timed = (fn) => { const start = performance.now(); fn(); return performance.now() - start; };
+
+    it("finishes requestErrorSignature on a message with 64K trailing spaces", () => {
+      expect(timed(() => requestErrorSignature(400, `[400]: ${TOO_LONG}${" ".repeat(n)}`))).toBeLessThan(200);
+    });
+
+    it("finishes requestErrorSignature on a 422 JSON body echoing 64K spaces of input", () => {
+      const body = JSON.stringify({ detail: [{ msg: TOO_LONG, input: " ".repeat(n) }], message: TOO_LONG });
+      expect(timed(() => requestErrorSignature(422, `[422]: ${body}`))).toBeLessThan(200);
+    });
+
+    it.each(runs.map((run) => [JSON.stringify(run.slice(0, 16)), run]))("runs every pattern and veto on %s... in time", (_label, run) => {
+      const regexes = [...SAME_REQUEST_ERROR_PATTERNS, SAME_REQUEST_ERROR_KEY_LIMIT, MODEL_REFUSAL, OPERATION_REFUSAL];
+      for (const re of regexes) expect(timed(() => re.test(run)), String(re)).toBeLessThan(200);
+      expect(timed(() => requestErrorSignature(400, `[400]: ${TOO_LONG} ${run}`))).toBeLessThan(200);
+      expect(timed(() => upstreamMessage(run))).toBeLessThan(200);
+    });
+  });
+
   // Each message is request-shaped, and exactly one veto keeps it out.
   const vetoes = {
     namesAccountOrLimit: (text) => namesAccountOrLimit(text),
@@ -279,7 +315,7 @@ describe("which errors count", () => {
     ["OPERATION_REFUSAL", `${TOO_LONG}; permission denied for this operation`],
     ...["per minute", "per hour", "per day", "per month", "tpm", "tpd", "rpm", "rpd", "daily", "monthly", "in organization org-example",
       "for this key", "for this account", "throttled", "please wait", "tier 1", "upgrade", "your plan", "tokens_limit_reached",
-      "your organization", "this organisation", "the organization", "subscription"]
+      "your organization", "this organisation", "the organization", "your subscription", "this subscription", "the subscription"]
       .map((words) => ["SAME_REQUEST_ERROR_KEY_LIMIT", `${TOO_LONG} (${words})`]),
     // A hosted tool is enabled per organization.
     ["SAME_REQUEST_ERROR_KEY_LIMIT", "tools.0: web search is not enabled for your organization"],

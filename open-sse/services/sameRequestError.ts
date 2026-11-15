@@ -26,7 +26,9 @@ const asText = (error: unknown): string =>
   (error == null ? "" : typeof error === "string" ? error : JSON.stringify(error)).slice(0, SAME_REQUEST_ERROR_MAX_TEXT);
 
 // A relay's per-call id inside the message text: "... (request id: 2026...abc)".
-const REQUEST_ID_SUFFIX = /\s*\(request id: [^)]*\)/gi;
+// No leading \s*: that backtracks quadratically on a long run of spaces, and
+// normalizeErrorMessage collapses whitespace anyway.
+const REQUEST_ID_SUFFIX = / ?\(request id: [^)]{0,128}\)/gi;
 
 /**
  * The upstream's message: chatCore's "[400]: " prefix dropped, and from a JSON
@@ -35,12 +37,16 @@ const REQUEST_ID_SUFFIX = /\s*\(request id: [^)]*\)/gi;
  * "(request id: ...)" a relay writes into the message is dropped too.
  */
 export function upstreamMessage(error: unknown): string {
+  return bodyMessage(error).replace(REQUEST_ID_SUFFIX, "");
+}
+
+function bodyMessage(error: unknown): string {
   const text = asText(error).replace(/^\[\d+\]:\s*/, "");
   let json: { error?: { message?: unknown } | unknown; message?: unknown } | null = null;
-  try { json = JSON.parse(text); } catch { return text.replace(REQUEST_ID_SUFFIX, ""); }
-  if (!json || typeof json !== "object") return text.replace(REQUEST_ID_SUFFIX, "");
+  try { json = JSON.parse(text); } catch { return text; }
+  if (!json || typeof json !== "object") return text;
   const message = (json.error as { message?: unknown } | undefined)?.message || json.message || json.error;
-  return (message ? asText(message) : text).replace(REQUEST_ID_SUFFIX, "");
+  return message ? asText(message) : text;
 }
 
 /**

@@ -211,7 +211,7 @@ export const SAME_REQUEST_ERROR_PATTERNS = [
 // patterns above can also match ("request too large ... on tokens per min", a
 // hosted tool not enabled for this organization): such an error never counts,
 // since another key may have room or the feature.
-export const SAME_REQUEST_ERROR_KEY_LIMIT = /per (?:min(?:ute)?|hour|day|month)|\b(?:tpm|tpd|rpm|rpd)\b|daily|monthly|in organization|for this (?:key|account)|throttl|please wait|\btier\b|upgrade|your plan|tokens_limit_reached|(?:your|this|the) organi[sz]ation|subscription/i;
+export const SAME_REQUEST_ERROR_KEY_LIMIT = /per (?:min(?:ute)?|hour|day|month)|\b(?:tpm|tpd|rpm|rpd)\b|daily|monthly|in organization|for this (?:key|account)|throttl|please wait|\btier\b|upgrade|your plan|tokens_limit_reached|(?:your|this|the) (?:organi[sz]ation|subscription)/i;
 // Only this much of an error body is read when matching those, parse included.
 export const SAME_REQUEST_ERROR_MAX_TEXT = 64 * 1024;
 
