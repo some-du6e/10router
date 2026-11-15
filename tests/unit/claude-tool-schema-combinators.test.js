@@ -375,6 +375,44 @@ describe("normalizeClaudeInputSchema at the input cap", () => {
     check(out);
   });
 
+  // Each shape costs far more than the budget unless one particular step is
+  // charged to it (or cached); 50 copies in one request make that visible.
+  const fiftyTools = (schema) => {
+    const body = {
+      model: MODEL,
+      messages: [{ role: "user", content: "hi" }],
+      tools: times(50, (i) => ({ type: "function", function: { name: `tool_${i}`, description: "d", parameters: schema() } })),
+    };
+    expect(JSON.stringify(schema()).length).toBeLessThan(CAP_BYTES);
+    expect(countNodes(schema())).toBeLessThan(CAP_NODES);
+    const start = performance.now();
+    const out = translateRequest("openai", "claude", MODEL, body, false, { ...CREDS }, "claude");
+    return { schemas: out.tools.map((t) => t.input_schema), ms: performance.now() - start };
+  };
+  const refsTo = (n) => times(n, () => ({ $ref: "#/$defs/T" }));
+
+  it.each([
+    ["merging allOf members (per key)", () => ({ $defs: { T: { type: "object", properties: stringProps(500, "p") } }, allOf: refsTo(700) })],
+    ["intersecting required keys (per key)", () => ({ $defs: { T: { type: "object", required: times(1000, (j) => `k${j}`) } }, anyOf: refsTo(900) })],
+    ["collecting alternatives' properties (per name)", () => ({ $defs: { T: { type: "object", properties: stringProps(500, "p") } }, anyOf: refsTo(700) })],
+  ])("charges %s, across 50 tools", (_, schema) => {
+    const { schemas, ms } = fiftyTools(schema);
+    console.log(`charges ${_}: ${ms.toFixed(1)} ms`);
+    expect(schemas).toHaveLength(50);
+    for (const s of schemas) expect(isPermissive(s)).toBe(true);
+    expect(ms).toBeLessThan(1500);
+  });
+
+  it("keys each property definition once, across 50 tools", () => {
+    const def = () => Object.fromEntries(times(40, (j) => [`k${j}`, 1]));
+    const T = { type: "object", properties: Object.fromEntries(times(10, (i) => [`p${i}`, def()])) };
+    const { schemas, ms } = fiftyTools(() => ({ $defs: { T: structuredClone(T) }, anyOf: refsTo(900) }));
+    console.log(`keys each definition once: ${ms.toFixed(1)} ms`);
+    expect(schemas).toHaveLength(50);
+    for (const s of schemas) expect(isPermissive(s)).toBe(true);
+    expect(ms).toBeLessThan(1500);
+  });
+
   it("refuses input over the byte cap, keeping a truncated description", () => {
     const big = { description: "H".repeat(5000), anyOf: [{ type: "object", title: "Blob", properties: { blob: { type: "string", description: "x".repeat(70_000) } } }] };
     expect(normalizeClaudeInputSchema(big)).toEqual({ ...PERMISSIVE, description: `${"H".repeat(1023)}…` });
@@ -754,6 +792,47 @@ describe("normalizeClaudeInputSchema $refs", () => {
   it("puts a type into the label as written, $& included", () => {
     expect(normalizeClaudeInputSchema({ anyOf: [{ type: "$&x" }, byQuery] }))
       .toEqual({ ...PERMISSIVE, description: "Accepts one of: a $&x; Search by free text." });
+  });
+
+  it("flattens combinators sitting next to a $ref", () => {
+    const out = normalizeClaudeInputSchema({
+      $defs: { T: { type: "object", properties: { a: { type: "string" } } } },
+      allOf: [{ $ref: "#/$defs/T", anyOf: [{ properties: { b: { type: "string" } } }, { properties: { c: { type: "string" } } }] }],
+    });
+    expect(out.properties).toEqual({ a: { type: "string" }, b: { type: "string" }, c: { type: "string" } });
+  });
+
+  it("lets keys next to a top-level $ref win over the target's", () => {
+    const out = normalizeClaudeInputSchema({
+      $ref: "#/$defs/W",
+      description: "Create a widget",
+      additionalProperties: false,
+      $defs: { W: { type: "object", description: "A widget", additionalProperties: true, properties: { a: { type: "string" } } } },
+    });
+    expect(out).toEqual({ type: "object", description: "Create a widget", additionalProperties: false, properties: { a: { type: "string" } } });
+  });
+
+  // "application/json" is written application~1json; a name with a literal "~1"
+  // in it is written ~01. Escaping or unescaping in the wrong order breaks one of them.
+  it("escapes and unescapes ~ and / in the right order when retargeting", () => {
+    const out = normalizeClaudeInputSchema({
+      anyOf: [
+        {
+          type: "object",
+          properties: {
+            "application/json": { type: "string" },
+            "x~1y": { type: "integer" },
+            a: { $ref: "#/anyOf/0/properties/application~1json" },
+            b: { $ref: "#/anyOf/0/properties/x~01y" },
+          },
+        },
+        byQuery,
+      ],
+    });
+    expect(out.properties.a).toEqual({ $ref: "#/properties/application~1json" });
+    expect(out.properties.b).toEqual({ $ref: "#/properties/x~01y" });
+    expectLocalRefsResolve(out);
+    expect(out.properties["x~1y"]).toEqual({ type: "integer" });
   });
 
   it("merges a top-level $ref's sibling properties and required with the target's, the siblings winning", () => {

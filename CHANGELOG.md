@@ -11,7 +11,7 @@
     - an `input_schema` isn't an object at all;
     - the schema is over the size limit;
     - a member isn't an object;
-    - a `$ref` can't be resolved, isn't local (another document, or a base set by `$id`), or has no exact place once merged (a `$ref` to the document or to an alternative itself, as a recursive union writes, one into an alternative's own `$defs`, or one through a property the alternatives define differently);
+    - a `$ref` can't be resolved, doesn't start with `#` (such as one into another document; an empty `$ref` counts as `#`), or has no exact place once merged (a `$ref` to the document or to an alternative itself, as a recursive union writes, one into an alternative's own `$defs`, or one through a property the alternatives define differently);
     - it doesn't flatten within a fixed work budget;
     - flattening would more than double its size.
 

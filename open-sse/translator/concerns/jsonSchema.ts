@@ -225,7 +225,7 @@ function findRefNodes(node: Schema, skip: Set<object> = new Set(), isMap = false
 // ── JSON pointers ───────────────────────────────────────────────────────────
 
 // "#/a/b~1c" → ["a", "b/c"]; "" and "#" → []; null when not a local pointer
-// (another document, or one named by $id) or malformed.
+// (one that doesn't start with "#") or malformed.
 function parsePointer(ref: unknown): string[] | null {
   if (typeof ref !== "string" || !isLocalPointer(ref)) return null;
   if (ref === "" || ref === "#") return [];
@@ -485,7 +485,7 @@ function dropUnusedDefs(out: Schema) {
 }
 
 // Every $ref left in the output must mean exactly what it meant in the input.
-// One that isn't local (another document, or a base set by $id) can't be
+// One that doesn't start with "#" (another document, say) can't be
 // checked, so it fails. One that still resolves must reach the very same
 // object it did. One that
 // doesn't pointed into a combinator member that was merged away; it's
