@@ -193,6 +193,21 @@ describe("chatCore failure request details", () => {
     expect(executeMock.mock.calls[0][0].onHeadersBudget).toBe(onHeadersBudget);
   });
 
+  it("hands the callback to the retry after a token refresh too", async () => {
+    const { getExecutor } = await import("../../open-sse/executors/index.js");
+    getExecutor.mockReturnValueOnce({ execute: executeMock, noAuth: false, refreshCredentials: async () => ({ accessToken: "refreshed" }) });
+    const answer = (status) => ({
+      response: new Response(JSON.stringify(status === 200 ? { id: "x", choices: [] } : { error: { message: "expired" } }), { status, headers: { "content-type": "application/json" } }),
+      url: "https://upstream.example.test", headers: {}, transformedBody: {},
+    });
+    executeMock.mockResolvedValueOnce(answer(401)).mockResolvedValueOnce(answer(200));
+    const onHeadersBudget = vi.fn();
+    // The reply handling past the retry isn't wired in this file's mocks.
+    await run({ onHeadersBudget }).catch(() => {});
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(executeMock.mock.calls[1][0].onHeadersBudget).toBe(onHeadersBudget);
+  });
+
   it("records timeout when undici reports it only in the error cause", async () => {
     const cause = Object.assign(new Error("Connect Timeout Error"), { code: "UND_ERR_CONNECT_TIMEOUT" });
     executeMock.mockRejectedValue(new TypeError("fetch failed", { cause }));

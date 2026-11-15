@@ -13,7 +13,13 @@ const WINDOWS = HEADERS_TIMEOUT.hungWindowMs;
 const [W0, W1] = WINDOWS;
 const END = T0 + W0;
 const timeout = (requestId, connectionId, now, stream = true) => noteHeadersTimeout(P, M, { requestId, connectionId, stream, reason: "no headers" }, now);
-const check = (requestId, now, options = {}) => checkModelHang(P, M, requestId, options, now);
+const check = (requestId, now) => checkModelHang(P, M, requestId, now);
+// The probe starts, and its executor reports this headers budget at once.
+const startProbe = (requestId, now, budgetMs) => {
+  const result = check(requestId, now);
+  if (budgetMs) noteProbeBudget(P, M, requestId, budgetMs, now);
+  return result;
+};
 const blocked = (requestId, now) => check(requestId, now).blocked;
 
 // Hung at T0 by requests r1 and r2 on keys a and b.
@@ -70,7 +76,7 @@ describe("what marks a model hung", () => {
 describe("a hung model's windows and probes", () => {
   it("lets one probe through after the window, and tells the rest when its budget runs out", () => {
     hang();
-    expect(check("p1", END, { budgetMs: 90_000 })).toEqual({ blocked: false, probe: true, avoidKeys: ["a", "b"] });
+    expect(startProbe("p1", END, 90_000)).toEqual({ blocked: false, probe: true, avoidKeys: ["a", "b"] });
     expect(check("p1", END + 1).probe).toBe(true);
     expect(check("r3", END + 1)).toEqual({ blocked: true, checking: true, retryAtMs: END + 90_000, reason: "no headers" });
   });
@@ -87,14 +93,14 @@ describe("a hung model's windows and probes", () => {
   it("holds the slot for a probe with a long budget until that budget and a margin are past", () => {
     hang();
     const budgetMs = 2 * HEADERS_TIMEOUT.probeLeaseMs;
-    check("p1", END, { budgetMs });
+    startProbe("p1", END, budgetMs);
     expect(blocked("p2", END + budgetMs + HEADERS_TIMEOUT.probeLeaseMarginMs - 1)).toBe(true);
     expect(check("p2", END + budgetMs + HEADERS_TIMEOUT.probeLeaseMarginMs).probe).toBe(true);
   });
 
   it("tells the rest to come back shortly once the probe has outlived its budget but not its lease", () => {
     hang();
-    check("p1", END, { budgetMs: 60_000 });
+    startProbe("p1", END, 60_000);
     const now = END + 90_000;
     expect(check("r3", now)).toMatchObject({ blocked: true, checking: true, retryAtMs: now + 1000 });
   });
@@ -103,16 +109,24 @@ describe("a hung model's windows and probes", () => {
     hang();
     check("p1", END);
     const budgetMs = 20 * 60 * 1000;
-    noteProbeBudget(P, M, "r9", 1);
-    noteProbeBudget(P, M, "p1", budgetMs);
+    noteProbeBudget(P, M, "p1", budgetMs, END);
+    noteProbeBudget(P, M, "r9", 60_000, END);
     expect(check("r3", END + 1).retryAtMs).toBe(END + budgetMs);
     expect(blocked("r3", END + budgetMs + HEADERS_TIMEOUT.probeLeaseMarginMs - 1)).toBe(true);
     expect(check("r3", END + budgetMs + HEADERS_TIMEOUT.probeLeaseMarginMs).probe).toBe(true);
   });
 
+  it("times the probe's next key from when it starts, with that key's budget", () => {
+    hang();
+    startProbe("p1", END, 60_000);
+    // The first key failed fast; the second starts 50s in with a longer budget.
+    noteProbeBudget(P, M, "p1", 240_000, END + 50_000);
+    expect(check("r3", END + 100_000).retryAtMs).toBe(END + 50_000 + 240_000);
+  });
+
   it("moves to the next window only on the probe's own timeout", () => {
     hang();
-    check("p1", END, { budgetMs: 90_000 });
+    startProbe("p1", END, 90_000);
     // A request sent before the hang times out after the window: a check is running.
     expect(timeout("r9", "c", END + 1)).toEqual({ hung: true, checking: true, retryAtMs: END + 90_000, reason: "no headers" });
     expect(timeout("p1", "c", END + 2)).toMatchObject({ hung: true, checking: false, retryAtMs: END + 2 + W1 });

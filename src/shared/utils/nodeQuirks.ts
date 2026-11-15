@@ -44,7 +44,7 @@ export type RawOverrides = {
   models?: string;   // "ours => theirs" per line
   stream?: StreamMode;
   timeout?: string;  // seconds until the upstream answers (headers); a header timeout gets one attempt of timeout x (retries + 1), or x 4 without retries
-  retries?: string;  // retries on 429 / 5xx / network errors (not header timeouts)
+  retries?: string;  // retries on 429 / 5xx / network errors; a header timeout instead gets one attempt of (timeout, or FETCH_CONNECT_TIMEOUT_MS without one) x (retries + 1)
   proxy?: string;    // http(s):// or socks5:// for this endpoint only
 };
 

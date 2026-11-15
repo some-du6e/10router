@@ -1,4 +1,5 @@
 import { MEMORY_CONFIG, UNDICI_HEADERS_TIMEOUT_MS } from "../config/runtimeConfig.js";
+import { isUndiciHeadersTimeout } from "./headersTimeout.js";
 
 const originalFetch = globalThis.fetch;
 const proxyDispatchers = new Map();
@@ -192,7 +193,8 @@ async function getDirectDispatcher() {
     try {
       const { Agent } = await import("undici");
       directDispatcher = new Agent({ headersTimeout: 0 });
-    } catch {
+    } catch (error) {
+      console.warn(`[ProxyFetch] undici unavailable (${error.message}); long header waits end at its default ${UNDICI_HEADERS_TIMEOUT_MS / 1000}s`);
       directDispatcher = null;
     }
   }
@@ -249,9 +251,12 @@ async function fetchVia(url, options, proxyOptions, noHeadersTimeout = false) {
       const dispatcher = await getDispatcher(proxyUrl, { noHeadersTimeout });
       return await originalFetch(url, { ...options, dispatcher });
     } catch (proxyError) {
+      // The upstream got the request and sent no headers (undici's own limit,
+      // which a SOCKS proxy keeps): not the proxy failing, so not retried direct.
+      if (isUndiciHeadersTimeout(proxyError)) throw proxyError;
       // If strictProxy is enabled, fail hard instead of falling back to direct
       if (proxyOptions?.strictProxy === true) {
-        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
+        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`, { cause: proxyError });
       }
       console.warn(`[ProxyFetch] Proxy failed, falling back to direct: ${proxyError.message}`);
       return direct(url, options);

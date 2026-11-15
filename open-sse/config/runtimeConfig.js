@@ -148,13 +148,16 @@ export const UPSTREAM_STREAM_HEADERS_TIMEOUT_MS = envMs("UPSTREAM_STREAM_HEADERS
 
 /**
  * How long a chat call waits for the upstream's response headers, and the
- * setting behind it. timeoutMs: an endpoint's own Timeout; attempts: how many
- * attempts of it the endpoint's Retries setting gave (Retries + 1), when set.
+ * setting behind it. timeoutMs: an endpoint's own Timeout; attempts: the
+ * attempts its Retries setting gave (Retries + 1), when set. Either makes the
+ * budget that many attempts (HEADERS_TIMEOUT_ATTEMPTS without Retries) of the
+ * Timeout, or of FETCH_CONNECT_TIMEOUT_MS without one.
  */
-export function upstreamHeadersBudget({ stream = false, timeoutMs = 0, attempts = HEADERS_TIMEOUT_ATTEMPTS } = {}) {
-  if (timeoutMs > 0) {
-    const setBy = attempts === 1 ? "the endpoint's Timeout setting" : `${attempts}x the endpoint's Timeout setting`;
-    return { ms: Math.min(attempts * timeoutMs, MAX_TIMER_MS), setBy };
+export function upstreamHeadersBudget({ stream = false, timeoutMs = 0, attempts = 0 } = {}) {
+  if (timeoutMs > 0 || attempts > 0) {
+    const n = attempts > 0 ? attempts : HEADERS_TIMEOUT_ATTEMPTS;
+    const what = timeoutMs > 0 ? "the endpoint's Timeout setting" : "FETCH_CONNECT_TIMEOUT_MS";
+    return { ms: Math.min(n * (timeoutMs > 0 ? timeoutMs : FETCH_CONNECT_TIMEOUT_MS), MAX_TIMER_MS), setBy: n === 1 ? what : `${n}x ${what}` };
   }
   if (stream) return { ms: UPSTREAM_STREAM_HEADERS_TIMEOUT_MS, setBy: "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS" };
   return { ms: allAttemptsMs(FETCH_CONNECT_TIMEOUT_MS), setBy: `${HEADERS_TIMEOUT_ATTEMPTS}x FETCH_CONNECT_TIMEOUT_MS` };
@@ -162,7 +165,9 @@ export function upstreamHeadersBudget({ stream = false, timeoutMs = 0, attempts 
 
 // undici's own default headersTimeout. A fetch whose budget is at least this
 // long goes through a dispatcher with that timeout off (utils/proxyFetch.js),
-// so the router's timer is the one that ends it.
+// so the router's timer is the one that ends it. Not through a SOCKS proxy:
+// undici's SOCKS agent builds its pools without the options, so this limit
+// stays, and ends such a fetch as a header timeout.
 export const UNDICI_HEADERS_TIMEOUT_MS = 300 * 1000;
 
 // Gemini native TTS fetch timeout: abort if Google does not return response headers in time.

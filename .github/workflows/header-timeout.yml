@@ -11,6 +11,7 @@ on:
       - "tests/unit/headers-timeout-*.test.js"
       - "tests/unit/model-hang.test.js"
       - "tests/unit/proxy-fetch-headers-timeout.test.js"
+      - "tests/unit/undici-headers-timeout-real.test.js"
       - "tests/unit/endpoint-overrides.test.js"
       - "src/shared/utils/nodeQuirks.ts"
       - "docs/ARCHITECTURE.md"
@@ -46,6 +47,7 @@ jobs:
           unit/headers-timeout-routing.test.js
           unit/model-hang.test.js
           unit/proxy-fetch-headers-timeout.test.js
+          unit/undici-headers-timeout-real.test.js
           unit/endpoint-overrides.test.js
           unit/base-executor-retry.test.js
           unit/chat-core-failure-detail.test.js
@@ -68,6 +70,7 @@ jobs:
           tests/unit/headers-timeout-routing.test.js
           tests/unit/model-hang.test.js
           tests/unit/proxy-fetch-headers-timeout.test.js
+          tests/unit/undici-headers-timeout-real.test.js
           tests/unit/chat-core-failure-detail.test.js
       # Fails only on errors in chat.ts, so unrelated type errors elsewhere don't block it.
       - name: Type check chat.ts

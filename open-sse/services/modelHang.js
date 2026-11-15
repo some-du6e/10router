@@ -27,9 +27,8 @@ const blockedBy = (hung, now) => ({ blocked: true, ...hangStatus(hung, now) });
 
 /**
  * May this request call the upstream for this model? A hung model blocks every
- * request until its window ends, then lets one through as the probe.
- * budgetMs: this request's headers budget, which the probe's lease and the
- * others' Retry-After go by.
+ * request until its window ends, then lets one through as the probe, whose
+ * lease and the others' Retry-After go by its headers budget (noteProbeBudget).
  * @returns {{ blocked: false, probe: boolean, avoidKeys: string[] }
  *   | { blocked: true, checking: boolean, retryAtMs: number, reason: string }}
  *   avoidKeys: keys to try last: those whose stream timed out since the model
@@ -37,7 +36,7 @@ const blockedBy = (hung, now) => ({ blocked: true, ...hangStatus(hung, now) });
  *   reaches another key, which tells a hung model from one slow key.
  *   checking: a probe is running; retryAtMs is when its headers budget runs out.
  */
-export function checkModelHang(provider, model, requestId, { budgetMs = UPSTREAM_STREAM_HEADERS_TIMEOUT_MS } = {}, now = Date.now()) {
+export function checkModelHang(provider, model, requestId, now = Date.now()) {
   const entry = models.get(keyOf(provider, model));
   const hung = entry?.hung;
   if (!hung) {
@@ -47,7 +46,7 @@ export function checkModelHang(provider, model, requestId, { budgetMs = UPSTREAM
   const probe = () => ({ blocked: false, probe: true, avoidKeys: [...hung.stalled] });
   if (hung.probe?.id === requestId) return probe();
   if (now < hung.until || (hung.probe && now - hung.probe.at < leaseMs(hung.probe))) return blockedBy(hung, now);
-  hung.probe = { id: requestId, at: now, budgetMs };
+  hung.probe = { id: requestId, at: now, budgetMs: UPSTREAM_STREAM_HEADERS_TIMEOUT_MS };
   return probe();
 }
 
@@ -88,10 +87,13 @@ export function noteHeadersTimeout(provider, model, { requestId, connectionId, s
   return { hung: true, ...hangStatus(entry.hung, now) };
 }
 
-/** The probe's executor reported its whole headers budget (all base URLs): the lease and Retry-After go by it. */
-export function noteProbeBudget(provider, model, requestId, budgetMs) {
+/**
+ * The probe's executor is about to call a key, with this whole headers budget
+ * (all its base URLs): the lease and Retry-After go by it, from now.
+ */
+export function noteProbeBudget(provider, model, requestId, budgetMs, now = Date.now()) {
   const probe = models.get(keyOf(provider, model))?.hung?.probe;
-  if (probe?.id === requestId && budgetMs > 0) probe.budgetMs = budgetMs;
+  if (probe?.id === requestId && budgetMs > 0) Object.assign(probe, { at: now, budgetMs });
 }
 
 /** The model served a request: it isn't hung, and earlier header timeouts stop counting. */

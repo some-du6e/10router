@@ -17,9 +17,11 @@ export function isUpstreamHeadersTimeout(error) {
   return error?.name === NAME;
 }
 
-// undici's own headers timeout (its UND_ERR_HEADERS_TIMEOUT), on the error or its cause.
-export function isUndiciHeadersTimeout(error) {
-  return error?.code === "UND_ERR_HEADERS_TIMEOUT" || error?.cause?.code === "UND_ERR_HEADERS_TIMEOUT";
+// undici's own headers timeout (its UND_ERR_HEADERS_TIMEOUT), on the error or
+// down its causes (fetch's TypeError, a wrapper's cause).
+export function isUndiciHeadersTimeout(error, depth = 3) {
+  if (!error || depth < 0) return false;
+  return error.code === "UND_ERR_HEADERS_TIMEOUT" || isUndiciHeadersTimeout(error.cause, depth - 1);
 }
 
 /**
