@@ -191,6 +191,27 @@ export const NETWORK_PATTERN = /\b(enotfound|econnrefused|econnreset|econnaborte
 // Only this much of an error message is classified; bodies can be megabytes.
 export const ERROR_CLASS_MAX_TEXT = 8 * 1024;
 
+// Upstream messages (case-insensitive) that describe the request itself, so
+// every key of a custom endpoint would refuse it the same way
+// (services/sameRequestError.ts): a prompt over the context window, a tool
+// schema the upstream rejects, a thinking budget that doesn't fit. Only these,
+// and a 413, count toward stopping the account walk; any other 4xx keeps
+// trying the next key.
+export const SAME_REQUEST_ERROR_PATTERNS = [
+  /prompt is too long/i,
+  /maximum context length/i,
+  /context (?:length|window|limit)s? (?:is |was |has been )?exceed/i,
+  /\bexceed(?:s|ed)?\b.{0,40}\bcontext\b/i,
+  /\btoken limit\b/i,
+  /too many tokens/i,
+  /input tokens? exceed/i,
+  /\b(?:input|request|prompt|payload|body)\b.{0,20}\btoo (?:long|large)\b/i,
+  /input_schema|json schema|invalid schema|function parameters|\btools?(?:\.\d+|\[\d+\])/i,
+  /budget_tokens/i,
+];
+// Only this much of an error body is read when matching those, parse included.
+export const SAME_REQUEST_ERROR_MAX_TEXT = 64 * 1024;
+
 // A final error a client must not retry: header and value (Codex and the
 // Anthropic/OpenAI SDKs honour it).
 export const SHOULD_RETRY_HEADER = "x-should-retry";

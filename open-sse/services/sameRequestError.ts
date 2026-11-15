@@ -2,16 +2,22 @@
 // context window, the upstream rejects a tool schema) fails the same way on
 // each account, so walking all of them only costs time. This tallies one
 // request's errors per model and says when enough accounts agreed to stop.
+//
+// Only errors that read as the request's own fault count
+// (SAME_REQUEST_ERROR_PATTERNS, or a 413). An unknown 400 may be about the
+// account (a disabled organization, an unverified one) and would never lock
+// the key, so stopping on it could fail every request; it keeps the walk.
 import { namesAccountOrLimit } from "./accountFallback.js";
 import { isLimitError } from "../utils/limitHold.js";
-import { SAME_REQUEST_ERROR_STOP_AFTER, SAME_REQUEST_ERROR_STATUSES } from "../config/runtimeConfig.js";
-import { ERROR_CLASS_MAX_TEXT, LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL } from "../config/errorConfig.js";
+import { HTTP_STATUS, SAME_REQUEST_ERROR_STOP_AFTER, SAME_REQUEST_ERROR_STATUSES } from "../config/runtimeConfig.js";
+import { MODEL_REFUSAL, OPERATION_REFUSAL, SAME_REQUEST_ERROR_PATTERNS, SAME_REQUEST_ERROR_MAX_TEXT } from "../config/errorConfig.js";
 
-// A limit, or a refusal of one model or operation: about the key, not the request.
-const KEY_REFUSAL = new RegExp([...LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL].map((r) => r.source).join("|"), "i");
+// A refusal of one model or operation for this key: about the key, not the request.
+const KEY_REFUSAL = new RegExp([MODEL_REFUSAL, OPERATION_REFUSAL].map((r) => r.source).join("|"), "i");
 
+/** The error as text, cut to SAME_REQUEST_ERROR_MAX_TEXT: everything below reads only this much. */
 const asText = (error: unknown): string =>
-  error == null ? "" : typeof error === "string" ? error : JSON.stringify(error);
+  (error == null ? "" : typeof error === "string" ? error : JSON.stringify(error)).slice(0, SAME_REQUEST_ERROR_MAX_TEXT);
 
 /**
  * The upstream's message: chatCore's "[400]: " prefix dropped, and from a JSON
@@ -29,24 +35,29 @@ export function upstreamMessage(error: unknown): string {
 
 /**
  * The message in a form two keys' copies of one error share: lowercased, every
- * run of digits as "#" (token counts and sizes differ per call), whitespace
- * collapsed. Only the first ERROR_CLASS_MAX_TEXT characters are read.
+ * run of digits as "#" (token counts and sizes differ per call), whitespace collapsed.
  */
 export function normalizeErrorMessage(error: unknown): string {
-  return upstreamMessage(error).slice(0, ERROR_CLASS_MAX_TEXT).toLowerCase().replace(/\d+/g, "#").replace(/\s+/g, " ").trim();
+  return upstreamMessage(error).toLowerCase().replace(/\d+/g, "#").replace(/\s+/g, " ").trim();
 }
+
+// Text about the key: a bad key, billing, a rate limit or quota, or a refusal of one model or operation.
+const namesTheKey = (status: number, text: string): boolean =>
+  namesAccountOrLimit(text) || isLimitError(status, text) || KEY_REFUSAL.test(text);
 
 /**
  * What identifies this failure as a request error for counting, or null when it
- * doesn't count: another status, or a 4xx that names the key, its billing, a
- * limit, or a refusal of one model or operation (those are about the account,
- * and keep today's handling).
+ * doesn't count: another status, a message that doesn't read as the request's
+ * fault, or one (in the message or anywhere in the body) about the key.
  */
 export function requestErrorSignature(status: number | null | undefined, error: unknown): string | null {
   if (typeof status !== "number" || !SAME_REQUEST_ERROR_STATUSES.has(status)) return null;
-  const text = asText(error).slice(0, ERROR_CLASS_MAX_TEXT);
-  if (namesAccountOrLimit(text) || isLimitError(status, text) || KEY_REFUSAL.test(text)) return null;
-  return `${status} ${normalizeErrorMessage(error)}`;
+  const raw = asText(error);
+  const message = upstreamMessage(raw);
+  if (namesTheKey(status, message) || namesTheKey(status, raw)) return null;
+  const requestShaped = status === HTTP_STATUS.PAYLOAD_TOO_LARGE || SAME_REQUEST_ERROR_PATTERNS.some((p) => p.test(message));
+  if (!requestShaped) return null;
+  return `${status} ${normalizeErrorMessage(raw)}`;
 }
 
 export interface SameRequestErrorTally {

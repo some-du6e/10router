@@ -96,8 +96,10 @@ export const CACHE_AFFINITY = {
 // On a custom (OpenAI-/Anthropic-compatible) endpoint, a request error every
 // key would refuse (a prompt longer than the model's context window, a tool
 // schema the upstream rejects) stops the account walk once this many accounts
-// of one model answered it with the same message (services/sameRequestError.ts),
-// instead of trying every key. 1 stops at the first such error.
+// of one model answered it with the same message, when that message reads as
+// the request's fault (SAME_REQUEST_ERROR_PATTERNS in errorConfig.js) or the
+// status is 413 (services/sameRequestError.ts), instead of trying every key.
+// 1 stops at the first such error.
 // Env: SAME_REQUEST_ERROR_STOP_AFTER (0 tries every key, as before; anything
 // that isn't a whole number falls back to 2).
 export const SAME_REQUEST_ERROR_STOP_AFTER = envInt("SAME_REQUEST_ERROR_STOP_AFTER", 2);

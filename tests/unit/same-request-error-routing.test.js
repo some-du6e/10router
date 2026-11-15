@@ -152,34 +152,66 @@ describe("normalizing a request error", () => {
     expect(normalizeErrorMessage(`${prefix} field a`)).not.toBe(normalizeErrorMessage(`${prefix} field b`));
   });
 
-  it("counts the errors every key would give", () => {
-    expect(requestErrorSignature(400, `[400]: ${TOO_LONG}`)).not.toBeNull();
-    expect(requestErrorSignature(400, "[400]: maximum context length is 10000 tokens, the request has 12345")).not.toBeNull();
-    expect(requestErrorSignature(400, "[400]: tools.0.input_schema: schema rejected")).not.toBeNull();
-  });
-
-  it("counts only 400, 413 and 422, and not one about the key, a limit or one model", () => {
-    for (const status of [400, 413, 422]) expect(requestErrorSignature(status, "tool definition rejected")).not.toBeNull();
-    for (const status of [401, 403, 404, 429, 500, 502, 503, 504]) expect(requestErrorSignature(status, "tool definition rejected")).toBeNull();
-    expect(requestErrorSignature(400, "rate limit exceeded")).toBeNull();
-    expect(requestErrorSignature(400, "invalid api key")).toBeNull();
-    expect(requestErrorSignature(400, "insufficient quota")).toBeNull();
-    expect(requestErrorSignature(400, "key limit exceeded for today")).toBeNull();
-    expect(requestErrorSignature(400, "the model example-model is not enabled for this key")).toBeNull();
-    expect(requestErrorSignature(400, "missing required scopes: chat")).toBeNull();
-  });
-
   it("stops at the configured count of distinct accounts", () => {
     expect(SAME_REQUEST_ERROR_STOP_AFTER).toBe(2);
     const tally = createSameRequestErrorTally();
     expect(tally.stopAfter).toBe(2);
-    expect(tally.note("a", 400, "too long: 1")).toBe(false);
+    expect(tally.note("a", 400, "prompt is too long: 1")).toBe(false);
     // The same account again is still one account.
-    expect(tally.note("a", 400, "too long: 2")).toBe(false);
-    expect(tally.note("b", 422, "too long: 3")).toBe(false);
-    expect(tally.note("b", 400, "too long: 4")).toBe(true);
-    expect(createSameRequestErrorTally(0).note("a", 400, "x")).toBe(false);
-    expect(createSameRequestErrorTally(1).note("a", 400, "x")).toBe(true);
+    expect(tally.note("a", 400, "prompt is too long: 2")).toBe(false);
+    expect(tally.note("b", 422, "prompt is too long: 3")).toBe(false);
+    expect(tally.note("b", 400, "prompt is too long: 4")).toBe(true);
+    expect(createSameRequestErrorTally(0).note("a", 400, TOO_LONG)).toBe(false);
+    expect(createSameRequestErrorTally(1).note("a", 400, TOO_LONG)).toBe(true);
+  });
+});
+
+// Placeholder numbers and wording; each reads like a kind of error upstreams send.
+describe("which errors count", () => {
+  const counts = [
+    [400, TOO_LONG],
+    [400, "The model's maximum context length is 10000 tokens, but the messages came to 12345 tokens"],
+    [400, "input plus `max_tokens` exceed context limit: 12345 + 100 > 10000"],
+    [400, "Bad request: this request is over the model token limit (10000)"],
+    [400, "Input tokens exceed this endpoint's limit of 10000"],
+    [400, "the context window exceeds limit"],
+    [400, "tools.0.input_schema: JSON schema is not valid"],
+    [422, "tools[1]: function parameters schema rejected"],
+    [400, "`thinking.budget_tokens` has to be lower than `max_tokens`"],
+    [413, "Payload Too Large"],
+    [413, ""],
+  ];
+  const ignored = [
+    [400, "The workspace for this key has been disabled."],
+    [400, "Your workspace must be verified to stream this model"],
+    [400, "key limit exceeded for today"],
+    [400, '{"error":{"code":"usage_limit_reached"}}'],
+    [400, "insufficient quota"],
+    [400, "rate limit exceeded"],
+    [400, "invalid api key"],
+    [400, "model example-model is not enabled for this key"],
+    [400, "Missing scopes: chat.write"],
+    [400, "Some other bad request"],
+  ];
+
+  it.each(counts)("counts a %i: %s", (status, message) => {
+    expect(requestErrorSignature(status, `[${status}]: ${message}`)).not.toBeNull();
+    expect(requestErrorSignature(status, `[${status}]: ${jsonBody(message, "req_placeholder_aaaa")}`)).not.toBeNull();
+  });
+
+  it.each(ignored)("doesn't count a %i: %s", (status, message) => {
+    expect(requestErrorSignature(status, `[${status}]: ${message}`)).toBeNull();
+  });
+
+  it("doesn't count a request-shaped message whose body names a usage limit", () => {
+    // Only isLimitError reads usage_limit_reached; the message alone would count.
+    const body = JSON.stringify({ error: { message: TOO_LONG, code: "usage_limit_reached" } });
+    expect(requestErrorSignature(400, `[400]: ${TOO_LONG}`)).not.toBeNull();
+    expect(requestErrorSignature(400, `[400]: ${body}`)).toBeNull();
+  });
+
+  it("counts only 400, 413 and 422", () => {
+    for (const status of [401, 403, 404, 429, 500, 502, 503, 504]) expect(requestErrorSignature(status, `[${status}]: ${TOO_LONG}`)).toBeNull();
   });
 });
 
@@ -220,12 +252,29 @@ describe("the same request error from two accounts", () => {
     expect(res.status).toBe(400);
   });
 
+  it("stops the same way on an Anthropic-compatible endpoint, answering with the upstream message", async () => {
+    provider = `anthropic-compatible-gateway-${++providerSeq}`;
+    const keys = await addKeys(5);
+    upstream.script = [
+      failure(400, jsonBody(TOO_LONG, "req_placeholder_aaaa")),
+      failure(400, jsonBody(TOO_LONG, "req_placeholder_bbbb")),
+      failure(400, jsonBody(TOO_LONG, "req_placeholder_cccc")),
+    ];
+
+    const res = await chat();
+    expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
+    expect(res.status).toBe(400);
+    expect(await errorOf(res)).toContain(TOO_LONG);
+    expect(await errorOf(res)).toContain("req_placeholder_bbbb");
+    expect(warnings).toContain(stopLine("key-2"));
+  });
+
   it("stops the same way on a 413 or a 422", async () => {
-    for (const status of [413, 422]) {
+    for (const [status, message] of [[413, "payload rejected: 12345 bytes"], [422, "tools.0.input_schema: JSON schema is not valid"]]) {
       provider = `openai-compatible-gateway-${++providerSeq}`;
       upstream.calls = [];
       const keys = await addKeys(5);
-      upstream.script = Array(5).fill(failure(status, "payload rejected: 12345 bytes"));
+      upstream.script = Array(5).fill(failure(status, message));
 
       const res = await chat();
       expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
@@ -233,13 +282,23 @@ describe("the same request error from two accounts", () => {
     }
   });
 
+  it("keeps walking on an unknown 400, which may be about the account, and the next key serves the request", async () => {
+    const keys = await addKeys(5);
+    upstream.script = Array(2).fill(failure(400, "The workspace for this key has been disabled."));
+
+    const res = await chat();
+    expect(upstream.calls).toEqual(calls(keys.slice(0, 3)));
+    expect(res.status).toBe(200);
+    expect(stopped()).toBe(false);
+  });
+
   it("keeps walking when the keys give different messages", async () => {
     const keys = await addKeys(5);
     upstream.script = [
-      failure(400, "tool definition rejected"),
-      failure(400, "unknown field in request"),
-      failure(400, "unsupported option"),
-      failure(400, "bad message order"),
+      failure(400, TOO_LONG),
+      failure(400, "tools.0.input_schema: JSON schema is not valid"),
+      failure(400, "`thinking.budget_tokens` has to be lower than `max_tokens`"),
+      failure(400, "tools[1]: function parameters schema rejected"),
     ];
 
     const res = await chat();
@@ -267,6 +326,7 @@ describe("the same request error from two accounts", () => {
     ["reads like a quota (isLimitError)", "insufficient quota"],
     ["names a limit on the key", "key limit exceeded for today"],
     ["refuses the model for this key", "the model example-model is not enabled for this key"],
+    ["is request-shaped but names a usage limit", JSON.stringify({ error: { message: TOO_LONG, code: "usage_limit_reached" } })],
   ]) {
     it(`keeps walking on a 400 that ${label}`, async () => {
       const keys = await addKeys(5);
