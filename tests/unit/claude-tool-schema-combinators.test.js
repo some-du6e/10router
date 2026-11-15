@@ -445,8 +445,8 @@ describe("normalizeClaudeInputSchema at the input cap", () => {
 
   // 400 members share one $ref target whose required entries are long arrays.
   // The schema flattens within the budget, so the alternatives get summarized
-  // and the target is labelled for every member: cheap only if the label is
-  // cached and doesn't stringify non-string entries.
+  // and the target is labelled for every member: cheap only if a label doesn't
+  // stringify those non-string entries.
   it("labels a shared $ref target cheaply when it's summarized, across 50 tools in one request", () => {
     const schema = () => ({ $defs: { T: { required: times(8, () => times(500, () => "a")) } }, anyOf: times(400, () => ({ $ref: "#/$defs/T" })) });
     expect(JSON.stringify(schema()).length).toBeLessThan(CAP_BYTES);
@@ -720,6 +720,24 @@ describe("normalizeClaudeInputSchema $refs", () => {
     expect(out.properties.default).toEqual({ $ref: "#/properties/target" });
     expect(out.properties.examples).toEqual({ $ref: "#/properties/target" });
     expectLocalRefsResolve(out);
+  });
+
+  // A property *named* properties is a subschema, not a map of them, so the ref
+  // inside it is still found: retargeted, and keeping the $defs it points into.
+  it("finds the ref in a property named after a map keyword", () => {
+    const retargeted = normalizeClaudeInputSchema({
+      anyOf: [{ type: "object", properties: { properties: { $ref: "#/anyOf/0/properties/a" }, a: { type: "string" } } }, byQuery],
+    });
+    expect(retargeted.properties.properties).toEqual({ $ref: "#/properties/a" });
+    expectLocalRefsResolve(retargeted);
+
+    const kept = normalizeClaudeInputSchema({
+      $defs: { X: { type: "integer" } },
+      anyOf: [{ type: "object", properties: { properties: { $ref: "#/$defs/X" } } }, byQuery],
+    });
+    expect(kept.$defs).toEqual({ X: { type: "integer" } });
+    expect(kept.properties.properties).toEqual({ $ref: "#/$defs/X" });
+    expectLocalRefsResolve(kept);
   });
 
   it.each([
