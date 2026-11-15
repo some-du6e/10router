@@ -1,5 +1,5 @@
 // Limits and wording for flattening Claude tool input schemas
-// (translator/concerns/jsonSchema.js).
+// (translator/concerns/jsonSchema.ts).
 
 export const CLAUDE_TOOL_SCHEMA_LIMITS = {
   // Only small schemas are flattened. Anything over either cap gets the

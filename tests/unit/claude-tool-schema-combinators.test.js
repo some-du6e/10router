@@ -467,9 +467,9 @@ function randomSchema(rand) {
   return schema;
 }
 
-// The seeded run gives 759 flattened (85 keeping local refs) and 1241 fallbacks;
+// The seeded run gives 705 flattened (31 keeping local refs) and 1295 fallbacks;
 // the floors leave room for small changes to the rules, not for losing an outcome.
-const FUZZ_FLOOR = { flattened: 600, withRefs: 60, fallbacks: 1000 };
+const FUZZ_FLOOR = { flattened: 550, withRefs: 20, fallbacks: 1000 };
 
 describe("normalizeClaudeInputSchema fuzz", () => {
   it("keeps its guarantees on 2000 seeded random schemas", () => {
@@ -570,6 +570,50 @@ describe("normalizeClaudeInputSchema $refs", () => {
       ],
     });
     expect(out).toEqual({ ...PERMISSIVE, description: "Accepts one of: A; B." });
+  });
+
+  it("falls back when a kept ref would now reach a property an alternative redefined", () => {
+    const out = normalizeClaudeInputSchema({
+      properties: { value: { type: "string" } },
+      anyOf: [{ type: "object", title: "Int", properties: { value: { type: "integer" }, copy: { $ref: "#/properties/value" } } }, byId],
+    });
+    expect(out).toEqual({ ...PERMISSIVE, description: "Accepts one of: Int; By id." });
+  });
+
+  it("writes a retargeted ref as a URI fragment", () => {
+    const out = normalizeClaudeInputSchema({
+      anyOf: [
+        { type: "object", properties: { "a%b": { type: "string" }, plain: { type: "integer" }, c: { $ref: "#/anyOf/0/properties/a%25b" }, d: { $ref: "#/anyOf/0/properties/plain" } } },
+        byQuery,
+      ],
+    });
+    expect(out.properties.c).toEqual({ $ref: "#/properties/a%25b" });
+    expect(out.properties.d).toEqual({ $ref: "#/properties/plain" });
+    const resolve = (ref) => ref.slice(2).split("/").map(decodeURIComponent).reduce((node, key) => node?.[key], out);
+    expect(resolve(out.properties.c.$ref)).toEqual({ type: "string" });
+    expect(resolve(out.properties.d.$ref)).toEqual({ type: "integer" });
+  });
+
+  it("keeps a definitions block a percent-encoded ref points into", () => {
+    const out = normalizeClaudeInputSchema({
+      $defs: { A: { type: "string" } },
+      anyOf: [{ type: "object", properties: { x: { $ref: "#/%24defs/A" } } }, byQuery],
+    });
+    expect(out.$defs).toEqual({ A: { type: "string" } });
+    expect(out.properties.x).toEqual({ $ref: "#/%24defs/A" });
+  });
+
+  it("leaves $ref-shaped data under const, enum and default alone", () => {
+    const literal = () => ({ $ref: "#/anyOf/0/properties/target" });
+    const out = normalizeClaudeInputSchema({
+      anyOf: [
+        { type: "object", properties: { target: { type: "string" }, a: { const: literal() }, b: { enum: [literal()] }, c: { type: "object", default: literal() } } },
+        byQuery,
+      ],
+    });
+    expect(out.properties.a).toEqual({ const: literal() });
+    expect(out.properties.b).toEqual({ enum: [literal()] });
+    expect(out.properties.c).toEqual({ type: "object", default: literal() });
   });
 
   it("merges a top-level $ref's sibling properties and required with the target's, the siblings winning", () => {
