@@ -487,8 +487,8 @@ function dropUnusedDefs(out: Schema) {
 // Every $ref left in the output must mean exactly what it meant in the input.
 // One that doesn't start with "#" (another document, say) can't be
 // checked, so it fails. One that still resolves must reach the very same
-// object it did. One that
-// doesn't pointed into a combinator member that was merged away; it's
+// object it did. One that doesn't resolve pointed into a combinator member
+// that was merged away; it's
 // retargeted only to a property the merged schema holds as the very same
 // object: "#/anyOf/0/properties/a/..." → "#/properties/a/...", which
 // zod-to-json-schema writes. Anything else fails (false): a ref to a member

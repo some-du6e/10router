@@ -395,6 +395,17 @@ describe("normalizeClaudeInputSchema at the input cap", () => {
     ["merging allOf members (per key)", () => ({ $defs: { T: { type: "object", properties: stringProps(500, "p") } }, allOf: refsTo(700) })],
     ["intersecting required keys (per key)", () => ({ $defs: { T: { type: "object", required: times(1000, (j) => `k${j}`) } }, anyOf: refsTo(900) })],
     ["collecting alternatives' properties (per name)", () => ({ $defs: { T: { type: "object", properties: stringProps(500, "p") } }, anyOf: refsTo(700) })],
+    ["merging a $ref target with its siblings (per key)", () => ({
+      $defs: { T: { type: "object", properties: stringProps(340, "p") } },
+      anyOf: times(560, () => ({ $ref: "#/$defs/T", a: 1 })),
+    })],
+    // The first alternative requires nothing, so only the per-member required
+    // count keeps the intersection's cost in the budget.
+    ["intersecting required keys after an empty first member (per key)", () => ({
+      $defs: { T: { type: "object", required: times(2000, String) } },
+      anyOf: [{ type: "object" }, ...refsTo(700)],
+    })],
+    ["merging allOf members' required keys (per key)", () => ({ $defs: { T: { type: "object", required: times(2000, String) } }, allOf: refsTo(700) })],
   ])("charges %s, across 50 tools", (_, schema) => {
     const { schemas, ms } = fiftyTools(schema);
     console.log(`charges ${_}: ${ms.toFixed(1)} ms`);
@@ -792,6 +803,34 @@ describe("normalizeClaudeInputSchema $refs", () => {
   it("puts a type into the label as written, $& included", () => {
     expect(normalizeClaudeInputSchema({ anyOf: [{ type: "$&x" }, byQuery] }))
       .toEqual({ ...PERMISSIVE, description: "Accepts one of: a $&x; Search by free text." });
+  });
+
+  // "toString" is on every object's prototype but isn't a definition here.
+  it("falls back on a ref to a name only an object's prototype has", () => {
+    const out = normalizeClaudeInputSchema({
+      $defs: { A: { type: "string" } },
+      anyOf: [{ type: "object", title: "A", properties: { a: { $ref: "#/$defs/toString" } } }, byQuery],
+    });
+    expect(out).toEqual({ ...PERMISSIVE, description: "Accepts one of: A; Search by free text." });
+  });
+
+  // "#aT" names an anchor, not a pointer; read as one it would reach the root's T.
+  it("falls back on a plain-name anchor ref", () => {
+    const out = normalizeClaudeInputSchema({
+      T: { type: "object", properties: { p: { type: "string" } } },
+      anyOf: [{ $ref: "#aT" }, byQuery],
+    });
+    expect(out).toEqual({ ...PERMISSIVE, description: "Accepts one of: #aT; Search by free text." });
+  });
+
+  // The definition is longer than MAX_KEY_LENGTH as JSON, so it's matched by identity.
+  it("keeps one copy of a long property definition two alternatives share", () => {
+    const big = { type: "string", description: "d".repeat(300) };
+    const out = normalizeClaudeInputSchema({
+      $defs: { T: { type: "object", properties: { big } } },
+      anyOf: [{ $ref: "#/$defs/T", title: "A" }, { $ref: "#/$defs/T", title: "B" }],
+    });
+    expect(out).toEqual({ type: "object", properties: { big }, description: "Accepts one of: A; B." });
   });
 
   it("flattens combinators sitting next to a $ref", () => {
