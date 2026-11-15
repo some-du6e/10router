@@ -4,13 +4,18 @@
 - **Claude-format endpoints no longer reject a tool whose schema starts with `anyOf`/`oneOf`/`allOf`.** Anthropic-style Messages APIs take only a plain object schema at the top of a tool's `input_schema`, so one such tool (common among MCP tools, and what zod-to-json-schema writes for a union) got the request refused on every key, and the router tried each key in turn before failing the turn. Every request that ends in Claude format (from Chat Completions, Responses or Claude clients, passthrough and Zed included) now gets that schema flattened before it's sent:
   - `allOf` is merged into one object: every member's properties and required keys.
   - `anyOf` / `oneOf` of objects become one object with every alternative's properties. Only the keys required by every alternative stay required, and the alternatives are named in the description ("Accepts one of: …") so the model still sees the choice. A property the alternatives define differently keeps each definition as a nested `anyOf`.
-  - A top-level `$ref` is followed first. A `$ref` into one of the merged-away alternatives (zod's `#/anyOf/0/properties/x`) is pointed at the same place in the merged schema (`#/properties/x`).
-  - Some schemas get a permissive object schema (`additionalProperties: true`) instead, with the original description and the alternatives kept in its description, so the request still goes through. That happens when:
+  - A top-level `$ref` is followed first, its sibling `properties` and `required` merging with the target's. A `$ref` into one of the merged-away alternatives (zod's `#/anyOf/0/properties/x`) is pointed at the same place in the merged schema (`#/properties/x`), when that's the very same property.
+  - A schema with no combinator but no `type` next to its `properties`, or typed `["object", "null"]`, gets `type: "object"`.
+  - Only small schemas are flattened: up to 64 KB and 4,000 objects/arrays. Real tool schemas that start with a combinator are far smaller.
+  - Some schemas get a permissive object schema (`additionalProperties: true`) instead, so the request still goes through. That happens when:
+    - an `input_schema` isn't an object at all;
+    - the schema is over the size limit (it keeps its description, cut to 1,024 characters);
     - a member isn't an object;
-    - a `$ref` can't be resolved, or has nowhere to point once merged (a `$ref` to an alternative itself, as a recursive union writes);
-    - the schema is over 200,000 nodes or about 1 MB;
-    - it doesn't flatten within a fixed work budget (very wide or deeply nested combinators);
+    - a `$ref` can't be resolved, or has no exact place once merged (a `$ref` to an alternative itself, as a recursive union writes, one into an alternative's own `$defs`, or one through a property the alternatives define differently);
+    - it doesn't flatten within a fixed work budget;
     - flattening would more than double its size.
+
+    Except over the size limit, the fallback keeps the original description and names the alternatives in it.
   - Combinators nested inside properties are left alone, and tools that don't need it are sent unchanged.
 - **A model that stops answering no longer costs four minutes on every key, request after request.** When an upstream sent no response headers within `FETCH_CONNECT_TIMEOUT_MS` (60s), the router retried the same key 3 more times, 3s apart (249s), then did the same on the next key, and the next request did it all again. Now:
   - A chat call gets one attempt as long as its attempts used to take in all, and isn't retried on the same key: 4x `FETCH_CONNECT_TIMEOUT_MS` (240s); on a custom endpoint, Timeout x (Retries + 1) when its Retries setting is set (so Retries 0 still fails over after one Timeout, or after `FETCH_CONNECT_TIMEOUT_MS` without a Timeout), else 4x its Timeout. A stream's default can be set apart with `UPSTREAM_STREAM_HEADERS_TIMEOUT_MS`. A big cold prompt finishes its prefill inside the one attempt instead of being cut off every 60s. A budget of 300s or more no longer ends early at undici's own 300s headers timeout (as a 502, retried): those calls go through a connection pool with undici's timeout off, and if undici's timeout still fires it counts as a header timeout. Through a SOCKS proxy undici keeps its 300s limit (its SOCKS agent doesn't take the pool options), so a longer budget ends there at 300s, as a header timeout and without the fallback to a direct connection. qoder keeps its own timer (its 120s provider timeout), as before.
