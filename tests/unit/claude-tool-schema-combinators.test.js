@@ -190,12 +190,46 @@ describe("normalizeClaudeInputSchema", () => {
     });
   });
 
-  it("falls back on a cyclic object (not a tree, so not JSON) before flattening", () => {
+  // Parsed JSON is never cyclic; such an object is refused by the size walk, which
+  // keeps only the description (no summary, so nothing walks the cycle).
+  it("refuses a cyclic object up front, keeping only its description", () => {
     const cyclic = { description: "Loop", title: "Self", anyOf: [] };
     cyclic.anyOf.push(cyclic);
     expect(normalizeClaudeInputSchema(cyclic)).toEqual({
-      type: "object", properties: {}, additionalProperties: true, description: "Loop\n\nAccepts one of: Self.",
+      type: "object", properties: {}, additionalProperties: true, description: "Loop",
     });
+  });
+
+  it("sets type object on a plain schema typed [object, null]", () => {
+    expect(normalizeClaudeInputSchema({ type: ["object", "null"], properties: { a: { type: "string" } } }))
+      .toEqual({ type: "object", properties: { a: { type: "string" } } });
+  });
+
+  it("lets a later allOf member win a property clash", () => {
+    const out = normalizeClaudeInputSchema({ allOf: [{ properties: { a: { type: "string" } } }, { properties: { a: { type: "integer" } } }] });
+    expect(out.properties).toEqual({ a: { type: "integer" } });
+  });
+
+  it("keeps a property named __proto__", () => {
+    const out = normalizeClaudeInputSchema(JSON.parse(
+      '{"anyOf":[{"type":"object","properties":{"__proto__":{"type":"string"},"a":{"type":"string"}}},{"type":"object","properties":{"b":{"type":"string"}}}]}',
+    ));
+    expect(Object.keys(out.properties)).toEqual(["__proto__", "a", "b"]);
+    expect(Object.getPrototypeOf(out.properties)).toBe(Object.prototype);
+    expect(JSON.stringify(out.properties)).toBe('{"__proto__":{"type":"string"},"a":{"type":"string"},"b":{"type":"string"}}');
+  });
+
+  // Definitions longer than MAX_KEY_LENGTH as JSON are told apart by identity only.
+  it("compares long property definitions by identity, short ones by content", () => {
+    const long = () => ({ type: "string", description: "d".repeat(300) });
+    const out = normalizeClaudeInputSchema({
+      anyOf: [
+        { type: "object", properties: { big: long(), small: { type: "string" } } },
+        { type: "object", properties: { big: long(), small: { type: "string" } } },
+      ],
+    });
+    expect(out.properties.small).toEqual({ type: "string" });
+    expect(out.properties.big).toEqual({ anyOf: [long(), long()] });
   });
 
   it("treats a malformed % in a $ref as unresolvable and keeps the description", () => {
@@ -255,71 +289,118 @@ const isPermissive = (out) => {
   return JSON.stringify(rest) === JSON.stringify(PERMISSIVE) && (description === undefined || typeof description === "string");
 };
 
-// Generous: the shapes below took 15 to 40 seconds before; they're linear now.
-const SLOW_MS = 2000;
-const timed = (fn) => {
-  const start = performance.now();
-  const out = fn();
-  return { out, ms: performance.now() - start };
+const CAP_BYTES = 64 * 1024;
+const CAP_NODES = 4000;
+const countNodes = (value) => (value !== null && typeof value === "object"
+  ? 1 + Object.values(value).reduce((n, child) => n + countNodes(child), 0) : 0);
+const times = (n, fn) => Array.from({ length: n }, (_, i) => fn(i));
+const stringProps = (n, prefix) => Object.fromEntries(times(n, (j) => [`${prefix}${j}`, { type: "string" }]));
+// "#/$defs/T" with the characters picked by `mask` percent-encoded.
+const spell = (mask) => `#/${[..."$defs"].map((c, i) => (mask & (1 << i) ? `%${c.charCodeAt(0).toString(16)}` : c)).join("")}/${mask & 32 ? "%54" : "T"}`;
+
+// Each shape, built as large as the input caps allow, with the result it must give.
+const AT_CAP = {
+  "$ref fan-out": {
+    schema: () => fanOutSchema(330),
+    check: (out) => expect(out).toEqual({ type: "object", description: "Fan out", properties: { leaf: { type: "string" } }, required: ["leaf"] }),
+  },
+  "members pointing at the next member twice": {
+    schema: () => ({
+      description: "Chain",
+      anyOf: times(700, (k) => ({ type: "object", properties: { a: { $ref: `#/anyOf/${k + 1}` }, b: { $ref: `#/anyOf/${k + 1}` } } })),
+    }),
+    check: (out) => expect(out).toEqual({ ...PERMISSIVE, description: "Chain" }),
+  },
+  "a long pointer": {
+    schema: () => ({ anyOf: [{ type: "object", title: "X", properties: { x: { type: "string" }, y: { $ref: `#/${"anyOf/0/".repeat(7000)}properties/x` } } }, byQuery] }),
+    check: (out) => expect(out).toEqual({ ...PERMISSIVE, description: "Accepts one of: X; Search by free text." }),
+  },
+  "a wide anyOf": {
+    schema: () => ({ anyOf: times(550, (i) => ({ type: "object", properties: stringProps(3, `p${i}_`) })) }),
+    check: (out) => expect(Object.keys(out.properties)).toHaveLength(1650),
+  },
+  "a wide allOf": {
+    schema: () => ({ allOf: times(600, (i) => ({ properties: stringProps(3, `p${i}_`) })) }),
+    check: (out) => expect(Object.keys(out.properties)).toHaveLength(1800),
+  },
+  "wide required lists": {
+    schema: () => ({ anyOf: times(30, () => ({ type: "object", required: times(220, (j) => `k${j}`) })) }),
+    check: (out) => expect(out.required).toHaveLength(220),
+  },
+  "a $ref with siblings to a target with many keys": {
+    schema: () => ({
+      $defs: { T: { type: "object", ...Object.fromEntries(times(2000, (j) => [`k${j}`, "v"])) } },
+      anyOf: times(1000, () => ({ $ref: "#/$defs/T", title: "m" })),
+    }),
+    check: (out) => expect(out).toEqual({ ...PERMISSIVE, description: "Accepts one of: m." }),
+  },
+  "one $ref spelled many ways": {
+    schema: () => ({ $defs: { T: { type: "object", properties: { a: { type: "string" } } } }, anyOf: times(1800, (i) => ({ $ref: spell(i % 64) })) }),
+    check: (out) => expect(out).toEqual({ type: "object", properties: { a: { type: "string" } } }),
+  },
+  "a huge type array": {
+    schema: () => ({ anyOf: [{ type: times(6000, () => "null") }, byQuery] }),
+    check: (out) => expect(out.description).toBe("Accepts one of: a null, null, null, null, null, null, null, null; Search by free text."),
+  },
+  "a long description on an allOf target": {
+    schema: () => ({ $defs: { T: { type: "object", description: "x".repeat(40_000), properties: { a: { type: "string" } } } }, allOf: times(800, () => ({ $ref: "#/$defs/T" })) }),
+    check: (out) => {
+      expect(out.properties).toEqual({ a: { type: "string" } });
+      expect(out.description.length).toBeLessThanOrEqual(500);
+    },
+  },
+  "a long description on an anyOf target": {
+    schema: () => ({ $defs: { T: { type: "object", description: "x".repeat(40_000), properties: { a: { type: "string" } } } }, anyOf: times(800, () => ({ $ref: "#/$defs/T" })) }),
+    check: (out) => expect(out).toEqual({ type: "object", properties: { a: { type: "string" } } }),
+  },
 };
 
-describe("normalizeClaudeInputSchema work bound", () => {
-  it("flattens an exponential $ref fan-out once per definition", () => {
-    const schema = fanOutSchema(8);
-    expect(JSON.stringify(schema).length).toBeLessThan(2000);
-    const out = normalizeClaudeInputSchema(schema);
-    expect(out).toEqual({ type: "object", description: "Fan out", properties: { leaf: { type: "string" } }, required: ["leaf"] });
-  });
-
-  // anyOf[k] has properties a and b, both pointing at anyOf[k+1]: each member
-  // used to be inlined twice per level.
-  it("falls back on members that point at the next member", () => {
-    const members = Array.from({ length: 20 }, (_, k) => ({
-      type: "object",
-      properties: k < 19 ? { a: { $ref: `#/anyOf/${k + 1}` }, b: { $ref: `#/anyOf/${k + 1}` } } : { leaf: { type: "string" } },
-    }));
-    const { out, ms } = timed(() => normalizeClaudeInputSchema({ description: "Chain", anyOf: members }));
-    expect(ms).toBeLessThan(SLOW_MS);
-    expect(out).toEqual({ ...PERMISSIVE, description: "Chain" });
-  });
-
-  it("points a chain of refs into removed members at the merged properties", () => {
-    const members = Array.from({ length: 30 }, (_, k) => ({
-      type: "object",
-      properties: { [`p${k}`]: k < 29 ? { type: "array", items: [{ $ref: `#/anyOf/${k + 1}/properties/p${k + 1}` }, { $ref: `#/anyOf/${k + 1}/properties/p${k + 1}` }] } : { type: "string" } },
-    }));
-    const { out, ms } = timed(() => normalizeClaudeInputSchema({ anyOf: members }));
-    expect(ms).toBeLessThan(SLOW_MS);
-    expect(out.properties.p0.items[0]).toEqual({ $ref: "#/properties/p1" });
+describe("normalizeClaudeInputSchema at the input cap", () => {
+  it.each(Object.keys(AT_CAP))("handles %s within the cap", (name) => {
+    const { schema, check } = AT_CAP[name];
+    const input = schema();
+    const bytes = JSON.stringify(input).length;
+    const nodes = countNodes(input);
+    // Big enough to be near the cap, small enough to be flattened rather than refused.
+    expect(bytes).toBeLessThanOrEqual(CAP_BYTES - 1024);
+    expect(nodes).toBeLessThanOrEqual(CAP_NODES);
+    expect(bytes > CAP_BYTES / 2 || nodes > CAP_NODES / 2).toBe(true);
+    const start = performance.now();
+    const out = normalizeClaudeInputSchema(input);
+    const ms = performance.now() - start;
+    console.log(`at cap: ${name}: ${bytes} B, ${nodes} nodes, ${ms.toFixed(1)} ms`);
+    expect(ms).toBeLessThan(1000);
+    expectPlainObjectSchema(out);
     expectLocalRefsResolve(out);
-    expect(JSON.stringify(out).length).toBeLessThan(2 * JSON.stringify({ anyOf: members }).length);
+    check(out);
   });
 
-  it("handles a very long pointer in linear time", () => {
-    const ref = `#/${"anyOf/0/".repeat(60_000)}properties/x`;
-    expect(ref.length).toBeGreaterThan(450_000);
-    const { out, ms } = timed(() => normalizeClaudeInputSchema({
-      anyOf: [{ type: "object", properties: { x: { type: "string" }, y: { $ref: ref } } }, byQuery],
-    }));
-    expect(ms).toBeLessThan(SLOW_MS);
-    expect(out.properties.y).toEqual({ $ref: "#/properties/x" });
+  it("refuses input over the byte cap, keeping a truncated description", () => {
+    const big = { description: "H".repeat(5000), anyOf: [{ type: "object", title: "Blob", properties: { blob: { type: "string", description: "x".repeat(70_000) } } }] };
+    expect(normalizeClaudeInputSchema(big)).toEqual({ ...PERMISSIVE, description: `${"H".repeat(1023)}…` });
   });
 
-  it.each([
-    ["anyOf", () => ({ anyOf: Array.from({ length: 5000 }, (_, i) => ({ type: "object", properties: Object.fromEntries(Array.from({ length: 5 }, (_, j) => [`p${i}_${j}`, { type: "string" }])) })) })],
-    ["allOf", () => ({ allOf: Array.from({ length: 5000 }, (_, i) => ({ properties: Object.fromEntries(Array.from({ length: 5 }, (_, j) => [`p${i}_${j}`, { type: "string" }])) })) })],
-    ["required", () => ({ anyOf: Array.from({ length: 200 }, () => ({ type: "object", required: Array.from({ length: 200 }, (_, j) => `k${j}`) })) })],
-  ])("falls back fast on a very wide %s", (_, make) => {
-    const schema = { description: "Wide", ...make() };
-    const { out, ms } = timed(() => normalizeClaudeInputSchema(schema));
-    expect(ms).toBeLessThan(SLOW_MS);
-    expect(isPermissive(out)).toBe(true);
-    expect(out.description.startsWith("Wide")).toBe(true);
+  it("refuses input over the node cap", () => {
+    const wide = { description: "Many", anyOf: times(CAP_NODES, () => ({ type: "object" })) };
+    expect(normalizeClaudeInputSchema(wide)).toEqual({ ...PERMISSIVE, description: "Many" });
   });
 
-  it("falls back on input over the size cap without flattening", () => {
-    const big = { description: "Huge", anyOf: [{ type: "object", properties: { blob: { type: "string", description: "x".repeat(1_100_000) } } }] };
-    expect(normalizeClaudeInputSchema(big)).toEqual({ ...PERMISSIVE, description: "Huge" });
+  // Members point at ever deeper levels of one nested property; their
+  // alternatives would repeat the levels below each one.
+  // Nothing else in this shape can fail (no refs are left in the output, and
+  // the work is tiny), and two levels of it flatten fine.
+  it("falls back when flattening would more than double the schema", () => {
+    const nested = (levels) => {
+      let level = { type: "object", properties: stringProps(10, "f") };
+      for (let d = 0; d < levels; d++) level = { type: "object", properties: { s: level, ...stringProps(10, "f") } };
+      const path = (d) => `#/properties/s${"/properties/s".repeat(d)}`;
+      return { description: "Nested", properties: { s: level }, anyOf: times(levels, (d) => ({ $ref: path(d) })) };
+    };
+    const small = normalizeClaudeInputSchema(nested(2));
+    expect(Object.keys(small.properties)).toEqual(["s", ...Object.keys(stringProps(10, "f"))]);
+    const deep = normalizeClaudeInputSchema(nested(20));
+    expect(isPermissive(deep)).toBe(true);
+    expect(deep.description).toMatch(/^Nested\n\nAccepts one of: #\/properties\/s; /);
   });
 
   it("flattens a top-level $ref to an object with 50 properties", () => {
@@ -386,6 +467,10 @@ function randomSchema(rand) {
   return schema;
 }
 
+// The seeded run gives 759 flattened (85 keeping local refs) and 1241 fallbacks;
+// the floors leave room for small changes to the rules, not for losing an outcome.
+const FUZZ_FLOOR = { flattened: 600, withRefs: 60, fallbacks: 1000 };
+
 describe("normalizeClaudeInputSchema fuzz", () => {
   it("keeps its guarantees on 2000 seeded random schemas", () => {
     const rand = mulberry32(163);
@@ -409,9 +494,10 @@ describe("normalizeClaudeInputSchema fuzz", () => {
     const ms = performance.now() - start;
     console.log(`fuzz: 2000 schemas, ${2000 - fallbacks} flattened (${withRefs} keeping local refs), ${fallbacks} fallbacks, ${ms.toFixed(0)}ms`);
     expect(ms).toBeLessThan(20_000);
-    // Both outcomes are exercised.
-    expect(fallbacks).toBeGreaterThan(100);
-    expect(fallbacks).toBeLessThan(1900);
+    // Flattening, ref retargeting and the fallback are all exercised.
+    expect(2000 - fallbacks).toBeGreaterThan(FUZZ_FLOOR.flattened);
+    expect(withRefs).toBeGreaterThan(FUZZ_FLOOR.withRefs);
+    expect(fallbacks).toBeGreaterThan(FUZZ_FLOOR.fallbacks);
   });
 });
 
@@ -440,16 +526,60 @@ describe("normalizeClaudeInputSchema $refs", () => {
     expectLocalRefsResolve(out);
   });
 
-  it("points a ref at the merged property even when the alternatives define it differently", () => {
+  it("falls back on a ref to a property the alternatives define differently", () => {
     const out = normalizeClaudeInputSchema({
       oneOf: [
-        { type: "object", properties: { value: { type: "string" } } },
-        { type: "object", properties: { value: { type: "integer" }, copy: { $ref: "#/oneOf/0/properties/value", description: "Copy" } } },
+        { type: "object", title: "Text", properties: { value: { type: "string" } } },
+        { type: "object", title: "Number", properties: { value: { type: "integer" }, copy: { $ref: "#/oneOf/0/properties/value" } } },
       ],
     });
-    expect(out.properties.value).toEqual({ anyOf: [{ type: "string" }, { type: "integer" }] });
-    expect(out.properties.copy).toEqual({ $ref: "#/properties/value", description: "Copy" });
+    expect(out).toEqual({ ...PERMISSIVE, description: "Accepts one of: Text; Number." });
+  });
+
+  // Once "x" is a union of both members' x, "x/anyOf/0" isn't member 0's x/anyOf/0.
+  it("falls back on a deep ref through a property that became a union", () => {
+    const out = normalizeClaudeInputSchema({
+      anyOf: [
+        { type: "object", title: "A", properties: { x: { anyOf: [{ type: "string" }, { type: "null" }] }, y: { $ref: "#/anyOf/0/properties/x/anyOf/0" } } },
+        { type: "object", title: "B", properties: { x: { type: "integer" } } },
+      ],
+    });
+    expect(out).toEqual({ ...PERMISSIVE, description: "Accepts one of: A; B." });
+  });
+
+  it("retargets a deep ref through a property both alternatives share", () => {
+    const shared = () => ({ type: "object", properties: { street: { type: "string" } } });
+    const out = normalizeClaudeInputSchema({
+      anyOf: [
+        { type: "object", properties: { address: shared(), copy: { $ref: "#/anyOf/0/properties/address/properties/street" } } },
+        { type: "object", properties: { other: { type: "string" } } },
+      ],
+    });
+    expect(out.properties.copy).toEqual({ $ref: "#/properties/address/properties/street" });
     expectLocalRefsResolve(out);
+  });
+
+  // The member's own Foo is a string; the root's Foo is an object. Retargeting
+  // "#/anyOf/0/$defs/Foo" to "#/$defs/Foo" would silently change the type.
+  it("falls back on a ref into a member's own $defs", () => {
+    const out = normalizeClaudeInputSchema({
+      $defs: { Foo: { type: "object", properties: { n: { type: "integer" } } } },
+      anyOf: [
+        { type: "object", title: "A", $defs: { Foo: { type: "string" } }, properties: { f: { $ref: "#/anyOf/0/$defs/Foo" } } },
+        { type: "object", title: "B", properties: { g: { $ref: "#/$defs/Foo" } } },
+      ],
+    });
+    expect(out).toEqual({ ...PERMISSIVE, description: "Accepts one of: A; B." });
+  });
+
+  it("merges a top-level $ref's sibling properties and required with the target's, the siblings winning", () => {
+    const out = normalizeClaudeInputSchema({
+      $ref: "#/$defs/A",
+      properties: { extra: { type: "string" } },
+      required: ["extra"],
+      $defs: { A: { type: "object", properties: { a: { type: "string" }, extra: { type: "integer" } }, required: ["a"] } },
+    });
+    expect(out).toEqual({ type: "object", properties: { a: { type: "string" }, extra: { type: "string" } }, required: ["a", "extra"] });
   });
 
   // zod's recursive union: a member's items point back at the member.
@@ -473,15 +603,15 @@ describe("normalizeClaudeInputSchema $refs", () => {
     expect(out).toEqual({ ...PERMISSIVE, description: "Lost\n\nAccepts one of: By id; an object." });
   });
 
-  it("merges sibling keys next to a $ref member", () => {
+  it("merges sibling keys next to a $ref member, the siblings winning", () => {
     const out = normalizeClaudeInputSchema({
-      $defs: { Base: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
+      $defs: { Base: { type: "object", properties: { id: { type: "string" }, kind: { type: "string" } }, required: ["id"] } },
       anyOf: [
-        { $ref: "#/$defs/Base", title: "With note", properties: { note: { type: "string" } }, required: ["note"] },
+        { $ref: "#/$defs/Base", title: "With note", properties: { note: { type: "string" }, kind: { const: "note" } }, required: ["note"] },
         { $ref: "#/$defs/Base", title: "Plain" },
       ],
     });
-    expect(out.properties).toEqual({ id: { type: "string" }, note: { type: "string" } });
+    expect(out.properties).toEqual({ id: { type: "string" }, kind: { anyOf: [{ const: "note" }, { type: "string" }] }, note: { type: "string" } });
     expect(out.required).toEqual(["id"]);
     expect(out.description).toBe("Accepts one of: With note; Plain.");
   });

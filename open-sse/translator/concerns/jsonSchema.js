@@ -6,6 +6,7 @@ import { dbg } from "../../utils/debugLog.js";
 const { ALL_OF, ANY_OF, ONE_OF } = JSON_SCHEMA_COMBINATOR;
 const OBJECT = JSON_SCHEMA_TYPE.OBJECT;
 const REF = JSON_SCHEMA_REF;
+const PROPERTIES = "properties";
 const COMBINATORS = new Set([ALL_OF, ANY_OF, ONE_OF]);
 const ALTERNATIVES = [ANY_OF, ONE_OF];
 const DEFS_KEYS = Object.values(JSON_SCHEMA_DEFS);
@@ -16,9 +17,17 @@ const INDEX = /^\d+$/;
 const isPlainObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const hasCombinator = (schema) => has(schema, ALL_OF) || has(schema, ANY_OF) || has(schema, ONE_OF);
-const isObjectType = (type) => type === undefined || type === OBJECT || (Array.isArray(type) && type.includes(OBJECT));
 const isLocalRef = (node) => isPlainObject(node) && typeof node[REF] === "string" && node[REF].startsWith("#");
-const nonEmpty = (text) => typeof text === "string" && text.trim() !== "";
+
+// Strings come from the client, so only a bounded prefix is ever scanned.
+const head = (text, max) => (typeof text === "string" ? text.slice(0, max) : "");
+const nonEmpty = (text) => /\S/.test(head(text, LIMITS.MAX_BLANK_SCAN));
+const truncate = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+
+// An own property, even one named "__proto__" (plain assignment would set the prototype).
+function setOwn(obj, key, value) {
+  Object.defineProperty(obj, key, { value, enumerable: true, writable: true, configurable: true });
+}
 
 // allOf semantics: the union of the members' properties (a later member wins a
 // clash) and of their required keys, first-seen order. Non-object members are
@@ -35,7 +44,7 @@ export function mergeAllOfMembers(members, charge = () => true) {
     if (!charge(1 + keys.length + req.length)) return merged;
     if (props) {
       merged.properties ??= {};
-      for (const key of keys) merged.properties[key] = props[key];
+      for (const key of keys) setOwn(merged.properties, key, props[key]);
     }
     if (Array.isArray(item.required)) {
       required ??= new Set();
@@ -54,18 +63,23 @@ function permissiveSchema(description) {
 
 // ── Descriptions ────────────────────────────────────────────────────────────
 
-const truncate = (text, max = LIMITS.MAX_LABEL) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+const labelText = (text) => truncate(head(text, 2 * LIMITS.MAX_LABEL).trim(), LIMITS.MAX_LABEL);
+const typeText = (type) => (Array.isArray(type) ? type.slice(0, LIMITS.MAX_LABEL_KEYS) : [type])
+  .map((t) => (typeof t === "string" ? labelText(t) : typeof t)).join(", ");
 
 function label(member) {
   if (!isPlainObject(member)) return TEXT.VALUE;
   for (const text of [member.title, member.description]) {
-    if (nonEmpty(text)) return truncate(text.trim());
+    if (nonEmpty(text)) return labelText(text);
   }
   if (Array.isArray(member.required) && member.required.length) {
-    return `{${truncate(member.required.slice(0, LIMITS.MAX_LABEL_KEYS).map(String).join(", "))}}`;
+    const keys = member.required.slice(0, LIMITS.MAX_LABEL_KEYS).map((k) => labelText(String(k)));
+    return `{${truncate(keys.join(", "), LIMITS.MAX_LABEL)}}`;
   }
-  if (typeof member[REF] === "string") return truncate(member[REF]);
-  if (member.type !== undefined && member.type !== OBJECT) return TEXT.TYPED.replace("{type}", truncate(String(member.type)));
+  if (typeof member[REF] === "string") return labelText(member[REF]);
+  if (member.type !== undefined && member.type !== OBJECT) {
+    return TEXT.TYPED.replace("{type}", truncate(typeText(member.type), LIMITS.MAX_LABEL));
+  }
   return TEXT.OBJECT;
 }
 
@@ -83,24 +97,24 @@ function summarize(prefix, members, minDistinct = 1) {
 
 // The schema's own description, then the notes (deduped, capped in length).
 function describe(description, notes) {
-  const extra = truncate([...new Set(notes.filter(nonEmpty))].join("\n\n"), LIMITS.MAX_NOTES);
+  const kept = [...new Set(notes.filter(nonEmpty).map((n) => head(n, LIMITS.MAX_NOTES + 1)))];
+  const extra = truncate(kept.join("\n\n"), LIMITS.MAX_NOTES);
   return [description, extra].filter(nonEmpty).join("\n\n");
 }
 
-// The original intent, in words, for the permissive fallback.
-function fallbackDescription(schema) {
-  if (!isPlainObject(schema)) return "";
+const fallbackText = (description) => (nonEmpty(description) ? truncate(description, LIMITS.MAX_FALLBACK_DESCRIPTION) : "");
+
+// The permissive fallback, with the original intent in words.
+function fallback(schema) {
   const notes = [summarize(TEXT.ALL_OF, schema[ALL_OF])];
   for (const key of ALTERNATIVES) notes.push(summarize(TEXT.ONE_OF, schema[key]));
-  return describe(schema.description, notes);
+  return permissiveSchema(describe(fallbackText(schema.description), notes));
 }
-
-const fallback = (schema) => permissiveSchema(fallbackDescription(schema));
 
 // ── Size ────────────────────────────────────────────────────────────────────
 
-// Nodes in the input; -1 when it's too big to flatten or not a tree (a node
-// reached twice: shared or cyclic, which parsed JSON never is).
+// Nodes (objects and arrays) in the input; -1 as soon as it's over either cap,
+// or isn't a tree (a node reached twice: shared or cyclic, which parsed JSON never is).
 function countInput(schema) {
   const stack = [schema];
   const seen = new Set();
@@ -110,14 +124,22 @@ function countInput(schema) {
     const node = stack.pop();
     if (node === null || typeof node !== "object") {
       bytes += typeof node === "string" ? node.length + 2 : 8;
-      if (bytes > LIMITS.MAX_INPUT_BYTES) return -1;
-      continue;
-    }
-    if (seen.has(node) || ++nodes > LIMITS.MAX_INPUT_NODES) return -1;
-    seen.add(node);
-    for (const key of Object.keys(node)) {
-      bytes += key.length + 4;
-      stack.push(node[key]);
+    } else {
+      if (seen.has(node) || ++nodes > LIMITS.MAX_INPUT_NODES) return -1;
+      seen.add(node);
+      if (Array.isArray(node)) {
+        bytes += 2 + node.length;
+        if (bytes > LIMITS.MAX_INPUT_BYTES) return -1;
+        for (let i = 0; i < node.length; i++) stack.push(node[i]);
+      } else {
+        bytes += 2;
+        for (const key in node) {
+          if (!has(node, key)) continue;
+          bytes += key.length + 4;
+          if (bytes > LIMITS.MAX_INPUT_BYTES) return -1;
+          stack.push(node[key]);
+        }
+      }
     }
     if (bytes > LIMITS.MAX_INPUT_BYTES) return -1;
   }
@@ -166,27 +188,23 @@ function parsePointer(ref) {
   }
 }
 
+// The canonical spelling of keys[from..]: "%41" and "A" give the same pointer.
 const formatPointer = (keys, from = 0) => {
   let out = "#";
   for (let i = from; i < keys.length; i++) out += `/${keys[i].replace(/~/g, "~0").replace(/\//g, "~1")}`;
   return out;
 };
 
-// What keys[from..] points at under root, or undefined.
-function resolveKeys(root, keys, from = 0) {
+// What keys[from..to) points at under root, or undefined.
+function resolveKeys(root, keys, from = 0, to = keys.length) {
   let target = root;
-  for (let i = from; i < keys.length; i++) {
+  for (let i = from; i < to; i++) {
     const key = keys[i];
     if (Array.isArray(target) && INDEX.test(key) && Number(key) < target.length) target = target[Number(key)];
     else if (isPlainObject(target) && has(target, key)) target = target[key];
     else return undefined;
   }
   return target;
-}
-
-function resolvePointer(root, ref) {
-  const keys = parsePointer(ref);
-  return keys ? resolveKeys(root, keys) : undefined;
 }
 
 // ── Flattening ──────────────────────────────────────────────────────────────
@@ -215,8 +233,8 @@ function shortKey(value, ctx, depth = 0) {
     const isArray = Array.isArray(value);
     let out = isArray ? "[" : "{";
     for (const k of Object.keys(value)) {
-      const child = shortKey(value[k], ctx, depth + 1);
-      if (child === null || k.length > LIMITS.MAX_KEY_LENGTH) { out = null; break; }
+      const child = k.length > LIMITS.MAX_KEY_LENGTH ? null : shortKey(value[k], ctx, depth + 1);
+      if (child === null) { out = null; break; }
       out += `${isArray ? "" : `${JSON.stringify(k)}:`}${child},`;
       if (out.length > LIMITS.MAX_KEY_LENGTH) { out = null; break; }
     }
@@ -246,7 +264,7 @@ function alternativeProperties(members, ctx) {
     }
   }
   const properties = {};
-  for (const [name, { list }] of defs) properties[name] = list.length === 1 ? list[0] : { [ANY_OF]: list };
+  for (const [name, { list }] of defs) setOwn(properties, name, list.length === 1 ? list[0] : { [ANY_OF]: list });
   return properties;
 }
 
@@ -255,47 +273,72 @@ function sharedRequired(members, ctx) {
   let shared = null;
   for (const member of members) {
     const req = Array.isArray(member.required) ? member.required : [];
-    if (!ctx.charge(req.length + 1)) return null;
+    if (!ctx.charge(1 + req.length + (shared ? shared.size : 0))) return null;
     const own = new Set(req);
     shared = shared === null ? own : new Set([...shared].filter((k) => own.has(k)));
   }
   return [...(shared || [])];
 }
 
-// A $ref member: its target is flattened once per ref and reused, so a schema
-// that points at the same definition many times costs one flatten, not one per path.
-function flattenRef(schema, ctx, depth) {
-  const { [REF]: ref, ...siblings } = schema;
-  let target = ctx.memo.get(ref);
-  if (target === IN_PROGRESS) return null;
-  if (target === undefined) {
-    ctx.memo.set(ref, IN_PROGRESS);
-    const resolved = resolvePointer(ctx.root, ref);
-    // Same depth: the member holding the ref already counted this level.
-    target = isPlainObject(resolved) ? flatten(resolved, ctx, depth) : null;
-    ctx.memo.set(ref, target);
-  }
-  if (!target || !Object.keys(siblings).length) return target;
-  const rest = flatten(siblings, ctx, depth + 1);
-  if (!rest) return null;
+// `target` with `rest`'s keys on top; properties and required merged, `rest`
+// winning a clash. Charged per key copied.
+function mergeOnto(target, rest, ctx) {
+  const targetKeys = Object.keys(target);
+  const restKeys = Object.keys(rest);
+  if (!ctx.charge(targetKeys.length + restKeys.length)) return null;
   const merged = mergeAllOfMembers([target, rest], ctx.charge);
   if (ctx.exhausted) return null;
-  const out = { ...target, ...rest };
+  const out = {};
+  for (const key of targetKeys) setOwn(out, key, target[key]);
+  for (const key of restKeys) setOwn(out, key, rest[key]);
   if (merged.properties) out.properties = merged.properties;
   if (merged.required) out.required = merged.required;
   return out;
 }
 
+// A $ref member: its target is flattened once per pointer (however it's
+// spelled) and reused.
+function flattenRef(schema, ctx, depth) {
+  const keys = parsePointer(schema[REF]);
+  if (!keys) return null;
+  const pointer = formatPointer(keys);
+  let target = ctx.memo.get(pointer);
+  if (target === IN_PROGRESS) return null;
+  if (target === undefined) {
+    ctx.memo.set(pointer, IN_PROGRESS);
+    const resolved = resolveKeys(ctx.root, keys);
+    // Same depth: the member holding the ref already counted this level.
+    target = isPlainObject(resolved) ? flatten(resolved, ctx, depth) : null;
+    ctx.memo.set(pointer, target);
+  }
+  if (!target) return null;
+  const siblingKeys = Object.keys(schema).filter((k) => k !== REF);
+  if (!siblingKeys.length) return target;
+  if (!ctx.charge(siblingKeys.length)) return null;
+  const siblings = {};
+  for (const key of siblingKeys) setOwn(siblings, key, schema[key]);
+  const rest = flatten(siblings, ctx, depth + 1);
+  return rest && mergeOnto(target, rest, ctx);
+}
+
+function isObjectType(type, ctx) {
+  if (type === undefined || type === OBJECT) return true;
+  if (!Array.isArray(type) || !ctx.charge(type.length)) return false;
+  return type.includes(OBJECT);
+}
+
 // One object schema equivalent enough to `schema` with no top-level combinator,
 // or null when a member isn't an object schema we can flatten (or the budget ran out).
 function flatten(schema, ctx, depth) {
-  if (!ctx.charge() || depth > LIMITS.MAX_DEPTH || !isPlainObject(schema)) return null;
+  if (depth > LIMITS.MAX_DEPTH || !isPlainObject(schema) || !ctx.charge()) return null;
   if (typeof schema[REF] === "string") return flattenRef(schema, ctx, depth);
-  if (!isObjectType(schema.type)) return null;
+  if (!isObjectType(schema.type, ctx)) return null;
   if (!hasCombinator(schema)) return schema;
 
-  const base = { ...schema };
-  for (const key of COMBINATORS) delete base[key];
+  const ownKeys = Object.keys(schema);
+  if (!ctx.charge(ownKeys.length)) return null;
+  const base = {};
+  for (const key of ownKeys) if (!COMBINATORS.has(key)) setOwn(base, key, schema[key]);
   const parts = [base];
   const notes = [];
 
@@ -333,7 +376,9 @@ function flatten(schema, ctx, depth) {
 
   const merged = mergeAllOfMembers(parts, ctx.charge);
   if (ctx.exhausted) return null;
-  const out = { ...base, type: OBJECT, properties: merged.properties || {} };
+  const out = base;
+  out.type = OBJECT;
+  out.properties = merged.properties || {};
   if (merged.required?.length) out.required = merged.required;
   else delete out.required;
   const description = describe(base.description, notes);
@@ -343,15 +388,18 @@ function flatten(schema, ctx, depth) {
 }
 
 // A top-level $ref, followed to the schema it names. The root's other keys
-// (its definitions block, a description) stay next to it.
+// stay next to it (its definitions block, a description), and its properties
+// and required merge with the target's, as for a $ref member's siblings.
 function resolveTop(root, ctx) {
   let top = root;
   for (let hops = 0; typeof top[REF] === "string"; hops++) {
-    if (hops >= LIMITS.MAX_DEPTH || !ctx.charge()) return null;
-    const target = resolvePointer(root, top[REF]);
-    if (!isPlainObject(target)) return null;
-    const { [REF]: _ref, ...siblings } = top;
-    top = { ...target, ...siblings };
+    const keys = parsePointer(top[REF]);
+    const target = keys && resolveKeys(root, keys);
+    if (hops >= LIMITS.MAX_DEPTH || !isPlainObject(target)) return null;
+    const rest = {};
+    for (const key of Object.keys(top)) if (key !== REF) setOwn(rest, key, top[key]);
+    top = mergeOnto(target, rest, ctx);
+    if (!top) return null;
   }
   return top;
 }
@@ -361,8 +409,10 @@ function resolveTop(root, ctx) {
 function dropUnusedDefs(out) {
   const blocks = DEFS_KEYS.filter((key) => isPlainObject(out[key]));
   if (!blocks.length) return;
-  const prefixOf = (key) => formatPointer([key]);
-  const pointsInto = (refs, key) => refs.some((ref) => ref === prefixOf(key) || ref.startsWith(`${prefixOf(key)}/`));
+  const pointsInto = (refs, key) => {
+    const prefix = formatPointer([key]);
+    return refs.some((ref) => ref === prefix || ref.startsWith(`${prefix}/`));
+  };
   const refsIn = (node, skip) => findNodes(node, isLocalRef, skip).map((n) => n[REF]);
   const used = new Set();
   let refs = refsIn(out, new Set(blocks.map((key) => out[key])));
@@ -376,18 +426,22 @@ function dropUnusedDefs(out) {
 }
 
 // A $ref that no longer resolves pointed into a combinator member that was
-// merged away. It's pointed at the same path in the merged schema
-// ("#/anyOf/0/properties/a" → "#/properties/a", which zod-to-json-schema
-// writes) when that exists. Anything else (a ref to a member itself, as a
-// recursive union writes, or one that pointed nowhere) fails: false.
-function retargetRefs(out) {
+// merged away. It's retargeted only to a property the merged schema holds as
+// the very same object: "#/anyOf/0/properties/a/..." → "#/properties/a/...",
+// which zod-to-json-schema writes. Anything else fails (false): a ref to a
+// member itself (a recursive union), into a member's own $defs, through a
+// property the alternatives define differently, or one that pointed nowhere.
+function retargetRefs(out, root) {
   for (const node of findNodes(out, isLocalRef)) {
     const keys = parsePointer(node[REF]);
     if (!keys) return false;
     if (resolveKeys(out, keys) !== undefined) continue;
     let from = 0;
     while (from + 1 < keys.length && COMBINATORS.has(keys[from]) && INDEX.test(keys[from + 1])) from += 2;
-    if (from === 0 || from === keys.length || resolveKeys(out, keys, from) === undefined) return false;
+    if (from === 0 || keys[from] !== PROPERTIES || keys.length < from + 2) return false;
+    const original = resolveKeys(root, keys, 0, from + 2);
+    if (original === undefined || original !== resolveKeys(out, keys, from, from + 2)) return false;
+    if (resolveKeys(out, keys, from) === undefined) return false;
     node[REF] = formatPointer(keys, from);
   }
   return true;
@@ -404,12 +458,13 @@ function withObjectType(schema) {
 // Anthropic-style Messages APIs reject allOf/anyOf/oneOf there (nested inside
 // properties they're fine, and left alone). Returns the schema itself when
 // nothing needs changing, otherwise a new schema; never mutates or throws.
+// Only small schemas (MAX_INPUT_BYTES / MAX_INPUT_NODES) are flattened.
 export function normalizeClaudeInputSchema(schema) {
   if (!isPlainObject(schema)) return permissiveSchema();
   if (!hasCombinator(schema) && typeof schema[REF] !== "string") return withObjectType(schema);
   try {
     const nodes = countInput(schema);
-    if (nodes < 0) return fallback(schema);
+    if (nodes < 0) return permissiveSchema(fallbackText(schema.description));
     const root = structuredClone(schema);
     const ctx = createContext(root);
     const top = resolveTop(root, ctx);
@@ -418,9 +473,9 @@ export function normalizeClaudeInputSchema(schema) {
     const out = { ...flat, type: OBJECT };
     if (!fitsIn(out, LIMITS.MAX_GROWTH * nodes + 64)) return fallback(top);
     dropUnusedDefs(out);
-    return retargetRefs(out) ? out : fallback(top);
+    return retargetRefs(out, root) ? out : fallback(top);
   } catch {
-    return permissiveSchema(nonEmpty(schema.description) ? schema.description : "");
+    return permissiveSchema(fallbackText(schema.description));
   }
 }
 
