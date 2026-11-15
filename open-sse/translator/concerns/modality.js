@@ -2,6 +2,7 @@
 // Driven by getCapabilitiesForModel: vision/audioInput/pdf. Replaces removed
 // media with a short text placeholder so messages never become empty.
 import { FORMATS } from "../formats.js";
+import { CLAUDE_BLOCK, OPENAI_BLOCK, RESPONSES_ITEM } from "../schema/index.js";
 
 // Placeholder text inserted where a media block was removed.
 // Current turn: explain the active model can't read what the user just sent.
@@ -87,20 +88,34 @@ function stripClaude(body, caps) {
   const last = body.messages.length - 1;
   body.messages.forEach((msg, i) => {
     if (!Array.isArray(msg.content)) return;
+    // Images inside a tool_result too, such as a tool's screenshot.
+    for (const block of msg.content) {
+      if (block?.type === CLAUDE_BLOCK.TOOL_RESULT && Array.isArray(block.content)) {
+        block.content = filterBlocks(block.content, capForClaudeBlock, caps, new Set(), i === last);
+      }
+    }
     const removed = new Set();
     msg.content = filterBlocks(msg.content, capForClaudeBlock, caps, removed, i === last);
   });
 }
 
 // OpenAI Responses input[].content[] and a tool call's array output[] (input_image / input_file).
+// A tool output may also carry Chat-shaped image_url parts, which the converter keeps.
+function capForResponsesPart(block) {
+  const t = block?.type;
+  if (t === RESPONSES_ITEM.INPUT_IMAGE || t === OPENAI_BLOCK.IMAGE_URL) return "vision";
+  if (t === RESPONSES_ITEM.INPUT_FILE) return "pdf";
+  return null;
+}
+
 function stripResponsesParts(parts, caps, isLast) {
   const removed = new Set();
   const kept = parts.filter((b) => {
-    const cap = b?.type === "input_image" ? "vision" : b?.type === "input_file" ? "pdf" : null;
+    const cap = capForResponsesPart(b);
     if (cap && caps[cap] === false) { removed.add(cap); return false; }
     return true;
   });
-  for (const cap of removed) kept.push({ type: "input_text", text: ph(cap, isLast) });
+  for (const cap of removed) kept.push({ type: RESPONSES_ITEM.INPUT_TEXT, text: ph(cap, isLast) });
   return kept;
 }
 

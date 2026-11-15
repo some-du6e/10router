@@ -18,7 +18,7 @@ import {
   usesKiroNativeGptEffort
 } from "../../config/kiroConstants.js";
 import { parseDataUri } from "../concerns/image.js";
-import { splitToolContent } from "../concerns/toolContent.js";
+import { imagePartUrl, splitToolContent } from "../concerns/toolContent.js";
 import { DEFAULT_IMAGE_MIME } from "../schema/index.js";
 import { ROLE, OPENAI_BLOCK, CLAUDE_BLOCK } from "../schema/index.js";
 import {
@@ -116,7 +116,7 @@ function convertMessages(messages, model) {
             textParts.push(c.text || "");
           } else if (c.type === OPENAI_BLOCK.IMAGE_URL) {
             // OpenAI format: image_url.url with data URI
-            const url = c.image_url?.url || "";
+            const url = imagePartUrl(c);
             const parsed = parseDataUri(url);
             if (parsed) {
               const format = parsed.mimeType.split("/")[1] || parsed.mimeType;

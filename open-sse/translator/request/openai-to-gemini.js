@@ -161,6 +161,7 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
             const toolParts = [];
             // Images from the results ride as inlineData after the functionResponses
             const mediaParts = [];
+            let notedImages = 0;
             for (const fid of toolCallIds) {
               if (!toolResponses[fid]) continue;
 
@@ -176,7 +177,8 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
 
               let resp = toolResponses[fid];
               if (Array.isArray(resp)) {
-                const { text, images } = splitToolContent(resp);
+                const { text, images } = splitToolContent(resp, notedImages);
+                notedImages += images.length;
                 resp = text;
                 mediaParts.push(...convertOpenAIContentToParts(images));
               }

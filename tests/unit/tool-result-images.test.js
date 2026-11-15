@@ -283,6 +283,14 @@ describe("other targets reached through the OpenAI pivot", () => {
     expect(turn.parts[1]).toEqual({ inlineData: { mime_type: "image/jpeg", data: JPEG_B64 } });
   });
 
+  it("Gemini numbers the notes across several results in one turn", () => {
+    const out = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.GEMINI, "gemini-x", responsesBody(screenshotOutput(), { calls: 2 }), true, null, null);
+    const turn = out.contents.find((c) => c.parts.some((p) => p.functionResponse));
+    const results = turn.parts.filter((p) => p.functionResponse).map((p) => p.functionResponse.response.result.result);
+    expect(results).toEqual(["Output:\n[image 1 attached below]", "Output:\n[image 2 attached below]"]);
+    expect(turn.parts.filter((p) => p.inlineData)).toHaveLength(2);
+  });
+
   it("Antigravity's Claude envelope carries the image as inlineData too", () => {
     const out = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.ANTIGRAVITY, CLAUDE_MODEL, responsesBody(), true, {}, null);
     const parts = out.request.contents.flatMap((c) => c.parts);
@@ -298,11 +306,31 @@ describe("other targets reached through the OpenAI pivot", () => {
     expect(leaksIntoText(out, JPEG_B64)).toBe(false);
   });
 
+  it("Kiro reads an image_url given as a bare string", () => {
+    const out = translateRequest(FORMATS.OPENAI, FORMATS.KIRO, CLAUDE_MODEL, {
+      messages: [
+        { role: "user", content: "go" },
+        { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "screenshot", arguments: "{}" } }] },
+        { role: "tool", tool_call_id: "call_1", content: [{ type: "text", text: "Output:" }, { type: "image_url", image_url: PNG_URL }] },
+      ],
+    }, true, {}, null);
+    expect(JSON.stringify(out)).toContain(PNG_B64);
+    expect(leaksIntoText(out, PNG_B64)).toBe(false);
+  });
+
   it("Ollama sends the image in images[] on a user message after the tool message", () => {
     const out = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.OLLAMA, "ollama-x", responsesBody(), true, null, null);
     const i = out.messages.findIndex((m) => m.role === "tool");
     expect(out.messages[i].content).toBe("Output:\n[image 1 attached below]");
     expect(out.messages[i + 1]).toMatchObject({ role: "user", images: [JPEG_B64] });
+  });
+
+  it("Ollama takes base64 only: an https screenshot becomes a placeholder, not a dangling note", () => {
+    const out = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.OLLAMA, "ollama-x",
+      responsesBody([{ type: "input_text", text: "Output:" }, { type: "input_image", image_url: "https://example.com/shot.png" }]), true, null, null);
+    const i = out.messages.findIndex((m) => m.role === "tool");
+    expect(out.messages[i].content).toBe(`Output:\n${MEDIA_OMITTED_TEXT.IMAGE}`);
+    expect(out.messages[i + 1]).toBeUndefined();
   });
 });
 
@@ -334,6 +362,27 @@ describe("modality strip", () => {
     const output = body.input.find((i) => i.type === "function_call_output").output;
     expect(output.some((p) => p.type === "input_image")).toBe(false);
     expect(output[0]).toEqual({ type: "input_text", text: "Output:" });
+  });
+
+  it("also drops a Chat-shaped image_url from a tool output", () => {
+    const body = responsesBody([{ type: "image_url", image_url: { url: PNG_URL } }]);
+    stripUnsupportedModalities(body, FORMATS.OPENAI_RESPONSES, { vision: false });
+    const output = body.input.find((i) => i.type === "function_call_output").output;
+    expect(output.some((p) => p.type === "image_url")).toBe(false);
+  });
+
+  it("drops an image inside a Claude tool_result", () => {
+    const body = { messages: [
+      { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "screenshot", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: [
+        { type: "text", text: "Output:" },
+        { type: "image", source: { type: "base64", media_type: "image/png", data: PNG_B64 } },
+      ] }] },
+    ] };
+    stripUnsupportedModalities(body, FORMATS.CLAUDE, { vision: false });
+    const content = body.messages[1].content[0].content;
+    expect(content.some((b) => b.type === "image")).toBe(false);
+    expect(content[0]).toEqual({ type: "text", text: "Output:" });
   });
 });
 

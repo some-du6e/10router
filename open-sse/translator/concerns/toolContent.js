@@ -91,15 +91,15 @@ const normalizeChatImage = (part) => (typeof part.image_url === "string"
   ? { ...part, image_url: { url: part.image_url } }
   : part);
 
-// Text of Chat content parts. The nth image becomes imageText(n), other media a
-// placeholder, and text is scrubbed of inline base64.
-function partsText(parts, imageText) {
+// Text of Chat content parts. The nth image the target carries becomes
+// imageText(n), other media a placeholder, and text is scrubbed of inline base64.
+function partsText(parts, imageText, carries = isChatImage) {
   let images = 0;
   const texts = [];
   for (const part of parts) {
     if (typeof part === "string") texts.push(scrubInlineBase64(part));
     else if (!part || typeof part !== "object") continue;
-    else if (isChatImage(part)) texts.push(imageText(++images));
+    else if (isChatImage(part)) texts.push(carries(part) ? imageText(++images) : omittedText(part));
     else if (typeof part.text === "string") texts.push(scrubInlineBase64(part.text));
     else texts.push(omittedText(part));
   }
@@ -121,12 +121,13 @@ export function toolContentText(content) {
 /**
  * Tool message content split for a target that carries images next to the
  * result (a user turn, Gemini inlineData, Kiro images): the text, with a note
- * where each image was, and the image parts.
+ * where each image was, and the image parts. `offset` is how many images
+ * earlier results in the same turn already attached, so the notes keep counting.
  */
-export function splitToolContent(content) {
+export function splitToolContent(content, offset = 0) {
   if (!Array.isArray(content)) return { text: toolContentText(content), images: [] };
   return {
-    text: partsText(content, imageAttachedBelowText),
+    text: partsText(content, (n) => imageAttachedBelowText(offset + n)),
     images: content.filter(isChatImage).map(normalizeChatImage),
   };
 }
@@ -138,8 +139,10 @@ const hasToolImages = (msg) => msg?.role === ROLE.TOOL && Array.isArray(msg.cont
  * "tool" message, so each image moves to ONE user message after the run of
  * tool messages it came from. Every tool result of an assistant turn still
  * comes straight after it. Messages without tool images are returned as they are.
+ * `carries(part)` says whether the target can take an image; one it can't take
+ * becomes a placeholder in the tool text instead of moving.
  */
-export function moveToolImagesToUserTurn(messages) {
+export function moveToolImagesToUserTurn(messages, carries = isChatImage) {
   if (!Array.isArray(messages) || !messages.some(hasToolImages)) return messages;
   const out = [];
   let images = [];
@@ -158,8 +161,8 @@ export function moveToolImagesToUserTurn(messages) {
       continue;
     }
     const offset = images.length;
-    out.push({ ...msg, content: partsText(msg.content, (n) => imageAttachedBelowText(offset + n)) });
-    images.push(...msg.content.filter(isChatImage).map(normalizeChatImage));
+    out.push({ ...msg, content: partsText(msg.content, (n) => imageAttachedBelowText(offset + n), carries) });
+    images.push(...msg.content.filter((part) => isChatImage(part) && carries(part)).map(normalizeChatImage));
   }
   flush();
   return out;
