@@ -19,6 +19,7 @@ import {
 import { deriveSessionId, toNumericSessionId } from "../../utils/sessionManager.js";
 import { ROLE, GEMINI_ROLE, OPENAI_BLOCK, CLAUDE_BLOCK, DEFAULT_IMAGE_MIME } from "../schema/index.js";
 import { isDataUriImage, omittedText, scrubInlineBase64, splitToolContent } from "../concerns/toolContent.js";
+import { capChatImages } from "../concerns/toolImageCap.js";
 import { MEDIA_OMITTED_TEXT, imageAttachedBelowText, imageUrlText } from "../../config/mediaConfig.js";
 
 // Sanitize function names for Gemini API.
@@ -49,6 +50,8 @@ function normalizeGeminiContents(contents) {
 
 // Core: Convert OpenAI request to Gemini format (base for all variants)
 function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG_SIGNATURE) {
+  // A long computer-use session: keep under the upstream's image limits
+  if (Array.isArray(body.messages)) body = { ...body, messages: capChatImages(body.messages) };
   const result = {
     model: model,
     contents: [],

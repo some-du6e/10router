@@ -3,7 +3,7 @@ import { FORMATS } from "../formats.js";
 import { parseDataUri } from "../concerns/image.js";
 import { safeParseJSON } from "../concerns/json.js";
 import { ROLE, OPENAI_BLOCK } from "../schema/index.js";
-import { imagePartUrl, moveToolImagesToUserTurn } from "../concerns/toolContent.js";
+import { isDataUriImage, moveToolImagesToUserTurn } from "../concerns/toolContent.js";
 
 /**
  * Convert OpenAI request to Ollama format
@@ -23,8 +23,8 @@ export function openaiToOllamaRequest(model, body, stream) {
   const result = {
     model: model,
     // Tool messages are text; their images go in a user message's images[] after them.
-    // Ollama takes base64 only, so an image URL becomes a placeholder.
-    messages: normalizeMessages(moveToolImagesToUserTurn(body.messages, (part) => parseDataUri(imagePartUrl(part)) !== null)),
+    // Ollama takes base64 only, so an image given as a web URL stays as "[Image: <url>]" text.
+    messages: normalizeMessages(moveToolImagesToUserTurn(body.messages, isDataUriImage)),
     stream: stream
   };
 

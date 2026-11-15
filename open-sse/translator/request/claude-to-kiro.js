@@ -32,6 +32,7 @@ import {
 import { DEFAULT_IMAGE_MIME } from "../schema/index.js";
 import { ROLE, CLAUDE_BLOCK } from "../schema/index.js";
 import { scrubInlineBase64 } from "../concerns/toolContent.js";
+import { capClaudeImages } from "../concerns/toolImageCap.js";
 import { MEDIA_OMITTED_TEXT, imageAttachedBelowText, imageUrlText } from "../../config/mediaConfig.js";
 import {
   canonicalizeKiroConversation,
@@ -234,7 +235,8 @@ function extractClaudeSystemText(system) {
  * Build a Kiro payload directly from a Claude Messages API request body.
  */
 export function claudeToKiroRequest(model, body, stream, credentials) {
-  const messages = Array.isArray(body.messages) ? body.messages : [];
+  // A long computer-use session: keep under the upstream's image limits
+  const messages = Array.isArray(body.messages) ? capClaudeImages(body.messages) : [];
   const tools = Array.isArray(body.tools) ? body.tools : [];
   const maxTokens = body.max_tokens || 32000;
   const temperature = body.temperature;

@@ -35,22 +35,31 @@ export const imageAttachedBelowText = (n) => `[image ${n} attached below]`;
 export const imageUrlText = (url) => `[Image: ${url}]`;
 
 // Tool-result text loses image and PDF data: URLs with a payload of at least
-// this many characters (a screenshot is ~600K). Shorter ones, like a small icon
-// inlined in a CSS file, and other types (fonts) are left alone, as is any
-// bare base64 or hex.
-export const INLINE_BASE64_MIN_CHARS = 1024;
+// this many characters. A screenshot is ~600K; the icons and fonts inlined in
+// CSS, HTML, SVG or Markdown files are far smaller, so a file the model reads
+// and edits comes through as it is. Other types and any bare base64 or hex
+// are left alone.
+export const INLINE_BASE64_MIN_CHARS = 64 * 1024;
 export const SCRUBBED_DATA_URI_MIME = /^(image\/|application\/pdf$)/i;
 
-// Long computer-use sessions: Anthropic takes at most 100 images and about
-// 32 MB per request. Past either limit here, the oldest tool-result images
-// are replaced in chunks of CHUNK, so the prompt prefix (and its cache) stays
-// the same for many turns after each trim. User images and the newest
-// KEEP_RECENT tool images are never dropped.
-export const TOOL_IMAGE_CAP = {
-  MAX_IMAGES: 80,
-  MAX_BYTES: 24 * 1024 * 1024,
-  CHUNK: 40,
-  KEEP_RECENT: 8,
+// Long computer-use sessions. An upstream takes at most 100 images and about
+// 32 MB per request, and no more than 20 images once any of them is over
+// 2000 px on a side. The images are walked oldest first in a window: when the
+// window passes a TRIGGER, its oldest tool-result images are replaced until it
+// is back at TARGET. A new image moves the window only when it crosses a
+// trigger, so the prompt prefix (and its cache) stays the same between trims.
+// Bytes are base64 characters, which is what the request carries.
+export const IMAGE_WINDOW = {
+  HARD_MAX_IMAGES: 100,
+  HARD_MAX_BASE64_BYTES: 30_000_000, // leaves room under ~32 MB for the text
+  TRIGGER_IMAGES: 80,
+  TARGET_IMAGES: 50,
+  TRIGGER_BASE64_BYTES: 24_000_000,
+  TARGET_BASE64_BYTES: 15_000_000,
+  // Over 20 images, every image must be at most MAX_SIDE px on each side.
+  HI_RES_MAX_SIDE: 2000,
+  HI_RES_TRIGGER_IMAGES: 20,
+  HI_RES_TARGET_IMAGES: 16,
 };
 
 // Tokens one image counts as in local estimates: the context meter, billing

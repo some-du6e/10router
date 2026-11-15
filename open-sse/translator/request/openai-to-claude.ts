@@ -3,8 +3,8 @@ import { FORMATS } from "../formats.js";
 import { adjustMaxTokens } from "../formats/maxTokens.js";
 import { safeParseJSON } from "../concerns/json.js";
 import { parseDataUri, sniffImageMime } from "../concerns/image.js";
-import { imagePartUrl, omittedText, scrubInlineBase64 } from "../concerns/toolContent.js";
-import { capToolResultImages } from "../concerns/toolImageCap.js";
+import { imagePartUrl, isHttpUrl, omittedText, scrubInlineBase64 } from "../concerns/toolContent.js";
+import { capClaudeImages } from "../concerns/toolImageCap.js";
 import { CLAUDE_IMAGE_MIMES } from "../../config/mediaConfig.js";
 import { extractTextContent } from "../formats/gemini.js";
 import { ROLE, OPENAI_BLOCK, CLAUDE_BLOCK } from "../schema/index.js";
@@ -39,7 +39,7 @@ export function openaiToClaudeRequest(model: string, body: Body, stream: boolean
   }
 
   // Messages
-  const messages: ClaudeMessage[] = [];
+  let messages: ClaudeMessage[] = [];
   result.messages = messages;
   const systemParts: string[] = [];
 
@@ -105,7 +105,8 @@ export function openaiToClaudeRequest(model: string, body: Body, stream: boolean
     flushCurrentMessage();
 
     // A long computer-use session: keep under the upstream's image limits
-    capToolResultImages(messages);
+    messages = capClaudeImages(messages);
+    result.messages = messages;
 
     // Add cache_control to last assistant message
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -295,7 +296,7 @@ function openaiPartToClaude(part: Body): ClaudeBlock | null {
     const url = imagePartUrl(part);
     const parsed = parseDataUri(url);
     if (parsed) return base64ImageBlock(parsed.base64) ?? { type: CLAUDE_BLOCK.TEXT, text: omittedText(part) };
-    if (url.startsWith("http://") || url.startsWith("https://")) {
+    if (isHttpUrl(url)) {
       return { type: CLAUDE_BLOCK.IMAGE, source: { type: "url", url } };
     }
     return { type: CLAUDE_BLOCK.TEXT, text: omittedText(part) };

@@ -18,7 +18,8 @@ import {
   usesKiroNativeGptEffort
 } from "../../config/kiroConstants.js";
 import { parseDataUri } from "../concerns/image.js";
-import { imagePartUrl, isDataUriImage, splitToolContent } from "../concerns/toolContent.js";
+import { imagePartUrl, isDataUriImage, isHttpUrl, splitToolContent } from "../concerns/toolContent.js";
+import { capChatImages } from "../concerns/toolImageCap.js";
 import { imageUrlText } from "../../config/mediaConfig.js";
 import { DEFAULT_IMAGE_MIME } from "../schema/index.js";
 import { ROLE, OPENAI_BLOCK, CLAUDE_BLOCK } from "../schema/index.js";
@@ -124,7 +125,7 @@ function convertMessages(messages, model) {
             if (parsed) {
               const format = parsed.mimeType.split("/")[1] || parsed.mimeType;
               pendingImages.push({ format, source: { bytes: parsed.base64 } });
-            } else if (url.startsWith("http://") || url.startsWith("https://")) {
+            } else if (isHttpUrl(url)) {
               // Kiro only supports base64 — fallback to URL text
               textParts.push(imageUrlText(url));
             }
@@ -310,7 +311,8 @@ function convertMessages(messages, model) {
  *    legacy prompt tags remain only for models that need them.
  */
 export function openaiToKiroRequest(model, body, stream, credentials) {
-  const messages = body.messages || [];
+  // A long computer-use session: keep under the upstream's image limits
+  const messages = capChatImages(body.messages || []);
   const tools = body.tools || [];
   const maxTokens = 32000;
   const temperature = body.temperature;

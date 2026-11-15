@@ -45,7 +45,8 @@ export function imagePartUrl(part) {
   return typeof url === "string" ? url : "";
 }
 
-const isHttpUrl = (url) => url.startsWith("http://") || url.startsWith("https://");
+/** True for a web (http or https) URL. */
+export const isHttpUrl = (url) => typeof url === "string" && (url.startsWith("http://") || url.startsWith("https://"));
 
 /** True for an image part whose URL is a base64 data: URL, the only kind some targets can attach. */
 export const isDataUriImage = (part) => parseDataUri(imagePartUrl(part)) !== null;
@@ -73,7 +74,7 @@ const uncarriedImageText = (part) => {
  * become an image: a file_id names a file no upstream outside the OpenAI API
  * can read, so it becomes a placeholder.
  */
-export function responsesImageToChat(part) {
+function responsesImageToChat(part) {
   const url = imagePartUrl(part);
   if (!url) return textPart(MEDIA_OMITTED_TEXT.IMAGE);
   return { type: OPENAI_BLOCK.IMAGE_URL, image_url: { url, detail: part.detail || part.image_url?.detail || "auto" } };

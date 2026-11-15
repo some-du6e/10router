@@ -58,6 +58,71 @@ export function sniffImageMime(base64) {
   }
 }
 
+// Base64 characters that decode to the first 64 KiB, as far as a JPEG's
+// frame header is looked for. PNG, GIF and WebP keep their size in the first
+// 30 bytes.
+const DIMENSION_SCAN_BASE64 = Math.ceil((64 * 1024) / 3) * 4;
+const HEAD_BASE64 = 64;
+
+const decodeHead = (base64, chars) => Buffer.from(base64.slice(0, chars).replace(/\s/g, ""), "base64");
+
+// JPEG: walk the marker segments to the first start-of-frame (SOF0-SOF15,
+// except DHT C4, JPG C8 and DAC CC), which holds height then width.
+function jpegDimensions(buf) {
+  let i = 2;
+  while (i + 9 <= buf.length) {
+    if (buf[i] !== 0xff) return null;
+    const marker = buf[i + 1];
+    if (marker === 0xff) { i++; continue; } // fill byte
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) { i += 2; continue; }
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      return { width: buf.readUInt16BE(i + 7), height: buf.readUInt16BE(i + 5) };
+    }
+    if (marker === 0xd9 || marker === 0xda) return null; // end of image / start of scan
+    i += 2 + buf.readUInt16BE(i + 2);
+  }
+  return null;
+}
+
+function webpDimensions(buf) {
+  const chunk = buf.toString("latin1", 12, 16);
+  if (chunk === "VP8 " && buf.length >= 30) {
+    return { width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff };
+  }
+  if (chunk === "VP8L" && buf.length >= 25) {
+    const b = buf.subarray(21, 25);
+    return {
+      width: 1 + (((b[1] & 0x3f) << 8) | b[0]),
+      height: 1 + (((b[3] & 0x0f) << 10) | (b[2] << 2) | ((b[1] & 0xc0) >> 6)),
+    };
+  }
+  if (chunk === "VP8X" && buf.length >= 30) {
+    return { width: 1 + buf.readUIntLE(24, 3), height: 1 + buf.readUIntLE(27, 3) };
+  }
+  return null;
+}
+
+/**
+ * Pixel size of a base64 PNG, JPEG, GIF or WebP, read from its header, or null
+ * when it can't be read. Decodes the head only (up to 64 KiB for a JPEG).
+ */
+export function imageDimensions(base64) {
+  if (typeof base64 !== "string" || !base64) return null;
+  try {
+    const head = decodeHead(base64, HEAD_BASE64);
+    const mime = detectImageMime(head);
+    if (mime === "image/png" && head.toString("latin1", 12, 16) === "IHDR") {
+      return { width: head.readUInt32BE(16), height: head.readUInt32BE(20) };
+    }
+    if (mime === "image/gif" && head.length >= 10) return { width: head.readUInt16LE(6), height: head.readUInt16LE(8) };
+    if (mime === "image/webp") return webpDimensions(head);
+    if (mime === "image/jpeg") return jpegDimensions(decodeHead(base64, DIMENSION_SCAN_BASE64));
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // Verify buffer magic bytes match a known image signature; return its mime or null.
 function detectImageMime(buf) {
   for (const { sig, offset, mime, verifyWebp } of IMAGE_SIGNATURES) {
