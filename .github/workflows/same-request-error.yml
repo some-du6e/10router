@@ -54,6 +54,7 @@ jobs:
           open-sse/services/accountFallback.js
           open-sse/config/runtimeConfig.js
           open-sse/config/errorConfig.js
+          src/sse/services/auth.js
           tests/unit/same-request-error-routing.test.js
       # Fails only on errors in the .ts files this change touches, so unrelated
       # type errors elsewhere don't block it.

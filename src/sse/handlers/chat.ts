@@ -5,6 +5,7 @@ import {
   getProviderCredentials,
   markAccountUnavailable,
   clearAccountError,
+  keysShareOneUpstream,
   extractApiKey,
   isValidApiKey,
 } from "../services/auth.js";
@@ -721,9 +722,11 @@ async function routeSingleModelChat(
   let lockedUntil = 0;
   // Keys tried since this request's first header timeout, that one included.
   let keysSinceHeadersTimeout = 0;
-  // 400/413/422 messages per account on a custom endpoint: the same one from
-  // enough keys is the request's fault.
+  // Request-shaped 400/413/422 messages per account on a custom endpoint
+  // (sameRequestError.ts): the same one from enough keys is the request's fault.
   const sameRequestErrors = createSameRequestErrorTally();
+  // Whether every key of the provider reaches one upstream, read when first needed.
+  let sharedUpstream: boolean | null = null;
 
   while (true) {
     // The client is gone: try no more accounts, and lock none for its abort.
@@ -937,9 +940,11 @@ async function routeSingleModelChat(
         log.warn("CHAT", `${errorMsg} (no more keys for this request)`);
         return { success: false, status: HTTP_STATUS.GATEWAY_TIMEOUT, error: errorMsg, limited: false, response: errorResponse(HTTP_STATUS.GATEWAY_TIMEOUT, errorMsg) };
       }
-      // Enough keys refused this request with the same message: the rest would too.
-      // Built-in providers keep walking: their accounts differ in plan and region.
-      if (customEndpoint && sameRequestErrors.note(credentials.connectionId, result.status, result.error)) {
+      // Enough keys refused this request with the same message: the rest would too,
+      // when they all reach one upstream. Built-in providers keep walking: their
+      // accounts differ in plan and region.
+      if (customEndpoint && sameRequestErrors.note(credentials.connectionId, result.status, result.error) &&
+          (sharedUpstream ??= await keysShareOneUpstream(provider))) {
         log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} same request error (${result.status}) from ${sameRequestErrors.stopAfter} accounts, not trying the rest`);
         return result;
       }

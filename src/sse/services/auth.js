@@ -96,6 +96,7 @@ function isModelRefusal(status, errorText) {
 // URL, an Azure resource, a region or location in the host, an account or
 // project in the path.
 const UPSTREAM_FIELDS = ["baseUrl", "azureEndpoint", "region", "location", "accountId", "projectId"];
+const upstreamOf = (psd) => JSON.stringify(UPSTREAM_FIELDS.map(f => String(psd[f] ?? "").trim().replace(/\/+$/, "")));
 
 // Where a key's requests go: the proxy or relay they leave through, and the
 // upstream they reach.
@@ -105,8 +106,21 @@ async function networkPath(conn) {
   const proxy = p.connectionProxyEnabled && p.connectionProxyUrl ? p.connectionProxyUrl : "";
   return {
     transport: JSON.stringify([proxy, proxy ? p.connectionNoProxy || "" : "", p.vercelRelayUrl || ""]),
-    upstream: JSON.stringify(UPSTREAM_FIELDS.map(f => String(psd[f] ?? "").trim().replace(/\/+$/, ""))),
+    upstream: upstreamOf(psd),
   };
+}
+
+/**
+ * Every active key of the provider reaches the same upstream: none has its own
+ * base URL, and they agree on every upstream field. Keys on different servers
+ * can differ in context window or tier, so one key's request error says
+ * nothing about another's.
+ */
+export async function keysShareOneUpstream(provider) {
+  const connections = (await getProviderConnections({ provider })).filter(c => c.isActive !== false);
+  const psds = connections.map(c => c.providerSpecificData || {});
+  if (psds.some(psd => psd.ownBaseUrl)) return false;
+  return new Set(psds.map(upstreamOf)).size <= 1;
 }
 
 // Only API keys count: an OAuth token or session cookie that fails to refresh

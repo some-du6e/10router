@@ -1,8 +1,10 @@
-// On a custom endpoint, a request every key refuses the same way (a prompt
-// longer than the model's context window, a tool schema the upstream rejects)
-// stops the account walk once two keys gave the same 400/413/422 message,
-// instead of costing one upstream call per key before failing with that error
-// anyway. Built-in providers keep walking every key.
+// On a custom endpoint whose keys all reach one upstream, a request every key
+// refuses the same way (a prompt longer than the model's context window, a tool
+// schema the upstream rejects) stops the account walk once two keys gave the
+// same request-shaped error (a 413, or a 400/422 matching
+// SAME_REQUEST_ERROR_PATTERNS and no veto), instead of costing one upstream
+// call per key before failing with that error anyway. Any other error, built-in
+// providers and keys on their own base URL keep walking every key.
 //
 // Runs the real account loop (handleChat → auth.js against a temporary
 // database); only the upstream call (handleChatCore) is stubbed, returning what
@@ -47,7 +49,10 @@ vi.mock("@/sse/utils/logger.js", async (importOriginal) => ({
 
 const db = await import("@/lib/db/index.js");
 const { handleChat } = await import("@/sse/handlers/chat.js");
-const { normalizeErrorMessage, requestErrorSignature, createSameRequestErrorTally } = await import("open-sse/services/sameRequestError.js");
+const { normalizeErrorMessage, upstreamMessage, requestErrorSignature, createSameRequestErrorTally } = await import("open-sse/services/sameRequestError.js");
+const { SAME_REQUEST_ERROR_PATTERNS, SAME_REQUEST_ERROR_KEY_LIMIT, MODEL_REFUSAL, OPERATION_REFUSAL } = await import("open-sse/config/errorConfig.js");
+const { namesAccountOrLimit } = await import("open-sse/services/accountFallback.js");
+const { isLimitError } = await import("open-sse/utils/limitHold.js");
 const { SAME_REQUEST_ERROR_STOP_AFTER } = await import("open-sse/config/runtimeConfig.js");
 const { createErrorResult, formatProviderError } = await import("open-sse/utils/error.js");
 
@@ -103,11 +108,13 @@ beforeEach(() => {
   combos.clear();
 });
 
-async function addKeys(count) {
+// psd: providerSpecificData by key number (1-based).
+async function addKeys(count, psd = {}) {
   const ids = [];
   for (let i = 0; i < count; i++) {
     const conn = await db.createProviderConnection({
       provider, authType: "apikey", name: `key-${i + 1}`, apiKey: `placeholder-${i + 1}`, priority: i + 1, isActive: true,
+      ...(psd[i + 1] ? { providerSpecificData: psd[i + 1] } : {}),
     });
     ids.push(conn.id);
   }
@@ -192,6 +199,12 @@ describe("which errors count", () => {
     [400, "model example-model is not enabled for this key"],
     [400, "Missing scopes: chat.write"],
     [400, "Some other bad request"],
+    [400, "You have reached your daily token limit for this key"],
+    [400, "Tokens per day limit exceeded for this endpoint"],
+    [400, "Request too large for example-model in organization org-example: tokens per min limit 10000, requested 12345."],
+    [400, "Too many tokens right now, please wait and retry"],
+    [400, "Request took too long to process"],
+    [413, "tokens_limit_reached: request body too large for example-model, max size 8000 tokens"],
   ];
 
   it.each(counts)("counts a %i: %s", (status, message) => {
@@ -203,11 +216,48 @@ describe("which errors count", () => {
     expect(requestErrorSignature(status, `[${status}]: ${message}`)).toBeNull();
   });
 
-  it("doesn't count a request-shaped message whose body names a usage limit", () => {
-    // Only isLimitError reads usage_limit_reached; the message alone would count.
-    const body = JSON.stringify({ error: { message: TOO_LONG, code: "usage_limit_reached" } });
-    expect(requestErrorSignature(400, `[400]: ${TOO_LONG}`)).not.toBeNull();
-    expect(requestErrorSignature(400, `[400]: ${body}`)).toBeNull();
+  it("pins every allowlist pattern with a message only it matches", () => {
+    const pinned = [
+      "The model's maximum context length is 10000 tokens, but the messages came to 12345 tokens",
+      "the context window exceeds limit",
+      "input plus `max_tokens` exceed context limit: 12345 + 100 > 10000",
+      "Bad request: this request is over the model token limit (10000)",
+      "Input tokens exceed this endpoint's limit of 10000",
+      TOO_LONG,
+      "tools.0.input_schema: JSON schema is not valid",
+      "`thinking.budget_tokens` has to be lower than `max_tokens`",
+    ];
+    const covered = new Set();
+    for (const message of pinned) {
+      const matching = SAME_REQUEST_ERROR_PATTERNS.filter((p) => p.test(message));
+      expect(matching, message).toHaveLength(1);
+      covered.add(matching[0]);
+      expect(requestErrorSignature(400, `[400]: ${message}`), message).not.toBeNull();
+    }
+    expect(covered.size).toBe(SAME_REQUEST_ERROR_PATTERNS.length);
+  });
+
+  // Each message is request-shaped, and exactly one veto keeps it out.
+  const vetoes = {
+    namesAccountOrLimit: (text) => namesAccountOrLimit(text),
+    isLimitError: (text) => isLimitError(400, text),
+    MODEL_REFUSAL: (text) => MODEL_REFUSAL.test(text.toLowerCase()),
+    OPERATION_REFUSAL: (text) => OPERATION_REFUSAL.test(text.toLowerCase()),
+    SAME_REQUEST_ERROR_KEY_LIMIT: (text) => SAME_REQUEST_ERROR_KEY_LIMIT.test(text),
+  };
+  it.each([
+    ["namesAccountOrLimit", `${TOO_LONG} (invalid api key)`],
+    ["isLimitError", JSON.stringify({ error: { message: TOO_LONG, code: "usage_limit_reached" } })],
+    ["MODEL_REFUSAL", `${TOO_LONG}; model example-model is not available on this endpoint`],
+    ["OPERATION_REFUSAL", `${TOO_LONG}; permission denied for this operation`],
+    ...["per minute", "per day", "tpm", "rpd", "daily", "monthly", "in organization org-example", "for this key", "for this account",
+      "throttled", "please wait", "tier 1", "upgrade", "your plan", "tokens_limit_reached"]
+      .map((words) => ["SAME_REQUEST_ERROR_KEY_LIMIT", `${TOO_LONG} (${words})`]),
+  ])("only %s keeps out: %s", (veto, body) => {
+    const raw = `[400]: ${body}`;
+    expect(SAME_REQUEST_ERROR_PATTERNS.some((p) => p.test(upstreamMessage(raw)))).toBe(true);
+    expect(Object.keys(vetoes).filter((name) => vetoes[name](raw))).toEqual([veto]);
+    expect(requestErrorSignature(400, raw)).toBeNull();
   });
 
   it("counts only 400, 413 and 422", () => {
@@ -321,14 +371,14 @@ describe("the same request error from two accounts", () => {
     expect(warnings).toContain(stopLine("key-3"));
   });
 
-  for (const [label, message] of [
-    ["names a rate limit", "rate limit exceeded"],
-    ["reads like a quota (isLimitError)", "insufficient quota"],
-    ["names a limit on the key", "key limit exceeded for today"],
-    ["refuses the model for this key", "the model example-model is not enabled for this key"],
-    ["is request-shaped but names a usage limit", JSON.stringify({ error: { message: TOO_LONG, code: "usage_limit_reached" } })],
+  // Not request-shaped, so the allowlist leaves them out.
+  for (const message of [
+    "rate limit exceeded",
+    "insufficient quota",
+    "key limit exceeded for today",
+    "the model example-model is not enabled for this key",
   ]) {
-    it(`keeps walking on a 400 that ${label}`, async () => {
+    it(`keeps walking on a 400 the allowlist doesn't match: ${message}`, async () => {
       const keys = await addKeys(5);
       upstream.script = Array(5).fill(failure(400, message));
 
@@ -337,6 +387,50 @@ describe("the same request error from two accounts", () => {
       expect(stopped()).toBe(false);
     });
   }
+
+  // Request-shaped, but a veto says it's about the key.
+  for (const [status, message] of [
+    [400, JSON.stringify({ error: { message: TOO_LONG, code: "usage_limit_reached" } })],
+    [400, "Request too large for example-model in organization org-example: tokens per min limit 10000, requested 12345."],
+    [413, "tokens_limit_reached: request body too large for example-model, max size 8000 tokens"],
+  ]) {
+    it(`keeps walking on a ${status} a veto keeps out: ${message}`, async () => {
+      const keys = await addKeys(5);
+      upstream.script = Array(5).fill(failure(status, message));
+
+      await chat();
+      expect(upstream.calls).toEqual(calls(keys));
+      expect(stopped()).toBe(false);
+    });
+  }
+
+  it("keeps walking when a key has its own base URL, and that key serves the request", async () => {
+    const keys = await addKeys(5, { 3: { baseUrl: "http://upstream-b.example/v1", ownBaseUrl: true } });
+    upstream.script = Array(2).fill(failure(400, TOO_LONG));
+
+    const res = await chat();
+    expect(upstream.calls).toEqual(calls(keys.slice(0, 3)));
+    expect(res.status).toBe(200);
+    expect(stopped()).toBe(false);
+  });
+
+  it("keeps walking when the keys' base URLs differ", async () => {
+    const keys = await addKeys(5, { 1: { baseUrl: "http://upstream-a.example/v1" }, 2: { baseUrl: "http://upstream-a.example/v1" }, 3: { baseUrl: "http://upstream-b.example/v1" } });
+    upstream.script = Array(2).fill(failure(400, TOO_LONG));
+
+    const res = await chat();
+    expect(upstream.calls).toEqual(calls(keys.slice(0, 3)));
+    expect(res.status).toBe(200);
+  });
+
+  it("stops when every key has the same base URL", async () => {
+    const same = { baseUrl: "http://upstream-a.example/v1" };
+    const keys = await addKeys(5, { 1: same, 2: same, 3: same, 4: same, 5: same });
+    upstream.script = Array(5).fill(failure(400, TOO_LONG));
+
+    await chat();
+    expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
+  });
 
   it("lets a combo move on to its next model", async () => {
     const keys = await addKeys(5);

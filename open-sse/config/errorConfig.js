@@ -198,17 +198,19 @@ export const ERROR_CLASS_MAX_TEXT = 8 * 1024;
 // and a 413, count toward stopping the account walk; any other 4xx keeps
 // trying the next key.
 export const SAME_REQUEST_ERROR_PATTERNS = [
-  /prompt is too long/i,
   /maximum context length/i,
   /context (?:length|window|limit)s? (?:is |was |has been )?exceed/i,
   /\bexceed(?:s|ed)?\b.{0,40}\bcontext\b/i,
-  /\btoken limit\b/i,
-  /too many tokens/i,
+  /\b(?:model|context)\b.{0,30}\btoken limit\b|\btoken limit\b.{0,30}\b(?:model|context)\b/i,
   /input tokens? exceed/i,
-  /\b(?:input|request|prompt|payload|body)\b.{0,20}\btoo (?:long|large)\b/i,
+  /\b(?:input|request|prompt|payload|body)\s+(?:is\s+)?too (?:long|large)\b/i,
   /input_schema|json schema|invalid schema|function parameters|\btools?(?:\.\d+|\[\d+\])/i,
   /budget_tokens/i,
 ];
+// Wording of a limit on one key, account or plan, which the patterns above can
+// also match ("request too large ... on tokens per min"): such an error never
+// counts, since another key may have room.
+export const SAME_REQUEST_ERROR_KEY_LIMIT = /per (?:min(?:ute)?|hour|day|month)|\b(?:tpm|tpd|rpm|rpd)\b|daily|monthly|in organization|for this (?:key|account)|throttl|please wait|\btier\b|upgrade|your plan|tokens_limit_reached/i;
 // Only this much of an error body is read when matching those, parse included.
 export const SAME_REQUEST_ERROR_MAX_TEXT = 64 * 1024;
 

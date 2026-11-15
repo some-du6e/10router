@@ -10,7 +10,13 @@
 import { namesAccountOrLimit } from "./accountFallback.js";
 import { isLimitError } from "../utils/limitHold.js";
 import { HTTP_STATUS, SAME_REQUEST_ERROR_STOP_AFTER, SAME_REQUEST_ERROR_STATUSES } from "../config/runtimeConfig.js";
-import { MODEL_REFUSAL, OPERATION_REFUSAL, SAME_REQUEST_ERROR_PATTERNS, SAME_REQUEST_ERROR_MAX_TEXT } from "../config/errorConfig.js";
+import {
+  MODEL_REFUSAL,
+  OPERATION_REFUSAL,
+  SAME_REQUEST_ERROR_PATTERNS,
+  SAME_REQUEST_ERROR_KEY_LIMIT,
+  SAME_REQUEST_ERROR_MAX_TEXT,
+} from "../config/errorConfig.js";
 
 // A refusal of one model or operation for this key: about the key, not the request.
 const KEY_REFUSAL = new RegExp([MODEL_REFUSAL, OPERATION_REFUSAL].map((r) => r.source).join("|"), "i");
@@ -41,14 +47,16 @@ export function normalizeErrorMessage(error: unknown): string {
   return upstreamMessage(error).toLowerCase().replace(/\d+/g, "#").replace(/\s+/g, " ").trim();
 }
 
-// Text about the key: a bad key, billing, a rate limit or quota, or a refusal of one model or operation.
+// Text about the key: a bad key, billing, a rate limit or quota, a limit on the
+// key, account or plan, or a refusal of one model or operation.
 const namesTheKey = (status: number, text: string): boolean =>
-  namesAccountOrLimit(text) || isLimitError(status, text) || KEY_REFUSAL.test(text);
+  namesAccountOrLimit(text) || isLimitError(status, text) || KEY_REFUSAL.test(text) || SAME_REQUEST_ERROR_KEY_LIMIT.test(text);
 
 /**
  * What identifies this failure as a request error for counting, or null when it
  * doesn't count: another status, a message that doesn't read as the request's
- * fault, or one (in the message or anywhere in the body) about the key.
+ * fault, or one (in the message or anywhere in the body) about the key. A 413
+ * counts whatever its message says, unless that is about the key.
  */
 export function requestErrorSignature(status: number | null | undefined, error: unknown): string | null {
   if (typeof status !== "number" || !SAME_REQUEST_ERROR_STATUSES.has(status)) return null;
