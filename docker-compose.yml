@@ -3,6 +3,9 @@ services:
     image: some-du6e/10router:latest
     container_name: 10router
     restart: always
+    # Longer than SHUTDOWN_DRAIN_TIMEOUT_MS (3 min by default), so in-flight
+    # requests can finish on `docker compose down` / a redeploy.
+    stop_grace_period: 3m30s
     ports:
       - "20128:20128"
     volumes:

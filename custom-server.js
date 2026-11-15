@@ -7,6 +7,18 @@ const { createDrain, gateShutdownSignals, parseDrainTimeout } = require("./serve
 
 const origCreate = http.createServer.bind(http);
 
+// Graceful drain on SIGTERM/SIGINT (see server-drain.js). The signal gate is
+// only installed when this file is the entry point, at the bottom.
+let runSignalListeners = async () => {};
+const drain = createDrain({
+  timeoutMs: parseDrainTimeout(process.env.SHUTDOWN_DRAIN_TIMEOUT_MS),
+  exit: (code, info) => {
+    // A second signal means now: listeners still run, but nobody waits on them.
+    const waitMs = info.reason === "signal" ? 0 : undefined;
+    runSignalListeners(info.signal, { waitMs }).finally(() => process.exit(code));
+  },
+});
+
 // ─── Codex WebSocket transport ────────────────────────────────────────────────
 //
 // Codex upgrades `<base_url>/responses` instead of POSTing it: by default on
@@ -349,7 +361,15 @@ function handleCodexUpgrade(req, socket, head, port) {
   // bridge's completion callback treats the destroy below as an abandoned turn
   // rather than one that failed on its own.
   let inflight = null;
+  // Holds a graceful shutdown open from the turn's start until the bridge has
+  // relayed its last event (the loopback POST alone ends a moment earlier).
+  let releaseTurn = null;
+  const endTurn = () => {
+    if (releaseTurn) releaseTurn();
+    releaseTurn = null;
+  };
   const abortInflight = () => {
+    endTurn();
     if (!inflight) return;
     inflight.destroy();
     inflight = null;
@@ -419,19 +439,31 @@ function handleCodexUpgrade(req, socket, head, port) {
         );
       }
 
+      // The server is shutting down: start no new upstream work. Codex retries
+      // a failed stream on a fresh connection, which reaches the next server.
+      if (drain.draining) {
+        send(bridgeLocalErrorFrame(503, "Server is restarting; retry shortly.", "server_error", "server_draining"));
+        return close(1012, "server restarting");
+      }
+
+      releaseTurn = drain.hold();
       inflight = bridgeCodexTurn(request, port, req.headers, peerIp, send, (error, rejectedStatus) => {
         inflight = null;
-        // The client is already gone — its socket handler abandoned this turn.
-        if (closed) return;
-        if (error) {
-          send(bridgeLocalErrorFrame(502, error.message, "server_error"));
-          return close(1011, "bridge error");
+        try {
+          // The client is already gone — its socket handler abandoned this turn.
+          if (closed) return;
+          if (error) {
+            send(bridgeLocalErrorFrame(502, error.message, "server_error"));
+            return close(1011, "bridge error");
+          }
+          // A rejected turn already sent its error frame; close so the client
+          // stops waiting instead of holding a socket that will never stream.
+          if (rejectedStatus) return close(1011, `upstream ${rejectedStatus}`);
+          // Otherwise leave the socket open: Codex opens one connection per turn
+          // and closes it itself, and closing early races its own shutdown.
+        } finally {
+          endTurn();
         }
-        // A rejected turn already sent its error frame; close so the client
-        // stops waiting instead of holding a socket that will never stream.
-        if (rejectedStatus) return close(1011, `upstream ${rejectedStatus}`);
-        // Otherwise leave the socket open: Codex opens one connection per turn
-        // and closes it itself, and closing early races its own shutdown.
       });
     },
     (code) => close(code === 1005 ? 1000 : code, ""),
@@ -467,16 +499,6 @@ function handleCodexUpgrade(req, socket, head, port) {
 const PEER_TOKEN = crypto.randomBytes(24).toString("hex");
 process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
 
-// Graceful drain on SIGTERM/SIGINT (see server-drain.js). The signal gate is
-// only installed when this file is the entry point, below.
-let runSignalListeners = () => {};
-const drain = createDrain({
-  timeoutMs: parseDrainTimeout(process.env.SHUTDOWN_DRAIN_TIMEOUT_MS),
-  exit: (code, info) => {
-    runSignalListeners(info.signal);
-    process.exit(code);
-  },
-});
 
 let backgroundRefreshStarted = false;
 
@@ -608,12 +630,15 @@ http.createServer = (...args) => {
   return server;
 };
 
-module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn, MAX_ERROR_BODY } };
+module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn, MAX_ERROR_BODY, drain } };
 
 if (require.main === module) {
   // Before the app loads: its own signal listeners must not see SIGTERM first.
   if (drain.timeoutMs > 0) {
     runSignalListeners = gateShutdownSignals(process, (signal) => drain.start(signal));
+    // Next's start-server would add its own SIGTERM/SIGINT cleanup, which only
+    // repeats the server.close() the drain does and then exits.
+    if (!process.env.NEXT_MANUAL_SIG_HANDLE) process.env.NEXT_MANUAL_SIG_HANDLE = "true";
   }
   const standalone = path.join(__dirname, "server.js");
   if (fs.existsSync(standalone)) {

@@ -232,22 +232,37 @@ Container defaults: `PORT=20128`, `HOSTNAME=0.0.0.0`.
 
 #### Restarts and deploys
 
-On `SIGTERM` (what `docker stop` sends) the server stops taking new connections and lets
-requests already running finish, long streams included, for up to
-`SHUTDOWN_DRAIN_TIMEOUT_MS` (10 minutes by default), then exits. A request that reaches it
-during that time gets a `503` with `Retry-After`. A second signal exits at once. This needs
-Node (the Docker image and `npm run start`); under Bun (`start:bun`) a signal still exits at once.
+On `SIGTERM` or `SIGINT` (`docker stop` sends `SIGTERM`) the server drains before it exits:
 
-That only helps if the container runtime waits for it. Docker's default is 10 seconds before
-it kills the process, so raise the stop grace period to match:
+- It closes its listening socket, so **new connections are refused for the whole drain**.
+  On a setup that stops the old container before starting the new one, that's the trade-off:
+  turns already running finish, and new requests fail until the new instance is up.
+- Model requests already running (`/v1/*`, `/api/v1/*`, the Codex routes and WebSocket turns),
+  long streams included, get up to `SHUTDOWN_DRAIN_TIMEOUT_MS` (3 minutes by default) to
+  finish. Then the app's own shutdown work runs (database flush and close) and it exits.
+  A request held at a provider limit keeps the drain open until that timeout.
+- A request sent on a keep-alive connection that was already open gets a `503` with
+  `Retry-After: 5` and `Connection: close`. Dashboard streams that never end (usage, console
+  logs, MCP) are closed at the start and reconnect on their own.
+- A second signal more than 1.5 seconds after the first exits at once. `SHUTDOWN_DRAIN_TIMEOUT_MS=0`
+  turns the drain off.
+- It needs Node (the Docker image and `npm run start`). Under Bun (`start:bun`) a signal still
+  exits at once.
 
-- `docker stop -t 600 10router` (or `docker run --stop-timeout 600 …`)
-- Compose: `stop_grace_period: 10m`
-- A hosting platform: its container stop timeout or grace period setting.
+**The drain does nothing unless the container runtime waits for it.** Docker kills the process
+10 seconds after `docker stop` by default, which cuts the drain short and can kill the database
+flush that follows it. Set the stop grace period **longer** than the drain timeout, e.g. drain +
+30 seconds:
 
-`GET /api/health` answers `200` while serving and `503` while draining, with no auth. The
-image's `HEALTHCHECK` uses it; point a platform's health check at it too, so one that does
-rolling updates can start the new container before stopping the old one.
+- `docker stop -t 210 10router` (or `docker run --stop-timeout 210 …`)
+- Compose: `stop_grace_period: 3m30s` (the repo's `docker-compose.yml` sets it)
+- A hosting platform: its container stop timeout / grace period setting.
+
+`GET /api/health` answers `200` while the server is up, with no auth, for a platform health
+check. During the drain new connections are refused, so a health check
+fails then. Don't use it to run two instances side by side for a rolling update: two
+instances must never share one `DATA_DIR` (SQLite / sql.js writes are last-writer-wins, and
+OAuth refresh tokens rotate, so one instance would lose the other's).
 
 Data persists at `$HOME/.9router/db/data.sqlite` on the host (the `.9router` directory name
 is retained for compatibility with existing installs) ↔ `/app/data/db/data.sqlite` in the
@@ -263,7 +278,7 @@ container.
 | `PORT` | framework default | Service port (`20128` in examples) |
 | `HOSTNAME` | framework default | Bind host (Docker defaults to `0.0.0.0`) |
 | `NODE_ENV` | runtime default | Set `production` for deploy |
-| `SHUTDOWN_DRAIN_TIMEOUT_MS` | `600000` | On SIGTERM/SIGINT, how long in-flight requests get to finish before exit; `0` exits at once. Set the container stop grace period at least this long |
+| `SHUTDOWN_DRAIN_TIMEOUT_MS` | `180000` | On SIGTERM/SIGINT, how long in-flight model requests get to finish before exit (new connections are refused meanwhile); `0`/`off`/`false` exits at once. Set the container stop grace period longer than this |
 | `BASE_URL` | `http://localhost:20128` | Server-side internal base URL used by cloud sync jobs |
 | `CLOUD_URL` | `https://9router.com` | Server-side cloud sync endpoint base URL |
 | `NEXT_PUBLIC_BASE_URL` | `http://localhost:3000` | Backward-compatible/public base URL (prefer `BASE_URL`) |
