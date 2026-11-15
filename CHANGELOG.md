@@ -9,13 +9,13 @@
   - Only small schemas are flattened: up to 32 KB and 2,000 objects/arrays. Real tool schemas that start with a combinator are far smaller.
   - Some schemas get a permissive object schema (`additionalProperties: true`) instead, so the request still goes through. That happens when:
     - an `input_schema` isn't an object at all;
-    - the schema is over the size limit (it keeps its description, cut to 1,024 characters);
+    - the schema is over the size limit;
     - a member isn't an object;
-    - a `$ref` can't be resolved, or has no exact place once merged (a `$ref` to an alternative itself, as a recursive union writes, one into an alternative's own `$defs`, or one through a property the alternatives define differently);
+    - a `$ref` can't be resolved, isn't local (another document, or a base set by `$id`), or has no exact place once merged (a `$ref` to the document or to an alternative itself, as a recursive union writes, one into an alternative's own `$defs`, or one through a property the alternatives define differently);
     - it doesn't flatten within a fixed work budget;
     - flattening would more than double its size.
 
-    Except over the size limit, the fallback keeps the original description and names the alternatives in it.
+    Every fallback keeps the schema's own description, cut to 1,024 characters. Except over the size limit, which is refused without looking further, it also names the alternatives.
   - Combinators nested inside properties are left alone, and tools that don't need it are sent unchanged.
 - **A model that stops answering no longer costs four minutes on every key, request after request.** When an upstream sent no response headers within `FETCH_CONNECT_TIMEOUT_MS` (60s), the router retried the same key 3 more times, 3s apart (249s), then did the same on the next key, and the next request did it all again. Now:
   - A chat call gets one attempt as long as its attempts used to take in all, and isn't retried on the same key: 4x `FETCH_CONNECT_TIMEOUT_MS` (240s); on a custom endpoint, Timeout x (Retries + 1) when its Retries setting is set (so Retries 0 still fails over after one Timeout, or after `FETCH_CONNECT_TIMEOUT_MS` without a Timeout), else 4x its Timeout. A stream's default can be set apart with `UPSTREAM_STREAM_HEADERS_TIMEOUT_MS`. A big cold prompt finishes its prefill inside the one attempt instead of being cut off every 60s. A budget of 300s or more no longer ends early at undici's own 300s headers timeout (as a 502, retried): those calls go through a connection pool with undici's timeout off, and if undici's timeout still fires it counts as a header timeout. Through a SOCKS proxy undici keeps its 300s limit (its SOCKS agent doesn't take the pool options), so a longer budget ends there at 300s, as a header timeout and without the fallback to a direct connection. qoder keeps its own timer (its 120s provider timeout), as before.
