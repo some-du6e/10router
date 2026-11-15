@@ -16,7 +16,7 @@ import {
 import { stripUnsupportedModalities } from "../../open-sse/translator/concerns/modality.js";
 import { estimateInputTokens, estimateBillingInputTokens } from "../../open-sse/utils/usageTracking.js";
 import { estimateAnthropicInputTokens } from "../../src/app/api/v1/messages/count_tokens/route.js";
-import { capChatImages, capClaudeImages, planImageWindow } from "../../open-sse/translator/concerns/toolImageCap.js";
+import { capChatImages, capClaudeImages, capKiroImages, markToolImage, planImageWindow } from "../../open-sse/translator/concerns/toolImageCap.js";
 import { imageDimensions } from "../../open-sse/translator/concerns/image.js";
 import { GrokCliExecutor } from "../../open-sse/executors/grok-cli.js";
 import { clearKiroSessionReplayStore } from "../../open-sse/utils/kiroSessionReplay.js";
@@ -818,6 +818,26 @@ describe("image window for long sessions", () => {
     expect(kept).toEqual([...Array(20).keys()].map((i) => i + 35));
   });
 
+  it("hi-res: a large user image goes, the small user image before it stays", () => {
+    const entries = [userShot(1000, false), userShot(1000, true), ...Array.from({ length: 19 }, () => shot(1000)), shot(1000)];
+    expect([...plan(entries)]).toEqual([1]);
+  });
+
+  it("hi-res: exactly 2000 px is not large, 2001 is, on either side", () => {
+    const session21 = (newest) => [
+      ...Array.from({ length: 20 }, (_, i) => ({ role: "user", content: [{ type: "tool_result", tool_use_id: `t${i}`, content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: pngOf(100, 100) } }] }] })),
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t20", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: newest } }] }] },
+    ];
+    const images = (out) => JSON.stringify(out).split('"type":"image"').length - 1;
+    for (const [w, h] of [[2000, 100], [100, 2000]]) {
+      const messages = session21(pngOf(w, h));
+      expect(capClaudeImages(messages)).toBe(messages); // 21 images, none large: left alone
+    }
+    for (const [w, h] of [[2001, 100], [100, 2001]]) {
+      expect(images(capClaudeImages(session21(pngOf(w, h))))).toBe(16);
+    }
+  });
+
   it("hi-res with a small newest image drops just the large ones, tool images first", () => {
     const one = [...Array.from({ length: 5 }, () => shot(1000)), shot(1000, true), ...Array.from({ length: 15 }, () => shot(1000))];
     expect([...plan(one)]).toEqual([5]);
@@ -1046,6 +1066,101 @@ describe("image window for long sessions", () => {
     }, 60_000);
   }
 
+  // The same 200 turns on the direct claude → Kiro route.
+  const claudeTools = [{ name: "screenshot", description: "Take a screenshot", input_schema: { type: "object", properties: {} } }];
+  const claudeImage = (base64) => ({ type: "image", source: { type: "base64", media_type: "image/png", data: base64 } });
+  for (const sharedTurn of [false, true]) {
+    it(`direct claude → Kiro replay over 200 turns, user image ${sharedTurn ? "in the tool result's turn" : "in its own turn"}: nothing reappears`, () => {
+      clearKiroSessionReplayStore();
+      const credentials = { rawHeaders: { "x-session-id": `tool-result-images-direct-${sharedTurn}` }, connectionId: "kiro-direct" };
+      const first = [0, 1, 2].map((i) => uniquePng(50_000 + i));
+      const users = [];
+      const messages = [{ role: "user", content: [{ type: "text", text: "start" }, ...first.map(claudeImage)] }];
+      let previous = new Set();
+      let breaks = 0;
+      for (let k = 1; k <= 200; k++) {
+        messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_${k}`, name: "screenshot", input: {} }] });
+        const result = { role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_${k}`, content: [{ type: "text", text: `shot ${k}` }, claudeImage(uniquePng(60_000 + k))] }] };
+        messages.push(result);
+        if (k % 2 === 0) {
+          const user = uniquePng(70_000 + k);
+          users.push(user);
+          if (sharedTurn) result.content.push(claudeImage(user));
+          else {
+            messages.push({ role: "assistant", content: [{ type: "text", text: "ok" }] });
+            messages.push({ role: "user", content: [claudeImage(user)] });
+          }
+        }
+        const out = translateRequest(FORMATS.CLAUDE, FORMATS.KIRO, CLAUDE_MODEL, { model: CLAUDE_MODEL, max_tokens: 1024, tools: claudeTools, messages }, true, credentials, null);
+        const sent = sentKiroImages(out);
+        expect(sent.has(k % 2 === 0 ? users.at(-1) : uniquePng(60_000 + k))).toBe(true);
+        const all = [...first, ...users, ...Array.from({ length: k }, (_, i) => uniquePng(60_001 + i))];
+        const dropped = new Set(all.filter((b) => !sent.has(b)));
+        for (const b of previous) expect(dropped.has(b)).toBe(true);
+        if (dropped.size !== previous.size) breaks++;
+        previous = dropped;
+        if (k === 100) for (const b of [...first, ...users]) expect(sent.has(b)).toBe(true);
+      }
+      expect(breaks).toBeLessThanOrEqual(16);
+      clearKiroSessionReplayStore();
+    }, 60_000);
+  }
+
+  it("direct claude → Kiro: user images survive while screenshots trigger the trim, in their own turn or a tool result's", () => {
+    const ownTurn = claudeSession(80, PNG_B64);
+    ownTurn.messages[0] = { role: "user", content: [{ type: "text", text: "go" }, ...Array.from({ length: 10 }, (_, i) => claudeImage(uniquePng(80_000 + i)))] };
+    const shared = claudeSession(80, PNG_B64);
+    for (let i = 0; i < 10; i++) shared.messages[2 + 2 * i].content.push(claudeImage(uniquePng(80_000 + i))); // the first ten results' turns
+    for (const body of [ownTurn, shared]) {
+      const out = translateRequest(FORMATS.CLAUDE, FORMATS.KIRO, CLAUDE_MODEL, body, true, {}, null);
+      const sent = sentKiroImages(out);
+      for (let i = 0; i < 10; i++) expect(sent.has(uniquePng(80_000 + i))).toBe(true);
+      expect(JSON.stringify(out)).toContain(MEDIA_OMITTED_TEXT.EARLIER_IMAGE);
+    }
+  });
+
+  it("direct claude → Kiro: two tool results in one turn get distinct notes", () => {
+    const out = translateRequest(FORMATS.CLAUDE, FORMATS.KIRO, CLAUDE_MODEL, {
+      model: CLAUDE_MODEL,
+      max_tokens: 1024,
+      tools: claudeTools,
+      messages: [
+        { role: "user", content: "go" },
+        { role: "assistant", content: [
+          { type: "tool_use", id: "toolu_1", name: "screenshot", input: {} },
+          { type: "tool_use", id: "toolu_2", name: "screenshot", input: {} },
+        ] },
+        { role: "user", content: [
+          { type: "tool_result", tool_use_id: "toolu_1", content: [claudeImage(uniquePng(1))] },
+          { type: "tool_result", tool_use_id: "toolu_2", content: [claudeImage(uniquePng(2))] },
+        ] },
+      ],
+    }, true, {}, null);
+    const results = out.conversationState.currentMessage.userInputMessage.userInputMessageContext.toolResults;
+    expect(results.map((r) => r.content[0].text)).toEqual(["[image 1 attached below]", "[image 2 attached below]"]);
+  });
+
+  it("capKiroImages: an untouched turn keeps its content byte for byte; one note per dropped image", () => {
+    const image = (i) => markToolImage({ format: "png", source: { bytes: uniquePng(i) } }, true);
+    const limits = { images: { hard: 10, trigger: 3, target: 2 }, countUrlImages: false };
+    const conversation = {
+      history: [
+        { userInputMessage: { content: "a", images: [image(1), image(2), image(3)] } },
+        { assistantResponseMessage: { content: "ok" } },
+        { userInputMessage: { content: "untouched" } },
+      ],
+      currentMessage: { userInputMessage: { content: "b", images: [image(4)] } },
+    };
+    const out = capKiroImages(conversation, limits);
+    expect(out.history[0].userInputMessage.content).toBe(`a\n\n${MEDIA_OMITTED_TEXT.EARLIER_IMAGE}\n${MEDIA_OMITTED_TEXT.EARLIER_IMAGE}`);
+    expect(out.history[0].userInputMessage.images).toEqual([{ format: "png", source: { bytes: uniquePng(3) } }]);
+    expect(out.history[2]).toBe(conversation.history[2]);
+    expect(out.currentMessage.userInputMessage).toEqual({ content: "b", images: [{ format: "png", source: { bytes: uniquePng(4) } }] });
+    // nothing dropped: every turn's content as it was
+    const none = capKiroImages({ history: [], currentMessage: { userInputMessage: { content: "c", images: [image(5)] } } }, limits);
+    expect(none.currentMessage.userInputMessage).toEqual({ content: "c", images: [{ format: "png", source: { bytes: uniquePng(5) } }] });
+  });
+
   it("Kiro never sends an empty or null images list", () => {
     const kiro = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.KIRO, CLAUDE_MODEL, session(85, PNG_URL), true, {}, null);
     const state = kiro.conversationState;
@@ -1094,8 +1209,6 @@ describe("image window for long sessions", () => {
     const direct = translateRequest(FORMATS.CLAUDE, FORMATS.KIRO, CLAUDE_MODEL, body, true, {}, null);
     expect(kiroImages(direct)).toBe(79);
     expect(JSON.stringify(direct)).not.toContain(MEDIA_OMITTED_TEXT.EARLIER_IMAGE);
-    // The Claude adapter with Kiro's limits leaves them uncounted too.
-    expect(capClaudeImages(body.messages, IMAGE_WINDOW.KIRO)).toBe(body.messages);
   });
 
   it("user images survive while screenshots trigger the trim: Claude, Kiro and Gemini routes", () => {
