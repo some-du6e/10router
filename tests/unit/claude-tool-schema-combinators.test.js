@@ -179,6 +179,11 @@ describe("normalizeClaudeInputSchema", () => {
     expectPlainObjectSchema(out);
   });
 
+  it.each(["oneOf", "anyOf", "allOf"])("gives an empty %s exactly the permissive fallback", (key) => {
+    expect(normalizeClaudeInputSchema({ [key]: [] })).toEqual(PERMISSIVE);
+    expect(normalizeClaudeInputSchema({ description: "Empty", [key]: [] })).toEqual({ ...PERMISSIVE, description: "Empty" });
+  });
+
   // The summary only comes from the depth-bound fallback; the catch-all keeps the
   // bare description. So these pin the bound itself, not a caught stack overflow.
   it("stops at the depth bound and keeps the top-level description", () => {
@@ -230,6 +235,14 @@ describe("normalizeClaudeInputSchema", () => {
     });
     expect(out.properties.small).toEqual({ type: "string" });
     expect(out.properties.big).toEqual({ anyOf: [long(), long()] });
+  });
+
+  // Same values under different keywords are different constraints.
+  it("keeps short property definitions that differ only in their keywords apart", () => {
+    const out = normalizeClaudeInputSchema({
+      anyOf: [{ type: "object", properties: { n: { minimum: 5 } } }, { type: "object", properties: { n: { maximum: 5 } } }],
+    });
+    expect(out.properties.n).toEqual({ anyOf: [{ minimum: 5 }, { maximum: 5 }] });
   });
 
   it("treats a malformed % in a $ref as unresolvable and keeps the description", () => {
