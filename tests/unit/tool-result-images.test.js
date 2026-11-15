@@ -728,19 +728,72 @@ describe("image dimensions from the header", () => {
 });
 
 describe("image window for long sessions", () => {
-  const W = IMAGE_WINDOW;
-  const plan = (entries) => planImageWindow(entries);
+  const W = IMAGE_WINDOW.CLAUDE;
+  const plan = (entries, limits = W) => planImageWindow(entries, limits);
   const shot = (bytes, large = false) => ({ tool: true, bytes, large: () => large });
+  const userShot = (bytes, large = false) => ({ tool: false, bytes, large: () => large });
   const windowBytes = (entries, dropped) => entries.reduce((sum, e, i) => sum + (dropped.has(i) ? 0 : e.bytes), 0);
+  // Turns (1-based) at which the dropped set changed, adding one entry per turn.
+  const trimTurns = (make, turns, limits = W) => {
+    const entries = [];
+    let previous = new Set();
+    const changes = [];
+    for (let turn = 1; turn <= turns; turn++) {
+      entries.push(make(turn));
+      const dropped = plan(entries, limits);
+      for (const i of previous) expect(dropped.has(i)).toBe(true); // only ever grows
+      expect(dropped.has(entries.length - 1)).toBe(false); // the newest is kept
+      if (dropped.size !== previous.size) changes.push(turn);
+      previous = dropped;
+    }
+    return { changes, dropped: previous, entries };
+  };
 
-  it("the real limits sit under the upstream's 100 images and 32 MB", () => {
-    expect(W.HARD_MAX_IMAGES).toBeLessThanOrEqual(100);
-    expect(W.HARD_MAX_BASE64_BYTES).toBeLessThan(32 * 1000 * 1000);
-    expect(W.TRIGGER_IMAGES).toBe(W.HARD_MAX_IMAGES * 0.8);
-    expect(W.TARGET_IMAGES).toBe(W.HARD_MAX_IMAGES * 0.5);
-    expect(W.TRIGGER_BASE64_BYTES).toBeCloseTo(W.HARD_MAX_BASE64_BYTES * 0.8, -6);
-    expect(W.TARGET_BASE64_BYTES).toBeCloseTo(W.HARD_MAX_BASE64_BYTES * 0.5, -6);
-    expect([W.HI_RES_MAX_SIDE, W.HI_RES_TRIGGER_IMAGES, W.HI_RES_TARGET_IMAGES]).toEqual([2000, 20, 16]);
+  it("the real limits sit under each upstream's limits", () => {
+    expect(W.images.hard).toBeLessThanOrEqual(100);
+    expect(W.base64Bytes.hard).toBeLessThan(32 * 1000 * 1000);
+    expect(W.images.trigger).toBe(W.images.hard * 0.8);
+    expect(W.images.target).toBe(W.images.hard * 0.5);
+    expect(W.base64Bytes.trigger).toBeCloseTo(W.base64Bytes.hard * 0.8, -6);
+    expect(W.base64Bytes.target).toBeCloseTo(W.base64Bytes.hard * 0.5, -6);
+    expect(W.hiRes).toEqual({ maxSide: 2000, trigger: 20, target: 16 });
+    expect(W.countUrlImages).toBe(true);
+    expect(IMAGE_WINDOW.KIRO.hiRes).toBeUndefined();
+    expect(IMAGE_WINDOW.KIRO.countUrlImages).toBe(false);
+    expect(IMAGE_WINDOW.GEMINI.images).toBeUndefined();
+    expect(IMAGE_WINDOW.GEMINI.hiRes).toBeUndefined();
+    expect(IMAGE_WINDOW.GEMINI.base64Bytes.hard).toBeLessThan(20 * 1000 * 1000);
+  });
+
+  it("user images survive while tool images remain", () => {
+    const entries = [...Array.from({ length: 50 }, () => userShot(100)), ...Array.from({ length: 40 }, () => shot(100))];
+    const dropped = plan(entries);
+    expect(dropped.size).toBeGreaterThan(0);
+    for (const i of dropped) expect(entries[i].tool).toBe(true);
+  });
+
+  it("over 100 user-only images: the last resort drops them, in one chunk down to the target", () => {
+    const { changes, dropped, entries } = trimTurns(() => userShot(100), 130);
+    expect(changes).toEqual([101]);
+    expect(entries.length - dropped.size).toBe(W.images.target + 29);
+  });
+
+  it("1 MB user screenshots: chunky trims, not one break per turn", () => {
+    const { changes } = trimTurns(() => userShot(1_000_000), 90);
+    expect(changes).toEqual([31, 47, 63, 79]); // over 30M hard, back to 15M each time
+  });
+
+  it("130 hi-res user screenshots: the dropped set changes only at trims", () => {
+    const { changes, dropped, entries } = trimTurns(() => userShot(1000, true), 130);
+    expect(entries.length - dropped.size).toBeLessThanOrEqual(W.hiRes.trigger);
+    for (let i = 1; i < changes.length; i++) expect(changes[i] - changes[i - 1]).toBe(W.hiRes.trigger + 1 - W.hiRes.target);
+  });
+
+  it("one old hi-res user image clears the rule once, then the window grows back toward 80", () => {
+    const { changes, dropped, entries } = trimTurns((turn) => (turn === 1 ? userShot(0, true) : shot(1000)), 80);
+    expect(changes).toEqual([21]);
+    expect([...dropped]).toEqual([0]);
+    expect(entries.length - dropped.size).toBe(79);
   });
 
   it("60 turns of 1M screenshots: the oldest go in chunks, constant between trims", () => {
@@ -752,7 +805,7 @@ describe("image window for long sessions", () => {
       const start = dropped.size;
       // always the oldest ones
       expect([...dropped].sort((a, b) => a - b)).toEqual([...Array(start).keys()]);
-      expect(windowBytes(entries, dropped)).toBeLessThanOrEqual(W.TRIGGER_BASE64_BYTES);
+      expect(windowBytes(entries, dropped)).toBeLessThanOrEqual(W.base64Bytes.trigger);
       starts.push(start);
     }
     const changes = starts.flatMap((s, i) => (i > 0 && s !== starts[i - 1] ? [i + 1] : []));
@@ -770,7 +823,7 @@ describe("image window for long sessions", () => {
       const dropped = plan(entries);
       for (const i of previous) expect(dropped.has(i)).toBe(true);
       if (dropped.size !== previous.size) trims++;
-      expect(windowBytes(entries, dropped)).toBeLessThanOrEqual(W.TRIGGER_BASE64_BYTES);
+      expect(windowBytes(entries, dropped)).toBeLessThanOrEqual(W.base64Bytes.trigger);
       previous = dropped;
     }
     expect(trims).toBeLessThan(12);
@@ -792,7 +845,7 @@ describe("image window for long sessions", () => {
   it("eight 4M screenshots stay under the hard size", () => {
     const entries = Array.from({ length: 8 }, () => shot(4_000_000));
     const dropped = plan(entries);
-    expect(windowBytes(entries, dropped)).toBeLessThanOrEqual(W.HARD_MAX_BASE64_BYTES);
+    expect(windowBytes(entries, dropped)).toBeLessThanOrEqual(W.base64Bytes.hard);
     expect(dropped.has(7)).toBe(false);
   });
 
@@ -828,33 +881,92 @@ describe("image window for long sessions", () => {
     const now = toClaude(session(100, PNG_URL));
     const next = toClaude(session(101, PNG_URL));
     const images = shots(now).filter((b) => b.type === "image").length;
-    expect(images).toBeLessThanOrEqual(W.TRIGGER_IMAGES);
+    expect(images).toBeLessThanOrEqual(W.images.trigger);
     expect(shots(next).filter((b) => b.type === "text").length).toBe(100 - images);
     // Everything up to the 99th result: the 100th assistant turn holds the cache breakpoint.
     expect(withoutCache(next.messages.slice(0, 199))).toEqual(withoutCache(now.messages.slice(0, 199)));
   });
 
-  it("Kiro and Gemini get the same window", () => {
-    const body = session(25, `data:image/png;base64,${pngOf(2880, 1800)}`);
-    const kiro = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.KIRO, CLAUDE_MODEL, structuredClone(body), true, {}, null);
-    expect(JSON.stringify(kiro).split('"bytes":').length - 1).toBeLessThanOrEqual(20);
-    expect(JSON.stringify(kiro)).toContain(MEDIA_OMITTED_TEXT.EARLIER_IMAGE);
-    const gemini = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.GEMINI, "gemini-x", structuredClone(body), true, null, null);
-    expect(gemini.contents.flatMap((c) => c.parts).filter((p) => p.inlineData).length).toBeLessThanOrEqual(20);
+  const RETINA_URL = `data:image/png;base64,${pngOf(2880, 1800)}`;
+  const kiroImages = (out) => JSON.stringify(out).split('"bytes":').length - 1;
+  const withUrlUser = (body) => ({
+    ...body,
+    input: [{ type: "message", role: "user", content: [{ type: "input_image", image_url: "https://example.com/ref.png" }] }, ...body.input],
   });
 
-  it("the direct claude → Kiro route gets it too, and the Chat window leaves its input alone", () => {
-    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: pngOf(2880, 1800) } };
+  it("Claude target: more than 20 images of unreadable size count as hi-res", () => {
+    const noFrame = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16]), Buffer.alloc(40)]).toString("base64");
+    expect(imageDimensions(noFrame)).toBeNull();
+    const blocks = shots(toClaude(session(25, `data:image/jpeg;base64,${noFrame}`)));
+    expect(blocks.filter((b) => b.type === "image").length).toBeLessThanOrEqual(20);
+  });
+
+  it("Claude target: an old URL user image clears the hi-res rule once, and the screenshots grow back", () => {
+    const out = toClaude(withUrlUser(session(60, PNG_URL)));
+    expect(withoutCache(out.messages[0].content)).toContainEqual({ type: "text", text: MEDIA_OMITTED_TEXT.EARLIER_IMAGE });
+    expect(shots(out).every((b) => b.type === "image")).toBe(true); // all 60 kept
+  });
+
+  it("Kiro: a URL image doesn't count and there's no hi-res rule, so 25 screenshots all stay", () => {
+    for (const url of [PNG_URL, RETINA_URL]) {
+      const kiro = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.KIRO, CLAUDE_MODEL, withUrlUser(session(25, url)), true, {}, null);
+      expect(kiroImages(kiro)).toBe(25);
+      expect(JSON.stringify(kiro)).not.toContain(MEDIA_OMITTED_TEXT.EARLIER_IMAGE);
+    }
+  });
+
+  it("Kiro, both routes: over 80 screenshots the oldest are dropped", () => {
+    const kiro = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.KIRO, CLAUDE_MODEL, session(85, PNG_URL), true, {}, null);
+    expect(kiroImages(kiro)).toBeLessThanOrEqual(IMAGE_WINDOW.KIRO.images.trigger);
+    expect(JSON.stringify(kiro)).toContain(MEDIA_OMITTED_TEXT.EARLIER_IMAGE);
+
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: PNG_B64 } };
     const messages = [{ role: "user", content: "go" }];
     const tools = [{ name: "screenshot", description: "Take a screenshot", input_schema: { type: "object", properties: {} } }];
-    for (let i = 1; i <= 25; i++) {
+    for (let i = 1; i <= 85; i++) {
       messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_${i}`, name: "screenshot", input: {} }] });
       messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_${i}`, content: [image] }] });
     }
-    const kiro = translateRequest(FORMATS.CLAUDE, FORMATS.KIRO, CLAUDE_MODEL, { model: CLAUDE_MODEL, max_tokens: 1024, tools, messages }, true, {}, null);
-    expect(JSON.stringify(kiro).split('"bytes":').length - 1).toBeLessThanOrEqual(20);
+    const direct = translateRequest(FORMATS.CLAUDE, FORMATS.KIRO, CLAUDE_MODEL, { model: CLAUDE_MODEL, max_tokens: 1024, tools, messages }, true, {}, null);
+    expect(kiroImages(direct)).toBeLessThanOrEqual(IMAGE_WINDOW.KIRO.images.trigger);
+    expect(JSON.stringify(direct)).toContain(MEDIA_OMITTED_TEXT.EARLIER_IMAGE);
+    expect(messages[2].content[0].content[0]).toBe(image); // the client's body is left alone
+  });
 
-    const chat = [{ role: "user", content: "go" }, ...Array.from({ length: 25 }, (_, i) => toolMsg(`call_${i}`, [imagePart(`data:image/png;base64,${pngOf(2880, 1800)}`)]))];
+  it("Gemini: no count or hi-res rule, so 25 Retina screenshots all stay", () => {
+    const gemini = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.GEMINI, "gemini-x", session(25, RETINA_URL), true, null, null);
+    expect(gemini.contents.flatMap((c) => c.parts).filter((p) => p.inlineData)).toHaveLength(25);
+  });
+
+  // A few big strings, shared, to keep memory low: 5 × 5M base64 = 25M, over the 24M trigger.
+  const BIG_PNG = pngOf(100, 100, 5_000_000);
+  it("the adapters count real base64 sizes (Claude and Chat)", () => {
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: BIG_PNG } };
+    const claude = capClaudeImages(Array.from({ length: 5 }, (_, i) => ({ role: "user", content: [{ type: "tool_result", tool_use_id: `t${i}`, content: [image] }] })));
+    expect(claude.filter((m) => m.content[0].content[0].type === "image")).toHaveLength(3); // back to ≤15M
+    const chat = capChatImages(Array.from({ length: 5 }, (_, i) => toolMsg(`call_${i}`, [imagePart(`data:image/png;base64,${BIG_PNG}`)])));
+    expect(chat.filter((m) => m.content[0].type === "image_url")).toHaveLength(3);
+  });
+
+  // Gemini's budget is 14.4M to trigger, 9M to target: the third 5M image
+  // trims back to one, the fourth makes two.
+  const geminiTargets = [
+    [FORMATS.GEMINI, (out) => out.contents],
+    [FORMATS.GEMINI_CLI, (out) => out.request.contents],
+    [FORMATS.VERTEX, (out) => out.contents],
+    [FORMATS.ANTIGRAVITY, (out) => out.request.contents],
+  ];
+  for (const [target, contentsOf] of geminiTargets) {
+    it(`${target}: the Gemini byte budget applies`, () => {
+      const out = translateRequest(FORMATS.OPENAI_RESPONSES, target, "gemini-x", session(4, `data:image/png;base64,${BIG_PNG}`), true, {}, null);
+      const parts = contentsOf(out).flatMap((c) => c.parts);
+      expect(parts.filter((p) => p.inlineData)).toHaveLength(2);
+      expect(parts.filter((p) => p.functionResponse).map((p) => JSON.stringify(p.functionResponse.response)).join()).toContain(MEDIA_OMITTED_TEXT.EARLIER_IMAGE);
+    });
+  }
+
+  it("the Chat window leaves its input alone", () => {
+    const chat = [{ role: "user", content: "go" }, ...Array.from({ length: 25 }, (_, i) => toolMsg(`call_${i}`, [imagePart(RETINA_URL)]))];
     const before = JSON.stringify(chat);
     const capped = capChatImages(chat);
     expect(capped).not.toBe(chat);
@@ -862,7 +974,29 @@ describe("image window for long sessions", () => {
   });
 });
 
-describe("round 2 coverage", () => {
+describe("JPEG frame header past the first bytes", () => {
+  it("is found after an ICC profile and a Huffman table, within 64 KiB", () => {
+    const segment = (marker, length) => {
+      const seg = Buffer.alloc(2 + length);
+      seg[0] = 0xff;
+      seg[1] = marker;
+      seg.writeUInt16BE(length, 2);
+      return seg;
+    };
+    const dht = segment(0xc4, 32);
+    dht[4] = 0x00; // looks nothing like a frame size, so reading it as SOF gives a wrong answer
+    const jpeg = Buffer.concat([
+      Buffer.from([0xff, 0xd8]),
+      segment(0xe2, 3000), // APP2 ICC profile
+      dht,
+      Buffer.from([0xff, 0xc0, 0, 17, 8, 1800 >> 8, 1800 & 0xff, 2880 >> 8, 2880 & 0xff, 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]),
+      Buffer.alloc(64),
+    ]);
+    expect(imageDimensions(jpeg.toString("base64"))).toEqual({ width: 2880, height: 1800 });
+  });
+});
+
+describe("scrub threshold, image typing and the text-only consumers", () => {
   it("the scrub threshold: a 60K image data URL stays, a 70K one goes", () => {
     const at = (n) => `x data:image/png;base64,${"A".repeat(n)} y`;
     expect(scrubInlineBase64(at(60_000))).toBe(at(60_000));
