@@ -18,10 +18,11 @@ type Message = Record<string, any>;
 type TextPart = { type: string; text: string };
 type ImageTest = (part: Part) => boolean;
 
-// A data: URL, with any RFC 2397 `;name=value` parameters before `;base64`,
-// in any case. It starts only at a literal "data:", and no part of it can
-// match the text the next part needs, so it runs in linear time.
-const DATA_URI = /data:([\w.+-]+\/[\w.+-]+)((?:;[\w.+-]+=[^;,\s]*)*);base64,[A-Za-z0-9+/=]+/gi;
+// A data: URL, with up to 8 short RFC 2397 `;name=value` parameters before
+// `;base64`, in any case. It starts only at a literal "data:", and the header
+// before the payload is bounded, so a failed attempt rescans at most a few
+// hundred characters and the whole scan stays linear.
+const DATA_URI = /data:([\w.+-]{1,64}\/[\w.+-]{1,64})((?:;[\w.+-]{1,32}=[^;,\s]{0,128}){0,8});base64,[A-Za-z0-9+/=]+/gi;
 const BASE64_MARKER = /;base64,/i;
 const HAS_DATA_URI = /data:/i;
 
@@ -188,7 +189,7 @@ export function splitToolContent(
 export function claudeToolResultText(blocks: unknown[], attach: (block: Part) => number): string {
   const texts: string[] = [];
   for (const block of blocks as Part[]) {
-    if (block?.type === CLAUDE_BLOCK.TEXT) texts.push(block.text);
+    if (block?.type === CLAUDE_BLOCK.TEXT) texts.push(scrubInlineBase64(block.text));
     else if (block?.type === CLAUDE_BLOCK.IMAGE) {
       const n = attach(block);
       texts.push(n > 0 ? imageAttachedBelowText(n) : block.source?.url ? imageUrlText(block.source.url) : MEDIA_OMITTED_TEXT.IMAGE);

@@ -103,7 +103,7 @@ function convertClaudeMessagesToKiro(messages, model) {
           } else if (block.type === CLAUDE_BLOCK.TOOL_RESULT) {
             let resultContent = "";
             if (typeof block.content === "string") {
-              resultContent = block.content;
+              resultContent = scrubInlineBase64(block.content);
             } else if (Array.isArray(block.content)) {
               // A tool's screenshot is attached to this turn as a Kiro image;
               // its base64 never goes in the result text.

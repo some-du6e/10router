@@ -1078,6 +1078,35 @@ describe("scrub threshold, image typing and the text-only consumers", () => {
     expect(scrubInlineBase64(at(70_000))).toBe(`x ${MEDIA_OMITTED_TEXT.IMAGE} y`);
   });
 
+  it("a long chain of data: headers with parameters goes through in one pass, unchanged", () => {
+    const chain = "data:image/png;x=".repeat(40_000);
+    expect(chain.length).toBeGreaterThan(600_000);
+    expect(scrubInlineBase64(chain)).toBe(chain);
+  });
+
+  it("Claude tool_result text and Chat string tool results are scrubbed on every route", () => {
+    const shotUrl = `data:image/png;base64,${"A".repeat(70_000)}`;
+    for (const content of [[{ type: "text", text: `saved ${shotUrl}` }], `saved ${shotUrl}`]) {
+      const claudeBody = {
+        model: CLAUDE_MODEL,
+        max_tokens: 1024,
+        tools: [{ name: "screenshot", description: "Take a screenshot", input_schema: { type: "object", properties: {} } }],
+        messages: [
+          { role: "user", content: "go" },
+          { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "screenshot", input: {} }] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content }] },
+        ],
+      };
+      for (const target of [FORMATS.OPENAI, FORMATS.KIRO]) {
+        const out = translateRequest(FORMATS.CLAUDE, target, CLAUDE_MODEL, structuredClone(claudeBody), true, {}, null);
+        expect(JSON.stringify(out)).not.toContain(shotUrl);
+        expect(JSON.stringify(out)).toContain(`saved ${MEDIA_OMITTED_TEXT.IMAGE}`);
+      }
+    }
+    const gemini = translateRequest(FORMATS.OPENAI, FORMATS.GEMINI, "gemini-x", chatBody(`saved ${shotUrl}`), true, null, null);
+    expect(JSON.stringify(gemini)).not.toContain(shotUrl);
+  });
+
   it("the scrub catches RFC 2397 parameters and any case", () => {
     const payload = "A".repeat(70_000);
     expect(scrubInlineBase64(`x data:image/png;name=a.png;charset=utf-8;base64,${payload} y`)).toBe(`x ${MEDIA_OMITTED_TEXT.IMAGE} y`);

@@ -200,7 +200,7 @@ function convertClaudeMessage(msg) {
         case CLAUDE_BLOCK.TOOL_RESULT: {
           let resultContent = "";
           if (typeof block.content === "string") {
-            resultContent = block.content;
+            resultContent = scrubInlineBase64(block.content);
           } else if (Array.isArray(block.content)) {
             // Tool messages are text-only on most OpenAI upstreams: images go in a
             // user turn right after the tool results instead of as base64 text.

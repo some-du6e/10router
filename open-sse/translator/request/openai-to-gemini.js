@@ -187,6 +187,8 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
                 notedImages += images.length;
                 resp = text;
                 mediaParts.push(...convertOpenAIContentToParts(images));
+              } else {
+                resp = scrubInlineBase64(resp);
               }
               let parsedResp = tryParseJSON(resp);
               if (resp === "" || resp == null) {
