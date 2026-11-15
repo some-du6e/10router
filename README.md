@@ -236,7 +236,9 @@ On `SIGTERM` or `SIGINT` (`docker stop` sends `SIGTERM`) the server drains befor
 
 - It closes its listening socket, so **new connections are refused for the whole drain**.
   On a setup that stops the old container before starting the new one, that's the trade-off:
-  turns already running finish, and new requests fail until the new instance is up.
+  turns already running finish, and new requests fail until the new instance is up. So each
+  deploy's outage now lasts as long as the drain runs: up to 3 minutes by default once the
+  stop grace period is raised (below), and up to the grace period itself before that.
 - Model requests already running get up to `SHUTDOWN_DRAIN_TIMEOUT_MS` (3 minutes by default)
   to finish, long streams included. That covers `/v1*`, `/api/v1*`, `/v1beta*`, `/api/v1beta*`,
   `/responses`, `/systemone`, `/codex/*`, `/backend-api/codex/*` and Codex WebSocket turns.
@@ -268,9 +270,11 @@ and, on the sql.js driver, about 100 ms of writes. SQLite itself replays its WAL
 open.
 
 `GET /api/health` answers `200` while the server is up, with no auth, for a platform health
-check. During the drain new connections are refused, so a health check fails then. Don't use it to run two instances side by side for a rolling update: two
-instances must never share one `DATA_DIR` (SQLite / sql.js writes are last-writer-wins, and
-OAuth refresh tokens rotate, so one instance would lose the other's).
+check. During the drain new connections are refused, so a health check fails then.
+
+Don't overlap a restart by running two instances side by side on one `DATA_DIR`. SQLite and
+sql.js writes are last-writer-wins, and OAuth refresh tokens rotate, so each instance would
+overwrite or invalidate the other's state.
 
 Data persists at `$HOME/.9router/db/data.sqlite` on the host (the `.9router` directory name
 is retained for compatibility with existing installs) ↔ `/app/data/db/data.sqlite` in the

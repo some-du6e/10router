@@ -62,16 +62,64 @@ function openWs(port) {
   });
 }
 
-let release;
-const released = new Promise((resolve) => { release = resolve; });
-// Stands in for the app: answers the bridge's loopback POST with a Responses
-// stream whose last event waits for release().
+const gates = new Map();
+const gate = (id) => {
+  if (!gates.has(id)) {
+    let open;
+    const promise = new Promise((resolve) => { open = resolve; });
+    gates.set(id, { promise, open });
+  }
+  return gates.get(id);
+};
+const release = (id = "turn") => gate(id).open();
+// What reached the stand-in app, past the wrapper.
+const hits = [];
+// Stands in for the app. /v1/slow?id=x streams until release(x); a request
+// marked x-test-quick is answered at once; anything else is the bridge's
+// loopback POST, answered with a Responses stream whose last event waits for
+// release("turn").
 const server = http.createServer(async (req, res) => {
+  hits.push(`${req.method} ${req.url}`);
   for await (const chunk of req) void chunk;
+  const url = new URL(req.url, "http://x");
+  if (url.pathname === "/v1/slow") {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.write("first;");
+    await gate(url.searchParams.get("id")).promise;
+    res.end("last;");
+    return;
+  }
+  if (req.headers["x-test-quick"]) {
+    res.end("served");
+    return;
+  }
   res.writeHead(200, { "Content-Type": "text/event-stream" });
   res.write(`data: ${JSON.stringify({ type: "response.created" })}\n\n`);
-  await released;
+  await gate("turn").promise;
   res.end(`data: ${JSON.stringify({ type: "response.completed" })}\n\n`);
+});
+
+// A keep-alive socket with a slow request in flight, so the drain doesn't
+// close it as idle.
+async function busySocket(id) {
+  const socket = net.createConnection({ host: "127.0.0.1", port });
+  await new Promise((resolve, reject) => { socket.once("connect", resolve); socket.once("error", reject); });
+  const state = { raw: "", socket, closed: new Promise((resolve) => socket.on("close", resolve)) };
+  socket.setEncoding("utf8");
+  socket.on("data", (chunk) => { state.raw += chunk; });
+  socket.on("error", () => {});
+  socket.write(`GET /v1/slow?id=${id} HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n`);
+  await vi.waitFor(() => expect(state.raw).toContain("first;"));
+  return state;
+}
+
+const arrived = (match) => new Promise((resolve) => {
+  const listener = (req) => {
+    if (`${req.method} ${req.url}` !== match) return;
+    server.off("request", listener);
+    resolve();
+  };
+  server.on("request", listener);
 });
 server.on("upgrade", (_req, socket) => socket.destroy());
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -83,7 +131,9 @@ afterAll(async () => {
 });
 
 describe("drain wiring in custom-server.js", () => {
-  it("finishes a bridged Codex turn, refuses new connections and upgrades, then exits", async () => {
+  it("finishes a bridged Codex turn, refuses new connections, requests and upgrades, admits its own loopback POST, then exits", async () => {
+    const a = await busySocket("a");
+    const b = await busySocket("b");
     const ws = await openWs(port);
     ws.send({ type: "response.create", model: "m", input: "hi" });
     await vi.waitFor(() => expect(ws.events.map((e) => e.type)).toContain("response.created"));
@@ -93,8 +143,32 @@ describe("drain wiring in custom-server.js", () => {
     const quiet = vi.spyOn(console, "log").mockImplementation(() => {});
     onTestFinished(() => quiet.mockRestore());
     drain.start("SIGTERM");
-    // The bridge's loopback POST, and the WebSocket turn's own hold.
-    expect(drain.inflight).toBe(2);
+    // The two slow requests, the bridge's loopback POST, and the WebSocket turn's own hold.
+    expect(drain.inflight).toBe(4);
+
+    // A /v1 request on an open keep-alive socket: 503 from the wrapper, never the app.
+    const sawNew = arrived("GET /v1/new");
+    a.socket.write(`GET /v1/new HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n`);
+    await sawNew;
+    release("a");
+    await a.closed;
+    expect(a.raw).toContain("last;");
+    expect(a.raw.slice(a.raw.indexOf("HTTP/1.1", 1))).toMatch(/^HTTP\/1\.1 503 [\s\S]*server_draining/);
+    expect(hits).not.toContain("GET /v1/new");
+
+    // This process's own loopback POST (it carries the peer token) is still served.
+    const sawOwn = arrived("POST /backend-api/codex/responses?own=1");
+    b.socket.write(
+      "POST /backend-api/codex/responses?own=1 HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n" +
+        `x-9r-peer-token: ${process.env.NINEROUTER_PEER_TOKEN}\r\nx-test-quick: 1\r\nContent-Length: 2\r\n\r\n{}`
+    );
+    await sawOwn;
+    release("b");
+    await vi.waitFor(() => expect(b.raw).toContain("served"));
+    expect(b.raw).not.toContain(" 503 ");
+    expect(hits).toContain("POST /backend-api/codex/responses?own=1");
+    // Left: the WebSocket turn's loopback POST and its hold.
+    await vi.waitFor(() => expect(drain.inflight).toBe(2));
 
     // The wrapper registered the server with the drain, so the port is closed.
     await expect(new Promise((resolve, reject) => {
@@ -109,7 +183,7 @@ describe("drain wiring in custom-server.js", () => {
     expect(fakeSocket.end.mock.calls[0][0]).toMatch(/^HTTP\/1\.1 503 /);
 
     expect(exit).not.toHaveBeenCalled();
-    release();
+    release("turn");
     await vi.waitFor(() => expect(exit).toHaveBeenCalledTimes(1), { timeout: 3000 });
     expect(exit.mock.calls[0][0]).toBe(0);
     // What the client had when the process would have exited.

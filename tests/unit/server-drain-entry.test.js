@@ -11,19 +11,8 @@ import { fileURLToPath } from "node:url";
 // SIGTERM listeners the way the app does: an async flush (request details),
 // then one that closes the database and exits at once (the DB adapters).
 const repoRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "../..");
-const dir = mkdtempSync(join(tmpdir(), "10router-drain-entry-"));
-copyFileSync(join(repoRoot, "custom-server.js"), join(dir, "custom-server.js"));
-copyFileSync(join(repoRoot, "server-drain.js"), join(dir, "server-drain.js"));
-writeFileSync(
-  join(dir, "server.js"),
-  `const http = require("http");
-process.on("SIGTERM", async () => {
-  await new Promise((r) => setTimeout(r, 100));
-  console.log("async-flush-done");
-});
-process.on("SIGTERM", () => { console.log("db-closed"); process.exit(0); });
-process.on("SIGINT", () => { console.log("db-closed-sigint"); process.exit(0); });
-const server = http.createServer((req, res) => {
+
+const SERVE = `const server = http.createServer((req, res) => {
   if (req.url === "/v1/slow") {
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     res.write("data: first\\n\\n");
@@ -33,8 +22,30 @@ const server = http.createServer((req, res) => {
   res.end("ok");
 });
 server.listen(0, "127.0.0.1", () => console.log("PORT " + server.address().port + " SIG " + process.env.NEXT_MANUAL_SIG_HANDLE));
-`
-);
+`;
+
+const dirs = [];
+// A directory with custom-server.js, server-drain.js and a stand-in server.js.
+function entryDir(serverSource) {
+  const dir = mkdtempSync(join(tmpdir(), "10router-drain-entry-"));
+  dirs.push(dir);
+  copyFileSync(join(repoRoot, "custom-server.js"), join(dir, "custom-server.js"));
+  copyFileSync(join(repoRoot, "server-drain.js"), join(dir, "server-drain.js"));
+  writeFileSync(join(dir, "server.js"), serverSource);
+  return dir;
+}
+
+const appDir = entryDir(`const http = require("http");
+process.on("SIGTERM", async () => {
+  await new Promise((r) => setTimeout(r, 100));
+  console.log("async-flush-done");
+});
+process.on("SIGTERM", () => { console.log("db-closed"); process.exit(0); });
+process.on("SIGINT", () => { console.log("db-closed-sigint"); process.exit(0); });
+${SERVE}`);
+// No signal listeners of its own: without the drain's, Node's default action kills it.
+const bareDir = entryDir(`const http = require("http");
+${SERVE}`);
 
 const children = [];
 
@@ -43,10 +54,10 @@ afterEach(() => {
 });
 
 afterAll(() => {
-  rmSync(dir, { recursive: true, force: true });
+  for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
 });
 
-function runEntry(env) {
+function runEntry(env, dir = appDir) {
   const childEnv = { ...process.env, ...env };
   delete childEnv.NEXT_MANUAL_SIG_HANDLE;
   const child = spawn(process.execPath, ["custom-server.js"], { cwd: dir, env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
@@ -116,6 +127,18 @@ describe("custom-server.js drain on SIGTERM", () => {
     const out = run.output();
     expect(out).toContain("[Shutdown] SIGINT: draining 1 in-flight request(s)");
     expect(out.indexOf("db-closed-sigint")).toBeGreaterThan(out.indexOf("drained in"));
+  }, 20_000);
+
+  it("survives SIGTERM until drained when the app registers no signal listeners of its own", async () => {
+    const run = runEntry({ SHUTDOWN_DRAIN_TIMEOUT_MS: "20000" }, bareDir);
+    const port = await run.port;
+
+    const result = await streamThenSignal(port, run.child);
+    const { code, signal } = await run.exited;
+
+    expect(result).toEqual({ text: "data: first\n\ndata: last\n\n", complete: true });
+    expect({ code, signal }).toEqual({ code: 0, signal: null });
+    expect(run.output()).toMatch(/\[Shutdown\] drained in \d+s, exiting/);
   }, 20_000);
 
   it("cuts the stream when SHUTDOWN_DRAIN_TIMEOUT_MS=0 (the old behaviour)", async () => {

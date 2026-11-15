@@ -262,6 +262,10 @@ function bridgeCodexTurn(request, port, headers, peerIp, send, done, { errorFram
 
   const payload = Buffer.from(JSON.stringify(body), "utf8");
   const forwarded = bridgeForwardHeaders(headers, peerIp, payload.length);
+  // Marks the POST as this process's own, so a shutdown drain that began a
+  // moment ago still admits it (see the wrapper below). The wrapper replaces
+  // the header, as it does on every request.
+  forwarded["x-9r-peer-token"] = PEER_TOKEN;
 
   const req = http.request(
     { host: "127.0.0.1", port, path: CODEX_WS_PATH, method: "POST", headers: forwarded },
@@ -532,8 +536,13 @@ http.createServer = (...args) => {
   const rest = args.filter((a) => typeof a !== "function");
   if (!handler) return origCreate(...args);
   const wrapped = (req, res) => {
-    if (!drain.track(req, res)) return;
     const socketIp = req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : "";
+    // A Codex WebSocket turn's loopback POST from this process, sent just
+    // before a shutdown signal, is still served and counted. One whose TCP
+    // connect hadn't been accepted when server.close() ran is reset instead,
+    // and the turn fails with a 502 frame.
+    const ownBridgeTurn = isLoopbackSocketIp(socketIp) && req.headers["x-9r-peer-token"] === PEER_TOKEN;
+    if (!drain.track(req, res, { admit: ownBridgeTurn })) return;
     const xff = req.headers["x-forwarded-for"];
     const xRealIp = req.headers["x-real-ip"];
     const viaProxy = !!(xff || xRealIp);

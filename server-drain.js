@@ -44,13 +44,15 @@ function parseDrainTimeout(value, warn = console.warn) {
   return DEFAULT_DRAIN_TIMEOUT_MS;
 }
 
-// The path of a request target, origin-form (`/v1/x?y`) or absolute-form
-// (`http://host/v1/x?y`).
+// The path a request target routes to: origin-form (`/v1/x?y`) or absolute-form
+// (`http://host/v1/x?y`), with dot segments (`..`, `%2e%2e`) resolved the way
+// Next resolves them, through the URL parser.
 function pathOf(url) {
-  let text = String(url || "").replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/i, "");
-  const end = text.search(/[?#]/);
-  if (end !== -1) text = text.slice(0, end);
-  return text || "/";
+  try {
+    return new URL(String(url || "/"), "http://n").pathname;
+  } catch {
+    return "/";
+  }
 }
 
 const isModelTraffic = (url) => MODEL_TRAFFIC.test(pathOf(url));
@@ -136,7 +138,10 @@ function createDrain({
   function guardBody(entry) {
     if (entry.req.complete) return;
     const server = entry.req.socket && entry.req.socket.server;
-    const limit = server && server.requestTimeout > 0 ? server.requestTimeout : DEFAULT_REQUEST_TIMEOUT_MS;
+    const requestTimeout = server ? server.requestTimeout : undefined;
+    // 0 means Node never cuts it; the drain's own deadline still does.
+    if (requestTimeout === 0) return;
+    const limit = requestTimeout > 0 ? requestTimeout : DEFAULT_REQUEST_TIMEOUT_MS;
     const bodyTimer = setTimeout(() => {
       bodyTimers.delete(bodyTimer);
       if (entry.req.complete || !active.has(entry)) return;
@@ -166,9 +171,11 @@ function createDrain({
     },
 
     // Call at the start of every HTTP request. Returns false when the request
-    // was answered with a 503 here and must not reach the app.
-    track(req, res) {
-      if (draining) {
+    // was answered with a 503 here and must not reach the app. `admit` lets a
+    // request through during the drain (still counted): this process's own
+    // loopback POST for a Codex WebSocket turn that started before it.
+    track(req, res, { admit = false } = {}) {
+      if (draining && !admit) {
         reject(res);
         return false;
       }
@@ -193,6 +200,7 @@ function createDrain({
       active.add(entry);
       res.once("finish", entry.end);
       res.once("close", entry.end);
+      if (draining) guardBody(entry);
       return true;
     },
 
@@ -226,10 +234,6 @@ function createDrain({
         }
         log(`[Shutdown] second ${signal}: exiting now with ${open()} request(s) still open`);
         finish(1, { reason: "signal", open: open(), signal });
-        return;
-      }
-      if (timeoutMs <= 0) {
-        finish(0, { reason: "disabled", open: open(), signal });
         return;
       }
       draining = true;
@@ -314,8 +318,9 @@ function logListenerError(error) {
 }
 
 /**
- * Wire `drain` to the process's shutdown signals. Returns false, changing
- * nothing, when the drain is off or the runtime is Bun: Bun calls signal
+ * Wire `drain` to the process's shutdown signals. The one place a timeout of
+ * 0 is handled: returns false, changing nothing, when the drain is off (a
+ * signal then exits at once, as without a drain) or the runtime is Bun: Bun calls signal
  * listeners without going through process.emit, so the gate would never see
  * the signal while still keeping Next's own exit from running.
  */

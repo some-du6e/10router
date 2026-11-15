@@ -237,6 +237,8 @@ describe("drain: a budgeted key's client hangs up mid-stream", () => {
   });
 
   it("keeps the stall watchdog armed while draining", async () => {
+    const work = () => globalThis[Symbol.for("10router.server.backgroundWork")]?.count ?? 0;
+    const before = work();
     const { out, completed, up } = pipe({ drain: true, drainMaxMs: 60_000, stallMs: 80 });
     const reader = out.getReader();
     up.push(messageStart + textBlock("then the upstream went quiet"));
@@ -245,6 +247,8 @@ describe("drain: a budgeted key's client hangs up mid-stream", () => {
     // Only the stall (80 ms) can end this drain; the cap is a minute away.
     await vi.waitFor(() => expect(completed).toHaveLength(1), { timeout: 2000 });
     expect(completed[0][3]).toEqual({ aborted: true });
+    // The failed read still lets go of the shutdown hold (its finally), not at the cap.
+    await vi.waitFor(() => expect(work()).toBe(before));
   });
 
   it("holds a graceful shutdown open while it reads, and lets go when the read loop ends", async () => {

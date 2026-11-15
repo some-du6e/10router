@@ -12,6 +12,7 @@ on:
       - "cli/scripts/build-cli.js"
       - "Dockerfile"
       - "tests/unit/server-drain*.test.js"
+      - "tests/unit/stream-abort-usage.test.js"
       - "tests/unit/standalone-assets.test.js"
       - "tests/package.json"
       - "tests/vitest.config.js"
