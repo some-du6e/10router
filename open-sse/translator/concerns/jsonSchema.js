@@ -82,6 +82,23 @@ function resolveRef(schema, root) {
   return current;
 }
 
+// Every alternative's properties. A name the alternatives define differently
+// keeps each definition as a property-level anyOf, which is allowed nested.
+function alternativeProperties(members) {
+  const defs = new Map();
+  for (const member of members) {
+    if (!isPlainObject(member.properties)) continue;
+    for (const [name, def] of Object.entries(member.properties)) {
+      const list = defs.get(name) || [];
+      if (!list.some((seen) => JSON.stringify(seen) === JSON.stringify(def))) list.push(def);
+      defs.set(name, list);
+    }
+  }
+  const properties = {};
+  for (const [name, list] of defs) properties[name] = list.length === 1 ? list[0] : { [ANY_OF]: list };
+  return properties;
+}
+
 // One object schema equivalent enough to `schema` with no top-level combinator,
 // or null when a member isn't an object schema we can flatten.
 function flatten(schema, root, depth) {
@@ -110,6 +127,7 @@ function flatten(schema, root, depth) {
     const members = flattenAll(resolved[ALL_OF]);
     if (!members) return null;
     parts.push(...members);
+    notes.push(...members.map((m) => m.description));
   }
 
   // anyOf / oneOf: any member's properties may be sent; only keys every member
@@ -120,7 +138,7 @@ function flatten(schema, root, depth) {
     if (!members) return null;
     const requiredBy = members.map((m) => (Array.isArray(m.required) ? m.required : []));
     const required = requiredBy.reduce((acc, keys) => acc.filter((k) => keys.includes(k)));
-    parts.push({ properties: mergeAllOfMembers(members).properties || {}, required });
+    parts.push({ properties: alternativeProperties(members), required });
     notes.push(summarize("Accepts one of", members));
   }
 

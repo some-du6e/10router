@@ -137,6 +137,20 @@ describe("normalizeClaudeInputSchema", () => {
     expectPlainObjectSchema(out);
     expect(out.properties.target).toEqual({ oneOf: [{ type: "string" }, { type: "integer" }] });
     expect(out.required).toEqual(["verbose"]);
+    expect(out.description).toBe("Accepts one of: By id; Search by free text.");
+  });
+
+  it("keeps every alternative's definition of a property they define differently", () => {
+    const out = normalizeClaudeInputSchema({
+      oneOf: [
+        { type: "object", properties: { value: { type: "string" }, unit: { type: "string" } } },
+        { type: "object", properties: { value: { type: "integer" }, unit: { type: "string" } } },
+      ],
+    });
+    expect(out.properties).toEqual({
+      value: { anyOf: [{ type: "string" }, { type: "integer" }] },
+      unit: { type: "string" },
+    });
   });
 
   it("does not mutate its input", () => {
