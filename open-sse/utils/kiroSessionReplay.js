@@ -1,4 +1,5 @@
 import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
+import { capKiroImages } from "../translator/concerns/toolImageCap.js";
 
 const sessionStartStore = new Map();
 const MAX_SESSION_STARTS = 5000;
@@ -89,11 +90,13 @@ export function applyKiroSessionReplay({
         baseHistory.push({ assistantResponseMessage: { content: "..." } });
       }
     }
-    return {
+    // The stored first turn brings its images back after the translator's
+    // image window ran, so run the window again on the final conversation.
+    const capped = capKiroImages({
       history: ensureHistoryModelIds(baseHistory, modelId),
       currentMessage: prefixUserMessage(baseCurrent, currentContentPrefix, modelId),
-      replayed: true,
-    };
+    });
+    return { ...capped, replayed: true };
   }
 
   const firstUserIndex = findFirstUserIndex(baseHistory);

@@ -168,6 +168,60 @@ export function capClaudeImages<T>(messages: T, limits: ImageLimits = IMAGE_WIND
 }
 
 /**
+ * A Kiro conversation (history plus current message), for after session
+ * replay has put the stored first turn back. Images sit in
+ * `userInputMessage.images`; those on a turn carrying tool results count as
+ * tool images. A dropped image leaves the placeholder in that turn's content.
+ * Returns the input itself when nothing is dropped, else copies.
+ */
+export function capKiroImages<H, C>(
+  conversation: { history: H; currentMessage: C },
+  limits: ImageLimits = IMAGE_WINDOW.KIRO,
+): { history: H; currentMessage: C } {
+  const turns: Message[] = [...(Array.isArray(conversation.history) ? conversation.history : []), conversation.currentMessage as Message];
+  const found: Found[] = [];
+  const copies = new Map<number, Message>();
+  // The turn's userInputMessage, copied once before its first change.
+  const editable = (t: number): Message => {
+    if (!copies.has(t)) {
+      const input = turns[t].userInputMessage;
+      copies.set(t, { ...input, images: [...input.images], content: input.content ?? "" });
+    }
+    return copies.get(t) as Message;
+  };
+  turns.forEach((turn, t) => {
+    const input = turn?.userInputMessage;
+    if (!Array.isArray(input?.images)) return;
+    const tool = !!input.userInputMessageContext?.toolResults?.length;
+    input.images.forEach((image: Block, i: number) => {
+      const base64 = typeof image?.source?.bytes === "string" ? image.source.bytes : "";
+      found.push({
+        entry: entryOf(tool, base64, limits),
+        replace: () => {
+          const copy = editable(t);
+          copy.images[i] = null;
+          copy.content = copy.content ? `${copy.content}\n\n${MEDIA_OMITTED_TEXT.EARLIER_IMAGE}` : MEDIA_OMITTED_TEXT.EARLIER_IMAGE;
+        },
+      });
+    });
+  });
+  if (found.length === 0 || !applyWindow(found, limits)) return conversation;
+  const rebuilt = turns.map((turn, t) => {
+    const copy = copies.get(t);
+    if (!copy) return turn;
+    const images = copy.images.filter(Boolean);
+    const input: Message = { ...copy };
+    if (images.length > 0) input.images = images;
+    else delete input.images;
+    return { ...turn, userInputMessage: input };
+  });
+  return {
+    history: rebuilt.slice(0, -1) as H,
+    currentMessage: rebuilt[rebuilt.length - 1] as C,
+  };
+}
+
+/**
  * Chat-format messages: image_url (and Claude-shaped image) parts in user and
  * tool messages. Same contract as capClaudeImages.
  */

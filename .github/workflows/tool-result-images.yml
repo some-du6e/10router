@@ -109,6 +109,7 @@ jobs:
           ./node_modules/.bin/eslint
           open-sse/translator/concerns/toolContent.ts
           open-sse/translator/concerns/toolImageCap.ts
+          open-sse/utils/kiroSessionReplay.js
           open-sse/translator/concerns/image.js
           open-sse/translator/request/claude-to-kiro.js
           open-sse/translator/index.ts

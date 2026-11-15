@@ -18,6 +18,7 @@ import { estimateAnthropicInputTokens } from "../../src/app/api/v1/messages/coun
 import { capChatImages, capClaudeImages, planImageWindow } from "../../open-sse/translator/concerns/toolImageCap.js";
 import { imageDimensions } from "../../open-sse/translator/concerns/image.js";
 import { GrokCliExecutor } from "../../open-sse/executors/grok-cli.js";
+import { clearKiroSessionReplayStore } from "../../open-sse/utils/kiroSessionReplay.js";
 import { MEDIA_OMITTED_TEXT, IMAGE_TOKEN_ESTIMATE, IMAGE_WINDOW } from "../../open-sse/config/mediaConfig.js";
 
 // 1x1 PNG / JPEG placeholders
@@ -995,6 +996,30 @@ describe("image window for long sessions", () => {
     expect(kiroImages(direct)).toBe(54);
     expect(JSON.stringify(direct)).toContain(MEDIA_OMITTED_TEXT.EARLIER_IMAGE);
     expect(body.messages[2].content[0].content[0]).toBe(image); // the client's body is left alone
+  });
+
+  it("Kiro session replay: the stored first turn's images count toward the window", () => {
+    clearKiroSessionReplayStore();
+    const credentials = { rawHeaders: { "x-session-id": "tool-result-images-replay" }, connectionId: "kiro-images" };
+    const tools = [{ type: "function", function: { name: "screenshot", parameters: { type: "object", properties: {} } } }];
+    // Turn 1: a first message with 40 images, which replay stores and puts back.
+    translateRequest(FORMATS.OPENAI, FORMATS.KIRO, CLAUDE_MODEL, {
+      tools,
+      messages: [{ role: "user", content: [{ type: "text", text: "start" }, ...Array.from({ length: 40 }, () => imagePart(PNG_URL))] }],
+    }, true, credentials, null);
+    // Later turn: the client's copy of that message has no images, then 45 screenshots.
+    const messages = [{ role: "user", content: "start" }];
+    for (let i = 1; i <= 45; i++) {
+      messages.push(chatTurn([`call_${i}`]));
+      messages.push(toolMsg(`call_${i}`, [{ type: "text", text: `shot ${i}` }, imagePart(PNG_URL)]));
+    }
+    const out = translateRequest(FORMATS.OPENAI, FORMATS.KIRO, CLAUDE_MODEL, { tools, messages }, true, credentials, null);
+    const state = out.conversationState;
+    expect(state.history[0].userInputMessage.images).toHaveLength(40); // user images stay
+    expect(kiroImages(out)).toBe(54); // 85 over the 80 trigger: 31 oldest screenshots dropped
+    expect(state.currentMessage.userInputMessage.images).toHaveLength(1); // the newest is kept
+    expect(JSON.stringify(state)).toContain(MEDIA_OMITTED_TEXT.EARLIER_IMAGE);
+    clearKiroSessionReplayStore();
   });
 
   it("direct claude → Kiro: 25 Retina screenshots all stay (Kiro has no hi-res rule)", () => {
