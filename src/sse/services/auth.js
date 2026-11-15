@@ -3,8 +3,8 @@ import { getProviderConnections, validateApiKey, updateProviderConnection, getSe
 import { extractClientApiKey } from "@/shared/utils/clientApiKey.js";
 import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey } from "@/lib/db/index.js";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
-import { formatRetryAfter, checkFallbackError, getQuotaCooldown, isModelLockActive, getModelLockUntil, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL } from "open-sse/services/accountFallback.js";
-import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG, AUTH_DEMOTE_CONFIG, LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL } from "open-sse/config/errorConfig.js";
+import { formatRetryAfter, checkFallbackError, getQuotaCooldown, isModelLockActive, getModelLockUntil, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL, isHeadersTimeout } from "open-sse/services/accountFallback.js";
+import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG, AUTH_DEMOTE_CONFIG, LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL, HEADERS_TIMEOUT } from "open-sse/config/errorConfig.js";
 import { isBackoffText } from "open-sse/utils/errorClass.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { planCanServeModel } from "@/shared/utils/planCapability.js";
@@ -14,7 +14,7 @@ import * as log from "../utils/logger.js";
 import { getNextAccountReset, PROVIDER_RESET_PREFIX, extractProviderMessage } from "./accountFailureSummary.js";
 import { isLimitError } from "open-sse/utils/limitHold.js";
 import { warmJitterMs, warmRetryAt } from "open-sse/services/cacheAffinity.js";
-import { CACHE_AFFINITY } from "open-sse/config/runtimeConfig.js";
+import { CACHE_AFFINITY, HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 
 // Per-provider mutexes for account selection. Picks for the same provider stay
 // serialized (round-robin sticky counters read-then-write lastUsedAt and
@@ -22,6 +22,8 @@ import { CACHE_AFFINITY } from "open-sse/config/runtimeConfig.js";
 // run concurrently. Kept on global so duplicated Next.js module instances share it.
 const selectionMutexes = (global._selectionMutexes ??= new Map());
 const MODEL_LIMIT_PREFIX = "modelLimit_";
+// Set on a model lock written for a header timeout (HEADERS_TIMEOUT).
+const NO_HEADERS_PREFIX = "modelNoHeaders_";
 
 const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit for your plan";
 
@@ -341,6 +343,9 @@ async function claimProbe(conn, model, from) {
   return JSON.stringify(saved?.[getAuthDemoteKey(model)]) === JSON.stringify(to);
 }
 
+// When the key's own lock on this model ends, in ms (0: none).
+const ownLockEndMs = (conn, model) => new Date(conn?.[getModelLockKey(model)] || 0).getTime() || 0;
+
 // Locked on this model for a limit: a key that serves again once it clears.
 // The lock that ends last decides, so a short limit lock can't hide a longer
 // account-wide refusal.
@@ -362,6 +367,8 @@ function isLimitLocked(c, model) {
  *   session affinity), used when usable.
  * @param {((c: any) => boolean) | null} [options.connectionFilter] - drops
  *   connections the caller may not use at all.
+ * @param {string[]} [options.avoidConnectionIds] - keys to rank after every other
+ *   healthy key, but before keys demoted on this model.
  * @param {string[]} [options.warmConnectionIds] - keys holding this conversation's
  *   prompt cache, most recently used last. One is picked when it ranks with the
  *   strategy's own pick (round-robin: the most recent usable one).
@@ -386,6 +393,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
   // Drops connections the caller may not use at all (auto combos skip blocked
   // billing), as if they were not connected.
   const connectionFilter = typeof options?.connectionFilter === "function" ? options.connectionFilter : null;
+  // Keys to try after every other healthy key, but before keys demoted on this
+  // model (a stream on them just got no headers for it: modelHang.js).
+  const avoidIds = new Set(Array.isArray(options?.avoidConnectionIds) ? options.avoidConnectionIds : []);
   // Resolve alias to provider ID (e.g., "kc" -> "kilocode") so aliases share a lock
   const providerId = resolveProviderId(provider);
 
@@ -483,9 +493,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const skippedThisPass = (c) => deadTriedThisPass && demotedElsewhere(c, model) && (refusedHere(c) || refusedOnTwo(c));
     const notDemotedHere = usableConnections.filter(c => !demotions.get(c.id));
     const preferred = notDemotedHere.filter(c => !skippedThisPass(c));
+    const notAvoided = preferred.filter(c => !avoidIds.has(c.id));
     // Failing that (every such key rate-limited, excluded or off), keys demoted
     // on another model go before keys demoted on this one.
-    let availableConnections = preferred.length > 0 ? preferred : notDemotedHere.length > 0 ? notDemotedHere : usableConnections;
+    let availableConnections = notAvoided.length > 0 ? notAvoided
+      : preferred.length > 0 ? preferred : notDemotedHere.length > 0 ? notDemotedHere : usableConnections;
     let probing = false;
     if (preferred.length > 0 && !deadTriedThisPass) {
       // Under fill-first a key behind a usable one wouldn't be tried anyway
@@ -538,6 +550,14 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         // came from another model.
         const reportOf = c => {
           const limited = limitLocked(c);
+          // A header timeout's lock: the stored error may be another model's.
+          const ownLockUntil = ownLockEndMs(c, model);
+          const noHeadersLock = ownLockUntil > Date.now() && ownLockUntil >= getModelLockUntil(c, model)
+            && c[`${NO_HEADERS_PREFIX}${model || "__all"}`] === true;
+          if (!limited && noHeadersLock) {
+            const error = isHeadersTimeout(c.errorCode, c.lastError) ? c.lastError : `[504]: ${HEADERS_TIMEOUT.text} (headers timeout)`;
+            return { code: HTTP_STATUS.GATEWAY_TIMEOUT, error, limit: false, ranks: true, own: true };
+          }
           const authCode = c.errorCode === 401 || c.errorCode === 403;
           const retryableCode = c.errorCode === 429 || c.errorCode >= 500;
           // A stored error that isn't a limit (an auth refusal, a 400/404) came from another model.
@@ -626,7 +646,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         const freeAt = c => Math.max(getModelLockUntil(c, model), resetStates.get(c.id).blockedUntil || 0);
         const jitterMs = warmJitterMs();
         const candidates = connections
-          .filter(c => warmIds.has(c.id) && servable(c) && isLimitLocked(c, model) && !resetStates.get(c.id).blockedUntil)
+          .filter(c => warmIds.has(c.id) && !avoidIds.has(c.id) && servable(c) && isLimitLocked(c, model) && !resetStates.get(c.id).blockedUntil)
           .sort((x, y) => getModelLockUntil(x, model) - getModelLockUntil(y, model));
         for (const c of candidates) {
           const lockEnd = getModelLockUntil(c, model);
@@ -758,7 +778,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
 
   // Provider-specific precise cooldown (e.g. codex usage_limit_reached resets_at) overrides backoff
-  let shouldFallback, cooldownMs, newBackoffLevel, inOwnLock = false;
+  let shouldFallback, cooldownMs, newBackoffLevel, inOwnLock = false, keptLock = false;
   if (githubResetAtMs) {
     shouldFallback = true;
     cooldownMs = githubResetAtMs - Date.now();
@@ -777,18 +797,25 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     // the model's own lock (and its provider reset) is kept, never shortened.
     if (newBackoffLevel != null && conn && isModelLockActive(conn, model)) {
       newBackoffLevel = backoffLevel;
-      const ownLockUntil = new Date(conn[getModelLockKey(model)] || 0).getTime() || 0;
+      const ownLockUntil = ownLockEndMs(conn, model);
       inOwnLock = ownLockUntil > Date.now();
       cooldownMs = Math.max(ownLockUntil - Date.now(), getQuotaCooldown(backoffLevel));
+    }
+    // Nor does a header timeout shorten a longer lock on the model.
+    const ownLockMs = ownLockEndMs(conn, model) - Date.now();
+    if (isHeadersTimeout(status, errorText) && ownLockMs > cooldownMs) {
+      keptLock = inOwnLock = true;
+      cooldownMs = ownLockMs;
     }
   }
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 
   const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
-  const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
+  const lockUpdate = keptLock ? { [getModelLockKey(model)]: conn[getModelLockKey(model)] } : buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
   const providerResetAtMs = githubResetAtMs || resetsAtMs;
   const lockScope = githubResetAtMs ? "__all" : model || "__all";
   const limitKey = `${MODEL_LIMIT_PREFIX}${lockScope}`;
+  const noHeadersKey = `${NO_HEADERS_PREFIX}${lockScope}`;
 
   // Auth rejections build a streak that only a success clears; other errors
   // leave it alone. A dead key is turned off unless it is the provider's last.
@@ -809,18 +836,21 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   } : null;
   const disabling = autoDisable || deadOnTwo;
 
+  const limitFlag = (inOwnLock && conn[limitKey] === true) || isLimitError(status, errorText);
   const update = {
     ...lockUpdate,
     // A straggler in the model's own lock can mark it a limit, never unmark it or drop its reset time.
-    [limitKey]: (inOwnLock && conn[limitKey] === true) || isLimitError(status, errorText),
+    [limitKey]: limitFlag,
+    ...(isHeadersTimeout(status, errorText) || conn?.[noHeadersKey] ? {
+      [noHeadersKey]: (keptLock ? conn[noHeadersKey] === true : isHeadersTimeout(status, errorText) && !limitFlag) || null,
+    } : {}),
     ...(inOwnLock ? {} : {
       [`${PROVIDER_RESET_PREFIX}${lockScope}`]:
         Number.isFinite(providerResetAtMs) && providerResetAtMs > Date.now() ? new Date(providerResetAtMs).toISOString() : null,
     }),
     testStatus: "unavailable",
-    lastError: reason,
-    errorCode: status,
-    lastErrorAt: new Date().toISOString(),
+    // A kept lock keeps the error it was set for, which the all-locked answer reports.
+    ...(keptLock ? {} : { lastError: reason, errorCode: status, lastErrorAt: new Date().toISOString() }),
     backoffLevel: newBackoffLevel ?? backoffLevel,
     ...authFailStreak,
   };
@@ -862,7 +892,8 @@ export async function clearAccountError(connectionId, currentConnection, model =
   // A cleared lock stays as modelLock_<model>: null and needs no write, unless
   // whatever cleared it left its reset time or limit flag behind.
   const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_")
-    && (conn[k] || conn[k.replace("modelLock_", PROVIDER_RESET_PREFIX)] || conn[k.replace("modelLock_", MODEL_LIMIT_PREFIX)]));
+    && (conn[k] || conn[k.replace("modelLock_", PROVIDER_RESET_PREFIX)] || conn[k.replace("modelLock_", MODEL_LIMIT_PREFIX)]
+      || conn[k.replace("modelLock_", NO_HEADERS_PREFIX)]));
 
   // The model's demotion record goes, even one written after the snapshot. A
   // record on another model stays, and authDemoteOkAt notes the key served
@@ -903,6 +934,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
   for (const key of keysToClear) {
     clearObj[key.replace("modelLock_", PROVIDER_RESET_PREFIX)] = null;
     clearObj[key.replace("modelLock_", MODEL_LIMIT_PREFIX)] = null;
+    clearObj[key.replace("modelLock_", NO_HEADERS_PREFIX)] = null;
   }
 
   // Only reset error state if no active locks remain

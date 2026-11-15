@@ -1,4 +1,5 @@
-import { ERROR_RULES, BACKOFF_CONFIG, TRANSIENT_COOLDOWN_MS, BAD_KEY_TEXTS, BILLING_TEXTS } from "../config/errorConfig.js";
+import { ERROR_RULES, BACKOFF_CONFIG, TRANSIENT_COOLDOWN_MS, BAD_KEY_TEXTS, BILLING_TEXTS, HEADERS_TIMEOUT } from "../config/errorConfig.js";
+import { HTTP_STATUS } from "../config/runtimeConfig.js";
 
 /**
  * Calculate exponential backoff cooldown for rate limits (429)
@@ -64,6 +65,11 @@ export function isRequestError(status, errorText) {
     : "";
   if (ACCOUNT_ERROR_TEXTS.some((t) => lowerError.includes(t))) return false;
   return !ERROR_RULES.some((rule) => rule.text && lowerError.includes(rule.text));
+}
+
+/** A 504 from a chat call that got no response headers in time (utils/headersTimeout.js). */
+export function isHeadersTimeout(status, errorText) {
+  return status === HTTP_STATUS.GATEWAY_TIMEOUT && typeof errorText === "string" && errorText.includes(HEADERS_TIMEOUT.text);
 }
 
 /**
