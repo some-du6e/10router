@@ -9,6 +9,7 @@ import { convertResponsesApiFormat } from "../../open-sse/translator/formats/res
 import { filterToOpenAIFormat } from "../../open-sse/translator/formats/openai.js";
 import {
   scrubInlineBase64,
+  splitToolContent,
   toolContentText,
   moveToolImagesToUserTurn,
 } from "../../open-sse/translator/concerns/toolContent.js";
@@ -998,6 +999,68 @@ describe("image window for long sessions", () => {
     expect(body.messages[2].content[0].content[0]).toBe(image); // the client's body is left alone
   });
 
+  // A distinct small PNG per index, so every image can be followed through the output.
+  const uniquePng = (i, base64Length = 200) => {
+    const head = Buffer.from(pngOf(100, 100, 48), "base64");
+    head.writeUInt32BE(i, 29);
+    return padTo(head, base64Length);
+  };
+  const sentKiroImages = (out) => new Set((JSON.stringify(out).match(/"bytes":"[^"]+"/g) || []).map((m) => m.slice(9, -1)));
+
+  for (const sharedTurn of [false, true]) {
+    it(`Kiro replay over 200 turns, user image ${sharedTurn ? "in the tool result's turn" : "in its own turn"}: nothing reappears`, () => {
+      clearKiroSessionReplayStore();
+      const credentials = { rawHeaders: { "x-session-id": `tool-result-images-flicker-${sharedTurn}` }, connectionId: "kiro-flicker" };
+      const tools = [{ type: "function", function: { name: "screenshot", parameters: { type: "object", properties: {} } } }];
+      const first = [0, 1, 2].map((i) => uniquePng(10_000 + i));
+      const users = [];
+      const messages = [{ role: "user", content: [{ type: "text", text: "start" }, ...first.map((b) => imagePart(`data:image/png;base64,${b}`))] }];
+      let previous = new Set();
+      let breaks = 0;
+      for (let k = 1; k <= 200; k++) {
+        messages.push(chatTurn([`call_${k}`]));
+        messages.push(toolMsg(`call_${k}`, [{ type: "text", text: `shot ${k}` }, imagePart(`data:image/png;base64,${uniquePng(k)}`)]));
+        if (k % 2 === 0) {
+          const user = uniquePng(20_000 + k);
+          users.push(user);
+          if (!sharedTurn) messages.push({ role: "assistant", content: "ok" });
+          messages.push({ role: "user", content: [imagePart(`data:image/png;base64,${user}`)] });
+        }
+        const out = translateRequest(FORMATS.OPENAI, FORMATS.KIRO, CLAUDE_MODEL, { tools, messages }, true, credentials, null);
+        const sent = sentKiroImages(out);
+        const all = [...first, ...users, ...Array.from({ length: k }, (_, i) => uniquePng(i + 1))];
+        const dropped = new Set(all.filter((b) => !sent.has(b)));
+        for (const b of previous) expect(dropped.has(b)).toBe(true); // nothing reappears
+        if (dropped.size !== previous.size) breaks++;
+        previous = dropped;
+        if (k === 100) {
+          // user images, next to tool results or not, outlast the tool screenshots
+          for (const b of [...first, ...users]) expect(sent.has(b)).toBe(true);
+        }
+      }
+      // 15 in 200 turns: chunks shrink as user images, kept first, fill the window
+      expect(breaks).toBeLessThanOrEqual(16);
+      clearKiroSessionReplayStore();
+    }, 60_000);
+  }
+
+  it("Kiro never sends an empty or null images list", () => {
+    const kiro = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.KIRO, CLAUDE_MODEL, session(85, PNG_URL), true, {}, null);
+    const state = kiro.conversationState;
+    const inputs = [...state.history, state.currentMessage].map((t) => t.userInputMessage).filter(Boolean);
+    let emptied = 0;
+    for (const input of inputs) {
+      if ("images" in input) {
+        expect(input.images.length).toBeGreaterThan(0);
+        expect(input.images.includes(null)).toBe(false);
+        expect(JSON.stringify(input.images)).not.toContain("_fromToolResult");
+      } else if (input.content.includes(MEDIA_OMITTED_TEXT.EARLIER_IMAGE)) {
+        emptied++;
+      }
+    }
+    expect(emptied).toBeGreaterThan(0);
+  });
+
   it("Kiro session replay: the stored first turn's images count toward the window", () => {
     clearKiroSessionReplayStore();
     const credentials = { rawHeaders: { "x-session-id": "tool-result-images-replay" }, connectionId: "kiro-images" };
@@ -1005,13 +1068,14 @@ describe("image window for long sessions", () => {
     // Turn 1: a first message with 40 images, which replay stores and puts back.
     translateRequest(FORMATS.OPENAI, FORMATS.KIRO, CLAUDE_MODEL, {
       tools,
-      messages: [{ role: "user", content: [{ type: "text", text: "start" }, ...Array.from({ length: 40 }, () => imagePart(PNG_URL))] }],
+      messages: [{ role: "user", content: [{ type: "text", text: "start" }, ...Array.from({ length: 40 }, () => imagePart(RETINA_URL))] }],
     }, true, credentials, null);
-    // Later turn: the client's copy of that message has no images, then 45 screenshots.
+    // Later turn: the client's copy of that message has no images, then 45
+    // Retina screenshots (Kiro has no hi-res rule, so only the count binds).
     const messages = [{ role: "user", content: "start" }];
     for (let i = 1; i <= 45; i++) {
       messages.push(chatTurn([`call_${i}`]));
-      messages.push(toolMsg(`call_${i}`, [{ type: "text", text: `shot ${i}` }, imagePart(PNG_URL)]));
+      messages.push(toolMsg(`call_${i}`, [{ type: "text", text: `shot ${i}` }, imagePart(RETINA_URL)]));
     }
     const out = translateRequest(FORMATS.OPENAI, FORMATS.KIRO, CLAUDE_MODEL, { tools, messages }, true, credentials, null);
     const state = out.conversationState;
@@ -1020,6 +1084,45 @@ describe("image window for long sessions", () => {
     expect(state.currentMessage.userInputMessage.images).toHaveLength(1); // the newest is kept
     expect(JSON.stringify(state)).toContain(MEDIA_OMITTED_TEXT.EARLIER_IMAGE);
     clearKiroSessionReplayStore();
+  });
+
+  it("direct claude → Kiro: URL user images don't count toward the 80 trigger", () => {
+    const body = claudeSession(79, PNG_B64);
+    body.messages[0] = { role: "user", content: [{ type: "text", text: "go" }, ...Array.from({ length: 5 }, (_, i) => ({ type: "image", source: { type: "url", url: `https://example.com/ref${i}.png` } }))] };
+    const direct = translateRequest(FORMATS.CLAUDE, FORMATS.KIRO, CLAUDE_MODEL, body, true, {}, null);
+    expect(kiroImages(direct)).toBe(79);
+    expect(JSON.stringify(direct)).not.toContain(MEDIA_OMITTED_TEXT.EARLIER_IMAGE);
+    // The Claude adapter with Kiro's limits leaves them uncounted too.
+    expect(capClaudeImages(body.messages, IMAGE_WINDOW.KIRO)).toBe(body.messages);
+  });
+
+  it("user images survive while screenshots trigger the trim: Claude, Kiro and Gemini routes", () => {
+    const withUserImages = (count, url) => {
+      const body = session(80, PNG_URL);
+      body.input.unshift({ type: "message", role: "user", content: Array.from({ length: count }, (_, i) => ({ type: "input_image", image_url: url(i) })) });
+      return body;
+    };
+    const userUrl = (i) => `data:image/png;base64,${uniquePng(30_000 + i)}`;
+    const claude = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.CLAUDE, CLAUDE_MODEL, withUserImages(10, userUrl), true, null, null);
+    expect(claude.messages[0].content.filter((b) => b.type === "image")).toHaveLength(10);
+    expect(shots(claude).some((b) => b.type === "text")).toBe(true);
+    const kiro = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.KIRO, CLAUDE_MODEL, withUserImages(10, userUrl), true, {}, null);
+    const sent = sentKiroImages(kiro);
+    for (let i = 0; i < 10; i++) expect(sent.has(uniquePng(30_000 + i))).toBe(true);
+    expect(JSON.stringify(kiro)).toContain(MEDIA_OMITTED_TEXT.EARLIER_IMAGE);
+    // Gemini: 2 user images and 3 screenshots of 4M each, over 14.4M
+    const big = (i) => uniquePng(40_000 + i, 4_000_000);
+    const gemini = { model: "gemini-x", input: [
+      { type: "message", role: "user", content: [0, 1].map((i) => ({ type: "input_image", image_url: `data:image/png;base64,${big(i)}` })) },
+      ...session(3, "x").input.slice(1).map((item) => (item.type === "function_call_output"
+        ? { ...item, output: screenshotOutput(`data:image/png;base64,${big(Number(item.call_id.slice(5)) + 10)}`) }
+        : item)),
+    ], tools: responsesBody().tools };
+    const out = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.GEMINI, "gemini-x", gemini, true, null, null);
+    const inline = out.contents.flatMap((c) => c.parts).filter((p) => p.inlineData).map((p) => p.inlineData.data);
+    expect(inline).toContain(big(0));
+    expect(inline).toContain(big(1));
+    expect(inline.length).toBeLessThan(5);
   });
 
   it("direct claude → Kiro: 25 Retina screenshots all stay (Kiro has no hi-res rule)", () => {
@@ -1122,14 +1225,37 @@ describe("scrub threshold, image typing and the text-only consumers", () => {
           { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content }] },
         ],
       };
-      for (const target of [FORMATS.OPENAI, FORMATS.KIRO]) {
+      for (const target of [FORMATS.OPENAI, FORMATS.OPENAI_RESPONSES, FORMATS.CURSOR, FORMATS.KIRO]) {
         const out = translateRequest(FORMATS.CLAUDE, target, CLAUDE_MODEL, structuredClone(claudeBody), true, {}, null);
-        expect(JSON.stringify(out)).not.toContain(shotUrl);
-        expect(JSON.stringify(out)).toContain(`saved ${MEDIA_OMITTED_TEXT.IMAGE}`);
+        expect(JSON.stringify(out), target).not.toContain(shotUrl);
+        expect(JSON.stringify(out), target).toContain(`saved ${MEDIA_OMITTED_TEXT.IMAGE}`);
       }
     }
     const gemini = translateRequest(FORMATS.OPENAI, FORMATS.GEMINI, "gemini-x", chatBody(`saved ${shotUrl}`), true, null, null);
     expect(JSON.stringify(gemini)).not.toContain(shotUrl);
+  });
+
+  it("a Chat tool message with a data URL in its text next to an image: no base64 in any text, on every target", () => {
+    const payload = "A".repeat(70_000);
+    const content = [{ type: "text", text: `log: data:image/png;base64,${payload}` }, imagePart(PNG_URL)];
+    for (const [target, model, creds] of [
+      [FORMATS.OPENAI, "gpt-x", null],
+      [FORMATS.GEMINI, "gemini-x", null],
+      [FORMATS.KIRO, CLAUDE_MODEL, {}],
+      [FORMATS.OLLAMA, "ollama-x", null],
+    ]) {
+      const out = translateRequest(FORMATS.OPENAI, target, model, chatBody(structuredClone(content)), true, creds, null);
+      const json = JSON.stringify(out);
+      expect(json, target).not.toContain(payload);
+      expect(json, target).toContain(`log: ${MEDIA_OMITTED_TEXT.IMAGE}`);
+      expect(json, target).toContain(PNG_B64); // the real image still goes as an image
+    }
+  });
+
+  it("notes are numbered per image, from the offset", () => {
+    const { text, images } = splitToolContent([imagePart(PNG_URL), { type: "text", text: "between" }, imagePart(JPEG_URL), imagePart(PNG_URL)], { offset: 2 });
+    expect(text).toBe("[image 3 attached below]\nbetween\n[image 4 attached below]\n[image 5 attached below]");
+    expect(images).toHaveLength(3);
   });
 
   it("the scrub catches RFC 2397 parameters and any case", () => {
