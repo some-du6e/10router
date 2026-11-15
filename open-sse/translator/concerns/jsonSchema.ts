@@ -1,5 +1,8 @@
 // JSON Schema helpers shared by the tool translators.
-import { JSON_SCHEMA_TYPE, JSON_SCHEMA_COMBINATOR, JSON_SCHEMA_REF, JSON_SCHEMA_DEFS } from "../schema/index.js";
+import {
+  JSON_SCHEMA_TYPE, JSON_SCHEMA_COMBINATOR, JSON_SCHEMA_REF, JSON_SCHEMA_DEFS,
+  JSON_SCHEMA_SCHEMA_MAP, JSON_SCHEMA_LITERAL, JSON_SCHEMA_EXTENSION_PREFIX,
+} from "../schema/index.js";
 import { CLAUDE_TOOL_SCHEMA_LIMITS as LIMITS, CLAUDE_TOOL_SCHEMA_TEXT as TEXT } from "../../config/claudeToolSchema.js";
 import { dbg } from "../../utils/debugLog.js";
 
@@ -18,14 +21,14 @@ type Context = {
 const { ALL_OF, ANY_OF, ONE_OF } = JSON_SCHEMA_COMBINATOR;
 const OBJECT = JSON_SCHEMA_TYPE.OBJECT;
 const REF = JSON_SCHEMA_REF;
-const PROPERTIES = "properties";
+const PROPERTIES = JSON_SCHEMA_SCHEMA_MAP.PROPERTIES;
 const COMBINATORS = new Set<string>([ALL_OF, ANY_OF, ONE_OF]);
 const ALTERNATIVES = [ANY_OF, ONE_OF];
 const DEFS_KEYS: string[] = Object.values(JSON_SCHEMA_DEFS);
 // Keywords whose value maps names to subschemas (any name, even "const").
-const SCHEMA_MAPS = new Set<string>([PROPERTIES, "patternProperties", "dependentSchemas", ...DEFS_KEYS]);
-// Keywords whose value is instance data or annotation, never a subschema.
-const LITERALS = new Set(["const", "enum", "default", "examples"]);
+const SCHEMA_MAPS = new Set<string>([...Object.values(JSON_SCHEMA_SCHEMA_MAP), ...DEFS_KEYS]);
+// Keywords whose value is instance data, never a subschema.
+const LITERALS = new Set<string>(Object.values(JSON_SCHEMA_LITERAL));
 const GENERIC_LABELS = new Set<string>([TEXT.OBJECT, TEXT.VALUE]);
 const IN_PROGRESS: unique symbol = Symbol("in progress");
 const INDEX = /^\d+$/;
@@ -37,7 +40,7 @@ const hasCombinator = (schema: Schema) => has(schema, ALL_OF) || has(schema, ANY
 const isLocalPointer = (ref: unknown) => typeof ref === "string" && (ref === "" || ref.startsWith("#"));
 const hasRef = (node: unknown): node is Schema => isPlainObject(node) && typeof node[REF] === "string";
 // Vendor extension keywords ("x-…") hold annotation data, not subschemas.
-const isExtension = (key: string) => key.startsWith("x-");
+const isExtension = (key: string) => key.startsWith(JSON_SCHEMA_EXTENSION_PREFIX);
 
 // Strings come from the client, so only a bounded prefix is ever scanned.
 const head = (text: unknown, max: number) => (typeof text === "string" ? text.slice(0, max) : "");

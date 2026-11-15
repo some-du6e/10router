@@ -394,11 +394,16 @@ describe("normalizeClaudeInputSchema at the input cap", () => {
     expect(out).toEqual({ type: "object", properties: stringProps(3, "p"), required: ["p0"] });
   });
 
-  // A memoized target is labelled for every member pointing at it, and its
-  // required entries here are long arrays.
-  it("labels a shared target cheaply, across 50 such tools in one request", () => {
-    const schema = () => ({ $defs: { T: { required: times(8, () => times(500, () => "a")) } }, anyOf: times(550, () => ({ $ref: "#/$defs/T" })) });
+  // 400 members share one $ref target whose required entries are long arrays.
+  // The schema flattens within the budget, so the alternatives get summarized
+  // and the target is labelled for every member: cheap only if the label is
+  // cached and doesn't stringify non-string entries.
+  it("labels a shared $ref target cheaply when it's summarized, across 50 tools in one request", () => {
+    const schema = () => ({ $defs: { T: { required: times(8, () => times(500, () => "a")) } }, anyOf: times(400, () => ({ $ref: "#/$defs/T" })) });
     expect(JSON.stringify(schema()).length).toBeLessThan(CAP_BYTES);
+    const single = normalizeClaudeInputSchema(schema());
+    expect(isPermissive(single)).toBe(false);
+    expect(single.required).toHaveLength(8);
     const body = {
       model: MODEL,
       messages: [{ role: "user", content: "hi" }],
@@ -677,6 +682,73 @@ describe("normalizeClaudeInputSchema $refs", () => {
     ["a ref into another document", { anyOf: [{ type: "object", properties: { x: { $ref: "other.json#/x" } } }, byQuery] }],
   ])("falls back on %s", (_, schema) => {
     expect(isPermissive(normalizeClaudeInputSchema(schema))).toBe(true);
+  });
+
+  it("names non-string required entries by their type in a label", () => {
+    expect(normalizeClaudeInputSchema({ anyOf: [{ type: "object", required: [1, ["k"]] }, { type: "string", title: "S" }] }))
+      .toEqual({ ...PERMISSIVE, description: "Accepts one of: {number, object}; S." });
+  });
+
+  it("skips a blank-only title in a label", () => {
+    expect(normalizeClaudeInputSchema({ anyOf: [{ type: "string", title: "   ", description: "Real" }, byQuery] }))
+      .toEqual({ ...PERMISSIVE, description: "Accepts one of: Real; Search by free text." });
+  });
+
+  it("falls back on a member typed with an array that leaves out object", () => {
+    expect(normalizeClaudeInputSchema({
+      anyOf: [{ type: ["string", "integer"], title: "Scalar" }, { type: "object", title: "Obj", properties: { a: { type: "string" } } }],
+    })).toEqual({ ...PERMISSIVE, description: "Accepts one of: Scalar; Obj." });
+  });
+
+  it("falls back on a ref that runs past a merged property into nothing", () => {
+    expect(normalizeClaudeInputSchema({
+      anyOf: [{ type: "object", title: "A", properties: { a: { type: "object" }, b: { $ref: "#/anyOf/0/properties/a/nowhere" } } }, byQuery],
+    })).toEqual({ ...PERMISSIVE, description: "Accepts one of: A; Search by free text." });
+  });
+
+  // A slash inside a definition's name is escaped (~1), so "A/B" and A's B are different refs.
+  it("doesn't confuse a definition named A/B with B inside A", () => {
+    const out = normalizeClaudeInputSchema({
+      $defs: { "A/B": { type: "object", properties: { x: { type: "string" } } }, A: { B: { type: "object", properties: { y: { type: "string" } } } } },
+      anyOf: [{ $ref: "#/$defs/A~1B" }, { $ref: "#/$defs/A/B" }],
+    });
+    expect(out.properties).toEqual({ x: { type: "string" }, y: { type: "string" } });
+  });
+
+  it("keeps a definitions block that only another kept block points into", () => {
+    const out = normalizeClaudeInputSchema({
+      $defs: { A: { type: "object", properties: { b: { $ref: "#/definitions/B" } } } },
+      definitions: { B: { type: "string" } },
+      anyOf: [{ type: "object", properties: { a: { $ref: "#/$defs/A" } } }, byQuery],
+    });
+    expect(out.definitions).toEqual({ B: { type: "string" } });
+    expect(out.$defs.A.properties.b).toEqual({ $ref: "#/definitions/B" });
+    expectLocalRefsResolve(out);
+  });
+
+  // An unknown annotation keyword is walked like a schema position. That fails
+  // safe: a ref there is only ever kept on the same object or retargeted to the
+  // very same object, and anything else falls back.
+  it("keeps the meaning of a $ref under an unknown annotation keyword", () => {
+    const input = () => ({
+      anyOf: [
+        { type: "object", properties: { target: { type: "string", minLength: 2 }, a: { type: "string", metadata: { $ref: "#/anyOf/0/properties/target" } } } },
+        byQuery,
+      ],
+    });
+    const out = normalizeClaudeInputSchema(input());
+    const ref = out.properties.a.metadata.$ref;
+    const resolve = (r) => r.slice(2).split("/").map(decodeURIComponent).reduce((node, key) => node?.[key], out);
+    expect(resolve(ref)).toEqual(input().anyOf[0].properties.target);
+    const dangling = normalizeClaudeInputSchema({
+      anyOf: [{ type: "object", title: "A", properties: { a: { type: "string", metadata: { $ref: "#/anyOf/0/properties/missing" } } } }, byQuery],
+    });
+    expect(dangling).toEqual({ ...PERMISSIVE, description: "Accepts one of: A; Search by free text." });
+  });
+
+  it("counts key length toward the byte cap", () => {
+    const longKey = { description: "Keys", anyOf: [{ type: "object", properties: { ["k".repeat(CAP_BYTES)]: {} } }, byQuery] };
+    expect(normalizeClaudeInputSchema(longKey)).toEqual({ ...PERMISSIVE, description: "Keys" });
   });
 
   it("puts a type into the label as written, $& included", () => {
