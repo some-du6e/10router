@@ -6,3 +6,4 @@ export {
 } from "./blocks.js";
 export { OPENAI_FINISH, CLAUDE_STOP, GEMINI_FINISH, RESPONSES_INCOMPLETE_REASON } from "./finishReasons.js";
 export { MODEL_FALLBACK, DEFAULT_IMAGE_MIME } from "./defaults.js";
+export { JSON_SCHEMA_TYPE, JSON_SCHEMA_COMBINATOR, JSON_SCHEMA_REF } from "./jsonSchema.js";

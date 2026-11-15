@@ -13,6 +13,7 @@ import { FORMATS } from "../formats.js";
 import { isLastMessageFromUser } from "../../services/provider.js";
 import { DEFAULT_MAX_TOKENS } from "../../config/runtimeConfig.js";
 import { isToolChangeBlock, mapToolDefinitions } from "../concerns/toolChanges.js";
+import { normalizeClaudeToolSchema, normalizeClaudeToolSchemas } from "../concerns/jsonSchema.js";
 import { claudeContinuationContent } from "../concerns/message.js";
 import { supportsClaudeAssistantPrefill } from "../../config/claudeMessageCompat.js";
 
@@ -160,6 +161,7 @@ function hasForeignServerToolUseId(block) {
 // 2. output_config.effort → unsupported on Haiku 4.x
 // 3. role "system" messages (mid-conversation-system beta) → only top-level system is allowed
 // 4. server_tool_use blocks carrying a foreign (non-srvtoolu_) id → rejected outright
+// 5. tool input_schema with a top-level allOf/anyOf/oneOf → rejected outright
 export function normalizeClaudePassthrough(body, model = "", provider = null) {
   if (!body || typeof body !== "object") return body;
 
@@ -284,6 +286,11 @@ export function normalizeClaudePassthrough(body, model = "", provider = null) {
       return msg.content.length > 0;
     });
   }
+
+  // 6. Tool input schemas with a top-level allOf/anyOf/oneOf are rejected;
+  // flatten them, in tools[] and in tools added by value mid-conversation.
+  if (Array.isArray(body.tools)) body.tools = normalizeClaudeToolSchemas(body.tools);
+  Object.assign(body, mapToolDefinitions(body, normalizeClaudeToolSchema));
 
   return body;
 }
@@ -523,12 +530,14 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
     }
   }
 
-  // 3. Tools: filter built-in tools for non-Anthropic providers, then handle cache_control.
+  // 3. Tools: filter built-in tools for non-Anthropic providers, flatten input
+  // schemas the Messages API rejects, then handle cache_control.
   // A tool added by value mid-conversation gets the same treatment (one that
   // would be filtered out is dropped with its block).
-  body = mapToolDefinitions(body, (def) => toProviderClaudeTools([def], provider)[0] ?? null);
+  const toClaudeTools = (tools) => normalizeClaudeToolSchemas(toProviderClaudeTools(tools, provider));
+  body = mapToolDefinitions(body, (def) => toClaudeTools([def])[0] ?? null);
   if (body.tools && Array.isArray(body.tools)) {
-    body.tools = toProviderClaudeTools(body.tools, provider);
+    body.tools = toClaudeTools(body.tools);
 
     const lastCacheable = lastCacheableToolIndex(body.tools);
     body.tools = body.tools.map((tool, i) => {

@@ -1,6 +1,7 @@
 // Gemini helper functions for translator
 
 import { safeParseJSON } from "../concerns/json.js";
+import { mergeAllOfMembers } from "../concerns/jsonSchema.js";
 import { OPENAI_BLOCK } from "../schema/index.js";
 
 // Unsupported JSON Schema constraints that should be removed for Antigravity
@@ -200,22 +201,7 @@ function mergeAllOf(obj) {
   if (!obj || typeof obj !== "object") return;
 
   if (obj.allOf && Array.isArray(obj.allOf)) {
-    const merged = {};
-
-    for (const item of obj.allOf) {
-      if (item.properties) {
-        if (!merged.properties) merged.properties = {};
-        Object.assign(merged.properties, item.properties);
-      }
-      if (item.required && Array.isArray(item.required)) {
-        if (!merged.required) merged.required = [];
-        for (const req of item.required) {
-          if (!merged.required.includes(req)) {
-            merged.required.push(req);
-          }
-        }
-      }
-    }
+    const merged = mergeAllOfMembers(obj.allOf);
 
     delete obj.allOf;
     if (merged.properties) obj.properties = { ...obj.properties, ...merged.properties };
