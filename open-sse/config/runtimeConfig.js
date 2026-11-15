@@ -96,12 +96,14 @@ export const CACHE_AFFINITY = {
 // On a custom (OpenAI-/Anthropic-compatible) endpoint, a request error every
 // key would refuse (a prompt longer than the model's context window, a tool
 // schema the upstream rejects) stops the account walk once this many accounts
-// of one model answered it with the same message, when that message reads as
-// the request's fault (SAME_REQUEST_ERROR_PATTERNS in errorConfig.js) or the
-// status is 413 (services/sameRequestError.ts), instead of trying every key.
-// 1 stops at the first such error.
-// Env: SAME_REQUEST_ERROR_STOP_AFTER (0 tries every key, as before; anything
-// that isn't a whole number falls back to 2).
+// of one model answered it with the same message, instead of trying every key
+// (services/sameRequestError.ts). The message has to read as the request's
+// fault (SAME_REQUEST_ERROR_PATTERNS in errorConfig.js), or the status be 413,
+// and either way pass the vetoes on key, billing, limit and plan wording. Only
+// when every active key of the node reaches one upstream (no key on its own
+// base URL). 1 stops at the first such error.
+// Env: SAME_REQUEST_ERROR_STOP_AFTER (0 tries every key, as before, on every
+// node; anything that isn't a whole number falls back to 2).
 export const SAME_REQUEST_ERROR_STOP_AFTER = envInt("SAME_REQUEST_ERROR_STOP_AFTER", 2);
 // The statuses it counts. 401/403/404/429, 5xx and header timeouts never count.
 export const SAME_REQUEST_ERROR_STATUSES = new Set([HTTP_STATUS.BAD_REQUEST, HTTP_STATUS.PAYLOAD_TOO_LARGE, HTTP_STATUS.UNPROCESSABLE_ENTITY]);

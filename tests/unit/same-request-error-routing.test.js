@@ -1,10 +1,11 @@
 // On a custom endpoint whose keys all reach one upstream, a request every key
 // refuses the same way (a prompt longer than the model's context window, a tool
 // schema the upstream rejects) stops the account walk once two keys gave the
-// same request-shaped error (a 413, or a 400/422 matching
-// SAME_REQUEST_ERROR_PATTERNS and no veto), instead of costing one upstream
-// call per key before failing with that error anyway. Any other error, built-in
-// providers and keys on their own base URL keep walking every key.
+// same request-shaped error, instead of costing one upstream call per key
+// before failing with that error anyway. Request-shaped means a 413, or a
+// 400/422 matching SAME_REQUEST_ERROR_PATTERNS, and in both cases no veto
+// (key, billing, limit, plan or organization wording). Any other error,
+// built-in providers and nodes with a key on its own base URL keep walking.
 //
 // Runs the real account loop (handleChat → auth.js against a temporary
 // database); only the upstream call (handleChatCore) is stubbed, returning what
@@ -237,6 +238,32 @@ describe("which errors count", () => {
     expect(covered.size).toBe(SAME_REQUEST_ERROR_PATTERNS.length);
   });
 
+  // Each message holds the words of one alternative inside a pattern and no
+  // other, so dropping that alternative from the pattern turns its case red.
+  it.each([
+    ["input_schema", "tools: input_schema rejected"],
+    ["json schema", "the JSON schema for the function is not valid"],
+    ["invalid schema", "invalid schema for a tool"],
+    ["function parameters", "function parameters must be an object"],
+    ["tools.N", "tools.2.name: required"],
+    ["tools[N]", "tools[2].name: required"],
+    ["model ... token limit", "Bad request: this request is over the model token limit (10000)"],
+    ["token limit ... context", "token limit of the context reached: 12345 > 10000"],
+  ])("counts a message only the %s alternative matches: %s", (_alt, message) => {
+    const alternatives = [/input_schema/i, /json schema/i, /invalid schema/i, /function parameters/i, /\btools?\.\d+/i, /\btools?\[\d+\]/i,
+      /\b(?:model|context)\b.{0,30}\btoken limit\b/i, /\btoken limit\b.{0,30}\b(?:model|context)\b/i];
+    expect(alternatives.filter((a) => a.test(message))).toHaveLength(1);
+    expect(requestErrorSignature(400, `[400]: ${message}`)).not.toBeNull();
+  });
+
+  it("drops a relay's request id from the message", () => {
+    const a = `[400]: ${TOO_LONG} (request id: 20261115120000123456789abcDEF12)`;
+    const b = `[400]: ${TOO_LONG} (Request ID: 20261115120005987654321xyzUVW98)`;
+    expect(upstreamMessage(a)).toBe(TOO_LONG);
+    expect(requestErrorSignature(400, a)).toBe(requestErrorSignature(400, b));
+    expect(upstreamMessage(`[400]: ${jsonBody(`${TOO_LONG} (request id: 2026111512000000aaa)`, "req_placeholder_aaaa")}`)).toBe(TOO_LONG);
+  });
+
   // Each message is request-shaped, and exactly one veto keeps it out.
   const vetoes = {
     namesAccountOrLimit: (text) => namesAccountOrLimit(text),
@@ -250,9 +277,13 @@ describe("which errors count", () => {
     ["isLimitError", JSON.stringify({ error: { message: TOO_LONG, code: "usage_limit_reached" } })],
     ["MODEL_REFUSAL", `${TOO_LONG}; model example-model is not available on this endpoint`],
     ["OPERATION_REFUSAL", `${TOO_LONG}; permission denied for this operation`],
-    ...["per minute", "per day", "tpm", "rpd", "daily", "monthly", "in organization org-example", "for this key", "for this account",
-      "throttled", "please wait", "tier 1", "upgrade", "your plan", "tokens_limit_reached"]
+    ...["per minute", "per hour", "per day", "per month", "tpm", "tpd", "rpm", "rpd", "daily", "monthly", "in organization org-example",
+      "for this key", "for this account", "throttled", "please wait", "tier 1", "upgrade", "your plan", "tokens_limit_reached",
+      "your organization", "this organisation", "the organization", "subscription"]
       .map((words) => ["SAME_REQUEST_ERROR_KEY_LIMIT", `${TOO_LONG} (${words})`]),
+    // A hosted tool is enabled per organization.
+    ["SAME_REQUEST_ERROR_KEY_LIMIT", "tools.0: web search is not enabled for your organization"],
+    ["SAME_REQUEST_ERROR_KEY_LIMIT", "tools[0].type: web_search isn't available for this organization"],
   ])("only %s keeps out: %s", (veto, body) => {
     const raw = `[400]: ${body}`;
     expect(SAME_REQUEST_ERROR_PATTERNS.some((p) => p.test(upstreamMessage(raw)))).toBe(true);
@@ -405,7 +436,9 @@ describe("the same request error from two accounts", () => {
   }
 
   it("keeps walking when a key has its own base URL, and that key serves the request", async () => {
-    const keys = await addKeys(5, { 3: { baseUrl: "http://upstream-b.example/v1", ownBaseUrl: true } });
+    // Same URL on every key: only the ownBaseUrl flag turns the stop off.
+    const same = { baseUrl: "http://upstream-a.example/v1" };
+    const keys = await addKeys(5, { 1: same, 2: same, 3: { ...same, ownBaseUrl: true }, 4: same, 5: same });
     upstream.script = Array(2).fill(failure(400, TOO_LONG));
 
     const res = await chat();
@@ -430,6 +463,31 @@ describe("the same request error from two accounts", () => {
 
     await chat();
     expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
+  });
+
+  it("ignores an inactive key on another server", async () => {
+    const keys = await addKeys(5);
+    await db.createProviderConnection({
+      provider, authType: "apikey", name: "key-off", apiKey: "placeholder-off", priority: 9, isActive: false,
+      providerSpecificData: { baseUrl: "http://upstream-b.example/v1", ownBaseUrl: true },
+    });
+    upstream.script = Array(5).fill(failure(400, TOO_LONG));
+
+    await chat();
+    expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
+  });
+
+  it("stops when the messages differ only in a relay's request id", async () => {
+    const keys = await addKeys(5);
+    upstream.script = [
+      failure(400, `${TOO_LONG} (request id: 20261115120000123456789abcDEF12)`),
+      failure(400, `${TOO_LONG} (request id: 20261115120005987654321xyzUVW98)`),
+      failure(400, `${TOO_LONG} (request id: 20261115120009555555555qrsTUV55)`),
+    ];
+
+    const res = await chat();
+    expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
+    expect(res.status).toBe(400);
   });
 
   it("lets a combo move on to its next model", async () => {

@@ -25,18 +25,22 @@ const KEY_REFUSAL = new RegExp([MODEL_REFUSAL, OPERATION_REFUSAL].map((r) => r.s
 const asText = (error: unknown): string =>
   (error == null ? "" : typeof error === "string" ? error : JSON.stringify(error)).slice(0, SAME_REQUEST_ERROR_MAX_TEXT);
 
+// A relay's per-call id inside the message text: "... (request id: 2026...abc)".
+const REQUEST_ID_SUFFIX = /\s*\(request id: [^)]*\)/gi;
+
 /**
  * The upstream's message: chatCore's "[400]: " prefix dropped, and from a JSON
  * body its error.message, else message, else error (the order parseUpstreamError
- * reads them in), so per-call fields such as a request id don't take part.
+ * reads them in), so per-call fields such as a request id don't take part. A
+ * "(request id: ...)" a relay writes into the message is dropped too.
  */
 export function upstreamMessage(error: unknown): string {
   const text = asText(error).replace(/^\[\d+\]:\s*/, "");
   let json: { error?: { message?: unknown } | unknown; message?: unknown } | null = null;
-  try { json = JSON.parse(text); } catch { return text; }
-  if (!json || typeof json !== "object") return text;
+  try { json = JSON.parse(text); } catch { return text.replace(REQUEST_ID_SUFFIX, ""); }
+  if (!json || typeof json !== "object") return text.replace(REQUEST_ID_SUFFIX, "");
   const message = (json.error as { message?: unknown } | undefined)?.message || json.message || json.error;
-  return message ? asText(message) : text;
+  return (message ? asText(message) : text).replace(REQUEST_ID_SUFFIX, "");
 }
 
 /**
