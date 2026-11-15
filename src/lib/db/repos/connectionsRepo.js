@@ -5,6 +5,7 @@ import { DEMOTE_PREFIX, SOFT_DEMOTE_PREFIX, keyRefusedAtOf, softLooksDead, softR
 import { clearSoftDemotions } from "../../softDemotions.js";
 import { AUTH_SOFT_DEMOTE } from "../../../../open-sse/config/runtimeConfig.js";
 import { COOLDOWN_MS } from "../../../../open-sse/config/errorConfig.js";
+import { MODEL_LOCK_PREFIX, MODEL_LIMIT_PREFIX, MODEL_NO_HEADERS_PREFIX } from "../../../../open-sse/services/accountFallback.js";
 
 const OPTIONAL_FIELDS = [
   "displayName", "email", "globalPriority", "defaultModel",
@@ -72,12 +73,16 @@ function applyAutoDisableTransition(db, existing, merged, data) {
   )) {
     // A key switched back on from a soft demotion waits out a refusal's
     // cooldown on that model, as it would had it been tried there all along,
-    // while another key of the provider serves it.
+    // while another key of the provider serves it: a refusal's lock, not a
+    // limit's or a header timeout's.
     const until = new Date(Date.now() + COOLDOWN_MS.unauthorized).toISOString();
     for (const [k, r] of Object.entries(existing)) {
       if (!k.startsWith(AUTH_SOFT_PREFIX) || !r?.since) continue;
-      const lockKey = `modelLock_${k.slice(AUTH_SOFT_PREFIX.length)}`;
-      if (!(existing[lockKey] > until)) merged[lockKey] = until;
+      const model = k.slice(AUTH_SOFT_PREFIX.length);
+      if (existing[`${MODEL_LOCK_PREFIX}${model}`] > until) continue;
+      merged[`${MODEL_LOCK_PREFIX}${model}`] = until;
+      merged[`${MODEL_LIMIT_PREFIX}${model}`] = null;
+      merged[`${MODEL_NO_HEADERS_PREFIX}${model}`] = null;
     }
   }
   if (reEnabled || keyChanged) {

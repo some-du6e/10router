@@ -3,7 +3,7 @@ import { getProviderConnections, validateApiKey, updateProviderConnection, getSe
 import { extractClientApiKey } from "@/shared/utils/clientApiKey.js";
 import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey, AUTH_SOFT_PREFIX, getAuthSoftKey } from "@/lib/db/index.js";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
-import { formatRetryAfter, checkFallbackError, getQuotaCooldown, isModelLockActive, getModelLockUntil, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL, isHeadersTimeout } from "open-sse/services/accountFallback.js";
+import { formatRetryAfter, checkFallbackError, getQuotaCooldown, isModelLockActive, getModelLockUntil, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL, isHeadersTimeout, MODEL_LIMIT_PREFIX, MODEL_NO_HEADERS_PREFIX as NO_HEADERS_PREFIX } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG, AUTH_DEMOTE_CONFIG, LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL, HEADERS_TIMEOUT } from "open-sse/config/errorConfig.js";
 import { isBackoffText } from "open-sse/utils/errorClass.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
@@ -23,9 +23,6 @@ import { modelsRefusedForItself, refusedLikeDead, softRecordsForItself } from "@
 // consecutiveUseCount); picks for different providers touch disjoint state and
 // run concurrently. Kept on global so duplicated Next.js module instances share it.
 const selectionMutexes = (global._selectionMutexes ??= new Map());
-const MODEL_LIMIT_PREFIX = "modelLimit_";
-// Set on a model lock written for a header timeout (HEADERS_TIMEOUT).
-const NO_HEADERS_PREFIX = "modelNoHeaders_";
 
 const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit for your plan";
 
@@ -648,14 +645,21 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     }
     // Soft-demoted keys go after the others, avoided ones included (an avoided
     // key that is soft-demoted ranks as soft-demoted), but for one due try per
-    // pass, which keeps its place.
+    // pass, which keeps its place unless the key is avoided. So does a key held
+    // (soft-demoted for refusals of itself on another model) that was last
+    // refused for itself here, not served: its refusals here may count for
+    // nothing (no peer served), and the hold keeps the usual rules off it.
+    const heldRefusedHere = (c) => softDemotedForItself(c)
+      && (authEvents.refused.get(`${c.id}|${model}`)?.seq ?? -Infinity) > (authEvents.success.get(`${c.id}|${model}`)?.seq ?? -Infinity);
+    const back = (c) => softDemoted(c, model) || heldRefusedHere(c);
     if (!probing && (availableConnections === notAvoided || availableConnections === preferred)
-      && preferred.some(c => softDemoted(c, model)) && preferred.some(c => !softDemoted(c, model))) {
+      && preferred.some(back) && preferred.some(c => !back(c))) {
       const softTriedThisPass = allConnections.some(c => excludeSet.has(c.id) && softDemoted(c, model));
-      const due = deadTriedThisPass || softTriedThisPass ? null : preferred.find(c => claimSoftTry(c, model));
-      const notSoft = preferred.filter(c => !softDemoted(c, model));
-      const notSoftNotAvoided = notSoft.filter(c => !avoidIds.has(c.id));
-      const ahead = notSoftNotAvoided.length > 0 ? notSoftNotAvoided : notSoft;
+      const due = deadTriedThisPass || softTriedThisPass ? null
+        : preferred.find(c => softDemoted(c, model) && !avoidIds.has(c.id) && claimSoftTry(c, model));
+      const front = preferred.filter(c => !back(c));
+      const frontNotAvoided = front.filter(c => !avoidIds.has(c.id));
+      const ahead = frontNotAvoided.length > 0 ? frontNotAvoided : front;
       availableConnections = preferred.filter(c => c === due || ahead.includes(c));
     }
 

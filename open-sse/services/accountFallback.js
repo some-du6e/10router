@@ -127,6 +127,10 @@ export function formatRetryAfter(rateLimitedUntil) {
 
 /** Prefix for model lock flat fields on connection record */
 export const MODEL_LOCK_PREFIX = "modelLock_";
+/** Set beside a model lock written for a limit (sse/services/auth.js). */
+export const MODEL_LIMIT_PREFIX = "modelLimit_";
+/** Set beside a model lock written for a header timeout (HEADERS_TIMEOUT). */
+export const MODEL_NO_HEADERS_PREFIX = "modelNoHeaders_";
 
 /** Special key used when no model is known (account-level lock) */
 export const MODEL_LOCK_ALL = `${MODEL_LOCK_PREFIX}__all`;

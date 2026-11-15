@@ -281,6 +281,19 @@ describe("soft demotion", () => {
     expect(await pick(OPUS)).toBe(key.id);
   });
 
+  // Its lock then reads as a refusal's, not a limit's (the limit hold) or a header timeout's (a 504).
+  it("writes that cooldown as a refusal's, without a limit or header-timeout flag", async () => {
+    const { key } = await softDemoted();
+    await db.updateProviderConnection(key.id, { [`modelLimit_${OPUS}`]: true, [`modelNoHeaders_${OPUS}`]: true });
+    vi.advanceTimersByTime(3 * MIN);
+    await db.updateProviderConnection(key.id, { isActive: false });
+    await db.updateProviderConnection(key.id, { isActive: true });
+    const conn = await load(key.id);
+    expect(conn[`modelLock_${OPUS}`] > new Date().toISOString()).toBe(true);
+    expect(conn[`modelLimit_${OPUS}`] ?? null).toBeNull();
+    expect(conn[`modelNoHeaders_${OPUS}`] ?? null).toBeNull();
+  });
+
   it.each([
     ["with a new key", (id) => db.updateProviderConnection(id, { apiKey: "sk-test-a-new-0123456789", isActive: true })],
     ["when no other key of the provider is on", async (id, peer) => {
@@ -319,18 +332,81 @@ describe("soft demotion", () => {
     expect(order).toEqual([healthy.id, avoided.id, soft.id]);
   });
 
-  it("doesn't count a header timeout on a soft-demoted model as a refusal", async () => {
+  const headersTimeout = async (id, model) => {
     const { HEADERS_TIMEOUT } = await import("open-sse/config/errorConfig.js");
+    return auth.markAccountUnavailable(id, 504, `[504]: ${HEADERS_TIMEOUT.text} in 240s (headers timeout)`, provider, model);
+  };
+
+  it("doesn't count a header timeout on a soft-demoted model as a refusal, nor let it end the 401s in a row", async () => {
     const { key, peer } = await softDemoted();
-    const before = (await load(key.id))[`authSoft_${OPUS}`];
     vi.advanceTimersByTime(11 * MIN);
     await succeed(peer.id, OPUS);
-    await auth.markAccountUnavailable(key.id, 504, `[504]: ${HEADERS_TIMEOUT.text} in 240s (headers timeout)`, provider, OPUS);
+    await auth.markAccountUnavailable(key.id, 401, "Invalid API key", provider, OPUS);
+    const before = await load(key.id);
+    expect(before.authHeld401s).toBe(1);
+    vi.advanceTimersByTime(21 * MIN);
+    await succeed(peer.id, OPUS);
+    await headersTimeout(key.id, OPUS);
     const conn = await load(key.id);
-    expect(conn[`authSoft_${OPUS}`]).toEqual(before);
-    expect(conn.authHeld401s ?? null).toBeNull();
+    expect(conn[`authSoft_${OPUS}`]).toEqual(before[`authSoft_${OPUS}`]);
+    expect(conn.authHeld401s).toBe(1);
     expect(conn.authFailCount ?? null).toBeNull();
     expect(conn[`authDemote_${OPUS}`] ?? null).toBeNull();
+  });
+
+  it("doesn't turn it off at a header timeout once the day is up", async () => {
+    const { key, peer } = await softDemoted();
+    // Refused for itself on opus and kimi, so only the trigger is missing.
+    expect((await run(key, 23)).off).toBeNull();
+    vi.advanceTimersByTime(2 * 60 * MIN);
+    await succeed(peer.id, KIMI);
+    await headersTimeout(key.id, KIMI);
+    expect((await load(key.id)).isActive).toBe(true);
+    vi.advanceTimersByTime(5 * MIN);
+    await succeed(peer.id, KIMI);
+    await failOnce(key.id, KIMI);
+    expect((await load(key.id)).isActive).toBe(false);
+  }, 120000);
+
+  // Key d, first by priority, dead and held for refusals of itself on opus. On
+  // kimi, where no other key has served yet, its refusal counts for nothing.
+  it("tries a key held on another model after the healthy keys on a model it was last refused on", async () => {
+    const [d, k2, k3] = await accounts(["d", "k2", "k3"]);
+    await refuse(d.id, k2, { times: 6 });
+    expect((await load(d.id))[`authSoft_${OPUS}`]).toMatchObject({ keyRefused: true });
+    vi.advanceTimersByTime(MIN);
+    await failOnce(d.id, KIMI);
+    vi.advanceTimersByTime(3 * MIN);
+    const order = [];
+    const tried = new Set();
+    for (;;) {
+      const id = await pick(KIMI, tried);
+      if (!id) break;
+      order.push(id);
+      tried.add(id);
+    }
+    expect(order).toEqual([k2.id, k3.id, d.id]);
+    // A request whose first key, k2, got no headers: its second slot goes to k3.
+    await headersTimeout(k2.id, KIMI);
+    expect((await auth.getProviderCredentials(provider, new Set([k2.id]), KIMI, { avoidConnectionIds: [k2.id] })).connectionId).toBe(k3.id);
+  });
+
+  it("keeps serving a held key first on a model it serves", async () => {
+    const [d, k2] = await accounts(["d", "k2"]);
+    await refuse(d.id, k2, { times: 6 });
+    vi.advanceTimersByTime(MIN);
+    await failOnce(d.id, KIMI);
+    vi.advanceTimersByTime(3 * MIN);
+    await succeed(d.id, KIMI);
+    expect(await pick(KIMI)).toBe(d.id);
+  });
+
+  it("doesn't let an avoided soft-demoted key's due try go ahead of a healthy key", async () => {
+    const { key, peer } = await softDemoted();
+    vi.advanceTimersByTime(11 * MIN);
+    expect((await auth.getProviderCredentials(provider, null, OPUS, { avoidConnectionIds: [key.id] })).connectionId).toBe(peer.id);
+    // Not avoided, it takes its due try.
+    expect(await pick(OPUS)).toBe(key.id);
   });
 
   it("is stored on the connection, without the key, and survives a restart", async () => {
