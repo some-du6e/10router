@@ -380,9 +380,37 @@ describe("normalizeClaudeInputSchema at the input cap", () => {
     expect(normalizeClaudeInputSchema(big)).toEqual({ ...PERMISSIVE, description: `${"H".repeat(1023)}…` });
   });
 
-  it("refuses input over the node cap", () => {
-    const wide = { description: "Many", anyOf: times(CAP_NODES, () => ({ type: "object" })) };
+  it("refuses input over the node cap while under the byte cap", () => {
+    const wide = { description: "Many", anyOf: times(CAP_NODES + 2, () => ({})) };
+    expect(JSON.stringify(wide).length).toBeLessThan(CAP_BYTES / 4);
     expect(normalizeClaudeInputSchema(wide)).toEqual({ ...PERMISSIVE, description: "Many" });
+  });
+
+  // One flatten of T fits the budget; 64 would not. So this flattens only if
+  // the 64 spellings of the ref share one cache entry.
+  it("flattens a costly $ref target once however the ref is spelled", () => {
+    const T = { anyOf: times(50, (i) => ({ type: "object", title: `M${i}`, properties: stringProps(3, "p"), required: ["p0"] })) };
+    const out = normalizeClaudeInputSchema({ $defs: { T }, anyOf: times(64, (i) => ({ $ref: spell(i) })) });
+    expect(out).toEqual({ type: "object", properties: stringProps(3, "p"), required: ["p0"] });
+  });
+
+  // A memoized target is labelled for every member pointing at it, and its
+  // required entries here are long arrays.
+  it("labels a shared target cheaply, across 50 such tools in one request", () => {
+    const schema = () => ({ $defs: { T: { required: times(8, () => times(500, () => "a")) } }, anyOf: times(550, () => ({ $ref: "#/$defs/T" })) });
+    expect(JSON.stringify(schema()).length).toBeLessThan(CAP_BYTES);
+    const body = {
+      model: MODEL,
+      messages: [{ role: "user", content: "hi" }],
+      tools: times(50, (i) => ({ type: "function", function: { name: `tool_${i}`, description: "d", parameters: schema() } })),
+    };
+    const start = performance.now();
+    const out = translateRequest("openai", "claude", MODEL, body, false, { ...CREDS }, "claude");
+    const ms = performance.now() - start;
+    console.log(`50 tools with a costly shared label: ${ms.toFixed(1)} ms`);
+    expect(out.tools).toHaveLength(50);
+    for (const tool of out.tools) expectPlainObjectSchema(tool.input_schema);
+    expect(ms).toBeLessThan(1500);
   });
 
   // Members point at ever deeper levels of one nested property; their
@@ -467,7 +495,7 @@ function randomSchema(rand) {
   return schema;
 }
 
-// The seeded run gives 705 flattened (31 keeping local refs) and 1295 fallbacks;
+// The seeded run gives 678 flattened (27 keeping local refs) and 1322 fallbacks;
 // the floors leave room for small changes to the rules, not for losing an outcome.
 const FUZZ_FLOOR = { flattened: 550, withRefs: 20, fallbacks: 1000 };
 
@@ -614,6 +642,46 @@ describe("normalizeClaudeInputSchema $refs", () => {
     expect(out.properties.a).toEqual({ const: literal() });
     expect(out.properties.b).toEqual({ enum: [literal()] });
     expect(out.properties.c).toEqual({ type: "object", default: literal() });
+  });
+
+  it("leaves $ref-shaped data under examples and vendor x- keywords alone", () => {
+    const literal = () => ({ $ref: "#/anyOf/0/properties/target" });
+    const out = normalizeClaudeInputSchema({
+      anyOf: [
+        { type: "object", properties: { target: { type: "string" }, a: { type: "object", examples: [literal()] }, b: { type: "string", "x-source": literal() } } },
+        byQuery,
+      ],
+    });
+    expect(out.properties.a).toEqual({ type: "object", examples: [literal()] });
+    expect(out.properties.b).toEqual({ type: "string", "x-source": literal() });
+  });
+
+  it("retargets a ref in a property named after a literal keyword", () => {
+    const out = normalizeClaudeInputSchema({
+      anyOf: [
+        { type: "object", properties: { target: { type: "string" }, default: { $ref: "#/anyOf/0/properties/target" }, examples: { $ref: "#/anyOf/0/properties/target" } } },
+        byQuery,
+      ],
+    });
+    expect(out.properties.default).toEqual({ $ref: "#/properties/target" });
+    expect(out.properties.examples).toEqual({ $ref: "#/properties/target" });
+    expectLocalRefsResolve(out);
+  });
+
+  it.each([
+    ["an empty $ref member (the document itself)", { anyOf: [{ $ref: "" }, byQuery] }],
+    ["an empty $ref in a property", { anyOf: [{ type: "object", properties: { self: { $ref: "" } } }, byQuery] }],
+    ["an empty top-level $ref", { $ref: "", anyOf: [byId, byQuery] }],
+    ["a top-level $ref to the document", { $ref: "#", anyOf: [byId, byQuery] }],
+    ["a ref resolved against $id", { $id: "https://example.com/root.json", anyOf: [{ type: "object", properties: { x: { $ref: "item.json" } } }, byQuery] }],
+    ["a ref into another document", { anyOf: [{ type: "object", properties: { x: { $ref: "other.json#/x" } } }, byQuery] }],
+  ])("falls back on %s", (_, schema) => {
+    expect(isPermissive(normalizeClaudeInputSchema(schema))).toBe(true);
+  });
+
+  it("puts a type into the label as written, $& included", () => {
+    expect(normalizeClaudeInputSchema({ anyOf: [{ type: "$&x" }, byQuery] }))
+      .toEqual({ ...PERMISSIVE, description: "Accepts one of: a $&x; Search by free text." });
   });
 
   it("merges a top-level $ref's sibling properties and required with the target's, the siblings winning", () => {

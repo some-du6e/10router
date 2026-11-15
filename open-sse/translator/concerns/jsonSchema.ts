@@ -33,7 +33,11 @@ const INDEX = /^\d+$/;
 const isPlainObject = (v: unknown): v is Schema => v !== null && typeof v === "object" && !Array.isArray(v);
 const has = (obj: object, key: string) => Object.prototype.hasOwnProperty.call(obj, key);
 const hasCombinator = (schema: Schema) => has(schema, ALL_OF) || has(schema, ANY_OF) || has(schema, ONE_OF);
-const isLocalRef = (node: unknown): node is Schema => isPlainObject(node) && typeof node[REF] === "string" && node[REF].startsWith("#");
+// "" is the document itself, like "#".
+const isLocalPointer = (ref: unknown) => typeof ref === "string" && (ref === "" || ref.startsWith("#"));
+const hasRef = (node: unknown): node is Schema => isPlainObject(node) && typeof node[REF] === "string";
+// Vendor extension keywords ("x-…") hold annotation data, not subschemas.
+const isExtension = (key: string) => key.startsWith("x-");
 
 // Strings come from the client, so only a bounded prefix is ever scanned.
 const head = (text: unknown, max: number) => (typeof text === "string" ? text.slice(0, max) : "");
@@ -80,21 +84,34 @@ function permissiveSchema(description?: string): Schema {
 // ── Descriptions ────────────────────────────────────────────────────────────
 
 const labelText = (text: unknown) => truncate(head(text, 2 * LIMITS.MAX_LABEL).trim(), LIMITS.MAX_LABEL);
-const typeText = (type: unknown) => (Array.isArray(type) ? type.slice(0, LIMITS.MAX_LABEL_KEYS) : [type])
+// The first few entries of a list, each a bounded string (a non-string is named by its typeof).
+const listText = (list: unknown[]) => list.slice(0, LIMITS.MAX_LABEL_KEYS)
   .map((t) => (typeof t === "string" ? labelText(t) : typeof t)).join(", ");
+
+// Labels are cached per member object: a shared $ref target is labelled once.
+const labels = new WeakMap<object, string>();
 
 function label(member: unknown): string {
   if (!isPlainObject(member)) return TEXT.VALUE;
+  let text = labels.get(member);
+  if (text === undefined) {
+    text = computeLabel(member);
+    labels.set(member, text);
+  }
+  return text;
+}
+
+function computeLabel(member: Schema): string {
   for (const text of [member.title, member.description]) {
     if (nonEmpty(text)) return labelText(text);
   }
   if (Array.isArray(member.required) && member.required.length) {
-    const keys = member.required.slice(0, LIMITS.MAX_LABEL_KEYS).map((k: unknown) => labelText(String(k)));
-    return `{${truncate(keys.join(", "), LIMITS.MAX_LABEL)}}`;
+    return `{${truncate(listText(member.required), LIMITS.MAX_LABEL)}}`;
   }
   if (typeof member[REF] === "string") return labelText(member[REF]);
   if (member.type !== undefined && member.type !== OBJECT) {
-    return TEXT.TYPED.replace("{type}", truncate(typeText(member.type), LIMITS.MAX_LABEL));
+    const type = truncate(listText(Array.isArray(member.type) ? member.type : [member.type]), LIMITS.MAX_LABEL);
+    return TEXT.TYPED.replace("{type}", () => type);
   }
   return TEXT.OBJECT;
 }
@@ -107,7 +124,7 @@ function summarize(prefix: string, members: unknown, minDistinct = 1): string {
   if (labels.length < minDistinct || labels.every((l) => GENERIC_LABELS.has(l))) return "";
   const listed = labels.slice(0, LIMITS.MAX_LISTED);
   const more = labels.length - listed.length;
-  if (more > 0) listed.push(TEXT.MORE.replace("{n}", String(more)));
+  if (more > 0) listed.push(TEXT.MORE.replace("{n}", () => String(more)));
   return `${prefix}: ${listed.join("; ")}.`;
 }
 
@@ -175,10 +192,11 @@ function fitsIn(node: Schema, limit: number): boolean {
   return true;
 }
 
-// Every distinct subschema in `node` holding a local $ref, skipping `skip`
-// subtrees. Only schema positions are visited: the values under const, enum,
-// default and examples are data, and a $ref there isn't a reference. `isMap`
-// says `node` itself maps names to subschemas (a definitions block).
+// Every distinct subschema in `node` holding a $ref (local or not), skipping
+// `skip` subtrees. Only schema positions are visited: the values under const,
+// enum, default, examples and vendor "x-" keywords are data, and a $ref there
+// isn't a reference. `isMap` says `node` itself maps names to subschemas (a
+// definitions block).
 function findRefNodes(node: Schema, skip: Set<object> = new Set(), isMap = false): Schema[] {
   const found: Schema[] = [];
   // [value, whether value maps names to subschemas]
@@ -192,10 +210,10 @@ function findRefNodes(node: Schema, skip: Set<object> = new Set(), isMap = false
       for (const child of next) stack.push([child, false]);
       continue;
     }
-    if (!isMap && isLocalRef(next)) found.push(next);
+    if (!isMap && hasRef(next)) found.push(next);
     for (const [key, child] of Object.entries(next)) {
       if (isMap) stack.push([child, false]);
-      else if (!LITERALS.has(key)) stack.push([child, SCHEMA_MAPS.has(key)]);
+      else if (!LITERALS.has(key) && !isExtension(key)) stack.push([child, SCHEMA_MAPS.has(key)]);
     }
   }
   return found;
@@ -203,10 +221,11 @@ function findRefNodes(node: Schema, skip: Set<object> = new Set(), isMap = false
 
 // ── JSON pointers ───────────────────────────────────────────────────────────
 
-// "#/a/b~1c" → ["a", "b/c"]; null when not a local pointer or malformed.
+// "#/a/b~1c" → ["a", "b/c"]; "" and "#" → []; null when not a local pointer
+// (another document, or one named by $id) or malformed.
 function parsePointer(ref: unknown): string[] | null {
-  if (typeof ref !== "string" || !ref.startsWith("#")) return null;
-  if (ref === "#") return [];
+  if (typeof ref !== "string" || !isLocalPointer(ref)) return null;
+  if (ref === "" || ref === "#") return [];
   if (!ref.startsWith("#/")) return null;
   try {
     return ref.slice(2).split("/").map((raw) => decodeURIComponent(raw).replace(/~1/g, "/").replace(/~0/g, "~"));
@@ -408,6 +427,7 @@ function flatten(schema: unknown, ctx: Context, depth: number): Schema | null {
     if (!properties) return null;
     parts.push({ properties, required });
     // Alternatives that flatten to the same thing aren't a choice worth describing.
+    if (!ctx.charge(members.length)) return null;
     notes.push(summarize(TEXT.ONE_OF, members, 2));
   }
 
@@ -432,7 +452,8 @@ function resolveTop(root: Schema, ctx: Context): Schema | null {
   for (let hops = 0; typeof top[REF] === "string"; hops++) {
     const keys = parsePointer(top[REF]);
     const target = keys && resolveKeys(root, keys);
-    if (hops >= LIMITS.MAX_DEPTH || !isPlainObject(target)) return null;
+    // A ref to the document itself ("" or "#") never reaches an object schema.
+    if (hops >= LIMITS.MAX_DEPTH || !isPlainObject(target) || target === root) return null;
     const rest: Schema = {};
     for (const key of Object.keys(top)) if (key !== REF) setOwn(rest, key, top[key]);
     top = mergeOnto(target, rest, ctx);
@@ -461,7 +482,9 @@ function dropUnusedDefs(out: Schema) {
 }
 
 // Every $ref left in the output must mean exactly what it meant in the input.
-// One that still resolves must reach the very same object it did. One that
+// One that isn't local (another document, or a base set by $id) can't be
+// checked, so it fails. One that still resolves must reach the very same
+// object it did. One that
 // doesn't pointed into a combinator member that was merged away; it's
 // retargeted only to a property the merged schema holds as the very same
 // object: "#/anyOf/0/properties/a/..." → "#/properties/a/...", which
