@@ -2,7 +2,10 @@ import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
 import { adjustMaxTokens } from "../formats/maxTokens.js";
 import { safeParseJSON } from "../concerns/json.js";
-import { parseDataUri } from "../concerns/image.js";
+import { parseDataUri, sniffImageMime } from "../concerns/image.js";
+import { imagePartUrl, isHttpUrl, omittedText, scrubInlineBase64 } from "../concerns/toolContent.js";
+import { capClaudeImages } from "../concerns/toolImageCap.js";
+import { CLAUDE_IMAGE_MIMES } from "../../config/mediaConfig.js";
 import { extractTextContent } from "../formats/gemini.js";
 import { ROLE, OPENAI_BLOCK, CLAUDE_BLOCK } from "../schema/index.js";
 import { getCapabilitiesForModel } from "../../providers/capabilities.js";
@@ -36,7 +39,7 @@ export function openaiToClaudeRequest(model: string, body: Body, stream: boolean
   }
 
   // Messages
-  const messages: ClaudeMessage[] = [];
+  let messages: ClaudeMessage[] = [];
   result.messages = messages;
   const systemParts: string[] = [];
 
@@ -100,6 +103,10 @@ export function openaiToClaudeRequest(model: string, body: Body, stream: boolean
     }
 
     flushCurrentMessage();
+
+    // A long computer-use session: keep under the upstream's image limits
+    messages = capClaudeImages(messages);
+    result.messages = messages;
 
     // Add cache_control to last assistant message
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -208,7 +215,7 @@ function getContentBlocksFromMessage(msg: Body, toolNameMap: Map<string, string>
     blocks.push({
       type: CLAUDE_BLOCK.TOOL_RESULT,
       tool_use_id: msg.tool_call_id,
-      content: msg.content
+      content: toolResultContent(msg.content)
     });
   } else if (msg.role === ROLE.USER) {
     if (typeof msg.content === "string") {
@@ -217,42 +224,17 @@ function getContentBlocksFromMessage(msg: Body, toolNameMap: Map<string, string>
       }
     } else if (Array.isArray(msg.content)) {
       for (const part of msg.content) {
-        if (part.type === OPENAI_BLOCK.TEXT && part.text) {
-          blocks.push({ type: CLAUDE_BLOCK.TEXT, text: part.text });
-        } else if (part.type === CLAUDE_BLOCK.TOOL_RESULT) {
+        if (part.type === CLAUDE_BLOCK.TOOL_RESULT) {
           blocks.push({
             type: CLAUDE_BLOCK.TOOL_RESULT,
             tool_use_id: part.tool_use_id,
             content: part.content,
             ...(part.is_error && { is_error: part.is_error })
           });
-        } else if (part.type === OPENAI_BLOCK.IMAGE_URL) {
-          const url = part.image_url.url;
-          const parsed = parseDataUri(url);
-          if (parsed) {
-            blocks.push({
-              type: CLAUDE_BLOCK.IMAGE,
-              source: { type: "base64", media_type: parsed.mimeType, data: parsed.base64 }
-            });
-          } else if (url.startsWith("http://") || url.startsWith("https://")) {
-            blocks.push({
-              type: CLAUDE_BLOCK.IMAGE,
-              source: { type: "url", url }
-            });
-          }
-        } else if (part.type === OPENAI_BLOCK.IMAGE && part.source) {
-          blocks.push({ type: CLAUDE_BLOCK.IMAGE, source: part.source });
-        } else if (part.type === OPENAI_BLOCK.FILE && part.file) {
-          // OpenAI file block -> Claude document (PDF only; Claude rejects other mimes).
-          const fileData = part.file.file_data;
-          const parsed = parseDataUri(fileData);
-          if (parsed && parsed.mimeType === "application/pdf") {
-            blocks.push({
-              type: CLAUDE_BLOCK.DOCUMENT,
-              source: { type: "base64", media_type: parsed.mimeType, data: parsed.base64 }
-            });
-          }
+          continue;
         }
+        const block = openaiPartToClaude(part);
+        if (block) blocks.push(block);
       }
     }
   } else if (msg.role === ROLE.ASSISTANT) {
@@ -293,6 +275,75 @@ function getContentBlocksFromMessage(msg: Body, toolNameMap: Map<string, string>
   }
 
   return blocks;
+}
+
+// A base64 image block typed by its bytes, not the label it came with, or null
+// when they aren't a type Anthropic takes. A wrong type is a 400 on every later
+// turn, since the image stays in the history.
+function base64ImageBlock(data: unknown): ClaudeBlock | null {
+  const mime = sniffImageMime(data);
+  if (!mime || !CLAUDE_IMAGE_MIMES.has(mime)) return null;
+  return { type: CLAUDE_BLOCK.IMAGE, source: { type: "base64", media_type: mime, data } };
+}
+
+// One Chat content part → Claude text, image or document block, or null when
+// Claude has nothing for it. An image Claude can't read becomes a placeholder.
+function openaiPartToClaude(part: Body): ClaudeBlock | null {
+  if (part.type === OPENAI_BLOCK.TEXT) {
+    return part.text ? { type: CLAUDE_BLOCK.TEXT, text: part.text } : null;
+  }
+  if (part.type === OPENAI_BLOCK.IMAGE_URL) {
+    const url = imagePartUrl(part);
+    const parsed = parseDataUri(url);
+    if (parsed) return base64ImageBlock(parsed.base64) ?? { type: CLAUDE_BLOCK.TEXT, text: omittedText(part) };
+    if (isHttpUrl(url)) {
+      return { type: CLAUDE_BLOCK.IMAGE, source: { type: "url", url } };
+    }
+    return { type: CLAUDE_BLOCK.TEXT, text: omittedText(part) };
+  }
+  if (part.type === OPENAI_BLOCK.IMAGE && part.source) {
+    if (part.source.type !== "base64") return { type: CLAUDE_BLOCK.IMAGE, source: part.source };
+    return base64ImageBlock(part.source.data) ?? { type: CLAUDE_BLOCK.TEXT, text: omittedText(part) };
+  }
+  if (part.type === OPENAI_BLOCK.FILE && part.file) {
+    // OpenAI file block -> Claude document (PDF only; Claude rejects other mimes).
+    const parsed = parseDataUri(part.file.file_data);
+    if (parsed && parsed.mimeType === "application/pdf") {
+      return { type: CLAUDE_BLOCK.DOCUMENT, source: { type: "base64", media_type: parsed.mimeType, data: parsed.base64 } };
+    }
+  }
+  return null;
+}
+
+// A tool message's content → tool_result content, which takes text, image and
+// document blocks. Text is scrubbed of image data: URLs, and empty text blocks
+// (which Anthropic rejects) are dropped; otherwise text-only content goes
+// through as it is.
+function toolResultContent(content: unknown): unknown {
+  if (typeof content === "string") return scrubInlineBase64(content);
+  if (!Array.isArray(content)) return content;
+  if (content.every((part) => part?.type === OPENAI_BLOCK.TEXT)) {
+    let changed = false;
+    const kept = content.flatMap((part) => {
+      const text = scrubInlineBase64(part.text);
+      if (!text) { changed = true; return []; }
+      if (text === part.text) return [part];
+      changed = true;
+      return [{ ...part, text }];
+    });
+    if (!changed) return content;
+    return kept.length > 0 ? kept : "";
+  }
+  const blocks: ClaudeBlock[] = [];
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    if (typeof part.text === "string") {
+      if (part.text) blocks.push({ type: CLAUDE_BLOCK.TEXT, text: scrubInlineBase64(part.text) });
+      continue;
+    }
+    blocks.push(openaiPartToClaude(part) ?? { type: CLAUDE_BLOCK.TEXT, text: omittedText(part) });
+  }
+  return blocks.length > 0 ? blocks : "";
 }
 
 // Convert OpenAI tool choice to Claude format.

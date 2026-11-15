@@ -494,7 +494,8 @@ describe("billing estimates", () => {
     expect(estimateBillingInputTokens(text)).toBeGreaterThan(1000);
     const withImage = { messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: `data:image/png;base64,${"A".repeat(400_000)}` } }] }] };
     expect(estimateBillingInputTokens(withImage)).toBeLessThan(2000);
-    expect(estimateInputTokens(withImage)).toBeGreaterThan(100_000);
+    // The context meter counts the image flat too, not as 100K tokens of text.
+    expect(estimateInputTokens(withImage)).toBeLessThan(2000);
     const anthropicImage = { messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "B".repeat(400_000) } }] }] };
     expect(estimateBillingInputTokens(anthropicImage)).toBeLessThan(2000);
   });
