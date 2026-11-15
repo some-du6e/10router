@@ -45,13 +45,20 @@ function parseDrainTimeout(value, warn = console.warn) {
 }
 
 // The path a request target routes to: origin-form (`/v1/x?y`) or absolute-form
-// (`http://host/v1/x?y`), with dot segments (`..`, `%2e%2e`) resolved the way
-// Next resolves them, through the URL parser.
+// (`http://host/v1/x?y`). The URL parser resolves dot segments (`..`, `%2e%2e`),
+// as it does for Next's own request URL; the result is then percent-decoded,
+// since Next's route lookup also tries the decoded path (`/api/v%31` → `/api/v1`).
 function pathOf(url) {
+  let pathname;
   try {
-    return new URL(String(url || "/"), "http://n").pathname;
+    pathname = new URL(String(url || "/"), "http://n").pathname;
   } catch {
     return "/";
+  }
+  try {
+    return decodeURIComponent(pathname);
+  } catch {
+    return pathname;
   }
 }
 

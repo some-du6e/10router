@@ -134,6 +134,7 @@ describe("drain wiring in custom-server.js", () => {
   it("finishes a bridged Codex turn, refuses new connections, requests and upgrades, admits its own loopback POST, then exits", async () => {
     const a = await busySocket("a");
     const b = await busySocket("b");
+    const c = await busySocket("c");
     const ws = await openWs(port);
     ws.send({ type: "response.create", model: "m", input: "hi" });
     await vi.waitFor(() => expect(ws.events.map((e) => e.type)).toContain("response.created"));
@@ -143,18 +144,39 @@ describe("drain wiring in custom-server.js", () => {
     const quiet = vi.spyOn(console, "log").mockImplementation(() => {});
     onTestFinished(() => quiet.mockRestore());
     drain.start("SIGTERM");
-    // The two slow requests, the bridge's loopback POST, and the WebSocket turn's own hold.
-    expect(drain.inflight).toBe(4);
+    // The three slow requests, the bridge's loopback POST, and the WebSocket turn's own hold.
+    expect(drain.inflight).toBe(5);
 
-    // A /v1 request on an open keep-alive socket: 503 from the wrapper, never the app.
-    const sawNew = arrived("GET /v1/new");
-    a.socket.write(`GET /v1/new HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n`);
-    await sawNew;
-    release("a");
-    await a.closed;
-    expect(a.raw).toContain("last;");
-    expect(a.raw.slice(a.raw.indexOf("HTTP/1.1", 1))).toMatch(/^HTTP\/1\.1 503 [\s\S]*server_draining/);
-    expect(hits).not.toContain("GET /v1/new");
+    // A /v1 request on an open keep-alive socket: 503 from the wrapper, never the
+    // app. Once with a forged peer token, once with none.
+    const refused = [
+      [a, "a", "GET /v1/new?forged=1", "x-9r-peer-token: forged\r\n"],
+      [c, "c", "GET /v1/new?token=none", ""],
+    ];
+    for (const [sock, id, line, extra] of refused) {
+      const saw = arrived(line);
+      sock.socket.write(`${line} HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n${extra}\r\n`);
+      await saw;
+      release(id);
+      await sock.closed;
+      expect(sock.raw, line).toContain("last;");
+      expect(sock.raw.slice(sock.raw.indexOf("HTTP/1.1", 1)), line).toMatch(/^HTTP\/1\.1 503 [\s\S]*server_draining/);
+      expect(hits, line).not.toContain(line);
+    }
+
+    // The right token from a peer that isn't loopback is refused too.
+    const remoteRes = { writeHead: vi.fn(), end: vi.fn(), once: vi.fn() };
+    server.emit(
+      "request",
+      {
+        method: "POST", url: "/backend-api/codex/responses?remote=1",
+        headers: { "x-9r-peer-token": process.env.NINEROUTER_PEER_TOKEN },
+        socket: { remoteAddress: "203.0.113.9" },
+      },
+      remoteRes
+    );
+    expect(remoteRes.writeHead.mock.calls[0][0]).toBe(503);
+    expect(hits).not.toContain("POST /backend-api/codex/responses?remote=1");
 
     // This process's own loopback POST (it carries the peer token) is still served.
     const sawOwn = arrived("POST /backend-api/codex/responses?own=1");

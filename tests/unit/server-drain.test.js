@@ -375,19 +375,58 @@ describe("server drain on shutdown", () => {
     release();
   });
 
-  it("leaves a trickled body to the drain's own deadline when requestTimeout is 0, as Node would", async () => {
-    const { drain, exit, logs } = newDrain({ timeoutMs: 600 });
-    const { port } = await startServer(drain, { requestTimeout: 0 });
+  it("leaves a trickled body to the drain's own deadline when requestTimeout is 0, as Node would", () => {
+    vi.useFakeTimers();
+    try {
+      const { drain, exit, logs } = newDrain({ timeoutMs: 400_000 });
+      const socket = { server: { requestTimeout: 0 }, destroy: vi.fn() };
+      const req = { url: "/v1/chat/completions", complete: false, socket };
+      const res = new EventEmitter();
+      expect(drain.track(req, res)).toBe(true);
+      drain.start("SIGTERM");
 
-    const upload = await startUpload(port, 100_000);
-    const trickle = setInterval(() => upload.socket.write(" "), 20);
+      // Past the 300 s a server without the setting would get.
+      vi.advanceTimersByTime(350_000);
+      expect(socket.destroy).not.toHaveBeenCalled();
+      expect(logs.join("\n")).not.toContain("still sending its body");
+      expect(drain.inflight).toBe(1);
+
+      vi.advanceTimersByTime(60_000);
+      expect(exit).toHaveBeenCalledWith(1, { reason: "timeout", open: 1, signal: "SIGTERM" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cuts a request admitted during the drain whose body trickles past requestTimeout", async () => {
+    const { drain, exit, logs } = newDrain({ timeoutMs: 3000 });
+    const { server, port } = await startServer(drain, { requestTimeout: 500 });
+    server.removeAllListeners("request");
+    server.on("request", async (req, res) => {
+      if (!drain.track(req, res, { admit: req.headers["x-admit"] === "1" })) return;
+      if (req.url === "/v1/hold") return; // never answered
+      try {
+        for await (const chunk of req) void chunk;
+      } catch {
+        return;
+      }
+      res.end("posted");
+    });
+
+    const socket = await connect(port);
+    socket.on("error", () => {});
+    const closed = new Promise((resolve) => socket.on("close", resolve));
+    socket.write(`GET /v1/hold HTTP/1.1\r\nHost: x\r\n\r\n`);
     await vi.waitFor(() => expect(drain.inflight).toBe(1));
     drain.start("SIGTERM");
-    await vi.waitFor(() => expect(exit).toHaveBeenCalledTimes(1), { timeout: 2000 });
+    socket.write(`POST /backend-api/codex/responses HTTP/1.1\r\nHost: x\r\nX-Admit: 1\r\nContent-Length: 1000\r\n\r\n{"in`);
+    await vi.waitFor(() => expect(drain.inflight).toBe(2));
+    const trickle = setInterval(() => socket.write(" "), 20);
+    await closed;
     clearInterval(trickle);
-    expect(exit).toHaveBeenCalledWith(1, { reason: "timeout", open: 1, signal: "SIGTERM" });
-    expect(logs.join("\n")).not.toContain("still sending its body");
-    upload.socket.destroy();
+    // Cut by the body guard (500 ms), not left to the drain's 3 s timeout.
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0, { reason: "drained", open: 0, signal: "SIGTERM" }), { timeout: 2000 });
+    expect(logs.join("\n")).toContain("still sending its body past requestTimeout");
   });
 
   it("admits a request let through during the drain, and still counts it", async () => {
@@ -489,7 +528,9 @@ describe("what the drain counts", () => {
       // Absolute-form request targets.
       "http://example.test/v1/chat/completions", "https://example.test:8443/responses?x=1",
       // Dot segments, resolved as Next resolves them.
-      "/./v1/chat/completions", "/api/usage/../../v1/messages", "/dashboard/%2e%2e/v1/models"]) {
+      "/./v1/chat/completions", "/api/usage/../../v1/messages", "/dashboard/%2e%2e/v1/models",
+      // Percent-encoding, which Next's route lookup also decodes.
+      "/api/v%31/chat/completions", "/%76%31/messages"]) {
       expect(isModelTraffic(url), url).toBe(true);
     }
     for (const url of ["/dashboard", "/api/usage/stream", "/api/health", "/api/v10", "/v1x", "/responsesx", "http://example.test/dashboard", "http://example.test",
