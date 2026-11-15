@@ -4,8 +4,7 @@ import { adjustMaxTokens } from "../formats/maxTokens.js";
 import { encodeDataUri } from "../concerns/image.js";
 import { ROLE, OPENAI_BLOCK, CLAUDE_BLOCK } from "../schema/index.js";
 import { collapseTextParts } from "../concerns/message.js";
-import { MEDIA_OMITTED_TEXT, imageAttachedBelowText } from "../../config/mediaConfig.js";
-import { scrubInlineBase64 } from "../concerns/toolContent.js";
+import { claudeToolResultText, scrubInlineBase64 } from "../concerns/toolContent.js";
 import { stripAnthropicBillingHeader } from "../../utils/claudeCloaking.js";
 
 // Convert Claude request to OpenAI format
@@ -205,17 +204,12 @@ function convertClaudeMessage(msg) {
           } else if (Array.isArray(block.content)) {
             // Tool messages are text-only on most OpenAI upstreams: images go in a
             // user turn right after the tool results instead of as base64 text.
-            const texts = [];
-            for (const c of block.content) {
-              if (c?.type === CLAUDE_BLOCK.TEXT) texts.push(c.text);
-              else if (c?.type === CLAUDE_BLOCK.IMAGE) {
-                const image = toImagePart(c);
-                if (image) { resultImages.push(image); texts.push(imageAttachedBelowText(resultImages.length)); }
-              } else if (c?.type === CLAUDE_BLOCK.DOCUMENT) {
-                texts.push(MEDIA_OMITTED_TEXT.FILE);
-              }
-            }
-            resultContent = texts.join("\n") || scrubInlineBase64(JSON.stringify(block.content));
+            resultContent = claudeToolResultText(block.content, (c) => {
+              const image = toImagePart(c);
+              if (!image) return 0;
+              resultImages.push(image);
+              return resultImages.length;
+            }) || scrubInlineBase64(JSON.stringify(block.content));
           } else if (block.content) {
             resultContent = scrubInlineBase64(JSON.stringify(block.content));
           }

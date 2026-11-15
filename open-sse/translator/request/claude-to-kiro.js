@@ -31,9 +31,9 @@ import {
 } from "../../config/kiroConstants.js";
 import { DEFAULT_IMAGE_MIME } from "../schema/index.js";
 import { ROLE, CLAUDE_BLOCK } from "../schema/index.js";
-import { scrubInlineBase64 } from "../concerns/toolContent.js";
+import { claudeToolResultText, scrubInlineBase64 } from "../concerns/toolContent.js";
 import { capClaudeImages } from "../concerns/toolImageCap.js";
-import { IMAGE_WINDOW, MEDIA_OMITTED_TEXT, imageAttachedBelowText, imageUrlText } from "../../config/mediaConfig.js";
+import { IMAGE_WINDOW } from "../../config/mediaConfig.js";
 import {
   canonicalizeKiroConversation,
   normalizeKiroToolSpecs,
@@ -107,19 +107,11 @@ function convertClaudeMessagesToKiro(messages, model) {
             } else if (Array.isArray(block.content)) {
               // A tool's screenshot is attached to this turn as a Kiro image;
               // its base64 never goes in the result text.
-              const texts = [];
-              for (const c of block.content) {
-                if (c?.type === CLAUDE_BLOCK.TEXT) texts.push(c.text);
-                else if (c?.type === CLAUDE_BLOCK.IMAGE && c.source?.type === "base64" && c.source.data) {
-                  pendingImages.push(kiroImage(c.source));
-                  texts.push(imageAttachedBelowText(pendingImages.length));
-                } else if (c?.type === CLAUDE_BLOCK.IMAGE) {
-                  texts.push(c.source?.url ? imageUrlText(c.source.url) : MEDIA_OMITTED_TEXT.IMAGE);
-                } else if (c?.type === CLAUDE_BLOCK.DOCUMENT) {
-                  texts.push(MEDIA_OMITTED_TEXT.FILE);
-                }
-              }
-              resultContent = texts.filter(Boolean).join("\n") || scrubInlineBase64(JSON.stringify(block.content));
+              resultContent = claudeToolResultText(block.content, (c) => {
+                if (c.source?.type !== "base64" || !c.source.data) return 0;
+                pendingImages.push(kiroImage(c.source));
+                return pendingImages.length;
+              }) || scrubInlineBase64(JSON.stringify(block.content));
             } else if (block.content) {
               resultContent = scrubInlineBase64(JSON.stringify(block.content));
             }
