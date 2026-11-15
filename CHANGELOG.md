@@ -6,7 +6,7 @@
   - `anyOf` / `oneOf` of objects become one object with every alternative's properties. Only the keys required by every alternative stay required, and the alternatives are named in the description ("Accepts one of: …") so the model still sees the choice. A property the alternatives define differently keeps each definition as a nested `anyOf`.
   - A top-level `$ref` is followed first, its sibling `properties` and `required` merging with the target's. A `$ref` into one of the merged-away alternatives (zod's `#/anyOf/0/properties/x`) is pointed at the same place in the merged schema (`#/properties/x`), when that's the very same property.
   - A schema with no combinator but no `type` next to its `properties`, or typed `["object", "null"]`, gets `type: "object"`.
-  - Only small schemas are flattened: up to 64 KB and 4,000 objects/arrays. Real tool schemas that start with a combinator are far smaller.
+  - Only small schemas are flattened: up to 32 KB and 2,000 objects/arrays. Real tool schemas that start with a combinator are far smaller.
   - Some schemas get a permissive object schema (`additionalProperties: true`) instead, so the request still goes through. That happens when:
     - an `input_schema` isn't an object at all;
     - the schema is over the size limit (it keeps its description, cut to 1,024 characters);
