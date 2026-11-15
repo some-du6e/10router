@@ -168,11 +168,14 @@ export function capClaudeImages<T>(messages: T, limits: ImageLimits = IMAGE_WIND
 }
 
 /**
- * A Kiro conversation (history plus current message), for after session
- * replay has put the stored first turn back. Images sit in
- * `userInputMessage.images`; those on a turn carrying tool results count as
- * tool images. A dropped image leaves the placeholder in that turn's content.
- * Returns the input itself when nothing is dropped, else copies.
+ * A Kiro conversation (history plus current message), after the translator
+ * built it and session replay put the stored first turn back:
+ * the only image window on Kiro, run once on what is sent. Images sit in
+ * `userInputMessage.images`; one the translator marked with markToolImage
+ * counts as a tool image, whatever else shares its turn. The mark is removed
+ * here. A dropped image leaves the placeholder in its turn's content, and a
+ * turn left with no image has no `images` key. Returns copies; the input is
+ * never modified.
  */
 export function capKiroImages<H, C>(
   conversation: { history: H; currentMessage: C },
@@ -180,39 +183,39 @@ export function capKiroImages<H, C>(
 ): { history: H; currentMessage: C } {
   const turns: Message[] = [...(Array.isArray(conversation.history) ? conversation.history : []), conversation.currentMessage as Message];
   const found: Found[] = [];
-  const copies = new Map<number, Message>();
-  // The turn's userInputMessage, copied once before its first change.
-  const editable = (t: number): Message => {
-    if (!copies.has(t)) {
-      const input = turns[t].userInputMessage;
-      copies.set(t, { ...input, images: [...input.images], content: input.content ?? "" });
-    }
-    return copies.get(t) as Message;
-  };
+  const kept = new Map<number, (Block | null)[]>(); // turn → its images, unmarked; null where dropped
+  const earlier = new Map<number, number>(); // turn → images dropped from it
   turns.forEach((turn, t) => {
-    const input = turn?.userInputMessage;
-    if (!Array.isArray(input?.images)) return;
-    const tool = !!input.userInputMessageContext?.toolResults?.length;
-    input.images.forEach((image: Block, i: number) => {
+    const images = turn?.userInputMessage?.images;
+    if (!Array.isArray(images)) return;
+    kept.set(t, images.map((image: Block) => {
+      if (!image || typeof image !== "object" || !(KIRO_TOOL_IMAGE in image)) return image;
+      const { [KIRO_TOOL_IMAGE]: _mark, ...clean } = image;
+      return clean;
+    }));
+    images.forEach((image: Block, i: number) => {
       const base64 = typeof image?.source?.bytes === "string" ? image.source.bytes : "";
       found.push({
-        entry: entryOf(tool, base64, limits),
+        entry: entryOf(image?.[KIRO_TOOL_IMAGE] === true, base64, limits),
         replace: () => {
-          const copy = editable(t);
-          copy.images[i] = null;
-          copy.content = copy.content ? `${copy.content}\n\n${MEDIA_OMITTED_TEXT.EARLIER_IMAGE}` : MEDIA_OMITTED_TEXT.EARLIER_IMAGE;
+          (kept.get(t) as (Block | null)[])[i] = null;
+          earlier.set(t, (earlier.get(t) ?? 0) + 1);
         },
       });
     });
   });
-  if (found.length === 0 || !applyWindow(found, limits)) return conversation;
+  if (found.length > 0) applyWindow(found, limits);
   const rebuilt = turns.map((turn, t) => {
-    const copy = copies.get(t);
-    if (!copy) return turn;
-    const images = copy.images.filter(Boolean);
-    const input: Message = { ...copy };
+    if (!kept.has(t)) return turn;
+    const input: Message = { ...turn.userInputMessage };
+    const images = (kept.get(t) as (Block | null)[]).filter(Boolean);
     if (images.length > 0) input.images = images;
     else delete input.images;
+    const dropped = earlier.get(t) ?? 0;
+    if (dropped > 0) {
+      const notes = Array(dropped).fill(MEDIA_OMITTED_TEXT.EARLIER_IMAGE).join("\n");
+      input.content = input.content ? `${input.content}\n\n${notes}` : notes;
+    }
     return { ...turn, userInputMessage: input };
   });
   return {
@@ -220,6 +223,14 @@ export function capKiroImages<H, C>(
     currentMessage: rebuilt[rebuilt.length - 1] as C,
   };
 }
+
+// Set on a Kiro image built from a tool result, so capKiroImages can tell tool
+// images from user images in the same turn. capKiroImages removes it.
+export const KIRO_TOOL_IMAGE = "_fromToolResult";
+
+/** The Kiro image, marked as a tool-result image when `tool`. */
+export const markToolImage = <T extends Block>(image: T, tool: boolean): T =>
+  (tool ? { ...image, [KIRO_TOOL_IMAGE]: true } : image);
 
 /**
  * Chat-format messages: image_url (and Claude-shaped image) parts in user and

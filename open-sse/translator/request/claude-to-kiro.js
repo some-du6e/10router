@@ -32,8 +32,7 @@ import {
 import { DEFAULT_IMAGE_MIME } from "../schema/index.js";
 import { ROLE, CLAUDE_BLOCK } from "../schema/index.js";
 import { claudeToolResultText, scrubInlineBase64 } from "../concerns/toolContent.js";
-import { capClaudeImages } from "../concerns/toolImageCap.js";
-import { IMAGE_WINDOW } from "../../config/mediaConfig.js";
+import { markToolImage } from "../concerns/toolImageCap.js";
 import {
   canonicalizeKiroConversation,
   normalizeKiroToolSpecs,
@@ -109,7 +108,8 @@ function convertClaudeMessagesToKiro(messages, model) {
               // its base64 never goes in the result text.
               resultContent = claudeToolResultText(block.content, (c) => {
                 if (c.source?.type !== "base64" || !c.source.data) return 0;
-                pendingImages.push(kiroImage(c.source));
+                // Marked as a tool image for the image window after replay
+                pendingImages.push(markToolImage(kiroImage(c.source), true));
                 return pendingImages.length;
               }) || scrubInlineBase64(JSON.stringify(block.content));
             } else if (block.content) {
@@ -227,8 +227,8 @@ function extractClaudeSystemText(system) {
  * Build a Kiro payload directly from a Claude Messages API request body.
  */
 export function claudeToKiroRequest(model, body, stream, credentials) {
-  // A long computer-use session: keep under the upstream's image limits
-  const messages = Array.isArray(body.messages) ? capClaudeImages(body.messages, IMAGE_WINDOW.KIRO) : [];
+  // The image window runs once, in applyKiroSessionReplay, on what is sent.
+  const messages = Array.isArray(body.messages) ? body.messages : [];
   const tools = Array.isArray(body.tools) ? body.tools : [];
   const maxTokens = body.max_tokens || 32000;
   const temperature = body.temperature;

@@ -90,8 +90,8 @@ export function applyKiroSessionReplay({
         baseHistory.push({ assistantResponseMessage: { content: "..." } });
       }
     }
-    // The stored first turn brings its images back after the translator's
-    // image window ran, so run the window again on the final conversation.
+    // Kiro's one image window, on the conversation as it will be sent,
+    // the replayed first turn included.
     const capped = capKiroImages({
       history: ensureHistoryModelIds(baseHistory, modelId),
       currentMessage: prefixUserMessage(baseCurrent, currentContentPrefix, modelId),
@@ -127,11 +127,12 @@ export function applyKiroSessionReplay({
     });
   }
 
-  return {
+  // Kiro's one image window, on the conversation as it will be sent.
+  const capped = capKiroImages({
     history: ensureHistoryModelIds(baseHistory, modelId),
     currentMessage: nextCurrent,
-    replayed: false,
-  };
+  });
+  return { ...capped, replayed: false };
 }
 
 export function clearKiroSessionReplayStore() {

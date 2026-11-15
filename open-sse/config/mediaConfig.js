@@ -24,7 +24,7 @@ export const MEDIA_OMITTED_TEXT = {
   IMAGE: "[image omitted]",
   FILE: "[file omitted]",
   OTHER: "[content omitted]",
-  // An old tool-result image dropped to keep a long session under the image cap
+  // An old image (tool-result or user) dropped to keep a long session under the image limits
   EARLIER_IMAGE: "[earlier image omitted]",
 };
 
@@ -43,15 +43,18 @@ export const INLINE_BASE64_MIN_CHARS = 64 * 1024;
 export const SCRUBBED_DATA_URI_MIME = /^(image\/|application\/pdf$)/i;
 
 // Long computer-use sessions: per-target image limits for the window in
-// translator/concerns/toolImageCap.js. The images are walked oldest first;
+// translator/concerns/toolImageCap.ts. The images are walked oldest first;
 // when the window passes a `trigger`, its oldest images are replaced until it
-// is back at `target`, tool-result images first. User images go only when the
-// window is over a `hard` limit without tool images to drop (then down to
-// `target` too), or when they are the large images the hi-res rule is about.
-// The newest image is always kept. A new image moves the window only when it
-// crosses a trigger, so the prompt prefix (and its cache) stays the same
-// between trims. Bytes are base64 characters, which is what the request
-// carries. A limit left out doesn't apply to that target.
+// is back at `target`, tool-result images first. User images go when the
+// window is still over a trigger with no tool image left to drop (then down
+// to `target` too), or when they are the large images the hi-res rule is
+// about. The newest image is always kept. A new image moves the window only
+// when it crosses a trigger, so the prompt prefix (and its cache) stays the
+// same between trims. `hard` is the upstream's own limit, kept here as
+// documentation and for the tests that pin trigger and target to it; the
+// window itself only reads `trigger` and `target`. Bytes are base64
+// characters, which is what the request carries. A limit left out doesn't
+// apply to that target.
 const ANTHROPIC_IMAGES = { hard: 100, trigger: 80, target: 50 };
 const ANTHROPIC_BASE64_BYTES = { hard: 30_000_000, trigger: 24_000_000, target: 15_000_000 }; // under ~32 MB, with room for text
 export const IMAGE_WINDOW = {
