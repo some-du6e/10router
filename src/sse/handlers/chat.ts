@@ -676,9 +676,8 @@ async function routeSingleModelChat(
   const connectionFilter = blockedBilling ? (c: { provider: string; authType?: string }) => !blockedBilling.has(connectionBilling(c)) : null;
   // Total time this request has waited for a warm key, across passes.
   let cacheWaitedMs = 0;
-  let cacheWaits = 0;
   let promptTokens: number | null = null;
-  const waitBudget = () => warmWaitBudget({ waitedMs: cacheWaitedMs, waits: cacheWaits, promptTokens: () => (promptTokens ??= estimatePromptTokens(body)) });
+  const waitBudget = () => warmWaitBudget({ waitedMs: cacheWaitedMs, promptTokens: () => (promptTokens ??= estimatePromptTokens(body)) });
 
   // Rate-limit hold: when every account is limited we can keep the client's
   // stream open and wait for the reset instead of returning an error.
@@ -722,7 +721,6 @@ async function routeSingleModelChat(
       const waitMs = Math.max(0, credentials.warmRetryAtMs - Date.now());
       log.info("CACHE", `waiting ${waitMs}ms for a key holding this conversation's prompt cache`);
       cacheWaitedMs += waitMs;
-      cacheWaits++;
       await abortableSleep(waitMs, signal);
       continue;
     }
