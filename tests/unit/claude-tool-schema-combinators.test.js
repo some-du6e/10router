@@ -289,8 +289,8 @@ const isPermissive = (out) => {
   return JSON.stringify(rest) === JSON.stringify(PERMISSIVE) && (description === undefined || typeof description === "string");
 };
 
-const CAP_BYTES = 64 * 1024;
-const CAP_NODES = 4000;
+const CAP_BYTES = 32 * 1024;
+const CAP_NODES = 2000;
 const countNodes = (value) => (value !== null && typeof value === "object"
   ? 1 + Object.values(value).reduce((n, child) => n + countNodes(child), 0) : 0);
 const times = (n, fn) => Array.from({ length: n }, (_, i) => fn(i));
@@ -301,56 +301,56 @@ const spell = (mask) => `#/${[..."$defs"].map((c, i) => (mask & (1 << i) ? `%${c
 // Each shape, built as large as the input caps allow, with the result it must give.
 const AT_CAP = {
   "$ref fan-out": {
-    schema: () => fanOutSchema(330),
+    schema: () => fanOutSchema(165),
     check: (out) => expect(out).toEqual({ type: "object", description: "Fan out", properties: { leaf: { type: "string" } }, required: ["leaf"] }),
   },
   "members pointing at the next member twice": {
     schema: () => ({
       description: "Chain",
-      anyOf: times(700, (k) => ({ type: "object", properties: { a: { $ref: `#/anyOf/${k + 1}` }, b: { $ref: `#/anyOf/${k + 1}` } } })),
+      anyOf: times(340, (k) => ({ type: "object", properties: { a: { $ref: `#/anyOf/${k + 1}` }, b: { $ref: `#/anyOf/${k + 1}` } } })),
     }),
     check: (out) => expect(out).toEqual({ ...PERMISSIVE, description: "Chain" }),
   },
   "a long pointer": {
-    schema: () => ({ anyOf: [{ type: "object", title: "X", properties: { x: { type: "string" }, y: { $ref: `#/${"anyOf/0/".repeat(7000)}properties/x` } } }, byQuery] }),
+    schema: () => ({ anyOf: [{ type: "object", title: "X", properties: { x: { type: "string" }, y: { $ref: `#/${"anyOf/0/".repeat(3500)}properties/x` } } }, byQuery] }),
     check: (out) => expect(out).toEqual({ ...PERMISSIVE, description: "Accepts one of: X; Search by free text." }),
   },
   "a wide anyOf": {
-    schema: () => ({ anyOf: times(550, (i) => ({ type: "object", properties: stringProps(3, `p${i}_`) })) }),
-    check: (out) => expect(Object.keys(out.properties)).toHaveLength(1650),
+    schema: () => ({ anyOf: times(260, (i) => ({ type: "object", properties: stringProps(3, `p${i}_`) })) }),
+    check: (out) => expect(Object.keys(out.properties)).toHaveLength(780),
   },
   "a wide allOf": {
-    schema: () => ({ allOf: times(600, (i) => ({ properties: stringProps(3, `p${i}_`) })) }),
-    check: (out) => expect(Object.keys(out.properties)).toHaveLength(1800),
+    schema: () => ({ allOf: times(300, (i) => ({ properties: stringProps(3, `p${i}_`) })) }),
+    check: (out) => expect(Object.keys(out.properties)).toHaveLength(900),
   },
   "wide required lists": {
-    schema: () => ({ anyOf: times(30, () => ({ type: "object", required: times(220, (j) => `k${j}`) })) }),
-    check: (out) => expect(out.required).toHaveLength(220),
+    schema: () => ({ anyOf: times(20, () => ({ type: "object", required: times(200, (j) => `k${j}`) })) }),
+    check: (out) => expect(out.required).toHaveLength(200),
   },
   "a $ref with siblings to a target with many keys": {
     schema: () => ({
-      $defs: { T: { type: "object", ...Object.fromEntries(times(2000, (j) => [`k${j}`, "v"])) } },
-      anyOf: times(1000, () => ({ $ref: "#/$defs/T", title: "m" })),
+      $defs: { T: { type: "object", ...Object.fromEntries(times(800, (j) => [`k${j}`, "v"])) } },
+      anyOf: times(600, () => ({ $ref: "#/$defs/T", title: "m" })),
     }),
     check: (out) => expect(out).toEqual({ ...PERMISSIVE, description: "Accepts one of: m." }),
   },
   "one $ref spelled many ways": {
-    schema: () => ({ $defs: { T: { type: "object", properties: { a: { type: "string" } } } }, anyOf: times(1800, (i) => ({ $ref: spell(i % 64) })) }),
+    schema: () => ({ $defs: { T: { type: "object", properties: { a: { type: "string" } } } }, anyOf: times(900, (i) => ({ $ref: spell(i % 64) })) }),
     check: (out) => expect(out).toEqual({ type: "object", properties: { a: { type: "string" } } }),
   },
   "a huge type array": {
-    schema: () => ({ anyOf: [{ type: times(6000, () => "null") }, byQuery] }),
+    schema: () => ({ anyOf: [{ type: times(3000, () => "null") }, byQuery] }),
     check: (out) => expect(out.description).toBe("Accepts one of: a null, null, null, null, null, null, null, null; Search by free text."),
   },
   "a long description on an allOf target": {
-    schema: () => ({ $defs: { T: { type: "object", description: "x".repeat(40_000), properties: { a: { type: "string" } } } }, allOf: times(800, () => ({ $ref: "#/$defs/T" })) }),
+    schema: () => ({ $defs: { T: { type: "object", description: "x".repeat(20_000), properties: { a: { type: "string" } } } }, allOf: times(400, () => ({ $ref: "#/$defs/T" })) }),
     check: (out) => {
       expect(out.properties).toEqual({ a: { type: "string" } });
       expect(out.description.length).toBeLessThanOrEqual(500);
     },
   },
   "a long description on an anyOf target": {
-    schema: () => ({ $defs: { T: { type: "object", description: "x".repeat(40_000), properties: { a: { type: "string" } } } }, anyOf: times(800, () => ({ $ref: "#/$defs/T" })) }),
+    schema: () => ({ $defs: { T: { type: "object", description: "x".repeat(20_000), properties: { a: { type: "string" } } } }, anyOf: times(400, () => ({ $ref: "#/$defs/T" })) }),
     check: (out) => expect(out).toEqual({ type: "object", properties: { a: { type: "string" } } }),
   },
 };

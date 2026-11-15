@@ -6,11 +6,11 @@ export const CLAUDE_TOOL_SCHEMA_LIMITS = {
   // permissive fallback at once; tool schemas that start with a combinator are
   // far smaller in practice. Bytes are estimated by a walk that stops at the
   // cap; nodes are objects and arrays.
-  MAX_INPUT_BYTES: 64 * 1024,
-  MAX_INPUT_NODES: 4000,
+  MAX_INPUT_BYTES: 32 * 1024,
+  MAX_INPUT_NODES: 2000,
   // Work units for flattening one schema: a member visited, a key copied, a
   // property merged, a required key compared. Past it, the permissive fallback.
-  MAX_STEPS: 20_000,
+  MAX_STEPS: 10_000,
   // Nested combinators and $ref hops, per path.
   MAX_DEPTH: 8,
   // The flattened schema may hold at most this many times the input's nodes
