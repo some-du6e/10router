@@ -25,9 +25,9 @@ import { checkApiKeyLimits, apiKeyLimitDenial, keepAllowedAdapterModels, keyHasB
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
-import { HTTP_STATUS, NON_STREAM_EARLY_HEADERS_MS, STREAM_EARLY_HEADERS_MS, upstreamHeadersBudget } from "open-sse/config/runtimeConfig.js";
+import { HTTP_STATUS, NON_STREAM_EARLY_HEADERS_MS, STREAM_EARLY_HEADERS_MS } from "open-sse/config/runtimeConfig.js";
 import { isRequestError } from "open-sse/services/accountFallback.js";
-import { checkModelHang, hasModelHang, noteHeadersTimeout, noteModelServed, releaseProbe } from "open-sse/services/modelHang.js";
+import { checkModelHang, noteHeadersTimeout, noteModelServed, noteProbeBudget, releaseProbe } from "open-sse/services/modelHang.js";
 import { HEADERS_TIMEOUT } from "open-sse/config/errorConfig.js";
 import { detectFormatByEndpoint, FORMATS } from "open-sse/translator/formats.js";
 import { detectFormat } from "open-sse/services/provider.js";
@@ -841,6 +841,9 @@ async function routeSingleModelChat(
       // Anthropic-compatible endpoint rejected some beta flags; remember them on the
       // connection so later requests skip the failed first try.
       onBetasRejected: (droppedBetas: string[]) => saveDroppedBetas(credentials, provider, droppedBetas),
+      // The executor's own headers budget for this call: a probe's lease and the
+      // Retry-After of requests waiting on it go by it.
+      onHeadersBudget: (budgetMs: number) => noteProbeBudget(provider, model, requestId, budgetMs),
       onRequestSuccess: async () => {
         await clearAccountError(credentials.connectionId, credentials, model);
         // "Consecutive" strikes: a success clears the breaker for this pair.
@@ -967,15 +970,8 @@ async function routeSingleModelChat(
   // Tells this request's header timeouts from other requests' (modelHang.js).
   const requestId = randomUUID();
   // A model hung upstream fails at once, but for one request at a time probing it.
-  // This request's headers budget, which a probe's lease goes by. A custom
-  // endpoint's Timeout setting comes from its node.
-  const headersBudgetMs = async (): Promise<number> => {
-    const timeout = Number((await nodeSettings(provider) as Record<string, any> | null)?.providerSpecificData?.overrides?.timeout);
-    return upstreamHeadersBudget({ stream: body.stream === true, timeoutMs: timeout > 0 ? timeout * 1000 : 0 }).ms;
-  };
   const runAccountLoop = async (): Promise<PassResult> => {
-    const budgetMs = hasModelHang(provider, model) ? await headersBudgetMs() : undefined;
-    const hang = checkModelHang(provider, model, requestId, { budgetMs });
+    const hang = checkModelHang(provider, model, requestId);
     if (hang.blocked) return modelHungResult(provider, model, hang);
     try {
       return await accountPass(hang.avoidKeys);

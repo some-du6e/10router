@@ -10,7 +10,9 @@ on:
       - "tests/vitest.config.js"
       - "tests/unit/headers-timeout-*.test.js"
       - "tests/unit/model-hang.test.js"
+      - "tests/unit/proxy-fetch-headers-timeout.test.js"
       - "tests/unit/endpoint-overrides.test.js"
+      - "src/shared/utils/nodeQuirks.ts"
       - "docs/ARCHITECTURE.md"
       - "tests/unit/base-executor-retry.test.js"
       - "tests/unit/chat-core-failure-detail.test.js"
@@ -43,6 +45,7 @@ jobs:
           unit/headers-timeout-executor.test.js
           unit/headers-timeout-routing.test.js
           unit/model-hang.test.js
+          unit/proxy-fetch-headers-timeout.test.js
           unit/endpoint-overrides.test.js
           unit/base-executor-retry.test.js
           unit/chat-core-failure-detail.test.js
@@ -56,6 +59,7 @@ jobs:
           open-sse/handlers/chatCore.js
           open-sse/utils/headersTimeout.js
           open-sse/services/modelHang.js
+          open-sse/utils/proxyFetch.js
           open-sse/services/accountFallback.js
           open-sse/config/runtimeConfig.js
           open-sse/config/errorConfig.js
@@ -63,6 +67,7 @@ jobs:
           tests/unit/headers-timeout-executor.test.js
           tests/unit/headers-timeout-routing.test.js
           tests/unit/model-hang.test.js
+          tests/unit/proxy-fetch-headers-timeout.test.js
           tests/unit/chat-core-failure-detail.test.js
       # Fails only on errors in chat.ts, so unrelated type errors elsewhere don't block it.
       - name: Type check chat.ts
@@ -75,10 +80,10 @@ jobs:
           if [ "$code" -gt 2 ] || ! [ -x ./node_modules/.bin/tsc ]; then echo "tsc did not run (exit $code)"; exit 1; fi
           if grep -F "src/sse/handlers/chat.ts" tsc.log; then exit 1; fi
 
-  # Before: this branch's tests against the base branch's code. Every source
-  # file under open-sse/ and src/ that this branch changes is checked out from
-  # the base (files it adds stay, unused); the tests stay. Reports how many
-  # fail; it never fails the run itself.
+  # Informational, for the PR's "Before": this branch's tests against the base
+  # branch's code. Every source file under open-sse/ and src/ that this branch
+  # modifies is checked out from the base (files it adds stay, unused); the
+  # tests stay. Reports how many fail; it never fails the run itself.
   before-on-base:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -98,18 +103,21 @@ jobs:
         run: |
           base="origin/${{ github.base_ref || 'master' }}"
           changed=$(git diff --name-only --diff-filter=M "$base"...HEAD -- open-sse src)
+          if [ -z "$changed" ]; then echo "No source files changed from $base; nothing to compare."; exit 0; fi
           echo "$changed"
           git checkout "$base" -- $changed
-      - name: Run this branch's tests on it
+          echo "compare=yes" >> "$GITHUB_ENV"
+      - name: Run this branch's tests on it (informational)
+        if: env.compare == 'yes'
         working-directory: tests
         run: |
           ./node_modules/.bin/vitest run --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/before.json" \
             unit/headers-timeout-executor.test.js unit/headers-timeout-routing.test.js \
-            unit/model-hang.test.js unit/chat-core-failure-detail.test.js || true
+            unit/model-hang.test.js unit/proxy-fetch-headers-timeout.test.js unit/chat-core-failure-detail.test.js || true
           node --input-type=module -e '
             import { readFileSync, appendFileSync } from "node:fs";
             const r = JSON.parse(readFileSync(process.env.RUNNER_TEMP + "/before.json", "utf8"));
-            const lines = [`Before (base code, this branch tests): ${r.numFailedTests} failed, ${r.numPassedTests} passed of ${r.numTotalTests}`];
+            const lines = [`Informational. Before (base code, this branch tests): ${r.numFailedTests} failed, ${r.numPassedTests} passed of ${r.numTotalTests}`];
             for (const f of r.testResults) {
               const rel = f.name.slice(f.name.indexOf("/tests/") + 1);
               if (!f.assertionResults.length && f.status === "failed") lines.push(`  ${rel}: failed to load`);

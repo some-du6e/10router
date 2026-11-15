@@ -646,7 +646,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         const freeAt = c => Math.max(getModelLockUntil(c, model), resetStates.get(c.id).blockedUntil || 0);
         const jitterMs = warmJitterMs();
         const candidates = connections
-          .filter(c => warmIds.has(c.id) && servable(c) && isLimitLocked(c, model) && !resetStates.get(c.id).blockedUntil)
+          .filter(c => warmIds.has(c.id) && !avoidIds.has(c.id) && servable(c) && isLimitLocked(c, model) && !resetStates.get(c.id).blockedUntil)
           .sort((x, y) => getModelLockUntil(x, model) - getModelLockUntil(y, model));
         for (const c of candidates) {
           const lockEnd = getModelLockUntil(c, model);

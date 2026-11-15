@@ -549,9 +549,10 @@ export class QoderExecutor extends BaseExecutor {
         url,
         { method: "POST", headers, body: encodedBodyBuf, signal: headersTimeout.signal },
         proxyOptions,
+        { headersTimeoutMs: timeoutMs },
       );
     } catch (error) {
-      throw headersTimeout.error() || error;
+      throw headersTimeout.error(error) || error;
     } finally {
       headersTimeout.clear();
     }

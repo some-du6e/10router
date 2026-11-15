@@ -148,13 +148,22 @@ export const UPSTREAM_STREAM_HEADERS_TIMEOUT_MS = envMs("UPSTREAM_STREAM_HEADERS
 
 /**
  * How long a chat call waits for the upstream's response headers, and the
- * setting behind it. timeoutMs: the provider's or endpoint's own timeout.
+ * setting behind it. timeoutMs: an endpoint's own Timeout; attempts: how many
+ * attempts of it the endpoint's Retries setting gave (Retries + 1), when set.
  */
-export function upstreamHeadersBudget({ stream = false, timeoutMs = 0 } = {}) {
-  if (timeoutMs > 0) return { ms: allAttemptsMs(timeoutMs), setBy: `${HEADERS_TIMEOUT_ATTEMPTS}x the endpoint's Timeout setting` };
+export function upstreamHeadersBudget({ stream = false, timeoutMs = 0, attempts = HEADERS_TIMEOUT_ATTEMPTS } = {}) {
+  if (timeoutMs > 0) {
+    const setBy = attempts === 1 ? "the endpoint's Timeout setting" : `${attempts}x the endpoint's Timeout setting`;
+    return { ms: Math.min(attempts * timeoutMs, MAX_TIMER_MS), setBy };
+  }
   if (stream) return { ms: UPSTREAM_STREAM_HEADERS_TIMEOUT_MS, setBy: "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS" };
   return { ms: allAttemptsMs(FETCH_CONNECT_TIMEOUT_MS), setBy: `${HEADERS_TIMEOUT_ATTEMPTS}x FETCH_CONNECT_TIMEOUT_MS` };
 }
+
+// undici's own default headersTimeout. A fetch whose budget is at least this
+// long goes through a dispatcher with that timeout off (utils/proxyFetch.js),
+// so the router's timer is the one that ends it.
+export const UNDICI_HEADERS_TIMEOUT_MS = 300 * 1000;
 
 // Gemini native TTS fetch timeout: abort if Google does not return response headers in time.
 export const GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS = envMs("GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS", 45 * 1000);

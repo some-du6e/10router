@@ -17,13 +17,16 @@ process.env.DATA_DIR = tempDir;
 delete global._dbAdapter;
 
 // script: one-off results, in order; stalled: keys whose upstream never sends
-// headers; pending: a result the next call waits on. Anything else succeeds.
-const upstream = vi.hoisted(() => ({ calls: [], script: [], stalled: new Set(), pending: null }));
+// headers; pending: a result the next call waits on; budgetMs: the headers
+// budget the executor reports. Anything else succeeds.
+const upstream = vi.hoisted(() => ({ calls: [], script: [], stalled: new Set(), pending: null, budgetMs: 0 }));
+const sleeps = vi.hoisted(() => []);
 const combos = vi.hoisted(() => new Map());
 vi.mock("open-sse/handlers/chatCore.js", async (importOriginal) => ({
   ...(await importOriginal()),
   handleChatCore: async (args) => {
     upstream.calls.push(`${args.connectionId}:${args.modelInfo.model}`);
+    if (upstream.budgetMs) args.onHeadersBudget?.(upstream.budgetMs);
     const stream = args.body?.stream === true;
     const pending = upstream.pending;
     upstream.pending = null;
@@ -40,6 +43,10 @@ vi.mock("@/sse/services/model.js", () => ({
   getComboModels: async (m) => combos.get(m) ?? null,
   comboLookupName: (name) => name,
 }));
+// Records cache-affinity waits on a warm key, and skips them.
+vi.mock("open-sse/utils/abortableSleep.js", () => ({
+  abortableSleep: async (ms) => { sleeps.push(ms); },
+}));
 vi.mock("@/sse/services/tokenRefresh.js", () => ({
   checkAndRefreshToken: async (_p, c) => c,
   updateProviderCredentials: async () => {},
@@ -49,6 +56,8 @@ const db = await import("@/lib/db/index.js");
 const { handleChat } = await import("@/sse/handlers/chat.js");
 const { markAccountUnavailable } = await import("@/sse/services/auth.js");
 const { TRANSIENT_COOLDOWN_MS } = await import("open-sse/config/errorConfig.js");
+const { CACHE_AFFINITY } = await import("open-sse/config/runtimeConfig.js");
+const CACHE_DEFAULTS = { ...CACHE_AFFINITY };
 
 const MODEL = "big-model";
 const OTHER_MODEL = "big-model-mini";
@@ -95,11 +104,14 @@ beforeEach(() => {
   upstream.script = [];
   upstream.stalled = new Set();
   upstream.pending = null;
+  upstream.budgetMs = 0;
+  sleeps.length = 0;
   combos.clear();
 });
 
 afterEach(async () => {
   vi.useRealTimers();
+  Object.assign(CACHE_AFFINITY, CACHE_DEFAULTS);
   await db.updateSettings({ limitHoldEnabled: false });
 });
 
@@ -114,11 +126,16 @@ async function addKeys(...names) {
   return ids;
 }
 
-function chat(model = `${provider}/${MODEL}`, { stream = true } = {}) {
+// cache: a big system prompt asking for a prompt cache, in one conversation.
+function chat(model = `${provider}/${MODEL}`, { stream = true, cache = false } = {}) {
+  const system = cache
+    ? { role: "system", content: [{ type: "text", text: "You are a coding agent. ".repeat(400), cache_control: { type: "ephemeral" } }] }
+    : null;
+  const conversation = cache ? { metadata: { user_id: "user_abc_account__session_0b3c5d7e-1111-4222-8333-944455556666" } } : {};
   return handleChat(new Request("http://localhost/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, stream, messages: [{ role: "user", content: "fix the bug" }] }),
+    body: JSON.stringify({ model, stream, messages: [...(system ? [system] : []), { role: "user", content: "fix the bug" }], ...conversation }),
   }));
 }
 
@@ -201,6 +218,40 @@ describe("header timeout in the account loop", () => {
     await res.body?.cancel();
     expect(res.status).toBe(504);
     expect(upstream.calls).toEqual([]);
+  });
+
+  it("counts every key tried after a header timeout toward the cap, whatever it failed with", async () => {
+    const { a, b } = await addKeys("a", "b", "c");
+    upstream.script = [noHeaders, serverError];
+
+    expect((await chat()).status).toBe(504);
+    expect(upstream.calls).toEqual(calls(a, b));
+  });
+
+  it("clears the key's header-timeout mark once it serves the model", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const { a } = await addKeys("a");
+    upstream.script = [noHeaders];
+    await chat();
+    expect((await connection(a))[`modelNoHeaders_${MODEL}`]).toBe(true);
+    later(PAST_KEY_LOCK_MS);
+
+    expect((await chat()).status).toBe(200);
+    expect((await connection(a))[`modelNoHeaders_${MODEL}`]).toBeFalsy();
+  });
+
+  it("doesn't wait for a warm key whose stream just got no headers", async () => {
+    Object.assign(CACHE_AFFINITY, { maxWaitMs: 1000, minPromptTokens: 1000 });
+    const { a, c } = await addKeys("a", "b", "c");
+    expect((await chat(undefined, { cache: true })).status).toBe(200);
+    // a stalls on this conversation's next turn, b fails another way; then a gets a short limit lock.
+    upstream.script = [noHeaders, serverError];
+    expect((await chat(undefined, { cache: true })).status).toBe(504);
+    await markAccountUnavailable(a, 429, "rate limit exceeded", provider, MODEL, Date.now() + 500);
+
+    expect((await chat(undefined, { cache: true })).status).toBe(200);
+    expect(sleeps).toEqual([]);
+    expect(upstream.calls.at(-1)).toBe(`${c}:${MODEL}`);
   });
 
   it("forgets earlier header timeouts once the model serves a request", async () => {
@@ -320,6 +371,29 @@ describe("hung model", () => {
     later(PROBE_LEASE_MS);
     expect((await chat()).status).toBe(200);
     expect(upstream.calls).toHaveLength(5);
+
+    answer({ success: true, response: new Response("{}", { status: 200 }) });
+    await probe;
+  });
+
+  it("goes by the probe's own headers budget, as its executor reports it", async () => {
+    const keys = await addKeys("a", "b", "c", "d");
+    await hangModel(keys);
+    later(FIRST_WINDOW_MS + 1000);
+
+    // A custom endpoint whose Timeout gives this call 20 minutes.
+    upstream.budgetMs = 20 * 60 * 1000;
+    let answer;
+    upstream.pending = new Promise((resolve) => { answer = resolve; });
+    const probe = chat();
+    await vi.waitFor(() => expect(upstream.calls).toHaveLength(4));
+
+    const res = await chat();
+    expect(await errorOf(res)).toMatch(/a check is running/);
+    expect(Number(res.headers.get("retry-after"))).toBe(20 * 60);
+    later(PROBE_LEASE_MS + 5 * 60 * 1000);
+    expect((await chat()).status).toBe(504);
+    expect(upstream.calls).toHaveLength(4);
 
     answer({ success: true, response: new Response("{}", { status: 200 }) });
     await probe;

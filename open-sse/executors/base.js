@@ -109,8 +109,12 @@ export class BaseExecutor {
     return { status: response.status, message: bodyText || `HTTP ${response.status}` };
   }
 
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, onHeadersBudget = null }) {
     const fallbackCount = this.getFallbackCount();
+    // How long each URL waits for response headers; the caller learns the
+    // whole call's (a hung model's probe goes by it).
+    const { ms: timeoutMs, setBy } = upstreamHeadersBudget({ stream, timeoutMs: this.config?.timeoutMs, attempts: this.config?.headersTimeoutAttempts });
+    onHeadersBudget?.(timeoutMs * fallbackCount);
     let lastError = null;
     let lastStatus = 0;
     const retryAttemptsByUrl = {};
@@ -145,7 +149,6 @@ export class BaseExecutor {
       if (!retryAttemptsByUrl[urlIndex]) retryAttemptsByUrl[urlIndex] = 0;
 
       // Abort if upstream doesn't return response headers in time
-      const { ms: timeoutMs, setBy } = upstreamHeadersBudget({ stream, timeoutMs: this.config?.timeoutMs });
       const headersTimeout = headersTimer(timeoutMs, signal, { stream, setBy });
 
       try {
@@ -157,7 +160,7 @@ export class BaseExecutor {
           headers,
           body: bodyStr,
           signal: headersTimeout.signal
-        }, proxyOptions);
+        }, proxyOptions, { headersTimeoutMs: timeoutMs });
         headersTimeout.clear();
         const ct = response.headers?.get?.("content-type") || "";
         const cl = response.headers?.get?.("content-length") || "?";
@@ -174,7 +177,7 @@ export class BaseExecutor {
         return { response, url, headers, transformedBody };
       } catch (caught) {
         headersTimeout.clear();
-        const timedOut = headersTimeout.error();
+        const timedOut = headersTimeout.error(caught);
         const error = timedOut || caught;
         // Request logs keep what was (or would have been) sent, not the pre-transform body.
         // Non-enumerable, so logging the error doesn't print the prompt.

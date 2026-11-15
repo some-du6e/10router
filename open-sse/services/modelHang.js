@@ -25,11 +25,6 @@ function hangStatus(hung, now) {
 }
 const blockedBy = (hung, now) => ({ blocked: true, ...hangStatus(hung, now) });
 
-/** Whether the model is hung, so a request's headers budget is worth looking up before checkModelHang. */
-export function hasModelHang(provider, model) {
-  return !!models.get(keyOf(provider, model))?.hung;
-}
-
 /**
  * May this request call the upstream for this model? A hung model blocks every
  * request until its window ends, then lets one through as the probe.
@@ -91,6 +86,12 @@ export function noteHeadersTimeout(provider, model, { requestId, connectionId, s
   entry.requests.clear();
   entry.keys.clear();
   return { hung: true, ...hangStatus(entry.hung, now) };
+}
+
+/** The probe's executor reported its whole headers budget (all base URLs): the lease and Retry-After go by it. */
+export function noteProbeBudget(provider, model, requestId, budgetMs) {
+  const probe = models.get(keyOf(provider, model))?.hung?.probe;
+  if (probe?.id === requestId && budgetMs > 0) probe.budgetMs = budgetMs;
 }
 
 /** The model served a request: it isn't hung, and earlier header timeouts stop counting. */

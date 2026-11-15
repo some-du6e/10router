@@ -41,8 +41,8 @@ async function timed(executor, args) {
   return { ...(await settled), elapsedMs: Date.now() - start };
 }
 
-function endpoint(stream) {
-  const credentials = { apiKey: "placeholder", providerSpecificData: { baseUrl: "https://upstream.test/v1", overrides: { timeout: "5" } } };
+function endpoint(stream, overrides = { timeout: "5" }) {
+  const credentials = { apiKey: "placeholder", providerSpecificData: { baseUrl: "https://upstream.test/v1", overrides } };
   const body = { model: MODEL, messages: [{ role: "user", content: "hi" }], stream };
   return timed(new DefaultExecutor("openai-compatible-chat-acme"), { stream, body, credentials });
 }
@@ -112,6 +112,40 @@ describe("BaseExecutor header timeout", () => {
     expect(isHeadersTimeout(error)).toBe(true);
   });
 
+  it("gives a custom endpoint with Retries set one attempt of Timeout x (Retries + 1)", async () => {
+    fetchMock.mockImplementation(hang);
+    const failFast = await endpoint(true, { timeout: "5", retries: "0" });
+    expect(failFast.elapsedMs).toBe(5000);
+    expect(failFast.error.message).toContain("set by the endpoint's Timeout setting)");
+
+    fetchMock.mockClear();
+    const { elapsedMs } = await endpoint(false, { timeout: "5", retries: "2" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(elapsedMs).toBe(3 * 5000);
+  });
+
+  it("treats undici's own headers timeout as a header timeout, without the 502 retries", async () => {
+    fetchMock.mockRejectedValue(new TypeError("fetch failed", { cause: Object.assign(new Error("Headers Timeout Error"), { code: "UND_ERR_HEADERS_TIMEOUT" }) }));
+    const { error } = await timed(new BaseExecutor("acme", { baseUrl: A }), { stream: true });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(isHeadersTimeout(error)).toBe(true);
+    expect(error.message).toContain("set by the HTTP client's own headers timeout");
+  });
+
+  it("tells the fetch its headers budget, so undici's own timeout can't end it first", async () => {
+    fetchMock.mockResolvedValue(ok());
+    await timed(new BaseExecutor("acme", { baseUrl: A }), { stream: true });
+    expect(fetchMock.mock.calls[0][3]).toEqual({ headersTimeoutMs: BUDGET_MS });
+  });
+
+  it("reports the whole call's headers budget, one budget per base URL", async () => {
+    fetchMock.mockResolvedValue(ok());
+    const onHeadersBudget = vi.fn();
+    await timed(new BaseExecutor("acme", { baseUrls: [A, B, "https://c.upstream.test/v1"] }), { stream: true, onHeadersBudget });
+    expect(onHeadersBudget).toHaveBeenCalledWith(3 * BUDGET_MS);
+  });
+
   it("still retries a connection reset on the same URL with the 502 retry config", async () => {
     const reset = new TypeError("fetch failed", { cause: Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }) });
     fetchMock.mockRejectedValueOnce(reset).mockResolvedValueOnce(ok());
@@ -142,7 +176,8 @@ describe("QoderExecutor header timeout", () => {
     const { error, elapsedMs } = await timed(qoder, { model: "qoder/big-model", stream: true, body, credentials });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(elapsedMs).toBe(qoder.config.timeoutMs || FETCH_CONNECT_TIMEOUT_MS);
+    // qoder's own provider timeout.
+    expect(elapsedMs).toBe(120_000);
     expect(isHeadersTimeout(error)).toBe(true);
     expect(error.stream).toBe(true);
   });

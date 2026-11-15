@@ -34,9 +34,10 @@ const UPSTREAM_DELAY_MS = 40;
 
 let handleChatCore;
 
-function run() {
+function run(extra = {}) {
   const body = { model: "gpt-4o", stream: false, messages: [{ role: "user", content: "Hi" }] };
   return handleChatCore({
+    ...extra,
     body,
     modelInfo: { provider: "openai", model: "gpt-4o" },
     credentials: { apiKey: "k", providerSpecificData: {} },
@@ -183,6 +184,13 @@ describe("chatCore failure request details", () => {
     const result = await run();
     expect(result.status).toBe(504);
     expect(result.headersTimeout).toEqual({ stream: false });
+  });
+
+  it("hands the executor the account loop's headers-budget callback", async () => {
+    const onHeadersBudget = vi.fn();
+    respondAfterDelay(503, { error: { message: "temporarily unavailable" } });
+    await run({ onHeadersBudget });
+    expect(executeMock.mock.calls[0][0].onHeadersBudget).toBe(onHeadersBudget);
   });
 
   it("records timeout when undici reports it only in the error cause", async () => {

@@ -17,17 +17,30 @@ export function isUpstreamHeadersTimeout(error) {
   return error?.name === NAME;
 }
 
+// undici's own headers timeout (its UND_ERR_HEADERS_TIMEOUT), on the error or its cause.
+export function isUndiciHeadersTimeout(error) {
+  return error?.code === "UND_ERR_HEADERS_TIMEOUT" || error?.cause?.code === "UND_ERR_HEADERS_TIMEOUT";
+}
+
 /**
  * Aborts a fetch whose response headers haven't arrived within timeoutMs.
- * `error()` is the UpstreamHeadersTimeoutError when the timer (not the client's
- * signal) ended the fetch, else null.
+ * `error(caught)` is the UpstreamHeadersTimeoutError when the timer (not the
+ * client's signal) ended the fetch, or when undici's own headers timeout did
+ * (`caught`); else null.
  */
 export function headersTimer(timeoutMs, clientSignal, details) {
+  const startedAt = Date.now();
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(new UpstreamHeadersTimeoutError(timeoutMs, details)), timeoutMs);
   return {
     signal: clientSignal ? AbortSignal.any([clientSignal, ctrl.signal]) : ctrl.signal,
     clear: () => clearTimeout(timer),
-    error: () => (ctrl.signal.aborted && !clientSignal?.aborted ? ctrl.signal.reason : null),
+    error: (caught) => {
+      if (ctrl.signal.aborted && !clientSignal?.aborted) return ctrl.signal.reason;
+      if (isUndiciHeadersTimeout(caught)) {
+        return new UpstreamHeadersTimeoutError(Date.now() - startedAt, { ...details, setBy: "the HTTP client's own headers timeout" });
+      }
+      return null;
+    },
   };
 }

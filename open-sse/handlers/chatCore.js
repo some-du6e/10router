@@ -129,7 +129,7 @@ export async function handleChatCore(args) {
   }
 }
 
-async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onBetasRejected, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, sourceFormatOverride, providerThinking, clientSignal = null, drainOnDisconnect = false }, hangUp) {
+async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onBetasRejected, onHeadersBudget, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, sourceFormatOverride, providerThinking, clientSignal = null, drainOnDisconnect = false }, hangUp) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -413,7 +413,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   // 2s sleeps records over 6s). Upstream-error rows report it as ttft.
   let upstreamRespondedAt = 0;
   try {
-    const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onBetasRejected });
+    const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onBetasRejected, onHeadersBudget });
     upstreamRespondedAt = Date.now();
     providerResponse = result.response;
     providerUrl = result.url;
@@ -473,7 +473,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
           try { await onCredentialsRefreshed(newCredentials); } catch (e) { log?.warn?.("TOKEN", `onCredentialsRefreshed failed: ${e.message}`); }
         }
         try {
-          const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions });
+          const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onHeadersBudget });
           if (retryResult.response.ok) {
             providerResponse = retryResult.response;
             providerUrl = retryResult.url;

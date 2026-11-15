@@ -2,7 +2,7 @@
 // counts toward a hang, and how its windows and probes move.
 import { describe, it, expect, beforeEach } from "vitest";
 
-const { checkModelHang, noteHeadersTimeout, noteModelServed, releaseProbe, clearModelHang } = await import("../../open-sse/services/modelHang.js");
+const { checkModelHang, noteHeadersTimeout, noteModelServed, noteProbeBudget, releaseProbe, clearModelHang } = await import("../../open-sse/services/modelHang.js");
 const { HEADERS_TIMEOUT } = await import("../../open-sse/config/errorConfig.js");
 const { UPSTREAM_STREAM_HEADERS_TIMEOUT_MS } = await import("../../open-sse/config/runtimeConfig.js");
 
@@ -90,6 +90,24 @@ describe("a hung model's windows and probes", () => {
     check("p1", END, { budgetMs });
     expect(blocked("p2", END + budgetMs + HEADERS_TIMEOUT.probeLeaseMarginMs - 1)).toBe(true);
     expect(check("p2", END + budgetMs + HEADERS_TIMEOUT.probeLeaseMarginMs).probe).toBe(true);
+  });
+
+  it("tells the rest to come back shortly once the probe has outlived its budget but not its lease", () => {
+    hang();
+    check("p1", END, { budgetMs: 60_000 });
+    const now = END + 90_000;
+    expect(check("r3", now)).toMatchObject({ blocked: true, checking: true, retryAtMs: now + 1000 });
+  });
+
+  it("goes by the budget the probe's executor reports, and only the probe's", () => {
+    hang();
+    check("p1", END);
+    const budgetMs = 20 * 60 * 1000;
+    noteProbeBudget(P, M, "r9", 1);
+    noteProbeBudget(P, M, "p1", budgetMs);
+    expect(check("r3", END + 1).retryAtMs).toBe(END + budgetMs);
+    expect(blocked("r3", END + budgetMs + HEADERS_TIMEOUT.probeLeaseMarginMs - 1)).toBe(true);
+    expect(check("r3", END + budgetMs + HEADERS_TIMEOUT.probeLeaseMarginMs).probe).toBe(true);
   });
 
   it("moves to the next window only on the probe's own timeout", () => {
