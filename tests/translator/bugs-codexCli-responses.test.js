@@ -28,9 +28,7 @@ describe("Codex CLI Responses → OpenAI", () => {
     expect(typeof asst.tool_calls[0].function.arguments).toBe("string");
   });
 
-  // openai-responses.js:75-77 — input_image uses file_id as raw url
-  // KNOWN BUG
-  it.fails("input_image with file_id is not used as a raw url", () => {
+  it("input_image with file_id is not used as a raw url", () => {
     const out = R2O({
       input: [{ type: "message", role: "user", content: [
         { type: "input_image", file_id: "file-abc" },
