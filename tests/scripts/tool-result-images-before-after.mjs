@@ -8,6 +8,7 @@
 // --assert-clean exits 1 when the image's base64 shows up in any text field, or
 // when the image isn't sent as an image.
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -16,10 +17,12 @@ const root = path.resolve(args.find((a) => !a.startsWith("--")) ?? ".");
 const label = args.includes("--label") ? args[args.indexOf("--label") + 1] : root;
 const assertClean = args.includes("--assert-clean");
 
+// The module as it is on disk at <root> (.ts on newer code, .js on older), so
+// an error inside it isn't mistaken for a missing file.
 const load = async (rel) => {
-  for (const ext of [".ts", ".js"]) {
-    try { return await import(pathToFileURL(path.join(root, rel + ext)).href); } catch (e) { if (ext === ".js") throw e; }
-  }
+  const file = [".ts", ".js"].map((ext) => path.join(root, rel + ext)).find((f) => existsSync(f));
+  if (!file) throw new Error(`${rel}.ts/.js not found under ${root}`);
+  return import(pathToFileURL(file).href);
 };
 const { translateRequest } = await load("open-sse/translator/index");
 const { FORMATS } = await load("open-sse/translator/formats");

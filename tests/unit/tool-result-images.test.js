@@ -772,15 +772,65 @@ describe("image window for long sessions", () => {
     for (const i of dropped) expect(entries[i].tool).toBe(true);
   });
 
-  it("over 100 user-only images: the last resort drops them, in one chunk down to the target", () => {
+  it("user-only images over the trigger: dropped in one chunk down to the target", () => {
     const { changes, dropped, entries } = trimTurns(() => userShot(100), 130);
-    expect(changes).toEqual([101]);
-    expect(entries.length - dropped.size).toBe(W.images.target + 29);
+    expect(changes).toEqual([81, 112]);
+    expect(entries.length - dropped.size).toBe(W.images.target + 18);
   });
 
   it("1 MB user screenshots: chunky trims, not one break per turn", () => {
     const { changes } = trimTurns(() => userShot(1_000_000), 90);
-    expect(changes).toEqual([31, 47, 63, 79]); // over 30M hard, back to 15M each time
+    expect(changes).toEqual([25, 35, 45, 55, 65, 75, 85]); // over 24M, back to 15M each time
+  });
+
+  // User images alone between the trigger and the hard limit, then a stream
+  // of tool screenshots: the user images are trimmed once, instead of every
+  // new screenshot evicting the one before it.
+  it("Claude: 4 × 6.5M user images, then 100 screenshots", () => {
+    const { changes } = trimTurns((turn) => (turn <= 4 ? userShot(6_500_000) : shot(1000)), 104);
+    expect(changes).toEqual([4, 83]);
+  });
+
+  it("Gemini: 3 × 5M user images, then 100 screenshots", () => {
+    const { changes } = trimTurns((turn) => (turn <= 3 ? userShot(5_000_000) : shot(1000)), 103, IMAGE_WINDOW.GEMINI);
+    expect(changes).toEqual([3]);
+  });
+
+  it("Claude: 85 small user images, then 100 screenshots", () => {
+    const { changes } = trimTurns((turn) => (turn <= 85 ? userShot(100) : shot(100)), 185);
+    expect(changes).toEqual([81, 112, 138, 164]);
+  });
+
+  it("tool images go before user images in the same trim", () => {
+    const entries = [...Array.from({ length: 10 }, () => shot(100)), ...Array.from({ length: 95 }, () => userShot(100))];
+    expect([...plan(entries.slice(0, 81))].sort((a, b) => a - b)).toEqual([...Array(10).keys()]);
+    const dropped = plan(entries);
+    expect([...dropped].sort((a, b) => a - b)).toEqual([...Array(41).keys()]);
+    expect(entries.length - dropped.size).toBe(64);
+  });
+
+  it("hi-res with a large newest image keeps the newest 20, not old small ones", () => {
+    const entries = [...Array.from({ length: 15 }, () => shot(1000, false)), ...Array.from({ length: 40 }, () => shot(1000, true))];
+    const dropped = plan(entries);
+    const kept = entries.map((_, i) => i).filter((i) => !dropped.has(i));
+    expect(kept).toEqual([...Array(20).keys()].map((i) => i + 35));
+  });
+
+  it("hi-res with a small newest image drops just the large ones, tool images first", () => {
+    const one = [...Array.from({ length: 5 }, () => shot(1000)), shot(1000, true), ...Array.from({ length: 15 }, () => shot(1000))];
+    expect([...plan(one)]).toEqual([5]);
+    const users = Array.from({ length: 3 }, () => userShot(1000, true));
+    const tools = Array.from({ length: 3 }, () => shot(1000, true));
+    const mixed = [...users, ...tools, ...Array.from({ length: 15 }, () => shot(1000))];
+    expect([...plan(mixed)].sort((a, b) => a - b)).toEqual([0, 1, 3, 4, 5]);
+  });
+
+  it("Gemini: the limits are pinned, and 1M screenshots trim at the exact turns", () => {
+    const G = IMAGE_WINDOW.GEMINI.base64Bytes;
+    expect(G.trigger).toBeCloseTo(G.hard * 0.8, -6);
+    expect(G.target).toBe(G.hard * 0.5);
+    const { changes } = trimTurns(() => shot(1_000_000), 60, IMAGE_WINDOW.GEMINI);
+    expect(changes).toEqual([15, 21, 27, 33, 39, 45, 51, 57]);
   });
 
   it("130 hi-res user screenshots: the dropped set changes only at trims", () => {
@@ -837,7 +887,7 @@ describe("image window for long sessions", () => {
     ];
     const out = capClaudeImages(messages);
     const images = JSON.stringify(out).split('"type":"image"').length - 1;
-    expect(images).toBeLessThanOrEqual(100);
+    expect(images).toBe(74); // 31 user images went at the 81st, before any tool image existed
     expect(out[1].content.at(-1).content[0].type).toBe("image"); // the newest is kept
     expect(messages[1].content[0].content[0].type).toBe("image"); // input untouched
   });
@@ -907,7 +957,7 @@ describe("image window for long sessions", () => {
     expect(shots(out).every((b) => b.type === "image")).toBe(true); // all 60 kept
   });
 
-  it("Kiro: a URL image doesn't count and there's no hi-res rule, so 25 screenshots all stay", () => {
+  it("Kiro: no hi-res rule, so 25 Retina screenshots all stay", () => {
     for (const url of [PNG_URL, RETINA_URL]) {
       const kiro = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.KIRO, CLAUDE_MODEL, withUrlUser(session(25, url)), true, {}, null);
       expect(kiroImages(kiro)).toBe(25);
@@ -915,22 +965,42 @@ describe("image window for long sessions", () => {
     }
   });
 
-  it("Kiro, both routes: over 80 screenshots the oldest are dropped", () => {
-    const kiro = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.KIRO, CLAUDE_MODEL, session(85, PNG_URL), true, {}, null);
-    expect(kiroImages(kiro)).toBeLessThanOrEqual(IMAGE_WINDOW.KIRO.images.trigger);
-    expect(JSON.stringify(kiro)).toContain(MEDIA_OMITTED_TEXT.EARLIER_IMAGE);
+  it("Kiro: URL images don't count toward the 80 trigger", () => {
+    const body = session(79, PNG_URL);
+    body.input.unshift({ type: "message", role: "user", content: Array.from({ length: 5 }, (_, i) => ({ type: "input_image", image_url: `https://example.com/ref${i}.png` })) });
+    const kiro = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.KIRO, CLAUDE_MODEL, body, true, {}, null);
+    expect(kiroImages(kiro)).toBe(79);
+    expect(JSON.stringify(kiro)).not.toContain(MEDIA_OMITTED_TEXT.EARLIER_IMAGE);
+  });
 
-    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: PNG_B64 } };
+  const claudeSession = (n, data) => {
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data } };
     const messages = [{ role: "user", content: "go" }];
-    const tools = [{ name: "screenshot", description: "Take a screenshot", input_schema: { type: "object", properties: {} } }];
-    for (let i = 1; i <= 85; i++) {
+    for (let i = 1; i <= n; i++) {
       messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_${i}`, name: "screenshot", input: {} }] });
       messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_${i}`, content: [image] }] });
     }
-    const direct = translateRequest(FORMATS.CLAUDE, FORMATS.KIRO, CLAUDE_MODEL, { model: CLAUDE_MODEL, max_tokens: 1024, tools, messages }, true, {}, null);
-    expect(kiroImages(direct)).toBeLessThanOrEqual(IMAGE_WINDOW.KIRO.images.trigger);
+    const tools = [{ name: "screenshot", description: "Take a screenshot", input_schema: { type: "object", properties: {} } }];
+    return { model: CLAUDE_MODEL, max_tokens: 1024, tools, messages };
+  };
+
+  it("Kiro, both routes: 85 screenshots keep exactly 54", () => {
+    const kiro = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.KIRO, CLAUDE_MODEL, session(85, PNG_URL), true, {}, null);
+    expect(kiroImages(kiro)).toBe(54);
+    expect(JSON.stringify(kiro)).toContain(MEDIA_OMITTED_TEXT.EARLIER_IMAGE);
+
+    const body = claudeSession(85, PNG_B64);
+    const image = body.messages[2].content[0].content[0];
+    const direct = translateRequest(FORMATS.CLAUDE, FORMATS.KIRO, CLAUDE_MODEL, body, true, {}, null);
+    expect(kiroImages(direct)).toBe(54);
     expect(JSON.stringify(direct)).toContain(MEDIA_OMITTED_TEXT.EARLIER_IMAGE);
-    expect(messages[2].content[0].content[0]).toBe(image); // the client's body is left alone
+    expect(body.messages[2].content[0].content[0]).toBe(image); // the client's body is left alone
+  });
+
+  it("direct claude → Kiro: 25 Retina screenshots all stay (Kiro has no hi-res rule)", () => {
+    const direct = translateRequest(FORMATS.CLAUDE, FORMATS.KIRO, CLAUDE_MODEL, claudeSession(25, pngOf(2880, 1800)), true, {}, null);
+    expect(kiroImages(direct)).toBe(25);
+    expect(JSON.stringify(direct)).not.toContain(MEDIA_OMITTED_TEXT.EARLIER_IMAGE);
   });
 
   it("Gemini: no count or hi-res rule, so 25 Retina screenshots all stay", () => {
@@ -940,6 +1010,11 @@ describe("image window for long sessions", () => {
 
   // A few big strings, shared, to keep memory low: 5 × 5M base64 = 25M, over the 24M trigger.
   const BIG_PNG = pngOf(100, 100, 5_000_000);
+  it("Kiro: screenshots over the size trigger are trimmed back to the target", () => {
+    const kiro = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.KIRO, CLAUDE_MODEL, session(5, `data:image/png;base64,${BIG_PNG}`), true, {}, null);
+    expect(kiroImages(kiro)).toBe(3); // 25M over 24M, back to 15M
+  });
+
   it("the adapters count real base64 sizes (Claude and Chat)", () => {
     const image = { type: "image", source: { type: "base64", media_type: "image/png", data: BIG_PNG } };
     const claude = capClaudeImages(Array.from({ length: 5 }, (_, i) => ({ role: "user", content: [{ type: "tool_result", tool_use_id: `t${i}`, content: [image] }] })));
@@ -975,7 +1050,7 @@ describe("image window for long sessions", () => {
 });
 
 describe("JPEG frame header past the first bytes", () => {
-  it("is found after an ICC profile and a Huffman table, within 64 KiB", () => {
+  it("is found ~60 KB in, after an ICC profile and a Huffman table", () => {
     const segment = (marker, length) => {
       const seg = Buffer.alloc(2 + length);
       seg[0] = 0xff;
@@ -987,7 +1062,7 @@ describe("JPEG frame header past the first bytes", () => {
     dht[4] = 0x00; // looks nothing like a frame size, so reading it as SOF gives a wrong answer
     const jpeg = Buffer.concat([
       Buffer.from([0xff, 0xd8]),
-      segment(0xe2, 3000), // APP2 ICC profile
+      segment(0xe2, 60_000), // APP2 ICC profile: the frame header lands ~60 KB in
       dht,
       Buffer.from([0xff, 0xc0, 0, 17, 8, 1800 >> 8, 1800 & 0xff, 2880 >> 8, 2880 & 0xff, 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]),
       Buffer.alloc(64),
@@ -1001,6 +1076,15 @@ describe("scrub threshold, image typing and the text-only consumers", () => {
     const at = (n) => `x data:image/png;base64,${"A".repeat(n)} y`;
     expect(scrubInlineBase64(at(60_000))).toBe(at(60_000));
     expect(scrubInlineBase64(at(70_000))).toBe(`x ${MEDIA_OMITTED_TEXT.IMAGE} y`);
+  });
+
+  it("the scrub catches RFC 2397 parameters and any case", () => {
+    const payload = "A".repeat(70_000);
+    expect(scrubInlineBase64(`x data:image/png;name=a.png;charset=utf-8;base64,${payload} y`)).toBe(`x ${MEDIA_OMITTED_TEXT.IMAGE} y`);
+    expect(scrubInlineBase64(`x DATA:IMAGE/PNG;BASE64,${payload} y`)).toBe(`x ${MEDIA_OMITTED_TEXT.IMAGE} y`);
+    expect(scrubInlineBase64(`x Data:Application/PDF;Base64,${payload} y`)).toBe(`x ${MEDIA_OMITTED_TEXT.FILE} y`);
+    const font = `x data:font/woff2;name=f.woff2;base64,${payload} y`;
+    expect(scrubInlineBase64(font)).toBe(font);
   });
 
   it("a Claude-shaped base64 image in Chat content is typed by its bytes", () => {

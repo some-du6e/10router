@@ -5,6 +5,8 @@ on:
     paths:
       - "open-sse/**"
       - "src/app/api/v1/messages/count_tokens/**"
+      - "src/lib/usageDb.js"
+      - "src/shared/constants/providers.js"
       - "tests/package.json"
       - "tests/vitest.*.js"
       - "tests/scripts/tool-result-images-before-after.mjs"
@@ -105,8 +107,8 @@ jobs:
       - name: Lint
         run: >
           ./node_modules/.bin/eslint
-          open-sse/translator/concerns/toolContent.js
-          open-sse/translator/concerns/toolImageCap.js
+          open-sse/translator/concerns/toolContent.ts
+          open-sse/translator/concerns/toolImageCap.ts
           open-sse/translator/concerns/image.js
           open-sse/translator/request/claude-to-kiro.js
           open-sse/translator/index.ts
@@ -131,7 +133,7 @@ jobs:
           tests/scripts/tool-result-images-before-after.mjs
       # Fails only on errors in the .ts file this change touches, so unrelated
       # type errors elsewhere don't block it.
-      - name: Type check openai-to-claude.ts and translator/index.ts
+      - name: Type check the .ts files this change touches
         run: |
           set +e
           ./node_modules/.bin/tsc --noEmit -p . > tsc.log 2>&1
@@ -139,7 +141,7 @@ jobs:
           set -e
           tail -5 tsc.log
           if [ "$code" -gt 2 ] || ! [ -x ./node_modules/.bin/tsc ]; then echo "tsc did not run (exit $code)"; exit 1; fi
-          if grep -F -e "open-sse/translator/request/openai-to-claude.ts" -e "open-sse/translator/index.ts" tsc.log; then exit 1; fi
+          if grep -F -e "open-sse/translator/request/openai-to-claude.ts" -e "open-sse/translator/index.ts" -e "open-sse/translator/concerns/toolContent.ts" -e "open-sse/translator/concerns/toolImageCap.ts" tsc.log; then exit 1; fi
 
   # The same Responses turn (a tool output holding a screenshot-sized image)
   # translated by the base branch's code and by this branch's. Prints the tool
