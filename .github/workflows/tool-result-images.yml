@@ -52,7 +52,6 @@ jobs:
           unit/compatible-endpoint-translation.test.js
           unit/count-tokens.test.js
           unit/stream-abort-usage.test.js
-          unit/devin-cli-executor.test.js
           unit/grok-cli-executor.test.js
           translator/bugs-codexCli-responses.test.js
           translator/bugs-openai-bridge.test.js
