@@ -15,9 +15,10 @@ import {
 import { stripUnsupportedModalities } from "../../open-sse/translator/concerns/modality.js";
 import { estimateInputTokens, estimateBillingInputTokens } from "../../open-sse/utils/usageTracking.js";
 import { estimateAnthropicInputTokens } from "../../src/app/api/v1/messages/count_tokens/route.js";
-import { capToolResultImages } from "../../open-sse/translator/concerns/toolImageCap.js";
+import { capChatImages, capClaudeImages, planImageWindow } from "../../open-sse/translator/concerns/toolImageCap.js";
+import { imageDimensions } from "../../open-sse/translator/concerns/image.js";
 import { GrokCliExecutor } from "../../open-sse/executors/grok-cli.js";
-import { MEDIA_OMITTED_TEXT, IMAGE_TOKEN_ESTIMATE, TOOL_IMAGE_CAP } from "../../open-sse/config/mediaConfig.js";
+import { MEDIA_OMITTED_TEXT, IMAGE_TOKEN_ESTIMATE, IMAGE_WINDOW } from "../../open-sse/config/mediaConfig.js";
 
 // 1x1 PNG / JPEG placeholders
 const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
@@ -661,13 +662,154 @@ describe("Grok CLI", () => {
   });
 });
 
-describe("image cap for long sessions on a Claude-format target", () => {
-  const { MAX_IMAGES, CHUNK } = TOOL_IMAGE_CAP;
-  const session = (n) => {
+// Real image headers of a given pixel size, padded to `base64Length` base64 characters.
+const padTo = (head, base64Length) => Buffer.concat([head, Buffer.alloc(Math.max(0, Math.floor((base64Length * 3) / 4) - head.length))]).toString("base64");
+const pngOf = (width, height, base64Length = 200) => {
+  const head = Buffer.alloc(33);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]).copy(head, 0);
+  head.write("IHDR", 12, "latin1");
+  head.writeUInt32BE(width, 16);
+  head.writeUInt32BE(height, 20);
+  return padTo(head, base64Length);
+};
+const jpegOf = (width, height, sof = 0xc0) => {
+  const app0 = Buffer.from([0xff, 0xe0, 0, 16, ...Buffer.from("JFIF\0"), 1, 1, 0, 0, 1, 0, 1, 0, 0]);
+  const frame = Buffer.from([0xff, sof, 0, 17, 8, height >> 8, height & 0xff, width >> 8, width & 0xff, 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]);
+  return Buffer.concat([Buffer.from([0xff, 0xd8]), app0, frame, Buffer.alloc(16)]).toString("base64");
+};
+const gifOf = (width, height) => {
+  const head = Buffer.alloc(16);
+  head.write("GIF89a", 0, "latin1");
+  head.writeUInt16LE(width, 6);
+  head.writeUInt16LE(height, 8);
+  return head.toString("base64");
+};
+const webpOf = (chunk, width, height) => {
+  const head = Buffer.alloc(40);
+  head.write("RIFF", 0, "latin1");
+  head.writeUInt32LE(32, 4);
+  head.write("WEBP", 8, "latin1");
+  head.write(chunk, 12, "latin1");
+  if (chunk === "VP8X") {
+    head.writeUIntLE(width - 1, 24, 3);
+    head.writeUIntLE(height - 1, 27, 3);
+  } else if (chunk === "VP8 ") {
+    Buffer.from([0x9d, 0x01, 0x2a]).copy(head, 23);
+    head.writeUInt16LE(width, 26);
+    head.writeUInt16LE(height, 28);
+  } else {
+    head[20] = 0x2f;
+    const w = width - 1;
+    const h = height - 1;
+    head[21] = w & 0xff;
+    head[22] = ((w >> 8) & 0x3f) | ((h & 0x3) << 6);
+    head[23] = (h >> 2) & 0xff;
+    head[24] = (h >> 10) & 0x0f;
+  }
+  return head.toString("base64");
+};
+
+describe("image dimensions from the header", () => {
+  it("reads PNG, JPEG (SOF0 and SOF2), GIF and WebP (VP8, VP8L, VP8X)", () => {
+    expect(imageDimensions(pngOf(2880, 1800))).toEqual({ width: 2880, height: 1800 });
+    expect(imageDimensions(jpegOf(1440, 900))).toEqual({ width: 1440, height: 900 });
+    expect(imageDimensions(jpegOf(3024, 1964, 0xc2))).toEqual({ width: 3024, height: 1964 });
+    expect(imageDimensions(gifOf(320, 200))).toEqual({ width: 320, height: 200 });
+    expect(imageDimensions(webpOf("VP8 ", 1280, 800))).toEqual({ width: 1280, height: 800 });
+    expect(imageDimensions(webpOf("VP8L", 2560, 1600))).toEqual({ width: 2560, height: 1600 });
+    expect(imageDimensions(webpOf("VP8X", 5120, 2880))).toEqual({ width: 5120, height: 2880 });
+  });
+
+  it("returns null when it can't tell", () => {
+    expect(imageDimensions("AAAAAAAAAAAA")).toBeNull();
+    expect(imageDimensions(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16]).toString("base64"))).toBeNull();
+    expect(imageDimensions("")).toBeNull();
+  });
+});
+
+describe("image window for long sessions", () => {
+  const W = IMAGE_WINDOW;
+  const plan = (entries) => planImageWindow(entries);
+  const shot = (bytes, large = false) => ({ tool: true, bytes, large: () => large });
+  const windowBytes = (entries, dropped) => entries.reduce((sum, e, i) => sum + (dropped.has(i) ? 0 : e.bytes), 0);
+
+  it("the real limits sit under the upstream's 100 images and 32 MB", () => {
+    expect(W.HARD_MAX_IMAGES).toBeLessThanOrEqual(100);
+    expect(W.HARD_MAX_BASE64_BYTES).toBeLessThan(32 * 1000 * 1000);
+    expect(W.TRIGGER_IMAGES).toBe(W.HARD_MAX_IMAGES * 0.8);
+    expect(W.TARGET_IMAGES).toBe(W.HARD_MAX_IMAGES * 0.5);
+    expect(W.TRIGGER_BASE64_BYTES).toBeCloseTo(W.HARD_MAX_BASE64_BYTES * 0.8, -6);
+    expect(W.TARGET_BASE64_BYTES).toBeCloseTo(W.HARD_MAX_BASE64_BYTES * 0.5, -6);
+    expect([W.HI_RES_MAX_SIDE, W.HI_RES_TRIGGER_IMAGES, W.HI_RES_TARGET_IMAGES]).toEqual([2000, 20, 16]);
+  });
+
+  it("60 turns of 1M screenshots: the oldest go in chunks, constant between trims", () => {
+    const entries = [];
+    const starts = [];
+    for (let turn = 1; turn <= 60; turn++) {
+      entries.push(shot(1_000_000));
+      const dropped = plan(entries);
+      const start = dropped.size;
+      // always the oldest ones
+      expect([...dropped].sort((a, b) => a - b)).toEqual([...Array(start).keys()]);
+      expect(windowBytes(entries, dropped)).toBeLessThanOrEqual(W.TRIGGER_BASE64_BYTES);
+      starts.push(start);
+    }
+    const changes = starts.flatMap((s, i) => (i > 0 && s !== starts[i - 1] ? [i + 1] : []));
+    expect(changes).toEqual([25, 35, 45, 55]); // trigger at 24 MB, back to 15 MB each time
+    for (let i = 1; i < starts.length; i++) expect(starts[i]).toBeGreaterThanOrEqual(starts[i - 1]);
+  });
+
+  it("mixed sizes: what is dropped only grows, and the window stays under the trigger", () => {
+    const sizes = [200_000, 2_000_000, 600_000, 4_000_000, 50_000];
+    const entries = [];
+    let previous = new Set();
+    let trims = 0;
+    for (let turn = 0; turn < 80; turn++) {
+      entries.push(shot(sizes[turn % sizes.length]));
+      const dropped = plan(entries);
+      for (const i of previous) expect(dropped.has(i)).toBe(true);
+      if (dropped.size !== previous.size) trims++;
+      expect(windowBytes(entries, dropped)).toBeLessThanOrEqual(W.TRIGGER_BASE64_BYTES);
+      previous = dropped;
+    }
+    expect(trims).toBeLessThan(12);
+  });
+
+  it("95 user images and 10 tool images stay within 100", () => {
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: PNG_B64 } };
+    const messages = [
+      { role: "user", content: Array.from({ length: 95 }, () => image) },
+      { role: "user", content: Array.from({ length: 10 }, (_, i) => ({ type: "tool_result", tool_use_id: `t${i}`, content: [image] })) },
+    ];
+    const out = capClaudeImages(messages);
+    const images = JSON.stringify(out).split('"type":"image"').length - 1;
+    expect(images).toBeLessThanOrEqual(100);
+    expect(out[1].content.at(-1).content[0].type).toBe("image"); // the newest is kept
+    expect(messages[1].content[0].content[0].type).toBe("image"); // input untouched
+  });
+
+  it("eight 4M screenshots stay under the hard size", () => {
+    const entries = Array.from({ length: 8 }, () => shot(4_000_000));
+    const dropped = plan(entries);
+    expect(windowBytes(entries, dropped)).toBeLessThanOrEqual(W.HARD_MAX_BASE64_BYTES);
+    expect(dropped.has(7)).toBe(false);
+  });
+
+  it("hi-res: over 20 images with one over 2000 px trims to 16; all small is left alone", () => {
+    const small = Array.from({ length: 30 }, () => shot(1000, false));
+    expect(plan(small).size).toBe(0);
+    const mixed = [...Array.from({ length: 20 }, () => shot(1000, false)), shot(1000, true)];
+    const dropped = plan(mixed);
+    expect(mixed.length - dropped.size).toBe(16);
+    expect(dropped.has(20)).toBe(false);
+  });
+
+  const session = (n, url) => {
     const input = [{ type: "message", role: "user", content: [{ type: "input_text", text: "use the computer" }] }];
     for (let i = 1; i <= n; i++) {
       input.push({ type: "function_call", call_id: `call_${i}`, name: "screenshot", arguments: "{}" });
-      input.push({ type: "function_call_output", call_id: `call_${i}`, output: screenshotOutput(PNG_URL) });
+      input.push({ type: "function_call_output", call_id: `call_${i}`, output: screenshotOutput(url) });
     }
     return { model: CLAUDE_MODEL, input, tools: responsesBody().tools };
   };
@@ -675,40 +817,126 @@ describe("image cap for long sessions on a Claude-format target", () => {
   const shots = (out) => out.messages.flatMap((m) => (Array.isArray(m.content) ? m.content : []))
     .filter((b) => b.type === "tool_result").map((b) => b.content[1]);
 
-  it("100 screenshots: the oldest go in one chunk and the request stays under the cap", () => {
-    const blocks = shots(toClaude(session(100)));
-    expect(blocks).toHaveLength(100);
-    const images = blocks.filter((b) => b.type === "image").length;
-    expect(images).toBeLessThanOrEqual(MAX_IMAGES);
-    expect(images).toBe(100 - CHUNK);
-    expect(blocks.slice(0, CHUNK).every((b) => b.type === "text" && b.text === MEDIA_OMITTED_TEXT.EARLIER_IMAGE)).toBe(true);
-    expect(blocks.slice(CHUNK).every((b) => b.type === "image")).toBe(true);
+  it("Claude target: 25 retina screenshots end with at most 20 images", () => {
+    const blocks = shots(toClaude(session(25, `data:image/png;base64,${pngOf(2880, 1800)}`)));
+    expect(blocks.filter((b) => b.type === "image").length).toBeLessThanOrEqual(20);
+    expect(blocks[0]).toEqual({ type: "text", text: MEDIA_OMITTED_TEXT.EARLIER_IMAGE });
+    expect(blocks.at(-1).type).toBe("image");
   });
 
-  it("the next turn drops the same ones, so the prompt prefix stays the same", () => {
-    const now = toClaude(session(100));
-    const next = toClaude(session(101));
-    expect(shots(next).filter((b) => b.type === "text")).toHaveLength(CHUNK);
+  it("Claude target: 100 small screenshots, the next turn keeps the same prefix", () => {
+    const now = toClaude(session(100, PNG_URL));
+    const next = toClaude(session(101, PNG_URL));
+    const images = shots(now).filter((b) => b.type === "image").length;
+    expect(images).toBeLessThanOrEqual(W.TRIGGER_IMAGES);
+    expect(shots(next).filter((b) => b.type === "text").length).toBe(100 - images);
     // Everything up to the 99th result: the 100th assistant turn holds the cache breakpoint.
     expect(withoutCache(next.messages.slice(0, 199))).toEqual(withoutCache(now.messages.slice(0, 199)));
   });
 
-  it("under the cap nothing changes", () => {
-    expect(shots(toClaude(session(MAX_IMAGES))).every((b) => b.type === "image")).toBe(true);
+  it("Kiro and Gemini get the same window", () => {
+    const body = session(25, `data:image/png;base64,${pngOf(2880, 1800)}`);
+    const kiro = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.KIRO, CLAUDE_MODEL, structuredClone(body), true, {}, null);
+    expect(JSON.stringify(kiro).split('"bytes":').length - 1).toBeLessThanOrEqual(20);
+    expect(JSON.stringify(kiro)).toContain(MEDIA_OMITTED_TEXT.EARLIER_IMAGE);
+    const gemini = translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.GEMINI, "gemini-x", structuredClone(body), true, null, null);
+    expect(gemini.contents.flatMap((c) => c.parts).filter((p) => p.inlineData).length).toBeLessThanOrEqual(20);
   });
 
-  it("never drops user images or the newest tool images, and trims by size too", () => {
-    const image = (n) => ({ type: "image", source: { type: "base64", media_type: "image/png", data: "y".repeat(n) } });
-    const result = (i, n) => ({ type: "tool_result", tool_use_id: `t${i}`, content: [image(n)] });
-    const userImages = [image(400), image(400), image(400)];
-    const messages = [{ role: "user", content: [...userImages] }, { role: "user", content: [1, 2, 3, 4].map((i) => result(i, 400)) }];
-    const original = messages[1].content[0].content;
-    expect(capToolResultImages(messages, { MAX_IMAGES: 4, MAX_BYTES: 1e9, CHUNK: 2, KEEP_RECENT: 1 })).toBe(3);
-    expect(messages[0].content).toEqual(userImages);
-    expect(messages[1].content.map((r) => r.content[0].type)).toEqual(["text", "text", "text", "image"]);
-    expect(original[0].type).toBe("image"); // content arrays are replaced, not edited
+  it("the direct claude → Kiro route gets it too, and the Chat window leaves its input alone", () => {
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: pngOf(2880, 1800) } };
+    const messages = [{ role: "user", content: "go" }];
+    const tools = [{ name: "screenshot", description: "Take a screenshot", input_schema: { type: "object", properties: {} } }];
+    for (let i = 1; i <= 25; i++) {
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_${i}`, name: "screenshot", input: {} }] });
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_${i}`, content: [image] }] });
+    }
+    const kiro = translateRequest(FORMATS.CLAUDE, FORMATS.KIRO, CLAUDE_MODEL, { model: CLAUDE_MODEL, max_tokens: 1024, tools, messages }, true, {}, null);
+    expect(JSON.stringify(kiro).split('"bytes":').length - 1).toBeLessThanOrEqual(20);
 
-    const bySize = [{ role: "user", content: [1, 2, 3, 4, 5].map((i) => result(i, 4000)) }]; // 3000 bytes each
-    expect(capToolResultImages(bySize, { MAX_IMAGES: 100, MAX_BYTES: 10_000, CHUNK: 1, KEEP_RECENT: 0 })).toBe(2);
+    const chat = [{ role: "user", content: "go" }, ...Array.from({ length: 25 }, (_, i) => toolMsg(`call_${i}`, [imagePart(`data:image/png;base64,${pngOf(2880, 1800)}`)]))];
+    const before = JSON.stringify(chat);
+    const capped = capChatImages(chat);
+    expect(capped).not.toBe(chat);
+    expect(JSON.stringify(chat)).toBe(before);
+  });
+});
+
+describe("round 2 coverage", () => {
+  it("the scrub threshold: a 60K image data URL stays, a 70K one goes", () => {
+    const at = (n) => `x data:image/png;base64,${"A".repeat(n)} y`;
+    expect(scrubInlineBase64(at(60_000))).toBe(at(60_000));
+    expect(scrubInlineBase64(at(70_000))).toBe(`x ${MEDIA_OMITTED_TEXT.IMAGE} y`);
+  });
+
+  it("a Claude-shaped base64 image in Chat content is typed by its bytes", () => {
+    const BMP_B64 = Buffer.from([0x42, 0x4d, 0x3a, 0, 0, 0, 0, 0, 0, 0, 0x36, 0, 0, 0]).toString("base64");
+    const out = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, CLAUDE_MODEL, { messages: [{ role: "user", content: [
+      { type: "text", text: "look" },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: JPEG_B64 } },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: BMP_B64 } },
+    ] }] }, true, null, null);
+    expect(withoutCache(out.messages[0].content)).toEqual([
+      { type: "text", text: "look" },
+      { type: "image", source: { type: "base64", media_type: "image/jpeg", data: JPEG_B64 } },
+      { type: "text", text: MEDIA_OMITTED_TEXT.IMAGE },
+    ]);
+  });
+
+  it("GIF and WebP are accepted on the Claude path", () => {
+    for (const [mime, data] of [["image/gif", gifOf(10, 10)], ["image/webp", webpOf("VP8X", 10, 10)]]) {
+      const out = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, CLAUDE_MODEL,
+        chatBody([imagePart(`data:application/octet-stream;base64,${data}`)]), true, null, null);
+      expect(toolResultOf(out).content).toEqual([{ type: "image", source: { type: "base64", media_type: mime, data } }]);
+    }
+  });
+
+  it("toolContentText scrubs a string (the Devin and Grok paths)", () => {
+    expect(toolContentText(`x data:image/png;base64,${BIG_B64} y`)).toBe(`x ${MEDIA_OMITTED_TEXT.IMAGE} y`);
+  });
+
+  it("Grok: string outputs and text-only arrays with a screenshot data URL are scrubbed", () => {
+    const shotUrl = `data:image/png;base64,${BIG_B64}`;
+    const out = new GrokCliExecutor().transformRequest("grok-4.5", {
+      model: "grok-4.5",
+      input: [
+        { type: "message", role: "user", content: "go" },
+        { type: "function_call", call_id: "call_1", name: "screenshot", arguments: "{}" },
+        { type: "function_call_output", call_id: "call_1", output: `saved ${shotUrl}` },
+        { type: "function_call", call_id: "call_2", name: "screenshot", arguments: "{}" },
+        { type: "function_call_output", call_id: "call_2", output: [{ type: "input_text", text: shotUrl }] },
+      ],
+    }, true, { connectionId: "tool-result-images-2" });
+    const outputs = out.input.filter((i) => i.type === "function_call_output").map((i) => i.output);
+    expect(outputs[0]).toBe(`saved ${MEDIA_OMITTED_TEXT.IMAGE}`);
+    expect(outputs[1]).toContain(MEDIA_OMITTED_TEXT.IMAGE);
+    expect(JSON.stringify(out)).not.toContain(BIG_B64);
+  });
+
+  it("the direct claude → Kiro route: documents and URL images never put base64 in the tool text", () => {
+    const PDF_B64 = Buffer.from(`%PDF-1.4 ${"x".repeat(3000)}`).toString("base64");
+    const out = translateRequest(FORMATS.CLAUDE, FORMATS.KIRO, CLAUDE_MODEL, {
+      model: CLAUDE_MODEL,
+      max_tokens: 1024,
+      tools: [{ name: "read", description: "Read", input_schema: { type: "object", properties: {} } }],
+      messages: [
+        { role: "user", content: "go" },
+        { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "read", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: [
+          { type: "document", source: { type: "base64", media_type: "application/pdf", data: PDF_B64 } },
+          { type: "image", source: { type: "url", url: "https://example.com/shot.png" } },
+        ] }] },
+      ],
+    }, true, {}, null);
+    const texts = out.conversationState.currentMessage.userInputMessage.userInputMessageContext.toolResults.map((r) => r.content[0].text);
+    expect(texts).toEqual([`${MEDIA_OMITTED_TEXT.FILE}\n[Image: https://example.com/shot.png]`]);
+    expect(JSON.stringify(out)).not.toContain(PDF_B64);
+  });
+
+  it("Antigravity's Claude envelope keeps a web image as its URL", () => {
+    const out = translateRequest(FORMATS.OPENAI, FORMATS.ANTIGRAVITY, CLAUDE_MODEL,
+      chatBody([{ type: "text", text: "Output:" }, imagePart("https://example.com/shot.png")]), true, {}, null);
+    const response = out.request.contents.flatMap((c) => c.parts).find((p) => p.functionResponse);
+    expect(response.functionResponse.response.result).toBe("Output:\n[Image: https://example.com/shot.png]");
   });
 });

@@ -11,6 +11,12 @@ on:
       - "tests/scripts/tool-result-images-before-after.mjs"
       - "tests/unit/stream-abort-usage.test.js"
       - "tests/translator/bugs-codexCli-responses.test.js"
+      - "tests/translator/bugs-openai-bridge.test.js"
+      - "tests/translator/bugs-toClaude-context.test.js"
+      - "tests/translator/golden-request.test.js"
+      - "tests/translator/__snapshots__/golden-request.test.js.snap"
+      - "tests/unit/devin-cli-executor.test.js"
+      - "tests/unit/multimodal-drop-lock.test.js"
       - ".github/workflows/tool-result-images.yml"
   workflow_dispatch:
 
