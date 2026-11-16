@@ -20,8 +20,12 @@ vi.mock("../../open-sse/utils/requestLogger.js", () => ({
     logConvertedResponse: vi.fn(), logProviderResponse: vi.fn(),
   })),
 }));
-vi.mock("../../open-sse/utils/streamHandler.js", () => ({
-  createStreamController: vi.fn(() => ({ signal: undefined, handleComplete: vi.fn(), handleError: vi.fn() })),
+vi.mock("../../open-sse/utils/streamHandler.js", async (importOriginal) => ({
+  ...(await importOriginal()),
+  createStreamController: vi.fn(() => ({
+    signal: undefined, isConnected: () => true,
+    handleComplete: vi.fn(), handleError: vi.fn(), handleDisconnect: vi.fn(), abort: vi.fn(),
+  })),
 }));
 vi.mock("../../open-sse/translator/concerns/prefetch.js", () => ({
   prefetchRemoteImages: vi.fn(async () => 0),
@@ -35,8 +39,10 @@ vi.mock("@/lib/usageDb.js", () => ({
 
 let handleChatCore;
 
-function run({ model, extraBody = {}, providerThinking } = {}) {
-  const body = { model, stream: false, messages: [{ role: "user", content: "Hi" }], ...extraBody };
+const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+function run({ model, extraBody = {}, providerThinking, stream = false } = {}) {
+  const body = { model, stream, messages: [{ role: "user", content: "Hi" }], ...extraBody };
   return handleChatCore({
     body,
     modelInfo: { provider: "openai", model },
@@ -44,25 +50,31 @@ function run({ model, extraBody = {}, providerThinking } = {}) {
     clientRawRequest: { endpoint: "/v1/chat/completions", body, headers: {} },
     connectionId: "conn-1",
     providerThinking,
-    log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    log,
   });
 }
 
-// The upstream answers with `status`; the row's providerRequest is the body the executor got.
-function respond(status) {
+const JSON_REPLY = { id: "chatcmpl-1", object: "chat.completion", model: "gpt-5-x", choices: [{ index: 0, message: { role: "assistant", content: "Hello" }, finish_reason: "stop" }], usage: { prompt_tokens: 3, completion_tokens: 1 } };
+const SSE_REPLY = [
+  `data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", model: "gpt-5-x", choices: [{ index: 0, delta: { role: "assistant", content: "Hello" }, finish_reason: null }] })}`,
+  `data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", model: "gpt-5-x", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 3, completion_tokens: 1 } })}`,
+  "data: [DONE]",
+  "",
+].join("\n\n");
+
+// The upstream answers with `status` (SSE when `sse`); the row's providerRequest is the body the executor got.
+function respond(status, { sse = false } = {}) {
   executeMock.mockImplementation(async ({ body }) => {
-    const payload = status === 200
-      ? { id: "chatcmpl-1", object: "chat.completion", model: "gpt-5-x", choices: [{ index: 0, message: { role: "assistant", content: "Hello" }, finish_reason: "stop" }], usage: { prompt_tokens: 3, completion_tokens: 1 } }
-      : { error: { message: "bad request" } };
-    return {
-      response: new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } }),
-      url: "https://upstream.example.test", headers: {}, transformedBody: body,
-    };
+    const response = sse
+      ? new Response(SSE_REPLY, { status, headers: { "content-type": "text/event-stream" } })
+      : new Response(JSON.stringify(status === 200 ? JSON_REPLY : { error: { message: "bad request" } }), { status, headers: { "content-type": "application/json" } });
+    return { response, url: "https://upstream.example.test", headers: {}, transformedBody: body };
   });
 }
 
-const savedRow = (status) => saveRequestDetailMock.mock.calls.map((c) => c[0]).find((d) => d.status === status);
-const sentBody = () => executeMock.mock.calls[0][0].body;
+const rows = () => saveRequestDetailMock.mock.calls.map((c) => c[0]);
+const savedRow = (status) => rows().find((d) => d.status === status);
+const sentBody = (call = 0) => executeMock.mock.calls[call][0].body;
 
 describe("request details keep the client's reasoning effort, not the router's", () => {
   beforeAll(async () => {
@@ -100,5 +112,38 @@ describe("request details keep the client's reasoning effort, not the router's",
     const row = savedRow("success");
     expect(row.request.reasoning_effort).toBe("low");
     expect(row.providerRequest.reasoning_effort).toBe(sentBody().reasoning_effort);
+  });
+
+  // The account loop hands each attempt a shallow copy of one client body, so a
+  // nested edit on the first attempt would reach the second.
+  it("keeps the client's output_config for the next attempt after a Claude passthrough strips effort", async () => {
+    respond(400);
+    const clientBody = {
+      model: "claude-x", max_tokens: 1024, stream: false,
+      messages: [{ role: "user", content: "Hi" }],
+      thinking: { type: "adaptive" }, output_config: { effort: "low" },
+    };
+    const attempt = (model) => {
+      const body = { ...clientBody, model };
+      return handleChatCore({
+        body,
+        modelInfo: { provider: "anthropic", model },
+        credentials: { apiKey: "k", providerSpecificData: {} },
+        clientRawRequest: { endpoint: "/v1/messages", body, headers: { "user-agent": "claude-cli/2.0.0" } },
+        connectionId: "conn-1",
+        sourceFormatOverride: "claude",
+        log,
+      });
+    };
+
+    // A haiku model doesn't take effort, so the passthrough drops it from what's sent.
+    await attempt("claude-haiku-4-x");
+    expect(sentBody(0).output_config?.effort).toBeUndefined();
+    expect(clientBody.output_config).toEqual({ effort: "low" });
+
+    await attempt("claude-sonnet-5-x");
+    const second = rows()[1];
+    expect(second.request.output_config).toEqual({ effort: "low" });
+    expect(sentBody(1).output_config).toEqual({ effort: "low" });
   });
 });
