@@ -5,13 +5,18 @@ import { canonicalizeUsage } from "../../utils/usageTracking.js";
 const OPTIONAL_PARAMS = [
   "temperature", "top_p", "top_k",
   "max_tokens", "max_completion_tokens",
-  "thinking", "reasoning", "enable_thinking",
+  "thinking", "reasoning", "enable_thinking", "thinking_budget",
+  "output_config", "reasoning_effort",
   "presence_penalty", "frequency_penalty",
   "seed", "stop", "tools", "tool_choice",
   "response_format", "prediction", "store", "metadata",
   "n", "logprobs", "top_logprobs", "logit_bias",
   "user", "parallel_tool_calls"
 ];
+
+// The router edits these in place on a same-format route, so they're copied to
+// keep the client's values. Everything else (messages, tools) is kept by reference.
+const COPIED_PARAMS = new Set(["thinking", "reasoning", "output_config"]);
 
 export function extractRequestConfig(body, stream) {
   const config = { model: body.model, stream };
@@ -20,7 +25,13 @@ export function extractRequestConfig(body, stream) {
   if (body.instructions !== undefined) config.instructions = body.instructions;
   if (body.previous_response_id !== undefined) config.previous_response_id = body.previous_response_id;
   for (const param of OPTIONAL_PARAMS) {
-    if (body[param] !== undefined) config[param] = body[param];
+    const value = body[param];
+    if (value === undefined) continue;
+    if (COPIED_PARAMS.has(param) && value !== null && typeof value === "object") {
+      try { config[param] = structuredClone(value); } catch { config[param] = value; }
+    } else {
+      config[param] = value;
+    }
   }
   return config;
 }

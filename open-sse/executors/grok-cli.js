@@ -495,14 +495,16 @@ export class GrokCliExecutor extends BaseExecutor {
         body.reasoning.effort = normalizeGrokCliEffort(body.reasoning_effort || modelEffort);
       }
     } else {
+      const reasoning = { ...body.reasoning };
       if (supportsReasoningEffort) {
-        body.reasoning.effort = normalizeGrokCliEffort(
-          body.reasoning.effort || body.reasoning_effort || modelEffort,
+        reasoning.effort = normalizeGrokCliEffort(
+          reasoning.effort || body.reasoning_effort || modelEffort,
         );
       } else {
-        delete body.reasoning.effort;
+        delete reasoning.effort;
       }
-      if (!body.reasoning.summary) body.reasoning.summary = "concise";
+      if (!reasoning.summary) reasoning.summary = "concise";
+      body.reasoning = reasoning;
     }
     delete body.reasoning_effort;
 

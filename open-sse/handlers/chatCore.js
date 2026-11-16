@@ -108,6 +108,20 @@ export function clientReceivesStream({ body, provider, model, sourceFormat, clie
   return !clientDemandsJson(body, clientRawRequest?.headers);
 }
 
+const THINKING_OBJECT_KEYS = ["thinking", "reasoning", "output_config"];
+
+// A shallow copy of body with its own copies of the nested thinking objects.
+function withOwnThinkingObjects(body) {
+  if (!body || typeof body !== "object") return body;
+  const keys = THINKING_OBJECT_KEYS.filter((key) => body[key] !== null && typeof body[key] === "object");
+  if (keys.length === 0) return body;
+  const copy = { ...body };
+  for (const key of keys) {
+    try { copy[key] = structuredClone(body[key]); } catch { copy[key] = { ...body[key] }; }
+  }
+  return copy;
+}
+
 /**
  * One attempt at one account. `clientSignal` aborts when the client hangs up.
  * While the attempt waits on the upstream, that aborts the upstream call (the
@@ -181,6 +195,13 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   const stripList = getModelStrip(alias, model);
   const upstreamModel = getModelUpstreamId(alias, model);
 
+  // Request details record the client's request: take it before the router
+  // adds its own thinking settings below or translation edits the body.
+  const clientRequestConfig = extractRequestConfig(body, undefined);
+  // The account and combo loops reuse the client's body for the next attempt, and
+  // translators and executors edit these objects in place.
+  body = withOwnThinkingObjects(body);
+
   // Inject provider-level thinking config override (only if client hasn't set)
   // on/off → extended type (body.thinking), none/low/medium/high → effort type (body.reasoning_effort)
   if (providerThinking?.mode && providerThinking.mode !== "auto") {
@@ -219,6 +240,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   // A client that sends Accept: application/json (AI SDK) wants JSON.
   if (clientDemandsJson(body, clientRawRequest?.headers) && !providerRequiresStreaming) stream = false;
   if (streamMode === "never") stream = false;
+  const clientRequest = { ...clientRequestConfig, stream };
 
   const reqLogger = await createRequestLogger(sourceFormat, targetFormat, model);
   if (clientRawRequest) reqLogger.logClientRawRequest(clientRawRequest.endpoint, clientRawRequest.body, clientRawRequest.headers);
@@ -431,7 +453,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
       provider, model, connectionId,
       latency: { ttft: 0, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
-      request: extractRequestConfig(body, stream),
+      request: clientRequest,
       // Untagged error: the executor's own last edit, with the headers unknown.
       providerRequest: error?.transformedBody || executor.finalizeBody?.(translatedBody, null, credentials) || translatedBody || null,
       response: { error: error?.message || String(error), status: failStatus, thinking: null },
@@ -503,7 +525,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
       provider, model, connectionId,
       latency: { ttft: upstreamRespondedAt - requestStartTime, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
-      request: extractRequestConfig(body, stream),
+      request: clientRequest,
       providerRequest: finalBody || translatedBody || null,
       response: { error: message, status: statusCode, thinking: null },
       status: "error",
@@ -519,7 +541,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     return createErrorResult(statusCode, errMsg, resetsAtMs);
   }
 
-  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqTag, log, clientSignal };
+  const sharedCtx = { provider, model, body, stream, clientRequest, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqTag, log, clientSignal };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = endPending;
 

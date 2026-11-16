@@ -182,9 +182,12 @@ export function normalizeClaudePassthrough(body, model = "", provider = null) {
   }
 
   // 2. Strip effort param for models that don't support it (keep other output_config fields)
+  // A new object rather than an edit, so the caller's output_config stays as sent.
   if (adaptiveUnsupported && body.output_config?.effort != null) {
-    delete body.output_config.effort;
-    if (Object.keys(body.output_config).length === 0) delete body.output_config;
+    const rest = { ...body.output_config };
+    delete rest.effort;
+    if (Object.keys(rest).length > 0) body.output_config = rest;
+    else delete body.output_config;
   }
 
   // 3. Fold mid-conversation system messages into the neighbouring turn.
