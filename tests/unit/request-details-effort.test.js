@@ -114,6 +114,37 @@ describe("request details keep the client's reasoning effort, not the router's",
     expect(row.providerRequest.reasoning_effort).toBe(sentBody().reasoning_effort);
   });
 
+  it("records the client's effort on a streamed reply", async () => {
+    respond(200, { sse: true });
+    const result = await run({ model: "gpt-5-x(max)", stream: true, extraBody: { reasoning_effort: "low" } });
+    expect(sentBody().reasoning_effort).not.toBe("low");
+    const row = savedRow("success");
+    expect(row.response.type).toBe("streaming");
+    expect(row.request.reasoning_effort).toBe("low");
+    expect(row.request.stream).toBe(true);
+    expect(row.providerRequest.reasoning_effort).toBe(sentBody().reasoning_effort);
+    await result.response?.body?.cancel().catch(() => {});
+  });
+
+  it("records the client's effort when an SSE reply is turned into JSON", async () => {
+    respond(200, { sse: true });
+    await run({ model: "gpt-5-x(max)", extraBody: { reasoning_effort: "low" } });
+    const row = savedRow("success");
+    expect(row.response.content).toBe("Hello");
+    expect(row.request.reasoning_effort).toBe("low");
+    expect(row.providerRequest.reasoning_effort).not.toBe("low");
+  });
+
+  it("records the client's effort when the executor throws", async () => {
+    executeMock.mockRejectedValue(new Error("fetch failed"));
+    await run({ model: "gpt-5-x(max)", extraBody: { reasoning_effort: "low" } });
+    const row = savedRow("error");
+    expect(row.response.status).toBe(502);
+    expect(row.request.reasoning_effort).toBe("low");
+    expect(row.providerRequest.reasoning_effort).toBeTruthy();
+    expect(row.providerRequest.reasoning_effort).not.toBe("low");
+  });
+
   // The account loop hands each attempt a shallow copy of one client body, so a
   // nested edit on the first attempt would reach the second.
   it("keeps the client's output_config for the next attempt after a Claude passthrough strips effort", async () => {
