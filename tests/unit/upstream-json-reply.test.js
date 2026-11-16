@@ -69,7 +69,8 @@ vi.mock("../../open-sse/translator/concerns/prefetch.js", () => ({
   prefetchRemoteImages: vi.fn(async () => 0),
 }));
 
-vi.mock("../../open-sse/handlers/chatCore/requestDetail.js", () => ({
+vi.mock("../../open-sse/handlers/chatCore/requestDetail.js", async (importOriginal) => ({
+  ...(await importOriginal()),
   buildRequestDetail: vi.fn((detail) => detail),
   extractRequestConfig: vi.fn((body, stream) => ({ body, stream })),
 }));
