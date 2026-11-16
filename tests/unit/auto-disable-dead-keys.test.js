@@ -2282,8 +2282,13 @@ describe("a refusal only counts when another key serves that model", () => {
     expect((await load(own.id)).isActive).toBe(false);
   });
 
-  it("trips a key on the same base URL as its peer, ignoring a trailing slash", async () => {
-    const dead = await addKey("a", { providerSpecificData: { baseUrl: "https://dead-keys.test/v1/" } });
+  it.each([
+    ["a trailing slash", "https://dead-keys.test/v1/"],
+    ["the host's case", "https://DEAD-KEYS.test/v1"],
+    ["a default port", "https://dead-keys.test:443/v1"],
+    ["a pasted API path", "https://dead-keys.test/v1/chat/completions"],
+  ])("trips a key on the same base URL as its peer, ignoring %s", async (_label, baseUrl) => {
+    const dead = await addKey("a", { providerSpecificData: { baseUrl } });
     const healthy = await addKey("b");
     await fail(dead.id, { times: 6, models: ["m1"], peers: [healthy], status: 401, text: "Invalid API key" });
     expect((await load(dead.id)).isActive).toBe(false);

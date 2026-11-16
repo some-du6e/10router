@@ -586,6 +586,10 @@ describe("the same request error from two accounts", () => {
     ["a 413", 413, "payload rejected: 12345 bytes"],
     ["schema error with a tool index", 400, "tools.0.input_schema: JSON schema is not valid (draft 2020-12)"],
     ["limit message whose only digits are a model name", 400, "prompt is too long for this request. Model Group=example-model-3-7"],
+    // Two sizes, but a thinking budget is not a context limit.
+    ["thinking-budget error naming two sizes", 400, "thinking.budget_tokens (16000) must be less than max_tokens (8192)"],
+    // Two sizes, but a 413 never agrees exactly.
+    ["413 naming both sizes", 413, "request body too large: 2100000 bytes > 2000000 maximum"],
   ]) {
     it(`keeps walking on keys of other upstreams on the same ${label}`, async () => {
       const keys = await addKeys(5, apart);
@@ -800,6 +804,8 @@ describe("where the walk doesn't stop", () => {
       const res = await chat(undefined, handleChatOne);
       expect(upstream.calls).toEqual(calls(keys.slice(0, 3)));
       expect(res.status).toBe(400);
+      // The log names the threshold the exact path used: 2 upstreams, not STOP_AFTER's 1.
+      expect(warnings).toContain(exactStopLine("key-3"));
     });
   });
 });

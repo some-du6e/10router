@@ -5,6 +5,7 @@ on:
     paths:
       - "open-sse/**"
       - "src/sse/**"
+      - "src/shared/utils/endpointUrl.ts"
       - "src/lib/db/**"
       - "tests/package.json"
       - "tests/vitest.config.js"
