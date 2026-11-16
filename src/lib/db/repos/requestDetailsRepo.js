@@ -441,13 +441,5 @@ const _shutdownHandler = () => {
 // The database adapters close the connection on these signals, and the drain
 // (server-drain.js) runs listeners in the order they were added, awaiting each.
 // Prepending puts the flush ahead of the close whichever registered first.
-function ensureShutdownHandler() {
-  process.off("beforeExit", _shutdownHandler);
-  process.on("beforeExit", _shutdownHandler);
-  for (const signal of ["SIGINT", "SIGTERM"]) {
-    process.off(signal, _shutdownHandler);
-    process.prependListener(signal, _shutdownHandler);
-  }
-}
-
-ensureShutdownHandler();
+process.on("beforeExit", _shutdownHandler);
+for (const signal of ["SIGINT", "SIGTERM"]) process.prependListener(signal, _shutdownHandler);
