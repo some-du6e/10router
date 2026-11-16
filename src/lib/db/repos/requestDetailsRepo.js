@@ -235,9 +235,7 @@ function truncateField(obj, maxSize, fieldJson, key) {
 // A flush already running drains the whole buffer, rows added meanwhile too,
 // so callers wait on it rather than start a second one.
 function flushToDatabase(options) {
-  if (!activeFlush && writeBuffer.length > 0) {
-    activeFlush = writeBufferedRows(options).finally(() => { activeFlush = null; });
-  }
+  if (!activeFlush && writeBuffer.length > 0) activeFlush = writeBufferedRows(options);
   return activeFlush ?? Promise.resolve();
 }
 
@@ -308,6 +306,10 @@ async function writeBufferedRows({ skipFullData = false } = {}) {
     }
   } catch (e) {
     console.error("[requestDetailsRepo] Batch write failed:", e);
+  } finally {
+    // Cleared in the same tick as the last empty-buffer check, so a row saved
+    // after it starts a new flush instead of joining one that's done.
+    activeFlush = null;
   }
 }
 

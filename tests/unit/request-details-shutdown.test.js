@@ -9,7 +9,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 const require = createRequire(import.meta.url);
 const { gateShutdownSignals } = require("../../server-drain.js");
 
-const state = vi.hoisted(() => ({ events: [], closed: false, adapterGate: null }));
+const state = vi.hoisted(() => ({ events: [], closed: false, adapterGate: null, onTransaction: null }));
 
 vi.mock("@/lib/db/driver.js", () => {
   const ensureOpen = () => {
@@ -17,7 +17,14 @@ vi.mock("@/lib/db/driver.js", () => {
   };
   const db = {
     driver: "node:sqlite",
-    transaction(fn) { ensureOpen(); return fn(); },
+    transaction(fn) {
+      ensureOpen();
+      const result = fn();
+      const hook = state.onTransaction;
+      state.onTransaction = null;
+      hook?.();
+      return result;
+    },
     run(sql, params = []) {
       ensureOpen();
       if (sql.startsWith("INSERT")) state.events.push(`insert ${params[0]}`);
@@ -77,6 +84,7 @@ beforeEach(() => {
   state.events.length = 0;
   state.closed = false;
   state.adapterGate = null;
+  state.onTransaction = null;
   consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
   return () => consoleError.mockRestore();
 });
@@ -103,6 +111,20 @@ describe("request details on shutdown", () => {
     await runSignalListeners("SIGTERM");
 
     expect(state.events).toEqual(["insert row-a", "insert row-b", "close"]);
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it("writes a batch saved while the previous flush is finishing, with no further save or signal", async () => {
+    // Runs inside the flush's last transaction; both saves push a tick later,
+    // after that flush has found the buffer empty.
+    state.onTransaction = () => {
+      repo.saveRequestDetail({ id: "late-a", model: "m" });
+      repo.saveRequestDetail({ id: "late-b", model: "m" });
+    };
+    await repo.saveRequestDetail({ id: "row-1", model: "m" });
+    await repo.saveRequestDetail({ id: "row-2", model: "m" });
+
+    await vi.waitFor(() => expect(state.events).toEqual(["insert row-1", "insert row-2", "insert late-a", "insert late-b"]));
     expect(consoleError).not.toHaveBeenCalled();
   });
 
