@@ -3,8 +3,13 @@ const crypto = require("crypto");
 const path = require("path");
 const fs = require("fs");
 const { pathToFileURL } = require("url");
+const { createDrain, installShutdownDrain, parseDrainTimeout } = require("./server-drain.js");
 
 const origCreate = http.createServer.bind(http);
+
+// Graceful drain on SIGTERM/SIGINT (see server-drain.js). It is wired to the
+// process's signals only when this file is the entry point, at the bottom.
+const drain = createDrain({ timeoutMs: parseDrainTimeout(process.env.SHUTDOWN_DRAIN_TIMEOUT_MS) });
 
 // ─── Codex WebSocket transport ────────────────────────────────────────────────
 //
@@ -257,6 +262,10 @@ function bridgeCodexTurn(request, port, headers, peerIp, send, done, { errorFram
 
   const payload = Buffer.from(JSON.stringify(body), "utf8");
   const forwarded = bridgeForwardHeaders(headers, peerIp, payload.length);
+  // Marks the POST as this process's own, so a shutdown drain that began a
+  // moment ago still admits it (see the wrapper below). The wrapper replaces
+  // the header, as it does on every request.
+  forwarded["x-9r-peer-token"] = PEER_TOKEN;
 
   const req = http.request(
     { host: "127.0.0.1", port, path: CODEX_WS_PATH, method: "POST", headers: forwarded },
@@ -348,7 +357,15 @@ function handleCodexUpgrade(req, socket, head, port) {
   // bridge's completion callback treats the destroy below as an abandoned turn
   // rather than one that failed on its own.
   let inflight = null;
+  // Holds a graceful shutdown open from the turn's start until the bridge has
+  // relayed its last event (the loopback POST alone ends a moment earlier).
+  let releaseTurn = null;
+  const endTurn = () => {
+    if (releaseTurn) releaseTurn();
+    releaseTurn = null;
+  };
   const abortInflight = () => {
+    endTurn();
     if (!inflight) return;
     inflight.destroy();
     inflight = null;
@@ -418,19 +435,31 @@ function handleCodexUpgrade(req, socket, head, port) {
         );
       }
 
+      // The server is shutting down: start no new upstream work. The turn
+      // fails; Codex's retry succeeds only once a server is accepting again.
+      if (drain.draining) {
+        send(bridgeLocalErrorFrame(503, "Server is restarting; retry shortly.", "server_error", "server_draining"));
+        return close(1012, "server restarting");
+      }
+
+      releaseTurn = drain.hold();
       inflight = bridgeCodexTurn(request, port, req.headers, peerIp, send, (error, rejectedStatus) => {
         inflight = null;
-        // The client is already gone — its socket handler abandoned this turn.
-        if (closed) return;
-        if (error) {
-          send(bridgeLocalErrorFrame(502, error.message, "server_error"));
-          return close(1011, "bridge error");
+        try {
+          // The client is already gone — its socket handler abandoned this turn.
+          if (closed) return;
+          if (error) {
+            send(bridgeLocalErrorFrame(502, error.message, "server_error"));
+            return close(1011, "bridge error");
+          }
+          // A rejected turn already sent its error frame; close so the client
+          // stops waiting instead of holding a socket that will never stream.
+          if (rejectedStatus) return close(1011, `upstream ${rejectedStatus}`);
+          // Otherwise leave the socket open: Codex opens one connection per turn
+          // and closes it itself, and closing early races its own shutdown.
+        } finally {
+          endTurn();
         }
-        // A rejected turn already sent its error frame; close so the client
-        // stops waiting instead of holding a socket that will never stream.
-        if (rejectedStatus) return close(1011, `upstream ${rejectedStatus}`);
-        // Otherwise leave the socket open: Codex opens one connection per turn
-        // and closes it itself, and closing early races its own shutdown.
       });
     },
     (code) => close(code === 1005 ? 1000 : code, ""),
@@ -508,6 +537,12 @@ http.createServer = (...args) => {
   if (!handler) return origCreate(...args);
   const wrapped = (req, res) => {
     const socketIp = req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : "";
+    // A Codex WebSocket turn's loopback POST from this process, sent just
+    // before a shutdown signal, is still served and counted. One whose TCP
+    // connect hadn't been accepted when server.close() ran is reset instead,
+    // and the turn fails with a 502 frame.
+    const ownBridgeTurn = isLoopbackSocketIp(socketIp) && req.headers["x-9r-peer-token"] === PEER_TOKEN;
+    if (!drain.track(req, res, { admit: ownBridgeTurn })) return;
     const xff = req.headers["x-forwarded-for"];
     const xRealIp = req.headers["x-real-ip"];
     const viaProxy = !!(xff || xRealIp);
@@ -526,6 +561,7 @@ http.createServer = (...args) => {
     return handler(req, res);
   };
   const server = origCreate(...rest, wrapped);
+  drain.addServer(server);
   server.once("listening", () => {
     startBackgroundTokenRefreshFromCustomServer();
   });
@@ -533,6 +569,10 @@ http.createServer = (...args) => {
   // JBR 25 sends h2c upgrades that the HTTP/1.1 server would otherwise close.
   server.emit = function (event, ...eventArgs) {
     const [req, socket, head] = eventArgs;
+    if (event === "upgrade" && drain.draining) {
+      drain.rejectUpgrade(socket);
+      return true;
+    }
     if (event === "upgrade" && String(req.headers.upgrade || "").toLowerCase() === "websocket") {
       const requestPath = String(req.url || "").split("?")[0].replace(/\/+$/, "");
       // Codex appends /v1 to the base URL in some configurations; both spellings
@@ -590,9 +630,11 @@ http.createServer = (...args) => {
   return server;
 };
 
-module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn, MAX_ERROR_BODY } };
+module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn, MAX_ERROR_BODY, drain } };
 
 if (require.main === module) {
+  // Before the app loads: its own signal listeners must not see SIGTERM first.
+  installShutdownDrain(process, drain);
   const standalone = path.join(__dirname, "server.js");
   if (fs.existsSync(standalone)) {
     require(standalone);

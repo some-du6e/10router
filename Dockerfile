@@ -37,6 +37,7 @@ COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/custom-server.js ./custom-server.js
+COPY --from=builder /app/server-drain.js ./server-drain.js
 COPY --from=builder /app/open-sse ./open-sse
 COPY --from=builder /app/THIRD_PARTY_NOTICES.md ./THIRD_PARTY_NOTICES.md
 COPY --from=builder /app/src/lib/upgrades/retireIdeProxy.cjs ./src/lib/upgrades/retireIdeProxy.cjs
