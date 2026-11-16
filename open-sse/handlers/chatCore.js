@@ -181,6 +181,10 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   const stripList = getModelStrip(alias, model);
   const upstreamModel = getModelUpstreamId(alias, model);
 
+  // Request details record the client's request: take it before the router
+  // adds its own thinking settings below or translation edits the body.
+  const clientRequestConfig = extractRequestConfig(body, undefined);
+
   // Inject provider-level thinking config override (only if client hasn't set)
   // on/off → extended type (body.thinking), none/low/medium/high → effort type (body.reasoning_effort)
   if (providerThinking?.mode && providerThinking.mode !== "auto") {
@@ -219,6 +223,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   // A client that sends Accept: application/json (AI SDK) wants JSON.
   if (clientDemandsJson(body, clientRawRequest?.headers) && !providerRequiresStreaming) stream = false;
   if (streamMode === "never") stream = false;
+  const clientRequest = { ...clientRequestConfig, stream };
 
   const reqLogger = await createRequestLogger(sourceFormat, targetFormat, model);
   if (clientRawRequest) reqLogger.logClientRawRequest(clientRawRequest.endpoint, clientRawRequest.body, clientRawRequest.headers);
@@ -431,7 +436,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
       provider, model, connectionId,
       latency: { ttft: 0, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
-      request: extractRequestConfig(body, stream),
+      request: clientRequest,
       // Untagged error: the executor's own last edit, with the headers unknown.
       providerRequest: error?.transformedBody || executor.finalizeBody?.(translatedBody, null, credentials) || translatedBody || null,
       response: { error: error?.message || String(error), status: failStatus, thinking: null },
@@ -503,7 +508,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
       provider, model, connectionId,
       latency: { ttft: upstreamRespondedAt - requestStartTime, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
-      request: extractRequestConfig(body, stream),
+      request: clientRequest,
       providerRequest: finalBody || translatedBody || null,
       response: { error: message, status: statusCode, thinking: null },
       status: "error",
@@ -519,7 +524,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     return createErrorResult(statusCode, errMsg, resetsAtMs);
   }
 
-  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqTag, log, clientSignal };
+  const sharedCtx = { provider, model, body, stream, clientRequest, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqTag, log, clientSignal };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = endPending;
 

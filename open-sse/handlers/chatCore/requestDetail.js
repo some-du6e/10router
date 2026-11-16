@@ -14,6 +14,9 @@ const OPTIONAL_PARAMS = [
   "user", "parallel_tool_calls"
 ];
 
+// The params are deep-copied, so the router editing the body in place later
+// (thinking fields on a same-format route) can't change what was recorded.
+// Messages and input stay shared: they're the big part of a request.
 export function extractRequestConfig(body, stream) {
   const config = { model: body.model, stream };
   if (body.messages !== undefined) config.messages = body.messages;
@@ -21,7 +24,13 @@ export function extractRequestConfig(body, stream) {
   if (body.instructions !== undefined) config.instructions = body.instructions;
   if (body.previous_response_id !== undefined) config.previous_response_id = body.previous_response_id;
   for (const param of OPTIONAL_PARAMS) {
-    if (body[param] !== undefined) config[param] = body[param];
+    const value = body[param];
+    if (value === undefined) continue;
+    if (value === null || typeof value !== "object") {
+      config[param] = value;
+      continue;
+    }
+    try { config[param] = structuredClone(value); } catch { config[param] = value; }
   }
   return config;
 }
