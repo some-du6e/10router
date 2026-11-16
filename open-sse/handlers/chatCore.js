@@ -117,6 +117,20 @@ export function clientReceivesStream({ body, provider, model, sourceFormat, clie
  * request) once the attempt is over: on a failure or a reply that isn't a
  * stream. A stream keeps it until it ends.
  */
+const THINKING_OBJECT_KEYS = ["thinking", "reasoning", "output_config"];
+
+// A shallow copy of body with its own copies of the nested thinking objects.
+function withOwnThinkingObjects(body) {
+  if (!body || typeof body !== "object") return body;
+  const keys = THINKING_OBJECT_KEYS.filter((key) => body[key] !== null && typeof body[key] === "object");
+  if (keys.length === 0) return body;
+  const copy = { ...body };
+  for (const key of keys) {
+    try { copy[key] = structuredClone(body[key]); } catch { copy[key] = { ...body[key] }; }
+  }
+  return copy;
+}
+
 export async function handleChatCore(args) {
   const hangUp = { onAbort: null, streaming: false };
   let result = null;
@@ -184,6 +198,9 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   // Request details record the client's request: take it before the router
   // adds its own thinking settings below or translation edits the body.
   const clientRequestConfig = extractRequestConfig(body, undefined);
+  // The account and combo loops reuse the client's body for the next attempt, and
+  // translators and executors edit these objects in place.
+  body = withOwnThinkingObjects(body);
 
   // Inject provider-level thinking config override (only if client hasn't set)
   // on/off → extended type (body.thinking), none/low/medium/high → effort type (body.reasoning_effort)

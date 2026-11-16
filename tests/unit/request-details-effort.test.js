@@ -145,6 +145,53 @@ describe("request details keep the client's reasoning effort, not the router's",
     expect(row.providerRequest.reasoning_effort).not.toBe("low");
   });
 
+  // Executors normalize thinking in place (Codex sets reasoning.effort and
+  // summary, Grok CLI drops effort). On a passthrough those objects came from
+  // the client body, which the next attempt reuses.
+  it("keeps an executor's in-place thinking edits out of the next attempt", async () => {
+    const sent = [];
+    executeMock.mockImplementation(async ({ body }) => {
+      sent.push(structuredClone({ thinking: body.thinking, output_config: body.output_config, reasoning: body.reasoning }));
+      if (body.thinking) body.thinking.display = "omitted";
+      if (body.output_config) body.output_config.effort = "max";
+      if (body.reasoning) Object.assign(body.reasoning, { effort: "xhigh", summary: "auto" });
+      return {
+        response: new Response(JSON.stringify({ error: { message: "bad request" } }), { status: 400, headers: { "content-type": "application/json" } }),
+        url: "https://upstream.example.test", headers: {}, transformedBody: body,
+      };
+    });
+    const clientBody = {
+      model: "claude-x", max_tokens: 1024, stream: false,
+      messages: [{ role: "user", content: "Hi" }],
+      thinking: { type: "adaptive" }, output_config: { effort: "low" }, reasoning: { effort: "low" },
+    };
+    const attempt = () => {
+      const body = { ...clientBody, model: "claude-sonnet-5-x" };
+      return handleChatCore({
+        body,
+        modelInfo: { provider: "anthropic", model: "claude-sonnet-5-x" },
+        credentials: { apiKey: "k", providerSpecificData: {} },
+        clientRawRequest: { endpoint: "/v1/messages", body, headers: { "user-agent": "claude-cli/2.0.0" } },
+        connectionId: "conn-1",
+        sourceFormatOverride: "claude",
+        log,
+      });
+    };
+
+    await attempt();
+    await attempt();
+    expect(clientBody.thinking).toEqual({ type: "adaptive" });
+    expect(clientBody.output_config).toEqual({ effort: "low" });
+    expect(clientBody.reasoning).toEqual({ effort: "low" });
+    expect(sent[1]).toEqual(sent[0]);
+    expect(sent[1].output_config).toEqual({ effort: "low" });
+    expect(sent[1].thinking).toEqual({ type: "adaptive" });
+    const second = rows()[1];
+    expect(second.request.output_config).toEqual({ effort: "low" });
+    expect(second.request.reasoning).toEqual({ effort: "low" });
+    expect(second.request.thinking).toEqual({ type: "adaptive" });
+  });
+
   // The account loop hands each attempt a shallow copy of one client body, so a
   // nested edit on the first attempt would reach the second.
   it("keeps the client's output_config for the next attempt after a Claude passthrough strips effort", async () => {
