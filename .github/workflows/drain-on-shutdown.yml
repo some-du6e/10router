@@ -11,7 +11,10 @@ on:
       - "scripts/copy-standalone-assets.mjs"
       - "cli/scripts/build-cli.js"
       - "Dockerfile"
+      - "src/lib/db/adapters/**"
+      - "src/lib/db/repos/requestDetailsRepo.js"
       - "tests/unit/server-drain*.test.js"
+      - "tests/unit/request-details-shutdown.test.js"
       - "tests/unit/stream-abort-usage.test.js"
       - "tests/unit/custom-server-h2c.test.js"
       - "tests/unit/custom-server-peer-headers.test.js"
@@ -47,6 +50,7 @@ jobs:
           unit/server-drain.test.js
           unit/server-drain-entry.test.js
           unit/server-drain-wiring.test.js
+          unit/request-details-shutdown.test.js
           unit/standalone-assets.test.js
           unit/custom-server-h2c.test.js
           unit/custom-server-peer-headers.test.js
