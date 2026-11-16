@@ -99,9 +99,9 @@ export const CACHE_AFFINITY = {
 // of one model answered it with the same message, instead of trying every key
 // (services/sameRequestError.ts). The message has to read as the request's
 // fault (SAME_REQUEST_ERROR_PATTERNS in errorConfig.js), or the status be 413,
-// and either way pass the vetoes on key, billing, limit and plan wording. Only
-// when every active key of the node reaches one upstream (no key on its own
-// base URL). 1 stops at the first such error.
+// and either way pass the vetoes on key, billing, limit and plan wording. Keys
+// on one upstream match up to numbers; when any key has its own base URL they
+// must give the very same message. 1 stops at the first such error.
 // Env: SAME_REQUEST_ERROR_STOP_AFTER (0 tries every key, as before, on every
 // node; anything that isn't a whole number falls back to 2).
 export const SAME_REQUEST_ERROR_STOP_AFTER = envInt("SAME_REQUEST_ERROR_STOP_AFTER", 2);

@@ -940,11 +940,12 @@ async function routeSingleModelChat(
         log.warn("CHAT", `${errorMsg} (no more keys for this request)`);
         return { success: false, status: HTTP_STATUS.GATEWAY_TIMEOUT, error: errorMsg, limited: false, response: errorResponse(HTTP_STATUS.GATEWAY_TIMEOUT, errorMsg) };
       }
-      // Enough keys refused this request with the same message: the rest would too,
-      // when they all reach one upstream. Built-in providers keep walking: their
-      // accounts differ in plan and region.
-      if (customEndpoint && sameRequestErrors.note(credentials.connectionId, result.status, result.error) &&
-          (sharedUpstream ??= await keysShareOneUpstream(provider))) {
+      // Enough keys refused this request with the same message: the rest would too.
+      // Keys on one upstream agree up to numbers; keys on different upstreams
+      // must give the very same message, since their limits may differ.
+      // Built-in providers keep walking: their accounts differ in plan and region.
+      const agreement = customEndpoint ? sameRequestErrors.note(credentials.connectionId, result.status, result.error) : null;
+      if (agreement === "exact" || (agreement === "normalized" && (sharedUpstream ??= await keysShareOneUpstream(provider)))) {
         log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} same request error (${result.status}) from ${sameRequestErrors.stopAfter} accounts, not trying the rest`);
         return result;
       }

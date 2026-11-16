@@ -4,8 +4,9 @@
 // same request-shaped error, instead of costing one upstream call per key
 // before failing with that error anyway. Request-shaped means a 413, or a
 // 400/422 matching SAME_REQUEST_ERROR_PATTERNS, and in both cases no veto
-// (key, billing, limit, plan or organization wording). Any other error,
-// built-in providers and nodes with a key on its own base URL keep walking.
+// (key, billing, limit, plan or organization wording). Keys on one upstream
+// match up to numbers; when any key has its own base URL they must give the
+// very same message. Any other error and built-in providers keep walking.
 //
 // Runs the real account loop (handleChat → auth.js against a temporary
 // database); only the upstream call (handleChatCore) is stubbed, returning what
@@ -164,13 +165,16 @@ describe("normalizing a request error", () => {
     expect(SAME_REQUEST_ERROR_STOP_AFTER).toBe(2);
     const tally = createSameRequestErrorTally();
     expect(tally.stopAfter).toBe(2);
-    expect(tally.note("a", 400, "prompt is too long: 1")).toBe(false);
+    expect(tally.note("a", 400, "prompt is too long: 1")).toBeNull();
     // The same account again is still one account.
-    expect(tally.note("a", 400, "prompt is too long: 2")).toBe(false);
-    expect(tally.note("b", 422, "prompt is too long: 3")).toBe(false);
-    expect(tally.note("b", 400, "prompt is too long: 4")).toBe(true);
-    expect(createSameRequestErrorTally(0).note("a", 400, TOO_LONG)).toBe(false);
-    expect(createSameRequestErrorTally(1).note("a", 400, TOO_LONG)).toBe(true);
+    expect(tally.note("a", 400, "prompt is too long: 2")).toBeNull();
+    expect(tally.note("b", 422, "prompt is too long: 3")).toBeNull();
+    // Same up to numbers: enough for keys on one upstream only.
+    expect(tally.note("b", 400, "prompt is too long: 4")).toBe("normalized");
+    // The very same message, case, spacing at the ends and a relay's request id aside.
+    expect(tally.note("c", 400, " Prompt is too long: 1 (request id: 2026aaa)")).toBe("exact");
+    expect(createSameRequestErrorTally(0).note("a", 400, TOO_LONG)).toBeNull();
+    expect(createSameRequestErrorTally(1).note("a", 400, TOO_LONG)).toBe("exact");
   });
 });
 
@@ -471,11 +475,16 @@ describe("the same request error from two accounts", () => {
     });
   }
 
-  it("keeps walking when a key has its own base URL, and that key serves the request", async () => {
-    // Same URL on every key: only the ownBaseUrl flag turns the stop off.
-    const same = { baseUrl: "http://upstream-a.example/v1" };
-    const keys = await addKeys(5, { 1: same, 2: same, 3: { ...same, ownBaseUrl: true }, 4: same, 5: same });
-    upstream.script = Array(2).fill(failure(400, TOO_LONG));
+  // Two keys whose limits differ: the same message up to numbers.
+  const smallWindow = "prompt is too long: 12345 tokens > 10000 maximum";
+  const otherWindow = "prompt is too long: 12345 tokens > 11000 maximum";
+  const apart = { 1: { baseUrl: "http://upstream-a.example/v1", ownBaseUrl: true }, 2: { baseUrl: "http://upstream-b.example/v1", ownBaseUrl: true },
+    3: { baseUrl: "http://upstream-c.example/v1", ownBaseUrl: true }, 4: { baseUrl: "http://upstream-d.example/v1", ownBaseUrl: true },
+    5: { baseUrl: "http://upstream-e.example/v1", ownBaseUrl: true } };
+
+  it("keeps walking on keys of other upstreams whose messages differ in numbers, and the next key serves", async () => {
+    const keys = await addKeys(5, apart);
+    upstream.script = [failure(400, smallWindow), failure(400, otherWindow)];
 
     const res = await chat();
     expect(upstream.calls).toEqual(calls(keys.slice(0, 3)));
@@ -483,19 +492,62 @@ describe("the same request error from two accounts", () => {
     expect(stopped()).toBe(false);
   });
 
-  it("keeps walking when the keys' base URLs differ", async () => {
+  it("stops on keys of other upstreams once 2 gave the very same message", async () => {
+    const keys = await addKeys(5, apart);
+    upstream.script = [
+      failure(400, `${TOO_LONG} (request id: 20261115120000111aaa)`),
+      failure(400, `${TOO_LONG.toUpperCase()} (request id: 20261115120000222bbb)`),
+      failure(400, TOO_LONG),
+    ];
+
+    const res = await chat();
+    expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
+    expect(res.status).toBe(400);
+    expect(warnings).toContain(stopLine("key-2"));
+  });
+
+  it("still lets a veto win on keys of other upstreams", async () => {
+    const keys = await addKeys(5, apart);
+    upstream.script = Array(5).fill(failure(400, `${TOO_LONG} (tokens per min)`));
+
+    await chat();
+    expect(upstream.calls).toEqual(calls(keys));
+    expect(stopped()).toBe(false);
+  });
+
+  it("compares up to numbers again once no key has its own base URL", async () => {
+    const keys = await addKeys(5);
+    upstream.script = [failure(400, smallWindow), failure(400, otherWindow)];
+
+    await chat();
+    expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
+  });
+
+  it("compares exactly when a key has its own base URL, even with the same URL", async () => {
+    // Same URL on every key: only the ownBaseUrl flag makes this an exact compare.
+    const same = { baseUrl: "http://upstream-a.example/v1" };
+    const keys = await addKeys(5, { 1: same, 2: same, 3: { ...same, ownBaseUrl: true }, 4: same, 5: same });
+    upstream.script = [failure(400, smallWindow), failure(400, otherWindow)];
+
+    const res = await chat();
+    expect(upstream.calls).toEqual(calls(keys.slice(0, 3)));
+    expect(res.status).toBe(200);
+    expect(stopped()).toBe(false);
+  });
+
+  it("compares exactly when the keys' base URLs differ", async () => {
     const keys = await addKeys(5, { 1: { baseUrl: "http://upstream-a.example/v1" }, 2: { baseUrl: "http://upstream-a.example/v1" }, 3: { baseUrl: "http://upstream-b.example/v1" } });
-    upstream.script = Array(2).fill(failure(400, TOO_LONG));
+    upstream.script = [failure(400, smallWindow), failure(400, otherWindow)];
 
     const res = await chat();
     expect(upstream.calls).toEqual(calls(keys.slice(0, 3)));
     expect(res.status).toBe(200);
   });
 
-  it("stops when every key has the same base URL", async () => {
+  it("compares up to numbers when every key has the same base URL", async () => {
     const same = { baseUrl: "http://upstream-a.example/v1" };
     const keys = await addKeys(5, { 1: same, 2: same, 3: same, 4: same, 5: same });
-    upstream.script = Array(5).fill(failure(400, TOO_LONG));
+    upstream.script = [failure(400, smallWindow), failure(400, otherWindow)];
 
     await chat();
     expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
@@ -507,7 +559,7 @@ describe("the same request error from two accounts", () => {
       provider, authType: "apikey", name: "key-off", apiKey: "placeholder-off", priority: 9, isActive: false,
       providerSpecificData: { baseUrl: "http://upstream-b.example/v1", ownBaseUrl: true },
     });
-    upstream.script = Array(5).fill(failure(400, TOO_LONG));
+    upstream.script = [failure(400, smallWindow), failure(400, otherWindow)];
 
     await chat();
     expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));

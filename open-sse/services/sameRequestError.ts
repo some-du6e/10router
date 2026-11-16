@@ -69,34 +69,57 @@ const namesTheKey = (status: number, text: string): boolean =>
  * counts whatever its message says, unless that is about the key.
  */
 export function requestErrorSignature(status: number | null | undefined, error: unknown): string | null {
+  return requestErrorSignatures(status, error)?.normalized ?? null;
+}
+
+/**
+ * Both ways to compare one request error: `normalized` (digits as "#",
+ * whitespace collapsed), for keys on one upstream; `exact` (only trimmed and
+ * lowercased), for keys on different upstreams, whose limits may differ, so
+ * "> 200000 maximum" and "> 1000000 maximum" must not count as the same.
+ */
+export function requestErrorSignatures(status: number | null | undefined, error: unknown): { normalized: string; exact: string } | null {
   if (typeof status !== "number" || !SAME_REQUEST_ERROR_STATUSES.has(status)) return null;
   const raw = asText(error);
   const message = upstreamMessage(raw);
   if (namesTheKey(status, message) || namesTheKey(status, raw)) return null;
   const requestShaped = status === HTTP_STATUS.PAYLOAD_TOO_LARGE || SAME_REQUEST_ERROR_PATTERNS.some((p) => p.test(message));
   if (!requestShaped) return null;
-  return `${status} ${normalizeErrorMessage(raw)}`;
+  return { normalized: `${status} ${normalizeErrorMessage(raw)}`, exact: `${status} ${message.trim().toLowerCase()}` };
 }
+
+/**
+ * How many accounts agreed: "exact" once `stopAfter` of them gave the very
+ * same message (a stop wherever the keys point), "normalized" once they gave
+ * it up to numbers and spacing (a stop only for keys on one upstream), else null.
+ */
+export type SameRequestErrorAgreement = "exact" | "normalized" | null;
 
 export interface SameRequestErrorTally {
   /** Accounts that must give the same request error to stop; 0 never stops. */
   readonly stopAfter: number;
-  /** Records one account's failure; true once `stopAfter` distinct accounts gave this same request error. */
-  note(connectionId: string, status: number | null | undefined, error: unknown): boolean;
+  /** Records one account's failure and says how far `stopAfter` distinct accounts agree on it. */
+  note(connectionId: string, status: number | null | undefined, error: unknown): SameRequestErrorAgreement;
 }
 
 export function createSameRequestErrorTally(stopAfter: number = SAME_REQUEST_ERROR_STOP_AFTER): SameRequestErrorTally {
   const accountsBySignature = new Map<string, Set<string>>();
+  const agreeing = (signature: string, connectionId: string): number => {
+    let accounts = accountsBySignature.get(signature);
+    if (!accounts) accountsBySignature.set(signature, (accounts = new Set()));
+    accounts.add(connectionId);
+    return accounts.size;
+  };
   return {
     stopAfter,
     note(connectionId, status, error) {
-      if (stopAfter <= 0) return false;
-      const signature = requestErrorSignature(status, error);
-      if (signature === null) return false;
-      let accounts = accountsBySignature.get(signature);
-      if (!accounts) accountsBySignature.set(signature, (accounts = new Set()));
-      accounts.add(connectionId);
-      return accounts.size >= stopAfter;
+      if (stopAfter <= 0) return null;
+      const signatures = requestErrorSignatures(status, error);
+      if (!signatures) return null;
+      const normalized = agreeing(`n ${signatures.normalized}`, connectionId);
+      const exact = agreeing(`x ${signatures.exact}`, connectionId);
+      if (exact >= stopAfter) return "exact";
+      return normalized >= stopAfter ? "normalized" : null;
     },
   };
 }
