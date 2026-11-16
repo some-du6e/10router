@@ -103,7 +103,8 @@ export const CACHE_AFFINITY = {
 // on one upstream, reached the same way (same proxy or relay), match up to
 // numbers. When the keys don't all reach one upstream that way, max(this, 2) distinct upstreams must give the very same context or
 // token limit message naming both sizes (two runs of 4+ digits), never a 413.
-// 1 stops at the first such error, only when the keys share one upstream.
+// 1 stops at the first such error, only when the keys share one upstream
+// reached the same way (same proxy or relay).
 // Env: SAME_REQUEST_ERROR_STOP_AFTER (0 tries every key, as before, on every
 // node; anything that isn't a whole number falls back to 2).
 export const SAME_REQUEST_ERROR_STOP_AFTER = envInt("SAME_REQUEST_ERROR_STOP_AFTER", 2);

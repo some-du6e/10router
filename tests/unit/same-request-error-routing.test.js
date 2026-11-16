@@ -687,6 +687,35 @@ describe("the same request error from two accounts", () => {
     expect(stopped()).toBe(false);
   });
 
+  // Each case: keys 1-2 reach the URL one way, keys 3-5 another, and the first
+  // two answer the same 413. The direct comparison is of where requests really
+  // go (networkPath), not of the stored fields.
+  it.each([
+    ["a stored proxy URL that only keys 1-2 have switched on", async () => {
+      const stored = { connectionProxyUrl: "http://proxy.example:8080" };
+      return [{ ...stored, connectionProxyEnabled: true }, { ...stored, connectionProxyEnabled: false }];
+    }],
+    ["two relays of the same type", async () => {
+      const r1 = await db.createProxyPool({ name: `relay-1-${providerSeq}`, type: "cloudflare", proxyUrl: "https://relay-1.example/", isActive: true });
+      const r2 = await db.createProxyPool({ name: `relay-2-${providerSeq}`, type: "cloudflare", proxyUrl: "https://relay-2.example/", isActive: true });
+      return [{ proxyPoolId: r1.id }, { proxyPoolId: r2.id }];
+    }],
+    ["one proxy, but keys 3-5 bypass it for the upstream host", async () => {
+      const proxy = { connectionProxyEnabled: true, connectionProxyUrl: "http://proxy.example:8080" };
+      return [proxy, { ...proxy, connectionNoProxy: "upstream-a.example" }];
+    }],
+  ])("keeps walking when keys on one URL reach it through %s", async (_label, transports) => {
+    const [first, rest] = await transports();
+    const nodeUrl = { baseUrl: "http://upstream-a.example/v1" };
+    const keys = await addKeys(5, { 1: { ...nodeUrl, ...first }, 2: { ...nodeUrl, ...first }, 3: { ...nodeUrl, ...rest }, 4: { ...nodeUrl, ...rest }, 5: { ...nodeUrl, ...rest } });
+    upstream.script = Array(2).fill(failure(413, "Payload Too Large"));
+
+    const res = await chat();
+    expect(upstream.calls).toEqual(calls(keys.slice(0, 3)));
+    expect(res.status).toBe(200);
+    expect(stopped()).toBe(false);
+  });
+
   it("keeps walking when keys on one URL differ in HTTP proxy", async () => {
     const nodeUrl = { baseUrl: "http://upstream-a.example/v1" };
     const viaProxy = { ...nodeUrl, connectionProxyEnabled: true, connectionProxyUrl: "http://proxy.example:8080" };
