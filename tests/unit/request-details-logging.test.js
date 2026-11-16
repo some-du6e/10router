@@ -103,6 +103,28 @@ describe("request detail logging", () => {
     });
   });
 
+  it("keeps the reasoning effort the client sent", () => {
+    const messages = [{ role: "user", content: "hi" }];
+    expect(extractRequestConfig({
+      model: "claude-sonnet-x", messages, thinking: { type: "adaptive" }, output_config: { effort: "max" },
+    }, true)).toEqual({
+      model: "claude-sonnet-x", stream: true, messages, thinking: { type: "adaptive" }, output_config: { effort: "max" },
+    });
+    expect(extractRequestConfig({ model: "gpt-x", messages, reasoning_effort: "low" }, false))
+      .toEqual({ model: "gpt-x", stream: false, messages, reasoning_effort: "low" });
+    expect(extractRequestConfig({ model: "qwen-x", messages, enable_thinking: true, thinking_budget: 2048 }, false))
+      .toEqual({ model: "qwen-x", stream: false, messages, enable_thinking: true, thinking_budget: 2048 });
+  });
+
+  it("copies the params, so editing the body afterwards doesn't change the record", () => {
+    const body = { model: "claude-sonnet-x", messages: [], output_config: { effort: "low" }, thinking: { type: "adaptive" } };
+    const config = extractRequestConfig(body, true);
+    delete body.output_config.effort;
+    body.thinking.type = "enabled";
+    expect(config.output_config).toEqual({ effort: "low" });
+    expect(config.thinking).toEqual({ type: "adaptive" });
+  });
+
   it("captures Responses API text and tool calls when a stream completes", async () => {
     let completed;
     await runResponsesStream([
