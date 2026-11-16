@@ -225,7 +225,9 @@ describe("the next provider gets the client's Claude history", () => {
     expect(thinking(1)?.signature).toBe(SIGNATURE);
     expect(rows()[1].request.messages[0].content[0].cache_control).toEqual({ type: "ephemeral" });
   });
+});
 
+describe("the next provider gets the client's tools and tool calls", () => {
   it("a tool call's object arguments are stringified for this attempt only", async () => {
     const clientBody = {
       model: "combo-a", stream: false,
@@ -253,7 +255,12 @@ describe("the next provider gets the client's Claude history", () => {
     };
     await runAttempts(clientBody, [["antigravity", "claude-model"], ["openai", "model-b"]]);
     expect(sentJson(0)).not.toContain("additionalProperties");
-    expect(sent[1].tools[0].function.parameters).toEqual(parameters);
+    expect(sent[1].tools[0].function.parameters).toEqual({
+      type: "object",
+      properties: { q: { type: "string", minLength: 1 } },
+      required: ["q"],
+      additionalProperties: false,
+    });
   });
 });
 
