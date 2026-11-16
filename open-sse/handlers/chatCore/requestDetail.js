@@ -14,9 +14,11 @@ const OPTIONAL_PARAMS = [
   "user", "parallel_tool_calls"
 ];
 
-// The router edits these in place on a same-format route, so they're copied to
-// keep the client's values. Everything else (messages, tools) is kept by reference.
-const COPIED_PARAMS = new Set(["thinking", "reasoning", "output_config"]);
+// The router edits these objects in place on a same-format route, so request
+// details and each attempt get their own copies. Everything else (messages,
+// tools) is kept by reference.
+export const THINKING_OBJECT_KEYS = ["thinking", "reasoning", "output_config"];
+const COPIED_PARAMS = new Set(THINKING_OBJECT_KEYS);
 
 export function extractRequestConfig(body, stream) {
   const config = { model: body.model, stream };

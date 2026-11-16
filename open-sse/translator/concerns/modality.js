@@ -1,6 +1,10 @@
 // Strip multimodal content blocks a model cannot read, BEFORE translation.
 // Driven by getCapabilitiesForModel: vision/audioInput/pdf. Replaces removed
 // media with a short text placeholder so messages never become empty.
+//
+// Copy-on-write: only the body's own top-level keys are reassigned. Messages,
+// content arrays and blocks are the client's (the next combo model or account
+// reuses them), so a changed one is replaced by a new object, never edited.
 import { FORMATS } from "../formats.js";
 import { CLAUDE_BLOCK, OPENAI_BLOCK, RESPONSES_ITEM } from "../schema/index.js";
 
@@ -45,40 +49,64 @@ function capForClaudeBlock(block) {
   return null;
 }
 
-// Filter an array of content blocks; drop unsupported, inject one placeholder per kind.
-// isLast = block belongs to the current user turn (picks the explanatory placeholder).
-function filterBlocks(blocks, capOf, caps, removed, isLast) {
-  const out = [];
-  for (const block of blocks) {
+// Filter an array of content blocks; drop unsupported, add one placeholder per
+// kind (built by `placeholder(text)`). isLast = block belongs to the current
+// user turn (picks the explanatory placeholder). Returns `blocks` itself when
+// nothing was dropped.
+function filterBlocks(blocks, capOf, caps, isLast, placeholder = (text) => ({ type: "text", text })) {
+  const removed = new Set();
+  const out = blocks.filter((block) => {
     const cap = capOf(block);
-    if (cap && caps[cap] === false) { removed.add(cap); continue; }
-    out.push(block);
-  }
-  for (const cap of removed) out.push({ type: "text", text: ph(cap, isLast) });
+    if (cap && caps[cap] === false) { removed.add(cap); return false; }
+    return true;
+  });
+  if (removed.size === 0) return blocks;
+  for (const cap of removed) out.push(placeholder(ph(cap, isLast)));
   return out;
 }
+
+// Map an array, returning the same array when no element changed.
+function mapKeep(items, fn) {
+  let out = null;
+  items.forEach((item, i) => {
+    const next = fn(item, i);
+    if (next !== item) (out ??= items.slice())[i] = next;
+  });
+  return out || items;
+}
+
+// A copy of obj with the given keys replaced; obj itself when none changed.
+function withChanges(obj, changes) {
+  const keys = Object.keys(changes).filter((key) => changes[key] !== obj[key]);
+  if (keys.length === 0) return obj;
+  const copy = { ...obj };
+  for (const key of keys) {
+    if (changes[key] === undefined) delete copy[key];
+    else copy[key] = changes[key];
+  }
+  return copy;
+}
+
+const isImageAttachment = (a) => a?.contentType?.startsWith("image/") || (typeof a?.url === "string" && a.url.startsWith("data:image/"));
+const withoutImages = (list) => {
+  const kept = list.filter((a) => !isImageAttachment(a));
+  return kept.length === list.length ? list : kept;
+};
 
 // OpenAI / OpenAI-compatible chat messages[].content[].
 function stripOpenAI(body, caps) {
   if (!Array.isArray(body.messages)) return;
   const last = body.messages.length - 1;
-  body.messages.forEach((msg, i) => {
+  body.messages = mapKeep(body.messages, (msg, i) => {
+    if (!msg || typeof msg !== "object") return msg;
+    const changes = {};
     if (caps.vision === false) {
-      if (Array.isArray(msg.images)) delete msg.images;
-      if (Array.isArray(msg.experimental_attachments)) {
-        msg.experimental_attachments = msg.experimental_attachments.filter(
-          (a) => !(a?.contentType?.startsWith("image/") || (typeof a?.url === "string" && a.url.startsWith("data:image/")))
-        );
-      }
-      if (Array.isArray(msg.attachments)) {
-        msg.attachments = msg.attachments.filter(
-          (a) => !(a?.contentType?.startsWith("image/") || (typeof a?.url === "string" && a.url.startsWith("data:image/")))
-        );
-      }
+      if (Array.isArray(msg.images)) changes.images = undefined;
+      if (Array.isArray(msg.experimental_attachments)) changes.experimental_attachments = withoutImages(msg.experimental_attachments);
+      if (Array.isArray(msg.attachments)) changes.attachments = withoutImages(msg.attachments);
     }
-    if (!Array.isArray(msg.content)) return;
-    const removed = new Set();
-    msg.content = filterBlocks(msg.content, capForOpenAIBlock, caps, removed, i === last);
+    if (Array.isArray(msg.content)) changes.content = filterBlocks(msg.content, capForOpenAIBlock, caps, i === last);
+    return withChanges(msg, changes);
   });
 }
 
@@ -86,16 +114,14 @@ function stripOpenAI(body, caps) {
 function stripClaude(body, caps) {
   if (!Array.isArray(body.messages)) return;
   const last = body.messages.length - 1;
-  body.messages.forEach((msg, i) => {
-    if (!Array.isArray(msg.content)) return;
+  body.messages = mapKeep(body.messages, (msg, i) => {
+    if (!Array.isArray(msg?.content)) return msg;
     // Images inside a tool_result too, such as a tool's screenshot.
-    for (const block of msg.content) {
-      if (block?.type === CLAUDE_BLOCK.TOOL_RESULT && Array.isArray(block.content)) {
-        block.content = filterBlocks(block.content, capForClaudeBlock, caps, new Set(), i === last);
-      }
-    }
-    const removed = new Set();
-    msg.content = filterBlocks(msg.content, capForClaudeBlock, caps, removed, i === last);
+    const content = mapKeep(msg.content, (block) => {
+      if (block?.type !== CLAUDE_BLOCK.TOOL_RESULT || !Array.isArray(block.content)) return block;
+      return withChanges(block, { content: filterBlocks(block.content, capForClaudeBlock, caps, i === last) });
+    });
+    return withChanges(msg, { content: filterBlocks(content, capForClaudeBlock, caps, i === last) });
   });
 }
 
@@ -108,45 +134,36 @@ function capForResponsesPart(block) {
   return null;
 }
 
-function stripResponsesParts(parts, caps, isLast) {
-  const removed = new Set();
-  const kept = parts.filter((b) => {
-    const cap = capForResponsesPart(b);
-    if (cap && caps[cap] === false) { removed.add(cap); return false; }
-    return true;
-  });
-  for (const cap of removed) kept.push({ type: RESPONSES_ITEM.INPUT_TEXT, text: ph(cap, isLast) });
-  return kept;
-}
+const responsesText = (text) => ({ type: RESPONSES_ITEM.INPUT_TEXT, text });
 
 function stripResponses(body, caps) {
   if (!Array.isArray(body.input)) return;
   const last = body.input.length - 1;
-  body.input.forEach((item, i) => {
-    if (Array.isArray(item.content)) item.content = stripResponsesParts(item.content, caps, i === last);
-    if (Array.isArray(item.output)) item.output = stripResponsesParts(item.output, caps, i === last);
+  body.input = mapKeep(body.input, (item, i) => {
+    if (!item || typeof item !== "object") return item;
+    const changes = {};
+    if (Array.isArray(item.content)) changes.content = filterBlocks(item.content, capForResponsesPart, caps, i === last, responsesText);
+    if (Array.isArray(item.output)) changes.output = filterBlocks(item.output, capForResponsesPart, caps, i === last, responsesText);
+    return withChanges(item, changes);
   });
 }
 
 // Gemini / gemini-cli contents[].parts[] (inlineData / fileData by mime).
+const capForGeminiPart = (p) => capForMime(p?.inlineData?.mimeType || p?.fileData?.mimeType);
+const geminiText = (text) => ({ text });
+
 function stripGeminiParts(contents, caps) {
-  if (!Array.isArray(contents)) return;
+  if (!Array.isArray(contents)) return contents;
   const last = contents.length - 1;
-  contents.forEach((c, i) => {
-    if (!Array.isArray(c.parts)) return;
-    const removed = new Set();
-    c.parts = c.parts.filter((p) => {
-      const mime = p?.inlineData?.mimeType || p?.fileData?.mimeType;
-      const cap = capForMime(mime);
-      if (cap && caps[cap] === false) { removed.add(cap); return false; }
-      return true;
-    });
-    for (const cap of removed) c.parts.push({ text: ph(cap, i === last) });
+  return mapKeep(contents, (c, i) => {
+    if (!Array.isArray(c?.parts)) return c;
+    return withChanges(c, { parts: filterBlocks(c.parts, capForGeminiPart, caps, i === last, geminiText) });
   });
 }
 
 /**
- * Remove media blocks the model can't read, in-place on the source-format body.
+ * Remove media blocks the model can't read from the source-format body. Only
+ * body's own keys are reassigned; the messages and blocks it holds are not edited.
  * @param {object} body - request body (source format)
  * @param {string} sourceFormat - one of FORMATS
  * @param {object} caps - capabilities from getCapabilitiesForModel
@@ -176,10 +193,13 @@ export function stripUnsupportedModalities(body, sourceFormat, caps) {
     case FORMATS.GEMINI:
     case FORMATS.GEMINI_CLI:
     case FORMATS.VERTEX:
-      stripGeminiParts(body.contents, caps);
+      if (Array.isArray(body.contents)) body.contents = stripGeminiParts(body.contents, caps);
       break;
     case FORMATS.ANTIGRAVITY:
-      stripGeminiParts(body?.request?.contents, caps);
+      if (Array.isArray(body.request?.contents)) {
+        const contents = stripGeminiParts(body.request.contents, caps);
+        if (contents !== body.request.contents) body.request = { ...body.request, contents };
+      }
       break;
     default:
       stripOpenAI(body, caps);

@@ -18,7 +18,7 @@ import { injectLimitHoldNotice } from "../utils/limitHoldNotice.js";
 import { trackPendingRequest, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { getExecutor } from "../executors/index.js";
 import { supportsGrokCliReasoningEffort } from "../config/grokCli.js";
-import { buildRequestDetail, extractRequestConfig } from "./chatCore/requestDetail.js";
+import { buildRequestDetail, extractRequestConfig, THINKING_OBJECT_KEYS } from "./chatCore/requestDetail.js";
 import { handleForcedSSEToJson } from "./chatCore/sseToJsonHandler.js";
 import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
 import { jsonReplyToSse } from "./chatCore/jsonToSse.js";
@@ -107,8 +107,6 @@ export function clientReceivesStream({ body, provider, model, sourceFormat, clie
 
   return !clientDemandsJson(body, clientRawRequest?.headers);
 }
-
-const THINKING_OBJECT_KEYS = ["thinking", "reasoning", "output_config"];
 
 // A shallow copy of body with its own copies of the nested thinking objects.
 function withOwnThinkingObjects(body) {

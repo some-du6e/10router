@@ -33,6 +33,8 @@ on:
       - "tests/unit/kiro-conversation-canonicalization.test.js"
       - "tests/unit/alicode-cache-control-2069.test.js"
       - "tests/unit/image-fetch-hardening.test.js"
+      - "tests/unit/combo-attempt-isolation.test.js"
+      - "tests/unit/prefetch-images.test.js"
       - "tests/translator/bugs-codexCli-responses.test.js"
       - "tests/translator/bugs-openai-bridge.test.js"
       - "tests/translator/bugs-gemini-cursor-commandcode.test.js"
@@ -100,6 +102,8 @@ jobs:
           unit/kiro-conversation-canonicalization.test.js
           unit/alicode-cache-control-2069.test.js
           unit/image-fetch-hardening.test.js
+          unit/combo-attempt-isolation.test.js
+          unit/prefetch-images.test.js
       # The runner sets XDG_CONFIG_HOME, which one of these tests expects unset.
       - name: Devin CLI tests
         working-directory: tests
@@ -115,6 +119,9 @@ jobs:
           open-sse/translator/index.ts
           tests/unit/devin-cli-executor.test.js
           open-sse/translator/concerns/modality.js
+          open-sse/translator/concerns/prefetch.js
+          open-sse/translator/concerns/thinkingUnified.js
+          tests/unit/combo-attempt-isolation.test.js
           open-sse/translator/request/openai-responses.js
           open-sse/translator/formats/responsesApi.js
           open-sse/translator/request/openai-to-claude.ts
