@@ -17,7 +17,7 @@ const MODEL_CAPS = {
   "text-model": { vision: false },
   "vision-model": { vision: true },
   "audio-model": { audioInput: true },
-  "no-audio-model": { audioInput: true },
+  "audio-stripping-model": { audioInput: true },
   "thinking-model": { reasoning: true, thinkingFormat: "gemini-budget", thinkingRange: undefined },
 };
 const baseModel = (model) => String(model || "").replace(/\(.*\)$/, "");
@@ -36,7 +36,7 @@ vi.mock("../../open-sse/config/providerModels.js", async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,
-    getModelStrip: (alias, model) => (model === "no-audio-model" ? ["audio"] : actual.getModelStrip(alias, model)),
+    getModelStrip: (alias, model) => (model === "audio-stripping-model" ? ["audio"] : actual.getModelStrip(alias, model)),
   };
 });
 const IMAGE_URL = "https://img.example.test/cat.png";
@@ -83,12 +83,18 @@ beforeAll(async () => {
   ({ fetchImageAsBase64 } = await import("../../open-sse/translator/concerns/image.js"));
 }, 30000);
 
+// The executor is mocked; a test that needs a real executor's request edits
+// sets this to run them on the body the executor was handed.
+let executorEdits = null;
+
 beforeEach(() => {
   sent.length = 0;
+  executorEdits = null;
   saveRequestDetailMock.mockClear();
   fetchImageAsBase64.mockClear();
   executeMock.mockReset();
-  executeMock.mockImplementation(async ({ body }) => {
+  executeMock.mockImplementation(async (args) => {
+    const body = executorEdits ? await executorEdits(args) : args.body;
     sent.push(structuredClone(body));
     return {
       response: new Response(JSON.stringify({ error: { message: "bad request" } }), { status: 400, headers: { "content-type": "application/json" } }),
@@ -98,15 +104,16 @@ beforeEach(() => {
 });
 
 // One attempt, given the client's body the way the account and combo loops do.
-function attempt(clientBody, provider, model, sourceFormatOverride) {
+function attempt(clientBody, provider, model, sourceFormatOverride, { headers = {}, signal = null } = {}) {
   const body = { ...clientBody, model: `${provider}/${model}` };
   return handleChatCore({
     body,
     modelInfo: { provider, model },
     credentials: { apiKey: "k", providerSpecificData: {} },
-    clientRawRequest: { endpoint: "/v1/chat/completions", body, headers: {} },
+    clientRawRequest: { endpoint: "/v1/chat/completions", body, headers },
     connectionId: "conn-1",
     sourceFormatOverride,
+    clientSignal: signal,
     log,
   });
 }
@@ -114,8 +121,8 @@ function attempt(clientBody, provider, model, sourceFormatOverride) {
 // Run the attempts in order and check the client's body never changed.
 async function runAttempts(clientBody, attempts) {
   const before = structuredClone(clientBody);
-  for (const [provider, model, sourceFormat] of attempts) {
-    await attempt(clientBody, provider, model, sourceFormat);
+  for (const [provider, model, sourceFormat, options] of attempts) {
+    await attempt(clientBody, provider, model, sourceFormat, options);
     expect(clientBody).toEqual(before);
   }
 }
@@ -170,7 +177,7 @@ describe("the next combo model gets the client's media", () => {
       model: "combo-a", stream: false,
       messages: [{ role: "user", content: [audio] }, { role: "user", content: [{ type: "text", text: "transcribe it" }, audio] }],
     };
-    await runAttempts(clientBody, [["openai", "no-audio-model"], ["openai", "audio-model"]]);
+    await runAttempts(clientBody, [["openai", "audio-stripping-model"], ["openai", "audio-model"]]);
     expect(sentJson(0)).not.toContain("input_audio");
     expect(sentJson(1)).toContain("input_audio");
   });
@@ -266,20 +273,106 @@ describe("remote images for targets that need inline data", () => {
     expect(fetchesOf(MISSING_IMAGE_URL)).toBe(2);
   });
 
-  // The Gemini translator drops a remote URL it can't inline, so this looks at
-  // the source body prefetch hands on.
-  it("keeps the block of an image whose fetch failed and converts the other", async () => {
-    const { prefetchRemoteImages } = await import("../../open-sse/translator/concerns/prefetch.js");
-    const body = imageRequest([IMAGE_URL, MISSING_IMAGE_URL]);
-    expect(await prefetchRemoteImages(body, "openai", "gemini")).toBe(1);
-    const [, converted, kept] = body.messages[0].content;
-    expect(converted.image_url).toEqual({ url: "data:image/png;base64,QUJD", detail: "low" });
-    expect(kept).toEqual({ type: "image_url", image_url: MISSING_IMAGE_URL });
+  // A fusion judge or single-answer fallback gets a new message list (the
+  // judge adds a turn), but the same client request and so the same signal.
+  it("attempts with the same client signal but different message lists fetch each URL once", async () => {
+    const signal = new AbortController().signal;
+    const panelBody = imageRequest([IMAGE_URL]);
+    const judgeBody = { ...panelBody, messages: [...panelBody.messages, { role: "user", content: "Judge the answers." }] };
+    await runAttempts(panelBody, [["gemini", "vision-model", undefined, { signal }]]);
+    await runAttempts(judgeBody, [["gemini", "vision-model", undefined, { signal }]]);
+    expect(sentJson(1)).toContain("QUJD");
+    expect(fetchesOf(IMAGE_URL)).toBe(1);
   });
 
   it("a new client request fetches again", async () => {
+    await runAttempts(imageRequest([IMAGE_URL]), [["gemini", "vision-model", undefined, { signal: new AbortController().signal }]]);
     await runAttempts(imageRequest([IMAGE_URL]), [["gemini", "vision-model"]]);
     await runAttempts(imageRequest([IMAGE_URL]), [["gemini", "vision-model"]]);
-    expect(fetchesOf(IMAGE_URL)).toBe(2);
+    expect(fetchesOf(IMAGE_URL)).toBe(3);
+  });
+
+  it("a Gemini fileData part is inlined for every attempt and stays the client's", async () => {
+    const clientBody = {
+      contents: [{ role: "user", parts: [{ text: "what is this?" }, { fileData: { fileUri: IMAGE_URL, mimeType: "image/png" } }] }],
+    };
+    await runAttempts(clientBody, [["gemini", "vision-model", "gemini"], ["gemini", "vision-model", "gemini"]]);
+    for (const call of [0, 1]) {
+      expect(sentJson(call)).toContain("QUJD");
+      expect(sentJson(call)).not.toContain(IMAGE_URL);
+    }
+    expect(fetchesOf(IMAGE_URL)).toBe(1);
+  });
+
+  it("Codex: an image_url in Responses input is downloaded once across attempts", async () => {
+    const { CodexExecutor } = await import("../../open-sse/executors/codex.js");
+    executorEdits = async ({ body, imageCacheKey }) => {
+      await new CodexExecutor().prefetchImages(body, imageCacheKey);
+      return body;
+    };
+    const clientBody = {
+      model: "combo-a", stream: false,
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "what is this?" }, { type: "image_url", image_url: { url: IMAGE_URL } }] }],
+    };
+    await runAttempts(clientBody, [["codex", "vision-model", "openai-responses"], ["codex", "vision-model", "openai-responses"]]);
+    for (const call of [0, 1]) expect(sentJson(call)).toContain("data:image/png;base64,QUJD");
+    expect(fetchesOf(IMAGE_URL)).toBe(1);
+  });
+});
+
+// Edits real executors make to the body they're handed: the executor is
+// mocked, so these run the real executor's request edits on that body.
+describe("executor edits stay in the attempt", () => {
+  it("Codex: system roles, stored item ids and tool shapes are rewritten for this attempt only", async () => {
+    const { CodexExecutor } = await import("../../open-sse/executors/codex.js");
+    executorEdits = ({ model, body, stream, credentials }) => new CodexExecutor().transformRequest(model, body, stream, credentials);
+    const clientBody = {
+      model: "combo-a", stream: false,
+      input: [
+        { type: "message", role: "system", content: [{ type: "input_text", text: "be brief" }] },
+        { type: "message", id: "msg_0123456789abcdef", role: "user", content: [{ type: "input_text", text: "weather?" }] },
+      ],
+      tools: [{ type: "function", function: { name: "weather", description: "Look up the weather", parameters: { type: "object", properties: {} } } }],
+    };
+    await runAttempts(clientBody, [["codex", "model-a", "openai-responses"], ["codex", "model-b", "openai-responses"]]);
+    expect(sent[1].input[0].role).toBe("developer");
+    expect(sent[1].tools[0]).toMatchObject({ type: "function", name: "weather" });
+  });
+
+  it("Antigravity: the system instruction rewrite stays in the attempt", async () => {
+    const { AntigravityExecutor } = await import("../../open-sse/executors/antigravity.js");
+    executorEdits = ({ model, body, stream, credentials }) => new AntigravityExecutor().transformRequest(model, body, stream, credentials);
+    const clientBody = {
+      project: "project-a",
+      request: {
+        systemInstruction: { role: "user", parts: [{ text: "You follow the opencode style guide." }] },
+        contents: [{ role: "user", parts: [{ text: "hi" }] }],
+      },
+    };
+    await runAttempts(clientBody, [["antigravity", "model-a", "antigravity"], ["antigravity", "model-b", "antigravity"]]);
+    expect(sentJson(1)).toContain("antigravity style guide");
+  });
+
+  it("Antigravity: a vision model still gets the image a text-only model dropped from the envelope", async () => {
+    const clientBody = {
+      project: "project-a",
+      request: { contents: [{ role: "user", parts: [{ text: "what is this?" }, { inlineData: { mimeType: "image/png", data: "QUJD" } }] }] },
+    };
+    await runAttempts(clientBody, [["antigravity", "text-model", "antigravity"], ["antigravity", "vision-model", "antigravity"]]);
+    expect(sentJson(0)).not.toContain("inlineData");
+    expect(sentJson(1)).toContain("inlineData");
+  });
+
+  it("Claude passthrough: the cache anchors on system blocks and tools stay in the attempt", async () => {
+    const clientBody = {
+      model: "combo-a", max_tokens: 1024, stream: false,
+      system: [{ type: "text", text: "You are terse.", cache_control: { type: "ephemeral" } }, { type: "text", text: "Answer in English." }],
+      tools: [{ name: "lookup", description: "Look something up", input_schema: { type: "object", properties: {} } }],
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    };
+    const claudeCli = { headers: { "user-agent": "claude-cli/2.0.0" } };
+    await runAttempts(clientBody, [["anthropic", "model-a", "claude", claudeCli], ["anthropic", "model-b", "claude", claudeCli]]);
+    expect(sent[1].system[1].cache_control).toBeTruthy();
+    expect(sent[1].tools[0].cache_control).toBeTruthy();
   });
 });

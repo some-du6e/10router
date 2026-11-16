@@ -15,9 +15,10 @@ const OPTIONAL_PARAMS = [
   "user", "parallel_tool_calls"
 ];
 
-// The router edits these in place on a same-format route, so they're copied to
-// keep the client's values. Everything else (messages, tools) is kept by
-// reference: each attempt works on its own copy of those (config/attemptCopy.js).
+// The thinking settings are stored as copies, so the row holds the client's
+// values whatever later holds the same objects. Everything else (messages,
+// tools) is kept by reference: each attempt edits its own copy of those
+// (config/attemptCopy.js), not the client's.
 const COPIED_PARAMS = new Set(THINKING_OBJECT_KEYS);
 
 export function extractRequestConfig(body, stream) {

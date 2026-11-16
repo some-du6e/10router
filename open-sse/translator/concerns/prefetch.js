@@ -14,9 +14,10 @@ const TARGETS_NEED_BASE64 = new Set([
 ]);
 
 // Images fetched for one client request, so a fallback to another account or
-// combo model doesn't download them again. Keyed by the client's history list,
-// which all attempts at the request share; an entry goes with the request.
-// A failed fetch isn't kept, so the next attempt tries it again.
+// combo model, a fusion panel or its judge doesn't download them again. Keyed
+// by an object every attempt at the request shares (chatCore passes the
+// client's abort signal); an entry goes with the request. A failed fetch isn't
+// kept, so the next attempt tries it again.
 const fetchedByRequest = new WeakMap();
 
 function requestCache(key) {
@@ -26,7 +27,14 @@ function requestCache(key) {
   return cache;
 }
 
-function fetchOnce(cache, url, options) {
+/**
+ * fetchImageAsBase64, at most once per URL for one client request.
+ * @param {string} url
+ * @param {object} [options] - `cacheKey` (the request's shared object), plus fetchImageAsBase64's options
+ * @returns {Promise<{url: string, mimeType: string} | null>}
+ */
+export function fetchImageOnce(url, { cacheKey, ...options } = {}) {
+  const cache = requestCache(cacheKey);
   if (!cache.has(url)) {
     const pending = fetchImageAsBase64(url, options).catch(() => null);
     cache.set(url, pending);
@@ -104,8 +112,8 @@ function collectImageRefs(body, sourceFormat) {
 /**
  * Replace remote image URLs with base64 data when the target needs inline data.
  * No-op when target accepts remote URLs (e.g. openai, claude) or body has none.
- * `options.cacheKey` (the client's history list) shares fetched images between
- * attempts at one client request.
+ * `options.cacheKey` shares fetched images between attempts at one client
+ * request (see fetchImageOnce).
  * @returns {Promise<number>} count of images converted
  */
 export async function prefetchRemoteImages(body, sourceFormat, targetFormat, options = {}) {
@@ -113,11 +121,9 @@ export async function prefetchRemoteImages(body, sourceFormat, targetFormat, opt
   const refs = collectImageRefs(body, sourceFormat);
   if (!refs.length) return 0;
 
-  const { cacheKey, ...fetchOptions } = options;
-  const cache = requestCache(cacheKey);
   const images = new Map();
   for (const url of new Set(refs.map((ref) => ref.url))) {
-    images.set(url, await fetchOnce(cache, url, fetchOptions));
+    images.set(url, await fetchImageOnce(url, options));
   }
 
   let converted = 0;

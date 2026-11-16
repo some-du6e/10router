@@ -192,8 +192,10 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   const reqTag = log?.tagForSession ? log.tagForSession(sessionSeed) : (log?.nextTag ? log.nextTag() : "");
 
   const sourceFormat = sourceFormatOverride || detectFormat(body);
-  // Taken before anything replaces it: images fetched for one attempt are kept per client request.
-  const clientHistory = clientHistoryOf(body);
+  // Images fetched for one attempt are kept for the rest of the client request.
+  // The client's signal is shared by every attempt, fusion panel and judge;
+  // without one, the client's history list (taken before anything replaces it).
+  const imageCacheKey = clientSignal || clientHistoryOf(body);
 
   // A previous turn may have been paused by a rate-limit hold, which wrote a
   // status banner into the assistant message the client just sent back. Add a
@@ -301,7 +303,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     }
     // Convert remote image URLs to base64 for targets that can't fetch URLs.
     try {
-      const n = await prefetchRemoteImages(body, sourceFormat, targetFormat, { signal: undefined, cacheKey: clientHistory });
+      const n = await prefetchRemoteImages(body, sourceFormat, targetFormat, { signal: undefined, cacheKey: imageCacheKey });
       if (n > 0) log?.debug?.("MODALITY", `prefetched ${n} remote image(s) for ${targetFormat}`);
     } catch (e) { log?.warn?.("MODALITY", `image prefetch failed: ${e.message}`); }
   }
@@ -472,7 +474,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   // 2s sleeps records over 6s). Upstream-error rows report it as ttft.
   let upstreamRespondedAt = 0;
   try {
-    const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onBetasRejected, onHeadersBudget });
+    const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onBetasRejected, onHeadersBudget, imageCacheKey });
     upstreamRespondedAt = Date.now();
     providerResponse = result.response;
     providerUrl = result.url;
@@ -532,7 +534,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
           try { await onCredentialsRefreshed(newCredentials); } catch (e) { log?.warn?.("TOKEN", `onCredentialsRefreshed failed: ${e.message}`); }
         }
         try {
-          const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onHeadersBudget });
+          const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onHeadersBudget, imageCacheKey });
           if (retryResult.response.ok) {
             providerResponse = retryResult.response;
             providerUrl = retryResult.url;
