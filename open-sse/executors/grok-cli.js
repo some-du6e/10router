@@ -510,11 +510,9 @@ export class GrokCliExecutor extends BaseExecutor {
 
     // Encrypted reasoning for multi-turn continuity (CLI always requests this)
     if (body.reasoning && body.reasoning.effort !== "none") {
+      // A new list: on a Responses route this is the client's own include.
       const include = Array.isArray(body.include) ? body.include : [];
-      if (!include.includes("reasoning.encrypted_content")) {
-        include.push("reasoning.encrypted_content");
-      }
-      body.include = include;
+      body.include = include.includes("reasoning.encrypted_content") ? include : [...include, "reasoning.encrypted_content"];
     }
 
     // Drop Chat Completions leftovers that Responses rejects

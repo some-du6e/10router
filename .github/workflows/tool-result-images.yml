@@ -126,7 +126,10 @@ jobs:
           open-sse/config/attemptCopy.js
           open-sse/handlers/chatCore.js
           open-sse/executors/codex.js
+          open-sse/executors/grok-cli.js
+          open-sse/handlers/chatCore/requestDetail.js
           tests/unit/combo-attempt-isolation.test.js
+          tests/unit/prefetch-images.test.js
           open-sse/translator/request/openai-responses.js
           open-sse/translator/formats/responsesApi.js
           open-sse/translator/request/openai-to-claude.ts

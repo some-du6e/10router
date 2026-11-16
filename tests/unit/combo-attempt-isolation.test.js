@@ -339,6 +339,21 @@ describe("executor edits stay in the attempt", () => {
     expect(sent[1].tools[0]).toMatchObject({ type: "function", name: "weather" });
   });
 
+  it("Grok CLI: its encrypted-reasoning include stays in the attempt", async () => {
+    const { GrokCliExecutor } = await import("../../open-sse/executors/grok-cli.js");
+    executorEdits = ({ model, body, stream, credentials }) => (
+      model === "grok-model" ? new GrokCliExecutor().transformRequest(model, body, stream, credentials) : body
+    );
+    const clientBody = {
+      model: "combo-a", stream: false,
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
+      include: ["file_search_call.results"],
+    };
+    await runAttempts(clientBody, [["grok-cli", "grok-model", "openai-responses"], ["codex", "model-b", "openai-responses"]]);
+    expect(sent[0].include).toContain("reasoning.encrypted_content");
+    expect(sent[1].include).toEqual(["file_search_call.results"]);
+  });
+
   it("Antigravity: the system instruction rewrite stays in the attempt", async () => {
     const { AntigravityExecutor } = await import("../../open-sse/executors/antigravity.js");
     executorEdits = ({ model, body, stream, credentials }) => new AntigravityExecutor().transformRequest(model, body, stream, credentials);
