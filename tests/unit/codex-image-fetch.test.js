@@ -146,6 +146,7 @@ describe("CodexExecutor image handling", () => {
     await run(request);
     await run(request);
     expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(sentBodies).toHaveLength(2);
     for (const sent of sentBodies) {
       expect(sent.input[0].content[0].image_url.startsWith("data:image/jpeg;base64,")).toBe(true);
     }

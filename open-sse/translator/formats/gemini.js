@@ -331,7 +331,7 @@ function ensureArrayItems(obj) {
 export function cleanJSONSchemaForAntigravity(schema) {
   if (!schema || typeof schema !== "object") return schema;
 
-  // Mutate directly (schema is only used once per request)
+  // Edits schema in place: callers pass their own copy.
   let cleaned = schema;
 
   // Phase 1: Convert and prepare

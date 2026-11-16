@@ -238,6 +238,23 @@ describe("the next provider gets the client's Claude history", () => {
     await runAttempts(clientBody, [["openai", "model-a"], ["openai", "model-b"]]);
     expect(sent[1].messages[1].tool_calls[0].function.arguments).toBe('{"city":"x"}');
   });
+
+  it("a Claude model on Antigravity cleans a copy of the tool schema, not the client's", async () => {
+    const parameters = {
+      type: "object",
+      properties: { q: { type: "string", minLength: 1 } },
+      required: ["q"],
+      additionalProperties: false,
+    };
+    const clientBody = {
+      model: "combo-a", stream: false,
+      messages: [{ role: "user", content: "look it up" }],
+      tools: [{ type: "function", function: { name: "lookup", description: "Look something up", strict: true, parameters } }],
+    };
+    await runAttempts(clientBody, [["antigravity", "claude-model"], ["openai", "model-b"]]);
+    expect(sentJson(0)).not.toContain("additionalProperties");
+    expect(sent[1].tools[0].function.parameters).toEqual(parameters);
+  });
 });
 
 describe("remote images for targets that need inline data", () => {

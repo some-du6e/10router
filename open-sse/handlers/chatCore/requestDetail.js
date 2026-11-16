@@ -15,9 +15,9 @@ const OPTIONAL_PARAMS = [
   "user", "parallel_tool_calls"
 ];
 
-// The thinking settings are stored as copies, so a stored row never shares an
-// object with the live request. Everything else (messages,
-// tools) is kept by reference: each attempt edits its own copy of those
+// The thinking settings are stored as copies, so the row's thinking objects are
+// never the ones the live request holds. Everything else (messages, tools) is
+// kept by reference: each attempt edits its own copy of those
 // (config/attemptCopy.js), not the client's.
 const COPIED_PARAMS = new Set(THINKING_OBJECT_KEYS);
 
