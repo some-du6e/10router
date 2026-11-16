@@ -73,52 +73,61 @@ export function requestErrorSignature(status: number | null | undefined, error: 
 }
 
 /**
- * Both ways to compare one request error: `normalized` (digits as "#",
- * whitespace collapsed), for keys on one upstream; `exact` (only trimmed and
- * lowercased), for keys on different upstreams, whose limits may differ, so
- * "> 200000 maximum" and "> 1000000 maximum" must not count as the same.
+ * Both ways to compare one request error. `normalized` (digits as "#",
+ * whitespace collapsed) is for keys on one upstream. `exact` is the extracted
+ * upstream message (a JSON body's message, a relay's request id dropped), only
+ * trimmed and lowercased: for keys on different upstreams, whose limits may
+ * differ, so "> 200000 maximum" and "> 1000000 maximum" must not count as the
+ * same. `exact` is null for a 413 or a message with no number: those name no
+ * limit, so the same text from two servers says nothing about a third.
  */
-export function requestErrorSignatures(status: number | null | undefined, error: unknown): { normalized: string; exact: string } | null {
+export function requestErrorSignatures(status: number | null | undefined, error: unknown): { normalized: string; exact: string | null } | null {
   if (typeof status !== "number" || !SAME_REQUEST_ERROR_STATUSES.has(status)) return null;
   const raw = asText(error);
   const message = upstreamMessage(raw);
   if (namesTheKey(status, message) || namesTheKey(status, raw)) return null;
   const requestShaped = status === HTTP_STATUS.PAYLOAD_TOO_LARGE || SAME_REQUEST_ERROR_PATTERNS.some((p) => p.test(message));
   if (!requestShaped) return null;
-  return { normalized: `${status} ${normalizeErrorMessage(raw)}`, exact: `${status} ${message.trim().toLowerCase()}` };
+  const exact = status !== HTTP_STATUS.PAYLOAD_TOO_LARGE && /\d/.test(message) ? `${status} ${message.trim().toLowerCase()}` : null;
+  return { normalized: `${status} ${normalizeErrorMessage(raw)}`, exact };
 }
 
 /**
- * How many accounts agreed: "exact" once `stopAfter` of them gave the very
- * same message (a stop wherever the keys point), "normalized" once they gave
- * it up to numbers and spacing (a stop only for keys on one upstream), else null.
+ * How far accounts agree: "exact" once at least max(stopAfter, 2) distinct
+ * upstreams gave the very same message (a stop wherever the keys point),
+ * "normalized" once `stopAfter` accounts gave it up to numbers and spacing (a
+ * stop only for keys on one upstream), else null.
  */
 export type SameRequestErrorAgreement = "exact" | "normalized" | null;
 
 export interface SameRequestErrorTally {
   /** Accounts that must give the same request error to stop; 0 never stops. */
   readonly stopAfter: number;
-  /** Records one account's failure and says how far `stopAfter` distinct accounts agree on it. */
-  note(connectionId: string, status: number | null | undefined, error: unknown): SameRequestErrorAgreement;
+  /**
+   * Records one account's failure and says how far accounts agree on it.
+   * `upstream` identifies where the account's requests go (connectionUpstream in auth.js).
+   */
+  note(connectionId: string, upstream: string, status: number | null | undefined, error: unknown): SameRequestErrorAgreement;
 }
 
 export function createSameRequestErrorTally(stopAfter: number = SAME_REQUEST_ERROR_STOP_AFTER): SameRequestErrorTally {
-  const accountsBySignature = new Map<string, Set<string>>();
-  const agreeing = (signature: string, connectionId: string): number => {
-    let accounts = accountsBySignature.get(signature);
-    if (!accounts) accountsBySignature.set(signature, (accounts = new Set()));
-    accounts.add(connectionId);
-    return accounts.size;
+  const membersBySignature = new Map<string, Set<string>>();
+  const agreeing = (signature: string, member: string): number => {
+    let members = membersBySignature.get(signature);
+    if (!members) membersBySignature.set(signature, (members = new Set()));
+    members.add(member);
+    return members.size;
   };
+  // One upstream agreeing with itself proves nothing about another.
+  const exactAfter = Math.max(stopAfter, 2);
   return {
     stopAfter,
-    note(connectionId, status, error) {
+    note(connectionId, upstream, status, error) {
       if (stopAfter <= 0) return null;
       const signatures = requestErrorSignatures(status, error);
       if (!signatures) return null;
       const normalized = agreeing(`n ${signatures.normalized}`, connectionId);
-      const exact = agreeing(`x ${signatures.exact}`, connectionId);
-      if (exact >= stopAfter) return "exact";
+      if (signatures.exact !== null && agreeing(`x ${signatures.exact}`, upstream) >= exactAfter) return "exact";
       return normalized >= stopAfter ? "normalized" : null;
     },
   };

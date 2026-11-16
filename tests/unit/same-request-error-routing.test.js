@@ -1,12 +1,13 @@
-// On a custom endpoint whose keys all reach one upstream, a request every key
-// refuses the same way (a prompt longer than the model's context window, a tool
-// schema the upstream rejects) stops the account walk once two keys gave the
-// same request-shaped error, instead of costing one upstream call per key
-// before failing with that error anyway. Request-shaped means a 413, or a
-// 400/422 matching SAME_REQUEST_ERROR_PATTERNS, and in both cases no veto
-// (key, billing, limit, plan or organization wording). Keys on one upstream
-// match up to numbers; when any key has its own base URL they must give the
-// very same message. Any other error and built-in providers keep walking.
+// On a custom endpoint, a request every key refuses the same way (a prompt
+// longer than the model's context window, a tool schema the upstream rejects)
+// stops the account walk once enough keys gave the same request-shaped error,
+// instead of costing one upstream call per key before failing with that error
+// anyway. Request-shaped means a 413, or a 400/422 matching
+// SAME_REQUEST_ERROR_PATTERNS, and in both cases no veto (key, billing, limit,
+// plan or organization wording). When the keys all reach one upstream, two
+// keys' messages match up to numbers. When they don't, two distinct upstreams
+// must give the very same message with a number in it (never a 413). Any other
+// error and built-in providers keep walking.
 //
 // Runs the real account loop (handleChat → auth.js against a temporary
 // database); only the upstream call (handleChatCore) is stubbed, returning what
@@ -165,16 +166,41 @@ describe("normalizing a request error", () => {
     expect(SAME_REQUEST_ERROR_STOP_AFTER).toBe(2);
     const tally = createSameRequestErrorTally();
     expect(tally.stopAfter).toBe(2);
-    expect(tally.note("a", 400, "prompt is too long: 1")).toBeNull();
+    expect(tally.note("a", "up-a", 400, "prompt is too long: 1")).toBeNull();
     // The same account again is still one account.
-    expect(tally.note("a", 400, "prompt is too long: 2")).toBeNull();
-    expect(tally.note("b", 422, "prompt is too long: 3")).toBeNull();
+    expect(tally.note("a", "up-a", 400, "prompt is too long: 2")).toBeNull();
+    expect(tally.note("b", "up-b", 422, "prompt is too long: 3")).toBeNull();
     // Same up to numbers: enough for keys on one upstream only.
-    expect(tally.note("b", 400, "prompt is too long: 4")).toBe("normalized");
-    // The very same message, case, spacing at the ends and a relay's request id aside.
-    expect(tally.note("c", 400, " Prompt is too long: 1 (request id: 2026aaa)")).toBe("exact");
-    expect(createSameRequestErrorTally(0).note("a", 400, TOO_LONG)).toBeNull();
-    expect(createSameRequestErrorTally(1).note("a", 400, TOO_LONG)).toBe("exact");
+    expect(tally.note("b", "up-b", 400, "prompt is too long: 4")).toBe("normalized");
+    // The very same message from a second upstream, case, spacing at the ends
+    // and a relay's request id aside.
+    expect(tally.note("c", "up-c", 400, " Prompt is too long: 1 (request id: 2026aaa)")).toBe("exact");
+    expect(createSameRequestErrorTally(0).note("a", "up-a", 400, TOO_LONG)).toBeNull();
+  });
+
+  it("counts upstreams, not keys, on the exact path", () => {
+    const tally = createSameRequestErrorTally();
+    expect(tally.note("a", "up-a", 400, TOO_LONG)).toBeNull();
+    // A second key on the same upstream: agreement up to numbers only.
+    expect(tally.note("b", "up-a", 400, TOO_LONG)).toBe("normalized");
+    expect(tally.note("c", "up-b", 400, TOO_LONG)).toBe("exact");
+  });
+
+  it("never agrees exactly on a 413 or a message with no number", () => {
+    for (const [status, message] of [[413, "Payload Too Large"], [413, "request body too large: 12345 bytes"], [400, "Input is too long for the model."]]) {
+      const tally = createSameRequestErrorTally();
+      tally.note("a", "up-a", status, message);
+      expect(tally.note("b", "up-b", status, message)).toBe("normalized");
+      expect(tally.note("c", "up-c", status, message)).toBe("normalized");
+    }
+  });
+
+  it("needs two upstreams to agree exactly even with a stop after 1", () => {
+    const tally = createSameRequestErrorTally(1);
+    // One key is enough on one upstream...
+    expect(tally.note("a", "up-a", 400, TOO_LONG)).toBe("normalized");
+    // ...but agreement across servers needs a second one.
+    expect(tally.note("b", "up-b", 400, TOO_LONG)).toBe("exact");
   });
 });
 
@@ -506,6 +532,41 @@ describe("the same request error from two accounts", () => {
     expect(warnings).toContain(stopLine("key-2"));
   });
 
+  it("stops on keys of other upstreams at the second upstream that gives the very same message", async () => {
+    const keys = await addKeys(5, apart);
+    upstream.script = [failure(400, smallWindow), failure(400, otherWindow), failure(400, otherWindow)];
+
+    const res = await chat();
+    expect(upstream.calls).toEqual(calls(keys.slice(0, 3)));
+    expect(res.status).toBe(400);
+    expect(warnings).toContain(stopLine("key-3"));
+  });
+
+  it("keeps walking when the two agreeing keys share one upstream and a third key is elsewhere", async () => {
+    const nodeUrl = { baseUrl: "http://upstream-a.example/v1" };
+    const keys = await addKeys(5, { 1: nodeUrl, 2: nodeUrl, 3: { baseUrl: "http://upstream-b.example/v1", ownBaseUrl: true }, 4: nodeUrl, 5: nodeUrl });
+    upstream.script = Array(2).fill(failure(400, TOO_LONG));
+
+    const res = await chat();
+    expect(upstream.calls).toEqual(calls(keys.slice(0, 3)));
+    expect(res.status).toBe(200);
+    expect(stopped()).toBe(false);
+  });
+
+  for (const [label, status, message] of [
+    ["a 400 with no number in it", 400, "Input is too long for the model."],
+    ["a 413", 413, "payload rejected: 12345 bytes"],
+  ]) {
+    it(`keeps walking on keys of other upstreams on the same ${label}`, async () => {
+      const keys = await addKeys(5, apart);
+      upstream.script = Array(5).fill(failure(status, message));
+
+      await chat();
+      expect(upstream.calls).toEqual(calls(keys));
+      expect(stopped()).toBe(false);
+    });
+  }
+
   it("still lets a veto win on keys of other upstreams", async () => {
     const keys = await addKeys(5, apart);
     upstream.script = Array(5).fill(failure(400, `${TOO_LONG} (tokens per min)`));
@@ -648,6 +709,42 @@ describe("where the walk doesn't stop", () => {
       expect(upstream.calls).toEqual(calls(keys));
       expect(res.status).toBe(400);
       expect(stopped()).toBe(false);
+    });
+  });
+
+  describe("with SAME_REQUEST_ERROR_STOP_AFTER=1", () => {
+    let handleChatOne;
+    beforeAll(async () => {
+      vi.stubEnv("SAME_REQUEST_ERROR_STOP_AFTER", "1");
+      vi.resetModules();
+      ({ handleChat: handleChatOne } = await import("@/sse/handlers/chat.js"));
+    });
+    afterAll(() => {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    });
+
+    it("stops at the first such error when the keys share one upstream", async () => {
+      const keys = await addKeys(5);
+      upstream.script = Array(5).fill(failure(400, TOO_LONG));
+
+      const res = await chat(undefined, handleChatOne);
+      expect(upstream.calls).toEqual(calls(keys.slice(0, 1)));
+      expect(res.status).toBe(400);
+    });
+
+    it("walks keys of other upstreams until two of them give the very same message", async () => {
+      const own = (n) => ({ baseUrl: `http://upstream-${n}.example/v1`, ownBaseUrl: true });
+      const keys = await addKeys(5, { 1: own(1), 2: own(2), 3: own(3), 4: own(4), 5: own(5) });
+      upstream.script = [
+        failure(400, "prompt is too long: 12345 tokens > 11000 maximum"),
+        failure(400, TOO_LONG),
+        failure(400, TOO_LONG),
+      ];
+
+      const res = await chat(undefined, handleChatOne);
+      expect(upstream.calls).toEqual(calls(keys.slice(0, 3)));
+      expect(res.status).toBe(400);
     });
   });
 });

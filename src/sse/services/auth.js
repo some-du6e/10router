@@ -110,6 +110,11 @@ async function networkPath(conn) {
   };
 }
 
+/** Where one key's requests go upstream: its base URL, account, region and the like. */
+export function connectionUpstream(conn) {
+  return upstreamOf(conn?.providerSpecificData || {});
+}
+
 /**
  * Every active key of the provider reaches the same upstream: none has its own
  * base URL, and they agree on every upstream field. Keys on different servers

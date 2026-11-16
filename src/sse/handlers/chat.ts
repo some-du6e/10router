@@ -6,6 +6,7 @@ import {
   markAccountUnavailable,
   clearAccountError,
   keysShareOneUpstream,
+  connectionUpstream,
   extractApiKey,
   isValidApiKey,
 } from "../services/auth.js";
@@ -941,10 +942,13 @@ async function routeSingleModelChat(
         return { success: false, status: HTTP_STATUS.GATEWAY_TIMEOUT, error: errorMsg, limited: false, response: errorResponse(HTTP_STATUS.GATEWAY_TIMEOUT, errorMsg) };
       }
       // Enough keys refused this request with the same message: the rest would too.
-      // Keys on one upstream agree up to numbers; keys on different upstreams
-      // must give the very same message, since their limits may differ.
+      // Keys on one upstream agree up to numbers. Otherwise two distinct
+      // upstreams must give the very same message, numbers and all, since their
+      // limits may differ.
       // Built-in providers keep walking: their accounts differ in plan and region.
-      const agreement = customEndpoint ? sameRequestErrors.note(credentials.connectionId, result.status, result.error) : null;
+      const agreement = customEndpoint
+        ? sameRequestErrors.note(credentials.connectionId, connectionUpstream(credentials), result.status, result.error)
+        : null;
       if (agreement === "exact" || (agreement === "normalized" && (sharedUpstream ??= await keysShareOneUpstream(provider)))) {
         log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} same request error (${result.status}) from ${sameRequestErrors.stopAfter} accounts, not trying the rest`);
         return result;
