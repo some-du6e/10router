@@ -191,6 +191,36 @@ export const NETWORK_PATTERN = /\b(enotfound|econnrefused|econnreset|econnaborte
 // Only this much of an error message is classified; bodies can be megabytes.
 export const ERROR_CLASS_MAX_TEXT = 8 * 1024;
 
+// Upstream messages (case-insensitive) that describe the request itself, so
+// every key of a custom endpoint would refuse it the same way
+// (services/sameRequestError.ts): a prompt over the context window, a tool
+// schema the upstream rejects, a thinking budget that doesn't fit. Only these,
+// and a 413, count toward stopping the account walk; any other 4xx keeps
+// trying the next key.
+// The prompt is over the context window or the model's token limit. Only these
+// name a limit, so only these can stop the walk across different upstreams.
+export const SAME_REQUEST_ERROR_LIMIT_PATTERNS = [
+  /maximum context length/i,
+  /context (?:length|window|limit)s? (?:is |was |has been )?exceed/i,
+  /\bexceed(?:s|ed)?\b.{0,40}\bcontext\b/i,
+  /\b(?:model|context)\b.{0,30}\btoken limit\b|\btoken limit\b.{0,30}\b(?:model|context)\b/i,
+  /input tokens? exceed/i,
+  /\b(?:input|request|prompt|payload|body)\s+(?:is\s+)?too (?:long|large)\b/i,
+];
+// A tool schema the upstream rejects, a thinking budget that doesn't fit.
+export const SAME_REQUEST_ERROR_SHAPE_PATTERNS = [
+  /input_schema|json schema|invalid schema|function parameters|\btools?(?:\.\d+|\[\d+\])/i,
+  /budget_tokens/i,
+];
+export const SAME_REQUEST_ERROR_PATTERNS = [...SAME_REQUEST_ERROR_LIMIT_PATTERNS, ...SAME_REQUEST_ERROR_SHAPE_PATTERNS];
+// Wording of a limit on one key, account, organization or plan, which the
+// patterns above can also match ("request too large ... on tokens per min", a
+// hosted tool not enabled for this organization): such an error never counts,
+// since another key may have room or the feature.
+export const SAME_REQUEST_ERROR_KEY_LIMIT = /per (?:min(?:ute)?|hour|day|month)|\b(?:tpm|tpd|rpm|rpd)\b|daily|monthly|in organization|for this (?:key|account)|throttl|please wait|\btier\b|upgrade|your plan|tokens_limit_reached|(?:your|this|the) (?:organi[sz]ation|subscription)/i;
+// Only this much of an error body is read when matching those, parse included.
+export const SAME_REQUEST_ERROR_MAX_TEXT = 64 * 1024;
+
 // A final error a client must not retry: header and value (Codex and the
 // Anthropic/OpenAI SDKs honour it).
 export const SHOULD_RETRY_HEADER = "x-should-retry";

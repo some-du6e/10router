@@ -5,6 +5,7 @@ import {
   getProviderCredentials,
   markAccountUnavailable,
   clearAccountError,
+  keysShareOneUpstream,
   extractApiKey,
   isValidApiKey,
 } from "../services/auth.js";
@@ -27,6 +28,8 @@ import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActi
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS, NON_STREAM_EARLY_HEADERS_MS, STREAM_EARLY_HEADERS_MS } from "open-sse/config/runtimeConfig.js";
 import { isRequestError } from "open-sse/services/accountFallback.js";
+import { createSameRequestErrorTally } from "open-sse/services/sameRequestError.js";
+import { connectionUpstream } from "../services/connectionUpstream.js";
 import { checkModelHang, noteHeadersTimeout, noteModelServed, noteProbeBudget, releaseProbe } from "open-sse/services/modelHang.js";
 import { HEADERS_TIMEOUT } from "open-sse/config/errorConfig.js";
 import { detectFormatByEndpoint, FORMATS } from "open-sse/translator/formats.js";
@@ -691,6 +694,8 @@ async function routeSingleModelChat(
   // Prompt-cache affinity for every other provider: a conversation that asks for
   // a prompt cache prefers the keys that served it recently, which hold that cache.
   const cacheKey = cacheAffinityKey({ provider, model, body, headers: clientRawRequest?.headers, tenant: apiKey });
+  // A custom endpoint: an OpenAI- or Anthropic-compatible node the user added.
+  const customEndpoint = isOpenAICompatibleProvider(provider) || isAnthropicCompatibleProvider(provider);
   const connectionFilter = blockedBilling ? (c: { provider: string; authType?: string }) => !blockedBilling.has(connectionBilling(c)) : null;
   // Total time this request has waited for a warm key, across passes.
   let cacheWaitedMs = 0;
@@ -718,6 +723,12 @@ async function routeSingleModelChat(
   let lockedUntil = 0;
   // Keys tried since this request's first header timeout, that one included.
   let keysSinceHeadersTimeout = 0;
+  // Request-shaped 400/413/422 messages per account on a custom endpoint
+  // (sameRequestError.ts): the same one from enough keys is the request's fault.
+  const sameRequestErrors = createSameRequestErrorTally();
+  // Whether every key of the provider reaches one upstream the same way (same
+  // proxy or relay), read when first needed.
+  let sharedUpstream: boolean | null = null;
 
   while (true) {
     // The client is gone: try no more accounts, and lock none for its abort.
@@ -875,7 +886,7 @@ async function routeSingleModelChat(
     // the next key, in case it was key-specific, but locks nothing: one bad
     // conversation mustn't make the pool "unavailable" for everyone else.
     // Built-in providers keep their usual short locks.
-    if ((isOpenAICompatibleProvider(provider) || isAnthropicCompatibleProvider(provider)) && isRequestError(result.status, result.error)) {
+    if (customEndpoint && isRequestError(result.status, result.error)) {
       log.warn("AUTH", `${credentials.connectionName} request error [${result.status}], not locking`);
       // No-auth providers hand back the same virtual connection whatever is
       // excluded, so "try the next key" would resend the same request forever.
@@ -930,6 +941,20 @@ async function routeSingleModelChat(
         const errorMsg = summarizeAccountFailures(provider, model, accountFailures);
         log.warn("CHAT", `${errorMsg} (no more keys for this request)`);
         return { success: false, status: HTTP_STATUS.GATEWAY_TIMEOUT, error: errorMsg, limited: false, response: errorResponse(HTTP_STATUS.GATEWAY_TIMEOUT, errorMsg) };
+      }
+      // Enough keys refused this request with the same message: the rest would too.
+      // Keys on one upstream agree up to numbers (stopAfter keys). Otherwise
+      // max(stopAfter, 2) distinct upstreams must give the very same context or
+      // token limit message naming both sizes, never a 413, since their limits
+      // may differ.
+      // Built-in providers keep walking: their accounts differ in plan and region.
+      const agreement = customEndpoint
+        ? sameRequestErrors.note(credentials.connectionId, connectionUpstream(credentials), result.status, result.error)
+        : null;
+      if (agreement === "exact" || (agreement === "normalized" && (sharedUpstream ??= await keysShareOneUpstream(provider)))) {
+        const from = agreement === "exact" ? `${sameRequestErrors.exactAfter} upstreams` : `${sameRequestErrors.stopAfter} accounts`;
+        log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} same request error (${result.status}) from ${from}, not trying the rest`);
+        return result;
       }
       // A warm key just rate-limited for a short while stays in play: the next
       // selection waits for it (or picks another warm key) rather than rebuilding

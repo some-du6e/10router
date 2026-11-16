@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools } from "@/lib/localDb";
 import { extractClientApiKey } from "@/shared/utils/clientApiKey.js";
+import { upstreamOf, connectionUpstream } from "./connectionUpstream.js";
 import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey } from "@/lib/db/index.js";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, getQuotaCooldown, isModelLockActive, getModelLockUntil, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL, isHeadersTimeout } from "open-sse/services/accountFallback.js";
@@ -92,11 +93,6 @@ function isModelRefusal(status, errorText) {
     && !isBackoffText(text);
 }
 
-// Per-connection fields executors build the upstream URL from: a custom base
-// URL, an Azure resource, a region or location in the host, an account or
-// project in the path.
-const UPSTREAM_FIELDS = ["baseUrl", "azureEndpoint", "region", "location", "accountId", "projectId"];
-
 // Where a key's requests go: the proxy or relay they leave through, and the
 // upstream they reach.
 async function networkPath(conn) {
@@ -105,8 +101,26 @@ async function networkPath(conn) {
   const proxy = p.connectionProxyEnabled && p.connectionProxyUrl ? p.connectionProxyUrl : "";
   return {
     transport: JSON.stringify([proxy, proxy ? p.connectionNoProxy || "" : "", p.vercelRelayUrl || ""]),
-    upstream: JSON.stringify(UPSTREAM_FIELDS.map(f => String(psd[f] ?? "").trim().replace(/\/+$/, ""))),
+    upstream: upstreamOf(psd),
   };
+}
+
+export { connectionUpstream };
+
+/**
+ * Every active key of the provider reaches one upstream the same way: none has
+ * its own base URL, they agree on every upstream field, and they go through the
+ * same proxy or relay (or none). Keys on different servers can differ in
+ * context window or tier, and a proxy or relay has its own body limit and can
+ * answer a 413 itself, so one key's request error says nothing about another's.
+ */
+export async function keysShareOneUpstream(provider) {
+  const connections = (await getProviderConnections({ provider })).filter(c => c.isActive !== false);
+  const psds = connections.map(c => c.providerSpecificData || {});
+  if (psds.some(psd => psd.ownBaseUrl)) return false;
+  if (new Set(psds.map(upstreamOf)).size > 1) return false;
+  const paths = await Promise.all(connections.map(networkPath));
+  return new Set(paths.map(p => p.transport)).size <= 1;
 }
 
 // Only API keys count: an OAuth token or session cookie that fails to refresh

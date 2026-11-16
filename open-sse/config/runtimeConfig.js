@@ -8,6 +8,8 @@ export const HTTP_STATUS = {
   NOT_ACCEPTABLE: 406,
   REQUEST_TIMEOUT: 408,
   CONFLICT: 409,
+  PAYLOAD_TOO_LARGE: 413,
+  UNPROCESSABLE_ENTITY: 422,
   RATE_LIMITED: 429,
   CLIENT_CLOSED_REQUEST: 499,
   SERVER_ERROR: 500,
@@ -90,6 +92,24 @@ export const CACHE_AFFINITY = {
   // retry it at once and escalate its backoff.
   jitterMs: 250,
 };
+
+// On a custom (OpenAI-/Anthropic-compatible) endpoint, a request error every
+// key would refuse (a prompt longer than the model's context window, a tool
+// schema the upstream rejects) stops the account walk once this many accounts
+// of one model answered it with the same message, instead of trying every key
+// (services/sameRequestError.ts). The message has to read as the request's
+// fault (SAME_REQUEST_ERROR_PATTERNS in errorConfig.js), or the status be 413,
+// and either way pass the vetoes on key, billing, limit and plan wording. Keys
+// on one upstream, reached the same way (same proxy or relay), match up to
+// numbers. When the keys don't all reach one upstream that way, max(this, 2) distinct upstreams must give the very same context or
+// token limit message naming both sizes (two runs of 4+ digits), never a 413.
+// 1 stops at the first such error, only when the keys share one upstream
+// reached the same way (same proxy or relay).
+// Env: SAME_REQUEST_ERROR_STOP_AFTER (0 tries every key, as before, on every
+// node; anything that isn't a whole number falls back to 2).
+export const SAME_REQUEST_ERROR_STOP_AFTER = envInt("SAME_REQUEST_ERROR_STOP_AFTER", 2);
+// The statuses it counts. 401/403/404/429, 5xx and header timeouts never count.
+export const SAME_REQUEST_ERROR_STATUSES = new Set([HTTP_STATUS.BAD_REQUEST, HTTP_STATUS.PAYLOAD_TOO_LARGE, HTTP_STATUS.UNPROCESSABLE_ENTITY]);
 
 // Inter-chunk stall timeout (once tokens are flowing). Generous headroom so
 // slow reasoning models aren't aborted mid-stream. Env: STREAM_STALL_TIMEOUT_MS.
