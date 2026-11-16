@@ -90,7 +90,7 @@ describe("request details keep the client's reasoning effort, not the router's",
     expect(sentBody().reasoning_effort).not.toBe("low");
     const row = savedRow("error");
     expect(row.request.reasoning_effort).toBe("low");
-    expect(row.request.stream).toBe(false);
+    expect(row.providerRequest.reasoning_effort).toBe(sentBody().reasoning_effort);
   });
 
   it("records the client's effort on a successful reply too", async () => {
