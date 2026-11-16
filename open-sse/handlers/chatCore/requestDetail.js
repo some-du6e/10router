@@ -14,9 +14,10 @@ const OPTIONAL_PARAMS = [
   "user", "parallel_tool_calls"
 ];
 
-// The params are deep-copied, so the router editing the body in place later
-// (thinking fields on a same-format route) can't change what was recorded.
-// Messages and input stay shared: they're the big part of a request.
+// The router edits these in place on a same-format route, so they're copied to
+// keep the client's values. Everything else (messages, tools) is kept by reference.
+const COPIED_PARAMS = new Set(["thinking", "reasoning", "output_config"]);
+
 export function extractRequestConfig(body, stream) {
   const config = { model: body.model, stream };
   if (body.messages !== undefined) config.messages = body.messages;
@@ -26,11 +27,11 @@ export function extractRequestConfig(body, stream) {
   for (const param of OPTIONAL_PARAMS) {
     const value = body[param];
     if (value === undefined) continue;
-    if (value === null || typeof value !== "object") {
+    if (COPIED_PARAMS.has(param) && value !== null && typeof value === "object") {
+      try { config[param] = structuredClone(value); } catch { config[param] = value; }
+    } else {
       config[param] = value;
-      continue;
     }
-    try { config[param] = structuredClone(value); } catch { config[param] = value; }
   }
   return config;
 }
