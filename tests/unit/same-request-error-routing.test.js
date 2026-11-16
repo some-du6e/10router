@@ -673,6 +673,41 @@ describe("the same request error from two accounts", () => {
     expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
   });
 
+  it("keeps walking when keys on one URL reach it through different relays, and the direct key serves", async () => {
+    const relay = await db.createProxyPool({ name: `relay-${providerSeq}`, type: "cloudflare", proxyUrl: "https://relay.example/", isActive: true });
+    const nodeUrl = { baseUrl: "http://upstream-a.example/v1" };
+    const viaRelay = { ...nodeUrl, proxyPoolId: relay.id };
+    const keys = await addKeys(5, { 1: viaRelay, 2: viaRelay, 3: nodeUrl, 4: nodeUrl, 5: nodeUrl });
+    // The relay's own body limit answers a 413 on both relayed keys.
+    upstream.script = Array(2).fill(failure(413, "Payload Too Large"));
+
+    const res = await chat();
+    expect(upstream.calls).toEqual(calls(keys.slice(0, 3)));
+    expect(res.status).toBe(200);
+    expect(stopped()).toBe(false);
+  });
+
+  it("keeps walking when keys on one URL differ in HTTP proxy", async () => {
+    const nodeUrl = { baseUrl: "http://upstream-a.example/v1" };
+    const viaProxy = { ...nodeUrl, connectionProxyEnabled: true, connectionProxyUrl: "http://proxy.example:8080" };
+    const keys = await addKeys(5, { 1: viaProxy, 2: viaProxy, 3: nodeUrl, 4: nodeUrl, 5: nodeUrl });
+    upstream.script = Array(2).fill(failure(413, "Payload Too Large"));
+
+    const res = await chat();
+    expect(upstream.calls).toEqual(calls(keys.slice(0, 3)));
+    expect(res.status).toBe(200);
+  });
+
+  it("stops when every key on one URL goes through the same relay", async () => {
+    const relay = await db.createProxyPool({ name: `relay-all-${providerSeq}`, type: "cloudflare", proxyUrl: "https://relay.example/", isActive: true });
+    const viaRelay = { baseUrl: "http://upstream-a.example/v1", proxyPoolId: relay.id };
+    const keys = await addKeys(5, { 1: viaRelay, 2: viaRelay, 3: viaRelay, 4: viaRelay, 5: viaRelay });
+    upstream.script = Array(5).fill(failure(413, "Payload Too Large"));
+
+    await chat();
+    expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
+  });
+
   it("ignores an inactive key on another server", async () => {
     const keys = await addKeys(5);
     await db.createProviderConnection({

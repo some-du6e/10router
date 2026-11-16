@@ -726,7 +726,8 @@ async function routeSingleModelChat(
   // Request-shaped 400/413/422 messages per account on a custom endpoint
   // (sameRequestError.ts): the same one from enough keys is the request's fault.
   const sameRequestErrors = createSameRequestErrorTally();
-  // Whether every key of the provider reaches one upstream, read when first needed.
+  // Whether every key of the provider reaches one upstream the same way (same
+  // proxy or relay), read when first needed.
   let sharedUpstream: boolean | null = null;
 
   while (true) {

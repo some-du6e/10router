@@ -100,8 +100,8 @@ export const CACHE_AFFINITY = {
 // (services/sameRequestError.ts). The message has to read as the request's
 // fault (SAME_REQUEST_ERROR_PATTERNS in errorConfig.js), or the status be 413,
 // and either way pass the vetoes on key, billing, limit and plan wording. Keys
-// on one upstream match up to numbers. When the keys don't all reach one
-// upstream, max(this, 2) distinct upstreams must give the very same context or
+// on one upstream, reached the same way (same proxy or relay), match up to
+// numbers. When the keys don't all reach one upstream that way, max(this, 2) distinct upstreams must give the very same context or
 // token limit message naming both sizes (two runs of 4+ digits), never a 413.
 // 1 stops at the first such error, only when the keys share one upstream.
 // Env: SAME_REQUEST_ERROR_STOP_AFTER (0 tries every key, as before, on every

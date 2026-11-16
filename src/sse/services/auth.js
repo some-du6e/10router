@@ -108,16 +108,19 @@ async function networkPath(conn) {
 export { connectionUpstream };
 
 /**
- * Every active key of the provider reaches the same upstream: none has its own
- * base URL, and they agree on every upstream field. Keys on different servers
- * can differ in context window or tier, so one key's request error says
- * nothing about another's.
+ * Every active key of the provider reaches one upstream the same way: none has
+ * its own base URL, they agree on every upstream field, and they go through the
+ * same proxy or relay (or none). Keys on different servers can differ in
+ * context window or tier, and a proxy or relay has its own body limit and can
+ * answer a 413 itself, so one key's request error says nothing about another's.
  */
 export async function keysShareOneUpstream(provider) {
   const connections = (await getProviderConnections({ provider })).filter(c => c.isActive !== false);
   const psds = connections.map(c => c.providerSpecificData || {});
   if (psds.some(psd => psd.ownBaseUrl)) return false;
-  return new Set(psds.map(upstreamOf)).size <= 1;
+  if (new Set(psds.map(upstreamOf)).size > 1) return false;
+  const paths = await Promise.all(connections.map(networkPath));
+  return new Set(paths.map(p => p.transport)).size <= 1;
 }
 
 // Only API keys count: an OAuth token or session cookie that fails to refresh
