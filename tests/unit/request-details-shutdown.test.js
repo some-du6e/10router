@@ -90,24 +90,31 @@ const closeDb = () => {
   process.exit(0);
 };
 
-beforeAll(async () => {
+const removeListenersAddedSince = (snapshot) => {
+  for (const name of SIGNALS) {
+    for (const listener of process.listeners(name)) {
+      if (!snapshot[name].includes(listener)) process.off(name, listener);
+    }
+  }
+};
+let beforeRepo;
+
+beforeAll(() => {
   vi.stubEnv("ENABLE_REQUEST_LOGS", "true");
   runSignalListeners = gateShutdownSignals(process, () => {});
   process.on("SIGTERM", closeDb);
-  repo = await import("@/lib/db/repos/requestDetailsRepo.js");
+  beforeRepo = Object.fromEntries(SIGNALS.map((name) => [name, process.listeners(name)]));
 });
 
 afterAll(() => {
   process.emit = realEmit;
-  for (const name of SIGNALS) {
-    for (const listener of process.listeners(name)) {
-      if (!before[name].includes(listener)) process.off(name, listener);
-    }
-  }
+  removeListenersAddedSince(before);
   vi.unstubAllEnvs();
 });
 
-beforeEach(() => {
+// Each test gets its own copy of the repo (buffer, running flush, shutdown
+// flag), registered after the adapter's listener, and drops it afterwards.
+beforeEach(async () => {
   state.events.length = 0;
   state.fullData = {};
   state.closed = false;
@@ -115,11 +122,15 @@ beforeEach(() => {
   state.onTransaction = null;
   state.failNextTransaction = false;
   consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-  return () => consoleError.mockRestore();
+  vi.resetModules();
+  repo = await import("@/lib/db/repos/requestDetailsRepo.js");
+  return () => {
+    removeListenersAddedSince(beforeRepo);
+    consoleError.mockRestore();
+  };
 });
 
 describe("request details on shutdown", () => {
-  // Must run first: once a signal has run, the repo stays in shutdown mode.
   it("stops packing full payloads in a running flush once shutdown starts", async () => {
     const first = gate();
     const second = gate();
