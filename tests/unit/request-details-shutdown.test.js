@@ -15,6 +15,7 @@ const state = vi.hoisted(() => ({
   closed: false,
   adapterGates: [],
   onTransaction: null,
+  failNextTransaction: false,
 }));
 
 vi.mock("@/lib/db/driver.js", () => {
@@ -25,6 +26,10 @@ vi.mock("@/lib/db/driver.js", () => {
     driver: "node:sqlite",
     transaction(fn) {
       ensureOpen();
+      if (state.failNextTransaction) {
+        state.failNextTransaction = false;
+        throw new Error("disk I/O error");
+      }
       const result = fn();
       const hook = state.onTransaction;
       state.onTransaction = null;
@@ -108,6 +113,7 @@ beforeEach(() => {
   state.closed = false;
   state.adapterGates = [];
   state.onTransaction = null;
+  state.failNextTransaction = false;
   consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
   return () => consoleError.mockRestore();
 });
@@ -172,6 +178,19 @@ describe("request details on shutdown", () => {
 
     await vi.waitFor(() => expect(state.events).toEqual(["insert row-1", "insert row-2", "insert late-a", "insert late-b"]));
     expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it("still writes later rows after a batch whose transaction failed", async () => {
+    state.failNextTransaction = true;
+    await repo.saveRequestDetail({ id: "lost-1", model: "m" });
+    await repo.saveRequestDetail({ id: "lost-2", model: "m" });
+    await repo.__test__.flush();
+    expect(consoleError).toHaveBeenCalledWith("[requestDetailsRepo] Batch write failed:", expect.any(Error));
+
+    await repo.saveRequestDetail({ id: "kept-1", model: "m" });
+    await repo.saveRequestDetail({ id: "kept-2", model: "m" });
+    await repo.__test__.flush();
+    expect(state.events).toEqual(["insert kept-1", "insert kept-2"]);
   });
 
   it("does not leave an exit listener that can't finish an async write", () => {
