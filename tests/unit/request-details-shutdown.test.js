@@ -9,7 +9,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 const require = createRequire(import.meta.url);
 const { gateShutdownSignals } = require("../../server-drain.js");
 
-const state = vi.hoisted(() => ({ events: [], closed: false, adapterGate: null, onTransaction: null }));
+const state = vi.hoisted(() => ({
+  events: [],
+  fullData: {},
+  closed: false,
+  adapterGates: [],
+  onTransaction: null,
+}));
 
 vi.mock("@/lib/db/driver.js", () => {
   const ensureOpen = () => {
@@ -27,27 +33,43 @@ vi.mock("@/lib/db/driver.js", () => {
     },
     run(sql, params = []) {
       ensureOpen();
-      if (sql.startsWith("INSERT")) state.events.push(`insert ${params[0]}`);
+      if (sql.startsWith("INSERT")) {
+        state.events.push(`insert ${params[0]}`);
+        state.fullData[params[0]] = params[7];
+      }
       return { changes: 0 };
     },
     get() { ensureOpen(); return { c: 0 }; },
     all() { ensureOpen(); return []; },
   };
   return {
+    // Each call waits on the next queued gate, if any.
     getAdapter: async () => {
-      if (state.adapterGate) await state.adapterGate;
+      const gate = state.adapterGates.shift();
+      if (gate) await gate;
       return db;
     },
   };
 });
 
+// Full payloads on: rows over the size cap also get a gzipped full copy.
 vi.mock("@/lib/db/repos/settingsRepo.js", () => ({
   getSettings: async () => ({
     enableObservability: true,
+    showSensitiveRequestDetails: true,
     observabilityBatchSize: 2,
     observabilityFlushIntervalMs: 60_000,
   }),
 }));
+
+function gate() {
+  let open;
+  const promise = new Promise((resolve) => { open = resolve; });
+  return { promise, open };
+}
+
+// Over the 128 KB cap that applies with full payloads on.
+const bigRow = (id) => ({ id, model: "m", request: { messages: [{ role: "user", content: "x".repeat(200_000) }] } });
 
 const SIGNALS = ["SIGTERM", "SIGINT", "beforeExit", "exit"];
 const before = Object.fromEntries(SIGNALS.map((name) => [name, process.listeners(name)]));
@@ -82,14 +104,38 @@ afterAll(() => {
 
 beforeEach(() => {
   state.events.length = 0;
+  state.fullData = {};
   state.closed = false;
-  state.adapterGate = null;
+  state.adapterGates = [];
   state.onTransaction = null;
   consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
   return () => consoleError.mockRestore();
 });
 
 describe("request details on shutdown", () => {
+  // Must run first: once a signal has run, the repo stays in shutdown mode.
+  it("stops packing full payloads in a running flush once shutdown starts", async () => {
+    const first = gate();
+    const second = gate();
+    state.adapterGates = [first.promise, second.promise];
+    await repo.saveRequestDetail(bigRow("big-a"));
+    await repo.saveRequestDetail(bigRow("big-b")); // starts a flush, held at the first gate
+    await repo.saveRequestDetail(bigRow("big-c")); // left for that flush's next pass
+    first.open();
+    // The first pass, before any signal, keeps full payloads.
+    await vi.waitFor(() => expect(state.events).toEqual(["insert big-a", "insert big-b"]));
+    expect(typeof state.fullData["big-a"]).toBe("string");
+    expect(typeof state.fullData["big-b"]).toBe("string");
+
+    // The next pass is held at the second gate when the signal arrives.
+    setTimeout(second.open, 20);
+    await runSignalListeners("SIGTERM");
+
+    expect(state.events).toEqual(["insert big-a", "insert big-b", "insert big-c", "close"]);
+    expect(state.fullData["big-c"]).toBeNull();
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
   it("writes the buffered rows before the adapter registered ahead of it closes the database", async () => {
     await repo.saveRequestDetail({ id: "last-row", model: "m" });
     expect(state.events).toEqual([]);
@@ -101,12 +147,12 @@ describe("request details on shutdown", () => {
   });
 
   it("waits for a flush already running before the database closes", async () => {
-    let open;
-    state.adapterGate = new Promise((resolve) => { open = resolve; });
+    const held = gate();
+    state.adapterGates = [held.promise];
     await repo.saveRequestDetail({ id: "row-a", model: "m" });
     // The second row reaches the batch size and starts a flush, held at getAdapter.
     await repo.saveRequestDetail({ id: "row-b", model: "m" });
-    setTimeout(open, 20);
+    setTimeout(held.open, 20);
 
     await runSignalListeners("SIGTERM");
 

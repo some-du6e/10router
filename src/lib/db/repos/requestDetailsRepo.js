@@ -93,6 +93,7 @@ async function readObservabilityConfig() {
 let writeBuffer = [];
 let flushTimer = null;
 let activeFlush = null;
+let shuttingDown = false;
 
 function sanitizeHeaders(headers) {
   if (!headers || typeof headers !== "object") return {};
@@ -233,13 +234,14 @@ function truncateField(obj, maxSize, fieldJson, key) {
 }
 
 // A flush already running drains the whole buffer, rows added meanwhile too,
-// so callers wait on it rather than start a second one.
-function flushToDatabase(options) {
-  if (!activeFlush && writeBuffer.length > 0) activeFlush = writeBufferedRows(options);
+// so callers wait on it rather than start a second one. Shutdown joins it as
+// well; it stops packing full payloads once `shuttingDown` is set.
+function flushToDatabase() {
+  if (!activeFlush && writeBuffer.length > 0) activeFlush = writeBufferedRows();
   return activeFlush ?? Promise.resolve();
 }
 
-async function writeBufferedRows({ skipFullData = false } = {}) {
+async function writeBufferedRows() {
   try {
     // Drain entire buffer (loop in case more pushed during await)
     while (writeBuffer.length > 0) {
@@ -249,8 +251,9 @@ async function writeBufferedRows({ skipFullData = false } = {}) {
       const config = await getObservabilityConfig();
 
       // sql.js rewrites the whole DB file on every write, so it skips full payloads.
-      // Shutdown skips them too: gzip callbacks can't run once the process exits.
-      const keepFull = config.keepFullData && !skipFullData && db.driver !== "sql.js";
+      // So does a flush once shutdown starts, checked per row: gzip eats into
+      // the drain's listener budget, and the database closes when that runs out.
+      const keepFull = config.keepFullData && !shuttingDown && db.driver !== "sql.js";
       const rows = [];
       for (const item of items) {
         if (!item.id) item.id = generateDetailId(item.model);
@@ -273,7 +276,7 @@ async function writeBufferedRows({ skipFullData = false } = {}) {
           response: truncateField(item.response, config.maxJsonSize, fieldJson, "response"),
           errorClass: item.errorClass || undefined,
         };
-        rows.push({ record, fullData: keepFull ? await packFullData(item, record, fieldJson) : null });
+        rows.push({ record, fullData: keepFull && !shuttingDown ? await packFullData(item, record, fieldJson) : null });
       }
       // The setting may have been turned off (and stored payloads cleared)
       // while compression was awaited. Nothing awaits between this check and
@@ -430,8 +433,9 @@ export async function getRequestDetailFullData(id) {
 }
 
 const _shutdownHandler = () => {
+  shuttingDown = true;
   if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
-  return flushToDatabase({ skipFullData: true });
+  return flushToDatabase();
 };
 
 // The database adapters close the connection on these signals, and the drain
