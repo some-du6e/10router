@@ -92,7 +92,7 @@ async function readObservabilityConfig() {
 
 let writeBuffer = [];
 let flushTimer = null;
-let isFlushing = false;
+let activeFlush = null;
 
 function sanitizeHeaders(headers) {
   if (!headers || typeof headers !== "object") return {};
@@ -232,10 +232,16 @@ function truncateField(obj, maxSize, fieldJson, key) {
   return obj;
 }
 
-async function flushToDatabase({ skipFullData = false } = {}) {
-  if (isFlushing) return;
-  if (writeBuffer.length === 0) return;
-  isFlushing = true;
+// A flush already running drains the whole buffer, rows added meanwhile too,
+// so callers wait on it rather than start a second one.
+function flushToDatabase(options) {
+  if (!activeFlush && writeBuffer.length > 0) {
+    activeFlush = writeBufferedRows(options).finally(() => { activeFlush = null; });
+  }
+  return activeFlush ?? Promise.resolve();
+}
+
+async function writeBufferedRows({ skipFullData = false } = {}) {
   try {
     // Drain entire buffer (loop in case more pushed during await)
     while (writeBuffer.length > 0) {
@@ -302,8 +308,6 @@ async function flushToDatabase({ skipFullData = false } = {}) {
     }
   } catch (e) {
     console.error("[requestDetailsRepo] Batch write failed:", e);
-  } finally {
-    isFlushing = false;
   }
 }
 
@@ -423,21 +427,21 @@ export async function getRequestDetailFullData(id) {
   }
 }
 
-const _shutdownHandler = async () => {
+const _shutdownHandler = () => {
   if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
-  if (writeBuffer.length > 0) await flushToDatabase({ skipFullData: true });
+  return flushToDatabase({ skipFullData: true });
 };
 
+// The database adapters close the connection on these signals, and the drain
+// (server-drain.js) runs listeners in the order they were added, awaiting each.
+// Prepending puts the flush ahead of the close whichever registered first.
 function ensureShutdownHandler() {
   process.off("beforeExit", _shutdownHandler);
-  process.off("SIGINT", _shutdownHandler);
-  process.off("SIGTERM", _shutdownHandler);
-  process.off("exit", _shutdownHandler);
-
   process.on("beforeExit", _shutdownHandler);
-  process.on("SIGINT", _shutdownHandler);
-  process.on("SIGTERM", _shutdownHandler);
-  process.on("exit", _shutdownHandler);
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.off(signal, _shutdownHandler);
+    process.prependListener(signal, _shutdownHandler);
+  }
 }
 
 ensureShutdownHandler();
