@@ -16,7 +16,20 @@ const state = vi.hoisted(() => ({
   adapterGates: [],
   onTransaction: null,
   failNextTransaction: false,
+  onGzip: null,
 }));
+
+// Lets a test act while a full payload is being compressed.
+vi.mock("node:zlib", async (importOriginal) => {
+  const real = await importOriginal();
+  const gzip = (buffer, callback) => {
+    const hook = state.onGzip;
+    state.onGzip = null;
+    hook?.();
+    real.gzip(buffer, callback);
+  };
+  return { ...real, default: { ...real, gzip }, gzip };
+});
 
 vi.mock("@/lib/db/driver.js", () => {
   const ensureOpen = () => {
@@ -121,6 +134,7 @@ beforeEach(async () => {
   state.adapterGates = [];
   state.onTransaction = null;
   state.failNextTransaction = false;
+  state.onGzip = null;
   consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
   vi.resetModules();
   repo = await import("@/lib/db/repos/requestDetailsRepo.js");
@@ -150,6 +164,20 @@ describe("request details on shutdown", () => {
 
     expect(state.events).toEqual(["insert big-a", "insert big-b", "insert big-c", "close"]);
     expect(state.fullData["big-c"]).toBeNull();
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it("skips full payloads for the rest of a pass when the signal lands while its first row is compressed", async () => {
+    let signalled;
+    state.onGzip = () => { signalled = runSignalListeners("SIGTERM"); };
+    await repo.saveRequestDetail(bigRow("mid-a"));
+    await repo.saveRequestDetail(bigRow("mid-b")); // starts one pass with both rows
+    await vi.waitFor(() => expect(signalled).toBeDefined());
+    await signalled;
+
+    expect(state.events).toEqual(["insert mid-a", "insert mid-b", "close"]);
+    expect(typeof state.fullData["mid-a"]).toBe("string");
+    expect(state.fullData["mid-b"]).toBeNull();
     expect(consoleError).not.toHaveBeenCalled();
   });
 
