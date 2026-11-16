@@ -6,7 +6,7 @@ const OPTIONAL_PARAMS = [
   "temperature", "top_p", "top_k",
   "max_tokens", "max_completion_tokens",
   "thinking", "reasoning", "enable_thinking", "thinking_budget",
-  "output_config", "reasoning_effort", "thinkingConfig", "generationConfig",
+  "output_config", "reasoning_effort",
   "presence_penalty", "frequency_penalty",
   "seed", "stop", "tools", "tool_choice",
   "response_format", "prediction", "store", "metadata",
