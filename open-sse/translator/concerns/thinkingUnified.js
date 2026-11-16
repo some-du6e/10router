@@ -186,24 +186,17 @@ function geminiLevelOutputFloor(level) {
 // Gemini nests thinkingConfig under generationConfig. gemini-cli / antigravity wrap
 // the whole request in a { request: { generationConfig } } envelope — target the
 // envelope's generationConfig when present, else the top-level one.
-// On a Gemini-to-Gemini route these are the client's objects, which the next
-// combo model or account reuses, so edits go to fresh copies set on the body.
-function ownObject(value) {
-  return value && typeof value === "object" ? { ...value } : {};
-}
-
 function getGeminiGenerationConfig(body) {
   if (body.request && typeof body.request === "object") {
-    body.request = { ...body.request, generationConfig: ownObject(body.request.generationConfig) };
+    if (!body.request.generationConfig || typeof body.request.generationConfig !== "object") {
+      body.request.generationConfig = {};
+    }
     return body.request.generationConfig;
   }
-  body.generationConfig = ownObject(body.generationConfig);
+  if (!body.generationConfig || typeof body.generationConfig !== "object") {
+    body.generationConfig = {};
+  }
   return body.generationConfig;
-}
-
-function withoutThinkingConfig(generationConfig) {
-  const { thinkingConfig: _thinkingConfig, ...rest } = generationConfig;
-  return rest;
 }
 
 function setGeminiThinking(body, tc) {
@@ -230,12 +223,8 @@ function stripAll(body) {
   delete body.enable_thinking;
   delete body.thinking_budget;
   delete body.output_config;
-  if (body.generationConfig?.thinkingConfig !== undefined) {
-    body.generationConfig = withoutThinkingConfig(body.generationConfig);
-  }
-  if (body.request?.generationConfig?.thinkingConfig !== undefined) {
-    body.request = { ...body.request, generationConfig: withoutThinkingConfig(body.request.generationConfig) };
-  }
+  if (body.generationConfig) delete body.generationConfig.thinkingConfig;
+  if (body.request?.generationConfig) delete body.request.generationConfig.thinkingConfig;
 }
 
 // Apply unified thinking config to body in the resolved provider-native format.

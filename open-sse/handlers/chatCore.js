@@ -18,7 +18,8 @@ import { injectLimitHoldNotice } from "../utils/limitHoldNotice.js";
 import { trackPendingRequest, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { getExecutor } from "../executors/index.js";
 import { supportsGrokCliReasoningEffort } from "../config/grokCli.js";
-import { buildRequestDetail, extractRequestConfig, THINKING_OBJECT_KEYS } from "./chatCore/requestDetail.js";
+import { buildRequestDetail, extractRequestConfig } from "./chatCore/requestDetail.js";
+import { THINKING_OBJECT_KEYS, HISTORY_KEYS, ITEM_LIST_KEYS, OBJECT_LIST_KEYS, NESTED_ITEM_KEYS, ENVELOPE_KEY } from "../config/attemptCopy.js";
 import { handleForcedSSEToJson } from "./chatCore/sseToJsonHandler.js";
 import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
 import { jsonReplyToSse } from "./chatCore/jsonToSse.js";
@@ -108,16 +109,52 @@ export function clientReceivesStream({ body, provider, model, sourceFormat, clie
   return !clientDemandsJson(body, clientRawRequest?.headers);
 }
 
-// A shallow copy of body with its own copies of the nested thinking objects.
-function withOwnThinkingObjects(body) {
-  if (!body || typeof body !== "object") return body;
-  const keys = THINKING_OBJECT_KEYS.filter((key) => body[key] !== null && typeof body[key] === "object");
-  if (keys.length === 0) return body;
-  const copy = { ...body };
-  for (const key of keys) {
+const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const shallowCopy = (value) => (isObject(value) ? { ...value } : value);
+
+// A history item (message, input item, Gemini content) with its own lists of
+// shallow-copied blocks.
+function copyItem(item) {
+  if (!isObject(item)) return item;
+  const copy = { ...item };
+  for (const key of ITEM_LIST_KEYS) {
+    if (Array.isArray(item[key])) copy[key] = item[key].map(shallowCopy);
+  }
+  return copy;
+}
+
+function copyLevels(obj) {
+  const copy = { ...obj };
+  for (const key of HISTORY_KEYS) {
+    if (Array.isArray(obj[key])) copy[key] = obj[key].map(copyItem);
+  }
+  for (const key of OBJECT_LIST_KEYS) {
+    if (Array.isArray(obj[key])) copy[key] = obj[key].map(shallowCopy);
+  }
+  for (const key of NESTED_ITEM_KEYS) {
+    if (isObject(obj[key])) copy[key] = copyItem(obj[key]);
+  }
+  return copy;
+}
+
+// The attempt's own copy of the body, down to the depth translators and
+// executors edit (config/attemptCopy.js), so nothing it changes reaches the
+// next attempt or the client's request.
+function copyBodyForAttempt(body) {
+  if (!isObject(body)) return body;
+  const copy = copyLevels(body);
+  if (isObject(body[ENVELOPE_KEY])) copy[ENVELOPE_KEY] = copyLevels(body[ENVELOPE_KEY]);
+  for (const key of THINKING_OBJECT_KEYS) {
+    if (body[key] === null || typeof body[key] !== "object") continue;
     try { copy[key] = structuredClone(body[key]); } catch { copy[key] = { ...body[key] }; }
   }
   return copy;
+}
+
+// The client's history list, which every attempt at one request shares.
+function clientHistoryOf(body) {
+  const lists = [...HISTORY_KEYS.map((key) => body?.[key]), body?.[ENVELOPE_KEY]?.contents];
+  return lists.find(Array.isArray) || null;
 }
 
 /**
@@ -155,6 +192,8 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   const reqTag = log?.tagForSession ? log.tagForSession(sessionSeed) : (log?.nextTag ? log.nextTag() : "");
 
   const sourceFormat = sourceFormatOverride || detectFormat(body);
+  // Taken before anything replaces it: images fetched for one attempt are kept per client request.
+  const clientHistory = clientHistoryOf(body);
 
   // A previous turn may have been paused by a rate-limit hold, which wrote a
   // status banner into the assistant message the client just sent back. Add a
@@ -197,8 +236,8 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   // adds its own thinking settings below or translation edits the body.
   const clientRequestConfig = extractRequestConfig(body, undefined);
   // The account and combo loops reuse the client's body for the next attempt, and
-  // translators and executors edit these objects in place.
-  body = withOwnThinkingObjects(body);
+  // translators and executors edit its nested objects in place.
+  body = copyBodyForAttempt(body);
 
   // Inject provider-level thinking config override (only if client hasn't set)
   // on/off → extended type (body.thinking), none/low/medium/high → effort type (body.reasoning_effort)
@@ -262,7 +301,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     }
     // Convert remote image URLs to base64 for targets that can't fetch URLs.
     try {
-      const n = await prefetchRemoteImages(body, sourceFormat, targetFormat, { signal: undefined });
+      const n = await prefetchRemoteImages(body, sourceFormat, targetFormat, { signal: undefined, cacheKey: clientHistory });
       if (n > 0) log?.debug?.("MODALITY", `prefetched ${n} remote image(s) for ${targetFormat}`);
     } catch (e) { log?.warn?.("MODALITY", `image prefetch failed: ${e.message}`); }
   }

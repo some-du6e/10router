@@ -120,7 +120,9 @@ jobs:
           tests/unit/devin-cli-executor.test.js
           open-sse/translator/concerns/modality.js
           open-sse/translator/concerns/prefetch.js
-          open-sse/translator/concerns/thinkingUnified.js
+          open-sse/translator/concerns/toolCall.js
+          open-sse/config/attemptCopy.js
+          open-sse/handlers/chatCore.js
           tests/unit/combo-attempt-isolation.test.js
           open-sse/translator/request/openai-responses.js
           open-sse/translator/formats/responsesApi.js

@@ -1,9 +1,9 @@
 /**
  * The account and combo loops give each attempt a shallow copy of the client's
- * body, so its messages, blocks and generationConfig are shared with the next
- * attempt. Code that changes them for one model must build new objects: the
- * next model (or key) has to get the request as the client sent it, and
- * request details record the client's messages by reference.
+ * body ({ ...body, model }), so its messages, blocks and generationConfig are
+ * the client's. chatCore copies them per attempt before anything edits them, so
+ * the next attempt (another key or combo model) gets the request as the client
+ * sent it, and request details record what the client sent.
  */
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -16,22 +16,35 @@ const { executeMock, saveRequestDetailMock } = vi.hoisted(() => ({
 const MODEL_CAPS = {
   "text-model": { vision: false },
   "vision-model": { vision: true },
-  "plain-model": { reasoning: false },
+  "audio-model": { audioInput: true },
+  "no-audio-model": { audioInput: true },
   "thinking-model": { reasoning: true, thinkingFormat: "gemini-budget", thinkingRange: undefined },
 };
+const baseModel = (model) => String(model || "").replace(/\(.*\)$/, "");
 vi.mock("../../open-sse/providers/capabilities.js", async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,
     getCapabilitiesForModel: (provider, model) => ({
       ...actual.getCapabilitiesForModel(provider, model),
-      ...MODEL_CAPS[String(model || "").replace(/\(.*\)$/, "")],
+      ...MODEL_CAPS[baseModel(model)],
     }),
   };
 });
+// A model whose provider config strips audio before sending.
+vi.mock("../../open-sse/config/providerModels.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    getModelStrip: (alias, model) => (model === "no-audio-model" ? ["audio"] : actual.getModelStrip(alias, model)),
+  };
+});
+const IMAGE_URL = "https://img.example.test/cat.png";
+const OTHER_IMAGE_URL = "https://img.example.test/dog.png";
+const MISSING_IMAGE_URL = "https://img.example.test/missing.png";
 vi.mock("../../open-sse/translator/concerns/image.js", async (importOriginal) => ({
   ...(await importOriginal()),
-  fetchImageAsBase64: vi.fn(async () => ({ url: "data:image/png;base64,QUJD", mimeType: "image/png" })),
+  fetchImageAsBase64: vi.fn(async (url) => (url.includes("missing") ? null : { url: "data:image/png;base64,QUJD", mimeType: "image/png" })),
 }));
 vi.mock("../../open-sse/executors/index.js", () => ({
   getExecutor: vi.fn(() => ({ execute: executeMock, noAuth: true })),
@@ -57,213 +70,216 @@ vi.mock("@/lib/usageDb.js", () => ({
 }));
 
 let handleChatCore;
-let stripUnsupportedModalities;
-let prefetchRemoteImages;
-let applyThinking;
-let translateRequest;
-let FORMATS;
+let fetchImageAsBase64;
 
-const NO_VISION = { vision: false, audioInput: true, pdf: true };
-const IMAGE_URL = "https://img.example.test/cat.png";
 const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), line: vi.fn() };
+// What each executor call was sent, snapshotted when it was sent.
+const sent = [];
+const sentJson = (call) => JSON.stringify(sent[call]);
+const rows = () => saveRequestDetailMock.mock.calls.map((c) => c[0]);
 
 beforeAll(async () => {
   ({ handleChatCore } = await import("../../open-sse/handlers/chatCore.js"));
-  ({ stripUnsupportedModalities } = await import("../../open-sse/translator/concerns/modality.js"));
-  ({ prefetchRemoteImages } = await import("../../open-sse/translator/concerns/prefetch.js"));
-  ({ applyThinking } = await import("../../open-sse/translator/concerns/thinkingUnified.js"));
-  ({ translateRequest } = await import("../../open-sse/translator/index.js"));
-  ({ FORMATS } = await import("../../open-sse/translator/formats.js"));
+  ({ fetchImageAsBase64 } = await import("../../open-sse/translator/concerns/image.js"));
 }, 30000);
 
 beforeEach(() => {
-  executeMock.mockReset();
+  sent.length = 0;
   saveRequestDetailMock.mockClear();
-});
-
-// Run fn on a shallow copy of clientBody, as the attempt loop does, and check
-// the client's body is still exactly what it was.
-function onAttemptCopy(clientBody, fn) {
-  const before = structuredClone(clientBody);
-  const attempt = { ...clientBody };
-  fn(attempt);
-  expect(clientBody).toEqual(before);
-  return attempt;
-}
-
-async function onAttemptCopyAsync(clientBody, fn) {
-  const before = structuredClone(clientBody);
-  const attempt = { ...clientBody };
-  await fn(attempt);
-  expect(clientBody).toEqual(before);
-  return attempt;
-}
-
-describe("media stripping leaves the client's messages alone", () => {
-  it("openai: drops the image from this attempt only", () => {
-    const clientBody = { messages: [
-      { role: "user", content: [{ type: "text", text: "what is this?" }, { type: "image_url", image_url: { url: IMAGE_URL } }], images: ["x"], attachments: [{ contentType: "image/png", url: IMAGE_URL }] },
-    ] };
-    const attempt = onAttemptCopy(clientBody, (body) => stripUnsupportedModalities(body, FORMATS.OPENAI, NO_VISION));
-    expect(attempt.messages[0].content.some((b) => b.type === "image_url")).toBe(false);
-    expect(attempt.messages[0].images).toBeUndefined();
-    expect(attempt.messages[0].attachments).toEqual([]);
-  });
-
-  it("claude: drops images, including one inside a tool_result, from this attempt only", () => {
-    const clientBody = { messages: [
-      { role: "user", content: [
-        { type: "tool_result", tool_use_id: "t1", content: [{ type: "image", source: { type: "url", url: IMAGE_URL } }] },
-        { type: "image", source: { type: "url", url: IMAGE_URL } },
-      ] },
-    ] };
-    const attempt = onAttemptCopy(clientBody, (body) => stripUnsupportedModalities(body, FORMATS.CLAUDE, NO_VISION));
-    const [toolResult, ...rest] = attempt.messages[0].content;
-    expect(toolResult.content.some((b) => b.type === "image")).toBe(false);
-    expect(rest.some((b) => b.type === "image")).toBe(false);
-  });
-
-  it("responses: drops input_image from this attempt only", () => {
-    const clientBody = { input: [
-      { type: "function_call_output", call_id: "c1", output: [{ type: "input_image", image_url: IMAGE_URL }] },
-      { role: "user", content: [{ type: "input_image", image_url: IMAGE_URL }] },
-    ] };
-    const attempt = onAttemptCopy(clientBody, (body) => stripUnsupportedModalities(body, FORMATS.OPENAI_RESPONSES, NO_VISION));
-    expect(attempt.input[0].output.some((b) => b.type === "input_image")).toBe(false);
-    expect(attempt.input[1].content.some((b) => b.type === "input_image")).toBe(false);
-  });
-
-  it("gemini and antigravity: drop inline images from this attempt only", () => {
-    const parts = () => [{ text: "hi" }, { inlineData: { mimeType: "image/png", data: "QUJD" } }];
-    const gemini = onAttemptCopy({ contents: [{ role: "user", parts: parts() }] },
-      (body) => stripUnsupportedModalities(body, FORMATS.GEMINI, NO_VISION));
-    expect(gemini.contents[0].parts.some((p) => p.inlineData)).toBe(false);
-    const antigravity = onAttemptCopy({ request: { contents: [{ role: "user", parts: parts() }] } },
-      (body) => stripUnsupportedModalities(body, FORMATS.ANTIGRAVITY, NO_VISION));
-    expect(antigravity.request.contents[0].parts.some((p) => p.inlineData)).toBe(false);
-  });
-
-  it("a model's strip list drops the image from this attempt only", () => {
-    const clientBody = {
-      model: "text-model",
-      messages: [{ role: "user", content: [{ type: "text", text: "hi" }, { type: "image_url", image_url: { url: IMAGE_URL } }] }],
-    };
-    const before = structuredClone(clientBody);
-    const out = translateRequest(FORMATS.OPENAI, FORMATS.OPENAI, "text-model", { ...clientBody }, false, null, "openai", null, ["image"]);
-    expect(JSON.stringify(out.messages)).not.toContain(IMAGE_URL);
-    expect(clientBody).toEqual(before);
-  });
-});
-
-describe("image prefetch leaves the client's messages alone", () => {
-  it("openai, claude and gemini: inline the image in this attempt only", async () => {
-    const openai = await onAttemptCopyAsync(
-      { messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: IMAGE_URL, detail: "low" } }] }] },
-      (body) => prefetchRemoteImages(body, FORMATS.OPENAI, FORMATS.OLLAMA));
-    expect(openai.messages[0].content[0].image_url).toEqual({ url: "data:image/png;base64,QUJD", detail: "low" });
-
-    const claude = await onAttemptCopyAsync(
-      { messages: [{ role: "user", content: [{ type: "image", source: { type: "url", url: IMAGE_URL } }] }] },
-      (body) => prefetchRemoteImages(body, FORMATS.CLAUDE, FORMATS.KIRO));
-    expect(claude.messages[0].content[0].source).toEqual({ type: "base64", media_type: "image/png", data: "QUJD" });
-
-    const gemini = await onAttemptCopyAsync(
-      { contents: [{ role: "user", parts: [{ fileData: { mimeType: "image/png", fileUri: IMAGE_URL } }] }] },
-      (body) => prefetchRemoteImages(body, FORMATS.GEMINI, FORMATS.GEMINI));
-    expect(gemini.contents[0].parts[0]).toEqual({ inlineData: { mimeType: "image/png", data: "QUJD" } });
-  });
-
-  it("counts every converted image and fetches a repeated URL once", async () => {
-    const { fetchImageAsBase64 } = await import("../../open-sse/translator/concerns/image.js");
-    fetchImageAsBase64.mockClear();
-    const block = () => ({ type: "image_url", image_url: { url: IMAGE_URL } });
-    const body = { messages: [{ role: "user", content: [block(), block()] }] };
-    expect(await prefetchRemoteImages(body, FORMATS.OPENAI, FORMATS.OLLAMA)).toBe(2);
-    expect(fetchImageAsBase64).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("Gemini thinking settings leave the client's generationConfig alone", () => {
-  const generationConfig = () => ({ temperature: 0.2, maxOutputTokens: 100, thinkingConfig: { thinkingBudget: 512 } });
-
-  it("a model without reasoning drops thinkingConfig from this attempt only", () => {
-    const attempt = onAttemptCopy({ contents: [], generationConfig: generationConfig() },
-      (body) => applyThinking(FORMATS.GEMINI, "plain-model", body, "gemini"));
-    expect(attempt.generationConfig).toEqual({ temperature: 0.2, maxOutputTokens: 100 });
-  });
-
-  it("a model suffix replaces thinkingConfig in this attempt only", () => {
-    const attempt = onAttemptCopy({ contents: [], generationConfig: generationConfig() },
-      (body) => applyThinking(FORMATS.GEMINI, "thinking-model(high)", body, "gemini"));
-    expect(attempt.generationConfig.thinkingConfig.thinkingBudget).not.toBe(512);
-    expect(attempt.generationConfig.maxOutputTokens).toBeGreaterThan(100);
-  });
-
-  it("the request envelope's generationConfig is copied too", () => {
-    const stripped = onAttemptCopy({ request: { contents: [], generationConfig: generationConfig() } },
-      (body) => applyThinking(FORMATS.GEMINI_CLI, "plain-model", body, "gemini-cli"));
-    expect(stripped.request.generationConfig.thinkingConfig).toBeUndefined();
-    const raised = onAttemptCopy({ request: { contents: [], generationConfig: generationConfig() } },
-      (body) => applyThinking(FORMATS.GEMINI_CLI, "thinking-model(high)", body, "gemini-cli"));
-    expect(raised.request.generationConfig.thinkingConfig.thinkingBudget).not.toBe(512);
-  });
-});
-
-// The scenarios from the bug, through chatCore with a failing upstream.
-describe("the next combo model gets the client's request", () => {
-  const sentBody = (call) => executeMock.mock.calls[call][0].body;
-  const rows = () => saveRequestDetailMock.mock.calls.map((c) => c[0]);
-
-  function failingUpstream() {
-    executeMock.mockImplementation(async ({ body }) => ({
+  fetchImageAsBase64.mockClear();
+  executeMock.mockReset();
+  executeMock.mockImplementation(async ({ body }) => {
+    sent.push(structuredClone(body));
+    return {
       response: new Response(JSON.stringify({ error: { message: "bad request" } }), { status: 400, headers: { "content-type": "application/json" } }),
       url: "https://upstream.example.test", headers: {}, transformedBody: body,
-    }));
-  }
+    };
+  });
+});
 
-  function attempt(clientBody, provider, model, sourceFormatOverride) {
-    const body = { ...clientBody, model: `${provider}/${model}` };
-    return handleChatCore({
-      body,
-      modelInfo: { provider, model },
-      credentials: { apiKey: "k", providerSpecificData: {} },
-      clientRawRequest: { endpoint: "/v1/chat/completions", body, headers: {} },
-      connectionId: "conn-1",
-      sourceFormatOverride,
-      log,
-    });
-  }
+// One attempt, given the client's body the way the account and combo loops do.
+function attempt(clientBody, provider, model, sourceFormatOverride) {
+  const body = { ...clientBody, model: `${provider}/${model}` };
+  return handleChatCore({
+    body,
+    modelInfo: { provider, model },
+    credentials: { apiKey: "k", providerSpecificData: {} },
+    clientRawRequest: { endpoint: "/v1/chat/completions", body, headers: {} },
+    connectionId: "conn-1",
+    sourceFormatOverride,
+    log,
+  });
+}
 
-  it("a vision model still gets the image after a text-only model dropped it", async () => {
-    failingUpstream();
+// Run the attempts in order and check the client's body never changed.
+async function runAttempts(clientBody, attempts) {
+  const before = structuredClone(clientBody);
+  for (const [provider, model, sourceFormat] of attempts) {
+    await attempt(clientBody, provider, model, sourceFormat);
+    expect(clientBody).toEqual(before);
+  }
+}
+
+describe("the next combo model gets the client's media", () => {
+  it("OpenAI: a vision model still gets the image a text-only model dropped", async () => {
     const clientBody = {
       model: "combo-a", stream: false,
-      messages: [{ role: "user", content: [{ type: "text", text: "what is this?" }, { type: "image_url", image_url: { url: IMAGE_URL } }] }],
+      messages: [{
+        role: "user",
+        content: [{ type: "text", text: "what is this?" }, { type: "image_url", image_url: { url: IMAGE_URL } }],
+        experimental_attachments: [{ contentType: "image/png", url: OTHER_IMAGE_URL }],
+      }],
     };
-    const before = structuredClone(clientBody);
-
-    await attempt(clientBody, "openai", "text-model");
-    expect(JSON.stringify(sentBody(0).messages)).not.toContain(IMAGE_URL);
-
-    await attempt(clientBody, "openai", "vision-model");
-    expect(JSON.stringify(sentBody(1).messages)).toContain(IMAGE_URL);
-    expect(clientBody).toEqual(before);
-    expect(JSON.stringify(rows()[1].request.messages)).toContain(IMAGE_URL);
+    await runAttempts(clientBody, [["openai", "text-model"], ["openai", "vision-model"]]);
+    expect(sentJson(0)).not.toContain(IMAGE_URL);
+    expect(sentJson(1)).toContain(IMAGE_URL);
+    // The first attempt's request details hold the client's message, not the stripped one.
+    const recorded = rows()[0].request.messages[0];
+    expect(JSON.stringify(recorded.content)).toContain(IMAGE_URL);
+    expect(recorded.experimental_attachments).toHaveLength(1);
   });
 
-  it("a thinking model still gets the client's thinkingConfig after a model without reasoning dropped it", async () => {
-    failingUpstream();
+  it("Claude: a vision model still gets the image inside a tool_result", async () => {
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "QUJD" } };
+    const clientBody = {
+      model: "combo-a", max_tokens: 1024, stream: false,
+      messages: [
+        { role: "user", content: [{ type: "text", text: "take a screenshot" }] },
+        { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "screenshot", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: [image] }, { type: "text", text: "what is on screen?" }] },
+      ],
+    };
+    await runAttempts(clientBody, [["anthropic", "text-model", "claude"], ["anthropic", "vision-model", "claude"]]);
+    expect(sentJson(0)).not.toContain('"QUJD"');
+    expect(sentJson(1)).toContain('"QUJD"');
+    expect(JSON.stringify(rows()[0].request.messages)).toContain('"QUJD"');
+  });
+
+  it("Gemini: a vision model still gets the inline image part", async () => {
+    const clientBody = {
+      contents: [{ role: "user", parts: [{ text: "what is this?" }, { inlineData: { mimeType: "image/png", data: "QUJD" } }] }],
+    };
+    await runAttempts(clientBody, [["gemini", "text-model", "gemini"], ["gemini", "vision-model", "gemini"]]);
+    expect(sentJson(0)).not.toContain("inlineData");
+    expect(sentJson(1)).toContain("inlineData");
+  });
+
+  it("a model's strip list leaves the audio, and a message it empties, for the next model", async () => {
+    const audio = { type: "input_audio", input_audio: { data: "QUJD", format: "wav" } };
+    const clientBody = {
+      model: "combo-a", stream: false,
+      messages: [{ role: "user", content: [audio] }, { role: "user", content: [{ type: "text", text: "transcribe it" }, audio] }],
+    };
+    await runAttempts(clientBody, [["openai", "no-audio-model"], ["openai", "audio-model"]]);
+    expect(sentJson(0)).not.toContain("input_audio");
+    expect(sentJson(1)).toContain("input_audio");
+  });
+});
+
+describe("the next combo model gets the client's Gemini thinking settings", () => {
+  it("a (level) suffix doesn't leave thinkingConfig or a raised maxOutputTokens behind", async () => {
     const clientBody = {
       contents: [{ role: "user", parts: [{ text: "hi" }] }],
-      generationConfig: { temperature: 0.2, thinkingConfig: { thinkingBudget: 512 } },
+      generationConfig: { temperature: 0.2, maxOutputTokens: 100 },
     };
-    const before = structuredClone(clientBody);
+    await runAttempts(clientBody, [["gemini", "thinking-model(high)", "gemini"], ["gemini", "thinking-model", "gemini"]]);
+    expect(sent[0].generationConfig.thinkingConfig).toBeTruthy();
+    expect(sent[0].generationConfig.maxOutputTokens).toBeGreaterThan(100);
+    expect(sent[1].generationConfig).toEqual({ temperature: 0.2, maxOutputTokens: 100 });
+  });
 
-    await attempt(clientBody, "gemini", "plain-model", "gemini");
-    expect(sentBody(0).generationConfig?.thinkingConfig).toBeUndefined();
+  it("the request envelope gets no generationConfig the client didn't send", async () => {
+    const clientBody = { request: { contents: [{ role: "user", parts: [{ text: "hi" }] }] } };
+    await runAttempts(clientBody, [["gemini-cli", "thinking-model(high)", "gemini-cli"], ["gemini-cli", "thinking-model", "gemini-cli"]]);
+    expect(sent[0].request.generationConfig.thinkingConfig).toBeTruthy();
+    expect(sent[1].request.generationConfig).toBeUndefined();
+  });
+});
 
-    await attempt(clientBody, "gemini", "thinking-model", "gemini");
-    expect(sentBody(1).generationConfig.thinkingConfig).toMatchObject({ thinkingBudget: 512 });
-    expect(clientBody).toEqual(before);
+describe("the next provider gets the client's Claude history", () => {
+  // A Claude thinking signature: base64 starting with the 0x12 marker byte.
+  const SIGNATURE = Buffer.from([0x12, 1, 2, 3]).toString("base64");
+
+  it("native Claude keeps the signature and cache markers an Anthropic-compatible endpoint rewrote", async () => {
+    const clientBody = {
+      model: "combo-a", max_tokens: 1024, stream: false,
+      messages: [
+        { role: "user", content: [{ type: "text", text: "look it up", cache_control: { type: "ephemeral" } }] },
+        { role: "assistant", content: [
+          { type: "thinking", thinking: "I should look it up.", signature: SIGNATURE },
+          { type: "tool_use", id: "t1", name: "lookup", input: { q: "x" } },
+        ] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "found" }] },
+      ],
+    };
+    await runAttempts(clientBody, [["anthropic-compatible-node", "model-a", "claude"], ["claude", "model-b", "claude"]]);
+    const thinking = (call) => sent[call].messages.flatMap((m) => (Array.isArray(m.content) ? m.content : [])).find((b) => b.type === "thinking");
+    expect(thinking(0)?.signature).not.toBe(SIGNATURE);
+    expect(thinking(1)?.signature).toBe(SIGNATURE);
+    expect(rows()[1].request.messages[0].content[0].cache_control).toEqual({ type: "ephemeral" });
+  });
+
+  it("a tool call's object arguments are stringified for this attempt only", async () => {
+    const clientBody = {
+      model: "combo-a", stream: false,
+      messages: [
+        { role: "user", content: "weather?" },
+        { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "weather", arguments: { city: "x" } } }] },
+        { role: "tool", tool_call_id: "call_1", content: "sunny" },
+      ],
+    };
+    await runAttempts(clientBody, [["openai", "model-a"], ["openai", "model-b"]]);
+    expect(sent[1].messages[1].tool_calls[0].function.arguments).toBe('{"city":"x"}');
+  });
+});
+
+describe("remote images for targets that need inline data", () => {
+  const imageRequest = (urls) => ({
+    model: "combo-a", stream: false,
+    messages: [{ role: "user", content: [
+      { type: "text", text: "compare" },
+      ...urls.map((url, i) => (i % 2 ? { type: "image_url", image_url: url } : { type: "image_url", image_url: { url, detail: "low" } })),
+    ] }],
+  });
+  const fetchesOf = (url) => fetchImageAsBase64.mock.calls.filter(([u]) => u === url).length;
+
+  it("inline each image (object and string image_url) for every attempt, fetching each URL once per request", async () => {
+    const clientBody = imageRequest([IMAGE_URL, OTHER_IMAGE_URL]);
+    await runAttempts(clientBody, [["gemini", "vision-model"], ["gemini", "vision-model"]]);
+    for (const call of [0, 1]) {
+      expect(sentJson(call)).not.toContain(IMAGE_URL);
+      expect(sentJson(call)).not.toContain(OTHER_IMAGE_URL);
+      expect(sentJson(call)).toContain("QUJD");
+    }
+    expect(fetchesOf(IMAGE_URL)).toBe(1);
+    expect(fetchesOf(OTHER_IMAGE_URL)).toBe(1);
+  });
+
+  it("tries an image whose fetch failed again on the next attempt, and the other one not", async () => {
+    const clientBody = imageRequest([IMAGE_URL, MISSING_IMAGE_URL]);
+    await runAttempts(clientBody, [["gemini", "vision-model"], ["gemini", "vision-model"]]);
+    for (const call of [0, 1]) {
+      expect(sentJson(call)).not.toContain(IMAGE_URL);
+      expect(sentJson(call)).toContain("QUJD");
+    }
+    expect(fetchesOf(IMAGE_URL)).toBe(1);
+    expect(fetchesOf(MISSING_IMAGE_URL)).toBe(2);
+  });
+
+  // The Gemini translator drops a remote URL it can't inline, so this looks at
+  // the source body prefetch hands on.
+  it("keeps the block of an image whose fetch failed and converts the other", async () => {
+    const { prefetchRemoteImages } = await import("../../open-sse/translator/concerns/prefetch.js");
+    const body = imageRequest([IMAGE_URL, MISSING_IMAGE_URL]);
+    expect(await prefetchRemoteImages(body, "openai", "gemini")).toBe(1);
+    const [, converted, kept] = body.messages[0].content;
+    expect(converted.image_url).toEqual({ url: "data:image/png;base64,QUJD", detail: "low" });
+    expect(kept).toEqual({ type: "image_url", image_url: MISSING_IMAGE_URL });
+  });
+
+  it("a new client request fetches again", async () => {
+    await runAttempts(imageRequest([IMAGE_URL]), [["gemini", "vision-model"]]);
+    await runAttempts(imageRequest([IMAGE_URL]), [["gemini", "vision-model"]]);
+    expect(fetchesOf(IMAGE_URL)).toBe(2);
   });
 });

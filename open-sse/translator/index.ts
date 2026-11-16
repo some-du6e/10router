@@ -58,13 +58,11 @@ function stripContentTypes(body: Body, stripList: string[] = []) {
     if (audioTypes.has(type)) return stripList.includes("audio");
     return false;
   };
-  // New messages, not edits: the client's messages go to the next combo model too.
-  body.messages = body.messages.map((msg: Body) => {
-    if (!Array.isArray(msg?.content)) return msg;
-    const content = msg.content.filter((part: { type: string }) => !shouldStrip(part?.type));
-    if (content.length > 0 && content.length === msg.content.length) return msg;
-    return { ...msg, content: content.length === 0 ? "" : content };
-  });
+  for (const msg of body.messages) {
+    if (!Array.isArray(msg.content)) continue;
+    msg.content = msg.content.filter((part: { type: string }) => !shouldStrip(part.type));
+    if (msg.content.length === 0) msg.content = "";
+  }
 }
 
 function providerQuirks(provider: string | null): Record<string, unknown> | undefined {

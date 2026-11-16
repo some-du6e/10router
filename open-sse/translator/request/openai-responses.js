@@ -355,7 +355,7 @@ function renameHistoryCalls(messages, byRef) {
     for (const tc of msg.tool_calls || []) {
       const wire = tc.function && byRef.get(toolRefKey(tc.namespace, tc.function.name));
       if (!wire || wire === tc.function.name) continue;
-      tc.function.name = wire;
+      tc.function = { ...tc.function, name: wire };
       delete tc.namespace;
     }
   }
