@@ -108,15 +108,6 @@ export function clientReceivesStream({ body, provider, model, sourceFormat, clie
   return !clientDemandsJson(body, clientRawRequest?.headers);
 }
 
-/**
- * One attempt at one account. `clientSignal` aborts when the client hangs up.
- * While the attempt waits on the upstream, that aborts the upstream call (the
- * executor's catch then settles the attempt). Once a stream is returned it is a
- * disconnect instead, which ends the stream's bookkeeping the way a cancelled
- * body does. The listener comes off the signal (shared by every attempt of the
- * request) once the attempt is over: on a failure or a reply that isn't a
- * stream. A stream keeps it until it ends.
- */
 const THINKING_OBJECT_KEYS = ["thinking", "reasoning", "output_config"];
 
 // A shallow copy of body with its own copies of the nested thinking objects.
@@ -131,6 +122,15 @@ function withOwnThinkingObjects(body) {
   return copy;
 }
 
+/**
+ * One attempt at one account. `clientSignal` aborts when the client hangs up.
+ * While the attempt waits on the upstream, that aborts the upstream call (the
+ * executor's catch then settles the attempt). Once a stream is returned it is a
+ * disconnect instead, which ends the stream's bookkeeping the way a cancelled
+ * body does. The listener comes off the signal (shared by every attempt of the
+ * request) once the attempt is over: on a failure or a reply that isn't a
+ * stream. A stream keeps it until it ends.
+ */
 export async function handleChatCore(args) {
   const hangUp = { onAbort: null, streaming: false };
   let result = null;

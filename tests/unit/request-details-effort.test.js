@@ -145,9 +145,8 @@ describe("request details keep the client's reasoning effort, not the router's",
     expect(row.providerRequest.reasoning_effort).not.toBe("low");
   });
 
-  // Executors normalize thinking in place (Codex sets reasoning.effort and
-  // summary, Grok CLI drops effort). On a passthrough those objects came from
-  // the client body, which the next attempt reuses.
+  // An executor that edits thinking objects in place must only touch this
+  // attempt's copy: on a passthrough the next attempt reuses the client body.
   it("keeps an executor's in-place thinking edits out of the next attempt", async () => {
     const sent = [];
     executeMock.mockImplementation(async ({ body }) => {

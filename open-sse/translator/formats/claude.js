@@ -182,8 +182,7 @@ export function normalizeClaudePassthrough(body, model = "", provider = null) {
   }
 
   // 2. Strip effort param for models that don't support it (keep other output_config fields)
-  // A new object: output_config is shared with the client body, which the next
-  // account or combo model reuses.
+  // A new object rather than an edit, so the caller's output_config stays as sent.
   if (adaptiveUnsupported && body.output_config?.effort != null) {
     const rest = { ...body.output_config };
     delete rest.effort;
