@@ -12,6 +12,7 @@ on:
       - "src/lib/db/repos/nodesRepo.js"
       - "src/lib/db/index.js"
       - "src/shared/constants/providers.js"
+      - "open-sse/handlers/chatCore/requestDetail.js"
       - "tests/unit/request-details-*.test.js"
       - ".github/workflows/request-details.yml"
   workflow_dispatch:
@@ -44,6 +45,7 @@ jobs:
           unit/request-details-full-data-db.test.js
           unit/request-details-error-class.test.js
           unit/request-details-shutdown.test.js
+          unit/request-details-effort.test.js
       # set-state-in-effect: RequestDetailsTab.js's data-loading effects, which
       # predate this check.
       - name: Lint
