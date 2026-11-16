@@ -68,6 +68,7 @@ jobs:
           if [ "$code" -gt 2 ] || ! [ -x ./node_modules/.bin/tsc ]; then echo "tsc did not run (exit $code)"; exit 1; fi
           if grep -F "src/sse/handlers/chat.ts" tsc.log; then exit 1; fi
           if grep -F "open-sse/services/sameRequestError.ts" tsc.log; then exit 1; fi
+          if grep -F "src/sse/services/connectionUpstream.ts" tsc.log; then exit 1; fi
 
   # Informational, for the PR's "Before": this branch's test against the base
   # branch's code. Every source file under open-sse/ and src/ that this branch

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools } from "@/lib/localDb";
 import { extractClientApiKey } from "@/shared/utils/clientApiKey.js";
+import { upstreamOf, connectionUpstream } from "./connectionUpstream.js";
 import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey } from "@/lib/db/index.js";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, getQuotaCooldown, isModelLockActive, getModelLockUntil, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL, isHeadersTimeout } from "open-sse/services/accountFallback.js";
@@ -92,12 +93,6 @@ function isModelRefusal(status, errorText) {
     && !isBackoffText(text);
 }
 
-// Per-connection fields executors build the upstream URL from: a custom base
-// URL, an Azure resource, a region or location in the host, an account or
-// project in the path.
-const UPSTREAM_FIELDS = ["baseUrl", "azureEndpoint", "region", "location", "accountId", "projectId"];
-const upstreamOf = (psd) => JSON.stringify(UPSTREAM_FIELDS.map(f => String(psd[f] ?? "").trim().replace(/\/+$/, "")));
-
 // Where a key's requests go: the proxy or relay they leave through, and the
 // upstream they reach.
 async function networkPath(conn) {
@@ -110,10 +105,7 @@ async function networkPath(conn) {
   };
 }
 
-/** Where one key's requests go upstream: its base URL, account, region and the like. */
-export function connectionUpstream(conn) {
-  return upstreamOf(conn?.providerSpecificData || {});
-}
+export { connectionUpstream };
 
 /**
  * Every active key of the provider reaches the same upstream: none has its own

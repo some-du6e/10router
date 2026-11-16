@@ -14,6 +14,7 @@ import {
   MODEL_REFUSAL,
   OPERATION_REFUSAL,
   SAME_REQUEST_ERROR_PATTERNS,
+  SAME_REQUEST_ERROR_LIMIT_PATTERNS,
   SAME_REQUEST_ERROR_KEY_LIMIT,
   SAME_REQUEST_ERROR_MAX_TEXT,
 } from "../config/errorConfig.js";
@@ -78,8 +79,11 @@ export function requestErrorSignature(status: number | null | undefined, error: 
  * upstream message (a JSON body's message, a relay's request id dropped), only
  * trimmed and lowercased: for keys on different upstreams, whose limits may
  * differ, so "> 200000 maximum" and "> 1000000 maximum" must not count as the
- * same. `exact` is null for a 413 or a message with no number: those name no
- * limit, so the same text from two servers says nothing about a third.
+ * same. `exact` is set only for a context or token limit message
+ * (SAME_REQUEST_ERROR_LIMIT_PATTERNS) that names both sizes, two runs of 4+
+ * digits such as "12345 tokens > 10000 maximum", and never for a 413. Other
+ * messages name no limit (a tool index, a schema draft, a model name are just
+ * digits), so the same text from two servers says nothing about a third.
  */
 export function requestErrorSignatures(status: number | null | undefined, error: unknown): { normalized: string; exact: string | null } | null {
   if (typeof status !== "number" || !SAME_REQUEST_ERROR_STATUSES.has(status)) return null;
@@ -88,24 +92,29 @@ export function requestErrorSignatures(status: number | null | undefined, error:
   if (namesTheKey(status, message) || namesTheKey(status, raw)) return null;
   const requestShaped = status === HTTP_STATUS.PAYLOAD_TOO_LARGE || SAME_REQUEST_ERROR_PATTERNS.some((p) => p.test(message));
   if (!requestShaped) return null;
-  const exact = status !== HTTP_STATUS.PAYLOAD_TOO_LARGE && /\d/.test(message) ? `${status} ${message.trim().toLowerCase()}` : null;
+  const namesLimit = status !== HTTP_STATUS.PAYLOAD_TOO_LARGE &&
+    SAME_REQUEST_ERROR_LIMIT_PATTERNS.some((p) => p.test(message)) &&
+    (message.match(/\d{4,}/g) || []).length >= 2;
+  const exact = namesLimit ? `${status} ${message.trim().toLowerCase()}` : null;
   return { normalized: `${status} ${normalizeErrorMessage(raw)}`, exact };
 }
 
 /**
- * How far accounts agree: "exact" once at least max(stopAfter, 2) distinct
- * upstreams gave the very same message (a stop wherever the keys point),
- * "normalized" once `stopAfter` accounts gave it up to numbers and spacing (a
- * stop only for keys on one upstream), else null.
+ * How far accounts agree: "exact" once `exactAfter` (max(stopAfter, 2))
+ * distinct upstreams gave the very same limit message (a stop wherever the
+ * keys point), "normalized" once `stopAfter` accounts gave it up to numbers
+ * and spacing (a stop only for keys on one upstream), else null.
  */
 export type SameRequestErrorAgreement = "exact" | "normalized" | null;
 
 export interface SameRequestErrorTally {
   /** Accounts that must give the same request error to stop; 0 never stops. */
   readonly stopAfter: number;
+  /** Distinct upstreams that must give the very same limit message: max(stopAfter, 2). */
+  readonly exactAfter: number;
   /**
    * Records one account's failure and says how far accounts agree on it.
-   * `upstream` identifies where the account's requests go (connectionUpstream in auth.js).
+   * `upstream` identifies where the account's requests go (src/sse/services/connectionUpstream.ts).
    */
   note(connectionId: string, upstream: string, status: number | null | undefined, error: unknown): SameRequestErrorAgreement;
 }
@@ -122,6 +131,7 @@ export function createSameRequestErrorTally(stopAfter: number = SAME_REQUEST_ERR
   const exactAfter = Math.max(stopAfter, 2);
   return {
     stopAfter,
+    exactAfter,
     note(connectionId, upstream, status, error) {
       if (stopAfter <= 0) return null;
       const signatures = requestErrorSignatures(status, error);

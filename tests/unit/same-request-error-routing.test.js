@@ -5,9 +5,10 @@
 // anyway. Request-shaped means a 413, or a 400/422 matching
 // SAME_REQUEST_ERROR_PATTERNS, and in both cases no veto (key, billing, limit,
 // plan or organization wording). When the keys all reach one upstream, two
-// keys' messages match up to numbers. When they don't, two distinct upstreams
-// must give the very same message with a number in it (never a 413). Any other
-// error and built-in providers keep walking.
+// keys' messages match up to numbers. When they don't, max(STOP_AFTER, 2)
+// distinct upstreams must give the very same context or token limit message
+// naming both sizes (never a 413). Any other error and built-in providers keep
+// walking.
 //
 // Runs the real account loop (handleChat → auth.js against a temporary
 // database); only the upstream call (handleChatCore) is stubbed, returning what
@@ -65,6 +66,7 @@ const TOO_LONG = "prompt is too long: 12345 tokens > 10000 maximum";
 // What chatCore returns when the executor's header timer fired (pinned in chat-core-failure-detail.test.js).
 const NO_HEADERS = "[504]: upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)";
 const stopLine = (account, status = 400) => `[FALLBACK] ⇄ ACC:${account} same request error (${status}) from 2 accounts, not trying the rest`;
+const exactStopLine = (account, status = 400) => `[FALLBACK] ⇄ ACC:${account} same request error (${status}) from 2 upstreams, not trying the rest`;
 const stopped = () => warnings.some((w) => w.includes("not trying the rest"));
 let providerSeq = 0;
 let provider;
@@ -166,16 +168,42 @@ describe("normalizing a request error", () => {
     expect(SAME_REQUEST_ERROR_STOP_AFTER).toBe(2);
     const tally = createSameRequestErrorTally();
     expect(tally.stopAfter).toBe(2);
-    expect(tally.note("a", "up-a", 400, "prompt is too long: 1")).toBeNull();
+    expect(tally.exactAfter).toBe(2);
+    expect(tally.note("a", "up-a", 400, "prompt is too long: 11111 tokens > 10000 maximum")).toBeNull();
     // The same account again is still one account.
-    expect(tally.note("a", "up-a", 400, "prompt is too long: 2")).toBeNull();
-    expect(tally.note("b", "up-b", 422, "prompt is too long: 3")).toBeNull();
+    expect(tally.note("a", "up-a", 400, "prompt is too long: 22222 tokens > 10000 maximum")).toBeNull();
+    expect(tally.note("b", "up-b", 422, "prompt is too long: 33333 tokens > 10000 maximum")).toBeNull();
     // Same up to numbers: enough for keys on one upstream only.
-    expect(tally.note("b", "up-b", 400, "prompt is too long: 4")).toBe("normalized");
+    expect(tally.note("b", "up-b", 400, "prompt is too long: 44444 tokens > 10000 maximum")).toBe("normalized");
     // The very same message from a second upstream, case, spacing at the ends
     // and a relay's request id aside.
-    expect(tally.note("c", "up-c", 400, " Prompt is too long: 1 (request id: 2026aaa)")).toBe("exact");
+    expect(tally.note("c", "up-c", 400, " Prompt is too long: 11111 tokens > 10000 maximum (request id: 2026aaa)")).toBe("exact");
     expect(createSameRequestErrorTally(0).note("a", "up-a", 400, TOO_LONG)).toBeNull();
+  });
+
+  it("needs as many upstreams as STOP_AFTER when that is over 2", () => {
+    const tally = createSameRequestErrorTally(3);
+    expect(tally.exactAfter).toBe(3);
+    expect(tally.note("a", "up-a", 400, TOO_LONG)).toBeNull();
+    expect(tally.note("b", "up-b", 400, TOO_LONG)).toBeNull();
+    expect(tally.note("c", "up-c", 400, TOO_LONG)).toBe("exact");
+  });
+
+  it("agrees exactly only on a limit message that names both sizes", () => {
+    for (const message of [
+      // Digits only in a relay's request id.
+      "Input is too long for the model. (request id: 20261115120000123456789abc)",
+      // A tool index and a schema draft are digits, not a limit.
+      "tools.0.input_schema: JSON schema is not valid (draft 2020-12)",
+      // A model name with digits in a proxy's suffix.
+      "prompt is too long for this request. Model Group=example-model-3-7",
+      // Only one size.
+      "Input tokens exceed this endpoint's limit of 10000",
+    ]) {
+      const tally = createSameRequestErrorTally();
+      tally.note("a", "up-a", 400, message);
+      expect(tally.note("b", "up-b", 400, message), message).toBe("normalized");
+    }
   });
 
   it("counts upstreams, not keys, on the exact path", () => {
@@ -529,7 +557,7 @@ describe("the same request error from two accounts", () => {
     const res = await chat();
     expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
     expect(res.status).toBe(400);
-    expect(warnings).toContain(stopLine("key-2"));
+    expect(warnings).toContain(exactStopLine("key-2"));
   });
 
   it("stops on keys of other upstreams at the second upstream that gives the very same message", async () => {
@@ -539,7 +567,7 @@ describe("the same request error from two accounts", () => {
     const res = await chat();
     expect(upstream.calls).toEqual(calls(keys.slice(0, 3)));
     expect(res.status).toBe(400);
-    expect(warnings).toContain(stopLine("key-3"));
+    expect(warnings).toContain(exactStopLine("key-3"));
   });
 
   it("keeps walking when the two agreeing keys share one upstream and a third key is elsewhere", async () => {
@@ -556,6 +584,8 @@ describe("the same request error from two accounts", () => {
   for (const [label, status, message] of [
     ["a 400 with no number in it", 400, "Input is too long for the model."],
     ["a 413", 413, "payload rejected: 12345 bytes"],
+    ["schema error with a tool index", 400, "tools.0.input_schema: JSON schema is not valid (draft 2020-12)"],
+    ["limit message whose only digits are a model name", 400, "prompt is too long for this request. Model Group=example-model-3-7"],
   ]) {
     it(`keeps walking on keys of other upstreams on the same ${label}`, async () => {
       const keys = await addKeys(5, apart);
@@ -566,6 +596,31 @@ describe("the same request error from two accounts", () => {
       expect(stopped()).toBe(false);
     });
   }
+
+  it("counts one upstream however its URL is written", async () => {
+    const keys = await addKeys(5, {
+      1: { baseUrl: "https://API.example.com/v1", ownBaseUrl: true },
+      2: { baseUrl: "https://api.example.com:443/v1/", ownBaseUrl: true },
+      3: { baseUrl: "https://other.example.com/v1", ownBaseUrl: true },
+    });
+    upstream.script = Array(2).fill(failure(400, TOO_LONG));
+
+    const res = await chat();
+    expect(upstream.calls).toEqual(calls(keys.slice(0, 3)));
+    expect(res.status).toBe(200);
+  });
+
+  it("treats keys whose URLs differ only in case, port or a trailing slash as one upstream", async () => {
+    const keys = await addKeys(5, {
+      1: { baseUrl: "https://API.example.com/v1" }, 2: { baseUrl: "https://api.example.com:443/v1/" },
+      3: { baseUrl: "https://api.example.com/v1" }, 4: { baseUrl: "https://api.example.com/v1/chat/completions" },
+      5: { baseUrl: "https://api.example.com/v1" },
+    });
+    upstream.script = [failure(400, smallWindow), failure(400, otherWindow)];
+
+    await chat();
+    expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
+  });
 
   it("still lets a veto win on keys of other upstreams", async () => {
     const keys = await addKeys(5, apart);

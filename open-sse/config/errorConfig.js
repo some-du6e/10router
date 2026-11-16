@@ -197,16 +197,22 @@ export const ERROR_CLASS_MAX_TEXT = 8 * 1024;
 // schema the upstream rejects, a thinking budget that doesn't fit. Only these,
 // and a 413, count toward stopping the account walk; any other 4xx keeps
 // trying the next key.
-export const SAME_REQUEST_ERROR_PATTERNS = [
+// The prompt is over the context window or the model's token limit. Only these
+// name a limit, so only these can stop the walk across different upstreams.
+export const SAME_REQUEST_ERROR_LIMIT_PATTERNS = [
   /maximum context length/i,
   /context (?:length|window|limit)s? (?:is |was |has been )?exceed/i,
   /\bexceed(?:s|ed)?\b.{0,40}\bcontext\b/i,
   /\b(?:model|context)\b.{0,30}\btoken limit\b|\btoken limit\b.{0,30}\b(?:model|context)\b/i,
   /input tokens? exceed/i,
   /\b(?:input|request|prompt|payload|body)\s+(?:is\s+)?too (?:long|large)\b/i,
+];
+// A tool schema the upstream rejects, a thinking budget that doesn't fit.
+export const SAME_REQUEST_ERROR_SHAPE_PATTERNS = [
   /input_schema|json schema|invalid schema|function parameters|\btools?(?:\.\d+|\[\d+\])/i,
   /budget_tokens/i,
 ];
+export const SAME_REQUEST_ERROR_PATTERNS = [...SAME_REQUEST_ERROR_LIMIT_PATTERNS, ...SAME_REQUEST_ERROR_SHAPE_PATTERNS];
 // Wording of a limit on one key, account, organization or plan, which the
 // patterns above can also match ("request too large ... on tokens per min", a
 // hosted tool not enabled for this organization): such an error never counts,

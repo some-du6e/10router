@@ -6,7 +6,6 @@ import {
   markAccountUnavailable,
   clearAccountError,
   keysShareOneUpstream,
-  connectionUpstream,
   extractApiKey,
   isValidApiKey,
 } from "../services/auth.js";
@@ -30,6 +29,7 @@ import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS, NON_STREAM_EARLY_HEADERS_MS, STREAM_EARLY_HEADERS_MS } from "open-sse/config/runtimeConfig.js";
 import { isRequestError } from "open-sse/services/accountFallback.js";
 import { createSameRequestErrorTally } from "open-sse/services/sameRequestError.js";
+import { connectionUpstream } from "../services/connectionUpstream.js";
 import { checkModelHang, noteHeadersTimeout, noteModelServed, noteProbeBudget, releaseProbe } from "open-sse/services/modelHang.js";
 import { HEADERS_TIMEOUT } from "open-sse/config/errorConfig.js";
 import { detectFormatByEndpoint, FORMATS } from "open-sse/translator/formats.js";
@@ -942,15 +942,17 @@ async function routeSingleModelChat(
         return { success: false, status: HTTP_STATUS.GATEWAY_TIMEOUT, error: errorMsg, limited: false, response: errorResponse(HTTP_STATUS.GATEWAY_TIMEOUT, errorMsg) };
       }
       // Enough keys refused this request with the same message: the rest would too.
-      // Keys on one upstream agree up to numbers. Otherwise two distinct
-      // upstreams must give the very same message, numbers and all, since their
-      // limits may differ.
+      // Keys on one upstream agree up to numbers (stopAfter keys). Otherwise
+      // max(stopAfter, 2) distinct upstreams must give the very same context or
+      // token limit message naming both sizes, never a 413, since their limits
+      // may differ.
       // Built-in providers keep walking: their accounts differ in plan and region.
       const agreement = customEndpoint
         ? sameRequestErrors.note(credentials.connectionId, connectionUpstream(credentials), result.status, result.error)
         : null;
       if (agreement === "exact" || (agreement === "normalized" && (sharedUpstream ??= await keysShareOneUpstream(provider)))) {
-        log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} same request error (${result.status}) from ${sameRequestErrors.stopAfter} accounts, not trying the rest`);
+        const from = agreement === "exact" ? `${sameRequestErrors.exactAfter} upstreams` : `${sameRequestErrors.stopAfter} accounts`;
+        log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} same request error (${result.status}) from ${from}, not trying the rest`);
         return result;
       }
       // A warm key just rate-limited for a short while stays in play: the next
