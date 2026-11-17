@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-// Mock DNS lookup so we control which host resolves to what IP.
-const lookupMock = vi.fn();
-vi.mock("node:dns/promises", () => ({ lookup: (...a) => lookupMock(...a) }));
+import dns from "node:dns";
+
+// The image fetch is undici's own fetch, with the connection pinned to the checked address.
+const undiciFetch = vi.hoisted(() => vi.fn());
+vi.mock("undici", async (orig) => ({ ...(await orig()), fetch: (...a) => undiciFetch(...a) }));
 
 import { fetchImageAsBase64 } from "../../open-sse/translator/concerns/image.js";
+
+// Control which host resolves to what IP (the SSRF guard's one lookup).
+let lookupMock;
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -18,12 +23,12 @@ function mockFetchOnce(bytes, ok = true) {
       };
     },
   };
-  globalThis.fetch = vi.fn(async () => ({ ok, body }));
+  undiciFetch.mockImplementation(async () => ({ ok, body }));
 }
 
 beforeEach(() => {
-  lookupMock.mockReset();
-  lookupMock.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]); // public by default
+  undiciFetch.mockReset();
+  lookupMock = vi.spyOn(dns.promises, "lookup").mockResolvedValue([{ address: "93.184.216.34", family: 4 }]); // public by default
 });
 afterEach(() => { vi.restoreAllMocks(); });
 
@@ -73,5 +78,38 @@ describe("fetchImageAsBase64 hardening", () => {
   it("returns null when fetch not ok", async () => {
     mockFetchOnce(PNG, false);
     expect(await fetchImageAsBase64("https://example.com/404.png")).toBeNull();
+  });
+
+  it("pins the connection: undici's fetch gets a dispatcher and never follows redirects itself", async () => {
+    mockFetchOnce(PNG);
+    expect(await fetchImageAsBase64("https://example.com/a.png")).not.toBeNull();
+    const init = undiciFetch.mock.calls[0][1];
+    expect(init.dispatcher).toBeDefined();
+    expect(init.redirect).toBe("manual");
+    expect(lookupMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when the name doesn't resolve", async () => {
+    lookupMock.mockRejectedValue(Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" }));
+    mockFetchOnce(PNG);
+    expect(await fetchImageAsBase64("https://nowhere.example/a.png")).toBeNull();
+    expect(undiciFetch).not.toHaveBeenCalled();
+  });
+
+  it("takes an upper-case scheme", async () => {
+    mockFetchOnce(PNG);
+    expect(await fetchImageAsBase64("HTTPS://example.com/a.png")).not.toBeNull();
+  });
+
+  it("follows a redirect only when allowed, checking the new host again", async () => {
+    const redirect = (location) => ({ ok: false, status: 302, headers: new Headers({ location }), body: { cancel: async () => {} } });
+    undiciFetch.mockResolvedValueOnce(redirect("https://cdn2.example.com/a.png"));
+    expect(await fetchImageAsBase64("https://example.com/a.png")).toBeNull();
+    expect(undiciFetch).toHaveBeenCalledTimes(1);
+
+    undiciFetch.mockReset();
+    undiciFetch.mockResolvedValueOnce(redirect("http://10.0.0.9/a.png"));
+    expect(await fetchImageAsBase64("https://example.com/a.png", { maxRedirects: 3 })).toBeNull();
+    expect(undiciFetch).toHaveBeenCalledTimes(1);
   });
 });

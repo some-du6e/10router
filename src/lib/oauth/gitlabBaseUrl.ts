@@ -1,10 +1,12 @@
+import { GITLAB_CONFIG } from "./constants/oauth.js";
 import { assertPublicUrlResolved } from "@/shared/utils/ssrfGuard.js";
+import { blocksPrivateUrls, PRIVATE_URL_ERROR } from "@/lib/network/privateUrls.js";
 
-export const GITLAB_DEFAULT_BASE = "https://gitlab.com";
+export const GITLAB_DEFAULT_BASE: string = GITLAB_CONFIG.defaultBaseUrl;
 
 // A GitLab instance URL: http(s), no credentials, query or fragment (those
-// would swallow the API path appended after it). Empty means gitlab.com.
-// Returns null when the value isn't usable.
+// would swallow the API path appended after it). Empty means the registry's
+// default (gitlab.com). Returns null when the value isn't usable.
 export function normalizeGitlabBaseUrl(raw: unknown): string | null {
   if (raw === undefined || raw === null) return GITLAB_DEFAULT_BASE;
   if (typeof raw !== "string") return null;
@@ -18,14 +20,15 @@ export function normalizeGitlabBaseUrl(raw: unknown): string | null {
   return `${url.origin}${url.pathname}`.replace(/\/+$/, "");
 }
 
-// Remote callers may only point at public GitLab hosts; local callers may use a
-// self-hosted instance on their own network.
-export async function isAllowedGitlabBase(base: string, remote: boolean): Promise<boolean> {
-  if (!remote) return true;
-  try {
-    await assertPublicUrlResolved(base);
-    return true;
-  } catch {
-    return false;
+// The instance a GitLab sign-in (PAT or OAuth) may use, and whether its probes
+// must check every hop (`remote`). A caller who may not reach internal hosts
+// (see blocksPrivateUrls) only gets public ones; others keep a LAN GitLab.
+export async function resolveGitlabBase(request: Request, raw: unknown): Promise<{ base: string; remote: boolean } | { error: string }> {
+  const base = normalizeGitlabBaseUrl(raw);
+  if (!base) return { error: "Invalid GitLab URL" };
+  const remote = await blocksPrivateUrls(request);
+  if (remote) {
+    try { await assertPublicUrlResolved(base); } catch { return { error: PRIVATE_URL_ERROR }; }
   }
+  return { base, remote };
 }

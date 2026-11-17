@@ -12,7 +12,7 @@ import { APIKEY_PROVIDERS } from "@/shared/constants/config";
 import { AI_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { normalizeProviderId, normalizeProviderSpecificData } from "@/lib/providerNormalization";
 import { resolveKeyBaseUrl, withKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
-import { blocksPrivateUrls } from "@/lib/network/privateUrls.js";
+import { blocksPrivateUrls, providerDataProblem, proxyUrlProblem } from "@/lib/network/privateUrls.js";
 
 export const dynamic = "force-dynamic";
 
@@ -149,6 +149,11 @@ export async function POST(request) {
     }
 
     let providerSpecificData = normalizeProviderSpecificData(provider, body, body.providerSpecificData);
+    const dataProblem = await providerDataProblem(request, provider, providerSpecificData, null);
+    if (dataProblem) return NextResponse.json({ error: dataProblem }, { status: 400 });
+    const proxyProblem = proxyConfig.connectionProxyEnabled && proxyConfig.connectionProxyUrl
+      ? await proxyUrlProblem(request, proxyConfig.connectionProxyUrl) : null;
+    if (proxyProblem) return NextResponse.json({ error: proxyProblem, field: "connectionProxyUrl" }, { status: 400 });
 
     // Compatible LLM nodes support multiple API-key connections (key pool); runtime
     // rotates/fails over via getProviderCredentials. Embedding nodes stay single-connection.
@@ -190,7 +195,7 @@ export async function POST(request) {
     // A key on another account or region of the same API can bring its own
     // base URL; failover across keys then fails over across endpoints.
     if (isCompatibleNode && typeof body.baseUrl === "string" && body.baseUrl.trim()) {
-      const keyUrl = await resolveKeyBaseUrl(body.baseUrl, providerSpecificData.baseUrl, { remote: blocksPrivateUrls(request) });
+      const keyUrl = await resolveKeyBaseUrl(body.baseUrl, providerSpecificData.baseUrl, { remote: await blocksPrivateUrls(request) });
       if (!keyUrl.ok) return NextResponse.json({ error: keyUrl.error, field: "baseUrl" }, { status: 400 });
       providerSpecificData = withKeyBaseUrl(providerSpecificData, keyUrl);
     }

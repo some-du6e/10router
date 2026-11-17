@@ -12,8 +12,14 @@ on:
       - "open-sse/translator/concerns/image.js"
       - "open-sse/translator/concerns/prefetch.js"
       - "open-sse/config/mediaConfig.js"
+      - "open-sse/config/awsRegion.js"
+      - "open-sse/handlers/imageGenerationCore.js"
+      - "open-sse/providers/registry/**"
+      - "open-sse/services/tokenRefresh/**"
       - "open-sse/utils/ssrfGuard.js"
       - "open-sse/utils/awsRegion.ts"
+      - "open-sse/utils/envProxy.js"
+      - "open-sse/utils/proxyFetch.js"
       - "open-sse/utils/redact.js"
       - "src/app/api/oauth/[provider]/[action]/route.js"
       - "src/app/api/oauth/gitlab/**"
@@ -21,6 +27,7 @@ on:
       - "src/app/api/provider-nodes/**"
       - "src/app/api/providers/route.js"
       - "src/app/api/providers/[id]/route.js"
+      - "src/app/api/providers/[id]/test/**"
       - "src/app/api/providers/[id]/discover-models/**"
       - "src/app/api/providers/[id]/redetect/**"
       - "src/app/api/providers/validate/**"
@@ -32,12 +39,24 @@ on:
       - "src/lib/probeFetch.ts"
       - "src/shared/utils/connectionBaseUrl.ts"
       - "src/shared/utils/ssrfGuard.js"
+      - "src/shared/constants/privateUrl.js"
       - "tests/unit/security-outbound.test.js"
       - "tests/unit/security-outbound-routes.test.js"
+      - "tests/unit/security-relay.test.js"
+      - "tests/unit/private-urls-session.test.js"
       - "tests/unit/image-generation.test.js"
       - "tests/unit/provider-nodes-routes.test.js"
       - "tests/unit/codex-image-fetch.test.js"
       - "tests/unit/prefetch-images.test.js"
+      - "tests/unit/search-ssrf-guard.test.js"
+      - "tests/unit/image-fetch-hardening.test.js"
+      - "tests/unit/compatible-multi-endpoint.test.js"
+      - "tests/unit/kiro-external-idp.test.js"
+      - "tests/unit/kiro-api-key-endpoint-routing.test.js"
+      - "tests/unit/ssrf-guard-hardening.test.js"
+      - "tests/unit/endpoint-detect-hardening.test.js"
+      - "tests/unit/dashboard-guard.test.js"
+      - "tests/unit/local-request-peer-trust-3294.test.js"
       - "tests/vitest.config.js"
       - "package.json"
       - "tests/package.json"
@@ -69,6 +88,11 @@ jobs:
           ./node_modules/.bin/vitest run
           unit/security-outbound.test.js
           unit/security-outbound-routes.test.js
+          unit/security-relay.test.js
+          unit/private-urls-session.test.js
+          unit/endpoint-detect-hardening.test.js
+          unit/dashboard-guard.test.js
+          unit/local-request-peer-trust-3294.test.js
           unit/search-ssrf-guard.test.js
           unit/image-fetch-hardening.test.js
           unit/prefetch-images.test.js

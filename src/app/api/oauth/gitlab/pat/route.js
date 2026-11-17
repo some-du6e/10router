@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { createProviderConnection } from "@/models";
-import { blocksPrivateUrls } from "@/lib/network/privateUrls.js";
 import { describeRedirect, makeProbeFetch } from "@/lib/probeFetch.js";
-import { normalizeGitlabBaseUrl } from "@/lib/oauth/gitlabBaseUrl.js";
+import { resolveGitlabBase } from "@/lib/oauth/gitlabBaseUrl.js";
+import { isBlockedUrlError } from "@/shared/utils/ssrfGuard.js";
+import { PRIVATE_URL_ERROR } from "@/lib/network/privateUrls.js";
 
 /**
  * POST /api/oauth/gitlab/pat
@@ -22,20 +23,21 @@ export async function POST(request) {
       return NextResponse.json({ error: "Personal Access Token is required" }, { status: 400 });
     }
 
-    const base = normalizeGitlabBaseUrl(baseUrl);
-    if (!base) {
-      return NextResponse.json({ error: "Invalid GitLab URL" }, { status: 400 });
+    const target = await resolveGitlabBase(request, baseUrl);
+    if ("error" in target) {
+      return NextResponse.json({ error: target.error }, { status: 400 });
     }
+    const { base, remote } = target;
 
     // Verify token by fetching current user
     let userRes;
     try {
-      userRes = await makeProbeFetch(blocksPrivateUrls(request))(`${base}/api/v4/user`, {
+      userRes = await makeProbeFetch(remote)(`${base}/api/v4/user`, {
         headers: { "Private-Token": token.trim(), Accept: "application/json" },
       });
     } catch (error) {
-      if (String(error?.message).startsWith("Blocked URL")) {
-        return NextResponse.json({ error: "URL not allowed" }, { status: 400 });
+      if (isBlockedUrlError(error)) {
+        return NextResponse.json({ error: PRIVATE_URL_ERROR }, { status: 400 });
       }
       return NextResponse.json({ error: "GitLab URL is not reachable" }, { status: 400 });
     }

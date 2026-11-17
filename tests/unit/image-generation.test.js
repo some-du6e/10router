@@ -9,21 +9,29 @@
  *  - Error handling (missing prompt, invalid model)
  */
 
+import dns from "node:dns";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { handleImageGenerationCore } from "../../open-sse/handlers/imageGenerationCore.js";
 
-vi.mock("node:dns/promises", () => ({ lookup: async () => [{ address: "93.184.216.34", family: 4 }] }));
+// Image URL inputs are downloaded with undici's own fetch (pinned); here it
+// hands off to each test's global.fetch mock, so one mock answers both.
+const imageFetch = vi.hoisted(() => vi.fn());
+vi.mock("undici", async (orig) => ({ ...(await orig()), fetch: (...a) => imageFetch(...a) }));
+
+import { handleImageGenerationCore } from "../../open-sse/handlers/imageGenerationCore.js";
 
 const originalFetch = global.fetch;
 
 describe("handleImageGenerationCore", () => {
   beforeEach(() => {
     global.fetch = vi.fn();
+    imageFetch.mockReset().mockImplementation((...a) => global.fetch(...a));
+    vi.spyOn(dns.promises, "lookup").mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
   });
 
   afterEach(() => {
     global.fetch = originalFetch;
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it("validates required prompt field", async () => {

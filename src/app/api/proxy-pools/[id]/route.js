@@ -5,6 +5,7 @@ import {
   getProxyPoolById,
   updateProxyPool,
 } from "@/models";
+import { proxyUrlProblem } from "@/lib/network/privateUrls.js";
 
 function normalizeProxyPoolUpdate(body = {}) {
   const updates = {};
@@ -38,7 +39,7 @@ function normalizeProxyPoolUpdate(body = {}) {
   }
 
   if (Object.prototype.hasOwnProperty.call(body, "type")) {
-    const validTypes = ["http", "vercel", "cloudflare"];
+    const validTypes = ["http", "vercel", "cloudflare", "deno"];
     updates.type = validTypes.includes(body?.type) ? body.type : "http";
   }
 
@@ -81,6 +82,13 @@ export async function PUT(request, { params }) {
 
     if (normalized.error) {
       return NextResponse.json({ error: normalized.error }, { status: 400 });
+    }
+
+    // A new URL gets the same rule as on create; keeping the stored one is fine.
+    const nextUrl = normalized.updates.proxyUrl;
+    if (nextUrl && nextUrl !== existing.proxyUrl) {
+      const urlProblem = await proxyUrlProblem(request, nextUrl);
+      if (urlProblem) return NextResponse.json({ error: urlProblem, field: "proxyUrl" }, { status: 400 });
     }
 
     const updated = await updateProxyPool(id, normalized.updates);

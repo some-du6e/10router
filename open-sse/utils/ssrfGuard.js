@@ -19,6 +19,8 @@
 // same address to hex form ("::ffff:7f00:1") — a mismatch, not an oversight.
 
 import dns from "node:dns";
+import { Agent, fetch as undiciFetch } from "undici";
+import { envProxyDispatcher } from "./envProxy.js";
 
 const BLOCKED_HOSTNAMES = new Set(["localhost", "ip6-localhost", "ip6-loopback"]);
 const BLOCKED_SUFFIXES = [".internal", ".local", ".localhost"];
@@ -47,7 +49,9 @@ const BLOCKED_V4_RANGES = [
   [ipv4ToInt("172.16.0.0"), 12],
   [ipv4ToInt("192.168.0.0"), 16],
   [ipv4ToInt("192.0.0.0"), 24], // IETF protocol assignments (incl. DS-Lite 192.0.0.0/29)
-  [ipv4ToInt("198.18.0.0"), 15], // benchmarking; often routed to internal test nets
+  // Not 198.18.0.0/15 (benchmarking): Clash, mihomo, sing-box and Surge TUN
+  // "fake-IP" modes answer every DNS lookup from it, so blocking it would block
+  // every hostname on those machines.
 ];
 
 function isBlockedIpv4Int(ip) {
@@ -187,46 +191,86 @@ export function assertPublicUrl(rawUrl) {
 // services like nip.io/sslip.io, or an attacker-controlled domain with an A record
 // pointed at 127.0.0.1) is rejected too, not just IPs typed directly into the URL.
 export async function assertPublicUrlResolved(rawUrl) {
+  try {
+    await resolvePublicAddresses(rawUrl);
+  } catch (error) {
+    // Resolution failure isn't an SSRF signal by itself — let the subsequent
+    // fetch() fail with its own (clearer) network error. Fetches that must not
+    // fail open use resolvePublicAddresses (fetchPublicHop, probeFetch).
+    if (isBlockedUrlError(error)) throw error;
+  }
+}
+
+// Every refusal from this guard starts with "Blocked URL".
+export function isBlockedUrlError(error) {
+  return String(error?.message || "").startsWith("Blocked URL");
+}
+
+// Check a URL and resolve its host once. Returns the addresses to connect to,
+// or null for a literal IP (nothing to resolve, nothing to rebind). Throws a
+// "Blocked URL" error for an internal host or address, and the lookup's own
+// error when the name doesn't resolve: callers that connect fail closed.
+export async function resolvePublicAddresses(rawUrl) {
   const parsed = new URL(rawUrl);
   const host = normalizeHost(parsed.hostname);
   if (isBlockedHost(host)) throw new Error("Blocked URL: internal host");
-
-  // Already a literal IPv4/IPv6 address — isBlockedHost above already covered it,
-  // no DNS lookup applies (and dns.lookup would just echo it back anyway).
   const bracketless = host.replace(/^\[|\]$/g, "");
-  if (ipv4ToInt(bracketless) !== null || bracketless.includes(":")) return;
-
-  let addresses;
-  try {
-    addresses = await dns.promises.lookup(host, { all: true, verbatim: true });
-  } catch {
-    // Resolution failure isn't an SSRF signal by itself — let the subsequent
-    // fetch() fail with its own (clearer) network error.
-    return;
+  if (ipv4ToInt(bracketless) !== null || bracketless.includes(":")) return null;
+  const addresses = await dns.promises.lookup(bracketless, { all: true, verbatim: true });
+  if (!addresses?.length) throw new Error(`Host ${bracketless} did not resolve`);
+  if (addresses.some((a) => isBlockedIpAddress(a.address))) {
+    throw new Error("Blocked URL: hostname resolves to an internal host");
   }
-  for (const { address, family } of addresses) {
-    if (family === 4 ? isBlockedIpv4(address) : isBlockedIpv6Groups(parseIPv6ToGroups(address) || [])) {
-      throw new Error("Blocked URL: hostname resolves to an internal host");
-    }
+  return addresses;
+}
+
+// A dispatcher whose connect uses exactly these addresses, so a DNS-rebinding
+// host can't answer the check with a public IP and the connect with 127.0.0.1.
+export function pinnedAgent(addresses) {
+  const lookup = (_host, opts, cb) => (opts?.all ? cb(null, addresses) : cb(null, addresses[0].address, addresses[0].family));
+  return new Agent({ connect: { lookup } });
+}
+
+// One request to a public URL, redirects never followed. The URL is checked
+// and resolved once (failing closed). When the environment's proxy covers it
+// (HTTPS_PROXY / HTTP_PROXY / ALL_PROXY, NO_PROXY respected), the request goes
+// through that proxy: the proxy resolves the name again, so the pin can't
+// apply there. Otherwise the connection is pinned to the checked addresses.
+// undici's own fetch, so the global fetch patch can't swap the dispatcher.
+export async function fetchPublicHop(url, init = {}) {
+  const addresses = await resolvePublicAddresses(url);
+  const proxy = envProxyDispatcher(url);
+  const pinned = !proxy && addresses ? pinnedAgent(addresses) : null;
+  const dispatcher = proxy || pinned;
+  try {
+    return await undiciFetch(url, { ...init, redirect: "manual", ...(dispatcher ? { dispatcher } : {}) });
+  } finally {
+    // The body is read by the caller; closing gracefully waits for it.
+    pinned?.close().catch(() => {});
   }
 }
 
 // fetch() with SSRF-safe manual redirect handling: each hop's target is
-// re-validated through assertPublicUrlResolved before being followed, so a
-// validated public URL can't 30x its way to an internal target. Bounded to
-// maxRedirects hops (fetch's own default following behavior has no bound
-// relevant here since we never let it auto-follow).
-export async function fetchPublic(url, init = {}, { maxRedirects = 5 } = {}) {
-  await assertPublicUrlResolved(url);
+// re-validated before being followed, so a validated public URL can't 30x its
+// way to an internal target. Bounded to maxRedirects hops. With `pin` (for a
+// URL a client supplied), every hop goes through fetchPublicHop: resolved once,
+// refused when it doesn't resolve, and pinned. Without it (operator-set URLs)
+// the global fetch runs it, after the same check.
+export async function fetchPublic(url, init = {}, { maxRedirects = 5, pin = false } = {}) {
   let currentUrl = url;
   for (let hop = 0; ; hop++) {
-    const res = await fetch(currentUrl, { ...init, redirect: "manual" });
+    let res;
+    if (pin) {
+      res = await fetchPublicHop(currentUrl, init);
+    } else {
+      await assertPublicUrlResolved(currentUrl);
+      res = await fetch(currentUrl, { ...init, redirect: "manual" });
+    }
     const isRedirect = res.status >= 300 && res.status < 400;
     const location = isRedirect ? res.headers.get("location") : null;
     if (!location) return res;
     if (hop >= maxRedirects) throw new Error("Blocked URL: too many redirects");
-    const nextUrl = new URL(location, currentUrl).toString();
-    await assertPublicUrlResolved(nextUrl);
-    currentUrl = nextUrl;
+    await res.body?.cancel().catch(() => {});
+    currentUrl = new URL(location, currentUrl).toString();
   }
 }

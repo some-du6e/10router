@@ -1,4 +1,4 @@
-import { isValidAwsRegion, isValidKiroProfileArn } from "open-sse/utils/awsRegion.js";
+import { AWS_DEFAULT_REGION as DEFAULT_REGION, isValidAwsRegion, isValidKiroProfileArn } from "open-sse/utils/awsRegion.js";
 
 const MICROSOFT_TOKEN_ENDPOINT_HOSTS = new Set([
   "login.microsoftonline.com",
@@ -6,7 +6,6 @@ const MICROSOFT_TOKEN_ENDPOINT_HOSTS = new Set([
   "login.windows.net",
 ]);
 
-const DEFAULT_REGION = "us-east-1";
 const DEFAULT_EXPIRES_IN = 3600;
 
 function normalizeString(value) {

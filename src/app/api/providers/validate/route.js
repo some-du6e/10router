@@ -28,7 +28,7 @@ import { NO_API_ROUTE, UNVERIFIED, KEY_CHECK_ERRORS, INVALID_KEY, PROBE_TIMEOUT_
 async function compatibleBaseUrl(request, body, node) {
   const plainFetch = (url, init) => fetch(url, init);
   if (typeof body.baseUrl !== "string" || !body.baseUrl.trim()) return { ok: true, baseUrl: node.baseUrl, fetch: plainFetch };
-  const remote = blocksPrivateUrls(request);
+  const remote = await blocksPrivateUrls(request);
   const keyUrl = await resolveKeyBaseUrl(body.baseUrl, node.baseUrl, { remote });
   if (!keyUrl.ok) return keyUrl;
   return { ...keyUrl, fetch: keyUrl.own && remote ? makeProbeFetch(true) : plainFetch };

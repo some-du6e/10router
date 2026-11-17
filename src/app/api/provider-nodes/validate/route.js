@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
-import { assertPublicUrl } from "@/shared/utils/ssrfGuard.js";
-import { blocksPrivateUrls } from "@/lib/network/privateUrls.js";
+import { isBlockedUrlError } from "@/shared/utils/ssrfGuard.js";
+import { blocksPrivateUrls, PRIVATE_URL_ERROR } from "@/lib/network/privateUrls.js";
 import { describeRedirect, makeProbeFetch } from "@/lib/probeFetch.js";
 
-const withTimeout = (probe) => (url, options, timeout = 10000) =>
-  probe(url, { ...options, signal: AbortSignal.timeout(timeout) });
+const PROBE_TIMEOUT_MS = 10_000;
 
 // Validate URL format
 const isValidUrl = (url) => {
@@ -60,16 +59,9 @@ export async function POST(request) {
       return NextResponse.json({ error: "Invalid URL format" }, { status: 400 });
     }
 
-    // SSRF guard for remote callers; local host keeps self-hosted nodes (e.g. ollama-local)
-    const remote = blocksPrivateUrls(request);
-    if (remote) {
-      try {
-        assertPublicUrl(baseUrl);
-      } catch {
-        return NextResponse.json({ error: "URL not allowed" }, { status: 400 });
-      }
-    }
-    const fetchWithTimeout = withTimeout(makeProbeFetch(remote));
+    // SSRF guard for remote callers, on every hop; local host keeps self-hosted nodes (e.g. ollama-local)
+    const probe = makeProbeFetch(await blocksPrivateUrls(request));
+    const fetchWithTimeout = (url, options) => probe(url, { ...options, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
 
     // Custom Embedding Validation - test POST /embeddings directly
     if (type === "custom-embedding") {
@@ -193,8 +185,8 @@ export async function POST(request) {
 
     return NextResponse.json({ valid: false, error: describeRedirect(res) || getModelsErrorMessage(res.status) });
   } catch (error) {
-    if (String(error?.message).startsWith("Blocked URL")) {
-      return NextResponse.json({ error: "URL not allowed" }, { status: 400 });
+    if (isBlockedUrlError(error)) {
+      return NextResponse.json({ error: PRIVATE_URL_ERROR }, { status: 400 });
     }
     const errorMessage = getErrorMessage(error);
     console.error("Error validating provider node:", {

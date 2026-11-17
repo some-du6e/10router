@@ -5,6 +5,7 @@
 // URLs alone.
 import { assertPublicUrlResolved } from "./ssrfGuard.js";
 import { normalizeEndpointUrl } from "./endpointUrl.js";
+import { PRIVATE_URL_ERROR } from "../constants/privateUrl.js";
 
 export { normalizeEndpointUrl };
 
@@ -39,7 +40,7 @@ export async function endpointUrlProblem(url: string, { remote }: { remote: bool
   }
   if (remote) {
     try { await assertPublicUrlResolved(url); }
-    catch { return "URL not allowed"; }
+    catch { return PRIVATE_URL_ERROR; }
   }
   return null;
 }

@@ -4,7 +4,7 @@
 import { platform, arch } from "os";
 import { ANTIGRAVITY_OAUTH_CLIENT, GOOGLE_OAUTH_CLIENT } from "open-sse/providers/shared.js";
 import { PROVIDER_OAUTH, PROVIDERS as REGISTRY_PROVIDERS } from "open-sse/providers/index.js";
-import { AWS_REGION_PATTERN } from "open-sse/utils/awsRegion.js";
+import { isValidAwsRegion } from "open-sse/utils/awsRegion.js";
 
 /**
  * Get the platform enum value based on the current OS.
@@ -65,13 +65,9 @@ export const GITHUB_CONFIG = { ...PROVIDER_OAUTH["github"] };
 // Kiro OAuth Configuration (multi-method: AWS Builder ID / IDC / Social / Import Token)
 export const KIRO_CONFIG = { ...PROVIDER_OAUTH["kiro"] };
 
-export { AWS_REGION_PATTERN };
-
 // Reject any region that is not a valid AWS region before interpolating it into a URL
 export function assertValidAwsRegion(region) {
-  if (typeof region !== "string" || !AWS_REGION_PATTERN.test(region)) {
-    throw new Error("Invalid region");
-  }
+  if (!isValidAwsRegion(region)) throw new Error("Invalid region");
   return region;
 }
 

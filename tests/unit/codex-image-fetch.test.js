@@ -10,8 +10,11 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
-// Mock DNS so the SSRF guard treats example.com as public.
-vi.mock("node:dns/promises", () => ({ lookup: async () => [{ address: "93.184.216.34", family: 4 }] }));
+import dns from "node:dns";
+
+// Image downloads go through undici's own fetch (pinned); the upstream call through proxyAwareFetch.
+const imageFetch = vi.hoisted(() => vi.fn());
+vi.mock("undici", async (orig) => ({ ...(await orig()), fetch: (...a) => imageFetch(...a) }));
 
 import { CodexExecutor } from "../../open-sse/executors/codex.js";
 import * as proxyFetchModule from "../../open-sse/utils/proxyFetch.js";
@@ -51,6 +54,9 @@ describe("CodexExecutor image handling", () => {
 
   beforeEach(() => {
     originalFetch = global.fetch;
+    // The SSRF guard sees example.com as public; each test's global.fetch mock answers the download.
+    vi.spyOn(dns.promises, "lookup").mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+    imageFetch.mockReset().mockImplementation((...a) => global.fetch(...a));
   });
 
   afterEach(() => {
@@ -85,6 +91,7 @@ describe("CodexExecutor image handling", () => {
     const decodedLen = Buffer.from(base64Payload, "base64").length;
     expect(decodedLen).toBe(IMAGE_1MB_BYTES);
     expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(imageFetch.mock.calls[0][1].dispatcher).toBeDefined(); // pinned to the checked address
   });
 
   it("passes through existing data URIs without calling fetch", async () => {

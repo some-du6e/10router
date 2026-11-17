@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { createProxyPool } from "@/models";
-import { newRelayKey, relayKeyCheck, withRelayKey } from "@/lib/network/relayKey.js";
+import { newRelayKey, relayKeyCheck } from "@/lib/network/relayKey.js";
+import { saveRelayPool } from "@/lib/network/relayPool.js";
 
 const VERCEL_API = "https://api.vercel.com";
 
@@ -127,17 +127,9 @@ export async function POST(request) {
     const ready = await pollDeployment(deploymentId, vercelToken);
     const deployUrl = `https://${ready.url}`;
 
-    // Create proxy pool entry with type vercel
-    const proxyPool = await createProxyPool({
-      name: projectName,
-      proxyUrl: withRelayKey(deployUrl, relayKey),
-      type: "vercel",
-      noProxy: "",
-      isActive: true,
-      strictProxy: false,
-    });
+    const { proxyPool, created } = await saveRelayPool({ type: "vercel", name: projectName, deployUrl, relayKey });
 
-    return NextResponse.json({ proxyPool, deployUrl }, { status: 201 });
+    return NextResponse.json({ proxyPool, deployUrl, updated: !created }, { status: created ? 201 : 200 });
   } catch (error) {
     console.log("Error deploying Vercel relay:", error);
     return NextResponse.json({ error: error.message || "Deploy failed" }, { status: 500 });

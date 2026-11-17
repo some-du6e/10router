@@ -16,6 +16,15 @@ export const IMAGE_SIGNATURES = [
   { sig: [0x42, 0x4d], offset: 0, mime: "image/bmp" },
 ];
 
+// Cloudflare Workers AI image and mask inputs: the chat set (BMP included) plus
+// AVIF (an ISO-BMFF "ftyp" box with brand avif or avis at byte 4). HEIC isn't
+// listed: Cloudflare doesn't document taking it.
+const ftyp = (brand) => ({ sig: [..."ftyp" + brand].map((c) => c.charCodeAt(0)), offset: 4, mime: "image/avif" });
+export const CLOUDFLARE_IMAGE_SIGNATURES = [...IMAGE_SIGNATURES, ftyp("avif"), ftyp("avis")];
+
+// Redirects a Cloudflare image or mask URL may take; each hop is checked again.
+export const CLOUDFLARE_IMAGE_MAX_REDIRECTS = 3;
+
 // Image types Anthropic accepts in an image block. The bytes must match the type.
 export const CLAUDE_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 
@@ -88,13 +97,3 @@ export const IMAGE_WINDOW = {
 // and count_tokens. Upstreams charge an image roughly this much, not by the
 // length of its base64.
 export const IMAGE_TOKEN_ESTIMATE = 1600;
-
-// Hostnames/IPs that must never be fetched (SSRF guard for loopback + cloud metadata).
-export const BLOCKED_HOSTS = new Set([
-  "localhost",
-  "127.0.0.1",
-  "0.0.0.0",
-  "::1",
-  "169.254.169.254", // AWS/GCP/Azure IMDS
-  "metadata.google.internal",
-]);

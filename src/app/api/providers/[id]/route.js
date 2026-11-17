@@ -9,7 +9,7 @@ import {
 } from "@/models";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { resolveKeyBaseUrl, withKeyBaseUrl, withoutKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
-import { blocksPrivateUrls } from "@/lib/network/privateUrls.js";
+import { blocksPrivateUrls, providerDataProblem } from "@/lib/network/privateUrls.js";
 
 function normalizeProxyConfig(body = {}) {
   const hasAnyProxyField =
@@ -128,6 +128,16 @@ export async function PUT(request, { params }) {
       return NextResponse.json({ error: proxyConfig.error }, { status: 400 });
     }
 
+    // providerSpecificData is merged as sent: a Kiro region must be an AWS
+    // region (it picks the host the refresh token and client secret go to), and
+    // a new proxy URL, sent either way, gets the endpoint URL rule.
+    const storedData = existing.providerSpecificData || {};
+    const dataProblem = await providerDataProblem(request, existing.provider, {
+      ...(providerSpecificData || {}),
+      ...(proxyConfig.hasAnyProxyField && proxyConfig.connectionProxyEnabled ? { connectionProxyUrl: proxyConfig.connectionProxyUrl } : {}),
+    }, storedData);
+    if (dataProblem) return NextResponse.json({ error: dataProblem }, { status: 400 });
+
     const proxyPoolResult = await normalizeProxyPoolUpdate(body.proxyPoolId);
     if (proxyPoolResult.error) {
       return NextResponse.json({ error: proxyPoolResult.error }, { status: 400 });
@@ -216,7 +226,7 @@ export async function PUT(request, { params }) {
       }
       const node = await getProviderNodeById(existing.provider);
       if (!node) return NextResponse.json({ error: "Provider node not found" }, { status: 404 });
-      const keyUrl = await resolveKeyBaseUrl(body.baseUrl, node.baseUrl, { remote: blocksPrivateUrls(request) });
+      const keyUrl = await resolveKeyBaseUrl(body.baseUrl, node.baseUrl, { remote: await blocksPrivateUrls(request) });
       if (!keyUrl.ok) return NextResponse.json({ error: keyUrl.error, field: "baseUrl" }, { status: 400 });
       updateData.providerSpecificData = withKeyBaseUrl(
         updateData.providerSpecificData || { ...(existing.providerSpecificData || {}) },

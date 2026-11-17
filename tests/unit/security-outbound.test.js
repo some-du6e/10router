@@ -1,10 +1,22 @@
+import dns from "node:dns";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-const lookupMock = vi.hoisted(() => vi.fn());
-vi.mock("node:dns/promises", () => ({ lookup: (...a) => lookupMock(...a) }));
+// Checked fetches (images, client-picked search URLs) use undici's own fetch
+// with a pinned dispatcher; here it hands off to each test's globalThis.fetch.
+const undiciFetch = vi.hoisted(() => vi.fn());
+vi.mock("undici", async (orig) => ({ ...(await orig()), fetch: (...a) => undiciFetch(...a) }));
+// Token refresh calls go through proxyAwareFetch; the kiro test answers them.
+const refreshFetch = vi.hoisted(() => ({ impl: null }));
+vi.mock("../../open-sse/utils/proxyFetch.js", async (orig) => {
+  const real = await orig();
+  return { ...real, proxyAwareFetch: (...a) => (refreshFetch.impl || real.proxyAwareFetch)(...a) };
+});
 
 import { resolveBaseUrl, buildSearchRequest } from "../../open-sse/handlers/search/callers.js";
-import { isBlockedIpAddress } from "../../open-sse/utils/ssrfGuard.js";
+import { handleSearchCore } from "../../open-sse/handlers/search/index.js";
+import { isBlockedIpAddress, fetchPublic } from "../../open-sse/utils/ssrfGuard.js";
+import { refreshKiroToken } from "../../open-sse/services/tokenRefresh/providers.js";
+import { AWS_REGION_PATTERN, KIRO_PROFILE_ARN_PATTERN } from "../../open-sse/config/awsRegion.js";
 import { fetchImageAsBase64 } from "../../open-sse/translator/concerns/image.js";
 import cloudflareAi from "../../open-sse/handlers/imageProviders/cloudflareAi.js";
 import { KiroExecutor } from "../../open-sse/executors/kiro.js";
@@ -20,13 +32,15 @@ import { redactUrlSecrets } from "../../open-sse/utils/redact.js";
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const realFetch = globalThis.fetch;
 
+let lookupMock;
 beforeEach(() => {
-  lookupMock.mockReset();
-  lookupMock.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+  lookupMock = vi.spyOn(dns.promises, "lookup").mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+  undiciFetch.mockReset().mockImplementation((...a) => globalThis.fetch(...a));
 });
 afterEach(() => {
   globalThis.fetch = realFetch;
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe("search provider_options.baseUrl", () => {
@@ -47,6 +61,38 @@ describe("search provider_options.baseUrl", () => {
     const params = { providerOptions: { baseUrl: "https://my-searxng.example.com" } };
     expect(resolveBaseUrl({ id: "searxng", baseUrl: "https://s.example" }, params)).toBe("https://my-searxng.example.com");
   });
+
+  const searx = (baseUrl) => handleSearchCore({
+    body: { query: "q", provider_options: { baseUrl } },
+    provider: { id: "searxng" },
+    providerConfig: { authType: "none", baseUrl: "https://searx.default.example/search" },
+    credentials: null,
+  });
+
+  it("pins a keyless override to the address it checked, and refuses one that resolves internal", async () => {
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ results: [] }), { status: 200, headers: { "content-type": "application/json" } }));
+    expect((await searx("https://my-searx.example.org")).success).toBe(true);
+    expect(undiciFetch.mock.calls[0][1].dispatcher).toBeDefined();
+
+    undiciFetch.mockClear();
+    lookupMock.mockResolvedValue([{ address: "10.0.0.3", family: 4 }]);
+    expect((await searx("https://rebind.example.org")).success).toBe(false);
+    expect(undiciFetch).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when a client-picked URL doesn't resolve, but not for the operator's own URL", async () => {
+    lookupMock.mockRejectedValue(Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" }));
+    globalThis.fetch = vi.fn(async () => new Response("ok"));
+    await expect(fetchPublic("https://nowhere.example.org/", {}, { pin: true })).rejects.toThrow(/ENOTFOUND/);
+    expect(undiciFetch).not.toHaveBeenCalled();
+    await fetchPublic("https://searx.default.example/search");
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps blocking internal overrides with ALLOW_PRIVATE_ENDPOINT_URLS on", () => {
+    vi.stubEnv("ALLOW_PRIVATE_ENDPOINT_URLS", "true");
+    expect(() => resolveBaseUrl({ id: "searxng", baseUrl: "https://s.example" }, { providerOptions: { baseUrl: "http://10.0.0.3:8080" } })).toThrow();
+  });
 });
 
 describe("image prefetch address check", () => {
@@ -56,6 +102,11 @@ describe("image prefetch address check", () => {
     }
     expect(isBlockedIpAddress("93.184.216.34")).toBe(false);
     expect(isBlockedIpAddress("2606:4700::1111")).toBe(false);
+    expect(isBlockedIpAddress("192.0.0.9")).toBe(true);
+  });
+
+  it("lets the 198.18.0.0/15 fake-IP range through (Clash, mihomo, sing-box, Surge TUN)", () => {
+    for (const ip of ["198.18.0.1", "198.18.5.5", "198.19.255.254"]) expect(isBlockedIpAddress(ip), ip).toBe(false);
   });
 
   it("refuses a host that resolves to ::", async () => {
@@ -114,6 +165,14 @@ describe("every image download path", () => {
     expect(await fetchImageOnce("https://cdn.example.com/b.png", { cacheKey })).toBeNull();
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps refusing LAN images with ALLOW_PRIVATE_ENDPOINT_URLS on (it only covers dashboard URLs)", async () => {
+    vi.stubEnv("ALLOW_PRIVATE_ENDPOINT_URLS", "true");
+    lookupMock.mockResolvedValue([{ address: "10.0.0.7", family: 4 }]);
+    globalThis.fetch = vi.fn();
+    expect(await prefetchRemoteImages(imageBody("http://nas.example/x.png"), "openai", "gemini", { cacheKey: {} })).toBe(0);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
 });
 
 describe("cloudflare-ai image inputs", () => {
@@ -129,6 +188,53 @@ describe("cloudflare-ai image inputs", () => {
     globalThis.fetch = vi.fn(async () => new Response(PNG, { status: 200 }));
     const body = await cloudflareAi.buildBody("@cf/m", { prompt: "p", image: "https://cdn.example.com/a.png" });
     expect(body.image_b64).toBe(PNG.toString("base64"));
+    expect(undiciFetch.mock.calls[0][1].dispatcher).toBeDefined();
+  });
+
+  it("follows a redirect, checking every hop, and refuses one that lands on an internal host", async () => {
+    globalThis.fetch = vi.fn(async (url) => (String(url).includes("/old")
+      ? new Response(null, { status: 302, headers: { location: "https://cdn2.example.com/new.png" } })
+      : new Response(PNG, { status: 200 })));
+    const body = await cloudflareAi.buildBody("@cf/m", { prompt: "p", image: "https://cdn.example.com/old.png" });
+    expect(body.image_b64).toBe(PNG.toString("base64"));
+    expect(lookupMock.mock.calls.map((c) => c[0])).toEqual(["cdn.example.com", "cdn2.example.com"]);
+
+    globalThis.fetch = vi.fn(async () => new Response(null, { status: 302, headers: { location: "http://169.254.169.254/latest" } }));
+    await expect(cloudflareAi.buildBody("@cf/m", { prompt: "p", image: "https://cdn.example.com/old.png" })).rejects.toThrow(/not allowed/);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("takes AVIF and BMP inputs and an upper-case scheme", async () => {
+    const AVIF = Buffer.from([0, 0, 0, 0x1c, ..."ftypavif"].map((c) => (typeof c === "string" ? c.charCodeAt(0) : c)));
+    const BMP = Buffer.from([0x42, 0x4d, 0, 0]);
+    for (const bytes of [AVIF, BMP]) {
+      globalThis.fetch = vi.fn(async () => new Response(bytes, { status: 200 }));
+      const body = await cloudflareAi.buildBody("@cf/m", { prompt: "p", image: "HTTPS://cdn.example.com/a" });
+      expect(body.image_b64).toBe(bytes.toString("base64"));
+    }
+  });
+});
+
+describe("kiro token refresh and test", () => {
+  it("never sends the client secret and refresh token to a host a stored region picks", async () => {
+    const calls = [];
+    refreshFetch.impl = async (url) => {
+      calls.push(url);
+      return new Response(JSON.stringify({ accessToken: "a", expiresIn: 3600 }), { status: 200 });
+    };
+    try {
+      await refreshKiroToken("rt-region-1", { authMethod: "idc", clientId: "c", clientSecret: "s", region: "x.attacker.example/", profileArn: "arn:aws:codewhisperer:us-east-1:123456789012:profile/ABC" });
+      await refreshKiroToken("rt-region-2", { authMethod: "idc", clientId: "c", clientSecret: "s", region: "eu-central-1", profileArn: "arn:aws:codewhisperer:eu-central-1:123456789012:profile/ABC" });
+    } finally {
+      refreshFetch.impl = null;
+    }
+    expect(calls).toEqual(["https://oidc.us-east-1.amazonaws.com/token", "https://oidc.eu-central-1.amazonaws.com/token"]);
+  });
+
+  it("builds the ARN pattern from the region pattern", () => {
+    expect(AWS_REGION_PATTERN.test("ap-southeast-2")).toBe(true);
+    expect(KIRO_PROFILE_ARN_PATTERN.test("arn:aws:codewhisperer:ap-southeast-2:123456789012:profile/ABC")).toBe(true);
+    expect(KIRO_PROFILE_ARN_PATTERN.test("arn:aws:codewhisperer:evil.example:123456789012:profile/ABC")).toBe(false);
   });
 });
 

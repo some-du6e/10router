@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { mergeQuirks, mergeConnectionData } from "@/shared/utils/nodeQuirkMerge";
 import { prefixProblem } from "@/shared/utils/reservedPrefixes";
-import { endpointUrlProblem } from "@/shared/utils/connectionBaseUrl.js";
-import { blocksPrivateUrls } from "@/lib/network/privateUrls.js";
+import { endpointUrlProblem, normalizeEndpointUrl } from "@/shared/utils/connectionBaseUrl.js";
+import { blocksPrivateUrls, proxyUrlProblem } from "@/lib/network/privateUrls.js";
 import { deleteProviderConnectionsByProvider, deleteProviderNode, getProviderConnections, getProviderNodeById, getProviderNodes, updateProviderConnection, updateProviderNode } from "@/models";
 
 // PUT /api/provider-nodes/[id] - Update provider node
@@ -60,11 +60,18 @@ export async function PUT(request, { params }) {
       }
     }
 
-    const urlProblem = sanitizedBaseUrl !== node.baseUrl
-      && await endpointUrlProblem(sanitizedBaseUrl, { remote: blocksPrivateUrls(request) });
+    // Keeping the URL the node already has (up to a trailing slash or pasted
+    // API path) is always fine, so a remote admin can still rename a node that
+    // points at a local model. A new URL, or a new per-endpoint proxy, must pass
+    // the same rule as on create.
+    const urlProblem = normalizeEndpointUrl(sanitizedBaseUrl) !== normalizeEndpointUrl(node.baseUrl)
+      && await endpointUrlProblem(sanitizedBaseUrl, { remote: await blocksPrivateUrls(request) });
     if (urlProblem) return NextResponse.json({ error: urlProblem, field: "baseUrl" }, { status: 400 });
 
     const { quirks, removed } = mergeQuirks(node, body);
+    const proxy = quirks.overrides?.proxy;
+    const proxyProblem = proxy && proxy !== node.overrides?.proxy ? await proxyUrlProblem(request, proxy) : null;
+    if (proxyProblem) return NextResponse.json({ error: proxyProblem, field: "proxy" }, { status: 400 });
     const updates = {
       name: name.trim(),
       prefix: prefix.trim(),

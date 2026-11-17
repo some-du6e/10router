@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createProxyPool, getProviderConnections, getProxyPools } from "@/models";
+import { proxyUrlProblem } from "@/lib/network/privateUrls.js";
 
 function toBoolean(value) {
   if (value === "true") return true;
@@ -83,6 +84,11 @@ export async function POST(request) {
     if (normalized.error) {
       return NextResponse.json({ error: normalized.error }, { status: 400 });
     }
+
+    // Every upstream request of a connection on this pool, stored keys in its
+    // headers included, goes to this URL: same rule as an endpoint URL.
+    const urlProblem = await proxyUrlProblem(request, normalized.proxyUrl);
+    if (urlProblem) return NextResponse.json({ error: urlProblem, field: "proxyUrl" }, { status: 400 });
 
     const proxyPool = await createProxyPool(normalized);
     return NextResponse.json({ proxyPool }, { status: 201 });
