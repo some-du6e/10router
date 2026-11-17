@@ -1,6 +1,7 @@
 import { saveRequestUsage, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { COLORS } from "../../utils/stream.js";
 import { canonicalizeUsage } from "../../utils/usageTracking.js";
+import { THINKING_OBJECT_KEYS } from "../../config/attemptCopy.js";
 
 const OPTIONAL_PARAMS = [
   "temperature", "top_p", "top_k",
@@ -14,9 +15,11 @@ const OPTIONAL_PARAMS = [
   "user", "parallel_tool_calls"
 ];
 
-// The router edits these in place on a same-format route, so they're copied to
-// keep the client's values. Everything else (messages, tools) is kept by reference.
-const COPIED_PARAMS = new Set(["thinking", "reasoning", "output_config"]);
+// The thinking settings are stored as copies, so the row's thinking objects are
+// never the ones the live request holds. Everything else (messages, tools) is
+// kept by reference: each attempt edits its own copy of those
+// (config/attemptCopy.js), not the client's.
+const COPIED_PARAMS = new Set(THINKING_OBJECT_KEYS);
 
 export function extractRequestConfig(body, stream) {
   const config = { model: body.model, stream };

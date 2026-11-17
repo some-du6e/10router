@@ -47,6 +47,20 @@ describe("prefetchRemoteImages", () => {
     expect(body.contents[0].parts[0].fileData).toBeUndefined();
   });
 
+  it("keeps the block of an image whose fetch failed and converts the other", async () => {
+    fetchImageAsBase64
+      .mockImplementationOnce(async () => ({ url: "data:image/png;base64,QUJD", mimeType: "image/png" }))
+      .mockImplementationOnce(async () => null);
+    const body = { messages: [{ role: "user", content: [
+      { type: "image_url", image_url: { url: "https://x/a.png", detail: "low" } },
+      { type: "image_url", image_url: "https://x/missing.png" },
+    ] }] };
+    expect(await prefetchRemoteImages(body, FORMATS.OPENAI, FORMATS.GEMINI)).toBe(1);
+    const [converted, kept] = body.messages[0].content;
+    expect(converted.image_url).toEqual({ url: "data:image/png;base64,QUJD", detail: "low" });
+    expect(kept).toEqual({ type: "image_url", image_url: "https://x/missing.png" });
+  });
+
   it("claude source -> kiro target: source.url -> base64", async () => {
     const body = { messages: [{ role: "user", content: [
       { type: "image", source: { type: "url", url: "https://x/a.png" } },

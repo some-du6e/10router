@@ -39,9 +39,10 @@ export function ensureToolCallIds(body) {
         if (!tc.type) {
           tc.type = "function";
         }
-        // Ensure arguments is JSON string, not object
+        // Ensure arguments is JSON string, not object. A new function object:
+        // the attempt's copy of a tool call shares the client's.
         if (tc.function?.arguments && typeof tc.function.arguments !== "string") {
-          tc.function.arguments = JSON.stringify(tc.function.arguments);
+          tc.function = { ...tc.function, arguments: JSON.stringify(tc.function.arguments) };
         }
       }
     }
