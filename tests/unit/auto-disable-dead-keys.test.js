@@ -2343,7 +2343,7 @@ describe("a key refused on only one model", () => {
     expect(await pickOn("m2")).toBe(a.id);
   }, 120000);
 
-  // key-a was demoted on m1 6 hours ago, and its first try on m2, 15 minutes
+  // key-a was demoted on m1 6 hours ago, and its first try on m2, 5 minutes
   // before a restart, was refused. Its next comes 10 minutes after that one,
   // not 180 as its demotion's age alone would have it.
   it("doesn't push a key whose tries on another model began minutes before a restart hours out", async () => {
@@ -2361,16 +2361,45 @@ describe("a key refused on only one model", () => {
     expect(await pickOn("m2")).toBe(a.id);
   });
 
-  // An xAI video poll (no model) carries the account that made the job.
-  it.each([
-    ["a request with no model", null],
-    ["a request for a model", "m2"],
-  ])("gives %s pinned to a key the pinned key, ahead of a key demoted elsewhere with a try due", async (_label, model) => {
+  // Session affinity pins a request to the key that served the conversation.
+  it("gives a request pinned to a key the pinned key, ahead of a key demoted elsewhere with a try due", async () => {
     const { dead, healthy } = await demotedKey();
-    expect(await pickOn(model, { preferredConnectionId: healthy.id })).toBe(healthy.id);
+    expect(await pickOn("m2", { preferredConnectionId: healthy.id })).toBe(healthy.id);
     expect([...global._authEvents.spreadLeases.values()].filter((lease) => lease.connectionId === dead.id)).toEqual([]);
     // Its try was not used up: the next request without the pin takes it.
-    if (model) expect(await pickOn(model)).toBe(dead.id);
+    expect(await pickOn("m2")).toBe(dead.id);
+  });
+
+  it("still gives a pinned request the due probe of a key demoted on that model, so it can recover", async () => {
+    const { dead, healthy } = await demotedKey();
+    await atProbe(dead.id);
+    expect(await pickOn("m1", { preferredConnectionId: healthy.id })).toBe(dead.id);
+    expect(record(await load(dead.id))).toHaveProperty("probeId");
+  });
+
+  // key-a was refused on m2 for 3 hours, an hour or more apart, so never
+  // demoted there; then it was demoted on m1. Its tries on m2 count from that
+  // demotion, not from its first refusal there: its next try, after a refusal
+  // 11 minutes after the demotion, comes 20 minutes on, not 180.
+  it("counts a key's tries on another model from its demotion, not from older refusals there", async () => {
+    const a = await addKey("a");
+    const healthy = await addKey("b");
+    for (let i = 0; i < 4; i++) {
+      if (i > 0) vi.advanceTimersByTime(61 * MIN);
+      await fail(a.id, { times: 1, models: ["m2"], peers: [healthy] });
+    }
+    expect(record(await load(a.id), "m2")).toMatchObject({ count: 1, refusedSince: expect.any(String) });
+    expect(Date.now() - Date.parse(record(await load(a.id), "m2").refusedSince)).toBe(3 * 61 * MIN);
+    vi.advanceTimersByTime(11 * MIN);
+    await fail(a.id, { times: 5, models: ["m1"], peers: [healthy] });
+    expect(demoted(await load(a.id))).toBe(true);
+    vi.advanceTimersByTime(11 * MIN);
+    await fail(a.id, { times: 1, models: ["m2"], peers: [healthy] });
+    vi.advanceTimersByTime(19 * MIN);
+    expect(await pickOn("m2")).toBe(healthy.id);
+    vi.advanceTimersByTime(MIN);
+    expect(await pickOn("m2")).toBe(a.id);
+    expect((await load(a.id)).isActive).toBe(true);
   });
 
   it("leaves a key demoted on another model in its place for a request with no model", async () => {

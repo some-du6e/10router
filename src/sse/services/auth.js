@@ -596,15 +596,16 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     let availableConnections = notAvoided.length > 0 ? notAvoided
       : notDemoted.length > 0 ? notDemoted : notDemotedOnModel.length > 0 ? notDemotedOnModel : usableConnections;
     let probing = false;
-    // A usable pinned key (a job's own account, session affinity) wins over a probe.
+    // A usable pinned key (session affinity) wins over a spread try; a key's
+    // probe on its own demoted model still goes first, so it can recover.
     const pinnedUsable = !!preferredConnectionId && availableConnections.some(c => c.id === preferredConnectionId);
-    if (notDemoted.length > 0 && !deadTriedThisPass && !pinnedUsable) {
+    if (notDemoted.length > 0 && !deadTriedThisPass) {
       // Under fill-first a key behind a usable one wouldn't be tried anyway
       // (a backup), so only demoted keys ahead of them are probed.
       const ahead = strategy === "fill-first" ? usableConnections.slice(0, usableConnections.indexOf(notDemoted[0])) : usableConnections;
       for (const c of ahead.filter(c => demotions.get(c.id))) {
         const { own, spread } = demotions.get(c.id);
-        if (own ? await claimProbe(c, model, own) : claimSpreadProbe(c, providerId, model, spread)) {
+        if (own ? await claimProbe(c, model, own) : !pinnedUsable && claimSpreadProbe(c, providerId, model, spread)) {
           availableConnections = [c];
           probing = true;
           break;
