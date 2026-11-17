@@ -11,6 +11,10 @@ on:
       - "package.json"
       - "tests/package.json"
       - ".github/workflows/security-dashboard-html.yml"
+  # No lockfile pins marked (^18), so a new release can break the preview's
+  # overrides without any listed path changing.
+  schedule:
+    - cron: "17 6 * * 1"
   workflow_dispatch:
 
 permissions:

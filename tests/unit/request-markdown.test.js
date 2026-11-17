@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { Lexer, marked } from "marked";
+import { getDefaults, Lexer, marked } from "marked";
 import {
   BOUNDED_TEXT_RULE,
   MARKDOWN_LIMITS,
@@ -188,10 +188,14 @@ describe("request markdown preview", () => {
     }
   });
 
-  it("ignores a global marked.use() elsewhere in the app", () => {
-    marked.use({ renderer: { html: ({ text }) => text } });
-    expect(marked.parse("<img src=x onerror=alert(1)>")).toContain("<img");
-    expectInert(renderPromptMarkdown("<img src=x onerror=alert(1)> [x](javascript:0)"));
+  describe("with a global marked.use() elsewhere in the app", () => {
+    afterEach(() => marked.setOptions(getDefaults()));
+
+    it("still drops HTML", () => {
+      marked.use({ renderer: { html: ({ text }) => text } });
+      expect(marked.parse("<img src=x onerror=alert(1)>")).toContain("<img");
+      expectInert(renderPromptMarkdown("<img src=x onerror=alert(1)> [x](javascript:0)"));
+    });
   });
 });
 
@@ -256,18 +260,23 @@ describe("request markdown preview on hostile sizes", () => {
     expect(BOUNDED_TEXT_RULE.source).not.toContain("~-]+@");
   });
 
-  // Each took 3 s to minutes before; the limits are ~10x what they take now.
-  it.each([
-    ["a*_", 2500],
-    ["_*a", 2500],
-    ["a~_", 2500],
-    ["a!", 1500],
-    ["_a", 1500],
-  ])("renders %j repeated up to the length cap quickly", (pattern, limitMs) => {
-    const markdown = pattern.repeat(Math.floor(MARKDOWN_LIMITS.chars / pattern.length));
-    const { html, ms } = timed(markdown);
-    expect(html).not.toContain(PLAIN_TEXT_NOTE);
-    expect(ms).toBeLessThan(limitMs);
+  // The timing tests below can't tell a missing override apart on a fast
+  // runner (unbounded "a!" took ~3.5 s on a loaded 3-core box), so check that
+  // the preview's text tokenizer is the bounded one.
+  it("tokenizes text with the bounded rule", () => {
+    const exec = vi.spyOn(BOUNDED_TEXT_RULE, "exec");
+    renderPromptMarkdown("plain words");
+    expect(exec).toHaveBeenCalled();
+  });
+
+  // Each took 3 s to minutes before and ~0.1-0.5 s now on a loaded 3-core box.
+  describe("timing", { retry: 2, timeout: 15_000 }, () => {
+    it.each(["a*_", "_*a", "a~_", "a!", "_a"])("renders %j repeated up to the length cap within 4 s", (pattern) => {
+      const markdown = pattern.repeat(Math.floor(MARKDOWN_LIMITS.chars / pattern.length));
+      const { html, ms } = timed(markdown);
+      expect(html).not.toContain(PLAIN_TEXT_NOTE);
+      expect(ms).toBeLessThan(4000);
+    });
   });
 
   it("keeps emphasis in a long paragraph full of ordinary bold and italics", () => {
