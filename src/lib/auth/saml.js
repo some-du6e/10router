@@ -124,10 +124,13 @@ const NO_STORE_CACHE = {
   removeAsync: async () => null,
 };
 
-function boundRequestCache(requestId) {
+// node-saml reads the cached value as the request's issue time, the way its own
+// store saves it.
+function boundRequestCache({ id, exp }) {
+  const issuedAt = new Date(exp - SAML_REQUEST_TTL_MS).toISOString();
   return {
     saveAsync: async () => null,
-    getAsync: async (key) => (key === requestId ? "issued" : null),
+    getAsync: async (key) => (key === id ? issuedAt : null),
     removeAsync: async (key) => key ?? null,
   };
 }
@@ -144,6 +147,7 @@ export function createSamlInstance(settings, origin, cacheProvider = NO_STORE_CA
     acceptedClockSkewMs: 60000,
     wantAssertionsSigned: true,
     validateInResponseTo: "always",
+    requestIdExpirationPeriodMs: SAML_REQUEST_TTL_MS,
     cacheProvider,
   });
 }
@@ -199,7 +203,7 @@ export async function validateSamlResponse(request, body, stateCookie, settings)
   let profile;
   try {
     const origin = getSamlBaseUrl(request, settings);
-    const samlInstance = createSamlInstance(settings, origin, boundRequestCache(pending.id));
+    const samlInstance = createSamlInstance(settings, origin, boundRequestCache(pending));
     const result = await samlInstance.validatePostResponseAsync({ SAMLResponse: rawSamlResponse });
     profile = result?.profile || result;
     const confirmations = profile?.getAssertion?.()?.Assertion?.Subject?.[0]?.SubjectConfirmation || [];
