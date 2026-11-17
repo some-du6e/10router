@@ -9,6 +9,7 @@ import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG, AUTH_DEMOTE_CONFIG, LIMIT
 import { isBackoffText } from "open-sse/utils/errorClass.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { planCanServeModel } from "@/shared/utils/planCapability.js";
+import { SPREAD_NOTE } from "@/shared/utils/connectionStatus.js";
 import { getAntigravityQuotaCache } from "./antigravityQuota.js";
 import { getRoutingQuotas, getResetState, pickSoonestReset } from "./soonestReset.js";
 import * as log from "../utils/logger.js";
@@ -70,7 +71,6 @@ function recordSuccess(connectionId, model) {
 }
 
 const succeededSince = (key, sinceMs) => (authEvents.success.get(key)?.at ?? -Infinity) >= sinceMs;
-const refusedSince = (key, sinceMs) => (authEvents.refused.get(key)?.at ?? -Infinity) >= sinceMs;
 
 // LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL: a limit or a refusal of one
 // model or operation; the key itself is fine.
@@ -281,48 +281,96 @@ const isDeadClass = (conn, r) => !!r?.demotedAt && refusedForItself(conn, r);
 const isFirm = (conn, r) => isDeadClass(conn, r)
   && !(new Date(r.servedAt).getTime() >= new Date(r.firstAt).getTime() - AUTH_DEAD_CONFIG.minWindowMs);
 
-// Demoted on another model the way isDeadClass says.
-const demotedElsewhere = (conn, model) => demoteRecords(conn).some(([m, r]) => m !== model && isDeadClass(conn, r));
+// The key's demotions on models other than `model` the way isDeadClass says:
+// refused for itself, with nothing served since the count began.
+const deadDemotionsElsewhere = (conn, model) => demoteRecords(conn).filter(([m, r]) => m !== model && isDeadClass(conn, r));
 
 // How account selection treats the key on `model`: { own } when it is demoted
-// there, { spread: true } when it is demoted on another model the way
-// isDeadClass says (refused for itself, nothing served since that count
-// began), so it goes after the working keys on every model, or null. A
-// success on any model ends the spread; a demotion for refusals of just that
-// model (isModelRefusal) never spreads.
+// there; { spread: records } when it is demoted elsewhere the way isDeadClass
+// says, so it goes after the working keys here too; or null. The spread ends
+// on any success on any model (the key's own demotion still ends only on a
+// success there), never comes from a demotion for refusals of just that model
+// (isModelRefusal), and leaves web search/fetch lock keys alone: their
+// refusals aren't recorded, so nothing would space its tries there. A request
+// with no model is handled like one for a model of that name.
 function selectionDemotion(conn, model) {
-  if (!model) return null;
-  const own = demotionOf(conn, model);
+  if (/^web(search|fetch):/.test(model || "")) return null;
+  const own = model ? demotionOf(conn, model) : null;
   if (own) return { own };
-  return demotedElsewhere(conn, model) ? { spread: true } : null;
+  const spread = deadDemotionsElsewhere(conn, model);
+  return spread.length > 0 ? { spread } : null;
 }
 
-// A spread key's probes on a model: one as soon as it has no refusal there to
-// go by (so a key that lacks another model gets to serve this one, and a dead
-// key's refusal here reaches the turn-off rules), then one probeMs after its last
-// refusal there, stepping by its count there or its demotion's probe level,
-// whichever is further, until it serves or is demoted there itself. Leased per
-// process for probeLeaseMs, so concurrent requests take one.
-const spreadLeases = (global._authSpreadLeases ??= new Map());
-function claimSpreadProbe(conn, model) {
+// A spread key's tries on a model, per process: `${connectionId}|${model}` ->
+// { at, tries }, and the one try in flight per `${providerId}|${model}` ->
+// { connectionId, until }.
+authEvents.spreadTries ??= new Map();
+authEvents.spreadLeases ??= new Map();
+function rememberBounded(map, key, value, expired) {
+  if (map.size >= MAX_EVENT_ENTRIES) {
+    for (const [k, v] of map) if (expired(v)) map.delete(k);
+    if (map.size >= MAX_EVENT_ENTRIES) map.clear();
+  }
+  map.set(key, value);
+}
+
+// The probe step a dead key has reached by `ageMs` after its count began, had
+// it been probed on schedule since: 0 before probeMs[0], the last step from
+// the sum of all of them on.
+function stepByAge(ageMs) {
+  let step = 0;
+  let sum = 0;
+  for (let i = 0; i < AUTH_DEMOTE_CONFIG.probeMs.length; i++) {
+    sum += AUTH_DEMOTE_CONFIG.probeMs[i];
+    if (ageMs >= sum) step = i + 1;
+  }
+  return Math.min(step, AUTH_DEMOTE_CONFIG.probeMs.length - 1);
+}
+
+// Takes a spread key's next try on `model`: one at once when it has no try or
+// refusal there to go by (a key that lacks the other model gets to serve this
+// one, and a dead key's refusal here reaches the turn-off rules), then one
+// probeMs after the last, stepped by the furthest of its tries and count there,
+// its dead demotions' probe levels and their age, so a key dead everywhere is
+// tried less and less often whatever its count does. One spread try per
+// provider and model is in flight at a time, until it answers or after
+// probeLeaseMs. All per process.
+function claimSpreadProbe(conn, providerId, model, records) {
   const now = Date.now();
+  const leaseKey = `${providerId}|${model}`;
+  const lease = authEvents.spreadLeases.get(leaseKey);
+  if (lease && lease.until > now) return false;
   const key = `${conn.id}|${model}`;
-  if ((spreadLeases.get(key) ?? 0) > now) return false;
-  const record = conn[getAuthDemoteKey(model)];
-  const lastAt = Math.max(authEvents.refused.get(key)?.at ?? -Infinity, authEvents.modelRefused.get(key)?.at ?? -Infinity,
-    Date.parse(record?.lastAt) || -Infinity);
-  const level = Math.max(Number.isInteger(record?.count) && record.count > 0 ? record.count - 1 : 0,
-    ...demoteRecords(conn).filter(([m, r]) => m !== model && isDeadClass(conn, r)).map(([, r]) => r.probeLevel || 0));
-  if (now < lastAt + probeMs(level)) return false;
-  if (spreadLeases.size >= MAX_EVENT_ENTRIES) for (const [k, until] of spreadLeases) if (until <= now) spreadLeases.delete(k);
-  spreadLeases.set(key, now + AUTH_DEMOTE_CONFIG.probeLeaseMs);
+  // Tries count from the dead demotions' start: a key that served and died
+  // again starts over.
+  const since = Math.min(...records.map(([, r]) => Date.parse(r.firstAt)));
+  const stored = authEvents.spreadTries.get(key);
+  const tried = stored?.since === since ? stored : null;
+  const record = model ? conn[getAuthDemoteKey(model)] : null;
+  const lastAt = Math.max(tried?.at ?? -Infinity, authEvents.refused.get(key)?.at ?? -Infinity,
+    authEvents.modelRefused.get(key)?.at ?? -Infinity, Date.parse(record?.lastAt) || -Infinity);
+  if (Number.isFinite(lastAt)) {
+    // Without this process's tries to go by (after a restart), the demotion's
+    // age stands in for them.
+    const demotedAt = Math.min(...records.map(([, r]) => Date.parse(r.demotedAt)));
+    const step = Math.max(tried ? tried.tries - 1 : stepByAge(now - demotedAt),
+      Number.isInteger(record?.count) && record.count > 0 ? record.count - 1 : 0, ...records.map(([, r]) => r.probeLevel || 0));
+    if (now < lastAt + probeMs(step)) return false;
+  }
+  const longestMs = Math.max(...AUTH_DEMOTE_CONFIG.probeMs);
+  rememberBounded(authEvents.spreadTries, key, { since, at: now, tries: (tried?.tries ?? 0) + 1 }, (v) => now - v.at > longestMs);
+  rememberBounded(authEvents.spreadLeases, leaseKey, { connectionId: conn.id, model: model ?? null, until: now + AUTH_DEMOTE_CONFIG.probeLeaseMs },
+    (v) => v.until <= now);
   return true;
 }
-// Has refusedForItself counts on 2 models or more, each demoted or still
-// running (countRuns): a count that has lapsed is only a stray refusal. A key
-// that lacks one model is refused only there.
-const refusedOnTwo = (conn) => demoteRecords(conn)
-  .filter(([, r]) => refusedForItself(conn, r) && (r.demotedAt || countRuns(r, Date.now()))).length >= AUTH_DEAD_CONFIG.minModels;
+
+// The key answered on `model` (served or failed): its spread try there, if it
+// had one out, is over and the next may go out.
+function endSpreadProbe(connectionId, model) {
+  for (const [k, v] of authEvents.spreadLeases) {
+    if (v.connectionId === connectionId && v.model === (model ?? null)) authEvents.spreadLeases.delete(k);
+  }
+}
 
 // Refused, in ways the turn-off rule counts, on 2 models with nothing served in
 // between, the key is dead (tests/unit/auto-disable-stress.test.js replays it).
@@ -370,10 +418,11 @@ async function planDemotion(connections, conn, model, status, errorText, evidenc
   // failing at random clears them sooner this way.
   const probeNow = evidence && !current?.demotedAt
     ? records.filter(([m, r]) => m !== model && !r.modelScoped).map(([m]) => m) : [];
+  const spreads = !to.modelScoped && refusedForItself(conn, to);
   return {
     demote: {
       model, from: conn[getAuthDemoteKey(model)] ?? null, to, probeNow,
-      data: demoting ? { lastError: `${model} demoted after repeated ${to.reason}` } : null,
+      data: demoting ? { lastError: `${model} demoted after repeated ${to.reason}${spreads ? `. ${SPREAD_NOTE}` : ""}` } : null,
     },
     demoting,
     deadWith: evidence ? deadElsewhere(conn, records, model, current, demoting) : null,
@@ -527,36 +576,30 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       }
       return true;
     };
-    // A key demoted on this model (selectionDemotion: or dead on another) is
-    // used when no other key can serve it, or for its next probe.
+    // Keys demoted on this model, and keys dead on another (selectionDemotion),
+    // go after the rest: they serve when no other key can, or take a probe.
     const usableConnections = connections.filter(usable);
     const demotions = new Map(usableConnections.map(c => [c.id, selectionDemotion(c, model)]));
-    // One dead-key try per pass (one exclude set). Once it's used, skip keys
-    // demoted here, and keys demoted elsewhere that were refused here or are
-    // refusedOnTwo, while another key can serve. Every other key keeps its place.
+    // One dead-key try per pass (one exclude set): once a demoted key, or one
+    // this pass's refusal turned off, has been tried, no other is probed.
     const activeIds = new Set(allConnections.map(c => c.id));
-    const refusedHere = (c) => (c.errorCode === 401 || c.errorCode === 403)
-      && refusedSince(`${c.id}|${model}`, Date.now() - AUTH_DEAD_CONFIG.minWindowMs);
     const deadTriedThisPass = [...excludeSet].some(id => !activeIds.has(id))
-      || allConnections.some(c => excludeSet.has(c.id) && (selectionDemotion(c, model) || (refusedHere(c) && demotedElsewhere(c, model))));
-    const skippedThisPass = (c) => deadTriedThisPass && demotedElsewhere(c, model) && (refusedHere(c) || refusedOnTwo(c));
-    const notDemotedHere = usableConnections.filter(c => !demotions.get(c.id));
-    const preferred = notDemotedHere.filter(c => !skippedThisPass(c));
-    const notAvoided = preferred.filter(c => !avoidIds.has(c.id));
-    // Failing that (every such key rate-limited, excluded or off), keys demoted
+      || allConnections.some(c => excludeSet.has(c.id) && selectionDemotion(c, model));
+    const notDemoted = usableConnections.filter(c => !demotions.get(c.id));
+    const notAvoided = notDemoted.filter(c => !avoidIds.has(c.id));
+    // Failing those (every such key rate-limited, excluded or off), keys dead
     // on another model go before keys demoted on this one.
     const notDemotedOnModel = usableConnections.filter(c => !demotions.get(c.id)?.own);
     let availableConnections = notAvoided.length > 0 ? notAvoided
-      : preferred.length > 0 ? preferred : notDemotedHere.length > 0 ? notDemotedHere
-        : notDemotedOnModel.length > 0 ? notDemotedOnModel : usableConnections;
+      : notDemoted.length > 0 ? notDemoted : notDemotedOnModel.length > 0 ? notDemotedOnModel : usableConnections;
     let probing = false;
-    if (preferred.length > 0 && !deadTriedThisPass) {
+    if (notDemoted.length > 0 && !deadTriedThisPass) {
       // Under fill-first a key behind a usable one wouldn't be tried anyway
       // (a backup), so only demoted keys ahead of them are probed.
-      const ahead = strategy === "fill-first" ? usableConnections.slice(0, usableConnections.indexOf(preferred[0])) : usableConnections;
+      const ahead = strategy === "fill-first" ? usableConnections.slice(0, usableConnections.indexOf(notDemoted[0])) : usableConnections;
       for (const c of ahead.filter(c => demotions.get(c.id))) {
-        const { own } = demotions.get(c.id);
-        if (own ? await claimProbe(c, model, own) : claimSpreadProbe(c, model)) {
+        const { own, spread } = demotions.get(c.id);
+        if (own ? await claimProbe(c, model, own) : claimSpreadProbe(c, providerId, model, spread)) {
           availableConnections = [c];
           probing = true;
           break;
@@ -693,7 +736,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           const [l, r] = [resetStates.get(x.id), resetStates.get(y.id)];
           return ((l.weeklyReset - r.weeklyReset || l.sessionReset - r.sessionReset || 0) || byPriority(x, y)) < 0;
         };
-        const servable = c => !excludeSet.has(c.id) && !quotaBlocked(c) && !selectionDemotion(c, model) && !skippedThisPass(c)
+        const servable = c => !excludeSet.has(c.id) && !quotaBlocked(c) && !selectionDemotion(c, model)
           && planCanServeModel(providerId, c, model);
         const freeAt = c => Math.max(getModelLockUntil(c, model), resetStates.get(c.id).blockedUntil || 0);
         const jitterMs = warmJitterMs();
@@ -822,6 +865,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
  */
 export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null, requestApiKey = undefined) {
   if (!connectionId || connectionId === "noauth") return { shouldFallback: false, cooldownMs: 0 };
+  endSpreadProbe(connectionId, model);
   const connections = await getProviderConnections({ provider });
   const conn = connections.find(c => c.id === connectionId);
   const backoffLevel = conn?.backoffLevel || 0;
@@ -939,6 +983,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
 export async function clearAccountError(connectionId, currentConnection, model = null) {
   if (!connectionId || connectionId === "noauth") return;
   recordSuccess(connectionId, model);
+  endSpreadProbe(connectionId, model);
   const conn = currentConnection._connection || currentConnection;
   const now = Date.now();
   // A cleared lock stays as modelLock_<model>: null and needs no write, unless
