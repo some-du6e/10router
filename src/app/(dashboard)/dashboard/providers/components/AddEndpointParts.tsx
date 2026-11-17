@@ -230,7 +230,7 @@ export function AppIcon({ icon, name, size = 24 }: { icon?: string | null; name:
 
 // ---- Models by maker --------------------------------------------------------------
 
-// Model maker from the id (Snowflake prefixes some, e.g. "openai-gpt-6-sol").
+// Model maker from the id (some gateways prefix them, e.g. "openai-gpt-6-sol").
 const MAKERS: [RegExp, string, string][] = [
   [/claude/i, "anthropic", "Anthropic"], [/gpt|^o\d|openai/i, "openai", "OpenAI"], [/gemini|gemma/i, "gemini", "Google"],
   [/deepseek/i, "deepseek", "DeepSeek"], [/kimi|moonshot/i, "kimi", "Moonshot"], [/glm/i, "glm", "Z.ai"], [/minimax/i, "minimax", "MiniMax"],

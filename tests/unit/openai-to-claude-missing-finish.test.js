@@ -1,5 +1,5 @@
 // OpenAI-compatible gateways that end tool-call turns without
-// finish_reason: "tool_calls". Snowflake Cortex serving Claude on
+// finish_reason: "tool_calls". One such gateway serving Claude on
 // /chat/completions (captured 2026-10-19) streams the tool call, then a usage
 // chunk and [DONE], with no finish_reason at all. Claude Code saw end_turn and
 // a truncated stream, so it never ran the tool. stream.js sets

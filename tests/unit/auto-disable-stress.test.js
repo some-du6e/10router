@@ -21,7 +21,7 @@ const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "10router-auth-stress-"));
 process.env.DATA_DIR = tempDir;
 
 const MIN = 60 * 1000;
-const DEAD_403 = '[403]: {"code":"003001","message":"Not authorized for this endpoint"}';
+const DEAD_403 = '[403]: {"code":"000000","message":"Key barred from this endpoint"}';
 const OPUS = "claude-opus-5-5";
 const SONNET = "claude-sonnet-5-5";
 const HAIKU = "claude-haiku-5-5";
@@ -59,7 +59,7 @@ async function setup(names, cross = false) {
     keys.push(await db.createProviderConnection({
       provider, authType: "apikey", name, apiKey: `sk-test-${name}-0123456789`,
       providerSpecificData: {
-        baseUrl: `https://${own ? "acct-own" : "acct-shared"}.snowflakecomputing.test/api/v2/cortex/v1`,
+        baseUrl: `https://${own ? "acct-own" : "acct-shared"}.contoso-cloud.test/api/v1`,
         ...(own ? { ownBaseUrl: true } : {}),
       },
     }));

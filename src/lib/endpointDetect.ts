@@ -381,12 +381,12 @@ export function makePrefix(name: unknown, taken: readonly unknown[] = []): strin
   for (let i = 2; ; i++) if (!used.has(`${p}${i}`)) return `${p}${i}`;
 }
 
-// Endpoints with no model list (Snowflake Cortex: /v1/models 404) can still be
-// asked about one model at a time for free, when they reject an unknown model id
-// before anything else. Candidate ids come from the models.dev catalog, synced
-// daily: `catalog` is [{ id, name, api, models: [ids] }] (see modelCatalog/sync.js).
+// Endpoints with no model list (/v1/models 404) can still be asked about one
+// model at a time for free, when they reject an unknown model id before
+// anything else. Candidate ids come from the models.dev catalog, synced daily:
+// `catalog` is [{ id, name, api, models: [ids] }] (see modelCatalog/sync.js).
 
-// "https://${SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/cortex/v1" ->
+// "https://${ACCOUNT}.gateway.example/api/v1" ->
 // host regex (placeholders match one label) + path.
 function apiPattern(api: unknown): { host: RegExp; path: string } | null {
   const m = /^https?:\/\/([^/]+)(\/[^?#]*)?/i.exec(String(api || ""));
@@ -471,7 +471,7 @@ export function recentLabModels(labs: CatalogLabModel[] = [], gens = 3, maxAgeDa
   return [...new Set(out.sort((a, b) => b.date.localeCompare(a.date)).map((m) => m.id))];
 }
 
-// Gateways often prefix a vendor's ids with its name (Snowflake: "openai-gpt-5").
+// Gateways often prefix a vendor's ids with its name ("openai-gpt-5").
 // Learn the prefixes from the matched provider's own list.
 // Only a real prefix counts: "openai-gpt-5" is, "deepseek-r1" and "mistral-large2" aren't.
 function vendorPrefixes(models: string[] = []): Set<string> {
@@ -535,7 +535,7 @@ export function candidateModels(base: string, catalog: CatalogInput = {}): { mat
 // Error-body fragments that mean "your request reached a real model endpoint".
 const UNKNOWN_MODEL_RE = /unknown model|model[^"]{0,40}(not found|does not exist|not supported|invalid|is not available|not available)|model\s+[\\]?["'`][^"'`]{1,100}[\\]?["'`]\s+(not found|does not exist|is not available)|no such model|invalid model|model_not_found|无可用渠道/i;
 // Known to the endpoint but not usable here.
-// Snowflake Cortex: "not eligible for this model" (account tier), "Model ... is unavailable".
+// Seen on a gateway: "not eligible for this model" (account tier), "Model ... is unavailable".
 const NOT_SERVABLE_RE = /legacy|does not support this endpoint|deprecated model|not eligible for this model|model\b.{0,120}?\bis unavailable/i;
 const CLIENT_GATE_RE = /unauthorized client|client (is )?not allowed|unsupported client/i;
 // Auth complaints, including the ones sent as 400 (Gemini: API_KEY_INVALID).
@@ -781,8 +781,8 @@ function makeProber({ fetchFn, key, steps, timeoutMs, sleep = defaultSleep, sign
 
 // Model probes carry only the model, the empty conversation and a 1-token cap,
 // so the model name is the first thing validated. OpenAI-style gateways can
-// reject max_tokens first (Snowflake: "deprecated in favor of
-// max_completion_tokens"): then the cap moves to max_completion_tokens.
+// reject max_tokens first and ask for max_completion_tokens: then the cap
+// moves to max_completion_tokens.
 // stream:false stays explicit: a gateway that streams by default would otherwise
 // answer with an SSE stream.
 function modelBody(p: ProbeSpec, model: string, { maxCompletionTokens = false }: DetectQuirks = {}): Record<string, unknown> {
@@ -1035,6 +1035,24 @@ export interface DetectOptions {
   // Re-detect checks only the API, URL and fixes; models have their own check.
   skipModels?: boolean;
 }
+
+// DETECT_ANTHROPIC_FIRST_HINTS: comma-separated URL substrings (any case) for
+// gateways whose Anthropic Messages API should be probed first. Empty by
+// default. Quotes around an entry or the whole list (an env-file habit) are
+// dropped. Read on first use, so this module stays safe to import in the browser.
+export const parseHintList = (raw: unknown): string[] => String(raw ?? "").split(",")
+  .map((s) => s.trim().replace(/^['"]+|['"]+$/g, "").trim().toLowerCase()).filter(Boolean);
+let hintCache: string[] | null = null;
+export function anthropicFirstHints(): string[] {
+  return (hintCache ??= parseHintList(typeof process === "undefined" ? "" : process.env?.DETECT_ANTHROPIC_FIRST_HINTS));
+}
+// Probe Messages first: the URL names Anthropic or Claude or matches a
+// configured hint, or the key is an Anthropic one.
+export function prefersAnthropic(base: unknown, key: string, hints: readonly string[] = anthropicFirstHints()): boolean {
+  const url = String(base).toLowerCase();
+  return /anthropic|claude/.test(url) || hints.some((h) => url.includes(h)) || /^sk-ant-/.test(key);
+}
+
 export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS, sleep, signal = null, deadlineMs = DETECT_DEADLINE_MS, onProgress = null, skipModels = false }: DetectOptions): Promise<DetectResult> {
   const key = cleanKey(apiKey);
   const base0 = normalizeUrl(url);
@@ -1097,10 +1115,10 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   const openaiAuth = modelsAuth === "api-key" || (azure && modelsAuth !== "bearer") ? AUTH["api-key"] : AUTH.bearer;
   const PROBES = probeSpecs(AUTH, openaiAuth);
 
-  // 2. Protocol: empty-body probes. Anthropic first when the host/key hints at it.
+  // 2. Protocol: empty-body probes. Anthropic first when the URL/key hints at it.
   // Found = an API-shaped 400/422 (or an unknown-model error, vLLM/Ollama answer
   // that with 404). 5xx, HTML, plain "Not Found" and auth errors are not.
-  const preferAnthropic = /anthropic|claude|cortex|snowflake/i.test(base0) || /^sk-ant-/.test(key);
+  const preferAnthropic = prefersAnthropic(base0, key);
   const order: Protocol[] = preferAnthropic ? ["anthropic", "openai-chat", "openai-responses"] : ["openai-chat", "openai-responses", "anthropic"];
   // A model-access 401/403 on model "probe" counts too: the path and key work.
   const found: { proto: Protocol; base: string; shape: ErrorShape | null; sig: string }[] = [];
@@ -1412,7 +1430,7 @@ function tagAttrs(tag: string): Record<string, string> {
   return out;
 }
 
-// Cut a tagline: "Snowflake | The AI Data Cloud" -> "Snowflake".
+// Cut a tagline: "Acme | Fast inference" -> "Acme".
 export function cleanSiteName(raw: unknown): string | null {
   let t = decodeEntities(String(raw || "")).replace(/\s+/g, " ").trim();
   if (!t) return null;
@@ -1500,7 +1518,7 @@ export function siteRoots(base: string): string[] {
   if (isLanHost(u.hostname) || /^\d+\.\d+\.\d+\.\d+$|^\[/.test(u.hostname)) return [];
   const roots = [u.origin];
   const labels = u.hostname.split(".");
-  // acme-xy12345.snowflakecomputing.com -> snowflakecomputing.com; api.x.ai -> x.ai
+  // acme-1234.gateway.example -> gateway.example; api.x.ai -> x.ai
   if (labels.length > 2) {
     const tail = labels.slice(-2);
     const keep = tail[0].length <= 3 && SECOND_LEVEL.has(tail[0]) ? labels.slice(-3) : tail;

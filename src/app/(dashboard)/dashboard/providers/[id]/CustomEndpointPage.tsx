@@ -133,7 +133,7 @@ interface Props {
 
 const protoOf = (n: EndpointNode): RouteProtocol =>
   n.type === "anthropic-compatible" ? "anthropic" : n.apiType === "responses" ? "openai-responses" : "openai-chat";
-// One badge per API some model uses (Snowflake serves Claude on Messages and GPT
+// One badge per API some model uses (a gateway may serve Claude on Messages and GPT
 // on Chat Completions from one URL). Unrouted models use the main API.
 const protosOf = (n: EndpointNode, main: RouteProtocol, models: string[]): RouteProtocol[] => {
   const routes = n.modelRoutes || {};

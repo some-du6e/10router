@@ -56,9 +56,9 @@ const validateRoute = await import("../../src/app/api/providers/validate/route.j
 const { getExecutor } = await import("../../open-sse/executors/index.js");
 const { normalizeEndpointUrl } = await import("../../src/shared/utils/connectionBaseUrl.js");
 
-const NODE_ID = "openai-compatible-chat-snow";
-const URL_A = "https://accta.snowflakecomputing.com/api/v2/cortex/v1";
-const URL_B = "https://acctb.snowflakecomputing.com/api/v2/cortex/v1";
+const NODE_ID = "openai-compatible-chat-ctso";
+const URL_A = "https://accta.contoso-cloud.example/api/v1";
+const URL_B = "https://acctb.contoso-cloud.example/api/v1";
 
 const req = (body) => ({ json: async () => body, headers: new Headers() });
 const params = (id) => ({ params: Promise.resolve({ id }) });
@@ -69,7 +69,7 @@ beforeEach(() => {
   db.local = true;
   db.connections = [];
   db.customModels = [];
-  db.nodes = [{ id: NODE_ID, type: "openai-compatible", prefix: "snow", apiType: "chat", baseUrl: URL_A, name: "Snowflake", stripBeta: false }];
+  db.nodes = [{ id: NODE_ID, type: "openai-compatible", prefix: "ctso", apiType: "chat", baseUrl: URL_A, name: "Contoso", stripBeta: false }];
 });
 
 describe("per-key endpoint URL", () => {
@@ -82,7 +82,7 @@ describe("per-key endpoint URL", () => {
   it("stores a key's own base URL with the flag", async () => {
     const res = await providersRoute.POST(req({ provider: NODE_ID, apiKey: "sk-b", name: "B", baseUrl: `${URL_B}/chat/completions` }));
     expect(res.status).toBe(201);
-    expect(db.connections[0].providerSpecificData).toMatchObject({ baseUrl: URL_B, ownBaseUrl: true, prefix: "snow" });
+    expect(db.connections[0].providerSpecificData).toMatchObject({ baseUrl: URL_B, ownBaseUrl: true, prefix: "ctso" });
   });
 
   it("the node's own URL, or none, is not an override", async () => {
@@ -115,7 +115,7 @@ describe("per-key endpoint URL", () => {
 
     const put = await connectionRoute.PUT(req({ providerSpecificData: { baseUrl: "http://169.254.169.254/latest", ownBaseUrl: true, region: "eu" } }), params("conn-1"));
     expect(put.status).toBe(200);
-    expect(db.connections[0].providerSpecificData).toMatchObject({ baseUrl: URL_A, prefix: "snow", region: "eu" });
+    expect(db.connections[0].providerSpecificData).toMatchObject({ baseUrl: URL_A, prefix: "ctso", region: "eu" });
     expect(db.connections[0].providerSpecificData.ownBaseUrl).toBeUndefined();
   });
 
@@ -133,8 +133,8 @@ describe("per-key endpoint URL", () => {
   it("node edits keep a key's own URL but still update quirks", async () => {
     await providersRoute.POST(req({ provider: NODE_ID, apiKey: "sk-a", name: "A" }));
     await providersRoute.POST(req({ provider: NODE_ID, apiKey: "sk-b", name: "B", baseUrl: URL_B }));
-    const NEW_A = "https://accta-new.snowflakecomputing.com/api/v2/cortex/v1";
-    const res = await nodeRoute.PUT(req({ name: "Snowflake", prefix: "snow", apiType: "chat", baseUrl: NEW_A, quirks: { stripBeta: true } }), params(NODE_ID));
+    const NEW_A = "https://accta-new.contoso-cloud.example/api/v1";
+    const res = await nodeRoute.PUT(req({ name: "Contoso", prefix: "ctso", apiType: "chat", baseUrl: NEW_A, quirks: { stripBeta: true } }), params(NODE_ID));
     expect(res.status).toBe(200);
     const [a, b] = db.connections;
     expect(a.providerSpecificData).toMatchObject({ baseUrl: NEW_A, stripBeta: true });
@@ -151,7 +151,7 @@ describe("per-key endpoint URL", () => {
     expect(res.status).toBe(200);
     expect(db.connections[0].providerSpecificData.baseUrl).toBe(URL_A);
     expect(db.connections[0].providerSpecificData.ownBaseUrl).toBeUndefined();
-    expect(db.connections[0].providerSpecificData.prefix).toBe("snow");
+    expect(db.connections[0].providerSpecificData.prefix).toBe("ctso");
   });
 
   it("other edits leave the URL alone", async () => {
