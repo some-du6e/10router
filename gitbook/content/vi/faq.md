@@ -254,7 +254,7 @@ Xem [hướng dẫn deployment](getting-started/installation.md#deployment) đ�
 
 **Không telemetry:**
 - Không tracking sử dụng
-- Không analytics
+- Không analytics, trừ khi người vận hành build với `NEXT_PUBLIC_GA_ID`
 - Không phone-home
 
 **Mã nguồn mở:**

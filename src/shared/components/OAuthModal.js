@@ -71,8 +71,9 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   // Define all useCallback hooks BEFORE the useEffects that reference them
 
   // Exchange tokens
+  // Resolves true once the connection is saved.
   const exchangeTokens = useCallback(async (code, state) => {
-    if (!authData) return;
+    if (!authData) return false;
     try {
       const res = await fetch(`/api/oauth/${provider}/exchange`, {
         method: "POST",
@@ -91,9 +92,11 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
       setStep("success");
       onSuccess?.();
+      return true;
     } catch (err) {
       setError(err.message);
       setStep("error");
+      return false;
     }
   }, [authData, provider, onSuccess, oauthMeta]);
 
@@ -498,14 +501,15 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     callbackProcessedRef.current = false; // Reset when authData changes
 
     // Handler for callback data - only process once
-    const handleCallback = async (data) => {
+    // reply: answers the /callback page on the postMessage path.
+    const handleCallback = async (data, reply) => {
       if (callbackProcessedRef.current) return; // Already processed
 
       const { code, token, state, error: callbackError, errorDescription } = data;
 
       if (callbackError) {
         callbackProcessedRef.current = true;
-        sendCallbackAck();
+        sendCallbackAck(data, { ok: false, reply });
         setError(errorDescription || callbackError);
         setStep("error");
         return;
@@ -513,8 +517,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
       if (token || code) {
         callbackProcessedRef.current = true;
-        sendCallbackAck();
-        await exchangeTokens(token || code, state);
+        // Ack only a saved connection; otherwise the page keeps the URL to paste.
+        if (await exchangeTokens(token || code, state)) sendCallbackAck(data, { reply });
       }
     };
 
@@ -526,7 +530,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       if (!isLocalhost && !isSameOrigin) return;
       
       if (event.data?.type === "oauth_callback") {
-        handleCallback(event.data.data);
+        handleCallback(event.data.data, (ack) => event.source?.postMessage(ack, event.origin));
       }
     };
     window.addEventListener("message", handleMessage);

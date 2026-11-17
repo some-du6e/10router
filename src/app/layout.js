@@ -1,14 +1,15 @@
 import { Inter } from "next/font/google";
 import localFont from "next/font/local";
-import { GoogleAnalytics } from "@next/third-parties/google";
 import "./globals.css";
 import { ThemeProvider } from "@/shared/components/ThemeProvider";
+import Analytics from "@/shared/components/Analytics";
 import "@/lib/network/initOutboundProxy"; // Auto-initialize outbound proxy env
 import "@/shared/services/bootstrap"; // Auto-run initializeApp (watchdog, auto-resume tunnel)
 import { initConsoleLogCapture } from "@/lib/consoleLogBuffer";
 import { RuntimeI18nProvider } from "@/i18n/RuntimeI18nProvider";
 
-const GA_ID = process.env.NEXT_PUBLIC_GA_ID?.trim() || "";
+// Inlined at build time by next.config.mjs, already validated; empty means off.
+const GA_ID = process.env.NEXT_PUBLIC_GA_ID || "";
 
 // Hook console immediately at module load time (server-side only, runs once)
 initConsoleLogCapture();
@@ -66,7 +67,7 @@ export default function RootLayout({ children }) {
             {children}
           </RuntimeI18nProvider>
         </ThemeProvider>
-        {GA_ID ? <GoogleAnalytics gaId={GA_ID} /> : null}
+        {GA_ID ? <Analytics gaId={GA_ID} /> : null}
       </body>
     </html>
   );

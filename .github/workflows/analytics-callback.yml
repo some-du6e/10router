@@ -5,12 +5,22 @@ on:
     paths:
       - "src/app/layout.js"
       - "src/app/callback/**"
+      - "src/shared/components/Analytics.tsx"
       - "src/shared/components/OAuthModal.js"
+      - "src/shared/utils/gaMeasurementId.mjs"
       - "src/shared/utils/oauthCallbackAck.ts"
+      - "src/shared/utils/oauthCallbackFlow.ts"
+      - "next.config.mjs"
       - "Dockerfile"
+      - "package.json"
+      - "tsconfig.json"
+      - "eslint.config.mjs"
       - "tests/unit/analytics-optin.test.js"
       - "tests/unit/oauth-callback-ack.test.js"
+      - "tests/unit/oauth-callback-flow.test.js"
       - "tests/package.json"
+      - "tests/vitest.config.js"
+      - "tests/vitest.shared.js"
       - ".github/workflows/analytics-callback.yml"
   workflow_dispatch:
 
@@ -37,16 +47,24 @@ jobs:
           ./node_modules/.bin/vitest run
           unit/analytics-optin.test.js
           unit/oauth-callback-ack.test.js
+          unit/oauth-callback-flow.test.js
       # set-state-in-effect: these components' existing open/load effects predate
       # the check.
       - name: Lint
         run: >
           ./node_modules/.bin/eslint --rule 'react-hooks/set-state-in-effect: off'
+          next.config.mjs
           src/app/layout.js
           src/app/callback/page.js
+          src/shared/components/Analytics.tsx
           src/shared/components/OAuthModal.js
+          src/shared/utils/gaMeasurementId.mjs
           src/shared/utils/oauthCallbackAck.ts
-      # Fails only on errors in the new .ts file, so unrelated type errors
+          src/shared/utils/oauthCallbackFlow.ts
+          tests/unit/analytics-optin.test.js
+          tests/unit/oauth-callback-ack.test.js
+          tests/unit/oauth-callback-flow.test.js
+      # Fails only on errors in the new .ts/.tsx files, so unrelated type errors
       # elsewhere don't block it.
       - name: Type check
         run: |
@@ -56,7 +74,7 @@ jobs:
           set -e
           tail -5 tsc.log
           if [ "$code" -gt 2 ] || ! [ -x ./node_modules/.bin/tsc ]; then echo "tsc did not run (exit $code)"; exit 1; fi
-          if grep -E "oauthCallbackAck\.ts" tsc.log; then exit 1; fi
+          if grep -E "(oauthCallbackAck|oauthCallbackFlow)\.ts|Analytics\.tsx" tsc.log; then exit 1; fi
 
   no-new-failures:
     runs-on: ubuntu-latest

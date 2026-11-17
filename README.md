@@ -295,7 +295,7 @@ container.
 | `CLOUD_URL` | `https://9router.com` | Server-side cloud sync endpoint base URL |
 | `NEXT_PUBLIC_BASE_URL` | `http://localhost:3000` | Backward-compatible/public base URL (prefer `BASE_URL`) |
 | `NEXT_PUBLIC_CLOUD_URL` | `https://9router.com` | Backward-compatible/public cloud URL (prefer `CLOUD_URL`) |
-| `NEXT_PUBLIC_GA_ID` | unset (no analytics) | Optional Google Analytics 4 measurement ID for the dashboard. Read at build time (Docker: `--build-arg NEXT_PUBLIC_GA_ID=...`) |
+| `NEXT_PUBLIC_GA_ID` | unset (no analytics) | Optional Google Analytics 4 measurement ID (`G-...`) for the dashboard; never loaded on `/callback`. Baked in by `next build`, so a running server ignores it (Docker: `--build-arg NEXT_PUBLIC_GA_ID=...`) |
 | `API_KEY_SECRET` | `endpoint-proxy-api-key-secret` | HMAC secret for generated API keys |
 | `MACHINE_ID_SALT` | `endpoint-proxy-salt` | Salt for stable machine ID hashing |
 | `ENABLE_REQUEST_LOGS` | `false` | Enables request/response logs under `logs/` |
