@@ -73,12 +73,14 @@ export const AUTH_DEAD_CONFIG = {
 // unanswered is retaken after probeLeaseMs. A success brings the key back.
 // While a demotion is for 403s that refuse the key itself (not just that model)
 // and the key has served nothing since its count began, the key also goes after
-// the other keys on every other model. There it gets one try at once, then
-// tries spaced the same way: probeMs, stepped by its refusals there, its
-// demotions' probe levels and the demotion's age (a demotion as old as the sum
-// of probeMs takes the last step). That spread is kept per process: one try
-// per provider and model in flight at a time, held at most probeLeaseMs. Any
-// success on any model ends it.
+// the other keys on every other model (requests without a model aside). There
+// it gets one try at once, then tries spaced the same way: probeMs, stepped by
+// its tries and refusals there, its demotions' probe levels, and how long it
+// has been tried there (tries that have gone on as long as all of probeMs but
+// the last take the last step). That spread is kept per process, along with
+// its tries' start on each model's record: one try per provider and model in
+// flight at a time, held at most probeLeaseMs, and never instead of a usable
+// pinned key. Any success on any model ends it.
 export const AUTH_DEMOTE_CONFIG = {
   probeMs: [10, 20, 40, 90, 180].map(min => min * 60 * 1000),
   probeLeaseMs: 10 * 60 * 1000,
