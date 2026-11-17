@@ -7,7 +7,7 @@ import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/con
 import { formatRetryAfter, checkFallbackError, getQuotaCooldown, isModelLockActive, getModelLockUntil, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL, isHeadersTimeout } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG, AUTH_DEMOTE_CONFIG, LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL, HEADERS_TIMEOUT, MODEL_REFUSAL_STOP } from "open-sse/config/errorConfig.js";
 import { isBackoffText, isModelRefusal } from "open-sse/utils/errorClass.js";
-import { resolveProviderId, FREE_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers.js";
+import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { planCanServeModel } from "@/shared/utils/planCapability.js";
 import { SPREAD_NOTE } from "@/shared/utils/connectionStatus.js";
 import { endSpreadProbe } from "./spreadLeases.js";
@@ -72,8 +72,6 @@ function recordSuccess(connectionId, model) {
 }
 
 const succeededSince = (key, sinceMs) => (authEvents.success.get(key)?.at ?? -Infinity) >= sinceMs;
-
-const isCustomEndpoint = (provider) => isOpenAICompatibleProvider(provider) || isAnthropicCompatibleProvider(provider);
 
 /**
  * An active key of the provider served `model` within
@@ -881,9 +879,14 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
  * @param {string} errorText
  * @param {string|null} provider
  * @param {string|null} model - The specific model that triggered the error
- * @returns {{ shouldFallback: boolean, cooldownMs: number }}
+ * @param {number|null} [resetsAtMs]
+ * @param {string} [requestApiKey]
+ * @param {{ customEndpoint?: boolean }} [routing] - customEndpoint: the provider
+ *   is an OpenAI-/Anthropic-compatible endpoint, where a 403 refusing the model
+ *   for the key's account locks it there for MODEL_REFUSAL_STOP.lockMs.
+ * @returns {Promise<{ shouldFallback: boolean, cooldownMs: number, providerResetAtMs?: number | null }>}
  */
-export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null, requestApiKey = undefined) {
+export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null, requestApiKey = undefined, routing = {}) {
   if (!connectionId || connectionId === "noauth") return { shouldFallback: false, cooldownMs: 0 };
   endSpreadProbe(connectionId, model);
   const connections = await getProviderConnections({ provider });
@@ -920,7 +923,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     // A custom endpoint's account refusing the model locks the key there for
     // longer (MODEL_REFUSAL_STOP.lockMs), so requests that stop early on it move
     // on to other keys.
-    if (isCustomEndpoint(provider) && isModelRefusal(status, errorText)) cooldownMs = Math.max(cooldownMs, MODEL_REFUSAL_STOP.lockMs);
+    if (routing?.customEndpoint === true && isModelRefusal(status, errorText)) cooldownMs = Math.max(cooldownMs, MODEL_REFUSAL_STOP.lockMs);
     // Nor does a header timeout shorten a longer lock on the model.
     const ownLockMs = ownLockEndMs(conn, model) - Date.now();
     if (isHeadersTimeout(status, errorText) && ownLockMs > cooldownMs) {

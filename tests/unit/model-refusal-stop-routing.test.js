@@ -430,7 +430,9 @@ describe("keys whose accounts differ in model access, behind one URL", () => {
 describe("a key refused that way while another account serves the model", () => {
   beforeEach(useClock);
 
-  const refuse = (id, model, onProvider = provider) => auth.markAccountUnavailable(id, 403, refusedText, onProvider, model);
+  // As chat.ts calls it for a custom endpoint, unless `options` says otherwise.
+  const refuse = (id, model, options = { customEndpoint: true }) =>
+    auth.markAccountUnavailable(id, 403, refusedText, provider, model, null, undefined, options);
 
   it("is never turned off, however many models it is refused on", async () => {
     const [key, peer] = await addKeys(2);
@@ -461,10 +463,11 @@ describe("a key refused that way while another account serves the model", () => 
     expect((await auth.getProviderCredentials(provider, null, "m1")).connectionId).toBe(peer);
   });
 
-  it("is locked for the usual 2 minutes on a built-in provider", async () => {
-    provider = `builtin-test-${providerSeq}`;
+  it("is locked for 30 minutes on a custom endpoint, and the usual 2 on a built-in provider", async () => {
     const [key] = await addKeys(1);
-    const { cooldownMs } = await refuse(key, "m1");
-    expect(cooldownMs).toBe(2 * MIN);
+    expect((await refuse(key, "m1")).cooldownMs).toBe(MODEL_REFUSAL_STOP.lockMs);
+    provider = `builtin-test-${providerSeq}`;
+    const [builtin] = await addKeys(1);
+    expect((await refuse(builtin, "m1", {})).cooldownMs).toBe(2 * MIN);
   });
 });
