@@ -1,10 +1,15 @@
 import { getSettings } from "@/lib/localDb";
 
-// A card sends KEEP_EXISTING_KEY (keepKey.js) when it can't show the key stored in
-// a tool's config. Keeping it is only safe when the key still goes where it went
-// before: the same base URL, or one of this instance's own endpoints. Otherwise a
-// remote dashboard session could repoint the tool and have the user's custom key
-// sent to a host it chose.
+// Which base URLs a credential already on this host may go to. Two uses:
+// - mayKeepStoredKey: a card sends KEEP_EXISTING_KEY (keepKey.js) when it can't
+//   show the key stored in a tool's config. Keeping it is only safe when the key
+//   still goes where it went before: the same base URL, or one of this instance's
+//   own endpoints.
+// - checkNewBaseUrl: any settings route writing a base URL the request picked
+//   makes sure the tool won't fall back to, or carry along, a credential stored
+//   on this host for a URL that is neither.
+// Otherwise a remote dashboard session could repoint a tool and have the user's
+// credentials sent to a host it chose.
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "[::1]", "::1"]);
 
@@ -67,13 +72,14 @@ export async function mayKeepStoredKey(newBaseUrl, storedBaseUrl) {
 
 export const CHOOSE_A_KEY_ERROR = "The stored API key only stays for the same base URL or this 10router; choose a key";
 
-const isCredential = (value) => typeof value === "string" && value.trim() !== "";
+// A key a request may hand a tool: a string with something besides whitespace.
+export const isCredential = (value) => typeof value === "string" && value.trim() !== "";
 
-// The check every settings route runs before it writes a base URL the request
-// picked. A tool pointed somewhere new keeps using whatever credential it already
-// has on this host unless the route replaces it, so for a base URL that is neither
-// storedBaseUrl nor this instance (mayKeepStoredKey false) the write may only go
-// ahead when:
+// Run by the settings routes whose tool could otherwise use a credential the
+// route doesn't replace (Codex, Hermes, Claude Code, OpenCode, Cline) before they
+// write a base URL. A tool pointed somewhere new keeps using that credential, so
+// for a base URL that is neither storedBaseUrl nor this instance
+// (mayKeepStoredKey false) the write may only go ahead when:
 // - no credential the route leaves in place would go along (otherCredentials:
 //   names of stored entries, given in the error), and
 // - when the tool falls back to a host credential without a key (fallback: what
@@ -93,9 +99,10 @@ export async function checkNewBaseUrl({ tool, baseUrl, storedBaseUrl = null, cre
   }
   if (fallback && !isCredential(credential)) {
     const target = parse(baseUrl)?.origin || "that base URL";
+    const notOurs = storedBaseUrl ? "is neither its current base URL nor this 10router" : "isn't this 10router";
     return {
       foreign: true,
-      error: `${tool} would send ${fallback} to ${target}, which is neither its current base URL nor this 10router; choose a key for it`,
+      error: `${tool} would send ${fallback} to ${target}, which ${notOurs}; choose a key for it`,
     };
   }
   return { foreign: true, error: null };

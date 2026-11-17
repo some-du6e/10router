@@ -81,7 +81,7 @@ export async function GET() {
 export async function POST(request) {
   try {
     const { baseUrl, apiKey, model } = await request.json();
-    if (!baseUrl || !apiKey || !model) {
+    if (typeof baseUrl !== "string" || !baseUrl.trim() || !apiKey || !model) {
       return NextResponse.json({ error: "baseUrl, apiKey and model are required" }, { status: 400 });
     }
 

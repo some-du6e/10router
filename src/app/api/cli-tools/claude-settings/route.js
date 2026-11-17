@@ -10,7 +10,7 @@ import { DEFAULT_PLUGINS } from "@/shared/constants/coworkPlugins";
 import { CLI_TOOLS } from "@/shared/constants/cliTools";
 import { keyStatus, pickFields } from "@/lib/cliTools/statusFields.js";
 import { isKeepExistingKey } from "@/lib/cliTools/keepKey.js";
-import { checkNewBaseUrl } from "@/lib/cliTools/keepKeyTarget.js";
+import { checkNewBaseUrl, isCredential } from "@/lib/cliTools/keepKeyTarget.js";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 
 const execAsync = promisify(exec);
@@ -210,17 +210,25 @@ export async function POST(request) {
       delete env.ANTHROPIC_AUTH_TOKEN;
     }
     if (env.ANTHROPIC_AUTH_TOKEN === "") delete env.ANTHROPIC_AUTH_TOKEN;
+    // Any other token must be a real one, whatever the base URL: a blank or
+    // numeric token leaves Claude Code on its own login, which would then go to
+    // the stored base URL.
+    if (env.ANTHROPIC_AUTH_TOKEN !== undefined && !isCredential(env.ANTHROPIC_AUTH_TOKEN)) {
+      return NextResponse.json({ error: "ANTHROPIC_AUTH_TOKEN must be a non-blank string; choose a key" }, { status: 400 });
+    }
 
-    // A new base URL that is neither the stored one nor this instance needs a token
-    // chosen for it (without one, Claude Code signs in with its own claude.ai or
-    // Console login), and no other stored credential that would go along with it.
-    if (env.ANTHROPIC_BASE_URL) {
+    // The base URL settings.json ends up with (empty: Anthropic's own API) must be
+    // the stored one or this instance, or come with a token chosen for it (without
+    // one, Claude Code sends the stored token, or signs in with its own claude.ai or
+    // Console login), and with no other stored credential that would go along.
+    const effectiveBaseUrl = env.ANTHROPIC_BASE_URL !== undefined ? env.ANTHROPIC_BASE_URL : storedEnv.ANTHROPIC_BASE_URL;
+    if (effectiveBaseUrl) {
       const target = await checkNewBaseUrl({
         tool: "Claude Code",
-        baseUrl: env.ANTHROPIC_BASE_URL,
+        baseUrl: effectiveBaseUrl,
         storedBaseUrl: storedEnv.ANTHROPIC_BASE_URL,
         credential: env.ANTHROPIC_AUTH_TOKEN,
-        fallback: "its own Claude login",
+        fallback: storedEnv.ANTHROPIC_AUTH_TOKEN ? "the stored ANTHROPIC_AUTH_TOKEN" : "its own Claude login",
         otherCredentials: otherStoredCredentials(currentSettings),
         where: "settings.json",
       });

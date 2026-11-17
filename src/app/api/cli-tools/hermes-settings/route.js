@@ -147,7 +147,9 @@ export async function POST(request) {
     // The block reads OPENAI_API_KEY from ~/.hermes/.env, which can be the user's
     // own key. It may keep doing so only for this instance, or for the base URL
     // the stored block already sent that key to. Anywhere else the request's key
-    // goes into the block itself, and .env is left alone.
+    // goes into the block itself, and .env is left alone. For a custom base_url
+    // Hermes takes model.api_key (with ${VAR} expanded) ahead of any env key
+    // (hermes_cli/runtime_provider_backends.py, _resolve_openrouter_runtime).
     const existingYaml = await readConfigYaml();
     const stored = parseModelBlock(existingYaml);
     const target = await checkNewBaseUrl({
@@ -164,7 +166,9 @@ export async function POST(request) {
     const newYaml = upsertModelBlock(existingYaml, buildModelBlock(model, normalizedBaseUrl, target.foreign ? apiKey : null));
     await writePrivateFile(getHermesConfigPath(), newYaml);
 
-    // Update .env — upsert OPENAI_API_KEY only when caller provides one
+    // Update .env — upsert OPENAI_API_KEY when the caller provides one and the
+    // block reads it from there (this instance or the stored base URL); a foreign
+    // host's key is in the block, and .env stays as it was.
     if (apiKey && !target.foreign) {
       const existingEnv = await readEnvFile();
       const newEnv = upsertEnvVar(existingEnv, API_KEY_ENV, apiKey);

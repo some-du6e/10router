@@ -7,7 +7,7 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { parseTOML, stringifyTOML } from "confbox";
-import { parseCodexVersion } from "@/shared/utils/codexCatalog.js";
+import { parseCodexVersion, codexSendsBearerToken, BEARER_TOKEN_FROM } from "@/shared/utils/codexCatalog.js";
 import { decideCatalogUrl } from "@/lib/codex/catalogUrlDecision.js";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 import { checkNewBaseUrl } from "@/lib/cliTools/keepKeyTarget.js";
@@ -228,6 +228,7 @@ export async function POST(request) {
     // file may change meanwhile (a Reset, or Codex itself writing to it).
     const useNative = native !== false;
     const normalizedBaseUrl = resolveCodexBaseUrl(baseUrl, useNative);
+    const codexVersion = installedCodexVersion();
 
     // No stored base URL: the section is rewritten whole, so the only credential
     // that would carry over is Codex's own login, which goes to this instance only.
@@ -238,9 +239,17 @@ export async function POST(request) {
       fallback: "its own login (~/.codex/auth.json)",
     });
     if (target.error) return NextResponse.json({ error: target.error }, { status: 400 });
+    // Another host gets the key as experimental_bearer_token, which a Codex older
+    // than 0.48 ignores, signing in there with auth.json instead.
+    if (target.foreign && !codexSendsBearerToken(await codexVersion)) {
+      const version = await codexVersion;
+      return NextResponse.json({
+        error: `${version ? `Codex ${version.join(".")}` : "The installed Codex (version unknown)"} would send its own login (~/.codex/auth.json) to a host that isn't this 10router; update Codex to ${BEARER_TOKEN_FROM.join(".")} or newer to use a non-10router base URL from the dashboard`,
+      }, { status: 400 });
+    }
 
     const catalog = useNative
-      ? await decideCatalogUrl({ apiKey, ids: [model, subagentModel || model], codexVersion: installedCodexVersion() })
+      ? await decideCatalogUrl({ apiKey, ids: [model, subagentModel || model], codexVersion })
       : { write: false, reason: "not-native" };
 
     // Ensure directory exists
@@ -253,12 +262,14 @@ export async function POST(request) {
       parsed = parsedToWritable(parseTOML(existingConfig));
     } catch { /* No existing config */ }
 
-    // Update only 10router related fields (api_key goes to auth.json, not config.toml)
+    // Update only 10router related fields
     parsed.model = model;
     parsed.model_provider = "10router";
 
-    // Update or create 10router provider section (no api_key - Codex reads from auth.json).
-    // The Codex-native endpoint is the default; pass native:false for plain /v1.
+    // Update or create the 10router provider section. For this instance it carries
+    // no key and Codex uses its own login; for another host it carries the request's
+    // key (buildProviderSection). The Codex-native endpoint is the default; pass
+    // native:false for plain /v1.
     setNestedSection(
       parsed,
       "model_providers.10router",

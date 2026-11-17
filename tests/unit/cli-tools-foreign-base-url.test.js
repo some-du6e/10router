@@ -22,13 +22,19 @@ vi.mock("os", async (importOriginal) => {
   return { ...actual, homedir, default: { ...(actual.default ?? actual), homedir } };
 });
 
-// No installed tools to ask: `which`, `codex --version` and the like fail.
+// No installed tools to ask: `which` and the like fail. `codex --version` answers
+// codex.version (null: not installed).
+const codex = vi.hoisted(() => ({ version: "codex-cli 0.169.0" }));
 vi.mock("child_process", async (importOriginal) => {
   const actual = await importOriginal();
   const { promisify: p } = await import("node:util");
-  const run = async () => { throw new Error("command not found"); };
+  const run = async (command) => {
+    if (command === "codex --version" && codex.version !== null) return { stdout: `${codex.version}\n`, stderr: "" };
+    throw new Error("command not found");
+  };
   const exec = (command, options, callback) => {
-    (typeof options === "function" ? options : callback)(new Error("command not found"));
+    const done = typeof options === "function" ? options : callback;
+    run(command).then(({ stdout, stderr }) => done(null, stdout, stderr), (error) => done(error));
   };
   exec[p.custom] = run;
   return { ...actual, exec, default: { ...(actual.default ?? actual), exec } };
@@ -68,6 +74,7 @@ const FOREIGN = "https://attacker.example.net";
 const OWN = "http://127.0.0.1:20128";
 const USER_KEY = "sk-placeholder-user-key";
 const NEW_KEY = "sk-placeholder-request-key";
+const OTHER_KEY = "sk-placeholder-second-key";
 
 const file = (rel) => path.join(home, rel);
 const write = (rel, content) => {
@@ -85,6 +92,7 @@ const post = async (route, body) => {
 beforeEach(() => {
   fs.rmSync(home, { recursive: true, force: true });
   fs.mkdirSync(home, { recursive: true });
+  codex.version = "codex-cli 0.169.0";
 });
 
 describe("codex: a foreign base URL never gets Codex's own login", () => {
@@ -101,15 +109,15 @@ describe("codex: a foreign base URL never gets Codex's own login", () => {
     "",
   ].join("\n");
   const provider = () => parseTOML(read(CONFIG)).model_providers["10router"];
+  const OWN_NATIVE = { name: "openai", base_url: `${OWN}/backend-api/codex`, wire_api: "responses", requires_openai_auth: true };
 
   it.each([[true], [false]])("native=%s without a usable key: 400, config.toml untouched", async (native) => {
     write(CONFIG, EXISTING);
     const res = await post("codex-settings", { baseUrl: FOREIGN, apiKey: "   ", model: "m1", native });
     expect(res.status).toBe(400);
-    const { error } = await res.json();
-    expect(error).toContain("~/.codex/auth.json");
-    expect(error).toContain("https://attacker.example.net");
-    expect(error).toMatch(/choose a key/);
+    expect((await res.json()).error).toBe(
+      "Codex would send its own login (~/.codex/auth.json) to https://attacker.example.net, which isn't this 10router; choose a key for it"
+    );
     expect(read(CONFIG)).toBe(EXISTING);
   });
 
@@ -132,24 +140,52 @@ describe("codex: a foreign base URL never gets Codex's own login", () => {
     expect(provider()).toEqual({ name: "10router", base_url: `${FOREIGN}/v1`, wire_api: "responses", experimental_bearer_token: NEW_KEY });
   });
 
-  it("re-applying the same foreign base URL still writes the key: the stored URL vouches for nothing", async () => {
+  it.each([
+    ["0.47.0, which predates experimental_bearer_token", "codex-cli 0.47.0", "Codex 0.47.0"],
+    ["an unknown version", null, "The installed Codex (version unknown)"],
+    ["a version it can't parse", "codex-cli dev", "The installed Codex (version unknown)"],
+    ["a source build (0.0.0)", "codex-cli 0.0.0", "Codex 0.0.0"],
+  ])("a foreign host with Codex %s: 400, config.toml untouched", async (_label, version, named) => {
+    codex.version = version;
+    write(CONFIG, EXISTING);
+    const res = await post("codex-settings", { baseUrl: FOREIGN, apiKey: NEW_KEY, model: "m1" });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe(
+      `${named} would send its own login (~/.codex/auth.json) to a host that isn't this 10router; update Codex to 0.48.0 or newer to use a non-10router base URL from the dashboard`
+    );
+    expect(read(CONFIG)).toBe(EXISTING);
+  });
+
+  it("Codex 0.48.0 takes a foreign host's key; an older Codex still points at this instance as before", async () => {
+    codex.version = "codex-cli 0.48.0";
+    expect((await post("codex-settings", { baseUrl: FOREIGN, apiKey: NEW_KEY, model: "m1" })).status).toBe(200);
+    expect(provider().experimental_bearer_token).toBe(NEW_KEY);
+    codex.version = null;
+    expect((await post("codex-settings", { baseUrl: OWN, apiKey: NEW_KEY, model: "m1" })).status).toBe(200);
+    expect(provider()).toEqual(OWN_NATIVE);
+  });
+
+  it("re-applying the same foreign base URL needs a key again, and a different key replaces the token", async () => {
     await post("codex-settings", { baseUrl: FOREIGN, apiKey: NEW_KEY, model: "m1" });
     const refused = await post("codex-settings", { baseUrl: FOREIGN, apiKey: " ", model: "m1" });
     expect(refused.status).toBe(400);
-    const again = await post("codex-settings", { baseUrl: FOREIGN, apiKey: NEW_KEY, model: "m2" });
+    const again = await post("codex-settings", { baseUrl: FOREIGN, apiKey: OTHER_KEY, model: "m2" });
     expect(again.status).toBe(200);
-    expect(provider().experimental_bearer_token).toBe(NEW_KEY);
+    expect(provider().experimental_bearer_token).toBe(OTHER_KEY);
+    expect(read(CONFIG)).not.toContain(NEW_KEY);
+  });
+
+  it("a foreign host, then this instance: the token goes and Codex's own login comes back", async () => {
+    await post("codex-settings", { baseUrl: FOREIGN, apiKey: NEW_KEY, model: "m1" });
+    expect((await post("codex-settings", { baseUrl: OWN, apiKey: NEW_KEY, model: "m1" })).status).toBe(200);
+    expect(provider()).toEqual(OWN_NATIVE);
+    expect(read(CONFIG)).not.toContain(NEW_KEY);
   });
 
   it("this instance: unchanged, Codex's own login and no key in config.toml", async () => {
     const res = await post("codex-settings", { baseUrl: OWN, apiKey: NEW_KEY, model: "m1" });
     expect(res.status).toBe(200);
-    expect(provider()).toEqual({
-      name: "openai",
-      base_url: `${OWN}/backend-api/codex`,
-      wire_api: "responses",
-      requires_openai_auth: true,
-    });
+    expect(provider()).toEqual(OWN_NATIVE);
     expect(read(CONFIG)).not.toContain(NEW_KEY);
     await post("codex-settings", { baseUrl: "http://localhost:20128", apiKey: NEW_KEY, model: "m1", native: false });
     expect(provider()).toEqual({ name: "10router", base_url: "http://localhost:20128/v1", wire_api: "responses" });
@@ -173,9 +209,9 @@ describe("hermes: a foreign base URL never gets the OPENAI_API_KEY in ~/.hermes/
       const before = read(CONFIG);
       const res = await post("hermes-settings", { baseUrl: FOREIGN, model: "m1", ...key });
       expect(res.status).toBe(400);
-      const { error } = await res.json();
-      expect(error).toContain("OPENAI_API_KEY from ~/.hermes/.env");
-      expect(error).toMatch(/choose a key/);
+      expect((await res.json()).error).toBe(
+        "Hermes would send OPENAI_API_KEY from ~/.hermes/.env to https://attacker.example.net, which is neither its current base URL nor this 10router; choose a key for it"
+      );
       expect(read(CONFIG)).toBe(before);
       expect(read(ENV)).toBe(`OPENAI_API_KEY=${USER_KEY}\n`);
     }
@@ -200,8 +236,21 @@ describe("hermes: a foreign base URL never gets the OPENAI_API_KEY in ~/.hermes/
 
     // A block with a key of its own never sent the .env key anywhere.
     write(CONFIG, block(`${FOREIGN}/v1`, `"${NEW_KEY}"`));
-    expect((await post("hermes-settings", { baseUrl: FOREIGN, model: "m1" })).status).toBe(400);
+    const res = await post("hermes-settings", { baseUrl: FOREIGN, model: "m1" });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe(
+      "Hermes would send OPENAI_API_KEY from ~/.hermes/.env to https://attacker.example.net, which isn't this 10router; choose a key for it"
+    );
     expect(read(CONFIG)).toContain(`api_key: "${NEW_KEY}"`);
+  });
+
+  it("a foreign host, then this instance: the block's key goes and ${OPENAI_API_KEY} comes back", async () => {
+    await post("hermes-settings", { baseUrl: FOREIGN, apiKey: NEW_KEY, model: "m1" });
+    expect((await post("hermes-settings", { baseUrl: OWN, model: "m1" })).status).toBe(200);
+    const yaml = read(CONFIG);
+    expect(yaml).toContain(`api_key: ${REF}`);
+    expect(yaml).not.toContain(NEW_KEY);
+    expect(read(ENV)).toBe(`OPENAI_API_KEY=${USER_KEY}\n`);
   });
 
   it("this instance: unchanged, the block reads .env and a sent key goes there", async () => {
@@ -214,32 +263,61 @@ describe("hermes: a foreign base URL never gets the OPENAI_API_KEY in ~/.hermes/
   });
 });
 
-describe("claude: a foreign base URL never gets Claude Code's own login", () => {
+describe("claude: a foreign base URL never gets Claude Code's own login or the stored token", () => {
   const SETTINGS = ".claude/settings.json";
+  const STORED = { env: { ANTHROPIC_BASE_URL: `${OWN}/v1` } };
 
   beforeEach(() => {
-    write(SETTINGS, { env: { ANTHROPIC_BASE_URL: `${OWN}/v1` } });
+    write(SETTINGS, STORED);
   });
 
-  it.each([["a blank token", "   "], ["a numeric token", 12345]])("with %s: 400, settings.json untouched", async (_label, token) => {
-    const res = await post("claude-settings", { env: { ANTHROPIC_BASE_URL: FOREIGN, ANTHROPIC_AUTH_TOKEN: token } });
-    expect(res.status).toBe(400);
-    const { error } = await res.json();
-    expect(error).toContain("its own Claude login");
-    expect(error).toMatch(/choose a key/);
-    expect(readJson(SETTINGS)).toEqual({ env: { ANTHROPIC_BASE_URL: `${OWN}/v1` } });
+  it.each([["a blank token", "   "], ["a numeric token", 12345]])("%s is refused for any base URL, settings.json untouched", async (_label, token) => {
+    for (const env of [{ ANTHROPIC_BASE_URL: FOREIGN, ANTHROPIC_AUTH_TOKEN: token }, { ANTHROPIC_BASE_URL: OWN, ANTHROPIC_AUTH_TOKEN: token }, { ANTHROPIC_AUTH_TOKEN: token }]) {
+      const res = await post("claude-settings", { env });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe("ANTHROPIC_AUTH_TOKEN must be a non-blank string; choose a key");
+      expect(readJson(SETTINGS)).toEqual(STORED);
+    }
+  });
+
+  it.each([["a blank token", "   "], ["a numeric token", 12345]])(
+    "two steps: a foreign URL with a throwaway token, then %s without a URL, is refused",
+    async (_label, token) => {
+      expect((await post("claude-settings", { env: { ANTHROPIC_BASE_URL: FOREIGN, ANTHROPIC_AUTH_TOKEN: NEW_KEY } })).status).toBe(200);
+      const res = await post("claude-settings", { env: { ANTHROPIC_AUTH_TOKEN: token } });
+      expect(res.status).toBe(400);
+      expect(readJson(SETTINGS).env.ANTHROPIC_AUTH_TOKEN).toBe(NEW_KEY);
+    }
+  );
+
+  it("names what would go: its own login with no stored token, the stored token otherwise", async () => {
+    const noToken = await post("claude-settings", { env: { ANTHROPIC_BASE_URL: FOREIGN } });
+    expect(noToken.status).toBe(400);
+    expect((await noToken.json()).error).toBe(
+      "Claude Code would send its own Claude login to https://attacker.example.net, which is neither its current base URL nor this 10router; choose a key for it"
+    );
+    write(SETTINGS, { env: { ANTHROPIC_BASE_URL: `${OWN}/v1`, ANTHROPIC_AUTH_TOKEN: USER_KEY } });
+    const stored = await post("claude-settings", { env: { ANTHROPIC_BASE_URL: FOREIGN } });
+    expect(stored.status).toBe(400);
+    expect((await stored.json()).error).toBe(
+      "Claude Code would send the stored ANTHROPIC_AUTH_TOKEN to https://attacker.example.net, which is neither its current base URL nor this 10router; choose a key for it"
+    );
+    expect(readJson(SETTINGS).env.ANTHROPIC_BASE_URL).toBe(`${OWN}/v1`);
   });
 
   it("a base URL that isn't a string is a 400, not a 500", async () => {
     const res = await post("claude-settings", { env: { ANTHROPIC_BASE_URL: 8080 } });
     expect(res.status).toBe(400);
-    expect(readJson(SETTINGS)).toEqual({ env: { ANTHROPIC_BASE_URL: `${OWN}/v1` } });
+    expect(readJson(SETTINGS)).toEqual(STORED);
   });
 
   it("with a token: written, so Claude Code sends it instead of its login", async () => {
     const res = await post("claude-settings", { env: { ANTHROPIC_BASE_URL: FOREIGN, ANTHROPIC_AUTH_TOKEN: NEW_KEY } });
     expect(res.status).toBe(200);
     expect(readJson(SETTINGS).env).toMatchObject({ ANTHROPIC_BASE_URL: `${FOREIGN}/v1`, ANTHROPIC_AUTH_TOKEN: NEW_KEY });
+    // Its stored base URL now: a model change without a token is fine.
+    expect((await post("claude-settings", { env: { ANTHROPIC_DEFAULT_OPUS_MODEL: "cc/opus-placeholder" } })).status).toBe(200);
+    expect(readJson(SETTINGS).env.ANTHROPIC_AUTH_TOKEN).toBe(NEW_KEY);
   });
 
   it("this instance: unchanged, no token needed", async () => {
@@ -249,48 +327,77 @@ describe("claude: a foreign base URL never gets Claude Code's own login", () => 
   });
 });
 
-describe("opencode: stored provider headers never follow a foreign base URL", () => {
+describe("opencode: stored provider headers and query params never follow a foreign base URL", () => {
   const CONFIG = ".config/opencode/opencode.json";
-  const withHeaders = (headers) => ({
-    provider: { "10router": { npm: "@ai-sdk/openai-compatible", options: { baseURL: `${OWN}/v1`, apiKey: USER_KEY, ...(headers ? { headers } : {}) }, models: {} } },
+  const stored = ({ baseURL = `${OWN}/v1`, options = {}, models = {} } = {}) => ({
+    provider: { "10router": { npm: "@ai-sdk/openai-compatible", options: { baseURL, apiKey: USER_KEY, ...options }, models } },
   });
+  const HEADERS = { Authorization: "Bearer sk-placeholder-header-token" };
 
-  it("stored headers: 400 naming them, opencode.json untouched", async () => {
-    write(CONFIG, withHeaders({ Authorization: "Bearer sk-placeholder-header-token" }));
+  it.each([
+    ["options.headers", stored({ options: { headers: HEADERS } }), "provider.10router.options.headers"],
+    ["options.queryParams", stored({ options: { queryParams: { key: "sk-placeholder-query-key" } } }), "provider.10router.options.queryParams"],
+    ["a kept model's headers", stored({ models: { old: { name: "old", headers: HEADERS } } }), "provider.10router.models.old.headers"],
+  ])("stored %s: 400 naming it, opencode.json untouched", async (_label, config, name) => {
+    write(CONFIG, config);
     const before = read(CONFIG);
     const res = await post("opencode-settings", { baseUrl: FOREIGN, apiKey: NEW_KEY, models: ["m1"] });
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe("opencode.json has provider.10router.options.headers; remove it or point OpenCode back at this instance");
+    expect((await res.json()).error).toBe(`opencode.json has ${name}; remove it or point OpenCode back at this instance`);
     expect(read(CONFIG)).toBe(before);
   });
 
+  it("a model the request replaces doesn't keep its headers, so they don't count", async () => {
+    write(CONFIG, stored({ models: { m1: { name: "m1", headers: HEADERS } } }));
+    const res = await post("opencode-settings", { baseUrl: FOREIGN, apiKey: NEW_KEY, models: ["m1"] });
+    expect(res.status).toBe(200);
+    expect(readJson(CONFIG).provider["10router"].models.m1.headers).toBeUndefined();
+  });
+
   it("no stored headers: the request's key is written with the base URL", async () => {
-    write(CONFIG, withHeaders(null));
+    write(CONFIG, stored());
     const res = await post("opencode-settings", { baseUrl: FOREIGN, apiKey: NEW_KEY, models: ["m1"] });
     expect(res.status).toBe(200);
     expect(readJson(CONFIG).provider["10router"].options).toEqual({ baseURL: `${FOREIGN}/v1`, apiKey: NEW_KEY });
   });
 
+  it("the same stored base URL keeps its headers", async () => {
+    write(CONFIG, stored({ baseURL: `${FOREIGN}/v1`, options: { headers: HEADERS } }));
+    const res = await post("opencode-settings", { baseUrl: FOREIGN, apiKey: NEW_KEY, models: ["m1"] });
+    expect(res.status).toBe(200);
+    expect(readJson(CONFIG).provider["10router"].options.headers).toEqual(HEADERS);
+  });
+
   it("this instance: unchanged, stored headers stay", async () => {
-    write(CONFIG, withHeaders({ "x-placeholder": "1" }));
+    write(CONFIG, stored({ options: { headers: { "x-placeholder": "1" } } }));
     const res = await post("opencode-settings", { baseUrl: "http://localhost:20128", apiKey: NEW_KEY, models: ["m1"] });
     expect(res.status).toBe(200);
     expect(readJson(CONFIG).provider["10router"].options).toEqual({ baseURL: "http://localhost:20128/v1", apiKey: NEW_KEY, headers: { "x-placeholder": "1" } });
+  });
+
+  it.each([[8080], [["https://a.example.com"]], [{ url: FOREIGN }]])("a base URL that is %j is a 400, not a 500", async (baseUrl) => {
+    write(CONFIG, stored());
+    const before = read(CONFIG);
+    const res = await post("opencode-settings", { baseUrl, apiKey: NEW_KEY, models: ["m1"] });
+    expect(res.status).toBe(400);
+    expect(read(CONFIG)).toBe(before);
   });
 });
 
 describe("cline: stored openAiHeaders never follow a foreign base URL", () => {
   const STATE = ".cline/data/globalState.json";
   const SECRETS = ".cline/data/secrets.json";
+  const HEADERS = { Authorization: "Bearer sk-placeholder-header-token" };
 
-  it("stored headers: 400 naming them, nothing written", async () => {
-    write(STATE, { openAiBaseUrl: OWN, openAiHeaders: { Authorization: "Bearer sk-placeholder-header-token" } });
+  it("stored headers: 400 naming them, both files byte-for-byte untouched", async () => {
+    write(STATE, { openAiBaseUrl: OWN, openAiHeaders: HEADERS });
     write(SECRETS, { openAiApiKey: USER_KEY });
+    const before = { state: read(STATE), secrets: read(SECRETS) };
     const res = await post("cline-settings", { baseUrl: FOREIGN, apiKey: NEW_KEY, model: "m1" });
     expect(res.status).toBe(400);
     expect((await res.json()).error).toBe("globalState.json has openAiHeaders; remove it or point Cline back at this instance");
-    expect(readJson(STATE).openAiBaseUrl).toBe(OWN);
-    expect(readJson(SECRETS)).toEqual({ openAiApiKey: USER_KEY });
+    expect(read(STATE)).toBe(before.state);
+    expect(read(SECRETS)).toBe(before.secrets);
   });
 
   it("no stored headers: the request's key is written with the base URL", async () => {
@@ -301,10 +408,25 @@ describe("cline: stored openAiHeaders never follow a foreign base URL", () => {
     expect(readJson(SECRETS)).toEqual({ openAiApiKey: NEW_KEY });
   });
 
+  it("the same stored base URL keeps its headers", async () => {
+    write(STATE, { openAiBaseUrl: FOREIGN, openAiHeaders: HEADERS });
+    const res = await post("cline-settings", { baseUrl: `${FOREIGN}/v1`, apiKey: NEW_KEY, model: "m1" });
+    expect(res.status).toBe(200);
+    expect(readJson(STATE)).toMatchObject({ openAiBaseUrl: FOREIGN, openAiHeaders: HEADERS });
+  });
+
   it("this instance: unchanged, stored headers stay", async () => {
     write(STATE, { openAiBaseUrl: FOREIGN, openAiHeaders: { "x-placeholder": "1" } });
     const res = await post("cline-settings", { baseUrl: `${OWN}/v1`, apiKey: NEW_KEY, model: "m1" });
     expect(res.status).toBe(200);
     expect(readJson(STATE)).toMatchObject({ openAiBaseUrl: OWN, openAiHeaders: { "x-placeholder": "1" } });
+  });
+
+  it.each([[8080], [["https://a.example.com"]], [{ url: FOREIGN }]])("a base URL that is %j is a 400, not a 500", async (baseUrl) => {
+    write(STATE, { openAiBaseUrl: OWN });
+    const before = read(STATE);
+    const res = await post("cline-settings", { baseUrl, apiKey: NEW_KEY, model: "m1" });
+    expect(res.status).toBe(400);
+    expect(read(STATE)).toBe(before);
   });
 });
