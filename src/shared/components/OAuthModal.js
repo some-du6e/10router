@@ -4,10 +4,17 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import PropTypes from "prop-types";
 import { Modal, Button, Input } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import {
+  handleRelayedCallback,
+  isOwnPopup,
+  isTrustedCallbackOrigin,
+  openLoginPopup,
+  openLoginTab,
+  parsePastedCallback,
+  PROXY_OAUTH_PROVIDERS,
+} from "@/shared/utils/oauthCallbackBinding.js";
 
-// Providers using the dynamic-port local callback proxy.
-// Browser OAuth: popup → auto callback → auto exchange → poll-status.
-const PROXY_OAUTH_PROVIDERS = new Set(["trae", "windsurf", "zed"]);
+const openWindow = (url, target, features) => window.open(url, target, features);
 
 // Providers offering a paste-token fallback (import-token flow).
 // UX warns if the IDE (which issues the token) is not installed.
@@ -47,6 +54,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const [authMode, setAuthMode] = useState("browser"); // "browser" | "paste-token"
   const [pasteToken, setPasteToken] = useState("");
   const [ideStatus, setIdeStatus] = useState(null);
+  const [ignoredCallback, setIgnoredCallback] = useState(false);
   const popupRef = useRef(null);
   const pollingAbortRef = useRef(false);
   const openedRef = useRef(false);
@@ -206,7 +214,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     // 4. Open popup; proxy auto-exchanges on callback, modal polls poll-status.
     setAuthData({ ...authData, proxyProvider: providerId });
     setStep("waiting");
-    popupRef.current = window.open(authData.authUrl, "oauth_popup", "width=600,height=700");
+    popupRef.current = openLoginPopup(openWindow, authData.authUrl);
     if (!popupRef.current) setStep("input"); // popup blocked → fall back to manual paste
   }, []);
 
@@ -370,24 +378,25 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       if (provider === "codex" && codexProxyActive) {
         // Proxy active: callback will be handled server-side (auto-exchange) or via channels (fallback)
         setStep("waiting");
-        popupRef.current = window.open(data.authUrl, "oauth_popup", "width=600,height=700");
+        popupRef.current = openLoginPopup(openWindow, data.authUrl);
         if (!popupRef.current) {
           setStep("input");
         }
       } else if (provider === "xai" && xaiProxyActive) {
         setStep("waiting");
-        popupRef.current = window.open(data.authUrl, "oauth_popup", "width=600,height=700");
+        popupRef.current = openLoginPopup(openWindow, data.authUrl);
         if (!popupRef.current) {
           setStep("input");
         }
       } else if (!isLocalhost || provider === "codex" || provider === "xai") {
         // Non-localhost or proxy failed: manual input mode
         setStep("input");
-        window.open(data.authUrl, "_blank");
+        // Not a popup we track: a window left over from an earlier login mustn't count as ours.
+        popupRef.current = openLoginTab(openWindow, data.authUrl);
       } else {
         // Localhost (non-Codex/xAI): Open popup and wait for message
         setStep("waiting");
-        popupRef.current = window.open(data.authUrl, "oauth_popup", "width=600,height=700");
+        popupRef.current = openLoginPopup(openWindow, data.authUrl);
         if (!popupRef.current) {
           setStep("input");
         }
@@ -413,6 +422,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       setAuthMode("browser");
       setPasteToken("");
       setIdeStatus(null);
+      setIgnoredCallback(false);
       pollingAbortRef.current = false;
       // Best-effort IDE detection for paste-token providers (Trae/Windsurf)
       if (PASTE_TOKEN_PROVIDERS[provider]) {
@@ -496,34 +506,34 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     if (!authData) return;
     callbackProcessedRef.current = false; // Reset when authData changes
 
-    // Handler for callback data - only process once
-    const handleCallback = async (data) => {
-      if (callbackProcessedRef.current) return; // Already processed
-
-      const { code, token, state, error: callbackError, errorDescription } = data;
-
-      if (callbackError) {
-        callbackProcessedRef.current = true;
-        setError(errorDescription || callbackError);
-        setStep("error");
-        return;
-      }
-
-      if (token || code) {
-        callbackProcessedRef.current = true;
-        await exchangeTokens(token || code, state);
-      }
-    };
+    // Takes a relayed callback only if it belongs to this login, and only once.
+    const handleCallback = (data, via, source, origin) => handleRelayedCallback(
+      data,
+      {
+        provider,
+        authData,
+        processed: callbackProcessedRef.current,
+        via,
+        fromOwnPopup: isOwnPopup(source, popupRef.current),
+        origin,
+      },
+      {
+        markProcessed: () => { callbackProcessedRef.current = true; },
+        notice: () => setIgnoredCallback(true),
+        fail: (message) => {
+          setError(message);
+          setStep("error");
+        },
+        exchange: exchangeTokens,
+      },
+    );
 
     // Method 1: postMessage from popup
     const handleMessage = (event) => {
-      // Allow messages from same origin or localhost (any port)
-      const isLocalhost = event.origin.includes("localhost") || event.origin.includes("127.0.0.1");
-      const isSameOrigin = event.origin === window.location.origin;
-      if (!isLocalhost && !isSameOrigin) return;
-      
+      if (!isTrustedCallbackOrigin(event.origin, window.location.origin)) return;
+
       if (event.data?.type === "oauth_callback") {
-        handleCallback(event.data.data);
+        handleCallback(event.data.data, "message", event.source, event.origin);
       }
     };
     window.addEventListener("message", handleMessage);
@@ -532,7 +542,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     let channel;
     try {
       channel = new BroadcastChannel("oauth_callback");
-      channel.onmessage = (event) => handleCallback(event.data);
+      channel.onmessage = (event) => handleCallback(event.data, "broadcast");
     } catch (e) {
       console.log("BroadcastChannel not supported");
     }
@@ -542,7 +552,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       if (event.key === "oauth_callback" && event.newValue) {
         try {
           const data = JSON.parse(event.newValue);
-          handleCallback(data);
+          handleCallback(data, "storage");
           localStorage.removeItem("oauth_callback");
         } catch (e) {
           console.log("Failed to parse localStorage data");
@@ -557,7 +567,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       if (stored) {
         const data = JSON.parse(stored);
         if (data.timestamp && Date.now() - data.timestamp < 30000) {
-          handleCallback(data);
+          handleCallback(data, "storage");
         }
         localStorage.removeItem("oauth_callback");
       }
@@ -570,7 +580,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       window.removeEventListener("storage", handleStorage);
       if (channel) channel.close();
     };
-  }, [authData, exchangeTokens]);
+  }, [authData, exchangeTokens, provider]);
 
   // Handle manual URL input
   const handleManualSubmit = async () => {
@@ -609,43 +619,13 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         return;
       }
 
-      // Detect raw JWT access token (starts with eyJ) — skip URL parsing
-      if (input.startsWith("eyJ") && input.includes(".")) {
-        await exchangeTokens(input, null);
+      const pasted = parsePastedCallback(input, authData, provider);
+      if (pasted.action === "error") throw new Error(pasted.message);
+      if (pasted.action === "xai-code") {
+        await completeXaiManualCode(pasted.code);
         return;
       }
-
-      if (provider === "xai" && input && !input.includes("://") && !input.includes("?") && !input.includes("code=")) {
-        await completeXaiManualCode(input);
-        return;
-      }
-
-      if (provider === "kimchi" && input && !input.includes("://") && !input.includes("?")) {
-        await exchangeTokens(input, null);
-        return;
-      }
-
-      const url = new URL(input);
-      const code = url.searchParams.get("code");
-      const token = url.searchParams.get("token");
-      const state = url.searchParams.get("state");
-      const errorParam = url.searchParams.get("error");
-
-      if (errorParam) {
-        throw new Error(url.searchParams.get("error_description") || errorParam);
-      }
-
-      if (!code && !token) {
-        throw new Error(
-          provider === "xai"
-            ? "Paste the callback URL or copied xAI code"
-            : provider === "kimchi"
-              ? "No Kimchi token found in URL"
-              : "No authorization code found in URL"
-        );
-      }
-
-      await exchangeTokens(token || code, state);
+      await exchangeTokens(pasted.code, pasted.state);
     } catch (err) {
       setError(err.message);
       setStep("error");
@@ -682,6 +662,9 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   return (
     <Modal isOpen={isOpen} title={modalTitle} onClose={handleClose} size="lg">
       <div className="flex flex-col gap-4">
+        {ignoredCallback && (step === "waiting" || step === "input") && (
+          <p className="text-xs text-text-muted">A sign-in callback that wasn&apos;t for this login was ignored.</p>
+        )}
         {/* Trae/Windsurf: browser OAuth (proxy) + paste-token fallback */}
         {PROXY_OAUTH_PROVIDERS.has(provider) && (step === "waiting" || step === "input" || step === "error") && (
           <>

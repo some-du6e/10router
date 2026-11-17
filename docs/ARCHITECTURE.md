@@ -573,6 +573,7 @@ Runtime visibility sources:
   `legacyDefaultPassword` in `_meta` and get exactly one login on the old
   default; that session carries a `pwChange` claim which the guard restricts to
   `/api/auth/change-password`, so the forced change cannot be skipped.
+- SSO: OIDC and SAML logins give the single admin role, so `SSO_ALLOWED_USERS` is the only way to narrow who gets in. SAML start keeps no server state: it puts the AuthnRequest ID and a 10-minute expiry in the `saml_state` cookie, HMAC-signed with the session secret (`src/lib/auth/authSecret.js`). ACS lets node-saml redeem only that request, and each process refuses a request it already used (that record is in memory, so another instance, or the same one after a restart, could take a captured response and cookie once more within the 10 minutes). So SAML needs HTTPS (for the `SameSite=None` cookie), and several instances need the same `JWT_SECRET`. With SAML, an `SSO_ALLOWED_USERS` email entry trusts the email the IdP asserts
 - API key HMAC secret (`API_KEY_SECRET`) secures generated local API key format
 - Provider secrets (API keys/tokens) are persisted in local DB and should be protected at filesystem level
 - Cloud sync endpoints rely on API key auth + machine id semantics
@@ -581,7 +582,7 @@ Runtime visibility sources:
 
 Environment variables actively used by code:
 
-- App/auth: `JWT_SECRET`, `INITIAL_PASSWORD`
+- App/auth: `JWT_SECRET`, `INITIAL_PASSWORD`, `SSO_ALLOWED_USERS` (optional OIDC/SAML allowlist of emails, `@domain` suffixes or subject IDs; unset allows every IdP account; OIDC email entries only match an IdP-verified email, so list Entra ID users by subject ID; SAML email entries trust the asserted email, so prefer NameID entries where users can edit theirs)
 - Storage: `DATA_DIR`
 - Security hashing: `API_KEY_SECRET`, `MACHINE_ID_SALT`
 - Logging: `ENABLE_REQUEST_LOGS`
