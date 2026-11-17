@@ -1,7 +1,9 @@
 // Values written into hand-built YAML, TOML and .env lines. Quotes, backslashes and
-// control characters would let a value close its string and add keys or lines, and
-// `${` would let a tool that expands variables pull another one into the value.
-const UNSAFE = /["\\\u0000-\u001f\u007f]|\$\{/;
+// control characters would let a value close its string and add keys or lines.
+// `$` (bare $VAR as well as ${VAR}) and backticks are what env-file loaders and
+// shells expand, so a value with them could pull another variable or a command in.
+// Real base URLs, keys and model ids contain none of these.
+const UNSAFE = /["\\`$\u0000-\u001f\u007f]/;
 
 export function findUnsafeConfigValue(fields: Record<string, unknown>): string | null {
   for (const [name, value] of Object.entries(fields)) {

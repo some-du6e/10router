@@ -2,7 +2,9 @@
 
 import { NextResponse } from "next/server";
 import { findUnsafeConfigValue } from "@/lib/cliTools/configValue.js";
-import { pickFields } from "@/lib/cliTools/statusFields.js";
+import { keyStatus, pickFields } from "@/lib/cliTools/statusFields.js";
+import { isKeepExistingKey } from "@/lib/cliTools/keepKey.js";
+import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
@@ -106,7 +108,8 @@ const writeProviderEnv = async (env) => {
     content += `${key}="${value}"\n`;
   }
 
-  await fs.writeFile(envPath, content, "utf-8");
+  // Owner-only: it holds the client key.
+  await writePrivateFile(envPath, content);
 };
 
 export async function GET() {
@@ -130,9 +133,14 @@ export async function GET() {
     if (provider && typeof provider === "object") providers[name] = pickFields(provider, ["base_url", "default_model"]);
   }
 
+  // The key lives in the provider env file: whether it is set, and which of our
+  // keys it is, never the key itself.
+  const providerEnv = await readProviderEnv();
+
   return NextResponse.json({
     installed: true,
     config: { providers },
+    apiKeyStatus: await keyStatus(providerEnv.JCODE_10ROUTER_API_KEY),
     has10Router,
     configPath: getConfigPath(),
   });
@@ -140,7 +148,9 @@ export async function GET() {
 
 export async function POST(request) {
   try {
-    const { baseUrl, apiKey, models } = await request.json();
+    const { baseUrl, models, apiKey: requestedKey } = await request.json();
+    // The card couldn't show the stored key (a custom one): keep it.
+    const apiKey = isKeepExistingKey(requestedKey) ? (await readProviderEnv()).JCODE_10ROUTER_API_KEY : requestedKey;
 
     if (!baseUrl || !apiKey) {
       return NextResponse.json(

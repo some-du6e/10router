@@ -50,8 +50,12 @@ async function buildClaudeHeader() {
   if (currentUrl) {
     lines.push(`Status:   ${COLORS.green}✓ Configured${COLORS.reset}`);
     lines.push(`Endpoint: ${COLORS.cyan}${currentUrl}${COLORS.reset}`);
+    // Newer gateways never return the token, only whether one is set (authToken).
     if (currentKey) {
       lines.push(`API Key:  ${COLORS.dim}${currentKey.substring(0, 10)}...${COLORS.reset}`);
+    } else if (result.data.authToken?.set) {
+      const which = result.data.authToken.ownKeyId ? "a 10router key" : "a custom key";
+      lines.push(`API Key:  ${COLORS.dim}set (${which})${COLORS.reset}`);
     }
   } else {
     lines.push(`Status:   ${COLORS.red}✗ Not configured${COLORS.reset}`);

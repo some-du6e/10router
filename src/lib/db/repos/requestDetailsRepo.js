@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { structuredPreview } from "../../../shared/utils/requestConversation.js";
-import { dropSensitiveHeaders } from "../../../../open-sse/utils/redact.js";
+import { dropSensitiveHeaders, isBinaryBody, binaryBodyMarker } from "../../../../open-sse/utils/redact.js";
 
 const DEFAULT_MAX_RECORDS = 200;
 const DEFAULT_BATCH_SIZE = 20;
@@ -261,6 +261,9 @@ async function writeBufferedRows() {
         if (!item.id) item.id = generateDetailId(item.model);
         if (!item.timestamp) item.timestamp = new Date().toISOString();
         if (item.request?.headers) item.request.headers = sanitizeHeaders(item.request.headers);
+        // A binary upstream body (Windsurf's protobuf starts with the API key) is
+        // stored as its size only.
+        for (const key of PAYLOAD_KEYS) if (isBinaryBody(item[key])) item[key] = binaryBodyMarker(item[key]);
 
         const fieldJson = keepFull ? {} : undefined;
         const record = {

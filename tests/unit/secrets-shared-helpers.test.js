@@ -84,6 +84,18 @@ describe("shared redaction", () => {
       expect(isSensitiveHeader(name)).toBe(true);
     }
     expect(isSensitiveHeader("content-type")).toBe(false);
+    // Usage counters only mention tokens: logs keep them readable.
+    for (const name of [
+      "x-ratelimit-remaining-tokens",
+      "x-ratelimit-limit-tokens",
+      "anthropic-ratelimit-input-tokens-limit",
+      "anthropic-ratelimit-output-tokens-reset",
+      "anthropic-ratelimit-tokens-remaining",
+    ]) {
+      expect(isSensitiveHeader(name)).toBe(false);
+    }
+    expect(maskSensitiveHeaders({ "x-ratelimit-remaining-tokens": "39999" })).toEqual({ "x-ratelimit-remaining-tokens": "39999" });
+    for (const name of ["set-cookie", "x-amz-security-token", "x-csrf-token"]) expect(isSensitiveHeader(name)).toBe(true);
     expect(Object.keys(dropSensitiveHeaders(headers))).toEqual(["content-type"]);
     expect(redactSensitiveHeaders(headers)["x-goog-api-key"]).toBe("[REDACTED]");
     expect(JSON.stringify(maskSensitiveHeaders(headers))).not.toContain("AIzaPlaceholder");
@@ -96,7 +108,14 @@ describe("shared redaction", () => {
       expect(redactUrlSecrets(`https://u.example/p?${name}=SECRET1&alt=sse`)).toBe(`https://u.example/p?${name}=[REDACTED]&alt=sse`);
       expect(`see https://u.example/p?${name.toUpperCase()}=SECRET2`.replace(SECRET_QUERY_PARAM_RE, "$1x")).not.toContain("SECRET2");
     }
+    const { isSecretQueryParamName } = await import("../../open-sse/utils/redact.js");
+    for (const name of ["exaApiKey", "tavilyApiKey", "refresh_token", "client_secret", "X-Amz-Signature"]) {
+      expect(isSecretQueryParamName(name)).toBe(true);
+      expect(redactUrlSecrets(`https://mcp.example/s?${name}=SECRET4&q=1`)).toBe(`https://mcp.example/s?${name}=[REDACTED]&q=1`);
+    }
+    expect(isSecretQueryParamName("alt")).toBe(false);
     const { makeRedactor } = await import("../../src/lib/endpointDetect.ts");
+    expect(makeRedactor("")("Authorization: Bearer abcdefgh1234")).not.toContain("abcdefgh1234");
     expect(makeRedactor("")("https://u.example/p?signature=SECRET3")).not.toContain("SECRET3");
   });
 });

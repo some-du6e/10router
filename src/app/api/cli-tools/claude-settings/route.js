@@ -8,7 +8,9 @@ import path from "path";
 import os from "os";
 import { DEFAULT_PLUGINS } from "@/shared/constants/coworkPlugins";
 import { CLI_TOOLS } from "@/shared/constants/cliTools";
-import { ownClientKeyOrNull, pickFields } from "@/lib/cliTools/statusFields.js";
+import { keyStatus, pickFields } from "@/lib/cliTools/statusFields.js";
+import { isKeepExistingKey } from "@/lib/cliTools/keepKey.js";
+import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 
 const execAsync = promisify(exec);
 
@@ -114,14 +116,13 @@ export async function GET() {
     const has10Router = !!(settings?.env?.ANTHROPIC_BASE_URL);
     const claudeJson = await readClaudeJson();
     const env = settings?.env || {};
-    const token = await ownClientKeyOrNull(env.ANTHROPIC_AUTH_TOKEN);
 
     return NextResponse.json({
       installed: true,
       // settings.json can hold any env var (other tokens, proxies): only the ones the card reads.
-      settings: settings
-        ? { env: { ...pickFields(env, STATUS_ENV_KEYS), ...(token ? { ANTHROPIC_AUTH_TOKEN: token } : {}) } }
-        : null,
+      settings: settings ? { env: pickFields(env, STATUS_ENV_KEYS) } : null,
+      // Never the token itself: whether one is set, and which of our keys it is.
+      authToken: await keyStatus(env.ANTHROPIC_AUTH_TOKEN),
       has10Router: has10Router,
       exaMcpEnabled: !!claudeJson?.mcpServers?.exa,
       settingsPath: getClaudeSettingsPath(),
@@ -171,6 +172,9 @@ export async function POST(request) {
         : `${env.ANTHROPIC_BASE_URL}/v1`;
     }
 
+    // The card couldn't show the stored token (a custom key): keep it as it is.
+    if (isKeepExistingKey(env.ANTHROPIC_AUTH_TOKEN)) delete env.ANTHROPIC_AUTH_TOKEN;
+
     // Merge new env with existing settings
     const newSettings = {
       ...currentSettings,
@@ -189,8 +193,8 @@ export async function POST(request) {
       delete newSettings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
     }
 
-    // Write new settings
-    await fs.writeFile(settingsPath, JSON.stringify(newSettings, null, 2));
+    // Write new settings (owner-only: it holds the key)
+    await writePrivateFile(settingsPath, JSON.stringify(newSettings, null, 2));
 
     // Exa MCP toggle — write to ~/.claude.json (CLI reads mcpServers from here).
     if (EXA_PLUGIN) {
@@ -257,7 +261,7 @@ export async function DELETE() {
     await writeClaudeJsonMcp(null);
 
     // Write updated settings
-    await fs.writeFile(settingsPath, JSON.stringify(currentSettings, null, 2));
+    await writePrivateFile(settingsPath, JSON.stringify(currentSettings, null, 2));
 
     return NextResponse.json({
       success: true,

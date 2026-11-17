@@ -7,6 +7,7 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { pickFields } from "@/lib/cliTools/statusFields.js";
+import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 
 const execAsync = promisify(exec);
 
@@ -170,7 +171,7 @@ export async function POST(request) {
     }
 
     // Write settings
-    await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2));
+    await writePrivateFile(settingsPath, JSON.stringify(settings, null, 2));
 
     return NextResponse.json({
       success: true,
@@ -214,7 +215,7 @@ export async function DELETE() {
     }
 
     // Write updated settings
-    await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2));
+    await writePrivateFile(settingsPath, JSON.stringify(settings, null, 2));
 
     return NextResponse.json({
       success: true,

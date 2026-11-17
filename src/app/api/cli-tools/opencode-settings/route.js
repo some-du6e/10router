@@ -6,6 +6,7 @@ import { promisify } from "util";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
+import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 
 const execAsync = promisify(exec);
 
@@ -176,7 +177,7 @@ export async function POST(request) {
       model: `10router/${effectiveSubagentModel}`,
     };
 
-    await fs.writeFile(configPath, JSON.stringify(config, null, 2));
+    await writePrivateFile(configPath, JSON.stringify(config, null, 2));
 
     return NextResponse.json({
       success: true,
@@ -213,7 +214,7 @@ export async function PATCH(request) {
       }
     }
 
-    await fs.writeFile(configPath, JSON.stringify(config, null, 2));
+    await writePrivateFile(configPath, JSON.stringify(config, null, 2));
 
     return NextResponse.json({
       success: true,
@@ -269,7 +270,7 @@ export async function DELETE(request) {
       if (Object.keys(config.agent).length === 0) delete config.agent;
     }
 
-    await fs.writeFile(configPath, JSON.stringify(config, null, 2));
+    await writePrivateFile(configPath, JSON.stringify(config, null, 2));
 
     return NextResponse.json({
       success: true,

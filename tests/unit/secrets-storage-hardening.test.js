@@ -33,7 +33,7 @@ describe("client API key generation", () => {
 
 describe("request log header masking", () => {
   it("masks credential headers and keeps the rest", async () => {
-    const { maskSensitiveHeaders } = await import("../../open-sse/utils/requestLogger.js");
+    const { maskSensitiveHeaders } = await import("../../open-sse/utils/redact.js");
     const masked = maskSensitiveHeaders({
       Authorization: "Bearer sk-abcdefghijklmnopqrstuvwxyz",
       "x-api-key": "sk-ant-api03-secretsecretsecret",
@@ -83,7 +83,9 @@ describe("request log header masking", () => {
     try {
       const { createRequestLogger } = await import("../../open-sse/utils/requestLogger.js");
       const logger = await createRequestLogger("openai", "gemini", "m");
-      const params = ["key", "api_key", "apikey", "access_token", "token", "KEY", "Api_Key", "ApiKey", "Access_Token", "TOKEN"];
+      const { SECRET_QUERY_PARAMS } = await import("../../open-sse/utils/redact.js");
+      const titleCase = (p) => p.replace(/(^|[_-])([a-z])/g, (_m, sep, c) => sep + c.toUpperCase());
+      const params = SECRET_QUERY_PARAMS.flatMap((p) => [p, p.toUpperCase(), titleCase(p)]);
       const url = "https://upstream.example/v1/models/m:generateContent?alt=sse&" + params.map((p, i) => `${p}=SECRETVALUE${i}`).join("&");
       logger.logTargetRequest(url, { "x-goog-api-key": "SECRETHEADERVALUE123" }, {});
       const text = fs.readFileSync(path.join(logger.sessionPath, "4_req_target.json"), "utf8");
@@ -99,7 +101,7 @@ describe("request log header masking", () => {
 
 describe("request log URL redaction", () => {
   it("redacts credentials carried in the query string", async () => {
-    const { redactUrlSecrets } = await import("../../open-sse/utils/requestLogger.js");
+    const { redactUrlSecrets } = await import("../../open-sse/utils/redact.js");
     const url = redactUrlSecrets("https://aiplatform.example/v1/models/m:streamGenerateContent?alt=sse&key=AIzaSecretValue");
     expect(url).not.toContain("AIzaSecretValue");
     expect(url).toContain("alt=sse");

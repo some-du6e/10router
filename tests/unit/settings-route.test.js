@@ -154,7 +154,7 @@ describe("PATCH /api/settings session revocation", () => {
       .toBeLessThan(mocks.reissueDashboardSession.mock.invocationCallOrder[0]);
   });
 
-  it("revokes for a CLI-token caller with no cookie and has no session to reissue", async () => {
+  it("revokes for a caller with no cookie and has no session to reissue", async () => {
     mocks.cookieGet.mockReturnValue(undefined);
 
     const response = await changePassword();

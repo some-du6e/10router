@@ -7,6 +7,7 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { findUnsafeConfigValue } from "@/lib/cliTools/configValue.js";
+import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 
 const execAsync = promisify(exec);
 
@@ -147,7 +148,7 @@ export async function POST(request) {
     if (apiKey) {
       const existingEnv = await readEnvFile();
       const newEnv = upsertEnvVar(existingEnv, API_KEY_ENV, apiKey);
-      await fs.writeFile(getHermesEnvPath(), newEnv);
+      await writePrivateFile(getHermesEnvPath(), newEnv);
     }
 
     return NextResponse.json({

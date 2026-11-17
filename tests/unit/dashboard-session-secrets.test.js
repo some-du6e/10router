@@ -149,10 +149,6 @@ describe("dashboard session revocation", () => {
     resetState();
   });
 
-  afterEach(() => {
-    vi.doUnmock("@/lib/auth/dashboardSession");
-  });
-
   it("keeps sessions issued before the epoch existed valid until the first revocation", async () => {
     const session = await loadSession(undefined);
     const token = await session.createDashboardAuthToken();

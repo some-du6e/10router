@@ -1,4 +1,4 @@
-import { maskSensitiveHeaders, redactUrlSecrets } from "./redact.js";
+import { maskSensitiveHeaders, redactUrlSecrets, binaryJsonReplacer } from "./redact.js";
 
 // Check if running in Node.js environment (has fs module)
 const isNode = typeof process !== "undefined" && process.versions?.node && typeof window === "undefined";
@@ -9,9 +9,6 @@ const LOGGING_ENABLED = typeof process !== "undefined" && process.env?.ENABLE_RE
 let fs = null;
 let path = null;
 let LOGS_DIR = null;
-
-// Masking lives in redact.js; re-exported for existing importers.
-export { maskSensitiveHeaders, redactUrlSecrets };
 
 const PRIVATE_FILE = { mode: 0o600 };
 let logsDirReady = false;
@@ -77,7 +74,8 @@ function writeJsonFile(sessionPath, filename, data) {
   
   try {
     const filePath = path.join(sessionPath, filename);
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), PRIVATE_FILE);
+    // Binary bodies (Windsurf protobuf, which carries the API key) are logged as their size.
+    fs.writeFileSync(filePath, JSON.stringify(data, binaryJsonReplacer, 2), PRIVATE_FILE);
   } catch (err) {
     console.log(`[LOG] Failed to write ${filename}:`, err.message);
   }

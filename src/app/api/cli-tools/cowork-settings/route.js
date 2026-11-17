@@ -8,16 +8,14 @@ import crypto from "crypto";
 import { DEFAULT_PLUGINS, LOCAL_STDIO_PLUGINS, buildManagedMcpServers } from "@/shared/constants/coworkPlugins";
 import { UPDATER_CONFIG } from "@/shared/constants/config";
 import { CLI_TOKEN_HEADER, getCliToken } from "@/lib/auth/cliToken.js";
+import { redactUrlSecrets } from "open-sse/utils/redact.js";
+import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 
 const APP_PORT = UPDATER_CONFIG.appPort;
 const LOCAL_MCP_PREFIX = `http://localhost:${APP_PORT}/api/mcp/`;
 
-// The applied config holds the client key and the CLI token: owner-only.
-const writePrivateFile = async (filePath, content) => {
-  await fs.writeFile(filePath, content, { mode: 0o600 });
-  // writeFile keeps an existing file's mode, so tighten one written before this.
-  if (os.platform() !== "win32") await fs.chmod(filePath, 0o600).catch(() => {});
-};
+// The applied config holds the client key and the CLI token: written owner-only
+// through a temp file, so an existing world-readable file never holds them.
 
 // Inject CLI token header into entries pointing at our local /api/mcp/ bridge.
 const injectAuthHeaders = async (entries) => {
@@ -240,6 +238,30 @@ async function writeSkipApprovals(managedServers) {
   return { written: Object.keys(skip).length };
 }
 
+// Plugin URLs can carry a key in the query (an Exa or Tavily key): the status shows
+// them with those values redacted.
+const redactPluginUrl = (url) => (typeof url === "string" ? redactUrlSecrets(url) : url);
+
+// A plugin sent back on Apply with the redacted URL the status showed gets the
+// stored URL (with its key) again, so a re-apply never writes the placeholder.
+const restoreRedactedUrls = (entries, stored) => {
+  const storedUrls = new Map(
+    (Array.isArray(stored) ? stored : []).filter((m) => m?.name && typeof m.url === "string").map((m) => [m.name, m.url])
+  );
+  return entries.map((p) => {
+    const original = storedUrls.get(p?.name);
+    if (!original || typeof p?.url !== "string" || p.url === original) return p;
+    return p.url === redactPluginUrl(original) ? { ...p, url: original } : p;
+  });
+};
+
+const readAppliedConfig = async () => {
+  const meta = await readJson(await getMetaPath());
+  const appliedId = meta?.appliedId || null;
+  const configPath = appliedId ? path.join(await getConfigDir(), `${appliedId}.json`) : null;
+  return { appliedId, configPath, config: configPath ? await readJson(configPath) : null };
+};
+
 // The status carries only what the card reads (status.cowork.*), never the stored
 // config: that holds the client key and, in bridge headers, the CLI token.
 export async function GET() {
@@ -248,11 +270,7 @@ export async function GET() {
     if (!installed) {
       return NextResponse.json({ installed: false, message: "Claude Desktop (Cowork mode) not detected" });
     }
-    const meta = await readJson(await getMetaPath());
-    const appliedId = meta?.appliedId || null;
-    const configDir = await getConfigDir();
-    const configPath = appliedId ? path.join(configDir, `${appliedId}.json`) : null;
-    const config = configPath ? await readJson(configPath) : null;
+    const { appliedId, configPath, config } = await readAppliedConfig();
 
     const baseUrl = config?.inferenceGatewayBaseUrl || null;
     const models = Array.isArray(config?.inferenceModels)
@@ -270,7 +288,7 @@ export async function GET() {
     // Custom plugins = bridge entries not in preset LOCAL_STDIO_PLUGINS (custom:true or unknown name).
     const activeCustomPlugins = managedMcp
       .filter((m) => m.custom || (!stdioNames.has(m.name) && typeof m.url === "string" && m.url.includes("/api/mcp/")))
-      .map((m) => ({ name: m.name, url: m.url, transport: m.transport, custom: true }));
+      .map((m) => ({ name: m.name, url: redactPluginUrl(m.url), transport: m.transport, custom: true }));
 
     return NextResponse.json({
       installed: true,
@@ -294,7 +312,7 @@ export async function GET() {
           // If plugin matches a default, prefer default toolNames (curated/correct).
           const def = DEFAULT_PLUGINS.find((d) => d.name === m.name);
           const toolNames = def && Array.isArray(def.toolNames) ? def.toolNames : Array.from(bare);
-          return { name: m.name, url: m.url, transport: m.transport, oauth: !!m.oauth, toolNames };
+          return { name: m.name, url: redactPluginUrl(m.url), transport: m.transport, oauth: !!m.oauth, toolNames };
         }),
         localPlugins: activeLocalNames,
         customPlugins: activeCustomPlugins,
@@ -320,11 +338,15 @@ export async function POST(request) {
       return NextResponse.json({ error: "At least one model is required" }, { status: 400 });
     }
 
+    const storedServers = (await readAppliedConfig()).config?.managedMcpServers;
     // Respect empty array (user toggled all off); fallback to defaults only when undefined.
-    const pluginsArray = Array.isArray(plugins) ? plugins : DEFAULT_PLUGINS;
+    const pluginsArray = restoreRedactedUrls(Array.isArray(plugins) ? plugins : DEFAULT_PLUGINS, storedServers);
     const localPluginNames = Array.isArray(localPlugins) ? localPlugins : [];
     // Only URL-based custom plugins allowed (no stdio command spawning).
-    const customPluginsArray = (Array.isArray(customPlugins) ? customPlugins : []).filter((p) => p?.url);
+    const customPluginsArray = restoreRedactedUrls(
+      (Array.isArray(customPlugins) ? customPlugins : []).filter((p) => p?.url),
+      storedServers
+    );
 
     const bridgeEntries = await injectAuthHeaders(buildLocalBridgeEntries(localPluginNames));
     const customEntries = await injectAuthHeaders(buildCustomEntries(customPluginsArray));
@@ -375,7 +397,7 @@ export async function DELETE() {
       return NextResponse.json({ success: true, message: "No active config to reset" });
     }
     const configPath = path.join(await getConfigDir(), `${meta.appliedId}.json`);
-    try { await fs.writeFile(configPath, JSON.stringify({}, null, 2)); }
+    try { await writePrivateFile(configPath, JSON.stringify({}, null, 2)); }
     catch (error) { if (error.code !== "ENOENT") throw error; }
     try { await writeSkipApprovals([]); } catch { /* ignore */ }
     try { await cleanup1pLegacy(); } catch { /* ignore */ }

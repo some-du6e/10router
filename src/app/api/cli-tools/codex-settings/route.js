@@ -9,6 +9,7 @@ import os from "os";
 import { parseTOML, stringifyTOML } from "confbox";
 import { parseCodexVersion } from "@/shared/utils/codexCatalog.js";
 import { decideCatalogUrl } from "@/lib/codex/catalogUrlDecision.js";
+import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 
 const execAsync = promisify(exec);
 
@@ -156,6 +157,16 @@ const summarizeConfig = (config) => {
   };
 };
 
+// Published CLI launchers regex `model = "..."` and `base_url = "..."` out of a raw
+// `config` string. This rebuilds just those lines from the parsed fields, so they
+// keep working without the real file (which can hold other providers' secrets).
+const legacyConfigString = ({ model, baseUrl }) => {
+  const lines = [];
+  if (model) lines.push(`model = ${JSON.stringify(model)}`);
+  if (baseUrl) lines.push("[model_providers.10router]", `base_url = ${JSON.stringify(baseUrl)}`);
+  return lines.length ? `${lines.join("\n")}\n` : null;
+};
+
 // GET - Check codex CLI and read current settings
 export async function GET() {
   try {
@@ -169,13 +180,15 @@ export async function GET() {
     }
 
     const config = await readConfig();
+    const codex = summarizeConfig(config);
 
     // Only the fields the card shows: config.toml can hold other providers'
     // headers and MCP server env, and this status reaches remote dashboard sessions.
     return NextResponse.json({
       installed: true,
       hasConfig: Boolean(config),
-      codex: summarizeConfig(config),
+      codex,
+      config: config ? legacyConfigString(codex) : null,
       has10Router: has10RouterConfig(config),
       native: Boolean(config && config.includes(CODEX_NATIVE_PATH)),
       configPath: getCodexConfigPath(),
@@ -300,7 +313,7 @@ export async function DELETE() {
       if (Object.keys(authData).length === 0) {
         await fs.unlink(authPath);
       } else {
-        await fs.writeFile(authPath, JSON.stringify(authData, null, 2));
+        await writePrivateFile(authPath, JSON.stringify(authData, null, 2));
       }
     } catch { /* No auth file */ }
 

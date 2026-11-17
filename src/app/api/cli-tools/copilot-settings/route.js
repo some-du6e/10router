@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
+import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 
 // Resolve chatLanguageModels.json path per OS
 const getConfigPath = () => {
@@ -110,7 +111,7 @@ export async function POST(request) {
       config.push(newEntry);
     }
 
-    await fs.writeFile(configPath, JSON.stringify(config, null, 2));
+    await writePrivateFile(configPath, JSON.stringify(config, null, 2));
 
     return NextResponse.json({
       success: true,
@@ -141,7 +142,7 @@ export async function DELETE() {
     }
 
     config = config.filter((e) => e.name !== "10router");
-    await fs.writeFile(configPath, JSON.stringify(config, null, 2));
+    await writePrivateFile(configPath, JSON.stringify(config, null, 2));
 
     return NextResponse.json({
       success: true,

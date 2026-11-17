@@ -7,6 +7,7 @@ import BaseUrlSelect from "./BaseUrlSelect";
 import { rememberEndpoint } from "./cliEndpointPresets";
 import ApiKeySelect from "./ApiKeySelect";
 import { matchKnownEndpoint } from "./cliEndpointMatch";
+import { KEEP_EXISTING_KEY } from "@/lib/cliTools/keepKey.js";
 
 export default function OpenClawToolCard({
   tool,
@@ -83,9 +84,6 @@ export default function OpenClawToolCard({
       if (provider) {
         const primaryModel = openclawStatus.settings?.agents?.defaults?.model?.primary;
         if (primaryModel) setSelectedModel(primaryModel.replace("10router/", ""));
-        if (provider.apiKey && apiKeys?.some(k => k.key === provider.apiKey)) {
-          setSelectedApiKey(provider.apiKey);
-        }
       }
       // Init per-agent models from enriched agents list
       const agentList = openclawStatus.agents || [];
@@ -96,6 +94,23 @@ export default function OpenClawToolCard({
       setAgentModels(initAgentModels);
     }
   }, [openclawStatus, apiKeys]);
+
+  // Preselect the key openclaw.json already has. The status never carries it: one
+  // of our keys comes back by id; any other key is kept as it is.
+  const keyStatus = openclawStatus?.settings?.models?.providers?.["10router"]?.apiKeyStatus;
+  const keptCustomKey = !!keyStatus?.set && !keyStatus?.ownKeyId;
+  const hasInitializedKey = useRef(false);
+  useEffect(() => {
+    if (hasInitializedKey.current || !openclawStatus?.installed) return;
+    if (keyStatus?.ownKeyId) {
+      const own = apiKeys?.find((k) => k.id === keyStatus.ownKeyId);
+      if (!own) return; // wait for the key list
+      setSelectedApiKey(own.key);
+    } else if (keyStatus?.set) {
+      setSelectedApiKey(KEEP_EXISTING_KEY);
+    }
+    hasInitializedKey.current = true;
+  }, [openclawStatus, keyStatus, apiKeys]);
 
   const checkOpenclawStatus = async () => {
     setCheckingOpenclaw(true);
@@ -195,9 +210,11 @@ export default function OpenClawToolCard({
   };
 
   const getManualConfigs = () => {
-    const keyToUse = (selectedApiKey && selectedApiKey.trim())
-      ? selectedApiKey
-      : (!cloudEnabled ? "sk_10router" : "<API_KEY_FROM_DASHBOARD>");
+    const keyToUse = selectedApiKey === KEEP_EXISTING_KEY
+      ? "<YOUR_EXISTING_KEY>"
+      : (selectedApiKey && selectedApiKey.trim())
+        ? selectedApiKey
+        : (!cloudEnabled ? "sk_10router" : "<API_KEY_FROM_DASHBOARD>");
 
     const settingsContent = {
       agents: {
@@ -315,7 +332,7 @@ export default function OpenClawToolCard({
                 <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr_auto] sm:items-center sm:gap-2">
                   <span className="text-xs font-semibold text-text-main sm:text-right sm:text-sm">API Key</span>
                   <span className="material-symbols-outlined hidden text-text-muted text-[14px] sm:inline">arrow_forward</span>
-                  <ApiKeySelect value={selectedApiKey} onChange={setSelectedApiKey} apiKeys={apiKeys} cloudEnabled={cloudEnabled} />
+                  <ApiKeySelect value={selectedApiKey} onChange={setSelectedApiKey} apiKeys={apiKeys} cloudEnabled={cloudEnabled} keepExisting={keptCustomKey} />
                 </div>
 
                 {/* Default Model */}

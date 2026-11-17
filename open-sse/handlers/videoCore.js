@@ -18,8 +18,6 @@ export function getVideoConfig(provider) {
   return PROVIDER_MEDIA[provider]?.videoConfig || null;
 }
 
-// Kept as an export here for existing importers.
-export { sanitizeSecrets };
 
 function buildUpstreamUrl(config, action, requestId) {
   const base = config.baseUrl.replace(/\/$/, "");

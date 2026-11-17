@@ -116,7 +116,8 @@ describe("cowork status does not disclose the CLI token", () => {
   });
 });
 
-describe("translator preview step 3", () => {
+// The first import transforms the translator and executor graph, slow on a loaded runner.
+describe("translator preview step 3", { timeout: 30000 }, () => {
   const SECRET = "sk-provider-live-secret-0001";
 
   it("returns header names but never the provider credential", async () => {
@@ -178,6 +179,40 @@ describe("translator preview step 3", () => {
       expect(json.result.url).toContain("alt=sse");
       expect(json.result.headers["x-upstream-credential"]).toBe("[REDACTED]");
       expect(json.result.headers["content-type"]).toBe("application/json");
+    } finally {
+      vi.doUnmock("open-sse/executors/index.js");
+    }
+  });
+
+  it("redacts credentials the executor derives, which match no stored value", async () => {
+    const KEY = "stored-key-placeholder-000111";
+    const basic = `Basic ${Buffer.from(`user:${KEY}`).toString("base64")}`;
+    mocks.getProviderConnections.mockResolvedValue([{ isActive: true, apiKey: KEY }]);
+    vi.resetModules();
+    vi.doMock("open-sse/executors/index.js", () => ({
+      getExecutor: () => ({
+        buildUrl: () => "https://upstream.example/v1/chat?alt=sse&sig=derived123",
+        buildHeaders: () => ({ Authorization: basic, "x-request-sig-token": "derived-token-456" }),
+        transformRequest: (_model, body) => body,
+        finalizeBody: (body) => body,
+      }),
+    }));
+    try {
+      const { POST } = await import("../../src/app/api/translator/translate/route.js");
+      const res = await POST(
+        new Request("http://localhost/api/translator/translate", {
+          method: "POST",
+          body: JSON.stringify({ step: 3, body: { provider: "openai", model: "m", body: { model: "m", messages: [] } } }),
+        })
+      );
+      const json = await res.json();
+      const text = JSON.stringify(json);
+      expect(json.success).toBe(true);
+      expect(text).not.toContain(basic.slice(6));
+      expect(text).not.toContain("derived123");
+      expect(text).not.toContain("derived-token-456");
+      expect(json.result.headers.Authorization).toBe("[REDACTED]");
+      expect(json.result.url).toBe("https://upstream.example/v1/chat?alt=sse&sig=[REDACTED]");
     } finally {
       vi.doUnmock("open-sse/executors/index.js");
     }

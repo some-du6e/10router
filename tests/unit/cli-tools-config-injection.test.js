@@ -67,10 +67,27 @@ describe("cli-tools writers refuse values that would break out of the config syn
     expect(fs.existsSync(path.join(home, ".config", "jcode", "provider-10router.env"))).toBe(false);
   });
 
-  it("jcode: rejects an API key that would expand another variable", async () => {
-    const { POST } = await import("../../src/app/api/cli-tools/jcode-settings/route.js");
-    const res = await POST(post({ baseUrl: "http://localhost:20128", apiKey: "sk-${OTHER_SECRET}" }));
+  it.each(["sk-${OTHER_SECRET}", "sk-$OTHER_SECRET", "sk-`id`", "sk-$(id)"])(
+    "jcode: rejects an API key an env loader would expand (%s)",
+    async (apiKey) => {
+      const { POST } = await import("../../src/app/api/cli-tools/jcode-settings/route.js");
+      const res = await POST(post({ baseUrl: "http://localhost:20128", apiKey }));
+      expect(res.status).toBe(400);
+      expect(fs.existsSync(path.join(home, ".config", "jcode", "provider-10router.env"))).toBe(false);
+    }
+  );
+
+  it.each(["sk-$OTHER_SECRET", "sk-`id`"])("hermes: rejects an API key its .env loader would expand (%s)", async (apiKey) => {
+    const { POST } = await import("../../src/app/api/cli-tools/hermes-settings/route.js");
+    const res = await POST(post({ baseUrl: "http://localhost:20128", model: "cc/claude", apiKey }));
     expect(res.status).toBe(400);
-    expect(fs.existsSync(path.join(home, ".config", "jcode", "provider-10router.env"))).toBe(false);
+    expect(fs.existsSync(path.join(home, ".hermes", ".env"))).toBe(false);
+  });
+
+  it("jcode: still writes an ordinary key", async () => {
+    const { POST } = await import("../../src/app/api/cli-tools/jcode-settings/route.js");
+    const res = await POST(post({ baseUrl: "http://localhost:20128", apiKey: "sk-abc_123", models: ["m1"] }));
+    expect(res.status).toBe(200);
+    expect(fs.readFileSync(path.join(home, ".config", "jcode", "provider-10router.env"), "utf8")).toContain('"sk-abc_123"');
   });
 });

@@ -56,6 +56,18 @@ describe.runIf(isPosix)("database file permissions", () => {
     expect(mode(BACKUPS_DIR)).toBe(0o700);
   });
 
+  it("safety backups (which copy _meta) are owner-only", async () => {
+    vi.stubEnv("DATA_DIR", root);
+    const { makeBackupDir, backupFile } = await import("../../src/lib/db/backup.js");
+    const source = path.join(root, "db.json");
+    fs.writeFileSync(source, "{}", { mode: 0o644 });
+    const dir = makeBackupDir("test");
+    const copy = backupFile(source, dir);
+    expect(mode(dir)).toBe(0o700);
+    expect(mode(path.dirname(dir))).toBe(0o700);
+    expect(mode(copy)).toBe(0o600);
+  });
+
   it("the driver tightens the database files once the adapter has opened them", async () => {
     vi.stubEnv("DATA_DIR", root);
     const calls = [];
@@ -75,9 +87,11 @@ describe.runIf(isPosix)("database file permissions", () => {
     try {
       const { getAdapter } = await import("../../src/lib/db/driver.js");
       const adapter = await getAdapter();
-      expect(calls.length).toBeGreaterThanOrEqual(1);
+      // Called once, after the adapter created the file (node:sqlite opens it on connect).
+      expect(calls).toEqual([true]);
+      expect(adapter.driver).not.toBe("sql.js");
       const { DATA_FILE } = await import("../../src/lib/db/paths.js");
-      if (fs.existsSync(DATA_FILE)) expect(mode(DATA_FILE)).toBe(0o600);
+      expect(mode(DATA_FILE)).toBe(0o600);
       adapter.close?.();
     } finally {
       globalThis._dbAdapter = saved;

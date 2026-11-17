@@ -319,7 +319,7 @@ Notes:
 - App state: `${DATA_DIR}/db/data.sqlite` (providers, combos, aliases, keys, settings, usage history)
 - Auto backups: `${DATA_DIR}/db/backups/`
 - Request/translator logs: `<repo>/logs/...` when `ENABLE_REQUEST_LOGS=true`. Credential headers are masked to their last 4 characters and secret query params (`key`, `api_key`, `apikey`, `access_token`, `token`, ...) are redacted
-- Owner-only: `${DATA_DIR}/db/` and `backups/` are `0700`, `data.sqlite` (with `-wal`/`-shm`) and any leftover `db.json`/`usage.json`/`request-details.json` are `0600`, and `logs/` is `0700` with `0600` files. A backup job or sidecar running as another OS user can no longer read them; run it as the same user. A `DATA_DIR` you created yourself keeps its own mode
+- Owner-only: `${DATA_DIR}/db/` and `backups/` are `0700`, `data.sqlite` (with `-wal`/`-shm`) and any leftover `db.json`/`usage.json`/`disabledModels.json`/`request-details.json` and the safety backups are owner-only, and `logs/` is `0700` with `0600` files. A backup job or sidecar running as another OS user can no longer read them; run it as the same user. A `DATA_DIR` you created yourself keeps its own mode
 - In Docker, `${DATA_DIR}` and `~/.9router` resolve to the same location — the symlink
   `/root/.9router -> /app/data` is created at build time.
 

@@ -32,21 +32,34 @@ function docFiles() {
 
 // `JWT_SECRET=value`, `JWT_SECRET: value`, `-e JWT_SECRET="value"`. Shell or
 // compose expansions ($(...), ${...}) and <placeholders> are not literals.
-const ASSIGNMENT = /JWT_SECRET\s*[=:]\s*["']?([^\s"'`|]+)/g;
+// Spaces and tabs only, so a bare `JWT_SECRET:` heading never reads the next line.
+const ASSIGNMENT = /JWT_SECRET[ \t]*[=:][ \t]*["']?([^\s"'`|]+)/g;
 
-function literalExamples() {
+function literalsIn(text) {
   const found = [];
-  for (const file of docFiles()) {
-    for (const match of fs.readFileSync(file, "utf8").matchAll(ASSIGNMENT)) {
-      const value = match[1].trim();
-      if (!value || value.startsWith("$") || value.startsWith("<")) continue;
-      found.push({ file: path.relative(ROOT, file), value });
-    }
+  for (const match of text.matchAll(ASSIGNMENT)) {
+    const value = match[1].trim();
+    if (!value || value.startsWith("$") || value.startsWith("<")) continue;
+    found.push(value);
   }
   return found;
 }
 
+function literalExamples() {
+  return docFiles().flatMap((file) => literalsIn(fs.readFileSync(file, "utf8")).map((value) => ({ file: path.relative(ROOT, file), value })));
+}
+
 describe("JWT_SECRET examples in the docs", () => {
+  it("reads every way the docs write an assignment, and nothing else", () => {
+    expect(literalsIn("JWT_SECRET=x1")).toEqual(["x1"]);
+    expect(literalsIn("  JWT_SECRET: x2")).toEqual(["x2"]);
+    expect(literalsIn('docker run -e "JWT_SECRET=x3" image')).toEqual(["x3"]);
+    expect(literalsIn("export JWT_SECRET='x4'")).toEqual(["x4"]);
+    expect(literalsIn('JWT_SECRET="$(openssl rand -hex 32)"')).toEqual([]);
+    expect(literalsIn("- JWT_SECRET=${JWT_SECRET}")).toEqual([]);
+    expect(literalsIn("JWT_SECRET:\nnext-line-value")).toEqual([]);
+  });
+
   it("scans the files it is meant to", () => {
     const files = docFiles().map((file) => path.relative(ROOT, file));
     expect(files).toContain(".env.example");

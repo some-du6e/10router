@@ -8,6 +8,7 @@ import { promisify } from "util";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
+import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 
 const execAsync = promisify(exec);
 
@@ -144,7 +145,7 @@ export async function POST(request) {
         await fs.mkdir(dir, { recursive: true });
 
         const newConfig = build10RouterConfig(baseUrl, apiKey || "sk_10router", model);
-        await fs.writeFile(getDeepSeekConfigPath(), newConfig);
+        await writePrivateFile(getDeepSeekConfigPath(), newConfig);
 
         return NextResponse.json({
             success: true,
