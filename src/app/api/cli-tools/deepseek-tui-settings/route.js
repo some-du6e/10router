@@ -1,11 +1,14 @@
 "use server";
 
 import { NextResponse } from "next/server";
+import { findUnsafeConfigValue } from "@/lib/cliTools/configValue.js";
+import { pickFields } from "@/lib/cliTools/statusFields.js";
 import { exec } from "child_process";
 import { promisify } from "util";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
+import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 
 const execAsync = promisify(exec);
 
@@ -110,9 +113,14 @@ export async function GET() {
         }
         const toml = await readConfigToml();
         const config = parseToml(toml);
+        const openai = config["providers.openai"];
         return NextResponse.json({
             installed: true,
-            settings: config,
+            // The provider and the openai section's URL and model, never an api_key.
+            settings: {
+                ...pickFields(config, ["provider"]),
+                ...(openai ? { "providers.openai": pickFields(openai, ["base_url", "model"]) } : {}),
+            },
             has10Router: has10RouterConfig(config),
             configPath: getDeepSeekConfigPath(),
         });
@@ -128,12 +136,16 @@ export async function POST(request) {
         if (!baseUrl || !model) {
             return NextResponse.json({ error: "baseUrl and model are required" }, { status: 400 });
         }
+        const unsafeField = findUnsafeConfigValue({ baseUrl, apiKey, model });
+        if (unsafeField) {
+            return NextResponse.json({ error: `Invalid ${unsafeField}` }, { status: 400 });
+        }
 
         const dir = getDeepSeekDir();
         await fs.mkdir(dir, { recursive: true });
 
         const newConfig = build10RouterConfig(baseUrl, apiKey || "sk_10router", model);
-        await fs.writeFile(getDeepSeekConfigPath(), newConfig);
+        await writePrivateFile(getDeepSeekConfigPath(), newConfig);
 
         return NextResponse.json({
             success: true,

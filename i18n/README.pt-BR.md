@@ -1146,7 +1146,6 @@ npm install
 npm run build
 
 # Configurar
-export JWT_SECRET="your-secure-secret-change-this"
 export INITIAL_PASSWORD="your-password"
 export DATA_DIR="/var/lib/9router"
 export PORT="20128"
@@ -1166,6 +1165,8 @@ pm2 start npm --name 9router -- start
 pm2 save
 pm2 startup
 ```
+
+> `JWT_SECRET` é opcional. Deixe sem definir e o 10router gera um uma única vez em `$DATA_DIR/jwt-secret`, então as sessões continuam após reinícios. Apenas para várias instâncias atrás de uma mesma URL: gere um valor uma vez (`openssl rand -hex 32`), guarde-o e defina esse mesmo valor em todas as instâncias. Valores com menos de 32 caracteres ou um placeholder documentado são ignorados.
 
 ### Docker
 
@@ -1217,7 +1218,7 @@ docker pull decolua/9router:latest   # atualizar para a versão mais recente
 
 | Variável | Padrão | Descrição |
 | ---------------------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------- |
-| `JWT_SECRET` | Gerado automaticamente (`~/.9router/jwt-secret`) | Segredo de assinatura JWT para cookie de autenticação do painel (substituir para compartilhar entre instâncias) |
+| `JWT_SECRET` | Gerado automaticamente (`~/.9router/jwt-secret`) | Segredo de assinatura JWT para cookie de autenticação do painel; defina apenas para compartilhar sessões entre instâncias (32+ caracteres; valores mais curtos e placeholders documentados são ignorados) |
 | `INITIAL_PASSWORD` | `123456` | Primeira senha de login quando não existe hash salvo |
 | `DATA_DIR` | `~/.9router` | Localização principal dos dados do aplicativo (SQLite em `$DATA_DIR/db/data.sqlite`) |
 | `PORT` | padrão da estrutura | Porta de serviço (`20128` nos exemplos) |

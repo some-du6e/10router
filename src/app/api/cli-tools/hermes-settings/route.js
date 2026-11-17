@@ -6,6 +6,8 @@ import { promisify } from "util";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
+import { findUnsafeConfigValue } from "@/lib/cliTools/configValue.js";
+import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 
 const execAsync = promisify(exec);
 
@@ -107,9 +109,11 @@ export async function GET() {
     }
     const yaml = await readConfigYaml();
     const model = parseModelBlock(yaml);
+    // Without api_key: the model block's key may be any provider's.
+    const { api_key: _apiKey, ...shownModel } = model || {};
     return NextResponse.json({
       installed: true,
-      settings: { model },
+      settings: { model: model ? shownModel : null },
       has10Router: has10RouterConfig(model),
       configPath: getHermesConfigPath(),
     });
@@ -124,6 +128,10 @@ export async function POST(request) {
     const { baseUrl, apiKey, model } = await request.json();
     if (!baseUrl || !model) {
       return NextResponse.json({ error: "baseUrl and model are required" }, { status: 400 });
+    }
+    const unsafeField = findUnsafeConfigValue({ baseUrl, apiKey, model });
+    if (unsafeField) {
+      return NextResponse.json({ error: `Invalid ${unsafeField}` }, { status: 400 });
     }
 
     const dir = getHermesDir();
@@ -140,7 +148,7 @@ export async function POST(request) {
     if (apiKey) {
       const existingEnv = await readEnvFile();
       const newEnv = upsertEnvVar(existingEnv, API_KEY_ENV, apiKey);
-      await fs.writeFile(getHermesEnvPath(), newEnv);
+      await writePrivateFile(getHermesEnvPath(), newEnv);
     }
 
     return NextResponse.json({

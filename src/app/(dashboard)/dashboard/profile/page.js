@@ -262,7 +262,7 @@ export default function ProfilePage() {
       const data = await res.json();
 
       if (res.ok) {
-        setPassStatus({ type: "success", message: "Password updated successfully" });
+        setPassStatus({ type: "success", message: "Password updated. Other browsers were signed out." });
         setPasswords({ current: "", new: "", confirm: "" });
       } else {
         setPassStatus({ type: "error", message: data.error || "Failed to update password" });
@@ -1853,6 +1853,7 @@ export default function ProfilePage() {
             fullWidth
             icon="logout"
             onClick={handleLogout}
+            title="Signs out all browsers"
           >
             Logout
           </Button>

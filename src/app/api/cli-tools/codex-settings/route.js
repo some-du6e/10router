@@ -9,6 +9,7 @@ import os from "os";
 import { parseTOML, stringifyTOML } from "confbox";
 import { parseCodexVersion } from "@/shared/utils/codexCatalog.js";
 import { decideCatalogUrl } from "@/lib/codex/catalogUrlDecision.js";
+import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 
 const execAsync = promisify(exec);
 
@@ -133,6 +134,39 @@ const has10RouterConfig = (config) => {
   return config.includes("model_provider = \"10router\"") || config.includes("[model_providers.10router]");
 };
 
+const stringOrNull = (value) => (typeof value === "string" && value ? value : null);
+
+// The model, subagent model and active provider's base URL from config.toml.
+const summarizeConfig = (config) => {
+  if (!config) return { model: null, subagentModel: null, baseUrl: null };
+  let parsed = null;
+  try { parsed = parseTOML(config); } catch { /* fall back to line matching */ }
+  if (parsed && typeof parsed === "object") {
+    const providers = parsed.model_providers || {};
+    const provider = providers[parsed.model_provider] || providers["10router"];
+    return {
+      model: stringOrNull(parsed.model),
+      subagentModel: stringOrNull(parsed.agents?.default_subagent_model ?? parsed.default_subagent_model),
+      baseUrl: stringOrNull(provider?.base_url),
+    };
+  }
+  return {
+    model: config.match(/^model\s*=\s*"([^"]+)"/m)?.[1] || null,
+    subagentModel: config.match(/^default_subagent_model\s*=\s*"([^"]+)"/m)?.[1] || null,
+    baseUrl: config.match(/base_url\s*=\s*"([^"]+)"/)?.[1] || null,
+  };
+};
+
+// Published CLI launchers regex `model = "..."` and `base_url = "..."` out of a raw
+// `config` string. This rebuilds just those lines from the parsed fields, so they
+// keep working without the real file (which can hold other providers' secrets).
+const legacyConfigString = ({ model, baseUrl }) => {
+  const lines = [];
+  if (model) lines.push(`model = ${JSON.stringify(model)}`);
+  if (baseUrl) lines.push("[model_providers.10router]", `base_url = ${JSON.stringify(baseUrl)}`);
+  return lines.length ? `${lines.join("\n")}\n` : null;
+};
+
 // GET - Check codex CLI and read current settings
 export async function GET() {
   try {
@@ -141,16 +175,20 @@ export async function GET() {
     if (!isInstalled) {
       return NextResponse.json({
         installed: false,
-        config: null,
         message: "Codex CLI is not installed",
       });
     }
 
     const config = await readConfig();
+    const codex = summarizeConfig(config);
 
+    // Only the fields the card shows: config.toml can hold other providers'
+    // headers and MCP server env, and this status reaches remote dashboard sessions.
     return NextResponse.json({
       installed: true,
-      config,
+      hasConfig: Boolean(config),
+      codex,
+      config: config ? legacyConfigString(codex) : null,
       has10Router: has10RouterConfig(config),
       native: Boolean(config && config.includes(CODEX_NATIVE_PATH)),
       configPath: getCodexConfigPath(),
@@ -275,7 +313,7 @@ export async function DELETE() {
       if (Object.keys(authData).length === 0) {
         await fs.unlink(authPath);
       } else {
-        await fs.writeFile(authPath, JSON.stringify(authData, null, 2));
+        await writePrivateFile(authPath, JSON.stringify(authData, null, 2));
       }
     } catch { /* No auth file */ }
 

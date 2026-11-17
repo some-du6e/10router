@@ -210,22 +210,24 @@ git clone https://github.com/some-du6e/10router.git
 cd 10router/app
 npm install && npm run build
 
-export JWT_SECRET="your-secure-secret"
 export INITIAL_PASSWORD="your-password"
 export NODE_ENV="production"
 
 npm start
 ```
 
+> `JWT_SECRET` is optional. Leave it unset and 10router generates one once into `$DATA_DIR/jwt-secret`, so sessions survive restarts. Only for several instances behind one URL: generate one value once (`openssl rand -hex 32`), store it, and set that same value on every instance. Values under 32 characters or a documented placeholder are ignored.
+
 ### Docker
 ```bash
 docker build -t 10router .
 docker run -d \
   -p 3000:3000 \
-  -e JWT_SECRET="your-secret" \
   -v 10router-data:/app/data \
   10router
 ```
+
+> `JWT_SECRET` is left unset on purpose (see the note above): the secret generated in `$DATA_DIR/jwt-secret` persists across restarts.
 
 ### Cloudflare Workers
 ```bash
@@ -234,7 +236,7 @@ npm run deploy:cloudflare
 ```
 
 **Environment variables:**
-- `JWT_SECRET` - **MUST change in production!**
+- `JWT_SECRET` - Optional: auto-generated into `$DATA_DIR/jwt-secret`. Set it (32+ characters) only to share sessions across instances behind one URL
 - `DATA_DIR` - Database storage path (default: `~/.9router`)
 - `INITIAL_PASSWORD` - Optional headless bootstrap password (min 8 characters). Unset by default: first run requires the one-time setup token printed to the server console
 - `NODE_ENV` - Set to `production` for deploy
@@ -263,7 +265,7 @@ See [deployment guide](getting-started/installation.md#deployment) for details.
 - Community-reviewed
 
 **Best practices:**
-- Change `JWT_SECRET` in production
+- Keep the data directory (`$DATA_DIR`, which holds `jwt-secret`) private
 - Use strong `INITIAL_PASSWORD`
 - Enable HTTPS for cloud deployments
 - Rotate API keys regularly

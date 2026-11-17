@@ -284,7 +284,7 @@ container.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `JWT_SECRET` | Auto-generated (`$DATA_DIR/jwt-secret`, `~/.9router` by default) | Signs the dashboard session cookie and the SAML `saml_state` cookie; set the same value on every instance behind one URL (each instance still refuses a request it already used) |
+| `JWT_SECRET` | Auto-generated (`$DATA_DIR/jwt-secret`, `~/.9router` by default) | Signs the dashboard session cookie and the SAML `saml_state` cookie; set the same value on every instance behind one URL (each instance still refuses a request it already used). Values shorter than 32 characters and documented placeholders are ignored with a warning, and the generated file is used instead; generate one with `openssl rand -hex 32`. Logout and password changes end sessions through the database, so instances that each have their own database revoke only their own sessions; behind one URL they need a shared database for that to apply everywhere |
 | `INITIAL_PASSWORD` | unset | Optional headless bootstrap password (min 8 chars). When unset, first run requires the one-time setup token printed to the server console. There is no default password |
 | `SSO_ALLOWED_USERS` | unset (any IdP account) | Optional OIDC/SAML dashboard allowlist: comma-separated emails, `@domain` suffixes or IdP subject IDs (OIDC `sub`, SAML NameID). Unset, every account the IdP signs in gets admin access. For OIDC, email entries only match an email the IdP marks verified (`email_verified`; Entra ID often omits it, so list Entra users by subject ID). For SAML, an email entry trusts the email the IdP asserts, so if users can register or change their email at the IdP, list them by NameID |
 | `DATA_DIR` | `~/.9router` | App data location (SQLite at `$DATA_DIR/db/data.sqlite`); the `.9router` name is kept for compatibility |
@@ -318,7 +318,8 @@ Notes:
 
 - App state: `${DATA_DIR}/db/data.sqlite` (providers, combos, aliases, keys, settings, usage history)
 - Auto backups: `${DATA_DIR}/db/backups/`
-- Request/translator logs: `<repo>/logs/...` when `ENABLE_REQUEST_LOGS=true`
+- Request/translator logs: `<repo>/logs/...` when `ENABLE_REQUEST_LOGS=true`. Credential headers are masked to their last 4 characters (rate-limit and token-count headers stay readable), and every query param whose name contains `key`, `token`, `secret`, `auth` or `sig` (plus `code`) is redacted. That rule is broad on purpose, so harmless params such as `max_tokens` or `author` read `[REDACTED]` too. `Bearer` tokens in error text are redacted from 8 characters
+- Owner-only: `${DATA_DIR}/db/` and `backups/` are `0700`, `data.sqlite` (with `-wal`/`-shm`) and any leftover `db.json`/`usage.json`/`disabledModels.json`/`request-details.json` and the safety backups are owner-only, and `logs/` is `0700` with `0600` files. A backup job or sidecar running as another OS user can no longer read them; run it as the same user. A `DATA_DIR` you created yourself keeps its own mode
 - In Docker, `${DATA_DIR}` and `~/.9router` resolve to the same location — the symlink
   `/root/.9router -> /app/data` is created at build time.
 

@@ -117,13 +117,9 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
 
   // Parse model and subagent settings from config content
   useEffect(() => {
-    if (codexStatus?.config) {
-      const modelMatch = codexStatus.config.match(/^model\s*=\s*"([^"]+)"/m);
-      if (modelMatch) setSelectedModel(modelMatch[1]);
-
-      // Parse subagent settings
-      const subagentModelMatch = codexStatus.config.match(/^default_subagent_model\s*=\s*"([^"]+)"/m);
-      if (subagentModelMatch) setSubagentModel(subagentModelMatch[1]);
+    if (codexStatus?.hasConfig) {
+      if (codexStatus.codex?.model) setSelectedModel(codexStatus.codex.model);
+      if (codexStatus.codex?.subagentModel) setSubagentModel(codexStatus.codex.subagentModel);
 
       // Reflect the ingress the config already points at, so Apply doesn't
       // silently move a working setup off /v1.
@@ -159,16 +155,11 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
     }
   };
 
-  const getCurrentBaseUrl = () => {
-    const parsed = codexStatus?.config?.match(/base_url\s*=\s*"([^"]+)"/);
-    return parsed ? parsed[1] : "";
-  };
-
-  const currentBaseUrl = getCurrentBaseUrl();
+  const currentBaseUrl = codexStatus?.codex?.baseUrl || "";
 
   const getConfigStatus = () => {
     if (!codexStatus?.installed) return null;
-    if (!codexStatus.config) return "not_configured";
+    if (!codexStatus.hasConfig) return "not_configured";
     return matchKnownEndpoint(currentBaseUrl, { tunnelPublicUrl, tailscaleUrl }) ? "configured" : "other";
   };
 
@@ -465,7 +456,7 @@ default_subagent_model = "${effectiveSubagentModel}"
                 </div>
 
                 {/* Current configured */}
-                {codexStatus?.config && (() => {
+                {codexStatus?.hasConfig && (() => {
                   return currentBaseUrl ? (
                     <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr_auto] sm:items-center sm:gap-2">
                       <span className="text-xs font-semibold text-text-main sm:text-right sm:text-sm">Current</span>

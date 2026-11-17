@@ -6,7 +6,7 @@ vi.mock("@/lib/localDb", () => ({ getSettings: mocks.getSettings }));
 vi.mock("@/lib/db/helpers/metaStore.js", () => ({ getMeta: mocks.getMeta, setMeta: vi.fn() }));
 const { getOidcRuntimeConfig } = await import("../../src/lib/auth/oidc.js");
 const { getAuthBootstrapState } = await import("../../src/lib/auth/setupState.js");
-vi.stubEnv("JWT_SECRET", "test-secret-for-sessions");
+vi.stubEnv("JWT_SECRET", "test-secret-for-sessions-at-least-32-chars");
 const { verifyDashboardPassword } = await import("../../src/lib/auth/dashboardSession.js");
 
 const credentials = {

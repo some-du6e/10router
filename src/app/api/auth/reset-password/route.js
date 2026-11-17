@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSettings, updateSettings } from "@/lib/localDb";
 import { setMeta } from "@/lib/db/helpers/metaStore.js";
 import { getEnvInitialPassword, LEGACY_GRACE_META_KEY } from "@/lib/auth/setupState";
+import { revokeDashboardSessions } from "@/lib/auth/dashboardSession";
 import { issueSetupToken, printSetupBanner, SETUP_WINDOW_MS } from "@/lib/auth/setupToken";
 import { getConfiguredSsoType, isPasswordLoginDisabled } from "@/lib/auth/authMode.js";
 
@@ -29,6 +30,8 @@ export async function POST() {
     // untouched and mints nothing.
     await setMeta(LEGACY_GRACE_META_KEY, "0");
     await updateSettings(switchToBoth ? { password: null, authMode: "both", ssoType } : { password: null });
+    // Sessions signed in with the old password end here. SSO users sign in again.
+    await revokeDashboardSessions();
 
     let message;
     if (envPassword && ssoOnly) {

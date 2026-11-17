@@ -42,7 +42,7 @@ jobs:
     env:
       DATA_DIR: /tmp/10router-e2e-data
       INITIAL_PASSWORD: e2e-password-not-secret
-      JWT_SECRET: e2e-jwt-secret-not-secret
+      JWT_SECRET: e2e-jwt-secret-not-secret-but-32-chars-long
       API_KEY_SECRET: e2e-api-key-secret
       MACHINE_ID_SALT: e2e-salt
       NEXT_TELEMETRY_DISABLED: "1"

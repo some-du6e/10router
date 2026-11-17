@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { withoutProviderDataSecrets } from "open-sse/utils/redact.js";
 import { QUIRK_KEYS } from "@/shared/utils/nodeQuirks";
 import {
   getProviderConnections,
@@ -76,6 +77,8 @@ export async function GET() {
         accessToken: undefined,
         refreshToken: undefined,
         idToken: undefined,
+        // Copilot's bearer token, Kiro IDC's client secret, ... live here too.
+        providerSpecificData: withoutProviderDataSecrets(c.providerSpecificData),
       };
     });
 
@@ -222,6 +225,7 @@ export async function POST(request) {
     const result = { ...newConnection };
     delete result.apiKey;
 
+    result.providerSpecificData = withoutProviderDataSecrets(result.providerSpecificData);
     return NextResponse.json({ connection: result }, { status: 201 });
   } catch (error) {
     if (error?.code === "PROVIDER_NAME_CONFLICT") {
