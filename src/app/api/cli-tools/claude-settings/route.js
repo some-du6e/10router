@@ -28,13 +28,15 @@ const STATUS_ENV_KEYS = [
 // the key, NODE_OPTIONS would run code on this host.
 const WRITABLE_ENV_KEYS = new Set([...STATUS_ENV_KEYS, "ANTHROPIC_AUTH_TOKEN", "API_TIMEOUT_MS"]);
 
-// Stored credentials a base URL change would hand to the new host.
-function storedCredentials(settings) {
+// Credentials in settings.json the card never writes, which Claude Code would send
+// to whatever base URL the request sets: named in the error so the user can fix it.
+function otherStoredCredentials(settings) {
   const env = settings?.env || {};
-  return {
-    authToken: !!env.ANTHROPIC_AUTH_TOKEN,
-    other: !!env.ANTHROPIC_API_KEY || !!settings?.apiKeyHelper,
-  };
+  return [
+    env.ANTHROPIC_API_KEY ? "env.ANTHROPIC_API_KEY" : null,
+    env.ANTHROPIC_CUSTOM_HEADERS ? "env.ANTHROPIC_CUSTOM_HEADERS" : null,
+    settings?.apiKeyHelper ? "apiKeyHelper" : null,
+  ].filter(Boolean);
 }
 
 // Exa MCP def — reuse from coworkPlugins (DRY).
@@ -167,7 +169,7 @@ export async function POST(request) {
       return NextResponse.json({ error: `These env keys can't be set here: ${refused.join(", ")}` }, { status: 400 });
     }
     if (Object.values(env).some((value) => typeof value !== "string" && typeof value !== "number")) {
-      return NextResponse.json({ error: "Env values must be strings" }, { status: 400 });
+      return NextResponse.json({ error: "Env values must be strings or numbers" }, { status: 400 });
     }
 
     const settingsPath = getClaudeSettingsPath();
@@ -195,26 +197,30 @@ export async function POST(request) {
     }
 
     // The card couldn't show the stored token (a custom key): keep it as it is. A
-    // body without a token keeps it too (the env merge below). Either way the kept
-    // token may only follow a base URL change to this instance.
+    // body without a token (or with an empty one) keeps it too, through the env
+    // merge below.
     const storedEnv = currentSettings.env || {};
-    const keepMarker = isKeepExistingKey(env.ANTHROPIC_AUTH_TOKEN);
-    if (keepMarker) {
+    if (isKeepExistingKey(env.ANTHROPIC_AUTH_TOKEN)) {
       if (!storedEnv.ANTHROPIC_AUTH_TOKEN) {
         return NextResponse.json({ error: "No existing API key to keep; choose a key" }, { status: 400 });
       }
       delete env.ANTHROPIC_AUTH_TOKEN;
     }
-    // ANTHROPIC_API_KEY and apiKeyHelper stay whatever the body sends, so they
-    // count as kept credentials too.
-    const stored = storedCredentials(currentSettings);
-    const keepsStoredCredential = (env.ANTHROPIC_AUTH_TOKEN === undefined && stored.authToken) || stored.other;
-    if (
-      keepsStoredCredential &&
-      env.ANTHROPIC_BASE_URL &&
-      !(await mayKeepStoredKey(env.ANTHROPIC_BASE_URL, storedEnv.ANTHROPIC_BASE_URL))
-    ) {
-      return NextResponse.json({ error: CHOOSE_A_KEY_ERROR }, { status: 400 });
+    if (env.ANTHROPIC_AUTH_TOKEN === "") delete env.ANTHROPIC_AUTH_TOKEN;
+
+    // A new base URL that is neither the stored one nor this instance needs a key
+    // chosen for it, and no other stored credential that would go along with it.
+    if (env.ANTHROPIC_BASE_URL && !(await mayKeepStoredKey(env.ANTHROPIC_BASE_URL, storedEnv.ANTHROPIC_BASE_URL))) {
+      const others = otherStoredCredentials(currentSettings);
+      if (others.length) {
+        return NextResponse.json(
+          { error: `settings.json has ${others.join(" and ")}; remove it or point Claude Code back at this instance` },
+          { status: 400 }
+        );
+      }
+      if (!env.ANTHROPIC_AUTH_TOKEN) {
+        return NextResponse.json({ error: CHOOSE_A_KEY_ERROR }, { status: 400 });
+      }
     }
 
     // Merge new env with existing settings

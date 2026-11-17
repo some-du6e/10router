@@ -19,20 +19,19 @@ export function keepOptionLabel({ keyStatus, pointsHere }) {
   return pointsHere ? KEEP_LABEL_HERE : KEEP_LABEL_ELSEWHERE;
 }
 
-// What a card preselects when its status arrives: { value, label } (value null =
-// nothing to preselect; label = the keep option's label, or null), or null while
-// the key list it needs hasn't loaded.
+// What a card preselects when its status arrives: { value } (null = nothing to
+// preselect), or null while the key list it needs hasn't loaded. The keep option's
+// label comes from keepOptionLabel.
 // - One of our keys: that key.
 // - Another key, and the tool points at this instance: keep it.
 // - Another key (another gateway's, or a deleted one), tool points elsewhere: our
 //   first key, with the stored one still offered.
 export function initialKeySelection({ keyStatus, pointsHere, apiKeys }) {
-  const label = keepOptionLabel({ keyStatus, pointsHere });
   if (keyStatus?.ownKeyId) {
     const own = apiKeys?.find((k) => k.id === keyStatus.ownKeyId);
-    return own ? { value: own.key, label } : null;
+    return own ? { value: own.key } : null;
   }
-  if (!keyStatus?.set) return { value: null, label };
-  if (pointsHere) return { value: KEEP_EXISTING_KEY, label };
-  return apiKeys?.length > 0 ? { value: apiKeys[0].key, label } : null;
+  if (!keyStatus?.set) return { value: null };
+  if (pointsHere) return { value: KEEP_EXISTING_KEY };
+  return apiKeys?.length > 0 ? { value: apiKeys[0].key } : null;
 }

@@ -45,7 +45,8 @@ async function ownOrigins() {
   try {
     const { getTunnelStatus } = await import("@/lib/tunnel/cloudflare/manager.js");
     const tunnel = await getTunnelStatus();
-    // Read from the tunnel manager's own state file, not from settings.
+    // URLs from the tunnel manager's state file; trusted only while
+    // settings.tunnelEnabled, which only the manager writes, is true.
     if (tunnel?.settingsEnabled === true) urls.push(tunnel.publicUrl, tunnel.tunnelUrl);
   } catch { /* no tunnel */ }
   return new Set(urls.map((u) => parse(u)?.origin?.toLowerCase()).filter(Boolean));

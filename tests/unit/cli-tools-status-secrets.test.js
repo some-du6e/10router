@@ -20,6 +20,9 @@ const SECRETS = [
   "sk-placeholder-custom-plugin-key",
 ];
 
+const tunnel = vi.hoisted(() => ({ status: { settingsEnabled: false, publicUrl: "", tunnelUrl: "" } }));
+vi.mock("@/lib/tunnel/cloudflare/manager.js", () => ({ getTunnelStatus: vi.fn(async () => tunnel.status) }));
+
 vi.mock("@/lib/localDb", () => ({
   getApiKeys: vi.fn(async () => [{ id: "k1", key: OWN_KEY, isActive: true }]),
   getSettings: vi.fn(async () => ({})),
@@ -355,27 +358,31 @@ describe("the key a card preselects", () => {
   const apiKeys = [{ id: "k1", key: OWN_KEY }, { id: "k2", key: "sk-own-client-key-0002" }];
 
   it("one of our keys: that key, no keep option", async () => {
-    const { initialKeySelection } = await import("../../src/lib/cliTools/keepKey.js");
-    expect(initialKeySelection({ keyStatus: { set: true, ownKeyId: "k2" }, pointsHere: false, apiKeys })).toEqual({ value: "sk-own-client-key-0002", label: null });
+    const { initialKeySelection, keepOptionLabel } = await import("../../src/lib/cliTools/keepKey.js");
+    expect(initialKeySelection({ keyStatus: { set: true, ownKeyId: "k2" }, pointsHere: false, apiKeys })).toEqual({ value: "sk-own-client-key-0002" });
+    expect(keepOptionLabel({ keyStatus: { set: true, ownKeyId: "k2" }, pointsHere: false })).toBeNull();
     // The key list hasn't loaded yet: wait.
     expect(initialKeySelection({ keyStatus: { set: true, ownKeyId: "k2" }, pointsHere: true, apiKeys: [] })).toBeNull();
   });
 
   it("another key while the tool points here: keep it", async () => {
-    const { initialKeySelection, KEEP_EXISTING_KEY, KEEP_LABEL_HERE } = await import("../../src/lib/cliTools/keepKey.js");
-    expect(initialKeySelection({ keyStatus: { set: true, ownKeyId: null }, pointsHere: true, apiKeys })).toEqual({ value: KEEP_EXISTING_KEY, label: KEEP_LABEL_HERE });
+    const { initialKeySelection, keepOptionLabel, KEEP_EXISTING_KEY, KEEP_LABEL_HERE } = await import("../../src/lib/cliTools/keepKey.js");
+    expect(initialKeySelection({ keyStatus: { set: true, ownKeyId: null }, pointsHere: true, apiKeys })).toEqual({ value: KEEP_EXISTING_KEY });
+    expect(keepOptionLabel({ keyStatus: { set: true, ownKeyId: null }, pointsHere: true })).toBe(KEEP_LABEL_HERE);
   });
 
   it("another key (another gateway's, or a deleted one) while the tool points elsewhere: our first key, the stored one still offered", async () => {
-    const { initialKeySelection, KEEP_LABEL_ELSEWHERE } = await import("../../src/lib/cliTools/keepKey.js");
-    expect(initialKeySelection({ keyStatus: { set: true, ownKeyId: null }, pointsHere: false, apiKeys })).toEqual({ value: OWN_KEY, label: KEEP_LABEL_ELSEWHERE });
+    const { initialKeySelection, keepOptionLabel, KEEP_LABEL_ELSEWHERE } = await import("../../src/lib/cliTools/keepKey.js");
+    expect(initialKeySelection({ keyStatus: { set: true, ownKeyId: null }, pointsHere: false, apiKeys })).toEqual({ value: OWN_KEY });
+    expect(keepOptionLabel({ keyStatus: { set: true, ownKeyId: null }, pointsHere: false })).toBe(KEEP_LABEL_ELSEWHERE);
     expect(initialKeySelection({ keyStatus: { set: true, ownKeyId: null }, pointsHere: false, apiKeys: [] })).toBeNull();
   });
 
   it("no stored key: nothing to preselect, no keep option", async () => {
-    const { initialKeySelection } = await import("../../src/lib/cliTools/keepKey.js");
-    expect(initialKeySelection({ keyStatus: { set: false, ownKeyId: null }, pointsHere: true, apiKeys })).toEqual({ value: null, label: null });
-    expect(initialKeySelection({ keyStatus: undefined, pointsHere: false, apiKeys })).toEqual({ value: null, label: null });
+    const { initialKeySelection, keepOptionLabel } = await import("../../src/lib/cliTools/keepKey.js");
+    expect(initialKeySelection({ keyStatus: { set: false, ownKeyId: null }, pointsHere: true, apiKeys })).toEqual({ value: null });
+    expect(initialKeySelection({ keyStatus: undefined, pointsHere: false, apiKeys })).toEqual({ value: null });
+    expect(keepOptionLabel({ keyStatus: { set: false, ownKeyId: null }, pointsHere: true })).toBeNull();
   });
 });
 
@@ -462,6 +469,20 @@ describe("a kept key never follows a base URL to another host", () => {
     expect(await mayKeepStoredKey(ATTACKER, "https://other.example.com")).toBe(false);
   });
 
+  it("the tunnel URLs count only while the tunnel manager has the tunnel enabled", async () => {
+    const { mayKeepStoredKey } = await import("../../src/lib/cliTools/keepKeyTarget.js");
+    const publicUrl = "https://rplaceholder.tunnel.example";
+    try {
+      tunnel.status = { settingsEnabled: false, publicUrl, tunnelUrl: "https://quick-placeholder.tunnel.example" };
+      expect(await mayKeepStoredKey(`${publicUrl}/v1`, "https://other.example.com")).toBe(false);
+      tunnel.status = { settingsEnabled: true, publicUrl, tunnelUrl: "https://quick-placeholder.tunnel.example" };
+      expect(await mayKeepStoredKey(`${publicUrl}/v1`, "https://other.example.com")).toBe(true);
+      expect(await mayKeepStoredKey("https://quick-placeholder.tunnel.example", "https://other.example.com")).toBe(true);
+    } finally {
+      tunnel.status = { settingsEnabled: false, publicUrl: "", tunnelUrl: "" };
+    }
+  });
+
   it("claude: only the env keys the card writes are accepted", async () => {
     write(".claude/settings.json", { env: { ANTHROPIC_BASE_URL: "http://localhost:20128/v1", ANTHROPIC_AUTH_TOKEN: OWN_KEY } });
     for (const key of ["HTTPS_PROXY", "HTTP_PROXY", "NODE_TLS_REJECT_UNAUTHORIZED", "NODE_OPTIONS", "ANTHROPIC_API_KEY"]) {
@@ -482,13 +503,42 @@ describe("a kept key never follows a base URL to another host", () => {
   });
 
   it.each([
-    ["ANTHROPIC_API_KEY", { env: { ANTHROPIC_BASE_URL: "https://other.example.com/v1", ANTHROPIC_API_KEY: FOREIGN } }],
+    ["env.ANTHROPIC_API_KEY", { env: { ANTHROPIC_BASE_URL: "https://other.example.com/v1", ANTHROPIC_API_KEY: FOREIGN } }],
+    ["env.ANTHROPIC_CUSTOM_HEADERS", { env: { ANTHROPIC_BASE_URL: "https://other.example.com/v1", ANTHROPIC_CUSTOM_HEADERS: "x-api-key: placeholder" } }],
     ["apiKeyHelper", { apiKeyHelper: "print-placeholder-key", env: { ANTHROPIC_BASE_URL: "https://other.example.com/v1" } }],
-  ])("claude: a stored %s can't be pointed at a foreign base URL, even with a new token", async (_name, stored) => {
+  ])("claude: a stored %s can't be pointed at a foreign base URL, even with a new token", async (name, stored) => {
     write(".claude/settings.json", stored);
     const res = await post("claude-settings", { env: { ANTHROPIC_BASE_URL: ATTACKER, ANTHROPIC_AUTH_TOKEN: OWN_KEY } });
     expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe(`settings.json has ${name}; remove it or point Claude Code back at this instance`);
     expect(readJsonFile(".claude/settings.json").env.ANTHROPIC_BASE_URL).toBe("https://other.example.com/v1");
+  });
+
+  it.each([
+    ["an empty token", { ANTHROPIC_AUTH_TOKEN: "" }],
+    ["no token", {}],
+  ])("claude: a foreign base URL with %s is refused, stored token or not", async (_label, token) => {
+    for (const stored of [{ env: { ANTHROPIC_BASE_URL: "https://other.example.com/v1", ANTHROPIC_AUTH_TOKEN: FOREIGN } }, { env: {} }]) {
+      write(".claude/settings.json", stored);
+      const res = await post("claude-settings", { env: { ANTHROPIC_BASE_URL: ATTACKER, ...token } });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/choose a key/);
+      expect(fs.readFileSync(path.join(home, ".claude/settings.json"), "utf8")).not.toContain("attacker.example.net");
+    }
+  });
+
+  it("claude: an empty token for this instance keeps the stored one", async () => {
+    write(".claude/settings.json", { env: { ANTHROPIC_BASE_URL: "http://localhost:20128/v1", ANTHROPIC_AUTH_TOKEN: FOREIGN } });
+    const res = await post("claude-settings", { env: { ANTHROPIC_BASE_URL: "http://localhost:20128/v1", ANTHROPIC_AUTH_TOKEN: "" } });
+    expect(res.status).toBe(200);
+    expect(readJsonFile(".claude/settings.json").env.ANTHROPIC_AUTH_TOKEN).toBe(FOREIGN);
+  });
+
+  it.each([[{ nested: true }], [["a"]], [null], [true]])("claude: an env value that is %j is refused", async (value) => {
+    write(".claude/settings.json", { env: {} });
+    const res = await post("claude-settings", { env: { ANTHROPIC_BASE_URL: "http://localhost:20128/v1", ANTHROPIC_DEFAULT_OPUS_MODEL: value } });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("Env values must be strings or numbers");
   });
 
   it("the shared rule: same base, loopback and this instance's configured URLs only", async () => {

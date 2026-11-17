@@ -128,9 +128,8 @@ describe("shared redaction", () => {
       "GET /cb?next=https://h.example/p?key=x&x=1"
     );
     expect(redactQueryParamsInText("https://h.example/p?a?key=SECRET9", "x")).toBe("https://h.example/p?a?key=x");
-    const { makeRedactor: redactor } = await import("../../src/lib/endpointDetect.ts");
-    expect(redactor("")("upstream said: /v1?redirect=https://h.example/x?api_key=SECRET10")).not.toContain("SECRET10");
     const { makeRedactor } = await import("../../src/lib/endpointDetect.ts");
+    expect(makeRedactor("")("upstream said: /v1?redirect=https://h.example/x?api_key=SECRET10")).not.toContain("SECRET10");
     expect(makeRedactor("")("Authorization: Bearer abcdefgh1234")).not.toContain("abcdefgh1234");
     expect(makeRedactor("")("https://u.example/p?exaApiKey=SECRET7")).not.toContain("SECRET7");
     // One bearer rule everywhere: 8+ characters is a token, 7 is left alone (so
