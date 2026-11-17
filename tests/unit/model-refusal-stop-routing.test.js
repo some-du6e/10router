@@ -1,10 +1,13 @@
-// A custom endpoint whose upstream account may not use one model ("this account
-// is not eligible for this model") answers that 403 from every healthy key,
+// A custom endpoint whose upstream account may not use one model answers a 403
+// saying the account isn't eligible for it, from every key on that account,
 // while the same keys keep serving other models. That is a refusal of the
-// model, not of the key: once two keys on one upstream gave the same one, the
-// router answers with it instead of walking every key, and none of those keys
-// is turned off or demoted on other models for it. A dead key's generic 403
-// is handled as before.
+// model, not of the key: once two keys on one upstream gave the same one, and
+// no key has served the model lately, the router answers with it instead of
+// walking every key. Each such key is locked on that model alone for
+// MODEL_REFUSAL_STOP.lockMs, so later requests ask other keys and reach one
+// whose account may use the model; once one has served it, the walk goes on
+// past the refusing keys. None of those keys is turned off or demoted on other
+// models for it. A dead key's generic 403 is handled as before.
 //
 // Runs the real account loop (handleChat → auth.js against a temporary
 // database); only the upstream call (handleChatCore) is stubbed, returning what
@@ -19,14 +22,16 @@ const originalDataDir = process.env.DATA_DIR;
 process.env.DATA_DIR = tempDir;
 delete global._dbAdapter;
 
-// script: one result per upstream call, in order; past its end every call succeeds.
-const upstream = vi.hoisted(() => ({ calls: [], script: [] }));
+// script: one result per upstream call, in order. Past its end, `refuser`
+// (connectionId, model) may return a failure; otherwise the call succeeds.
+const upstream = vi.hoisted(() => ({ calls: [], script: [], refuser: null }));
+const combos = vi.hoisted(() => new Map());
 const warnings = vi.hoisted(() => []);
 vi.mock("open-sse/handlers/chatCore.js", async (importOriginal) => ({
   ...(await importOriginal()),
   handleChatCore: async (args) => {
     upstream.calls.push(`${args.connectionId}:${args.modelInfo.model}`);
-    const next = upstream.script.shift();
+    const next = upstream.script.shift() ?? upstream.refuser?.(args.connectionId, args.modelInfo.model);
     if (next) return next(args.modelInfo.model);
     await args.onRequestSuccess?.();
     return { success: true, response: new Response("{}", { status: 200 }) };
@@ -34,7 +39,7 @@ vi.mock("open-sse/handlers/chatCore.js", async (importOriginal) => ({
 }));
 vi.mock("@/sse/services/model.js", () => ({
   getModelInfo: async (m) => (m.includes("/") ? { provider: m.split("/")[0], model: m.split("/")[1] } : { provider: null, model: m }),
-  getComboModels: async () => null,
+  getComboModels: async (m) => combos.get(m) ?? null,
   comboLookupName: (name) => name,
 }));
 vi.mock("@/sse/services/tokenRefresh.js", () => ({
@@ -51,13 +56,14 @@ const auth = await import("@/sse/services/auth.js");
 const { handleChat } = await import("@/sse/handlers/chat.js");
 const { modelRefusalSignature, createSameRequestErrorTally } = await import("open-sse/services/sameRequestError.js");
 const { isModelRefusal, classifyError } = await import("open-sse/utils/errorClass.js");
+const { MODEL_REFUSAL, MODEL_REFUSAL_STOP } = await import("open-sse/config/errorConfig.js");
 const { createErrorResult, formatProviderError } = await import("open-sse/utils/error.js");
 
 const MODEL = "big-model";
 const OTHER_MODEL = "big-model-mini";
 const KEYS = 9;
-// Paraphrased: the account behind the keys may not use this one model.
-const NOT_ELIGIBLE = "Model access rules mean this account is not eligible for this model for now. Ask support about turning this model on.";
+// Paraphrased: the account behind the key may not use this one model.
+const NOT_ELIGIBLE = "Under current access rules your account is not eligible for this model yet. Contact support to have it switched on.";
 // A dead key's generic refusal.
 const DEAD = "Key barred from this endpoint";
 const MIN = 60 * 1000;
@@ -74,6 +80,8 @@ const refused = failure(403, NOT_ELIGIBLE);
 const dead = failure(403, DEAD);
 // The error text markAccountUnavailable gets for that refusal.
 const refusedText = `[403]: ${JSON.stringify({ message: NOT_ELIGIBLE })}`;
+// The upstream refuses MODEL on these keys' accounts and serves everything else.
+const refuseOn = (ids) => (id, model) => (model === MODEL && ids.includes(id) ? refused : null);
 
 beforeAll(async () => {
   await db.updateSettings({ requireApiKey: false, limitHoldEnabled: false });
@@ -92,12 +100,19 @@ beforeEach(() => {
   provider = `openai-compatible-gateway-${++providerSeq}`;
   upstream.calls = [];
   upstream.script = [];
+  upstream.refuser = null;
   warnings.length = 0;
+  combos.clear();
 });
 
 afterEach(() => {
   vi.useRealTimers();
 });
+
+const useClock = () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-17T09:00:00.000Z"));
+};
 
 // psd: providerSpecificData by key number (1-based).
 async function addKeys(count, psd = {}) {
@@ -112,12 +127,25 @@ async function addKeys(count, psd = {}) {
   return ids;
 }
 
-function chat(model = MODEL, handler = handleChat) {
+function chat(model = MODEL, { handler = handleChat, stream = false } = {}) {
   return handler(new Request("http://localhost/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: `${provider}/${model}`, stream: false, messages: [{ role: "user", content: "fix the bug" }] }),
+    body: JSON.stringify({ model: model.includes("/") || combos.has(model) ? model : `${provider}/${model}`, stream,
+      messages: [{ role: "user", content: "fix the bug" }] }),
   }));
+}
+
+// One request per `stepMs`: each one's status and upstream calls.
+async function requests(count, stepMs = 3 * MIN) {
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    if (i > 0) vi.advanceTimersByTime(stepMs);
+    upstream.calls = [];
+    const res = await chat();
+    out.push({ status: res.status, calls: [...upstream.calls] });
+  }
+  return out;
 }
 
 const calls = (ids, model = MODEL) => ids.map((id) => `${id}:${model}`);
@@ -131,11 +159,13 @@ async function demotions(id) {
   const conn = await load(id);
   return Object.entries(conn).filter(([k, v]) => k.startsWith(db.AUTH_DEMOTE_PREFIX) && v);
 }
+const served = async (id, model = MODEL) => auth.clearAccountError(id, await load(id), model);
 
 describe("classifying a refusal of the model for the account", () => {
   it.each([
     NOT_ELIGIBLE,
     "This account is not eligible for the model.",
+    "This account is not eligible for the model",
     "Your organization does not have access to this model",
     "The model example-model is not available for your account",
     "model example-model is not enabled for this account",
@@ -145,9 +175,23 @@ describe("classifying a refusal of the model for the account", () => {
     expect(classifyError(403, text)).toBe("client_error");
   });
 
+  // Holds only the words of the "model ... not eligible for <account>" alternative,
+  // so dropping it from MODEL_REFUSAL turns this red.
+  it("counts a message only the model ... not eligible for the account alternative matches", () => {
+    const message = "model example-model is not eligible for this account";
+    const others = [/does not have access to (?:the |this )?model/i, /model_not_found/i, /\bnot eligible for (?:this model\b|the model(?![\s-]*\w))/i,
+      /\bmodel\b.{0,60}?\bnot (?:available|allowed|enabled|permitted|supported)\b/i];
+    expect(others.filter((r) => r.test(message))).toEqual([]);
+    expect(MODEL_REFUSAL.test(message)).toBe(true);
+    expect(isModelRefusal(403, `[403]: ${message}`)).toBe(true);
+  });
+
   it.each([
     DEAD,
     "tools.0: web search is not enabled for your organization",
+    "This account is not eligible for the model service",
+    "This account is not eligible for the model-serving API",
+    "Model access denied: this key is not eligible for API use",
     "This account is not eligible for this model on your current plan",
     "Rate limit: this account is not eligible for this model right now",
   ])("is not one for a key refusal, a feature or a limit: %s", (message) => {
@@ -167,12 +211,25 @@ describe("classifying a refusal of the model for the account", () => {
     expect(tally.note("c", "u", 403, refusedText)).toBe("model");
     expect(createSameRequestErrorTally(0).note("a", "u", 403, refusedText)).toBeNull();
   });
+
+  it("doesn't agree on two different refusals of the model", () => {
+    const tally = createSameRequestErrorTally(2);
+    expect(tally.note("a", "u", 403, refusedText)).toBeNull();
+    expect(tally.note("b", "u", 403, "[403]: Your organization does not have access to this model")).toBeNull();
+  });
+
+  it("needs 2 accounts even with STOP_AFTER=1: one account says nothing about another", () => {
+    const tally = createSameRequestErrorTally(1);
+    expect(tally.modelStopAfter).toBe(2);
+    expect(tally.note("a", "u", 403, refusedText)).toBeNull();
+    expect(tally.note("b", "u", 403, refusedText)).toBe("model");
+  });
 });
 
-describe("a model the upstream account may not use", () => {
+describe("a model no key's account may use", () => {
   it("answers after 2 of 9 keys with the upstream's 403, and the keys keep serving another model", async () => {
     const keys = await addKeys(KEYS);
-    upstream.script = Array(KEYS).fill(refused);
+    upstream.refuser = refuseOn(keys);
 
     const res = await chat();
     expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
@@ -180,14 +237,11 @@ describe("a model the upstream account may not use", () => {
     expect(await errorOf(res)).toContain("not eligible for this model");
     expect(warnings).toContain(stopLine("key-2"));
 
-    // Only those two are locked, and only on this model.
-    expect(await lockEnd(keys[0])).toBeGreaterThan(Date.now());
-    expect(await lockEnd(keys[1])).toBeGreaterThan(Date.now());
+    // Only those two are locked, only on this model, and for MODEL_REFUSAL_STOP.lockMs.
+    for (const id of keys.slice(0, 2)) expect(await lockEnd(id)).toBeGreaterThan(Date.now() + MODEL_REFUSAL_STOP.lockMs - MIN);
     for (const id of keys.slice(2)) expect(await lockEnd(id)).toBe(0);
 
-    // The upstream serves the other model on every key.
     upstream.calls = [];
-    upstream.script = [];
     const other = await chat(OTHER_MODEL);
     expect(other.status).toBe(200);
     expect(upstream.calls).toEqual(calls(keys.slice(0, 1), OTHER_MODEL));
@@ -202,24 +256,41 @@ describe("a model the upstream account may not use", () => {
     }
   });
 
-  it("asks each key at most once while its lock lasts: later requests try 2 new keys, then none", async () => {
+  it("stops the same way on a streaming request", async () => {
     const keys = await addKeys(KEYS);
-    upstream.script = Array(KEYS).fill(refused);
+    upstream.refuser = refuseOn(keys);
 
-    const perRequest = [];
-    for (let i = 0; i < 6; i++) {
-      upstream.calls = [];
-      const res = await chat();
-      expect(res.status).not.toBe(200);
-      perRequest.push(upstream.calls.length);
-      if (i === 1) expect(upstream.calls).toEqual(calls(keys.slice(2, 4)));
-    }
-    expect(perRequest).toEqual([2, 2, 2, 2, 1, 0]);
+    const res = await chat(MODEL, { stream: true });
+    expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
+    expect(res.status).toBe(403);
+    expect(warnings).toContain(stopLine("key-2"));
+  });
+
+  it("asks each key once while its lock lasts, even with requests minutes apart, then fails at once", async () => {
+    useClock();
+    const keys = await addKeys(KEYS);
+    upstream.refuser = refuseOn(keys);
+
+    const out = await requests(6);
+    expect(out.map((r) => r.calls.length)).toEqual([2, 2, 2, 2, 1, 0]);
+    expect(out[1].calls).toEqual(calls(keys.slice(2, 4)));
+    expect(out.every((r) => r.status === 403)).toBe(true);
+  });
+
+  it("lets a combo move on to its next model", async () => {
+    const keys = await addKeys(KEYS);
+    upstream.refuser = refuseOn(keys);
+    combos.set("big-combo", [`${provider}/${MODEL}`, `${provider}/${OTHER_MODEL}`]);
+
+    const res = await chat("big-combo");
+    expect(res.status).toBe(200);
+    expect(upstream.calls).toEqual([...calls(keys.slice(0, 2)), `${keys[0]}:${OTHER_MODEL}`]);
   });
 
   it("walks past dead keys' generic 403s, then stops at the second refusal of the model", async () => {
     const keys = await addKeys(KEYS);
-    upstream.script = [dead, dead, dead, ...Array(KEYS - 3).fill(refused)];
+    upstream.script = [dead, dead, dead];
+    upstream.refuser = refuseOn(keys);
 
     const res = await chat();
     expect(upstream.calls).toEqual(calls(keys.slice(0, 5)));
@@ -228,7 +299,7 @@ describe("a model the upstream account may not use", () => {
     expect(warnings).toContain(stopLine("key-5"));
   });
 
-  it("still walks every key on a dead key's generic 403, as before", async () => {
+  it("still walks every key on a dead key's generic 403, as before, with the usual short lock", async () => {
     const keys = await addKeys(KEYS);
     upstream.script = Array(KEYS).fill(dead);
 
@@ -236,23 +307,16 @@ describe("a model the upstream account may not use", () => {
     expect(upstream.calls).toEqual(calls(keys));
     expect(res.status).toBe(403);
     expect(stopped()).toBe(false);
-    for (const id of keys) expect(await lockEnd(id)).toBeGreaterThan(Date.now());
-  });
-
-  it("serves the request from a key whose account may use the model", async () => {
-    const keys = await addKeys(KEYS);
-    upstream.script = [refused];
-
-    const res = await chat();
-    expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
-    expect(res.status).toBe(200);
-    expect(stopped()).toBe(false);
+    for (const id of keys) {
+      expect(await lockEnd(id)).toBeGreaterThan(Date.now());
+      expect(await lockEnd(id)).toBeLessThanOrEqual(Date.now() + 2 * MIN);
+    }
   });
 
   it("keeps walking when the keys reach different upstreams, whose accounts may differ", async () => {
     const own = (n) => ({ baseUrl: `http://upstream-${n}.example/v1`, ownBaseUrl: true });
     const keys = await addKeys(4, { 1: own(1), 2: own(2), 3: own(3), 4: own(4) });
-    upstream.script = Array(4).fill(refused);
+    upstream.refuser = refuseOn(keys);
 
     const res = await chat();
     expect(upstream.calls).toEqual(calls(keys));
@@ -274,9 +338,9 @@ describe("a model the upstream account may not use", () => {
 
     it("tries every key, as before", async () => {
       const keys = await addKeys(KEYS);
-      upstream.script = Array(KEYS).fill(refused);
+      upstream.refuser = refuseOn(keys);
 
-      const res = await chat(MODEL, handleChatOff);
+      const res = await chat(MODEL, { handler: handleChatOff });
       expect(upstream.calls).toEqual(calls(keys));
       expect(res.status).toBe(403);
       expect(stopped()).toBe(false);
@@ -284,21 +348,96 @@ describe("a model the upstream account may not use", () => {
   });
 });
 
-describe("a key refused that way while another account serves the model", () => {
-  beforeEach(() => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-11-17T09:00:00.000Z"));
+describe("keys whose accounts differ in model access, behind one URL", () => {
+  it("walks past refusing keys to one that served the model lately", async () => {
+    const keys = await addKeys(3);
+    upstream.refuser = refuseOn(keys.slice(0, 2));
+    await served(keys[2]);
+
+    const res = await chat();
+    expect(res.status).toBe(200);
+    expect(upstream.calls).toEqual(calls(keys));
+    expect(stopped()).toBe(false);
   });
 
-  const succeed = async (id, model) => auth.clearAccountError(id, await load(id), model);
-  const refuse = (id, model) => auth.markAccountUnavailable(id, 403, refusedText, provider, model);
+  it("stops again once the key that served the model refuses it too", async () => {
+    const keys = await addKeys(3);
+    upstream.refuser = refuseOn(keys);
+    await served(keys[2]);
+
+    const res = await chat();
+    expect(res.status).toBe(403);
+    expect(upstream.calls).toEqual(calls(keys));
+    expect(warnings).toContain("[FALLBACK] ⇄ ACC:key-3 same refusal of big-model (403) from 2 accounts, not trying the rest");
+  });
+
+  it("doesn't count a key that served the model but is turned off", async () => {
+    const keys = await addKeys(4);
+    upstream.refuser = refuseOn(keys.slice(0, 3));
+    await served(keys[3]);
+    await db.updateProviderConnection(keys[3], { isActive: false });
+
+    const res = await chat();
+    expect(res.status).toBe(403);
+    expect(upstream.calls).toEqual(calls(keys.slice(0, 2)));
+  });
+
+  it("reaches the eligible key within ceil(keys / 2) requests minutes apart, then serves every request", async () => {
+    useClock();
+    const keys = await addKeys(KEYS);
+    upstream.refuser = refuseOn(keys.slice(0, KEYS - 1));
+
+    const first = await requests(Math.ceil(KEYS / 2));
+    expect(first.map((r) => r.status)).toEqual([403, 403, 403, 403, 200]);
+    expect(first.at(-1).calls).toEqual(calls(keys.slice(-1)));
+
+    // An hour more, one request every 3 minutes: the refusing keys' locks end
+    // on the way, and the walk passes them to the key that serves.
+    vi.advanceTimersByTime(3 * MIN);
+    const later = await requests(20);
+    expect(later.map((r) => r.status)).toEqual(Array(20).fill(200));
+    expect(later.some((r) => r.calls.length > 1)).toBe(true);
+    for (const id of keys) expect((await load(id)).isActive).toBe(true);
+  });
+
+  it("after a restart (no memory of the key that served), finds it again the same way", async () => {
+    useClock();
+    const keys = await addKeys(KEYS);
+    upstream.refuser = refuseOn(keys.slice(0, KEYS - 1));
+    expect((await requests(Math.ceil(KEYS / 2))).at(-1).status).toBe(200);
+
+    // Every refusing key's lock is over, and the process forgot who served.
+    vi.advanceTimersByTime(MODEL_REFUSAL_STOP.lockMs + MIN);
+    global._authEvents.success.clear();
+    const again = await requests(Math.ceil(KEYS / 2));
+    expect(again.map((r) => r.status)).toEqual([403, 403, 403, 403, 200]);
+    expect(again[0].calls).toEqual(calls(keys.slice(0, 2)));
+  });
+
+  it("without that restart, serves the first request after the locks end", async () => {
+    useClock();
+    const keys = await addKeys(KEYS);
+    upstream.refuser = refuseOn(keys.slice(0, KEYS - 1));
+    expect((await requests(Math.ceil(KEYS / 2))).at(-1).status).toBe(200);
+
+    vi.advanceTimersByTime(MODEL_REFUSAL_STOP.lockMs + MIN);
+    const [next] = await requests(1);
+    expect(next.status).toBe(200);
+    expect(next.calls).toEqual(calls(keys));
+  });
+});
+
+describe("a key refused that way while another account serves the model", () => {
+  beforeEach(useClock);
+
+  const refuse = (id, model, onProvider = provider) => auth.markAccountUnavailable(id, 403, refusedText, onProvider, model);
 
   it("is never turned off, however many models it is refused on", async () => {
     const [key, peer] = await addKeys(2);
     for (let i = 0; i < 6; i++) {
       if (i > 0) vi.advanceTimersByTime(3 * MIN);
       const model = ["m1", "m2"][i % 2];
-      await succeed(peer, model);
+      await served(peer, model);
       await refuse(key, model);
     }
 
@@ -312,7 +451,7 @@ describe("a key refused that way while another account serves the model", () => 
     const [key, peer] = await addKeys(2);
     for (let i = 0; i < 5; i++) {
       if (i > 0) vi.advanceTimersByTime(3 * MIN);
-      await succeed(peer, "m1");
+      await served(peer, "m1");
       await refuse(key, "m1");
     }
 
@@ -320,5 +459,12 @@ describe("a key refused that way while another account serves the model", () => 
     expect((await demotions(key)).map(([k]) => k)).toEqual([db.getAuthDemoteKey("m1")]);
     expect((await auth.getProviderCredentials(provider, null, "m3")).connectionId).toBe(key);
     expect((await auth.getProviderCredentials(provider, null, "m1")).connectionId).toBe(peer);
+  });
+
+  it("is locked for the usual 2 minutes on a built-in provider", async () => {
+    provider = `builtin-test-${providerSeq}`;
+    const [key] = await addKeys(1);
+    const { cooldownMs } = await refuse(key, "m1");
+    expect(cooldownMs).toBe(2 * MIN);
   });
 });

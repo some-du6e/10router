@@ -174,13 +174,37 @@ export const ERROR_CLASS = {
 // exceeded (daily limit)", qoder's "Queue limit" or "Upgrade required" with a
 // pricingUrl, "credits exhausted", "account balance is insufficient",
 // AccountOverdueError), refusals of one model ("does not have access to model
-// 'o3'", "this account is not eligible for this model") and of one operation
-// by a restricted key ("Missing scopes: ...").
+// 'o3'", a 403 saying the account isn't eligible for the model) and of one
+// operation by a restricted key ("Missing scopes: ...").
 export const LIMIT_REFUSAL = [
   /\blimit|queue|upgrade|pricing|\bplans?\b|credit|quota|exhausted|usage cap|billing|budget|payment/,
   /\bbalance\b|\bfunds\b|overdue|arrears|unpaid|recharge|top[- ]?up/,
 ];
-export const MODEL_REFUSAL = /does not have access to (?:the |this )?model|model_not_found|\bnot eligible for (?:the|this) model\b|\bmodel\b.{0,60}?\bnot (?:available|allowed|enabled|permitted|supported|eligible)\b/i;
+// "not eligible for the model" must end there ("the model service" is not a
+// model), and "model ... not eligible" must name the account, organization,
+// project or workspace, so a key's own refusal ("this key is not eligible for
+// API use") stays a key refusal.
+export const MODEL_REFUSAL = /does not have access to (?:the |this )?model|model_not_found|\bnot eligible for (?:this model\b|the model(?![\s-]*\w))|\bmodel\b.{0,60}?\bnot (?:available|allowed|enabled|permitted|supported|eligible for (?:your|this|the) (?:account|organi[sz]ation|project|workspace))\b/i;
+
+// A 403 refusing the model for the key's account (isModelRefusal) on a custom
+// endpoint (src/sse/handlers/chat.ts, src/sse/services/auth.js):
+// - lockMs: how long the key is locked on that model alone, instead of the
+//   403's usual COOLDOWN.long. Each request that stops early (see
+//   SAME_REQUEST_ERROR_STOP_AFTER in runtimeConfig.js) locks the keys it asked,
+//   so the next ones ask 2 other keys: a pool reaches a key whose account may
+//   use the model within ceil(keys / 2) requests, even with requests further
+//   apart than COOLDOWN.long. The model coming back for a refused key is seen
+//   only once its lock ends.
+// - servedWindowMs: while an active key of the provider served the model this
+//   recently and wasn't refused on it since (memory only, per process), the
+//   accounts differ in model access, so the walk doesn't stop on these
+//   refusals. A key's own refusal ends its evidence at once, so the length
+//   only decides how sparse traffic can be and still keep reaching the key
+//   that serves; outside it a request stops and the walk starts over.
+export const MODEL_REFUSAL_STOP = {
+  lockMs: 30 * 60 * 1000,
+  servedWindowMs: 24 * 60 * 60 * 1000,
+};
 export const OPERATION_REFUSAL = /insufficient (?:permissions?|scopes?|privileges?)|missing (?:required )?(?:scopes?|permissions?)|permission denied for this operation|not (?:allowed|permitted|authorized) to perform this operation/;
 
 // Account errors some upstreams send as 400: a bad key (Gemini: "API key not

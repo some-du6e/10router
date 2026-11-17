@@ -8,9 +8,11 @@
 // account (a disabled organization, an unverified one) and would never lock
 // the key, so stopping on it could fail every request; it keeps the walk.
 //
-// A 403 refusing the model for the key's account (isModelRefusal: "this account
-// is not eligible for this model") is tallied apart: the key is fine, only that
-// model is off, and keys on one upstream that give the same one agree on it.
+// A 403 refusing the model for the key's account (isModelRefusal: the account
+// isn't eligible for the model) is tallied apart: the key is fine, only that
+// model is off for its account, and accounts on one upstream that give the
+// same one agree on it. Accounts behind one URL can still differ in model
+// access, so chat.ts stops on it only while no key has served the model.
 import { namesAccountOrLimit } from "./accountFallback.js";
 import { isLimitError } from "../utils/limitHold.js";
 import { isModelRefusal } from "../utils/errorClass.js";
@@ -117,17 +119,23 @@ export function modelRefusalSignature(status: number | null | undefined, error: 
  * How far accounts agree: "exact" once `exactAfter` (max(stopAfter, 2))
  * distinct upstreams gave the very same limit message (a stop wherever the
  * keys point), "normalized" once `stopAfter` accounts gave it up to numbers
- * and spacing (a stop only for keys on one upstream), "model" once `stopAfter`
- * accounts refused the model the same way (modelRefusalSignature; a stop only
- * for keys on one upstream), else null.
+ * and spacing (a stop only for keys on one upstream), "model" once
+ * `modelStopAfter` (max(stopAfter, 2)) accounts refused the model the same
+ * way (modelRefusalSignature; a stop only for keys on one upstream, and only
+ * while no key served the model: chat.ts), else null.
  */
 export type SameRequestErrorAgreement = "exact" | "normalized" | "model" | null;
 
 export interface SameRequestErrorTally {
-  /** Accounts that must give the same request error to stop; 0 never stops. */
+  /** Accounts that must give the same request error ("normalized"); 0 never stops on anything. */
   readonly stopAfter: number;
-  /** Distinct upstreams that must give the very same limit message: max(stopAfter, 2). */
+  /** Distinct upstreams that must give the very same limit message ("exact"): max(stopAfter, 2). */
   readonly exactAfter: number;
+  /**
+   * Accounts that must refuse the model the same way ("model"): max(stopAfter, 2),
+   * since one account's refusal says nothing about another's; 0 when stopAfter is 0.
+   */
+  readonly modelStopAfter: number;
   /**
    * Records one account's failure and says how far accounts agree on it.
    * `upstream` identifies where the account's requests go (src/sse/services/connectionUpstream.ts).
@@ -145,15 +153,17 @@ export function createSameRequestErrorTally(stopAfter: number = SAME_REQUEST_ERR
   };
   // One upstream agreeing with itself proves nothing about another.
   const exactAfter = Math.max(stopAfter, 2);
+  const modelStopAfter = stopAfter <= 0 ? 0 : Math.max(stopAfter, 2);
   return {
     stopAfter,
     exactAfter,
+    modelStopAfter,
     note(connectionId, upstream, status, error) {
       if (stopAfter <= 0) return null;
       const signatures = requestErrorSignatures(status, error);
       if (!signatures) {
         const refusal = modelRefusalSignature(status, error);
-        return refusal !== null && agreeing(`m ${refusal}`, connectionId) >= stopAfter ? "model" : null;
+        return refusal !== null && agreeing(`m ${refusal}`, connectionId) >= modelStopAfter ? "model" : null;
       }
       const normalized = agreeing(`n ${signatures.normalized}`, connectionId);
       if (signatures.exact !== null && agreeing(`x ${signatures.exact}`, upstream) >= exactAfter) return "exact";

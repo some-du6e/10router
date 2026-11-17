@@ -6,6 +6,7 @@ import {
   markAccountUnavailable,
   clearAccountError,
   keysShareOneUpstream,
+  modelServedRecently,
   extractApiKey,
   isValidApiKey,
 } from "../services/auth.js";
@@ -951,16 +952,22 @@ async function routeSingleModelChat(
       // max(stopAfter, 2) distinct upstreams must give the very same context or
       // token limit message naming both sizes, never a 413, since their limits
       // may differ.
-      // The same goes for a 403 refusing the model for the account ("not
-      // eligible for this model"), from stopAfter keys on one upstream: each
-      // key that gave it keeps its usual lock on this model alone, so the next
-      // request tries other keys, again stopping after stopAfter.
+      // The same goes for a 403 refusing the model for the key's account, from
+      // modelStopAfter keys on one upstream, unless a key served the model
+      // lately (modelServedRecently): then the accounts behind the URL differ
+      // and the walk goes on to reach it. Each key that gave it is locked on
+      // this model alone for MODEL_REFUSAL_STOP.lockMs, so the next request
+      // asks other keys.
       // Built-in providers keep walking: their accounts differ in plan and region.
       const agreement = customEndpoint
         ? sameRequestErrors.note(credentials.connectionId, connectionUpstream(credentials), result.status, result.error)
         : null;
-      if (agreement === "exact" || ((agreement === "normalized" || agreement === "model") && (sharedUpstream ??= await keysShareOneUpstream(provider)))) {
-        const from = agreement === "exact" ? `${sameRequestErrors.exactAfter} upstreams` : `${sameRequestErrors.stopAfter} accounts`;
+      const agreed = agreement === "exact"
+        || (agreement === "normalized" && (sharedUpstream ??= await keysShareOneUpstream(provider)))
+        || (agreement === "model" && (sharedUpstream ??= await keysShareOneUpstream(provider)) && !(await modelServedRecently(provider, model)));
+      if (agreed) {
+        const from = agreement === "exact" ? `${sameRequestErrors.exactAfter} upstreams`
+          : `${agreement === "model" ? sameRequestErrors.modelStopAfter : sameRequestErrors.stopAfter} accounts`;
         const what = agreement === "model" ? `same refusal of ${model}` : "same request error";
         log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} ${what} (${result.status}) from ${from}, not trying the rest`);
         return result;
