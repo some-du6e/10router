@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { getSettings } from "@/lib/localDb";
-import { getActiveSsoType } from "./authMode.js";
+import { getConfiguredSsoType, isOidcConfigured } from "./authMode.js";
+
+export { isOidcConfigured };
 
 export const OIDC_COOKIE_NAMES = {
   state: "oidc_state",
@@ -41,17 +43,9 @@ export function getPublicOrigin(request) {
   return trimTrailingSlashes(new URL(request.url).origin);
 }
 
-export function isOidcConfigured(settings) {
-  return !!(
-    trimTrailingSlashes(settings?.oidcIssuerUrl) &&
-    (settings?.oidcClientId || "").trim() &&
-    (settings?.oidcClientSecret || "").trim()
-  );
-}
-
 export async function getOidcRuntimeConfig() {
   const settings = await getSettings();
-  if (getActiveSsoType(settings) !== "oidc" || !isOidcConfigured(settings)) return null;
+  if (getConfiguredSsoType(settings) !== "oidc") return null;
 
   const issuerUrl = trimTrailingSlashes(settings.oidcIssuerUrl);
   return {
@@ -217,16 +211,13 @@ export async function verifyOidcIdToken({
   jwksUri,
   nonce,
 }) {
-  if (typeof nonce !== "string" || !nonce) {
-    throw new Error("Missing OIDC nonce; start a new login");
-  }
   const jwks = createRemoteJWKSet(new URL(jwksUri));
   const { payload } = await jwtVerify(idToken, jwks, {
     issuer,
     audience,
   });
-  // jose verifies registered JWT claims, but does not validate OIDC's nonce.
-  if (payload.nonce !== nonce) {
+  // jose verifies registered JWT claims, but not OIDC's nonce.
+  if (typeof nonce !== "string" || !nonce || payload.nonce !== nonce) {
     throw new Error("OIDC nonce mismatch; start a new login");
   }
   return payload;

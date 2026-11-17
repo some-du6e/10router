@@ -55,6 +55,9 @@ describe("OIDC ID token binding with real signatures and JWKS", () => {
   });
 
   it("rejects verification without stored login nonce", async () => {
-    await expect(verify({ nonce: "login-nonce" }, "")).rejects.toThrow(/Missing OIDC nonce/);
+    await expect(verify({ nonce: "login-nonce" }, "")).rejects.toThrow(/nonce mismatch/i);
+    // A token without a nonce must not match a missing stored one either.
+    await expect(verify({}, "")).rejects.toThrow(/nonce mismatch/i);
+    await expect(verify({}, null)).rejects.toThrow(/nonce mismatch/i);
   });
 });

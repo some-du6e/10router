@@ -86,6 +86,17 @@ describe("cryptographically validated SAML request binding", () => {
     await expect(verify(response("attacker-chosen"), "attacker-chosen")).rejects.toThrow(/InResponseTo/i);
   });
 
+  it("rejects a response to a request issued more than 10 minutes ago", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const id = await issueRequest();
+      vi.setSystemTime(Date.now() + 10 * 60 * 1000 + 1000);
+      await expect(verify(response(id), id)).rejects.toThrow(/InResponseTo/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("accepts each issued request once, so a captured response cannot be replayed", async () => {
     const id = await issueRequest();
     const captured = response(id);

@@ -100,8 +100,9 @@ describe("auth bootstrap state", () => {
   });
 
   it("does not demand setup when OIDC is the configured auth mode", async () => {
-    mocks.isOidcConfigured.mockReturnValue(true);
-    expect(await getAuthBootstrapState({ authMode: "oidc" })).toBe("oidc");
+    const oidc = { oidcIssuerUrl: "https://idp.example.com", oidcClientId: "client", oidcClientSecret: "secret" };
+    expect(await getAuthBootstrapState({ ...oidc, authMode: "oidc" })).toBe("oidc");
+    expect(await getAuthBootstrapState({ authMode: "oidc" })).toBe("setup");
   });
 });
 

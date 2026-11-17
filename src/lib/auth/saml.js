@@ -1,6 +1,7 @@
-import { InMemoryCacheProvider, SAML } from "@node-saml/node-saml";
-import { getSettings } from "../db/repos/settingsRepo.js";
-import { getActiveSsoType } from "./authMode.js";
+import { SAML } from "@node-saml/node-saml";
+import { isSamlConfigured } from "./authMode.js";
+
+export { isSamlConfigured };
 
 /**
  * Formats a raw Base64 string or unformatted X.509 certificate into standard PEM format.
@@ -18,27 +19,6 @@ export function formatX509Certificate(certStr) {
 
   const lines = clean.match(/.{1,64}/g) || [];
   return `-----BEGIN CERTIFICATE-----\n${lines.join("\n")}\n-----END CERTIFICATE-----`;
-}
-
-/**
- * Checks whether SAML configuration has essential parameters (entryPoint & cert).
- * @param {object} settings
- * @returns {boolean}
- */
-export function isSamlConfigured(settings) {
-  return Boolean(settings?.samlEntryPoint && settings?.samlCert);
-}
-
-/**
- * Fetches settings and returns runtime status + settings.
- * @returns {Promise<{ configured: boolean, settings: object }>}
- */
-export async function getSamlRuntimeConfig() {
-  const settings = await getSettings();
-  return {
-    configured: getActiveSsoType(settings) === "saml" && isSamlConfigured(settings),
-    settings,
-  };
 }
 
 /**
@@ -88,39 +68,47 @@ export function getSamlBaseUrl(request, settings) {
   return "http://localhost:20128";
 }
 
-const SAML_REQUEST_TTL_MS = 10 * 60 * 1000;
-const SAML_REQUEST_CACHES = Symbol.for("10router.samlRequestCaches");
+export const SAML_REQUEST_TTL_MS = 10 * 60 * 1000;
+// /start is public, so cap the pending request IDs. An entry is a few dozen bytes.
+export const SAML_MAX_PENDING_REQUESTS = 50_000;
+const SAML_REQUEST_CACHE = Symbol.for("10router.samlRequestCache");
 
-// One store per IdP for the whole process, so an AuthnRequest ID issued by /start is
-// single-use and only redeemable at /acs. Route bundles can each load this module.
-function getSamlRequestCache(settings) {
-  const caches = (globalThis[SAML_REQUEST_CACHES] ??= new Map());
-  const key = `${settings?.samlEntryPoint || ""}\n${settings?.samlCert || ""}`;
-  if (!caches.has(key)) {
-    caches.set(key, boundedCache(new InMemoryCacheProvider({ keyExpirationPeriodMs: SAML_REQUEST_TTL_MS })));
-  }
-  return caches.get(key);
+// node-saml cacheProvider for the AuthnRequest IDs /start issues. ACS accepts an ID
+// only within SAML_REQUEST_TTL_MS, and node-saml removes it once answered. The Map
+// keeps insertion order, so expired entries sit at the front and go first; past the
+// cap the oldest live one goes.
+function createSamlRequestCache() {
+  const entries = new Map();
+  const isLive = (entry, now) => !!entry && now - entry.createdAt < SAML_REQUEST_TTL_MS;
+  return {
+    async saveAsync(key, value) {
+      const now = Date.now();
+      for (const [id, entry] of entries) {
+        if (isLive(entry, now)) break;
+        entries.delete(id);
+      }
+      if (entries.has(key)) return null;
+      while (entries.size >= SAML_MAX_PENDING_REQUESTS) entries.delete(entries.keys().next().value);
+      const item = { value, createdAt: now };
+      entries.set(key, item);
+      return item;
+    },
+    async getAsync(key) {
+      const entry = entries.get(key);
+      if (isLive(entry, Date.now())) return entry.value;
+      entries.delete(key);
+      return null;
+    },
+    async removeAsync(key) {
+      return key != null && entries.delete(key) ? key : null;
+    },
+  };
 }
 
-// /start is public, so cap how many outstanding request IDs it can pile up.
-// Past the cap the oldest IDs go first; a login that slow has to start again.
-export const SAML_MAX_PENDING_REQUESTS = 1000;
-export function boundedCache(cache) {
-  if (typeof cache?.saveAsync !== "function" || typeof cache?.removeAsync !== "function") return cache;
-  const order = [];
-  const saveAsync = cache.saveAsync.bind(cache);
-  const removeAsync = cache.removeAsync.bind(cache);
-  cache.saveAsync = async (key, value) => {
-    order.push(key);
-    while (order.length > SAML_MAX_PENDING_REQUESTS) await removeAsync(order.shift());
-    return saveAsync(key, value);
-  };
-  cache.removeAsync = async (key) => {
-    const i = key == null ? -1 : order.indexOf(key);
-    if (i >= 0) order.splice(i, 1);
-    return removeAsync(key);
-  };
-  return cache;
+// One store per process, on globalThis so every route bundle that loads this module
+// sees the IDs /start issued.
+export function getSamlRequestCache() {
+  return (globalThis[SAML_REQUEST_CACHE] ??= createSamlRequestCache());
 }
 
 export function createSamlInstance(settings, origin) {
@@ -135,8 +123,7 @@ export function createSamlInstance(settings, origin) {
     acceptedClockSkewMs: 60000,
     wantAssertionsSigned: true,
     validateInResponseTo: "always",
-    requestIdExpirationPeriodMs: SAML_REQUEST_TTL_MS,
-    cacheProvider: getSamlRequestCache(settings),
+    cacheProvider: getSamlRequestCache(),
   });
 }
 
@@ -193,7 +180,7 @@ export async function validateSamlResponse(request, body, expectedRequestId, set
     confirmation.$?.Method === "urn:oasis:names:tc:SAML:2.0:cm:bearer" &&
     confirmation.SubjectConfirmationData?.[0]?.$?.InResponseTo === expectedRequestId
   );
-  if (profile?.inResponseTo !== expectedRequestId || !boundSubject) {
+  if (!boundSubject) {
     throw new Error("SAML signed SubjectConfirmation InResponseTo mismatch");
   }
 

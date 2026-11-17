@@ -25,7 +25,8 @@ export function isSsoPrincipalAllowed(principal: SsoPrincipal, raw: string | und
 
   return entries.some((entry) => {
     if (subject && entry === subject) return true;
-    if (!email) return false;
+    // An entry without "@" is a subject ID, so an email attribute can't match it.
+    if (!email || !entry.includes("@")) return false;
     const normalized = entry.toLowerCase();
     if (normalized.startsWith("@")) return normalized.length > 1 && email.endsWith(normalized);
     return email === normalized;

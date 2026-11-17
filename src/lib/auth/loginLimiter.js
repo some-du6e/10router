@@ -46,6 +46,26 @@ export function recordSuccess(ip) {
   attempts.delete(ip);
 }
 
+// Fixed-window request cap for public endpoints that store something per call
+// (SAML /start). Separate from the failure lockout above.
+const windows = new Map(); // key → { count, startedAt }
+const MAX_TRACKED_WINDOWS = 10_000;
+
+export function checkRateLimit(key, { limit, windowMs }) {
+  const t = now();
+  if (windows.size > MAX_TRACKED_WINDOWS) {
+    for (const [k, w] of windows) if (t - w.startedAt >= windowMs) windows.delete(k);
+  }
+  let w = windows.get(key);
+  if (!w || t - w.startedAt >= windowMs) {
+    w = { count: 0, startedAt: t };
+    windows.set(key, w);
+  }
+  w.count += 1;
+  if (w.count <= limit) return { limited: false };
+  return { limited: true, retryAfter: Math.ceil((w.startedAt + windowMs - t) / 1000) };
+}
+
 export function getClientIp(request) {
   // Trusted only when custom-server.js proves it stamped the header from the TCP socket;
   // otherwise a client could rotate the value to escape its own lockout bucket.

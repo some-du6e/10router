@@ -3,7 +3,6 @@ import { cookies } from "next/headers";
 import { getSettings } from "@/lib/localDb";
 import {
   getSamlBaseUrl,
-  isSamlConfigured,
   pickSamlDisplayName,
   pickSamlEmail,
   validateSamlResponse,
@@ -11,7 +10,7 @@ import {
 import { setDashboardAuthCookie } from "@/lib/auth/dashboardSession";
 import { isSsoPrincipalAllowed } from "@/lib/auth/ssoAllowlist.js";
 import { checkLock, recordFail, recordSuccess, getClientIp } from "@/lib/auth/loginLimiter";
-import { getActiveSsoType } from "@/lib/auth/authMode.js";
+import { getConfiguredSsoType } from "@/lib/auth/authMode.js";
 
 export async function POST(request) {
   const settings = await getSettings();
@@ -43,7 +42,7 @@ export async function POST(request) {
       return NextResponse.redirect(new URL("/login?error=saml_missing_response", origin));
     }
 
-    if (getActiveSsoType(settings) !== "saml" || !isSamlConfigured(settings)) {
+    if (getConfiguredSsoType(settings) !== "saml") {
       recordFail(ip);
       return NextResponse.redirect(new URL("/login?error=saml_not_configured", origin));
     }

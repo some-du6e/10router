@@ -3,11 +3,9 @@ import { getSettings } from "@/lib/localDb";
 import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
 import { setDashboardAuthCookie } from "@/lib/auth/dashboardSession";
-import { isOidcConfigured } from "@/lib/auth/oidc";
-import { isSamlConfigured } from "@/lib/auth/saml.js";
 import { checkLock, recordFail, recordSuccess, getClientIp } from "@/lib/auth/loginLimiter";
 import { getAuthBootstrapState, getBootstrapSecret } from "@/lib/auth/setupState";
-import { getActiveSsoType, isPasswordLoginDisabled } from "@/lib/auth/authMode.js";
+import { getConfiguredSsoType, isPasswordLoginDisabled } from "@/lib/auth/authMode.js";
 
 const RESET_HINT = "Forgot password? Run 10router CLI → Settings → Reset Password, then use the new setup token printed on the host console.";
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" };
@@ -41,11 +39,11 @@ export async function POST(request) {
     const storedHash = settings.password;
 
     if (isPasswordLoginDisabled(settings)) {
-      const ssoType = getActiveSsoType(settings);
-      if (ssoType === "saml" && isSamlConfigured(settings)) {
+      const ssoType = getConfiguredSsoType(settings);
+      if (ssoType === "saml") {
         return NextResponse.json({ error: "Password login is disabled. Use SAML SSO sign in." }, { status: 403 });
       }
-      if (ssoType === "oidc" && isOidcConfigured(settings)) {
+      if (ssoType === "oidc") {
         return NextResponse.json({ error: "Password login is disabled. Use OIDC sign in." }, { status: 403 });
       }
     }
