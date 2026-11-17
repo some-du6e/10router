@@ -137,8 +137,11 @@ export default function ClaudeToolCard({
   }, [claudeStatus, apiKeys, tool.defaultModels, onModelMappingChange]);
 
   // Preselect the key settings.json already has. The status never carries the
-  // token: one of our keys comes back by id; any other key is kept as it is.
+  // token: one of our keys comes back by id. Another key is kept by default only
+  // while settings.json points at this instance; one for another endpoint (another
+  // gateway's, or a deleted key) stays selectable but isn't the default.
   const keptCustomKey = !!claudeStatus?.authToken?.set && !claudeStatus?.authToken?.ownKeyId;
+  const keptKeyLabel = configStatus === "configured" ? "Custom key (kept)" : "Custom key (not one of yours)";
   useEffect(() => {
     if (hasInitializedKey.current || !claudeStatus?.installed) return;
     const auth = claudeStatus.authToken;
@@ -147,10 +150,12 @@ export default function ClaudeToolCard({
       if (!own) return; // wait for the key list
       setSelectedApiKey(own.key);
     } else if (auth?.set) {
-      setSelectedApiKey(KEEP_EXISTING_KEY);
+      if (configStatus === "configured") setSelectedApiKey(KEEP_EXISTING_KEY);
+      else if (apiKeys?.length > 0) setSelectedApiKey(apiKeys[0].key);
+      else return; // wait for the key list
     }
     hasInitializedKey.current = true;
-  }, [claudeStatus, apiKeys]);
+  }, [claudeStatus, apiKeys, configStatus]);
 
   const checkClaudeStatus = async () => {
     setCheckingClaude(true);
@@ -378,7 +383,7 @@ export default function ClaudeToolCard({
                 <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr_auto] sm:items-center sm:gap-2">
                   <span className="text-xs font-semibold text-text-main sm:text-right sm:text-sm">API Key</span>
                   <span className="material-symbols-outlined hidden text-text-muted text-[14px] sm:inline">arrow_forward</span>
-                  <ApiKeySelect value={selectedApiKey} onChange={setSelectedApiKey} apiKeys={apiKeys} cloudEnabled={cloudEnabled} keepExisting={keptCustomKey} />
+                  <ApiKeySelect value={selectedApiKey} onChange={setSelectedApiKey} apiKeys={apiKeys} cloudEnabled={cloudEnabled} keepExisting={keptCustomKey} keepLabel={keptKeyLabel} />
                 </div>
 
                 {/* Model Mappings */}

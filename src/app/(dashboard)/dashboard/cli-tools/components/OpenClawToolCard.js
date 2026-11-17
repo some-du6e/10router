@@ -95,10 +95,17 @@ export default function OpenClawToolCard({
     }
   }, [openclawStatus, apiKeys]);
 
-  // Preselect the key openclaw.json already has. The status never carries it: one
-  // of our keys comes back by id; any other key is kept as it is.
-  const keyStatus = openclawStatus?.settings?.models?.providers?.["10router"]?.apiKeyStatus;
+  // Preselect the key openclaw.json already has (in the 10router provider, or the
+  // pre-rebrand 9router one). The status never carries it: one of our keys comes
+  // back by id. Another key is kept by default only while that provider points at
+  // this instance; one for another endpoint (another gateway's, or a deleted key)
+  // stays selectable but isn't the default.
+  const providers = openclawStatus?.settings?.models?.providers;
+  const keyProvider = providers?.["10router"]?.apiKeyStatus?.set ? providers["10router"] : providers?.["9router"] || providers?.["10router"];
+  const keyStatus = keyProvider?.apiKeyStatus;
   const keptCustomKey = !!keyStatus?.set && !keyStatus?.ownKeyId;
+  const keyPointsHere = !!keyProvider?.baseUrl && matchKnownEndpoint(keyProvider.baseUrl, { tunnelPublicUrl, tailscaleUrl });
+  const keptKeyLabel = keyPointsHere ? "Custom key (kept)" : "Custom key (not one of yours)";
   const hasInitializedKey = useRef(false);
   useEffect(() => {
     if (hasInitializedKey.current || !openclawStatus?.installed) return;
@@ -107,10 +114,12 @@ export default function OpenClawToolCard({
       if (!own) return; // wait for the key list
       setSelectedApiKey(own.key);
     } else if (keyStatus?.set) {
-      setSelectedApiKey(KEEP_EXISTING_KEY);
+      if (keyPointsHere) setSelectedApiKey(KEEP_EXISTING_KEY);
+      else if (apiKeys?.length > 0) setSelectedApiKey(apiKeys[0].key);
+      else return; // wait for the key list
     }
     hasInitializedKey.current = true;
-  }, [openclawStatus, keyStatus, apiKeys]);
+  }, [openclawStatus, keyStatus, keyPointsHere, apiKeys]);
 
   const checkOpenclawStatus = async () => {
     setCheckingOpenclaw(true);
@@ -332,7 +341,7 @@ export default function OpenClawToolCard({
                 <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr_auto] sm:items-center sm:gap-2">
                   <span className="text-xs font-semibold text-text-main sm:text-right sm:text-sm">API Key</span>
                   <span className="material-symbols-outlined hidden text-text-muted text-[14px] sm:inline">arrow_forward</span>
-                  <ApiKeySelect value={selectedApiKey} onChange={setSelectedApiKey} apiKeys={apiKeys} cloudEnabled={cloudEnabled} keepExisting={keptCustomKey} />
+                  <ApiKeySelect value={selectedApiKey} onChange={setSelectedApiKey} apiKeys={apiKeys} cloudEnabled={cloudEnabled} keepExisting={keptCustomKey} keepLabel={keptKeyLabel} />
                 </div>
 
                 {/* Default Model */}

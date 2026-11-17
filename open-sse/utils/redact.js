@@ -11,14 +11,23 @@ import {
   REDACTED_TEXT,
 } from "../config/redactionConstants.js";
 
-export { REDACTED, REDACTED_TEXT, SECRET_QUERY_PARAMS };
+export { REDACTED, SECRET_QUERY_PARAMS };
 
 const SECRET_QUERY_PARAM_SET = new Set(SECRET_QUERY_PARAMS);
-const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-// `?key=...` / `&token=...` inside free text, for when a URL can't be parsed.
-// Group 1 is the `?name=` prefix.
-export const SECRET_QUERY_PARAM_RE = new RegExp(`([?&](?:${SECRET_QUERY_PARAMS.map(escapeRe).join("|")})=)[^&#\\s"']*`, "gi");
+// `?name=value` / `&name=value` inside free text. Group 1 is the `?name=` prefix,
+// group 2 the name; redactQueryParamsInText decides by the same name rule as
+// redactUrlSecrets, so parsed URLs and free text redact the same params.
+const QUERY_PARAM_IN_TEXT_RE = /([?&]([^=&#\s"']+)=)[^&#\s"']*/g;
+
+export function redactQueryParamsInText(text, placeholder = REDACTED) {
+  return String(text ?? "").replace(QUERY_PARAM_IN_TEXT_RE, (match, prefix, name) => {
+    let decoded = name;
+    try { decoded = decodeURIComponent(name); } catch { /* keep the raw name */ }
+    return isSecretQueryParamName(decoded) ? prefix + placeholder : match;
+  });
+}
+
 // `Bearer <token>` inside free text. Group 1 is `Bearer `.
 export const BEARER_TOKEN_RE = BEARER_TOKEN_PATTERN;
 
@@ -80,7 +89,7 @@ export function redactUrlSecrets(url, placeholder = REDACTED) {
     // searchParams percent-encodes the placeholder; show it as written.
     return changed ? parsed.toString().split(encodeURIComponent(placeholder)).join(placeholder) : url;
   } catch {
-    return url.replace(SECRET_QUERY_PARAM_RE, `$1${placeholder}`);
+    return redactQueryParamsInText(url, placeholder);
   }
 }
 

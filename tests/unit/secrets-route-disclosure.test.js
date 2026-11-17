@@ -184,7 +184,11 @@ describe("translator preview step 3", { timeout: 30000 }, () => {
     }
   });
 
-  it("redacts credentials the executor derives, which match no stored value", async () => {
+    // Derived credentials match no stored value, so only the header-name and
+  // query-param rules can catch them: a credential header (Authorization, *-token)
+  // and a secret param (sig). A derived value under a neutral header name, or in
+  // the body, is not recognised; the PR says so.
+  it("redacts derived credentials by header name and query-param name", async () => {
     const KEY = "stored-key-placeholder-000111";
     const basic = `Basic ${Buffer.from(`user:${KEY}`).toString("base64")}`;
     mocks.getProviderConnections.mockResolvedValue([{ isActive: true, apiKey: KEY }]);

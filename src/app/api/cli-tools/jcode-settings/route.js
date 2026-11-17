@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { findUnsafeConfigValue } from "@/lib/cliTools/configValue.js";
 import { keyStatus, pickFields } from "@/lib/cliTools/statusFields.js";
 import { isKeepExistingKey } from "@/lib/cliTools/keepKey.js";
+import { mayKeepStoredKey, CHOOSE_A_KEY_ERROR } from "@/lib/cliTools/keepKeyTarget.js";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 import fs from "fs/promises";
 import path from "path";
@@ -149,14 +150,23 @@ export async function GET() {
 export async function POST(request) {
   try {
     const { baseUrl, models, apiKey: requestedKey } = await request.json();
-    // The card couldn't show the stored key (a custom one): keep it.
-    const apiKey = isKeepExistingKey(requestedKey) ? (await readProviderEnv()).JCODE_10ROUTER_API_KEY : requestedKey;
+    // The card couldn't show the stored key (a custom one): keep it, but only
+    // while it still goes to the same base URL or to this instance.
+    const keep = isKeepExistingKey(requestedKey);
+    const apiKey = keep ? (await readProviderEnv()).JCODE_10ROUTER_API_KEY : requestedKey;
 
     if (!baseUrl || !apiKey) {
       return NextResponse.json(
-        { error: "baseUrl and apiKey are required" },
+        { error: keep ? "No existing API key to keep; choose a key" : "baseUrl and apiKey are required" },
         { status: 400 }
       );
+    }
+    if (keep) {
+      const stored = await readConfig();
+      const storedBaseUrl = stored?.providers?.["10router"]?.base_url ?? stored?.providers?.["9router"]?.base_url;
+      if (!(await mayKeepStoredKey(baseUrl, storedBaseUrl))) {
+        return NextResponse.json({ error: CHOOSE_A_KEY_ERROR }, { status: 400 });
+      }
     }
     const unsafeField = findUnsafeConfigValue({ baseUrl, apiKey });
     if (unsafeField) {

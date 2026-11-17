@@ -22,6 +22,7 @@ const SECRETS = [
 
 vi.mock("@/lib/localDb", () => ({
   getApiKeys: vi.fn(async () => [{ id: "k1", key: OWN_KEY, isActive: true }]),
+  getSettings: vi.fn(async () => ({})),
 }));
 
 const originalHome = process.env.HOME;
@@ -350,6 +351,81 @@ describe("a key the status can't show is kept on Apply", () => {
   });
 });
 
+describe("a kept key never follows a base URL to another host", () => {
+  const ATTACKER = "https://attacker.example.net/v1";
+  const FOREIGN = "sk-placeholder-foreign-key";
+
+  it("claude: KEEP_EXISTING_KEY with a new, foreign base URL is refused and nothing is written", async () => {
+    const { KEEP_EXISTING_KEY } = await import("../../src/lib/cliTools/keepKey.js");
+    write(".claude/settings.json", { env: { ANTHROPIC_BASE_URL: "https://other.example.com/v1", ANTHROPIC_AUTH_TOKEN: FOREIGN } });
+    const res = await post("claude-settings", { env: { ANTHROPIC_BASE_URL: ATTACKER, ANTHROPIC_AUTH_TOKEN: KEEP_EXISTING_KEY } });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/choose a key/);
+    expect(readJsonFile(".claude/settings.json").env.ANTHROPIC_BASE_URL).toBe("https://other.example.com/v1");
+  });
+
+  it("claude: a body with no token can't repoint the stored token either", async () => {
+    write(".claude/settings.json", { env: { ANTHROPIC_BASE_URL: "https://other.example.com/v1", ANTHROPIC_AUTH_TOKEN: FOREIGN } });
+    const res = await post("claude-settings", { env: { ANTHROPIC_BASE_URL: ATTACKER } });
+    expect(res.status).toBe(400);
+    expect(readJsonFile(".claude/settings.json").env.ANTHROPIC_BASE_URL).toBe("https://other.example.com/v1");
+  });
+
+  it("claude: the stored token stays for the same base URL (case, trailing slash and /v1 aside)", async () => {
+    const { KEEP_EXISTING_KEY } = await import("../../src/lib/cliTools/keepKey.js");
+    write(".claude/settings.json", { env: { ANTHROPIC_BASE_URL: "https://other.example.com/v1", ANTHROPIC_AUTH_TOKEN: FOREIGN } });
+    const res = await post("claude-settings", { env: { ANTHROPIC_BASE_URL: "https://OTHER.example.com/", ANTHROPIC_AUTH_TOKEN: KEEP_EXISTING_KEY } });
+    expect(res.status).toBe(200);
+    expect(readJsonFile(".claude/settings.json").env.ANTHROPIC_AUTH_TOKEN).toBe(FOREIGN);
+  });
+
+  it("claude: KEEP_EXISTING_KEY with no stored token is refused", async () => {
+    const { KEEP_EXISTING_KEY } = await import("../../src/lib/cliTools/keepKey.js");
+    write(".claude/settings.json", { env: {} });
+    const res = await post("claude-settings", { env: { ANTHROPIC_BASE_URL: "http://localhost:20128/v1", ANTHROPIC_AUTH_TOKEN: KEEP_EXISTING_KEY } });
+    expect(res.status).toBe(400);
+    expect(fs.readFileSync(path.join(home, ".claude/settings.json"), "utf8")).not.toContain(KEEP_EXISTING_KEY);
+  });
+
+  it("openclaw: KEEP_EXISTING_KEY with a foreign base URL is refused; the same one is fine", async () => {
+    const { KEEP_EXISTING_KEY } = await import("../../src/lib/cliTools/keepKey.js");
+    write(".openclaw/openclaw.json", { models: { providers: { "9router": { baseUrl: "https://other.example.com/v1", apiKey: FOREIGN } } } });
+    const refused = await post("openclaw-settings", { baseUrl: ATTACKER, apiKey: KEEP_EXISTING_KEY, model: "m1" });
+    expect(refused.status).toBe(400);
+    expect(readJsonFile(".openclaw/openclaw.json").models.providers["10router"]).toBeUndefined();
+    const kept = await post("openclaw-settings", { baseUrl: "https://other.example.com", apiKey: KEEP_EXISTING_KEY, model: "m1" });
+    expect(kept.status).toBe(200);
+    expect(readJsonFile(".openclaw/openclaw.json").models.providers["10router"].apiKey).toBe(FOREIGN);
+  });
+
+  it("jcode: KEEP_EXISTING_KEY with a foreign base URL is refused and nothing is rewritten", async () => {
+    const { KEEP_EXISTING_KEY } = await import("../../src/lib/cliTools/keepKey.js");
+    write(".jcode/config.toml", '[providers.10router]\nbase_url = "https://other.example.com/v1"\n');
+    write(".config/jcode/provider-10router.env", `JCODE_10ROUTER_API_KEY="${FOREIGN}"\n`);
+    const res = await post("jcode-settings", { baseUrl: ATTACKER, apiKey: KEEP_EXISTING_KEY, models: ["m1"] });
+    expect(res.status).toBe(400);
+    expect(fs.readFileSync(path.join(home, ".jcode/config.toml"), "utf8")).not.toContain("attacker.example.net");
+  });
+
+  it("the shared rule: same base, loopback and this instance's configured URLs only", async () => {
+    const { mayKeepStoredKey, isSameBaseUrl } = await import("../../src/lib/cliTools/keepKeyTarget.js");
+    expect(isSameBaseUrl("https://a.example.com/v1/", "https://A.example.com")).toBe(true);
+    expect(isSameBaseUrl("https://a.example.com/api", "https://a.example.com")).toBe(false);
+    expect(await mayKeepStoredKey("http://127.0.0.1:20128/v1", "https://other.example.com")).toBe(true);
+    expect(await mayKeepStoredKey(ATTACKER, "https://other.example.com")).toBe(false);
+    expect(await mayKeepStoredKey(ATTACKER, null)).toBe(false);
+    expect(await mayKeepStoredKey("not a url", "not a url")).toBe(false);
+    const previous = process.env.NEXT_PUBLIC_CLOUD_URL;
+    process.env.NEXT_PUBLIC_CLOUD_URL = "https://cloud.example.org";
+    try {
+      expect(await mayKeepStoredKey("https://cloud.example.org/v1", "https://other.example.com")).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.NEXT_PUBLIC_CLOUD_URL;
+      else process.env.NEXT_PUBLIC_CLOUD_URL = previous;
+    }
+  });
+});
+
 describe("Cowork plugin URLs", () => {
   it("a re-apply with the redacted URL the status showed keeps the stored key", async () => {
     write(".config/Claude-3p/configLibrary/_meta.json", { appliedId: "cfg" });
@@ -376,13 +452,21 @@ describe.runIf(process.platform !== "win32")("tool config files holding a client
   });
   afterAll(() => process.umask(previousUmask));
 
+  const LOCAL = "http://localhost:20128/v1";
   it.each([
-    ["cline-settings", ".cline/data/secrets.json", { baseUrl: "http://localhost:20128/v1", apiKey: OWN_KEY, model: "m1" }],
-    ["kilo-settings", ".local/share/kilo/auth.json", { baseUrl: "http://localhost:20128/v1", apiKey: OWN_KEY, model: "m1" }],
-    ["claude-settings", ".claude/settings.json", { env: { ANTHROPIC_BASE_URL: "http://localhost:20128/v1", ANTHROPIC_AUTH_TOKEN: OWN_KEY } }],
-    ["jcode-settings", ".config/jcode/provider-10router.env", { baseUrl: "http://localhost:20128", apiKey: OWN_KEY, models: ["m1"] }],
-  ])("%s writes %s 0600, replacing a world-readable one", async (route, rel, body) => {
-    write(rel, rel.endsWith(".env") ? "OTHER=1\n" : "{}");
+    ["cline-settings", ".cline/data/secrets.json", { baseUrl: LOCAL, apiKey: OWN_KEY, model: "m1" }, "{}"],
+    ["kilo-settings", ".local/share/kilo/auth.json", { baseUrl: LOCAL, apiKey: OWN_KEY, model: "m1" }, "{}"],
+    ["kilo-settings", ".config/Code/User/settings.json", { baseUrl: LOCAL, apiKey: OWN_KEY, model: "m1" }, "{}"],
+    ["claude-settings", ".claude/settings.json", { env: { ANTHROPIC_BASE_URL: LOCAL, ANTHROPIC_AUTH_TOKEN: OWN_KEY } }, "{}"],
+    ["jcode-settings", ".config/jcode/provider-10router.env", { baseUrl: "http://localhost:20128", apiKey: OWN_KEY, models: ["m1"] }, "OTHER=1\n"],
+    ["hermes-settings", ".hermes/.env", { baseUrl: LOCAL, apiKey: OWN_KEY, model: "m1" }, "OTHER=1\n"],
+    ["opencode-settings", ".config/opencode/opencode.json", { baseUrl: LOCAL, apiKey: OWN_KEY, models: ["m1"] }, "{}"],
+    ["droid-settings", ".factory/settings.json", { baseUrl: LOCAL, apiKey: OWN_KEY, models: ["m1"] }, "{}"],
+    ["copilot-settings", ".config/Code/User/chatLanguageModels.json", { baseUrl: LOCAL, apiKey: OWN_KEY, models: ["m1"] }, "[]"],
+    ["grok-build-settings", ".grok/config.toml", { baseUrl: "http://localhost:20128", apiKey: OWN_KEY, model: "m1" }, ""],
+    ["deepseek-tui-settings", ".deepseek/config.toml", { baseUrl: LOCAL, apiKey: OWN_KEY, model: "m1" }, ""],
+  ])("%s writes %s 0600, replacing a world-readable one", async (route, rel, body, seed) => {
+    write(rel, seed);
     fs.chmodSync(path.join(home, rel), 0o644);
     const res = await post(route, body);
     expect(res.status).toBe(200);
@@ -390,6 +474,30 @@ describe.runIf(process.platform !== "win32")("tool config files holding a client
     expect(modeOf(rel)).toBe(0o600);
     // Nothing left behind next to it.
     expect(fs.readdirSync(path.dirname(path.join(home, rel))).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+  });
+
+  it("openclaw writes openclaw.json and each agent's models.json 0600", async () => {
+    const agentDir = path.join(home, ".openclaw/agents/a1");
+    write(".openclaw/openclaw.json", { agents: { list: [{ id: "a1", name: "A1", agentDir }] } });
+    write(".openclaw/agents/a1/models.json", "{}");
+    fs.chmodSync(path.join(home, ".openclaw/openclaw.json"), 0o644);
+    fs.chmodSync(path.join(agentDir, "models.json"), 0o644);
+    const res = await post("openclaw-settings", { baseUrl: "http://localhost:20128", apiKey: OWN_KEY, model: "m1" });
+    expect(res.status).toBe(200);
+    for (const rel of [".openclaw/openclaw.json", ".openclaw/agents/a1/models.json"]) {
+      expect(fs.readFileSync(path.join(home, rel), "utf8")).toContain(OWN_KEY);
+      expect(modeOf(rel)).toBe(0o600);
+    }
+  });
+
+  it("codex reset rewrites auth.json 0600 when other entries stay", async () => {
+    write(".codex/auth.json", { OPENAI_API_KEY: OWN_KEY, tokens: { refresh_token: "rt-placeholder" } });
+    fs.chmodSync(path.join(home, ".codex/auth.json"), 0o644);
+    const { DELETE } = await import("../../src/app/api/cli-tools/codex-settings/route.js");
+    const res = await DELETE(new Request("http://localhost/x", { method: "DELETE" }));
+    expect(res.status).toBe(200);
+    expect(readJsonFile(".codex/auth.json")).not.toHaveProperty("OPENAI_API_KEY");
+    expect(modeOf(".codex/auth.json")).toBe(0o600);
   });
 
   it("writes through a symlinked config to the file it points at", async () => {

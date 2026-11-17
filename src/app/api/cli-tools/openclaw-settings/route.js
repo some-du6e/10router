@@ -8,6 +8,7 @@ import path from "path";
 import os from "os";
 import { keyStatus, pickFields } from "@/lib/cliTools/statusFields.js";
 import { isKeepExistingKey } from "@/lib/cliTools/keepKey.js";
+import { mayKeepStoredKey, CHOOSE_A_KEY_ERROR } from "@/lib/cliTools/keepKeyTarget.js";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 
 const execAsync = promisify(exec);
@@ -193,10 +194,17 @@ export async function POST(request) {
     const normalizedBaseUrl = baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
     const fullModelId = `10router/${model}`;
 
-    // The card couldn't show the stored key (a custom one): keep it.
+    // The card couldn't show the stored key (a custom one): keep it, but only
+    // while it still goes to the same base URL or to this instance.
     if (isKeepExistingKey(apiKey)) {
-      apiKey = settings.models.providers["10router"]?.apiKey ?? settings.models.providers["9router"]?.apiKey;
+      const stored = settings.models.providers["10router"]?.apiKey
+        ? settings.models.providers["10router"]
+        : settings.models.providers["9router"];
+      apiKey = stored?.apiKey;
       if (!apiKey) return NextResponse.json({ error: "No existing API key to keep; choose a key" }, { status: 400 });
+      if (!(await mayKeepStoredKey(normalizedBaseUrl, stored?.baseUrl))) {
+        return NextResponse.json({ error: CHOOSE_A_KEY_ERROR }, { status: 400 });
+      }
     }
 
     // Remove all old 10router/* entries from agents.defaults.models

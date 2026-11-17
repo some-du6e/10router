@@ -10,6 +10,7 @@ import { DEFAULT_PLUGINS } from "@/shared/constants/coworkPlugins";
 import { CLI_TOOLS } from "@/shared/constants/cliTools";
 import { keyStatus, pickFields } from "@/lib/cliTools/statusFields.js";
 import { isKeepExistingKey } from "@/lib/cliTools/keepKey.js";
+import { mayKeepStoredKey, CHOOSE_A_KEY_ERROR } from "@/lib/cliTools/keepKeyTarget.js";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 
 const execAsync = promisify(exec);
@@ -172,8 +173,25 @@ export async function POST(request) {
         : `${env.ANTHROPIC_BASE_URL}/v1`;
     }
 
-    // The card couldn't show the stored token (a custom key): keep it as it is.
-    if (isKeepExistingKey(env.ANTHROPIC_AUTH_TOKEN)) delete env.ANTHROPIC_AUTH_TOKEN;
+    // The card couldn't show the stored token (a custom key): keep it as it is. A
+    // body without a token keeps it too (the env merge below). Either way the kept
+    // token may only follow a base URL change to this instance.
+    const storedEnv = currentSettings.env || {};
+    const keepMarker = isKeepExistingKey(env.ANTHROPIC_AUTH_TOKEN);
+    if (keepMarker) {
+      if (!storedEnv.ANTHROPIC_AUTH_TOKEN) {
+        return NextResponse.json({ error: "No existing API key to keep; choose a key" }, { status: 400 });
+      }
+      delete env.ANTHROPIC_AUTH_TOKEN;
+    }
+    const keepsStoredToken = env.ANTHROPIC_AUTH_TOKEN === undefined && !!storedEnv.ANTHROPIC_AUTH_TOKEN;
+    if (
+      keepsStoredToken &&
+      env.ANTHROPIC_BASE_URL &&
+      !(await mayKeepStoredKey(env.ANTHROPIC_BASE_URL, storedEnv.ANTHROPIC_BASE_URL))
+    ) {
+      return NextResponse.json({ error: CHOOSE_A_KEY_ERROR }, { status: 400 });
+    }
 
     // Merge new env with existing settings
     const newSettings = {

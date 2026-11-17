@@ -102,11 +102,11 @@ describe("shared redaction", () => {
   });
 
   it("uses one secret query-param list for URLs and for free text", async () => {
-    const { redactUrlSecrets, SECRET_QUERY_PARAM_RE } = await import("../../open-sse/utils/redact.js");
+    const { redactUrlSecrets, redactQueryParamsInText } = await import("../../open-sse/utils/redact.js");
     const params = ["key", "api_key", "api-key", "apikey", "access_token", "token", "auth", "sig", "signature", "code"];
     for (const name of params) {
       expect(redactUrlSecrets(`https://u.example/p?${name}=SECRET1&alt=sse`)).toBe(`https://u.example/p?${name}=[REDACTED]&alt=sse`);
-      expect(`see https://u.example/p?${name.toUpperCase()}=SECRET2`.replace(SECRET_QUERY_PARAM_RE, "$1x")).not.toContain("SECRET2");
+      expect(redactQueryParamsInText(`see https://u.example/p?${name.toUpperCase()}=SECRET2`, "x")).not.toContain("SECRET2");
     }
     const { isSecretQueryParamName } = await import("../../open-sse/utils/redact.js");
     for (const name of ["exaApiKey", "tavilyApiKey", "refresh_token", "client_secret", "X-Amz-Signature"]) {
@@ -114,8 +114,24 @@ describe("shared redaction", () => {
       expect(redactUrlSecrets(`https://mcp.example/s?${name}=SECRET4&q=1`)).toBe(`https://mcp.example/s?${name}=[REDACTED]&q=1`);
     }
     expect(isSecretQueryParamName("alt")).toBe(false);
+    // Deliberately broad: a harmless param whose name merely contains key/token/auth
+    // is redacted too.
+    expect(redactUrlSecrets("https://u.example/p?max_tokens=100&author=me&alt=sse")).toBe(
+      "https://u.example/p?max_tokens=[REDACTED]&author=[REDACTED]&alt=sse"
+    );
+    // A URL new URL() can't parse gets the same name rule, not a fixed list.
+    expect(redactUrlSecrets("not a url ?exaApiKey=SECRET5&alt=sse")).toBe("not a url ?exaApiKey=[REDACTED]&alt=sse");
+    expect(redactQueryParamsInText("see ?tavilyApiKey=SECRET6 and ?q=1", "x")).toBe("see ?tavilyApiKey=x and ?q=1");
     const { makeRedactor } = await import("../../src/lib/endpointDetect.ts");
     expect(makeRedactor("")("Authorization: Bearer abcdefgh1234")).not.toContain("abcdefgh1234");
+    expect(makeRedactor("")("https://u.example/p?exaApiKey=SECRET7")).not.toContain("SECRET7");
+    // One bearer rule everywhere: 8+ characters is a token, 7 is left alone (so
+    // "Bearer invalid" in an error message survives).
+    const { sanitizeSecrets } = await import("../../open-sse/utils/redact.js");
+    expect(sanitizeSecrets("Bearer abcdefgh")).toBe("Bearer [redacted]");
+    expect(sanitizeSecrets("Bearer abcdefg")).toBe("Bearer abcdefg");
+    expect(makeRedactor("")("Bearer abcdefgh")).toBe("Bearer <redacted>");
+    expect(makeRedactor("")("Bearer abcdefg")).toBe("Bearer abcdefg");
     expect(makeRedactor("")("https://u.example/p?signature=SECRET3")).not.toContain("SECRET3");
   });
 });

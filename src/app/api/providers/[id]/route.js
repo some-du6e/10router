@@ -236,8 +236,6 @@ export async function PUT(request, { params }) {
     // a PUT merges providerSpecificData, so the stored values survive a round trip.
     result.providerSpecificData = withoutProviderDataSecrets(result.providerSpecificData);
 
-    result.providerSpecificData = withoutProviderDataSecrets(result.providerSpecificData);
-
     return NextResponse.json({ connection: result });
   } catch (error) {
     console.log("Error updating connection:", error);

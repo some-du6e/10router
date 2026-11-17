@@ -62,6 +62,26 @@ describe("provider connection responses", () => {
     expect(json.connection.providerSpecificData).toMatchObject(KEPT);
   });
 
+  it("POST /api/providers answers 201 without the key or the secrets it stored", async () => {
+    const res = await listRoute.POST(
+      new Request("http://localhost/api/providers", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          provider: "openai",
+          name: "placeholder openai",
+          apiKey: "sk-placeholder-post-key-0001",
+          providerSpecificData: { sessionToken: "session-token-placeholder-0001", organization: "org-placeholder" },
+        }),
+      })
+    );
+    expect(res.status).toBe(201);
+    const text = JSON.stringify(await res.json());
+    expect(text).not.toContain("sk-placeholder-post-key-0001");
+    expect(text).not.toContain("session-token-placeholder-0001");
+    expect(text).toContain("org-placeholder");
+  });
+
   it("an update that sends providerSpecificData back keeps the stored secrets", async () => {
     const got = await (await itemRoute.GET(new Request("http://localhost/x"), { params: Promise.resolve({ id: connection.id }) })).json();
     const res = await itemRoute.PUT(

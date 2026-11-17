@@ -8,8 +8,9 @@ const CUSTOM_VALUE = "__custom__";
 const SAVE_VALUE = "__save_key__";
 
 // keepExisting: the tool already has a key the status can't show (a custom one).
-// It is offered as "Custom key (kept)", which Apply sends as KEEP_EXISTING_KEY.
-export default function ApiKeySelect({ value, onChange, apiKeys = [], cloudEnabled = false, keepExisting = false, className = "" }) {
+// It is offered under keepLabel ("Custom key (kept)", or "Custom key (not one of
+// yours)" when the tool points elsewhere), which Apply sends as KEEP_EXISTING_KEY.
+export default function ApiKeySelect({ value, onChange, apiKeys = [], cloudEnabled = false, keepExisting = false, keepLabel = "Custom key (kept)", className = "" }) {
   const [savedKeys, setSavedKeys] = useState([]);
   // Custom mode is sticky once the user types, so an emptied input doesn't jump back to a dropdown option
   const [customMode, setCustomMode] = useState(false);
@@ -23,12 +24,12 @@ export default function ApiKeySelect({ value, onChange, apiKeys = [], cloudEnabl
 
   const options = useMemo(
     () => [
-      ...(keepExisting || value === KEEP_EXISTING_KEY ? [{ value: KEEP_EXISTING_KEY, label: "Custom key (kept)" }] : []),
+      ...(keepExisting || value === KEEP_EXISTING_KEY ? [{ value: KEEP_EXISTING_KEY, label: keepLabel }] : []),
       ...apiKeys.map((k) => ({ value: k.key, label: k.key })),
       ...savedKeys.map((p) => ({ value: `saved:${p.name}`, label: p.key, url: p.key, saved: true })),
       { value: CUSTOM_VALUE, label: "Custom...", url: "" },
     ],
-    [apiKeys, savedKeys, keepExisting, value]
+    [apiKeys, savedKeys, keepExisting, keepLabel, value]
   );
 
   // Derive the active option from value — no sync effects needed when the parent updates it

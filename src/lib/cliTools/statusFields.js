@@ -14,12 +14,6 @@ async function ownKeyMatching(value) {
   }
 }
 
-// A key read from a tool's config, returned only when it is one of this instance's
-// own client keys (the dashboard lists those anyway).
-export async function ownClientKeyOrNull(value) {
-  return (await ownKeyMatching(value))?.key ?? null;
-}
-
 // What a card may know about the key in a tool's config, without the key itself:
 // whether one is set, and which of this instance's client keys it is (by id). A
 // card that gets set without ownKeyId shows the key as kept and sends
