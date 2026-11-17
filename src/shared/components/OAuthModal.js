@@ -4,8 +4,9 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import PropTypes from "prop-types";
 import { Modal, Button, Input } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import { sendCallbackAck } from "@/shared/utils/oauthCallbackAck.js";
+import { takeOAuthCallback } from "@/shared/utils/oauthCallbackFlow.js";
 import {
-  handleRelayedCallback,
   isOwnPopup,
   isTrustedCallbackOrigin,
   openLoginPopup,
@@ -78,8 +79,9 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   // Define all useCallback hooks BEFORE the useEffects that reference them
 
   // Exchange tokens
+  // Resolves true once the connection is saved.
   const exchangeTokens = useCallback(async (code, state) => {
-    if (!authData) return;
+    if (!authData) return false;
     try {
       const res = await fetch(`/api/oauth/${provider}/exchange`, {
         method: "POST",
@@ -98,9 +100,11 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
       setStep("success");
       onSuccess?.();
+      return true;
     } catch (err) {
       setError(err.message);
       setStep("error");
+      return false;
     }
   }, [authData, provider, onSuccess, oauthMeta]);
 
@@ -506,27 +510,34 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     if (!authData) return;
     callbackProcessedRef.current = false; // Reset when authData changes
 
-    // Takes a relayed callback only if it belongs to this login, and only once.
-    const handleCallback = (data, via, source, origin) => handleRelayedCallback(
-      data,
-      {
-        provider,
-        authData,
-        processed: callbackProcessedRef.current,
-        via,
-        fromOwnPopup: isOwnPopup(source, popupRef.current),
-        origin,
-      },
-      {
-        markProcessed: () => { callbackProcessedRef.current = true; },
-        notice: () => setIgnoredCallback(true),
-        fail: (message) => {
-          setError(message);
-          setStep("error");
+    // Takes a relayed callback only if it belongs to this login, and only once,
+    // and tells the /callback page how it went. A callback for another login
+    // gets no ack. On the postMessage path the ack also goes back to the
+    // sending window, for browsers without BroadcastChannel.
+    const handleCallback = (data, via, source, origin) => {
+      const reply = via === "message" && source ? (ack) => source.postMessage(ack, origin) : null;
+      return takeOAuthCallback(
+        data,
+        {
+          provider,
+          authData,
+          processed: callbackProcessedRef.current,
+          via,
+          fromOwnPopup: isOwnPopup(source, popupRef.current),
+          origin,
         },
-        exchange: exchangeTokens,
-      },
-    );
+        {
+          markProcessed: () => { callbackProcessedRef.current = true; },
+          notice: () => setIgnoredCallback(true),
+          onError: (message) => {
+            setError(message);
+            setStep("error");
+          },
+          exchange: exchangeTokens,
+          ack: (status) => sendCallbackAck(data, { status, reply }),
+        },
+      );
+    };
 
     // Method 1: postMessage from popup
     const handleMessage = (event) => {

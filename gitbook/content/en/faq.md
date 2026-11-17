@@ -254,7 +254,7 @@ See [deployment guide](getting-started/installation.md#deployment) for details.
 
 **No telemetry:**
 - No usage tracking
-- No analytics
+- No analytics, unless the operator builds with `NEXT_PUBLIC_GA_ID`
 - No phone-home
 
 **Open source:**
