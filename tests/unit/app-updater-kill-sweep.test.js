@@ -40,7 +40,11 @@ const execFileSync = vi.fn((cmd, args) => {
       ? table.filter((row) => byPid.includes(row.pid))
       : table.filter((row) => /^(node|bun)\.exe$/i.test(row.name || "")))
       .map((r) => ({ ProcessId: r.pid, ParentProcessId: r.ppid, CommandLine: r.args, ...(asksCreated ? { Created: r.created } : {}) }));
-    return JSON.stringify(rows.length === 1 ? rows[0] : rows);
+    const json = JSON.stringify(rows.length === 1 ? rows[0] : rows);
+    // Windows PowerShell 5.1 writes a pipe in the OEM code page unless the script
+    // switches to UTF-8 first; decoded as UTF-8, non-ASCII arrives as U+FFFD.
+    const utf8 = script.startsWith("[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;");
+    return utf8 ? Buffer.from(json, "utf8").toString("utf8") : json.replace(/[^\x00-\x7f]/g, "�");
   }
   return "";
 });
@@ -50,7 +54,7 @@ vi.mock("../../src/lib/tunnel/cloudflare/pid.js", () => ({ loadPid: () => null }
 const { collectAppPids, killAppProcesses } = await import("../../src/lib/appUpdater.js");
 const {
   busyInstallPids, busyInstallMessage, rememberOwnCloudflared, runtimeUpdaterPath,
-  LAUNCHER_PID_ENV, LAUNCHER_STATE_ENV, UPDATER_PID_ENV,
+  LAUNCHER_PID_ENV, LAUNCHER_STATE_ENV, UPDATER_PID_ENV, POWERSHELL_UTF8,
 } = await import("../../src/lib/appProcesses.js");
 
 const require = createRequire(import.meta.url);
@@ -332,6 +336,38 @@ describe("busyInstallPids", () => {
     expect(busyInstallPids(ctx({ platform: "linux" }))).toEqual([]);
     listFails = true;
     expect(busyInstallPids(ctx({ platform: "win32", installRoot: ROOT }))).toEqual([]);
+  });
+});
+
+describe("PowerShell output encoding", () => {
+  // A non-ASCII profile folder, as on many non-English Windows installs.
+  const ROOT = "C:\\Users\\José\\AppData\\Roaming\\npm\\node_modules\\10router";
+  const DATA_WIN = "C:\\Users\\José\\AppData\\Roaming\\9router";
+  const node = '"C:\\Program Files\\nodejs\\node.exe"';
+
+  beforeEach(() => {
+    table = [
+      { pid: LAUNCHER, ppid: 900, created: NOW - 120_000, name: "node.exe", args: `${node} "${ROOT}\\cli.js" --tray` },
+      { pid: SELF, ppid: LAUNCHER, created: SERVER_START, name: "node.exe", args: `${node} "${ROOT}\\app\\custom-server.js"` },
+      { pid: 4001, ppid: LAUNCHER, created: NOW - 50_000, args: `powershell.exe -NoProfile -File "${ROOT}\\src\\cli\\tray\\tray.ps1"` },
+      { pid: 3900, ppid: 1, created: NOW - 600_000, name: "node.exe", args: `${node} "${DATA_WIN}\\runtime\\updater\\updater.js"` },
+      { pid: 7100, ppid: 900, created: NOW - 900_000, name: "node.exe", args: `${node} "${ROOT}\\cli.js"` },
+    ];
+  });
+
+  it("switches every PowerShell script to UTF-8 first, so non-ASCII paths still match", () => {
+    expect(POWERSHELL_UTF8).toBe("[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;");
+    const options = ctx({
+      platform: "win32", installRoot: ROOT, updaterPath: `${DATA_WIN}\\runtime\\updater\\updater.js`,
+      env: { ...ownLauncherEnv({ tray: 4001 }), [UPDATER_PID_ENV]: "3900" },
+    });
+
+    expect(collect(options)).toEqual([4001, 3900, LAUNCHER]);
+    expect(busyInstallPids({ ...options, parent: 1 })).toEqual([LAUNCHER, 7100]);
+
+    const scripts = execFileSync.mock.calls.filter(([cmd]) => cmd === "powershell.exe").map(([, args]) => args.at(-1));
+    expect(scripts).toHaveLength(2);
+    for (const script of scripts) expect(script.startsWith(POWERSHELL_UTF8)).toBe(true);
   });
 });
 

@@ -23,6 +23,7 @@ const LIST_MAX_BUFFER = 16 * 1024 * 1024;
 const KILL_TIMEOUT_MS = 3000;
 const PROCESS_WAIT_MS = 1500;
 const OWN_CLOUDFLARED = Symbol.for("10router.ownCloudflared");
+export const POWERSHELL_UTF8 = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;";
 
 function toPid(value) {
   const pid = typeof value === "number" ? value : /^\d+$/.test(String(value ?? "").trim()) ? Number(value) : NaN;
@@ -100,7 +101,10 @@ function readPosix(pids, now) {
 
 function readWindows(filter) {
   const created = "@{n='Created';e={if ($_.CreationDate) { ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() } else { $null }}}";
-  const script = `Get-CimInstance Win32_Process -Filter "${filter}" | Select-Object ProcessId,ParentProcessId,CommandLine,${created} | ConvertTo-Json -Compress`;
+  // Windows PowerShell 5.1 writes a piped stdout in the OEM code page and its
+  // ConvertTo-Json leaves non-ASCII unescaped, so a profile path like
+  // C:\Users\José would reach Node (decoding UTF-8) mangled and match nothing.
+  const script = `${POWERSHELL_UTF8}Get-CimInstance Win32_Process -Filter "${filter}" | Select-Object ProcessId,ParentProcessId,CommandLine,${created} | ConvertTo-Json -Compress`;
   const infos = new Map();
   try {
     const out = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
