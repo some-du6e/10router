@@ -1,7 +1,7 @@
 // What the /callback page does with an OAuth redirect, without touching window,
 // so tests can drive it with fake timers. The page passes in the browser pieces.
 
-import { callbackAckKey, isCallbackAckFor } from "./oauthCallbackAck.js";
+import { callbackAckKey, isCallbackAckFor, type CallbackAckStatus } from "./oauthCallbackAck.js";
 
 // How long to wait for the dashboard to say it took the callback before showing
 // the URL to paste by hand.
@@ -12,8 +12,9 @@ export const CALLBACK_EXCHANGE_TIMEOUT_MS = 60_000;
 export const CALLBACK_CLOSE_DELAY_MS = 1500;
 export const CALLBACK_DONE_DELAY_MS = 500;
 
-// manual: nothing took the callback. slow: the dashboard took it but hasn't
-// finished. Both show the captured URL. A later ack still moves the page on.
+// manual: nothing took the callback, so the page shows the captured URL to
+// paste. slow: the dashboard took it (and spent the code) but hasn't finished,
+// so there's nothing to paste. A later ack still moves the page on.
 export type CallbackStatus = "processing" | "connecting" | "success" | "done" | "manual" | "slow" | "failed";
 
 export type CallbackData = {
@@ -44,7 +45,41 @@ export type CallbackFlowInput = {
   timers?: Timers;
 };
 
-// Returns a function that stops listening and cancels pending timers.
+type RelayedCallback = Partial<Omit<CallbackData, "fullUrl">> & { fullUrl?: string | null };
+
+// Whether the connect dialog has anything to do with a relayed callback.
+export function isTakeableCallback(data: RelayedCallback | null | undefined): boolean {
+  return Boolean(data && (data.error || data.token || data.code));
+}
+
+export type TakeCallbackInput = {
+  // Resolves true once the connection is saved.
+  exchange: (code: string, state: string | null) => Promise<boolean>;
+  ack: (status: CallbackAckStatus) => void;
+  onError: (message: string) => void;
+};
+
+// The connect dialog's side: acks "received" before the exchange, so the page
+// waits through a slow one, then "saved" or "failed". A provider error acks
+// "failed" without an exchange.
+export async function takeOAuthCallback(
+  data: RelayedCallback,
+  { exchange, ack, onError }: TakeCallbackInput,
+): Promise<void> {
+  if (data.error) {
+    ack("failed");
+    onError(data.errorDescription || data.error);
+    return;
+  }
+  const code = data.token || data.code;
+  if (!code) return;
+  ack("received");
+  const saved = await exchange(code, data.state ?? null);
+  ack(saved ? "saved" : "failed");
+}
+
+// The /callback page's side. Returns a function that stops listening and
+// cancels pending timers.
 export function runOAuthCallback({
   params,
   href,
@@ -68,7 +103,7 @@ export function runOAuthCallback({
   // Takes the code out of this tab's address bar and its back/forward entry
   // before anything else runs, so scripts that read location later don't see
   // it. It can't remove the URL from the browser's global history, autocomplete
-  // or sync, which recorded it on load. The manual screens show the copy kept
+  // or sync, which recorded it on load. The manual screen shows the copy kept
   // here.
   replaceState();
   setManualUrl(data.fullUrl);

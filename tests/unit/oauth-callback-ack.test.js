@@ -44,7 +44,7 @@ describe("OAuth callback ack over BroadcastChannel", () => {
   it("reaches the /callback page with that callback's key", async () => {
     const onMessage = vi.fn();
     listen(onMessage);
-    sendCallbackAck(CALLBACK);
+    sendCallbackAck(CALLBACK, { status: "saved" });
     await waitFor(() => onMessage.mock.calls.length > 0);
     expect(onMessage).toHaveBeenCalledOnce();
     const [ack] = onMessage.mock.calls[0];
@@ -73,7 +73,7 @@ describe("OAuth callback ack over BroadcastChannel", () => {
     const onMessage = vi.fn();
     const stop = listen(onMessage);
     stop();
-    sendCallbackAck(CALLBACK);
+    sendCallbackAck(CALLBACK, { status: "saved" });
     await settle();
     expect(onMessage).not.toHaveBeenCalled();
   });
@@ -95,12 +95,13 @@ describe("OAuth callback ack over postMessage", () => {
 
   it("replies on the channel the callback came in on", () => {
     const reply = vi.fn();
-    sendCallbackAck(CALLBACK, { reply, Channel: null });
+    sendCallbackAck(CALLBACK, { status: "saved", reply, Channel: null });
     expect(reply).toHaveBeenCalledWith({ type: OAUTH_CALLBACK_ACK_TYPE, key: "state:s1", status: "saved" });
   });
 
   it("survives a reply to a window that is gone", () => {
     expect(() => sendCallbackAck(CALLBACK, {
+      status: "saved",
       reply: () => {
         throw new Error("closed");
       },
@@ -141,7 +142,7 @@ describe("without a working BroadcastChannel", () => {
     it(`still acks by reply when BroadcastChannel is ${name}`, () => {
       vi.stubGlobal("BroadcastChannel", value);
       const reply = vi.fn();
-      expect(() => sendCallbackAck(CALLBACK, { reply })).not.toThrow();
+      expect(() => sendCallbackAck(CALLBACK, { status: "saved", reply })).not.toThrow();
       expect(reply).toHaveBeenCalledWith(ack);
     });
 

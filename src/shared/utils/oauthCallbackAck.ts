@@ -47,7 +47,7 @@ export function isCallbackAckFor(message: unknown, key: string): message is Call
 }
 
 type SendOptions = {
-  status?: CallbackAckStatus;
+  status: CallbackAckStatus;
   // Answers on the channel the callback came in on (postMessage source).
   reply?: ((ack: CallbackAck) => void) | null;
   Channel?: ChannelCtor | null;
@@ -55,7 +55,7 @@ type SendOptions = {
 
 export function sendCallbackAck(
   callback: CallbackIdentity,
-  { status = "saved", reply = null, Channel = globalThis.BroadcastChannel }: SendOptions = {},
+  { status, reply = null, Channel = globalThis.BroadcastChannel }: SendOptions,
 ): void {
   const ack: CallbackAck = { type: OAUTH_CALLBACK_ACK_TYPE, key: callbackAckKey(callback), status };
   if (reply) {

@@ -5,6 +5,7 @@ import PropTypes from "prop-types";
 import { Modal, Button, Input } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { sendCallbackAck } from "@/shared/utils/oauthCallbackAck.js";
+import { isTakeableCallback, takeOAuthCallback } from "@/shared/utils/oauthCallbackFlow.js";
 
 // Providers using the dynamic-port local callback proxy.
 // Browser OAuth: popup → auto callback → auto exchange → poll-status.
@@ -504,25 +505,16 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     // reply: answers the /callback page on the postMessage path.
     const handleCallback = async (data, reply) => {
       if (callbackProcessedRef.current) return; // Already processed
-
-      const { code, token, state, error: callbackError, errorDescription } = data;
-
-      if (callbackError) {
-        callbackProcessedRef.current = true;
-        sendCallbackAck(data, { status: "failed", reply });
-        setError(errorDescription || callbackError);
-        setStep("error");
-        return;
-      }
-
-      if (token || code) {
-        callbackProcessedRef.current = true;
-        // "received" keeps the page waiting through a slow exchange; the final
-        // ack tells it whether to close or to say the sign-in failed.
-        sendCallbackAck(data, { status: "received", reply });
-        const saved = await exchangeTokens(token || code, state);
-        sendCallbackAck(data, { status: saved ? "saved" : "failed", reply });
-      }
+      if (!isTakeableCallback(data)) return;
+      callbackProcessedRef.current = true;
+      await takeOAuthCallback(data, {
+        exchange: exchangeTokens,
+        ack: (status) => sendCallbackAck(data, { status, reply }),
+        onError: (message) => {
+          setError(message);
+          setStep("error");
+        },
+      });
     };
 
     // Method 1: postMessage from popup

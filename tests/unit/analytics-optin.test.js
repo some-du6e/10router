@@ -104,18 +104,13 @@ describe("Docker builds", () => {
   });
 });
 
-// The dialog has no render test; these keep the ack from getting lost when
-// handleCallback is rewritten.
+// The dialog has no render test. The ack order is tested on takeOAuthCallback
+// (oauth-callback-flow.test.js); this only checks the dialog uses it.
 describe("connect dialog wiring", () => {
-  it("acks received before the exchange and its outcome after, and replies to the popup", () => {
+  it("takes callbacks through takeOAuthCallback, acking with the reply", () => {
     const modal = read("src/shared/components/OAuthModal.js");
-    const received = modal.indexOf('sendCallbackAck(data, { status: "received", reply });');
-    const exchange = modal.indexOf("const saved = await exchangeTokens(token || code, state);");
-    const outcome = modal.indexOf('sendCallbackAck(data, { status: saved ? "saved" : "failed", reply });');
-    expect(received).toBeGreaterThan(-1);
-    expect(exchange).toBeGreaterThan(received);
-    expect(outcome).toBeGreaterThan(exchange);
-    expect(modal).toMatch(/sendCallbackAck\(data, \{ status: "failed", reply \}\);\s*setError\(errorDescription \|\| callbackError\)/);
+    expect(modal).toMatch(/await takeOAuthCallback\(data, \{/);
+    expect(modal).toMatch(/ack: \(status\) => sendCallbackAck\(data, \{ status, reply \}\)/);
     expect(modal).toMatch(/event\.source\?\.postMessage\(ack, event\.origin\)/);
   });
 });

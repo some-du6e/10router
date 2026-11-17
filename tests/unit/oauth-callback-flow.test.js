@@ -4,7 +4,9 @@ import {
   CALLBACK_CLOSE_DELAY_MS,
   CALLBACK_DONE_DELAY_MS,
   CALLBACK_EXCHANGE_TIMEOUT_MS,
+  isTakeableCallback,
   runOAuthCallback,
+  takeOAuthCallback,
 } from "../../src/shared/utils/oauthCallbackFlow.js";
 import { callbackAckKey, OAUTH_CALLBACK_ACK_TYPE } from "../../src/shared/utils/oauthCallbackAck.js";
 
@@ -170,6 +172,20 @@ describe("/callback page during a slow exchange", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("moves from the manual screen to connecting when received comes late, then closes when saved", () => {
+    const tab = open("?code=abc123&state=s1");
+    vi.advanceTimersByTime(CALLBACK_ACK_TIMEOUT_MS);
+    expect(tab.status).toBe("manual");
+    tab.ack({ state: "s1" }, "received");
+    expect(tab.status).toBe("connecting");
+    tab.ack({ state: "s1" }, "saved");
+    expect(tab.status).toBe("success");
+    vi.advanceTimersByTime(CALLBACK_CLOSE_DELAY_MS + CALLBACK_DONE_DELAY_MS);
+    expect(tab.closed).toBe(1);
+    expect(tab.status).toBe("done");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("says the sign-in failed when the exchange fails", () => {
     const tab = open("?code=abc123&state=s1");
     tab.ack({ state: "s1" }, "received");
@@ -183,17 +199,79 @@ describe("/callback page during a slow exchange", () => {
     expect(tab.closed).toBe(0);
   });
 
-  it("shows the URL as still connecting once the exchange runs past its limit", () => {
+  it("says it's still connecting once the exchange runs past its limit", () => {
     const tab = open("?code=abc123&state=s1");
     tab.ack({ state: "s1" }, "received");
     vi.advanceTimersByTime(CALLBACK_EXCHANGE_TIMEOUT_MS - 1);
     expect(tab.status).toBe("connecting");
     vi.advanceTimersByTime(1);
     expect(tab.status).toBe("slow");
-    expect(tab.manualUrl).toBe(tab.href);
     expect(vi.getTimerCount()).toBe(0);
     // A final ack after that still lands.
     tab.ack({ state: "s1" }, "saved");
     expect(tab.status).toBe("success");
+  });
+});
+
+describe("connect dialog taking a relayed callback", () => {
+  // Records acks and errors, and what had been acked when the exchange started.
+  function dialog(saved) {
+    const d = { acks: [], errors: [], exchanges: [], acksAtExchange: null };
+    d.input = {
+      exchange: async (code, state) => {
+        d.acksAtExchange = [...d.acks];
+        d.exchanges.push({ code, state });
+        return saved;
+      },
+      ack: (status) => d.acks.push(status),
+      onError: (message) => d.errors.push(message),
+    };
+    return d;
+  }
+
+  it("acks received before the exchange and saved after it succeeds", async () => {
+    const d = dialog(true);
+    await takeOAuthCallback({ code: "abc123", state: "s1" }, d.input);
+    expect(d.acksAtExchange).toEqual(["received"]);
+    expect(d.exchanges).toEqual([{ code: "abc123", state: "s1" }]);
+    expect(d.acks).toEqual(["received", "saved"]);
+    expect(d.errors).toEqual([]);
+  });
+
+  it("acks failed after an exchange that fails", async () => {
+    const d = dialog(false);
+    await takeOAuthCallback({ code: "abc123", state: "s1" }, d.input);
+    expect(d.acksAtExchange).toEqual(["received"]);
+    expect(d.acks).toEqual(["received", "failed"]);
+  });
+
+  it("exchanges a token in preference to a code, with no state", async () => {
+    const d = dialog(true);
+    await takeOAuthCallback({ token: "tok123", code: "abc123" }, d.input);
+    expect(d.exchanges).toEqual([{ code: "tok123", state: null }]);
+  });
+
+  it("acks a provider error as failed without exchanging", async () => {
+    const d = dialog(true);
+    await takeOAuthCallback({ error: "access_denied", errorDescription: "User said no", code: "abc123" }, d.input);
+    expect(d.acks).toEqual(["failed"]);
+    expect(d.exchanges).toEqual([]);
+    expect(d.errors).toEqual(["User said no"]);
+
+    const bare = dialog(true);
+    await takeOAuthCallback({ error: "access_denied" }, bare.input);
+    expect(bare.errors).toEqual(["access_denied"]);
+  });
+
+  it("does nothing for a callback without a code, token or error", async () => {
+    const d = dialog(true);
+    expect(isTakeableCallback({ state: "s1" })).toBe(false);
+    expect(isTakeableCallback(null)).toBe(false);
+    expect(isTakeableCallback({ code: "abc123" })).toBe(true);
+    expect(isTakeableCallback({ error: "access_denied" })).toBe(true);
+    await takeOAuthCallback({ state: "s1" }, d.input);
+    expect(d.acks).toEqual([]);
+    expect(d.exchanges).toEqual([]);
+    expect(d.errors).toEqual([]);
   });
 });
