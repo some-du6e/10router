@@ -10,7 +10,8 @@ import crypto from "crypto";
 // - A symlinked config (dotfiles repos) is written through to the file it points
 //   at, a dangling link included, so the link stays a link.
 // - Run as root (a container writing a mounted home), the new file keeps the old
-//   file's owner, so the tool's user can still read it.
+//   file's owner, or for a new file the directory's owner, so the tool's user can
+//   still read it.
 // - Where a rename can't replace the target (a single-file bind mount: EBUSY or
 //   EXDEV; Windows with the file open: EPERM), the file is written in place,
 //   after it is made owner-only.
@@ -30,9 +31,20 @@ async function resolveTarget(filePath) {
       if (error?.code === "EINVAL" || error?.code === "ENOENT" || error?.code === "UNKNOWN") return target;
       throw error;
     }
-    target = path.resolve(path.dirname(target), link);
+    // A relative link is relative to the directory the link really sits in, which
+    // differs from path.dirname when that directory is itself reached via a symlink.
+    target = path.resolve(await realDir(path.dirname(target)), link);
   }
   throw Object.assign(new Error(`Too many symbolic links: ${filePath}`), { code: "ELOOP" });
+}
+
+async function realDir(dir) {
+  try {
+    return await fs.realpath(dir);
+  } catch (error) {
+    if (error?.code === "ENOENT") return dir;
+    throw error;
+  }
 }
 
 async function statOrNull(target) {
@@ -59,9 +71,12 @@ export async function writePrivateFile(filePath, content, encoding = "utf-8") {
   try {
     // The umask can only remove bits, but say it outright.
     if (!isWindows()) await fs.chmod(tmp, 0o600);
+    // As root, a new file belongs to whoever owns the file it replaces or, for a
+    // first write, the directory it lands in (a mounted home stays its user's).
     const runningAsRoot = typeof process.getuid === "function" && process.getuid() === 0;
-    if (existing && runningAsRoot && (existing.uid !== 0 || existing.gid !== 0)) {
-      await fs.chown(tmp, existing.uid, existing.gid);
+    const owner = runningAsRoot ? existing || (await statOrNull(path.dirname(target))) : null;
+    if (owner && (owner.uid !== 0 || owner.gid !== 0)) {
+      await fs.chown(tmp, owner.uid, owner.gid);
     }
     try {
       await fs.rename(tmp, target);

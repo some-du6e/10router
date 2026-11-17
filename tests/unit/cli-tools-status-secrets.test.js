@@ -351,6 +351,34 @@ describe("a key the status can't show is kept on Apply", () => {
   });
 });
 
+describe("the key a card preselects", () => {
+  const apiKeys = [{ id: "k1", key: OWN_KEY }, { id: "k2", key: "sk-own-client-key-0002" }];
+
+  it("one of our keys: that key, no keep option", async () => {
+    const { initialKeySelection } = await import("../../src/lib/cliTools/keepKey.js");
+    expect(initialKeySelection({ keyStatus: { set: true, ownKeyId: "k2" }, pointsHere: false, apiKeys })).toEqual({ value: "sk-own-client-key-0002", label: null });
+    // The key list hasn't loaded yet: wait.
+    expect(initialKeySelection({ keyStatus: { set: true, ownKeyId: "k2" }, pointsHere: true, apiKeys: [] })).toBeNull();
+  });
+
+  it("another key while the tool points here: keep it", async () => {
+    const { initialKeySelection, KEEP_EXISTING_KEY, KEEP_LABEL_HERE } = await import("../../src/lib/cliTools/keepKey.js");
+    expect(initialKeySelection({ keyStatus: { set: true, ownKeyId: null }, pointsHere: true, apiKeys })).toEqual({ value: KEEP_EXISTING_KEY, label: KEEP_LABEL_HERE });
+  });
+
+  it("another key (another gateway's, or a deleted one) while the tool points elsewhere: our first key, the stored one still offered", async () => {
+    const { initialKeySelection, KEEP_LABEL_ELSEWHERE } = await import("../../src/lib/cliTools/keepKey.js");
+    expect(initialKeySelection({ keyStatus: { set: true, ownKeyId: null }, pointsHere: false, apiKeys })).toEqual({ value: OWN_KEY, label: KEEP_LABEL_ELSEWHERE });
+    expect(initialKeySelection({ keyStatus: { set: true, ownKeyId: null }, pointsHere: false, apiKeys: [] })).toBeNull();
+  });
+
+  it("no stored key: nothing to preselect, no keep option", async () => {
+    const { initialKeySelection } = await import("../../src/lib/cliTools/keepKey.js");
+    expect(initialKeySelection({ keyStatus: { set: false, ownKeyId: null }, pointsHere: true, apiKeys })).toEqual({ value: null, label: null });
+    expect(initialKeySelection({ keyStatus: undefined, pointsHere: false, apiKeys })).toEqual({ value: null, label: null });
+  });
+});
+
 describe("a kept key never follows a base URL to another host", () => {
   const ATTACKER = "https://attacker.example.net/v1";
   const FOREIGN = "sk-placeholder-foreign-key";
@@ -405,6 +433,62 @@ describe("a kept key never follows a base URL to another host", () => {
     const res = await post("jcode-settings", { baseUrl: ATTACKER, apiKey: KEEP_EXISTING_KEY, models: ["m1"] });
     expect(res.status).toBe(400);
     expect(fs.readFileSync(path.join(home, ".jcode/config.toml"), "utf8")).not.toContain("attacker.example.net");
+  });
+
+  it("a request sent to the attacker's own host doesn't make that host 'this instance'", async () => {
+    const { KEEP_EXISTING_KEY } = await import("../../src/lib/cliTools/keepKey.js");
+    write(".openclaw/openclaw.json", { models: { providers: { "10router": { baseUrl: "https://other.example.com/v1", apiKey: FOREIGN } } } });
+    const { POST } = await import("../../src/app/api/cli-tools/openclaw-settings/route.js");
+    const res = await POST(
+      new Request("https://attacker.example.net/x", {
+        method: "POST",
+        headers: { host: "attacker.example.net", "x-forwarded-host": "attacker.example.net" },
+        body: JSON.stringify({ baseUrl: ATTACKER, apiKey: KEEP_EXISTING_KEY, model: "m1" }),
+      })
+    );
+    expect(res.status).toBe(400);
+    expect(readJsonFile(".openclaw/openclaw.json").models.providers["10router"].baseUrl).toBe("https://other.example.com/v1");
+  });
+
+  it("the Tailscale URL counts only while the Tailscale manager has it enabled", async () => {
+    const { getSettings } = await import("@/lib/localDb");
+    const { mayKeepStoredKey } = await import("../../src/lib/cliTools/keepKeyTarget.js");
+    const funnel = "https://node.tailnet-placeholder.ts.net";
+    getSettings.mockResolvedValueOnce({ tailscaleEnabled: true, tailscaleUrl: funnel });
+    expect(await mayKeepStoredKey(`${funnel}/v1`, "https://other.example.com")).toBe(true);
+    // A tailscaleUrl without the manager's enabled flag (the shape a PATCH would
+    // have produced; PATCH /api/settings now refuses both) isn't trusted.
+    getSettings.mockResolvedValueOnce({ tailscaleEnabled: false, tailscaleUrl: ATTACKER });
+    expect(await mayKeepStoredKey(ATTACKER, "https://other.example.com")).toBe(false);
+  });
+
+  it("claude: only the env keys the card writes are accepted", async () => {
+    write(".claude/settings.json", { env: { ANTHROPIC_BASE_URL: "http://localhost:20128/v1", ANTHROPIC_AUTH_TOKEN: OWN_KEY } });
+    for (const key of ["HTTPS_PROXY", "HTTP_PROXY", "NODE_TLS_REJECT_UNAUTHORIZED", "NODE_OPTIONS", "ANTHROPIC_API_KEY"]) {
+      const res = await post("claude-settings", { env: { ANTHROPIC_BASE_URL: "http://localhost:20128/v1", [key]: "x" } });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain(key);
+      expect(readJsonFile(".claude/settings.json").env[key]).toBeUndefined();
+    }
+    const ok = await post("claude-settings", {
+      env: {
+        ANTHROPIC_BASE_URL: "http://localhost:20128/v1",
+        ANTHROPIC_AUTH_TOKEN: OWN_KEY,
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "cc/opus-placeholder",
+        API_TIMEOUT_MS: "600000",
+      },
+    });
+    expect(ok.status).toBe(200);
+  });
+
+  it.each([
+    ["ANTHROPIC_API_KEY", { env: { ANTHROPIC_BASE_URL: "https://other.example.com/v1", ANTHROPIC_API_KEY: FOREIGN } }],
+    ["apiKeyHelper", { apiKeyHelper: "print-placeholder-key", env: { ANTHROPIC_BASE_URL: "https://other.example.com/v1" } }],
+  ])("claude: a stored %s can't be pointed at a foreign base URL, even with a new token", async (_name, stored) => {
+    write(".claude/settings.json", stored);
+    const res = await post("claude-settings", { env: { ANTHROPIC_BASE_URL: ATTACKER, ANTHROPIC_AUTH_TOKEN: OWN_KEY } });
+    expect(res.status).toBe(400);
+    expect(readJsonFile(".claude/settings.json").env.ANTHROPIC_BASE_URL).toBe("https://other.example.com/v1");
   });
 
   it("the shared rule: same base, loopback and this instance's configured URLs only", async () => {

@@ -7,7 +7,7 @@ import BaseUrlSelect from "./BaseUrlSelect";
 import { rememberEndpoint } from "./cliEndpointPresets";
 import ApiKeySelect from "./ApiKeySelect";
 import { matchKnownEndpoint } from "./cliEndpointMatch";
-import { KEEP_EXISTING_KEY } from "@/lib/cliTools/keepKey.js";
+import { KEEP_EXISTING_KEY, initialKeySelection, keepOptionLabel } from "@/lib/cliTools/keepKey.js";
 
 export default function JcodeToolCard({
   tool,
@@ -93,22 +93,17 @@ export default function JcodeToolCard({
   // the provider points at this instance; one for another endpoint (another
   // gateway's, or a deleted key) stays selectable but isn't the default.
   const keyStatus = jcodeStatus?.apiKeyStatus;
-  const keptCustomKey = !!keyStatus?.set && !keyStatus?.ownKeyId;
-  const keptKeyLabel = configStatus === "configured" ? "Custom key (kept)" : "Custom key (not one of yours)";
+  const keyPointsHere = configStatus === "configured";
+  const keptKeyLabel = keepOptionLabel({ keyStatus, pointsHere: keyPointsHere });
+  const keptCustomKey = !!keptKeyLabel;
   const hasInitializedKey = useRef(false);
   useEffect(() => {
     if (hasInitializedKey.current || !jcodeStatus?.installed) return;
-    if (keyStatus?.ownKeyId) {
-      const own = apiKeys?.find((k) => k.id === keyStatus.ownKeyId);
-      if (!own) return; // wait for the key list
-      setSelectedApiKey(own.key);
-    } else if (keyStatus?.set) {
-      if (configStatus === "configured") setSelectedApiKey(KEEP_EXISTING_KEY);
-      else if (apiKeys?.length > 0) setSelectedApiKey(apiKeys[0].key);
-      else return; // wait for the key list
-    }
+    const selection = initialKeySelection({ keyStatus, pointsHere: keyPointsHere, apiKeys });
+    if (!selection) return; // wait for the key list
+    if (selection.value) setSelectedApiKey(selection.value);
     hasInitializedKey.current = true;
-  }, [jcodeStatus, keyStatus, configStatus, apiKeys]);
+  }, [jcodeStatus, keyStatus, keyPointsHere, apiKeys]);
 
   const checkJcodeStatus = async () => {
     setCheckingJcode(true);

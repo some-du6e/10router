@@ -7,7 +7,7 @@ import BaseUrlSelect from "./BaseUrlSelect";
 import { rememberEndpoint } from "./cliEndpointPresets";
 import ApiKeySelect from "./ApiKeySelect";
 import { matchKnownEndpoint } from "./cliEndpointMatch";
-import { KEEP_EXISTING_KEY } from "@/lib/cliTools/keepKey.js";
+import { KEEP_EXISTING_KEY, initialKeySelection, keepOptionLabel } from "@/lib/cliTools/keepKey.js";
 
 export default function OpenClawToolCard({
   tool,
@@ -103,21 +103,15 @@ export default function OpenClawToolCard({
   const providers = openclawStatus?.settings?.models?.providers;
   const keyProvider = providers?.["10router"]?.apiKeyStatus?.set ? providers["10router"] : providers?.["9router"] || providers?.["10router"];
   const keyStatus = keyProvider?.apiKeyStatus;
-  const keptCustomKey = !!keyStatus?.set && !keyStatus?.ownKeyId;
-  const keyPointsHere = !!keyProvider?.baseUrl && matchKnownEndpoint(keyProvider.baseUrl, { tunnelPublicUrl, tailscaleUrl });
-  const keptKeyLabel = keyPointsHere ? "Custom key (kept)" : "Custom key (not one of yours)";
+  const keyPointsHere = !!keyProvider?.baseUrl && !!matchKnownEndpoint(keyProvider.baseUrl, { tunnelPublicUrl, tailscaleUrl });
+  const keptKeyLabel = keepOptionLabel({ keyStatus, pointsHere: keyPointsHere });
+  const keptCustomKey = !!keptKeyLabel;
   const hasInitializedKey = useRef(false);
   useEffect(() => {
     if (hasInitializedKey.current || !openclawStatus?.installed) return;
-    if (keyStatus?.ownKeyId) {
-      const own = apiKeys?.find((k) => k.id === keyStatus.ownKeyId);
-      if (!own) return; // wait for the key list
-      setSelectedApiKey(own.key);
-    } else if (keyStatus?.set) {
-      if (keyPointsHere) setSelectedApiKey(KEEP_EXISTING_KEY);
-      else if (apiKeys?.length > 0) setSelectedApiKey(apiKeys[0].key);
-      else return; // wait for the key list
-    }
+    const selection = initialKeySelection({ keyStatus, pointsHere: keyPointsHere, apiKeys });
+    if (!selection) return; // wait for the key list
+    if (selection.value) setSelectedApiKey(selection.value);
     hasInitializedKey.current = true;
   }, [openclawStatus, keyStatus, keyPointsHere, apiKeys]);
 

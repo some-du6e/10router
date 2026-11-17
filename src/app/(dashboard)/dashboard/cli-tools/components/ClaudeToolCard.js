@@ -7,7 +7,7 @@ import BaseUrlSelect from "./BaseUrlSelect";
 import { rememberEndpoint } from "./cliEndpointPresets";
 import ApiKeySelect from "./ApiKeySelect";
 import { matchKnownEndpoint } from "./cliEndpointMatch";
-import { KEEP_EXISTING_KEY } from "@/lib/cliTools/keepKey.js";
+import { KEEP_EXISTING_KEY, initialKeySelection, keepOptionLabel } from "@/lib/cliTools/keepKey.js";
 
 const CLOUD_URL = process.env.NEXT_PUBLIC_CLOUD_URL;
 
@@ -140,22 +140,16 @@ export default function ClaudeToolCard({
   // token: one of our keys comes back by id. Another key is kept by default only
   // while settings.json points at this instance; one for another endpoint (another
   // gateway's, or a deleted key) stays selectable but isn't the default.
-  const keptCustomKey = !!claudeStatus?.authToken?.set && !claudeStatus?.authToken?.ownKeyId;
-  const keptKeyLabel = configStatus === "configured" ? "Custom key (kept)" : "Custom key (not one of yours)";
+  const keyPointsHere = configStatus === "configured";
+  const keptKeyLabel = keepOptionLabel({ keyStatus: claudeStatus?.authToken, pointsHere: keyPointsHere });
+  const keptCustomKey = !!keptKeyLabel;
   useEffect(() => {
     if (hasInitializedKey.current || !claudeStatus?.installed) return;
-    const auth = claudeStatus.authToken;
-    if (auth?.ownKeyId) {
-      const own = apiKeys?.find((k) => k.id === auth.ownKeyId);
-      if (!own) return; // wait for the key list
-      setSelectedApiKey(own.key);
-    } else if (auth?.set) {
-      if (configStatus === "configured") setSelectedApiKey(KEEP_EXISTING_KEY);
-      else if (apiKeys?.length > 0) setSelectedApiKey(apiKeys[0].key);
-      else return; // wait for the key list
-    }
+    const selection = initialKeySelection({ keyStatus: claudeStatus.authToken, pointsHere: keyPointsHere, apiKeys });
+    if (!selection) return; // wait for the key list
+    if (selection.value) setSelectedApiKey(selection.value);
     hasInitializedKey.current = true;
-  }, [claudeStatus, apiKeys, configStatus]);
+  }, [claudeStatus, apiKeys, keyPointsHere]);
 
   const checkClaudeStatus = async () => {
     setCheckingClaude(true);

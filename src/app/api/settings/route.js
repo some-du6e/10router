@@ -29,6 +29,10 @@ const SETTINGS_RESPONSE_HEADERS = {
 
 // Secrets must never be mass-assigned from request body (CWE-915)
 const PROTECTED_SETTING_KEYS = ["password", "usageHubKeyHash", "usageHubEnabled"];
+// Written only by the tunnel and Tailscale managers (src/lib/tunnel/*/manager.js),
+// from the URL the tunnel actually came up on. The guard and the CLI tools page
+// treat those URLs as this instance, so a PATCH must never set them.
+const INFRASTRUCTURE_SETTING_KEYS = ["tunnelEnabled", "tunnelUrl", "tunnelProvider", "tailscaleEnabled", "tailscaleUrl"];
 
 export async function GET() {
   try {
@@ -59,6 +63,13 @@ export async function PATCH(request) {
 
     // Strip protected secrets before any internal handling sets them
     for (const key of PROTECTED_SETTING_KEYS) delete body[key];
+    const infrastructure = INFRASTRUCTURE_SETTING_KEYS.filter((key) => Object.prototype.hasOwnProperty.call(body, key));
+    if (infrastructure.length) {
+      return NextResponse.json(
+        { error: `${infrastructure.join(", ")} can't be set here: the tunnel and Tailscale controls set them` },
+        { status: 400 }
+      );
+    }
 
     let passwordChanged = false;
 

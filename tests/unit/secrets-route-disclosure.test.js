@@ -184,10 +184,10 @@ describe("translator preview step 3", { timeout: 30000 }, () => {
     }
   });
 
-    // Derived credentials match no stored value, so only the header-name and
+  // Derived credentials match no stored value, so only the header-name and
   // query-param rules can catch them: a credential header (Authorization, *-token)
   // and a secret param (sig). A derived value under a neutral header name, or in
-  // the body, is not recognised; the PR says so.
+  // the body, is not recognised.
   it("redacts derived credentials by header name and query-param name", async () => {
     const KEY = "stored-key-placeholder-000111";
     const basic = `Basic ${Buffer.from(`user:${KEY}`).toString("base64")}`;

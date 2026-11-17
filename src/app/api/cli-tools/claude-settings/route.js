@@ -23,6 +23,20 @@ const STATUS_ENV_KEYS = [
   ...CLI_TOOLS.claude.defaultModels.map((m) => m.envKey).filter(Boolean),
 ];
 
+// The env keys the card writes (base URL, key, model mappings, context cap). Any
+// other key is refused: HTTPS_PROXY or NODE_TLS_REJECT_UNAUTHORIZED would reroute
+// the key, NODE_OPTIONS would run code on this host.
+const WRITABLE_ENV_KEYS = new Set([...STATUS_ENV_KEYS, "ANTHROPIC_AUTH_TOKEN", "API_TIMEOUT_MS"]);
+
+// Stored credentials a base URL change would hand to the new host.
+function storedCredentials(settings) {
+  const env = settings?.env || {};
+  return {
+    authToken: !!env.ANTHROPIC_AUTH_TOKEN,
+    other: !!env.ANTHROPIC_API_KEY || !!settings?.apiKeyHelper,
+  };
+}
+
 // Exa MCP def — reuse from coworkPlugins (DRY).
 const EXA_PLUGIN = DEFAULT_PLUGINS.find((p) => p.name === "exa");
 const buildExaMcpEntry = () => ({
@@ -142,11 +156,18 @@ export async function POST(request) {
   try {
     const { env, exaMcpEnabled, maxContextTokens } = await request.json();
     
-    if (!env || typeof env !== "object") {
+    if (!env || typeof env !== "object" || Array.isArray(env)) {
       return NextResponse.json(
         { error: "Invalid env object" },
         { status: 400 }
       );
+    }
+    const refused = Object.keys(env).filter((key) => !WRITABLE_ENV_KEYS.has(key));
+    if (refused.length) {
+      return NextResponse.json({ error: `These env keys can't be set here: ${refused.join(", ")}` }, { status: 400 });
+    }
+    if (Object.values(env).some((value) => typeof value !== "string" && typeof value !== "number")) {
+      return NextResponse.json({ error: "Env values must be strings" }, { status: 400 });
     }
 
     const settingsPath = getClaudeSettingsPath();
@@ -184,9 +205,12 @@ export async function POST(request) {
       }
       delete env.ANTHROPIC_AUTH_TOKEN;
     }
-    const keepsStoredToken = env.ANTHROPIC_AUTH_TOKEN === undefined && !!storedEnv.ANTHROPIC_AUTH_TOKEN;
+    // ANTHROPIC_API_KEY and apiKeyHelper stay whatever the body sends, so they
+    // count as kept credentials too.
+    const stored = storedCredentials(currentSettings);
+    const keepsStoredCredential = (env.ANTHROPIC_AUTH_TOKEN === undefined && stored.authToken) || stored.other;
     if (
-      keepsStoredToken &&
+      keepsStoredCredential &&
       env.ANTHROPIC_BASE_URL &&
       !(await mayKeepStoredKey(env.ANTHROPIC_BASE_URL, storedEnv.ANTHROPIC_BASE_URL))
     ) {

@@ -33,17 +33,20 @@ export function isSameBaseUrl(a, b) {
 
 // The public URLs this instance is reachable at: its Cloudflare tunnel, Tailscale
 // URL and configured cloud/base URL. Never the request's Host header, which the
-// caller controls.
+// caller controls. tailscaleUrl and tunnelUrl are written only by the Tailscale and
+// tunnel managers (PATCH /api/settings refuses them), and only count while the
+// manager has them enabled.
 async function ownOrigins() {
   const urls = [process.env.NEXT_PUBLIC_CLOUD_URL, process.env.NEXT_PUBLIC_BASE_URL];
   try {
     const settings = await getSettings();
-    urls.push(settings?.tailscaleUrl);
+    if (settings?.tailscaleEnabled === true) urls.push(settings.tailscaleUrl);
   } catch { /* no settings: loopback only */ }
   try {
     const { getTunnelStatus } = await import("@/lib/tunnel/cloudflare/manager.js");
     const tunnel = await getTunnelStatus();
-    urls.push(tunnel?.publicUrl, tunnel?.tunnelUrl);
+    // Read from the tunnel manager's own state file, not from settings.
+    if (tunnel?.settingsEnabled === true) urls.push(tunnel.publicUrl, tunnel.tunnelUrl);
   } catch { /* no tunnel */ }
   return new Set(urls.map((u) => parse(u)?.origin?.toLowerCase()).filter(Boolean));
 }

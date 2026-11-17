@@ -118,6 +118,21 @@ describe("PATCH /api/settings sensitive request details", () => {
     await PATCH(request({ usageHubKeyHash: "attacker-hash", usageHubEnabled: true, theme: "dark" }));
     expect(mocks.updateSettings).toHaveBeenCalledWith({ theme: "dark" });
   });
+
+  // The guard and the CLI tools page treat these URLs as this instance; only the
+  // tunnel and Tailscale managers may write them.
+  it.each([
+    ["tailscaleUrl", "https://evil.example"],
+    ["tailscaleEnabled", true],
+    ["tunnelUrl", "https://evil.example"],
+    ["tunnelEnabled", true],
+    ["tunnelProvider", "cloudflare"],
+  ])("refuses %s and writes nothing", async (key, value) => {
+    const response = await PATCH(request({ [key]: value, theme: "dark" }));
+    expect(response.status).toBe(400);
+    expect(response.body.error).toContain(key);
+    expect(mocks.updateSettings).not.toHaveBeenCalled();
+  });
 });
 
 describe("PATCH /api/settings session revocation", () => {

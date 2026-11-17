@@ -122,6 +122,14 @@ describe("shared redaction", () => {
     // A URL new URL() can't parse gets the same name rule, not a fixed list.
     expect(redactUrlSecrets("not a url ?exaApiKey=SECRET5&alt=sse")).toBe("not a url ?exaApiKey=[REDACTED]&alt=sse");
     expect(redactQueryParamsInText("see ?tavilyApiKey=SECRET6 and ?q=1", "x")).toBe("see ?tavilyApiKey=x and ?q=1");
+    // A harmless param can't swallow a nested ?key= (a redirect URL in its value),
+    // and a stray ? before the name doesn't hide it.
+    expect(redactQueryParamsInText("GET /cb?next=https://h.example/p?key=SECRET8&x=1", "x")).toBe(
+      "GET /cb?next=https://h.example/p?key=x&x=1"
+    );
+    expect(redactQueryParamsInText("https://h.example/p?a?key=SECRET9", "x")).toBe("https://h.example/p?a?key=x");
+    const { makeRedactor: redactor } = await import("../../src/lib/endpointDetect.ts");
+    expect(redactor("")("upstream said: /v1?redirect=https://h.example/x?api_key=SECRET10")).not.toContain("SECRET10");
     const { makeRedactor } = await import("../../src/lib/endpointDetect.ts");
     expect(makeRedactor("")("Authorization: Bearer abcdefgh1234")).not.toContain("abcdefgh1234");
     expect(makeRedactor("")("https://u.example/p?exaApiKey=SECRET7")).not.toContain("SECRET7");

@@ -7,3 +7,32 @@ export const KEEP_EXISTING_KEY = "__keep_existing_key__";
 export function isKeepExistingKey(value) {
   return value === KEEP_EXISTING_KEY;
 }
+
+export const KEEP_LABEL_HERE = "Custom key (kept)";
+export const KEEP_LABEL_ELSEWHERE = "Custom key (not one of yours)";
+
+// The label of the "keep the stored key" option, or null when there is no stored
+// key the card can't name. keyStatus is a status route's { set, ownKeyId };
+// pointsHere is whether the tool's stored base URL is this instance.
+export function keepOptionLabel({ keyStatus, pointsHere }) {
+  if (!keyStatus?.set || keyStatus.ownKeyId) return null;
+  return pointsHere ? KEEP_LABEL_HERE : KEEP_LABEL_ELSEWHERE;
+}
+
+// What a card preselects when its status arrives: { value, label } (value null =
+// nothing to preselect; label = the keep option's label, or null), or null while
+// the key list it needs hasn't loaded.
+// - One of our keys: that key.
+// - Another key, and the tool points at this instance: keep it.
+// - Another key (another gateway's, or a deleted one), tool points elsewhere: our
+//   first key, with the stored one still offered.
+export function initialKeySelection({ keyStatus, pointsHere, apiKeys }) {
+  const label = keepOptionLabel({ keyStatus, pointsHere });
+  if (keyStatus?.ownKeyId) {
+    const own = apiKeys?.find((k) => k.id === keyStatus.ownKeyId);
+    return own ? { value: own.key, label } : null;
+  }
+  if (!keyStatus?.set) return { value: null, label };
+  if (pointsHere) return { value: KEEP_EXISTING_KEY, label };
+  return apiKeys?.length > 0 ? { value: apiKeys[0].key, label } : null;
+}

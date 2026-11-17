@@ -18,7 +18,9 @@ const SECRET_QUERY_PARAM_SET = new Set(SECRET_QUERY_PARAMS);
 // `?name=value` / `&name=value` inside free text. Group 1 is the `?name=` prefix,
 // group 2 the name; redactQueryParamsInText decides by the same name rule as
 // redactUrlSecrets, so parsed URLs and free text redact the same params.
-const QUERY_PARAM_IN_TEXT_RE = /([?&]([^=&#\s"']+)=)[^&#\s"']*/g;
+// Names and values stop at ?, & and #, so a param can't swallow a nested
+// `?key=` (a redirect URL inside a value), and `?a?key=` is still caught.
+const QUERY_PARAM_IN_TEXT_RE = /([?&]([^=?&#\s"']+)=)[^?&#\s"']*/g;
 
 export function redactQueryParamsInText(text, placeholder = REDACTED) {
   return String(text ?? "").replace(QUERY_PARAM_IN_TEXT_RE, (match, prefix, name) => {

@@ -122,6 +122,34 @@ describe.runIf(posix)("writePrivateFile", () => {
     expect(fs.readFileSync(file, "utf8")).toBe("secret");
   });
 
+  it("run as root, gives a first-time file the directory's owner", async () => {
+    const file = path.join(dir, "new-config.json");
+    const realStat = fsp.stat.bind(fsp);
+    vi.spyOn(process, "getuid").mockReturnValue(0);
+    vi.spyOn(fsp, "stat").mockImplementation(async (target) => {
+      const st = await realStat(target);
+      return target === dir ? { ...st, uid: 1000, gid: 1001 } : st;
+    });
+    const chown = vi.spyOn(fsp, "chown").mockResolvedValue();
+    await writePrivateFile(file, "secret");
+    expect(chown).toHaveBeenCalledTimes(1);
+    expect(chown.mock.calls[0].slice(1)).toEqual([1000, 1001]);
+    expect(fs.readFileSync(file, "utf8")).toBe("secret");
+    expect(modeOf(file)).toBe(0o600);
+  });
+
+  it("resolves a relative link against the directory it really sits in", async () => {
+    // dir/real/sub/config.json -> ../target.json, reached as dir/alias/config.json
+    // where dir/alias -> dir/real/sub. The link means dir/real/target.json.
+    fs.mkdirSync(path.join(dir, "real", "sub"), { recursive: true });
+    fs.symlinkSync(path.join("..", "target.json"), path.join(dir, "real", "sub", "config.json"));
+    fs.symlinkSync(path.join(dir, "real", "sub"), path.join(dir, "alias"));
+    await writePrivateFile(path.join(dir, "alias", "config.json"), "secret");
+    expect(fs.readFileSync(path.join(dir, "real", "target.json"), "utf8")).toBe("secret");
+    expect(fs.existsSync(path.join(dir, "target.json"))).toBe(false);
+    expect(fs.lstatSync(path.join(dir, "real", "sub", "config.json")).isSymbolicLink()).toBe(true);
+  });
+
   it("not root, never chowns", async () => {
     const file = path.join(dir, "config.json");
     fs.writeFileSync(file, "old");
