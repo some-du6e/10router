@@ -237,6 +237,8 @@ describe("drain: a budgeted key's client hangs up mid-stream", () => {
   });
 
   it("keeps the stall watchdog armed while draining", async () => {
+    const work = () => globalThis[Symbol.for("10router.server.backgroundWork")]?.count ?? 0;
+    const before = work();
     const { out, completed, up } = pipe({ drain: true, drainMaxMs: 60_000, stallMs: 80 });
     const reader = out.getReader();
     up.push(messageStart + textBlock("then the upstream went quiet"));
@@ -245,6 +247,23 @@ describe("drain: a budgeted key's client hangs up mid-stream", () => {
     // Only the stall (80 ms) can end this drain; the cap is a minute away.
     await vi.waitFor(() => expect(completed).toHaveLength(1), { timeout: 2000 });
     expect(completed[0][3]).toEqual({ aborted: true });
+    // The failed read still lets go of the shutdown hold (its finally), not at the cap.
+    await vi.waitFor(() => expect(work()).toBe(before));
+  });
+
+  it("holds a graceful shutdown open while it reads, and lets go when the read loop ends", async () => {
+    const work = () => globalThis[Symbol.for("10router.server.backgroundWork")]?.count ?? 0;
+    const before = work();
+    const { up, out, completed } = pipe({ drain: true });
+    const reader = out.getReader();
+    up.push(messageStart + textBlock("hold the shutdown"));
+    await readUntil(reader, "hold the shutdown");
+    await reader.cancel();
+    await tick();
+    expect(work()).toBe(before + 1);
+    up.push(messageDelta(12) + messageStop);
+    await vi.waitFor(() => expect(completed).toHaveLength(1));
+    await vi.waitFor(() => expect(work()).toBe(before));
   });
 
   it("starts from a hang-up seen on the client signal, not just a cancelled body", async () => {
@@ -494,7 +513,8 @@ describe("billing estimates", () => {
     expect(estimateBillingInputTokens(text)).toBeGreaterThan(1000);
     const withImage = { messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: `data:image/png;base64,${"A".repeat(400_000)}` } }] }] };
     expect(estimateBillingInputTokens(withImage)).toBeLessThan(2000);
-    expect(estimateInputTokens(withImage)).toBeGreaterThan(100_000);
+    // The context meter counts the image flat too, not as 100K tokens of text.
+    expect(estimateInputTokens(withImage)).toBeLessThan(2000);
     const anthropicImage = { messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "B".repeat(400_000) } }] }] };
     expect(estimateBillingInputTokens(anthropicImage)).toBeLessThan(2000);
   });

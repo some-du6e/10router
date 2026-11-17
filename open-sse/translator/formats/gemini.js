@@ -1,7 +1,8 @@
 // Gemini helper functions for translator
 
 import { safeParseJSON } from "../concerns/json.js";
-import { OPENAI_BLOCK } from "../schema/index.js";
+import { mergeAllOfMembers } from "../concerns/jsonSchema.js";
+import { OPENAI_BLOCK, JSON_SCHEMA_COMBINATOR, JSON_SCHEMA_DEFS, JSON_SCHEMA_REF } from "../schema/index.js";
 
 // Unsupported JSON Schema constraints that should be removed for Antigravity
 export const UNSUPPORTED_SCHEMA_CONSTRAINTS = [
@@ -19,13 +20,13 @@ export const UNSUPPORTED_SCHEMA_CONSTRAINTS = [
   // Claude rejects these in VALIDATED mode
   "default", "examples",
   // JSON Schema meta keywords
-  "$schema", "$defs", "definitions", "const", "$ref", "$comment",
+  "$schema", JSON_SCHEMA_DEFS.DEFS, JSON_SCHEMA_DEFS.DEFINITIONS, "const", JSON_SCHEMA_REF, "$comment",
   // Annotation keywords (rejected by Gemini/Antigravity - e.g. MCP tool schemas set these)
   "deprecated", "readOnly", "writeOnly",
   // Object validation keywords (not supported)
   "additionalProperties", "propertyNames", "patternProperties", "enumDescriptions",
   // Complex schema keywords (handled by flattenAnyOfOneOf/mergeAllOf)
-  "anyOf", "oneOf", "allOf", "not",
+  JSON_SCHEMA_COMBINATOR.ANY_OF, JSON_SCHEMA_COMBINATOR.ONE_OF, JSON_SCHEMA_COMBINATOR.ALL_OF, "not",
   // Dependency keywords (not supported)
   "dependencies", "dependentSchemas", "dependentRequired",
   // Other unsupported keywords
@@ -200,22 +201,7 @@ function mergeAllOf(obj) {
   if (!obj || typeof obj !== "object") return;
 
   if (obj.allOf && Array.isArray(obj.allOf)) {
-    const merged = {};
-
-    for (const item of obj.allOf) {
-      if (item.properties) {
-        if (!merged.properties) merged.properties = {};
-        Object.assign(merged.properties, item.properties);
-      }
-      if (item.required && Array.isArray(item.required)) {
-        if (!merged.required) merged.required = [];
-        for (const req of item.required) {
-          if (!merged.required.includes(req)) {
-            merged.required.push(req);
-          }
-        }
-      }
-    }
+    const merged = mergeAllOfMembers(obj.allOf);
 
     delete obj.allOf;
     if (merged.properties) obj.properties = { ...obj.properties, ...merged.properties };
@@ -345,7 +331,7 @@ function ensureArrayItems(obj) {
 export function cleanJSONSchemaForAntigravity(schema) {
   if (!schema || typeof schema !== "object") return schema;
 
-  // Mutate directly (schema is only used once per request)
+  // Edits schema in place: callers pass their own copy.
   let cleaned = schema;
 
   // Phase 1: Convert and prepare

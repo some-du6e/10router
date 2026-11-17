@@ -8,6 +8,8 @@ export const HTTP_STATUS = {
   NOT_ACCEPTABLE: 406,
   REQUEST_TIMEOUT: 408,
   CONFLICT: 409,
+  PAYLOAD_TOO_LARGE: 413,
+  UNPROCESSABLE_ENTITY: 422,
   RATE_LIMITED: 429,
   CLIENT_CLOSED_REQUEST: 499,
   SERVER_ERROR: 500,
@@ -91,6 +93,24 @@ export const CACHE_AFFINITY = {
   jitterMs: 250,
 };
 
+// On a custom (OpenAI-/Anthropic-compatible) endpoint, a request error every
+// key would refuse (a prompt longer than the model's context window, a tool
+// schema the upstream rejects) stops the account walk once this many accounts
+// of one model answered it with the same message, instead of trying every key
+// (services/sameRequestError.ts). The message has to read as the request's
+// fault (SAME_REQUEST_ERROR_PATTERNS in errorConfig.js), or the status be 413,
+// and either way pass the vetoes on key, billing, limit and plan wording. Keys
+// on one upstream, reached the same way (same proxy or relay), match up to
+// numbers. When the keys don't all reach one upstream that way, max(this, 2) distinct upstreams must give the very same context or
+// token limit message naming both sizes (two runs of 4+ digits), never a 413.
+// 1 stops at the first such error, only when the keys share one upstream
+// reached the same way (same proxy or relay).
+// Env: SAME_REQUEST_ERROR_STOP_AFTER (0 tries every key, as before, on every
+// node; anything that isn't a whole number falls back to 2).
+export const SAME_REQUEST_ERROR_STOP_AFTER = envInt("SAME_REQUEST_ERROR_STOP_AFTER", 2);
+// The statuses it counts. 401/403/404/429, 5xx and header timeouts never count.
+export const SAME_REQUEST_ERROR_STATUSES = new Set([HTTP_STATUS.BAD_REQUEST, HTTP_STATUS.PAYLOAD_TOO_LARGE, HTTP_STATUS.UNPROCESSABLE_ENTITY]);
+
 // Inter-chunk stall timeout (once tokens are flowing). Generous headroom so
 // slow reasoning models aren't aborted mid-stream. Env: STREAM_STALL_TIMEOUT_MS.
 export const STREAM_STALL_TIMEOUT_MS = envMs("STREAM_STALL_TIMEOUT_MS", 360 * 1000);
@@ -134,8 +154,41 @@ export const RESPONSES_COMPLETION_WAIT_MS = 3000;
 // Time-to-first-token timeout (prompt prefill). Env: STREAM_FIRST_CHUNK_TIMEOUT_MS.
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_MS", 200 * 1000);
 
-// Fetch connect timeout: abort if upstream doesn't return response headers within this duration
+// Fetch connect timeout: abort if upstream doesn't return response headers within this duration.
 export const FETCH_CONNECT_TIMEOUT_MS = envMs("FETCH_CONNECT_TIMEOUT_MS", 60 * 1000);
+
+// A chat call waits for headers on a long prompt's prefill (and a non-streaming
+// one on its whole reply), so it gets one attempt as long as the
+// HEADERS_TIMEOUT_ATTEMPTS attempts of FETCH_CONNECT_TIMEOUT_MS (or of an
+// endpoint's own Timeout) it got while a header timeout was retried on the same
+// key. A stream's default can be set apart. Env: UPSTREAM_STREAM_HEADERS_TIMEOUT_MS.
+export const HEADERS_TIMEOUT_ATTEMPTS = 4;
+const allAttemptsMs = (attemptMs) => Math.min(HEADERS_TIMEOUT_ATTEMPTS * attemptMs, MAX_TIMER_MS);
+export const UPSTREAM_STREAM_HEADERS_TIMEOUT_MS = envMs("UPSTREAM_STREAM_HEADERS_TIMEOUT_MS", allAttemptsMs(FETCH_CONNECT_TIMEOUT_MS));
+
+/**
+ * How long a chat call waits for the upstream's response headers, and the
+ * setting behind it. timeoutMs: an endpoint's own Timeout; attempts: the
+ * attempts its Retries setting gave (Retries + 1), when set. Either makes the
+ * budget that many attempts (HEADERS_TIMEOUT_ATTEMPTS without Retries) of the
+ * Timeout, or of FETCH_CONNECT_TIMEOUT_MS without one.
+ */
+export function upstreamHeadersBudget({ stream = false, timeoutMs = 0, attempts = 0 } = {}) {
+  if (timeoutMs > 0 || attempts > 0) {
+    const n = attempts > 0 ? attempts : HEADERS_TIMEOUT_ATTEMPTS;
+    const what = timeoutMs > 0 ? "the endpoint's Timeout setting" : "FETCH_CONNECT_TIMEOUT_MS";
+    return { ms: Math.min(n * (timeoutMs > 0 ? timeoutMs : FETCH_CONNECT_TIMEOUT_MS), MAX_TIMER_MS), setBy: n === 1 ? what : `${n}x ${what}` };
+  }
+  if (stream) return { ms: UPSTREAM_STREAM_HEADERS_TIMEOUT_MS, setBy: "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS" };
+  return { ms: allAttemptsMs(FETCH_CONNECT_TIMEOUT_MS), setBy: `${HEADERS_TIMEOUT_ATTEMPTS}x FETCH_CONNECT_TIMEOUT_MS` };
+}
+
+// undici's own default headersTimeout. A fetch whose budget is at least this
+// long goes through a dispatcher with that timeout off (utils/proxyFetch.js),
+// so the router's timer is the one that ends it. Not through a SOCKS proxy:
+// undici's SOCKS agent builds its pools without the options, so this limit
+// stays, and ends such a fetch as a header timeout.
+export const UNDICI_HEADERS_TIMEOUT_MS = 300 * 1000;
 
 // Gemini native TTS fetch timeout: abort if Google does not return response headers in time.
 export const GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS = envMs("GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS", 45 * 1000);

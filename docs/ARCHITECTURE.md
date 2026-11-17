@@ -112,9 +112,17 @@ Important compatibility routes:
 - `src/app/api/v1/responses/route.js`
 - `src/app/api/v1/models/route.js`
 - `src/app/api/v1/codex/*` — Codex-native ingress served at `/backend-api/codex`
-  (`responses` and `responses/compact` reuse the `/v1` handlers, `models` serves
-  the routed catalog in Codex's `{ "models": [...] }` shape, `[...path]`
-  acknowledges Codex's advisory side-calls)
+  (`responses` and `responses/compact` reuse the `/v1` handlers, `[...path]`
+  acknowledges Codex's advisory side-calls). `models` serves the routed models in
+  Codex's `{ "models": [...] }` shape (`src/lib/codex/modelCatalog.js`), which
+  replaces Codex's own catalog once it decodes. A routed model that Codex's own
+  lookup matches to a model in Codex's bundled catalog (vendored in
+  `open-sse/config/codex/`, refreshed with `scripts/vendor-codex-catalog.mjs`),
+  such as `cx/gpt-5.5` or `gh/gpt-5.5`, gets that entry under its routed id.
+  Any other model gets a generic entry with Codex's generic prompt and, if it
+  can call tools, a shell and the freeform `apply_patch` tool. Codex's bundled
+  models also stay in under their bare names, hidden from the picker. The same
+  body carries an OpenAI-shaped `data` list.
 - `src/app/api/v1/messages/count_tokens/route.js`
 - `src/app/api/v1/key/route.js` — `GET /v1/key`: the calling key's own budget,
   spend, allowed models and expiry (see `docs/API_KEY_BUDGETS.md`)
@@ -261,6 +269,8 @@ flowchart TD
 ```
 
 Fallback decisions are driven by `open-sse/services/accountFallback.js` using status codes and error-message heuristics.
+
+On a custom (OpenAI-/Anthropic-compatible) endpoint, a request error every key would refuse ends the account walk early: once `SAME_REQUEST_ERROR_STOP_AFTER` (2) accounts of one model answered a request with the same request error (the upstream's message, read out of a JSON body when there is one, compared lowercased, digits as `#`, whitespace collapsed; `open-sse/services/sameRequestError.ts`), the account loop in `src/sse/handlers/chat.ts` returns that error instead of trying the next account. A combo then moves on to its next model as for any final failure. It's an allowlist: only a 413, or a 400/422 whose message matches `SAME_REQUEST_ERROR_PATTERNS` in `open-sse/config/errorConfig.js` (the context window or the model's token limit, a rejected tool schema, a thinking budget), counts. Any other 4xx may be about the account (these keys aren't locked for it), so it keeps the walk. So do 401/403/404/429, 5xx and header timeouts, and so does a message or body that names a bad key, billing, a rate or usage limit or quota, a limit on one key, account, organization or plan (`SAME_REQUEST_ERROR_KEY_LIMIT`: per minute or day, TPM, daily, tier, upgrade, "your organization", "your subscription", ...), or a refusal of one model or operation. Keys that reach one upstream the same way (same proxy or relay, or none) are assumed to be on the same tier, so their messages need only match up to numbers. When any active key has its own base URL, the keys' upstream fields differ, or they go through different proxies or relays (`keysShareOneUpstream` in `src/sse/services/auth.js`, using `networkPath`'s transport), their limits may differ: a proxy or relay has its own body limit and can answer a 413 itself. There at least `max(SAME_REQUEST_ERROR_STOP_AFTER, 2)` distinct upstreams (`src/sse/services/connectionUpstream.ts`, which `auth.js` uses too; a base URL compared canonically: scheme and host lowercased, a default port dropped, trailing slashes and a pasted `/chat/completions`, `/messages` or `/responses` dropped, path case and query string kept; dead-key evidence uses the same comparison) must give the very same message, numbers included: the extracted upstream message, only trimmed, lowercased and stripped of a relay's request id. That message must be a context or token limit (`SAME_REQUEST_ERROR_LIMIT_PATTERNS`) naming both sizes, two runs of 4+ digits such as "12345 tokens > 10000 maximum", and never a 413. So "> 200000 maximum" from one and "> 1000000 maximum" from another keeps the walk, and so do two keys on one upstream while a third key is elsewhere, a schema error with a tool index, and a message whose only digits are a model name. `SAME_REQUEST_ERROR_STOP_AFTER=1` stops at the first error only when the keys share one upstream reached the same way (same proxy or relay). A pool that mixes tiers behind one URL needs `SAME_REQUEST_ERROR_STOP_AFTER=0`, which is global: it turns the stop off for every node. A 413 counts whatever it says but goes through the same vetoes, and a relay's "(request id: ...)" in the message is dropped before comparing. Built-in providers keep walking every key, since their accounts can differ in plan or region.
 
 Prompt-cache affinity (`open-sse/services/cacheAffinity.js`) shapes step G for requests that ask for a prompt cache. Upstream caches are per account, so each conversation remembers its warm keys: the ones that served it within the cache TTL. A conversation is identified by a hash of the client key, session id, system prompt, instructions and first message. In `getProviderCredentials`, fill-first and soonest-reset keep their own pick, so a better usable key is never skipped. Fill-first ranks by priority. Soonest-reset ranks by reset, then priority; a known reset ranks ahead of an unknown one, and two unknown resets fall to priority. Round-robin takes the conversation's most recently used usable warm key and doesn't update the rotation for it. When the pick isn't warm and the prompt is large (`CACHE_AFFINITY_MIN_TOKENS`), it goes through the servable warm keys that are only limit-locked, soonest lock end first. Each one's retry time is lock end + `lockSlackMs` + jitter (one draw per selection). It returns `warmRetryAtMs` for the first one whose earliest retry, lock end + `lockSlackMs`, fits the remaining `CACHE_AFFINITY_MAX_WAIT_MS` (counted per request and model). It skips a candidate when a servable key the strategy ranks ahead of it is usable or frees up (lock or quota block over) within another `lockSlackMs` of that earliest retry. The jitter is then cut to the budget, and to `lockSlackMs` before the first better-ranked key frees up. The same margin on both sides absorbs late timers and the time selection takes before it reads the locks. Round-robin ranks none, so nothing overtakes there. The account loop in `src/sse/handlers/chat.ts` then sleeps until that time (abort-aware) and selects again. A warm key's own short 429 is recorded as a failure but not excluded, so the next selection can wait for it. Codex uses its own opt-in session pin (`open-sse/services/sessionAffinity.js`) instead.
 
@@ -438,6 +448,8 @@ flowchart LR
     Next --> SyncCloud
 ```
 
+Restarts: on SIGTERM/SIGINT `custom-server.js` drains (`server-drain.js`). It closes the listening socket, so new connections are refused for the whole drain, and waits up to `SHUTDOWN_DRAIN_TIMEOUT_MS` for in-flight model requests before running the app's own shutdown listeners and exiting. It only helps if the container's stop grace period is longer than that timeout. Never run two instances on one `DATA_DIR` to overlap a restart: SQLite / sql.js writes are last-writer-wins, and rotating OAuth refresh tokens would be lost.
+
 ## Module Mapping (Decision-Critical)
 
 ### Route and API Modules
@@ -513,6 +525,8 @@ Translations are selected dynamically based on source payload shape and provider
 - provider account cooldown on transient/rate/auth errors
 - account fallback before failing request
 - combo model fallback when current model/provider path is exhausted
+- an upstream that sends no response headers in time fails as a 504 (`HEADERS_TIMEOUT` in `open-sse/config/errorConfig.js`): one request tries at most one more key after it, and streaming header timeouts from two requests on two keys of one provider/model, with no success between, mark that model hung (`open-sse/services/modelHang.js`, in memory per process), so new requests for it fail at once (a 504 with Retry-After) until a single probe request, sent to keys that haven't stalled, gets an answer; the request that marks it, if it already sent a stream's early headers, ends with a retryable in-stream error instead
+- on a custom (OpenAI-/Anthropic-compatible) endpoint, a request error that `SAME_REQUEST_ERROR_STOP_AFTER` (2) keys of one model answered with the same message is returned at once instead of trying the remaining keys (`open-sse/services/sameRequestError.ts`); only a 413, or a 400/422 whose message matches `SAME_REQUEST_ERROR_PATTERNS` (context or token overflow, a rejected tool schema, a thinking budget), counts, and none whose text names a limit on the key, organization or plan (a 413 included); when the keys don't all reach one upstream, at least `max(SAME_REQUEST_ERROR_STOP_AFTER, 2)` distinct upstreams must give the very same context or token limit message naming both sizes (never a 413); built-in providers keep walking every key; for a pool mixing tiers behind one URL set `SAME_REQUEST_ERROR_STOP_AFTER=0`, which turns the stop off for every node
 
 ## 2) Token Expiry
 
@@ -574,6 +588,7 @@ Environment variables actively used by code:
 - Sync/cloud URLing: `NEXT_PUBLIC_BASE_URL`, `NEXT_PUBLIC_CLOUD_URL`
 - Outbound proxy: `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and lowercase variants
 - Endpoint detection: `DETECT_ANTHROPIC_FIRST_HINTS` (URL substrings that get Anthropic Messages probed first)
+- Shutdown: `SHUTDOWN_DRAIN_TIMEOUT_MS` (default `180000`; `0`/`off`/`false` disables). How long `custom-server.js` waits on SIGTERM/SIGINT for in-flight model requests (`/v1*`, `/api/v1*`, `/v1beta*`, `/api/v1beta*`, `/responses`, `/systemone`, `/codex/*`, `/backend-api/codex/*`, Codex WebSocket turns, a budgeted key's post-hang-up usage read) before exiting; see `server-drain.js` and the README's deploy notes. The stop timeout of whatever stops the process (container grace period, PM2 `kill_timeout`, systemd `TimeoutStopSec`) must be longer than this, or it kills the process first.
 - Platform/runtime helpers (not app-specific config): `APPDATA`, `NODE_ENV`, `PORT`, `HOSTNAME`
 
 ## Known Architectural Notes

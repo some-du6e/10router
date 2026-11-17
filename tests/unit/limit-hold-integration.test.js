@@ -87,7 +87,8 @@ describe("rate-limit hold wiring", () => {
     state.credentials = {
       allRateLimited: true,
       allLimitsExhausted: true,
-      retryAfter: new Date(Date.now() + 7_200_000).toISOString(),
+      // 30s over 2h, so a slow runner still formats the wait as "2h", not "1h 59m".
+      retryAfter: new Date(Date.now() + 7_230_000).toISOString(),
       retryAfterHuman: "reset after 2h",
       lastError: "usage_limit_reached",
       lastErrorCode: 429,

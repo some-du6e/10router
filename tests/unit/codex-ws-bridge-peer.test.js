@@ -82,6 +82,27 @@ describe("bridge error frames and wiring", () => {
     expect(JSON.parse(bridgeErrorFrame("", 502)).error).toEqual({ message: "Request failed with status 502", type: "server_error" });
   });
 
+  it("bridgeCodexTurn marks its loopback POST with this process's peer token, not one the client sent", async () => {
+    // new http.Server is not wrapped, so this sees the headers as the bridge sent them.
+    let seen;
+    const upstream = new http.Server((req, res) => {
+      seen = req.headers;
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.end(`data: ${JSON.stringify({ type: "response.completed" })}\n\n`);
+    });
+    await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    try {
+      await new Promise((resolve) => {
+        bridgeCodexTurn({ type: "response.create", model: "m", input: "hi" }, upstream.address().port,
+          { ...HANDSHAKE, "x-9r-peer-token": "forged" }, "127.0.0.1", () => {}, () => resolve());
+      });
+      expect(process.env.NINEROUTER_PEER_TOKEN).toMatch(/^[0-9a-f]{48}$/);
+      expect(seen["x-9r-peer-token"]).toBe(process.env.NINEROUTER_PEER_TOKEN);
+    } finally {
+      await new Promise((resolve) => upstream.close(resolve));
+    }
+  });
+
   it("falls back to a placeholder address for a remote peer with no address", () => {
     expect(bridgeForwardHeaders({}, "", 1)["x-forwarded-for"]).toBe("unknown");
   });

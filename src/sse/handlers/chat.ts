@@ -1,9 +1,11 @@
 import "open-sse/index.js";
+import { randomUUID } from "node:crypto";
 
 import {
   getProviderCredentials,
   markAccountUnavailable,
   clearAccountError,
+  keysShareOneUpstream,
   extractApiKey,
   isValidApiKey,
 } from "../services/auth.js";
@@ -26,6 +28,10 @@ import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActi
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS, NON_STREAM_EARLY_HEADERS_MS, STREAM_EARLY_HEADERS_MS } from "open-sse/config/runtimeConfig.js";
 import { isRequestError } from "open-sse/services/accountFallback.js";
+import { createSameRequestErrorTally } from "open-sse/services/sameRequestError.js";
+import { connectionUpstream } from "../services/connectionUpstream.js";
+import { checkModelHang, noteHeadersTimeout, noteModelServed, noteProbeBudget, releaseProbe } from "open-sse/services/modelHang.js";
+import { HEADERS_TIMEOUT } from "open-sse/config/errorConfig.js";
 import { detectFormatByEndpoint, FORMATS } from "open-sse/translator/formats.js";
 import { detectFormat } from "open-sse/services/provider.js";
 import * as log from "../utils/logger.js";
@@ -120,6 +126,8 @@ interface ChatCoreResult {
   status?: number;
   error?: string;
   resetsAtMs?: number | null;
+  // Set when the upstream sent no response headers in time.
+  headersTimeout?: { stream: boolean };
 }
 
 /** Result of one routing pass; a limited failure can be retried by the hold. */
@@ -572,6 +580,19 @@ async function nodeSettings(provider: string): Promise<Credentials | null> {
   return node ? ({ providerSpecificData: node } as unknown as Credentials) : null;
 }
 
+// A model hung upstream (modelHang.js): a 504 without calling it, with Retry-After.
+function modelHungResult(provider: string, model: string, { retryAtMs, checking, reason }: { retryAtMs: number; checking: boolean; reason: string }): PassResult {
+  const message = `[${provider}/${model}] is not responding upstream: ${reason || HEADERS_TIMEOUT.text}`;
+  const next = checking ? "a check is running" : `next check in ${Math.max(1, Math.ceil((retryAtMs - Date.now()) / 1000))}s`;
+  const error = `${message} (${next})`;
+  log.warn("CHAT", error);
+  const response = unavailableResponse(HTTP_STATUS.GATEWAY_TIMEOUT, message, new Date(retryAtMs).toISOString(), next);
+  return { success: false, status: HTTP_STATUS.GATEWAY_TIMEOUT, error, limited: false, response };
+}
+
+// The error text without its "[504]: " status prefix.
+const withoutStatus = (error: string | undefined): string => (error || "").replace(/^\[\d+\]:\s*/, "");
+
 async function routeSingleModelChat(
   body: ChatBody,
   modelStr: string,
@@ -673,6 +694,8 @@ async function routeSingleModelChat(
   // Prompt-cache affinity for every other provider: a conversation that asks for
   // a prompt cache prefers the keys that served it recently, which hold that cache.
   const cacheKey = cacheAffinityKey({ provider, model, body, headers: clientRawRequest?.headers, tenant: apiKey });
+  // A custom endpoint: an OpenAI- or Anthropic-compatible node the user added.
+  const customEndpoint = isOpenAICompatibleProvider(provider) || isAnthropicCompatibleProvider(provider);
   const connectionFilter = blockedBilling ? (c: { provider: string; authType?: string }) => !blockedBilling.has(connectionBilling(c)) : null;
   // Total time this request has waited for a warm key, across passes.
   let cacheWaitedMs = 0;
@@ -687,7 +710,8 @@ async function routeSingleModelChat(
   // limit can be retried later by the hold, rather than being burned into a
   // Response the caller can no longer act on.
   // The hold below needs the endpoint's settings ("Streaming: Always").
-  const runAccountLoop = async (): Promise<PassResult> => {
+  // avoidKeys: keys whose stream recently got no headers for this model, tried last (modelHang.js).
+  const accountPass = async (avoidKeys: string[]): Promise<PassResult> => {
   // Fresh per pass: a retry after the reset must reconsider every account, not
   // inherit exclusions from the pass that ran hours ago.
   const excludeConnectionIds = new Set<string>();
@@ -697,6 +721,14 @@ async function routeSingleModelChat(
   let lastError: string | null | undefined = null;
   let lastStatus: number | null | undefined = null;
   let lockedUntil = 0;
+  // Keys tried since this request's first header timeout, that one included.
+  let keysSinceHeadersTimeout = 0;
+  // Request-shaped 400/413/422 messages per account on a custom endpoint
+  // (sameRequestError.ts): the same one from enough keys is the request's fault.
+  const sameRequestErrors = createSameRequestErrorTally();
+  // Whether every key of the provider reaches one upstream the same way (same
+  // proxy or relay), read when first needed.
+  let sharedUpstream: boolean | null = null;
 
   while (true) {
     // The client is gone: try no more accounts, and lock none for its abort.
@@ -712,6 +744,7 @@ async function routeSingleModelChat(
       connectionFilter,
       warmConnectionIds,
       maxWarmWaitMs: warmConnectionIds.length > 0 ? waitBudget() : 0,
+      avoidConnectionIds: avoidKeys,
     })) as (Credentials & { connectionId: string } & Record<string, any>) | null;
 
     // The strategy's pick is cold, a warm key it would rank no worse is briefly
@@ -819,6 +852,9 @@ async function routeSingleModelChat(
       // Anthropic-compatible endpoint rejected some beta flags; remember them on the
       // connection so later requests skip the failed first try.
       onBetasRejected: (droppedBetas: string[]) => saveDroppedBetas(credentials, provider, droppedBetas),
+      // The executor's own headers budget for this call: a probe's lease and the
+      // Retry-After of requests waiting on it go by it.
+      onHeadersBudget: (budgetMs: number) => noteProbeBudget(provider, model, requestId, budgetMs),
       onRequestSuccess: async () => {
         await clearAccountError(credentials.connectionId, credentials, model);
         // "Consecutive" strikes: a success clears the breaker for this pair.
@@ -827,6 +863,7 @@ async function routeSingleModelChat(
     } as Parameters<typeof handleChatCore>[0])) as ChatCoreResult;
 
     if (result.success) {
+      noteModelServed(provider, model);
       if (cacheKey) rememberWarmKey(cacheKey, credentials.connectionId, cacheTtlMs(body));
       return result;
     }
@@ -849,7 +886,7 @@ async function routeSingleModelChat(
     // the next key, in case it was key-specific, but locks nothing: one bad
     // conversation mustn't make the pool "unavailable" for everyone else.
     // Built-in providers keep their usual short locks.
-    if ((isOpenAICompatibleProvider(provider) || isAnthropicCompatibleProvider(provider)) && isRequestError(result.status, result.error)) {
+    if (customEndpoint && isRequestError(result.status, result.error)) {
       log.warn("AUTH", `${credentials.connectionName} request error [${result.status}], not locking`);
       // No-auth providers hand back the same virtual connection whatever is
       // excluded, so "try the next key" would resend the same request forever.
@@ -886,11 +923,39 @@ async function routeSingleModelChat(
       };
     }
 
+    // No response headers in time: this request may be too slow for the model,
+    // or the model hung. Either way it tries few keys, and none once it's hung.
+    const headersTimedOut = !!result.headersTimeout;
+    const hang = result.headersTimeout
+      ? noteHeadersTimeout(provider, model, { requestId, connectionId: credentials.connectionId, stream: result.headersTimeout.stream, reason: withoutStatus(result.error) })
+      : null;
+    if (keysSinceHeadersTimeout > 0 || headersTimedOut) keysSinceHeadersTimeout++;
+
     if (shouldFallback) {
       const failure = { account: credentials.connectionName, status: result.status, error: result.error };
       const seen = failureIndex.get(credentials.connectionId);
       if (seen === undefined) failureIndex.set(credentials.connectionId, accountFailures.push(failure) - 1);
       else accountFailures[seen] = failure;
+      if (hang?.hung) return modelHungResult(provider, model, hang);
+      if (keysSinceHeadersTimeout >= HEADERS_TIMEOUT.maxKeysPerRequest) {
+        const errorMsg = summarizeAccountFailures(provider, model, accountFailures);
+        log.warn("CHAT", `${errorMsg} (no more keys for this request)`);
+        return { success: false, status: HTTP_STATUS.GATEWAY_TIMEOUT, error: errorMsg, limited: false, response: errorResponse(HTTP_STATUS.GATEWAY_TIMEOUT, errorMsg) };
+      }
+      // Enough keys refused this request with the same message: the rest would too.
+      // Keys on one upstream agree up to numbers (stopAfter keys). Otherwise
+      // max(stopAfter, 2) distinct upstreams must give the very same context or
+      // token limit message naming both sizes, never a 413, since their limits
+      // may differ.
+      // Built-in providers keep walking: their accounts differ in plan and region.
+      const agreement = customEndpoint
+        ? sameRequestErrors.note(credentials.connectionId, connectionUpstream(credentials), result.status, result.error)
+        : null;
+      if (agreement === "exact" || (agreement === "normalized" && (sharedUpstream ??= await keysShareOneUpstream(provider)))) {
+        const from = agreement === "exact" ? `${sameRequestErrors.exactAfter} upstreams` : `${sameRequestErrors.stopAfter} accounts`;
+        log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} same request error (${result.status}) from ${from}, not trying the rest`);
+        return result;
+      }
       // A warm key just rate-limited for a short while stays in play: the next
       // selection waits for it (or picks another warm key) rather than rebuilding
       // the cache on a cold one.
@@ -925,6 +990,19 @@ async function routeSingleModelChat(
     }
     return result;
   }
+  };
+
+  // Tells this request's header timeouts from other requests' (modelHang.js).
+  const requestId = randomUUID();
+  // A model hung upstream fails at once, but for one request at a time probing it.
+  const runAccountLoop = async (): Promise<PassResult> => {
+    const hang = checkModelHang(provider, model, requestId);
+    if (hang.blocked) return modelHungResult(provider, model, hang);
+    try {
+      return await accountPass(hang.avoidKeys);
+    } finally {
+      releaseProbe(provider, model, requestId);
+    }
   };
 
   const first = await runAccountLoop();
