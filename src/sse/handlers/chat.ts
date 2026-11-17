@@ -951,13 +951,18 @@ async function routeSingleModelChat(
       // max(stopAfter, 2) distinct upstreams must give the very same context or
       // token limit message naming both sizes, never a 413, since their limits
       // may differ.
+      // The same goes for a 403 refusing the model for the account ("not
+      // eligible for this model"), from stopAfter keys on one upstream: each
+      // key that gave it keeps its usual lock on this model alone, so the next
+      // request tries other keys, again stopping after stopAfter.
       // Built-in providers keep walking: their accounts differ in plan and region.
       const agreement = customEndpoint
         ? sameRequestErrors.note(credentials.connectionId, connectionUpstream(credentials), result.status, result.error)
         : null;
-      if (agreement === "exact" || (agreement === "normalized" && (sharedUpstream ??= await keysShareOneUpstream(provider)))) {
+      if (agreement === "exact" || ((agreement === "normalized" || agreement === "model") && (sharedUpstream ??= await keysShareOneUpstream(provider)))) {
         const from = agreement === "exact" ? `${sameRequestErrors.exactAfter} upstreams` : `${sameRequestErrors.stopAfter} accounts`;
-        log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} same request error (${result.status}) from ${from}, not trying the rest`);
+        const what = agreement === "model" ? `same refusal of ${model}` : "same request error";
+        log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} ${what} (${result.status}) from ${from}, not trying the rest`);
         return result;
       }
       // A warm key just rate-limited for a short while stays in play: the next

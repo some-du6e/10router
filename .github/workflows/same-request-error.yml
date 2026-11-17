@@ -10,6 +10,9 @@ on:
       - "tests/package.json"
       - "tests/vitest.config.js"
       - "tests/unit/same-request-error-routing.test.js"
+      - "tests/unit/model-refusal-stop-routing.test.js"
+      - "tests/unit/auto-disable-dead-keys.test.js"
+      - "tests/unit/error-class.test.js"
       - "tests/unit/headers-timeout-routing.test.js"
       - "tests/unit/account-failure-handler.test.js"
       - "tests/unit/all-locked-soonest-error.test.js"
@@ -42,6 +45,9 @@ jobs:
         run: >
           ./node_modules/.bin/vitest run
           unit/same-request-error-routing.test.js
+          unit/model-refusal-stop-routing.test.js
+          unit/auto-disable-dead-keys.test.js
+          unit/error-class.test.js
           unit/headers-timeout-routing.test.js
           unit/account-failure-handler.test.js
           unit/all-locked-soonest-error.test.js
@@ -55,8 +61,10 @@ jobs:
           open-sse/services/accountFallback.js
           open-sse/config/runtimeConfig.js
           open-sse/config/errorConfig.js
+          open-sse/utils/errorClass.js
           src/sse/services/auth.js
           tests/unit/same-request-error-routing.test.js
+          tests/unit/model-refusal-stop-routing.test.js
       # Fails only on errors in the .ts files this change touches, so unrelated
       # type errors elsewhere don't block it.
       - name: Type check chat.ts and sameRequestError.ts
@@ -103,7 +111,7 @@ jobs:
         working-directory: tests
         run: |
           ./node_modules/.bin/vitest run --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/before.json" \
-            unit/same-request-error-routing.test.js || true
+            unit/same-request-error-routing.test.js unit/model-refusal-stop-routing.test.js || true
           node --input-type=module -e '
             import { readFileSync, appendFileSync } from "node:fs";
             const r = JSON.parse(readFileSync(process.env.RUNNER_TEMP + "/before.json", "utf8"));

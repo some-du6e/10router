@@ -7,8 +7,13 @@
 // (SAME_REQUEST_ERROR_PATTERNS, or a 413). An unknown 400 may be about the
 // account (a disabled organization, an unverified one) and would never lock
 // the key, so stopping on it could fail every request; it keeps the walk.
+//
+// A 403 refusing the model for the key's account (isModelRefusal: "this account
+// is not eligible for this model") is tallied apart: the key is fine, only that
+// model is off, and keys on one upstream that give the same one agree on it.
 import { namesAccountOrLimit } from "./accountFallback.js";
 import { isLimitError } from "../utils/limitHold.js";
+import { isModelRefusal } from "../utils/errorClass.js";
 import { HTTP_STATUS, SAME_REQUEST_ERROR_STOP_AFTER, SAME_REQUEST_ERROR_STATUSES } from "../config/runtimeConfig.js";
 import {
   MODEL_REFUSAL,
@@ -100,12 +105,23 @@ export function requestErrorSignatures(status: number | null | undefined, error:
 }
 
 /**
+ * What identifies a 403 refusing the model for the key's account, for
+ * counting: status and normalized message. Null for any other failure.
+ */
+export function modelRefusalSignature(status: number | null | undefined, error: unknown): string | null {
+  const raw = asText(error);
+  return isModelRefusal(status, raw) ? `${status} ${normalizeErrorMessage(raw)}` : null;
+}
+
+/**
  * How far accounts agree: "exact" once `exactAfter` (max(stopAfter, 2))
  * distinct upstreams gave the very same limit message (a stop wherever the
  * keys point), "normalized" once `stopAfter` accounts gave it up to numbers
- * and spacing (a stop only for keys on one upstream), else null.
+ * and spacing (a stop only for keys on one upstream), "model" once `stopAfter`
+ * accounts refused the model the same way (modelRefusalSignature; a stop only
+ * for keys on one upstream), else null.
  */
-export type SameRequestErrorAgreement = "exact" | "normalized" | null;
+export type SameRequestErrorAgreement = "exact" | "normalized" | "model" | null;
 
 export interface SameRequestErrorTally {
   /** Accounts that must give the same request error to stop; 0 never stops. */
@@ -135,7 +151,10 @@ export function createSameRequestErrorTally(stopAfter: number = SAME_REQUEST_ERR
     note(connectionId, upstream, status, error) {
       if (stopAfter <= 0) return null;
       const signatures = requestErrorSignatures(status, error);
-      if (!signatures) return null;
+      if (!signatures) {
+        const refusal = modelRefusalSignature(status, error);
+        return refusal !== null && agreeing(`m ${refusal}`, connectionId) >= stopAfter ? "model" : null;
+      }
       const normalized = agreeing(`n ${signatures.normalized}`, connectionId);
       if (signatures.exact !== null && agreeing(`x ${signatures.exact}`, upstream) >= exactAfter) return "exact";
       return normalized >= stopAfter ? "normalized" : null;

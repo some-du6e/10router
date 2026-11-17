@@ -105,10 +105,15 @@ export const CACHE_AFFINITY = {
 // token limit message naming both sizes (two runs of 4+ digits), never a 413.
 // 1 stops at the first such error, only when the keys share one upstream
 // reached the same way (same proxy or relay).
+// The same count of 403s refusing the model for the key's account
+// (isModelRefusal in utils/errorClass.js, MODEL_REFUSAL wording), with the same
+// message up to numbers, also stops it, again only when the keys share one
+// upstream reached the same way.
 // Env: SAME_REQUEST_ERROR_STOP_AFTER (0 tries every key, as before, on every
 // node; anything that isn't a whole number falls back to 2).
 export const SAME_REQUEST_ERROR_STOP_AFTER = envInt("SAME_REQUEST_ERROR_STOP_AFTER", 2);
-// The statuses it counts. 401/403/404/429, 5xx and header timeouts never count.
+// The statuses request errors count with. 401/403/404/429, 5xx and header
+// timeouts never count as one (a 403 can count as a refusal of the model).
 export const SAME_REQUEST_ERROR_STATUSES = new Set([HTTP_STATUS.BAD_REQUEST, HTTP_STATUS.PAYLOAD_TOO_LARGE, HTTP_STATUS.UNPROCESSABLE_ENTITY]);
 
 // Inter-chunk stall timeout (once tokens are flowing). Generous headroom so

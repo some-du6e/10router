@@ -15,6 +15,17 @@ export const isBackoffText = (text) => {
 };
 
 const LIMIT_TEXT = new RegExp(LIMIT_REFUSAL.map((r) => r.source).join("|"), "i");
+const NOT_MODEL_REFUSAL = new RegExp([...LIMIT_REFUSAL, OPERATION_REFUSAL].map((r) => r.source).join("|"), "i");
+
+/**
+ * A 403 saying this key or its account may not use the model, and not a limit:
+ * the key lacks just that model and is fine on others.
+ */
+export function isModelRefusal(status, errorText) {
+  const text = String(errorText || "");
+  return Number(status) === HTTP_STATUS.FORBIDDEN && !isLimitError(HTTP_STATUS.FORBIDDEN, text) && MODEL_REFUSAL.test(text)
+    && !NOT_MODEL_REFUSAL.test(text) && !isBackoffText(text);
+}
 const includesAny = (text, list) => list.some((t) => text.includes(t));
 const capped = (part) => part.slice(0, ERROR_CLASS_MAX_TEXT);
 const toText = (message) => (typeof message === "string" ? capped(message).toLowerCase() : "");

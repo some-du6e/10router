@@ -174,12 +174,13 @@ export const ERROR_CLASS = {
 // exceeded (daily limit)", qoder's "Queue limit" or "Upgrade required" with a
 // pricingUrl, "credits exhausted", "account balance is insufficient",
 // AccountOverdueError), refusals of one model ("does not have access to model
-// 'o3'") and of one operation by a restricted key ("Missing scopes: ...").
+// 'o3'", "this account is not eligible for this model") and of one operation
+// by a restricted key ("Missing scopes: ...").
 export const LIMIT_REFUSAL = [
   /\blimit|queue|upgrade|pricing|\bplans?\b|credit|quota|exhausted|usage cap|billing|budget|payment/,
   /\bbalance\b|\bfunds\b|overdue|arrears|unpaid|recharge|top[- ]?up/,
 ];
-export const MODEL_REFUSAL = /does not have access to (?:the )?model|model_not_found|\bmodel\b.{0,60}?\bnot (?:available|allowed|enabled|permitted|supported)\b/i;
+export const MODEL_REFUSAL = /does not have access to (?:the |this )?model|model_not_found|\bnot eligible for (?:the|this) model\b|\bmodel\b.{0,60}?\bnot (?:available|allowed|enabled|permitted|supported|eligible)\b/i;
 export const OPERATION_REFUSAL = /insufficient (?:permissions?|scopes?|privileges?)|missing (?:required )?(?:scopes?|permissions?)|permission denied for this operation|not (?:allowed|permitted|authorized) to perform this operation/;
 
 // Account errors some upstreams send as 400: a bad key (Gemini: "API key not

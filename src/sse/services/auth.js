@@ -6,7 +6,7 @@ import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey } from "@/lib/db/index.js";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, getQuotaCooldown, isModelLockActive, getModelLockUntil, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL, isHeadersTimeout } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG, AUTH_DEMOTE_CONFIG, LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL, HEADERS_TIMEOUT } from "open-sse/config/errorConfig.js";
-import { isBackoffText } from "open-sse/utils/errorClass.js";
+import { isBackoffText, isModelRefusal } from "open-sse/utils/errorClass.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { planCanServeModel } from "@/shared/utils/planCapability.js";
 import { SPREAD_NOTE } from "@/shared/utils/connectionStatus.js";
@@ -77,21 +77,14 @@ const succeededSince = (key, sinceMs) => (authEvents.success.get(key)?.at ?? -In
 // model or operation; the key itself is fine.
 const anyOf = (patterns) => new RegExp(patterns.map(r => r.source).join("|"), "i");
 const NOT_KEY_REFUSAL = anyOf([...LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL]);
-const NOT_MODEL_REFUSAL = anyOf([...LIMIT_REFUSAL, OPERATION_REFUSAL]);
 
-// A 401 or 403 that is not a limit or a refusal of one model: the key itself is refused.
+// A 401 or 403 that is not a limit or a refusal of one model: the key itself is
+// refused. A refusal of one model (isModelRefusal) never turns a key off; it can
+// demote the key on that model alone.
 function isAuthRejection(status, errorText) {
   const code = Number(status);
   const text = String(errorText || "");
   return (code === 401 || code === 403) && !isLimitError(code, errorText) && !NOT_KEY_REFUSAL.test(text) && !isBackoffText(text);
-}
-
-// A 403 saying this key may not use the model, and not a limit: the key lacks
-// just that model. Never turns a key off; it can demote it there.
-function isModelRefusal(status, errorText) {
-  const text = String(errorText || "");
-  return Number(status) === 403 && !isLimitError(403, errorText) && MODEL_REFUSAL.test(text) && !NOT_MODEL_REFUSAL.test(text)
-    && !isBackoffText(text);
 }
 
 // Where a key's requests go: the proxy or relay they leave through, and the
