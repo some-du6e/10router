@@ -13,7 +13,8 @@ vi.mock("@/lib/localDb", () => ({ getSettings: mocks.getSettings }));
 vi.mock("@/lib/auth/saml.js", () => ({
   getSamlBaseUrl: mocks.getSamlBaseUrl,
   buildSamlAuthorizeUrl: mocks.buildSamlAuthorizeUrl,
-  SAML_REQUEST_TTL_MS: 10 * 60 * 1000,
+  // Not the real 10 minutes, so the cookie's maxAge must come from this constant.
+  SAML_REQUEST_TTL_MS: 5 * 60 * 1000,
 }));
 vi.mock("@/lib/auth/dashboardSession", () => ({ shouldUseSecureCookie: mocks.shouldUseSecureCookie }));
 
@@ -33,7 +34,7 @@ describe("SAML authorization request cookie", () => {
   it("persists the signed request state through the cross-site HTTPS IdP POST, for the request's lifetime", async () => {
     expect(await GET(new Request("https://dashboard.example.com/api/auth/saml/start"))).toEqual({ redirect: "https://idp.example.com/saml" });
     expect(mocks.set).toHaveBeenCalledWith("saml_state", "signed-state", {
-      httpOnly: true, secure: true, sameSite: "none", path: "/", maxAge: 600,
+      httpOnly: true, secure: true, sameSite: "none", path: "/", maxAge: 300,
     });
   });
 

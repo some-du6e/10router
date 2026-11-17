@@ -25,8 +25,11 @@ describe("signed saml_state cookie", () => {
     vi.resetModules();
     vi.stubEnv("JWT_SECRET", "secret-b");
     const other = await import("../../src/lib/auth/saml.js");
-    expect(readSamlStateCookie(other.createSamlStateCookie("_req-1", NOW), NOW)).toBeNull();
+    const cookie = other.createSamlStateCookie("_req-1", NOW);
+    // Back to this module's secret before it reads, whichever test ran first.
     vi.stubEnv("JWT_SECRET", "secret-a");
+    expect(readSamlStateCookie(createSamlStateCookie("_req-1", NOW), NOW)).not.toBeNull();
+    expect(readSamlStateCookie(cookie, NOW)).toBeNull();
   });
 
   it.each([undefined, null, "", "_req-1", ".", "abc.", ".abc", "not-base64.%%%"])("rejects %s", (value) => {

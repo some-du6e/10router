@@ -59,6 +59,15 @@ function verify(body, stateCookie, module = saml, Saml = SAML) {
   return module.validateSamlResponse(null, body, stateCookie, settings);
 }
 
+// The router's process-wide state lives on globalThis under 10router.* symbols.
+function ownGlobals() {
+  return Object.getOwnPropertySymbols(globalThis).filter((key) => key.description?.startsWith("10router."));
+}
+
+function consumedSize() {
+  return globalThis[CONSUMED]?.size ?? 0;
+}
+
 async function issueRequest(module = saml) {
   const { requestId, stateCookie } = await module.buildSamlAuthorizeUrl(null, settings);
   expect(requestId).toBeTruthy();
@@ -121,17 +130,20 @@ describe("cryptographically validated SAML request binding", () => {
     await expect(verify(response(id), cookie)).resolves.toBeTruthy();
   });
 
-  it("isn't affected by /start being called over and over", async () => {
+  it("isn't affected by /start being called over and over, and keeps nothing for it", async () => {
     const pending = await issueRequest();
+    const before = { globals: ownGlobals(), consumed: consumedSize() };
     for (let i = 0; i < 500; i++) await saml.buildSamlAuthorizeUrl(null, settings);
+    expect(ownGlobals()).toEqual(before.globals);
+    expect(consumedSize()).toBe(before.consumed);
     await expect(verify(response(pending.id), pending.cookie)).resolves.toBeTruthy();
   });
 
   it("lets another server process with the same secret finish the login", async () => {
     const { id, cookie } = await issueRequest();
-    // A second process: fresh modules and none of this one's memory.
+    // A second process: fresh modules and none of this one's process-wide state.
     vi.resetModules();
-    delete globalThis[CONSUMED];
+    for (const key of ownGlobals()) delete globalThis[key];
     const other = await import("../../src/lib/auth/saml.js");
     const { SAML: OtherSaml } = await import("@node-saml/node-saml");
     expect(other).not.toBe(saml);

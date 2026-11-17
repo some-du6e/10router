@@ -149,15 +149,15 @@ async function resetPassword() {
 
   const result = await api.resetPassword();
   if (result.success) {
-    const { token, expiresInSec, authMode } = result.data || {};
-    if (token) {
-      const minutes = Math.max(1, Math.round((expiresInSec || 300) / 60));
-      showStatus("Password cleared. Open the dashboard to finish setup.", "success");
-      if (authMode === "both") {
-        console.log(`  ${COLORS.dim}SSO-only login was on, so password login is back on too (SSO still works).${COLORS.reset}`);
+    const { token, expiresInSec, message } = result.data || {};
+    if (message || token) {
+      // Newer servers say what the reset did (mode switch, INITIAL_PASSWORD, setup token).
+      showStatus(message || "Password cleared. Open the dashboard to finish setup.", "success");
+      if (token) {
+        const minutes = Math.max(1, Math.round((expiresInSec || 300) / 60));
+        console.log(`\n  Setup token: ${COLORS.cyan}${token}${COLORS.reset}`);
+        console.log(`  ${COLORS.dim}Valid for ${minutes} minutes — restart 10router for a new one.${COLORS.reset}\n`);
       }
-      console.log(`\n  Setup token: ${COLORS.cyan}${token}${COLORS.reset}`);
-      console.log(`  ${COLORS.dim}Valid for ${minutes} minutes — restart 10router for a new one.${COLORS.reset}\n`);
     } else {
       showStatus("Password cleared. Check the server console for the setup token.", "success");
     }

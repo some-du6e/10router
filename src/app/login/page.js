@@ -67,7 +67,8 @@ export default function LoginPage() {
 
         if (res.ok) {
           const data = await res.json();
-          if (data.needsSetup === true) {
+          // While setup is pending, a configured SSO login still signs in here.
+          if (data.needsSetup === true && data.ssoLoginAvailable !== true) {
             window.location.assign("/setup");
             return;
           }

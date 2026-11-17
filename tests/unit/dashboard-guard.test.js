@@ -365,6 +365,46 @@ describe("dashboard guard first-run setup gate", () => {
 
     expect(response).toBe(mocks.nextResponse);
   });
+
+  describe("after Reset Password in an SSO mode (Both, configured SSO, no password)", () => {
+    const ssoDuringSetup = {
+      requireLogin: true,
+      authMode: "both",
+      ssoType: "oidc",
+      oidcIssuerUrl: "https://idp.example.test",
+      oidcClientId: "client",
+      oidcClientSecret: "secret",
+    };
+    beforeEach(() => mocks.getSettings.mockResolvedValue(ssoDuringSetup));
+
+    it("keeps the login page, with its SSO button, reachable", async () => {
+      expect(await proxy(request("/login", { host: "localhost:20128" }))).toBe(mocks.nextResponse);
+    });
+
+    it("still serves /setup for the token", async () => {
+      expect(await proxy(request("/setup", { host: "localhost:20128" }))).toBe(mocks.nextResponse);
+    });
+
+    it("lets the SSO routes run", async () => {
+      expect(await proxy(request("/api/auth/oidc/start", { host: "localhost:20128" }))).toBe(mocks.nextResponse);
+      expect(await proxy(request("/api/auth/oidc/callback", { host: "localhost:20128" }))).toBe(mocks.nextResponse);
+      expect(await proxy(request("/api/auth/saml/acs", { host: "localhost:20128" }))).toBe(mocks.nextResponse);
+    });
+
+    it("opens the dashboard to an SSO-signed-in session and sends anyone else to /login", async () => {
+      const anonymous = await proxy(request("/dashboard", { host: "localhost:20128" }));
+      expect(anonymous.url.pathname).toBe("/login");
+
+      mocks.verifyDashboardAuthToken.mockResolvedValue(true);
+      expect(await proxy(request("/dashboard", { host: "localhost:20128" }, "sso-session"))).toBe(mocks.nextResponse);
+    });
+
+    it("still funnels to /setup when the selected SSO isn't configured", async () => {
+      mocks.getSettings.mockResolvedValue({ requireLogin: true, authMode: "both", ssoType: "saml" });
+      const response = await proxy(request("/login", { host: "localhost:20128" }));
+      expect(response.url.pathname).toBe("/setup");
+    });
+  });
 });
 
 describe("dashboard guard forced password change", () => {

@@ -3,6 +3,7 @@ import { getSettings, validateApiKey } from "@/lib/localDb";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { verifyDashboardAuthToken, getDashboardAuthSession } from "@/lib/auth/dashboardSession";
 import { needsSetup } from "@/lib/auth/setupState";
+import { getConfiguredSsoType } from "@/lib/auth/authMode.js";
 import { hasTrustedPeerHeaders } from "@/lib/auth/trustedPeer";
 import { extractClientApiKey } from "@/shared/utils/clientApiKey.js";
 import { containsManagementKey } from "@/shared/utils/managementKey.js";
@@ -231,11 +232,13 @@ export async function proxy(request) {
   }
 
   // First-run gate: until someone claims the instance with the console setup
-  // token, every dashboard/login page funnels to /setup.
+  // token, every dashboard/login page funnels to /setup. When a configured SSO
+  // protocol is selected (after Reset Password in an SSO mode), /login and the
+  // SSO-signed-in dashboard stay reachable; /setup still takes the token.
   if (pathname === "/setup" || pathname.startsWith("/dashboard") || pathname === "/login" || pathname === "/") {
     const settings = await loadSettings();
     const setupPending = await needsSetup(settings);
-    if (setupPending && pathname !== "/setup") {
+    if (setupPending && pathname !== "/setup" && !getConfiguredSsoType(settings)) {
       return NextResponse.redirect(new URL("/setup", request.url));
     }
     if (!setupPending && pathname === "/setup") {

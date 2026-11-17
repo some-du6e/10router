@@ -5,7 +5,7 @@ import { isOidcConfigured } from "@/lib/auth/oidc";
 import { isSamlConfigured } from "@/lib/auth/saml.js";
 import { getDashboardAuthSession } from "@/lib/auth/dashboardSession";
 import { getAuthBootstrapState } from "@/lib/auth/setupState";
-import { getActiveSsoType } from "@/lib/auth/authMode.js";
+import { getActiveSsoType, getConfiguredSsoType } from "@/lib/auth/authMode.js";
 
 export async function GET() {
   try {
@@ -40,6 +40,8 @@ export async function GET() {
       samlLoginLabel: (settings.samlLoginLabel || "Sign in with SAML SSO").trim() || "Sign in with SAML SSO",
       hasPassword: !!settings.password,
       needsSetup: bootstrapState === "setup",
+      // SSO sign-in still works while setup is pending (after Reset Password in an SSO mode).
+      ssoLoginAvailable: getConfiguredSsoType(settings) !== null,
       mustChangePassword: bootstrapState === "legacy",
       displayName,
       loginMethod,
@@ -62,6 +64,7 @@ export async function GET() {
       samlLoginLabel: "Sign in with SAML SSO",
       hasPassword: false,
       needsSetup: false,
+      ssoLoginAvailable: false,
       mustChangePassword: false,
       displayName: "Password user",
       loginMethod: "Password",

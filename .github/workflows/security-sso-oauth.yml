@@ -13,8 +13,12 @@ on:
       - "src/lib/oauth/constants/oauth.js"
       - "src/shared/components/OAuthModal.js"
       - "src/shared/utils/oauthCallbackBinding.ts"
-      - "cli/src/cli/menus/settings.js"
+      - "src/lib/dataDir.js"
+      - "src/dashboardGuard.js"
+      - "src/app/(dashboard)/dashboard/profile/page.js"
       - "tests/unit/saml*.test.js"
+      - "tests/unit/auth-secret.test.js"
+      - "tests/unit/dashboard-guard.test.js"
       - "tests/unit/oidc-token-binding.test.js"
       - "tests/unit/auth-mode-consistency.test.js"
       - "tests/unit/auth-login-mode.test.js"
@@ -60,6 +64,8 @@ jobs:
           unit/auth-mode-consistency.test.js
           unit/auth-login-mode.test.js
           unit/auth-setup.test.js
+          unit/auth-secret.test.js
+          unit/dashboard-guard.test.js
           unit/login-errors.test.js
           unit/sso-allowlist.test.js
           unit/trae-callback-binding.test.js
@@ -71,6 +77,7 @@ jobs:
           src/app/api/auth
           src/lib/oauth/utils/server.js
           src/shared/utils/oauthCallbackBinding.ts
+          src/dashboardGuard.js
       # set-state-in-effect: these components' existing open/load effects predate
       # the check.
       - name: Lint client components

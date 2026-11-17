@@ -102,12 +102,49 @@ describe("password login under SSO modes", () => {
     expect(reset.body).toEqual(expect.objectContaining({ success: true, token: "setup-token", authMode: "both" }));
     expect(settings).toEqual(expect.objectContaining({ password: null, authMode: "both", ssoType }));
     expect(getConfiguredSsoType(settings)).toBe(ssoType);
-    expect(log.mock.calls.flat().join("\n")).toMatch(/login mode switched/);
+    expect(log.mock.calls.flat().join("\n")).toMatch(/Login mode switched/);
+    expect(reset.body.message).toMatch(/sign-in keeps working/);
 
     // The printed token is usable: the instance is back in first-run setup.
     const res = await attempt("anything-at-all");
     expect(res.status).toBe(403);
     expect(res.body.needsSetup).toBe(true);
+    log.mockRestore();
+  });
+
+  it("leaves SSO-only mode alone when INITIAL_PASSWORD is set, and says so instead of printing an unusable token", async () => {
+    vi.stubEnv("INITIAL_PASSWORD", "a-strong-bootstrap-pw");
+    const settings = { ...oidc, authMode: "sso", ssoType: "oidc", password: "$2a$10$stored-hash" };
+    mocks.updateSettings.mockImplementation(async (patch) => Object.assign(settings, patch));
+    mocks.getSettings.mockImplementation(async () => settings);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const reset = await resetPassword();
+    expect(reset.body).toEqual(expect.objectContaining({ success: true, token: null }));
+    expect(reset.body.message).toMatch(/Login mode is unchanged/);
+    expect(reset.body.message).toMatch(/INITIAL_PASSWORD is set/);
+    expect(mocks.issueSetupToken).not.toHaveBeenCalled();
+    expect(settings).toEqual(expect.objectContaining({ password: null, authMode: "sso", ssoType: "oidc" }));
+
+    // INITIAL_PASSWORD did not quietly become a live login.
+    const res = await attempt("a-strong-bootstrap-pw");
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Password login is disabled. Use OIDC sign in.");
+    log.mockRestore();
+  });
+
+  it("says INITIAL_PASSWORD is the login in password mode, with no setup token", async () => {
+    vi.stubEnv("INITIAL_PASSWORD", "a-strong-bootstrap-pw");
+    const settings = { authMode: "password", password: "$2a$10$stored-hash" };
+    mocks.updateSettings.mockImplementation(async (patch) => Object.assign(settings, patch));
+    mocks.getSettings.mockImplementation(async () => settings);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const reset = await resetPassword();
+    expect(reset.body).toEqual(expect.objectContaining({ success: true, token: null }));
+    expect(reset.body.message).toMatch(/password login uses it/);
+    expect(mocks.issueSetupToken).not.toHaveBeenCalled();
+    expect((await attempt("a-strong-bootstrap-pw")).status).toBe(200);
     log.mockRestore();
   });
 });
