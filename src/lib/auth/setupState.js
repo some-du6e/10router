@@ -8,7 +8,7 @@
 //   configured — a password hash is stored; normal password login
 //   oidc/saml  — no password, and password login is off in favour of that
 //                configured SSO protocol
-//   env      — operator supplied INITIAL_PASSWORD (headless/Docker bootstrap)
+//   env        — operator supplied INITIAL_PASSWORD (headless/Docker bootstrap)
 //   legacy     — pre-existing install that was still on the old default
 //                password; one last login is allowed, then a change is forced
 //   setup      — nothing configured; console setup token required
@@ -89,8 +89,10 @@ export async function needsSetup(settings = null) {
 // The secret that stands in for a stored hash in the "env" and "legacy" states.
 export async function getBootstrapSecret(settings = null) {
   const state = await getAuthBootstrapState(settings);
-  if (state === "env") return getEnvInitialPassword();
   if (state === "legacy") return LEGACY_DEFAULT_PASSWORD;
+  // With SSO-only login and no stored hash, INITIAL_PASSWORD still confirms
+  // sensitive actions, as it did before the SSO states existed.
+  if (state === "env" || state === "oidc" || state === "saml") return getEnvInitialPassword();
   return null;
 }
 

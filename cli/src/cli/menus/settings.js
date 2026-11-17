@@ -149,10 +149,13 @@ async function resetPassword() {
 
   const result = await api.resetPassword();
   if (result.success) {
-    const { token, expiresInSec } = result.data || {};
+    const { token, expiresInSec, authMode } = result.data || {};
     if (token) {
       const minutes = Math.max(1, Math.round((expiresInSec || 300) / 60));
       showStatus("Password cleared. Open the dashboard to finish setup.", "success");
+      if (authMode === "both") {
+        console.log(`  ${COLORS.dim}SSO-only login was on, so password login is back on too (SSO still works).${COLORS.reset}`);
+      }
       console.log(`\n  Setup token: ${COLORS.cyan}${token}${COLORS.reset}`);
       console.log(`  ${COLORS.dim}Valid for ${minutes} minutes — restart 10router for a new one.${COLORS.reset}\n`);
     } else {

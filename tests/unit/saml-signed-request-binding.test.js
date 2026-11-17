@@ -2,11 +2,15 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { generateKeyPairSync } from "node:crypto";
 import { createRequire } from "node:module";
 import { SAML } from "@node-saml/node-saml";
-import { buildSamlAuthorizeUrl, validateSamlResponse } from "../../src/lib/auth/saml.js";
+
+// Every process that shares JWT_SECRET can check a saml_state cookie.
+vi.stubEnv("JWT_SECRET", "test-secret-for-saml-state");
+const saml = await import("../../src/lib/auth/saml.js");
 
 // Resolve the actual validator's signing dependency without adding a test dependency.
 const require = createRequire(import.meta.url);
 const { SignedXml } = createRequire(require.resolve("@node-saml/node-saml"))("xml-crypto");
+const CONSUMED = Symbol.for("10router.samlConsumedRequests");
 let privateKey;
 let publicKey;
 const settings = { samlCert: "test-certificate", samlEntryPoint: "https://idp.example.com/sso", samlIssuer: "urn:9router:sp", baseUrl: "https://dashboard.example.com" };
@@ -18,7 +22,10 @@ beforeAll(() => {
     publicKeyEncoding: { type: "spki", format: "pem" },
   }));
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
 
 function sign(xml, element) {
   const signer = new SignedXml({ privateKey, publicCert: publicKey });
@@ -46,61 +53,89 @@ function response(requestId, subjectRequestId = requestId, comment = "") {
   return { SAMLResponse: Buffer.from(comment + xml).toString("base64") };
 }
 
-function verify(body, expectedRequestId) {
+function verify(body, stateCookie, module = saml, Saml = SAML) {
   // Supply an ephemeral RSA key to the real signature verifier; XML verification stays real.
-  vi.spyOn(SAML.prototype, "getKeyInfosAsPem").mockResolvedValue([publicKey]);
-  return validateSamlResponse(null, body, expectedRequestId, settings);
+  vi.spyOn(Saml.prototype, "getKeyInfosAsPem").mockResolvedValue([publicKey]);
+  return module.validateSamlResponse(null, body, stateCookie, settings);
 }
 
-async function issueRequest() {
-  const { requestId } = await buildSamlAuthorizeUrl(null, settings);
+async function issueRequest(module = saml) {
+  const { requestId, stateCookie } = await module.buildSamlAuthorizeUrl(null, settings);
   expect(requestId).toBeTruthy();
-  return requestId;
+  expect(stateCookie).toBeTruthy();
+  return { id: requestId, cookie: stateCookie };
 }
 
 describe("cryptographically validated SAML request binding", () => {
-  it("accepts a signed Response and Assertion bound to this request", async () => {
-    const id = await issueRequest();
-    const profile = await verify(response(id), id);
+  it("accepts a signed Response and Assertion bound to this browser's request", async () => {
+    const { id, cookie } = await issueRequest();
+    const profile = await verify(response(id), cookie);
     expect(profile.nameID).toBe("user@example.com");
   });
 
   it("rejects a captured signed response with a forged binding in an unsigned XML comment", async () => {
-    const oldId = await issueRequest();
-    const currentId = await issueRequest();
-    const captured = response(oldId, oldId, `<!-- InResponseTo="${currentId}" -->`);
-    await expect(verify(captured, currentId)).rejects.toThrow(/InResponseTo/i);
+    const old = await issueRequest();
+    const current = await issueRequest();
+    const captured = response(old.id, old.id, `<!-- InResponseTo="${current.id}" -->`);
+    await expect(verify(captured, current.cookie)).rejects.toThrow(/InResponseTo/i);
   });
 
   it("rejects a signed assertion bound to a different request than its signed Response", async () => {
-    const id = await issueRequest();
-    await expect(verify(response(id, "other-request"), id)).rejects.toThrow(/InResponseTo/i);
+    const { id, cookie } = await issueRequest();
+    await expect(verify(response(id, "other-request"), cookie)).rejects.toThrow(/InResponseTo/i);
   });
 
   it("rejects a signed assertion missing SubjectConfirmation request binding", async () => {
-    const id = await issueRequest();
-    await expect(verify(response(id, ""), id)).rejects.toThrow(/InResponseTo/i);
+    const { id, cookie } = await issueRequest();
+    await expect(verify(response(id, ""), cookie)).rejects.toThrow(/InResponseTo/i);
   });
 
-  it("rejects a response whose saml_state cookie names a request this server never issued", async () => {
-    await expect(verify(response("attacker-chosen"), "attacker-chosen")).rejects.toThrow(/InResponseTo/i);
-  });
-
-  it("rejects a response to a request issued more than 10 minutes ago", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      const id = await issueRequest();
-      vi.setSystemTime(Date.now() + 10 * 60 * 1000 + 1000);
-      await expect(verify(response(id), id)).rejects.toThrow(/InResponseTo/i);
-    } finally {
-      vi.useRealTimers();
+  it("rejects a forged or tampered saml_state cookie", async () => {
+    const { id, cookie } = await issueRequest();
+    const [payload, signature] = cookie.split(".");
+    const forgedPayload = Buffer.from(JSON.stringify({ id: "attacker-chosen", exp: Date.now() + 60_000 })).toString("base64url");
+    for (const bad of ["attacker-chosen", `${forgedPayload}.${signature}`, `${payload}.${signature.slice(0, -2)}xx`, "", undefined]) {
+      await expect(verify(response("attacker-chosen"), bad), String(bad)).rejects.toThrow(/request state/);
     }
+    // The real login still works afterwards.
+    await expect(verify(response(id), cookie)).resolves.toBeTruthy();
   });
 
-  it("accepts each issued request once, so a captured response cannot be replayed", async () => {
-    const id = await issueRequest();
+  it("rejects a response once its saml_state cookie is more than 10 minutes old", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const { id, cookie } = await issueRequest();
+    vi.setSystemTime(Date.now() + saml.SAML_REQUEST_TTL_MS + 1000);
+    await expect(verify(response(id), cookie)).rejects.toThrow(/request state/);
+  });
+
+  it("accepts each request once, so a captured response cannot be replayed", async () => {
+    const { id, cookie } = await issueRequest();
     const captured = response(id);
-    await verify(captured, id);
-    await expect(verify(captured, id)).rejects.toThrow(/InResponseTo/i);
+    await verify(captured, cookie);
+    await expect(verify(captured, cookie)).rejects.toThrow(/already used/);
+  });
+
+  it("releases a request whose response failed, so only a real login uses it up", async () => {
+    const { id, cookie } = await issueRequest();
+    await expect(verify(response(id, "other-request"), cookie)).rejects.toThrow(/InResponseTo/i);
+    await expect(verify(response(id), cookie)).resolves.toBeTruthy();
+  });
+
+  it("isn't affected by /start being called over and over", async () => {
+    const pending = await issueRequest();
+    for (let i = 0; i < 500; i++) await saml.buildSamlAuthorizeUrl(null, settings);
+    await expect(verify(response(pending.id), pending.cookie)).resolves.toBeTruthy();
+  });
+
+  it("lets another server process with the same secret finish the login", async () => {
+    const { id, cookie } = await issueRequest();
+    // A second process: fresh modules and none of this one's memory.
+    vi.resetModules();
+    delete globalThis[CONSUMED];
+    const other = await import("../../src/lib/auth/saml.js");
+    const { SAML: OtherSaml } = await import("@node-saml/node-saml");
+    expect(other).not.toBe(saml);
+    const profile = await verify(response(id), cookie, other, OtherSaml);
+    expect(profile.nameID).toBe("user@example.com");
   });
 });

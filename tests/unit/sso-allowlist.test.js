@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   validateSamlResponse: vi.fn(),
   verifyOidcIdToken: vi.fn(),
   getSettings: vi.fn(),
+  recordFail: vi.fn(),
   cookieValues: {},
 }));
 const SAML_SETTINGS = { authMode: "sso", ssoType: "saml", samlEntryPoint: "https://idp.example.test/sso", samlCert: "cert" };
@@ -15,7 +16,7 @@ vi.mock("next/headers", () => ({
 vi.mock("@/lib/localDb", () => ({ getSettings: mocks.getSettings }));
 vi.mock("@/lib/auth/dashboardSession", () => ({ setDashboardAuthCookie: mocks.setDashboardAuthCookie }));
 vi.mock("@/lib/auth/loginLimiter", () => ({
-  checkLock: () => ({ locked: false }), recordFail: vi.fn(), recordSuccess: vi.fn(), getClientIp: () => "127.0.0.1",
+  checkLock: () => ({ locked: false }), recordFail: mocks.recordFail, recordSuccess: vi.fn(), getClientIp: () => "127.0.0.1",
 }));
 vi.mock("@/lib/auth/saml.js", () => ({
   getSamlBaseUrl: () => "https://dash.example.test",
@@ -81,10 +82,12 @@ describe("SSO callbacks enforce SSO_ALLOWED_USERS", () => {
     return new Request("https://dash.example.test/api/auth/saml/acs", { method: "POST", body });
   }
 
-  it("refuses a SAML principal outside the allowlist", async () => {
+  it("refuses a SAML principal outside the allowlist without counting it toward the login lockout", async () => {
     mocks.validateSamlResponse.mockResolvedValue({ nameID: "mallory", email: "mallory@example.test" });
     expect(await samlAcs(acsRequest())).toEqual({ redirect: "https://dash.example.test/login?error=sso_user_not_allowed" });
     expect(mocks.setDashboardAuthCookie).not.toHaveBeenCalled();
+    // The IdP signed this user in; colleagues behind one NAT mustn't lock the admins out.
+    expect(mocks.recordFail).not.toHaveBeenCalled();
   });
 
   it("signs in an allowlisted SAML principal", async () => {

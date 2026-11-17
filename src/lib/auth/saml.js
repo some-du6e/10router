@@ -1,5 +1,7 @@
+import crypto from "node:crypto";
 import { SAML } from "@node-saml/node-saml";
 import { isSamlConfigured } from "./authMode.js";
+import { getAuthSecret } from "./authSecret.js";
 
 export { isSamlConfigured };
 
@@ -69,49 +71,68 @@ export function getSamlBaseUrl(request, settings) {
 }
 
 export const SAML_REQUEST_TTL_MS = 10 * 60 * 1000;
-// /start is public, so cap the pending request IDs. An entry is a few dozen bytes.
-export const SAML_MAX_PENDING_REQUESTS = 50_000;
-const SAML_REQUEST_CACHE = Symbol.for("10router.samlRequestCache");
+const CONSUMED_REQUESTS = Symbol.for("10router.samlConsumedRequests");
 
-// node-saml cacheProvider for the AuthnRequest IDs /start issues. ACS accepts an ID
-// only within SAML_REQUEST_TTL_MS, and node-saml removes it once answered. The Map
-// keeps insertion order, so expired entries sit at the front and go first; past the
-// cap the oldest live one goes.
-function createSamlRequestCache() {
-  const entries = new Map();
-  const isLive = (entry, now) => !!entry && now - entry.createdAt < SAML_REQUEST_TTL_MS;
+function signState(payload) {
+  return crypto.createHmac("sha256", getAuthSecret()).update(`saml_state\n${payload}`).digest("base64url");
+}
+
+// The saml_state cookie holds the AuthnRequest ID and its expiry, signed with the
+// server secret. /start keeps no state, and any process with the secret can check it.
+export function createSamlStateCookie(requestId, now = Date.now()) {
+  const payload = Buffer.from(JSON.stringify({ id: requestId, exp: now + SAML_REQUEST_TTL_MS })).toString("base64url");
+  return `${payload}.${signState(payload)}`;
+}
+
+// The request a saml_state cookie names, or null when it is missing, tampered with or expired.
+export function readSamlStateCookie(value, now = Date.now()) {
+  if (typeof value !== "string") return null;
+  const dot = value.lastIndexOf(".");
+  if (dot <= 0) return null;
+  const payload = value.slice(0, dot);
+  const given = Buffer.from(value.slice(dot + 1));
+  const expected = Buffer.from(signState(payload));
+  if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) return null;
+  try {
+    const { id, exp } = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    if (typeof id !== "string" || !id || typeof exp !== "number" || exp <= now) return null;
+    return { id, exp };
+  } catch {
+    return null;
+  }
+}
+
+// Request IDs that signed someone in, or are being checked right now, until their
+// cookie would expire. A failed check releases its ID, so only real logins stay.
+function consumedRequests() {
+  return (globalThis[CONSUMED_REQUESTS] ??= new Map());
+}
+
+function claimRequest({ id, exp }, now) {
+  const consumed = consumedRequests();
+  for (const [key, until] of consumed) if (until <= now) consumed.delete(key);
+  if (consumed.has(id)) return false;
+  consumed.set(id, exp);
+  return true;
+}
+
+// node-saml cacheProviders. /start stores nothing; at ACS node-saml may only redeem
+// the request the browser's signed cookie names.
+const NO_STORE_CACHE = {
+  saveAsync: async (key, value) => ({ value, createdAt: Date.now() }),
+  getAsync: async () => null,
+  removeAsync: async () => null,
+};
+
+function boundRequestCache(requestId) {
   return {
-    async saveAsync(key, value) {
-      const now = Date.now();
-      for (const [id, entry] of entries) {
-        if (isLive(entry, now)) break;
-        entries.delete(id);
-      }
-      if (entries.has(key)) return null;
-      while (entries.size >= SAML_MAX_PENDING_REQUESTS) entries.delete(entries.keys().next().value);
-      const item = { value, createdAt: now };
-      entries.set(key, item);
-      return item;
-    },
-    async getAsync(key) {
-      const entry = entries.get(key);
-      if (isLive(entry, Date.now())) return entry.value;
-      entries.delete(key);
-      return null;
-    },
-    async removeAsync(key) {
-      return key != null && entries.delete(key) ? key : null;
-    },
+    saveAsync: async () => null,
+    getAsync: async (key) => (key === requestId ? "issued" : null),
+    removeAsync: async (key) => key ?? null,
   };
 }
 
-// One store per process, on globalThis so every route bundle that loads this module
-// sees the IDs /start issued.
-export function getSamlRequestCache() {
-  return (globalThis[SAML_REQUEST_CACHE] ??= createSamlRequestCache());
-}
-
-export function createSamlInstance(settings, origin) {
+export function createSamlInstance(settings, origin, cacheProvider = NO_STORE_CACHE) {
   const cert = formatX509Certificate(settings?.samlCert || "") || DUMMY_FALLBACK_CERT;
   const callbackUrl = `${origin}/api/auth/saml/acs`;
   return new SAML({
@@ -123,15 +144,15 @@ export function createSamlInstance(settings, origin) {
     acceptedClockSkewMs: 60000,
     wantAssertionsSigned: true,
     validateInResponseTo: "always",
-    cacheProvider: getSamlRequestCache(),
+    cacheProvider,
   });
 }
 
 /**
- * Builds SAML AuthnRequest redirect URL and returns { authorizeUrl, requestId }.
+ * Builds the SAML AuthnRequest redirect URL and the signed saml_state cookie value.
  * @param {Request} request
  * @param {object} settings
- * @returns {Promise<{ authorizeUrl: string, requestId: string }>}
+ * @returns {Promise<{ authorizeUrl: string, requestId: string, stateCookie: string }>}
  */
 export async function buildSamlAuthorizeUrl(request, settings) {
   const origin = getSamlBaseUrl(request, settings);
@@ -143,18 +164,18 @@ export async function buildSamlAuthorizeUrl(request, settings) {
 
   const authorizeUrl = await samlInstance._requestToUrlAsync(xml, null, "authorize", {});
 
-  return { authorizeUrl, requestId };
+  return { authorizeUrl, requestId, stateCookie: requestId ? createSamlStateCookie(requestId) : "" };
 }
 
 /**
  * Validates SAML POST response from IdP ACS callback and returns user profile.
  * @param {Request} request
  * @param {object} body - Parsed form body or object containing SAMLResponse
- * @param {string} expectedRequestId - Request ID stored in saml_state cookie
+ * @param {string} stateCookie - The signed saml_state cookie value
  * @param {object} settings
  * @returns {Promise<object>}
  */
-export async function validateSamlResponse(request, body, expectedRequestId, settings) {
+export async function validateSamlResponse(request, body, stateCookie, settings) {
   if (!settings?.samlCert) {
     throw new Error("IdP X.509 Certificate (samlCert) is missing or not configured");
   }
@@ -166,22 +187,33 @@ export async function validateSamlResponse(request, body, expectedRequestId, set
     throw new Error("Missing SAMLResponse parameter in assertion POST body");
   }
 
-  // A response without the SP-issued request state must never authenticate.
-  if (typeof expectedRequestId !== "string" || !expectedRequestId) {
-    throw new Error("Missing SAML request state; SP-initiated login is required");
+  // A response without valid SP-issued request state must never authenticate.
+  const pending = readSamlStateCookie(stateCookie);
+  if (!pending) {
+    throw new Error("Missing, expired or invalid SAML request state; SP-initiated login is required");
   }
-  const origin = getSamlBaseUrl(request, settings);
-  const samlInstance = createSamlInstance(settings, origin);
-  const result = await samlInstance.validatePostResponseAsync({ SAMLResponse: rawSamlResponse });
-  const profile = result?.profile || result;
-  const confirmations = profile?.getAssertion?.()?.Assertion?.Subject?.[0]?.SubjectConfirmation || [];
-  // Inspect only the assertion parsed from verified XML, never the raw envelope.
-  const boundSubject = confirmations.some(confirmation =>
-    confirmation.$?.Method === "urn:oasis:names:tc:SAML:2.0:cm:bearer" &&
-    confirmation.SubjectConfirmationData?.[0]?.$?.InResponseTo === expectedRequestId
-  );
-  if (!boundSubject) {
-    throw new Error("SAML signed SubjectConfirmation InResponseTo mismatch");
+  if (!claimRequest(pending, Date.now())) {
+    throw new Error("SAML request already used; start a new login");
+  }
+
+  let profile;
+  try {
+    const origin = getSamlBaseUrl(request, settings);
+    const samlInstance = createSamlInstance(settings, origin, boundRequestCache(pending.id));
+    const result = await samlInstance.validatePostResponseAsync({ SAMLResponse: rawSamlResponse });
+    profile = result?.profile || result;
+    const confirmations = profile?.getAssertion?.()?.Assertion?.Subject?.[0]?.SubjectConfirmation || [];
+    // Inspect only the assertion parsed from verified XML, never the raw envelope.
+    const boundSubject = confirmations.some(confirmation =>
+      confirmation.$?.Method === "urn:oasis:names:tc:SAML:2.0:cm:bearer" &&
+      confirmation.SubjectConfirmationData?.[0]?.$?.InResponseTo === pending.id
+    );
+    if (!boundSubject) {
+      throw new Error("SAML signed SubjectConfirmation InResponseTo mismatch");
+    }
+  } catch (error) {
+    consumedRequests().delete(pending.id);
+    throw error;
   }
 
   return profile;

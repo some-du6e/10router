@@ -60,4 +60,17 @@ describe("OIDC ID token binding with real signatures and JWKS", () => {
     await expect(verify({}, "")).rejects.toThrow(/nonce mismatch/i);
     await expect(verify({}, null)).rejects.toThrow(/nonce mismatch/i);
   });
+
+  it("rejects a token without a nonce when no nonce was stored at all", async () => {
+    const idToken = await new SignJWT({})
+      .setProtectedHeader({ alg: "RS256", kid: "test-key" })
+      .setIssuer(issuer)
+      .setAudience(audience)
+      .setSubject("user-123")
+      .setIssuedAt()
+      .setExpirationTime("5m")
+      .sign(privateKey);
+    // undefined === undefined, so only the explicit guard stops this.
+    await expect(verifyOidcIdToken({ idToken, issuer, audience, jwksUri, nonce: undefined })).rejects.toThrow(/nonce mismatch/i);
+  });
 });

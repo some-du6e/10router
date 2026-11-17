@@ -6,6 +6,8 @@ vi.mock("@/lib/localDb", () => ({ getSettings: mocks.getSettings }));
 vi.mock("@/lib/db/helpers/metaStore.js", () => ({ getMeta: mocks.getMeta, setMeta: vi.fn() }));
 const { getOidcRuntimeConfig } = await import("../../src/lib/auth/oidc.js");
 const { getAuthBootstrapState } = await import("../../src/lib/auth/setupState.js");
+vi.stubEnv("JWT_SECRET", "test-secret-for-sessions");
+const { verifyDashboardPassword } = await import("../../src/lib/auth/dashboardSession.js");
 
 const credentials = {
   oidcIssuerUrl: "https://idp.example.com", oidcClientId: "client", oidcClientSecret: "secret",
@@ -52,5 +54,21 @@ describe("one interpretation of configured authentication mode", () => {
     vi.stubEnv("INITIAL_PASSWORD", "a-strong-bootstrap-pw");
     expect(await getAuthBootstrapState({ ...credentials, authMode: "both", ssoType: "oidc" })).toBe("env");
     expect(await getAuthBootstrapState({ ...credentials, authMode: "sso", ssoType: "oidc" })).toBe("oidc");
+  });
+
+  it.each([
+    ["OIDC only", { authMode: "sso", ssoType: "oidc" }],
+    ["SAML only", { authMode: "sso", ssoType: "saml" }],
+    ["legacy oidc", { authMode: "oidc" }],
+  ])("accepts INITIAL_PASSWORD to confirm sensitive actions in %s with no stored password", async (_label, mode) => {
+    vi.stubEnv("INITIAL_PASSWORD", "a-strong-bootstrap-pw");
+    mocks.getSettings.mockResolvedValue({ ...credentials, ...mode });
+    expect(await verifyDashboardPassword("a-strong-bootstrap-pw")).toBe(true);
+    expect(await verifyDashboardPassword("something-else")).toBe(false);
+  });
+
+  it("confirms nothing in SSO-only mode with no stored password and no INITIAL_PASSWORD", async () => {
+    mocks.getSettings.mockResolvedValue({ ...credentials, authMode: "sso", ssoType: "oidc" });
+    expect(await verifyDashboardPassword("anything")).toBe(false);
   });
 });

@@ -13,6 +13,7 @@ vi.mock("@/lib/localDb", () => ({ getSettings: mocks.getSettings }));
 vi.mock("@/lib/auth/saml.js", () => ({
   getSamlBaseUrl: mocks.getSamlBaseUrl,
   buildSamlAuthorizeUrl: mocks.buildSamlAuthorizeUrl,
+  SAML_REQUEST_TTL_MS: 10 * 60 * 1000,
 }));
 vi.mock("@/lib/auth/dashboardSession", () => ({ shouldUseSecureCookie: mocks.shouldUseSecureCookie }));
 
@@ -22,17 +23,16 @@ const samlSettings = { samlEntryPoint: "https://idp.example.com/sso", samlCert: 
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.unstubAllEnvs();
   mocks.getSettings.mockResolvedValue({ ...samlSettings, authMode: "sso", ssoType: "saml" });
   mocks.getSamlBaseUrl.mockReturnValue("https://dashboard.example.com");
   mocks.shouldUseSecureCookie.mockReturnValue(false);
-  mocks.buildSamlAuthorizeUrl.mockResolvedValue({ authorizeUrl: "https://idp.example.com/saml", requestId: "request-123" });
+  mocks.buildSamlAuthorizeUrl.mockResolvedValue({ authorizeUrl: "https://idp.example.com/saml", requestId: "request-123", stateCookie: "signed-state" });
 });
 
 describe("SAML authorization request cookie", () => {
-  it("persists request binding through the cross-site HTTPS IdP POST", async () => {
+  it("persists the signed request state through the cross-site HTTPS IdP POST, for the request's lifetime", async () => {
     expect(await GET(new Request("https://dashboard.example.com/api/auth/saml/start"))).toEqual({ redirect: "https://idp.example.com/saml" });
-    expect(mocks.set).toHaveBeenCalledWith("saml_state", "request-123", {
+    expect(mocks.set).toHaveBeenCalledWith("saml_state", "signed-state", {
       httpOnly: true, secure: true, sameSite: "none", path: "/", maxAge: 600,
     });
   });
@@ -41,13 +41,13 @@ describe("SAML authorization request cookie", () => {
     mocks.getSamlBaseUrl.mockReturnValue("http://localhost:20128");
     mocks.shouldUseSecureCookie.mockReturnValue(true);
     await GET(new Request("http://localhost:20128/api/auth/saml/start"));
-    expect(mocks.set).toHaveBeenCalledWith("saml_state", "request-123", expect.objectContaining({ secure: true, sameSite: "none" }));
+    expect(mocks.set).toHaveBeenCalledWith("saml_state", "signed-state", expect.objectContaining({ secure: true, sameSite: "none" }));
   });
 
   it("does not attempt an insecure SameSite=None cookie on HTTP", async () => {
     mocks.getSamlBaseUrl.mockReturnValue("http://localhost:20128");
     await GET(new Request("http://localhost:20128/api/auth/saml/start"));
-    expect(mocks.set).toHaveBeenCalledWith("saml_state", "request-123", expect.objectContaining({ secure: false, sameSite: "lax" }));
+    expect(mocks.set).toHaveBeenCalledWith("saml_state", "signed-state", expect.objectContaining({ secure: false, sameSite: "lax" }));
   });
 
   it.each([
@@ -61,13 +61,8 @@ describe("SAML authorization request cookie", () => {
     expect(mocks.set).not.toHaveBeenCalled();
   });
 
-  it("caps how often one client can start a SAML login", async () => {
-    vi.stubEnv("TRUST_PROXY", "true");
-    const start = (ip) => GET(new Request("https://dashboard.example.com/api/auth/saml/start", { headers: { "x-forwarded-for": ip } }));
-    for (let i = 0; i < 20; i++) expect((await start("203.0.113.7")).redirect).toBe("https://idp.example.com/saml");
-    expect((await start("203.0.113.7")).redirect).toBe("https://dashboard.example.com/login?error=saml_rate_limited");
-    expect(mocks.buildSamlAuthorizeUrl).toHaveBeenCalledTimes(20);
-    // Another client still gets through.
-    expect((await start("203.0.113.8")).redirect).toBe("https://idp.example.com/saml");
+  it("starts every login, however many come from one client", async () => {
+    for (let i = 0; i < 50; i++) expect((await GET(new Request("https://dashboard.example.com/api/auth/saml/start"))).redirect).toBe("https://idp.example.com/saml");
+    expect(mocks.buildSamlAuthorizeUrl).toHaveBeenCalledTimes(50);
   });
 });

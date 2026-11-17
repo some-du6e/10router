@@ -13,7 +13,6 @@ const mocks = vi.hoisted(() => ({
   updateSettings: vi.fn(),
   getMeta: vi.fn(),
   setMeta: vi.fn(),
-  isOidcConfigured: vi.fn(() => false),
 }));
 
 vi.mock("@/lib/localDb", () => ({
@@ -24,10 +23,6 @@ vi.mock("@/lib/localDb", () => ({
 vi.mock("@/lib/db/helpers/metaStore.js", () => ({
   getMeta: mocks.getMeta,
   setMeta: mocks.setMeta,
-}));
-
-vi.mock("@/lib/auth/oidc", () => ({
-  isOidcConfigured: mocks.isOidcConfigured,
 }));
 
 const {
@@ -58,7 +53,6 @@ beforeEach(() => {
   vi.useRealTimers();
   delete process.env.INITIAL_PASSWORD;
   mocks.getMeta.mockResolvedValue("0");
-  mocks.isOidcConfigured.mockReturnValue(false);
   clearSetupToken();
   __resetMintStateForTests();
 });

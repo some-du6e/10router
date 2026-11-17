@@ -27,6 +27,7 @@ vi.mock("@/lib/auth/setupToken", () => ({
   SETUP_WINDOW_MS: 15 * 60 * 1000,
 }));
 
+const { getConfiguredSsoType } = await import("../../src/lib/auth/authMode.js");
 const { POST: login } = await import("../../src/app/api/auth/login/route.js");
 const { POST: resetPassword } = await import("../../src/app/api/auth/reset-password/route.js");
 
@@ -84,5 +85,29 @@ describe("password login under SSO modes", () => {
     const res = await attempt("anything-at-all");
     expect(res.status).toBe(403);
     expect(res.body.needsSetup).toBe(true);
+    expect(settings.authMode).toBe("both");
+  });
+
+  it.each([
+    ["OIDC only", { authMode: "sso", ssoType: "oidc" }, "oidc"],
+    ["SAML only", { authMode: "sso", ssoType: "saml" }, "saml"],
+    ["legacy oidc mode with a stale SAML selector", { authMode: "oidc", ssoType: "saml" }, "oidc"],
+  ])("turns password login back on when Reset Password runs in %s, keeping the same SSO", async (_label, mode, ssoType) => {
+    const settings = { ...oidc, ...saml, ...mode, password: "$2a$10$stored-hash" };
+    mocks.updateSettings.mockImplementation(async (patch) => Object.assign(settings, patch));
+    mocks.getSettings.mockImplementation(async () => settings);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const reset = await resetPassword();
+    expect(reset.body).toEqual(expect.objectContaining({ success: true, token: "setup-token", authMode: "both" }));
+    expect(settings).toEqual(expect.objectContaining({ password: null, authMode: "both", ssoType }));
+    expect(getConfiguredSsoType(settings)).toBe(ssoType);
+    expect(log.mock.calls.flat().join("\n")).toMatch(/login mode switched/);
+
+    // The printed token is usable: the instance is back in first-run setup.
+    const res = await attempt("anything-at-all");
+    expect(res.status).toBe(403);
+    expect(res.body.needsSetup).toBe(true);
+    log.mockRestore();
   });
 });

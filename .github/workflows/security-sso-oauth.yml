@@ -13,6 +13,7 @@ on:
       - "src/lib/oauth/constants/oauth.js"
       - "src/shared/components/OAuthModal.js"
       - "src/shared/utils/oauthCallbackBinding.ts"
+      - "cli/src/cli/menus/settings.js"
       - "tests/unit/saml*.test.js"
       - "tests/unit/oidc-token-binding.test.js"
       - "tests/unit/auth-mode-consistency.test.js"
@@ -54,7 +55,7 @@ jobs:
           unit/saml-response-binding.test.js
           unit/saml-signed-request-binding.test.js
           unit/saml-start-cookie.test.js
-          unit/saml-request-cache-bound.test.js
+          unit/saml-state-cookie.test.js
           unit/oidc-token-binding.test.js
           unit/auth-mode-consistency.test.js
           unit/auth-login-mode.test.js
