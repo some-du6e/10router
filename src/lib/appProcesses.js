@@ -136,19 +136,26 @@ function context(ctx) {
   };
 }
 
-// Whether a command line runs `file`. Absolute paths are also compared after
-// resolving links, since a shim may launch through a junction or symlinked npm
-// prefix (nvm-windows) while this server sees the real path. Relative tokens
-// are never resolved: they belong to the other process's cwd, not ours.
-function runsFile(c, info, file) {
-  if (!file) return false;
+// A test for whether a command line runs `file`. Absolute paths are also
+// compared after resolving links, since a shim may launch through a junction or
+// symlinked npm prefix (nvm-windows) while this server sees the real path.
+// Resolving can block for seconds on an offline mapped drive or share, so only
+// tokens with the target's file name are resolved, and the target only once.
+// Relative tokens are never resolved: they belong to the other process's cwd.
+function fileMatcher(c, file) {
+  if (!file) return () => false;
   const real = (p) => {
-    if (!c.paths.isAbsolute(p)) return p;
     try { return c.realpath(p); } catch { return p; }
   };
   const norm = (p) => (c.isWin ? c.paths.normalize(p).toLowerCase() : c.paths.normalize(p));
-  const targets = new Set([norm(file), norm(real(file))]);
-  return tokensOf(info.args).some((token) => targets.has(norm(token)) || targets.has(norm(real(token))));
+  const baseOf = (p) => (c.isWin ? c.paths.basename(p).toLowerCase() : c.paths.basename(p));
+  const targetBase = baseOf(file);
+  const targets = new Set([norm(file), c.paths.isAbsolute(file) ? norm(real(file)) : norm(file)]);
+  return (info) => tokensOf(info.args).some((token) => {
+    if (targets.has(norm(token))) return true;
+    if (!c.paths.isAbsolute(token) || baseOf(token) !== targetBase) return false;
+    return targets.has(norm(real(token)));
+  });
 }
 
 // What to stop: PIDs (children first, the launcher last), the launcher if it
@@ -181,7 +188,7 @@ export function planKills(ctx = {}) {
   if (launcherInfo && c.isWin) {
     const cli = c.installRoot ? c.paths.join(c.installRoot, "cli.js") : null;
     const older = launcherInfo.created !== null && launcherInfo.created <= serverStart;
-    if (!runsFile(c, launcherInfo, cli) || !older) launcherInfo = null;
+    if (!fileMatcher(c, cli)(launcherInfo) || !older) launcherInfo = null;
   }
 
   const keep = new Set();
@@ -200,7 +207,7 @@ export function planKills(ctx = {}) {
   if (updater) {
     // The updater relaunched this install, so it started before this server.
     const info = mine(updater);
-    if (info && runsFile(c, info, c.updaterPath) && info.created != null && info.created <= serverStart) keep.add(updater);
+    if (info && fileMatcher(c, c.updaterPath)(info) && info.created != null && info.created <= serverStart) keep.add(updater);
   }
 
   const pids = wanted.filter((pid) => keep.has(pid) && pid !== ownLauncher);
@@ -223,13 +230,13 @@ export function busyInstallPids(ctx = {}) {
   // slow first listing or a clock step never turns it into "another instance".
   const launcher = toPid(c.env[LAUNCHER_PID_ENV]);
   const exclude = new Set([c.self, launcher === c.parent ? launcher : null].filter(Boolean));
-  const files = [
+  const matchers = [
     c.paths.join(c.installRoot, "cli.js"),
     c.paths.join(c.installRoot, "app", "custom-server.js"),
     c.paths.join(c.installRoot, "app", "server.js"),
-  ];
+  ].map((file) => fileMatcher(c, file));
   const infos = readWindows("Name='node.exe' OR Name='bun.exe'");
-  return [...infos].filter(([pid, info]) => !exclude.has(pid) && files.some((file) => runsFile(c, info, file))).map(([pid]) => pid);
+  return [...infos].filter(([pid, info]) => !exclude.has(pid) && matchers.some((runs) => runs(info))).map(([pid]) => pid);
 }
 
 export function busyInstallMessage(pids) {

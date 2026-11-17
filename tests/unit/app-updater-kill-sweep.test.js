@@ -298,6 +298,8 @@ describe("busyInstallPids", () => {
 
     expect(busyInstallPids(options)).toEqual([7100, 7101]);
     expect(busyInstallMessage([7100, 7101])).toBe("Another 10router from this install is running (PID 7100, 7101); stop it, then update.");
+    // Only the launcher that is this server's parent is left out.
+    expect(busyInstallPids({ ...options, parent: 1 })).toEqual([LAUNCHER, 7100, 7101]);
 
     // The launcher stays excluded when it can't be verified: a by-PID listing
     // that came back empty (cold PowerShell timing out), or a start time that a
@@ -305,6 +307,25 @@ describe("busyInstallPids", () => {
     pidQueriesEmpty = true;
     table[0] = { ...table[0], created: NOW };
     expect(busyInstallPids(options)).toEqual([7100, 7101]);
+  });
+
+  it("resolves links only for tokens named like a target, each target once", () => {
+    // An unrelated script on an offline mapped drive must not stall the check.
+    table = [
+      { pid: 7400, ppid: 900, created: NOW - 900_000, name: "node.exe", args: `${node} "Z:\\tools\\x.js" --watch` },
+      { pid: 7401, ppid: 900, created: NOW - 900_000, name: "node.exe", args: `${node} "\\\\nas\\share\\y.js"` },
+      { pid: 7402, ppid: 900, created: NOW - 900_000, name: "bun.exe", args: '"C:\\Users\\me\\.bun\\bin\\bun.exe" "Z:\\tools\\cli.js"' },
+    ];
+    const realpath = vi.fn(() => { throw Object.assign(new Error("ENOENT"), { code: "ENOENT" }); });
+
+    expect(busyInstallPids(ctx({ platform: "win32", installRoot: ROOT, realpath }))).toEqual([]);
+
+    const resolved = realpath.mock.calls.map(([p]) => p);
+    // The three targets, once each, then only the token named cli.js.
+    expect(resolved).toEqual([
+      `${ROOT}\\cli.js`, `${ROOT}\\app\\custom-server.js`, `${ROOT}\\app\\server.js`,
+      "Z:\\tools\\cli.js",
+    ]);
   });
 
   it("is empty off Windows and when the list can't be read", () => {

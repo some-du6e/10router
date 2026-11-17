@@ -87,21 +87,27 @@ describe("env files stay out of packages", () => {
   });
 
   it(".dockerignore keeps every .env file but .env.example out of the build context", () => {
-    // Docker's rules for a top-level file: each line is a glob, `!` re-includes, last match wins.
+    // Docker's rules for a file path: each line is a glob (`**/` = any depth),
+    // `!` re-includes, last match wins.
     const rules = fs.readFileSync(path.join(repoRoot, ".dockerignore"), "utf8").split(/\r?\n/)
       .map((line) => line.trim()).filter((line) => line && !line.startsWith("#"))
       .map((line) => {
         const negate = line.startsWith("!");
         const glob = negate ? line.slice(1) : line;
-        const source = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]");
+        const source = glob.split("**/").map((part) => part
+          .replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]")).join("(?:.*/)?");
         return { negate, regex: new RegExp(`^${source}$`) };
       });
     const ignored = (name) => rules.reduce((state, rule) => (rule.regex.test(name) ? !rule.negate : state), false);
 
     for (const name of [".env", ".env.local", ".env.production", ".env.production.local", ".env.development"]) {
       expect(ignored(name), name).toBe(true);
+      expect(ignored(`open-sse/${name}`), `open-sse/${name}`).toBe(true);
+      expect(ignored(`src/lib/${name}`), `src/lib/${name}`).toBe(true);
     }
     expect(ignored(".env.example")).toBe(false);
+    expect(ignored("open-sse/.env.example")).toBe(false);
     expect(ignored("package.json")).toBe(false);
+    expect(ignored("src/lib/env.js")).toBe(false);
   });
 });

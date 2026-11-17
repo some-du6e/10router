@@ -100,7 +100,7 @@ docker build --build-arg NEXT_PUBLIC_GA_ID=G-XXXXXXXXXX -t 10router .
 
 The ID is baked in at build time. The published images are built without it, so they never load analytics, and setting `NEXT_PUBLIC_GA_ID` in the compose `.env` or with `docker run -e` has no effect.
 
-`.env` and every other `.env.*` file except `.env.example` stay out of the build context (`.dockerignore`), so a `.env.production` next to the Dockerfile is never read during the build. Pass build-time values as build args: `--build-arg NEXT_PUBLIC_GA_ID=…` and `--build-arg NEXT_PUBLIC_CLOUD_URL=…` (the cloud URL the dashboard shows).
+`.env` and every other `.env.*` file except `.env.example`, in any folder, stay out of the build context (`.dockerignore`), so a `.env.production` next to the Dockerfile is never read during the build. Pass build-time values as build args: `--build-arg NEXT_PUBLIC_GA_ID=…` and `--build-arg NEXT_PUBLIC_CLOUD_URL=…` (the cloud URL the dashboard shows).
 
 ## Publish (automatic via CI)
 
