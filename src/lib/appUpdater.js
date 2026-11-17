@@ -1,77 +1,10 @@
-import { spawn, execSync } from "child_process";
+import { spawn } from "child_process";
 import path from "path";
 import fs from "fs";
 import os from "os";
 import { UPDATER_CONFIG } from "@/shared/constants/config";
 
-const KILL_TIMEOUT_MS = 5000;
-const PROCESS_WAIT_MS = 1500;
-
-// Directories that only this install's processes run from: the CLI package
-// (cli.js, bundled tray binaries), the standalone app, and DATA_DIR's
-// downloaded binaries and runtime node_modules (cloudflared, tray).
-function getInstallRoots() {
-  const appDir = path.resolve(process.cwd());
-  const parent = path.dirname(appDir);
-  const pkgRoot = path.basename(appDir) === "app" && fs.existsSync(path.join(parent, "cli.js")) ? parent : appDir;
-  const dataDir = getDataDir();
-  return [pkgRoot, path.join(dataDir, "bin"), path.join(dataDir, "runtime")]
-    .map((dir) => {
-      try { return fs.realpathSync(dir) + path.sep; } catch { return path.resolve(dir) + path.sep; }
-    });
-}
-
-// The file a process runs: its executable, or the script node was given.
-// Arguments after that (files an editor opened, URLs) never count.
-function programOf(cmdline, pid) {
-  const tokens = [...cmdline.matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2]);
-  let program = tokens[0] || "";
-  if (/(^|[\\/])node(\.exe)?$/i.test(program)) {
-    program = tokens.slice(1).find((t) => !t.startsWith("-")) || "";
-    if (program && !path.isAbsolute(program) && process.platform === "linux") {
-      try { program = path.resolve(fs.readlinkSync(`/proc/${pid}/cwd`), program); } catch { /* gone */ }
-    }
-  }
-  try { program = fs.realpathSync(program); } catch { /* keep as given */ }
-  return program;
-}
-
-// Collect PIDs of this install's own processes (excluding current): those the
-// current OS user runs from this install's directories.
-export function collectAppPids() {
-  const pids = new Set();
-  const self = String(process.pid);
-  const isWin = process.platform === "win32";
-  const roots = getInstallRoots().map((root) => (isWin ? root.toLowerCase() : root));
-  const fromInstall = (cmdline, pid) => {
-    const program = programOf(cmdline, pid);
-    const text = isWin ? program.toLowerCase() : program;
-    return roots.some((root) => text.startsWith(root));
-  };
-
-  if (isWin) {
-    try {
-      const psCmd = `powershell -NonInteractive -WindowStyle Hidden -Command "Get-WmiObject Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation"`;
-      const output = execSync(psCmd, { encoding: "utf8", windowsHide: true, timeout: KILL_TIMEOUT_MS });
-      output.split(/\r?\n/).slice(1).forEach((line) => {
-        const match = line.match(/^"(\d+)","(.*)"$/);
-        if (match && fromInstall(match[2].replace(/""/g, '"'), match[1])) pids.add(match[1]);
-      });
-    } catch { /* no processes */ }
-  } else {
-    const uid = String(process.getuid?.() ?? "");
-    try {
-      const output = execSync("ps -eo pid=,uid=,args= 2>/dev/null", { encoding: "utf8", timeout: KILL_TIMEOUT_MS });
-      output.split("\n").forEach((line) => {
-        const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
-        if (match && match[2] === uid && fromInstall(match[3], match[1])) pids.add(match[1]);
-      });
-    } catch { /* no processes */ }
-  }
-
-  pids.delete(self);
-  return [...pids];
-}
+export { collectAppPids, killAppProcesses } from "./appProcesses.js";
 
 // Copy updater.js into DATA_DIR so npm -g can overwrite node_modules safely.
 // The "9router" / ".9router" dir name is deliberately kept for backward
@@ -112,26 +45,6 @@ function ensureRuntimeUpdater(bundledPath) {
     return runtimePath;
   } catch {
     return bundledPath;
-  }
-}
-
-// Kill all app-related processes to release file locks (esp. on Windows)
-export async function killAppProcesses() {
-  const pids = collectAppPids();
-  const platform = process.platform;
-
-  pids.forEach(pid => {
-    try {
-      if (platform === "win32") {
-        execSync(`taskkill /F /PID ${pid} 2>nul`, { stdio: "ignore", shell: true, windowsHide: true, timeout: 3000 });
-      } else {
-        execSync(`kill -9 ${pid} 2>/dev/null`, { stdio: "ignore", timeout: 3000 });
-      }
-    } catch { /* already dead */ }
-  });
-
-  if (pids.length > 0) {
-    await new Promise(r => setTimeout(r, PROCESS_WAIT_MS));
   }
 }
 
