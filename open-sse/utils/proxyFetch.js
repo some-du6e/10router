@@ -1,4 +1,5 @@
-import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
+import { MEMORY_CONFIG, UNDICI_HEADERS_TIMEOUT_MS } from "../config/runtimeConfig.js";
+import { isUndiciHeadersTimeout } from "./headersTimeout.js";
 
 const originalFetch = globalThis.fetch;
 const proxyDispatchers = new Map();
@@ -167,20 +168,37 @@ function resolveConnectionProxyUrl(targetUrl, proxyOptions) {
 /**
  * Create proxy dispatcher lazily (undici-compatible)
  */
-async function getDispatcher(proxyUrl) {
+async function getDispatcher(proxyUrl, { noHeadersTimeout = false } = {}) {
   const normalized = normalizeProxyUrl(proxyUrl);
   if (!normalized) return null;
+  const key = noHeadersTimeout ? `${normalized}#no-headers-timeout` : normalized;
 
-  if (!proxyDispatchers.has(normalized)) {
+  if (!proxyDispatchers.has(key)) {
     // Evict oldest entry if max size reached
     if (proxyDispatchers.size >= MEMORY_CONFIG.proxyDispatchersMaxSize) {
       proxyDispatchers.delete(proxyDispatchers.keys().next().value);
     }
     const { ProxyAgent } = await import("undici");
-    proxyDispatchers.set(normalized, new ProxyAgent({ uri: normalized }));
+    proxyDispatchers.set(key, new ProxyAgent({ uri: normalized, ...(noHeadersTimeout ? { headersTimeout: 0 } : {}) }));
   }
 
-  return proxyDispatchers.get(normalized);
+  return proxyDispatchers.get(key);
+}
+
+// A direct dispatcher with undici's headers timeout off, for a fetch whose own
+// timer allows longer (see proxyAwareFetch). Built once; null if undici can't load.
+let directDispatcher;
+async function getDirectDispatcher() {
+  if (directDispatcher === undefined) {
+    try {
+      const { Agent } = await import("undici");
+      directDispatcher = new Agent({ headersTimeout: 0 });
+    } catch (error) {
+      console.warn(`[ProxyFetch] undici unavailable (${error.message}); long header waits end at its default ${UNDICI_HEADERS_TIMEOUT_MS / 1000}s`);
+      directDispatcher = null;
+    }
+  }
+  return directDispatcher;
 }
 
 // An optional observer the app installs on globalThis (the custom-endpoint
@@ -189,20 +207,28 @@ async function getDispatcher(proxyUrl) {
 // from the app.
 const FETCH_TAP = Symbol.for("10router.fetchTap");
 
-export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
+// headersTimeoutMs: the caller's own limit on waiting for response headers. At
+// UNDICI_HEADERS_TIMEOUT_MS or more, undici's would end the fetch first, so the
+// fetch goes through a dispatcher with it off.
+export async function proxyAwareFetch(url, options = {}, proxyOptions = null, { headersTimeoutMs = 0 } = {}) {
+  const noHeadersTimeout = headersTimeoutMs >= UNDICI_HEADERS_TIMEOUT_MS;
   const tap = globalThis[FETCH_TAP];
   const seen = tap ? tap.start(typeof url === "string" ? url : url.toString(), options) : null;
-  if (!seen) return fetchVia(url, options, proxyOptions);
+  if (!seen) return fetchVia(url, options, proxyOptions, noHeadersTimeout);
   try {
-    return seen.done(await fetchVia(url, options, proxyOptions));
+    return seen.done(await fetchVia(url, options, proxyOptions, noHeadersTimeout));
   } catch (error) {
     seen.fail(error);
     throw error;
   }
 }
 
-async function fetchVia(url, options, proxyOptions) {
+async function fetchVia(url, options, proxyOptions, noHeadersTimeout = false) {
   const targetUrl = typeof url === "string" ? url : url.toString();
+  const direct = async (target, init) => {
+    const dispatcher = noHeadersTimeout ? await getDirectDispatcher() : null;
+    return originalFetch(target, dispatcher ? { ...init, dispatcher } : init);
+  };
 
   // Vercel relay: forward request via relay headers
   const vercelRelayUrl = normalizeString(proxyOptions?.vercelRelayUrl);
@@ -213,7 +239,7 @@ async function fetchVia(url, options, proxyOptions) {
       "x-relay-target": `${parsed.protocol}//${parsed.host}`,
       "x-relay-path": `${parsed.pathname}${parsed.search}`,
     };
-    return originalFetch(vercelRelayUrl, { ...options, headers: relayHeaders });
+    return direct(vercelRelayUrl, { ...options, headers: relayHeaders });
   }
 
   const connectionProxyUrl = resolveConnectionProxyUrl(targetUrl, proxyOptions);
@@ -222,21 +248,24 @@ async function fetchVia(url, options, proxyOptions) {
 
   if (proxyUrl) {
     try {
-      const dispatcher = await getDispatcher(proxyUrl);
+      const dispatcher = await getDispatcher(proxyUrl, { noHeadersTimeout });
       return await originalFetch(url, { ...options, dispatcher });
     } catch (proxyError) {
+      // The upstream got the request and sent no headers (undici's own limit,
+      // which a SOCKS proxy keeps): not the proxy failing, so not retried direct.
+      if (isUndiciHeadersTimeout(proxyError)) throw proxyError;
       // If strictProxy is enabled, fail hard instead of falling back to direct
       if (proxyOptions?.strictProxy === true) {
-        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
+        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`, { cause: proxyError });
       }
       console.warn(`[ProxyFetch] Proxy failed, falling back to direct: ${proxyError.message}`);
-      return originalFetch(url, options);
+      return direct(url, options);
     }
   }
 
   // got-scraping disabled — use native fetch directly
   // (Re-enable per-host by wrapping with tryGotScrapingFetch when needed)
-  return originalFetch(url, options);
+  return direct(url, options);
 }
 
 /**

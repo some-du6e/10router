@@ -122,10 +122,10 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
 /**
  * Build onStreamComplete callback for streaming usage tracking.
  */
-export function buildOnStreamComplete({ provider, model, connectionId, apiKey, requestStartTime, body, stream, finalBody, translatedBody, clientRawRequest, reqTag, log }) {
+export function buildOnStreamComplete({ provider, model, connectionId, apiKey, requestStartTime, body, stream, clientRequest = null, finalBody, translatedBody, clientRawRequest, reqTag, log }) {
   const streamDetailId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
   // One object for both saves of this row, so the second reuses the first's capping.
-  const streamRequest = extractRequestConfig(body, stream);
+  const streamRequest = clientRequest || extractRequestConfig(body, stream);
 
   // `aborted`: the stream ended before its final event (hang-up, stall, upstream
   // error). Its usage is still saved, so the key is charged, but the request

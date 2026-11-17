@@ -143,6 +143,29 @@ describe("PATCH /api/settings session revocation", () => {
       .toBeLessThan(mocks.setDashboardAuthCookie.mock.invocationCallOrder[0]);
   });
 
+  it("reissues an SSO caller's session as the same SSO user", async () => {
+    const { default: bcrypt } = await import("bcryptjs");
+    mocks.getSettings.mockResolvedValue({ password: bcrypt.hashSync("old-password", 4) });
+    mocks.cookieGet.mockReturnValue({ value: "caller-token" });
+    mocks.getDashboardAuthSession.mockResolvedValue({
+      authenticated: true,
+      oidc: true,
+      oidcSub: "sub-1",
+      oidcEmail: "admin@example.com",
+      sep: "old-epoch",
+      iat: 1,
+      exp: 2,
+    });
+
+    await PATCH(request({ currentPassword: "old-password", newPassword: "new-password-1" }));
+
+    expect(mocks.setDashboardAuthCookie).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
+      oidc: true,
+      oidcSub: "sub-1",
+      oidcEmail: "admin@example.com",
+    });
+  });
+
   it("does not let the body set the session epoch or leak it back", async () => {
     mocks.getSettings.mockResolvedValue({ sessionEpoch: "abc" });
     mocks.updateSettings.mockResolvedValue({ sessionEpoch: "abc", theme: "dark" });

@@ -12,6 +12,11 @@ FROM base AS builder
 # the build step as an env var.
 ARG SOURCE_COMMIT
 
+# Optional Google Analytics 4 measurement ID. Next inlines NEXT_PUBLIC_* at build
+# time, so pass it with `--build-arg NEXT_PUBLIC_GA_ID=G-...`; unset leaves GA off.
+ARG NEXT_PUBLIC_GA_ID
+ENV NEXT_PUBLIC_GA_ID=$NEXT_PUBLIC_GA_ID
+
 RUN apk --no-cache upgrade && apk --no-cache add python3 make g++ linux-headers
 
 COPY package.json ./
@@ -37,7 +42,9 @@ COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/custom-server.js ./custom-server.js
+COPY --from=builder /app/server-drain.js ./server-drain.js
 COPY --from=builder /app/open-sse ./open-sse
+COPY --from=builder /app/THIRD_PARTY_NOTICES.md ./THIRD_PARTY_NOTICES.md
 COPY --from=builder /app/src/lib/upgrades/retireIdeProxy.cjs ./src/lib/upgrades/retireIdeProxy.cjs
 # Ensure `next` is available at runtime in case tracing did not include it.
 COPY --from=builder /app/node_modules/next ./node_modules/next

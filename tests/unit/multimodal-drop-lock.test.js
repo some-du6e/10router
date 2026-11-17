@@ -10,7 +10,7 @@ function userImage(detail) {
       role: "user",
       content: [
         { type: "text", text: "look" },
-        { type: "image_url", image_url: { url: "data:image/png;base64,AAAB", detail } },
+        { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=", detail } },
       ],
     }],
   };
@@ -21,7 +21,7 @@ describe("openai→claude: image_url.detail is dropped (docs 11 §4)", () => {
     const out = openaiToClaudeRequest("claude-sonnet-4-6", userImage("high"), false);
     const imgBlock = out.messages[0].content.find((b) => b.type === "image");
     expect(imgBlock).toBeTruthy();
-    expect(imgBlock.source).toEqual({ type: "base64", media_type: "image/png", data: "AAAB" });
+    expect(imgBlock.source).toEqual({ type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" });
     expect("detail" in imgBlock).toBe(false);
     expect("detail" in imgBlock.source).toBe(false);
   });

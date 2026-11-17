@@ -3,6 +3,7 @@ import { getSettings, validateApiKey } from "@/lib/localDb";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { verifyDashboardAuthToken, getDashboardAuthSession } from "@/lib/auth/dashboardSession";
 import { needsSetup } from "@/lib/auth/setupState";
+import { acceptsDashboardSession, getConfiguredSsoType } from "@/lib/auth/authMode.js";
 import { hasTrustedPeerHeaders } from "@/lib/auth/trustedPeer";
 import { extractClientApiKey } from "@/shared/utils/clientApiKey.js";
 import { containsManagementKey } from "@/shared/utils/managementKey.js";
@@ -33,8 +34,13 @@ const PUBLIC_API_PATHS = [
   "/api/auth/status",
   "/api/auth/setup",
   "/api/auth/change-password",
-  "/api/auth/oidc",
-  "/api/auth/saml",
+  // The SSO sign-in itself. The settings test routes (/api/auth/oidc/test,
+  // /api/auth/saml/test) are dashboard APIs and stay behind the session check.
+  "/api/auth/oidc/start",
+  "/api/auth/oidc/callback",
+  "/api/auth/saml/start",
+  "/api/auth/saml/acs",
+  "/api/auth/saml/metadata",
   "/api/version",
   "/api/settings/require-login",
 ];
@@ -175,9 +181,17 @@ async function readSession(request) {
 // A restricted session is deliberately NOT a valid token anywhere else: it is
 // issued after a last login on the old default password and unlocks only the
 // change-password endpoint.
+//
+// While setup is pending (after Reset Password, in any mode), only a session
+// from the SSO protocol configured now counts, for pages and API alike: a
+// password session from before the reset must not reach /api/settings and
+// repoint SSO (acceptsDashboardSession). The CLI token and the setup routes
+// don't go through here.
 async function hasValidToken(request) {
   const session = await readSession(request);
-  return !!session && session.pwChange !== true;
+  if (!session || session.pwChange === true) return false;
+  const settings = await loadSettings();
+  return acceptsDashboardSession(session, settings, await needsSetup(settings));
 }
 
 async function hasRestrictedSession(request) {
@@ -231,11 +245,14 @@ export async function proxy(request) {
   }
 
   // First-run gate: until someone claims the instance with the console setup
-  // token, every dashboard/login page funnels to /setup.
+  // token, every dashboard/login page funnels to /setup. When a configured SSO
+  // protocol is selected (after Reset Password with SSO on), /login and the
+  // dashboard stay reachable, and the dashboard block below lets only an SSO
+  // session in; /setup still takes the token.
   if (pathname === "/setup" || pathname.startsWith("/dashboard") || pathname === "/login" || pathname === "/") {
     const settings = await loadSettings();
     const setupPending = await needsSetup(settings);
-    if (setupPending && pathname !== "/setup") {
+    if (setupPending && pathname !== "/setup" && !getConfiguredSsoType(settings)) {
       return NextResponse.redirect(new URL("/setup", request.url));
     }
     if (!setupPending && pathname === "/setup") {
@@ -297,10 +314,13 @@ export async function proxy(request) {
   if (pathname.startsWith("/dashboard")) {
     let requireLogin = true;
     let tunnelDashboardAccess = true;
+    let setupPending = false;
+    let settings = null;
 
     try {
-      const settings = await loadSettings();
+      settings = await loadSettings();
       if (settings) {
+        setupPending = await needsSetup(settings);
         requireLogin = settings.requireLogin !== false;
         tunnelDashboardAccess = settings.tunnelDashboardAccess === true;
 
@@ -316,6 +336,15 @@ export async function proxy(request) {
       }
     } catch {
       // On error, keep defaults (require login, block tunnel)
+    }
+
+    // Setup pending: the first-run gate only let this through for SSO sign-in,
+    // so a session from the configured SSO is the only way in. requireLogin=false
+    // never opens an unclaimed instance, and a session from before the reset
+    // doesn't count.
+    if (setupPending) {
+      if (acceptsDashboardSession(await readSession(request), settings, true)) return NextResponse.next();
+      return NextResponse.redirect(new URL("/login", request.url));
     }
 
     // If login not required, allow through

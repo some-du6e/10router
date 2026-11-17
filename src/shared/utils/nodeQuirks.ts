@@ -3,7 +3,7 @@
 // providerSpecificData, which is where the executor reads them.
 //   stripBeta            send no anthropic-beta header at all
 //   droppedBetas         beta flags this endpoint rejected (learned at runtime)
-//   maxCompletionTokens  rename max_tokens → max_completion_tokens (Snowflake chat)
+//   maxCompletionTokens  rename max_tokens → max_completion_tokens (gateways whose Chat Completions rejects max_tokens)
 //   modelRoutes          model → API path, for endpoints that answer on both
 //                        Anthropic Messages and OpenAI (see resolveCompatibleRoute)
 //   apiKeyHeader         "api-key": send the key in an api-key header, not Bearer (Azure)
@@ -43,8 +43,8 @@ export type RawOverrides = {
   drop?: string;     // top-level body fields to delete, comma/space separated
   models?: string;   // "ours => theirs" per line
   stream?: StreamMode;
-  timeout?: string;  // seconds until the upstream answers (headers)
-  retries?: string;  // retries on 429 / 5xx / network errors
+  timeout?: string;  // seconds until the upstream answers (headers); a header timeout gets one attempt of timeout x (retries + 1), or x 4 without retries
+  retries?: string;  // retries on 429 / 5xx / network errors; a header timeout instead gets one attempt of (timeout, or FETCH_CONNECT_TIMEOUT_MS without one) x (retries + 1)
   proxy?: string;    // http(s):// or socks5:// for this endpoint only
 };
 

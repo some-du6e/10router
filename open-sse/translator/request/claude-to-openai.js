@@ -4,11 +4,8 @@ import { adjustMaxTokens } from "../formats/maxTokens.js";
 import { encodeDataUri } from "../concerns/image.js";
 import { ROLE, OPENAI_BLOCK, CLAUDE_BLOCK } from "../schema/index.js";
 import { collapseTextParts } from "../concerns/message.js";
-
-function stripAnthropicBillingHeader(text) {
-  if (typeof text !== "string") return "";
-  return text.replace(/^x-anthropic-billing-header:[^\n]*(?:\r?\n)?/i, "");
-}
+import { claudeToolResultText, scrubInlineBase64 } from "../concerns/toolContent.js";
+import { stripAnthropicBillingHeader } from "../../utils/claudeCloaking.js";
 
 // Convert Claude request to OpenAI format
 export function claudeToOpenAIRequest(model, body, stream) {
@@ -203,21 +200,18 @@ function convertClaudeMessage(msg) {
         case CLAUDE_BLOCK.TOOL_RESULT: {
           let resultContent = "";
           if (typeof block.content === "string") {
-            resultContent = block.content;
+            resultContent = scrubInlineBase64(block.content);
           } else if (Array.isArray(block.content)) {
             // Tool messages are text-only on most OpenAI upstreams: images go in a
             // user turn right after the tool results instead of as base64 text.
-            const texts = [];
-            for (const c of block.content) {
-              if (c?.type === CLAUDE_BLOCK.TEXT) texts.push(c.text);
-              else if (c?.type === CLAUDE_BLOCK.IMAGE) {
-                const image = toImagePart(c);
-                if (image) { resultImages.push(image); texts.push(`[image ${resultImages.length} attached below]`); }
-              }
-            }
-            resultContent = texts.join("\n") || JSON.stringify(block.content);
+            resultContent = claudeToolResultText(block.content, (c) => {
+              const image = toImagePart(c);
+              if (!image) return 0;
+              resultImages.push(image);
+              return resultImages.length;
+            }) || scrubInlineBase64(JSON.stringify(block.content));
           } else if (block.content) {
-            resultContent = JSON.stringify(block.content);
+            resultContent = scrubInlineBase64(JSON.stringify(block.content));
           }
           if (block.is_error) resultContent = `Error: ${resultContent}`;
 

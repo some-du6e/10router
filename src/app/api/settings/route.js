@@ -139,9 +139,13 @@ export async function PATCH(request) {
       await clearLegacyGrace();
       clearSetupToken();
       const cookieStore = await cookies();
-      const hadSession = !!(await getDashboardAuthSession(cookieStore.get("auth_token")?.value));
+      const session = await getDashboardAuthSession(cookieStore.get("auth_token")?.value);
       await revokeDashboardSessions();
-      if (hadSession) await setDashboardAuthCookie(cookieStore, request);
+      if (session) {
+        // The caller stays signed in, as the same OIDC/SAML user if it was one.
+        const { authenticated: _a, iat: _i, exp: _e, sep: _s, pwChange: _p, ...identity } = session;
+        await setDashboardAuthCookie(cookieStore, request, identity);
+      }
     }
 
     // Stored full payloads hold prompts; turning the setting off removes them.

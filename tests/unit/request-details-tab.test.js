@@ -307,7 +307,7 @@ describe("API route contract — labels, summary list, single request", () => {
     ({ GET } = await import("@/app/api/usage/request-details/route.js"));
     ({ GET: GET_ONE } = await import("@/app/api/usage/request-details/[id]/route.ts"));
     ({ GET: GET_PROVIDERS } = await import("@/app/api/usage/providers/route.js"));
-    const node = await db.createProviderNode({ id: "openai-compatible-chat-label-test", type: "openai-compatible", name: "Snowflake", prefix: "snow", apiType: "chat", baseUrl: "https://example.test/v1" });
+    const node = await db.createProviderNode({ id: "openai-compatible-chat-label-test", type: "openai-compatible", name: "Contoso", prefix: "ctso", apiType: "chat", baseUrl: "https://example.test/v1" });
     nodeId = node.id;
     connectionId = (await db.createProviderConnection({ provider: nodeId, authType: "apikey", name: "key…L09w", apiKey: "sk-test" })).id;
     oauthConnectionId = (await db.createProviderConnection({ provider: "codex", authType: "oauth", email: "someone@example.test", accessToken: "at" })).id;
@@ -349,7 +349,7 @@ describe("API route contract — labels, summary list, single request", () => {
     const res = await GET(new Request(`http://localhost/api/usage/request-details?provider=${nodeId}`));
     const { details } = await res.json();
     const detail = details.find((d) => d.id === "labelled-1");
-    expect(detail.providerName).toBe("Snowflake");
+    expect(detail.providerName).toBe("Contoso");
     expect(detail.connectionName).toBe("key…L09w");
     expect(details.find((d) => d.id === "labelled-display-name").connectionName).toBe("Team key");
   });
@@ -396,7 +396,7 @@ describe("API route contract — labels, summary list, single request", () => {
   it("serves one request by id, redacted unless full details are on", async () => {
     let body = await (await getOne("labelled-1")).json();
     expect(body.request).toEqual({ redacted: true });
-    expect(body.providerName).toBe("Snowflake");
+    expect(body.providerName).toBe("Contoso");
     expect(body.connectionName).toBe("key…L09w");
     expect(body.hasFullData).toBe(true);
 
@@ -410,7 +410,7 @@ describe("API route contract — labels, summary list, single request", () => {
 
   it("/api/usage/providers names custom endpoints and built-in providers", async () => {
     const { providers } = await (await GET_PROVIDERS()).json();
-    expect(providers).toContainEqual({ id: nodeId, name: "Snowflake" });
+    expect(providers).toContainEqual({ id: nodeId, name: "Contoso" });
     expect(providers).toContainEqual({ id: "codex", name: "OpenAI Codex" });
   });
 });

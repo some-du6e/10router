@@ -20,7 +20,11 @@ vi.mock("@/lib/localDb", () => ({
   }),
 }));
 
-vi.mock("@/lib/auth/setupState", () => ({ getBootstrapSecret: vi.fn(), LEGACY_GRACE_META_KEY: "legacyGrace" }));
+vi.mock("@/lib/auth/setupState", () => ({
+  getBootstrapSecret: vi.fn(),
+  getEnvInitialPassword: vi.fn(() => null),
+  LEGACY_GRACE_META_KEY: "legacyGrace",
+}));
 
 vi.mock("next/headers", () => ({
   cookies: async () => ({
@@ -85,13 +89,16 @@ describe("dashboard JWT secret", () => {
   });
 
   it("rejects every documented placeholder", async () => {
-    const { isUsableJwtSecret } = await loadSession(undefined);
+    await loadSession(undefined);
+    const { isUsableJwtSecret } = await import("../../src/lib/auth/authSecret.js");
     for (const value of [
       PLACEHOLDER,
       "your-secure-secret",
       "your-secure-secret-change-this",
       "your-secure-secret-change-this-to-random-string",
       "generated-secret-here",
+      "tu-secreto-seguro-cámbialo",
+      "votre-secret-sécurisé-changez-le",
       "",
       undefined,
     ]) {

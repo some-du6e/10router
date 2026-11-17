@@ -17,6 +17,11 @@ export type Protocol = "anthropic" | "openai-chat" | "openai-responses";
 export type KeyConfirmed = "confirmed" | "likely" | "unknown";
 export type ModelsSource = "models" | "catalog" | "guessed" | "none";
 export type StopReason = "auth" | "denied" | "rate" | "generated" | "failing" | "deadline" | "aborted";
+// What one run says about the key it was given, for callers choosing between
+// keys: it got through, it was refused, it was rate-limited before anything
+// was found, or nothing is known about it (the endpoint failed, or the model
+// probes were cut short before they told anything).
+export type KeyVerdict = "accepted" | "refused" | "rate-limited" | null;
 // Stops that mean the key itself can't be used.
 const keyStop = (s: StopReason | null) => s === "auth" || s === "denied";
 type ErrorShape = "anthropic" | "openai" | "generic";
@@ -65,6 +70,7 @@ export interface DetectResult {
   suggestedPrefix?: string;
   // Which failure screen fits, when ok is false.
   failure?: FailureKind;
+  keyVerdict?: KeyVerdict;
   // Why model checks stopped early, if they did.
   stopReason?: StopReason | null;
   // Per API that was asked about models one by one: how far it got, and the
@@ -157,7 +163,7 @@ const MAX_MODEL_PAGES = 10;      // /models pagination cap
 const PROBE_BODY_MAX = 4 * 1024 * 1024; // a probe reads at most this much
 const CANARY = "10router-no-such-model";
 const CONTROL_PATH = "/10router-no-such-path";
-const DETECT_DEADLINE_MS = 45_000; // whole detection; the UI gives up at 60s
+export const DETECT_DEADLINE_MS = 45_000; // whole detection; the UI gives up at 60s
 const MAX_CONSECUTIVE_FAILURES = 6; // network / timeout / 5xx in a row on one path
 const UNREACHABLE_AFTER = 2;     // network failures with no answer at all = the host is unreachable
 const MODEL_DENIED_STOP = 3;     // the same model-access refusal on this many models = the key, not the model
@@ -375,12 +381,12 @@ export function makePrefix(name: unknown, taken: readonly unknown[] = []): strin
   for (let i = 2; ; i++) if (!used.has(`${p}${i}`)) return `${p}${i}`;
 }
 
-// Endpoints with no model list (Snowflake Cortex: /v1/models 404) can still be
-// asked about one model at a time for free, when they reject an unknown model id
-// before anything else. Candidate ids come from the models.dev catalog, synced
-// daily: `catalog` is [{ id, name, api, models: [ids] }] (see modelCatalog/sync.js).
+// Endpoints with no model list (/v1/models 404) can still be asked about one
+// model at a time for free, when they reject an unknown model id before
+// anything else. Candidate ids come from the models.dev catalog, synced daily:
+// `catalog` is [{ id, name, api, models: [ids] }] (see modelCatalog/sync.js).
 
-// "https://${SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/cortex/v1" ->
+// "https://${ACCOUNT}.gateway.example/api/v1" ->
 // host regex (placeholders match one label) + path.
 function apiPattern(api: unknown): { host: RegExp; path: string } | null {
   const m = /^https?:\/\/([^/]+)(\/[^?#]*)?/i.exec(String(api || ""));
@@ -465,7 +471,7 @@ export function recentLabModels(labs: CatalogLabModel[] = [], gens = 3, maxAgeDa
   return [...new Set(out.sort((a, b) => b.date.localeCompare(a.date)).map((m) => m.id))];
 }
 
-// Gateways often prefix a vendor's ids with its name (Snowflake: "openai-gpt-5").
+// Gateways often prefix a vendor's ids with its name ("openai-gpt-5").
 // Learn the prefixes from the matched provider's own list.
 // Only a real prefix counts: "openai-gpt-5" is, "deepseek-r1" and "mistral-large2" aren't.
 function vendorPrefixes(models: string[] = []): Set<string> {
@@ -529,7 +535,7 @@ export function candidateModels(base: string, catalog: CatalogInput = {}): { mat
 // Error-body fragments that mean "your request reached a real model endpoint".
 const UNKNOWN_MODEL_RE = /unknown model|model[^"]{0,40}(not found|does not exist|not supported|invalid|is not available|not available)|model\s+[\\]?["'`][^"'`]{1,100}[\\]?["'`]\s+(not found|does not exist|is not available)|no such model|invalid model|model_not_found|无可用渠道/i;
 // Known to the endpoint but not usable here.
-// Snowflake Cortex: "not eligible for this model" (account tier), "Model ... is unavailable".
+// Seen on a gateway: "not eligible for this model" (account tier), "Model ... is unavailable".
 const NOT_SERVABLE_RE = /legacy|does not support this endpoint|deprecated model|not eligible for this model|model\b.{0,120}?\bis unavailable/i;
 const CLIENT_GATE_RE = /unauthorized client|client (is )?not allowed|unsupported client/i;
 // Auth complaints, including the ones sent as 400 (Gemini: API_KEY_INVALID).
@@ -775,8 +781,8 @@ function makeProber({ fetchFn, key, steps, timeoutMs, sleep = defaultSleep, sign
 
 // Model probes carry only the model, the empty conversation and a 1-token cap,
 // so the model name is the first thing validated. OpenAI-style gateways can
-// reject max_tokens first (Snowflake: "deprecated in favor of
-// max_completion_tokens"): then the cap moves to max_completion_tokens.
+// reject max_tokens first and ask for max_completion_tokens: then the cap
+// moves to max_completion_tokens.
 // stream:false stays explicit: a gateway that streams by default would otherwise
 // answer with an SSE stream.
 function modelBody(p: ProbeSpec, model: string, { maxCompletionTokens = false }: DetectQuirks = {}): Record<string, unknown> {
@@ -1029,6 +1035,24 @@ export interface DetectOptions {
   // Re-detect checks only the API, URL and fixes; models have their own check.
   skipModels?: boolean;
 }
+
+// DETECT_ANTHROPIC_FIRST_HINTS: comma-separated URL substrings (any case) for
+// gateways whose Anthropic Messages API should be probed first. Empty by
+// default. Quotes around an entry or the whole list (an env-file habit) are
+// dropped. Read on first use, so this module stays safe to import in the browser.
+export const parseHintList = (raw: unknown): string[] => String(raw ?? "").split(",")
+  .map((s) => s.trim().replace(/^['"]+|['"]+$/g, "").trim().toLowerCase()).filter(Boolean);
+let hintCache: string[] | null = null;
+export function anthropicFirstHints(): string[] {
+  return (hintCache ??= parseHintList(typeof process === "undefined" ? "" : process.env?.DETECT_ANTHROPIC_FIRST_HINTS));
+}
+// Probe Messages first: the URL names Anthropic or Claude or matches a
+// configured hint, or the key is an Anthropic one.
+export function prefersAnthropic(base: unknown, key: string, hints: readonly string[] = anthropicFirstHints()): boolean {
+  const url = String(base).toLowerCase();
+  return /anthropic|claude/.test(url) || hints.some((h) => url.includes(h)) || /^sk-ant-/.test(key);
+}
+
 export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS, sleep, signal = null, deadlineMs = DETECT_DEADLINE_MS, onProgress = null, skipModels = false }: DetectOptions): Promise<DetectResult> {
   const key = cleanKey(apiKey);
   const base0 = normalizeUrl(url);
@@ -1048,6 +1072,8 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   const listRefused = new Set<string>(); // auth styles GET /models refused
   let clientGated = false;
   let rateLimited = false;
+  let probeAuthFail = false; // a POST probe, not just GET /models, refused the key
+  let keyedListRefused = false; // GET /models listed without a key, and refused this one
   // A host that never answers (timeouts, refused, no DNS): two such requests
   // with nothing else heard back is enough; waiting on the rest only burns time.
   let netFails = 0, answered = false;
@@ -1074,6 +1100,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
         if (style === "none" && key) {
           const k = await fetchModelList(probe, b, "GET /models (bearer)", AUTH.bearer);
           if (k.listed) models = dedupe([...models, ...k.ids]);
+          else if (classify(k.first) === "auth") keyedListRefused = true;
           listComplete &&= k.listed && k.complete;
         }
         break outer;
@@ -1088,10 +1115,10 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   const openaiAuth = modelsAuth === "api-key" || (azure && modelsAuth !== "bearer") ? AUTH["api-key"] : AUTH.bearer;
   const PROBES = probeSpecs(AUTH, openaiAuth);
 
-  // 2. Protocol: empty-body probes. Anthropic first when the host/key hints at it.
+  // 2. Protocol: empty-body probes. Anthropic first when the URL/key hints at it.
   // Found = an API-shaped 400/422 (or an unknown-model error, vLLM/Ollama answer
   // that with 404). 5xx, HTML, plain "Not Found" and auth errors are not.
-  const preferAnthropic = /anthropic|claude|cortex|snowflake/i.test(base0) || /^sk-ant-/.test(key);
+  const preferAnthropic = prefersAnthropic(base0, key);
   const order: Protocol[] = preferAnthropic ? ["anthropic", "openai-chat", "openai-responses"] : ["openai-chat", "openai-responses", "anthropic"];
   // A model-access 401/403 on model "probe" counts too: the path and key work.
   const found: { proto: Protocol; base: string; shape: ErrorShape | null; sig: string }[] = [];
@@ -1106,6 +1133,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
       const k = classify(r, { model: String(p.body.model) });
       heard(k);
       note(k);
+      if (k === "auth") probeAuthFail = true;
       if (k === "server") serverErrors++;
       if (k === "accepted" || k === "unknown-model" || k === "model-denied") found.push({ proto, base: b, shape: apiErrorShape(r.json), sig: errorSignature(r, String(p.body.model)) });
       else if (k === "generated") { found.push({ proto, base: b, shape: null, sig: "" }); generatesOnEmpty.add(proto); }
@@ -1143,24 +1171,31 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   const keyAccepted = !!modelsAuth && modelsAuth !== "none";
   const stop0 = probe.halted();
   if (!filtered.length && stop0) {
-    return { ok: false, failure: stop0 === "aborted" ? "cancelled" : "timeout", error: stop0 === "aborted" ? "Detection was cancelled." : "Detection ran out of time before an API answered. Try again.", baseUrl: base0, steps, partial: true, partialReason: PARTIAL_REASON[stop0], clientGated, authRejected: false, rateLimited };
+    return { ok: false, failure: stop0 === "aborted" ? "cancelled" : "timeout", error: stop0 === "aborted" ? "Detection was cancelled." : "Detection ran out of time before an API answered. Try again.", baseUrl: base0, steps, partial: true, partialReason: PARTIAL_REASON[stop0], clientGated, authRejected: false, rateLimited, keyVerdict: null };
   }
 
   if (!filtered.length) {
     const last = steps[steps.length - 1];
     const html = steps.find((s) => s.html);
-    const keyRefused = sawAuthFail && !keyAccepted;
+    // Only GET /models refused the key, and the API paths answer 5xx: an
+    // admin-only list in front of a server that is down, not a dead key.
+    const keyRefused = sawAuthFail && !keyAccepted && (probeAuthFail || !serverErrors);
     const failure: FailureKind = clientGated ? "gated" : keyRefused ? "key" : rateLimited ? "rate" : found.length ? "catch-all"
       : serverErrors ? "down" : html ? "html" : unreachable() || last?.status === 0 ? "unreachable" : "no-api";
     const error = clientGated ? "This endpoint only accepts specific clients."
-      : sawAuthFail && !keyAccepted ? "The key was rejected."
+      : keyRefused ? "The key was rejected."
       : rateLimited ? "The endpoint is rate-limiting requests. Try again in a minute."
       : found.length ? "This server answers every request the same way, so no API could be identified."
       : serverErrors ? "The endpoint returned server errors (5xx). It may be down; try again later."
       : html ? `This isn't an API response${htmlTitle(html.preview) ? ` (got "${htmlTitle(html.preview)}")` : ""}.`
       : last?.status === 0 ? `Couldn't reach it: ${last.preview}`
       : "No OpenAI or Anthropic API found at this URL.";
-    return { ok: false, failure, error, baseUrl: base0, steps, clientGated, authRejected: sawAuthFail && !keyAccepted && !clientGated, rateLimited };
+    // A GET /models refusal alone can be an admin-only list.
+    // GET /models took the key and the POSTs refused it, with nothing else
+    // answering (no 5xx, no gate): it can list, not use.
+    const keyVerdict: KeyVerdict = failure === "key" ? (probeAuthFail ? "refused" : null) : failure === "rate" ? "rate-limited"
+      : failure === "no-api" && keyAccepted && probeAuthFail ? "refused" : null;
+    return { ok: false, failure, error, baseUrl: base0, steps, clientGated, authRejected: sawAuthFail && !keyAccepted && !clientGated, rateLimited, keyVerdict };
   }
 
   const protocol = filtered[0].proto;
@@ -1195,6 +1230,8 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   // says nothing about the style that worked.
   let probesRefusedKey = false;
   let stopReason: StopReason | null = null;
+  const modelStops = new Set<StopReason>(); // every stop, not just the first
+  let inconclusive = false; // some API's model probes ended before they told anything
   let blocked: StopReason | null = null; // a stop that applies to every path
   const checks: Partial<Record<Protocol, ModelCheck>> = {};
   if (!models.length && !skipModels) {
@@ -1209,7 +1246,11 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
       const res = await probeModels({ probe, base, protocol: proto, AUTH, openaiAuth, ids: candidates, quirks });
       byProtocol[proto] = res.ids || [];
       if (res.check) checks[proto] = res.check;
-      if (res.stopped) { partialReason ||= PARTIAL_REASON[res.stopped]; stopReason ||= res.stopped; if (keyStop(res.stopped)) probesRefusedKey = true; }
+      if (res.stopped) { partialReason ||= PARTIAL_REASON[res.stopped]; stopReason ||= res.stopped; modelStops.add(res.stopped); if (keyStop(res.stopped)) probesRefusedKey = true; }
+      // Cut short, or the made-up-id check itself failed (5xx, network).
+      if (res.stopped === "failing" || res.stopped === "deadline" || res.stopped === "aborted" || (res.ids === null && !res.stopped && !res.complete && candidates.length)) inconclusive = true;
+      // Some models got no answer (5xx, network) without a stop: still partial.
+      if (!res.stopped && !res.complete && candidates.length) partialReason ||= PARTIAL_REASON.failing;
       if (res.stopped && res.stopped !== "generated" && res.stopped !== "failing") blocked = res.stopped;
     }
     const built = buildRoutes(byProtocol);
@@ -1229,6 +1270,27 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
   const pathStyle = primary === "anthropic" ? ["bearer", "x-api-key"] : [openaiAuth === AUTH["api-key"] ? "api-key" : "bearer"];
   const listRefusedPathStyle = pathStyle.every((st) => listRefused.has(st)) && keyConfirmed !== "confirmed";
   const authRejected = !models.length && !keyAccepted && (probesRefusedKey || listRefusedPathStyle);
+  // The free probes got through with this key. A key the bad-key check
+  // confirmed, or that GET /models took, works. A public list that refused it
+  // when sent with the key doesn't vouch for it. Anything found or generated
+  // means it works. It was refused only if the model probes stopped on the key
+  // itself, and limited only if a rate limit stopped them first. A key that
+  // got through but could use none of the models asked about (limited, out of
+  // credit), or that only GET /models refused in the API path's style, is
+  // unknown: another key may do better. So are probes cut short by time or
+  // failures.
+  const confirmed = keyConfirmed === "confirmed";
+  // The keyed list retry sends Bearer: it only speaks for a path that takes Bearer.
+  const bearerPath = pathStyle.length === 1 && pathStyle[0] === "bearer";
+  const keyVerdict: KeyVerdict = generatesOnEmpty.size || modelStops.has("generated") ? "accepted"
+    : keyedListRefused && bearerPath && !confirmed ? "refused"
+    : models.length ? "accepted"
+    : modelStops.has("auth") && !keyAccepted && !confirmed ? "refused"
+    : modelStops.has("rate") ? "rate-limited"
+    // A 402 (out of credit) on the model probes: that key can't use anything.
+    : modelStops.has("auth") || modelStops.has("denied") || listRefusedPathStyle || steps.some((s) => s.status === 402) ? null
+    : keyAccepted || confirmed || !inconclusive ? "accepted"
+    : null;
 
   const name = matched?.name || suggestName(base);
   return {
@@ -1246,6 +1308,7 @@ export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeo
     partial: !!partialReason,
     partialReason,
     authRejected,
+    keyVerdict,
     suggestedName: name,
     suggestedPrefix: makePrefix(name),
     stopReason,
@@ -1367,7 +1430,7 @@ function tagAttrs(tag: string): Record<string, string> {
   return out;
 }
 
-// Cut a tagline: "Snowflake | The AI Data Cloud" -> "Snowflake".
+// Cut a tagline: "Acme | Fast inference" -> "Acme".
 export function cleanSiteName(raw: unknown): string | null {
   let t = decodeEntities(String(raw || "")).replace(/\s+/g, " ").trim();
   if (!t) return null;
@@ -1455,7 +1518,7 @@ export function siteRoots(base: string): string[] {
   if (isLanHost(u.hostname) || /^\d+\.\d+\.\d+\.\d+$|^\[/.test(u.hostname)) return [];
   const roots = [u.origin];
   const labels = u.hostname.split(".");
-  // acme-xy12345.snowflakecomputing.com -> snowflakecomputing.com; api.x.ai -> x.ai
+  // acme-1234.gateway.example -> gateway.example; api.x.ai -> x.ai
   if (labels.length > 2) {
     const tail = labels.slice(-2);
     const keep = tail[0].length <= 3 && SECOND_LEVEL.has(tail[0]) ? labels.slice(-3) : tail;

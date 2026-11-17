@@ -1067,7 +1067,7 @@ npm install
 npm run build
 
 # Configura
-export JWT_SECRET="tu-secreto-seguro-cámbialo"
+export JWT_SECRET="$(openssl rand -hex 32)"
 export INITIAL_PASSWORD="tu-contraseña"
 export DATA_DIR="/var/lib/9router"
 export PORT="20128"
@@ -1155,6 +1155,7 @@ docker pull decolua/9router:latest   # actualiza a la última versión
 | `REQUIRE_API_KEY`                                    | `false`                                    | Aplica clave API Bearer en las rutas `/v1/*` (recomendado para despliegues expuestos a Internet) |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` | vacío                                      | Proxy saliente opcional para las llamadas a proveedores externos                     |
 | `SEARXNG_URL`                                        | `http://localhost:8888/search`             | Endpoint del proveedor de búsqueda web SearXNG integrado sin autenticación           |
+| `DETECT_ANTHROPIC_FIRST_HINTS`                       | vacío                                      | Fragmentos de URL que hacen que «Add endpoint» pruebe primero Anthropic Messages. Separados por comas, sin distinguir mayúsculas; se ignoran las comillas alrededor de cada entrada. Las URL que nombran Anthropic o Claude y las claves `sk-ant-` ya lo hacen. Cada fragmento se busca en cualquier parte de la URL del endpoint (esquema, host, ruta, query; antes se quita una ruta de API final como `/chat/completions`): usa una parte distintiva del host. Reinicia tras cambiarlo. |
 
 Notas:
 

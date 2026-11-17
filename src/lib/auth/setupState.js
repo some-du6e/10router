@@ -6,14 +6,15 @@
 //
 // States:
 //   configured — a password hash is stored; normal password login
-//   oidc       — no password, but OIDC is the configured auth mode
+//   oidc/saml  — no password, and password login is off in favour of that
+//                configured SSO protocol
 //   env        — operator supplied INITIAL_PASSWORD (headless/Docker bootstrap)
 //   legacy     — pre-existing install that was still on the old default
 //                password; one last login is allowed, then a change is forced
 //   setup      — nothing configured; console setup token required
 import { getSettings } from "@/lib/localDb";
 import { getMeta, setMeta } from "@/lib/db/helpers/metaStore.js";
-import { isOidcConfigured } from "@/lib/auth/oidc";
+import { getConfiguredSsoType, isPasswordLoginDisabled } from "./authMode.js";
 
 export const MIN_PASSWORD_LENGTH = 8;
 
@@ -66,7 +67,10 @@ export async function getAuthBootstrapState(settings = null) {
     }
   }
   if (s?.password) return "configured";
-  if (s?.authMode === "oidc" && isOidcConfigured(s)) return "oidc";
+  // With password login still on ("both"), the env/legacy/setup paths below
+  // stay the way back in after a password reset.
+  const ssoType = isPasswordLoginDisabled(s) ? getConfiguredSsoType(s) : null;
+  if (ssoType) return ssoType;
   if (getEnvInitialPassword()) return "env";
 
   let legacy = false;
@@ -85,8 +89,10 @@ export async function needsSetup(settings = null) {
 // The secret that stands in for a stored hash in the "env" and "legacy" states.
 export async function getBootstrapSecret(settings = null) {
   const state = await getAuthBootstrapState(settings);
-  if (state === "env") return getEnvInitialPassword();
   if (state === "legacy") return LEGACY_DEFAULT_PASSWORD;
+  // With SSO-only login and no stored hash, INITIAL_PASSWORD still confirms
+  // sensitive actions, as it did before the SSO states existed.
+  if (state === "env" || state === "oidc" || state === "saml") return getEnvInitialPassword();
   return null;
 }
 

@@ -76,9 +76,31 @@ describe("bridge error frames and wiring", () => {
 
   it("wraps a string error (the gateway's own refusals) as an object Codex can read", () => {
     expect(JSON.parse(bridgeErrorFrame(JSON.stringify({ error: "API key required for remote API access" }), 401)))
-      .toEqual({ type: "error", error: { message: "API key required for remote API access", type: "invalid_request_error" } });
+      .toEqual({ type: "error", status: 401, error: { message: "API key required for remote API access", type: "invalid_request_error" } });
     expect(JSON.parse(bridgeErrorFrame(JSON.stringify({ error: { message: "m", type: "t" } }), 400)).error).toEqual({ message: "m", type: "t" });
-    expect(JSON.parse(bridgeErrorFrame("not json", 502)).error).toEqual({ message: "Request failed with status 502", type: "server_error" });
+    expect(JSON.parse(bridgeErrorFrame("not json", 502)).error).toEqual({ message: "not json", type: "server_error" });
+    expect(JSON.parse(bridgeErrorFrame("", 502)).error).toEqual({ message: "Request failed with status 502", type: "server_error" });
+  });
+
+  it("bridgeCodexTurn marks its loopback POST with this process's peer token, not one the client sent", async () => {
+    // new http.Server is not wrapped, so this sees the headers as the bridge sent them.
+    let seen;
+    const upstream = new http.Server((req, res) => {
+      seen = req.headers;
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.end(`data: ${JSON.stringify({ type: "response.completed" })}\n\n`);
+    });
+    await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    try {
+      await new Promise((resolve) => {
+        bridgeCodexTurn({ type: "response.create", model: "m", input: "hi" }, upstream.address().port,
+          { ...HANDSHAKE, "x-9r-peer-token": "forged" }, "127.0.0.1", () => {}, () => resolve());
+      });
+      expect(process.env.NINEROUTER_PEER_TOKEN).toMatch(/^[0-9a-f]{48}$/);
+      expect(seen["x-9r-peer-token"]).toBe(process.env.NINEROUTER_PEER_TOKEN);
+    } finally {
+      await new Promise((resolve) => upstream.close(resolve));
+    }
   });
 
   it("falls back to a placeholder address for a remote peer with no address", () => {

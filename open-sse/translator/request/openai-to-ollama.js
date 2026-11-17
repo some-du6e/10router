@@ -3,6 +3,7 @@ import { FORMATS } from "../formats.js";
 import { parseDataUri } from "../concerns/image.js";
 import { safeParseJSON } from "../concerns/json.js";
 import { ROLE, OPENAI_BLOCK } from "../schema/index.js";
+import { isDataUriImage, moveToolImagesToUserTurn } from "../concerns/toolContent.js";
 
 /**
  * Convert OpenAI request to Ollama format
@@ -21,7 +22,9 @@ import { ROLE, OPENAI_BLOCK } from "../schema/index.js";
 export function openaiToOllamaRequest(model, body, stream) {
   const result = {
     model: model,
-    messages: normalizeMessages(body.messages),
+    // Tool messages are text; their images go in a user message's images[] after them.
+    // Ollama takes base64 only, so an image given as a web URL stays as "[Image: <url>]" text.
+    messages: normalizeMessages(moveToolImagesToUserTurn(body.messages, isDataUriImage)),
     stream: stream
   };
 
@@ -126,8 +129,8 @@ function normalizeMessages(messages) {
     const content = normalizeContent(msg.content);
     const images = extractImagesFromContent(msg.content);
 
-    // Skip empty messages (except assistant)
-    if (!content && role !== ROLE.ASSISTANT) continue;
+    // Skip empty messages (except assistant, and a message that only has images)
+    if (!content && images.length === 0 && role !== ROLE.ASSISTANT) continue;
 
     const out = {
       role: role,

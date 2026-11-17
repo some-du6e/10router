@@ -1,50 +1,11 @@
 import { SignJWT, jwtVerify } from "jose";
 import bcrypt from "bcryptjs";
-import fs from "node:fs";
-import path from "node:path";
 import crypto from "node:crypto";
-import { DATA_DIR } from "@/lib/dataDir";
 import { getSettings, updateSettings } from "@/lib/localDb";
 import { getBootstrapSecret } from "@/lib/auth/setupState";
+import { getAuthSecret } from "@/lib/auth/authSecret.js";
 
-const MIN_JWT_SECRET_LENGTH = 32;
-const PLACEHOLDER_JWT_SECRETS = new Set([
-  "change-me-to-a-long-random-secret",
-  "your-secure-secret",
-  "your-secret",
-  "your-secure-secret-change-this",
-  "your-secure-secret-change-this-to-random-string",
-  "generated-secret-here",
-]);
-
-export function isUsableJwtSecret(value) {
-  return (
-    typeof value === "string" &&
-    value.trim().length >= MIN_JWT_SECRET_LENGTH &&
-    !PLACEHOLDER_JWT_SECRETS.has(value.trim())
-  );
-}
-
-function loadJwtSecret() {
-  const fromEnv = process.env.JWT_SECRET;
-  if (isUsableJwtSecret(fromEnv)) return fromEnv;
-  if (fromEnv) {
-    console.warn(
-      `[auth] Ignoring JWT_SECRET: it is a documented placeholder or shorter than ${MIN_JWT_SECRET_LENGTH} characters. ` +
-        "Using the generated secret in the data directory instead. Generate one with: openssl rand -hex 32"
-    );
-  }
-  const file = path.join(DATA_DIR, "jwt-secret");
-  try {
-    return fs.readFileSync(file, "utf8").trim();
-  } catch {}
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const generated = crypto.randomBytes(32).toString("hex");
-  fs.writeFileSync(file, generated, { mode: 0o600 });
-  return generated;
-}
-
-const SECRET = new TextEncoder().encode(loadJwtSecret());
+const SECRET = new TextEncoder().encode(getAuthSecret());
 
 export function shouldUseSecureCookie(request) {
   const forceSecureCookie = process.env.AUTH_COOKIE_SECURE === "true";
