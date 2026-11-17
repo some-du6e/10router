@@ -6,11 +6,11 @@ const defaultMarkdownRenderer = new marked.Renderer();
 // Prompts are user-controlled content. Keep the preview markdown-only and
 // allow links only when they point to a normal web or mail URL.
 markdownRenderer.html = () => "";
-markdownRenderer.link = (token) => {
+markdownRenderer.link = function (token) {
   if (!/^(https?:\/\/|mailto:)/i.test(token.href || "")) {
-    return token.text || "";
+    return this.parser.parseInline(token.tokens || []);
   }
-  return defaultMarkdownRenderer.link(token);
+  return defaultMarkdownRenderer.link.call(this, token);
 };
 markdownRenderer.image = () => "<span>[image omitted]</span>";
 
