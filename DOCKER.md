@@ -65,9 +65,12 @@ docker run -d \
   -e PORT=20128 \
   -e HOSTNAME=0.0.0.0 \
   -e DEBUG=true \
+  -e ALLOW_PRIVATE_ENDPOINT_URLS=true \
   --name 10router \
   some-du6e/10router:latest
 ```
+
+The container sees your browser come from the Docker gateway, not loopback, so the dashboard treats it as a remote session: it refuses custom endpoint, key, proxy and GitLab URLs on a private, LAN or loopback host (an Ollama at `http://host.docker.internal:11434`, a model server on your LAN) with "URL not allowed". `ALLOW_PRIVATE_ENDPOINT_URLS=true` lets a signed-in dashboard session use them. It needs login on (the default); with `requireLogin` off it does nothing. Endpoints you saved before keep working either way.
 
 ## Update to latest
 

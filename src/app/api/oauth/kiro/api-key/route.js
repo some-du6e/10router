@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { KiroService } from "@/lib/oauth/services/kiro";
 import { createProviderConnection } from "@/models";
+import { kiroProviderDataProblem } from "open-sse/utils/awsRegion.js";
 
 /**
  * POST /api/oauth/kiro/api-key
@@ -18,6 +19,10 @@ export async function POST(request) {
         { status: 400 }
       );
     }
+
+    // The region goes into the AWS hostname the key is sent to.
+    const regionProblem = kiroProviderDataProblem({ region });
+    if (regionProblem) return NextResponse.json({ error: regionProblem }, { status: 400 });
 
     const kiroService = new KiroService();
 

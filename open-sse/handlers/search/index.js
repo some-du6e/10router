@@ -101,7 +101,10 @@ async function tryDedicatedProvider({ provider, providerConfig, body, credential
   log?.info?.("SEARCH", `${provider.id} | "${params.query.slice(0, 80)}" | type=${params.searchType}`);
 
   try {
-    const resp = await fetchPublic(url, { ...init, headers: sanitizeHeaders(init.headers), signal: controller.signal });
+    // A base URL the client picked (keyless providers only, see resolveBaseUrl)
+    // is resolved once, refused when it doesn't resolve, and pinned.
+    const clientPicked = typeof body.provider_options?.baseUrl === "string" && body.provider_options.baseUrl.trim() !== "";
+    const resp = await fetchPublic(url, { ...init, headers: sanitizeHeaders(init.headers), signal: controller.signal }, { pin: clientPicked });
     clearTimeout(timer);
     if (!resp.ok) {
       const errText = await resp.text().catch(() => "");

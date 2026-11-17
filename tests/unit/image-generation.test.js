@@ -9,7 +9,14 @@
  *  - Error handling (missing prompt, invalid model)
  */
 
+import dns from "node:dns";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+// Image URL inputs are downloaded with undici's own fetch (pinned); here it
+// hands off to each test's global.fetch mock, so one mock answers both.
+const imageFetch = vi.hoisted(() => vi.fn());
+vi.mock("undici", async (orig) => ({ ...(await orig()), fetch: (...a) => imageFetch(...a) }));
+
 import { handleImageGenerationCore } from "../../open-sse/handlers/imageGenerationCore.js";
 
 const originalFetch = global.fetch;
@@ -17,11 +24,14 @@ const originalFetch = global.fetch;
 describe("handleImageGenerationCore", () => {
   beforeEach(() => {
     global.fetch = vi.fn();
+    imageFetch.mockReset().mockImplementation((...a) => global.fetch(...a));
+    vi.spyOn(dns.promises, "lookup").mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
   });
 
   afterEach(() => {
     global.fetch = originalFetch;
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it("validates required prompt field", async () => {
@@ -445,9 +455,11 @@ describe("handleImageGenerationCore", () => {
   });
 
   it("resolves Cloudflare img2img and inpainting URL inputs before sending", async () => {
+    const PNG_A = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1];
+    const PNG_B = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 2];
     global.fetch
-      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "Content-Type": "image/png" } }))
-      .mockResolvedValueOnce(new Response(new Uint8Array([4, 5, 6]), { status: 200, headers: { "Content-Type": "image/png" } }))
+      .mockResolvedValueOnce(new Response(new Uint8Array(PNG_A), { status: 200, headers: { "Content-Type": "image/png" } }))
+      .mockResolvedValueOnce(new Response(new Uint8Array(PNG_B), { status: 200, headers: { "Content-Type": "image/png" } }))
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({ result: { image: "base64inpaint" }, success: true }),
@@ -471,17 +483,18 @@ describe("handleImageGenerationCore", () => {
     });
 
     expect(result.success).toBe(true);
-    expect(global.fetch).toHaveBeenNthCalledWith(1, "https://example.com/source.png");
-    expect(global.fetch).toHaveBeenNthCalledWith(2, "https://example.com/mask.png");
+    expect(global.fetch.mock.calls[0][0]).toBe("https://example.com/source.png");
+    expect(global.fetch.mock.calls[0][1]).toMatchObject({ redirect: "manual" });
+    expect(global.fetch.mock.calls[1][0]).toBe("https://example.com/mask.png");
 
     const providerCall = global.fetch.mock.calls[2];
     expect(providerCall[0]).toBe("https://api.cloudflare.com/client/v4/accounts/cf-account/ai/run/@cf/runwayml/stable-diffusion-v1-5-inpainting");
     const requestBody = JSON.parse(providerCall[1].body);
-    expect(requestBody.image).toEqual([1, 2, 3]);
-    expect(requestBody.image_b64).toBe(Buffer.from([1, 2, 3]).toString("base64"));
-    expect(requestBody.mask).toEqual([4, 5, 6]);
-    expect(requestBody.mask_image).toEqual([4, 5, 6]);
-    expect(requestBody.mask_b64).toBe(Buffer.from([4, 5, 6]).toString("base64"));
+    expect(requestBody.image).toEqual(PNG_A);
+    expect(requestBody.image_b64).toBe(Buffer.from(PNG_A).toString("base64"));
+    expect(requestBody.mask).toEqual(PNG_B);
+    expect(requestBody.mask_image).toEqual(PNG_B);
+    expect(requestBody.mask_b64).toBe(Buffer.from(PNG_B).toString("base64"));
   });
 
   it("handles provider error responses", async () => {

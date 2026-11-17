@@ -9,7 +9,7 @@ import {
 } from "@/models";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { resolveKeyBaseUrl, withKeyBaseUrl, withoutKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
-import { isLocalRequest } from "@/dashboardGuard";
+import { blocksPrivateUrls, providerDataProblem } from "@/lib/network/privateUrls.js";
 
 function normalizeProxyConfig(body = {}) {
   const hasAnyProxyField =
@@ -128,6 +128,19 @@ export async function PUT(request, { params }) {
       return NextResponse.json({ error: proxyConfig.error }, { status: 400 });
     }
 
+    // providerSpecificData is merged as sent: a Kiro region must be an AWS
+    // region (it picks the host the refresh token and client secret go to), and
+    // the URLs the connection ends up with (proxy, sent either way, enabled or
+    // not; endpoint URLs) get the endpoint URL rule unless already in effect.
+    const dataProblem = await providerDataProblem(request, existing.provider, {
+      ...(providerSpecificData || {}),
+      ...(proxyConfig.hasAnyProxyField ? {
+        connectionProxyEnabled: proxyConfig.connectionProxyEnabled,
+        connectionProxyUrl: proxyConfig.connectionProxyUrl,
+      } : {}),
+    }, existing.providerSpecificData || {});
+    if (dataProblem) return NextResponse.json(dataProblem, { status: 400 });
+
     const proxyPoolResult = await normalizeProxyPoolUpdate(body.proxyPoolId);
     if (proxyPoolResult.error) {
       return NextResponse.json({ error: proxyPoolResult.error }, { status: 400 });
@@ -216,7 +229,7 @@ export async function PUT(request, { params }) {
       }
       const node = await getProviderNodeById(existing.provider);
       if (!node) return NextResponse.json({ error: "Provider node not found" }, { status: 404 });
-      const keyUrl = await resolveKeyBaseUrl(body.baseUrl, node.baseUrl, { remote: !isLocalRequest(request) });
+      const keyUrl = await resolveKeyBaseUrl(body.baseUrl, node.baseUrl, { remote: await blocksPrivateUrls(request) });
       if (!keyUrl.ok) return NextResponse.json({ error: keyUrl.error, field: "baseUrl" }, { status: 400 });
       updateData.providerSpecificData = withKeyBaseUrl(
         updateData.providerSpecificData || { ...(existing.providerSpecificData || {}) },

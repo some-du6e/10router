@@ -226,7 +226,8 @@ audit log). A URL that breaks one of the other rules gets a `400`. Both carry
 carry a token in its query. The URL is then validated and saved the same way as
 one typed into the dashboard: the validation ping runs at that URL, the
 private-network checks apply (a host that resolves to a private address is
-refused), and it's stored as the key's own URL (`providerSpecificData.baseUrl`
+refused; `ALLOW_PRIVATE_ENDPOINT_URLS` doesn't change that for the management
+API, which never carries a dashboard session), and it's stored as the key's own URL (`providerSpecificData.baseUrl`
 with `ownBaseUrl`), so requests on that key go there and fail over to the next
 key as usual. The hosts are checked again after the probe, so taking a host off
 the list while a key is being added adds nothing.

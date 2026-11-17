@@ -53,6 +53,7 @@ export NODE_ENV="production"
 | `DATA_DIR` | `~/.9router` | Database and data storage path (the directory name is unchanged from the previous release for backward compatibility) |
 | `NODE_ENV` | `development` | Set to `production` for deployment |
 | `ENABLE_REQUEST_LOGS` | `false` | Enable debug request/response logs |
+| `ALLOW_PRIVATE_ENDPOINT_URLS` | unset | Set `true` to let a signed-in dashboard session point custom endpoints, key URLs, proxies and GitLab at private, LAN or loopback hosts. Without it, only a browser on the server itself (loopback, no reverse proxy) may. Needs login on; doesn't cover image URLs or web search |
 
 ### Step 5: Create Data Directory
 
@@ -297,6 +298,8 @@ sudo nginx -t
 # Reload Nginx
 sudo systemctl reload nginx
 ```
+
+Behind Nginx, every dashboard session counts as remote, even from the server itself. So adding a custom endpoint, a key URL, a proxy or a GitLab instance on a private, LAN or loopback host (an Ollama at `http://127.0.0.1:11434`) gets "URL not allowed". Set `ALLOW_PRIVATE_ENDPOINT_URLS=true` in the service environment to allow it for signed-in sessions, or open the dashboard over an SSH tunnel to the app's own port (`ssh -L 20128:127.0.0.1:20128 server`, then `http://localhost:20128`). Endpoints saved before keep working.
 
 ### Step 4: Setup SSL with Let's Encrypt
 

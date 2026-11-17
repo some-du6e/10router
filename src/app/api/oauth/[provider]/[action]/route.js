@@ -36,6 +36,9 @@ import {
 } from "@/lib/oauth/utils/server";
 import { detectIdeInstalled } from "@/lib/oauth/utils/ideDetect";
 import { ZED_HOSTED_CONFIG } from "@/lib/oauth/constants/oauth";
+import { resolveGitlabBase } from "@/lib/oauth/gitlabBaseUrl.js";
+import { isBlockedUrlError } from "@/shared/utils/ssrfGuard.js";
+import { PRIVATE_URL_ERROR } from "@/shared/constants/privateUrl.js";
 
 async function completeXaiManualCode(code, state) {
   const session = state ? getXaiSessionStatus(state) : null;
@@ -348,8 +351,15 @@ export async function POST(request, { params }) {
         return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
       }
 
+      let exchangeMeta = meta;
+      if (provider === "gitlab") {
+        const target = await resolveGitlabBase(request, meta?.baseUrl);
+        if ("error" in target) return NextResponse.json({ error: target.error }, { status: 400 });
+        exchangeMeta = { ...meta, baseUrl: target.base, remote: target.remote };
+      }
+
       // Exchange code for tokens (meta carries provider-specific params, e.g. gitlab clientId/baseUrl)
-      const tokenData = await exchangeTokens(provider, code, redirectUri, codeVerifier, state, meta);
+      const tokenData = await exchangeTokens(provider, code, redirectUri, codeVerifier, state, exchangeMeta);
 
       // Save to database
       const connection = await createProviderConnection({
@@ -449,6 +459,8 @@ export async function POST(request, { params }) {
 
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });
   } catch (error) {
+    // A GitLab token or user-info hop the probe fetch refused (internal host).
+    if (isBlockedUrlError(error)) return NextResponse.json({ error: PRIVATE_URL_ERROR }, { status: 400 });
     console.log("OAuth POST error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

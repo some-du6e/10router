@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSettings, updateSettings } from "@/lib/localDb";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
+import { proxyUrlProblem } from "@/lib/network/privateUrls.js";
 import { resetComboRotation } from "open-sse/services/combo.js";
 import bcrypt from "bcryptjs";
 import {
@@ -131,6 +132,19 @@ export async function PATCH(request) {
     if (Object.prototype.hasOwnProperty.call(body, "oidcClientSecret")) {
       if (!body.oidcClientSecret || !String(body.oidcClientSecret).trim()) {
         delete body.oidcClientSecret;
+      }
+    }
+
+    // Every upstream request without a proxy of its own goes through the
+    // outbound proxy: a new URL, or turning a stored one on, gets the proxy URL
+    // rule (remote sessions can't point it at a private host).
+    if (Object.prototype.hasOwnProperty.call(body, "outboundProxyUrl") || body.outboundProxyEnabled === true) {
+      const current = await getSettings();
+      const url = Object.prototype.hasOwnProperty.call(body, "outboundProxyUrl") ? body.outboundProxyUrl : current.outboundProxyUrl;
+      const enabling = body.outboundProxyEnabled === true && current.outboundProxyEnabled !== true;
+      if (typeof url === "string" && url.trim() && (url !== current.outboundProxyUrl || enabling)) {
+        const problem = await proxyUrlProblem(request, url);
+        if (problem) return NextResponse.json({ error: problem, field: "outboundProxyUrl" }, { status: 400 });
       }
     }
 

@@ -11,7 +11,12 @@ import * as guard from "@/shared/utils/ssrfGuard.js";
 // Real guard by default; the pinning test lets one fake public host through.
 vi.mock("@/shared/utils/ssrfGuard.js", async (importActual) => {
   const real = await importActual();
-  return { ...real, assertPublicUrl: vi.fn(real.assertPublicUrl), assertPublicUrlResolved: vi.fn(real.assertPublicUrlResolved) };
+  return {
+    ...real,
+    assertPublicUrl: vi.fn(real.assertPublicUrl),
+    assertPublicUrlResolved: vi.fn(real.assertPublicUrlResolved),
+    resolvePublicAddresses: vi.fn(real.resolvePublicAddresses),
+  };
 });
 
 const KEY = "sk-test-0123456789abcdef";
@@ -290,11 +295,17 @@ describe("12. revoked key on an endpoint without /models", () => {
 
 describe("9. probeFetch pins the checked address (DNS rebinding)", () => {
   afterEach(() => vi.restoreAllMocks());
-  it("rejects when the second resolution turns private", async () => {
-    let n = 0;
-    vi.spyOn(dns.promises, "lookup").mockImplementation(async () => (n++ === 0 ? [{ address: "93.184.216.34", family: 4 }] : [{ address: "127.0.0.1", family: 4 }]));
+  it("resolves once and refuses a name that resolves private, before any fetch", async () => {
+    const lookups = vi.spyOn(dns.promises, "lookup").mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
     const fetchImpl = vi.fn();
     await expect(makeProbeFetch(true, { fetchImpl })("http://rebind.example.com/v1/models", { method: "GET" })).rejects.toThrow(/Blocked/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(lookups).toHaveBeenCalledTimes(1);
+  });
+  it("fails closed when the name doesn't resolve", async () => {
+    vi.spyOn(dns.promises, "lookup").mockRejectedValue(Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" }));
+    const fetchImpl = vi.fn();
+    await expect(makeProbeFetch(true, { fetchImpl })("http://nowhere.example.com/v1/models", { method: "GET" })).rejects.toThrow(/ENOTFOUND/);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
   it("connects to the resolved IP, not whatever DNS says at connect time", async () => {
@@ -302,18 +313,15 @@ describe("9. probeFetch pins the checked address (DNS rebinding)", () => {
     await new Promise((r) => server.listen(0, "127.0.0.1", r));
     const { port } = server.address();
     // pinned.invalid can never resolve for real, so reaching the server proves
-    // the connect used the pinned lookup. The guard is waved through because the
-    // only server a test can reach is on loopback.
-    guard.assertPublicUrl.mockImplementation(() => {});
-    guard.assertPublicUrlResolved.mockImplementation(async () => {});
+    // the connect used the pinned addresses. The check is waved through with
+    // loopback as its answer, because that is the only server a test can reach.
+    guard.resolvePublicAddresses.mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
     try {
-      const lookups = vi.spyOn(dns.promises, "lookup").mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
       const res = await makeProbeFetch(true)(`http://pinned.invalid:${port}/v1/models`, { method: "GET" });
       expect((await res.json()).host).toBe(`pinned.invalid:${port}`);
-      expect(lookups).toHaveBeenCalledWith("pinned.invalid", { all: true, verbatim: true });
+      expect(guard.resolvePublicAddresses).toHaveBeenCalledWith(`http://pinned.invalid:${port}/v1/models`);
     } finally {
-      guard.assertPublicUrl.mockReset();
-      guard.assertPublicUrlResolved.mockReset();
+      guard.resolvePublicAddresses.mockReset();
       server.close();
     }
   });

@@ -11,8 +11,8 @@ import {
 import { APIKEY_PROVIDERS } from "@/shared/constants/config";
 import { AI_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { normalizeProviderId, normalizeProviderSpecificData } from "@/lib/providerNormalization";
-import { resolveKeyBaseUrl, withKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
-import { isLocalRequest } from "@/dashboardGuard";
+import { resolveKeyBaseUrl, withKeyBaseUrl, withoutKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
+import { blocksPrivateUrls, providerDataProblem } from "@/lib/network/privateUrls.js";
 
 export const dynamic = "force-dynamic";
 
@@ -149,6 +149,16 @@ export async function POST(request) {
     }
 
     let providerSpecificData = normalizeProviderSpecificData(provider, body, body.providerSpecificData);
+    // What the new connection will hold: the proxy fields are stored even
+    // switched off, so a later edit that only turns it on is checked too. A
+    // custom node's baseUrl comes from the node below (or the checked per-key URL).
+    const isNodeBacked = isOpenAICompatibleProvider(provider) || isAnthropicCompatibleProvider(provider) || isCustomEmbeddingProvider(provider);
+    const dataProblem = await providerDataProblem(request, provider, {
+      ...((isNodeBacked ? withoutKeyBaseUrl(providerSpecificData) : providerSpecificData) || {}),
+      connectionProxyEnabled: proxyConfig.connectionProxyEnabled,
+      connectionProxyUrl: proxyConfig.connectionProxyUrl,
+    }, null);
+    if (dataProblem) return NextResponse.json(dataProblem, { status: 400 });
 
     // Compatible LLM nodes support multiple API-key connections (key pool); runtime
     // rotates/fails over via getProviderCredentials. Embedding nodes stay single-connection.
@@ -190,7 +200,7 @@ export async function POST(request) {
     // A key on another account or region of the same API can bring its own
     // base URL; failover across keys then fails over across endpoints.
     if (isCompatibleNode && typeof body.baseUrl === "string" && body.baseUrl.trim()) {
-      const keyUrl = await resolveKeyBaseUrl(body.baseUrl, providerSpecificData.baseUrl, { remote: !isLocalRequest(request) });
+      const keyUrl = await resolveKeyBaseUrl(body.baseUrl, providerSpecificData.baseUrl, { remote: await blocksPrivateUrls(request) });
       if (!keyUrl.ok) return NextResponse.json({ error: keyUrl.error, field: "baseUrl" }, { status: 400 });
       providerSpecificData = withKeyBaseUrl(providerSpecificData, keyUrl);
     }

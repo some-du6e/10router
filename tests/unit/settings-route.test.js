@@ -58,6 +58,13 @@ vi.mock("@/lib/auth/setupToken", () => ({
   clearSetupToken: mocks.clearSetupToken,
 }));
 
+// The outbound proxy URL gets the private-host rule: who is calling.
+const caller = vi.hoisted(() => ({ local: true, session: false }));
+vi.mock("@/dashboardGuard", () => ({
+  isLocalRequest: () => caller.local,
+  hasSignedInDashboardSession: async () => caller.session,
+}));
+
 const { GET, PATCH } = await import("../../src/app/api/settings/route.js");
 
 function request(body) {
@@ -184,5 +191,46 @@ describe("PATCH /api/settings session revocation", () => {
     await PATCH(request({ theme: "dark" }));
     expect(mocks.revokeDashboardSessions).not.toHaveBeenCalled();
     expect(mocks.reissueDashboardSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("PATCH /api/settings outbound proxy", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    caller.local = false;
+    caller.session = false;
+    mocks.getSettings.mockResolvedValue({ outboundProxyEnabled: false, outboundProxyUrl: "" });
+    mocks.updateSettings.mockImplementation(async (body) => body);
+  });
+
+  it("refuses a private proxy URL from a remote session, saved on or off", async () => {
+    for (const body of [
+      { outboundProxyEnabled: true, outboundProxyUrl: "http://10.0.0.8:3128" },
+      { outboundProxyEnabled: false, outboundProxyUrl: "127.0.0.1:7890" },
+    ]) {
+      const res = await PATCH(request(body));
+      expect(res.status).toBe(400);
+      expect(res.body.field).toBe("outboundProxyUrl");
+    }
+    expect(mocks.updateSettings).not.toHaveBeenCalled();
+    expect(mocks.applyOutboundProxyEnv).not.toHaveBeenCalled();
+  });
+
+  it("checks a stored private URL when a remote session switches it on", async () => {
+    mocks.getSettings.mockResolvedValue({ outboundProxyEnabled: false, outboundProxyUrl: "http://10.0.0.8:3128" });
+    expect((await PATCH(request({ outboundProxyEnabled: true }))).status).toBe(400);
+  });
+
+  it("lets a local session, or a signed-in one with ALLOW_PRIVATE_ENDPOINT_URLS, use a LAN proxy", async () => {
+    caller.local = true;
+    expect((await PATCH(request({ outboundProxyEnabled: true, outboundProxyUrl: "http://10.0.0.8:3128" }))).status).toBe(200);
+    caller.local = false;
+    caller.session = true;
+    vi.stubEnv("ALLOW_PRIVATE_ENDPOINT_URLS", "true");
+    try {
+      expect((await PATCH(request({ outboundProxyEnabled: true, outboundProxyUrl: "http://10.0.0.9:3128" }))).status).toBe(200);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { KiroService } from "@/lib/oauth/services/kiro";
 import { createProviderConnection } from "@/models";
+import { isValidKiroProfileArn, kiroProviderDataProblem } from "open-sse/utils/awsRegion.js";
 
 /**
  * POST /api/oauth/kiro/import
@@ -19,6 +20,10 @@ export async function POST(request) {
       );
     }
 
+    // Both end up in an AWS hostname, so only real regions and ARNs are taken.
+    const dataProblem = kiroProviderDataProblem({ region, profileArn });
+    if (dataProblem) return NextResponse.json({ error: dataProblem }, { status: 400 });
+
     const kiroService = new KiroService();
     const isIdc = !!(clientId && clientSecret);
 
@@ -33,7 +38,8 @@ export async function POST(request) {
     const email = kiroService.extractEmailFromJWT(tokenData.accessToken);
     const resolvedAuthMethod = isIdc ? "idc" : "imported";
     const providerLabel = isIdc ? "Enterprise" : "Imported";
-    const resolvedProfileArn = profileArn || tokenData.profileArn || null;
+    // The one AWS returned is dropped rather than stored when it isn't an ARN.
+    const resolvedProfileArn = [profileArn, tokenData.profileArn].find(isValidKiroProfileArn) || null;
 
     const connection = await createProviderConnection({
       provider: "kiro",

@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
-import { createProxyPool } from "@/models";
+import { newRelayKey, relayKeyCheck } from "@/lib/network/relayKey.js";
+import { saveRelayPool } from "@/lib/network/relayPool.js";
 
 const DENO_V2_API = "https://api.deno.com/v2";
 
-const DENO_RELAY_CODE = `Deno.serve(async (request) => {
+const denoRelayCode = (key) => `Deno.serve(async (request) => {
+  ${relayKeyCheck(key, "request")}
   const target = request.headers.get("x-relay-target");
   const relayPath = request.headers.get("x-relay-path") || "/";
 
@@ -59,6 +61,7 @@ export async function POST(request) {
       return NextResponse.json({ error: "Deno Deploy API token is required" }, { status: 400 });
     }
 
+    const relayKey = newRelayKey();
     const headers = {
       Authorization: `Bearer ${denoToken}`,
       "Content-Type": "application/json",
@@ -103,7 +106,7 @@ export async function POST(request) {
         assets: {
           "main.ts": {
             kind: "file",
-            content: DENO_RELAY_CODE,
+            content: denoRelayCode(relayKey),
             encoding: "utf-8",
           },
         },
@@ -158,16 +161,9 @@ export async function POST(request) {
     const deployUrl = `https://${projectName}.${orgSlug}.deno.net`;
     console.log("Deno deployUrl:", deployUrl);
 
-    const proxyPool = await createProxyPool({
-      name: projectName,
-      proxyUrl: deployUrl,
-      type: "deno",
-      noProxy: "",
-      isActive: true,
-      strictProxy: false,
-    });
+    const { proxyPool, created } = await saveRelayPool({ type: "deno", name: projectName, deployUrl, relayKey });
 
-    return NextResponse.json({ proxyPool, deployUrl }, { status: 201 });
+    return NextResponse.json({ proxyPool, deployUrl, updated: !created }, { status: created ? 201 : 200 });
   } catch (error) {
     console.log("Error deploying Deno Deploy relay:", error);
     return NextResponse.json({ error: error.message || "Deploy failed" }, { status: 500 });
