@@ -36,7 +36,7 @@ import {
 } from "@/lib/oauth/utils/server";
 import { detectIdeInstalled } from "@/lib/oauth/utils/ideDetect";
 import { ZED_HOSTED_CONFIG } from "@/lib/oauth/constants/oauth";
-import { isLocalRequest } from "@/dashboardGuard";
+import { blocksPrivateUrls } from "@/lib/network/privateUrls.js";
 import { normalizeGitlabBaseUrl, isAllowedGitlabBase } from "@/lib/oauth/gitlabBaseUrl.js";
 
 async function completeXaiManualCode(code, state) {
@@ -354,10 +354,11 @@ export async function POST(request, { params }) {
       if (provider === "gitlab") {
         const base = normalizeGitlabBaseUrl(meta?.baseUrl);
         if (!base) return NextResponse.json({ error: "Invalid GitLab URL" }, { status: 400 });
-        if (!(await isAllowedGitlabBase(base, !isLocalRequest(request)))) {
+        const remote = blocksPrivateUrls(request);
+        if (!(await isAllowedGitlabBase(base, remote))) {
           return NextResponse.json({ error: "URL not allowed" }, { status: 400 });
         }
-        exchangeMeta = { ...meta, baseUrl: base, remote: !isLocalRequest(request) };
+        exchangeMeta = { ...meta, baseUrl: base, remote };
       }
 
       // Exchange code for tokens (meta carries provider-specific params, e.g. gitlab clientId/baseUrl)

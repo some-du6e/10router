@@ -13,6 +13,9 @@ import { normalizeGitlabBaseUrl } from "../../src/lib/oauth/gitlabBaseUrl.js";
 import { relayKeyCheck, withRelayKey, newRelayKey } from "../../src/lib/network/relayKey.js";
 import { regionFromProfileArn } from "../../open-sse/services/kiroModels.js";
 import gitlabOAuth from "../../src/lib/oauth/providers/gitlab.js";
+import { fetchImageOnce, prefetchRemoteImages } from "../../open-sse/translator/concerns/prefetch.js";
+import { CodexExecutor } from "../../open-sse/executors/codex.js";
+import { redactUrlSecrets } from "../../open-sse/utils/redact.js";
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const realFetch = globalThis.fetch;
@@ -60,6 +63,56 @@ describe("image prefetch address check", () => {
     globalThis.fetch = vi.fn();
     expect(await fetchImageAsBase64("http://rebind.example/x.png")).toBeNull();
     expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+});
+
+// The request-scoped download cache (fetchImageOnce) and the Codex executor's
+// own download both sit on fetchImageAsBase64, so neither skips its checks.
+describe("every image download path", () => {
+  const imageBody = (url) => ({ messages: [{ role: "user", content: [{ type: "image_url", image_url: { url } }] }] });
+
+  it("fetchImageOnce checks an internal host again on each attempt, never caching it", async () => {
+    lookupMock.mockResolvedValue([{ address: "10.0.0.7", family: 4 }]);
+    globalThis.fetch = vi.fn(async () => new Response(PNG, { status: 200 }));
+    const cacheKey = new AbortController().signal;
+    expect(await fetchImageOnce("http://lan.example/a.png", { cacheKey })).toBeNull();
+    expect(await fetchImageOnce("http://lan.example/a.png", { cacheKey })).toBeNull();
+    expect(lookupMock).toHaveBeenCalledTimes(2);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("fetchImageOnce does not follow a redirect", async () => {
+    globalThis.fetch = vi.fn(async () => new Response(null, { status: 302, headers: { location: "http://127.0.0.1/a.png" } }));
+    expect(await fetchImageOnce("https://cdn.example.com/a.png", { cacheKey: {} })).toBeNull();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(globalThis.fetch.mock.calls[0][1].redirect).toBe("manual");
+  });
+
+  it("prefetch for an inline-only target leaves an internal image URL as it is", async () => {
+    lookupMock.mockResolvedValue([{ address: "::", family: 6 }]);
+    globalThis.fetch = vi.fn();
+    const body = imageBody("http://cam.example/x.png");
+    expect(await prefetchRemoteImages(body, "openai", "gemini", { cacheKey: {} })).toBe(0);
+    expect(body.messages[0].content[0].image_url.url).toBe("http://cam.example/x.png");
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("the Codex executor's download refuses an internal host", async () => {
+    lookupMock.mockResolvedValue([{ address: "::ffff:169.254.169.254", family: 6 }]);
+    globalThis.fetch = vi.fn();
+    const body = { input: [{ role: "user", content: [{ type: "image_url", image_url: { url: "http://meta.example/latest" } }] }] };
+    await new CodexExecutor().prefetchImages(body, new AbortController().signal);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(body.input[0].content[0]).toMatchObject({ type: "input_image", image_url: "http://meta.example/latest" });
+  });
+
+  it("a public image cached for the request doesn't let another URL skip the check", async () => {
+    globalThis.fetch = vi.fn(async () => new Response(PNG, { status: 200 }));
+    const cacheKey = {};
+    expect(await fetchImageOnce("https://cdn.example.com/a.png", { cacheKey })).not.toBeNull();
+    lookupMock.mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
+    expect(await fetchImageOnce("https://cdn.example.com/b.png", { cacheKey })).toBeNull();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -142,5 +195,10 @@ describe("relay key", () => {
     expect(run(key, "https://relay.example/").status).toBe(403);
     expect(run(key, "https://relay.example/?relay_key=wrong").status).toBe(403);
     expect(run(key, withRelayKey("https://relay.example", key))).toBe("forwarded");
+  });
+
+  it("is redacted where the relay URL is logged", () => {
+    const key = newRelayKey();
+    expect(redactUrlSecrets(withRelayKey("https://relay.example", key))).not.toContain(key);
   });
 });

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { assertPublicUrl } from "@/shared/utils/ssrfGuard.js";
-import { isLocalRequest } from "@/dashboardGuard";
+import { blocksPrivateUrls } from "@/lib/network/privateUrls.js";
 import { describeRedirect, makeProbeFetch } from "@/lib/probeFetch.js";
 
 const withTimeout = (probe) => (url, options, timeout = 10000) =>
@@ -61,14 +61,15 @@ export async function POST(request) {
     }
 
     // SSRF guard for remote callers; local host keeps self-hosted nodes (e.g. ollama-local)
-    if (!isLocalRequest(request)) {
+    const remote = blocksPrivateUrls(request);
+    if (remote) {
       try {
         assertPublicUrl(baseUrl);
       } catch {
         return NextResponse.json({ error: "URL not allowed" }, { status: 400 });
       }
     }
-    const fetchWithTimeout = withTimeout(makeProbeFetch(!isLocalRequest(request)));
+    const fetchWithTimeout = withTimeout(makeProbeFetch(remote));
 
     // Custom Embedding Validation - test POST /embeddings directly
     if (type === "custom-embedding") {

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createProviderConnection } from "@/models";
-import { isLocalRequest } from "@/dashboardGuard";
+import { blocksPrivateUrls } from "@/lib/network/privateUrls.js";
 import { describeRedirect, makeProbeFetch } from "@/lib/probeFetch.js";
 import { normalizeGitlabBaseUrl } from "@/lib/oauth/gitlabBaseUrl.js";
 
@@ -30,7 +30,7 @@ export async function POST(request) {
     // Verify token by fetching current user
     let userRes;
     try {
-      userRes = await makeProbeFetch(!isLocalRequest(request))(`${base}/api/v4/user`, {
+      userRes = await makeProbeFetch(blocksPrivateUrls(request))(`${base}/api/v4/user`, {
         headers: { "Private-Token": token.trim(), Accept: "application/json" },
       });
     } catch (error) {

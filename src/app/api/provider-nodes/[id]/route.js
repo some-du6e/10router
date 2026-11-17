@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { mergeQuirks, mergeConnectionData } from "@/shared/utils/nodeQuirkMerge";
 import { prefixProblem } from "@/shared/utils/reservedPrefixes";
 import { endpointUrlProblem } from "@/shared/utils/connectionBaseUrl.js";
-import { isLocalRequest } from "@/dashboardGuard";
+import { blocksPrivateUrls } from "@/lib/network/privateUrls.js";
 import { deleteProviderConnectionsByProvider, deleteProviderNode, getProviderConnections, getProviderNodeById, getProviderNodes, updateProviderConnection, updateProviderNode } from "@/models";
 
 // PUT /api/provider-nodes/[id] - Update provider node
@@ -61,7 +61,7 @@ export async function PUT(request, { params }) {
     }
 
     const urlProblem = sanitizedBaseUrl !== node.baseUrl
-      && await endpointUrlProblem(sanitizedBaseUrl, { remote: !isLocalRequest(request) });
+      && await endpointUrlProblem(sanitizedBaseUrl, { remote: blocksPrivateUrls(request) });
     if (urlProblem) return NextResponse.json({ error: urlProblem, field: "baseUrl" }, { status: 400 });
 
     const { quirks, removed } = mergeQuirks(node, body);

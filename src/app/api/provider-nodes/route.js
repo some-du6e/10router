@@ -5,7 +5,7 @@ import { generateId } from "@/shared/utils";
 import { sanitizeNodeQuirks } from "@/shared/utils/nodeQuirks";
 import { prefixFormatProblem, prefixProblem } from "@/shared/utils/reservedPrefixes";
 import { endpointUrlProblem } from "@/shared/utils/connectionBaseUrl.js";
-import { isLocalRequest } from "@/dashboardGuard";
+import { blocksPrivateUrls } from "@/lib/network/privateUrls.js";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +25,7 @@ const CUSTOM_EMBEDDING_DEFAULTS = {
 const trimUrl = (u) => String(u || "").trim().replace(/\/+$/, "").replace(/\/(messages|embeddings)$/, "");
 
 const baseUrlRejection = async (request, url) => {
-  const problem = await endpointUrlProblem(url, { remote: !isLocalRequest(request) });
+  const problem = await endpointUrlProblem(url, { remote: blocksPrivateUrls(request) });
   return problem ? NextResponse.json({ error: problem, field: "baseUrl" }, { status: 400 }) : null;
 };
 

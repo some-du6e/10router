@@ -9,7 +9,7 @@ import {
 } from "@/models";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { resolveKeyBaseUrl, withKeyBaseUrl, withoutKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
-import { isLocalRequest } from "@/dashboardGuard";
+import { blocksPrivateUrls } from "@/lib/network/privateUrls.js";
 
 function normalizeProxyConfig(body = {}) {
   const hasAnyProxyField =
@@ -216,7 +216,7 @@ export async function PUT(request, { params }) {
       }
       const node = await getProviderNodeById(existing.provider);
       if (!node) return NextResponse.json({ error: "Provider node not found" }, { status: 404 });
-      const keyUrl = await resolveKeyBaseUrl(body.baseUrl, node.baseUrl, { remote: !isLocalRequest(request) });
+      const keyUrl = await resolveKeyBaseUrl(body.baseUrl, node.baseUrl, { remote: blocksPrivateUrls(request) });
       if (!keyUrl.ok) return NextResponse.json({ error: keyUrl.error, field: "baseUrl" }, { status: 400 });
       updateData.providerSpecificData = withKeyBaseUrl(
         updateData.providerSpecificData || { ...(existing.providerSpecificData || {}) },

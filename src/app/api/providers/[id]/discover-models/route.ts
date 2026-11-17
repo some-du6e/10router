@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getProviderConnectionById, getProviderNodeById, updateProviderNode, getProviderConnections, updateProviderConnection } from "@/models";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
-import { isLocalRequest } from "@/dashboardGuard";
+import { blocksPrivateUrls } from "@/lib/network/privateUrls.js";
 import { assertPublicUrlResolved } from "@/shared/utils/ssrfGuard.js";
 import { discoverModels } from "@/lib/endpointDetect.js";
 import { getEndpointCatalog } from "@/lib/endpointCatalog.js";
@@ -45,7 +45,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     const baseUrl = connection.providerSpecificData?.baseUrl;
     if (!baseUrl) return NextResponse.json({ error: "No base URL configured" }, { status: 400 });
 
-    const remote = !isLocalRequest(request);
+    const remote = blocksPrivateUrls(request);
     if (remote) {
       try { await assertPublicUrlResolved(baseUrl); }
       catch { return NextResponse.json({ error: "URL not allowed" }, { status: 400 }); }

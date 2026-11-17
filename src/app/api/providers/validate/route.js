@@ -15,7 +15,7 @@ import { appendUrlPath, resolveCompatibleRoute } from "open-sse/services/provide
 import { stripThinkingSuffix } from "open-sse/translator/concerns/thinkingUnified.js";
 import { getExecutor } from "open-sse/executors/index.js";
 import { resolveKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
-import { isLocalRequest } from "@/dashboardGuard";
+import { blocksPrivateUrls } from "@/lib/network/privateUrls.js";
 import { makeProbeFetch } from "@/lib/probeFetch.js";
 import { discardBody } from "@/lib/endpointDetect.js";
 import { NO_API_ROUTE, UNVERIFIED, KEY_CHECK_ERRORS, INVALID_KEY, PROBE_TIMEOUT_MS } from "@/shared/constants/keyCheck.js";
@@ -28,7 +28,7 @@ import { NO_API_ROUTE, UNVERIFIED, KEY_CHECK_ERRORS, INVALID_KEY, PROBE_TIMEOUT_
 async function compatibleBaseUrl(request, body, node) {
   const plainFetch = (url, init) => fetch(url, init);
   if (typeof body.baseUrl !== "string" || !body.baseUrl.trim()) return { ok: true, baseUrl: node.baseUrl, fetch: plainFetch };
-  const remote = !isLocalRequest(request);
+  const remote = blocksPrivateUrls(request);
   const keyUrl = await resolveKeyBaseUrl(body.baseUrl, node.baseUrl, { remote });
   if (!keyUrl.ok) return keyUrl;
   return { ...keyUrl, fetch: keyUrl.own && remote ? makeProbeFetch(true) : plainFetch };

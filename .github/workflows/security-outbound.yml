@@ -4,17 +4,30 @@ on:
   pull_request:
     paths:
       - "open-sse/executors/kiro.js"
+      - "open-sse/executors/codex.js"
+      - "open-sse/services/kiroModels.js"
+      - "open-sse/handlers/chatCore.js"
       - "open-sse/handlers/imageProviders/**"
       - "open-sse/handlers/search/**"
       - "open-sse/translator/concerns/image.js"
+      - "open-sse/translator/concerns/prefetch.js"
+      - "open-sse/config/mediaConfig.js"
       - "open-sse/utils/ssrfGuard.js"
       - "open-sse/utils/awsRegion.ts"
+      - "open-sse/utils/redact.js"
       - "src/app/api/oauth/[provider]/[action]/route.js"
       - "src/app/api/oauth/gitlab/**"
+      - "src/app/api/oauth/kiro/**"
       - "src/app/api/provider-nodes/**"
+      - "src/app/api/providers/route.js"
+      - "src/app/api/providers/[id]/route.js"
+      - "src/app/api/providers/[id]/discover-models/**"
+      - "src/app/api/providers/[id]/redetect/**"
+      - "src/app/api/providers/validate/**"
       - "src/app/api/providers/suggested-models/**"
       - "src/app/api/proxy-pools/**"
-      - "src/lib/network/relayKey.ts"
+      - "src/dashboardGuard.js"
+      - "src/lib/network/**"
       - "src/lib/oauth/**"
       - "src/lib/probeFetch.ts"
       - "src/shared/utils/connectionBaseUrl.ts"
@@ -23,6 +36,11 @@ on:
       - "tests/unit/security-outbound-routes.test.js"
       - "tests/unit/image-generation.test.js"
       - "tests/unit/provider-nodes-routes.test.js"
+      - "tests/unit/codex-image-fetch.test.js"
+      - "tests/unit/prefetch-images.test.js"
+      - "tests/vitest.config.js"
+      - "package.json"
+      - "tests/package.json"
       - ".github/workflows/security-outbound.yml"
   workflow_dispatch:
 
@@ -54,6 +72,7 @@ jobs:
           unit/search-ssrf-guard.test.js
           unit/image-fetch-hardening.test.js
           unit/prefetch-images.test.js
+          unit/codex-image-fetch.test.js
           unit/image-generation.test.js
           unit/compatible-multi-endpoint.test.js
           unit/provider-nodes-routes.test.js

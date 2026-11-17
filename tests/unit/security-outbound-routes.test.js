@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const state = vi.hoisted(() => ({ local: false, nodes: [], connections: [], created: [], pools: [] }));
 const mocks = vi.hoisted(() => ({
@@ -89,6 +89,29 @@ describe("provider node base URL", () => {
     state.local = true;
     const res = await nodes.POST(req({ name: "LM", prefix: "lm", apiType: "chat", baseUrl: "http://localhost:1234/v1" }));
     expect(res.status).toBe(201);
+  });
+});
+
+describe("ALLOW_PRIVATE_ENDPOINT_URLS", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  const LAN = "http://10.0.0.20:11434/v1";
+
+  it("lets a remote dashboard session save, edit and probe a LAN endpoint", async () => {
+    vi.stubEnv("ALLOW_PRIVATE_ENDPOINT_URLS", "true");
+    const created = await nodes.POST(req({ name: "LAN", prefix: "lan", apiType: "chat", baseUrl: LAN }));
+    expect(created.status).toBe(201);
+    const edited = await node.PUT(req({ name: "Local", prefix: "x", apiType: "chat", baseUrl: "http://10.0.0.21/v1" }), params(NODE.id));
+    expect(edited.status).toBe(200);
+    mocks.probeFetch.mockResolvedValue({ ok: true, status: 200 });
+    await validate.POST(req({ baseUrl: LAN, apiKey: "k" }));
+    expect(mocks.makeProbeFetch).toHaveBeenCalledWith(false);
+  });
+
+  it("only the value true opts in", async () => {
+    vi.stubEnv("ALLOW_PRIVATE_ENDPOINT_URLS", "1");
+    const res = await nodes.POST(req({ name: "LAN", prefix: "lan", apiType: "chat", baseUrl: LAN }));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("URL not allowed");
   });
 });
 

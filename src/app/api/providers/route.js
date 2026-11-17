@@ -12,7 +12,7 @@ import { APIKEY_PROVIDERS } from "@/shared/constants/config";
 import { AI_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { normalizeProviderId, normalizeProviderSpecificData } from "@/lib/providerNormalization";
 import { resolveKeyBaseUrl, withKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
-import { isLocalRequest } from "@/dashboardGuard";
+import { blocksPrivateUrls } from "@/lib/network/privateUrls.js";
 
 export const dynamic = "force-dynamic";
 
@@ -190,7 +190,7 @@ export async function POST(request) {
     // A key on another account or region of the same API can bring its own
     // base URL; failover across keys then fails over across endpoints.
     if (isCompatibleNode && typeof body.baseUrl === "string" && body.baseUrl.trim()) {
-      const keyUrl = await resolveKeyBaseUrl(body.baseUrl, providerSpecificData.baseUrl, { remote: !isLocalRequest(request) });
+      const keyUrl = await resolveKeyBaseUrl(body.baseUrl, providerSpecificData.baseUrl, { remote: blocksPrivateUrls(request) });
       if (!keyUrl.ok) return NextResponse.json({ error: keyUrl.error, field: "baseUrl" }, { status: 400 });
       providerSpecificData = withKeyBaseUrl(providerSpecificData, keyUrl);
     }
