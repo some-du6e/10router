@@ -3,7 +3,7 @@ import { getSettings, validateApiKey } from "@/lib/localDb";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { verifyDashboardAuthToken, getDashboardAuthSession } from "@/lib/auth/dashboardSession";
 import { needsSetup } from "@/lib/auth/setupState";
-import { getConfiguredSsoType } from "@/lib/auth/authMode.js";
+import { acceptsDashboardSession, getConfiguredSsoType } from "@/lib/auth/authMode.js";
 import { hasTrustedPeerHeaders } from "@/lib/auth/trustedPeer";
 import { extractClientApiKey } from "@/shared/utils/clientApiKey.js";
 import { containsManagementKey } from "@/shared/utils/managementKey.js";
@@ -34,8 +34,13 @@ const PUBLIC_API_PATHS = [
   "/api/auth/status",
   "/api/auth/setup",
   "/api/auth/change-password",
-  "/api/auth/oidc",
-  "/api/auth/saml",
+  // The SSO sign-in itself. The settings test routes (/api/auth/oidc/test,
+  // /api/auth/saml/test) are dashboard APIs and stay behind the session check.
+  "/api/auth/oidc/start",
+  "/api/auth/oidc/callback",
+  "/api/auth/saml/start",
+  "/api/auth/saml/acs",
+  "/api/auth/saml/metadata",
   "/api/version",
   "/api/settings/require-login",
 ];
@@ -177,15 +182,16 @@ async function readSession(request) {
 // issued after a last login on the old default password and unlocks only the
 // change-password endpoint.
 //
-// While setup is pending (after Reset Password with SSO on), only an OIDC or
-// SAML session counts, for pages and API alike: a password session from before
-// the reset must not reach /api/settings and repoint SSO. The CLI token and the
-// setup routes don't go through here.
+// While setup is pending (after Reset Password, in any mode), only a session
+// from the SSO protocol configured now counts, for pages and API alike: a
+// password session from before the reset must not reach /api/settings and
+// repoint SSO (acceptsDashboardSession). The CLI token and the setup routes
+// don't go through here.
 async function hasValidToken(request) {
   const session = await readSession(request);
   if (!session || session.pwChange === true) return false;
-  if (session.oidc || session.saml) return true;
-  return !(await needsSetup(await loadSettings()));
+  const settings = await loadSettings();
+  return acceptsDashboardSession(session, settings, await needsSetup(settings));
 }
 
 async function hasRestrictedSession(request) {
@@ -309,9 +315,10 @@ export async function proxy(request) {
     let requireLogin = true;
     let tunnelDashboardAccess = true;
     let setupPending = false;
+    let settings = null;
 
     try {
-      const settings = await loadSettings();
+      settings = await loadSettings();
       if (settings) {
         setupPending = await needsSetup(settings);
         requireLogin = settings.requireLogin !== false;
@@ -332,11 +339,11 @@ export async function proxy(request) {
     }
 
     // Setup pending: the first-run gate only let this through for SSO sign-in,
-    // so an SSO session is the only way in. requireLogin=false never opens an
-    // unclaimed instance, and a session from before the reset doesn't count.
+    // so a session from the configured SSO is the only way in. requireLogin=false
+    // never opens an unclaimed instance, and a session from before the reset
+    // doesn't count.
     if (setupPending) {
-      const session = await readSession(request);
-      if (session?.oidc || session?.saml) return NextResponse.next();
+      if (acceptsDashboardSession(await readSession(request), settings, true)) return NextResponse.next();
       return NextResponse.redirect(new URL("/login", request.url));
     }
 

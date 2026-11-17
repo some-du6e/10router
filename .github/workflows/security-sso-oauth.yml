@@ -20,6 +20,8 @@ on:
       - "tests/unit/auth-status.test.js"
       - "tests/unit/dashboard-guard.test.js"
       - "tests/unit/login-landing.test.js"
+      - "tests/unit/oidc-test-route.test.js"
+      - "src/lib/management/dashboardHandlers.js"
       - "tests/unit/oidc-token-binding.test.js"
       - "tests/unit/auth-mode-consistency.test.js"
       - "tests/unit/auth-login-mode.test.js"
@@ -70,6 +72,7 @@ jobs:
           unit/dashboard-guard.test.js
           unit/login-errors.test.js
           unit/login-landing.test.js
+          unit/oidc-test-route.test.js
           unit/sso-allowlist.test.js
           unit/trae-callback-binding.test.js
           unit/oauth-callback-binding.test.js

@@ -49,3 +49,25 @@ export function getConfiguredSsoType(settings?: AuthModeSettings | null): SsoTyp
 export function isPasswordLoginDisabled(settings?: AuthModeSettings | null): boolean {
   return settings?.authMode !== "both" && getActiveSsoType(settings) !== null;
 }
+
+export interface DashboardSession {
+  pwChange?: boolean;
+  oidc?: boolean;
+  saml?: boolean;
+}
+
+// Whether a dashboard session may act on the dashboard (pages and API). A
+// forced-password-change session never does. While setup is pending (after
+// Reset Password, in any mode) only a session from the SSO protocol configured
+// right now does: a password session from before the reset, or an OIDC session
+// after a switch to SAML, doesn't.
+export function acceptsDashboardSession(
+  session: DashboardSession | null | undefined,
+  settings: AuthModeSettings | null | undefined,
+  setupPending: boolean,
+): boolean {
+  if (!session || session.pwChange === true) return false;
+  if (!setupPending) return true;
+  const type = getConfiguredSsoType(settings);
+  return (type === "oidc" && session.oidc === true) || (type === "saml" && session.saml === true);
+}

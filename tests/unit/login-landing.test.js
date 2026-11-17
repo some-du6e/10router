@@ -22,11 +22,14 @@ describe("where /login sends a visitor", () => {
     expect(loginLanding({ needsSetup: true, ssoLoginAvailable: true, requireLogin: false })).toBe("login");
   });
 
-  it("lets only an SSO session through to the dashboard while setup is pending", () => {
-    expect(loginLanding({ needsSetup: true, ssoLoginAvailable: true, authenticated: true, oidcLogin: true })).toBe("dashboard");
-    expect(loginLanding({ needsSetup: true, ssoLoginAvailable: true, authenticated: true, samlLogin: true })).toBe("dashboard");
-    // A password session from before the reset would bounce between /login and the dashboard.
-    expect(loginLanding({ needsSetup: true, ssoLoginAvailable: true, authenticated: true })).toBe("login");
+  it("lets only a session from the configured SSO through to the dashboard while setup is pending", () => {
+    const pending = { needsSetup: true, ssoLoginAvailable: true, authenticated: true };
+    expect(loginLanding({ ...pending, ssoType: "oidc", oidcLogin: true })).toBe("dashboard");
+    expect(loginLanding({ ...pending, ssoType: "saml", samlLogin: true })).toBe("dashboard");
+    // These would bounce between /login and the dashboard, which refuses them.
+    expect(loginLanding({ ...pending, ssoType: "oidc" })).toBe("login");
+    expect(loginLanding({ ...pending, ssoType: "saml", oidcLogin: true })).toBe("login");
+    expect(loginLanding({ ...pending, ssoType: "oidc", samlLogin: true })).toBe("login");
   });
 
   it("keeps the usual landings once the instance is claimed", () => {

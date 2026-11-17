@@ -47,8 +47,10 @@ export function getAuthSecret() {
   if (stored === "") throw emptyFileError(file);
 
   // Write the whole secret to a private temp file, then publish it under the real
-  // name in one step. The file is never seen half-written, and when two module
-  // graphs or processes start at once, the first link wins and the other reads it.
+  // name. With a hard link the file is never seen half-written; with the copy
+  // fallback, a reader that finds it empty waits for the bytes. When two module
+  // graphs or processes start at once, the first to publish wins and the other
+  // reads its secret.
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const generated = crypto.randomBytes(32).toString("hex");
   const tmp = path.join(DATA_DIR, `.jwt-secret.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`);

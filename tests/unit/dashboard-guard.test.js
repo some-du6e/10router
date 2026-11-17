@@ -358,6 +358,20 @@ describe("dashboard guard first-run setup gate", () => {
     expect(response.url.pathname).toBe("/login");
   });
 
+  it("doesn't let a session from before a password-mode reset use the API", async () => {
+    // Unclaimed (no hash, no SSO): what Reset Password leaves in password mode.
+    mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
+    expect((await proxy(request("/api/settings", { host: "localhost:20128" }, "password-session"))).status).toBe(401);
+    expect((await proxy(request("/api/settings/database", { host: "localhost:20128" }, "password-session"))).status).toBe(401);
+    expect((await proxy(request("/api/auth/oidc/test", { host: "localhost:20128" }, "password-session"))).status).toBe(401);
+  });
+
+  it("lets a password session use the API and the SSO test routes once the instance is claimed", async () => {
+    mocks.getSettings.mockResolvedValue({ requireLogin: true, password: "$2a$10$storedhash" });
+    mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
+    expect(await proxy(request("/api/auth/oidc/test", { host: "localhost:20128" }, "password-session"))).toBe(mocks.nextResponse);
+  });
+
   it("lets a password session use the API once the instance is claimed", async () => {
     mocks.getSettings.mockResolvedValue({ requireLogin: true, password: "$2a$10$storedhash" });
     mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
@@ -402,10 +416,33 @@ describe("dashboard guard first-run setup gate", () => {
       const anonymous = await proxy(request("/dashboard", { host: "localhost:20128" }));
       expect(anonymous.url.pathname).toBe("/login");
 
-      for (const session of [{ authenticated: true, oidc: true }, { authenticated: true, saml: true }]) {
-        mocks.getDashboardAuthSession.mockResolvedValue(session);
-        expect(await proxy(request("/dashboard", { host: "localhost:20128" }, "sso-session"))).toBe(mocks.nextResponse);
+      mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true, oidc: true });
+      expect(await proxy(request("/dashboard", { host: "localhost:20128" }, "sso-session"))).toBe(mocks.nextResponse);
+    });
+
+    it("takes only a session from the SSO protocol configured now", async () => {
+      // OIDC is configured; a SAML session from before a switch doesn't count.
+      mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true, saml: true });
+      expect((await proxy(request("/dashboard", { host: "localhost:20128" }, "saml-session"))).url.pathname).toBe("/login");
+      expect((await proxy(request("/api/settings", { host: "localhost:20128" }, "saml-session"))).status).toBe(401);
+
+      // Switched to SAML (configured): now the OIDC session is the stale one.
+      mocks.getSettings.mockResolvedValue({ ...ssoDuringSetup, ssoType: "saml", samlEntryPoint: "https://idp.example.test/sso", samlCert: "cert" });
+      mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true, oidc: true });
+      expect((await proxy(request("/api/settings", { host: "localhost:20128" }, "oidc-session"))).status).toBe(401);
+      mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true, saml: true });
+      expect(await proxy(request("/api/settings", { host: "localhost:20128" }, "saml-session"))).toBe(mocks.nextResponse);
+    });
+
+    it("keeps the SSO settings test routes behind the same rule", async () => {
+      mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
+      for (const path of ["/api/auth/oidc/test", "/api/auth/saml/test"]) {
+        expect((await proxy(request(path, { host: "localhost:20128" }, "password-session"))).status, path).toBe(401);
       }
+      mocks.getDashboardAuthSession.mockResolvedValue(null);
+      expect((await proxy(request("/api/auth/oidc/test", { host: "localhost:20128" }))).status).toBe(401);
+      // The SP metadata the IdP fetches stays public.
+      expect(await proxy(request("/api/auth/saml/metadata", { host: "localhost:20128" }))).toBe(mocks.nextResponse);
     });
 
     it("doesn't let a password session from before the reset into the dashboard", async () => {
