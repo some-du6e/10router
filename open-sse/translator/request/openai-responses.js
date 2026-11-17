@@ -7,7 +7,9 @@
 import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
 import { normalizeResponsesInput } from "../formats/responsesApi.js";
-import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM } from "../schema/index.js";
+import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM, TOOL_TYPE, TOOL_CHOICE } from "../schema/index.js";
+import { isWireToolName, qualifyToolName } from "../concerns/toolNamespace.js";
+import { imagePartUrl, omittedText, responsesContentPartToChat, responsesOutputToChatContent, scrubInlineBase64, toolContentText } from "../concerns/toolContent.js";
 
 // Responses API enforces max 64 chars on call_id (#393)
 const MAX_CALL_ID_LEN = 64;
@@ -34,8 +36,11 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
   let pendingReasoningEncrypted = "";
   const additionalTools = [];
   const customToolNames = new Set();
-  // name → namespace, so the response hop can re-attach the namespace the client expects
+  // wire name → { namespace, name }, so the response hop can hand the client back
+  // the name and namespace it declared (only for namespaced or renamed tools)
   const toolNamespaces = new Map();
+  // Prior turns' custom tool calls, by the client's { namespace, name }
+  const historyCustomCalls = [];
 
   const inputItems = normalizeResponsesInput(body.input);
   if (!inputItems) return body;
@@ -80,17 +85,7 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
       }
 
       // Convert content: input_text → text, output_text → text, input_image → image_url
-      const content = Array.isArray(item.content)
-        ? item.content.map(c => {
-          if (c.type === RESPONSES_ITEM.INPUT_TEXT) return { type: OPENAI_BLOCK.TEXT, text: c.text };
-          if (c.type === RESPONSES_ITEM.OUTPUT_TEXT) return { type: OPENAI_BLOCK.TEXT, text: c.text };
-          if (c.type === RESPONSES_ITEM.INPUT_IMAGE) {
-            const url = c.image_url || c.file_id || "";
-            return { type: OPENAI_BLOCK.IMAGE_URL, image_url: { url, detail: c.detail || "auto" } };
-          }
-          return c;
-        })
-        : item.content;
+      const content = Array.isArray(item.content) ? item.content.map(responsesContentPartToChat) : item.content;
       const msg = { role: item.role, content };
       // Attach buffered reasoning to assistant turn (required by xiaomi-mimo + store=false continuity)
       if (item.role === ROLE.ASSISTANT) attachPendingReasoning(msg);
@@ -112,13 +107,13 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
       }
       // Skip items with empty/missing name — Codex/OpenAI reject nameless tool calls (#444)
       if (!item.name || typeof item.name !== "string" || item.name.trim() === "") continue;
-      if (itemType === RESPONSES_ITEM.CUSTOM_TOOL_CALL) customToolNames.add(item.name);
+      const namespace = typeof item.namespace === "string" && item.namespace ? item.namespace : null;
+      if (itemType === RESPONSES_ITEM.CUSTOM_TOOL_CALL) historyCustomCalls.push({ namespace, name: item.name });
       // A prior turn's call carries its namespace; keep it so the next hop can restore it
-      if (typeof item.namespace === "string" && item.namespace) toolNamespaces.set(item.name, item.namespace);
+      if (namespace) toolNamespaces.set(item.name, { namespace, name: item.name });
       const toolInput = itemType === RESPONSES_ITEM.CUSTOM_TOOL_CALL
         ? { input: typeof item.input === "string" ? item.input : JSON.stringify(item.input ?? "") }
         : item.arguments;
-      if (typeof item.namespace === "string" && item.namespace) toolNamespaces.set(item.name, item.namespace);
       currentAssistantMsg.tool_calls.push({
         id: item.call_id,
         type: OPENAI_BLOCK.FUNCTION,
@@ -146,7 +141,7 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
       result.messages.push({
         role: ROLE.TOOL,
         tool_call_id: item.call_id,
-        content: typeof item.output === "string" ? item.output : JSON.stringify(item.output)
+        content: responsesOutputToChatContent(item.output)
       });
     }
     else if (itemType === RESPONSES_ITEM.ADDITIONAL_TOOLS) {
@@ -177,29 +172,22 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
   }
 
   // Convert tools format.
-  // Responses API supports "hosted" tools (e.g. { type: "request_user_input" }) that carry no
-  // explicit `name` field and cannot be represented as Chat Completions function declarations.
-  // Filter them out to avoid sending nameless functionDeclarations to downstream providers
-  // such as Gemini, which strictly validates function names.
-  const responseTools = flattenNamespaceTools(
-    [
-      ...(Array.isArray(body.tools) ? body.tools : []),
-      ...additionalTools,
-    ],
-    toolNamespaces
-  );
-  if (responseTools.length > 0) {
+  const responseTools = assignWireNames(flattenNamespaceTools([
+    ...(Array.isArray(body.tools) ? body.tools : []),
+    ...additionalTools,
+  ]), toolNamespaces);
+  const wireByRef = wireNamesByRef(toolNamespaces);
+  renameHistoryCalls(result.messages, wireByRef);
+  if (Array.isArray(body.tools) || additionalTools.length > 0) {
     result.tools = responseTools
-      .map(tool => {
+      .map(({ tool, name }) => {
         // Already in Chat Completions format: { type: "function", function: { name, ... } }
-        if (tool.function) return tool;
+        if (tool.function) return name === tool.function.name ? tool : { ...tool, function: { ...tool.function, name } };
         // Responses API function/custom tool: { type, name, description, parameters|format }.
         // Chat Completions has no freeform custom-tool declaration, so expose custom
         // tools as functions with one raw `input` string while retaining their names
         // in translator-only metadata for the response conversion.
-        const name = tool.name;
-        if (!name || typeof name !== "string" || name.trim() === "") return null;
-        if (tool.type === "custom") {
+        if (tool.type === TOOL_TYPE.CUSTOM) {
           customToolNames.add(name);
           const formatHint = [tool.format?.syntax, tool.format?.definition].filter(Boolean).join("\n");
           return {
@@ -222,7 +210,6 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
           };
         }
         // Responses API function tool: { type: "function", name, description, parameters }
-        // Only convert when a non-empty name is present; skip hosted tools without one.
         return {
           type: OPENAI_BLOCK.FUNCTION,
           function: {
@@ -232,9 +219,22 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
             strict: tool.strict
           }
         };
-      })
-      .filter(Boolean);
+      });
+    // Only hosted or deferred tools: upstreams reject an empty list or a choice with nothing to call.
+    if (result.tools.length === 0) {
+      delete result.tools;
+      delete result.tool_choice;
+    }
   }
+  // A prior turn's custom call to a tool no longer declared still comes back as
+  // custom. A declared tool's own type wins, so a plain function that shares a
+  // custom tool's client name is never turned into a custom call.
+  const declared = new Set(responseTools.map(({ name }) => name));
+  for (const { namespace, name } of historyCustomCalls) {
+    const wire = wireByRef.get(toolRefKey(namespace, name)) ?? name;
+    if (!declared.has(wire)) customToolNames.add(wire);
+  }
+  if (result.tool_choice !== undefined) result.tool_choice = wireToolChoice(result.tool_choice, wireByRef, declared);
   if (customToolNames.size > 0) result._customToolNames = [...customToolNames];
   if (toolNamespaces.size > 0) result._toolNamespaces = Object.fromEntries(toolNamespaces);
 
@@ -264,32 +264,114 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
  *
  * Chat Completions has no namespace concept, so a container like
  * `{ type: "namespace", name: "functions", tools: [...] }` must be unwrapped or every
- * tool inside it is lost (the container itself has no callable schema). Names stay
- * unqualified — the Responses API carries the namespace as a separate field on the
- * call, not as a `namespace.name` prefix — and are recorded in `namespaces` so the
- * response hop can re-attach it.
+ * tool inside it is lost (the container itself has no callable schema). Each entry
+ * keeps the namespace it came from so `assignWireNames` can map calls back.
  *
  * `defer_loading: true` tools are skipped at either level: they are delivered on
- * demand via tool_search and are not part of the initial callable set.
+ * demand via tool_search and are not part of the initial callable set. Hosted
+ * tools (`web_search`, `local_shell`, …) are skipped too: Chat and Claude
+ * upstreams can't run them, and a plain function standing in for one would
+ * never get a result.
  */
-function flattenNamespaceTools(tools, namespaces) {
+function flattenNamespaceTools(tools) {
   const flat = [];
   for (const tool of tools) {
     if (!tool || typeof tool !== "object") continue;
     if (tool.defer_loading === true) continue;
     if (tool.type !== RESPONSES_ITEM.NAMESPACE) {
-      flat.push(tool);
+      if (isClientTool(tool)) flat.push({ tool, namespace: null });
       continue;
     }
-    const ns = typeof tool.name === "string" ? tool.name : "";
+    const ns = typeof tool.name === "string" && tool.name ? tool.name : null;
     for (const nested of Array.isArray(tool.tools) ? tool.tools : []) {
       if (!nested || typeof nested !== "object") continue;
       if (nested.defer_loading === true) continue;
-      if (ns && typeof nested.name === "string" && nested.name) namespaces.set(nested.name, ns);
-      flat.push(nested);
+      if (isClientTool(nested)) flat.push({ tool: nested, namespace: ns });
     }
   }
   return flat;
+}
+
+const isClientTool = (tool) => !tool.type || tool.type === TOOL_TYPE.FUNCTION || tool.type === TOOL_TYPE.CUSTOM;
+
+/**
+ * Pick the name each flattened tool is declared under upstream, and record in
+ * `namespaces` how to turn that name back into the client's `{ name, namespace }`.
+ * A name used by more than one tool is qualified with its namespace; unique names
+ * are sent as-is. A name upstreams reject (`.`, `::`, too long) is sanitized, at
+ * the top level too. A tool declared twice under the same namespace is kept once.
+ */
+function assignWireNames(flat, namespaces) {
+  const seen = new Map();
+  const entries = [];
+  for (const entry of flat) {
+    const name = entry.tool.function?.name ?? entry.tool.name;
+    // Nameless or blank: nothing an upstream could declare or call.
+    if (typeof name !== "string" || !name.trim()) continue;
+    const ns = entry.namespace ?? "";
+    if (!seen.has(ns)) seen.set(ns, new Set());
+    if (seen.get(ns).has(name)) continue;
+    seen.get(ns).add(name);
+    entries.push({ ...entry, name });
+  }
+
+  const counts = new Map();
+  for (const { name } of entries) counts.set(name, (counts.get(name) || 0) + 1);
+  const keepsName = ({ name, namespace }) => isWireToolName(name) && (!namespace || counts.get(name) === 1);
+  const taken = new Set(entries.filter(keepsName).map((e) => e.name));
+
+  // Drop any namespace a prior turn's call recorded under a name declared now.
+  for (const { name } of entries) namespaces.delete(name);
+
+  return entries.map((entry) => {
+    const { name, namespace } = entry;
+    if (keepsName(entry)) {
+      if (namespace) namespaces.set(name, { namespace, name });
+      return entry;
+    }
+    let wire = qualifyToolName(namespace, name);
+    for (let i = 2; taken.has(wire); i++) wire = qualifyToolName(namespace, `${name}_${i}`);
+    taken.add(wire);
+    namespaces.set(wire, { namespace, name });
+    return { ...entry, name: wire };
+  });
+}
+
+const toolRefKey = (namespace, name) => `${namespace || ""}\u0000${name}`;
+
+// Reverse lookup from the client's (namespace, name) to the wire name.
+function wireNamesByRef(namespaces) {
+  const byRef = new Map();
+  for (const [wire, { namespace, name }] of namespaces) byRef.set(toolRefKey(namespace, name), wire);
+  return byRef;
+}
+
+// History calls must use the same upstream names as the declarations. A renamed
+// call drops its namespace: the wire name already carries it, and a Chat → Responses
+// hop (github, zed executors) would otherwise replay a namespace on a flat tool.
+function renameHistoryCalls(messages, byRef) {
+  if (byRef.size === 0) return;
+  for (const msg of messages) {
+    for (const tc of msg.tool_calls || []) {
+      const wire = tc.function && byRef.get(toolRefKey(tc.namespace, tc.function.name));
+      if (!wire || wire === tc.function.name) continue;
+      tc.function.name = wire;
+      delete tc.namespace;
+    }
+  }
+}
+
+// Responses forces a tool with `{ type: "function" | "custom", name, namespace? }`;
+// Chat (and the Claude translator after it) take `{ type: "function", function: { name } }`,
+// naming the tool as it is declared upstream. A forced tool that isn't declared
+// (dropped as deferred, hosted or nameless, or a bare name only declared
+// qualified) becomes "auto", as in the codex executor: upstreams 400 on it.
+function wireToolChoice(choice, byRef, declared) {
+  const isForced = (choice?.type === TOOL_TYPE.FUNCTION || choice?.type === TOOL_TYPE.CUSTOM)
+    && typeof choice.name === "string";
+  if (!isForced) return choice;
+  const name = byRef.get(toolRefKey(choice.namespace, choice.name)) ?? choice.name;
+  return declared.has(name) ? { type: OPENAI_BLOCK.FUNCTION, function: { name } } : TOOL_CHOICE.AUTO;
 }
 
 /**
@@ -336,6 +418,14 @@ function buildReasoningInputItem(msg) {
   // encrypted_content is the continuity token for store=false backends
   if (encrypted) item.encrypted_content = encrypted;
   return item;
+}
+
+// Chat image_url { url, detail } (or a bare url string) → Responses input_image,
+// whose image_url is the url string. One with no url becomes a placeholder.
+function chatImageToResponses(part, textType = RESPONSES_ITEM.INPUT_TEXT) {
+  const url = imagePartUrl(part);
+  if (!url) return { type: textType, text: omittedText(part) };
+  return { type: RESPONSES_ITEM.INPUT_IMAGE, image_url: url, detail: part.image_url?.detail || "auto" };
 }
 
 /**
@@ -392,13 +482,7 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
         : Array.isArray(msg.content)
           ? msg.content.map(c => {
             if (c.type === OPENAI_BLOCK.TEXT) return { type: contentType, text: c.text };
-            // Convert Chat Completions image_url → Responses API input_image
-            // Responses API expects: { type: "input_image", image_url: "<url string>" }
-            // Chat Completions sends: { type: "image_url", image_url: { url: "...", detail: "..." } }
-            if (c.type === OPENAI_BLOCK.IMAGE_URL) {
-              const url = typeof c.image_url === "string" ? c.image_url : c.image_url?.url;
-              return { type: RESPONSES_ITEM.INPUT_IMAGE, image_url: url, detail: c.image_url?.detail || "auto" };
-            }
+            if (c.type === OPENAI_BLOCK.IMAGE_URL) return chatImageToResponses(c, contentType);
             if (c.type === RESPONSES_ITEM.INPUT_IMAGE) return c;
             // Serialize any unknown type (tool_use, tool_result, thinking, etc.) as text
             const text = c.text || c.content || JSON.stringify(c);
@@ -432,13 +516,22 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
       }
     }
 
-    // Convert tool results - output must be a string for Responses API
+    // Convert tool results: a string, or with images the input_text / input_image
+    // array Responses takes as a tool output. Text gets the same scrub as on
+    // every other target, so a screenshot's data: URL doesn't go out as text.
     if (msg.role === ROLE.TOOL) {
+      const hasImages = Array.isArray(msg.content) && msg.content.some(c => c?.type === OPENAI_BLOCK.IMAGE_URL);
       const output = typeof msg.content === "string"
-        ? msg.content
-        : Array.isArray(msg.content)
-          ? msg.content.map(c => c.text || JSON.stringify(c)).join("")
-          : JSON.stringify(msg.content);
+        ? scrubInlineBase64(msg.content)
+        : hasImages
+          ? msg.content
+            .map(c => (c?.type === OPENAI_BLOCK.IMAGE_URL
+              ? chatImageToResponses(c)
+              : { type: RESPONSES_ITEM.INPUT_TEXT, text: toolContentText([c]) }))
+            .filter(c => c.type !== RESPONSES_ITEM.INPUT_TEXT || c.text)
+          : Array.isArray(msg.content)
+            ? scrubInlineBase64(msg.content.map(c => c.text || JSON.stringify(c)).join(""))
+            : scrubInlineBase64(JSON.stringify(msg.content));
       result.input.push({
         type: RESPONSES_ITEM.FUNCTION_CALL_OUTPUT,
         call_id: clampCallId(msg.tool_call_id),

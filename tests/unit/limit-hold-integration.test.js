@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { LIMIT_HOLD_SENTINEL, DEFAULT_TIMING } from "open-sse/utils/limitHold.js";
+import { DEFAULT_ERROR_MESSAGES } from "open-sse/config/errorConfig.js";
 
 // Exercises the real account loop in src/sse/handlers/chat.js with the
 // provider/credential layer stubbed, so the hold wiring itself is under test.
@@ -86,7 +87,8 @@ describe("rate-limit hold wiring", () => {
     state.credentials = {
       allRateLimited: true,
       allLimitsExhausted: true,
-      retryAfter: new Date(Date.now() + 7_200_000).toISOString(),
+      // 30s over 2h, so a slow runner still formats the wait as "2h", not "1h 59m".
+      retryAfter: new Date(Date.now() + 7_230_000).toISOString(),
       retryAfterHuman: "reset after 2h",
       lastError: "usage_limit_reached",
       lastErrorCode: 429,
@@ -229,7 +231,7 @@ describe("rate-limit hold wiring", () => {
 
     it("sends the soonest key's 429 when this pass hit the dead key first", async () => {
       await seq([dead, { allRateLimited: true, retryAfter: new Date(Date.now() + 2_000).toISOString(), retryAfterHuman: "reset after 2s", lastError: "rate_limit_error", lastErrorCode: 429 }]);
-      state.coreResults = [{ success: false, status: 403, error: "Not authorized for this endpoint" }];
+      state.coreResults = [{ success: false, status: 403, error: "Key barred from this endpoint" }];
 
       const res = await send();
       expect(res.status).toBe(429);
@@ -240,11 +242,60 @@ describe("rate-limit hold wiring", () => {
       await seq([{ connectionId: "live", connectionName: "live", accessToken: "t" }, dead, null]);
       state.coreResults = [
         { success: false, status: 429, error: "rate_limit_error" },
-        { success: false, status: 403, error: "Not authorized for this endpoint" },
+        { success: false, status: 403, error: "Key barred from this endpoint" },
       ];
 
       expect((await send()).status).toBe(429);
     });
+  });
+
+  it("holds for a bodyless 403 next to a refused request", async () => {
+    const refusal = "messages.1.content.0: unknown block type 'example_block'";
+    const quotaText = DEFAULT_ERROR_MESSAGES[403];
+    const limited = { allRateLimited: true, retryAfter: new Date(Date.now() + 7_200_000).toISOString(), retryAfterHuman: "reset after 2h", lastError: quotaText, lastErrorCode: 403 };
+    const steps = [
+      { connectionId: "live", connectionName: "live", accessToken: "t" },
+      { connectionId: "dead", connectionName: "dead", accessToken: "t" },
+    ];
+    let call = 0;
+    const auth = await import("@/sse/services/auth.js");
+    vi.spyOn(auth, "getProviderCredentials").mockImplementation(async () => steps[call++] ?? limited);
+    state.coreResults = [
+      { success: false, status: 400, error: refusal },
+      { success: false, status: 403, error: quotaText },
+    ];
+
+    const res = await handleChat(makeRequest({ model: "gpt-5", stream: true, messages: [{ role: "user", content: "hi" }] }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+    const reader = res.body.getReader();
+    const { value } = await reader.read();
+    expect(new TextDecoder().decode(value)).toContain(LIMIT_HOLD_SENTINEL);
+    await reader.cancel();
+  });
+
+  it("holds for a key on a quota limit when the other key's account lacks the model", async () => {
+    const quotaText = "Quota for this key is used up, try again later";
+    const limited = { allRateLimited: true, retryAfter: new Date(Date.now() + 7_200_000).toISOString(), retryAfterHuman: "reset after 2h", lastError: quotaText, lastErrorCode: 403 };
+    const steps = [
+      { connectionId: "lacks-model", connectionName: "lacks-model", accessToken: "t" },
+      { connectionId: "limited", connectionName: "limited", accessToken: "t" },
+    ];
+    let call = 0;
+    const auth = await import("@/sse/services/auth.js");
+    vi.spyOn(auth, "getProviderCredentials").mockImplementation(async () => steps[call++] ?? limited);
+    state.coreResults = [
+      { success: false, status: 404, error: "example-model isn't available to this account" },
+      { success: false, status: 403, error: quotaText },
+    ];
+
+    const res = await handleChat(makeRequest({ model: "gpt-5", stream: true, messages: [{ role: "user", content: "hi" }] }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+    const reader = res.body.getReader();
+    const { value } = await reader.read();
+    expect(new TextDecoder().decode(value)).toContain(LIMIT_HOLD_SENTINEL);
+    await reader.cancel();
   });
 
   it("holds a combo once every model in it is rate-limited", async () => {

@@ -1,18 +1,23 @@
 import { randomUUID } from "node:crypto";
 import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools } from "@/lib/localDb";
 import { extractClientApiKey } from "@/shared/utils/clientApiKey.js";
+import { upstreamOf, connectionUpstream } from "./connectionUpstream.js";
 import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey } from "@/lib/db/index.js";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
-import { formatRetryAfter, checkFallbackError, getQuotaCooldown, isModelLockActive, getModelLockUntil, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL } from "open-sse/services/accountFallback.js";
-import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG, AUTH_DEMOTE_CONFIG, LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL } from "open-sse/config/errorConfig.js";
+import { formatRetryAfter, checkFallbackError, getQuotaCooldown, isModelLockActive, getModelLockUntil, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL, isHeadersTimeout } from "open-sse/services/accountFallback.js";
+import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG, AUTH_DEMOTE_CONFIG, LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL, HEADERS_TIMEOUT } from "open-sse/config/errorConfig.js";
 import { isBackoffText } from "open-sse/utils/errorClass.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { planCanServeModel } from "@/shared/utils/planCapability.js";
+import { SPREAD_NOTE } from "@/shared/utils/connectionStatus.js";
+import { endSpreadProbe } from "./spreadLeases.js";
 import { getAntigravityQuotaCache } from "./antigravityQuota.js";
 import { getRoutingQuotas, getResetState, pickSoonestReset } from "./soonestReset.js";
 import * as log from "../utils/logger.js";
 import { getNextAccountReset, PROVIDER_RESET_PREFIX, extractProviderMessage } from "./accountFailureSummary.js";
 import { isLimitError } from "open-sse/utils/limitHold.js";
+import { warmJitterMs, warmRetryAt } from "open-sse/services/cacheAffinity.js";
+import { CACHE_AFFINITY, HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 
 // Per-provider mutexes for account selection. Picks for the same provider stay
 // serialized (round-robin sticky counters read-then-write lastUsedAt and
@@ -20,6 +25,8 @@ import { isLimitError } from "open-sse/utils/limitHold.js";
 // run concurrently. Kept on global so duplicated Next.js module instances share it.
 const selectionMutexes = (global._selectionMutexes ??= new Map());
 const MODEL_LIMIT_PREFIX = "modelLimit_";
+// Set on a model lock written for a header timeout (HEADERS_TIMEOUT).
+const NO_HEADERS_PREFIX = "modelNoHeaders_";
 
 const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit for your plan";
 
@@ -87,11 +94,6 @@ function isModelRefusal(status, errorText) {
     && !isBackoffText(text);
 }
 
-// Per-connection fields executors build the upstream URL from: a custom base
-// URL, an Azure resource, a region or location in the host, an account or
-// project in the path.
-const UPSTREAM_FIELDS = ["baseUrl", "azureEndpoint", "region", "location", "accountId", "projectId"];
-
 // Where a key's requests go: the proxy or relay they leave through, and the
 // upstream they reach.
 async function networkPath(conn) {
@@ -100,8 +102,26 @@ async function networkPath(conn) {
   const proxy = p.connectionProxyEnabled && p.connectionProxyUrl ? p.connectionProxyUrl : "";
   return {
     transport: JSON.stringify([proxy, proxy ? p.connectionNoProxy || "" : "", p.vercelRelayUrl || ""]),
-    upstream: JSON.stringify(UPSTREAM_FIELDS.map(f => String(psd[f] ?? "").trim().replace(/\/+$/, ""))),
+    upstream: upstreamOf(psd),
   };
+}
+
+export { connectionUpstream };
+
+/**
+ * Every active key of the provider reaches one upstream the same way: none has
+ * its own base URL, they agree on every upstream field, and they go through the
+ * same proxy or relay (or none). Keys on different servers can differ in
+ * context window or tier, and a proxy or relay has its own body limit and can
+ * answer a 413 itself, so one key's request error says nothing about another's.
+ */
+export async function keysShareOneUpstream(provider) {
+  const connections = (await getProviderConnections({ provider })).filter(c => c.isActive !== false);
+  const psds = connections.map(c => c.providerSpecificData || {});
+  if (psds.some(psd => psd.ownBaseUrl)) return false;
+  if (new Set(psds.map(upstreamOf)).size > 1) return false;
+  const paths = await Promise.all(connections.map(networkPath));
+  return new Set(paths.map(p => p.transport)).size <= 1;
 }
 
 // Only API keys count: an OAuth token or session cookie that fails to refresh
@@ -197,13 +217,24 @@ function autoDisableReason(status, errorText, streak) {
 
 const probeMs = (level) => AUTH_DEMOTE_CONFIG.probeMs[Math.min(level, AUTH_DEMOTE_CONFIG.probeMs.length - 1)];
 
+// A count that isn't demoted yet still runs at nowMs: its last refusal is no
+// more than crossUpstreamWindowMs back. Past that, the next refusal on the
+// model starts it over.
+const countRuns = (record, nowMs) => {
+  const sinceLast = nowMs - new Date(record?.lastAt).getTime();
+  return sinceLast >= 0 && sinceLast <= AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
+};
+
 // A key's demotion record for a model after one more counted 403 on it at
 // nowMs (see AUTH_DEMOTE_CONFIG); lastCountedAt is its last refusal the turn-off
 // rule counts too. It doesn't trip while the key was refused, in a way that rule
 // counts, on another model (lastly at otherRefusalAt) within the window: that
 // rule decides then. A new count keeps the key's last success before it
 // (lastServedAt) as servedAt. A demoted record counts on and moves its next
-// probe out, keeping the lease of the probe just answered.
+// probe out, keeping the lease of the probe just answered. refusedSince is when
+// the key's refusals there began, through any number of counts starting over,
+// until a success there clears the record (a record from before it has none:
+// its firstAt stands in).
 function nextDemoteRecord(record, nowMs, { sameUpstream, otherRefusalAt = -Infinity, modelScoped = false, lastServedAt, reason }) {
   const now = new Date(nowMs).toISOString();
   const lastCountedAt = modelScoped ? record?.lastCountedAt : now;
@@ -212,16 +243,16 @@ function nextDemoteRecord(record, nowMs, { sameUpstream, otherRefusalAt = -Infin
     const nextProbeAt = new Date(nowMs + probeMs(probeLevel)).toISOString();
     return { ...record, count: record.count + 1, lastAt: now, lastCountedAt, probeLevel, nextProbeAt };
   }
-  const sinceLast = nowMs - new Date(record?.lastAt).getTime();
-  const restart = !(sinceLast >= 0 && sinceLast <= AUTH_DEAD_CONFIG.crossUpstreamWindowMs);
+  const restart = !countRuns(record, nowMs);
   const count = (restart ? 0 : record.count) + 1;
   const firstAt = restart ? now : record.firstAt;
   const allSameUpstream = sameUpstream && (restart || record.sameUpstream === true);
   const windowMs = allSameUpstream ? AUTH_DEAD_CONFIG.minWindowMs : AUTH_DEAD_CONFIG.crossUpstreamWindowMs;
   const servedAt = restart ? (Number.isFinite(lastServedAt) ? new Date(lastServedAt).toISOString() : undefined) : record.servedAt;
+  const refusedSince = [record?.refusedSince, record?.firstAt].find(at => typeof at === "string" && Number.isFinite(Date.parse(at))) ?? now;
   const next = {
     count, firstAt, lastAt: now, lastCountedAt, servedAt,
-    sameUpstream: allSameUpstream, modelScoped: modelScoped || (!restart && record.modelScoped === true),
+    sameUpstream: allSameUpstream, modelScoped: modelScoped || (!restart && record.modelScoped === true), refusedSince,
   };
   const enough = count >= AUTH_DEAD_CONFIG.minFailures && nowMs - new Date(firstAt).getTime() >= windowMs;
   const refusedElsewhere = nowMs - otherRefusalAt <= windowMs;
@@ -244,11 +275,105 @@ const demotionOf = (conn, model) => {
   return record?.demotedAt ? record : null;
 };
 
-// A demotion for refusals the turn-off rule counts, with nothing served since
-// minWindowMs before its count began.
-const isFirm = (conn, r) => !!r?.demotedAt && !r.modelScoped && !(conn.authDemoteOkAt >= r.firstAt)
-  && !succeededSince(conn.id, new Date(r.firstAt).getTime() + 1)
+// A count of refusals the turn-off rule counts, with nothing served since it
+// began; a dead-class demotion once it demotes the key, firm if nothing was
+// served in the minWindowMs before the count began either. A record without a
+// readable firstAt (an ISO string) is none of these: no success could ever
+// clear it.
+const refusedForItself = (conn, r) => typeof r?.firstAt === "string" && Number.isFinite(Date.parse(r.firstAt)) && !r.modelScoped
+  && !(conn.authDemoteOkAt >= r.firstAt) && !succeededSince(conn.id, new Date(r.firstAt).getTime() + 1);
+const isDeadClass = (conn, r) => !!r?.demotedAt && refusedForItself(conn, r);
+const isFirm = (conn, r) => isDeadClass(conn, r)
   && !(new Date(r.servedAt).getTime() >= new Date(r.firstAt).getTime() - AUTH_DEAD_CONFIG.minWindowMs);
+
+// The key's demotions on models other than `model` the way isDeadClass says:
+// refused for itself, with nothing served since the count began.
+const deadDemotionsElsewhere = (conn, model) => demoteRecords(conn).filter(([m, r]) => m !== model && isDeadClass(conn, r));
+
+// How account selection treats the key on `model`: { own } when it is demoted
+// there; { spread: records } when it is demoted elsewhere the way isDeadClass
+// says, so it goes after the working keys here too; or null. The spread ends
+// on any success on any model (the key's own demotion still ends only on a
+// success there), never comes from a demotion for refusals of just that model
+// (isModelRefusal), and leaves alone requests with no model (a poll pinned to
+// the account that made the job) and web search/fetch lock keys, whose
+// refusals aren't recorded, so nothing would space its tries there.
+function selectionDemotion(conn, model) {
+  if (!model) return null;
+  const own = demotionOf(conn, model);
+  if (own) return { own };
+  if (/^web(search|fetch):/.test(model)) return null;
+  const spread = deadDemotionsElsewhere(conn, model);
+  return spread.length > 0 ? { spread } : null;
+}
+
+// A spread key's tries on a model, per process: `${connectionId}|${model}` ->
+// { since, first, at, tries }, and the one try in flight per
+// `${providerId}|${model}` -> { connectionId, model, until }, which
+// endSpreadProbe (spreadLeases.js) ends.
+authEvents.spreadTries ??= new Map();
+authEvents.spreadLeases ??= new Map();
+function rememberBounded(map, key, value, expired) {
+  if (map.size >= MAX_EVENT_ENTRIES) {
+    for (const [k, v] of map) if (expired(v)) map.delete(k);
+    if (map.size >= MAX_EVENT_ENTRIES) map.clear();
+  }
+  map.set(key, value);
+}
+
+// The probe step `ageMs` into a run of probes on schedule: 0 before
+// probeMs[0], step i once the first i waits have passed, and the last step
+// (probeMs.length - 1) from the sum of all waits but the last on.
+function stepByAge(ageMs) {
+  let step = 0;
+  let sum = 0;
+  for (let i = 0; i < AUTH_DEMOTE_CONFIG.probeMs.length - 1; i++) {
+    sum += AUTH_DEMOTE_CONFIG.probeMs[i];
+    if (ageMs >= sum) step = i + 1;
+  }
+  return step;
+}
+
+// Takes a spread key's next try on `model`: one at once when it has no try or
+// refusal there to go by (a key that lacks the other model gets to serve this
+// one, and a dead key's refusal here reaches the turn-off rules), then one
+// probeMs after the last, at the furthest step of: its tries and its count
+// there, its dead demotions' probe levels, and how long it has been tried
+// there: from the earlier of its first try there in this process and when its
+// refusals there began (refusedSince, kept through restarts), but never from
+// before the demotion. So a key dead for days stays slow after a restart, and
+// one whose tries there began minutes ago isn't pushed hours out. One
+// spread try per provider and model is in flight at a time, until it answers or
+// after probeLeaseMs.
+function claimSpreadProbe(conn, providerId, model, records) {
+  const now = Date.now();
+  const leaseKey = `${providerId}|${model}`;
+  const lease = authEvents.spreadLeases.get(leaseKey);
+  if (lease && lease.until > now) return false;
+  const key = `${conn.id}|${model}`;
+  // Tries count from the dead demotions' start: a key that served and died
+  // again starts over.
+  const since = Math.min(...records.map(([, r]) => Date.parse(r.firstAt)));
+  const stored = authEvents.spreadTries.get(key);
+  const tried = stored?.since === since ? stored : null;
+  const record = conn[getAuthDemoteKey(model)];
+  const lastAt = Math.max(tried?.at ?? -Infinity, authEvents.refused.get(key)?.at ?? -Infinity,
+    authEvents.modelRefused.get(key)?.at ?? -Infinity, Date.parse(record?.lastAt) || -Infinity);
+  if (Number.isFinite(lastAt)) {
+    const demotedAt = Math.min(...records.map(([, r]) => Date.parse(r.demotedAt)));
+    const triedSince = Math.min(tried?.first ?? Infinity, Date.parse(record?.refusedSince ?? record?.firstAt) || Infinity);
+    // The step its last try or refusal there was on decides the wait after it.
+    const step = Math.max(tried ? tried.tries - 1 : 0, stepByAge(lastAt - Math.max(demotedAt, triedSince)),
+      Number.isInteger(record?.count) && record.count > 0 ? record.count - 1 : 0, ...records.map(([, r]) => r.probeLevel || 0));
+    if (now < lastAt + probeMs(step)) return false;
+  }
+  const longestMs = Math.max(...AUTH_DEMOTE_CONFIG.probeMs);
+  rememberBounded(authEvents.spreadTries, key, { since, first: tried?.first ?? now, at: now, tries: (tried?.tries ?? 0) + 1 },
+    (v) => now - v.at > longestMs);
+  rememberBounded(authEvents.spreadLeases, leaseKey, { connectionId: conn.id, model: model ?? null, until: now + AUTH_DEMOTE_CONFIG.probeLeaseMs },
+    (v) => v.until <= now);
+  return true;
+}
 
 // Refused, in ways the turn-off rule counts, on 2 models with nothing served in
 // between, the key is dead (tests/unit/auto-disable-stress.test.js replays it).
@@ -296,10 +421,11 @@ async function planDemotion(connections, conn, model, status, errorText, evidenc
   // failing at random clears them sooner this way.
   const probeNow = evidence && !current?.demotedAt
     ? records.filter(([m, r]) => m !== model && !r.modelScoped).map(([m]) => m) : [];
+  const spreads = !to.modelScoped && refusedForItself(conn, to);
   return {
     demote: {
       model, from: conn[getAuthDemoteKey(model)] ?? null, to, probeNow,
-      data: demoting ? { lastError: `${model} demoted after repeated ${to.reason}` } : null,
+      data: demoting ? { lastError: `${model} demoted after repeated ${to.reason}${spreads ? `. ${SPREAD_NOTE}` : ""}` } : null,
     },
     demoting,
     deadWith: evidence ? deadElsewhere(conn, records, model, current, demoting) : null,
@@ -318,12 +444,42 @@ async function claimProbe(conn, model, from) {
   return JSON.stringify(saved?.[getAuthDemoteKey(model)]) === JSON.stringify(to);
 }
 
+// When the key's own lock on this model ends, in ms (0: none).
+const ownLockEndMs = (conn, model) => new Date(conn?.[getModelLockKey(model)] || 0).getTime() || 0;
+
+// Locked on this model for a limit: a key that serves again once it clears.
+// The lock that ends last decides, so a short limit lock can't hide a longer
+// account-wide refusal.
+function isLimitLocked(c, model) {
+  const [scope, until] = [[getModelLockKey(model), model || "__all"], [MODEL_LOCK_ALL, "__all"]]
+    .map(([key, sc]) => [sc, new Date(c[key] || 0).getTime() || 0])
+    .reduce((a, b) => (b[1] > a[1] ? b : a));
+  return until > Date.now() && c[`${MODEL_LIMIT_PREFIX}${scope}`] === true;
+}
+
 /**
  * Get provider credentials from localDb
  * Filters out unavailable accounts and returns the selected account based on strategy
  * @param {string} provider - Provider name
  * @param {Set<string>|string|null} excludeConnectionIds - Connection ID(s) to exclude (for retry with next account)
  * @param {string|null} model - Model name for per-model rate limit filtering
+ * @param {object} [options]
+ * @param {string | null} [options.preferredConnectionId] - pinned connection (Codex
+ *   session affinity), used when usable.
+ * @param {((c: any) => boolean) | null} [options.connectionFilter] - drops
+ *   connections the caller may not use at all.
+ * @param {string[]} [options.avoidConnectionIds] - keys to rank after every other
+ *   healthy key, but before keys demoted on this model.
+ * @param {string[]} [options.warmConnectionIds] - keys holding this conversation's
+ *   prompt cache, most recently used last. One is picked when it ranks with the
+ *   strategy's own pick (round-robin: the most recent usable one).
+ * @param {number} [options.maxWarmWaitMs] - when the strategy's pick isn't warm,
+ *   another key could serve, and a warm key is only rate-limited so briefly that
+ *   its earliest retry (lock end + slack) is within this long, and no key the
+ *   strategy ranks ahead of it is usable or frees up within one more slack of
+ *   that, returns `{ warmRetryAtMs }` instead of a key (nothing is picked or
+ *   written). The retry adds jitter, cut to the budget and to a slack before the
+ *   first better-ranked key frees up.
  */
 export async function getProviderCredentials(provider, excludeConnectionIds = null, model = null, options = {}) {
   // Normalize to Set for consistent handling
@@ -331,9 +487,16 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     ? excludeConnectionIds
     : (excludeConnectionIds ? new Set([excludeConnectionIds]) : new Set());
   const preferredConnectionId = options?.preferredConnectionId || null;
+  const warmIds = Array.isArray(options?.warmConnectionIds) && options.warmConnectionIds.length > 0
+    ? new Set(options.warmConnectionIds)
+    : null;
+  const maxWarmWaitMs = Number(options?.maxWarmWaitMs) || 0;
   // Drops connections the caller may not use at all (auto combos skip blocked
   // billing), as if they were not connected.
   const connectionFilter = typeof options?.connectionFilter === "function" ? options.connectionFilter : null;
+  // Keys to try after every other healthy key, but before keys demoted on this
+  // model (a stream on them just got no headers for it: modelHang.js).
+  const avoidIds = new Set(Array.isArray(options?.avoidConnectionIds) ? options.avoidConnectionIds : []);
   // Resolve alias to provider ID (e.g., "kc" -> "kilocode") so aliases share a lock
   const providerId = resolveProviderId(provider);
 
@@ -392,6 +555,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // Antigravity quota cache is lazy: only populated after that account returns 409/429.
     const isAntigravity = providerId === "antigravity";
     const antigravityQuotaCache = isAntigravity && model ? getAntigravityQuotaCache() : null;
+    // Antigravity's live quota for this model is used up until a reset still ahead.
+    const quotaBlocked = (c) => {
+      const quota = antigravityQuotaCache?.get(c.id)?.[model];
+      return !!(quota && quota.remainingPercentage <= 0 && quota.resetAt && new Date(quota.resetAt).getTime() > Date.now());
+    };
 
     // Filter out model-locked, excluded, and Antigravity quota-exhausted connections.
     const usable = (c) => {
@@ -404,29 +572,42 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         return false;
       }
       // Antigravity: skip if live quota exhausted for this model
-      if (isAntigravity && model && antigravityQuotaCache) {
-        const quota = antigravityQuotaCache.get(c.id)?.[model];
-        if (quota && quota.remainingPercentage <= 0 && quota.resetAt && new Date(quota.resetAt).getTime() > Date.now()) {
-          const account = c.id?.slice(0, 8) || "unknown";
-          log.info("AG_QUOTA", `${account} | CACHE_BLOCK ${model} — skip upstream until ${quota.resetAt}`);
-          return false;
-        }
+      if (quotaBlocked(c)) {
+        const account = c.id?.slice(0, 8) || "unknown";
+        log.info("AG_QUOTA", `${account} | CACHE_BLOCK ${model} — skip upstream until ${antigravityQuotaCache.get(c.id)[model].resetAt}`);
+        return false;
       }
       return true;
     };
-    // A key demoted on this model is used when no other key can serve it, or
-    // for its next probe.
+    // Keys demoted on this model, and keys dead on another (selectionDemotion),
+    // go after the rest: they serve when no other key can, or take a probe.
     const usableConnections = connections.filter(usable);
-    const demotions = new Map(usableConnections.map(c => [c.id, demotionOf(c, model)]));
-    const preferred = usableConnections.filter(c => !demotions.get(c.id));
-    let availableConnections = preferred.length > 0 ? preferred : usableConnections;
-    if (preferred.length > 0) {
+    const demotions = new Map(usableConnections.map(c => [c.id, selectionDemotion(c, model)]));
+    // One dead-key try per pass (one exclude set): once a demoted key, or one
+    // this pass's refusal turned off, has been tried, no other is probed.
+    const activeIds = new Set(allConnections.map(c => c.id));
+    const deadTriedThisPass = [...excludeSet].some(id => !activeIds.has(id))
+      || allConnections.some(c => excludeSet.has(c.id) && selectionDemotion(c, model));
+    const notDemoted = usableConnections.filter(c => !demotions.get(c.id));
+    const notAvoided = notDemoted.filter(c => !avoidIds.has(c.id));
+    // Failing those (every such key rate-limited, excluded or off), keys dead
+    // on another model go before keys demoted on this one.
+    const notDemotedOnModel = usableConnections.filter(c => !demotions.get(c.id)?.own);
+    let availableConnections = notAvoided.length > 0 ? notAvoided
+      : notDemoted.length > 0 ? notDemoted : notDemotedOnModel.length > 0 ? notDemotedOnModel : usableConnections;
+    let probing = false;
+    // A usable pinned key (session affinity) wins over a spread try; a key's
+    // probe on its own demoted model still goes first, so it can recover.
+    const pinnedUsable = !!preferredConnectionId && availableConnections.some(c => c.id === preferredConnectionId);
+    if (notDemoted.length > 0 && !deadTriedThisPass) {
       // Under fill-first a key behind a usable one wouldn't be tried anyway
       // (a backup), so only demoted keys ahead of them are probed.
-      const ahead = strategy === "fill-first" ? usableConnections.slice(0, usableConnections.indexOf(preferred[0])) : usableConnections;
+      const ahead = strategy === "fill-first" ? usableConnections.slice(0, usableConnections.indexOf(notDemoted[0])) : usableConnections;
       for (const c of ahead.filter(c => demotions.get(c.id))) {
-        if (await claimProbe(c, model, demotions.get(c.id))) {
+        const { own, spread } = demotions.get(c.id);
+        if (own ? await claimProbe(c, model, own) : !pinnedUsable && claimSpreadProbe(c, providerId, model, spread)) {
           availableConnections = [c];
+          probing = true;
           break;
         }
       }
@@ -464,20 +645,20 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       if (earliest) {
         // A dead key's 403 ahead of a key in a 2s rate-limit lock would turn a
         // retryable wait into an auth failure.
-        // Locked on this model for a limit: a key that serves again once it
-        // clears. The lock that ends last decides, so a short limit lock can't
-        // hide a longer account-wide refusal.
-        const limitLocked = c => {
-          const [scope, until] = [[getModelLockKey(model), model || "__all"], [MODEL_LOCK_ALL, "__all"]]
-            .map(([key, sc]) => [sc, new Date(c[key] || 0).getTime() || 0])
-            .reduce((a, b) => (b[1] > a[1] ? b : a));
-          return until > Date.now() && c[`${MODEL_LIMIT_PREFIX}${scope}`] === true;
-        };
+        const limitLocked = c => isLimitLocked(c, model);
         // errorCode/lastError are the key's last error on any model; the limit
         // flag on the lock is this model's. Where they disagree, the stored error
         // came from another model.
         const reportOf = c => {
           const limited = limitLocked(c);
+          // A header timeout's lock: the stored error may be another model's.
+          const ownLockUntil = ownLockEndMs(c, model);
+          const noHeadersLock = ownLockUntil > Date.now() && ownLockUntil >= getModelLockUntil(c, model)
+            && c[`${NO_HEADERS_PREFIX}${model || "__all"}`] === true;
+          if (!limited && noHeadersLock) {
+            const error = isHeadersTimeout(c.errorCode, c.lastError) ? c.lastError : `[504]: ${HEADERS_TIMEOUT.text} (headers timeout)`;
+            return { code: HTTP_STATUS.GATEWAY_TIMEOUT, error, limit: false, ranks: true, own: true };
+          }
           const authCode = c.errorCode === 401 || c.errorCode === 403;
           const retryableCode = c.errorCode === 429 || c.errorCode >= 500;
           // A stored error that isn't a limit (an auth refusal, a 400/404) came from another model.
@@ -533,9 +714,62 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
-    let connection;
+    // Prompt-cache affinity. Fill-first and soonest-reset keep their own pick;
+    // round-robin takes the conversation's most recently used usable warm key,
+    // without moving the rotation, so neither this conversation nor other
+    // traffic shifts the other. When the pick isn't warm, a warm key only
+    // briefly rate-limited is worth waiting for, unless a key the strategy ranks
+    // ahead of it (round-robin ranks none) is usable or frees up within one slack
+    // of the earliest retry: that key would win the pick after the wait. The caller gets
+    // warmRetryAtMs instead of a key.
+    let warmConnection = null;
+    if (warmIds && !probing) {
+      const recency = c => options.warmConnectionIds.lastIndexOf(c.id);
+      if (strategy === "round-robin") {
+        warmConnection = availableConnections.filter(c => warmIds.has(c.id))
+          .reduce((a, b) => (!a || recency(b) > recency(a) ? b : a), null);
+      }
+      const pick = strategy === "round-robin" ? warmConnection
+        : strategy === "soonest-reset" ? pickSoonestReset(availableConnections, resetStates)
+          : availableConnections[0];
+      if (pick && warmIds.has(pick.id)) {
+        log.debug("AUTH", `${provider} | warm key for this conversation`);
+      } else if (maxWarmWaitMs > 0) {
+        const byPriority = (x, y) => (x.priority || 999) - (y.priority || 999);
+        const ahead = (x, y) => {
+          if (strategy === "round-robin") return false;
+          if (strategy !== "soonest-reset") return byPriority(x, y) < 0;
+          const [l, r] = [resetStates.get(x.id), resetStates.get(y.id)];
+          return ((l.weeklyReset - r.weeklyReset || l.sessionReset - r.sessionReset || 0) || byPriority(x, y)) < 0;
+        };
+        const servable = c => !excludeSet.has(c.id) && !quotaBlocked(c) && !selectionDemotion(c, model)
+          && planCanServeModel(providerId, c, model);
+        const freeAt = c => Math.max(getModelLockUntil(c, model), resetStates.get(c.id).blockedUntil || 0);
+        const jitterMs = warmJitterMs();
+        const candidates = connections
+          .filter(c => warmIds.has(c.id) && !avoidIds.has(c.id) && servable(c) && isLimitLocked(c, model) && !resetStates.get(c.id).blockedUntil)
+          .sort((x, y) => getModelLockUntil(x, model) - getModelLockUntil(y, model));
+        for (const c of candidates) {
+          const lockEnd = getModelLockUntil(c, model);
+          const earliest = warmRetryAt(lockEnd, maxWarmWaitMs);
+          if (earliest === null) break;
+          // A better-ranked key free within one slack of the earliest retry
+          // overtakes (timers fire late, and selection reads before it checks); one
+          // free later only caps the jitter, so the retry lands a slack before it.
+          const marginMs = CACHE_AFFINITY.lockSlackMs;
+          const betterFreeAt = Math.min(Infinity, ...connections
+            .filter(k => k.id !== c.id && servable(k) && ahead(k, c)).map(freeAt));
+          if (betterFreeAt <= earliest + marginMs) continue;
+          const warmRetryAtMs = warmRetryAt(lockEnd, maxWarmWaitMs, Math.min(jitterMs, betterFreeAt - marginMs - earliest));
+          log.debug("AUTH", `${provider} | warm key rate-limited, retrying it in ${warmRetryAtMs - Date.now()}ms`);
+          return { warmRetryAtMs };
+        }
+      }
+    }
+
+    let connection = warmConnection;
     // Pin to preferred connection if specified and available
-    if (preferredConnectionId) {
+    if (!connection && preferredConnectionId) {
       connection = availableConnections.find((c) => c.id === preferredConnectionId);
       if (connection) {
         log.info("AUTH", `${provider} | pinned to ${connection.id?.slice(0, 8)} (${connection.name || connection.email || "unnamed"})`);
@@ -637,6 +871,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
  */
 export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null, requestApiKey = undefined) {
   if (!connectionId || connectionId === "noauth") return { shouldFallback: false, cooldownMs: 0 };
+  endSpreadProbe(connectionId, model);
   const connections = await getProviderConnections({ provider });
   const conn = connections.find(c => c.id === connectionId);
   const backoffLevel = conn?.backoffLevel || 0;
@@ -645,7 +880,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
 
   // Provider-specific precise cooldown (e.g. codex usage_limit_reached resets_at) overrides backoff
-  let shouldFallback, cooldownMs, newBackoffLevel, inOwnLock = false;
+  let shouldFallback, cooldownMs, newBackoffLevel, inOwnLock = false, keptLock = false;
   if (githubResetAtMs) {
     shouldFallback = true;
     cooldownMs = githubResetAtMs - Date.now();
@@ -664,18 +899,25 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     // the model's own lock (and its provider reset) is kept, never shortened.
     if (newBackoffLevel != null && conn && isModelLockActive(conn, model)) {
       newBackoffLevel = backoffLevel;
-      const ownLockUntil = new Date(conn[getModelLockKey(model)] || 0).getTime() || 0;
+      const ownLockUntil = ownLockEndMs(conn, model);
       inOwnLock = ownLockUntil > Date.now();
       cooldownMs = Math.max(ownLockUntil - Date.now(), getQuotaCooldown(backoffLevel));
+    }
+    // Nor does a header timeout shorten a longer lock on the model.
+    const ownLockMs = ownLockEndMs(conn, model) - Date.now();
+    if (isHeadersTimeout(status, errorText) && ownLockMs > cooldownMs) {
+      keptLock = inOwnLock = true;
+      cooldownMs = ownLockMs;
     }
   }
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 
   const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
-  const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
+  const lockUpdate = keptLock ? { [getModelLockKey(model)]: conn[getModelLockKey(model)] } : buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
   const providerResetAtMs = githubResetAtMs || resetsAtMs;
   const lockScope = githubResetAtMs ? "__all" : model || "__all";
   const limitKey = `${MODEL_LIMIT_PREFIX}${lockScope}`;
+  const noHeadersKey = `${NO_HEADERS_PREFIX}${lockScope}`;
 
   // Auth rejections build a streak that only a success clears; other errors
   // leave it alone. A dead key is turned off unless it is the provider's last.
@@ -696,18 +938,21 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   } : null;
   const disabling = autoDisable || deadOnTwo;
 
+  const limitFlag = (inOwnLock && conn[limitKey] === true) || isLimitError(status, errorText);
   const update = {
     ...lockUpdate,
     // A straggler in the model's own lock can mark it a limit, never unmark it or drop its reset time.
-    [limitKey]: (inOwnLock && conn[limitKey] === true) || isLimitError(status, errorText),
+    [limitKey]: limitFlag,
+    ...(isHeadersTimeout(status, errorText) || conn?.[noHeadersKey] ? {
+      [noHeadersKey]: (keptLock ? conn[noHeadersKey] === true : isHeadersTimeout(status, errorText) && !limitFlag) || null,
+    } : {}),
     ...(inOwnLock ? {} : {
       [`${PROVIDER_RESET_PREFIX}${lockScope}`]:
         Number.isFinite(providerResetAtMs) && providerResetAtMs > Date.now() ? new Date(providerResetAtMs).toISOString() : null,
     }),
     testStatus: "unavailable",
-    lastError: reason,
-    errorCode: status,
-    lastErrorAt: new Date().toISOString(),
+    // A kept lock keeps the error it was set for, which the all-locked answer reports.
+    ...(keptLock ? {} : { lastError: reason, errorCode: status, lastErrorAt: new Date().toISOString() }),
     backoffLevel: newBackoffLevel ?? backoffLevel,
     ...authFailStreak,
   };
@@ -744,12 +989,14 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
 export async function clearAccountError(connectionId, currentConnection, model = null) {
   if (!connectionId || connectionId === "noauth") return;
   recordSuccess(connectionId, model);
+  endSpreadProbe(connectionId, model);
   const conn = currentConnection._connection || currentConnection;
   const now = Date.now();
   // A cleared lock stays as modelLock_<model>: null and needs no write, unless
   // whatever cleared it left its reset time or limit flag behind.
   const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_")
-    && (conn[k] || conn[k.replace("modelLock_", PROVIDER_RESET_PREFIX)] || conn[k.replace("modelLock_", MODEL_LIMIT_PREFIX)]));
+    && (conn[k] || conn[k.replace("modelLock_", PROVIDER_RESET_PREFIX)] || conn[k.replace("modelLock_", MODEL_LIMIT_PREFIX)]
+      || conn[k.replace("modelLock_", NO_HEADERS_PREFIX)]));
 
   // The model's demotion record goes, even one written after the snapshot. A
   // record on another model stays, and authDemoteOkAt notes the key served
@@ -790,6 +1037,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
   for (const key of keysToClear) {
     clearObj[key.replace("modelLock_", PROVIDER_RESET_PREFIX)] = null;
     clearObj[key.replace("modelLock_", MODEL_LIMIT_PREFIX)] = null;
+    clearObj[key.replace("modelLock_", NO_HEADERS_PREFIX)] = null;
   }
 
   // Only reset error state if no active locks remain

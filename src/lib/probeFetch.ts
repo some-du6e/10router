@@ -28,7 +28,9 @@ async function pinnedDispatcher(target: string): Promise<Agent | null> {
 
 // fetch for probes: SSRF check on every hop for remote callers (with the
 // connection pinned to the checked IPs), and redirects are followed only within
-// the same origin so the key never goes to another host.
+// the same origin so the key never goes to another host. A caller that asks for
+// `redirect: "manual"` gets the first answer, a redirect included, unfollowed
+// (it follows hops itself, each through this fetch, or treats one as an answer).
 // Local callers may probe private hosts by design (ollama, LM Studio, vLLM).
 export function makeProbeFetch(checkPublic: boolean, { fetchImpl }: { fetchImpl?: ProbeFetch } = {}): ProbeFetch {
   return async (url, init) => {
@@ -51,6 +53,7 @@ export function makeProbeFetch(checkPublic: boolean, { fetchImpl }: { fetchImpl?
         // The body is read by the caller; closing gracefully waits for it.
         dispatcher?.close().catch(() => {});
       }
+      if (init?.redirect === "manual") return res;
       const location = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
       if (!location) return res;
       const next = new URL(location, current);

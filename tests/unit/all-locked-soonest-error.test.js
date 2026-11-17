@@ -34,11 +34,12 @@ vi.spyOn(console, "error").mockImplementation(() => {});
 
 const { markAccountUnavailable, getProviderCredentials } = await import("../../src/sse/services/auth.js");
 const { allLockedError } = await import("../../open-sse/utils/limitHold.js");
+const { DEFAULT_ERROR_MESSAGES } = await import("../../open-sse/config/errorConfig.js");
 
 const PROVIDER = "openai-compatible-chat-test";
 const MODEL = "claude-opus-5-5";
-const RATE_LIMIT = '{"type":"error","error":{"type":"rate_limit_error","message":"Snowflake enforces per-account per-model rate limits."}}';
-const DEMOTED = `${MODEL} demoted after repeated 403 "Not authorized for this endpoint"`;
+const RATE_LIMIT = '{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit reached for this model on this account."}}';
+const DEMOTED = `${MODEL} demoted after repeated 403 "Key barred from this endpoint"`;
 const NOW = new Date("2026-11-01T17:49:47.000Z").getTime();
 const lockKey = `modelLock_${MODEL}`;
 
@@ -104,7 +105,7 @@ describe("every key locked, the working one only for a moment", () => {
   it("reports a 429 when the limited key's last error was a 403 on another model", async () => {
     store.rows = new Map([["dead", deadKey()], ["live", liveKey()]]);
     await markAccountUnavailable("live", 429, RATE_LIMIT, PROVIDER, MODEL);
-    store.rows.set("live", { ...store.rows.get("live"), errorCode: 403, lastError: "Not authorized for this endpoint" });
+    store.rows.set("live", { ...store.rows.get("live"), errorCode: 403, lastError: "Key barred from this endpoint" });
 
     const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
 
@@ -136,12 +137,12 @@ describe("every key locked, the working one only for a moment", () => {
 
   it("does not report a 5xx from another model for a key refused on this one", async () => {
     store.rows = new Map([["dead", deadKey()], ["refused", { ...liveKey(), id: "refused", name: "refused" }]]);
-    await markAccountUnavailable("refused", 403, "Not authorized for this endpoint", PROVIDER, MODEL);
+    await markAccountUnavailable("refused", 403, "Key barred from this endpoint", PROVIDER, MODEL);
     store.rows.set("refused", { ...store.rows.get("refused"), [lockKey]: new Date(NOW + 10_000).toISOString(), errorCode: 503, lastError: "overloaded on other-model" });
 
     const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
 
-    expect(allLockedError(403, "Not authorized for this endpoint", creds).status).toBe(403);
+    expect(allLockedError(403, "Key barred from this endpoint", creds).status).toBe(403);
   });
 
   it("reports a 429 for a rate-limited key whose stored error was cleared", async () => {
@@ -151,7 +152,7 @@ describe("every key locked, the working one only for a moment", () => {
 
     const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
 
-    expect(allLockedError(403, "Not authorized for this endpoint", creds).status).toBe(429);
+    expect(allLockedError(403, "Key barred from this endpoint", creds).status).toBe(429);
   });
 
   it("reports a 429 when the limited key's last error was a 400 on another model", async () => {
@@ -162,7 +163,7 @@ describe("every key locked, the working one only for a moment", () => {
     const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
 
     expect(Number(creds.lastErrorCode)).toBe(429);
-    expect(allLockedError(403, "Not authorized for this endpoint", creds).status).toBe(429);
+    expect(allLockedError(403, "Key barred from this endpoint", creds).status).toBe(429);
   });
 
   it("under soonest-reset, reports the dead key's 403 over a quota-only key that frees up first", async () => {
@@ -199,7 +200,7 @@ describe("every key locked, the working one only for a moment", () => {
 
   it("prefers the dead key's 403 over another model's 429 when no key was tried yet", async () => {
     store.rows = new Map([["dead", deadKey()], ["refused", { ...liveKey(), id: "refused", name: "refused" }]]);
-    await markAccountUnavailable("refused", 403, "Not authorized for this endpoint", PROVIDER, MODEL);
+    await markAccountUnavailable("refused", 403, "Key barred from this endpoint", PROVIDER, MODEL);
     store.rows.set("refused", { ...store.rows.get("refused"), [lockKey]: new Date(NOW + 60_000).toISOString(), errorCode: 429, lastError: "rate limited on other" });
 
     const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
@@ -220,7 +221,7 @@ describe("every key locked, the working one only for a moment", () => {
   it("with no other error to report, keeps a refused key's stored error over a quota-only key", async () => {
     dbMocks.getSettings.mockImplementation(async () => ({ fallbackStrategy: "soonest-reset" }));
     store.rows = new Map([["quota", { ...liveKey(), id: "quota", name: "quota" }], ["refused", { ...liveKey(), id: "refused", name: "refused" }]]);
-    await markAccountUnavailable("refused", 403, "Not authorized for this endpoint", PROVIDER, MODEL);
+    await markAccountUnavailable("refused", 403, "Key barred from this endpoint", PROVIDER, MODEL);
     store.rows.set("refused", { ...store.rows.get("refused"), errorCode: 429, lastError: "rate limited on other" });
     blocked.set("quota", NOW + 10_000);
 
@@ -228,7 +229,7 @@ describe("every key locked, the working one only for a moment", () => {
 
     expect(creds.lastError).toBe("rate limited on other");
     expect(creds.lastErrorOwn).toBe(false);
-    expect(allLockedError(403, "Not authorized for this endpoint", creds).status).toBe(403);
+    expect(allLockedError(403, "Key barred from this endpoint", creds).status).toBe(403);
   });
 
   it("keeps a 402 plan limit's own code and message", async () => {
@@ -244,13 +245,13 @@ describe("every key locked, the working one only for a moment", () => {
 
   it("does not report a 429 from another model for a key refused on this one", async () => {
     store.rows = new Map([["dead", deadKey()], ["refused", { ...liveKey(), id: "refused", name: "refused" }]]);
-    await markAccountUnavailable("refused", 403, "Not authorized for this endpoint", PROVIDER, MODEL);
+    await markAccountUnavailable("refused", 403, "Key barred from this endpoint", PROVIDER, MODEL);
     // It frees up before the dead key, so it is the one reported.
     store.rows.set("refused", { ...store.rows.get("refused"), [lockKey]: new Date(NOW + 10_000).toISOString(), errorCode: 429, lastError: "rate_limit_error on other-model" });
 
     const creds = await getProviderCredentials(PROVIDER, new Set(), MODEL);
 
-    expect(allLockedError(403, "Not authorized for this endpoint", creds).status).toBe(403);
+    expect(allLockedError(403, "Key barred from this endpoint", creds).status).toBe(403);
   });
 
   it("counts the dead key's account-wide lock, not just its lock on the model", async () => {
@@ -320,6 +321,78 @@ describe("status sent when every key is locked", () => {
     expect(allLockedError(403, "Not authorized", null, [{ status: 502, error: "Bad gateway" }]).status).toBe(502);
     // A bodyless 403 gets "You exceeded your current quota" as its text.
     expect(allLockedError(403, "Not authorized", null, [{ status: 403, error: "You exceeded your current quota" }])).toEqual({ status: 403, error: "Not authorized", swapped: false });
+  });
+
+  describe("a request error another key got beats keys that could not authenticate", () => {
+    const refusal = "messages.1.content.0: unknown block type 'example_block'";
+    const dead = { status: 403, error: "Not authorized" };
+    const failures = [{ status: 400, error: refusal }, dead];
+
+    it("reports a 400 or 422 over a 401/403", () => {
+      expect(allLockedError(403, "Not authorized", { lastErrorCode: 403 }, failures)).toEqual({ status: 400, error: refusal, swapped: true });
+      expect(allLockedError(403, "Not authorized", null, [{ status: 422, error: "unprocessable field" }, dead])).toEqual({ status: 422, error: "unprocessable field", swapped: true });
+      expect(allLockedError(401, "bad key", null, [{ status: 404, error: "model not found" }]).status).toBe(404);
+    });
+
+    it("prefers a 400/422 over a 404 tried before it", () => {
+      expect(allLockedError(403, "Not authorized", null, [{ status: 404, error: "model not found" }, ...failures])).toEqual({ status: 400, error: refusal, swapped: true });
+    });
+
+    it("keeps a bodyless 400 with no error", () => {
+      expect(allLockedError(403, "Not authorized", null, [{ status: 400 }, dead])).toEqual({ status: 400, error: null, swapped: true });
+    });
+
+    it("still puts a 429/5xx first", () => {
+      expect(allLockedError(403, "Not authorized", null, [...failures, { status: 429, error: "rate_limit_error" }]).status).toBe(429);
+      expect(allLockedError(403, "Not authorized", { lastErrorCode: 429, lastError: "rate_limit_error", lastErrorOwn: true }, failures)).toEqual({ status: 429, error: "rate_limit_error", swapped: true });
+    });
+
+    it("uses the request error when the soonest key's 429 was on another model", () => {
+      expect(allLockedError(403, "Not authorized", { lastErrorCode: 429, lastError: "other model", lastErrorOwn: false }, failures)).toEqual({ status: 400, error: refusal, swapped: true });
+    });
+
+    it("treats a 400 about the key or its billing as an auth failure", () => {
+      expect(allLockedError(403, "Not authorized", null, [{ status: 400, error: "invalid api key" }]).status).toBe(403);
+      expect(allLockedError(403, "Not authorized", null, [{ status: 400, error: "example: credit balance is empty" }, dead])).toEqual({ status: 403, error: "Not authorized", swapped: false });
+    });
+
+    it("prefers a 400/422 over a 404 the pass ended on", () => {
+      expect(allLockedError(404, "model not found", null, [{ status: 400, error: refusal }, dead, { status: 404, error: "model not found" }])).toEqual({ status: 400, error: refusal, swapped: true });
+      expect(allLockedError(404, "model not found", null, [{ status: 422, error: "unprocessable field" }, { status: 404, error: "model not found" }]).status).toBe(422);
+      // Only a request error: a 429 before the 404 doesn't change what a 404 pass reports.
+      expect(allLockedError(404, "model not found", null, [{ status: 429, error: "rate_limit_error" }, { status: 404, error: "model not found" }])).toEqual({ status: 404, error: "model not found", swapped: false });
+    });
+  });
+
+  describe("a limit anywhere in the pass keeps the last key's answer", () => {
+    const refusal = "messages.1.content.0: unknown block type 'example_block'";
+    const lacksModel = { status: 404, error: "example-model isn't available to this account" };
+    const modelRefusal = { status: 400, error: "The requested model is not available on this account" };
+    const rateLimited = { status: 429, error: "rate_limit_error" };
+    const quota = { status: 403, error: "Quota for this key is used up, try again later" };
+    const dead = { status: 403, error: "Not authorized" };
+
+    it("keeps a 404 pass's 404 when another key got a 429", () => {
+      expect(allLockedError(404, lacksModel.error, null, [rateLimited, modelRefusal, lacksModel])).toEqual({ status: 404, error: lacksModel.error, swapped: false });
+      expect(allLockedError(404, lacksModel.error, null, [rateLimited, { status: 400, error: refusal }, lacksModel])).toEqual({ status: 404, error: lacksModel.error, swapped: false });
+    });
+
+    it("counts a limit worded on a 400", () => {
+      expect(allLockedError(401, "bad key", null, [{ status: 400, error: "rate limit exceeded" }, lacksModel, { status: 401, error: "bad key" }])).toEqual({ status: 401, error: "bad key", swapped: false });
+    });
+
+    it("keeps a quota-worded 403 over a 404 or a refused body", () => {
+      expect(allLockedError(403, quota.error, null, [lacksModel, quota])).toEqual({ status: 403, error: quota.error, swapped: false });
+      expect(allLockedError(403, quota.error, null, [{ status: 400, error: refusal }, quota])).toEqual({ status: 403, error: quota.error, swapped: false });
+      const bodyless = { status: 403, error: DEFAULT_ERROR_MESSAGES[403] };
+      expect(allLockedError(403, bodyless.error, null, [{ status: 400, error: refusal }, bodyless]).status).toBe(403);
+    });
+
+    it("swaps when no key hit a limit", () => {
+      expect(allLockedError(403, dead.error, null, [lacksModel, dead])).toEqual({ status: 404, error: lacksModel.error, swapped: true });
+      // The soonest key's stored error isn't part of this pass.
+      expect(allLockedError(403, dead.error, { lastErrorCode: 403, lastError: quota.error }, [lacksModel, dead]).status).toBe(404);
+    });
   });
 
   it("keeps the old order otherwise", () => {

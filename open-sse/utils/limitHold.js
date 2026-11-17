@@ -8,6 +8,8 @@ import { translateResponse, initState } from "../translator/index.js";
 import { FORMATS } from "../translator/formats.js";
 import { ROLE, OPENAI_FINISH } from "../translator/schema/index.js";
 import { formatSSE } from "./stream.js";
+import { abortableSleep } from "./abortableSleep.js";
+import { isRequestError } from "../services/accountFallback.js";
 
 // Present in every banner we emit. Later requests carry the banner back inside
 // their history; detecting this marker is what triggers the "ignore that line"
@@ -206,10 +208,7 @@ export async function awaitLimitClear({ retryAtMs, attempt, provider, model, sig
     // Never sleep past the ceiling: a reset days away would otherwise pin the
     // connection for days before the deadline is even looked at.
     waitMs = Math.min(waitMs, Math.max(deadline - Date.now(), 0));
-    await new Promise((resolve) => {
-      const timer = setTimeout(resolve, waitMs);
-      signal?.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
-    });
+    await abortableSleep(waitMs, signal);
     if (signal?.aborted) break;
 
     last = await attempt();
@@ -244,15 +243,12 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
   state._holdId = `chatcmpl-hold-${Date.now()}`;
 
   let cancelled = false;
-  let wakeTimer = null;
   let keepaliveTimer = null;
   const abortController = new AbortController();
 
   const stop = () => {
     cancelled = true;
-    if (wakeTimer) clearTimeout(wakeTimer);
     if (keepaliveTimer) clearInterval(keepaliveTimer);
-    wakeTimer = null;
     keepaliveTimer = null;
     abortController.abort();
   };
@@ -284,16 +280,6 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
       // which is what stops an intermediate proxy reaping an idle connection.
       keepaliveTimer = setInterval(() => write(`: 10router limit-hold\n\n`), keepaliveMs);
 
-      const sleep = (ms) =>
-        new Promise((resolve) => {
-          if (abortController.signal.aborted) return resolve();
-          wakeTimer = setTimeout(resolve, ms);
-          abortController.signal.addEventListener("abort", () => {
-            if (wakeTimer) clearTimeout(wakeTimer);
-            resolve();
-          }, { once: true });
-        });
-
       let splicedRealStream = false;
       let attemptNo = 1;
       let waitMs = Math.max((retryAtMs || 0) - Date.now(), minWaitMs);
@@ -302,7 +288,7 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
 
       try {
         while (!cancelled) {
-          await sleep(waitMs);
+          await abortableSleep(waitMs, abortController.signal);
           if (cancelled) break;
 
           attemptNo += 1;
@@ -375,15 +361,22 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
 // The status and error a request gets when every account is locked. A 401/403
 // this pass hit on one key loses to a retryable code the reported key got on
 // this model (lastErrorOwn), or to a 429/5xx another key hit in the same pass,
-// so the client waits instead of reporting an auth failure.
+// so the client waits instead of reporting an auth failure. Unless a key in the
+// pass hit a limit, a 401/403 or 404 pass then reports a request error.
 export function allLockedError(lastStatus, lastError, credentials, failures = []) {
   const soonest = Number(credentials?.lastErrorCode) || null;
   const retryable = status => status === 429 || status >= 500;
-  if (lastStatus === 401 || lastStatus === 403) {
+  const authFailed = lastStatus === 401 || lastStatus === 403;
+  if (authFailed) {
     if (soonest && retryable(soonest) && credentials.lastErrorOwn !== false) return { status: soonest, error: credentials.lastError || null, swapped: true };
     // By status: a bodyless 403 reads "You exceeded your current quota".
     const retry = failures.find(f => retryable(f.status));
     if (retry) return { status: retry.status, error: retry.error || null, swapped: true };
+  }
+  if ((authFailed || lastStatus === 404) && !failures.some(f => isLimitError(f.status, f.error))) {
+    const fixable = failures.filter(f => isRequestError(f.status, f.error));
+    const pick = fixable.find(f => f.status !== 404) ?? (authFailed ? fixable[0] : null);
+    if (pick) return { status: pick.status, error: pick.error || null, swapped: true };
   }
   return { status: lastStatus || soonest || 503, error: lastError || credentials?.lastError || null, swapped: false };
 }

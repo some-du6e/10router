@@ -6,10 +6,11 @@ import { useTheme } from "@/shared/hooks/useTheme";
 import ChangelogModal from "./ChangelogModal";
 import { ConfirmModal } from "./Modal";
 
-function MenuItem({ icon, label, onClick, trailing, danger }) {
+function MenuItem({ icon, label, onClick, trailing, danger, title }) {
   return (
     <button
       onClick={onClick}
+      title={title}
       className={`flex items-center gap-3 w-full px-4 py-2.5 text-sm transition-colors ${
         danger
           ? "text-red-500 hover:bg-red-500/10"
@@ -31,6 +32,7 @@ MenuItem.propTypes = {
   onClick: PropTypes.func.isRequired,
   trailing: PropTypes.node,
   danger: PropTypes.bool,
+  title: PropTypes.string,
 };
 
 export default function HeaderMenu({ onLogout }) {
@@ -99,6 +101,7 @@ export default function HeaderMenu({ onLogout }) {
             <MenuItem
               icon="logout"
               label="Logout"
+              title="Signs out all browsers"
               danger
               onClick={() => { close(); onLogout(); }}
             />

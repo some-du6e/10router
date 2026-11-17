@@ -73,6 +73,56 @@ describe("retryAsClient", () => {
     const res = { ok: false, error: "The key was rejected.", steps: [], clientGated: false };
     expect(await retryAsClient(res, { url: BASE, fetchFn: async () => { throw new Error("no"); }, detect: async () => { throw new Error("no"); } })).toBe(res);
   });
+  it("answers with the key refusal once a client gets past the gate, not the gate", async () => {
+    // A dead key: the gate lets Codex through, then the key itself is refused.
+    const { fn } = gatedFetch();
+    const dead = "sk-dead-key-0123456789";
+    const first = await detectEndpoint({ url: BASE, apiKey: dead, fetchFn: fn, deadlineMs: 20_000 });
+    expect(first).toMatchObject({ ok: false, failure: "gated", keyVerdict: null });
+    const r = await retryAsClient(first, { url: BASE, apiKey: dead, fetchFn: fn, detect: (f) => detectEndpoint({ url: BASE, apiKey: dead, fetchFn: f, deadlineMs: 20_000 }) });
+    expect(r).toMatchObject({ ok: false, failure: "key", keyVerdict: "refused" });
+    expect(r.gate).toBeUndefined();
+    expect(r.steps.length).toBeGreaterThan(first.steps.length);
+  });
+  it("answers with a rate limit once a client gets past the gate, not the gate", async () => {
+    const fn = async (url, init) => {
+      const h = Object.fromEntries(Object.entries(init.headers || {}).map(([k, v]) => [k.toLowerCase(), v]));
+      const res = (status, obj) => ({ status, text: async () => JSON.stringify(obj), headers: { get: (n) => (n === "content-type" ? "application/json" : null) } });
+      if (!/codex_cli_rs/.test(`${h["user-agent"] || ""} ${h.originator || ""}`)) return res(401, { error: { message: "unauthorized client detected", type: "unauthorized_client_error" } });
+      return res(429, { error: { message: "rate limited", type: "rate_limit_error" } });
+    };
+    const first = await detectEndpoint({ url: BASE, apiKey: KEY, fetchFn: fn, deadlineMs: 20_000, sleep: async () => {} });
+    expect(first).toMatchObject({ ok: false, failure: "gated" });
+    const r = await retryAsClient(first, { url: BASE, apiKey: KEY, fetchFn: fn, detect: (f) => detectEndpoint({ url: BASE, apiKey: KEY, fetchFn: f, deadlineMs: 20_000, sleep: async () => {} }) });
+    expect(r).toMatchObject({ ok: false, failure: "rate", keyVerdict: "rate-limited" });
+  });
+  it("keeps the gate's message, with the key's verdict, when the retry found no API", async () => {
+    // Past the gate, GET /models lists with the key, then every POST refuses it.
+    const fn = async (url, init) => {
+      const h = Object.fromEntries(Object.entries(init.headers || {}).map(([k, v]) => [k.toLowerCase(), v]));
+      const res = (status, obj) => ({ status, text: async () => JSON.stringify(obj), headers: { get: (n) => (n === "content-type" ? "application/json" : null) } });
+      if (!/codex_cli_rs/.test(`${h["user-agent"] || ""} ${h.originator || ""}`)) return res(401, { error: { message: "unauthorized client detected", type: "unauthorized_client_error" } });
+      if (init.method === "GET" && new URL(url).pathname === "/v1/models") return h.authorization ? res(200, { object: "list", data: [{ id: "m1" }] }) : res(401, { error: { message: "missing key", type: "authentication_error" } });
+      return res(401, { error: { message: "insufficient permissions", type: "authentication_error" } });
+    };
+    const first = await detectEndpoint({ url: BASE, apiKey: KEY, fetchFn: fn, deadlineMs: 20_000 });
+    const r = await retryAsClient(first, { url: BASE, apiKey: KEY, fetchFn: fn, detect: (f) => detectEndpoint({ url: BASE, apiKey: KEY, fetchFn: f, deadlineMs: 20_000 }) });
+    expect(r).toMatchObject({ ok: false, failure: "gated", keyVerdict: "refused" });
+    expect(r.error).toMatch(/only accepts specific clients/);
+  });
+  it("keeps the gate's result when the retry knew nothing about the key", async () => {
+    // Past the gate, GET /models is admin-only and no API path answers: no verdict.
+    const fn = async (url, init) => {
+      const h = Object.fromEntries(Object.entries(init.headers || {}).map(([k, v]) => [k.toLowerCase(), v]));
+      const res = (status, obj) => ({ status, text: async () => JSON.stringify(obj), headers: { get: (n) => (n === "content-type" ? "application/json" : null) } });
+      if (!/codex_cli_rs/.test(`${h["user-agent"] || ""} ${h.originator || ""}`)) return res(401, { error: { message: "unauthorized client detected", type: "unauthorized_client_error" } });
+      if (new URL(url).pathname === "/v1/models") return res(401, { error: { message: "admin key required", type: "authentication_error" } });
+      return res(404, { error: { message: "Not found" } });
+    };
+    const first = await detectEndpoint({ url: BASE, apiKey: KEY, fetchFn: fn, deadlineMs: 20_000 });
+    const r = await retryAsClient(first, { url: BASE, apiKey: KEY, fetchFn: fn, detect: (f) => detectEndpoint({ url: BASE, apiKey: KEY, fetchFn: f, deadlineMs: 20_000 }) });
+    expect(r).toMatchObject({ ok: false, failure: "gated", keyVerdict: null });
+  });
   it("keeps the failure (with the extra steps) when no client gets in", async () => {
     const { fn } = gatedFetch({ allow: /never/ });
     const first = await detectEndpoint({ url: BASE, apiKey: KEY, fetchFn: fn, deadlineMs: 20_000 });

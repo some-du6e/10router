@@ -15,8 +15,8 @@ vi.mock("@/lib/usageDb.js", () => ({
 
 const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
 
-const SNOWFLAKE = "openai-compatible-chat-sf";
-const BASE = "https://acme.snowflakecomputing.com/api/v2/cortex/v1";
+const CONTOSO = "openai-compatible-chat-ctso";
+const BASE = "https://acme.contoso-cloud.example/api/v1";
 const CLAUDE_CODE_UA = "claude-cli/2.1.309 (external, cli)";
 
 const claudeReply = () => new Response(JSON.stringify({
@@ -39,7 +39,7 @@ const claudeCodeBody = (model, thinking = { type: "adaptive", display: "summariz
   output_config: { effort: "medium" },
 });
 
-const snowflakeCreds = (model) => ({
+const contosoCreds = (model) => ({
   apiKey: "k",
   providerSpecificData: { apiType: "chat", baseUrl: BASE, modelRoutes: { [model]: "anthropic" }, stripBeta: true },
 });
@@ -47,7 +47,7 @@ const snowflakeCreds = (model) => ({
 async function send(model, body) {
   fetchMock.mockResolvedValueOnce(claudeReply());
   await handleChatCore({
-    body, modelInfo: { provider: SNOWFLAKE, model }, credentials: snowflakeCreds(model),
+    body, modelInfo: { provider: CONTOSO, model }, credentials: contosoCreds(model),
     log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn() }, connectionId: "c",
     clientRawRequest: { endpoint: "/v1/messages", body, headers: { "user-agent": CLAUDE_CODE_UA, accept: "application/json" } },
   });
@@ -85,7 +85,7 @@ describe("Claude Code on an openai-compatible node's Messages route", () => {
   it("keeps the node's own thinking blocks in a tool loop", async () => {
     const model = "claude-opus-5-5";
     const body = claudeCodeBody(model);
-    const thinking = { type: "thinking", thinking: "check the file", signature: "Cq8BsnowflakeSig" };
+    const thinking = { type: "thinking", thinking: "check the file", signature: "Cq8BcontosoSig" };
     body.messages = [
       { role: "user", content: [{ type: "text", text: "read a.txt" }] },
       { role: "assistant", content: [thinking, { type: "tool_use", id: "toolu_1", name: "Read", input: { path: "a.txt" } }] },

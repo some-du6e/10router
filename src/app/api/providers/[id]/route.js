@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { withoutProviderDataSecrets } from "open-sse/utils/redact.js";
 import {
   getProviderConnectionById,
   getProviderNodeById,
@@ -79,6 +80,9 @@ export async function GET(request, { params }) {
     delete result.accessToken;
     delete result.refreshToken;
     delete result.idToken;
+    // Copilot's bearer token, Kiro IDC's client secret, ... Left out, not masked:
+    // a PUT merges providerSpecificData, so the stored values survive a round trip.
+    result.providerSpecificData = withoutProviderDataSecrets(result.providerSpecificData);
 
     return NextResponse.json({ connection: result });
   } catch (error) {
@@ -228,6 +232,9 @@ export async function PUT(request, { params }) {
     delete result.accessToken;
     delete result.refreshToken;
     delete result.idToken;
+    // Copilot's bearer token, Kiro IDC's client secret, ... Left out, not masked:
+    // a PUT merges providerSpecificData, so the stored values survive a round trip.
+    result.providerSpecificData = withoutProviderDataSecrets(result.providerSpecificData);
 
     return NextResponse.json({ connection: result });
   } catch (error) {
