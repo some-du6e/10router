@@ -7,22 +7,36 @@ import { DATA_DIR } from "../dataDir.js";
 // JWT_SECRET, else one generated once into $DATA_DIR/jwt-secret.
 let cached = null;
 
-// null when the file doesn't exist.
+// A file this young that reads empty may still be getting its bytes (the copy
+// fallback below creates it before writing), so it is read again for a moment.
+const SETTLE_MS = 2000;
+
+function pause(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// The trimmed secret, "" for a file that stays empty, null when there is no file.
 function readSecret(file) {
-  try {
-    return fs.readFileSync(file, "utf8").trim();
-  } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    throw error;
+  const deadline = Date.now() + SETTLE_MS;
+  for (;;) {
+    let content;
+    let stat;
+    try {
+      content = fs.readFileSync(file, "utf8").trim();
+      if (content) return content;
+      stat = fs.statSync(file);
+    } catch (error) {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    }
+    if (Date.now() - stat.mtimeMs > SETTLE_MS || Date.now() > deadline) return "";
+    pause(20);
   }
 }
 
 function emptyFileError(file) {
   return new Error(`${file} is empty. Delete it to generate a new secret, or set JWT_SECRET.`);
 }
-
-// Filesystems without hard links (some network and FUSE mounts).
-const NO_HARD_LINKS = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EXDEV"]);
 
 export function getAuthSecret() {
   if (cached) return cached;
@@ -43,9 +57,11 @@ export function getAuthSecret() {
     try {
       fs.linkSync(tmp, file);
     } catch (error) {
-      if (!NO_HARD_LINKS.has(error?.code)) throw error;
+      if (error?.code === "EEXIST") throw error;
+      // No hard links here (FAT, exFAT, some network and FUSE mounts, each with its
+      // own error code): copy exclusively instead. copyFileSync keeps the temp
+      // file's 0600 mode; a reader that catches it empty waits (readSecret).
       fs.copyFileSync(tmp, file, fs.constants.COPYFILE_EXCL);
-      fs.chmodSync(file, 0o600);
     }
     return (cached = generated);
   } catch (error) {
