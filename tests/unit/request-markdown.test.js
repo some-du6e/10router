@@ -1,5 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { Lexer, marked } from "marked";
 import {
+  BOUNDED_TEXT_RULE,
+  MARKDOWN_LIMITS,
   promptToMarkdown,
   renderPromptMarkdown,
 } from "@/shared/utils/requestMarkdown.js";
@@ -16,6 +19,10 @@ const SAFE_TAGS = new Set([
 const SAFE_ATTRIBUTES = new Set(["href", "title", "class", "start", "align", "type", "checked", "disabled"]);
 
 function expectInert(html) {
+  // Also catches a tag the browser would still open without its closing ">".
+  for (const [opening, rawName] of html.matchAll(/<\/?([a-zA-Z][\w-]*)/g)) {
+    expect(SAFE_TAGS.has(rawName.toLowerCase()), `unexpected tag ${opening}`).toBe(true);
+  }
   for (const [tag, rawName, rawAttrs] of html.matchAll(/<\/?([a-zA-Z][\w-]*)([^>]*)>/g)) {
     const name = rawName.toLowerCase();
     expect(SAFE_TAGS.has(name), `unexpected tag ${tag}`).toBe(true);
@@ -58,6 +65,28 @@ const HOSTILE = [
   "> [<img src=x onerror=alert(1)>](javascript:alert(1))",
   "- [ ] [<img src=x onerror=alert(1)>](javascript:alert(1))",
   "**[<img src=x onerror=alert(1)>](javascript:alert(1))**",
+  // An inline <code>, <pre>, <kbd> or <script> puts marked in raw mode, and it
+  // used to pass the text after it through unescaped.
+  "a <code> <img src=x onerror=alert(1)",
+  "a <code> <img src=x onerror=alert(1)>",
+  "a <code>\n\nnext paragraph <img src=x onerror=alert(1)",
+  "<script> <img src=x onerror=alert(1)",
+  "<kbd> <img src=x onerror=alert(1)",
+  "<pre> <svg onload=alert(1)",
+  "<CODE> <img src=x onerror=alert(1)",
+  "<code class=x> <img src=x onerror=alert(1)",
+  "<script type=x> <iframe src=javascript:alert(1)",
+  "a <code> &lt;b&gt; <img src=x onerror=alert(1)",
+  "a <code></code> <img src=x onerror=alert(1)",
+  "| a |\n| - |\n| <code> <img src=x onerror=alert(1) |",
+  "> <code> <img src=x onerror=alert(1)",
+  "- <code> <img src=x onerror=alert(1)",
+  "# <code> <img src=x onerror=alert(1)",
+  "**<code> <img src=x onerror=alert(1)**",
+  "[<code> <img src=x onerror=alert(1)](javascript:0)",
+  "[<script> <img src=x onerror=alert(1)](https://example.com)",
+  "`x` <code> <img src=x onerror=alert(1)",
+  "&lt;img src=x onerror=alert(1)&gt;",
 ];
 
 describe("request markdown preview", () => {
@@ -157,5 +186,106 @@ describe("request markdown preview", () => {
       expect(message.text).toContain("onerror");
       expectInert(renderPromptMarkdown(message.text));
     }
+  });
+
+  it("ignores a global marked.use() elsewhere in the app", () => {
+    marked.use({ renderer: { html: ({ text }) => text } });
+    expect(marked.parse("<img src=x onerror=alert(1)>")).toContain("<img");
+    expectInert(renderPromptMarkdown("<img src=x onerror=alert(1)> [x](javascript:0)"));
+  });
+});
+
+// The preview renders on the dashboard's main thread: a message must not
+// freeze the tab or throw out of ConversationInspector's render.
+describe("request markdown preview on hostile sizes", () => {
+  const PLAIN_TEXT_NOTE = "shown as plain text";
+  const PAYLOAD = "<img src=x onerror=alert(1)> &amp; *x*";
+
+  function expectPlainText(html) {
+    expect(html).toContain(PLAIN_TEXT_NOTE);
+    expect(html).toContain("&lt;img src=x onerror=alert(1)&gt; &amp;amp; *x*");
+    expectInert(html);
+  }
+
+  function timed(markdown) {
+    const start = performance.now();
+    const html = renderPromptMarkdown(markdown);
+    return { html, ms: performance.now() - start };
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("shows a message past the length cap as escaped plain text", () => {
+    const markdown = PAYLOAD + " ".repeat(MARKDOWN_LIMITS.chars);
+    expectPlainText(renderPromptMarkdown(markdown));
+    expect(renderPromptMarkdown(markdown.slice(0, MARKDOWN_LIMITS.chars))).not.toContain(PLAIN_TEXT_NOTE);
+  });
+
+  it.each([
+    ["blockquotes", "> "],
+    ["lists", "- "],
+    ["ordered lists", "1. "],
+    ["mixed containers", "> - "],
+  ])("shows %s nested past the limit as plain text instead of overflowing the stack", (_, marker) => {
+    const depth = MARKDOWN_LIMITS.nesting + 1;
+    expectPlainText(renderPromptMarkdown(`${marker.repeat(depth)}${PAYLOAD}`));
+    // The reviewer's input: 3,000 levels used to throw "Maximum call stack size exceeded".
+    expectPlainText(renderPromptMarkdown(`${marker.repeat(3000)}${PAYLOAD}`));
+  });
+
+  it("shows lists indented past the nesting limit as plain text", () => {
+    const lines = Array.from({ length: MARKDOWN_LIMITS.nesting + 2 }, (_, i) => `${" ".repeat(i * 2)}- item`);
+    expectPlainText(renderPromptMarkdown(`${lines.join("\n")}\n\n${PAYLOAD}`));
+  });
+
+  it("still renders nesting up to the limit as Markdown", () => {
+    const html = renderPromptMarkdown(`${"> ".repeat(MARKDOWN_LIMITS.nesting)}**deep**`);
+    expect(html).not.toContain(PLAIN_TEXT_NOTE);
+    expect(html).toContain("<strong>deep</strong>");
+  });
+
+  it("falls back to escaped plain text when marked throws", () => {
+    vi.spyOn(Lexer.prototype, "lex").mockImplementation(() => {
+      throw new RangeError("Maximum call stack size exceeded");
+    });
+    expectPlainText(renderPromptMarkdown(PAYLOAD));
+  });
+
+  it("bounds marked's e-mail lookahead to an address's 64-character local part", () => {
+    expect(BOUNDED_TEXT_RULE.source).not.toBe(Lexer.rules.inline.breaks.text.source);
+    expect(BOUNDED_TEXT_RULE.source).not.toContain("~-]+@");
+  });
+
+  // Each took 3 s to minutes before; the limits are ~10x what they take now.
+  it.each([
+    ["a*_", 2500],
+    ["_*a", 2500],
+    ["a~_", 2500],
+    ["a!", 1500],
+    ["_a", 1500],
+  ])("renders %j repeated up to the length cap quickly", (pattern, limitMs) => {
+    const markdown = pattern.repeat(Math.floor(MARKDOWN_LIMITS.chars / pattern.length));
+    const { html, ms } = timed(markdown);
+    expect(html).not.toContain(PLAIN_TEXT_NOTE);
+    expect(ms).toBeLessThan(limitMs);
+  });
+
+  it("keeps emphasis in a long paragraph full of ordinary bold and italics", () => {
+    const spans = 300;
+    const markdown = Array.from(
+      { length: spans },
+      (_, i) => `words words words words words words words words words words **bold ${i}** and _em ${i}_ and ~~del ${i}~~`,
+    ).join(" ");
+    const { html } = timed(markdown);
+    expect(html.match(/<strong>/g)).toHaveLength(spans);
+    expect(html.match(/<em>/g)).toHaveLength(spans);
+    expect(html.match(/<del>/g)).toHaveLength(spans);
+  });
+
+  it("still links bare URLs and e-mail addresses", () => {
+    const html = renderPromptMarkdown("Mail someone@example.com, see https://example.com/x or www.example.com.");
+    expect(html).toContain('<a href="mailto:someone@example.com">someone@example.com</a>');
+    expect(html).toContain('<a href="https://example.com/x">https://example.com/x</a>');
+    expect(html).toContain('<a href="http://www.example.com">www.example.com</a>');
   });
 });
