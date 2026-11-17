@@ -1,13 +1,16 @@
 // The /callback page relays an OAuth callback to the dashboard tab and can't
-// tell whether anything received it. The dashboard answers with an ack once it
-// has used the callback, so the page knows whether to close or to show the URL
+// tell whether anything received it. The dashboard answers with acks: "received"
+// when it takes the callback, then "saved" or "failed" once the exchange ends.
+// So the page knows whether to wait, close, report a failure, or show the URL
 // for pasting by hand. Each ack names the callback it answers, so an ack for one
 // sign-in never closes the page of another.
 
 export const OAUTH_CALLBACK_ACK_CHANNEL = "oauth_callback_ack";
 export const OAUTH_CALLBACK_ACK_TYPE = "oauth_callback_ack";
 
-export type CallbackAck = { type: typeof OAUTH_CALLBACK_ACK_TYPE; key: string; ok: boolean };
+const ACK_STATUSES = ["received", "saved", "failed"] as const;
+export type CallbackAckStatus = (typeof ACK_STATUSES)[number];
+export type CallbackAck = { type: typeof OAUTH_CALLBACK_ACK_TYPE; key: string; status: CallbackAckStatus };
 type CallbackIdentity = { state?: string | null; fullUrl?: string | null };
 type ChannelCtor = new (name: string) => BroadcastChannel;
 type MessageTarget = Pick<Window, "addEventListener" | "removeEventListener">;
@@ -36,11 +39,15 @@ export function callbackAckKey({ state, fullUrl }: CallbackIdentity): string {
 export function isCallbackAckFor(message: unknown, key: string): message is CallbackAck {
   if (!message || typeof message !== "object") return false;
   const ack = message as Partial<CallbackAck>;
-  return ack.type === OAUTH_CALLBACK_ACK_TYPE && ack.key === key;
+  return (
+    ack.type === OAUTH_CALLBACK_ACK_TYPE &&
+    ack.key === key &&
+    (ACK_STATUSES as readonly unknown[]).includes(ack.status)
+  );
 }
 
 type SendOptions = {
-  ok?: boolean;
+  status?: CallbackAckStatus;
   // Answers on the channel the callback came in on (postMessage source).
   reply?: ((ack: CallbackAck) => void) | null;
   Channel?: ChannelCtor | null;
@@ -48,9 +55,9 @@ type SendOptions = {
 
 export function sendCallbackAck(
   callback: CallbackIdentity,
-  { ok = true, reply = null, Channel = globalThis.BroadcastChannel }: SendOptions = {},
+  { status = "saved", reply = null, Channel = globalThis.BroadcastChannel }: SendOptions = {},
 ): void {
-  const ack: CallbackAck = { type: OAUTH_CALLBACK_ACK_TYPE, key: callbackAckKey(callback), ok };
+  const ack: CallbackAck = { type: OAUTH_CALLBACK_ACK_TYPE, key: callbackAckKey(callback), status };
   if (reply) {
     try {
       reply(ack);

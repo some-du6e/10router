@@ -3,6 +3,7 @@ import {
   CALLBACK_ACK_TIMEOUT_MS,
   CALLBACK_CLOSE_DELAY_MS,
   CALLBACK_DONE_DELAY_MS,
+  CALLBACK_EXCHANGE_TIMEOUT_MS,
   runOAuthCallback,
 } from "../../src/shared/utils/oauthCallbackFlow.js";
 import { callbackAckKey, OAUTH_CALLBACK_ACK_TYPE } from "../../src/shared/utils/oauthCallbackAck.js";
@@ -47,7 +48,8 @@ function openCallback(query) {
     },
   });
   tab.stop = stop;
-  tab.ack = (identity, ok = true) => tab.listener?.({ type: OAUTH_CALLBACK_ACK_TYPE, key: callbackAckKey(identity), ok });
+  tab.ack = (identity, status = "saved") =>
+    tab.listener?.({ type: OAUTH_CALLBACK_ACK_TYPE, key: callbackAckKey(identity), status });
   return tab;
 }
 
@@ -77,7 +79,7 @@ describe("/callback page", () => {
     expect(tab.relayed[0].data).toMatchObject({ code: "abc123", state: "s1", fullUrl: tab.href });
   });
 
-  it("closes once the dashboard acks this callback", () => {
+  it("closes once the dashboard saves the connection", () => {
     const tab = open("?code=abc123&state=s1");
     tab.ack({ state: "s1" });
     expect(tab.status).toBe("success");
@@ -87,9 +89,7 @@ describe("/callback page", () => {
     // The browser kept the tab open (it didn't open it): say it's done.
     vi.advanceTimersByTime(CALLBACK_DONE_DELAY_MS);
     expect(tab.status).toBe("done");
-    // The ack timer was cancelled, so the page never flips to manual.
-    vi.advanceTimersByTime(CALLBACK_ACK_TIMEOUT_MS);
-    expect(tab.status).toBe("done");
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("shows the captured URL when no ack comes, with the address bar already stripped", () => {
@@ -115,10 +115,11 @@ describe("/callback page", () => {
     expect(tab.status).toBe("done");
   });
 
-  it("ignores an ack for another sign-in", () => {
+  it("ignores an ack for another sign-in, and malformed acks", () => {
     const tab = open("?code=abc123&state=s1");
     tab.ack({ state: "s2" });
-    tab.listener?.({ type: "something-else", key: callbackAckKey({ state: "s1" }), ok: true });
+    tab.ack({ state: "s1" }, "bogus");
+    tab.listener?.({ type: "something-else", key: callbackAckKey({ state: "s1" }), status: "saved" });
     expect(tab.status).toBe("processing");
     vi.advanceTimersByTime(CALLBACK_ACK_TIMEOUT_MS + CALLBACK_CLOSE_DELAY_MS);
     expect(tab.status).toBe("manual");
@@ -134,12 +135,12 @@ describe("/callback page", () => {
     expect(tab.status).toBe("success");
   });
 
-  it("says the sign-in failed when the dashboard acks an error callback", () => {
+  it("says the sign-in failed when the dashboard reports a provider error", () => {
     const tab = open("?error=access_denied&state=s1");
-    tab.ack({ state: "s1" }, false);
+    tab.ack({ state: "s1" }, "failed");
     expect(tab.status).toBe("failed");
-    vi.advanceTimersByTime(CALLBACK_ACK_TIMEOUT_MS + CALLBACK_CLOSE_DELAY_MS);
-    expect(tab.status).toBe("failed");
+    expect(tab.listener).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
     expect(tab.closed).toBe(0);
   });
 
@@ -149,5 +150,50 @@ describe("/callback page", () => {
     expect(tab.manualUrl).toBe(tab.href);
     expect(tab.listens).toBe(0);
     expect(tab.relayed).toHaveLength(0);
+  });
+});
+
+describe("/callback page during a slow exchange", () => {
+  it("waits past the ack timeout once received, then closes when saved", () => {
+    const tab = open("?code=abc123&state=s1");
+    tab.ack({ state: "s1" }, "received");
+    expect(tab.status).toBe("connecting");
+    vi.advanceTimersByTime(CALLBACK_ACK_TIMEOUT_MS * 5);
+    expect(tab.status).toBe("connecting");
+    tab.ack({ state: "s1" }, "received");
+    expect(tab.status).toBe("connecting");
+    tab.ack({ state: "s1" }, "saved");
+    expect(tab.status).toBe("success");
+    vi.advanceTimersByTime(CALLBACK_CLOSE_DELAY_MS + CALLBACK_DONE_DELAY_MS);
+    expect(tab.closed).toBe(1);
+    expect(tab.status).toBe("done");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("says the sign-in failed when the exchange fails", () => {
+    const tab = open("?code=abc123&state=s1");
+    tab.ack({ state: "s1" }, "received");
+    vi.advanceTimersByTime(CALLBACK_ACK_TIMEOUT_MS * 2);
+    tab.ack({ state: "s1" }, "failed");
+    expect(tab.status).toBe("failed");
+    expect(vi.getTimerCount()).toBe(0);
+    // Nothing later reopens it.
+    tab.ack({ state: "s1" }, "saved");
+    expect(tab.status).toBe("failed");
+    expect(tab.closed).toBe(0);
+  });
+
+  it("shows the URL as still connecting once the exchange runs past its limit", () => {
+    const tab = open("?code=abc123&state=s1");
+    tab.ack({ state: "s1" }, "received");
+    vi.advanceTimersByTime(CALLBACK_EXCHANGE_TIMEOUT_MS - 1);
+    expect(tab.status).toBe("connecting");
+    vi.advanceTimersByTime(1);
+    expect(tab.status).toBe("slow");
+    expect(tab.manualUrl).toBe(tab.href);
+    expect(vi.getTimerCount()).toBe(0);
+    // A final ack after that still lands.
+    tab.ack({ state: "s1" }, "saved");
+    expect(tab.status).toBe("success");
   });
 });

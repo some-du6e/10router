@@ -509,7 +509,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
       if (callbackError) {
         callbackProcessedRef.current = true;
-        sendCallbackAck(data, { ok: false, reply });
+        sendCallbackAck(data, { status: "failed", reply });
         setError(errorDescription || callbackError);
         setStep("error");
         return;
@@ -517,8 +517,11 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
       if (token || code) {
         callbackProcessedRef.current = true;
-        // Ack only a saved connection; otherwise the page keeps the URL to paste.
-        if (await exchangeTokens(token || code, state)) sendCallbackAck(data, { reply });
+        // "received" keeps the page waiting through a slow exchange; the final
+        // ack tells it whether to close or to say the sign-in failed.
+        sendCallbackAck(data, { status: "received", reply });
+        const saved = await exchangeTokens(token || code, state);
+        sendCallbackAck(data, { status: saved ? "saved" : "failed", reply });
       }
     };
 

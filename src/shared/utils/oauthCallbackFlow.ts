@@ -3,13 +3,18 @@
 
 import { callbackAckKey, isCallbackAckFor } from "./oauthCallbackAck.js";
 
-// How long to wait for the dashboard to say it used the callback before showing
-// the URL to paste by hand. A later ack still switches the page to done.
+// How long to wait for the dashboard to say it took the callback before showing
+// the URL to paste by hand.
 export const CALLBACK_ACK_TIMEOUT_MS = 4000;
+// How long to wait, after "received", for the exchange to end. Some providers
+// make several upstream calls, and a slow proxy adds to each.
+export const CALLBACK_EXCHANGE_TIMEOUT_MS = 60_000;
 export const CALLBACK_CLOSE_DELAY_MS = 1500;
 export const CALLBACK_DONE_DELAY_MS = 500;
 
-export type CallbackStatus = "processing" | "success" | "done" | "manual" | "failed";
+// manual: nothing took the callback. slow: the dashboard took it but hasn't
+// finished. Both show the captured URL. A later ack still moves the page on.
+export type CallbackStatus = "processing" | "connecting" | "success" | "done" | "manual" | "slow" | "failed";
 
 export type CallbackData = {
   code: string | null;
@@ -60,9 +65,11 @@ export function runOAuthCallback({
     fullUrl: href,
   };
 
-  // The code leaves the address bar (and with it history and any script that
-  // reads location) before anything else runs. The manual screen shows the
-  // copy kept here.
+  // Takes the code out of this tab's address bar and its back/forward entry
+  // before anything else runs, so scripts that read location later don't see
+  // it. It can't remove the URL from the browser's global history, autocomplete
+  // or sync, which recorded it on load. The manual screens show the copy kept
+  // here.
   replaceState();
   setManualUrl(data.fullUrl);
 
@@ -73,37 +80,53 @@ export function runOAuthCallback({
 
   const key = callbackAckKey(data);
   const pending: unknown[] = [];
-  let acked = false;
+  const later = (fn: () => void, ms: number) => {
+    const id = timers.setTimeout(fn, ms);
+    pending.push(id);
+    return id;
+  };
+  const cancel = (id: unknown) => {
+    if (id !== null) timers.clearTimeout(id);
+  };
+  let received = false;
+  let finished = false;
   let ackTimer: unknown = null;
+  let exchangeTimer: unknown = null;
   let stopListening: () => void = () => {};
 
   const onMessage = (message: unknown) => {
-    if (acked || !isCallbackAckFor(message, key)) return;
-    acked = true;
-    timers.clearTimeout(ackTimer);
+    if (finished || !isCallbackAckFor(message, key)) return;
+    if (message.status === "received") {
+      if (received) return;
+      received = true;
+      cancel(ackTimer);
+      setStatus("connecting");
+      exchangeTimer = later(() => setStatus("slow"), CALLBACK_EXCHANGE_TIMEOUT_MS);
+      return;
+    }
+    finished = true;
+    cancel(ackTimer);
+    cancel(exchangeTimer);
     stopListening();
-    if (!message.ok) {
+    if (message.status === "failed") {
       setStatus("failed");
       return;
     }
     setStatus("success");
-    pending.push(timers.setTimeout(() => {
+    later(() => {
       close();
       // Still here when the browser refuses to close a tab it didn't open.
-      pending.push(timers.setTimeout(() => setStatus("done"), CALLBACK_DONE_DELAY_MS));
-    }, CALLBACK_CLOSE_DELAY_MS));
+      later(() => setStatus("done"), CALLBACK_DONE_DELAY_MS);
+    }, CALLBACK_CLOSE_DELAY_MS);
   };
 
   stopListening = listen(onMessage);
-  ackTimer = timers.setTimeout(() => {
-    if (!acked) setStatus("manual");
-  }, CALLBACK_ACK_TIMEOUT_MS);
+  ackTimer = later(() => setStatus("manual"), CALLBACK_ACK_TIMEOUT_MS);
 
   relay(data);
 
   return () => {
     stopListening();
-    timers.clearTimeout(ackTimer);
     for (const id of pending) timers.clearTimeout(id);
   };
 }

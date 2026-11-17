@@ -113,14 +113,26 @@ function CallbackContent() {
           </>
         )}
 
-        {status === "manual" && (
+        {status === "connecting" && (
+          <>
+            <div className="size-16 mx-auto mb-4 rounded-full bg-primary/10 flex items-center justify-center">
+              <span className="material-symbols-outlined text-3xl text-primary animate-spin">progress_activity</span>
+            </div>
+            <h1 className="text-xl font-semibold mb-2">Connecting...</h1>
+            <p className="text-text-muted">The dashboard got this sign-in and is connecting the account.</p>
+          </>
+        )}
+
+        {(status === "manual" || status === "slow") && (
           <>
             <div className="size-16 mx-auto mb-4 rounded-full bg-yellow-100 dark:bg-yellow-900/30 flex items-center justify-center">
               <span className="material-symbols-outlined text-3xl text-yellow-600">info</span>
             </div>
-            <h1 className="text-xl font-semibold mb-2">Copy This URL</h1>
+            <h1 className="text-xl font-semibold mb-2">{status === "slow" ? "Still Connecting" : "Copy This URL"}</h1>
             <p className="text-text-muted mb-4">
-              The dashboard didn&apos;t pick up this sign-in. Copy this URL and paste it into the connect dialog.
+              {status === "slow"
+                ? "The dashboard got this sign-in but hasn't finished connecting. Check the connect dialog. If it gives up, paste this URL into it."
+                : "The dashboard didn't pick up this sign-in. Copy this URL and paste it into the connect dialog."}
             </p>
             <div className="bg-surface border border-border rounded-lg p-3 text-left">
               <code className="text-xs break-all">{manualUrl}</code>

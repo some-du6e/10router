@@ -107,9 +107,15 @@ describe("Docker builds", () => {
 // The dialog has no render test; these keep the ack from getting lost when
 // handleCallback is rewritten.
 describe("connect dialog wiring", () => {
-  it("acks a callback only after the exchange succeeds, and replies to the popup", () => {
+  it("acks received before the exchange and its outcome after, and replies to the popup", () => {
     const modal = read("src/shared/components/OAuthModal.js");
-    expect(modal).toMatch(/if \(await exchangeTokens\(token \|\| code, state\)\) sendCallbackAck\(data, \{ reply \}\)/);
+    const received = modal.indexOf('sendCallbackAck(data, { status: "received", reply });');
+    const exchange = modal.indexOf("const saved = await exchangeTokens(token || code, state);");
+    const outcome = modal.indexOf('sendCallbackAck(data, { status: saved ? "saved" : "failed", reply });');
+    expect(received).toBeGreaterThan(-1);
+    expect(exchange).toBeGreaterThan(received);
+    expect(outcome).toBeGreaterThan(exchange);
+    expect(modal).toMatch(/sendCallbackAck\(data, \{ status: "failed", reply \}\);\s*setError\(errorDescription \|\| callbackError\)/);
     expect(modal).toMatch(/event\.source\?\.postMessage\(ack, event\.origin\)/);
   });
 });

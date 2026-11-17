@@ -50,15 +50,23 @@ describe("OAuth callback ack over BroadcastChannel", () => {
     const [ack] = onMessage.mock.calls[0];
     expect(isCallbackAckFor(ack, callbackAckKey(CALLBACK))).toBe(true);
     expect(isCallbackAckFor(ack, callbackAckKey({ state: "s2" }))).toBe(false);
-    expect(ack.ok).toBe(true);
+    expect(ack.status).toBe("saved");
   });
 
-  it("marks an ack for an error callback as not ok", async () => {
+  it("carries received and failed acks in order", async () => {
     const onMessage = vi.fn();
     listen(onMessage);
-    sendCallbackAck(CALLBACK, { ok: false });
-    await waitFor(() => onMessage.mock.calls.length > 0);
-    expect(onMessage.mock.calls[0][0].ok).toBe(false);
+    sendCallbackAck(CALLBACK, { status: "received" });
+    sendCallbackAck(CALLBACK, { status: "failed" });
+    await waitFor(() => onMessage.mock.calls.length > 1);
+    expect(onMessage.mock.calls.map(([ack]) => ack.status)).toEqual(["received", "failed"]);
+  });
+
+  it("rejects an ack with an unknown status", () => {
+    const key = callbackAckKey(CALLBACK);
+    expect(isCallbackAckFor({ type: OAUTH_CALLBACK_ACK_TYPE, key, status: "saved" }, key)).toBe(true);
+    expect(isCallbackAckFor({ type: OAUTH_CALLBACK_ACK_TYPE, key, status: "bogus" }, key)).toBe(false);
+    expect(isCallbackAckFor({ type: OAUTH_CALLBACK_ACK_TYPE, key, ok: true }, key)).toBe(false);
   });
 
   it("stops delivering after stop()", async () => {
@@ -88,7 +96,7 @@ describe("OAuth callback ack over postMessage", () => {
   it("replies on the channel the callback came in on", () => {
     const reply = vi.fn();
     sendCallbackAck(CALLBACK, { reply, Channel: null });
-    expect(reply).toHaveBeenCalledWith({ type: OAUTH_CALLBACK_ACK_TYPE, key: "state:s1", ok: true });
+    expect(reply).toHaveBeenCalledWith({ type: OAUTH_CALLBACK_ACK_TYPE, key: "state:s1", status: "saved" });
   });
 
   it("survives a reply to a window that is gone", () => {
@@ -104,7 +112,7 @@ describe("OAuth callback ack over postMessage", () => {
     const target = new EventTarget();
     const onMessage = vi.fn();
     const stop = listen(onMessage, { Channel: null, target, origins: [ORIGIN] });
-    const ack = { type: OAUTH_CALLBACK_ACK_TYPE, key: "state:s1", ok: true };
+    const ack = { type: OAUTH_CALLBACK_ACK_TYPE, key: "state:s1", status: "saved" };
     target.dispatchEvent(message(ack, "http://evil.example"));
     target.dispatchEvent(message({ type: "oauth_callback", data: {} }));
     expect(onMessage).not.toHaveBeenCalled();
@@ -117,7 +125,7 @@ describe("OAuth callback ack over postMessage", () => {
 });
 
 describe("without a working BroadcastChannel", () => {
-  const ack = { type: OAUTH_CALLBACK_ACK_TYPE, key: "state:s1", ok: true };
+  const ack = { type: OAUTH_CALLBACK_ACK_TYPE, key: "state:s1", status: "saved" };
 
   for (const [name, value] of [
     ["undefined", undefined],
