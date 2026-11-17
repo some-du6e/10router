@@ -73,6 +73,7 @@ jobs:
           unit/login-errors.test.js
           unit/login-landing.test.js
           unit/oidc-test-route.test.js
+          unit/saml-test-route.test.js
           unit/sso-allowlist.test.js
           unit/trae-callback-binding.test.js
           unit/oauth-callback-binding.test.js
