@@ -53,11 +53,31 @@ describe("server auth secret", () => {
     fs.writeFileSync(file, "winner-secret");
     expect(getAuthSecret()).toBe("winner-secret");
     expect(realRead.call(fs, file, "utf8")).toBe("winner-secret");
+    expect(fs.readdirSync(dataDir)).toEqual(["jwt-secret"]);
+  });
+
+  it("leaves only the secret file behind, never a temp file", async () => {
+    (await loadAuthSecret()).getAuthSecret();
+    expect(fs.readdirSync(dataDir)).toEqual(["jwt-secret"]);
+  });
+
+  it("falls back to an exclusive copy where hard links aren't supported", async () => {
+    const { getAuthSecret } = await loadAuthSecret();
+    vi.spyOn(fs, "linkSync").mockImplementation(() => {
+      throw Object.assign(new Error("EPERM"), { code: "EPERM" });
+    });
+    const secret = getAuthSecret();
+    const file = path.join(dataDir, "jwt-secret");
+    expect(fs.readFileSync(file, "utf8")).toBe(secret);
+    if (process.platform !== "win32") expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(fs.readdirSync(dataDir)).toEqual(["jwt-secret"]);
   });
 
   it("refuses an empty secret file rather than signing with an empty key", async () => {
     fs.writeFileSync(path.join(dataDir, "jwt-secret"), "");
     const { getAuthSecret } = await loadAuthSecret();
     expect(() => getAuthSecret()).toThrow(/is empty/);
+    // Left as it is for the operator: the error says how to fix it.
+    expect(fs.readFileSync(path.join(dataDir, "jwt-secret"), "utf8")).toBe("");
   });
 });
