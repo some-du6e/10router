@@ -7,8 +7,38 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { DEFAULT_PLUGINS } from "@/shared/constants/coworkPlugins";
+import { CLI_TOOLS } from "@/shared/constants/cliTools";
+import { keyStatus, pickFields } from "@/lib/cliTools/statusFields.js";
+import { isKeepExistingKey } from "@/lib/cliTools/keepKey.js";
+import { checkNewBaseUrl, isCredential } from "@/lib/cliTools/keepKeyTarget.js";
+import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
+import { findUnsafeConfigValue, unsafeConfigValueError } from "@/lib/cliTools/configValue.js";
 
 const execAsync = promisify(exec);
+
+// The env vars the status shows: base URL, context cap and the model mappings.
+const STATUS_ENV_KEYS = [
+  "ANTHROPIC_BASE_URL",
+  "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+  ...Object.values(CLI_TOOLS.claude.envVars),
+  ...CLI_TOOLS.claude.defaultModels.map((m) => m.envKey).filter(Boolean),
+];
+
+// The env keys the card writes (base URL, key, model mappings, context cap). Any
+// other key is refused: HTTPS_PROXY or NODE_TLS_REJECT_UNAUTHORIZED would reroute
+// the key, NODE_OPTIONS would run code on this host.
+const WRITABLE_ENV_KEYS = new Set([...STATUS_ENV_KEYS, "ANTHROPIC_AUTH_TOKEN", "API_TIMEOUT_MS"]);
+
+// Credentials in settings.json the card never writes, which Claude Code would send
+// to whatever base URL the request sets: named in the error so the user can fix it.
+function otherStoredCredentials(settings) {
+  const env = settings?.env || {};
+  return [
+    env.ANTHROPIC_API_KEY ? "env.ANTHROPIC_API_KEY" : null,
+    env.ANTHROPIC_CUSTOM_HEADERS ? "env.ANTHROPIC_CUSTOM_HEADERS" : null,
+    settings?.apiKeyHelper ? "apiKeyHelper" : null,
+  ].filter(Boolean);
+}
 
 // Exa MCP def — reuse from coworkPlugins (DRY).
 const EXA_PLUGIN = DEFAULT_PLUGINS.find((p) => p.name === "exa");
@@ -103,10 +133,14 @@ export async function GET() {
     const settings = await readSettings();
     const has10Router = !!(settings?.env?.ANTHROPIC_BASE_URL);
     const claudeJson = await readClaudeJson();
+    const env = settings?.env || {};
 
     return NextResponse.json({
       installed: true,
-      settings: settings,
+      // settings.json can hold any env var (other tokens, proxies): only the ones the card reads.
+      settings: settings ? { env: pickFields(env, STATUS_ENV_KEYS) } : null,
+      // Never the token itself: whether one is set, and which of our keys it is.
+      authToken: await keyStatus(env.ANTHROPIC_AUTH_TOKEN),
       has10Router: has10Router,
       exaMcpEnabled: !!claudeJson?.mcpServers?.exa,
       settingsPath: getClaudeSettingsPath(),
@@ -125,11 +159,29 @@ export async function POST(request) {
   try {
     const { env, exaMcpEnabled, maxContextTokens } = await request.json();
     
-    if (!env || typeof env !== "object") {
+    if (!env || typeof env !== "object" || Array.isArray(env)) {
       return NextResponse.json(
         { error: "Invalid env object" },
         { status: 400 }
       );
+    }
+    const refused = Object.keys(env).filter((key) => !WRITABLE_ENV_KEYS.has(key));
+    if (refused.length) {
+      return NextResponse.json({ error: `These env keys can't be set here: ${refused.join(", ")}` }, { status: 400 });
+    }
+    if (Object.values(env).some((value) => typeof value !== "string" && typeof value !== "number")) {
+      return NextResponse.json({ error: "Env values must be strings or numbers" }, { status: 400 });
+    }
+    if (env.ANTHROPIC_BASE_URL !== undefined && typeof env.ANTHROPIC_BASE_URL !== "string") {
+      return NextResponse.json({ error: "ANTHROPIC_BASE_URL must be a string" }, { status: 400 });
+    }
+    const unsafeEnv = findUnsafeConfigValue({
+      ...Object.fromEntries(Object.entries(env).filter(([, value]) => typeof value === "string")),
+      // Written as String(maxContextTokens); a number is fine as is.
+      maxContextTokens: typeof maxContextTokens === "number" ? String(maxContextTokens) : maxContextTokens || undefined,
+    });
+    if (unsafeEnv) {
+      return NextResponse.json({ error: unsafeConfigValueError(unsafeEnv) }, { status: 400 });
     }
 
     const settingsPath = getClaudeSettingsPath();
@@ -156,6 +208,41 @@ export async function POST(request) {
         : `${env.ANTHROPIC_BASE_URL}/v1`;
     }
 
+    // The card couldn't show the stored token (a custom key): keep it as it is. A
+    // body without a token (or with an empty one) keeps it too, through the env
+    // merge below.
+    const storedEnv = currentSettings.env || {};
+    if (isKeepExistingKey(env.ANTHROPIC_AUTH_TOKEN)) {
+      if (!storedEnv.ANTHROPIC_AUTH_TOKEN) {
+        return NextResponse.json({ error: "No existing API key to keep; choose a key" }, { status: 400 });
+      }
+      delete env.ANTHROPIC_AUTH_TOKEN;
+    }
+    if (env.ANTHROPIC_AUTH_TOKEN === "") delete env.ANTHROPIC_AUTH_TOKEN;
+    // Any other token must be a real one, whatever the base URL: a blank or
+    // numeric token leaves Claude Code on its own login, which would then go to
+    // the stored base URL.
+    if (env.ANTHROPIC_AUTH_TOKEN !== undefined && !isCredential(env.ANTHROPIC_AUTH_TOKEN)) {
+      return NextResponse.json({ error: "ANTHROPIC_AUTH_TOKEN must be a non-blank string; choose a key" }, { status: 400 });
+    }
+
+    // A new base URL that is neither the stored one nor this instance needs a token
+    // chosen for it (without one, Claude Code sends the stored token, or signs in
+    // with its own claude.ai or Console login), and no other stored credential that
+    // would go along with it.
+    if (env.ANTHROPIC_BASE_URL) {
+      const target = await checkNewBaseUrl({
+        tool: "Claude Code",
+        baseUrl: env.ANTHROPIC_BASE_URL,
+        storedBaseUrl: storedEnv.ANTHROPIC_BASE_URL,
+        credential: env.ANTHROPIC_AUTH_TOKEN,
+        fallback: storedEnv.ANTHROPIC_AUTH_TOKEN ? "the stored ANTHROPIC_AUTH_TOKEN" : "its own Claude login",
+        otherCredentials: otherStoredCredentials(currentSettings),
+        where: "settings.json",
+      });
+      if (target.error) return NextResponse.json({ error: target.error }, { status: 400 });
+    }
+
     // Merge new env with existing settings
     const newSettings = {
       ...currentSettings,
@@ -174,8 +261,8 @@ export async function POST(request) {
       delete newSettings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
     }
 
-    // Write new settings
-    await fs.writeFile(settingsPath, JSON.stringify(newSettings, null, 2));
+    // Write new settings (owner-only: it holds the key)
+    await writePrivateFile(settingsPath, JSON.stringify(newSettings, null, 2));
 
     // Exa MCP toggle — write to ~/.claude.json (CLI reads mcpServers from here).
     if (EXA_PLUGIN) {
@@ -242,7 +329,7 @@ export async function DELETE() {
     await writeClaudeJsonMcp(null);
 
     // Write updated settings
-    await fs.writeFile(settingsPath, JSON.stringify(currentSettings, null, 2));
+    await writePrivateFile(settingsPath, JSON.stringify(currentSettings, null, 2));
 
     return NextResponse.json({
       success: true,

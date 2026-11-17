@@ -230,6 +230,52 @@ docker run -d --name 10router -p 20128:20128 \
 
 Container defaults: `PORT=20128`, `HOSTNAME=0.0.0.0`.
 
+#### Restarts and deploys
+
+On `SIGTERM` or `SIGINT` (`docker stop` sends `SIGTERM`) the server drains before it exits:
+
+- It closes its listening socket, so **new connections are refused for the whole drain**.
+  On a setup that stops the old container before starting the new one, that's the trade-off:
+  turns already running finish, and new requests fail until the new instance is up. So each
+  deploy's outage now lasts as long as the drain runs: up to 3 minutes by default once the
+  stop grace period is raised (below), and up to the grace period itself before that.
+- Model requests already running get up to `SHUTDOWN_DRAIN_TIMEOUT_MS` (3 minutes by default)
+  to finish, long streams included. That covers `/v1*`, `/api/v1*`, `/v1beta*`, `/api/v1beta*`,
+  `/responses`, `/systemone`, `/codex/*`, `/backend-api/codex/*` and Codex WebSocket turns.
+  Then the app's own shutdown work runs (database flush and close) and it exits. A request
+  held at a provider limit keeps the drain open until that timeout.
+- A request sent on a keep-alive connection that was already open gets a `503` with
+  `Retry-After: 5` and `Connection: close`. A Codex turn started during the drain fails; Codex's
+  retry works once a server is accepting again. Dashboard streams that never end (usage,
+  console logs, MCP) are closed at the start, so an open dashboard tab may need a reload after
+  the restart.
+- A repeat signal within 1.5 seconds of the first is ignored (`npm run start` forwards the one
+  it got); a later one exits at once. `SHUTDOWN_DRAIN_TIMEOUT_MS=0` turns the drain off.
+- It needs Node (the Docker image and `npm run start`). Under Bun (`start:bun`) a signal still
+  exits at once.
+
+**The drain does nothing unless whatever stops the process waits for it.** Docker kills the
+process 10 seconds after `docker stop` by default, which cuts the drain short and can kill the
+shutdown work after it. Set the stop timeout **longer** than the drain timeout, e.g. drain +
+30 seconds:
+
+- `docker stop -t 210 10router` (or `docker run --stop-timeout 210 …`)
+- Compose: `stop_grace_period: 3m30s` (the repo's `docker-compose.yml` sets it)
+- A hosting platform: its container stop timeout / grace period setting.
+- PM2: `kill_timeout` (default 1.6 seconds), e.g. `pm2 start npm --name 10router --kill-timeout 210000 -- start`.
+- systemd: `TimeoutStopSec=210` in the unit.
+
+A kill that comes too early loses about the last 5 seconds of buffered request-detail rows
+and, on the sql.js driver, about 100 ms of writes. SQLite itself replays its WAL on the next
+open.
+
+`GET /api/health` answers `200` while the server is up, with no auth, for a platform health
+check. During the drain new connections are refused, so a health check fails then.
+
+Don't overlap a restart by running two instances side by side on one `DATA_DIR`. SQLite and
+sql.js writes are last-writer-wins, and OAuth refresh tokens rotate, so each instance would
+overwrite or invalidate the other's state.
+
 Data persists at `$HOME/.9router/db/data.sqlite` on the host (the `.9router` directory name
 is retained for compatibility with existing installs) ↔ `/app/data/db/data.sqlite` in the
 container.
@@ -238,16 +284,19 @@ container.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `JWT_SECRET` | Auto-generated (`~/.9router/jwt-secret`) | JWT signing secret for the dashboard auth cookie (override to share across instances) |
+| `JWT_SECRET` | Auto-generated (`$DATA_DIR/jwt-secret`, `~/.9router` by default) | Signs the dashboard session cookie and the SAML `saml_state` cookie; set the same value on every instance behind one URL (each instance still refuses a request it already used). Values shorter than 32 characters and documented placeholders are ignored with a warning, and the generated file is used instead; generate one with `openssl rand -hex 32`. Logout and password changes end sessions through the database, so instances that each have their own database revoke only their own sessions; behind one URL they need a shared database for that to apply everywhere |
 | `INITIAL_PASSWORD` | unset | Optional headless bootstrap password (min 8 chars). When unset, first run requires the one-time setup token printed to the server console. There is no default password |
+| `SSO_ALLOWED_USERS` | unset (any IdP account) | Optional OIDC/SAML dashboard allowlist: comma-separated emails, `@domain` suffixes or IdP subject IDs (OIDC `sub`, SAML NameID). Unset, every account the IdP signs in gets admin access. For OIDC, email entries only match an email the IdP marks verified (`email_verified`; Entra ID often omits it, so list Entra users by subject ID). For SAML, an email entry trusts the email the IdP asserts, so if users can register or change their email at the IdP, list them by NameID |
 | `DATA_DIR` | `~/.9router` | App data location (SQLite at `$DATA_DIR/db/data.sqlite`); the `.9router` name is kept for compatibility |
 | `PORT` | framework default | Service port (`20128` in examples) |
 | `HOSTNAME` | framework default | Bind host (Docker defaults to `0.0.0.0`) |
 | `NODE_ENV` | runtime default | Set `production` for deploy |
+| `SHUTDOWN_DRAIN_TIMEOUT_MS` | `180000` | On SIGTERM/SIGINT, how long in-flight model requests get to finish before exit (new connections are refused meanwhile); `0`/`off`/`false` exits at once. Set the container stop grace period longer than this |
 | `BASE_URL` | `http://localhost:20128` | Server-side internal base URL used by cloud sync jobs |
 | `CLOUD_URL` | `https://9router.com` | Server-side cloud sync endpoint base URL |
 | `NEXT_PUBLIC_BASE_URL` | `http://localhost:3000` | Backward-compatible/public base URL (prefer `BASE_URL`) |
 | `NEXT_PUBLIC_CLOUD_URL` | `https://9router.com` | Backward-compatible/public cloud URL (prefer `CLOUD_URL`) |
+| `NEXT_PUBLIC_GA_ID` | unset (no analytics) | Optional Google Analytics 4 measurement ID (`G-...`) for the dashboard; never loaded on `/callback`. Baked in by `next build`, so a running server ignores it (Docker: `--build-arg NEXT_PUBLIC_GA_ID=...`) |
 | `API_KEY_SECRET` | `endpoint-proxy-api-key-secret` | HMAC secret for generated API keys |
 | `MACHINE_ID_SALT` | `endpoint-proxy-salt` | Salt for stable machine ID hashing |
 | `ENABLE_REQUEST_LOGS` | `false` | Enables request/response logs under `logs/` |
@@ -255,6 +304,7 @@ container.
 | `REQUIRE_API_KEY` | `false` | Enforce Bearer API key on `/v1/*` (recommended for internet-exposed deploys) |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` | empty | Outbound proxy for upstream provider calls |
 | `SEARXNG_URL` | `http://localhost:8888/search` | Endpoint for the built-in unauthenticated SearXNG web-search provider. Must resolve to a public address (the SSRF guard blocks private hosts). Claude Code's WebSearch only falls back to SearXNG when this is set. |
+| `DETECT_ANTHROPIC_FIRST_HINTS` | empty | URL substrings that make Add endpoint probe Anthropic Messages first. Comma-separated, any case; quotes around entries are ignored. URLs naming Anthropic or Claude and `sk-ant-` keys already do. A hint matches anywhere in the endpoint URL (scheme, host, path, query; a trailing API path like `/chat/completions` is cut off first), so use a distinctive piece of the host. Restart after changing it. |
 
 Notes:
 
@@ -268,7 +318,8 @@ Notes:
 
 - App state: `${DATA_DIR}/db/data.sqlite` (providers, combos, aliases, keys, settings, usage history)
 - Auto backups: `${DATA_DIR}/db/backups/`
-- Request/translator logs: `<repo>/logs/...` when `ENABLE_REQUEST_LOGS=true`
+- Request/translator logs: `<repo>/logs/...` when `ENABLE_REQUEST_LOGS=true`. Credential headers are masked to their last 4 characters (rate-limit and token-count headers stay readable), and every query param whose name contains `key`, `token`, `secret`, `auth` or `sig` (plus `code`) is redacted. That rule is broad on purpose, so harmless params such as `max_tokens` or `author` read `[REDACTED]` too. `Bearer` tokens in error text are redacted from 8 characters
+- Owner-only: `${DATA_DIR}/db/` and `backups/` are `0700`, `data.sqlite` (with `-wal`/`-shm`) and any leftover `db.json`/`usage.json`/`disabledModels.json`/`request-details.json` and the safety backups are owner-only, and `logs/` is `0700` with `0600` files. A backup job or sidecar running as another OS user can no longer read them; run it as the same user. A `DATA_DIR` you created yourself keeps its own mode
 - In Docker, `${DATA_DIR}` and `~/.9router` resolve to the same location — the symlink
   `/root/.9router -> /app/data` is created at build time.
 
@@ -391,13 +442,15 @@ Returns the calling key's own budget (`limit`), spend (`usage`), what's left
 GET  http://localhost:20128/api/management/v1/me
 GET  http://localhost:20128/api/management/v1/client-keys
 POST http://localhost:20128/api/management/v1/client-keys     {"name", "allowedModels", "budgetUsd", "expiresAt"}
-POST http://localhost:20128/api/management/v1/provider-keys   {"provider", "apiKey", "name"}
+POST http://localhost:20128/api/management/v1/provider-keys   {"provider", "apiKey", "name", "baseUrl"}
 Authorization: Bearer 10r-mgmt-...
 ```
 
 Create a management key on the Endpoint page and pick what it may do: client keys
 (optionally only for some providers or models, under a budget cap) and/or provider keys
-(optionally only for some providers). By default it sees and deletes only the keys it
+(optionally only for some providers). For an upstream where each key has its own host,
+the dashboard can also list, per custom endpoint, the hosts a key it adds may use for its
+own `baseUrl` (`*.acme.example`, https only). By default it sees and deletes only the keys it
 created. Responses never include provider secrets, and a new client key's full value
 appears only in the response that created it. Management keys can't be created or listed
 through this API. See [docs/MANAGEMENT_KEYS.md](docs/MANAGEMENT_KEYS.md).

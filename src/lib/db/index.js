@@ -6,6 +6,8 @@ import { rowToKey, toLimitHoldColumn, numberOrNull, toAllowedModelsColumn, resee
 // Public API barrel — all DB functions
 import { getAdapter } from "./driver.js";
 import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
+import { setMetaSync } from "./helpers/metaStore.js";
+import { SESSION_EPOCH_META_KEY, newSessionEpoch } from "./helpers/sessionEpoch.js";
 
 // Settings
 export {
@@ -13,6 +15,7 @@ export {
 } from "./repos/settingsRepo.js";
 import { invalidateSettingsCache } from "./repos/settingsRepo.js";
 import { bumpConnectionsVersion } from "./repos/connectionsRepo.js";
+import { bumpCombosVersion } from "./repos/combosRepo.js";
 
 // Provider connections
 export {
@@ -58,7 +61,7 @@ export {
 // Combos
 export {
   getCombos, getComboById, getComboByName,
-  createCombo, updateCombo, deleteCombo,
+  createCombo, updateCombo, deleteCombo, combosVersion,
 } from "./repos/combosRepo.js";
 
 // Aliases (model + custom)
@@ -139,6 +142,15 @@ export async function importDb(payload) {
     // and a key that is off (or has an expiry) with no actor then counts as the dashboard's.
     const actorOrNull = (a) => (a === "dashboard" ? a : ownerOrNull(a));
 
+    // The session epoch lives in _meta, which the import leaves alone. An import
+    // that changes the dashboard password (or drops it, or can't be compared)
+    // starts a new epoch, so sessions signed in under the old password end.
+    let livePassword;
+    try {
+      const row = db.all(`SELECT data FROM settings WHERE id = 1`)[0];
+      livePassword = row ? JSON.parse(row.data)?.password ?? null : null;
+    } catch { /* unreadable: treated as changed */ }
+
     // Wipe all tables (keep _meta)
     db.run(`DELETE FROM settings`);
     db.run(`DELETE FROM providerConnections`);
@@ -153,6 +165,10 @@ export async function importDb(payload) {
     if (payload.settings) {
       migrateLegacyHostPassword(db, payload.settings, { cleanup: false });
       db.run(`INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, [stringifyJson(stripRetiredSettings(payload.settings))]);
+    }
+    const importedPassword = payload.settings?.password ?? null;
+    if (livePassword === undefined || importedPassword !== livePassword) {
+      setMetaSync(db, SESSION_EPOCH_META_KEY, newSessionEpoch());
     }
 
     for (const c of payload.providerConnections || []) {
@@ -229,6 +245,7 @@ export async function importDb(payload) {
   // Settings were replaced wholesale above, bypassing updateSettings.
   invalidateSettingsCache();
   bumpConnectionsVersion();
+  bumpCombosVersion();
 
   // A restore can switch "Show full request details" off; drop any stored
   // full payloads so they don't outlive the setting.

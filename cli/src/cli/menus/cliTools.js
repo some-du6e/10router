@@ -50,8 +50,12 @@ async function buildClaudeHeader() {
   if (currentUrl) {
     lines.push(`Status:   ${COLORS.green}✓ Configured${COLORS.reset}`);
     lines.push(`Endpoint: ${COLORS.cyan}${currentUrl}${COLORS.reset}`);
+    // Newer gateways never return the token, only whether one is set (authToken).
     if (currentKey) {
       lines.push(`API Key:  ${COLORS.dim}${currentKey.substring(0, 10)}...${COLORS.reset}`);
+    } else if (result.data.authToken?.set) {
+      const which = result.data.authToken.ownKeyId ? "a 10router key" : "a custom key";
+      lines.push(`API Key:  ${COLORS.dim}set (${which})${COLORS.reset}`);
     }
   } else {
     lines.push(`Status:   ${COLORS.red}✗ Not configured${COLORS.reset}`);
@@ -202,11 +206,11 @@ async function buildCodexHeader() {
     ].join("\n");
   }
 
-  // Parse base_url and model from raw TOML string
-  const baseUrlMatch = config && config.match(/base_url\s*=\s*"([^"]+)"/);
-  const modelMatch = config && config.match(/^model\s*=\s*"([^"]+)"/m);
-  const baseUrl = baseUrlMatch ? baseUrlMatch[1] : "";
-  const model = modelMatch ? modelMatch[1] : "";
+  // Newer gateways return the parsed fields (`codex`); older ones the raw TOML string.
+  const baseUrlMatch = typeof config === "string" && config.match(/base_url\s*=\s*"([^"]+)"/);
+  const modelMatch = typeof config === "string" && config.match(/^model\s*=\s*"([^"]+)"/m);
+  const baseUrl = result.data.codex?.baseUrl || (baseUrlMatch ? baseUrlMatch[1] : "");
+  const model = result.data.codex?.model || (modelMatch ? modelMatch[1] : "");
 
   const lines = [`Status:   ${COLORS.green}✓ Configured${COLORS.reset}`];
   if (baseUrl) lines.push(`Endpoint: ${COLORS.cyan}${baseUrl}${COLORS.reset}`);

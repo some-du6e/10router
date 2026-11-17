@@ -4,8 +4,10 @@
 // here and on master to compare.
 //   cd tests && npx vitest run --config ./vitest.stress.config.js unit/auto-disable-stress.test.js
 // Set STRESS_OUT=<file> to also write the results as JSON, and STRESS_PIN=1 to
-// fail when they drift from the numbers PR #122 reports. To regenerate those,
-// run from tests/ with STRESS_OUT=unit/auto-disable-stress.pinned.json.
+// fail when they drift from the pinned numbers. To regenerate those, run from
+// tests/ with STRESS_OUT=unit/auto-disable-stress.pinned.json. The Dead-key
+// stress workflow runs it pinned; a manual run of it also runs it on master's
+// auth code for comparison.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -19,7 +21,7 @@ const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "10router-auth-stress-"));
 process.env.DATA_DIR = tempDir;
 
 const MIN = 60 * 1000;
-const DEAD_403 = '[403]: {"code":"003001","message":"Not authorized for this endpoint"}';
+const DEAD_403 = '[403]: {"code":"000000","message":"Key barred from this endpoint"}';
 const OPUS = "claude-opus-5-5";
 const SONNET = "claude-sonnet-5-5";
 const HAIKU = "claude-haiku-5-5";
@@ -57,7 +59,7 @@ async function setup(names, cross = false) {
     keys.push(await db.createProviderConnection({
       provider, authType: "apikey", name, apiKey: `sk-test-${name}-0123456789`,
       providerSpecificData: {
-        baseUrl: `https://${own ? "acct-own" : "acct-shared"}.snowflakecomputing.test/api/v2/cortex/v1`,
+        baseUrl: `https://${own ? "acct-own" : "acct-shared"}.contoso-cloud.test/api/v1`,
         ...(own ? { ownBaseUrl: true } : {}),
       },
     }));

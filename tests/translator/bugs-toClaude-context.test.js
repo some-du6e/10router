@@ -167,7 +167,7 @@ describe("OpenAI → Claude context mapping", () => {
       messages: [
         { role: "system", content: "Describe the image." },
         { role: "user", content: [
-          { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+          { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } },
         ] },
       ],
     });

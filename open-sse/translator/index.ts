@@ -1,8 +1,10 @@
 import { FORMATS } from "./formats.js";
 import { ensureToolCallIds, fixMissingToolResponses } from "./concerns/toolCall.js";
+import { inlineToolChanges } from "./concerns/toolChanges.js";
 import { prepareClaudeRequest } from "./formats/claude.js";
 import { cloakClaudeTools, decloakStreamChunk } from "../utils/claudeCloaking.js";
 import { filterToOpenAIFormat } from "./formats/openai.js";
+import { relaxForcedChatToolChoiceForClaude } from "./concerns/toolChoice.js";
 import { normalizeThinkingConfig } from "../services/provider.js";
 import { applyThinking, captureThinking } from "./concerns/thinkingUnified.js";
 import { captureSessionId } from "../utils/sessionManager.js";
@@ -96,6 +98,10 @@ export function translateRequest(
   ensureInitialized();
   let result = body;
 
+  // Only Claude Messages has tool_addition / tool_removal blocks; for any other
+  // target, fold them into tools[] so no tool the client added is lost.
+  if (sourceFormat === FORMATS.CLAUDE && targetFormat !== FORMATS.CLAUDE) result = inlineToolChanges(result);
+
   // Strip explicit content types (opt-in via strip[] in PROVIDER_MODELS entry)
   stripContentTypes(result, stripList);
 
@@ -172,9 +178,13 @@ export function translateRequest(
   // Always normalize to clean OpenAI format when target is OpenAI
   // This handles hybrid requests (e.g., OpenAI messages + Claude tools)
   if (targetFormat === FORMATS.OPENAI) {
-    result = filterToOpenAIFormat(result, {
+    // No translator ran (openai → openai): filter a copy, since the caller
+    // reuses the client body for a fallback to another model.
+    result = filterToOpenAIFormat(result === body ? { ...result } : result, {
       preserveCacheControl: !!providerQuirks(provider)?.preserveCacheControl,
     });
+    // Thinking-dependent cases wait for DefaultExecutor.finalizeBody: an executor may still strip reasoning.
+    relaxForcedChatToolChoiceForClaude(result, provider, model, false);
   }
 
   // Final step: prepare request for Claude format endpoints

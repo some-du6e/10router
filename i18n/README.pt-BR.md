@@ -1146,7 +1146,6 @@ npm install
 npm run build
 
 # Configurar
-export JWT_SECRET="your-secure-secret-change-this"
 export INITIAL_PASSWORD="your-password"
 export DATA_DIR="/var/lib/9router"
 export PORT="20128"
@@ -1166,6 +1165,8 @@ pm2 start npm --name 9router -- start
 pm2 save
 pm2 startup
 ```
+
+> `JWT_SECRET` é opcional. Deixe sem definir e o 10router gera um uma única vez em `$DATA_DIR/jwt-secret`, então as sessões continuam após reinícios. Apenas para várias instâncias atrás de uma mesma URL: gere um valor uma vez (`openssl rand -hex 32`), guarde-o e defina esse mesmo valor em todas as instâncias. Valores com menos de 32 caracteres ou um placeholder documentado são ignorados.
 
 ### Docker
 
@@ -1217,7 +1218,7 @@ docker pull decolua/9router:latest   # atualizar para a versão mais recente
 
 | Variável | Padrão | Descrição |
 | ---------------------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------- |
-| `JWT_SECRET` | Gerado automaticamente (`~/.9router/jwt-secret`) | Segredo de assinatura JWT para cookie de autenticação do painel (substituir para compartilhar entre instâncias) |
+| `JWT_SECRET` | Gerado automaticamente (`~/.9router/jwt-secret`) | Segredo de assinatura JWT para cookie de autenticação do painel; defina apenas para compartilhar sessões entre instâncias (32+ caracteres; valores mais curtos e placeholders documentados são ignorados) |
 | `INITIAL_PASSWORD` | `123456` | Primeira senha de login quando não existe hash salvo |
 | `DATA_DIR` | `~/.9router` | Localização principal dos dados do aplicativo (SQLite em `$DATA_DIR/db/data.sqlite`) |
 | `PORT` | padrão da estrutura | Porta de serviço (`20128` nos exemplos) |
@@ -1234,6 +1235,7 @@ docker pull decolua/9router:latest   # atualizar para a versão mais recente
 | `REQUIRE_API_KEY` | `false` | Aplicar chave de API Bearer em rotas `/v1/*` (recomendado para implantações expostas à Internet) |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` | vazio | Proxy de saída opcional para chamadas de provedor upstream |
 | `SEARXNG_URL` | `http://localhost:8888/search` | Endpoint para o provedor de pesquisa na web SearXNG não autenticado integrado |
+| `DETECT_ANTHROPIC_FIRST_HINTS` | vazio | Trechos de URL que fazem o "Add endpoint" testar primeiro o Anthropic Messages. Separados por vírgula, sem diferenciar maiúsculas; aspas em volta de cada entrada são ignoradas. URLs que citam Anthropic ou Claude e chaves `sk-ant-` já fazem isso. Cada trecho é buscado em qualquer parte da URL do endpoint (esquema, host, caminho, query; um caminho de API final como `/chat/completions` é removido antes): use uma parte distintiva do host. Reinicie depois de alterar. |
 
 Notas:
 

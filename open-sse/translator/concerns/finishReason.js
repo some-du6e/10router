@@ -1,6 +1,6 @@
 // Concern #6: finish_reason / stop_reason mapping.
 // One entry per direction; switch by special format, default handles common providers.
-import { OPENAI_FINISH, CLAUDE_STOP, GEMINI_FINISH } from "../schema/finishReasons.js";
+import { OPENAI_FINISH, CLAUDE_STOP, GEMINI_FINISH, RESPONSES_INCOMPLETE_REASON } from "../schema/finishReasons.js";
 
 // upstream finish/stop reason → OpenAI finish_reason
 export function toOpenAIFinish(reason, format) {
@@ -63,9 +63,22 @@ export function fromOpenAIFinish(reason, format) {
 }
 
 // A turn that emitted tool calls is a tool_use turn whatever the upstream calls
-// it (missing, "stop" from Snowflake Cortex, a passed-through "tool_use", legacy
+// it (missing, "stop" from some gateways, a passed-through "tool_use", legacy
 // "function_call"), except "length" / "content_filter": the call may be cut off.
 export function inferToolUseFinish(reason, hasToolCalls) {
   if (!hasToolCalls) return reason;
   return reason === OPENAI_FINISH.LENGTH || reason === OPENAI_FINISH.CONTENT_FILTER ? reason : OPENAI_FINISH.TOOL_CALLS;
+}
+
+// Finish reasons that cut a reply short, and the Responses incomplete_details.reason for each.
+const RESPONSES_INCOMPLETE_BY_FINISH = new Map([
+  [OPENAI_FINISH.LENGTH, RESPONSES_INCOMPLETE_REASON.MAX_OUTPUT_TOKENS],
+  [CLAUDE_STOP.MAX_TOKENS, RESPONSES_INCOMPLETE_REASON.MAX_OUTPUT_TOKENS],
+  [OPENAI_FINISH.CONTENT_FILTER, RESPONSES_INCOMPLETE_REASON.CONTENT_FILTER],
+]);
+
+// Chat (or Claude) finish reason → Responses incomplete_details.reason, or null
+// for a reply that finished (stop, tool_calls, end_turn, unknown reasons).
+export function toResponsesIncompleteReason(reason) {
+  return RESPONSES_INCOMPLETE_BY_FINISH.get(reason) ?? null;
 }

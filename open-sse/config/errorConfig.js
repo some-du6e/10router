@@ -71,9 +71,47 @@ export const AUTH_DEAD_CONFIG = {
 // demoted key still gets one request probeMs[0] after demotion, and each refused
 // probe waits for the next of probeMs (the last repeating); a probe left
 // unanswered is retaken after probeLeaseMs. A success brings the key back.
+// While a demotion is for 403s that refuse the key itself (not just that model)
+// and the key has served nothing since its count began, the key also goes after
+// the other keys on every other model (requests without a model aside). There
+// it gets one try at once, then tries spaced the same way: probeMs, stepped by
+// its tries and refusals there, its demotions' probe levels, and how long it
+// has been tried there (tries that have gone on as long as all of probeMs but
+// the last take the last step). That spread is kept per process, along with
+// its tries' start on each model's record: one try per provider and model in
+// flight at a time, held at most probeLeaseMs, and never instead of a usable
+// pinned key. Any success on any model ends it.
 export const AUTH_DEMOTE_CONFIG = {
   probeMs: [10, 20, 40, 90, 180].map(min => min * 60 * 1000),
   probeLeaseMs: 10 * 60 * 1000,
+};
+
+// A chat call that got no response headers in time (utils/headersTimeout.js)
+// fails as a 504 with this text. The key gets the usual TRANSIENT_COOLDOWN_MS
+// lock on that model.
+export const HEADERS_TIMEOUT = {
+  text: "upstream sent no response headers",
+  // Keys one request tries from its first header timeout on, that one included,
+  // so one request too slow for the model can't lock every key.
+  maxKeysPerRequest: 2,
+  // Streaming header timeouts from this many distinct requests on this many
+  // distinct keys of one provider/model, with no success on it between, mark the
+  // model hung (a non-streaming call's headers wait on its whole reply, so its
+  // timeouts don't count). New requests for it then fail at once with a 504 for
+  // hungWindowMs[0]; after that one request at a time probes it, on keys that
+  // haven't timed out during the hang if there are any. A probe whose stream
+  // times out starts the next window (the last repeating); a success on the
+  // model ends it.
+  hungAfterRequests: 2,
+  hungAfterKeys: 2,
+  hungWindowMs: [2, 5, 10, 20, 30].map(min => min * 60 * 1000),
+  // Header timeouts further apart than this don't add up, and a probe this long
+  // after its window ended starts the windows over.
+  resetAfterMs: 60 * 60 * 1000,
+  // A probe that never reported back (the process lost it) frees the slot after
+  // its headers budget plus probeLeaseMarginMs, and no sooner than probeLeaseMs.
+  probeLeaseMs: 10 * 60 * 1000,
+  probeLeaseMarginMs: 60 * 1000,
 };
 
 // Cooldown durations (ms)
@@ -162,6 +200,36 @@ export const TIMEOUT_PATTERN = /\b(timed out|etimedout|und_err_(connect|headers|
 export const NETWORK_PATTERN = /\b(enotfound|econnrefused|econnreset|econnaborted|ehostunreach|enetunreach|eai_again|epipe|und_err_socket|socket hang up|other side closed|fetch failed)\b/;
 // Only this much of an error message is classified; bodies can be megabytes.
 export const ERROR_CLASS_MAX_TEXT = 8 * 1024;
+
+// Upstream messages (case-insensitive) that describe the request itself, so
+// every key of a custom endpoint would refuse it the same way
+// (services/sameRequestError.ts): a prompt over the context window, a tool
+// schema the upstream rejects, a thinking budget that doesn't fit. Only these,
+// and a 413, count toward stopping the account walk; any other 4xx keeps
+// trying the next key.
+// The prompt is over the context window or the model's token limit. Only these
+// name a limit, so only these can stop the walk across different upstreams.
+export const SAME_REQUEST_ERROR_LIMIT_PATTERNS = [
+  /maximum context length/i,
+  /context (?:length|window|limit)s? (?:is |was |has been )?exceed/i,
+  /\bexceed(?:s|ed)?\b.{0,40}\bcontext\b/i,
+  /\b(?:model|context)\b.{0,30}\btoken limit\b|\btoken limit\b.{0,30}\b(?:model|context)\b/i,
+  /input tokens? exceed/i,
+  /\b(?:input|request|prompt|payload|body)\s+(?:is\s+)?too (?:long|large)\b/i,
+];
+// A tool schema the upstream rejects, a thinking budget that doesn't fit.
+export const SAME_REQUEST_ERROR_SHAPE_PATTERNS = [
+  /input_schema|json schema|invalid schema|function parameters|\btools?(?:\.\d+|\[\d+\])/i,
+  /budget_tokens/i,
+];
+export const SAME_REQUEST_ERROR_PATTERNS = [...SAME_REQUEST_ERROR_LIMIT_PATTERNS, ...SAME_REQUEST_ERROR_SHAPE_PATTERNS];
+// Wording of a limit on one key, account, organization or plan, which the
+// patterns above can also match ("request too large ... on tokens per min", a
+// hosted tool not enabled for this organization): such an error never counts,
+// since another key may have room or the feature.
+export const SAME_REQUEST_ERROR_KEY_LIMIT = /per (?:min(?:ute)?|hour|day|month)|\b(?:tpm|tpd|rpm|rpd)\b|daily|monthly|in organization|for this (?:key|account)|throttl|please wait|\btier\b|upgrade|your plan|tokens_limit_reached|(?:your|this|the) (?:organi[sz]ation|subscription)/i;
+// Only this much of an error body is read when matching those, parse included.
+export const SAME_REQUEST_ERROR_MAX_TEXT = 64 * 1024;
 
 // A final error a client must not retry: header and value (Codex and the
 // Anthropic/OpenAI SDKs honour it).
