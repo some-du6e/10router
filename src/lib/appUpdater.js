@@ -1,21 +1,10 @@
 import { spawn } from "child_process";
 import path from "path";
 import fs from "fs";
-import os from "os";
 import { UPDATER_CONFIG } from "@/shared/constants/config";
+import { runtimeUpdaterPath } from "./appProcesses.js";
 
-export { collectAppPids, killAppProcesses } from "./appProcesses.js";
-
-// Copy updater.js into DATA_DIR so npm -g can overwrite node_modules safely.
-// The "9router" / ".9router" dir name is deliberately kept for backward
-// compatibility with existing installs — not a missed rebrand.
-function getDataDir() {
-  if (process.env.DATA_DIR) return process.env.DATA_DIR;
-  if (process.platform === "win32") {
-    return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "9router");
-  }
-  return path.join(os.homedir(), ".9router");
-}
+export { collectAppPids, killAppProcesses, busyInstallPids, busyInstallMessage } from "./appProcesses.js";
 
 function resolveBundledUpdaterPath() {
   if (process.env.UPDATER_SCRIPT_PATH && fs.existsSync(process.env.UPDATER_SCRIPT_PATH)) {
@@ -30,11 +19,12 @@ function resolveBundledUpdaterPath() {
   return fromCwd;
 }
 
+// Copy updater.js into DATA_DIR so npm -g can overwrite node_modules safely.
 function ensureRuntimeUpdater(bundledPath) {
   try {
     if (!bundledPath || !fs.existsSync(bundledPath)) return bundledPath;
-    const runtimeDir = path.join(getDataDir(), "runtime", "updater");
-    const runtimePath = path.join(runtimeDir, "updater.js");
+    const runtimePath = runtimeUpdaterPath();
+    const runtimeDir = path.dirname(runtimePath);
     if (fs.existsSync(runtimePath)) {
       try {
         if (fs.statSync(bundledPath).size === fs.statSync(runtimePath).size) return runtimePath;

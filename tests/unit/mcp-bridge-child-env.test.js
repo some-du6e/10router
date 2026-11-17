@@ -45,7 +45,7 @@ describe("MCP stdio bridge child env", () => {
       ...kept,
       JWT_SECRET: "jwt", API_KEY_SECRET: "k", INITIAL_PASSWORD: "pw", MACHINE_ID_SALT: "salt",
       NINEROUTER_PEER_TOKEN: "peer", DATA_DIR: "/data", OPENAI_API_KEY: "sk", ANTHROPIC_API_KEY: "sk-ant",
-      NODE_OPTIONS: "--require /tmp/hook.js",
+      NODE_OPTIONS: "--require /tmp/hook.js", npm_config_node_options: "--require /tmp/hook.js",
     }, home);
 
     expect(env).toEqual(kept);

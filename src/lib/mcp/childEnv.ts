@@ -50,7 +50,8 @@ export function buildChildEnv(env: NodeJS.ProcessEnv = process.env, cwd: string 
   const out: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(env)) {
     const upper = key.toUpperCase();
-    if (GATEWAY_SECRETS.has(upper)) continue;
+    // npm hands npm_config_node_options to Node as NODE_OPTIONS, past the check below.
+    if (GATEWAY_SECRETS.has(upper) || upper === "NPM_CONFIG_NODE_OPTIONS") continue;
     const keep = CHILD_ENV_KEYS.has(upper)
       || CHILD_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix))
       || referenced.has(key)

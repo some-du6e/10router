@@ -54,9 +54,9 @@ describe("CLI API client host", () => {
   it("is configured once by the launcher, not per Terminal UI session", () => {
     const cli = fs.readFileSync(path.join(repoRoot, "cli/cli.js"), "utf8");
     const terminalUI = fs.readFileSync(path.join(repoRoot, "cli/src/cli/terminalUI.js"), "utf8");
-    expect(cli).toMatch(/api\.configure\(\{ port, host: dialHost \}\)/);
-    expect(cli).not.toMatch(/host: "127\.0\.0\.1", port/);
-    expect(terminalUI).not.toMatch(/api\.configure\(/);
+    expect(cli).toMatch(/api\.configure\(\s*\{\s*port\s*,\s*host\s*:\s*dialHost\s*\}\s*\)/);
+    expect(cli).not.toMatch(/host\s*:\s*["']127\.0\.0\.1["']\s*,\s*port/);
+    expect(terminalUI).not.toMatch(/api\.configure\s*\(/);
   });
 });
 
