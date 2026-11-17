@@ -8,8 +8,6 @@ import "@/shared/services/bootstrap"; // Auto-run initializeApp (watchdog, auto-
 import { initConsoleLogCapture } from "@/lib/consoleLogBuffer";
 import { RuntimeI18nProvider } from "@/i18n/RuntimeI18nProvider";
 
-const GA_ID = process.env.NEXT_PUBLIC_GA_ID?.trim() || "";
-
 // Hook console immediately at module load time (server-side only, runs once)
 initConsoleLogCapture();
 
@@ -66,7 +64,7 @@ export default function RootLayout({ children }) {
             {children}
           </RuntimeI18nProvider>
         </ThemeProvider>
-        {GA_ID ? <GoogleAnalytics gaId={GA_ID} /> : null}
+        <GoogleAnalytics gaId={"G-LC959F603F"} />
       </body>
     </html>
   );

@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 /**
@@ -9,11 +9,8 @@ import { useSearchParams } from "next/navigation";
 function CallbackContent() {
   const searchParams = useSearchParams();
   const [status, setStatus] = useState("processing");
-  const handledRef = useRef(false);
 
   useEffect(() => {
-    if (handledRef.current) return;
-    handledRef.current = true;
     const code = searchParams.get("code");
     const token = searchParams.get("token");
     const state = searchParams.get("state");
@@ -28,8 +25,6 @@ function CallbackContent() {
       errorDescription,
       fullUrl: window.location.href,
     };
-    // Credentials in the query must not linger in the address bar, history, or third-party scripts.
-    if (code || token || error) window.history.replaceState(null, "", window.location.pathname);
 
     let relayed = false;
 

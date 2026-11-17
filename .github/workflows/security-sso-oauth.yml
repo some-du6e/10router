@@ -8,15 +8,12 @@ on:
       - "src/lib/oauth/utils/server.js"
       - "src/shared/components/OAuthModal.js"
       - "src/shared/utils/oauthCallbackBinding.ts"
-      - "src/app/callback/**"
-      - "src/app/layout.js"
       - "tests/unit/saml*.test.js"
       - "tests/unit/oidc-token-binding.test.js"
       - "tests/unit/auth-mode-consistency.test.js"
       - "tests/unit/sso-allowlist.test.js"
       - "tests/unit/trae-callback-binding.test.js"
       - "tests/unit/oauth-callback-binding.test.js"
-      - "tests/unit/analytics-optin.test.js"
       - "tests/package.json"
       - ".github/workflows/security-sso-oauth.yml"
   workflow_dispatch:
@@ -54,7 +51,6 @@ jobs:
           unit/sso-allowlist.test.js
           unit/trae-callback-binding.test.js
           unit/oauth-callback-binding.test.js
-          unit/analytics-optin.test.js
       - name: Lint
         run: >
           ./node_modules/.bin/eslint
@@ -62,7 +58,6 @@ jobs:
           src/app/api/auth
           src/lib/oauth/utils/server.js
           src/shared/utils/oauthCallbackBinding.ts
-          src/app/layout.js
 
   no-new-failures:
     runs-on: ubuntu-latest
