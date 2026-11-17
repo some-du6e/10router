@@ -9,6 +9,7 @@ export interface CallbackData {
 export interface PendingAuth {
   state?: string | null;
   proxyProvider?: string | null;
+  redirectUri?: string | null;
 }
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -32,6 +33,27 @@ export function isTrustedCallbackOrigin(origin: string, ownOrigin: string): bool
   }
 }
 
+// A popup name of its own for each login. window.open with a fixed name reuses
+// any window already carrying it, even one another page opened.
+export function newPopupName(): string {
+  const bytes = new Uint8Array(12);
+  globalThis.crypto.getRandomValues(bytes);
+  return `oauth_popup_${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
+// Whether a postMessage came from the popup this dialog opened for this login.
+export function isOwnPopup(source: unknown, popup: unknown): boolean {
+  return source != null && popup != null && source === popup;
+}
+
+function originOf(url: string | null | undefined): string | null {
+  try {
+    return url ? new URL(url).origin : null;
+  } catch {
+    return null;
+  }
+}
+
 export type RelayChannel = "message" | "broadcast" | "storage";
 
 export interface RelayContext {
@@ -40,8 +62,10 @@ export interface RelayContext {
   // The login already took a callback.
   processed: boolean;
   via: RelayChannel;
-  // A postMessage whose event.source is the popup this dialog opened.
+  // A postMessage whose event.source is the popup this dialog opened (isOwnPopup).
   fromOwnPopup?: boolean;
+  // A postMessage's event.origin.
+  origin?: string | null;
 }
 
 export interface RelayDeps {
@@ -63,7 +87,10 @@ export function isCallbackForPendingAuth(data: CallbackData | null | undefined, 
   if (!data || !authData || !provider) return false;
   if (PROXY_OAUTH_PROVIDERS.has(provider) || authData.proxyProvider) return false;
   if (STATELESS_CALLBACK_PROVIDERS.has(provider)) {
-    return ctx.via === "message" && ctx.fromOwnPopup === true && !data.state;
+    // From our popup, and sent by the page at the redirect URI this login named.
+    const redirectOrigin = originOf(authData.redirectUri);
+    return ctx.via === "message" && ctx.fromOwnPopup === true && !data.state &&
+      redirectOrigin !== null && ctx.origin === redirectOrigin;
   }
   const state = sentState(authData);
   return state !== null && data.state === state;
@@ -106,4 +133,54 @@ export function checkPastedState(
   const state = sentState(authData);
   if (!state || !pastedState || pastedState === state) return null;
   return "This URL is from a different sign-in, not the one this dialog started. Start again, or paste the URL from the sign-in you just finished.";
+}
+
+export type PastedCallback =
+  | { action: "exchange"; code: string; state: string | null }
+  | { action: "xai-code"; code: string }
+  | { action: "error"; message: string };
+
+// What the connect dialog's paste step does with what the user pasted.
+export function parsePastedCallback(
+  input: string | null | undefined,
+  authData: PendingAuth | null | undefined,
+  provider: string | null | undefined,
+): PastedCallback {
+  const value = String(input || "").trim();
+  // A raw JWT access token.
+  if (value.startsWith("eyJ") && value.includes(".")) return { action: "exchange", code: value, state: null };
+  // xAI can show a code instead of redirecting; Kimchi can hand over a bare token.
+  if (provider === "xai" && value && !value.includes("://") && !value.includes("?") && !value.includes("code=")) {
+    return { action: "xai-code", code: value };
+  }
+  if (provider === "kimchi" && value && !value.includes("://") && !value.includes("?")) {
+    return { action: "exchange", code: value, state: null };
+  }
+
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return { action: "error", message: "Paste the full callback URL from your browser's address bar." };
+  }
+  const code = url.searchParams.get("code");
+  const token = url.searchParams.get("token");
+  const state = url.searchParams.get("state");
+  const error = url.searchParams.get("error");
+
+  const stateProblem = checkPastedState(state, authData, provider);
+  if (stateProblem) return { action: "error", message: stateProblem };
+  if (error) return { action: "error", message: url.searchParams.get("error_description") || error };
+  const credential = token || code;
+  if (!credential) {
+    return {
+      action: "error",
+      message: provider === "xai"
+        ? "Paste the callback URL or copied xAI code"
+        : provider === "kimchi"
+          ? "No Kimchi token found in URL"
+          : "No authorization code found in URL",
+    };
+  }
+  return { action: "exchange", code: credential, state };
 }

@@ -5,9 +5,11 @@ import PropTypes from "prop-types";
 import { Modal, Button, Input } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import {
-  checkPastedState,
   handleRelayedCallback,
+  isOwnPopup,
   isTrustedCallbackOrigin,
+  newPopupName,
+  parsePastedCallback,
   PROXY_OAUTH_PROVIDERS,
 } from "@/shared/utils/oauthCallbackBinding.js";
 
@@ -209,7 +211,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     // 4. Open popup; proxy auto-exchanges on callback, modal polls poll-status.
     setAuthData({ ...authData, proxyProvider: providerId });
     setStep("waiting");
-    popupRef.current = window.open(authData.authUrl, "oauth_popup", "width=600,height=700");
+    popupRef.current = window.open(authData.authUrl, newPopupName(), "width=600,height=700");
     if (!popupRef.current) setStep("input"); // popup blocked → fall back to manual paste
   }, []);
 
@@ -373,24 +375,26 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       if (provider === "codex" && codexProxyActive) {
         // Proxy active: callback will be handled server-side (auto-exchange) or via channels (fallback)
         setStep("waiting");
-        popupRef.current = window.open(data.authUrl, "oauth_popup", "width=600,height=700");
+        popupRef.current = window.open(data.authUrl, newPopupName(), "width=600,height=700");
         if (!popupRef.current) {
           setStep("input");
         }
       } else if (provider === "xai" && xaiProxyActive) {
         setStep("waiting");
-        popupRef.current = window.open(data.authUrl, "oauth_popup", "width=600,height=700");
+        popupRef.current = window.open(data.authUrl, newPopupName(), "width=600,height=700");
         if (!popupRef.current) {
           setStep("input");
         }
       } else if (!isLocalhost || provider === "codex" || provider === "xai") {
         // Non-localhost or proxy failed: manual input mode
         setStep("input");
+        // Not a popup we track: a window left over from an earlier login mustn't count as ours.
+        popupRef.current = null;
         window.open(data.authUrl, "_blank");
       } else {
         // Localhost (non-Codex/xAI): Open popup and wait for message
         setStep("waiting");
-        popupRef.current = window.open(data.authUrl, "oauth_popup", "width=600,height=700");
+        popupRef.current = window.open(data.authUrl, newPopupName(), "width=600,height=700");
         if (!popupRef.current) {
           setStep("input");
         }
@@ -501,14 +505,15 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     callbackProcessedRef.current = false; // Reset when authData changes
 
     // Takes a relayed callback only if it belongs to this login, and only once.
-    const handleCallback = (data, via, source) => handleRelayedCallback(
+    const handleCallback = (data, via, source, origin) => handleRelayedCallback(
       data,
       {
         provider,
         authData,
         processed: callbackProcessedRef.current,
         via,
-        fromOwnPopup: !!source && source === popupRef.current,
+        fromOwnPopup: isOwnPopup(source, popupRef.current),
+        origin,
       },
       {
         markProcessed: () => { callbackProcessedRef.current = true; },
@@ -526,7 +531,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       if (!isTrustedCallbackOrigin(event.origin, window.location.origin)) return;
 
       if (event.data?.type === "oauth_callback") {
-        handleCallback(event.data.data, "message", event.source);
+        handleCallback(event.data.data, "message", event.source, event.origin);
       }
     };
     window.addEventListener("message", handleMessage);
@@ -612,46 +617,13 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         return;
       }
 
-      // Detect raw JWT access token (starts with eyJ) — skip URL parsing
-      if (input.startsWith("eyJ") && input.includes(".")) {
-        await exchangeTokens(input, null);
+      const pasted = parsePastedCallback(input, authData, provider);
+      if (pasted.action === "error") throw new Error(pasted.message);
+      if (pasted.action === "xai-code") {
+        await completeXaiManualCode(pasted.code);
         return;
       }
-
-      if (provider === "xai" && input && !input.includes("://") && !input.includes("?") && !input.includes("code=")) {
-        await completeXaiManualCode(input);
-        return;
-      }
-
-      if (provider === "kimchi" && input && !input.includes("://") && !input.includes("?")) {
-        await exchangeTokens(input, null);
-        return;
-      }
-
-      const url = new URL(input);
-      const code = url.searchParams.get("code");
-      const token = url.searchParams.get("token");
-      const state = url.searchParams.get("state");
-      const errorParam = url.searchParams.get("error");
-
-      const stateProblem = checkPastedState(state, authData, provider);
-      if (stateProblem) throw new Error(stateProblem);
-
-      if (errorParam) {
-        throw new Error(url.searchParams.get("error_description") || errorParam);
-      }
-
-      if (!code && !token) {
-        throw new Error(
-          provider === "xai"
-            ? "Paste the callback URL or copied xAI code"
-            : provider === "kimchi"
-              ? "No Kimchi token found in URL"
-              : "No authorization code found in URL"
-        );
-      }
-
-      await exchangeTokens(token || code, state);
+      await exchangeTokens(pasted.code, pasted.state);
     } catch (err) {
       setError(err.message);
       setStep("error");
