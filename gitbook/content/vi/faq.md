@@ -210,22 +210,24 @@ git clone https://github.com/some-du6e/10router.git
 cd 10router/app
 npm install && npm run build
 
-export JWT_SECRET="$(openssl rand -hex 32)"
 export INITIAL_PASSWORD="your-password"
 export NODE_ENV="production"
 
 npm start
 ```
 
+> `JWT_SECRET` là tùy chọn. Để trống và 10router sẽ tạo một lần vào `$DATA_DIR/jwt-secret`, nên phiên đăng nhập vẫn giữ sau khi khởi động lại. Chỉ khi chạy nhiều instance sau cùng một URL: tạo một giá trị một lần (`openssl rand -hex 32`), lưu lại và đặt cùng giá trị đó cho mọi instance. Giá trị dưới 32 ký tự hoặc placeholder trong tài liệu sẽ bị bỏ qua.
+
 ### Docker
 ```bash
 docker build -t 10router .
 docker run -d \
   -p 3000:3000 \
-  -e JWT_SECRET="$(openssl rand -hex 32)" \
   -v 10router-data:/app/data \
   10router
 ```
+
+> `JWT_SECRET` được cố ý để trống (xem ghi chú ở trên): secret được tạo trong `$DATA_DIR/jwt-secret` được giữ lại sau khi khởi động lại.
 
 ### Cloudflare Workers
 ```bash
@@ -234,7 +236,7 @@ npm run deploy:cloudflare
 ```
 
 **Biến môi trường:**
-- `JWT_SECRET` - **PHẢI đổi trong production!**
+- `JWT_SECRET` - Tùy chọn: tự động tạo trong `$DATA_DIR/jwt-secret`. Chỉ đặt (từ 32 ký tự) khi cần chia sẻ phiên giữa các instance sau cùng một URL
 - `DATA_DIR` - Đường dẫn lưu database (mặc định: `~/.9router`)
 - `INITIAL_PASSWORD` - Mật khẩu bootstrap headless tùy chọn (tối thiểu 8 ký tự). Mặc định không đặt: lần chạy đầu cần setup token dùng một lần in ra console của server
 - `NODE_ENV` - Đặt `production` để deploy
@@ -263,7 +265,7 @@ Xem [hướng dẫn deployment](getting-started/installation.md#deployment) đ�
 - Community review
 
 **Best practice:**
-- Đổi `JWT_SECRET` trong production
+- Giữ thư mục dữ liệu (`$DATA_DIR`, chứa `jwt-secret`) ở chế độ riêng tư
 - Dùng `INITIAL_PASSWORD` mạnh
 - Bật HTTPS cho cloud deployment
 - Xoay API key định kỳ

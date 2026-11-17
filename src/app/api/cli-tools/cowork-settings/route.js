@@ -7,17 +7,16 @@ import os from "os";
 import crypto from "crypto";
 import { DEFAULT_PLUGINS, LOCAL_STDIO_PLUGINS, buildManagedMcpServers } from "@/shared/constants/coworkPlugins";
 import { UPDATER_CONFIG } from "@/shared/constants/config";
-import { getConsistentMachineId } from "@/shared/utils/machineId";
+import { CLI_TOKEN_HEADER, getCliToken } from "@/lib/auth/cliToken.js";
 
 const APP_PORT = UPDATER_CONFIG.appPort;
-const CLI_TOKEN_HEADER = "x-9r-cli-token";
-const CLI_TOKEN_SALT = "9r-cli-auth";
 const LOCAL_MCP_PREFIX = `http://localhost:${APP_PORT}/api/mcp/`;
 
-let cachedCliToken = null;
-const getCliToken = async () => {
-  if (!cachedCliToken) cachedCliToken = await getConsistentMachineId(CLI_TOKEN_SALT);
-  return cachedCliToken;
+// The applied config holds the client key and the CLI token: owner-only.
+const writePrivateFile = async (filePath, content) => {
+  await fs.writeFile(filePath, content, { mode: 0o600 });
+  // writeFile keeps an existing file's mode, so tighten one written before this.
+  if (os.platform() !== "win32") await fs.chmod(filePath, 0o600).catch(() => {});
 };
 
 // Inject CLI token header into entries pointing at our local /api/mcp/ bridge.
@@ -241,25 +240,13 @@ async function writeSkipApprovals(managedServers) {
   return { written: Object.keys(skip).length };
 }
 
-// Status responses must not carry the CLI token (in bridge headers) or the client key.
-const redactConfig = (cfg) => {
-  if (!cfg || typeof cfg !== "object") return cfg;
-  const { inferenceGatewayApiKey, ...rest } = cfg;
-  if (Array.isArray(rest.managedMcpServers)) {
-    rest.managedMcpServers = rest.managedMcpServers.map((m) => {
-      if (!m || typeof m !== "object") return m;
-      const { headers, ...entry } = m;
-      return entry;
-    });
-  }
-  return rest;
-};
-
+// The status carries only what the card reads (status.cowork.*), never the stored
+// config: that holds the client key and, in bridge headers, the CLI token.
 export async function GET() {
   try {
     const installed = await checkInstalled();
     if (!installed) {
-      return NextResponse.json({ installed: false, config: null, message: "Claude Desktop (Cowork mode) not detected" });
+      return NextResponse.json({ installed: false, message: "Claude Desktop (Cowork mode) not detected" });
     }
     const meta = await readJson(await getMetaPath());
     const appliedId = meta?.appliedId || null;
@@ -287,7 +274,6 @@ export async function GET() {
 
     return NextResponse.json({
       installed: true,
-      config: redactConfig(config),
       has10Router,
       configPath,
       cowork: {
@@ -357,7 +343,7 @@ export async function POST(request) {
     };
     if (managedMcpServers.length > 0) newConfig.managedMcpServers = managedMcpServers;
 
-    await fs.writeFile(configPath, JSON.stringify(newConfig, null, 2));
+    await writePrivateFile(configPath, JSON.stringify(newConfig, null, 2));
 
     let skipResult = null;
     try { skipResult = await writeSkipApprovals(managedMcpServers); } catch (e) { skipResult = { error: e.message }; }

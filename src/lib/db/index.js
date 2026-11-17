@@ -6,6 +6,8 @@ import { rowToKey, toLimitHoldColumn, numberOrNull, toAllowedModelsColumn, resee
 // Public API barrel — all DB functions
 import { getAdapter } from "./driver.js";
 import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
+import { setMetaSync } from "./helpers/metaStore.js";
+import { SESSION_EPOCH_META_KEY, newSessionEpoch } from "./helpers/sessionEpoch.js";
 
 // Settings
 export {
@@ -140,12 +142,14 @@ export async function importDb(payload) {
     // and a key that is off (or has an expiry) with no actor then counts as the dashboard's.
     const actorOrNull = (a) => (a === "dashboard" ? a : ownerOrNull(a));
 
-    // Sessions are revoked by rotating this epoch, so a restore keeps the live
-    // one: an old backup must neither log everyone out nor revive a revoked cookie.
-    let liveSessionEpoch;
+    // The session epoch lives in _meta, which the import leaves alone. An import
+    // that changes the dashboard password (or drops it, or can't be compared)
+    // starts a new epoch, so sessions signed in under the old password end.
+    let livePassword;
     try {
-      liveSessionEpoch = JSON.parse(db.all(`SELECT data FROM settings WHERE id = 1`)[0]?.data || "{}").sessionEpoch;
-    } catch { /* no live settings */ }
+      const row = db.all(`SELECT data FROM settings WHERE id = 1`)[0];
+      livePassword = row ? JSON.parse(row.data)?.password ?? null : null;
+    } catch { /* unreadable: treated as changed */ }
 
     // Wipe all tables (keep _meta)
     db.run(`DELETE FROM settings`);
@@ -160,9 +164,11 @@ export async function importDb(payload) {
     // Settings
     if (payload.settings) {
       migrateLegacyHostPassword(db, payload.settings, { cleanup: false });
-      const { sessionEpoch: _ignored, ...importedSettings } = stripRetiredSettings(payload.settings);
-      if (liveSessionEpoch !== undefined) importedSettings.sessionEpoch = liveSessionEpoch;
-      db.run(`INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, [stringifyJson(importedSettings)]);
+      db.run(`INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, [stringifyJson(stripRetiredSettings(payload.settings))]);
+    }
+    const importedPassword = payload.settings?.password ?? null;
+    if (livePassword === undefined || importedPassword !== livePassword) {
+      setMetaSync(db, SESSION_EPOCH_META_KEY, newSessionEpoch());
     }
 
     for (const c of payload.providerConnections || []) {

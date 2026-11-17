@@ -196,8 +196,7 @@ curl http://localhost:20128/v1/chat/completions \
 创建 `.env` 文件或设置环境变量:
 
 ```bash
-# Security (REQUIRED in production)
-export JWT_SECRET="$(openssl rand -hex 32)"
+# Security: optional headless bootstrap password
 export INITIAL_PASSWORD="your-password"
 
 # Storage
@@ -210,6 +209,8 @@ export NODE_ENV="production"
 # Logging
 export ENABLE_REQUEST_LOGS="false"
 ```
+
+> `JWT_SECRET` 是可选的。不设置时，10router 会在 `$DATA_DIR/jwt-secret` 中生成一次，重启后会话依然有效。仅当多个实例位于同一 URL 后面时：生成一个值（`openssl rand -hex 32`），保存好，并在每个实例上设置相同的值。少于 32 个字符的值或文档中的占位符会被忽略。
 
 ### 数据目录
 
@@ -393,7 +394,6 @@ npm install -g 10router
 npm install -g 10router
 
 # 配置
-export JWT_SECRET="$(openssl rand -hex 32)"
 export INITIAL_PASSWORD="your-password"
 export NODE_ENV="production"
 
@@ -404,6 +404,8 @@ pm2 save
 pm2 startup
 ```
 
+> 这里有意不设置 `JWT_SECRET`（见上文说明）：在 `$DATA_DIR/jwt-secret` 中生成的密钥在重启后保持不变。
+
 **适用场景:** 团队访问、远程编码
 
 ### Docker
@@ -413,12 +415,13 @@ docker pull 10router/10router:latest
 
 docker run -d \
   -p 20128:20128 \
-  -e JWT_SECRET="$(openssl rand -hex 32)" \
   -e INITIAL_PASSWORD="your-password" \
   -v 10router-data:/root/.9router \
   --name 10router \
   10router/10router:latest
 ```
+
+> 这里有意不设置 `JWT_SECRET`（见上文说明）：在 `$DATA_DIR/jwt-secret` 中生成的密钥在重启后保持不变。
 
 **适用场景:** 容器化部署、Kubernetes
 

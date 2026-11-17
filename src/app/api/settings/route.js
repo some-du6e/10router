@@ -14,7 +14,7 @@ import {
   verifyDashboardPassword,
   getDashboardAuthSession,
   revokeDashboardSessions,
-  setDashboardAuthCookie,
+  reissueDashboardSession,
 } from "@/lib/auth/dashboardSession";
 import { clearSetupToken } from "@/lib/auth/setupToken";
 import { sanitizeAutoComboSetting } from "@/sse/services/autoCombo.js";
@@ -28,12 +28,12 @@ const SETTINGS_RESPONSE_HEADERS = {
 };
 
 // Secrets must never be mass-assigned from request body (CWE-915)
-const PROTECTED_SETTING_KEYS = ["password", "usageHubKeyHash", "usageHubEnabled", "sessionEpoch"];
+const PROTECTED_SETTING_KEYS = ["password", "usageHubKeyHash", "usageHubEnabled"];
 
 export async function GET() {
   try {
     const settings = await getSettings();
-    const { password, oidcClientSecret, usageHubKeyHash, sessionEpoch, ...safeSettings } = settings;
+    const { password, oidcClientSecret, usageHubKeyHash, ...safeSettings } = settings;
     safeSettings.oidcConfigured = !!(safeSettings.oidcIssuerUrl && safeSettings.oidcClientId && oidcClientSecret);
     
     const enableRequestLogs = process.env.ENABLE_REQUEST_LOGS === "true";
@@ -139,13 +139,11 @@ export async function PATCH(request) {
       await clearLegacyGrace();
       clearSetupToken();
       const cookieStore = await cookies();
+      // Read before the revocation, which invalidates it. Other browsers are
+      // signed out; this one stays signed in as the same user.
       const session = await getDashboardAuthSession(cookieStore.get("auth_token")?.value);
       await revokeDashboardSessions();
-      if (session) {
-        // The caller stays signed in, as the same OIDC/SAML user if it was one.
-        const { authenticated: _a, iat: _i, exp: _e, sep: _s, pwChange: _p, ...identity } = session;
-        await setDashboardAuthCookie(cookieStore, request, identity);
-      }
+      await reissueDashboardSession(cookieStore, request, session);
     }
 
     // Stored full payloads hold prompts; turning the setting off removes them.
@@ -183,7 +181,7 @@ export async function PATCH(request) {
         .catch((error) => console.warn("[AutoPing] settings update failed:", error.message));
     }
 
-    const { password, oidcClientSecret, usageHubKeyHash, sessionEpoch, ...safeSettings } = settings;
+    const { password, oidcClientSecret, usageHubKeyHash, ...safeSettings } = settings;
     safeSettings.oidcConfigured = !!(safeSettings.oidcIssuerUrl && safeSettings.oidcClientId && oidcClientSecret);
     return NextResponse.json(safeSettings, { headers: SETTINGS_RESPONSE_HEADERS });
   } catch (error) {

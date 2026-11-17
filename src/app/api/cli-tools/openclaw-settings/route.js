@@ -6,6 +6,7 @@ import { promisify } from "util";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
+import { ownClientKeyOrNull, pickFields } from "@/lib/cliTools/statusFields.js";
 
 const execAsync = promisify(exec);
 
@@ -75,6 +76,25 @@ const readAgentModel = async (agentDir) => {
   }
 };
 
+// The parts of openclaw.json the card reads: this router's provider (its key only
+// when it is one of this instance's client keys) and the default model. Other
+// providers carry their own keys, and this status reaches remote dashboard sessions.
+const summarizeSettings = async (settings) => {
+  if (!settings) return null;
+  const providers = {};
+  for (const name of ["10router", "9router"]) {
+    const provider = settings.models?.providers?.[name];
+    if (!provider || typeof provider !== "object") continue;
+    const apiKey = await ownClientKeyOrNull(provider.apiKey);
+    providers[name] = { ...pickFields(provider, ["baseUrl"]), ...(apiKey ? { apiKey } : {}) };
+  }
+  const primary = settings.agents?.defaults?.model?.primary;
+  return {
+    models: { providers },
+    agents: { defaults: { model: typeof primary === "string" ? { primary } : {} } },
+  };
+};
+
 // GET - Check openclaw CLI and read current settings
 export async function GET() {
   try {
@@ -97,13 +117,13 @@ export async function GET() {
     const enrichedAgents = await Promise.all(
       agentList.map(async (agent) => {
         const agentModel = agent.agentDir ? await readAgentModel(agent.agentDir) : null;
-        return { ...agent, model: resolveAgentModel(agent.model), currentModel: agentModel };
+        return { ...pickFields(agent, ["id", "name", "agentDir"]), model: resolveAgentModel(agent.model), currentModel: agentModel };
       })
     );
 
     return NextResponse.json({
       installed: true,
-      settings,
+      settings: await summarizeSettings(settings),
       agents: enrichedAgents,
       has10Router: has10RouterConfig(settings),
       settingsPath: getOpenClawSettingsPath(),

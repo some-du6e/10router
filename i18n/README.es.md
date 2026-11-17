@@ -1067,7 +1067,6 @@ npm install
 npm run build
 
 # Configura
-export JWT_SECRET="$(openssl rand -hex 32)"
 export INITIAL_PASSWORD="tu-contraseña"
 export DATA_DIR="/var/lib/9router"
 export PORT="20128"
@@ -1087,6 +1086,8 @@ pm2 start npm --name 9router -- start
 pm2 save
 pm2 startup
 ```
+
+> `JWT_SECRET` es opcional. Déjalo sin definir y 10router genera uno una sola vez en `$DATA_DIR/jwt-secret`, así las sesiones sobreviven a los reinicios. Solo para varias instancias detrás de una misma URL: genera un valor una vez (`openssl rand -hex 32`), guárdalo y usa ese mismo valor en todas las instancias. Los valores de menos de 32 caracteres o un placeholder documentado se ignoran.
 
 ### Docker
 
@@ -1138,7 +1139,7 @@ docker pull decolua/9router:latest   # actualiza a la última versión
 
 | Variable                                             | Por defecto                                | Descripción                                                                          |
 | ---------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------ |
-| `JWT_SECRET`                                         | Generado automáticamente (`~/.9router/jwt-secret`) | Secreto de firma JWT para la cookie de autenticación del panel (sobreescríbelo para compartir entre instancias) |
+| `JWT_SECRET`                                         | Generado automáticamente (`~/.9router/jwt-secret`) | Secreto de firma JWT para la cookie de autenticación del panel; defínelo solo para compartir sesiones entre instancias (32+ caracteres; los valores más cortos y los placeholders documentados se ignoran) |
 | `INITIAL_PASSWORD`                                   | `123456`                                   | Contraseña del primer inicio de sesión cuando no existe un hash guardado             |
 | `DATA_DIR`                                           | `~/.9router`                               | Ubicación principal de datos de la app (SQLite en `$DATA_DIR/db/data.sqlite`)        |
 | `PORT`                                               | por defecto del framework                  | Puerto del servicio (`20128` en los ejemplos)                                        |

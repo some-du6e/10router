@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
   verifyDashboardPassword: vi.fn(),
   getDashboardAuthSession: vi.fn(),
   revokeDashboardSessions: vi.fn(),
-  setDashboardAuthCookie: vi.fn(),
+  reissueDashboardSession: vi.fn(),
   cookieGet: vi.fn(),
   applyOutboundProxyEnv: vi.fn(),
   resetComboRotation: vi.fn(),
@@ -31,11 +31,12 @@ vi.mock("@/lib/auth/dashboardSession", () => ({
   verifyDashboardPassword: mocks.verifyDashboardPassword,
   getDashboardAuthSession: mocks.getDashboardAuthSession,
   revokeDashboardSessions: mocks.revokeDashboardSessions,
-  setDashboardAuthCookie: mocks.setDashboardAuthCookie,
+  reissueDashboardSession: mocks.reissueDashboardSession,
 }));
 
 vi.mock("next/headers", () => ({
-  cookies: async () => ({ get: mocks.cookieGet }),
+  // Only the auth_token cookie exists.
+  cookies: async () => ({ get: (name) => (name === "auth_token" ? mocks.cookieGet(name) : undefined) }),
 }));
 
 vi.mock("@/lib/network/outboundProxy", () => ({
@@ -120,58 +121,53 @@ describe("PATCH /api/settings sensitive request details", () => {
 });
 
 describe("PATCH /api/settings session revocation", () => {
-  beforeEach(() => {
+  let revoked;
+  const callerSession = { authenticated: true, oidc: true, oidcSub: "sub-1", sep: "old-epoch", iat: 1, exp: 2 };
+
+  beforeEach(async () => {
     vi.clearAllMocks();
-    mocks.getSettings.mockResolvedValue({ password: "$2a$10$hash" });
+    const { default: bcrypt } = await import("bcryptjs");
+    mocks.getSettings.mockResolvedValue({ password: bcrypt.hashSync("old-password", 4) });
     mocks.updateSettings.mockImplementation(async (body) => body);
     mocks.getAuthBootstrapState.mockResolvedValue("claimed");
     mocks.validateNewPassword.mockReturnValue({ ok: true });
+    // Like the real store: a revocation invalidates the caller's cookie too.
+    revoked = false;
+    mocks.getDashboardAuthSession.mockImplementation(async (token) => (token === "caller-token" && !revoked ? callerSession : null));
+    mocks.revokeDashboardSessions.mockImplementation(async () => {
+      revoked = true;
+    });
   });
 
-  it("revokes other sessions on a password change and reissues the caller's", async () => {
-    const { default: bcrypt } = await import("bcryptjs");
-    mocks.getSettings.mockResolvedValue({ password: bcrypt.hashSync("old-password", 4) });
-    mocks.cookieGet.mockReturnValue({ value: "caller-token" });
-    mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
+  const changePassword = () => PATCH(request({ currentPassword: "old-password", newPassword: "new-password-1" }));
 
-    const response = await PATCH(request({ currentPassword: "old-password", newPassword: "new-password-1" }));
+  it("reads the caller's session before revoking, then reissues it", async () => {
+    mocks.cookieGet.mockReturnValue({ value: "caller-token" });
+
+    const response = await changePassword();
 
     expect(response.status).toBe(200);
     expect(mocks.revokeDashboardSessions).toHaveBeenCalledTimes(1);
-    expect(mocks.setDashboardAuthCookie).toHaveBeenCalledTimes(1);
+    // Read after the revocation it would be null, and the caller would be signed out.
+    expect(mocks.reissueDashboardSession).toHaveBeenCalledWith(expect.anything(), expect.anything(), callerSession);
     expect(mocks.revokeDashboardSessions.mock.invocationCallOrder[0])
-      .toBeLessThan(mocks.setDashboardAuthCookie.mock.invocationCallOrder[0]);
+      .toBeLessThan(mocks.reissueDashboardSession.mock.invocationCallOrder[0]);
   });
 
-  it("reissues an SSO caller's session as the same SSO user", async () => {
-    const { default: bcrypt } = await import("bcryptjs");
-    mocks.getSettings.mockResolvedValue({ password: bcrypt.hashSync("old-password", 4) });
+  it("revokes for a CLI-token caller with no cookie and has no session to reissue", async () => {
+    mocks.cookieGet.mockReturnValue(undefined);
+
+    const response = await changePassword();
+
+    expect(response.status).toBe(200);
+    expect(mocks.revokeDashboardSessions).toHaveBeenCalledTimes(1);
+    expect(mocks.reissueDashboardSession).toHaveBeenCalledWith(expect.anything(), expect.anything(), null);
+  });
+
+  it("does not revoke anything when the password doesn't change", async () => {
     mocks.cookieGet.mockReturnValue({ value: "caller-token" });
-    mocks.getDashboardAuthSession.mockResolvedValue({
-      authenticated: true,
-      oidc: true,
-      oidcSub: "sub-1",
-      oidcEmail: "admin@example.com",
-      sep: "old-epoch",
-      iat: 1,
-      exp: 2,
-    });
-
-    await PATCH(request({ currentPassword: "old-password", newPassword: "new-password-1" }));
-
-    expect(mocks.setDashboardAuthCookie).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
-      oidc: true,
-      oidcSub: "sub-1",
-      oidcEmail: "admin@example.com",
-    });
-  });
-
-  it("does not let the body set the session epoch or leak it back", async () => {
-    mocks.getSettings.mockResolvedValue({ sessionEpoch: "abc" });
-    mocks.updateSettings.mockResolvedValue({ sessionEpoch: "abc", theme: "dark" });
-    const response = await PATCH(request({ sessionEpoch: "attacker", theme: "dark" }));
-    expect(mocks.updateSettings).toHaveBeenCalledWith({ theme: "dark" });
-    expect(response.body).not.toHaveProperty("sessionEpoch");
-    expect((await GET()).body).not.toHaveProperty("sessionEpoch");
+    await PATCH(request({ theme: "dark" }));
+    expect(mocks.revokeDashboardSessions).not.toHaveBeenCalled();
+    expect(mocks.reissueDashboardSession).not.toHaveBeenCalled();
   });
 });

@@ -37,17 +37,18 @@ npm run build
 Crea un archivo `.env` o exporta variables:
 
 ```bash
-export JWT_SECRET="$(openssl rand -hex 32)"
 export INITIAL_PASSWORD="your-secure-password"
 export DATA_DIR="/var/lib/10router"
 export NODE_ENV="production"
 ```
 
+> `JWT_SECRET` es opcional. Déjalo sin definir y 10router genera uno una sola vez en `$DATA_DIR/jwt-secret`, así las sesiones sobreviven a los reinicios. Solo para varias instancias detrás de una misma URL: genera un valor una vez (`openssl rand -hex 32`), guárdalo y usa ese mismo valor en todas las instancias. Los valores de menos de 32 caracteres o un placeholder documentado se ignoran.
+
 **Variables de entorno:**
 
 | Variable | Por defecto | Descripción |
 |----------|---------|-------------|
-| `JWT_SECRET` | Auto-generado | **¡DEBE cambiarse en producción!** Usado para firmar tokens JWT |
+| `JWT_SECRET` | Auto-generado (`$DATA_DIR/jwt-secret`) | Opcional. Firma las sesiones del panel. Defínelo solo para compartir sesiones entre instancias detrás de una misma URL (32+ caracteres; los valores más cortos y los placeholders documentados se ignoran) |
 | `INITIAL_PASSWORD` | sin definir | Contraseña opcional de arranque headless (mínimo 8 caracteres). Sin definir, el primer arranque requiere el token de configuración de un solo uso impreso en la consola del servidor — no hay contraseña por defecto |
 | `DATA_DIR` | `~/.9router` | Ruta de almacenamiento de la base de datos (el nombre del directorio no ha cambiado respecto a la versión anterior por compatibilidad) |
 | `NODE_ENV` | `development` | Establece a `production` para despliegue |
@@ -154,11 +155,12 @@ docker run -d \
   --name 10router \
   -p 3000:3000 \
   -p 20128:20128 \
-  -e JWT_SECRET="$(openssl rand -hex 32)" \
   -e INITIAL_PASSWORD="your-secure-password" \
   -v 10router-data:/app/data \
   10router
 ```
+
+> `JWT_SECRET` se deja sin definir a propósito (ver la nota anterior): el secreto generado en `$DATA_DIR/jwt-secret` se mantiene entre reinicios.
 
 ### Opción 2: Docker Compose
 
@@ -176,7 +178,6 @@ services:
       - "20128:20128"
     environment:
       - NODE_ENV=production
-      - JWT_SECRET=${JWT_SECRET}
       - INITIAL_PASSWORD=your-secure-password
       - DATA_DIR=/app/data
     volumes:
@@ -186,6 +187,8 @@ services:
 volumes:
   10router-data:
 ```
+
+> `JWT_SECRET` se deja sin definir a propósito (ver la nota anterior): el secreto generado en `$DATA_DIR/jwt-secret` se mantiene entre reinicios.
 
 **Ejecutar con Docker Compose:**
 
@@ -311,16 +314,15 @@ sudo certbot renew --dry-run
 
 ## 🔒 Consideraciones de seguridad
 
-### 1. Cambiar credenciales por defecto
+### 1. Protege el acceso al panel
 
-**CRÍTICO:** Cambia `JWT_SECRET` y `INITIAL_PASSWORD` antes del despliegue:
+Define un `INITIAL_PASSWORD` seguro antes del despliegue, o déjalo sin definir y completa la configuración inicial con el token de un solo uso que se imprime en la consola del servidor. No hay contraseña por defecto.
+
+`JWT_SECRET` es opcional: 10router genera uno en `$DATA_DIR/jwt-secret` y lo conserva, así que mantén el directorio de datos privado. Define `JWT_SECRET` solo para compartir sesiones entre varias instancias detrás de una misma URL, con un valor de 32+ caracteres generado una vez y guardado:
 
 ```bash
-# Generar JWT secret seguro
-openssl rand -base64 32
-
-# Usa este valor para JWT_SECRET
-export JWT_SECRET="$(openssl rand -hex 32)"
+# Ejecútalo una vez, guarda el valor y úsalo en todas las instancias
+openssl rand -hex 32
 ```
 
 ### 2. Configuración del firewall
@@ -461,7 +463,7 @@ Asegúrate de que `proxy_buffering off` esté configurado en Nginx para soporte 
 ```bash
 # Corregir permisos del directorio de datos
 sudo chown -R $USER:$USER /var/lib/10router
-chmod 755 /var/lib/10router
+chmod 700 /var/lib/10router
 ```
 
 ---

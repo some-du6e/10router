@@ -2,6 +2,7 @@
 
 import { NextResponse } from "next/server";
 import { findUnsafeConfigValue } from "@/lib/cliTools/configValue.js";
+import { pickFields } from "@/lib/cliTools/statusFields.js";
 import { exec } from "child_process";
 import { promisify } from "util";
 import fs from "fs/promises";
@@ -111,9 +112,14 @@ export async function GET() {
         }
         const toml = await readConfigToml();
         const config = parseToml(toml);
+        const openai = config["providers.openai"];
         return NextResponse.json({
             installed: true,
-            settings: config,
+            // The provider and the openai section's URL and model, never an api_key.
+            settings: {
+                ...pickFields(config, ["provider"]),
+                ...(openai ? { "providers.openai": pickFields(openai, ["base_url", "model"]) } : {}),
+            },
             has10Router: has10RouterConfig(config),
             configPath: getDeepSeekConfigPath(),
         });

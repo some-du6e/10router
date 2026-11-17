@@ -7,18 +7,17 @@ import { DATA_DIR } from "../dataDir.js";
 // JWT_SECRET, else one generated once into $DATA_DIR/jwt-secret.
 let cached = null;
 
-const MIN_JWT_SECRET_LENGTH = 32;
-// Every JWT_SECRET example value the docs and env templates ever shipped. Anyone
-// can sign a session with one of these, so they count as no secret at all.
-const PLACEHOLDER_JWT_SECRETS = new Set([
-  "change-me-to-a-long-random-secret",
-  "your-secure-secret",
-  "your-secret",
-  "your-secure-secret-change-this",
+export const MIN_JWT_SECRET_LENGTH = 32;
+// JWT_SECRET example values the docs, env templates and old code ever shipped that
+// pass the length rule. Anyone can sign a session with one of these, so they count
+// as no secret at all. Shorter examples ("your-secure-secret", "generated-secret-here",
+// the Spanish README's) are already refused by length. A test scans the docs for
+// new examples.
+export const PLACEHOLDER_JWT_SECRETS = new Set([
+  "change-me-to-a-long-random-secret", // .env.example
   "your-secure-secret-change-this-to-random-string",
-  "generated-secret-here",
-  "tu-secreto-seguro-cámbialo",
-  "votre-secret-sécurisé-changez-le",
+  "votre-secret-sécurisé-changez-le", // French README
+  "9router-default-secret-change-me", // the old hardcoded fallback and README default
 ]);
 
 export function isUsableJwtSecret(value) {

@@ -7,8 +7,18 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { DEFAULT_PLUGINS } from "@/shared/constants/coworkPlugins";
+import { CLI_TOOLS } from "@/shared/constants/cliTools";
+import { ownClientKeyOrNull, pickFields } from "@/lib/cliTools/statusFields.js";
 
 const execAsync = promisify(exec);
+
+// The env vars the status shows: base URL, context cap and the model mappings.
+const STATUS_ENV_KEYS = [
+  "ANTHROPIC_BASE_URL",
+  "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+  ...Object.values(CLI_TOOLS.claude.envVars),
+  ...CLI_TOOLS.claude.defaultModels.map((m) => m.envKey).filter(Boolean),
+];
 
 // Exa MCP def — reuse from coworkPlugins (DRY).
 const EXA_PLUGIN = DEFAULT_PLUGINS.find((p) => p.name === "exa");
@@ -103,10 +113,15 @@ export async function GET() {
     const settings = await readSettings();
     const has10Router = !!(settings?.env?.ANTHROPIC_BASE_URL);
     const claudeJson = await readClaudeJson();
+    const env = settings?.env || {};
+    const token = await ownClientKeyOrNull(env.ANTHROPIC_AUTH_TOKEN);
 
     return NextResponse.json({
       installed: true,
-      settings: settings,
+      // settings.json can hold any env var (other tokens, proxies): only the ones the card reads.
+      settings: settings
+        ? { env: { ...pickFields(env, STATUS_ENV_KEYS), ...(token ? { ANTHROPIC_AUTH_TOKEN: token } : {}) } }
+        : null,
       has10Router: has10Router,
       exaMcpEnabled: !!claudeJson?.mcpServers?.exa,
       settingsPath: getClaudeSettingsPath(),

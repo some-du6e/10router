@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { exportDb, getSettings, importDb } from "@/lib/localDb";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
-import { verifyDashboardPassword } from "@/lib/auth/dashboardSession";
+import { cookies } from "next/headers";
+import {
+  verifyDashboardPassword,
+  getDashboardAuthSession,
+  reissueDashboardSession,
+} from "@/lib/auth/dashboardSession";
 import { CLI_TOKEN_HEADER, isValidCliToken } from "@/lib/auth/cliToken.js";
 
 const PASSWORD_HEADER = "x-9r-password";
@@ -30,7 +35,15 @@ export async function POST(request) {
     if (!(await isCliRequest(request)) && !(await verifyDashboardPassword(password))) {
       return NextResponse.json({ error: "Invalid password" }, { status: 401 });
     }
+    // An import that changes the dashboard password ends every session (importDb
+    // starts a new epoch). The caller is read first and stays signed in.
+    const cookieStore = await cookies();
+    const token = cookieStore.get("auth_token")?.value;
+    const session = await getDashboardAuthSession(token);
     await importDb(payload);
+    if (session && !(await getDashboardAuthSession(token))) {
+      await reissueDashboardSession(cookieStore, request, session);
+    }
 
     // Ensure proxy settings take effect immediately after a DB import.
     try {

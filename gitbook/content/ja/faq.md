@@ -210,22 +210,24 @@ git clone https://github.com/some-du6e/10router.git
 cd 10router/app
 npm install && npm run build
 
-export JWT_SECRET="$(openssl rand -hex 32)"
 export INITIAL_PASSWORD="your-password"
 export NODE_ENV="production"
 
 npm start
 ```
 
+> `JWT_SECRET` は任意です。未設定のままにすると、10router が `$DATA_DIR/jwt-secret` に一度だけ生成するため、再起動してもセッションは維持されます。1つのURLの背後で複数インスタンスを動かす場合のみ: 値を一度だけ生成し (`openssl rand -hex 32`)、保存して、すべてのインスタンスに同じ値を設定してください。32文字未満の値やドキュメント記載のプレースホルダーは無視されます。
+
 ### Docker
 ```bash
 docker build -t 10router .
 docker run -d \
   -p 3000:3000 \
-  -e JWT_SECRET="$(openssl rand -hex 32)" \
   -v 10router-data:/app/data \
   10router
 ```
+
+> `JWT_SECRET` は意図的に未設定です (上記の注を参照): `$DATA_DIR/jwt-secret` に生成されたシークレットは再起動後も維持されます。
 
 ### Cloudflare Workers
 ```bash
@@ -234,7 +236,7 @@ npm run deploy:cloudflare
 ```
 
 **環境変数:**
-- `JWT_SECRET` - **本番環境で必ず変更!**
+- `JWT_SECRET` - 任意: `$DATA_DIR/jwt-secret` に自動生成されます。1つのURLの背後にある複数インスタンスでセッションを共有する場合のみ設定 (32文字以上)
 - `DATA_DIR` - データベース保存パス(デフォルト: `~/.9router`)
 - `INITIAL_PASSWORD` - ヘッドレス起動用のオプションパスワード(8文字以上)。デフォルトは未設定で、初回起動にはサーバーコンソールに出力されるワンタイムのセットアップトークンが必要
 - `NODE_ENV` - デプロイ時は`production`に設定
@@ -263,7 +265,7 @@ npm run deploy:cloudflare
 - コミュニティレビュー済み
 
 **ベストプラクティス:**
-- 本番環境で`JWT_SECRET`を変更
+- データディレクトリ (`jwt-secret` を含む `$DATA_DIR`) を非公開に保つ
 - 強力な`INITIAL_PASSWORD`を使用
 - クラウドデプロイでHTTPSを有効化
 - APIキーを定期的にローテーション

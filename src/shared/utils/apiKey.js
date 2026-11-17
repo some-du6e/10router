@@ -3,15 +3,11 @@ import crypto from "crypto";
 const API_KEY_SECRET = process.env.API_KEY_SECRET || "endpoint-proxy-api-key-secret";
 
 /**
- * Generate a 26-char base32 keyId carrying 130 bits from the OS CSPRNG.
- * No "-", so the key still splits into four parts.
+ * Generate a 32-char hex keyId: 128 bits from the OS CSPRNG. Hex has no "-", so
+ * the key still splits into four parts.
  */
-const KEY_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
 function generateKeyId() {
-  const bytes = crypto.randomBytes(26);
-  let result = "";
-  for (const b of bytes) result += KEY_ID_ALPHABET[b & 31];
-  return result;
+  return crypto.randomBytes(16).toString("hex");
 }
 
 /**

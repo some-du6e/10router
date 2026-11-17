@@ -1067,7 +1067,6 @@ npm install
 npm run build
 
 # Configuration
-export JWT_SECRET="$(openssl rand -hex 32)"
 export INITIAL_PASSWORD="votre-mot-de-passe"
 export DATA_DIR="/var/lib/9router"
 export PORT="20128"
@@ -1087,6 +1086,8 @@ pm2 start npm --name 9router -- start
 pm2 save
 pm2 startup
 ```
+
+> `JWT_SECRET` est facultatif. Laissez-le vide et 10router en génère un une seule fois dans `$DATA_DIR/jwt-secret`, donc les sessions survivent aux redémarrages. Uniquement pour plusieurs instances derrière une même URL : générez une valeur une fois (`openssl rand -hex 32`), conservez-la et définissez cette même valeur sur chaque instance. Les valeurs de moins de 32 caractères ou un placeholder documenté sont ignorés.
 
 ### Docker
 
@@ -1138,7 +1139,7 @@ docker pull decolua/9router:latest   # mise à jour vers la dernière version
 
 | Variable                                             | Par défaut                                  | Description                                                                                  |
 | ---------------------------------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `JWT_SECRET`                                         | Généré automatiquement (`~/.9router/jwt-secret`) | Secret de signature JWT pour le cookie d'authentification du tableau de bord (remplacez-le pour partager entre instances) |
+| `JWT_SECRET`                                         | Généré automatiquement (`~/.9router/jwt-secret`) | Secret de signature JWT pour le cookie d'authentification du tableau de bord ; définissez-le uniquement pour partager les sessions entre instances (32 caractères ou plus ; les valeurs plus courtes et les placeholders documentés sont ignorés) |
 | `INITIAL_PASSWORD`                                   | `123456`                                    | Mot de passe de première connexion quand aucun hash n'est enregistré                          |
 | `DATA_DIR`                                           | `~/.9router`                                | Emplacement principal des données de l'app (SQLite dans `$DATA_DIR/db/data.sqlite`)          |
 | `PORT`                                               | défaut du framework                         | Port du service (`20128` dans les exemples)                                                   |

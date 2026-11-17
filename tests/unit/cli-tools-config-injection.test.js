@@ -45,6 +45,13 @@ describe("cli-tools writers refuse values that would break out of the config syn
       expect(res.status).toBe(400);
     });
 
+    it(`${tool.name}: rejects a value that would expand another variable`, async () => {
+      const { POST } = await import(`../../src/app/api/cli-tools/${tool.route}/route.js`);
+      const res = await POST(post({ baseUrl: "http://localhost:20128", model: "${HOME}", apiKey: "sk-1" }));
+      expect(res.status).toBe(400);
+      expect(fs.existsSync(tool.file())).toBe(false);
+    });
+
     it(`${tool.name}: still writes ordinary values`, async () => {
       const { POST } = await import(`../../src/app/api/cli-tools/${tool.route}/route.js`);
       const res = await POST(post({ baseUrl: "http://localhost:20128", model: "cc/claude-opus-4-7", apiKey: "sk-abc_123" }));
@@ -56,6 +63,13 @@ describe("cli-tools writers refuse values that would break out of the config syn
   it("jcode: rejects an API key that would add env lines", async () => {
     const { POST } = await import("../../src/app/api/cli-tools/jcode-settings/route.js");
     const res = await POST(post({ baseUrl: "http://localhost:20128", apiKey: 'sk-1"\nEVIL=1' }));
+    expect(res.status).toBe(400);
+    expect(fs.existsSync(path.join(home, ".config", "jcode", "provider-10router.env"))).toBe(false);
+  });
+
+  it("jcode: rejects an API key that would expand another variable", async () => {
+    const { POST } = await import("../../src/app/api/cli-tools/jcode-settings/route.js");
+    const res = await POST(post({ baseUrl: "http://localhost:20128", apiKey: "sk-${OTHER_SECRET}" }));
     expect(res.status).toBe(400);
     expect(fs.existsSync(path.join(home, ".config", "jcode", "provider-10router.env"))).toBe(false);
   });

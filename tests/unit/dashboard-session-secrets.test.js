@@ -4,7 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { SignJWT } from "jose";
 
-const state = vi.hoisted(() => ({ settings: {}, dataDir: "", cookie: undefined }));
+const state = vi.hoisted(() => ({
+  settings: {},
+  meta: new Map(),
+  dataDir: "",
+  cookies: {},
+  setupPending: false,
+  bootstrap: "claimed",
+}));
 
 vi.mock("@/lib/dataDir", () => ({
   get DATA_DIR() {
@@ -20,17 +27,49 @@ vi.mock("@/lib/localDb", () => ({
   }),
 }));
 
+vi.mock("@/lib/db/helpers/metaStore.js", () => ({
+  getMeta: vi.fn(async (key, fallback = null) => (state.meta.has(key) ? state.meta.get(key) : fallback)),
+  setMeta: vi.fn(async (key, value) => {
+    state.meta.set(key, String(value));
+  }),
+}));
+
 vi.mock("@/lib/auth/setupState", () => ({
   getBootstrapSecret: vi.fn(),
   getEnvInitialPassword: vi.fn(() => null),
+  needsSetup: vi.fn(async () => state.setupPending),
+  getAuthBootstrapState: vi.fn(async () => state.bootstrap),
+  validateNewPassword: vi.fn(() => ({ ok: true })),
+  clearLegacyGrace: vi.fn(async () => {}),
   LEGACY_GRACE_META_KEY: "legacyGrace",
+  MIN_PASSWORD_LENGTH: 8,
 }));
 
+vi.mock("@/lib/auth/setupToken", () => ({
+  issueSetupToken: () => "tok",
+  printSetupBanner: () => {},
+  consumeSetupToken: () => ({ ok: true }),
+  getSetupTokenState: () => ({ present: true, expired: false, expiresInSec: 60 }),
+  SETUP_WINDOW_MS: 1000,
+}));
+vi.mock("@/lib/auth/setupBootstrap", () => ({ ensureSetupToken: vi.fn() }));
+vi.mock("@/lib/auth/loginLimiter", () => ({
+  checkLock: () => ({ locked: false }),
+  recordFail: () => ({ remainingBeforeLock: 4 }),
+  recordSuccess: vi.fn(),
+  getClientIp: () => "127.0.0.1",
+}));
+
+// Only the auth_token cookie is ever read: a route reading another name gets nothing.
 vi.mock("next/headers", () => ({
   cookies: async () => ({
-    get: () => (state.cookie ? { value: state.cookie } : undefined),
-    delete: vi.fn(),
-    set: vi.fn(),
+    get: (name) => (name === "auth_token" && state.cookies.auth_token ? { value: state.cookies.auth_token } : undefined),
+    delete: (name) => {
+      delete state.cookies[name];
+    },
+    set: (name, value) => {
+      state.cookies[name] = value;
+    },
   }),
 }));
 
@@ -51,13 +90,23 @@ async function loadSession(jwtSecret) {
   return await import("../../src/lib/auth/dashboardSession.js");
 }
 
+const jsonRequest = (body) =>
+  new Request("http://localhost/api", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+function resetState() {
+  state.settings = {};
+  state.meta = new Map();
+  state.cookies = {};
+  state.setupPending = false;
+  state.bootstrap = "claimed";
+  state.dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "10r-jwt-"));
+}
+
 describe("dashboard JWT secret", () => {
   const originalSecret = process.env.JWT_SECRET;
 
   beforeEach(() => {
-    state.settings = {};
-    state.cookie = undefined;
-    state.dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "10r-jwt-"));
+    resetState();
     vi.spyOn(console, "warn").mockImplementation(() => {});
   });
 
@@ -76,6 +125,12 @@ describe("dashboard JWT secret", () => {
     expect(await session.verifyDashboardAuthToken(own)).toBe(true);
   });
 
+  it("ignores the old built-in default secret", async () => {
+    const legacy = "9router-default-secret-change-me";
+    const session = await loadSession(legacy);
+    expect(await session.verifyDashboardAuthToken(await forge(legacy))).toBe(false);
+  });
+
   it("ignores secrets shorter than 32 characters", async () => {
     const session = await loadSession("short-but-not-a-placeholder");
     expect(await session.verifyDashboardAuthToken(await forge("short-but-not-a-placeholder"))).toBe(false);
@@ -87,31 +142,15 @@ describe("dashboard JWT secret", () => {
     expect(await session.verifyDashboardAuthToken(await forge(strong))).toBe(true);
     expect(console.warn).not.toHaveBeenCalled();
   });
-
-  it("rejects every documented placeholder", async () => {
-    await loadSession(undefined);
-    const { isUsableJwtSecret } = await import("../../src/lib/auth/authSecret.js");
-    for (const value of [
-      PLACEHOLDER,
-      "your-secure-secret",
-      "your-secure-secret-change-this",
-      "your-secure-secret-change-this-to-random-string",
-      "generated-secret-here",
-      "tu-secreto-seguro-cámbialo",
-      "votre-secret-sécurisé-changez-le",
-      "",
-      undefined,
-    ]) {
-      expect(isUsableJwtSecret(value)).toBe(false);
-    }
-  });
 });
 
 describe("dashboard session revocation", () => {
   beforeEach(() => {
-    state.settings = {};
-    state.cookie = undefined;
-    state.dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "10r-jwt-"));
+    resetState();
+  });
+
+  afterEach(() => {
+    vi.doUnmock("@/lib/auth/dashboardSession");
   });
 
   it("keeps sessions issued before the epoch existed valid until the first revocation", async () => {
@@ -121,42 +160,95 @@ describe("dashboard session revocation", () => {
 
     await session.revokeDashboardSessions();
     expect(await session.getDashboardAuthSession(token)).toBeNull();
-    expect(await session.verifyDashboardAuthToken(token)).toBe(false);
 
     const fresh = await session.createDashboardAuthToken();
     expect(await session.verifyDashboardAuthToken(fresh)).toBe(true);
   });
 
-  it("logout revokes the caller's stolen copy of the session", async () => {
+  it("keeps the epoch in _meta, not in settings", async () => {
     const session = await loadSession(undefined);
-    const token = await session.createDashboardAuthToken();
-    state.cookie = token;
-    const { POST } = await import("../../src/app/api/auth/logout/route.js");
-    await POST();
-    expect(await session.getDashboardAuthSession(token)).toBeNull();
+    await session.revokeDashboardSessions();
+    expect(state.settings).toEqual({});
+    expect([...state.meta.values()][0]).toMatch(/^[0-9a-f]{32}$/);
   });
 
-  it("an anonymous logout does not revoke anyone", async () => {
+  it("logout with a live session signs out every other browser too", async () => {
     const session = await loadSession(undefined);
-    const token = await session.createDashboardAuthToken();
-    state.cookie = "not-a-token";
+    const other = await session.createDashboardAuthToken();
+    state.cookies.auth_token = await session.createDashboardAuthToken();
     const { POST } = await import("../../src/app/api/auth/logout/route.js");
     await POST();
-    expect(await session.getDashboardAuthSession(token)).toBeTruthy();
+    expect(state.cookies.auth_token).toBeUndefined();
+    expect(await session.getDashboardAuthSession(other)).toBeNull();
+  });
+
+  it.each([
+    ["an anonymous caller", async () => "not-a-token"],
+    ["a restricted password-change session", async (s) => s.createDashboardAuthToken({ pwChange: true })],
+  ])("logout by %s only clears its own cookie", async (_label, makeCookie) => {
+    const session = await loadSession(undefined);
+    const other = await session.createDashboardAuthToken();
+    state.cookies.auth_token = await makeCookie(session);
+    const { POST } = await import("../../src/app/api/auth/logout/route.js");
+    await POST();
+    expect(state.cookies.auth_token).toBeUndefined();
+    expect(await session.getDashboardAuthSession(other)).toBeTruthy();
+  });
+
+  it("logout by a pre-reset password session while setup is pending only clears its own cookie", async () => {
+    const session = await loadSession(undefined);
+    const other = await session.createDashboardAuthToken();
+    state.cookies.auth_token = await session.createDashboardAuthToken();
+    state.setupPending = true;
+    const { POST } = await import("../../src/app/api/auth/logout/route.js");
+    await POST();
+    expect(await session.getDashboardAuthSession(other)).toBeTruthy();
   });
 
   it("password reset revokes existing sessions", async () => {
     const session = await loadSession(undefined);
     const token = await session.createDashboardAuthToken();
-    vi.doMock("@/lib/db/helpers/metaStore.js", () => ({ setMeta: vi.fn(), getMeta: vi.fn() }));
-    vi.doMock("@/lib/auth/setupToken", () => ({
-      issueSetupToken: () => "tok",
-      printSetupBanner: () => {},
-      SETUP_WINDOW_MS: 1000,
-    }));
     const { POST } = await import("../../src/app/api/auth/reset-password/route.js");
     await POST();
     expect(state.settings.password).toBeNull();
     expect(await session.getDashboardAuthSession(token)).toBeNull();
+  });
+
+  it("change-password revokes the old sessions, then gives the caller a session that works", async () => {
+    const session = await loadSession(undefined);
+    const other = await session.createDashboardAuthToken();
+    state.cookies.auth_token = await session.createDashboardAuthToken({ pwChange: true });
+    state.bootstrap = "legacy";
+    const { POST } = await import("../../src/app/api/auth/change-password/route.js");
+    const res = await POST(jsonRequest({ newPassword: "a-new-password-1" }));
+    expect(res.status).toBe(200);
+    expect(await session.getDashboardAuthSession(other)).toBeNull();
+    const fresh = await session.getDashboardAuthSession(state.cookies.auth_token);
+    expect(fresh).toBeTruthy();
+    expect(fresh.pwChange).toBeUndefined();
+  });
+
+  it("setup revokes the old sessions, then gives the caller a session that works", async () => {
+    const session = await loadSession(undefined);
+    const other = await session.createDashboardAuthToken();
+    state.bootstrap = "setup";
+    const { POST } = await import("../../src/app/api/auth/setup/route.js");
+    const res = await POST(jsonRequest({ token: "tok", password: "a-new-password-1" }));
+    expect(res.status).toBe(200);
+    expect(await session.getDashboardAuthSession(other)).toBeNull();
+    expect(await session.getDashboardAuthSession(state.cookies.auth_token)).toBeTruthy();
+  });
+
+  it("reissueDashboardSession keeps the SSO identity and drops bookkeeping and pwChange", async () => {
+    const session = await loadSession(undefined);
+    const token = await session.createDashboardAuthToken({ oidc: true, oidcSub: "sub-1", pwChange: true });
+    const before = await session.getDashboardAuthSession(token);
+    await session.revokeDashboardSessions();
+    const store = { set: (name, value) => (state.cookies[name] = value) };
+    await session.reissueDashboardSession(store, null, before);
+    const after = await session.getDashboardAuthSession(state.cookies.auth_token);
+    expect(after).toEqual(expect.objectContaining({ oidc: true, oidcSub: "sub-1" }));
+    expect(after.pwChange).toBeUndefined();
+    expect(after.sep).toBe([...state.meta.values()][0]);
   });
 });

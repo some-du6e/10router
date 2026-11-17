@@ -1,3 +1,5 @@
+import { maskSensitiveHeaders, redactUrlSecrets } from "./redact.js";
+
 // Check if running in Node.js environment (has fs module)
 const isNode = typeof process !== "undefined" && process.versions?.node && typeof window === "undefined";
 
@@ -8,28 +10,18 @@ let fs = null;
 let path = null;
 let LOGS_DIR = null;
 
-const URL_SECRET_PARAMS = ["key", "api_key", "apikey", "access_token", "token"];
-// Some upstreams (Vertex with an API key) carry the credential in the query.
-export function redactUrlSecrets(url) {
-  if (typeof url !== "string" || !url.includes("?")) return url;
-  try {
-    const parsed = new URL(url);
-    let changed = false;
-    for (const name of [...parsed.searchParams.keys()]) {
-      if (URL_SECRET_PARAMS.includes(name.toLowerCase())) {
-        parsed.searchParams.set(name, "[REDACTED]");
-        changed = true;
-      }
-    }
-    return changed ? parsed.toString() : url;
-  } catch {
-    return url;
-  }
-}
+// Masking lives in redact.js; re-exported for existing importers.
+export { maskSensitiveHeaders, redactUrlSecrets };
 
+const PRIVATE_FILE = { mode: 0o600 };
+let logsDirReady = false;
+
+// Created (and an existing one tightened) once per process: logs hold prompts.
 function ensureLogsDir() {
+  if (logsDirReady) return;
   fs.mkdirSync(LOGS_DIR, { recursive: true, mode: 0o700 });
   try { fs.chmodSync(LOGS_DIR, 0o700); } catch { /* not ours to change */ }
+  logsDirReady = true;
 }
 
 // Lazy load Node.js modules (avoid top-level await)
@@ -85,23 +77,10 @@ function writeJsonFile(sessionPath, filename, data) {
   
   try {
     const filePath = path.join(sessionPath, filename);
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), { mode: 0o600 });
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), PRIVATE_FILE);
   } catch (err) {
     console.log(`[LOG] Failed to write ${filename}:`, err.message);
   }
-}
-
-const SENSITIVE_HEADER = /authorization|api-key|apikey|cookie|token|secret|password/i;
-
-export function maskSensitiveHeaders(headers) {
-  if (!headers) return {};
-  const masked = { ...headers };
-  for (const [key, value] of Object.entries(masked)) {
-    if (!SENSITIVE_HEADER.test(key) || value == null) continue;
-    const text = String(value);
-    masked[key] = text.length > 16 ? `***${text.slice(-4)}` : "***";
-  }
-  return masked;
 }
 
 // No-op logger when logging is disabled
@@ -184,7 +163,7 @@ export async function createRequestLogger(sourceFormat, targetFormat, model) {
         timestamp: new Date().toISOString(),
         status,
         statusText,
-        headers: headers ? (typeof headers.entries === "function" ? Object.fromEntries(headers.entries()) : headers) : {},
+        headers: maskSensitiveHeaders(headers),
         body
       });
     },
@@ -194,7 +173,7 @@ export async function createRequestLogger(sourceFormat, targetFormat, model) {
       if (!fs || !sessionPath) return;
       try {
         const filePath = path.join(sessionPath, "5_res_provider.txt");
-        fs.appendFileSync(filePath, chunk);
+        fs.appendFileSync(filePath, chunk, PRIVATE_FILE);
       } catch (err) {
         // Ignore append errors
       }
@@ -205,7 +184,7 @@ export async function createRequestLogger(sourceFormat, targetFormat, model) {
       if (!fs || !sessionPath) return;
       try {
         const filePath = path.join(sessionPath, "6_res_openai.txt");
-        fs.appendFileSync(filePath, chunk);
+        fs.appendFileSync(filePath, chunk, PRIVATE_FILE);
       } catch (err) {
         // Ignore append errors
       }
@@ -224,7 +203,7 @@ export async function createRequestLogger(sourceFormat, targetFormat, model) {
       if (!fs || !sessionPath) return;
       try {
         const filePath = path.join(sessionPath, "7_res_client.txt");
-        fs.appendFileSync(filePath, chunk);
+        fs.appendFileSync(filePath, chunk, PRIVATE_FILE);
       } catch (err) {
         // Ignore append errors
       }
@@ -265,7 +244,7 @@ export function logError(provider, { error, url, model, requestBody }) {
       requestBody
     };
     
-    fs.appendFileSync(logPath, JSON.stringify(logEntry) + "\n", { mode: 0o600 });
+    fs.appendFileSync(logPath, JSON.stringify(logEntry) + "\n", PRIVATE_FILE);
   } catch (err) {
     console.log("[LOG] Failed to write error log:", err.message);
   }

@@ -6,6 +6,7 @@ import { promisify } from "util";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
+import { pickFields } from "@/lib/cliTools/statusFields.js";
 
 const execAsync = promisify(exec);
 
@@ -52,6 +53,17 @@ const has10RouterConfig = (settings) => {
   return settings.customModels.some(m => m.id?.startsWith("custom:10router"));
 };
 
+// Only this router's custom models, without their apiKey: every entry in
+// customModels carries its provider's key, and this status reaches remote
+// dashboard sessions.
+const summarizeSettings = (settings) => {
+  if (!settings) return null;
+  const customModels = (Array.isArray(settings.customModels) ? settings.customModels : [])
+    .filter((m) => typeof m?.id === "string" && (m.id.startsWith("custom:10router") || m.id.startsWith("custom:9Router")))
+    .map((m) => pickFields(m, ["id", "index", "model", "baseUrl", "displayName", "provider"]));
+  return { customModels };
+};
+
 // GET - Check droid CLI and read current settings
 export async function GET() {
   try {
@@ -69,7 +81,7 @@ export async function GET() {
 
     return NextResponse.json({
       installed: true,
-      settings,
+      settings: summarizeSettings(settings),
       has10Router: has10RouterConfig(settings),
       settingsPath: getDroidSettingsPath(),
     });

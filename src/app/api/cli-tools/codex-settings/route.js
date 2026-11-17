@@ -133,6 +133,29 @@ const has10RouterConfig = (config) => {
   return config.includes("model_provider = \"10router\"") || config.includes("[model_providers.10router]");
 };
 
+const stringOrNull = (value) => (typeof value === "string" && value ? value : null);
+
+// The model, subagent model and active provider's base URL from config.toml.
+const summarizeConfig = (config) => {
+  if (!config) return { model: null, subagentModel: null, baseUrl: null };
+  let parsed = null;
+  try { parsed = parseTOML(config); } catch { /* fall back to line matching */ }
+  if (parsed && typeof parsed === "object") {
+    const providers = parsed.model_providers || {};
+    const provider = providers[parsed.model_provider] || providers["10router"];
+    return {
+      model: stringOrNull(parsed.model),
+      subagentModel: stringOrNull(parsed.agents?.default_subagent_model ?? parsed.default_subagent_model),
+      baseUrl: stringOrNull(provider?.base_url),
+    };
+  }
+  return {
+    model: config.match(/^model\s*=\s*"([^"]+)"/m)?.[1] || null,
+    subagentModel: config.match(/^default_subagent_model\s*=\s*"([^"]+)"/m)?.[1] || null,
+    baseUrl: config.match(/base_url\s*=\s*"([^"]+)"/)?.[1] || null,
+  };
+};
+
 // GET - Check codex CLI and read current settings
 export async function GET() {
   try {
@@ -141,16 +164,18 @@ export async function GET() {
     if (!isInstalled) {
       return NextResponse.json({
         installed: false,
-        config: null,
         message: "Codex CLI is not installed",
       });
     }
 
     const config = await readConfig();
 
+    // Only the fields the card shows: config.toml can hold other providers'
+    // headers and MCP server env, and this status reaches remote dashboard sessions.
     return NextResponse.json({
       installed: true,
-      config,
+      hasConfig: Boolean(config),
+      codex: summarizeConfig(config),
       has10Router: has10RouterConfig(config),
       native: Boolean(config && config.includes(CODEX_NATIVE_PATH)),
       configPath: getCodexConfigPath(),

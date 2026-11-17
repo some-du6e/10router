@@ -556,7 +556,7 @@ Runtime visibility sources:
 - console logs from `src/sse/utils/logger.js`
 - per-request usage aggregates in `usage.json`
 - textual request status log in `log.txt`
-- optional deep request/translation logs under `logs/` when `ENABLE_REQUEST_LOGS=true`
+- optional deep request/translation logs under `logs/` when `ENABLE_REQUEST_LOGS=true`. `open-sse/utils/requestLogger.js` masks credential headers (last 4 characters kept) and redacts secret query params in logged URLs, using the shared rules in `open-sse/utils/redact.js` (constants in `open-sse/config/redactionConstants.js`); the directory is `0700` and every file, streamed chunks included, `0600`
 - dashboard usage endpoints (`/api/usage/*`) for UI consumption
 
 ## Security-Sensitive Boundaries
@@ -575,7 +575,9 @@ Runtime visibility sources:
   `/api/auth/change-password`, so the forced change cannot be skipped.
 - SSO: OIDC and SAML logins give the single admin role, so `SSO_ALLOWED_USERS` is the only way to narrow who gets in. SAML start keeps no server state: it puts the AuthnRequest ID and a 10-minute expiry in the `saml_state` cookie, HMAC-signed with the session secret (`src/lib/auth/authSecret.js`). ACS lets node-saml redeem only that request, and each process refuses a request it already used (that record is in memory, so another instance, or the same one after a restart, could take a captured response and cookie once more within the 10 minutes). So SAML needs HTTPS (for the `SameSite=None` cookie), and several instances need the same `JWT_SECRET`. With SAML, an `SSO_ALLOWED_USERS` email entry trusts the email the IdP asserts
 - API key HMAC secret (`API_KEY_SECRET`) secures generated local API key format
-- Provider secrets (API keys/tokens) are persisted in local DB and should be protected at filesystem level
+- Session revocation: each dashboard JWT carries the epoch it was issued under (`sep`). The epoch is `dashboardSessionEpoch` in `_meta` (`src/lib/db/helpers/sessionEpoch.js`), never in settings and never exported, and a DB import leaves it alone. Logout (by a session the dashboard accepts), a password change, change-password, Reset Password, setup completion and an import that changes the password start a new epoch, which ends every session; the browser that changed the password is signed in again (`reissueDashboardSession`). Sessions from before the first epoch have no `sep` and stay valid until then. The epoch is per database: instances behind one URL with separate databases revoke only their own sessions
+- Provider secrets (API keys/tokens) are persisted in local DB. `src/lib/db/paths.js` creates `db/` and `backups/` `0700` (tightening an existing `db/`), and the driver sets `data.sqlite`, `-wal`, `-shm` and leftover pre-SQLite JSON files (`db.json`, `usage.json`, `disabledModels.json`, `request-details.json`) to `0600` on start; sql.js writes the file `0600` from its first save. A `DATA_DIR` the operator created keeps its mode. Everything is best-effort and skipped on Windows
+- CLI token (`x-9r-cli-token`, `src/lib/auth/cliToken.ts`): derived from the machine id, salt `9r-cli-auth` and `/auth/cli-secret`, the same way `cli/src/cli/api/client.js` derives it, and compared in constant time. CLI tool status routes return only the fields their cards read, never the host tools' other keys, tokens or headers
 - Cloud sync endpoints rely on API key auth + machine id semantics
 
 ## Environment and Runtime Matrix

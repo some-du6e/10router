@@ -80,7 +80,7 @@ describe("cowork status does not disclose the CLI token", () => {
     process.env.HOME = originalHome;
   });
 
-  it("strips bridge headers and the gateway key from GET /api/cli-tools/cowork-settings", async () => {
+  it("returns the status without the stored config, its bridge headers or the gateway key", async () => {
     process.env.HOME = home;
     const libDir = path.join(home, ".config", "Claude-3p", "configLibrary");
     fs.mkdirSync(libDir, { recursive: true });
@@ -105,8 +105,11 @@ describe("cowork status does not disclose the CLI token", () => {
 
     const { GET } = await import("../../src/app/api/cli-tools/cowork-settings/route.js");
     const res = await GET();
-    const text = JSON.stringify(await res.json());
+    const body = await res.json();
+    const text = JSON.stringify(body);
 
+    expect(body).not.toHaveProperty("config");
+    expect(body.cowork.baseUrl).toBe("http://localhost:20128/v1");
     expect(text).not.toContain(CLI_TOKEN);
     expect(text).not.toContain("sk-client-key-secret");
     expect(text).toContain("http://localhost:20128/api/mcp/files");
@@ -143,5 +146,40 @@ describe("translator preview step 3", () => {
     expect(text).not.toContain("oauth-access-token-0001");
     const headerNames = Object.keys(json.result.headers).map((h) => h.toLowerCase());
     expect(headerNames).toContain("authorization");
+  });
+
+  it("redacts a key carried in the URL (Vertex/Gemini) and in a header it doesn't know by name", async () => {
+    const KEY = "AIzaPlaceholderKey000111222";
+    mocks.getProviderConnections.mockResolvedValue([{ isActive: true, apiKey: KEY }]);
+    vi.resetModules();
+    vi.doMock("open-sse/executors/index.js", () => ({
+      getExecutor: () => ({
+        buildUrl: (model) => `https://generativelanguage.example/v1beta/models/${model}:generateContent?alt=sse&key=${KEY}`,
+        buildHeaders: () => ({ "content-type": "application/json", "x-upstream-credential": KEY }),
+        transformRequest: (_model, body) => body,
+        finalizeBody: (body) => body,
+      }),
+    }));
+    try {
+      const { POST } = await import("../../src/app/api/translator/translate/route.js");
+      const res = await POST(
+        new Request("http://localhost/api/translator/translate", {
+          method: "POST",
+          body: JSON.stringify({
+            step: 3,
+            body: { provider: "openai", model: "m", body: { model: "m", messages: [{ role: "user", content: "hi" }] } },
+          }),
+        })
+      );
+      const json = await res.json();
+      expect(json.success).toBe(true);
+      expect(JSON.stringify(json)).not.toContain(KEY);
+      expect(json.result.url).toContain("key=[REDACTED]");
+      expect(json.result.url).toContain("alt=sse");
+      expect(json.result.headers["x-upstream-credential"]).toBe("[REDACTED]");
+      expect(json.result.headers["content-type"]).toBe("application/json");
+    } finally {
+      vi.doUnmock("open-sse/executors/index.js");
+    }
   });
 });

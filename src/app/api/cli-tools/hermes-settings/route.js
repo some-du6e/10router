@@ -108,9 +108,11 @@ export async function GET() {
     }
     const yaml = await readConfigYaml();
     const model = parseModelBlock(yaml);
+    // Without api_key: the model block's key may be any provider's.
+    const { api_key: _apiKey, ...shownModel } = model || {};
     return NextResponse.json({
       installed: true,
-      settings: { model },
+      settings: { model: model ? shownModel : null },
       has10Router: has10RouterConfig(model),
       configPath: getHermesConfigPath(),
     });

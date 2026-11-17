@@ -210,22 +210,24 @@ git clone https://github.com/some-du6e/10router.git
 cd 10router/app
 npm install && npm run build
 
-export JWT_SECRET="$(openssl rand -hex 32)"
 export INITIAL_PASSWORD="your-password"
 export NODE_ENV="production"
 
 npm start
 ```
 
+> `JWT_SECRET` 是可选的。不设置时，10router 会在 `$DATA_DIR/jwt-secret` 中生成一次，重启后会话依然有效。仅当多个实例位于同一 URL 后面时：生成一个值（`openssl rand -hex 32`），保存好，并在每个实例上设置相同的值。少于 32 个字符的值或文档中的占位符会被忽略。
+
 ### Docker
 ```bash
 docker build -t 10router .
 docker run -d \
   -p 3000:3000 \
-  -e JWT_SECRET="$(openssl rand -hex 32)" \
   -v 10router-data:/app/data \
   10router
 ```
+
+> 这里有意不设置 `JWT_SECRET`（见上文说明）：在 `$DATA_DIR/jwt-secret` 中生成的密钥在重启后保持不变。
 
 ### Cloudflare Workers
 ```bash
@@ -234,7 +236,7 @@ npm run deploy:cloudflare
 ```
 
 **环境变量:**
-- `JWT_SECRET` - **生产环境必须修改!**
+- `JWT_SECRET` - 可选：自动生成到 `$DATA_DIR/jwt-secret`。仅在同一 URL 后的多个实例之间共享会话时设置（至少 32 个字符）
 - `DATA_DIR` - 数据库存储路径(默认:`~/.9router`)
 - `INITIAL_PASSWORD` - 可选的无头引导密码(至少 8 个字符)。默认不设置:首次启动需要服务器控制台打印的一次性 setup token
 - `NODE_ENV` - 部署时设为 `production`
@@ -263,7 +265,7 @@ npm run deploy:cloudflare
 - 社区评审
 
 **最佳实践:**
-- 生产环境修改 `JWT_SECRET`
+- 保持数据目录（包含 `jwt-secret` 的 `$DATA_DIR`）私有
 - 使用强 `INITIAL_PASSWORD`
 - 云端部署启用 HTTPS
 - 定期轮换 API keys

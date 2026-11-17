@@ -2,6 +2,7 @@
 
 import { NextResponse } from "next/server";
 import { findUnsafeConfigValue } from "@/lib/cliTools/configValue.js";
+import { pickFields } from "@/lib/cliTools/statusFields.js";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
@@ -121,9 +122,17 @@ export async function GET() {
   const config = await readConfig();
   const has10Router = has10RouterConfig(config);
 
+  // Only this router's provider URL and model: config.toml can hold other
+  // providers' keys and headers, and this status reaches remote dashboard sessions.
+  const providers = {};
+  for (const name of ["10router", "9router"]) {
+    const provider = config?.providers?.[name];
+    if (provider && typeof provider === "object") providers[name] = pickFields(provider, ["base_url", "default_model"]);
+  }
+
   return NextResponse.json({
     installed: true,
-    config,
+    config: { providers },
     has10Router,
     configPath: getConfigPath(),
   });

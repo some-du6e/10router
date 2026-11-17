@@ -53,6 +53,23 @@ const has10RouterConfig = (config) => {
   return !!config.provider["10router"];
 };
 
+// The parts of opencode.json the card reads: the 10router (and legacy 9router)
+// base URL and the explorer subagent model. Other providers' options hold their
+// API keys, and this status reaches remote dashboard sessions.
+const summarizeConfig = (config) => {
+  if (!config) return null;
+  const provider = {};
+  for (const name of ["10router", "9router"]) {
+    const baseURL = config.provider?.[name]?.options?.baseURL;
+    if (typeof baseURL === "string") provider[name] = { options: { baseURL } };
+  }
+  const explorerModel = config.agent?.explorer?.model;
+  return {
+    provider,
+    ...(typeof explorerModel === "string" ? { agent: { explorer: { model: explorerModel } } } : {}),
+  };
+};
+
 // GET - Check opencode CLI and read current settings
 export async function GET() {
   try {
@@ -72,7 +89,7 @@ export async function GET() {
 
     return NextResponse.json({
       installed: true,
-      config,
+      config: summarizeConfig(config),
       has10Router: has10RouterConfig(config),
       configPath: getConfigPath(),
         opencode: {

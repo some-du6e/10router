@@ -37,17 +37,18 @@ npm run build
 `.env` ファイルを作成するか、変数をエクスポート:
 
 ```bash
-export JWT_SECRET="$(openssl rand -hex 32)"
 export INITIAL_PASSWORD="your-secure-password"
 export DATA_DIR="/var/lib/10router"
 export NODE_ENV="production"
 ```
 
+> `JWT_SECRET` は任意です。未設定のままにすると、10router が `$DATA_DIR/jwt-secret` に一度だけ生成するため、再起動してもセッションは維持されます。1つのURLの背後で複数インスタンスを動かす場合のみ: 値を一度だけ生成し (`openssl rand -hex 32`)、保存して、すべてのインスタンスに同じ値を設定してください。32文字未満の値やドキュメント記載のプレースホルダーは無視されます。
+
 **環境変数:**
 
 | 変数 | デフォルト | 説明 |
 |----------|---------|-------------|
-| `JWT_SECRET` | 自動生成 | **本番環境では必ず変更!** JWTトークンの署名に使用 |
+| `JWT_SECRET` | 自動生成 (`$DATA_DIR/jwt-secret`) | 任意。ダッシュボードのセッションに署名します。1つのURLの背後にある複数インスタンスでセッションを共有する場合のみ設定 (32文字以上。短い値やドキュメント記載のプレースホルダーは無視されます) |
 | `INITIAL_PASSWORD` | 未設定 | ヘッドレス起動用のオプションパスワード(8文字以上)。未設定の場合、初回起動にはサーバーコンソールに出力されるワンタイムのセットアップトークンが必要 — デフォルトパスワードはありません |
 | `DATA_DIR` | `~/.9router` | データベースとデータの保存パス （ディレクトリ名は後方互換性のため以前のリリースから変更されていません） |
 | `NODE_ENV` | `development` | デプロイ時は `production` に設定 |
@@ -154,11 +155,12 @@ docker run -d \
   --name 10router \
   -p 3000:3000 \
   -p 20128:20128 \
-  -e JWT_SECRET="$(openssl rand -hex 32)" \
   -e INITIAL_PASSWORD="your-secure-password" \
   -v 10router-data:/app/data \
   10router
 ```
+
+> `JWT_SECRET` は意図的に未設定です (上記の注を参照): `$DATA_DIR/jwt-secret` に生成されたシークレットは再起動後も維持されます。
 
 ### オプション2: Docker Compose
 
@@ -176,7 +178,6 @@ services:
       - "20128:20128"
     environment:
       - NODE_ENV=production
-      - JWT_SECRET=${JWT_SECRET}
       - INITIAL_PASSWORD=your-secure-password
       - DATA_DIR=/app/data
     volumes:
@@ -186,6 +187,8 @@ services:
 volumes:
   10router-data:
 ```
+
+> `JWT_SECRET` は意図的に未設定です (上記の注を参照): `$DATA_DIR/jwt-secret` に生成されたシークレットは再起動後も維持されます。
 
 **Docker Composeで実行:**
 
@@ -311,16 +314,15 @@ sudo certbot renew --dry-run
 
 ## 🔒 セキュリティ考慮事項
 
-### 1. デフォルト認証情報を変更
+### 1. ダッシュボードのログインを保護
 
-**重要:** デプロイ前に `JWT_SECRET` と `INITIAL_PASSWORD` を変更:
+デプロイ前に強力な `INITIAL_PASSWORD` を設定するか、未設定のままにしてサーバーコンソールに出力されるワンタイムのセットアップトークンで初回セットアップを完了してください。デフォルトパスワードはありません。
+
+`JWT_SECRET` は任意です: 10router が `$DATA_DIR/jwt-secret` に生成して保持するため、データディレクトリは非公開にしてください。`JWT_SECRET` は、1つのURLの背後にある複数インスタンスでセッションを共有する場合にのみ、一度だけ生成して保存した32文字以上の値で設定します:
 
 ```bash
-# 安全なJWTシークレットを生成
-openssl rand -base64 32
-
-# この値をJWT_SECRETに使用
-export JWT_SECRET="$(openssl rand -hex 32)"
+# 一度だけ実行し、値を保存して、すべてのインスタンスに設定
+openssl rand -hex 32
 ```
 
 ### 2. ファイアウォール設定
@@ -461,7 +463,7 @@ SSEサポート用にNginx設定で `proxy_buffering off` が設定されてい�
 ```bash
 # データディレクトリ権限を修正
 sudo chown -R $USER:$USER /var/lib/10router
-chmod 755 /var/lib/10router
+chmod 700 /var/lib/10router
 ```
 
 ---

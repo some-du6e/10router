@@ -196,8 +196,7 @@ curl http://localhost:20128/v1/chat/completions \
 `.env` ファイルを作成するか、環境変数を設定:
 
 ```bash
-# セキュリティ (本番環境では必須)
-export JWT_SECRET="$(openssl rand -hex 32)"
+# セキュリティ: ヘッドレス起動用のオプションパスワード
 export INITIAL_PASSWORD="your-password"
 
 # ストレージ
@@ -210,6 +209,8 @@ export NODE_ENV="production"
 # ロギング
 export ENABLE_REQUEST_LOGS="false"
 ```
+
+> `JWT_SECRET` は任意です。未設定のままにすると、10router が `$DATA_DIR/jwt-secret` に一度だけ生成するため、再起動してもセッションは維持されます。1つのURLの背後で複数インスタンスを動かす場合のみ: 値を一度だけ生成し (`openssl rand -hex 32`)、保存して、すべてのインスタンスに同じ値を設定してください。32文字未満の値やドキュメント記載のプレースホルダーは無視されます。
 
 ### データディレクトリ
 
@@ -393,7 +394,6 @@ npm install -g 10router
 npm install -g 10router
 
 # 設定
-export JWT_SECRET="$(openssl rand -hex 32)"
 export INITIAL_PASSWORD="your-password"
 export NODE_ENV="production"
 
@@ -404,6 +404,8 @@ pm2 save
 pm2 startup
 ```
 
+> `JWT_SECRET` は意図的に未設定です (上記の注を参照): `$DATA_DIR/jwt-secret` に生成されたシークレットは再起動後も維持されます。
+
 **ユースケース:** チームアクセス、リモートコーディング
 
 ### Docker
@@ -413,12 +415,13 @@ docker pull 10router/10router:latest
 
 docker run -d \
   -p 20128:20128 \
-  -e JWT_SECRET="$(openssl rand -hex 32)" \
   -e INITIAL_PASSWORD="your-password" \
   -v 10router-data:/root/.9router \
   --name 10router \
   10router/10router:latest
 ```
+
+> `JWT_SECRET` は意図的に未設定です (上記の注を参照): `$DATA_DIR/jwt-secret` に生成されたシークレットは再起動後も維持されます。
 
 **ユースケース:** コンテナデプロイ、Kubernetes
 

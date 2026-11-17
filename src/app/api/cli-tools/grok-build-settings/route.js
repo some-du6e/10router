@@ -13,6 +13,7 @@ import {
   parseGrokBuildConfig,
   resetGrokBuildConfig,
 } from "@/lib/grokBuildConfig";
+import { pickFields } from "@/lib/cliTools/statusFields.js";
 
 const execAsync = promisify(exec);
 
@@ -84,9 +85,17 @@ export async function GET() {
     }
 
     const settings = parseGrokBuildConfig(await readConfigToml());
+    // A model section's api_key (and its raw body, which holds it) stays on the host.
+    const shownModel = (section) => (section ? pickFields(section, ["model", "base_url", "name", "api_backend", "context_window"]) : null);
     return NextResponse.json({
       installed: true,
-      settings,
+      settings: {
+        ...settings,
+        model: shownModel(settings.model),
+        subagentModels: Object.fromEntries(
+          Object.entries(settings.subagentModels || {}).map(([type, section]) => [type, shownModel(section)])
+        ),
+      },
       has10Router: has10RouterConfig(settings),
       configPath: getGrokConfigPath(),
     });

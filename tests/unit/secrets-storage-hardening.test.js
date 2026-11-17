@@ -21,7 +21,7 @@ describe("client API key generation", () => {
     const seen = new Set();
     for (let i = 0; i < 200; i++) {
       const { key, keyId } = generateApiKeyWithMachine("abcdef0123456789");
-      expect(keyId).toMatch(/^[a-z2-7]{26}$/);
+      expect(keyId).toMatch(/^[0-9a-f]{32}$/);
       expect(parseApiKey(key)).toEqual({ machineId: "abcdef0123456789", keyId, isNewFormat: true });
       seen.add(keyId);
     }
@@ -50,8 +50,9 @@ describe("request log header masking", () => {
     expect(masked.Authorization).toBe("***wxyz");
   });
 
-  it.runIf(isPosix)("writes log files only the owner can read", async () => {
+  it.runIf(isPosix)("writes log files, streamed chunks included, only the owner can read", async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "10r-logs-"));
+    const umask = process.umask(0o022);
     vi.resetModules();
     process.env.ENABLE_REQUEST_LOGS = "true";
     const spy = vi.spyOn(process, "cwd").mockReturnValue(cwd);
@@ -59,10 +60,36 @@ describe("request log header masking", () => {
       const { createRequestLogger } = await import("../../open-sse/utils/requestLogger.js");
       const logger = await createRequestLogger("openai", "openai", "m");
       logger.logClientRawRequest("/v1/chat/completions", { a: 1 }, { authorization: "Bearer sk-1234567890abcdefghij" });
-      const file = path.join(logger.sessionPath, fs.readdirSync(logger.sessionPath)[0]);
+      logger.appendProviderChunk("data: {}\n\n");
+      logger.appendOpenAIChunk("data: {}\n\n");
+      logger.appendConvertedChunk("data: {}\n\n");
+      const files = fs.readdirSync(logger.sessionPath);
+      expect(files.sort()).toEqual(["1_req_client.json", "5_res_provider.txt", "6_res_openai.txt", "7_res_client.txt"]);
       expect(mode(logger.sessionPath)).toBe(0o700);
-      expect(mode(file)).toBe(0o600);
-      expect(fs.readFileSync(file, "utf8")).not.toContain("sk-1234567890abcdef");
+      for (const name of files) expect(mode(path.join(logger.sessionPath, name))).toBe(0o600);
+      expect(fs.readFileSync(path.join(logger.sessionPath, "1_req_client.json"), "utf8")).not.toContain("sk-1234567890abcdef");
+    } finally {
+      spy.mockRestore();
+      process.umask(umask);
+      delete process.env.ENABLE_REQUEST_LOGS;
+    }
+  });
+
+  it("redacts every secret query param in the target request the chat handler logs", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "10r-target-"));
+    vi.resetModules();
+    process.env.ENABLE_REQUEST_LOGS = "true";
+    const spy = vi.spyOn(process, "cwd").mockReturnValue(cwd);
+    try {
+      const { createRequestLogger } = await import("../../open-sse/utils/requestLogger.js");
+      const logger = await createRequestLogger("openai", "gemini", "m");
+      const params = ["key", "api_key", "apikey", "access_token", "token", "KEY", "Api_Key", "ApiKey", "Access_Token", "TOKEN"];
+      const url = "https://upstream.example/v1/models/m:generateContent?alt=sse&" + params.map((p, i) => `${p}=SECRETVALUE${i}`).join("&");
+      logger.logTargetRequest(url, { "x-goog-api-key": "SECRETHEADERVALUE123" }, {});
+      const text = fs.readFileSync(path.join(logger.sessionPath, "4_req_target.json"), "utf8");
+      expect(text).not.toMatch(/SECRETVALUE\d/);
+      expect(text).not.toContain("SECRETHEADERVALUE");
+      expect(text).toContain("alt=sse");
     } finally {
       spy.mockRestore();
       delete process.env.ENABLE_REQUEST_LOGS;

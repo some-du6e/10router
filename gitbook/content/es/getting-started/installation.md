@@ -196,8 +196,7 @@ curl http://localhost:20128/v1/chat/completions \
 Crea un archivo `.env` o establece variables de entorno:
 
 ```bash
-# Security (REQUIRED in production)
-export JWT_SECRET="$(openssl rand -hex 32)"
+# Security: optional headless bootstrap password
 export INITIAL_PASSWORD="your-password"
 
 # Storage
@@ -210,6 +209,8 @@ export NODE_ENV="production"
 # Logging
 export ENABLE_REQUEST_LOGS="false"
 ```
+
+> `JWT_SECRET` es opcional. Déjalo sin definir y 10router genera uno una sola vez en `$DATA_DIR/jwt-secret`, así las sesiones sobreviven a los reinicios. Solo para varias instancias detrás de una misma URL: genera un valor una vez (`openssl rand -hex 32`), guárdalo y usa ese mismo valor en todas las instancias. Los valores de menos de 32 caracteres o un placeholder documentado se ignoran.
 
 ### Directorio de datos
 
@@ -393,7 +394,6 @@ npm install -g 10router
 npm install -g 10router
 
 # Configurar
-export JWT_SECRET="$(openssl rand -hex 32)"
 export INITIAL_PASSWORD="your-password"
 export NODE_ENV="production"
 
@@ -404,6 +404,8 @@ pm2 save
 pm2 startup
 ```
 
+> `JWT_SECRET` se deja sin definir a propósito (ver la nota anterior): el secreto generado en `$DATA_DIR/jwt-secret` se mantiene entre reinicios.
+
 **Caso de uso:** Acceso de equipo, codificación remota
 
 ### Docker
@@ -413,12 +415,13 @@ docker pull 10router/10router:latest
 
 docker run -d \
   -p 20128:20128 \
-  -e JWT_SECRET="$(openssl rand -hex 32)" \
   -e INITIAL_PASSWORD="your-password" \
   -v 10router-data:/root/.9router \
   --name 10router \
   10router/10router:latest
 ```
+
+> `JWT_SECRET` se deja sin definir a propósito (ver la nota anterior): el secreto generado en `$DATA_DIR/jwt-secret` se mantiene entre reinicios.
 
 **Caso de uso:** Despliegue containerizado, Kubernetes
 

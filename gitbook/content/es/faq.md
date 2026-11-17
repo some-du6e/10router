@@ -210,22 +210,24 @@ git clone https://github.com/some-du6e/10router.git
 cd 10router/app
 npm install && npm run build
 
-export JWT_SECRET="$(openssl rand -hex 32)"
 export INITIAL_PASSWORD="your-password"
 export NODE_ENV="production"
 
 npm start
 ```
 
+> `JWT_SECRET` es opcional. Déjalo sin definir y 10router genera uno una sola vez en `$DATA_DIR/jwt-secret`, así las sesiones sobreviven a los reinicios. Solo para varias instancias detrás de una misma URL: genera un valor una vez (`openssl rand -hex 32`), guárdalo y usa ese mismo valor en todas las instancias. Los valores de menos de 32 caracteres o un placeholder documentado se ignoran.
+
 ### Docker
 ```bash
 docker build -t 10router .
 docker run -d \
   -p 3000:3000 \
-  -e JWT_SECRET="$(openssl rand -hex 32)" \
   -v 10router-data:/app/data \
   10router
 ```
+
+> `JWT_SECRET` se deja sin definir a propósito (ver la nota anterior): el secreto generado en `$DATA_DIR/jwt-secret` se mantiene entre reinicios.
 
 ### Cloudflare Workers
 ```bash
@@ -234,7 +236,7 @@ npm run deploy:cloudflare
 ```
 
 **Variables de entorno:**
-- `JWT_SECRET` - **¡DEBE cambiarse en producción!**
+- `JWT_SECRET` - Opcional: se genera automáticamente en `$DATA_DIR/jwt-secret`. Defínelo (32+ caracteres) solo para compartir sesiones entre instancias detrás de una misma URL
 - `DATA_DIR` - Ruta de almacenamiento de la base de datos (por defecto: `~/.9router`)
 - `INITIAL_PASSWORD` - Contraseña opcional de arranque headless (mínimo 8 caracteres). Sin definir por defecto: el primer arranque requiere el token de configuración de un solo uso impreso en la consola del servidor
 - `NODE_ENV` - Establece en `production` para desplegar
@@ -263,7 +265,7 @@ Consulta la [guía de despliegue](getting-started/installation.md#deployment) pa
 - Revisado por la comunidad
 
 **Mejores prácticas:**
-- Cambia `JWT_SECRET` en producción
+- Mantén privado el directorio de datos (`$DATA_DIR`, que contiene `jwt-secret`)
 - Usa un `INITIAL_PASSWORD` fuerte
 - Habilita HTTPS para despliegues en la nube
 - Rota las API keys regularmente

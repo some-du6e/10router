@@ -202,11 +202,11 @@ async function buildCodexHeader() {
     ].join("\n");
   }
 
-  // Parse base_url and model from raw TOML string
-  const baseUrlMatch = config && config.match(/base_url\s*=\s*"([^"]+)"/);
-  const modelMatch = config && config.match(/^model\s*=\s*"([^"]+)"/m);
-  const baseUrl = baseUrlMatch ? baseUrlMatch[1] : "";
-  const model = modelMatch ? modelMatch[1] : "";
+  // Newer gateways return the parsed fields (`codex`); older ones the raw TOML string.
+  const baseUrlMatch = typeof config === "string" && config.match(/base_url\s*=\s*"([^"]+)"/);
+  const modelMatch = typeof config === "string" && config.match(/^model\s*=\s*"([^"]+)"/m);
+  const baseUrl = result.data.codex?.baseUrl || (baseUrlMatch ? baseUrlMatch[1] : "");
+  const model = result.data.codex?.model || (modelMatch ? modelMatch[1] : "");
 
   const lines = [`Status:   ${COLORS.green}✓ Configured${COLORS.reset}`];
   if (baseUrl) lines.push(`Endpoint: ${COLORS.cyan}${baseUrl}${COLORS.reset}`);

@@ -10,6 +10,7 @@
 // Imported by the dashboard too: no node:* imports in this file.
 
 import type { CatalogLabModel, CatalogProvider, EndpointCatalog } from "./endpointCatalog.js";
+import { SECRET_QUERY_PARAM_RE } from "open-sse/utils/redact.js";
 
 // ---- Types -------------------------------------------------------------------
 
@@ -239,7 +240,8 @@ export function cleanKey(raw: unknown): string {
 // shown to the user, in every form a server might echo it: raw, JSON-escaped
 // ("/" -> "\/"), URL-encoded and base64. A short key is only replaced as a whole
 // token, so a 3-char key doesn't turn every word containing it into "<key>".
-const SECRET_PARAM_RE = /([?&](?:key|api[_-]?key|token|access_token|auth|sig|signature|code)=)[^&#\s"']*/gi;
+// The secret query-param list is shared with the request logger (open-sse/utils/redact.js).
+const SECRET_PARAM_RE = SECRET_QUERY_PARAM_RE;
 const BEARER_TOKEN_RE = /(bearer\s+)[A-Za-z0-9._~+/=-]{4,}/gi;
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // btoa needs Latin-1; go through UTF-8 bytes so any key encodes.

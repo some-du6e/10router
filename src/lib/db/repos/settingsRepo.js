@@ -161,6 +161,5 @@ export async function getCloudUrl() {
 }
 
 export async function exportSettings() {
-  const { sessionEpoch: _sessionEpoch, ...settings } = stripRetiredSettings(await readRaw());
-  return settings;
+  return stripRetiredSettings(await readRaw());
 }

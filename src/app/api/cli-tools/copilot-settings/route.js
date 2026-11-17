@@ -48,7 +48,11 @@ export async function GET() {
 
     return NextResponse.json({
       installed: true,
-      config,
+      // Only this router's entry, model ids and URLs: every entry carries its
+      // provider's apiKey, and this status reaches remote dashboard sessions.
+      config: Array.isArray(config)
+        ? (entry ? [{ name: entry.name, models: (Array.isArray(entry.models) ? entry.models : []).map((m) => ({ id: m?.id, url: m?.url })) }] : [])
+        : null,
       has10Router: has10RouterConfig(config),
       configPath: getConfigPath(),
       currentModel: entry?.models?.[0]?.id || null,

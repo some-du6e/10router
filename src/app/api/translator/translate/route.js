@@ -5,33 +5,18 @@ import { FORMATS } from "open-sse/translator/formats.js";
 import { getModelInfo } from "@/sse/services/model.js";
 import { getProviderConnections } from "@/lib/localDb.js";
 import { getExecutor } from "open-sse/executors/index.js";
+import { REDACTED, redactSensitiveHeaders, redactUrlSecrets, sanitizeSecrets } from "open-sse/utils/redact.js";
 
-const CREDENTIAL_HEADER = /^(authorization|proxy-authorization|cookie|x-api-key|api-key|x-goog-api-key)$/i;
-const REDACTED = "[REDACTED]";
-
-function credentialValues(credentials) {
-  return [
-    credentials.apiKey,
-    credentials.accessToken,
-    credentials.refreshToken,
-    credentials.copilotToken,
-    credentials.providerSpecificData?.copilotToken,
-  ].filter((v) => typeof v === "string" && v.length >= 8);
-}
-
-// The preview shows header names and request shape; credential values never leave the server.
+// The preview shows header names and request shape; credential values never leave
+// the server: credential headers, secret query params, and every stored
+// credential value wherever it appears (Vertex puts the key in the URL).
 function redactPreview(preview, credentials) {
-  const headers = Object.fromEntries(
-    Object.entries(preview.headers || {}).map(([name, value]) => [
-      name,
-      CREDENTIAL_HEADER.test(name) ? REDACTED : value,
-    ])
-  );
-  let json = JSON.stringify({ ...preview, headers });
-  for (const secret of credentialValues(credentials)) {
-    json = json.split(JSON.stringify(secret).slice(1, -1)).join(REDACTED);
-  }
-  return JSON.parse(json);
+  const redacted = {
+    ...preview,
+    url: redactUrlSecrets(preview.url),
+    headers: redactSensitiveHeaders(preview.headers || {}),
+  };
+  return JSON.parse(sanitizeSecrets(JSON.stringify(redacted), credentials, REDACTED));
 }
 
 export async function POST(request) {
