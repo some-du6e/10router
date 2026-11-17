@@ -7,6 +7,7 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
+import { checkNewBaseUrl } from "@/lib/cliTools/keepKeyTarget.js";
 
 const execAsync = promisify(exec);
 
@@ -138,6 +139,18 @@ export async function POST(request) {
 
     // Preserve any existing 10router provider entry and its models
     const existingProvider = config.provider["10router"] || { npm: "@ai-sdk/openai-compatible", options: {}, models: {} };
+
+    // The merge below keeps the entry's other options, so stored headers (which
+    // can carry a token) would go to a new host along with the key.
+    const storedHeaders = existingProvider.options?.headers;
+    const target = await checkNewBaseUrl({
+      tool: "OpenCode",
+      baseUrl: normalizedBaseUrl,
+      storedBaseUrl: existingProvider.options?.baseURL,
+      otherCredentials: storedHeaders && Object.keys(storedHeaders).length ? ["provider.10router.options.headers"] : [],
+      where: "opencode.json",
+    });
+    if (target.error) return NextResponse.json({ error: target.error }, { status: 400 });
 
     // Merge options (overwrite baseURL/apiKey)
     existingProvider.options = {

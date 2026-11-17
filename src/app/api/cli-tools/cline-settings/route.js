@@ -7,6 +7,7 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
+import { checkNewBaseUrl } from "@/lib/cliTools/keepKeyTarget.js";
 
 const execAsync = promisify(exec);
 
@@ -90,6 +91,19 @@ export async function POST(request) {
     const normalizedBaseUrl = baseUrl.endsWith("/v1") ? baseUrl.slice(0, -3) : baseUrl;
 
     const globalState = (await readJson(getGlobalStatePath())) || {};
+
+    // Cline sends openAiHeaders (which can carry a token) with every OpenAI-provider
+    // request, and this route leaves them in place.
+    const storedHeaders = globalState.openAiHeaders;
+    const target = await checkNewBaseUrl({
+      tool: "Cline",
+      baseUrl: normalizedBaseUrl,
+      storedBaseUrl: globalState.openAiBaseUrl,
+      otherCredentials: storedHeaders && Object.keys(storedHeaders).length ? ["openAiHeaders"] : [],
+      where: "globalState.json",
+    });
+    if (target.error) return NextResponse.json({ error: target.error }, { status: 400 });
+
     globalState.actModeApiProvider = "openai";
     globalState.planModeApiProvider = "openai";
     globalState.openAiBaseUrl = normalizedBaseUrl;

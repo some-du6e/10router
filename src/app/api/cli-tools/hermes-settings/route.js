@@ -8,6 +8,7 @@ import path from "path";
 import os from "os";
 import { findUnsafeConfigValue } from "@/lib/cliTools/configValue.js";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
+import { checkNewBaseUrl } from "@/lib/cliTools/keepKeyTarget.js";
 
 const execAsync = promisify(exec);
 
@@ -21,8 +22,12 @@ const getHermesEnvPath = () => path.join(getHermesDir(), ".env");
 // Match top-level "model:" block (until next non-indented, non-empty line)
 const MODEL_BLOCK_RE = /^model:[ \t]*\r?\n((?:[ \t]+.*\r?\n?|[ \t]*\r?\n)*)/m;
 
-const buildModelBlock = (model, baseUrl) =>
-  `model:\n  default: "${model}"\n  provider: "custom"\n  base_url: "${baseUrl}"\n  api_key: \${OPENAI_API_KEY}\n`;
+const API_KEY_REF = `\${${API_KEY_ENV}}`;
+
+// apiKey null: the block reads the key from .env through ${OPENAI_API_KEY}.
+// Otherwise it carries the key itself (checked by findUnsafeConfigValue).
+const buildModelBlock = (model, baseUrl, apiKey = null) =>
+  `model:\n  default: "${model}"\n  provider: "custom"\n  base_url: "${baseUrl}"\n  api_key: ${apiKey ? `"${apiKey}"` : API_KEY_REF}\n`;
 
 // Parse current model block back to fields (best-effort, simple key:value)
 const parseModelBlock = (yaml) => {
@@ -139,13 +144,28 @@ export async function POST(request) {
 
     const normalizedBaseUrl = baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
 
-    // Update config.yaml — replace/insert model: block, keep everything else
+    // The block reads OPENAI_API_KEY from ~/.hermes/.env, which can be the user's
+    // own key. It may keep doing so only for this instance, or for the base URL
+    // the stored block already sent that key to. Anywhere else the request's key
+    // goes into the block itself, and .env is left alone.
     const existingYaml = await readConfigYaml();
-    const newYaml = upsertModelBlock(existingYaml, buildModelBlock(model, normalizedBaseUrl));
-    await fs.writeFile(getHermesConfigPath(), newYaml);
+    const stored = parseModelBlock(existingYaml);
+    const target = await checkNewBaseUrl({
+      tool: "Hermes",
+      baseUrl: normalizedBaseUrl,
+      storedBaseUrl: stored?.api_key === API_KEY_REF ? stored.base_url : null,
+      credential: apiKey,
+      fallback: `${API_KEY_ENV} from ~/.hermes/.env`,
+    });
+    if (target.error) return NextResponse.json({ error: target.error }, { status: 400 });
+
+    // Update config.yaml — replace/insert model: block, keep everything else.
+    // Owner-only: the block can hold a key.
+    const newYaml = upsertModelBlock(existingYaml, buildModelBlock(model, normalizedBaseUrl, target.foreign ? apiKey : null));
+    await writePrivateFile(getHermesConfigPath(), newYaml);
 
     // Update .env — upsert OPENAI_API_KEY only when caller provides one
-    if (apiKey) {
+    if (apiKey && !target.foreign) {
       const existingEnv = await readEnvFile();
       const newEnv = upsertEnvVar(existingEnv, API_KEY_ENV, apiKey);
       await writePrivateFile(getHermesEnvPath(), newEnv);

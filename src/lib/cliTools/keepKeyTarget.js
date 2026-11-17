@@ -66,3 +66,37 @@ export async function mayKeepStoredKey(newBaseUrl, storedBaseUrl) {
 }
 
 export const CHOOSE_A_KEY_ERROR = "The stored API key only stays for the same base URL or this 10router; choose a key";
+
+const isCredential = (value) => typeof value === "string" && value.trim() !== "";
+
+// The check every settings route runs before it writes a base URL the request
+// picked. A tool pointed somewhere new keeps using whatever credential it already
+// has on this host unless the route replaces it, so for a base URL that is neither
+// storedBaseUrl nor this instance (mayKeepStoredKey false) the write may only go
+// ahead when:
+// - no credential the route leaves in place would go along (otherCredentials:
+//   names of stored entries, given in the error), and
+// - when the tool falls back to a host credential without a key (fallback: what
+//   it would use), the request brings its own key (credential), which the route
+//   then writes so that the tool uses it instead.
+// Pass storedBaseUrl only when the stored credential really went there before:
+// a route that rewrites the credential's entry vouches for nothing.
+// Returns { foreign, error }: foreign tells the route to write the request's
+// credential in place of the host's; error is the 400 message, or null.
+export async function checkNewBaseUrl({ tool, baseUrl, storedBaseUrl = null, credential, fallback = null, otherCredentials = [], where }) {
+  if (await mayKeepStoredKey(baseUrl, storedBaseUrl)) return { foreign: false, error: null };
+  if (otherCredentials.length) {
+    return {
+      foreign: true,
+      error: `${where} has ${otherCredentials.join(" and ")}; remove it or point ${tool} back at this instance`,
+    };
+  }
+  if (fallback && !isCredential(credential)) {
+    const target = parse(baseUrl)?.origin || "that base URL";
+    return {
+      foreign: true,
+      error: `${tool} would send ${fallback} to ${target}, which is neither its current base URL nor this 10router; choose a key for it`,
+    };
+  }
+  return { foreign: true, error: null };
+}

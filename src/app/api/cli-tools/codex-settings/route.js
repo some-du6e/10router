@@ -10,6 +10,7 @@ import { parseTOML, stringifyTOML } from "confbox";
 import { parseCodexVersion } from "@/shared/utils/codexCatalog.js";
 import { decideCatalogUrl } from "@/lib/codex/catalogUrlDecision.js";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
+import { checkNewBaseUrl } from "@/lib/cliTools/keepKeyTarget.js";
 
 const execAsync = promisify(exec);
 
@@ -51,19 +52,29 @@ const resolveCodexBaseUrl = (baseUrl, native) => {
 // Signed in with an API key, Codex only reads a custom base URL's catalog from
 // `model_catalog_url`; without the catalog it has no apply_patch tool for
 // models it doesn't know.
-const buildProviderSection = (baseUrl, native, catalog) => (native
-  ? {
-    name: "openai",
-    base_url: baseUrl,
-    ...(catalog ? { model_catalog_url: `${baseUrl}/models` } : {}),
-    wire_api: "responses",
-    requires_openai_auth: true,
-  }
-  : {
-    name: "10router",
-    base_url: baseUrl,
-    wire_api: "responses",
-  });
+// Without a key of its own, Codex authenticates a provider with its own login
+// (auth.json: the ChatGPT sign-in or OPENAI_API_KEY). That only goes to this
+// instance. For any other host the section carries the request's key as
+// experimental_bearer_token, which Codex sends in place of its login, and drops
+// requires_openai_auth.
+const buildProviderSection = (baseUrl, native, catalog, bearerToken = null) => {
+  const section = native
+    ? {
+      name: "openai",
+      base_url: baseUrl,
+      ...(catalog ? { model_catalog_url: `${baseUrl}/models` } : {}),
+      wire_api: "responses",
+      requires_openai_auth: true,
+    }
+    : {
+      name: "10router",
+      base_url: baseUrl,
+      wire_api: "responses",
+    };
+  if (!bearerToken) return section;
+  const { requires_openai_auth: _login, ...withoutLogin } = section;
+  return { ...withoutLogin, experimental_bearer_token: bearerToken };
+};
 
 const getCodexDir = () => path.join(os.homedir(), ".codex");
 const getCodexConfigPath = () => path.join(getCodexDir(), "config.toml");
@@ -217,6 +228,17 @@ export async function POST(request) {
     // file may change meanwhile (a Reset, or Codex itself writing to it).
     const useNative = native !== false;
     const normalizedBaseUrl = resolveCodexBaseUrl(baseUrl, useNative);
+
+    // No stored base URL: the section is rewritten whole, so the only credential
+    // that would carry over is Codex's own login, which goes to this instance only.
+    const target = await checkNewBaseUrl({
+      tool: "Codex",
+      baseUrl: normalizedBaseUrl,
+      credential: apiKey,
+      fallback: "its own login (~/.codex/auth.json)",
+    });
+    if (target.error) return NextResponse.json({ error: target.error }, { status: 400 });
+
     const catalog = useNative
       ? await decideCatalogUrl({ apiKey, ids: [model, subagentModel || model], codexVersion: installedCodexVersion() })
       : { write: false, reason: "not-native" };
@@ -237,15 +259,19 @@ export async function POST(request) {
 
     // Update or create 10router provider section (no api_key - Codex reads from auth.json).
     // The Codex-native endpoint is the default; pass native:false for plain /v1.
-    setNestedSection(parsed, "model_providers.10router", buildProviderSection(normalizedBaseUrl, useNative, catalog.write));
+    setNestedSection(
+      parsed,
+      "model_providers.10router",
+      buildProviderSection(normalizedBaseUrl, useNative, catalog.write, target.foreign ? apiKey : null)
+    );
 
     // Subagent model is a scalar under [agents]; agents.<role> now means a custom role
     deleteNestedSection(parsed, "agents.subagent");
     setNestedSection(parsed, "agents.default_subagent_model", subagentModel || model);
 
-    // Write merged config
+    // Write merged config (owner-only: it can hold a key)
     const configContent = stringifyTOML(parsed);
-    await fs.writeFile(configPath, configContent);
+    await writePrivateFile(configPath, configContent);
 
     return NextResponse.json({
       success: true,

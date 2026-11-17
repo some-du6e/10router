@@ -10,7 +10,7 @@ import { DEFAULT_PLUGINS } from "@/shared/constants/coworkPlugins";
 import { CLI_TOOLS } from "@/shared/constants/cliTools";
 import { keyStatus, pickFields } from "@/lib/cliTools/statusFields.js";
 import { isKeepExistingKey } from "@/lib/cliTools/keepKey.js";
-import { mayKeepStoredKey, CHOOSE_A_KEY_ERROR } from "@/lib/cliTools/keepKeyTarget.js";
+import { checkNewBaseUrl } from "@/lib/cliTools/keepKeyTarget.js";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 
 const execAsync = promisify(exec);
@@ -171,6 +171,9 @@ export async function POST(request) {
     if (Object.values(env).some((value) => typeof value !== "string" && typeof value !== "number")) {
       return NextResponse.json({ error: "Env values must be strings or numbers" }, { status: 400 });
     }
+    if (env.ANTHROPIC_BASE_URL !== undefined && typeof env.ANTHROPIC_BASE_URL !== "string") {
+      return NextResponse.json({ error: "ANTHROPIC_BASE_URL must be a string" }, { status: 400 });
+    }
 
     const settingsPath = getClaudeSettingsPath();
     const claudeDir = path.dirname(settingsPath);
@@ -208,19 +211,20 @@ export async function POST(request) {
     }
     if (env.ANTHROPIC_AUTH_TOKEN === "") delete env.ANTHROPIC_AUTH_TOKEN;
 
-    // A new base URL that is neither the stored one nor this instance needs a key
-    // chosen for it, and no other stored credential that would go along with it.
-    if (env.ANTHROPIC_BASE_URL && !(await mayKeepStoredKey(env.ANTHROPIC_BASE_URL, storedEnv.ANTHROPIC_BASE_URL))) {
-      const others = otherStoredCredentials(currentSettings);
-      if (others.length) {
-        return NextResponse.json(
-          { error: `settings.json has ${others.join(" and ")}; remove it or point Claude Code back at this instance` },
-          { status: 400 }
-        );
-      }
-      if (!env.ANTHROPIC_AUTH_TOKEN) {
-        return NextResponse.json({ error: CHOOSE_A_KEY_ERROR }, { status: 400 });
-      }
+    // A new base URL that is neither the stored one nor this instance needs a token
+    // chosen for it (without one, Claude Code signs in with its own claude.ai or
+    // Console login), and no other stored credential that would go along with it.
+    if (env.ANTHROPIC_BASE_URL) {
+      const target = await checkNewBaseUrl({
+        tool: "Claude Code",
+        baseUrl: env.ANTHROPIC_BASE_URL,
+        storedBaseUrl: storedEnv.ANTHROPIC_BASE_URL,
+        credential: env.ANTHROPIC_AUTH_TOKEN,
+        fallback: "its own Claude login",
+        otherCredentials: otherStoredCredentials(currentSettings),
+        where: "settings.json",
+      });
+      if (target.error) return NextResponse.json({ error: target.error }, { status: 400 });
     }
 
     // Merge new env with existing settings
