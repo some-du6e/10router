@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { loginLanding } from "../../src/lib/auth/loginLanding.js";
+
+describe("the login page", () => {
+  it("decides where to go through loginLanding, not its own requireLogin check", () => {
+    const page = readFileSync(fileURLToPath(new URL("../../src/app/login/page.js", import.meta.url)), "utf8");
+    expect(page).toMatch(/loginLanding\(data\)/);
+    expect(page).not.toMatch(/requireLogin === false/);
+  });
+});
 
 describe("where /login sends a visitor", () => {
   it("sends an unclaimed instance to /setup", () => {

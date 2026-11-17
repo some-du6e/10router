@@ -40,7 +40,7 @@ export async function GET() {
       samlLoginLabel: (settings.samlLoginLabel || "Sign in with SAML SSO").trim() || "Sign in with SAML SSO",
       hasPassword: !!settings.password,
       needsSetup: bootstrapState === "setup",
-      // SSO sign-in still works while setup is pending (after Reset Password in an SSO mode).
+      // SSO sign-in still works while setup is pending with a configured SSO.
       ssoLoginAvailable: getConfiguredSsoType(settings) !== null,
       mustChangePassword: bootstrapState === "legacy",
       displayName,

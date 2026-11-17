@@ -358,6 +358,13 @@ describe("dashboard guard first-run setup gate", () => {
     expect(response.url.pathname).toBe("/login");
   });
 
+  it("lets a password session use the API once the instance is claimed", async () => {
+    mocks.getSettings.mockResolvedValue({ requireLogin: true, password: "$2a$10$storedhash" });
+    mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
+
+    expect(await proxy(request("/api/settings", { host: "localhost:20128" }, "password-session"))).toBe(mocks.nextResponse);
+  });
+
   it("keeps the legacy default-password install on the normal login page", async () => {
     mocks.getMeta.mockResolvedValue("1");
 
@@ -406,6 +413,23 @@ describe("dashboard guard first-run setup gate", () => {
       mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
       const response = await proxy(request("/dashboard", { host: "localhost:20128" }, "password-session"));
       expect(response.url.pathname).toBe("/login");
+    });
+
+    it("doesn't let a password session from before the reset use the API", async () => {
+      mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
+      for (const path of ["/api/settings", "/api/keys", "/api/providers"]) {
+        expect((await proxy(request(path, { host: "localhost:20128" }, "password-session"))).status, path).toBe(401);
+      }
+      // ALWAYS_PROTECTED routes too.
+      expect((await proxy(request("/api/settings/database", { host: "localhost:20128" }, "password-session"))).status).toBe(401);
+    });
+
+    it("lets an SSO session and the CLI token use the API", async () => {
+      mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true, oidc: true });
+      expect(await proxy(request("/api/settings", { host: "localhost:20128" }, "sso-session"))).toBe(mocks.nextResponse);
+
+      mocks.getDashboardAuthSession.mockResolvedValue(null);
+      expect(await proxy(request("/api/settings", { host: "localhost:20128", "x-9r-cli-token": "cli-token" }))).toBe(mocks.nextResponse);
     });
 
     it("doesn't let requireLogin=false open the dashboard to anonymous visitors", async () => {

@@ -176,9 +176,16 @@ async function readSession(request) {
 // A restricted session is deliberately NOT a valid token anywhere else: it is
 // issued after a last login on the old default password and unlocks only the
 // change-password endpoint.
+//
+// While setup is pending (after Reset Password with SSO on), only an OIDC or
+// SAML session counts, for pages and API alike: a password session from before
+// the reset must not reach /api/settings and repoint SSO. The CLI token and the
+// setup routes don't go through here.
 async function hasValidToken(request) {
   const session = await readSession(request);
-  return !!session && session.pwChange !== true;
+  if (!session || session.pwChange === true) return false;
+  if (session.oidc || session.saml) return true;
+  return !(await needsSetup(await loadSettings()));
 }
 
 async function hasRestrictedSession(request) {
