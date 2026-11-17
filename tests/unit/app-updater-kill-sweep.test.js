@@ -9,12 +9,17 @@ import { createRequire } from "node:module";
 // for, like the real tools, and ps exits non-zero when one of them is gone.
 let table = [];
 let listFails = false;
+let pidQueriesEmpty = false;
 let clock = Date.now();
 const two = (n) => String(n).padStart(2, "0");
+// Like real ps: [[dd-]hh:]mm:ss, with hh: only once there are hours or days.
 function etime(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
   const days = Math.floor(s / 86400);
-  return `${days ? `${days}-` : ""}${two(Math.floor(s / 3600) % 24)}:${two(Math.floor(s / 60) % 60)}:${two(s % 60)}`;
+  const hours = Math.floor(s / 3600) % 24;
+  const clockPart = `${two(Math.floor(s / 60) % 60)}:${two(s % 60)}`;
+  if (days) return `${days}-${two(hours)}:${clockPart}`;
+  return hours ? `${two(hours)}:${clockPart}` : clockPart;
 }
 const execFileSync = vi.fn((cmd, args) => {
   if (listFails) throw Object.assign(new Error("ps: bad -o argument 'uid'"), { stdout: "" });
@@ -28,10 +33,13 @@ const execFileSync = vi.fn((cmd, args) => {
   if (cmd === "powershell.exe") {
     const script = args.at(-1);
     const byPid = [...script.matchAll(/ProcessId=(\d+)/g)].map((m) => Number(m[1]));
+    if (byPid.length && pidQueriesEmpty) return "";
+    // Created comes back only when the script asks for it the way real PowerShell needs.
+    const asksCreated = script.includes("n='Created'") && script.includes(".ToUnixTimeMilliseconds()");
     const rows = (byPid.length
       ? table.filter((row) => byPid.includes(row.pid))
       : table.filter((row) => /^(node|bun)\.exe$/i.test(row.name || "")))
-      .map((r) => ({ ProcessId: r.pid, ParentProcessId: r.ppid, CommandLine: r.args, Created: r.created }));
+      .map((r) => ({ ProcessId: r.pid, ParentProcessId: r.ppid, CommandLine: r.args, ...(asksCreated ? { Created: r.created } : {}) }));
     return JSON.stringify(rows.length === 1 ? rows[0] : rows);
   }
   return "";
@@ -100,6 +108,7 @@ beforeEach(() => {
   stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "10router-launchers-"));
   table = [...OURS, ...NOT_OURS];
   listFails = false;
+  pidQueriesEmpty = false;
   clock = NOW;
   execFileSync.mockClear();
 });
@@ -116,7 +125,8 @@ describe("collectAppPids", () => {
     expect(execFileSync).toHaveBeenCalledTimes(1);
     const [cmd, args, options] = execFileSync.mock.calls[0];
     expect(cmd).toBe("ps");
-    expect(args).toEqual(["-o", "pid=,ppid=,uid=,etime=,args=", "-p", `4001,5001,3900,${LAUNCHER}`]);
+    // This server's own row is read too, for its start time.
+    expect(args).toEqual(["-o", "pid=,ppid=,uid=,etime=,args=", "-p", `4001,5001,3900,${LAUNCHER},${SELF}`]);
     expect(options.maxBuffer).toBeGreaterThan(1024 * 1024);
   });
 
@@ -185,9 +195,10 @@ describe("collectAppPids", () => {
 describe("collectAppPids on Windows", () => {
   const ROOT = "C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\10router";
   const WIN_DATA = "C:\\Users\\me\\AppData\\Roaming\\9router";
+  // What npm's cmd shim actually runs: "%dp0%\node_modules\…" leaves a doubled backslash.
   const launcherRow = (over = {}) => ({
     pid: LAUNCHER, ppid: 900, created: NOW - 120_000, name: "node.exe",
-    args: `"C:\\Program Files\\nodejs\\node.exe" --dns-result-order=ipv4first "${ROOT}\\cli.js" --tray`, ...over,
+    args: '"C:\\Program Files\\nodejs\\node.exe"  "C:\\Users\\me\\AppData\\Roaming\\npm\\\\node_modules\\10router\\cli.js" --tray', ...over,
   });
   const winCtx = (options) => ({ platform: "win32", installRoot: ROOT, updaterPath: `${WIN_DATA}\\runtime\\updater\\updater.js`, ...options });
 
@@ -207,9 +218,39 @@ describe("collectAppPids on Windows", () => {
     expect(collect(winCtx({ cloudflaredPid: 7001 }))).toEqual([]);
     const [cmd, args, options] = execFileSync.mock.calls[0];
     expect(cmd).toBe("powershell.exe");
-    expect(args.at(-1)).toContain("ProcessId=4001 OR ProcessId=5001 OR ProcessId=4000");
-    expect(args.at(-1)).toContain("CreationDate");
+    expect(args.at(-1)).toContain(`ProcessId=4001 OR ProcessId=5001 OR ProcessId=4000 OR ProcessId=${SELF}`);
+    expect(args.at(-1)).toContain("n='Created'");
+    expect(args.at(-1)).toContain(".ToUnixTimeMilliseconds()");
     expect(options.maxBuffer).toBeGreaterThan(1024 * 1024);
+  });
+
+  it("refuses a launcher whose start time is unknown", () => {
+    table[0] = launcherRow({ created: null });
+    expect(collect(winCtx({ env: ownLauncherEnv({ tray: 4001 }) }))).toEqual([]);
+  });
+
+  it("times the server by its own CreationDate, not by Date.now() - uptime", () => {
+    // The wall clock stepped back: by Date.now() - uptime the server "started"
+    // before its launcher. Its CreationDate, from the same query, says otherwise.
+    table[0] = launcherRow({ created: SERVER_START + 5_000 });
+    table[1] = { ...table[1], created: SERVER_START + 10_000 };
+    table[3] = { ...table[3], created: SERVER_START + 7_000 };
+    const env = ownLauncherEnv({ tray: 4001 });
+    expect(collect(winCtx({ env, cloudflaredPid: 5001 }))).toEqual([4001, LAUNCHER]);
+    table[3] = { ...table[3], created: SERVER_START + 20_000 };
+    expect(collect(winCtx({ env, cloudflaredPid: 5001 }))).toEqual([4001, 5001, LAUNCHER]);
+  });
+
+  it("matches a launcher started through a junction or symlinked npm prefix", () => {
+    // nvm-windows: the shim runs C:\nvm\nodejs\… while this server sees the real path.
+    table[0] = launcherRow({ args: '"C:\\nvm\\nodejs\\node.exe" "C:\\nvm\\nodejs\\node_modules\\10router\\cli.js" --tray' });
+    const env = ownLauncherEnv({ tray: 4001 });
+    const realpath = (p) => {
+      if (p.toLowerCase().startsWith("c:\\nvm\\nodejs\\node_modules\\10router")) return ROOT + p.slice("C:\\nvm\\nodejs\\node_modules\\10router".length);
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    };
+    expect(collect(winCtx({ env, realpath }))).toEqual([4001, LAUNCHER]);
+    expect(collect(winCtx({ env }))).toEqual([]);
   });
 
   it("refuses a launcher PID that now belongs to another program", () => {
@@ -257,6 +298,13 @@ describe("busyInstallPids", () => {
 
     expect(busyInstallPids(options)).toEqual([7100, 7101]);
     expect(busyInstallMessage([7100, 7101])).toBe("Another 10router from this install is running (PID 7100, 7101); stop it, then update.");
+
+    // The launcher stays excluded when it can't be verified: a by-PID listing
+    // that came back empty (cold PowerShell timing out), or a start time that a
+    // clock step put after the server's.
+    pidQueriesEmpty = true;
+    table[0] = { ...table[0], created: NOW };
+    expect(busyInstallPids(options)).toEqual([7100, 7101]);
   });
 
   it("is empty off Windows and when the list can't be read", () => {

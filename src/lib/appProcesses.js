@@ -132,14 +132,23 @@ function context(ctx) {
     installRoot: "installRoot" in ctx ? ctx.installRoot : defaultInstallRoot(),
     updaterPath: ctx.updaterPath ?? runtimeUpdaterPath(env, platform),
     cloudflaredPid: "cloudflaredPid" in ctx ? ctx.cloudflaredPid : loadCloudflaredPid(),
+    realpath: ctx.realpath ?? ((p) => fs.realpathSync.native(p)),
   };
 }
 
+// Whether a command line runs `file`. Absolute paths are also compared after
+// resolving links, since a shim may launch through a junction or symlinked npm
+// prefix (nvm-windows) while this server sees the real path. Relative tokens
+// are never resolved: they belong to the other process's cwd, not ours.
 function runsFile(c, info, file) {
   if (!file) return false;
+  const real = (p) => {
+    if (!c.paths.isAbsolute(p)) return p;
+    try { return c.realpath(p); } catch { return p; }
+  };
   const norm = (p) => (c.isWin ? c.paths.normalize(p).toLowerCase() : c.paths.normalize(p));
-  const target = norm(file);
-  return tokensOf(info.args).some((token) => norm(token) === target);
+  const targets = new Set([norm(file), norm(real(file))]);
+  return tokensOf(info.args).some((token) => targets.has(norm(token)) || targets.has(norm(real(token))));
 }
 
 // What to stop: PIDs (children first, the launcher last), the launcher if it
@@ -156,7 +165,11 @@ export function planKills(ctx = {}) {
   const none = { pids: [], launcher: null, stateFile: null };
   if (!wanted.length) return none;
 
-  const infos = c.isWin ? readWindows(wanted.map((pid) => `ProcessId=${pid}`).join(" OR ")) : readPosix(wanted, c.now);
+  // This server's own row comes back too, so its start time is read with the
+  // same clock and conversion as the others (immune to wall-clock steps).
+  const queried = [...wanted, c.self];
+  const infos = c.isWin ? readWindows(queried.map((pid) => `ProcessId=${pid}`).join(" OR ")) : readPosix(queried, c.now);
+  const serverStart = infos.get(c.self)?.created ?? c.serverStart;
   const mine = (pid) => {
     const info = infos.get(pid);
     return info && (c.isWin || info.uid === c.uid) ? info : null;
@@ -167,7 +180,7 @@ export function planKills(ctx = {}) {
   let launcherInfo = ownLauncher ? mine(ownLauncher) : null;
   if (launcherInfo && c.isWin) {
     const cli = c.installRoot ? c.paths.join(c.installRoot, "cli.js") : null;
-    const older = launcherInfo.created !== null && launcherInfo.created <= c.serverStart;
+    const older = launcherInfo.created !== null && launcherInfo.created <= serverStart;
     if (!runsFile(c, launcherInfo, cli) || !older) launcherInfo = null;
   }
 
@@ -181,13 +194,13 @@ export function planKills(ctx = {}) {
   }
   if (cloudflared) {
     const info = mine(cloudflared);
-    const ourChild = info && info.ppid === c.self && (!c.isWin || (info.created != null && info.created >= c.serverStart));
+    const ourChild = info && info.ppid === c.self && (!c.isWin || (info.created != null && info.created >= serverStart));
     if (info && isCloudflared(info.args) && (ourChild || servesPort(info.args, String(c.env.PORT || "")))) keep.add(cloudflared);
   }
   if (updater) {
     // The updater relaunched this install, so it started before this server.
     const info = mine(updater);
-    if (info && runsFile(c, info, c.updaterPath) && info.created != null && info.created <= c.serverStart) keep.add(updater);
+    if (info && runsFile(c, info, c.updaterPath) && info.created != null && info.created <= serverStart) keep.add(updater);
   }
 
   const pids = wanted.filter((pid) => keep.has(pid) && pid !== ownLauncher);
@@ -202,11 +215,14 @@ export function collectAppPids(ctx = {}) {
 // Windows can't replace files a running process holds, so an update while
 // another instance of this install runs fails mid-install. Lists node/bun
 // processes running this install's cli.js or server, other than this server
-// and the launcher being stopped. Empty elsewhere, or when the list can't be read.
+// and its launcher. Empty elsewhere, or when the list can't be read.
 export function busyInstallPids(ctx = {}) {
   const c = context(ctx);
   if (!c.isWin || !c.installRoot) return [];
-  const exclude = new Set([c.self, planKills(ctx).launcher].filter(Boolean));
+  // The launcher is excluded whether or not planKills could verify it, so a
+  // slow first listing or a clock step never turns it into "another instance".
+  const launcher = toPid(c.env[LAUNCHER_PID_ENV]);
+  const exclude = new Set([c.self, launcher === c.parent ? launcher : null].filter(Boolean));
   const files = [
     c.paths.join(c.installRoot, "cli.js"),
     c.paths.join(c.installRoot, "app", "custom-server.js"),

@@ -33,6 +33,8 @@ on:
       - "tests/unit/local-device-tts-args.test.js"
       - "tests/unit/mcp-bridge-child-env.test.js"
       - "tests/unit/cli-local-host-hardening.test.js"
+      - "tests/unit/version-routes.test.js"
+      - "tests/unit/cloudflared-own-handle.test.js"
       - "tests/vitest.config.js"
       - "package.json"
       - "tests/package.json"
@@ -66,6 +68,8 @@ jobs:
           unit/local-device-tts-args.test.js
           unit/mcp-bridge-child-env.test.js
           unit/cli-local-host-hardening.test.js
+          unit/version-routes.test.js
+          unit/cloudflared-own-handle.test.js
 
   # known-fails.txt lags master, so compare against the base branch run instead.
   no-new-failures:
