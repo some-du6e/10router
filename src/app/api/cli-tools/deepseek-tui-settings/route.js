@@ -1,7 +1,7 @@
 "use server";
 
 import { NextResponse } from "next/server";
-import { findUnsafeConfigValue } from "@/lib/cliTools/configValue.js";
+import { findUnsafeConfigValue, unsafeConfigValueError } from "@/lib/cliTools/configValue.js";
 import { pickFields } from "@/lib/cliTools/statusFields.js";
 import { exec } from "child_process";
 import { promisify } from "util";
@@ -138,7 +138,7 @@ export async function POST(request) {
         }
         const unsafeField = findUnsafeConfigValue({ baseUrl, apiKey, model });
         if (unsafeField) {
-            return NextResponse.json({ error: `Invalid ${unsafeField}` }, { status: 400 });
+            return NextResponse.json({ error: unsafeConfigValueError(unsafeField) }, { status: 400 });
         }
 
         const dir = getDeepSeekDir();

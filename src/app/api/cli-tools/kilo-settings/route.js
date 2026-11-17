@@ -7,6 +7,7 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
+import { findUnsafeConfigValue, unsafeConfigValueError } from "@/lib/cliTools/configValue.js";
 
 const execAsync = promisify(exec);
 
@@ -77,6 +78,11 @@ export async function POST(request) {
     const { baseUrl, apiKey, model } = await request.json();
     if (!baseUrl || !apiKey || !model) {
       return NextResponse.json({ error: "baseUrl, apiKey and model are required" }, { status: 400 });
+    }
+    // Kilo Code is OpenCode-based: {env:VAR} and {file:path} substitution.
+    const unsafeField = findUnsafeConfigValue({ baseUrl, apiKey, model });
+    if (unsafeField) {
+      return NextResponse.json({ error: unsafeConfigValueError(unsafeField) }, { status: 400 });
     }
 
     await fs.mkdir(getDataDir(), { recursive: true });

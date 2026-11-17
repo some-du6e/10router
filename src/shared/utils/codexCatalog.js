@@ -26,6 +26,22 @@ export function codexReadsCatalogUrl(version) {
   return true;
 }
 
+// Codex 0.48.0 added a provider's `experimental_bearer_token` (ModelProviderInfo
+// in codex-rs/core/src/model_provider_info.rs; 0.47.0 doesn't have it), which it
+// sends in place of its own login. An older Codex ignores the line and signs in
+// to the provider's base URL with auth.json.
+export const BEARER_TOKEN_FROM = [0, 48, 0];
+
+/**
+ * Does this Codex version send a provider's experimental_bearer_token? False for
+ * an unknown version and for a source build (0.0.0): either could predate it.
+ */
+export function codexSendsBearerToken(version) {
+  if (!Array.isArray(version) || version.every((n) => n === 0)) return false;
+  for (let i = 0; i < 3; i++) if (version[i] !== BEARER_TOKEN_FROM[i]) return version[i] > BEARER_TOKEN_FROM[i];
+  return true;
+}
+
 /**
  * One line for the Codex card after Apply: whether model_catalog_url was
  * written, and why not. `catalogUrl` is the settings route's { written, reason }.

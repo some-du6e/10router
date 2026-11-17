@@ -7,6 +7,8 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
+import { checkNewBaseUrl } from "@/lib/cliTools/keepKeyTarget.js";
+import { findUnsafeConfigValue, listFields, unsafeConfigValueError } from "@/lib/cliTools/configValue.js";
 
 const execAsync = promisify(exec);
 
@@ -71,6 +73,21 @@ const summarizeConfig = (config) => {
   };
 };
 
+const isNonEmpty = (value) => value != null && typeof value === "object" && Object.keys(value).length > 0;
+
+// Where the 10router provider entry holds a credential that a POST keeps: its
+// options' headers and queryParams, and the headers of each model it doesn't
+// replace (replacedIds).
+const keptCredentialEntries = (provider, replacedIds) => {
+  const found = [];
+  if (isNonEmpty(provider.options?.headers)) found.push("provider.10router.options.headers");
+  if (isNonEmpty(provider.options?.queryParams)) found.push("provider.10router.options.queryParams");
+  for (const [id, entry] of Object.entries(provider.models || {})) {
+    if (!replacedIds.includes(id) && isNonEmpty(entry?.headers)) found.push(`provider.10router.models.${id}.headers`);
+  }
+  return found;
+};
+
 // GET - Check opencode CLI and read current settings
 export async function GET() {
   try {
@@ -113,8 +130,13 @@ export async function POST(request) {
     // Accept either `model` (string, legacy) or `models` (array of strings)
     const modelsArray = Array.isArray(models) ? models.slice() : (typeof model === "string" ? [model] : []);
 
-    if (!baseUrl || modelsArray.length === 0) {
+    if (typeof baseUrl !== "string" || !baseUrl.trim() || modelsArray.length === 0) {
       return NextResponse.json({ error: "baseUrl and at least one model are required" }, { status: 400 });
+    }
+    // OpenCode substitutes {env:VAR} and {file:path} anywhere in opencode.json.
+    const unsafeField = findUnsafeConfigValue({ baseUrl, apiKey, activeModel, subagentModel, ...listFields("models", modelsArray) });
+    if (unsafeField) {
+      return NextResponse.json({ error: unsafeConfigValueError(unsafeField) }, { status: 400 });
     }
 
     const configDir = getConfigDir();
@@ -138,6 +160,18 @@ export async function POST(request) {
 
     // Preserve any existing 10router provider entry and its models
     const existingProvider = config.provider["10router"] || { npm: "@ai-sdk/openai-compatible", options: {}, models: {} };
+
+    // The merge below keeps the entry's other options and the models it doesn't
+    // replace, so their stored headers and query params (which can carry a token)
+    // would go to a new host along with the key.
+    const target = await checkNewBaseUrl({
+      tool: "OpenCode",
+      baseUrl: normalizedBaseUrl,
+      storedBaseUrl: existingProvider.options?.baseURL,
+      otherCredentials: keptCredentialEntries(existingProvider, modelsArray),
+      where: "opencode.json",
+    });
+    if (target.error) return NextResponse.json({ error: target.error }, { status: 400 });
 
     // Merge options (overwrite baseURL/apiKey)
     existingProvider.options = {

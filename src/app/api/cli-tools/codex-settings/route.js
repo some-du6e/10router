@@ -7,9 +7,11 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { parseTOML, stringifyTOML } from "confbox";
-import { parseCodexVersion } from "@/shared/utils/codexCatalog.js";
+import { parseCodexVersion, codexSendsBearerToken, BEARER_TOKEN_FROM } from "@/shared/utils/codexCatalog.js";
 import { decideCatalogUrl } from "@/lib/codex/catalogUrlDecision.js";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
+import { checkNewBaseUrl } from "@/lib/cliTools/keepKeyTarget.js";
+import { findUnsafeConfigValue, unsafeConfigValueError } from "@/lib/cliTools/configValue.js";
 
 const execAsync = promisify(exec);
 
@@ -51,19 +53,29 @@ const resolveCodexBaseUrl = (baseUrl, native) => {
 // Signed in with an API key, Codex only reads a custom base URL's catalog from
 // `model_catalog_url`; without the catalog it has no apply_patch tool for
 // models it doesn't know.
-const buildProviderSection = (baseUrl, native, catalog) => (native
-  ? {
-    name: "openai",
-    base_url: baseUrl,
-    ...(catalog ? { model_catalog_url: `${baseUrl}/models` } : {}),
-    wire_api: "responses",
-    requires_openai_auth: true,
-  }
-  : {
-    name: "10router",
-    base_url: baseUrl,
-    wire_api: "responses",
-  });
+// Without a key of its own, Codex authenticates a provider with its own login
+// (auth.json: the ChatGPT sign-in or OPENAI_API_KEY). That only goes to this
+// instance. For any other host the section carries the request's key as
+// experimental_bearer_token, which Codex sends in place of its login, and drops
+// requires_openai_auth.
+const buildProviderSection = (baseUrl, native, catalog, bearerToken = null) => {
+  const section = native
+    ? {
+      name: "openai",
+      base_url: baseUrl,
+      ...(catalog ? { model_catalog_url: `${baseUrl}/models` } : {}),
+      wire_api: "responses",
+      requires_openai_auth: true,
+    }
+    : {
+      name: "10router",
+      base_url: baseUrl,
+      wire_api: "responses",
+    };
+  if (!bearerToken) return section;
+  const { requires_openai_auth: _login, ...withoutLogin } = section;
+  return { ...withoutLogin, experimental_bearer_token: bearerToken };
+};
 
 const getCodexDir = () => path.join(os.homedir(), ".codex");
 const getCodexConfigPath = () => path.join(getCodexDir(), "config.toml");
@@ -209,6 +221,10 @@ export async function POST(request) {
     if (typeof baseUrl !== "string" || !baseUrl.trim() || !apiKey || !model) {
       return NextResponse.json({ error: "baseUrl, apiKey and model are required" }, { status: 400 });
     }
+    const unsafeField = findUnsafeConfigValue({ baseUrl, apiKey, model, subagentModel });
+    if (unsafeField) {
+      return NextResponse.json({ error: unsafeConfigValueError(unsafeField) }, { status: 400 });
+    }
 
     const codexDir = getCodexDir();
     const configPath = getCodexConfigPath();
@@ -217,8 +233,28 @@ export async function POST(request) {
     // file may change meanwhile (a Reset, or Codex itself writing to it).
     const useNative = native !== false;
     const normalizedBaseUrl = resolveCodexBaseUrl(baseUrl, useNative);
+    const codexVersion = installedCodexVersion();
+
+    // No stored base URL: the section is rewritten whole, so the only credential
+    // that would carry over is Codex's own login, which goes to this instance only.
+    const target = await checkNewBaseUrl({
+      tool: "Codex",
+      baseUrl: normalizedBaseUrl,
+      credential: apiKey,
+      fallback: "its own login (~/.codex/auth.json)",
+    });
+    if (target.error) return NextResponse.json({ error: target.error }, { status: 400 });
+    // Another host gets the key as experimental_bearer_token, which a Codex older
+    // than 0.48 ignores, signing in there with auth.json instead.
+    if (target.foreign && !codexSendsBearerToken(await codexVersion)) {
+      const version = await codexVersion;
+      return NextResponse.json({
+        error: `${version ? `Codex ${version.join(".")}` : "The installed Codex (version unknown)"} would send its own login (~/.codex/auth.json) to a host that isn't this 10router; update Codex to ${BEARER_TOKEN_FROM.join(".")} or newer to use a non-10router base URL from the dashboard`,
+      }, { status: 400 });
+    }
+
     const catalog = useNative
-      ? await decideCatalogUrl({ apiKey, ids: [model, subagentModel || model], codexVersion: installedCodexVersion() })
+      ? await decideCatalogUrl({ apiKey, ids: [model, subagentModel || model], codexVersion })
       : { write: false, reason: "not-native" };
 
     // Ensure directory exists
@@ -231,21 +267,27 @@ export async function POST(request) {
       parsed = parsedToWritable(parseTOML(existingConfig));
     } catch { /* No existing config */ }
 
-    // Update only 10router related fields (api_key goes to auth.json, not config.toml)
+    // Update only 10router related fields
     parsed.model = model;
     parsed.model_provider = "10router";
 
-    // Update or create 10router provider section (no api_key - Codex reads from auth.json).
-    // The Codex-native endpoint is the default; pass native:false for plain /v1.
-    setNestedSection(parsed, "model_providers.10router", buildProviderSection(normalizedBaseUrl, useNative, catalog.write));
+    // Update or create the 10router provider section. For this instance it carries
+    // no key and Codex uses its own login; for another host it carries the request's
+    // key (buildProviderSection). The Codex-native endpoint is the default; pass
+    // native:false for plain /v1.
+    setNestedSection(
+      parsed,
+      "model_providers.10router",
+      buildProviderSection(normalizedBaseUrl, useNative, catalog.write, target.foreign ? apiKey : null)
+    );
 
     // Subagent model is a scalar under [agents]; agents.<role> now means a custom role
     deleteNestedSection(parsed, "agents.subagent");
     setNestedSection(parsed, "agents.default_subagent_model", subagentModel || model);
 
-    // Write merged config
+    // Write merged config (owner-only: it can hold a key)
     const configContent = stringifyTOML(parsed);
-    await fs.writeFile(configPath, configContent);
+    await writePrivateFile(configPath, configContent);
 
     return NextResponse.json({
       success: true,
