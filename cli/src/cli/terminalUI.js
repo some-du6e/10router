@@ -61,13 +61,9 @@ function getHeader(port) {
 
 /**
  * Start Terminal UI
- * @param {number} port - Server port number
- * @param {string} [bindHost] - Address the server is bound to
+ * @param {number} port - Server port number (cli.js has already configured the API client)
  */
-async function startTerminalUI(port, bindHost) {
-  // Configure API client
-  api.configure({ port, host: api.hostForBind(bindHost) });
-
+async function startTerminalUI(port) {
   const basePath = ["10router"];
 
   // Prime header cache before first render

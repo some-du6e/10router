@@ -65,12 +65,13 @@ function getCliToken() {
   return cachedCliToken;
 }
 
-// Address the TUI dials for a server bound to bindHost. "localhost" may
+// Address the CLI dials for a server bound to bindHost. "localhost" may
 // resolve to ::1 first, where another local user could be listening.
 function hostForBind(bindHost) {
-  if (!bindHost || bindHost === "0.0.0.0" || bindHost === "localhost") return "127.0.0.1";
-  if (bindHost === "::" || bindHost === "[::]") return "::1";
-  return bindHost;
+  const host = String(bindHost || "").trim().replace(/^\[(.*)\]$/, "$1");
+  if (!host || host === "0.0.0.0" || host === "localhost") return "127.0.0.1";
+  if (host === "::") return "::1";
+  return host;
 }
 
 /**
