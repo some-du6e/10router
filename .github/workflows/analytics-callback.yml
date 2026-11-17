@@ -10,6 +10,7 @@ on:
       - "src/shared/utils/gaMeasurementId.mjs"
       - "src/shared/utils/oauthCallbackAck.ts"
       - "src/shared/utils/oauthCallbackFlow.ts"
+      - "src/shared/utils/oauthCallbackBinding.ts"
       - "next.config.mjs"
       - "Dockerfile"
       - "package.json"

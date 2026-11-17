@@ -2,6 +2,7 @@
 // so tests can drive it with fake timers. The page passes in the browser pieces.
 
 import { callbackAckKey, isCallbackAckFor, type CallbackAckStatus } from "./oauthCallbackAck.js";
+import { handleRelayedCallback, type RelayContext, type RelayResult } from "./oauthCallbackBinding.js";
 
 // How long to wait for the dashboard to say it took the callback before showing
 // the URL to paste by hand.
@@ -47,35 +48,41 @@ export type CallbackFlowInput = {
 
 type RelayedCallback = Partial<Omit<CallbackData, "fullUrl">> & { fullUrl?: string | null };
 
-// Whether the connect dialog has anything to do with a relayed callback.
-export function isTakeableCallback(data: RelayedCallback | null | undefined): boolean {
-  return Boolean(data && (data.error || data.token || data.code));
-}
-
-export type TakeCallbackInput = {
+export type TakeCallbackDeps = {
+  markProcessed: () => void;
+  // A callback that isn't this login's arrived.
+  notice: () => void;
   // Resolves true once the connection is saved.
   exchange: (code: string, state: string | null) => Promise<boolean>;
   ack: (status: CallbackAckStatus) => void;
   onError: (message: string) => void;
 };
 
-// The connect dialog's side: acks "received" before the exchange, so the page
-// waits through a slow one, then "saved" or "failed". A provider error acks
-// "failed" without an exchange.
-export async function takeOAuthCallback(
-  data: RelayedCallback,
-  { exchange, ack, onError }: TakeCallbackInput,
-): Promise<void> {
-  if (data.error) {
-    ack("failed");
-    onError(data.errorDescription || data.error);
-    return;
-  }
-  const code = data.token || data.code;
-  if (!code) return;
-  ack("received");
-  const saved = await exchange(code, data.state ?? null);
-  ack(saved ? "saved" : "failed");
+// The connect dialog's side. handleRelayedCallback decides first whether the
+// callback belongs to this dialog's login; one it ignores gets no ack and no
+// exchange, so the /callback page keeps waiting for the dialog that owns it.
+// An accepted one acks "received" before the exchange, so the page waits
+// through a slow one, then "saved" or "failed". A provider error acks "failed"
+// without an exchange.
+export function takeOAuthCallback(
+  data: RelayedCallback | null | undefined,
+  ctx: RelayContext,
+  { markProcessed, notice, exchange, ack, onError }: TakeCallbackDeps,
+): Promise<RelayResult> {
+  return handleRelayedCallback(data, ctx, {
+    markProcessed,
+    notice,
+    fail: (message) => {
+      ack("failed");
+      onError(message);
+    },
+    exchange: async (code, state) => {
+      ack("received");
+      const saved = await exchange(code, state);
+      ack(saved ? "saved" : "failed");
+      return saved;
+    },
+  });
 }
 
 // The /callback page's side. Returns a function that stops listening and

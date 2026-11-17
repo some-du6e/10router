@@ -4,11 +4,10 @@ import {
   CALLBACK_CLOSE_DELAY_MS,
   CALLBACK_DONE_DELAY_MS,
   CALLBACK_EXCHANGE_TIMEOUT_MS,
-  isTakeableCallback,
   runOAuthCallback,
   takeOAuthCallback,
 } from "../../src/shared/utils/oauthCallbackFlow.js";
-import { callbackAckKey, OAUTH_CALLBACK_ACK_TYPE } from "../../src/shared/utils/oauthCallbackAck.js";
+import { callbackAckKey, OAUTH_CALLBACK_ACK_TYPE, sendCallbackAck } from "../../src/shared/utils/oauthCallbackAck.js";
 
 const ORIGIN = "http://localhost:20128";
 
@@ -213,25 +212,47 @@ describe("/callback page during a slow exchange", () => {
   });
 });
 
-describe("connect dialog taking a relayed callback", () => {
-  // Records acks and errors, and what had been acked when the exchange started.
-  function dialog(saved) {
-    const d = { acks: [], errors: [], exchanges: [], acksAtExchange: null };
-    d.input = {
-      exchange: async (code, state) => {
-        d.acksAtExchange = [...d.acks];
-        d.exchanges.push({ code, state });
-        return saved;
+// A connect dialog: its pending login, and what it acked, exchanged and showed.
+function connectDialog({ provider = "gemini-cli", state = "s1", saved = true, redirectUri = `${ORIGIN}/callback` } = {}) {
+  const d = {
+    authData: { state, redirectUri },
+    processed: false,
+    acks: [],
+    errors: [],
+    notices: 0,
+    exchanges: [],
+    acksAtExchange: null,
+  };
+  d.take = (data, ctx = {}, reply = null) =>
+    takeOAuthCallback(
+      data,
+      { provider, authData: d.authData, processed: d.processed, via: "broadcast", ...ctx },
+      {
+        markProcessed: () => {
+          d.processed = true;
+        },
+        notice: () => {
+          d.notices++;
+        },
+        exchange: async (code, cbState) => {
+          d.acksAtExchange = [...d.acks];
+          d.exchanges.push({ code, state: cbState });
+          return saved;
+        },
+        ack: (status) => {
+          d.acks.push(status);
+          if (reply) sendCallbackAck(data, { status, reply, Channel: null });
+        },
+        onError: (message) => d.errors.push(message),
       },
-      ack: (status) => d.acks.push(status),
-      onError: (message) => d.errors.push(message),
-    };
-    return d;
-  }
+    );
+  return d;
+}
 
+describe("connect dialog taking a relayed callback", () => {
   it("acks received before the exchange and saved after it succeeds", async () => {
-    const d = dialog(true);
-    await takeOAuthCallback({ code: "abc123", state: "s1" }, d.input);
+    const d = connectDialog();
+    expect(await d.take({ code: "abc123", state: "s1" })).toBe("exchanged");
     expect(d.acksAtExchange).toEqual(["received"]);
     expect(d.exchanges).toEqual([{ code: "abc123", state: "s1" }]);
     expect(d.acks).toEqual(["received", "saved"]);
@@ -239,39 +260,94 @@ describe("connect dialog taking a relayed callback", () => {
   });
 
   it("acks failed after an exchange that fails", async () => {
-    const d = dialog(false);
-    await takeOAuthCallback({ code: "abc123", state: "s1" }, d.input);
+    const d = connectDialog({ saved: false });
+    await d.take({ code: "abc123", state: "s1" });
     expect(d.acksAtExchange).toEqual(["received"]);
     expect(d.acks).toEqual(["received", "failed"]);
   });
 
-  it("exchanges a token in preference to a code, with no state", async () => {
-    const d = dialog(true);
-    await takeOAuthCallback({ token: "tok123", code: "abc123" }, d.input);
-    expect(d.exchanges).toEqual([{ code: "tok123", state: null }]);
+  it("exchanges a token in preference to a code", async () => {
+    const d = connectDialog();
+    await d.take({ token: "tok123", code: "abc123", state: "s1" });
+    expect(d.exchanges).toEqual([{ code: "tok123", state: "s1" }]);
   });
 
   it("acks a provider error as failed without exchanging", async () => {
-    const d = dialog(true);
-    await takeOAuthCallback({ error: "access_denied", errorDescription: "User said no", code: "abc123" }, d.input);
+    const d = connectDialog();
+    await d.take({ error: "access_denied", errorDescription: "User said no", state: "s1" });
     expect(d.acks).toEqual(["failed"]);
     expect(d.exchanges).toEqual([]);
     expect(d.errors).toEqual(["User said no"]);
 
-    const bare = dialog(true);
-    await takeOAuthCallback({ error: "access_denied" }, bare.input);
+    const bare = connectDialog();
+    await bare.take({ error: "access_denied", state: "s1" });
     expect(bare.errors).toEqual(["access_denied"]);
   });
 
   it("does nothing for a callback without a code, token or error", async () => {
-    const d = dialog(true);
-    expect(isTakeableCallback({ state: "s1" })).toBe(false);
-    expect(isTakeableCallback(null)).toBe(false);
-    expect(isTakeableCallback({ code: "abc123" })).toBe(true);
-    expect(isTakeableCallback({ error: "access_denied" })).toBe(true);
-    await takeOAuthCallback({ state: "s1" }, d.input);
+    const d = connectDialog();
+    expect(await d.take({ state: "s1" })).toBe("ignored");
+    expect(d.acks).toEqual([]);
+    expect(d.exchanges).toEqual([]);
+    expect(d.notices).toBe(0);
+  });
+
+  it("takes a callback once", async () => {
+    const d = connectDialog();
+    await d.take({ code: "abc123", state: "s1" });
+    await d.take({ code: "abc123", state: "s1" });
+    expect(d.exchanges).toHaveLength(1);
+    expect(d.acks).toEqual(["received", "saved"]);
+  });
+});
+
+describe("connect dialog ignoring a callback that isn't its login's", () => {
+  const ignored = async (d, data, ctx) => {
+    expect(await d.take(data, ctx)).toBe("ignored");
     expect(d.acks).toEqual([]);
     expect(d.exchanges).toEqual([]);
     expect(d.errors).toEqual([]);
+  };
+
+  it("sends no ack and runs no exchange for another login's state, even an error", async () => {
+    const d = connectDialog({ state: "s1" });
+    await ignored(d, { code: "abc123", state: "s2" });
+    await ignored(d, { error: "access_denied", state: "s2" });
+    await ignored(d, { code: "abc123" });
+    expect(d.notices).toBe(3);
+  });
+
+  it.each(["trae", "windsurf", "zed"])("never takes a relayed callback for proxy provider %s", async (provider) => {
+    await ignored(connectDialog({ provider }), { code: "abc123", state: "s1" });
+  });
+
+  it("takes a stateless provider's callback only from its own popup", async () => {
+    const popup = { via: "message", fromOwnPopup: true, origin: ORIGIN };
+    await ignored(connectDialog({ provider: "cline", state: null }), { code: "cred" });
+    await ignored(connectDialog({ provider: "cline", state: null }), { code: "cred" }, { ...popup, fromOwnPopup: false });
+    const own = connectDialog({ provider: "cline", state: null });
+    await own.take({ code: "cred" }, popup);
+    expect(own.acks).toEqual(["received", "saved"]);
+  });
+
+  it("lets only the dialog that owns the callback answer when a stale one is also open", async () => {
+    const tab = open("?code=abc123&state=s1");
+    const relayed = tab.relayed[0].data;
+    const toPage = (ack) => tab.listener?.(ack);
+    // A closed dialog in another tab still holds an older login, and its
+    // exchange would fail.
+    const stale = connectDialog({ state: "s-old", saved: false });
+    const current = connectDialog({ state: "s1" });
+    // The stale one hears the relay first.
+    await stale.take(relayed, {}, toPage);
+    await current.take(relayed, {}, toPage);
+    expect(stale.acks).toEqual([]);
+    expect(stale.exchanges).toEqual([]);
+    expect(current.exchanges).toEqual([{ code: "abc123", state: "s1" }]);
+    expect(current.acks).toEqual(["received", "saved"]);
+    expect(tab.status).toBe("success");
+    vi.advanceTimersByTime(CALLBACK_CLOSE_DELAY_MS + CALLBACK_DONE_DELAY_MS);
+    expect(tab.closed).toBe(1);
+    expect(tab.status).toBe("done");
   });
 });

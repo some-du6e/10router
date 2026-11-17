@@ -33,8 +33,11 @@ function readCookie(request, name) {
 }
 
 /**
- * The same rule the proxy applies to dashboard APIs, checked again in the
- * route: minting a management key must not rest on the proxy alone.
+ * Checked again in the route, so minting a management key doesn't rest on the
+ * proxy alone: a valid session that isn't a forced-password-change one, or
+ * requireLogin=false on a claimed instance. The proxy in front adds only a
+ * session from the currently configured SSO protocol while setup is pending
+ * (acceptsDashboardSession); this check doesn't repeat it.
  */
 async function dashboardSessionOk(request) {
   const session = await getDashboardAuthSession(readCookie(request, "auth_token"));

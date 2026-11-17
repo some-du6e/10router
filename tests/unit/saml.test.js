@@ -1,5 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { SAML } from "@node-saml/node-saml";
 import {
+  createSamlStateCookie,
   formatX509Certificate,
   isSamlConfigured,
   generateSamlMetadata,
@@ -8,6 +10,9 @@ import {
   validateSamlResponse,
 } from "../../src/lib/auth/saml.js";
 import { mergeWithDefaults } from "../../src/lib/db/repos/settingsRepo.js";
+
+// Signs the saml_state cookies below; read on first use.
+vi.stubEnv("JWT_SECRET", "test-secret-for-saml-state");
 
 describe("SAML 2.0 Auth Engine Utilities", () => {
   describe("formatX509Certificate", () => {
@@ -71,27 +76,55 @@ describe("SAML 2.0 Auth Engine Utilities", () => {
   });
 
   describe("InResponseTo Replay Validation", () => {
-    it("throws error when expectedRequestId is supplied but InResponseTo is missing", async () => {
-      const settings = { samlCert: "dummy-cert" };
-      const rawXml = Buffer.from('<Response ID="123"></Response>').toString("base64");
+    afterEach(() => vi.restoreAllMocks());
+
+    // node-saml has verified the signature; what's left is the binding inside the signed assertion.
+    function verifiedProfile(subjectConfirmation) {
+      vi.spyOn(SAML.prototype, "validatePostResponseAsync").mockResolvedValue({
+        profile: {
+          nameID: "user@example.com",
+          inResponseTo: "req-123",
+          getAssertion: () => ({ Assertion: { Subject: [{ SubjectConfirmation: subjectConfirmation }] } }),
+        },
+      });
+    }
+    const body = { SAMLResponse: Buffer.from('<Response InResponseTo="req-123"></Response>').toString("base64") };
+    const bearer = "urn:oasis:names:tc:SAML:2.0:cm:bearer";
+    // A failed check releases its request, so these can share one.
+    const state = () => createSamlStateCookie("req-123");
+
+    it("throws when the verified assertion has no SubjectConfirmation bound to the request", async () => {
+      verifiedProfile(undefined);
       await expect(
-        validateSamlResponse(null, { SAMLResponse: rawXml }, "req-123", settings)
-      ).rejects.toThrow(/InResponseTo mismatch/);
+        validateSamlResponse(null, body, state(), { samlCert: "dummy-cert" })
+      ).rejects.toThrow("SAML signed SubjectConfirmation InResponseTo mismatch");
     });
 
-    it("throws error when expectedRequestId is supplied but InResponseTo does not match", async () => {
-      const settings = { samlCert: "dummy-cert" };
-      const rawXml = Buffer.from('<Response InResponseTo="wrong-id"></Response>').toString("base64");
+    it("throws when the verified assertion's SubjectConfirmation answers another request", async () => {
+      verifiedProfile([{ $: { Method: bearer }, SubjectConfirmationData: [{ $: { InResponseTo: "wrong-id" } }] }]);
       await expect(
-        validateSamlResponse(null, { SAMLResponse: rawXml }, "req-123", settings)
-      ).rejects.toThrow(/InResponseTo mismatch/);
+        validateSamlResponse(null, body, state(), { samlCert: "dummy-cert" })
+      ).rejects.toThrow("SAML signed SubjectConfirmation InResponseTo mismatch");
+    });
+
+    it("throws when the matching SubjectConfirmation isn't a bearer confirmation", async () => {
+      verifiedProfile([{ $: { Method: "urn:oasis:names:tc:SAML:2.0:cm:holder-of-key" }, SubjectConfirmationData: [{ $: { InResponseTo: "req-123" } }] }]);
+      await expect(
+        validateSamlResponse(null, body, state(), { samlCert: "dummy-cert" })
+      ).rejects.toThrow("SAML signed SubjectConfirmation InResponseTo mismatch");
     });
 
     it("throws error if samlCert is not configured", async () => {
       const rawXml = Buffer.from('<Response ID="123"></Response>').toString("base64");
       await expect(
-        validateSamlResponse(null, { SAMLResponse: rawXml }, "req-123", {})
+        validateSamlResponse(null, { SAMLResponse: rawXml }, state(), {})
       ).rejects.toThrow(/Certificate/);
+    });
+
+    it("returns the profile when the bearer SubjectConfirmation answers this request", async () => {
+      verifiedProfile([{ $: { Method: bearer }, SubjectConfirmationData: [{ $: { InResponseTo: "req-123" } }] }]);
+      const profile = await validateSamlResponse(null, body, state(), { samlCert: "dummy-cert" });
+      expect(profile.nameID).toBe("user@example.com");
     });
   });
 

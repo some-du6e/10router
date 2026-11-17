@@ -109,8 +109,10 @@ describe("Docker builds", () => {
 describe("connect dialog wiring", () => {
   it("takes callbacks through takeOAuthCallback, acking with the reply", () => {
     const modal = read("src/shared/components/OAuthModal.js");
-    expect(modal).toMatch(/await takeOAuthCallback\(data, \{/);
+    expect(modal).toMatch(/return takeOAuthCallback\(\s*data,/);
+    expect(modal).not.toMatch(/handleRelayedCallback\(/);
     expect(modal).toMatch(/ack: \(status\) => sendCallbackAck\(data, \{ status, reply \}\)/);
-    expect(modal).toMatch(/event\.source\?\.postMessage\(ack, event\.origin\)/);
+    expect(modal).toMatch(/via === "message" && source \? \(ack\) => source\.postMessage\(ack, origin\) : null/);
+    expect(modal).toMatch(/handleCallback\(event\.data\.data, "message", event\.source, event\.origin\)/);
   });
 });
