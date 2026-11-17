@@ -12,6 +12,7 @@ import { keyStatus, pickFields } from "@/lib/cliTools/statusFields.js";
 import { isKeepExistingKey } from "@/lib/cliTools/keepKey.js";
 import { checkNewBaseUrl, isCredential } from "@/lib/cliTools/keepKeyTarget.js";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
+import { findUnsafeConfigValue } from "@/lib/cliTools/configValue.js";
 
 const execAsync = promisify(exec);
 
@@ -174,6 +175,10 @@ export async function POST(request) {
     if (env.ANTHROPIC_BASE_URL !== undefined && typeof env.ANTHROPIC_BASE_URL !== "string") {
       return NextResponse.json({ error: "ANTHROPIC_BASE_URL must be a string" }, { status: 400 });
     }
+    const unsafeEnv = findUnsafeConfigValue(Object.fromEntries(Object.entries(env).filter(([, value]) => typeof value === "string")));
+    if (unsafeEnv) {
+      return NextResponse.json({ error: `Invalid ${unsafeEnv}` }, { status: 400 });
+    }
 
     const settingsPath = getClaudeSettingsPath();
     const claudeDir = path.dirname(settingsPath);
@@ -217,15 +222,14 @@ export async function POST(request) {
       return NextResponse.json({ error: "ANTHROPIC_AUTH_TOKEN must be a non-blank string; choose a key" }, { status: 400 });
     }
 
-    // The base URL settings.json ends up with (empty: Anthropic's own API) must be
-    // the stored one or this instance, or come with a token chosen for it (without
-    // one, Claude Code sends the stored token, or signs in with its own claude.ai or
-    // Console login), and with no other stored credential that would go along.
-    const effectiveBaseUrl = env.ANTHROPIC_BASE_URL !== undefined ? env.ANTHROPIC_BASE_URL : storedEnv.ANTHROPIC_BASE_URL;
-    if (effectiveBaseUrl) {
+    // A new base URL that is neither the stored one nor this instance needs a token
+    // chosen for it (without one, Claude Code sends the stored token, or signs in
+    // with its own claude.ai or Console login), and no other stored credential that
+    // would go along with it.
+    if (env.ANTHROPIC_BASE_URL) {
       const target = await checkNewBaseUrl({
         tool: "Claude Code",
-        baseUrl: effectiveBaseUrl,
+        baseUrl: env.ANTHROPIC_BASE_URL,
         storedBaseUrl: storedEnv.ANTHROPIC_BASE_URL,
         credential: env.ANTHROPIC_AUTH_TOKEN,
         fallback: storedEnv.ANTHROPIC_AUTH_TOKEN ? "the stored ANTHROPIC_AUTH_TOKEN" : "its own Claude login",

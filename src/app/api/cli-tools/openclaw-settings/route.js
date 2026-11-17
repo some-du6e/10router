@@ -10,6 +10,7 @@ import { keyStatus, pickFields } from "@/lib/cliTools/statusFields.js";
 import { isKeepExistingKey } from "@/lib/cliTools/keepKey.js";
 import { mayKeepStoredKey, CHOOSE_A_KEY_ERROR } from "@/lib/cliTools/keepKeyTarget.js";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
+import { findUnsafeConfigValue } from "@/lib/cliTools/configValue.js";
 
 const execAsync = promisify(exec);
 
@@ -171,6 +172,20 @@ export async function POST(request) {
     
     if (!baseUrl || !model) {
       return NextResponse.json({ error: "baseUrl and model are required" }, { status: 400 });
+    }
+    if (!agentModels || typeof agentModels !== "object" || Array.isArray(agentModels)) {
+      return NextResponse.json({ error: "Invalid agentModels" }, { status: 400 });
+    }
+    // OpenClaw expands ${VAR} in any string and reads an object apiKey as a
+    // secret reference: every value here must be a plain, safe string.
+    const unsafeField = findUnsafeConfigValue({
+      baseUrl,
+      model,
+      apiKey,
+      ...Object.fromEntries(Object.entries(agentModels).filter(([, m]) => m).map(([id, m]) => [`agentModels.${id}`, m])),
+    });
+    if (unsafeField) {
+      return NextResponse.json({ error: `Invalid ${unsafeField}` }, { status: 400 });
     }
 
     const openclawDir = getOpenClawDir();

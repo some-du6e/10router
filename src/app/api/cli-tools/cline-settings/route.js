@@ -8,6 +8,7 @@ import path from "path";
 import os from "os";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 import { checkNewBaseUrl } from "@/lib/cliTools/keepKeyTarget.js";
+import { findUnsafeConfigValue } from "@/lib/cliTools/configValue.js";
 
 const execAsync = promisify(exec);
 
@@ -83,6 +84,10 @@ export async function POST(request) {
     const { baseUrl, apiKey, model } = await request.json();
     if (typeof baseUrl !== "string" || !baseUrl.trim() || !apiKey || !model) {
       return NextResponse.json({ error: "baseUrl, apiKey and model are required" }, { status: 400 });
+    }
+    const unsafeField = findUnsafeConfigValue({ baseUrl, apiKey, model });
+    if (unsafeField) {
+      return NextResponse.json({ error: `Invalid ${unsafeField}` }, { status: 400 });
     }
 
     await fs.mkdir(getDataDir(), { recursive: true });

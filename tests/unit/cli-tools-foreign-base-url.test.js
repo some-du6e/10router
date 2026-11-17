@@ -156,13 +156,15 @@ describe("codex: a foreign base URL never gets Codex's own login", () => {
     expect(read(CONFIG)).toBe(EXISTING);
   });
 
-  it("Codex 0.48.0 takes a foreign host's key; an older Codex still points at this instance as before", async () => {
+  it("Codex 0.48.0 takes a foreign host's key; an older or unreadable Codex still points at this instance as before", async () => {
     codex.version = "codex-cli 0.48.0";
     expect((await post("codex-settings", { baseUrl: FOREIGN, apiKey: NEW_KEY, model: "m1" })).status).toBe(200);
     expect(provider().experimental_bearer_token).toBe(NEW_KEY);
-    codex.version = null;
-    expect((await post("codex-settings", { baseUrl: OWN, apiKey: NEW_KEY, model: "m1" })).status).toBe(200);
-    expect(provider()).toEqual(OWN_NATIVE);
+    for (const version of ["codex-cli 0.47.0", null]) {
+      codex.version = version;
+      expect((await post("codex-settings", { baseUrl: OWN, apiKey: NEW_KEY, model: "m1" })).status).toBe(200);
+      expect(provider()).toEqual(OWN_NATIVE);
+    }
   });
 
   it("re-applying the same foreign base URL needs a key again, and a different key replaces the token", async () => {
@@ -428,5 +430,133 @@ describe("cline: stored openAiHeaders never follow a foreign base URL", () => {
     const res = await post("cline-settings", { baseUrl, apiKey: NEW_KEY, model: "m1" });
     expect(res.status).toBe(400);
     expect(read(STATE)).toBe(before);
+  });
+});
+
+// The tools' own substitution would turn a request value into the user's env var
+// or file, sent to whatever base URL is set: no request value may carry it.
+describe("no request value reaches a tool's variable or file substitution", () => {
+  const TOKENS = [
+    "${OPENAI_API_KEY}", // Hermes, OpenClaw, Droid
+    "${env:OPENAI_API_KEY}", // Hermes
+    "{env:OPENAI_API_KEY}", // OpenCode, Kilo Code
+    "{file:~/.codex/auth.json}", // OpenCode, Kilo Code
+    "$OPENAI_API_KEY", // dotenv loaders and shells
+    "`cat ~/.codex/auth.json`", // shells
+  ];
+  // route -> fields -> a valid body with that field set to the value.
+  const ROUTES = {
+    "claude-settings": {
+      "env.ANTHROPIC_BASE_URL": (v) => ({ env: { ANTHROPIC_BASE_URL: v, ANTHROPIC_AUTH_TOKEN: NEW_KEY } }),
+      "env.ANTHROPIC_AUTH_TOKEN": (v) => ({ env: { ANTHROPIC_BASE_URL: OWN, ANTHROPIC_AUTH_TOKEN: v } }),
+      "env.ANTHROPIC_DEFAULT_OPUS_MODEL": (v) => ({ env: { ANTHROPIC_BASE_URL: OWN, ANTHROPIC_DEFAULT_OPUS_MODEL: v } }),
+    },
+    "codex-settings": {
+      baseUrl: (v) => ({ baseUrl: v, apiKey: NEW_KEY, model: "m1" }),
+      apiKey: (v) => ({ baseUrl: OWN, apiKey: v, model: "m1" }),
+      model: (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, model: v }),
+      subagentModel: (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, model: "m1", subagentModel: v }),
+    },
+    "hermes-settings": {
+      baseUrl: (v) => ({ baseUrl: v, apiKey: NEW_KEY, model: "m1" }),
+      apiKey: (v) => ({ baseUrl: OWN, apiKey: v, model: "m1" }),
+      model: (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, model: v }),
+    },
+    "opencode-settings": {
+      baseUrl: (v) => ({ baseUrl: v, apiKey: NEW_KEY, models: ["m1"] }),
+      apiKey: (v) => ({ baseUrl: OWN, apiKey: v, models: ["m1"] }),
+      "models[1]": (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, models: ["m1", v] }),
+      model: (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, model: v }),
+      activeModel: (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, models: ["m1"], activeModel: v }),
+      subagentModel: (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, models: ["m1"], subagentModel: v }),
+    },
+    "openclaw-settings": {
+      baseUrl: (v) => ({ baseUrl: v, apiKey: NEW_KEY, model: "m1" }),
+      apiKey: (v) => ({ baseUrl: OWN, apiKey: v, model: "m1" }),
+      model: (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, model: v }),
+      agentModels: (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, model: "m1", agentModels: { a1: v } }),
+    },
+    "jcode-settings": {
+      baseUrl: (v) => ({ baseUrl: v, apiKey: NEW_KEY, models: ["m1"] }),
+      apiKey: (v) => ({ baseUrl: OWN, apiKey: v, models: ["m1"] }),
+      models: (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, models: [v] }),
+    },
+    "droid-settings": {
+      baseUrl: (v) => ({ baseUrl: v, apiKey: NEW_KEY, models: ["m1"] }),
+      apiKey: (v) => ({ baseUrl: OWN, apiKey: v, models: ["m1"] }),
+      models: (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, models: [v] }),
+      activeModel: (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, models: ["m1"], activeModel: v }),
+    },
+    "copilot-settings": {
+      baseUrl: (v) => ({ baseUrl: v, apiKey: NEW_KEY, models: ["m1"] }),
+      apiKey: (v) => ({ baseUrl: OWN, apiKey: v, models: ["m1"] }),
+      models: (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, models: [v] }),
+    },
+    "deepseek-tui-settings": {
+      baseUrl: (v) => ({ baseUrl: v, apiKey: NEW_KEY, model: "m1" }),
+      apiKey: (v) => ({ baseUrl: OWN, apiKey: v, model: "m1" }),
+      model: (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, model: v }),
+    },
+    "grok-build-settings": {
+      baseUrl: (v) => ({ baseUrl: v, apiKey: NEW_KEY, model: "m1" }),
+      apiKey: (v) => ({ baseUrl: OWN, apiKey: v, model: "m1" }),
+      model: (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, model: v }),
+      subagentModels: (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, model: "m1", subagentModels: { explore: { model: v } } }),
+    },
+    "cline-settings": {
+      baseUrl: (v) => ({ baseUrl: v, apiKey: NEW_KEY, model: "m1" }),
+      apiKey: (v) => ({ baseUrl: OWN, apiKey: v, model: "m1" }),
+      model: (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, model: v }),
+    },
+    "kilo-settings": {
+      baseUrl: (v) => ({ baseUrl: v, apiKey: NEW_KEY, model: "m1" }),
+      apiKey: (v) => ({ baseUrl: OWN, apiKey: v, model: "m1" }),
+      model: (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, model: v }),
+    },
+    "cowork-settings": {
+      baseUrl: (v) => ({ baseUrl: v, apiKey: NEW_KEY, models: ["m1"] }),
+      apiKey: (v) => ({ baseUrl: OWN, apiKey: v, models: ["m1"] }),
+      models: (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, models: [v] }),
+      "customPlugins.url": (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, models: ["m1"], customPlugins: [{ name: "mine", url: v }] }),
+      "plugins.url": (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, models: ["m1"], plugins: [{ name: "p1", url: v }] }),
+    },
+  };
+  const cases = Object.entries(ROUTES).flatMap(([route, fields]) =>
+    Object.entries(fields).flatMap(([field, body]) => TOKENS.map((token) => [route, field, token, body]))
+  );
+
+  const isUrlField = (field) => /baseUrl$|BASE_URL$|\.url$/.test(field);
+
+  it.each(Object.entries(ROUTES).flatMap(([route, fields]) => Object.entries(fields).map(([field, body]) => [route, field, body])))(
+    "%s: %s with a plain value is accepted",
+    async (route, field, body) => {
+      expect((await post(route, body(isUrlField(field) ? `${OWN}/v1` : "plain-value-1"))).status).toBe(200);
+    }
+  );
+
+  it.each(cases)("%s: %s = %s is refused and nothing is written", async (route, field, token, body) => {
+    const value = isUrlField(field) ? `${OWN}/${token}` : token;
+    const res = await post(route, body(value));
+    expect(res.status).toBe(400);
+    expect(fs.readdirSync(home)).toEqual([]);
+  });
+
+  it("openclaw: an object apiKey (a secret reference to the user's env) is refused", async () => {
+    const res = await post("openclaw-settings", { baseUrl: FOREIGN, model: "m1", apiKey: { source: "env", provider: "default", id: "OPENAI_API_KEY" } });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("Invalid apiKey");
+    expect(fs.readdirSync(home)).toEqual([]);
+  });
+
+  it("the reported example bodies are refused", async () => {
+    const opencode = await post("opencode-settings", { baseUrl: FOREIGN, apiKey: "{env:OPENAI_API_KEY}", models: ["m1"] });
+    expect(opencode.status).toBe(400);
+    expect((await opencode.json()).error).toBe("Invalid apiKey");
+    const opencodeFile = await post("opencode-settings", { baseUrl: FOREIGN, apiKey: NEW_KEY, models: ["{file:~/.codex/auth.json}"] });
+    expect((await opencodeFile.json()).error).toBe("Invalid models[0]");
+    const openclaw = await post("openclaw-settings", { baseUrl: FOREIGN, model: "m", apiKey: "${OPENAI_API_KEY}" });
+    expect(openclaw.status).toBe(400);
+    expect((await openclaw.json()).error).toBe("Invalid apiKey");
+    expect(fs.readdirSync(home)).toEqual([]);
   });
 });

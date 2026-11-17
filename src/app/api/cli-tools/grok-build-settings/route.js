@@ -15,6 +15,7 @@ import {
 } from "@/lib/grokBuildConfig";
 import { pickFields } from "@/lib/cliTools/statusFields.js";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
+import { findUnsafeConfigValue } from "@/lib/cliTools/configValue.js";
 
 const execAsync = promisify(exec);
 
@@ -113,6 +114,16 @@ export async function POST(request) {
     if (!baseUrl || !selectedModel) {
       return NextResponse.json({ error: "baseUrl and model are required" }, { status: 400 });
     }
+    const subagents = normalizeSubagentModels(subagentModels);
+    const unsafeField = findUnsafeConfigValue({
+      baseUrl,
+      apiKey,
+      model: selectedModel,
+      ...Object.fromEntries(Object.entries(subagents || {}).map(([type, entry]) => [`subagentModels.${type}`, entry.model])),
+    });
+    if (unsafeField) {
+      return NextResponse.json({ error: `Invalid ${unsafeField}` }, { status: 400 });
+    }
 
     await fs.mkdir(getGrokDir(), { recursive: true });
     const normalizedBaseUrl = baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
@@ -121,7 +132,7 @@ export async function POST(request) {
       apiKey: apiKey || "sk_10router",
       model: selectedModel,
       contextWindow: normalizeContextWindow(contextWindow, selectedModel),
-      subagentModels: normalizeSubagentModels(subagentModels),
+      subagentModels: subagents,
     });
     await writePrivateFile(getGrokConfigPath(), toml);
 

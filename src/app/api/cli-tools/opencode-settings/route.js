@@ -8,6 +8,7 @@ import path from "path";
 import os from "os";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 import { checkNewBaseUrl } from "@/lib/cliTools/keepKeyTarget.js";
+import { findUnsafeConfigValue, listFields } from "@/lib/cliTools/configValue.js";
 
 const execAsync = promisify(exec);
 
@@ -131,6 +132,11 @@ export async function POST(request) {
 
     if (typeof baseUrl !== "string" || !baseUrl.trim() || modelsArray.length === 0) {
       return NextResponse.json({ error: "baseUrl and at least one model are required" }, { status: 400 });
+    }
+    // OpenCode substitutes {env:VAR} and {file:path} anywhere in opencode.json.
+    const unsafeField = findUnsafeConfigValue({ baseUrl, apiKey, activeModel, subagentModel, ...listFields("models", modelsArray) });
+    if (unsafeField) {
+      return NextResponse.json({ error: `Invalid ${unsafeField}` }, { status: 400 });
     }
 
     const configDir = getConfigDir();

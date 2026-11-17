@@ -10,6 +10,7 @@ import { UPDATER_CONFIG } from "@/shared/constants/config";
 import { CLI_TOKEN_HEADER, getCliToken } from "@/lib/auth/cliToken.js";
 import { redactUrlSecrets } from "open-sse/utils/redact.js";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
+import { findUnsafeConfigValue, listFields } from "@/lib/cliTools/configValue.js";
 
 const APP_PORT = UPDATER_CONFIG.appPort;
 const LOCAL_MCP_PREFIX = `http://localhost:${APP_PORT}/api/mcp/`;
@@ -336,6 +337,19 @@ export async function POST(request) {
     const modelsArray = Array.isArray(models) ? models.filter((m) => typeof m === "string" && m.trim()) : [];
     if (modelsArray.length === 0) {
       return NextResponse.json({ error: "At least one model is required" }, { status: 400 });
+    }
+    const pluginFields = (name, list) => Object.fromEntries(
+      (Array.isArray(list) ? list : []).flatMap((p, i) => [[`${name}[${i}].name`, p?.name], [`${name}[${i}].url`, p?.url]])
+    );
+    const unsafeField = findUnsafeConfigValue({
+      baseUrl,
+      apiKey,
+      ...listFields("models", modelsArray),
+      ...pluginFields("plugins", plugins),
+      ...pluginFields("customPlugins", customPlugins),
+    });
+    if (unsafeField) {
+      return NextResponse.json({ error: `Invalid ${unsafeField}` }, { status: 400 });
     }
 
     const storedServers = (await readAppliedConfig()).config?.managedMcpServers;

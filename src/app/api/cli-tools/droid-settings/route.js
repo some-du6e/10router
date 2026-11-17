@@ -8,6 +8,7 @@ import path from "path";
 import os from "os";
 import { pickFields } from "@/lib/cliTools/statusFields.js";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
+import { findUnsafeConfigValue, listFields } from "@/lib/cliTools/configValue.js";
 
 const execAsync = promisify(exec);
 
@@ -104,6 +105,11 @@ export async function POST(request) {
     
     if (!baseUrl || modelsArray.length === 0) {
       return NextResponse.json({ error: "baseUrl and at least one model are required" }, { status: 400 });
+    }
+    // Droid expands ${VAR} in a custom model's apiKey.
+    const unsafeField = findUnsafeConfigValue({ baseUrl, apiKey, activeModel, ...listFields("models", modelsArray) });
+    if (unsafeField) {
+      return NextResponse.json({ error: `Invalid ${unsafeField}` }, { status: 400 });
     }
 
     const droidDir = getDroidDir();
