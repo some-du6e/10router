@@ -32,11 +32,13 @@ export async function POST() {
 
     let message;
     if (envPassword && ssoOnly) {
-      message = `Password cleared. Login mode is unchanged: ${ssoLabel} only, password login off. INITIAL_PASSWORD is set, so no setup token is needed; it confirms sensitive actions, and it becomes the login password only if you switch the login mode to Both.`;
+      message = `Password cleared. Login mode is unchanged: ${ssoLabel} only, password login off. INITIAL_PASSWORD is set, so no setup token is needed; it confirms sensitive actions, and it becomes the login password only if password login is turned back on (Both, or CLI → Settings → Reset Auth Mode).`;
     } else if (envPassword) {
       message = "Password cleared. INITIAL_PASSWORD is set: password login uses it, so no setup token is needed.";
     } else if (switchToBoth) {
       message = `Password cleared. Login mode switched from ${ssoLabel} only to password + ${ssoLabel}, so the setup token works: finish at /setup. ${ssoLabel} sign-in keeps working on the login page meanwhile.`;
+    } else if (ssoType) {
+      message = `Password cleared. Finish at /setup with the setup token. ${ssoLabel} sign-in keeps working on the login page meanwhile.`;
     } else {
       message = "Password cleared. Finish at /setup with the setup token.";
     }
@@ -54,7 +56,6 @@ export async function POST() {
       token,
       expiresInSec: Math.round(SETUP_WINDOW_MS / 1000),
       message,
-      ...(switchToBoth ? { authMode: "both" } : {}),
     });
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });

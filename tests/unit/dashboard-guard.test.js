@@ -381,11 +381,11 @@ describe("dashboard guard first-run setup gate", () => {
       expect(await proxy(request("/login", { host: "localhost:20128" }))).toBe(mocks.nextResponse);
     });
 
-    it("still serves /setup for the token", async () => {
+    it("(guard) still serves /setup for the token", async () => {
       expect(await proxy(request("/setup", { host: "localhost:20128" }))).toBe(mocks.nextResponse);
     });
 
-    it("lets the SSO routes run", async () => {
+    it("(guard) keeps the SSO routes public", async () => {
       expect(await proxy(request("/api/auth/oidc/start", { host: "localhost:20128" }))).toBe(mocks.nextResponse);
       expect(await proxy(request("/api/auth/oidc/callback", { host: "localhost:20128" }))).toBe(mocks.nextResponse);
       expect(await proxy(request("/api/auth/saml/acs", { host: "localhost:20128" }))).toBe(mocks.nextResponse);
@@ -395,8 +395,29 @@ describe("dashboard guard first-run setup gate", () => {
       const anonymous = await proxy(request("/dashboard", { host: "localhost:20128" }));
       expect(anonymous.url.pathname).toBe("/login");
 
+      for (const session of [{ authenticated: true, oidc: true }, { authenticated: true, saml: true }]) {
+        mocks.getDashboardAuthSession.mockResolvedValue(session);
+        expect(await proxy(request("/dashboard", { host: "localhost:20128" }, "sso-session"))).toBe(mocks.nextResponse);
+      }
+    });
+
+    it("doesn't let a password session from before the reset into the dashboard", async () => {
       mocks.verifyDashboardAuthToken.mockResolvedValue(true);
-      expect(await proxy(request("/dashboard", { host: "localhost:20128" }, "sso-session"))).toBe(mocks.nextResponse);
+      mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
+      const response = await proxy(request("/dashboard", { host: "localhost:20128" }, "password-session"));
+      expect(response.url.pathname).toBe("/login");
+    });
+
+    it("doesn't let requireLogin=false open the dashboard to anonymous visitors", async () => {
+      mocks.getSettings.mockResolvedValue({ ...ssoDuringSetup, requireLogin: false });
+      for (const path of ["/dashboard", "/dashboard/providers"]) {
+        const response = await proxy(request(path, { host: "localhost:20128" }));
+        expect(response.status, path).toBe(307);
+        expect(response.url.pathname, path).toBe("/login");
+      }
+      const root = await proxy(request("/", { host: "localhost:20128" }));
+      expect(root.url.pathname).toBe("/dashboard");
+      expect((await proxy(request("/api/settings", { host: "localhost:20128" }))).status).toBe(401);
     });
 
     it("still funnels to /setup when the selected SSO isn't configured", async () => {

@@ -62,7 +62,7 @@ async function showSettingsMenu(breadcrumb = []) {
         action: async () => { await disableTunnel(); return true; }
       },
       {
-        label: "🔑 Reset Password (re-run setup)",
+        label: "🔑 Reset Password",
         action: async () => { await resetPassword(); return true; }
       },
       {
@@ -135,12 +135,13 @@ async function disableTunnel() {
 
 /**
  * Clear the dashboard password via server API (writes the live SQLite DB) and
- * put the instance back into first-run setup. There is no default password:
- * the server mints a one-time setup token, printed here and on the server
- * console, which must be used at /setup before the token expires.
+ * print what the server says happened. Without INITIAL_PASSWORD the instance
+ * goes back to first-run setup and the server mints a one-time setup token,
+ * printed here and on the server console. With INITIAL_PASSWORD set, no token
+ * is minted: that password is the way back in.
  */
 async function resetPassword() {
-  const ok = await confirm("Clear the dashboard password and re-run first-time setup?");
+  const ok = await confirm("Clear the dashboard password? You'll get a setup token, or sign in with INITIAL_PASSWORD if it's set.");
   if (!ok) {
     showStatus("Cancelled", "info");
     await pause();

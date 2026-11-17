@@ -7,7 +7,7 @@ import { checkLock, recordFail, recordSuccess, getClientIp } from "@/lib/auth/lo
 import { getAuthBootstrapState, getBootstrapSecret } from "@/lib/auth/setupState";
 import { getConfiguredSsoType, isPasswordLoginDisabled } from "@/lib/auth/authMode.js";
 
-const RESET_HINT = "Forgot password? Run 10router CLI → Settings → Reset Password, then use the new setup token printed on the host console.";
+const RESET_HINT = "Forgot password? Run 10router CLI → Settings → Reset Password, then follow what it prints (or sign in with INITIAL_PASSWORD if it's set).";
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" };
 
 function isTunnelRequest(request, settings) {

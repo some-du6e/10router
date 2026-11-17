@@ -233,8 +233,9 @@ export async function proxy(request) {
 
   // First-run gate: until someone claims the instance with the console setup
   // token, every dashboard/login page funnels to /setup. When a configured SSO
-  // protocol is selected (after Reset Password in an SSO mode), /login and the
-  // SSO-signed-in dashboard stay reachable; /setup still takes the token.
+  // protocol is selected (after Reset Password with SSO on), /login and the
+  // dashboard stay reachable, and the dashboard block below lets only an SSO
+  // session in; /setup still takes the token.
   if (pathname === "/setup" || pathname.startsWith("/dashboard") || pathname === "/login" || pathname === "/") {
     const settings = await loadSettings();
     const setupPending = await needsSetup(settings);
@@ -300,10 +301,12 @@ export async function proxy(request) {
   if (pathname.startsWith("/dashboard")) {
     let requireLogin = true;
     let tunnelDashboardAccess = true;
+    let setupPending = false;
 
     try {
       const settings = await loadSettings();
       if (settings) {
+        setupPending = await needsSetup(settings);
         requireLogin = settings.requireLogin !== false;
         tunnelDashboardAccess = settings.tunnelDashboardAccess === true;
 
@@ -319,6 +322,15 @@ export async function proxy(request) {
       }
     } catch {
       // On error, keep defaults (require login, block tunnel)
+    }
+
+    // Setup pending: the first-run gate only let this through for SSO sign-in,
+    // so an SSO session is the only way in. requireLogin=false never opens an
+    // unclaimed instance, and a session from before the reset doesn't count.
+    if (setupPending) {
+      const session = await readSession(request);
+      if (session?.oidc || session?.saml) return NextResponse.next();
+      return NextResponse.redirect(new URL("/login", request.url));
     }
 
     // If login not required, allow through

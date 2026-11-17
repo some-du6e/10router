@@ -99,7 +99,7 @@ describe("password login under SSO modes", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
 
     const reset = await resetPassword();
-    expect(reset.body).toEqual(expect.objectContaining({ success: true, token: "setup-token", authMode: "both" }));
+    expect(reset.body).toEqual(expect.objectContaining({ success: true, token: "setup-token" }));
     expect(settings).toEqual(expect.objectContaining({ password: null, authMode: "both", ssoType }));
     expect(getConfiguredSsoType(settings)).toBe(ssoType);
     expect(log.mock.calls.flat().join("\n")).toMatch(/Login mode switched/);
@@ -112,39 +112,49 @@ describe("password login under SSO modes", () => {
     log.mockRestore();
   });
 
-  it("leaves SSO-only mode alone when INITIAL_PASSWORD is set, and says so instead of printing an unusable token", async () => {
+  // With INITIAL_PASSWORD set no setup token is printed, and the mode is never switched.
+  it.each([
+    ["password", { authMode: "password" }, { status: 200 }],
+    ["Both", { authMode: "both", ssoType: "oidc" }, { status: 200 }],
+    ["OIDC only", { authMode: "sso", ssoType: "oidc" }, { status: 403, error: "Password login is disabled. Use OIDC sign in." }],
+    ["SAML only", { authMode: "sso", ssoType: "saml" }, { status: 403, error: "Password login is disabled. Use SAML SSO sign in." }],
+    ["legacy oidc", { authMode: "oidc" }, { status: 403, error: "Password login is disabled. Use OIDC sign in." }],
+  ])("with INITIAL_PASSWORD set, Reset Password in %s says what happens and prints no token", async (_label, mode, login) => {
     vi.stubEnv("INITIAL_PASSWORD", "a-strong-bootstrap-pw");
-    const settings = { ...oidc, authMode: "sso", ssoType: "oidc", password: "$2a$10$stored-hash" };
+    const settings = { ...oidc, ...saml, ...mode, password: "$2a$10$stored-hash" };
+    const before = { ...settings };
     mocks.updateSettings.mockImplementation(async (patch) => Object.assign(settings, patch));
     mocks.getSettings.mockImplementation(async () => settings);
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
 
     const reset = await resetPassword();
     expect(reset.body).toEqual(expect.objectContaining({ success: true, token: null }));
-    expect(reset.body.message).toMatch(/Login mode is unchanged/);
-    expect(reset.body.message).toMatch(/INITIAL_PASSWORD is set/);
     expect(mocks.issueSetupToken).not.toHaveBeenCalled();
-    expect(settings).toEqual(expect.objectContaining({ password: null, authMode: "sso", ssoType: "oidc" }));
+    expect(settings).toEqual({ ...before, password: null });
+    if (login.status === 200) {
+      expect(reset.body.message).toMatch(/INITIAL_PASSWORD is set: password login uses it/);
+    } else {
+      // INITIAL_PASSWORD doesn't quietly become a live login.
+      expect(reset.body.message).toMatch(/Login mode is unchanged/);
+      expect(reset.body.message).toMatch(/Reset Auth Mode/);
+    }
 
-    // INITIAL_PASSWORD did not quietly become a live login.
     const res = await attempt("a-strong-bootstrap-pw");
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Password login is disabled. Use OIDC sign in.");
+    expect(res.status).toBe(login.status);
+    if (login.error) expect(res.body.error).toBe(login.error);
     log.mockRestore();
   });
 
-  it("says INITIAL_PASSWORD is the login in password mode, with no setup token", async () => {
-    vi.stubEnv("INITIAL_PASSWORD", "a-strong-bootstrap-pw");
-    const settings = { authMode: "password", password: "$2a$10$stored-hash" };
+  it("says SSO keeps working when Reset Password runs in Both mode with a configured SSO", async () => {
+    const settings = { ...oidc, authMode: "both", ssoType: "oidc", password: "$2a$10$stored-hash" };
     mocks.updateSettings.mockImplementation(async (patch) => Object.assign(settings, patch));
     mocks.getSettings.mockImplementation(async () => settings);
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
 
     const reset = await resetPassword();
-    expect(reset.body).toEqual(expect.objectContaining({ success: true, token: null }));
-    expect(reset.body.message).toMatch(/password login uses it/);
-    expect(mocks.issueSetupToken).not.toHaveBeenCalled();
-    expect((await attempt("a-strong-bootstrap-pw")).status).toBe(200);
+    expect(reset.body).toEqual(expect.objectContaining({ success: true, token: "setup-token" }));
+    expect(reset.body.message).toMatch(/OIDC sign-in keeps working/);
+    expect(settings.authMode).toBe("both");
     log.mockRestore();
   });
 });
