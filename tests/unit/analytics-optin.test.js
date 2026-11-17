@@ -17,7 +17,11 @@ describe("third-party analytics stays off OAuth credentials", () => {
     const builder = dockerfile.slice(dockerfile.indexOf("AS builder"), dockerfile.indexOf("AS runner"));
     expect(builder).toMatch(/^ARG NEXT_PUBLIC_GA_ID$/m);
     expect(builder).toMatch(/^ENV NEXT_PUBLIC_GA_ID=\$NEXT_PUBLIC_GA_ID$/m);
-    expect(builder.indexOf("ENV NEXT_PUBLIC_GA_ID")).toBeLessThan(builder.indexOf("RUN npm run build"));
+    // Match instruction lines only; a comment above mentions `RUN npm run build`.
+    const env = builder.search(/^ENV NEXT_PUBLIC_GA_ID=/m);
+    const build = builder.search(/^RUN npm run build$/m);
+    expect(build).toBeGreaterThan(-1);
+    expect(env).toBeLessThan(build);
   });
 
   it("strips the /callback query only once the dashboard says it took the callback", () => {
