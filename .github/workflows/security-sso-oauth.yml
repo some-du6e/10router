@@ -15,10 +15,11 @@ on:
       - "src/shared/utils/oauthCallbackBinding.ts"
       - "src/lib/dataDir.js"
       - "src/dashboardGuard.js"
-      - "src/app/(dashboard)/dashboard/profile/page.js"
       - "tests/unit/saml*.test.js"
       - "tests/unit/auth-secret.test.js"
+      - "tests/unit/auth-status.test.js"
       - "tests/unit/dashboard-guard.test.js"
+      - "tests/unit/login-landing.test.js"
       - "tests/unit/oidc-token-binding.test.js"
       - "tests/unit/auth-mode-consistency.test.js"
       - "tests/unit/auth-login-mode.test.js"
@@ -65,8 +66,10 @@ jobs:
           unit/auth-login-mode.test.js
           unit/auth-setup.test.js
           unit/auth-secret.test.js
+          unit/auth-status.test.js
           unit/dashboard-guard.test.js
           unit/login-errors.test.js
+          unit/login-landing.test.js
           unit/sso-allowlist.test.js
           unit/trae-callback-binding.test.js
           unit/oauth-callback-binding.test.js

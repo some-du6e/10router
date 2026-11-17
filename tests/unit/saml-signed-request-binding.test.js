@@ -10,7 +10,6 @@ const saml = await import("../../src/lib/auth/saml.js");
 // Resolve the actual validator's signing dependency without adding a test dependency.
 const require = createRequire(import.meta.url);
 const { SignedXml } = createRequire(require.resolve("@node-saml/node-saml"))("xml-crypto");
-const CONSUMED = Symbol.for("10router.samlConsumedRequests");
 let privateKey;
 let publicKey;
 const settings = { samlCert: "test-certificate", samlEntryPoint: "https://idp.example.com/sso", samlIssuer: "urn:9router:sp", baseUrl: "https://dashboard.example.com" };
@@ -64,8 +63,13 @@ function ownGlobals() {
   return Object.getOwnPropertySymbols(globalThis).filter((key) => key.description?.startsWith("10router."));
 }
 
-function consumedSize() {
-  return globalThis[CONSUMED]?.size ?? 0;
+// How much each 10router.* global holds (entries of a Map or Set, else its JSON length).
+function globalSizes() {
+  return Object.fromEntries(ownGlobals().map((key) => {
+    const value = globalThis[key];
+    const size = typeof value?.size === "number" ? value.size : JSON.stringify(value ?? null)?.length ?? 0;
+    return [key.description, size];
+  }));
 }
 
 async function issueRequest(module = saml) {
@@ -131,11 +135,10 @@ describe("cryptographically validated SAML request binding", () => {
   });
 
   it("isn't affected by /start being called over and over, and keeps nothing for it", async () => {
+    const before = globalSizes();
     const pending = await issueRequest();
-    const before = { globals: ownGlobals(), consumed: consumedSize() };
     for (let i = 0; i < 500; i++) await saml.buildSamlAuthorizeUrl(null, settings);
-    expect(ownGlobals()).toEqual(before.globals);
-    expect(consumedSize()).toBe(before.consumed);
+    expect(globalSizes()).toEqual(before);
     await expect(verify(response(pending.id), pending.cookie)).resolves.toBeTruthy();
   });
 

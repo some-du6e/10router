@@ -8,10 +8,13 @@ import {
   handleRelayedCallback,
   isOwnPopup,
   isTrustedCallbackOrigin,
-  newPopupName,
+  openLoginPopup,
+  openLoginTab,
   parsePastedCallback,
   PROXY_OAUTH_PROVIDERS,
 } from "@/shared/utils/oauthCallbackBinding.js";
+
+const openWindow = (url, target, features) => window.open(url, target, features);
 
 // Providers offering a paste-token fallback (import-token flow).
 // UX warns if the IDE (which issues the token) is not installed.
@@ -211,7 +214,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     // 4. Open popup; proxy auto-exchanges on callback, modal polls poll-status.
     setAuthData({ ...authData, proxyProvider: providerId });
     setStep("waiting");
-    popupRef.current = window.open(authData.authUrl, newPopupName(), "width=600,height=700");
+    popupRef.current = openLoginPopup(openWindow, authData.authUrl);
     if (!popupRef.current) setStep("input"); // popup blocked → fall back to manual paste
   }, []);
 
@@ -375,13 +378,13 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       if (provider === "codex" && codexProxyActive) {
         // Proxy active: callback will be handled server-side (auto-exchange) or via channels (fallback)
         setStep("waiting");
-        popupRef.current = window.open(data.authUrl, newPopupName(), "width=600,height=700");
+        popupRef.current = openLoginPopup(openWindow, data.authUrl);
         if (!popupRef.current) {
           setStep("input");
         }
       } else if (provider === "xai" && xaiProxyActive) {
         setStep("waiting");
-        popupRef.current = window.open(data.authUrl, newPopupName(), "width=600,height=700");
+        popupRef.current = openLoginPopup(openWindow, data.authUrl);
         if (!popupRef.current) {
           setStep("input");
         }
@@ -389,12 +392,11 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         // Non-localhost or proxy failed: manual input mode
         setStep("input");
         // Not a popup we track: a window left over from an earlier login mustn't count as ours.
-        popupRef.current = null;
-        window.open(data.authUrl, "_blank");
+        popupRef.current = openLoginTab(openWindow, data.authUrl);
       } else {
         // Localhost (non-Codex/xAI): Open popup and wait for message
         setStep("waiting");
-        popupRef.current = window.open(data.authUrl, newPopupName(), "width=600,height=700");
+        popupRef.current = openLoginPopup(openWindow, data.authUrl);
         if (!popupRef.current) {
           setStep("input");
         }

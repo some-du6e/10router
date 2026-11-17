@@ -41,6 +41,21 @@ export function newPopupName(): string {
   return `oauth_popup_${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
+type WindowOpen = (url: string, target: string, features?: string) => unknown;
+
+// Opens a login's popup under its own name. The result is what the dialog keeps
+// as its popup (null when the browser blocked it).
+export function openLoginPopup(open: WindowOpen, url: string): unknown {
+  return open(url, newPopupName(), "width=600,height=700") ?? null;
+}
+
+// Opens the login in a new tab. Returns null: that tab isn't a popup the dialog
+// tracks, so a window left over from an earlier login stops counting as ours.
+export function openLoginTab(open: WindowOpen, url: string): null {
+  open(url, "_blank");
+  return null;
+}
+
 // Whether a postMessage came from the popup this dialog opened for this login.
 export function isOwnPopup(source: unknown, popup: unknown): boolean {
   return source != null && popup != null && source === popup;

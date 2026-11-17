@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   checkPastedState,
   handleRelayedCallback,
@@ -6,6 +8,8 @@ import {
   isOwnPopup,
   isTrustedCallbackOrigin,
   newPopupName,
+  openLoginPopup,
+  openLoginTab,
   parsePastedCallback,
   PROXY_OAUTH_PROVIDERS,
   STATELESS_CALLBACK_PROVIDERS,
@@ -76,6 +80,31 @@ describe("the dialog's own popup", () => {
     const names = new Set(Array.from({ length: 50 }, () => newPopupName()));
     expect(names.size).toBe(50);
     for (const name of names) expect(name).toMatch(/^oauth_popup_[0-9a-f]{24}$/);
+  });
+
+  it("opens each login's popup under a new name and keeps the window it got", () => {
+    const opened = [];
+    const popup = {};
+    const open = vi.fn((url, target, features) => { opened.push({ url, target, features }); return popup; });
+    expect(openLoginPopup(open, "https://auth.example.test/a")).toBe(popup);
+    expect(openLoginPopup(open, "https://auth.example.test/b")).toBe(popup);
+    expect(opened[0]).toEqual({ url: "https://auth.example.test/a", target: expect.stringMatching(/^oauth_popup_[0-9a-f]{24}$/), features: "width=600,height=700" });
+    expect(opened[0].target).not.toBe(opened[1].target);
+    // A blocked popup leaves nothing to track.
+    expect(openLoginPopup(() => null, "https://auth.example.test/a")).toBeNull();
+  });
+
+  it("tracks no popup when the login opens in a new tab", () => {
+    const open = vi.fn(() => ({}));
+    expect(openLoginTab(open, "https://auth.example.test/a")).toBeNull();
+    expect(open).toHaveBeenCalledWith("https://auth.example.test/a", "_blank");
+  });
+
+  it("is how the connect dialog opens every login window", () => {
+    const modal = readFileSync(fileURLToPath(new URL("../../src/shared/components/OAuthModal.js", import.meta.url)), "utf8");
+    expect(modal).not.toMatch(/["']oauth_popup["']/);
+    expect(modal).not.toMatch(/window\.open\((?:data|authData)\.authUrl/);
+    expect(modal).toMatch(/popupRef\.current = openLoginTab\(/);
   });
 
   it("counts a message as ours only when its source is the popup we opened", () => {
