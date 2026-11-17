@@ -12,6 +12,11 @@ FROM base AS builder
 # the build step as an env var.
 ARG SOURCE_COMMIT
 
+# Optional Google Analytics 4 measurement ID. Next inlines NEXT_PUBLIC_* at build
+# time, so pass it with `--build-arg NEXT_PUBLIC_GA_ID=G-...`; unset leaves GA off.
+ARG NEXT_PUBLIC_GA_ID
+ENV NEXT_PUBLIC_GA_ID=$NEXT_PUBLIC_GA_ID
+
 RUN apk --no-cache upgrade && apk --no-cache add python3 make g++ linux-headers
 
 COPY package.json ./

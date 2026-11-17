@@ -12,8 +12,29 @@ describe("third-party analytics stays off OAuth credentials", () => {
     expect(layout).toMatch(/GA_ID \? <GoogleAnalytics gaId=\{GA_ID\} \/> : null/);
   });
 
-  it("strips credential-bearing query params from the /callback URL once read", () => {
+  it("lets a Docker build pass the measurement ID to next build", () => {
+    const dockerfile = read("Dockerfile");
+    const builder = dockerfile.slice(dockerfile.indexOf("AS builder"), dockerfile.indexOf("AS runner"));
+    expect(builder).toMatch(/^ARG NEXT_PUBLIC_GA_ID$/m);
+    expect(builder).toMatch(/^ENV NEXT_PUBLIC_GA_ID=\$NEXT_PUBLIC_GA_ID$/m);
+    expect(builder.indexOf("ENV NEXT_PUBLIC_GA_ID")).toBeLessThan(builder.indexOf("RUN npm run build"));
+  });
+
+  it("strips the /callback query only once the dashboard says it took the callback", () => {
     const page = read("src/app/callback/page.js");
-    expect(page).toMatch(/if \(code \|\| token \|\| error\) window\.history\.replaceState\(null, "", window\.location\.pathname\)/);
+    const ackListener = page.indexOf("listenForCallbackAck(() => {");
+    expect(ackListener).toBeGreaterThan(-1);
+    // Every replaceState sits inside the ack handler, after the listener opens.
+    const strips = [...page.matchAll(/window\.history\.replaceState\(/g)].map((m) => m.index);
+    expect(strips).toHaveLength(1);
+    expect(strips[0]).toBeGreaterThan(ackListener);
+    // Without an ack the page shows the URL it captured, so the code isn't lost.
+    expect(page).toMatch(/setManualUrl\(fullUrl\)/);
+    expect(page).toMatch(/<code className="text-xs break-all">\{manualUrl\}<\/code>/);
+  });
+
+  it("has the connect dialog acknowledge a callback it took", () => {
+    const modal = read("src/shared/components/OAuthModal.js");
+    expect(modal.match(/sendCallbackAck\(\)/g)).toHaveLength(2);
   });
 });

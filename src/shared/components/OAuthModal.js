@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import PropTypes from "prop-types";
 import { Modal, Button, Input } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import { sendCallbackAck } from "@/shared/utils/oauthCallbackAck.js";
 
 // Providers using the dynamic-port local callback proxy.
 // Browser OAuth: popup → auto callback → auto exchange → poll-status.
@@ -504,6 +505,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
       if (callbackError) {
         callbackProcessedRef.current = true;
+        sendCallbackAck();
         setError(errorDescription || callbackError);
         setStep("error");
         return;
@@ -511,6 +513,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
       if (token || code) {
         callbackProcessedRef.current = true;
+        sendCallbackAck();
         await exchangeTokens(token || code, state);
       }
     };

@@ -2,6 +2,11 @@
 
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { listenForCallbackAck } from "@/shared/utils/oauthCallbackAck.js";
+
+// How long to wait for the dashboard to say it took the callback before showing
+// the URL to paste by hand.
+const CALLBACK_ACK_TIMEOUT_MS = 4000;
 
 /**
  * OAuth Callback Page Content
@@ -9,6 +14,7 @@ import { useSearchParams } from "next/navigation";
 function CallbackContent() {
   const searchParams = useSearchParams();
   const [status, setStatus] = useState("processing");
+  const [manualUrl, setManualUrl] = useState("");
   const handledRef = useRef(false);
 
   useEffect(() => {
@@ -20,16 +26,35 @@ function CallbackContent() {
     const error = searchParams.get("error");
     const errorDescription = searchParams.get("error_description");
 
+    const fullUrl = window.location.href;
     const callbackData = {
       code,
       token,
       state,
       error,
       errorDescription,
-      fullUrl: window.location.href,
+      fullUrl,
     };
-    // Credentials in the query must not linger in the address bar, history, or third-party scripts.
-    if (code || token || error) window.history.replaceState(null, "", window.location.pathname);
+
+    // Once the dashboard has taken the callback, the code must not linger in the
+    // address bar, history, or third-party scripts. Until then it stays, so a
+    // relay that reached nobody leaves the URL to paste by hand.
+    const stopListening = code || token || error
+      ? listenForCallbackAck(() => {
+          clearTimeout(ackTimer);
+          window.history.replaceState(null, "", window.location.pathname);
+          setStatus("success");
+          setTimeout(() => {
+            window.close();
+            setTimeout(() => setStatus("done"), 500);
+          }, 1500);
+        })
+      : () => {};
+    const ackTimer = setTimeout(() => {
+      stopListening();
+      setManualUrl(fullUrl);
+      setStatus("manual");
+    }, CALLBACK_ACK_TIMEOUT_MS);
 
     let relayed = false;
 
@@ -78,15 +103,12 @@ function CallbackContent() {
     }
 
     if (!(code || token || error)) {
-      setTimeout(() => setStatus("manual"), 0);
-      return;
+      clearTimeout(ackTimer);
+      setTimeout(() => {
+        setManualUrl(fullUrl);
+        setStatus("manual");
+      }, 0);
     }
-
-    setStatus("success");
-    setTimeout(() => {
-      window.close();
-      setTimeout(() => setStatus("done"), 500);
-    }, 1500);
   }, [searchParams]);
 
   return (
@@ -121,10 +143,10 @@ function CallbackContent() {
             </div>
             <h1 className="text-xl font-semibold mb-2">Copy This URL</h1>
             <p className="text-text-muted mb-4">
-              Please copy the URL from the address bar and paste it in the application.
+              The dashboard didn&apos;t pick up this sign-in. Copy this URL and paste it into the connect dialog.
             </p>
             <div className="bg-surface border border-border rounded-lg p-3 text-left">
-              <code className="text-xs break-all">{typeof window !== "undefined" ? window.location.href : ""}</code>
+              <code className="text-xs break-all">{manualUrl}</code>
             </div>
           </>
         )}
