@@ -3,16 +3,16 @@ import crypto from "crypto";
 import { URL } from "url";
 import { CODEX_CONFIG, TRAE_CONFIG, WINDSURF_CONFIG, ZED_HOSTED_CONFIG } from "../constants/oauth.js";
 
-// Loopback origin guard for local callback proxies.
-// Legit OAuth redirects are top-level navigations (no `Origin` header); a cross-site
-// page issuing `fetch(..., {mode:"no-cors"})` to scan + hit 127.0.0.1 always sends
-// `Origin: https://attacker`. Reject any non-loopback Origin to block login-CSRF.
 function safeEqual(a, b) {
   const left = Buffer.from(String(a));
   const right = Buffer.from(String(b));
   return left.length === right.length && crypto.timingSafeEqual(left, right);
 }
 
+// Loopback origin guard for local callback proxies.
+// Legit OAuth redirects are top-level navigations (no `Origin` header); a cross-site
+// page issuing `fetch(..., {mode:"no-cors"})` to scan + hit 127.0.0.1 always sends
+// `Origin: https://attacker`. Reject any non-loopback Origin to block login-CSRF.
 function isLoopbackOrigin(origin) {
   if (!origin) return true; // navigation redirect — allow
   return /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin);

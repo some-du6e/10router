@@ -5,7 +5,7 @@ import { Modal, Button, Input } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 
 /** A newly created key, shown once with a copy button. Open while `secret` is set. */
-export default function CreatedSecretModal({ secret, title, note, onClose }) {
+export default function CreatedSecretModal({ secret, title, note, docsUrl, onClose }) {
   const { copied, copy } = useCopyToClipboard();
   return (
     <Modal isOpen={!!secret} title={title} onClose={onClose}>
@@ -24,6 +24,14 @@ export default function CreatedSecretModal({ secret, title, note, onClose }) {
             {copied === "created_secret" ? "Copied!" : "Copy"}
           </Button>
         </div>
+        {docsUrl && (
+          <p className="text-sm text-text-muted">
+            Next:{" "}
+            <a href={docsUrl} target="_blank" rel="noopener noreferrer" className="text-primary underline">
+              call the API with this key
+            </a>
+          </p>
+        )}
         <Button onClick={onClose} fullWidth>Done</Button>
       </div>
     </Modal>
@@ -34,5 +42,6 @@ CreatedSecretModal.propTypes = {
   secret: PropTypes.string,
   title: PropTypes.string.isRequired,
   note: PropTypes.string.isRequired,
+  docsUrl: PropTypes.string,
   onClose: PropTypes.func.isRequired,
 };

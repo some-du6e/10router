@@ -26,6 +26,22 @@ on:
       - "src/lib/management/**"
       - "src/lib/db/**"
       - "src/shared/utils/managementKey.js"
+      # A key's own URL: how it is checked, stored and routed.
+      - "src/shared/utils/endpointUrl.ts"
+      - "src/shared/utils/connectionBaseUrl.ts"
+      - "src/shared/utils/ssrfGuard.js"
+      - "src/lib/probeFetch.ts"
+      # What the validation probe sends: the node's quirks and a model it serves.
+      - "src/shared/utils/nodeQuirks.ts"
+      - "src/shared/utils/endpointOverrides.ts"
+      - "open-sse/handlers/chatCore/endpointOverrides.ts"
+      - "src/app/api/providers/*/requests/pick.ts"
+      - "open-sse/utils/ssrfGuard.js"
+      - "open-sse/utils/proxyFetch.js"
+      - "open-sse/services/provider.js"
+      - "open-sse/executors/**"
+      - "src/app/api/provider-nodes/**"
+      - "tests/unit/compatible-multi-endpoint.test.js"
       - "src/shared/utils/apiKeyLimits.js"
       - "src/shared/utils/clientApiKey.js"
       - "src/sse/services/keyLimits.js"
@@ -33,10 +49,18 @@ on:
       - "src/app/api/management/**"
       - "src/app/api/management-keys/**"
       - "src/app/api/providers/route.js"
-      - "src/app/api/providers/[id]/route.js"
+      # GitHub reads [id] as a one-character class, so the folder is matched with *.
+      - "src/app/api/providers/*/route.js"
       - "src/app/api/providers/validate/route.js"
+      # Why a key check failed (the validator's reason, the management API's answer).
+      - "src/shared/constants/keyCheck.js"
+      - "src/lib/endpointDetect.ts"
+      - "src/shared/components/EditConnectionModal.js"
+      - "open-sse/translator/concerns/thinkingUnified.js"
       - "src/app/api/keys/**"
       - "src/app/(dashboard)/dashboard/endpoint/**"
+      # The e2e drives the endpoint page (providers/[id]); ** covers the [id] folder.
+      - "src/app/(dashboard)/dashboard/providers/**"
       - "docs/MANAGEMENT_KEYS.md"
       - "tests/package.json"
       - "tests/vitest.config.js"
@@ -94,6 +118,10 @@ jobs:
           unit/key-limits-payload.test.js
           unit/custom-server-peer-headers.test.js
           unit/auto-disable-dead-keys.test.js
+          unit/compatible-multi-endpoint.test.js
+      # The dialog's scope helpers are TypeScript (managementScopeForm.ts).
+      - name: Typecheck
+        run: ./node_modules/.bin/tsc --noEmit
       - name: Lint
         run: >
           ./node_modules/.bin/eslint
@@ -115,6 +143,7 @@ jobs:
           "src/app/(dashboard)/dashboard/endpoint/components/ManagementKeysCard.js"
           "src/app/(dashboard)/dashboard/endpoint/components/ManagementKeyModal.js"
           "src/app/(dashboard)/dashboard/endpoint/components/ModelAllowlistField.js"
+          "src/app/(dashboard)/dashboard/endpoint/components/managementScopeForm.ts"
           "src/app/(dashboard)/dashboard/endpoint/components/CreatedSecretModal.js"
           "src/app/(dashboard)/dashboard/endpoint/components/KeyLimitsModal.js"
           "src/app/api/keys/[id]/route.js"
@@ -122,6 +151,9 @@ jobs:
           tests/unit/management-keys.test.js
           tests/unit/management-keys-guard.test.js
           tests/unit/management-keys-migration.test.js
+          tests/unit/compatible-multi-endpoint.test.js
+          src/app/api/providers/validate/route.js
+          src/shared/constants/keyCheck.js
           .github/e2e/management-keys/run.mjs
 
   # The built app: the real proxy in front of the management API, /v1 and the

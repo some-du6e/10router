@@ -48,6 +48,7 @@ jobs:
           unit/saml-response-binding.test.js
           unit/saml-signed-request-binding.test.js
           unit/saml-start-cookie.test.js
+          unit/saml-request-cache-bound.test.js
           unit/oidc-token-binding.test.js
           unit/auth-mode-consistency.test.js
           unit/sso-allowlist.test.js

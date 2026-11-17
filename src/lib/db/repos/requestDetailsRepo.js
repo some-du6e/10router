@@ -92,7 +92,8 @@ async function readObservabilityConfig() {
 
 let writeBuffer = [];
 let flushTimer = null;
-let isFlushing = false;
+let activeFlush = null;
+let shuttingDown = false;
 
 function sanitizeHeaders(headers) {
   if (!headers || typeof headers !== "object") return {};
@@ -151,7 +152,7 @@ async function unpackFullData(value) {
   return JSON.parse((await gunzipAsync(Buffer.from(value, "base64"))).toString("utf8"));
 }
 
-export const __test__ = { sanitizeHeaders, getMaxJsonSize, truncateField, prettyJsonPrefix, packFullData, unpackFullData, flush: () => flushToDatabase() };
+export const __test__ = { sanitizeHeaders, getMaxJsonSize, truncateField, prettyJsonPrefix, packFullData, unpackFullData, flush: () => flushToDatabase(), shutdown: () => _shutdownHandler() };
 
 function generateDetailId(model) {
   const timestamp = new Date().toISOString();
@@ -232,10 +233,19 @@ function truncateField(obj, maxSize, fieldJson, key) {
   return obj;
 }
 
-async function flushToDatabase({ skipFullData = false } = {}) {
-  if (isFlushing) return;
-  if (writeBuffer.length === 0) return;
-  isFlushing = true;
+const UPSERT_PREFIX = `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data, fullData) VALUES(?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp, provider = excluded.provider, model = excluded.model, connectionId = excluded.connectionId, status = excluded.status, data = excluded.data, `;
+const UPSERT_SQL = `${UPSERT_PREFIX}fullData = excluded.fullData`;
+const UPSERT_KEEP_STORED_FULL_SQL = `${UPSERT_PREFIX}fullData = COALESCE(excluded.fullData, requestDetails.fullData)`;
+
+// A flush already running drains the whole buffer, rows added meanwhile too,
+// so callers wait on it rather than start a second one. Shutdown joins it as
+// well; it stops packing full payloads once `shuttingDown` is set.
+function flushToDatabase() {
+  if (!activeFlush && writeBuffer.length > 0) activeFlush = writeBufferedRows();
+  return activeFlush ?? Promise.resolve();
+}
+
+async function writeBufferedRows() {
   try {
     // Drain entire buffer (loop in case more pushed during await)
     while (writeBuffer.length > 0) {
@@ -245,8 +255,10 @@ async function flushToDatabase({ skipFullData = false } = {}) {
       const config = await getObservabilityConfig();
 
       // sql.js rewrites the whole DB file on every write, so it skips full payloads.
-      // Shutdown skips them too: gzip callbacks can't run once the process exits.
-      const keepFull = config.keepFullData && !skipFullData && db.driver !== "sql.js";
+      // So does a flush once shutdown starts, checked per row: gzip eats into
+      // the drain's listener budget, and the database closes when that runs out.
+      const wantFull = config.keepFullData && db.driver !== "sql.js";
+      const keepFull = wantFull && !shuttingDown;
       const rows = [];
       for (const item of items) {
         if (!item.id) item.id = generateDetailId(item.model);
@@ -269,19 +281,21 @@ async function flushToDatabase({ skipFullData = false } = {}) {
           response: truncateField(item.response, config.maxJsonSize, fieldJson, "response"),
           errorClass: item.errorClass || undefined,
         };
-        rows.push({ record, fullData: keepFull ? await packFullData(item, record, fieldJson) : null });
+        const pack = keepFull && !shuttingDown;
+        // A row skipped only for shutdown keeps the full copy an earlier save
+        // stored (a stream's start save shares its id with its end save).
+        rows.push({ record, fullData: pack ? await packFullData(item, record, fieldJson) : null, keepStored: wantFull && !pack });
       }
       // The setting may have been turned off (and stored payloads cleared)
       // while compression was awaited. Nothing awaits between this check and
       // the transaction, so a clear can't slip in after it.
-      if (keepFull && generation !== configCache.generation) {
-        for (const row of rows) row.fullData = null;
+      if (generation !== configCache.generation) {
+        for (const row of rows) { row.fullData = null; row.keepStored = false; }
       }
 
       db.transaction(() => {
-        for (const { record, fullData } of rows) {
-          db.run(
-            `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data, fullData) VALUES(?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp, provider = excluded.provider, model = excluded.model, connectionId = excluded.connectionId, status = excluded.status, data = excluded.data, fullData = excluded.fullData`,
+        for (const { record, fullData, keepStored } of rows) {
+          db.run(keepStored ? UPSERT_KEEP_STORED_FULL_SQL : UPSERT_SQL,
             [record.id, record.timestamp, record.provider, record.model, record.connectionId, record.status, stringifyJson(record), fullData]
           );
         }
@@ -303,7 +317,9 @@ async function flushToDatabase({ skipFullData = false } = {}) {
   } catch (e) {
     console.error("[requestDetailsRepo] Batch write failed:", e);
   } finally {
-    isFlushing = false;
+    // Cleared in the same tick as the last empty-buffer check, so a row saved
+    // after it starts a new flush instead of joining one that's done.
+    activeFlush = null;
   }
 }
 
@@ -423,21 +439,14 @@ export async function getRequestDetailFullData(id) {
   }
 }
 
-const _shutdownHandler = async () => {
+const _shutdownHandler = () => {
+  shuttingDown = true;
   if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
-  if (writeBuffer.length > 0) await flushToDatabase({ skipFullData: true });
+  return flushToDatabase();
 };
 
-function ensureShutdownHandler() {
-  process.off("beforeExit", _shutdownHandler);
-  process.off("SIGINT", _shutdownHandler);
-  process.off("SIGTERM", _shutdownHandler);
-  process.off("exit", _shutdownHandler);
-
-  process.on("beforeExit", _shutdownHandler);
-  process.on("SIGINT", _shutdownHandler);
-  process.on("SIGTERM", _shutdownHandler);
-  process.on("exit", _shutdownHandler);
-}
-
-ensureShutdownHandler();
+// The database adapters close the connection on these signals, and the drain
+// (server-drain.js) runs listeners in the order they were added, awaiting each.
+// Prepending puts the flush ahead of the close whichever registered first.
+process.on("beforeExit", _shutdownHandler);
+for (const signal of ["SIGINT", "SIGTERM"]) process.prependListener(signal, _shutdownHandler);

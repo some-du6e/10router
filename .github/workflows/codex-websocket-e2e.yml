@@ -1,0 +1,226 @@
+name: Codex WebSocket E2E
+
+# The real Codex CLI on its default transport (Responses over WebSocket),
+# against a built 10router whose model is served by a translated Chat
+# Completions endpoint (the early-headers mock, mock/fast streams "pong"),
+# directly and through a reverse proxy that adds `accept-encoding: gzip` the
+# way a CDN proxy does (.github/e2e/codex-ws/proxy.mjs). The "master" leg is
+# master from before the fix (pinned, so it keeps showing the hang after the
+# fix merges) and must show the hang's signature through the proxy; the "pr"
+# leg is this checkout and must answer both ways. Codex is pinned to the
+# version the bug was reported on.
+on:
+  pull_request:
+    paths:
+      - "custom-server.js"
+      - "src/app/api/v1/codex/**"
+      - "src/app/api/v1/responses/route.js"
+      - "src/sse/handlers/chat.ts"
+      - "src/sse/services/finalRoutingError.js"
+      - "open-sse/handlers/chatCore.js"
+      - "open-sse/handlers/chatCore/**"
+      - "open-sse/translator/**"
+      - "open-sse/executors/default.js"
+      - "open-sse/utils/proxyFetch.js"
+      - "open-sse/utils/streamHandler.js"
+      - "open-sse/utils/stream.js"
+      - "open-sse/utils/sseConstants.js"
+      - "open-sse/utils/earlyHeaders.js"
+      # The seed loads the whole db layer, and the server checks the client
+      # key through it; the proxied run is the e2e of the bridged remote-key path.
+      - "src/lib/dataDir.js"
+      - "src/lib/db/**"
+      - "src/lib/localDb.js"
+      - "src/shared/utils/clientApiKey.js"
+      - "src/dashboardGuard.js"
+      - "src/proxy.js"
+      - "src/lib/auth/trustedPeer.js"
+      - "scripts/resolve-src-alias.mjs"
+      - "next.config.mjs"
+      - "package.json"
+      - "tests/package.json"
+      - "tests/vitest.config.js"
+      - "tests/unit/codex-ws-translated.test.js"
+      - "tests/unit/codex-ws-bridge-peer.test.js"
+      - ".github/e2e/codex-ws/**"
+      - ".github/e2e/early-headers/**"
+      - ".github/workflows/codex-websocket-e2e.yml"
+  workflow_dispatch:
+
+env:
+  # master just before the fix.
+  PRE_FIX_SHA: 60dfcc0e9993fdc56f0ad0f0e603bc330074658f
+  CODEX_VERSION: "0.137.0"
+
+permissions:
+  contents: read
+
+jobs:
+  # The peer test and the custom-server.js lint run in management-keys.yml.
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Unit tests
+        working-directory: tests
+        run: ./node_modules/.bin/vitest run unit/codex-ws-translated.test.js
+      - name: Lint
+        run: ./node_modules/.bin/eslint tests/unit/codex-ws-translated.test.js .github/e2e/codex-ws/proxy.mjs
+
+  # The suite is not all-green on master (see AGENTS.md), so this runs it on
+  # both the base and this branch and fails only on tests that pass on the base
+  # and fail here (same job as api-key-budgets.yml).
+  no-new-failures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Check out the base branch next to this one
+        run: git worktree add ../base "origin/${{ github.base_ref || 'master' }}"
+      - name: Install dependencies (branch and base)
+        run: |
+          for dir in . ../base; do
+            (cd "$dir" && bun install --ignore-scripts && cd tests && bun install --ignore-scripts)
+          done
+      - name: Run the suite on the base
+        working-directory: ../base/tests
+        # Each run gets its own HOME: tests without a DATA_DIR use ~/.9router,
+        # and one run's database must not leak into the other.
+        run: |
+          mkdir -p "$RUNNER_TEMP/home-base"
+          HOME="$RUNNER_TEMP/home-base" ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/base.json" > /dev/null 2>&1 || true
+      - name: Run the suite on this branch
+        working-directory: tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/home-head"
+          HOME="$RUNNER_TEMP/home-head" ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/head.json" > /dev/null 2>&1 || true
+      - name: Compare
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const load = (file) => {
+              const r = JSON.parse(readFileSync(file, "utf8"));
+              const status = new Map();
+              for (const f of r.testResults) {
+                const rel = f.name.slice(f.name.indexOf("/tests/") + 1);
+                for (const a of f.assertionResults) status.set(`${rel} :: ${a.fullName}`, a.status);
+                // A file that failed to load has no assertions; count it as one failure.
+                if (!f.assertionResults.length && f.status === "failed") status.set(`${rel} :: (file failed to load)`, "failed");
+              }
+              return { status, total: r.numTotalTests, failed: r.numFailedTests };
+            };
+            const base = load(process.env.RUNNER_TEMP + "/base.json");
+            const head = load(process.env.RUNNER_TEMP + "/head.json");
+            console.log(`base: ${base.failed}/${base.total} failed, head: ${head.failed}/${head.total} failed`);
+            const regressions = [...head.status].filter(([k, s]) => s === "failed" && base.status.get(k) === "passed").map(([k]) => k);
+            const fixed = [...base.status].filter(([k, s]) => s === "failed" && head.status.get(k) === "passed").map(([k]) => k);
+            const newFailing = [...head.status].filter(([k, s]) => s === "failed" && !base.status.has(k)).map(([k]) => k);
+            if (fixed.length) console.log("Now passing:\n  " + fixed.join("\n  "));
+            if (newFailing.length) console.log("New tests failing:\n  " + newFailing.join("\n  "));
+            if (regressions.length) console.log("Passed on the base, fail here:\n  " + regressions.join("\n  "));
+            if (regressions.length || newFailing.length) process.exit(1);
+          '
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [master, pr]
+    steps:
+      - name: Check out the harness
+        uses: actions/checkout@v5
+        with:
+          path: harness
+      - name: Check out the app (${{ matrix.leg }})
+        uses: actions/checkout@v5
+        with:
+          path: app
+          ref: ${{ matrix.leg == 'master' && env.PRE_FIX_SHA || github.sha }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        working-directory: app
+        run: bun install --ignore-scripts
+      - name: Build
+        working-directory: app
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build
+      - name: Install Codex
+        run: |
+          npm install -g "@openai/codex@${CODEX_VERSION}"
+          codex --version
+      # Its own step, so the mask command reaches only the runner, never the
+      # tee'd log, the summary or an artifact. run.sh and seed.mjs use this key.
+      - name: Make the per-run client key
+        run: |
+          key="sk-e2e-$(openssl rand -hex 12)"
+          echo "::add-mask::$key"
+          echo "E2E_API_KEY=$key" >> "$GITHUB_ENV"
+      - name: E2E (${{ matrix.leg }})
+        working-directory: app
+        env:
+          OUT_DIR: ${{ github.workspace }}/e2e-out
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: |
+          set -o pipefail
+          bash ../harness/.github/e2e/codex-ws/run.sh ${{ matrix.leg }} 2>&1 | tee ../e2e-${{ matrix.leg }}.txt
+      # Uploaded files and the summary aren't masked like the job log. Every
+      # file that leaves the runner (all of e2e-out but the database, and the
+      # run's log) has the key replaced, then is checked by shape, not by the
+      # literal just removed: no key-shaped string, no bearer value.
+      - name: Scrub what gets uploaded
+        id: scrub
+        if: always()
+        run: |
+          mapfile -t files < <(find e2e-out -path e2e-out/data -prune -o -type f -print; ls "e2e-${{ matrix.leg }}.txt" 2>/dev/null)
+          for f in "${files[@]}"; do sed -i "s/$E2E_API_KEY/[client-key]/g" "$f"; done
+          leaked=0
+          for f in "${files[@]}"; do
+            if grep -qE 'sk-e2e-[0-9a-f]{24}' "$f" || grep -qiE 'bearer [a-z0-9._~+/-]{12,}' "$f"; then echo "holds a secret-shaped value: $f"; leaked=1; fi
+          done
+          echo "checked ${#files[@]} files"
+          exit $leaked
+      - name: Summary
+        if: always() && steps.scrub.outcome == 'success'
+        run: |
+          # The verdict first, so a long trace can't push it out of view.
+          {
+            echo "### ${{ matrix.leg }}"
+            echo '```'
+            grep -E '^(PASS|FAIL): |exit=|turn POST' e2e-${{ matrix.leg }}.txt || true
+            echo '```'
+            echo '<details><summary>log</summary>'
+            echo
+            echo '```'
+            grep -vE '^::(end)?group::' e2e-${{ matrix.leg }}.txt | head -200
+            echo '```'
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.scrub.outcome == 'success'
+        with:
+          name: codex-ws-e2e-${{ matrix.leg }}
+          path: |
+            e2e-out/
+            !e2e-out/data
+            e2e-${{ matrix.leg }}.txt

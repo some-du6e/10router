@@ -137,6 +137,7 @@ export default function EditConnectionModal({ isOpen, connection, nodeBaseUrl, p
           ...(isCloudflareAi ? { providerSpecificData: cloudflareData } : {}),
           ...(providerRegions ? { providerSpecificData: buildRegionSpecificData() } : {}),
           ...keyBaseUrl(),
+          ...(connection.defaultModel ? { defaultModel: connection.defaultModel } : {}),
         }),
       });
       const data = await res.json();
@@ -200,6 +201,7 @@ export default function EditConnectionModal({ isOpen, connection, nodeBaseUrl, p
                 ...(isCloudflareAi ? { providerSpecificData: cloudflareData } : {}),
                 ...(providerRegions ? { providerSpecificData: buildRegionSpecificData() } : {}),
                 ...keyBaseUrl(),
+                ...(connection.defaultModel ? { defaultModel: connection.defaultModel } : {}),
               }),
             });
             const data = await res.json();

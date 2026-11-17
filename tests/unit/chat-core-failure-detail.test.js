@@ -34,9 +34,10 @@ const UPSTREAM_DELAY_MS = 40;
 
 let handleChatCore;
 
-function run() {
+function run(extra = {}) {
   const body = { model: "gpt-4o", stream: false, messages: [{ role: "user", content: "Hi" }] };
   return handleChatCore({
+    ...extra,
     body,
     modelInfo: { provider: "openai", model: "gpt-4o" },
     credentials: { apiKey: "k", providerSpecificData: {} },
@@ -162,6 +163,49 @@ describe("chatCore failure request details", () => {
     expect(row.errorClass).toBe("timeout");
     expect(row.latency.ttft).toBe(0);
     expect(row.response.status).toBe(502);
+  });
+
+  it("answers 504, recorded as a timeout, when the upstream sent no headers in time", async () => {
+    const { UpstreamHeadersTimeoutError } = await import("../../open-sse/utils/headersTimeout.js");
+    executeMock.mockRejectedValue(new UpstreamHeadersTimeoutError(240_000, { stream: true, setBy: "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS" }));
+    const result = await run();
+    expect(result.status).toBe(504);
+    // The result headers-timeout-routing.test.js stubs chatCore with.
+    expect(result.error).toBe("[504]: upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)");
+    expect(result.headersTimeout).toEqual({ stream: true });
+    const row = savedErrorRow();
+    expect(row.errorClass).toBe("timeout");
+    expect(row.response.status).toBe(504);
+  });
+
+  it("tells the account loop a non-streaming call's header timeout didn't stream", async () => {
+    const { UpstreamHeadersTimeoutError } = await import("../../open-sse/utils/headersTimeout.js");
+    executeMock.mockRejectedValue(new UpstreamHeadersTimeoutError(240_000, { stream: false, setBy: "4x FETCH_CONNECT_TIMEOUT_MS" }));
+    const result = await run();
+    expect(result.status).toBe(504);
+    expect(result.headersTimeout).toEqual({ stream: false });
+  });
+
+  it("hands the executor the account loop's headers-budget callback", async () => {
+    const onHeadersBudget = vi.fn();
+    respondAfterDelay(503, { error: { message: "temporarily unavailable" } });
+    await run({ onHeadersBudget });
+    expect(executeMock.mock.calls[0][0].onHeadersBudget).toBe(onHeadersBudget);
+  });
+
+  it("hands the callback to the retry after a token refresh too", async () => {
+    const { getExecutor } = await import("../../open-sse/executors/index.js");
+    getExecutor.mockReturnValueOnce({ execute: executeMock, noAuth: false, refreshCredentials: async () => ({ accessToken: "refreshed" }) });
+    const answer = (status) => ({
+      response: new Response(JSON.stringify(status === 200 ? { id: "x", choices: [] } : { error: { message: "expired" } }), { status, headers: { "content-type": "application/json" } }),
+      url: "https://upstream.example.test", headers: {}, transformedBody: {},
+    });
+    executeMock.mockResolvedValueOnce(answer(401)).mockResolvedValueOnce(answer(200));
+    const onHeadersBudget = vi.fn();
+    // The reply handling past the retry isn't wired in this file's mocks.
+    await run({ onHeadersBudget }).catch(() => {});
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(executeMock.mock.calls[1][0].onHeadersBudget).toBe(onHeadersBudget);
   });
 
   it("records timeout when undici reports it only in the error cause", async () => {
