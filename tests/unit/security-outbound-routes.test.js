@@ -30,6 +30,21 @@ vi.mock("@/lib/oauth/services/kiro", () => ({
     extractEmailFromJWT() { return null; }
   },
 }));
+// The re-detect route reads nodes and keys through localDb.
+vi.mock("@/lib/localDb", () => ({
+  getProviderNodeById: vi.fn(async (id) => state.nodes.find((n) => n.id === id) || null),
+  updateProviderNode: vi.fn(async (id, data) => {
+    const i = state.nodes.findIndex((n) => n.id === id);
+    state.nodes[i] = { ...state.nodes[i], ...data };
+    return state.nodes[i];
+  }),
+  getProviderConnections: vi.fn(async () => state.connections),
+  updateProviderConnection: vi.fn(),
+  getCustomModels: vi.fn(async () => []),
+  addCustomModel: vi.fn(),
+  deleteCustomModel: vi.fn(),
+  getSettings: vi.fn(async () => ({})),
+}));
 vi.mock("@/models", () => ({
   getProviderNodes: vi.fn(async () => state.nodes),
   getProviderNodeById: vi.fn(async (id) => state.nodes.find((n) => n.id === id) || null),
@@ -72,6 +87,11 @@ const pools = await import("../../src/app/api/proxy-pools/route.js");
 const pool = await import("../../src/app/api/proxy-pools/[id]/route.js");
 const poolTest = await import("../../src/app/api/proxy-pools/[id]/test/route.js");
 const oauthAction = await import("../../src/app/api/oauth/[provider]/[action]/route.js");
+const providers = await import("../../src/app/api/providers/route.js");
+const kiroApiKey = await import("../../src/app/api/oauth/kiro/api-key/route.js");
+const redetect = await import("../../src/app/api/providers/[id]/redetect/route.js");
+const proxyTestRoute = await import("../../src/app/api/settings/proxy-test/route.js");
+const { classifyPoolTest, healthCheckSummary } = await import("../../src/shared/utils/proxyHealth.js");
 
 const req = (body, url = "http://gw.example/api") => ({ url, json: async () => body, headers: new Headers() });
 const params = (id) => ({ params: Promise.resolve({ id }) });
@@ -356,15 +376,108 @@ describe("proxy pools", () => {
     expect(state.pools[0].type).toBe("deno");
   });
 
-  it("tests a stored URL under the same rule, and lets a local caller test a LAN proxy", async () => {
-    state.pools = [{ id: "pool-1", name: "lan", type: "http", proxyUrl: "http://10.0.0.8:3128" }];
+  it("won't test a stored private URL from a remote session, says so, and leaves the pool alone", async () => {
+    state.pools = [{ id: "pool-1", name: "lan", type: "http", proxyUrl: "http://10.0.0.8:3128", isActive: true, testStatus: "active" }];
     const refused = await poolTest.POST(req({}), params("pool-1"));
-    expect(refused.status).toBe(400);
+    expect(refused.status).toBe(403);
+    expect(refused.body).toMatchObject({ ok: false, notAllowed: true, error: PRIVATE_URL_ERROR });
     expect(mocks.testProxyUrl).not.toHaveBeenCalled();
+    expect(state.pools[0]).toMatchObject({ isActive: true, testStatus: "active" });
+    // The health check counts it as not tested, never as dead.
+    expect(classifyPoolTest(false, refused.body)).toBe("skipped");
+    expect(classifyPoolTest(false, { ok: false, error: "timeout" })).toBe("dead");
+    expect(classifyPoolTest(true, { ok: true })).toBe("alive");
+    expect(healthCheckSummary({ alive: 1, dead: 0, skipped: 2 })).toBe("Alive: 1, Dead: 0, Not tested from this session (private host): 2");
 
     state.local = true;
     const ok = await poolTest.POST(req({}), params("pool-1"));
     expect(ok.status).toBe(200);
     expect(mocks.testProxyUrl).toHaveBeenCalledWith({ proxyUrl: "http://10.0.0.8:3128" });
+  });
+
+  it("the settings proxy test applies the same rule to the proxy and the test page", async () => {
+    const proxy = await proxyTestRoute.POST(req({ proxyUrl: "http://10.0.0.8:3128" }));
+    expect(proxy.status).toBe(400);
+    expect(proxy.body.field).toBe("proxyUrl");
+    const page = await proxyTestRoute.POST(req({ proxyUrl: "http://8.8.8.8:3128", testUrl: "http://169.254.169.254/latest" }));
+    expect(page.status).toBe(400);
+    expect(page.body.field).toBe("testUrl");
+    expect(mocks.testProxyUrl).not.toHaveBeenCalled();
+    state.local = true;
+    expect((await proxyTestRoute.POST(req({ proxyUrl: "http://10.0.0.8:3128" }))).status).toBe(200);
+  });
+});
+
+describe("connection URLs saved through any field", () => {
+  it("checks a proxy saved switched off, and a stored one when it's switched on", async () => {
+    state.connections = [{ id: "o1", provider: "openai", authType: "apikey", providerSpecificData: {} }];
+    const off = await connection.PUT(req({ connectionProxyEnabled: false, connectionProxyUrl: "http://10.0.0.8:3128" }), params("o1"));
+    expect(off.status).toBe(400);
+    expect(off.body.field).toBe("connectionProxyUrl");
+
+    state.local = true; // saved off from this machine
+    expect((await connection.PUT(req({ connectionProxyEnabled: false, connectionProxyUrl: "http://10.0.0.8:3128" }), params("o1"))).status).toBe(200);
+    expect(state.connections[0].providerSpecificData).toMatchObject({ connectionProxyEnabled: false, connectionProxyUrl: "http://10.0.0.8:3128" });
+    state.local = false; // then switched on from elsewhere
+    const top = await connection.PUT(req({ connectionProxyEnabled: true, connectionProxyUrl: "http://10.0.0.8:3128" }), params("o1"));
+    expect(top.status).toBe(400);
+    const nested = await connection.PUT(req({ providerSpecificData: { connectionProxyEnabled: true } }), params("o1"));
+    expect(nested.status).toBe(400);
+    expect(state.connections[0].providerSpecificData.connectionProxyEnabled).toBe(false);
+    // Already in effect: other edits pass.
+    expect((await connection.PUT(req({ name: "renamed" }), params("o1"))).status).toBe(200);
+  });
+
+  it("POST /api/providers refuses a private connection proxy, on or off, and a bad Kiro region", async () => {
+    for (const connectionProxyEnabled of [true, false]) {
+      const res = await providers.POST(req({ provider: "openai", apiKey: "sk-x", name: "o", connectionProxyEnabled, connectionProxyUrl: "http://10.0.0.8:3128" }));
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: PRIVATE_URL_ERROR, field: "connectionProxyUrl" });
+    }
+    // Kiro keys are created through their own route.
+    const kiro = await kiroApiKey.POST(req({ apiKey: "ksk_x", region: "x.attacker.example/" }));
+    expect(kiro.status).toBe(400);
+    expect(kiro.body.error).toBe("Invalid region");
+    expect(state.created).toHaveLength(0);
+  });
+
+  it("refuses a private baseUrl on a provider that isn't a custom node, and a private azureEndpoint", async () => {
+    const stt = await providers.POST(req({ provider: "ollama-local", apiKey: "x", name: "ol", baseUrl: "http://10.0.0.7:11434" }));
+    expect(stt.status).toBe(400);
+    expect(stt.body.field).toBe("baseUrl");
+
+    state.connections = [{ id: "az", provider: "azure", authType: "apikey", providerSpecificData: { azureEndpoint: "http://10.0.0.6" } }];
+    const azure = await connection.PUT(req({ providerSpecificData: { azureEndpoint: "http://169.254.169.254" } }), params("az"));
+    expect(azure.status).toBe(400);
+    expect(azure.body.field).toBe("azureEndpoint");
+    // The stored one, already in effect, doesn't block other edits.
+    expect((await connection.PUT(req({ providerSpecificData: { azureEndpoint: "http://10.0.0.6", deployment: "d" } }), params("az"))).status).toBe(200);
+
+    state.local = true;
+    expect((await providers.POST(req({ provider: "ollama-local", apiKey: "x", name: "ol", baseUrl: "http://10.0.0.7:11434" }))).status).toBe(201);
+  });
+
+  it("a key on a LAN custom node can still be added from a remote session (the node's URL isn't the key's)", async () => {
+    const res = await providers.POST(req({ provider: NODE.id, apiKey: "sk-n", name: "n" }));
+    expect(res.status).toBe(201);
+    expect(state.created[0].providerSpecificData.baseUrl).toBe(NODE.baseUrl);
+  });
+
+  it("node PUT refuses a new private per-endpoint proxy, and keeps a stored one", async () => {
+    state.nodes = [{ ...NODE, overrides: { proxy: "http://10.0.0.5:8080" } }];
+    const changed = await node.PUT(req({ name: "Local", prefix: "x", apiType: "chat", baseUrl: NODE.baseUrl, quirks: { overrides: { proxy: "http://10.0.0.6:8080" } } }), params(NODE.id));
+    expect(changed.status).toBe(400);
+    expect(changed.body).toEqual({ error: PRIVATE_URL_ERROR, field: "proxy" });
+    const kept = await node.PUT(req({ name: "Local", prefix: "x", apiType: "chat", baseUrl: NODE.baseUrl, quirks: { overrides: { proxy: "http://10.0.0.5:8080" } } }), params(NODE.id));
+    expect(kept.status).toBe(200);
+  });
+
+  it("re-detect apply refuses a private per-endpoint proxy in the accepted quirks", async () => {
+    state.nodes = [{ ...NODE }];
+    const res = await redetect.PUT(req({ quirks: { overrides: { proxy: "socks5://10.0.0.9:1080" } } }), params(NODE.id));
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: PRIVATE_URL_ERROR, field: "proxy" });
+    expect(state.nodes[0].overrides).toBeUndefined();
+    expect((await redetect.PUT(req({ quirks: { overrides: { proxy: "http://8.8.8.8:3128" } } }), params(NODE.id))).status).toBe(200);
   });
 });

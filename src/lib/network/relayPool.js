@@ -19,6 +19,7 @@ export async function saveRelayPool({ type, name, deployUrl, relayKey }) {
     const proxyPool = await createProxyPool({ name, proxyUrl, type, noProxy: "", isActive: true, strictProxy: false });
     return { proxyPool, created: true };
   }
-  const updated = await Promise.all(same.map((pool) => updateProxyPool(pool.id, { proxyUrl, isActive: true })));
+  // Only the URL changes: a pool the operator switched off stays off.
+  const updated = await Promise.all(same.map((pool) => updateProxyPool(pool.id, { proxyUrl })));
   return { proxyPool: updated[0], created: false };
 }

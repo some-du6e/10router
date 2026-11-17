@@ -14,7 +14,9 @@ vi.mock("../../open-sse/utils/proxyFetch.js", async (orig) => {
 
 import { resolveBaseUrl, buildSearchRequest } from "../../open-sse/handlers/search/callers.js";
 import { handleSearchCore } from "../../open-sse/handlers/search/index.js";
-import { isBlockedIpAddress, fetchPublic } from "../../open-sse/utils/ssrfGuard.js";
+import { isBlockedIpAddress, fetchPublic, fetchPublicHop } from "../../open-sse/utils/ssrfGuard.js";
+import { makeProbeFetch } from "../../src/lib/probeFetch.js";
+import { Agent, ProxyAgent } from "undici";
 import { refreshKiroToken } from "../../open-sse/services/tokenRefresh/providers.js";
 import { AWS_REGION_PATTERN, KIRO_PROFILE_ARN_PATTERN } from "../../open-sse/config/awsRegion.js";
 import { fetchImageAsBase64 } from "../../open-sse/translator/concerns/image.js";
@@ -172,6 +174,41 @@ describe("every image download path", () => {
     globalThis.fetch = vi.fn();
     expect(await prefetchRemoteImages(imageBody("http://nas.example/x.png"), "openai", "gemini", { cacheKey: {} })).toBe(0);
     expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("checked fetches and the environment's proxy", () => {
+  const proxyEnv = (noProxy = "") => {
+    vi.stubEnv("HTTPS_PROXY", "http://proxy.example.com:3128");
+    vi.stubEnv("NO_PROXY", noProxy);
+    vi.stubEnv("no_proxy", noProxy);
+  };
+  const dispatcherOf = (n) => undiciFetch.mock.calls[n][1].dispatcher;
+
+  it("go through HTTPS_PROXY after the check, and pinned when NO_PROXY matches", async () => {
+    globalThis.fetch = vi.fn(async () => new Response("ok"));
+    proxyEnv();
+    await fetchPublicHop("https://api.example.org/x");
+    await makeProbeFetch(true)("https://api.example.org/v1/models", { method: "GET" });
+    expect(dispatcherOf(0)).toBeInstanceOf(ProxyAgent);
+    expect(dispatcherOf(1)).toBeInstanceOf(ProxyAgent);
+    expect(lookupMock).toHaveBeenCalledTimes(2); // still checked first
+
+    proxyEnv("api.example.org");
+    await fetchPublicHop("https://api.example.org/x");
+    await makeProbeFetch(true)("https://api.example.org/v1/models", { method: "GET" });
+    for (const n of [2, 3]) {
+      expect(dispatcherOf(n)).toBeInstanceOf(Agent);
+      expect(dispatcherOf(n)).not.toBeInstanceOf(ProxyAgent);
+    }
+  });
+
+  it("still refuse an internal host with a proxy set", async () => {
+    proxyEnv();
+    lookupMock.mockResolvedValue([{ address: "10.0.0.4", family: 4 }]);
+    await expect(fetchPublicHop("https://rebind.example.org/x")).rejects.toThrow(/Blocked URL/);
+    await expect(makeProbeFetch(true)("https://rebind.example.org/v1/models", { method: "GET" })).rejects.toThrow(/Blocked URL/);
+    expect(undiciFetch).not.toHaveBeenCalled();
   });
 });
 

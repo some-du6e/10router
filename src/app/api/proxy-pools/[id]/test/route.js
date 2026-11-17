@@ -46,8 +46,11 @@ export async function POST(request, { params }) {
     }
 
     // The URL may predate the save-time check: test it under the same rule.
+    // Refusing to test from here says nothing about the pool, which may route
+    // fine: `notAllowed` keeps it off the health check's dead list, and its
+    // stored test status is left alone.
     const urlProblem = await proxyUrlProblem(request, proxyPool.proxyUrl);
-    if (urlProblem) return NextResponse.json({ error: urlProblem }, { status: 400 });
+    if (urlProblem) return NextResponse.json({ ok: false, notAllowed: true, error: urlProblem }, { status: 403 });
 
     const result = proxyPool.type === "vercel" || proxyPool.type === "cloudflare" || proxyPool.type === "deno"
       ? await testVercelRelay(proxyPool.proxyUrl)

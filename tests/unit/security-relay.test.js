@@ -116,6 +116,7 @@ describe("relay templates", () => {
     expect(first.status).toBe(201);
     await expectKeyEnforced(code, "cloudflare");
     const firstKey = new URL(state.pools[0].proxyUrl).searchParams.get("relay_key");
+    state.pools[0].isActive = false; // switched off by the operator: stays off
 
     const again = await cloudflareDeploy.POST(req({ accountId: "a", apiToken: "t", projectName: "relay-c" }));
     expect(again.status).toBe(200);
@@ -123,6 +124,7 @@ describe("relay templates", () => {
     expect(state.pools).toHaveLength(1);
     const secondKey = new URL(state.pools[0].proxyUrl).searchParams.get("relay_key");
     expect(secondKey).not.toBe(firstKey);
+    expect(state.pools[0].isActive).toBe(false);
     expect(code).toContain(JSON.stringify(secondKey));
   });
 });

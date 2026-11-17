@@ -33,6 +33,10 @@ on:
       - "src/app/api/providers/validate/**"
       - "src/app/api/providers/suggested-models/**"
       - "src/app/api/proxy-pools/**"
+      - "src/app/api/settings/route.js"
+      - "src/app/api/settings/proxy-test/**"
+      - "src/app/(dashboard)/dashboard/proxy-pools/**"
+      - "src/shared/utils/proxyHealth.js"
       - "src/dashboardGuard.js"
       - "src/lib/network/**"
       - "src/lib/oauth/**"
@@ -44,6 +48,8 @@ on:
       - "tests/unit/security-outbound-routes.test.js"
       - "tests/unit/security-relay.test.js"
       - "tests/unit/private-urls-session.test.js"
+      - "tests/unit/security-connection-test.test.js"
+      - "tests/unit/settings-route.test.js"
       - "tests/unit/image-generation.test.js"
       - "tests/unit/provider-nodes-routes.test.js"
       - "tests/unit/codex-image-fetch.test.js"
@@ -90,6 +96,8 @@ jobs:
           unit/security-outbound-routes.test.js
           unit/security-relay.test.js
           unit/private-urls-session.test.js
+          unit/security-connection-test.test.js
+          unit/settings-route.test.js
           unit/endpoint-detect-hardening.test.js
           unit/dashboard-guard.test.js
           unit/local-request-peer-trust-3294.test.js

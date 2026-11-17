@@ -112,4 +112,17 @@ describe("fetchImageAsBase64 hardening", () => {
     expect(await fetchImageAsBase64("https://example.com/a.png", { maxRedirects: 3 })).toBeNull();
     expect(undiciFetch).toHaveBeenCalledTimes(1);
   });
+
+  it("follows an allowed redirect to another public host, resolving and pinning it too", async () => {
+    const redirect = { ok: false, status: 302, headers: new Headers({ location: "https://cdn2.example.com/a.png" }), body: { cancel: async () => {} } };
+    undiciFetch.mockResolvedValueOnce(redirect);
+    const png = { ok: true, status: 200, headers: new Headers(), body: { getReader: () => { let sent = false; return { read: async () => (sent ? { done: true } : (sent = true, { done: false, value: new Uint8Array(PNG) })), cancel: async () => {} }; } } };
+    undiciFetch.mockResolvedValueOnce(png);
+    const r = await fetchImageAsBase64("https://example.com/a.png", { maxRedirects: 3 });
+    expect(r?.mimeType).toBe("image/png");
+    expect(undiciFetch).toHaveBeenCalledTimes(2);
+    expect(undiciFetch.mock.calls[1][0]).toBe("https://cdn2.example.com/a.png");
+    expect(undiciFetch.mock.calls[1][1].dispatcher).toBeDefined();
+    expect(lookupMock.mock.calls.map((c) => c[0])).toEqual(["example.com", "cdn2.example.com"]);
+  });
 });

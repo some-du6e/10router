@@ -130,13 +130,16 @@ export async function PUT(request, { params }) {
 
     // providerSpecificData is merged as sent: a Kiro region must be an AWS
     // region (it picks the host the refresh token and client secret go to), and
-    // a new proxy URL, sent either way, gets the endpoint URL rule.
-    const storedData = existing.providerSpecificData || {};
+    // the URLs the connection ends up with (proxy, sent either way, enabled or
+    // not; endpoint URLs) get the endpoint URL rule unless already in effect.
     const dataProblem = await providerDataProblem(request, existing.provider, {
       ...(providerSpecificData || {}),
-      ...(proxyConfig.hasAnyProxyField && proxyConfig.connectionProxyEnabled ? { connectionProxyUrl: proxyConfig.connectionProxyUrl } : {}),
-    }, storedData);
-    if (dataProblem) return NextResponse.json({ error: dataProblem }, { status: 400 });
+      ...(proxyConfig.hasAnyProxyField ? {
+        connectionProxyEnabled: proxyConfig.connectionProxyEnabled,
+        connectionProxyUrl: proxyConfig.connectionProxyUrl,
+      } : {}),
+    }, existing.providerSpecificData || {});
+    if (dataProblem) return NextResponse.json(dataProblem, { status: 400 });
 
     const proxyPoolResult = await normalizeProxyPoolUpdate(body.proxyPoolId);
     if (proxyPoolResult.error) {

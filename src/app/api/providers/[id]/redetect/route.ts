@@ -8,6 +8,7 @@ import { addCustomModel, deleteCustomModel, getCustomModels, getProviderConnecti
 import { mergeConnectionData, mergeQuirks } from "@/shared/utils/nodeQuirkMerge.js";
 import { isCustomEndpoint } from "@/lib/endpointRequestLog.js";
 import { guardTarget, respond } from "@/app/api/provider-nodes/detect/ndjson.js";
+import { proxyUrlProblem } from "@/lib/network/privateUrls.js";
 import { redetectDiff, savedProtocol, savedSettingsFetch } from "./diff.js";
 import type { RedetectPart, SavedEndpoint } from "./diff.js";
 
@@ -262,6 +263,12 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     offered = { ...(offered && typeof offered === "object" ? offered : {}), modelRoutes: Object.fromEntries(mine.map((m) => [m, saved[m] || oldProto])) };
   }
   const { quirks, removed } = mergeQuirks(node, { quirks: ownRoutesOnly(offered, finalProtocol(node, updates.apiType)) });
+  // A per-endpoint proxy in the accepted quirks goes to the node and every key:
+  // same rule as the node PUT.
+  const proxy = quirks.overrides?.proxy;
+  const storedProxy = (node.overrides as { proxy?: string } | undefined)?.proxy;
+  const proxyProblem = proxy && proxy !== storedProxy ? await proxyUrlProblem(request, proxy) : null;
+  if (proxyProblem) return NextResponse.json({ error: proxyProblem, field: "proxy" }, { status: 400 });
   Object.assign(updates, quirks);
   const updated = (await updateProviderNode(id, updates)) as unknown as Record<string, unknown> & { baseUrl?: string; apiType?: string; prefix?: string; name?: string };
 
