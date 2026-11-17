@@ -12,7 +12,7 @@ import {
 import { mergeWithDefaults } from "../../src/lib/db/repos/settingsRepo.js";
 
 // Signs the saml_state cookies below; read on first use.
-vi.stubEnv("JWT_SECRET", "test-secret-for-saml-state");
+vi.stubEnv("JWT_SECRET", "test-secret-for-saml-state-at-least-32-chars");
 
 describe("SAML 2.0 Auth Engine Utilities", () => {
   describe("formatX509Certificate", () => {

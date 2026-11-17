@@ -2,7 +2,11 @@ import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
 import { getSettings, updateSettings } from "@/lib/localDb";
-import { getDashboardAuthSession, setDashboardAuthCookie } from "@/lib/auth/dashboardSession";
+import {
+  getDashboardAuthSession,
+  setDashboardAuthCookie,
+  revokeDashboardSessions,
+} from "@/lib/auth/dashboardSession";
 import { getAuthBootstrapState, validateNewPassword, clearLegacyGrace } from "@/lib/auth/setupState";
 
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" };
@@ -39,6 +43,7 @@ export async function POST(request) {
     // write cannot leave the install with neither.
     await updateSettings({ password: hash });
     await clearLegacyGrace();
+    await revokeDashboardSessions();
 
     // Swap the restricted session for a full one.
     await setDashboardAuthCookie(cookieStore, request);

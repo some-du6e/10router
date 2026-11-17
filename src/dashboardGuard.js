@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSettings, validateApiKey } from "@/lib/localDb";
-import { getConsistentMachineId } from "@/shared/utils/machineId";
+import { CLI_TOKEN_HEADER, isValidCliToken } from "@/lib/auth/cliToken.js";
 import { verifyDashboardAuthToken, getDashboardAuthSession } from "@/lib/auth/dashboardSession";
 import { needsSetup } from "@/lib/auth/setupState";
 import { acceptsDashboardSession, getConfiguredSsoType } from "@/lib/auth/authMode.js";
@@ -9,19 +9,8 @@ import { extractClientApiKey } from "@/shared/utils/clientApiKey.js";
 import { containsManagementKey } from "@/shared/utils/managementKey.js";
 import { isManagementApiPath, authenticateManagementKey } from "@/lib/management/auth.js";
 
-const CLI_TOKEN_HEADER = "x-9r-cli-token";
-const CLI_TOKEN_SALT = "9r-cli-auth";
-
-let cachedCliToken = null;
-async function getCliToken() {
-  if (!cachedCliToken) cachedCliToken = await getConsistentMachineId(CLI_TOKEN_SALT);
-  return cachedCliToken;
-}
-
 async function hasValidCliToken(request) {
-  const token = request.headers.get(CLI_TOKEN_HEADER);
-  if (!token) return false;
-  return token === await getCliToken();
+  return await isValidCliToken(request.headers.get(CLI_TOKEN_HEADER));
 }
 
 // Public API paths — no auth required (LLM API has its own key auth inside handler).

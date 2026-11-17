@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { SAML } from "@node-saml/node-saml";
 
 // Every process that shares JWT_SECRET can check a saml_state cookie.
-vi.stubEnv("JWT_SECRET", "test-secret-for-saml-state");
+vi.stubEnv("JWT_SECRET", "test-secret-for-saml-state-at-least-32-chars");
 const saml = await import("../../src/lib/auth/saml.js");
 
 // Resolve the actual validator's signing dependency without adding a test dependency.

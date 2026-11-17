@@ -5,6 +5,19 @@ import { FORMATS } from "open-sse/translator/formats.js";
 import { getModelInfo } from "@/sse/services/model.js";
 import { getProviderConnections } from "@/lib/localDb.js";
 import { getExecutor } from "open-sse/executors/index.js";
+import { REDACTED, redactSensitiveHeaders, redactUrlSecrets, sanitizeSecrets } from "open-sse/utils/redact.js";
+
+// The preview shows header names and request shape; credential values never leave
+// the server: credential headers, secret query params, and every stored
+// credential value wherever it appears (Vertex puts the key in the URL).
+function redactPreview(preview, credentials) {
+  const redacted = {
+    ...preview,
+    url: redactUrlSecrets(preview.url),
+    headers: redactSensitiveHeaders(preview.headers || {}),
+  };
+  return JSON.parse(sanitizeSecrets(JSON.stringify(redacted), credentials, REDACTED));
+}
 
 export async function POST(request) {
   try {
@@ -78,7 +91,10 @@ export async function POST(request) {
         const transformed = executor.transformRequest(model, translated, stream, credentials);
         const finalBody = executor.finalizeBody(transformed, headers, credentials);
 
-        return NextResponse.json({ success: true, result: { url, headers, body: finalBody } });
+        return NextResponse.json({
+          success: true,
+          result: redactPreview({ url, headers, body: finalBody }, credentials),
+        });
       }
 
       default:

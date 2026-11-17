@@ -7,6 +7,40 @@ import { DATA_DIR } from "../dataDir.js";
 // JWT_SECRET, else one generated once into $DATA_DIR/jwt-secret.
 let cached = null;
 
+export const MIN_JWT_SECRET_LENGTH = 32;
+// JWT_SECRET example values the docs, env templates and old code ever shipped that
+// pass the length rule. Anyone can sign a session with one of these, so they count
+// as no secret at all. Shorter examples ("your-secure-secret", "generated-secret-here",
+// the Spanish README's) are already refused by length. A test scans the docs for
+// new examples.
+export const PLACEHOLDER_JWT_SECRETS = new Set([
+  "change-me-to-a-long-random-secret", // .env.example
+  "your-secure-secret-change-this-to-random-string",
+  "votre-secret-sécurisé-changez-le", // French README
+  "9router-default-secret-change-me", // the old hardcoded fallback and README default
+]);
+
+export function isUsableJwtSecret(value) {
+  return (
+    typeof value === "string" &&
+    value.trim().length >= MIN_JWT_SECRET_LENGTH &&
+    !PLACEHOLDER_JWT_SECRETS.has(value.trim())
+  );
+}
+
+// JWT_SECRET when it is strong enough, else null (with a warning when it was set).
+function envSecret() {
+  const fromEnv = process.env.JWT_SECRET;
+  if (isUsableJwtSecret(fromEnv)) return fromEnv;
+  if (fromEnv) {
+    console.warn(
+      `[auth] Ignoring JWT_SECRET: it is a documented placeholder or shorter than ${MIN_JWT_SECRET_LENGTH} characters. ` +
+        "Using the generated secret in the data directory instead. Generate one with: openssl rand -hex 32"
+    );
+  }
+  return null;
+}
+
 // A file this young that reads empty may still be getting its bytes (the copy
 // fallback below creates it before writing), so it is read again for a moment.
 const SETTLE_MS = 2000;
@@ -35,12 +69,13 @@ function readSecret(file) {
 }
 
 function emptyFileError(file) {
-  return new Error(`${file} is empty. Delete it to generate a new secret, or set JWT_SECRET.`);
+  return new Error(`${file} is empty. Delete it to generate a new secret, or set JWT_SECRET (at least ${MIN_JWT_SECRET_LENGTH} characters).`);
 }
 
 export function getAuthSecret() {
   if (cached) return cached;
-  if (process.env.JWT_SECRET) return (cached = process.env.JWT_SECRET);
+  const fromEnv = envSecret();
+  if (fromEnv) return (cached = fromEnv);
   const file = path.join(DATA_DIR, "jwt-secret");
   const stored = readSecret(file);
   if (stored) return (cached = stored);

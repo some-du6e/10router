@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { structuredPreview } from "../../../shared/utils/requestConversation.js";
+import { dropSensitiveHeaders, isBinaryBody, binaryBodyMarker } from "../../../../open-sse/utils/redact.js";
 
 const DEFAULT_MAX_RECORDS = 200;
 const DEFAULT_BATCH_SIZE = 20;
@@ -95,14 +96,10 @@ let flushTimer = null;
 let activeFlush = null;
 let shuttingDown = false;
 
+// Credential headers never reach a stored request detail (the dashboard renders
+// them and cloud sync uploads them).
 function sanitizeHeaders(headers) {
-  if (!headers || typeof headers !== "object") return {};
-  const sensitiveKeys = ["authorization", "x-api-key", "cookie", "token", "api-key"];
-  const sanitized = { ...headers };
-  for (const key of Object.keys(sanitized)) {
-    if (sensitiveKeys.some((s) => key.toLowerCase().includes(s))) delete sanitized[key];
-  }
-  return sanitized;
+  return dropSensitiveHeaders(headers);
 }
 
 // A streaming request is saved twice under one id, when it starts and when it
@@ -264,6 +261,9 @@ async function writeBufferedRows() {
         if (!item.id) item.id = generateDetailId(item.model);
         if (!item.timestamp) item.timestamp = new Date().toISOString();
         if (item.request?.headers) item.request.headers = sanitizeHeaders(item.request.headers);
+        // A binary upstream body (Windsurf's protobuf starts with the API key) is
+        // stored as its size only.
+        for (const key of PAYLOAD_KEYS) if (isBinaryBody(item[key])) item[key] = binaryBodyMarker(item[key]);
 
         const fieldJson = keepFull ? {} : undefined;
         const record = {

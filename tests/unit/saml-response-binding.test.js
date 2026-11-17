@@ -6,7 +6,7 @@ vi.mock("@node-saml/node-saml", () => ({
     validatePostResponseAsync = mocks.validatePostResponseAsync;
   },
 }));
-vi.stubEnv("JWT_SECRET", "test-secret-for-saml-state");
+vi.stubEnv("JWT_SECRET", "test-secret-for-saml-state-at-least-32-chars");
 const { createSamlStateCookie, validateSamlResponse } = await import("../../src/lib/auth/saml.js");
 
 const settings = { samlCert: "certificate", baseUrl: "https://dashboard.example.com" };

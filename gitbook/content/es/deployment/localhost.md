@@ -131,7 +131,7 @@ Si el directorio de datos no es accesible:
 ls -la ~/.9router
 
 # Corregir permisos
-chmod 755 ~/.9router
+chmod 700 ~/.9router
 ```
 
 ---

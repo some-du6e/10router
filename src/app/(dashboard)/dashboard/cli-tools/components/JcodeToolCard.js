@@ -7,6 +7,7 @@ import BaseUrlSelect from "./BaseUrlSelect";
 import { rememberEndpoint } from "./cliEndpointPresets";
 import ApiKeySelect from "./ApiKeySelect";
 import { matchKnownEndpoint } from "./cliEndpointMatch";
+import { KEEP_EXISTING_KEY, initialKeySelection, keepOptionLabel } from "@/lib/cliTools/keepKey.js";
 
 export default function JcodeToolCard({
   tool,
@@ -83,14 +84,26 @@ export default function JcodeToolCard({
         if (provider.default_model) {
           setSelectedModel(provider.default_model);
         }
-        // Try to match API key from env file
-        const envApiKey = jcodeStatus.envApiKey;
-        if (envApiKey && apiKeys?.some(k => k.key === envApiKey)) {
-          setSelectedApiKey(envApiKey);
-        }
       }
     }
   }, [jcodeStatus, apiKeys]);
+
+  // Preselect the key the provider env file already has. The status never carries
+  // it: one of our keys comes back by id. Another key is kept by default only while
+  // the provider points at this instance; one for another endpoint (another
+  // gateway's, or a deleted key) stays selectable but isn't the default.
+  const keyStatus = jcodeStatus?.apiKeyStatus;
+  const keyPointsHere = configStatus === "configured";
+  const keptKeyLabel = keepOptionLabel({ keyStatus, pointsHere: keyPointsHere });
+  const keptCustomKey = !!keptKeyLabel;
+  const hasInitializedKey = useRef(false);
+  useEffect(() => {
+    if (hasInitializedKey.current || !jcodeStatus?.installed) return;
+    const selection = initialKeySelection({ keyStatus, pointsHere: keyPointsHere, apiKeys });
+    if (!selection) return; // wait for the key list
+    if (selection.value) setSelectedApiKey(selection.value);
+    hasInitializedKey.current = true;
+  }, [jcodeStatus, keyStatus, keyPointsHere, apiKeys]);
 
   const checkJcodeStatus = async () => {
     setCheckingJcode(true);
@@ -184,9 +197,11 @@ export default function JcodeToolCard({
   };
 
   const getManualConfigs = () => {
-    const keyToUse = (selectedApiKey && selectedApiKey.trim())
-      ? selectedApiKey
-      : (!cloudEnabled ? "sk_10router" : "<API_KEY_FROM_DASHBOARD>");
+    const keyToUse = selectedApiKey === KEEP_EXISTING_KEY
+      ? "<YOUR_EXISTING_KEY>"
+      : (selectedApiKey && selectedApiKey.trim())
+        ? selectedApiKey
+        : (!cloudEnabled ? "sk_10router" : "<API_KEY_FROM_DASHBOARD>");
 
     const configToml = `[providers.10router]
 type = "openai-compatible"
@@ -319,7 +334,7 @@ id = "${selectedModel || "cc/claude-opus-4-7"}"`;
                 <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr_auto] sm:items-center sm:gap-2">
                   <span className="text-xs font-semibold text-text-main sm:text-right sm:text-sm">API Key</span>
                   <span className="material-symbols-outlined hidden text-text-muted text-[14px] sm:inline">arrow_forward</span>
-                  <ApiKeySelect value={selectedApiKey} onChange={setSelectedApiKey} apiKeys={apiKeys} cloudEnabled={cloudEnabled} />
+                  <ApiKeySelect value={selectedApiKey} onChange={setSelectedApiKey} apiKeys={apiKeys} cloudEnabled={cloudEnabled} keepExisting={keptCustomKey} keepLabel={keptKeyLabel} />
                 </div>
 
                 {/* Default Model */}

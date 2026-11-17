@@ -13,6 +13,8 @@ import {
   parseGrokBuildConfig,
   resetGrokBuildConfig,
 } from "@/lib/grokBuildConfig";
+import { pickFields } from "@/lib/cliTools/statusFields.js";
+import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 
 const execAsync = promisify(exec);
 
@@ -84,9 +86,17 @@ export async function GET() {
     }
 
     const settings = parseGrokBuildConfig(await readConfigToml());
+    // A model section's api_key (and its raw body, which holds it) stays on the host.
+    const shownModel = (section) => (section ? pickFields(section, ["model", "base_url", "name", "api_backend", "context_window"]) : null);
     return NextResponse.json({
       installed: true,
-      settings,
+      settings: {
+        ...settings,
+        model: shownModel(settings.model),
+        subagentModels: Object.fromEntries(
+          Object.entries(settings.subagentModels || {}).map(([type, section]) => [type, shownModel(section)])
+        ),
+      },
       has10Router: has10RouterConfig(settings),
       configPath: getGrokConfigPath(),
     });
@@ -113,7 +123,7 @@ export async function POST(request) {
       contextWindow: normalizeContextWindow(contextWindow, selectedModel),
       subagentModels: normalizeSubagentModels(subagentModels),
     });
-    await fs.writeFile(getGrokConfigPath(), toml);
+    await writePrivateFile(getGrokConfigPath(), toml);
 
     return NextResponse.json({
       success: true,
@@ -140,7 +150,7 @@ export async function DELETE() {
       throw error;
     }
 
-    await fs.writeFile(configPath, resetGrokBuildConfig(toml));
+    await writePrivateFile(configPath, resetGrokBuildConfig(toml));
     return NextResponse.json({
       success: true,
       message: "10router model slots removed from Grok Build",

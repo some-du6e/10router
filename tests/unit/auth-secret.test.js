@@ -25,10 +25,31 @@ afterEach(() => {
 
 describe("server auth secret", () => {
   it("prefers JWT_SECRET", async () => {
-    vi.stubEnv("JWT_SECRET", "from-env");
+    const strong = "from-env-and-long-enough-to-be-used-as-is";
+    vi.stubEnv("JWT_SECRET", strong);
     const { getAuthSecret } = await loadAuthSecret();
-    expect(getAuthSecret()).toBe("from-env");
+    expect(getAuthSecret()).toBe(strong);
     expect(fs.existsSync(path.join(dataDir, "jwt-secret"))).toBe(false);
+  });
+
+  it.each(["change-me-to-a-long-random-secret", "votre-secret-sécurisé-changez-le", "short-secret"])(
+    "ignores JWT_SECRET=%s and uses the generated file instead",
+    async (weak) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      vi.stubEnv("JWT_SECRET", weak);
+      const secret = (await loadAuthSecret()).getAuthSecret();
+      expect(secret).not.toBe(weak);
+      expect(secret).toMatch(/^[0-9a-f]{64}$/);
+      expect(fs.readFileSync(path.join(dataDir, "jwt-secret"), "utf8")).toBe(secret);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Ignoring JWT_SECRET"));
+    }
+  );
+
+  it("keeps an existing secret file when JWT_SECRET is too weak to use", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    fs.writeFileSync(path.join(dataDir, "jwt-secret"), "existing-secret-from-an-earlier-run");
+    vi.stubEnv("JWT_SECRET", "your-secure-secret");
+    expect((await loadAuthSecret()).getAuthSecret()).toBe("existing-secret-from-an-earlier-run");
   });
 
   it("generates one owner-only secret file that every module graph then shares", async () => {

@@ -6,6 +6,10 @@ import { promisify } from "util";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
+import { keyStatus, pickFields } from "@/lib/cliTools/statusFields.js";
+import { isKeepExistingKey } from "@/lib/cliTools/keepKey.js";
+import { mayKeepStoredKey, CHOOSE_A_KEY_ERROR } from "@/lib/cliTools/keepKeyTarget.js";
+import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 
 const execAsync = promisify(exec);
 
@@ -75,6 +79,30 @@ const readAgentModel = async (agentDir) => {
   }
 };
 
+// The parts of openclaw.json the card and the CLI menu read: this router's provider
+// (base URL, first model id, and whether its key is set and which of our keys it
+// is, never the key) and the default model. Other providers carry their own keys,
+// and this status reaches remote dashboard sessions.
+const summarizeSettings = async (settings) => {
+  if (!settings) return null;
+  const providers = {};
+  for (const name of ["10router", "9router"]) {
+    const provider = settings.models?.providers?.[name];
+    if (!provider || typeof provider !== "object") continue;
+    const firstModel = Array.isArray(provider.models) ? provider.models[0]?.id : null;
+    providers[name] = {
+      ...pickFields(provider, ["baseUrl"]),
+      ...(typeof firstModel === "string" ? { models: [{ id: firstModel }] } : {}),
+      apiKeyStatus: await keyStatus(provider.apiKey),
+    };
+  }
+  const primary = settings.agents?.defaults?.model?.primary;
+  return {
+    models: { providers },
+    agents: { defaults: { model: typeof primary === "string" ? { primary } : {} } },
+  };
+};
+
 // GET - Check openclaw CLI and read current settings
 export async function GET() {
   try {
@@ -97,13 +125,13 @@ export async function GET() {
     const enrichedAgents = await Promise.all(
       agentList.map(async (agent) => {
         const agentModel = agent.agentDir ? await readAgentModel(agent.agentDir) : null;
-        return { ...agent, model: resolveAgentModel(agent.model), currentModel: agentModel };
+        return { ...pickFields(agent, ["id", "name", "agentDir"]), model: resolveAgentModel(agent.model), currentModel: agentModel };
       })
     );
 
     return NextResponse.json({
       installed: true,
-      settings,
+      settings: await summarizeSettings(settings),
       agents: enrichedAgents,
       has10Router: has10RouterConfig(settings),
       settingsPath: getOpenClawSettingsPath(),
@@ -131,14 +159,15 @@ const writeAgentModels = async (agentDir, model, baseUrl, apiKey) => {
     api: "openai-completions",
     models: [{ id: model, name: model.split("/").pop() || model }],
   };
-  await fs.writeFile(modelsPath, JSON.stringify(existing, null, 2));
+  await writePrivateFile(modelsPath, JSON.stringify(existing, null, 2));
 };
 
 // POST - Update 10router settings (merge with existing settings)
 export async function POST(request) {
   try {
     // agentModels: { [agentId]: modelId } for per-agent override
-    const { baseUrl, apiKey, model, agentModels = {} } = await request.json();
+    const { baseUrl, model, agentModels = {}, apiKey: requestedKey } = await request.json();
+    let apiKey = requestedKey;
     
     if (!baseUrl || !model) {
       return NextResponse.json({ error: "baseUrl and model are required" }, { status: 400 });
@@ -164,6 +193,19 @@ export async function POST(request) {
 
     const normalizedBaseUrl = baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
     const fullModelId = `10router/${model}`;
+
+    // The card couldn't show the stored key (a custom one): keep it, but only
+    // while it still goes to the same base URL or to this instance.
+    if (isKeepExistingKey(apiKey)) {
+      const stored = settings.models.providers["10router"]?.apiKey
+        ? settings.models.providers["10router"]
+        : settings.models.providers["9router"];
+      apiKey = stored?.apiKey;
+      if (!apiKey) return NextResponse.json({ error: "No existing API key to keep; choose a key" }, { status: 400 });
+      if (!(await mayKeepStoredKey(normalizedBaseUrl, stored?.baseUrl))) {
+        return NextResponse.json({ error: CHOOSE_A_KEY_ERROR }, { status: 400 });
+      }
+    }
 
     // Remove all old 10router/* entries from agents.defaults.models
     Object.keys(settings.agents.defaults.models)
@@ -221,7 +263,7 @@ export async function POST(request) {
       );
     }
 
-    await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2));
+    await writePrivateFile(settingsPath, JSON.stringify(settings, null, 2));
 
     return NextResponse.json({
       success: true,
@@ -281,7 +323,7 @@ export async function DELETE() {
     }
 
     // Write updated settings
-    await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2));
+    await writePrivateFile(settingsPath, JSON.stringify(settings, null, 2));
 
     return NextResponse.json({
       success: true,
