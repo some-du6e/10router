@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { Button } from "@/shared/components";
 import LogoMark from "@/shared/components/LogoMark";
 import useThemeStore from "@/store/themeStore";
+import { describeLoginError } from "@/lib/auth/loginErrors.js";
 import styles from "./login.module.css";
 
 function PasswordField({ id, label, ...props }) {
@@ -90,6 +91,9 @@ export default function LoginPage() {
           setOidcLoginLabel(data.oidcLoginLabel || "Sign in with OIDC");
           setSamlConfigured(data.samlConfigured === true);
           setSamlLoginLabel(data.samlLoginLabel || "Sign in with SAML SSO");
+          // SSO routes send a failed sign-in back here with ?error=.
+          const ssoError = describeLoginError(new URLSearchParams(window.location.search).get("error"));
+          if (ssoError) setError(ssoError);
         } else {
           // Safe fallback on non-OK response to avoid infinite loading state.
           setHasPassword(true);

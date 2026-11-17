@@ -67,19 +67,20 @@ The dashboard draws Material Symbols from a subset font, `src/app/fonts/material
 - `custom-server.js` derives the client IP from the TCP socket and honours `X-Forwarded-For` only from a loopback proxy. Keep that guarantee in any request, IP, or rate-limit change.
 - A fresh install has no default password. It prints a one-time setup token to the console (`src/lib/auth/setupState.js`, `setupToken.js`), or takes `INITIAL_PASSWORD` (8+ chars) for headless bootstrap. The env contract lives in `.env.example`.
 
-## Commits
-
-Conventional Commits (`fix(translator): …`). Log user-facing changes in `CHANGELOG.md`; bump root and `cli/` versions independently.
-
-### Enforced auth rules
+Auth rules and the tests that hold them (all run in the default suite and in `.github/workflows/security-sso-oauth.yml`):
 
 | Rule | Enforcement |
 | --- | --- |
-| Bind every OIDC ID token to the stored login nonce and every SAML response to the SP-issued request state. Missing state fails closed. | `verifyOidcIdToken` and `validateSamlResponse`; `tests/unit/oidc-token-binding.test.js` uses real signed tokens and JWKS, and `tests/unit/saml-response-binding.test.js` exercises cookieless replay. `tests/unit/saml-signed-request-binding.test.js` verifies request binding using real signed XML. The latter prevents a repeat of the regression fixed in `98eef22e0`. |
-| Resolve legacy auth modes and the SSO selector through `getActiveSsoType` in `src/lib/auth/authMode.js`. Password mode cannot enable a saved SSO configuration. | Bootstrap, OIDC runtime, SAML runtime/start/callback, password login and auth status share the resolver; `tests/unit/auth-mode-consistency.test.js`. |
-| HTTPS SAML request-state cookies must survive the IdP's cross-site POST. | SAML start uses `SameSite=None` with `Secure`; `tests/unit/saml-start-cookie.test.js`. |
+| Bind every OIDC ID token to the stored login nonce and every SAML response to a request ID this process issued in the last 10 minutes, once. Missing state fails closed. | `verifyOidcIdToken`, `validateSamlResponse` and `getSamlRequestCache`; `tests/unit/oidc-token-binding.test.js` (real signed tokens and JWKS), `saml-response-binding.test.js` (cookieless replay), `saml-signed-request-binding.test.js` (real signed XML, forged cookie, replay, expiry), `saml-request-cache-bound.test.js` (cap and eviction). |
+| The server routes resolve the login mode through `src/lib/auth/authMode.ts` (`getConfiguredSsoType`, `isPasswordLoginDisabled`). Password mode can't enable a saved SSO configuration, and "both" keeps the password recovery paths. It has no dependencies, because the request proxy loads `setupState.js`. | Bootstrap, OIDC runtime, SAML start/ACS, password login and auth status; `tests/unit/auth-mode-consistency.test.js`, `auth-login-mode.test.js`. The login and profile pages still read the mode themselves. |
+| HTTPS SAML request-state cookies must survive the IdP's cross-site POST, and `/api/auth/saml/start` is rate-limited per client. | `tests/unit/saml-start-cookie.test.js`. |
+| `SSO_ALLOWED_USERS` gates OIDC and SAML sign-in. Email entries match only an IdP-verified email; entries without `@` match only the subject. | `tests/unit/sso-allowlist.test.js`. |
+| The Trae loopback proxy answers only its random callback path. | `tests/unit/trae-callback-binding.test.js`. |
+| The OAuth connect dialog uses a relayed callback only when it echoes the pending login's state (Cline and Cline Pass excepted), never for proxy providers (Trae, Windsurf, Zed), and ignores a mismatch without ending the login. | `decideRelayedCallback` in `src/shared/utils/oauthCallbackBinding.ts`; `tests/unit/oauth-callback-binding.test.js`. |
 
-Run these checks with `cd tests && npx vitest run unit/oidc-token-binding.test.js unit/saml-response-binding.test.js unit/saml-signed-request-binding.test.js unit/auth-mode-consistency.test.js unit/saml-start-cookie.test.js`. All five also run in the default deterministic suite.
+## Commits
+
+Conventional Commits (`fix(translator): …`). Log user-facing changes in `CHANGELOG.md`; bump root and `cli/` versions independently.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

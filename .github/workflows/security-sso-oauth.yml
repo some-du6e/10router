@@ -5,15 +5,24 @@ on:
     paths:
       - "src/lib/auth/**"
       - "src/app/api/auth/**"
+      - "src/app/api/oauth/**"
+      - "src/app/callback/**"
+      - "src/app/login/**"
       - "src/lib/oauth/utils/server.js"
+      - "src/lib/oauth/providers/trae.js"
+      - "src/lib/oauth/constants/oauth.js"
       - "src/shared/components/OAuthModal.js"
       - "src/shared/utils/oauthCallbackBinding.ts"
       - "tests/unit/saml*.test.js"
       - "tests/unit/oidc-token-binding.test.js"
       - "tests/unit/auth-mode-consistency.test.js"
+      - "tests/unit/auth-login-mode.test.js"
+      - "tests/unit/auth-setup.test.js"
+      - "tests/unit/login-errors.test.js"
       - "tests/unit/sso-allowlist.test.js"
       - "tests/unit/trae-callback-binding.test.js"
       - "tests/unit/oauth-callback-binding.test.js"
+      - "package.json"
       - "tests/package.json"
       - ".github/workflows/security-sso-oauth.yml"
   workflow_dispatch:
@@ -48,6 +57,9 @@ jobs:
           unit/saml-request-cache-bound.test.js
           unit/oidc-token-binding.test.js
           unit/auth-mode-consistency.test.js
+          unit/auth-login-mode.test.js
+          unit/auth-setup.test.js
+          unit/login-errors.test.js
           unit/sso-allowlist.test.js
           unit/trae-callback-binding.test.js
           unit/oauth-callback-binding.test.js
@@ -58,6 +70,14 @@ jobs:
           src/app/api/auth
           src/lib/oauth/utils/server.js
           src/shared/utils/oauthCallbackBinding.ts
+      # set-state-in-effect: these components' existing open/load effects predate
+      # the check.
+      - name: Lint client components
+        run: >
+          ./node_modules/.bin/eslint --rule 'react-hooks/set-state-in-effect: off'
+          src/shared/components/OAuthModal.js
+          src/app/callback/page.js
+          src/app/login/page.js
 
   no-new-failures:
     runs-on: ubuntu-latest

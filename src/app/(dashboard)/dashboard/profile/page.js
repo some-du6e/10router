@@ -1095,6 +1095,9 @@ export default function ProfilePage() {
               <p className="text-xs sm:text-sm text-text-muted">
                 Configure enterprise Single Sign-On (SSO) for dashboard access using SAML 2.0 or OIDC.
               </p>
+              <p className="text-xs text-text-muted">
+                Every account your identity provider signs in gets full admin access, unless the server sets <code>SSO_ALLOWED_USERS</code> to the emails, <code>@domain</code> suffixes or subject IDs allowed in.
+              </p>
 
               {/* SSO Protocol Switcher Tabs */}
               <div className="flex flex-col gap-2">
@@ -1207,6 +1210,9 @@ export default function ProfilePage() {
 
                     {showSamlGuide && (
                       <div className="p-4 border-t border-border bg-surface/30 text-xs text-text-main flex flex-col gap-3">
+                        <p className="text-text-muted">
+                          SAML needs the dashboard on HTTPS and a single server instance (or sticky sessions): the login has to come back to the server that started it, within 10 minutes.
+                        </p>
                         <div className="p-2.5 rounded border border-primary/20 bg-primary/5 text-primary text-xs">
                           <p className="font-semibold mb-1">🔑 Required Service Provider (SP) Values for your IdP Setup:</p>
                           <ul className="list-disc pl-4 space-y-1 font-mono text-[11px]">
