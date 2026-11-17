@@ -449,7 +449,7 @@ export function stopXaiProxy() {
 let traeProxyServer = null;
 let traeProxyTimeout = null;
 let traeProxyPort = null;
-let traeProxyPath = null;
+let traeProxyCallbackUrl = null;
 let traeSession = null;
 
 export function registerTraeSession({ state }) {
@@ -469,7 +469,7 @@ export function clearTraeSession(state) {
 export function startTraeProxy() {
   return new Promise((resolve) => {
     if (traeProxyServer) {
-      resolve({ success: true, port: traeProxyPort, callbackUrl: `http://127.0.0.1:${traeProxyPort}${traeProxyPath}` });
+      resolve({ success: true, port: traeProxyPort, callbackUrl: traeProxyCallbackUrl });
       return;
     }
     // Trae does not echo state, so an unguessable callback path binds the callback to this login.
@@ -535,9 +535,9 @@ export function startTraeProxy() {
     server.listen(0, "127.0.0.1", () => {
       traeProxyServer = server;
       traeProxyPort = server.address().port;
-      traeProxyPath = callbackPath;
+      traeProxyCallbackUrl = `http://127.0.0.1:${traeProxyPort}${callbackPath}`;
       traeProxyTimeout = setTimeout(() => stopTraeProxy(), TRAE_CONFIG.oauthTimeoutMs);
-      resolve({ success: true, port: traeProxyPort, callbackUrl: `http://127.0.0.1:${traeProxyPort}${callbackPath}` });
+      resolve({ success: true, port: traeProxyPort, callbackUrl: traeProxyCallbackUrl });
     });
     server.on("error", (err) => resolve({ success: false, reason: err.message }));
   });
@@ -547,7 +547,7 @@ export function stopTraeProxy() {
   if (traeProxyTimeout) { clearTimeout(traeProxyTimeout); traeProxyTimeout = null; }
   if (traeProxyServer) { traeProxyServer.close(); traeProxyServer = null; }
   traeProxyPort = null;
-  traeProxyPath = null;
+  traeProxyCallbackUrl = null;
 }
 
 // ───────────────────────────────────────────────────────────────────────────

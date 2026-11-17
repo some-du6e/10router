@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import PropTypes from "prop-types";
 import { Modal, Button, Input } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
-import { isCallbackForPendingAuth, isTrustedCallbackOrigin } from "@/shared/utils/oauthCallbackBinding.js";
+import { decideRelayedCallback, isTrustedCallbackOrigin } from "@/shared/utils/oauthCallbackBinding.js";
 
 // Providers using the dynamic-port local callback proxy.
 // Browser OAuth: popup → auto callback → auto exchange → poll-status.
@@ -48,6 +48,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const [authMode, setAuthMode] = useState("browser"); // "browser" | "paste-token"
   const [pasteToken, setPasteToken] = useState("");
   const [ideStatus, setIdeStatus] = useState(null);
+  const [ignoredCallback, setIgnoredCallback] = useState(false);
   const popupRef = useRef(null);
   const pollingAbortRef = useRef(false);
   const openedRef = useRef(false);
@@ -414,6 +415,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       setAuthMode("browser");
       setPasteToken("");
       setIdeStatus(null);
+      setIgnoredCallback(false);
       pollingAbortRef.current = false;
       // Best-effort IDE detection for paste-token providers (Trae/Windsurf)
       if (PASTE_TOKEN_PROVIDERS[provider]) {
@@ -500,31 +502,20 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     // Handler for callback data - only process once
     const handleCallback = async (data) => {
       if (callbackProcessedRef.current) return; // Already processed
-      if (!isCallbackForPendingAuth(data, authData)) {
-        // The popup has already closed and cleared its URL, so hand the URL to
-        // the paste step instead of dropping it. Submitting it is the user's call.
-        if (data?.code || data?.token || data?.error) {
-          callbackProcessedRef.current = true;
-          setCallbackUrl(data.fullUrl || "");
-          setError("This callback didn't match the login you started. Submit it only if you just signed in yourself, or start again.");
-          setStep("input");
-        }
+      const decision = decideRelayedCallback(data, authData, provider);
+      if (decision.action === "ignore") {
+        // Not this login's callback: keep waiting for the real one.
+        if (decision.notice) setIgnoredCallback(true);
         return;
       }
 
-      const { code, token, state, error: callbackError, errorDescription } = data;
-
-      if (callbackError) {
-        callbackProcessedRef.current = true;
-        setError(errorDescription || callbackError);
+      callbackProcessedRef.current = true;
+      if (decision.action === "error") {
+        setError(decision.message);
         setStep("error");
         return;
       }
-
-      if (token || code) {
-        callbackProcessedRef.current = true;
-        await exchangeTokens(token || code, state);
-      }
+      await exchangeTokens(decision.code, decision.state);
     };
 
     // Method 1: postMessage from popup
@@ -579,7 +570,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       window.removeEventListener("storage", handleStorage);
       if (channel) channel.close();
     };
-  }, [authData, exchangeTokens]);
+  }, [authData, exchangeTokens, provider]);
 
   // Handle manual URL input
   const handleManualSubmit = async () => {
@@ -691,6 +682,9 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   return (
     <Modal isOpen={isOpen} title={modalTitle} onClose={handleClose} size="lg">
       <div className="flex flex-col gap-4">
+        {ignoredCallback && (step === "waiting" || step === "input") && (
+          <p className="text-xs text-text-muted">A sign-in callback that wasn&apos;t for this login was ignored.</p>
+        )}
         {/* Trae/Windsurf: browser OAuth (proxy) + paste-token fallback */}
         {PROXY_OAUTH_PROVIDERS.has(provider) && (step === "waiting" || step === "input" || step === "error") && (
           <>
