@@ -518,45 +518,87 @@ describe("no request value reaches a tool's variable or file substitution", () =
       apiKey: (v) => ({ baseUrl: OWN, apiKey: v, models: ["m1"] }),
       models: (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, models: [v] }),
       "customPlugins.url": (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, models: ["m1"], customPlugins: [{ name: "mine", url: v }] }),
+      "customPlugins.name": (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, models: ["m1"], customPlugins: [{ name: v, url: "https://mcp.example.com/sse" }] }),
       "plugins.url": (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, models: ["m1"], plugins: [{ name: "p1", url: v }] }),
+      "plugins.name": (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, models: ["m1"], plugins: [{ name: v, url: "https://mcp.example.com/mcp" }] }),
+      "plugins.transport": (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, models: ["m1"], plugins: [{ name: "p1", url: "https://mcp.example.com/mcp", transport: v }] }),
+      "plugins.toolNames": (v) => ({ baseUrl: OWN, apiKey: NEW_KEY, models: ["m1"], plugins: [{ name: "p1", url: "https://mcp.example.com/mcp", toolNames: [v] }] }),
     },
   };
-  const cases = Object.entries(ROUTES).flatMap(([route, fields]) =>
-    Object.entries(fields).flatMap(([field, body]) => TOKENS.map((token) => [route, field, token, body]))
-  );
+  ROUTES["claude-settings"].maxContextTokens = (v) => ({ env: { ANTHROPIC_BASE_URL: OWN }, maxContextTokens: v });
 
+  // Realistic values each kind of field has to keep accepting.
+  const PLAIN_URLS = ["https://my-res.openai.azure.com/openai/deployments/gpt-4o?api-version=2024-10-21", `${OWN}/v1`];
+  const PLAIN_KEYS = ["sk-proj-Ab_3x-9Q"];
+  const PLAIN_MODELS = [
+    "cc/claude-opus-4-6",
+    "openrouter/anthropic/claude-sonnet-4.5:beta",
+    "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "claude-sonnet-4-5@20250929",
+  ];
+  const PLAIN_OTHER = {
+    "plugins.name": ["exa", "my_mcp-2"],
+    "customPlugins.name": ["my_mcp-2"],
+    "plugins.transport": ["http", "sse"],
+    "plugins.toolNames": ["web_search_exa"],
+    maxContextTokens: ["200000"],
+  };
   const isUrlField = (field) => /baseUrl$|BASE_URL$|\.url$/.test(field);
+  const plainValues = (field) => {
+    if (PLAIN_OTHER[field]) return PLAIN_OTHER[field];
+    if (isUrlField(field)) return PLAIN_URLS;
+    if (/apiKey$|AUTH_TOKEN$/.test(field)) return PLAIN_KEYS;
+    return PLAIN_MODELS;
+  };
+  const fieldsOf = Object.entries(ROUTES).flatMap(([route, fields]) => Object.entries(fields).map(([field, body]) => [route, field, body]));
+  const cases = fieldsOf.flatMap(([route, field, body]) => TOKENS.map((token) => [route, field, token, body]));
+  const plainCases = fieldsOf.flatMap(([route, field, body]) => plainValues(field).map((value) => [route, field, value, body]));
 
-  it.each(Object.entries(ROUTES).flatMap(([route, fields]) => Object.entries(fields).map(([field, body]) => [route, field, body])))(
-    "%s: %s with a plain value is accepted",
-    async (route, field, body) => {
-      expect((await post(route, body(isUrlField(field) ? `${OWN}/v1` : "plain-value-1"))).status).toBe(200);
-    }
-  );
+  it.each(plainCases)("%s: %s = %s is accepted", async (route, _field, value, body) => {
+    expect((await post(route, body(value))).status).toBe(200);
+  });
 
   it.each(cases)("%s: %s = %s is refused and nothing is written", async (route, field, token, body) => {
     const value = isUrlField(field) ? `${OWN}/${token}` : token;
     const res = await post(route, body(value));
     expect(res.status).toBe(400);
+    expect((await res.json()).error.startsWith("Invalid ")).toBe(true);
     expect(fs.readdirSync(home)).toEqual([]);
+  });
+
+  it.each([["a C1 control", "sk-proj-\u0085x"], ["a line separator", "sk-proj-\u2028x"], ["a paragraph separator", "sk-proj-\u2029x"], ["DEL", "sk-proj-\u007fx"]])(
+    "%s in a value is refused",
+    async (_label, apiKey) => {
+      const res = await post("hermes-settings", { baseUrl: OWN, apiKey, model: "m1" });
+      expect(res.status).toBe(400);
+      expect(fs.readdirSync(home)).toEqual([]);
+    }
+  );
+
+  it("the error names the field, the characters and why", async () => {
+    const res = await post("droid-settings", { baseUrl: OWN, apiKey: "${ANTHROPIC_API_KEY}", models: ["m1"] });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe(
+      "Invalid apiKey: values must be strings and can't contain $ { } \" \\ ` or control characters (they could pull secrets from your machine through the tool's own substitution, or break its config file)"
+    );
   });
 
   it("openclaw: an object apiKey (a secret reference to the user's env) is refused", async () => {
     const res = await post("openclaw-settings", { baseUrl: FOREIGN, model: "m1", apiKey: { source: "env", provider: "default", id: "OPENAI_API_KEY" } });
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe("Invalid apiKey");
+    expect((await res.json()).error.startsWith("Invalid apiKey:")).toBe(true);
     expect(fs.readdirSync(home)).toEqual([]);
   });
 
   it("the reported example bodies are refused", async () => {
     const opencode = await post("opencode-settings", { baseUrl: FOREIGN, apiKey: "{env:OPENAI_API_KEY}", models: ["m1"] });
     expect(opencode.status).toBe(400);
-    expect((await opencode.json()).error).toBe("Invalid apiKey");
+    expect((await opencode.json()).error.startsWith("Invalid apiKey:")).toBe(true);
     const opencodeFile = await post("opencode-settings", { baseUrl: FOREIGN, apiKey: NEW_KEY, models: ["{file:~/.codex/auth.json}"] });
-    expect((await opencodeFile.json()).error).toBe("Invalid models[0]");
+    expect((await opencodeFile.json()).error.startsWith("Invalid models[0]:")).toBe(true);
     const openclaw = await post("openclaw-settings", { baseUrl: FOREIGN, model: "m", apiKey: "${OPENAI_API_KEY}" });
     expect(openclaw.status).toBe(400);
-    expect((await openclaw.json()).error).toBe("Invalid apiKey");
+    expect((await openclaw.json()).error.startsWith("Invalid apiKey:")).toBe(true);
     expect(fs.readdirSync(home)).toEqual([]);
   });
 });

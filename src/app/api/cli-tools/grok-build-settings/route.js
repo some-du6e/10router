@@ -15,7 +15,7 @@ import {
 } from "@/lib/grokBuildConfig";
 import { pickFields } from "@/lib/cliTools/statusFields.js";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
-import { findUnsafeConfigValue } from "@/lib/cliTools/configValue.js";
+import { findUnsafeConfigValue, unsafeConfigValueError } from "@/lib/cliTools/configValue.js";
 
 const execAsync = promisify(exec);
 
@@ -122,7 +122,7 @@ export async function POST(request) {
       ...Object.fromEntries(Object.entries(subagents || {}).map(([type, entry]) => [`subagentModels.${type}`, entry.model])),
     });
     if (unsafeField) {
-      return NextResponse.json({ error: `Invalid ${unsafeField}` }, { status: 400 });
+      return NextResponse.json({ error: unsafeConfigValueError(unsafeField) }, { status: 400 });
     }
 
     await fs.mkdir(getGrokDir(), { recursive: true });

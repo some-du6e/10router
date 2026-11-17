@@ -10,7 +10,7 @@ import { UPDATER_CONFIG } from "@/shared/constants/config";
 import { CLI_TOKEN_HEADER, getCliToken } from "@/lib/auth/cliToken.js";
 import { redactUrlSecrets } from "open-sse/utils/redact.js";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
-import { findUnsafeConfigValue, listFields } from "@/lib/cliTools/configValue.js";
+import { findUnsafeConfigValue, listFields, unsafeConfigValueError } from "@/lib/cliTools/configValue.js";
 
 const APP_PORT = UPDATER_CONFIG.appPort;
 const LOCAL_MCP_PREFIX = `http://localhost:${APP_PORT}/api/mcp/`;
@@ -338,8 +338,14 @@ export async function POST(request) {
     if (modelsArray.length === 0) {
       return NextResponse.json({ error: "At least one model is required" }, { status: 400 });
     }
+    // Every plugin field that reaches the config: name, url, transport, toolNames.
     const pluginFields = (name, list) => Object.fromEntries(
-      (Array.isArray(list) ? list : []).flatMap((p, i) => [[`${name}[${i}].name`, p?.name], [`${name}[${i}].url`, p?.url]])
+      (Array.isArray(list) ? list : []).flatMap((p, i) => [
+        [`${name}[${i}].name`, p?.name],
+        [`${name}[${i}].url`, p?.url],
+        [`${name}[${i}].transport`, p?.transport],
+        ...(Array.isArray(p?.toolNames) ? p.toolNames.map((t, j) => [`${name}[${i}].toolNames[${j}]`, t]) : []),
+      ])
     );
     const unsafeField = findUnsafeConfigValue({
       baseUrl,
@@ -349,7 +355,7 @@ export async function POST(request) {
       ...pluginFields("customPlugins", customPlugins),
     });
     if (unsafeField) {
-      return NextResponse.json({ error: `Invalid ${unsafeField}` }, { status: 400 });
+      return NextResponse.json({ error: unsafeConfigValueError(unsafeField) }, { status: 400 });
     }
 
     const storedServers = (await readAppliedConfig()).config?.managedMcpServers;

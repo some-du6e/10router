@@ -16,9 +16,11 @@
 //                 no documented substitution in these values; held to the same
 //                 rule, so a newer version that adds one can't be reached.
 //   Shells and env loaders also expand bare $VAR and backticks.
-// So every such value must be a string without any of: " \ ` $ { } and control
-// characters. Real base URLs, keys and model ids contain none of these.
-const UNSAFE = /["\\`${}\u0000-\u001f\u007f]/;
+// So every such value must be a string without any of: " \ ` $ { }, control
+// characters (C0, DEL, C1) and the Unicode line and paragraph separators, which
+// YAML and JavaScript-based parsers treat as line breaks. Real base URLs, keys
+// and model ids contain none of these.
+const UNSAFE = /["\\`${}\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 
 /**
  * The name of the first field that isn't a safe string, or null. undefined and
@@ -30,6 +32,11 @@ export function findUnsafeConfigValue(fields: Record<string, unknown>): string |
     if (typeof value !== "string" || UNSAFE.test(value)) return name;
   }
   return null;
+}
+
+/** The 400 message for a field findUnsafeConfigValue named. */
+export function unsafeConfigValueError(field: string): string {
+  return `Invalid ${field}: values must be strings and can't contain $ { } " \\ \` or control characters (they could pull secrets from your machine through the tool's own substitution, or break its config file)`;
 }
 
 /** A list's items as fields for findUnsafeConfigValue: { "models[0]": ..., ... }. */

@@ -8,7 +8,7 @@ import path from "path";
 import os from "os";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 import { checkNewBaseUrl } from "@/lib/cliTools/keepKeyTarget.js";
-import { findUnsafeConfigValue } from "@/lib/cliTools/configValue.js";
+import { findUnsafeConfigValue, unsafeConfigValueError } from "@/lib/cliTools/configValue.js";
 
 const execAsync = promisify(exec);
 
@@ -87,7 +87,7 @@ export async function POST(request) {
     }
     const unsafeField = findUnsafeConfigValue({ baseUrl, apiKey, model });
     if (unsafeField) {
-      return NextResponse.json({ error: `Invalid ${unsafeField}` }, { status: 400 });
+      return NextResponse.json({ error: unsafeConfigValueError(unsafeField) }, { status: 400 });
     }
 
     await fs.mkdir(getDataDir(), { recursive: true });

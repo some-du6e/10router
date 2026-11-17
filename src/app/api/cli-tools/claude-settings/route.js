@@ -12,7 +12,7 @@ import { keyStatus, pickFields } from "@/lib/cliTools/statusFields.js";
 import { isKeepExistingKey } from "@/lib/cliTools/keepKey.js";
 import { checkNewBaseUrl, isCredential } from "@/lib/cliTools/keepKeyTarget.js";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
-import { findUnsafeConfigValue } from "@/lib/cliTools/configValue.js";
+import { findUnsafeConfigValue, unsafeConfigValueError } from "@/lib/cliTools/configValue.js";
 
 const execAsync = promisify(exec);
 
@@ -175,9 +175,13 @@ export async function POST(request) {
     if (env.ANTHROPIC_BASE_URL !== undefined && typeof env.ANTHROPIC_BASE_URL !== "string") {
       return NextResponse.json({ error: "ANTHROPIC_BASE_URL must be a string" }, { status: 400 });
     }
-    const unsafeEnv = findUnsafeConfigValue(Object.fromEntries(Object.entries(env).filter(([, value]) => typeof value === "string")));
+    const unsafeEnv = findUnsafeConfigValue({
+      ...Object.fromEntries(Object.entries(env).filter(([, value]) => typeof value === "string")),
+      // Written as String(maxContextTokens); a number is fine as is.
+      maxContextTokens: typeof maxContextTokens === "number" ? String(maxContextTokens) : maxContextTokens || undefined,
+    });
     if (unsafeEnv) {
-      return NextResponse.json({ error: `Invalid ${unsafeEnv}` }, { status: 400 });
+      return NextResponse.json({ error: unsafeConfigValueError(unsafeEnv) }, { status: 400 });
     }
 
     const settingsPath = getClaudeSettingsPath();

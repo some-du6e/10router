@@ -11,7 +11,7 @@ import { parseCodexVersion, codexSendsBearerToken, BEARER_TOKEN_FROM } from "@/s
 import { decideCatalogUrl } from "@/lib/codex/catalogUrlDecision.js";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
 import { checkNewBaseUrl } from "@/lib/cliTools/keepKeyTarget.js";
-import { findUnsafeConfigValue } from "@/lib/cliTools/configValue.js";
+import { findUnsafeConfigValue, unsafeConfigValueError } from "@/lib/cliTools/configValue.js";
 
 const execAsync = promisify(exec);
 
@@ -223,7 +223,7 @@ export async function POST(request) {
     }
     const unsafeField = findUnsafeConfigValue({ baseUrl, apiKey, model, subagentModel });
     if (unsafeField) {
-      return NextResponse.json({ error: `Invalid ${unsafeField}` }, { status: 400 });
+      return NextResponse.json({ error: unsafeConfigValueError(unsafeField) }, { status: 400 });
     }
 
     const codexDir = getCodexDir();

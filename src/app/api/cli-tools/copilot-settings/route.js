@@ -5,7 +5,7 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
-import { findUnsafeConfigValue, listFields } from "@/lib/cliTools/configValue.js";
+import { findUnsafeConfigValue, listFields, unsafeConfigValueError } from "@/lib/cliTools/configValue.js";
 
 // Resolve chatLanguageModels.json path per OS
 const getConfigPath = () => {
@@ -76,7 +76,7 @@ export async function POST(request) {
     }
     const unsafeField = findUnsafeConfigValue({ baseUrl, apiKey, ...listFields("models", models) });
     if (unsafeField) {
-      return NextResponse.json({ error: `Invalid ${unsafeField}` }, { status: 400 });
+      return NextResponse.json({ error: unsafeConfigValueError(unsafeField) }, { status: 400 });
     }
 
     const configPath = getConfigPath();

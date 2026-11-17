@@ -1,7 +1,7 @@
 "use server";
 
 import { NextResponse } from "next/server";
-import { findUnsafeConfigValue, listFields } from "@/lib/cliTools/configValue.js";
+import { findUnsafeConfigValue, listFields, unsafeConfigValueError } from "@/lib/cliTools/configValue.js";
 import { keyStatus, pickFields } from "@/lib/cliTools/statusFields.js";
 import { isKeepExistingKey } from "@/lib/cliTools/keepKey.js";
 import { mayKeepStoredKey, CHOOSE_A_KEY_ERROR } from "@/lib/cliTools/keepKeyTarget.js";
@@ -170,7 +170,7 @@ export async function POST(request) {
     }
     const unsafeField = findUnsafeConfigValue({ baseUrl, apiKey, ...listFields("models", models) });
     if (unsafeField) {
-      return NextResponse.json({ error: `Invalid ${unsafeField}` }, { status: 400 });
+      return NextResponse.json({ error: unsafeConfigValueError(unsafeField) }, { status: 400 });
     }
 
     const normalizedBaseUrl = baseUrl.endsWith("/v1")
