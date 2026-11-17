@@ -15,6 +15,9 @@ on:
       - "tests/unit/local-device-tts-args.test.js"
       - "tests/unit/mcp-bridge-child-env.test.js"
       - "tests/unit/cli-local-host-hardening.test.js"
+      - "tests/vitest.config.js"
+      - "package.json"
+      - "tests/package.json"
       - ".github/workflows/security-local-host.yml"
   workflow_dispatch:
 
