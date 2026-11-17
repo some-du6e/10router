@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   getMeta: vi.fn(),
   setMeta: vi.fn(),
   setDashboardAuthCookie: vi.fn(),
+  revokeDashboardSessions: vi.fn(),
   issueSetupToken: vi.fn(() => "setup-token"),
 }));
 vi.mock("next/server", () => ({
@@ -14,7 +15,10 @@ vi.mock("next/server", () => ({
 vi.mock("next/headers", () => ({ cookies: async () => ({}) }));
 vi.mock("@/lib/localDb", () => ({ getSettings: mocks.getSettings, updateSettings: mocks.updateSettings }));
 vi.mock("@/lib/db/helpers/metaStore.js", () => ({ getMeta: mocks.getMeta, setMeta: mocks.setMeta }));
-vi.mock("@/lib/auth/dashboardSession", () => ({ setDashboardAuthCookie: mocks.setDashboardAuthCookie }));
+vi.mock("@/lib/auth/dashboardSession", () => ({
+  setDashboardAuthCookie: mocks.setDashboardAuthCookie,
+  revokeDashboardSessions: mocks.revokeDashboardSessions,
+}));
 vi.mock("@/lib/auth/loginLimiter", () => ({
   checkLock: () => ({ locked: false }),
   recordFail: () => ({ remainingBeforeLock: 4 }),
@@ -81,6 +85,8 @@ describe("password login under SSO modes", () => {
     const reset = await resetPassword();
     expect(reset.body).toEqual(expect.objectContaining({ success: true, token: "setup-token" }));
     expect(settings.password).toBeNull();
+    // Sessions signed in before the reset end with it.
+    expect(mocks.revokeDashboardSessions).toHaveBeenCalled();
 
     const res = await attempt("anything-at-all");
     expect(res.status).toBe(403);
