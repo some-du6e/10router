@@ -8,14 +8,23 @@ const OPUS = getAuthDemoteKey("claude-opus-5-5");
 const KIMI = getAuthDemoteKey("kimi-k3");
 const REFUSED = '403 "Key barred from this endpoint"';
 const demoted = (extra = {}) => ({ count: 37, firstAt: "2026-11-02T01:28:10.416Z", demotedAt: "2026-11-02T02:29:57.665Z", reason: REFUSED, nextProbeAt: "2026-11-02T17:33:27.858Z", ...extra });
+const SPREAD = " Until it serves a request, other keys also go first on every other model.";
 
 describe("demoted key label", () => {
   it("names the model and its refusal", () => {
     const label = demotedLabel({ [OPUS]: demoted(), [KIMI]: { count: 1, firstAt: "2026-11-02T03:31:00.000Z" } });
     expect(label).toEqual({
       text: "Demoted on claude-opus-5-5",
-      title: `Demoted on claude-opus-5-5 after repeated ${REFUSED}. Switching the key off and on clears it.`,
+      title: `Demoted on claude-opus-5-5 after repeated ${REFUSED}. Switching the key off and on clears it.${SPREAD}`,
     });
+  });
+
+  it("says other keys go first on every other model only while the key, refused for itself, has served nothing since", () => {
+    const title = (connection) => demotedLabel(connection).title;
+    const plain = `Demoted on claude-opus-5-5 after repeated ${REFUSED}. Switching the key off and on clears it.`;
+    expect(title({ [OPUS]: demoted(), authDemoteOkAt: "2026-11-02T01:00:00.000Z" })).toBe(`${plain}${SPREAD}`);
+    expect(title({ [OPUS]: demoted(), authDemoteOkAt: "2026-11-02T03:00:00.000Z" })).toBe(plain);
+    expect(title({ [OPUS]: demoted({ modelScoped: true }) })).toBe(plain);
   });
 
   it("lists only models with a demotion", () => {
@@ -26,13 +35,14 @@ describe("demoted key label", () => {
     const label = demotedLabel({ [OPUS]: demoted(), [KIMI]: demoted({ reason: '403 "Forbidden"' }) });
     expect(label.text).toBe("Demoted on claude-opus-5-5, kimi-k3");
     expect(label.title.split("\n")).toEqual([
-      `Demoted on claude-opus-5-5 after repeated ${REFUSED}. Switching the key off and on clears it.`,
-      'Demoted on kimi-k3 after repeated 403 "Forbidden". Switching the key off and on clears it.',
+      `Demoted on claude-opus-5-5 after repeated ${REFUSED}. Switching the key off and on clears it.${SPREAD}`,
+      `Demoted on kimi-k3 after repeated 403 "Forbidden". Switching the key off and on clears it.${SPREAD}`,
     ]);
   });
 
   it("falls back to 'refusals' for a record with no reason", () => {
-    expect(demotedLabel({ [OPUS]: demoted({ reason: undefined }) }).title).toBe("Demoted on claude-opus-5-5 after repeated refusals. Switching the key off and on clears it.");
+    expect(demotedLabel({ [OPUS]: demoted({ reason: undefined }) }).title)
+      .toBe(`Demoted on claude-opus-5-5 after repeated refusals. Switching the key off and on clears it.${SPREAD}`);
   });
 
   it("shows nothing for a key still counting refusals, one a success cleared, or one turned off", () => {

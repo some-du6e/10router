@@ -10,6 +10,7 @@ import {
   isValidApiKey,
 } from "../services/auth.js";
 import { handleAntigravityQuotaError, clearAntigravityStrikes } from "../services/antigravityQuota.js";
+import { endSpreadProbe } from "../services/spreadLeases.js";
 import { getSettings, getProviderNodeById, updateProviderNode, getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
 import { getModelInfo, getComboModels, comboLookupName } from "../services/model.js";
 import { resolveAutoCombo, blockedBillingSets, connectionBilling, billingPolicyApplies } from "../services/autoCombo.js";
@@ -860,7 +861,10 @@ async function routeSingleModelChat(
         // "Consecutive" strikes: a success clears the breaker for this pair.
         clearAntigravityStrikes(credentials.connectionId, model);
       }
-    } as Parameters<typeof handleChatCore>[0])) as ChatCoreResult;
+    } as Parameters<typeof handleChatCore>[0])
+      // A spread try that ends without a lock or a success (client gone, a
+      // request error that locks nothing, a throw) frees the next one too.
+      .finally(() => endSpreadProbe(credentials.connectionId, model))) as ChatCoreResult;
 
     if (result.success) {
       noteModelServed(provider, model);
