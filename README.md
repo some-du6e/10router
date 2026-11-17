@@ -286,7 +286,7 @@ container.
 | --- | --- | --- |
 | `JWT_SECRET` | Auto-generated (`~/.9router/jwt-secret`) | JWT signing secret for the dashboard auth cookie (override to share across instances) |
 | `INITIAL_PASSWORD` | unset | Optional headless bootstrap password (min 8 chars). When unset, first run requires the one-time setup token printed to the server console. There is no default password |
-| `SSO_ALLOWED_USERS` | unset (any IdP account) | Optional OIDC/SAML dashboard allowlist: comma-separated emails, `@domain` suffixes or IdP subject IDs (OIDC `sub`, SAML NameID). Unset, every account the IdP signs in gets admin access. Email entries only match an email the IdP marks verified (OIDC `email_verified`; Entra ID often omits it, so list Entra users by subject ID) |
+| `SSO_ALLOWED_USERS` | unset (any IdP account) | Optional OIDC/SAML dashboard allowlist: comma-separated emails, `@domain` suffixes or IdP subject IDs (OIDC `sub`, SAML NameID). Unset, every account the IdP signs in gets admin access. For OIDC, email entries only match an email the IdP marks verified (`email_verified`; Entra ID often omits it, so list Entra users by subject ID). For SAML, an email entry trusts the email the IdP asserts, so if users can register or change their email at the IdP, list them by NameID |
 | `DATA_DIR` | `~/.9router` | App data location (SQLite at `$DATA_DIR/db/data.sqlite`); the `.9router` name is kept for compatibility |
 | `PORT` | framework default | Service port (`20128` in examples) |
 | `HOSTNAME` | framework default | Bind host (Docker defaults to `0.0.0.0`) |
