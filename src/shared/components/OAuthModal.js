@@ -4,11 +4,12 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import PropTypes from "prop-types";
 import { Modal, Button, Input } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
-import { decideRelayedCallback, isTrustedCallbackOrigin } from "@/shared/utils/oauthCallbackBinding.js";
-
-// Providers using the dynamic-port local callback proxy.
-// Browser OAuth: popup → auto callback → auto exchange → poll-status.
-const PROXY_OAUTH_PROVIDERS = new Set(["trae", "windsurf", "zed"]);
+import {
+  checkPastedState,
+  handleRelayedCallback,
+  isTrustedCallbackOrigin,
+  PROXY_OAUTH_PROVIDERS,
+} from "@/shared/utils/oauthCallbackBinding.js";
 
 // Providers offering a paste-token fallback (import-token flow).
 // UX warns if the IDE (which issues the token) is not installed.
@@ -499,31 +500,33 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     if (!authData) return;
     callbackProcessedRef.current = false; // Reset when authData changes
 
-    // Handler for callback data - only process once
-    const handleCallback = async (data) => {
-      if (callbackProcessedRef.current) return; // Already processed
-      const decision = decideRelayedCallback(data, authData, provider);
-      if (decision.action === "ignore") {
-        // Not this login's callback: keep waiting for the real one.
-        if (decision.notice) setIgnoredCallback(true);
-        return;
-      }
-
-      callbackProcessedRef.current = true;
-      if (decision.action === "error") {
-        setError(decision.message);
-        setStep("error");
-        return;
-      }
-      await exchangeTokens(decision.code, decision.state);
-    };
+    // Takes a relayed callback only if it belongs to this login, and only once.
+    const handleCallback = (data, via, source) => handleRelayedCallback(
+      data,
+      {
+        provider,
+        authData,
+        processed: callbackProcessedRef.current,
+        via,
+        fromOwnPopup: !!source && source === popupRef.current,
+      },
+      {
+        markProcessed: () => { callbackProcessedRef.current = true; },
+        notice: () => setIgnoredCallback(true),
+        fail: (message) => {
+          setError(message);
+          setStep("error");
+        },
+        exchange: exchangeTokens,
+      },
+    );
 
     // Method 1: postMessage from popup
     const handleMessage = (event) => {
       if (!isTrustedCallbackOrigin(event.origin, window.location.origin)) return;
 
       if (event.data?.type === "oauth_callback") {
-        handleCallback(event.data.data);
+        handleCallback(event.data.data, "message", event.source);
       }
     };
     window.addEventListener("message", handleMessage);
@@ -532,7 +535,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     let channel;
     try {
       channel = new BroadcastChannel("oauth_callback");
-      channel.onmessage = (event) => handleCallback(event.data);
+      channel.onmessage = (event) => handleCallback(event.data, "broadcast");
     } catch (e) {
       console.log("BroadcastChannel not supported");
     }
@@ -542,7 +545,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       if (event.key === "oauth_callback" && event.newValue) {
         try {
           const data = JSON.parse(event.newValue);
-          handleCallback(data);
+          handleCallback(data, "storage");
           localStorage.removeItem("oauth_callback");
         } catch (e) {
           console.log("Failed to parse localStorage data");
@@ -557,7 +560,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       if (stored) {
         const data = JSON.parse(stored);
         if (data.timestamp && Date.now() - data.timestamp < 30000) {
-          handleCallback(data);
+          handleCallback(data, "storage");
         }
         localStorage.removeItem("oauth_callback");
       }
@@ -630,6 +633,9 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       const token = url.searchParams.get("token");
       const state = url.searchParams.get("state");
       const errorParam = url.searchParams.get("error");
+
+      const stateProblem = checkPastedState(state, authData, provider);
+      if (stateProblem) throw new Error(stateProblem);
 
       if (errorParam) {
         throw new Error(url.searchParams.get("error_description") || errorParam);

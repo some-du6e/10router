@@ -1,90 +1,145 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
-  decideRelayedCallback,
+  checkPastedState,
+  handleRelayedCallback,
   isCallbackForPendingAuth,
   isTrustedCallbackOrigin,
+  PROXY_OAUTH_PROVIDERS,
+  STATELESS_CALLBACK_PROVIDERS,
 } from "../../src/shared/utils/oauthCallbackBinding.js";
 
-const pending = {
-  state: "s-123",
-  authUrl: "https://auth.example.com/authorize?client_id=x&state=s-123&redirect_uri=http%3A%2F%2Flocalhost%3A20128%2Fcallback",
-};
+const pending = { state: "s-123" };
+const ctx = (overrides = {}) => ({ provider: "gemini-cli", authData: pending, processed: false, via: "broadcast", ...overrides });
 
-describe("OAuth callback relay binding", () => {
+function deps() {
+  return { markProcessed: vi.fn(), notice: vi.fn(), fail: vi.fn(), exchange: vi.fn(async () => {}) };
+}
+
+describe("which relayed callbacks belong to the pending login", () => {
   it("accepts a callback that echoes the pending state", () => {
-    expect(isCallbackForPendingAuth({ code: "c", state: "s-123" }, pending, "gemini-cli")).toBe(true);
+    expect(isCallbackForPendingAuth({ code: "c", state: "s-123" }, ctx())).toBe(true);
   });
 
-  it("rejects a callback carrying another login's state", () => {
-    expect(isCallbackForPendingAuth({ code: "attacker", state: "other" }, pending, "gemini-cli")).toBe(false);
+  it("rejects a callback carrying another login's state, or none", () => {
+    expect(isCallbackForPendingAuth({ code: "attacker", state: "other" }, ctx())).toBe(false);
+    expect(isCallbackForPendingAuth({ token: "eyJ.attacker" }, ctx({ provider: "kimchi" }))).toBe(false);
   });
 
-  it("rejects a stateless callback for a provider that was given a state", () => {
-    expect(isCallbackForPendingAuth({ token: "eyJ.attacker" }, pending, "kimchi")).toBe(false);
-    expect(isCallbackForPendingAuth({ error: "access_denied" }, pending, "gemini-cli")).toBe(false);
+  it("requires state for every provider outside the stateless list", () => {
+    expect(isCallbackForPendingAuth({ code: "c" }, ctx({ provider: "gitlab" }))).toBe(false);
+    expect(isCallbackForPendingAuth({ code: "c", state: "" }, ctx({ authData: { state: "" } }))).toBe(false);
   });
 
-  it("requires state even when the authorize URL carries it under another name", () => {
-    // Trae sends its state as login_trace_id, not state=.
-    const custom = { state: "s-123", authUrl: "https://auth.example.com/login?login_trace_id=s-123" };
-    expect(isCallbackForPendingAuth({ code: "c" }, custom, "gitlab")).toBe(false);
+  it("never takes a relayed callback for a proxy provider, with or without proxyProvider set", () => {
+    for (const provider of PROXY_OAUTH_PROVIDERS) {
+      expect(isCallbackForPendingAuth({ code: "c", state: "s-123" }, ctx({ provider })), provider).toBe(false);
+      expect(isCallbackForPendingAuth({ code: "c", state: "s-123" }, ctx({ provider, authData: { ...pending, proxyProvider: provider } })), provider).toBe(false);
+    }
+    // Trae carries its state as login_trace_id, so its relays never echo state=.
+    expect(isCallbackForPendingAuth({ token: "eyJ.attacker" }, ctx({ provider: "trae", via: "message", fromOwnPopup: true }))).toBe(false);
   });
 
-  it("never takes a relayed callback for a provider its local proxy exchanges", () => {
-    for (const provider of ["trae", "windsurf", "zed"]) {
-      const authData = { state: "s-123", authUrl: "https://auth.example.com/login?login_trace_id=s-123", proxyProvider: provider };
-      expect(isCallbackForPendingAuth({ token: "eyJ.attacker" }, authData, provider), provider).toBe(false);
-      expect(isCallbackForPendingAuth({ code: "c", state: "s-123" }, authData, provider), provider).toBe(false);
+  it("refuses a pending login that went through the local proxy, whatever the provider", () => {
+    expect(isCallbackForPendingAuth({ code: "c", state: "s-123" }, ctx({ authData: { ...pending, proxyProvider: "other" } }))).toBe(false);
+  });
+
+  it("takes a stateless provider's callback only from the popup this dialog opened", () => {
+    for (const provider of STATELESS_CALLBACK_PROVIDERS) {
+      expect(isCallbackForPendingAuth({ code: "c" }, ctx({ provider, via: "message", fromOwnPopup: true })), provider).toBe(true);
+      expect(isCallbackForPendingAuth({ code: "c" }, ctx({ provider, via: "message", fromOwnPopup: false })), provider).toBe(false);
+      expect(isCallbackForPendingAuth({ code: "c" }, ctx({ provider, via: "broadcast" })), provider).toBe(false);
+      expect(isCallbackForPendingAuth({ code: "c" }, ctx({ provider, via: "storage" })), provider).toBe(false);
     }
   });
 
-  it("accepts a stateless callback only for the providers that are never sent a state", () => {
-    const cline = { state: "s-123", authUrl: "https://app.cline.example/auth?client_type=extension&callback_url=x" };
-    expect(isCallbackForPendingAuth({ code: "c" }, cline, "cline")).toBe(true);
-    expect(isCallbackForPendingAuth({ code: "c" }, cline, "clinepass")).toBe(true);
-    expect(isCallbackForPendingAuth({ code: "c", state: "other" }, cline, "cline")).toBe(false);
-    expect(isCallbackForPendingAuth({ code: "c" }, cline, "kimchi")).toBe(false);
-  });
-
-  it("rejects callbacks with no pending login or no state on it", () => {
-    expect(isCallbackForPendingAuth({ code: "c", state: "s-123" }, null, "gemini-cli")).toBe(false);
-    expect(isCallbackForPendingAuth({ code: "c", state: "" }, { state: "" }, "gemini-cli")).toBe(false);
-    expect(isCallbackForPendingAuth({ code: "c", state: "s-123" }, pending, null)).toBe(false);
+  it("refuses callbacks with no pending login or no provider", () => {
+    expect(isCallbackForPendingAuth({ code: "c", state: "s-123" }, ctx({ authData: null }))).toBe(false);
+    expect(isCallbackForPendingAuth({ code: "c", state: "s-123" }, ctx({ provider: null }))).toBe(false);
   });
 });
 
-describe("what the connect dialog does with a relayed callback", () => {
-  it("ignores a mismatched callback and still takes the real one after it", () => {
-    // The dialog only marks the login handled for a non-ignore decision.
-    let handled = false;
-    const run = (data) => {
-      if (handled) return null;
-      const decision = decideRelayedCallback(data, pending, "gemini-cli");
-      if (decision.action !== "ignore") handled = true;
-      return decision;
-    };
-
-    expect(run({ code: "attacker", state: "junk", fullUrl: "http://localhost:20128/callback?code=attacker&state=junk" }))
-      .toEqual({ action: "ignore", notice: true });
-    expect(handled).toBe(false);
-    expect(run({ code: "real", state: "s-123" })).toEqual({ action: "exchange", code: "real", state: "s-123" });
+describe("handleRelayedCallback", () => {
+  it("ignores a mismatched callback without consuming the login or touching the paste field", async () => {
+    const d = deps();
+    expect(await handleRelayedCallback({ code: "attacker", state: "junk", fullUrl: "http://localhost:20128/callback?code=attacker" }, ctx(), d)).toBe("ignored");
+    expect(d.markProcessed).not.toHaveBeenCalled();
+    expect(d.notice).toHaveBeenCalledOnce();
+    expect(d.exchange).not.toHaveBeenCalled();
+    expect(d.fail).not.toHaveBeenCalled();
   });
 
-  it("doesn't hand the mismatched callback's URL to the paste step", () => {
-    const decision = decideRelayedCallback({ code: "attacker", state: "junk", fullUrl: "http://x/callback?code=attacker" }, pending, "gemini-cli");
-    expect(decision).toEqual({ action: "ignore", notice: true });
-    expect(JSON.stringify(decision)).not.toContain("attacker");
+  it("still takes the real callback after a mismatched one", async () => {
+    let processed = false;
+    const d = { ...deps(), markProcessed: vi.fn(() => { processed = true; }) };
+    await handleRelayedCallback({ code: "attacker", state: "junk" }, ctx({ processed }), d);
+    expect(processed).toBe(false);
+    expect(await handleRelayedCallback({ code: "real", state: "s-123" }, ctx({ processed }), d)).toBe("exchanged");
+    expect(d.exchange).toHaveBeenCalledWith("real", "s-123");
+    expect(await handleRelayedCallback({ code: "again", state: "s-123" }, ctx({ processed }), d)).toBe("ignored");
+    expect(d.exchange).toHaveBeenCalledOnce();
   });
 
-  it("reports an error the provider sent for this login", () => {
-    expect(decideRelayedCallback({ error: "access_denied", errorDescription: "Denied", state: "s-123" }, pending, "gemini-cli"))
-      .toEqual({ action: "error", message: "Denied" });
+  it("marks the login processed before exchanging, so a second relay can't race in", async () => {
+    const order = [];
+    const d = { ...deps(), markProcessed: vi.fn(() => order.push("mark")), exchange: vi.fn(async () => { order.push("exchange"); }) };
+    await handleRelayedCallback({ token: "t", code: "c", state: "s-123" }, ctx(), d);
+    expect(order).toEqual(["mark", "exchange"]);
+    expect(d.exchange).toHaveBeenCalledWith("t", "s-123");
   });
 
-  it("prefers a token over a code and ignores an empty callback quietly", () => {
-    expect(decideRelayedCallback({ token: "t", code: "c", state: "s-123" }, pending, "gemini-cli"))
-      .toEqual({ action: "exchange", code: "t", state: "s-123" });
-    expect(decideRelayedCallback({ state: "s-123" }, pending, "gemini-cli")).toEqual({ action: "ignore", notice: false });
+  it("reports an error the provider sent for this login", async () => {
+    const d = deps();
+    expect(await handleRelayedCallback({ error: "access_denied", errorDescription: "Denied", state: "s-123" }, ctx(), d)).toBe("failed");
+    expect(d.markProcessed).toHaveBeenCalledOnce();
+    expect(d.fail).toHaveBeenCalledWith("Denied");
+  });
+
+  it("keeps the login pending on an error that carries no state", async () => {
+    const d = deps();
+    expect(await handleRelayedCallback({ error: "access_denied" }, ctx(), d)).toBe("ignored");
+    expect(d.fail).not.toHaveBeenCalled();
+    expect(d.markProcessed).not.toHaveBeenCalled();
+    expect(d.notice).toHaveBeenCalledOnce();
+  });
+
+  it("doesn't let a forged stateless error kill a pending Cline login", async () => {
+    const d = deps();
+    expect(await handleRelayedCallback({ error: "access_denied" }, ctx({ provider: "cline", via: "broadcast" }), d)).toBe("ignored");
+    expect(await handleRelayedCallback({ code: "forged" }, ctx({ provider: "cline", via: "storage" }), d)).toBe("ignored");
+    expect(d.fail).not.toHaveBeenCalled();
+    expect(d.exchange).not.toHaveBeenCalled();
+    expect(await handleRelayedCallback({ code: "real" }, ctx({ provider: "cline", via: "message", fromOwnPopup: true }), d)).toBe("exchanged");
+  });
+
+  it("ignores everything once the login took a callback, and anything without a provider", async () => {
+    const d = deps();
+    expect(await handleRelayedCallback({ code: "c", state: "s-123" }, ctx({ processed: true }), d)).toBe("ignored");
+    expect(await handleRelayedCallback({ code: "c", state: "s-123" }, ctx({ provider: undefined }), d)).toBe("ignored");
+    expect(d.markProcessed).not.toHaveBeenCalled();
+    expect(d.exchange).not.toHaveBeenCalled();
+  });
+
+  it("ignores a matching callback with nothing in it, quietly", async () => {
+    const d = deps();
+    expect(await handleRelayedCallback({ state: "s-123" }, ctx(), d)).toBe("ignored");
+    expect(d.notice).not.toHaveBeenCalled();
+    expect(d.markProcessed).not.toHaveBeenCalled();
+  });
+});
+
+describe("pasted callback URL state", () => {
+  it("refuses a pasted URL whose state names another login", () => {
+    expect(checkPastedState("other", pending, "gemini-cli")).toMatch(/different sign-in/);
+  });
+
+  it("accepts the matching state, or a URL with no state", () => {
+    expect(checkPastedState("s-123", pending, "gemini-cli")).toBeNull();
+    expect(checkPastedState(null, pending, "kimchi")).toBeNull();
+  });
+
+  it("doesn't check providers that were sent no state", () => {
+    expect(checkPastedState("anything", pending, "cline")).toBeNull();
+    expect(checkPastedState("anything", { state: "" }, "gemini-cli")).toBeNull();
   });
 });
 
