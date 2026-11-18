@@ -66,6 +66,7 @@ function initWinTray(options) {
   });
 
   return {
+    pid: psProcess.pid,
     updateItem(index, title, enabled) {
       sendCommand({ action: "update-item", index, title, enabled });
     },

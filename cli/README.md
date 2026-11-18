@@ -1,6 +1,6 @@
-# 10router - FREE AI Router & Token Saver
+# 10router - FREE AI Router
 
-**Never stop coding. Save 20-40% tokens with RTK + auto-fallback to FREE & cheap AI models.**
+**Never stop coding. Auto-fallback to FREE & cheap AI models.**
 
 **Connect All AI Code Tools (Claude Code, Cursor, Antigravity, Copilot, Codex, Gemini, OpenCode, Cline, OpenClaw...) to 40+ AI Providers & 100+ Models.**
 
@@ -27,7 +27,6 @@
 
 **10router solves this:**
 
-- ✅ **RTK Token Saver** - Auto-compress tool_result, save 20-40% tokens
 - ✅ **Maximize subscriptions** - Track quota, use every bit before reset
 - ✅ **Auto fallback** - Subscription → Cheap → Free, zero downtime
 - ✅ **Multi-account** - Round-robin between accounts per provider

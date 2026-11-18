@@ -1,0 +1,1044 @@
+import "open-sse/index.js";
+import { randomUUID } from "node:crypto";
+
+import {
+  getProviderCredentials,
+  markAccountUnavailable,
+  clearAccountError,
+  keysShareOneUpstream,
+  extractApiKey,
+  isValidApiKey,
+} from "../services/auth.js";
+import { handleAntigravityQuotaError, clearAntigravityStrikes } from "../services/antigravityQuota.js";
+import { endSpreadProbe } from "../services/spreadLeases.js";
+import { getSettings, getProviderNodeById, updateProviderNode, getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
+import { getModelInfo, getComboModels, comboLookupName } from "../services/model.js";
+import { resolveAutoCombo, blockedBillingSets, connectionBilling, billingPolicyApplies } from "../services/autoCombo.js";
+import type { BillingSet } from "../services/autoCombo.js";
+import { BUILTIN_MODEL_ALIASES } from "open-sse/services/model.js";
+import { handleChatCore, clientReceivesStream } from "open-sse/handlers/chatCore.js";
+import { clientDemandsJson } from "open-sse/utils/replyShape.js";
+import { KEEPALIVE_FORMATS } from "open-sse/utils/sseConstants.js";
+import { respondWithEarlyHeaders } from "open-sse/utils/earlyHeaders.js";
+import { errorResponse, unavailableResponse, clientAbortResult } from "open-sse/utils/error.js";
+import { createLimitHoldResponse, awaitLimitClear, isLimitError, allLockedError } from "open-sse/utils/limitHold.js";
+import { resolveLimitHold } from "../services/limitHoldConfig.js";
+import { checkApiKeyLimits, apiKeyLimitDenial, keepAllowedAdapterModels, keyHasBudget } from "../services/keyLimits.js";
+import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
+import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
+import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
+import { HTTP_STATUS, NON_STREAM_EARLY_HEADERS_MS, STREAM_EARLY_HEADERS_MS } from "open-sse/config/runtimeConfig.js";
+import { isRequestError } from "open-sse/services/accountFallback.js";
+import { createSameRequestErrorTally } from "open-sse/services/sameRequestError.js";
+import { connectionUpstream } from "../services/connectionUpstream.js";
+import { checkModelHang, noteHeadersTimeout, noteModelServed, noteProbeBudget, releaseProbe } from "open-sse/services/modelHang.js";
+import { HEADERS_TIMEOUT } from "open-sse/config/errorConfig.js";
+import { detectFormatByEndpoint, FORMATS } from "open-sse/translator/formats.js";
+import { detectFormat } from "open-sse/services/provider.js";
+import * as log from "../utils/logger.js";
+import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
+import { getProjectIdForConnection } from "open-sse/services/projectId.js";
+import { answerClaudeSideSearch, enrichClaudeBuiltinSearch } from "../services/claudeBuiltinSearch.js";
+import { summarizeAccountFailures } from "../services/accountFailureSummary.js";
+import {
+  isAffinityProvider,
+  affinityKeyFor,
+  getAffinity,
+  bindAffinity,
+  releaseAffinity,
+} from "open-sse/services/sessionAffinity.js";
+import {
+  cacheAffinityKey,
+  cacheTtlMs,
+  getWarmKeys,
+  rememberWarmKey,
+  estimatePromptTokens,
+  warmWaitBudget,
+  warmRetryAt,
+} from "open-sse/services/cacheAffinity.js";
+import { abortableSleep } from "open-sse/utils/abortableSleep.js";
+import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
+import { finalizeRoutingError } from "../services/finalRoutingError.js";
+import { detectClientTool } from "open-sse/utils/clientDetector.js";
+import { sanitizeNodeQuirks } from "@/shared/utils/nodeQuirks.js";
+import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers.js";
+import { recordEndpointRequests } from "@/lib/endpointRequestLog.js";
+
+// ---- Types -------------------------------------------------------------------
+
+// Client request body. Shape depends on the source format (OpenAI, Claude,
+// Gemini, Responses), so only `model` is read here; the rest passes through.
+type ChatBody = Record<string, unknown>;
+
+/** Copy of the client's request, kept for request-detail logging. */
+interface ClientRawRequest {
+  endpoint?: string;
+  body?: Record<string, unknown>;
+  headers?: Record<string, string>;
+  [key: string]: unknown;
+}
+
+interface ComboStrategyConfig {
+  fallbackStrategy?: string;
+  judgeModel?: string;
+  fusionTuning?: object;
+}
+
+// getSettings() is inferred from its JS defaults, which omit some keys read here.
+type ChatSettings = Omit<Awaited<ReturnType<typeof getSettings>>, "comboStrategies"> & {
+  comboStrategies?: Record<string, ComboStrategyConfig>;
+  ccFilterNaming?: boolean;
+  providerThinking?: Record<string, unknown>;
+};
+
+/** One routing attempt's outcome, read by finalizeRoutingError and withComboLimitHold. */
+interface RoutingFailure {
+  limited: boolean;
+  unconfigured?: boolean;
+  rateLimited?: boolean;
+  resetAtMs?: number | null;
+  retryAtMs?: number;
+  error?: string;
+}
+
+interface ProviderSpecificData {
+  droppedBetas?: string[];
+  [key: string]: unknown;
+}
+
+interface Credentials {
+  id?: string;
+  connectionId?: string;
+  connectionName?: string;
+  projectId?: string;
+  accessToken?: string;
+  providerSpecificData?: ProviderSpecificData;
+  [key: string]: unknown;
+}
+
+interface ModelInfo {
+  provider?: string;
+  model?: string;
+}
+
+interface ChatCoreResult {
+  success: boolean;
+  response: Response;
+  status?: number;
+  error?: string;
+  resetsAtMs?: number | null;
+  // Set when the upstream sent no response headers in time.
+  headersTimeout?: { stream: boolean };
+}
+
+/** Result of one routing pass; a limited failure can be retried by the hold. */
+interface PassResult {
+  success: boolean;
+  response: Response;
+  status?: number;
+  error?: string;
+  limited?: boolean;
+  limitsExhausted?: boolean;
+  unconfigured?: boolean;
+  resetAtMs?: number | null;
+  retryAtMs?: number;
+}
+
+interface SingleModelOptions {
+  allowHold?: boolean;
+  routingFailures?: RoutingFailure[];
+  // Set inside an auto combo: connections billed this way are never used.
+  blockedBilling?: Set<BillingSet> | null;
+  // Aborted when the client hangs up.
+  signal?: AbortSignal | null;
+}
+
+interface RoutedChatArgs {
+  body: ChatBody;
+  modelStr: string;
+  settings: ChatSettings;
+  clientRawRequest: ClientRawRequest;
+  request: Request;
+  apiKey: string | null;
+  routingFailures: RoutingFailure[];
+  signal?: AbortSignal | null;
+}
+
+interface ComboLimitHoldArgs {
+  run: () => Promise<Response>;
+  models: string[];
+  body: ChatBody;
+  modelStr: string;
+  request: Request | null;
+  apiKey: string | null;
+  clientRawRequest: ClientRawRequest | null;
+  routingFailures: RoutingFailure[];
+  signal?: AbortSignal | null;
+}
+
+interface HoldArgs {
+  first: PassResult;
+  attempt: () => Promise<PassResult>;
+  willStream: boolean;
+  sourceFormat: string;
+  modelStr: string;
+  provider: string;
+  model?: string;
+  signal?: AbortSignal | null;
+  apiKey?: string | null;
+}
+
+/**
+ * Handle chat completion request
+ * Supports: OpenAI, Claude, Gemini, OpenAI Responses API formats
+ * Format detection and translation handled by translator
+ */
+export async function handleChat(
+  request: Request,
+  clientRawRequest: ClientRawRequest | null = null,
+  // Routes whose response goes straight to the client turn this on; wrappers that
+  // reshape the response (Ollama, Gemini) need its real status.
+  { earlyHeaders = false }: { earlyHeaders?: boolean } = {},
+): Promise<Response> {
+  let body: ChatBody;
+  try {
+    body = await request.json();
+  } catch {
+    log.warn("CHAT", "Invalid JSON body");
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
+  }
+
+  // Build clientRawRequest for logging (if not provided)
+  if (!clientRawRequest) {
+    const url = new URL(request.url);
+    clientRawRequest = {
+      endpoint: url.pathname,
+      body,
+      headers: Object.fromEntries(request.headers.entries())
+    };
+  }
+  // Claude Code marks a 1M-context request as `<model>[1m]`; the marker matches
+  // no combo, alias or provider/model pair, so it must not reach resolution.
+  // The capability travels in the anthropic-beta header, forwarded as-is.
+  const { model: modelStr, contextMarker } = stripModelContextMarker(body.model);
+  if (contextMarker) body.model = modelStr;
+
+  // Request summary is emitted as the unified "▶" line in chatCore (has fmt/thinking/account)
+
+  // Log API key (masked)
+  const authHeader = request.headers.get("Authorization");
+  const apiKey = extractApiKey(request);
+  if (authHeader && apiKey) {
+    const masked = log.maskKey(apiKey);
+    log.debug("AUTH", `API Key: ${masked}`);
+  } else {
+    log.debug("AUTH", "No API key provided (local mode)");
+  }
+
+  // Enforce API key if enabled in settings
+  const settings = (await getSettings()) as ChatSettings;
+  if (settings.requireApiKey) {
+    if (!apiKey) {
+      log.warn("AUTH", "Missing API key (requireApiKey=true)");
+      return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
+    }
+    const valid = await isValidApiKey(apiKey);
+    if (!valid) {
+      log.warn("AUTH", "Invalid API key (requireApiKey=true)");
+      return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
+    }
+  }
+
+  if (!modelStr) {
+    log.warn("CHAT", "Missing model");
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
+  }
+
+  const sourceFormatOverride = request?.url
+    ? detectFormatByEndpoint(new URL(request.url).pathname, body)
+    : null;
+
+  const sourceFormat = sourceFormatOverride || detectFormat(body);
+
+  // The key's budget, model allowlist and expiry, checked before any upstream call.
+  const limitDenied = await checkApiKeyLimits(apiKey, { model: modelStr, format: sourceFormat });
+  if (limitDenied) {
+    log.warn("AUTH", `API key refused by its limits (${limitDenied.status})`);
+    return limitDenied;
+  }
+  // A budget is counted at standard prices; fast mode (`speed`) and priority
+  // tiers (`service_tier`) bill a multiple the pricing table doesn't know, so
+  // a budgeted key's requests go out without them.
+  if (await keyHasBudget(apiKey)) {
+    delete body.speed;
+    delete body.service_tier;
+  }
+
+  // Bypass naming/warmup requests before combo rotation to avoid wasting rotation slots
+  const userAgent = request?.headers?.get("user-agent") || "";
+  const bypassResponse = handleBypassRequest(body, modelStr, userAgent, !!settings.ccFilterNaming, sourceFormatOverride as Parameters<typeof handleBypassRequest>[4]);
+  if (bypassResponse) return bypassResponse.response || bypassResponse;
+
+  const routingFailures: RoutingFailure[] = [];
+  const clientTool = detectClientTool(Object.fromEntries(request.headers.entries()), body);
+  const rawRequest = clientRawRequest;
+  const route = async (signal: AbortSignal | null = null): Promise<Response> => finalizeRoutingError(
+    await handleRoutedChat({ body, modelStr, settings, clientRawRequest: rawRequest, request, apiKey, routingFailures, signal }),
+    { clientTool, routingFailures } as Parameters<typeof finalizeRoutingError>[1],
+  );
+
+  // A client whose upstream is slow to answer gets its headers early, so a proxy
+  // waiting on them (Cloudflare) doesn't give up on the request. Only when the
+  // reply's shape is known up front: a stream for `stream: true`, JSON for a
+  // client that demands it. Without `stream` the shape depends on the provider.
+  const json = clientDemandsJson(body, clientRawRequest.headers);
+  // Next aborts request.signal only when the client leaves before the response ends.
+  if (!earlyHeaders || !(body.stream === true || json) || !KEEPALIVE_FORMATS.has(sourceFormat)) return route(request.signal);
+  const delayMs = json ? NON_STREAM_EARLY_HEADERS_MS : STREAM_EARLY_HEADERS_MS;
+  return respondWithEarlyHeaders({ run: route, sourceFormat, json, delayMs, signal: request.signal, log });
+}
+
+async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, request, apiKey, routingFailures, signal = null }: RoutedChatArgs): Promise<Response> {
+  const requiredCapabilities = detectRequiredCapabilities(body);
+
+  // Check if model is a combo (has multiple models with fallback). A bare id
+  // with no combo or alias falls back across every provider serving it.
+  const userComboModels = await getComboModels(modelStr);
+  const comboModels = userComboModels ?? (await resolveAutoCombo(modelStr, BUILTIN_MODEL_ALIASES, settings));
+  if (comboModels) {
+    // An auto combo picked its providers by billing; every account it reaches,
+    // including fallbacks within a provider, has to pass the same check.
+    const blockedBilling = userComboModels ? null : blockedBillingSets(settings);
+    // Combos are configured and rotation-tracked under the bare name, so a
+    // context-window selector must not fragment either.
+    const comboKey = comboLookupName(modelStr);
+    // Check for combo-specific strategy first, fallback to global
+    const comboStrategies: Record<string, ComboStrategyConfig> = settings.comboStrategies || {};
+    const comboSpecificStrategy = comboStrategies[comboKey]?.fallbackStrategy;
+    // Rotating providers per turn would throw away prompt caches, so the global
+    // strategy only covers combos the user made.
+    const comboStrategy = comboSpecificStrategy || (blockedBilling ? "fallback" : settings.comboStrategy) || "fallback";
+    const augmentedModels = await keepAllowedAdapterModels(apiKey, augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, settings), comboModels);
+    const adapterAdded = augmentedModels.filter((m: string) => !comboModels.includes(m));
+
+    if (comboStrategy === "fusion") {
+      log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: fusion)`);
+      const judgeModel = comboStrategies[comboKey]?.judgeModel;
+      return withComboLimitHold({
+        run: () => handleFusionChat({
+          body,
+          models: comboModels,
+          handleSingleModel: (b: ChatBody, m: string, isPanel?: boolean) => {
+            let cleanRawReq = clientRawRequest;
+            if (isPanel && clientRawRequest) {
+              const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
+              cleanRawReq = { ...clientRawRequest, body: cleanBody };
+            }
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false, routingFailures, blockedBilling, signal });
+          },
+          log,
+          comboName: comboKey,
+          judgeModel,
+          tuning: comboStrategies[comboKey]?.fusionTuning,
+        }),
+        // The final answer comes from a panel model or the judge, so either
+        // may be the one whose response shape the client sees.
+        models: judgeModel?.trim() ? [...comboModels, judgeModel.trim()] : comboModels,
+        body, modelStr, request, apiKey, clientRawRequest, routingFailures, signal,
+      });
+    }
+
+    const comboStickyLimit = settings.comboStickyRoundRobinLimit;
+    log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+    return withComboLimitHold({
+      run: () => handleComboChat({
+        body,
+        models: augmentedModels,
+        handleSingleModel: withCapacityAdapterStripping(
+          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures, blockedBilling, signal }),
+          adapterAdded
+        ),
+        log,
+        comboName: comboKey,
+        comboStrategy,
+        comboStickyLimit
+      }),
+      models: augmentedModels, body, modelStr, request, apiKey, clientRawRequest, routingFailures, signal,
+    });
+  }
+
+  // A bare id that formed no auto combo still may not reach a blocked account.
+  const soloBlockedBilling = (await billingPolicyApplies(modelStr, BUILTIN_MODEL_ALIASES)) ? blockedBillingSets(settings) : null;
+
+  // Single model request — may still switch to a capacity-adapter model if the
+  // target lacks a capability the request needs (e.g. no vision, request has an image).
+  const soloAugmented = await keepAllowedAdapterModels(apiKey, augmentModelsWithCapacityAdapter([modelStr], requiredCapabilities, settings), [modelStr]);
+  if (soloAugmented.length > 1) {
+    const adapterAdded = soloAugmented.filter((m: string) => m !== modelStr);
+    log.info("CHAT", `Capacity adapter for [${[...requiredCapabilities].join(",")}] on "${modelStr}" → trying ${soloAugmented.join(", ")}`);
+    return withComboLimitHold({
+      run: () => handleComboChat({
+        body,
+        models: soloAugmented,
+        handleSingleModel: withCapacityAdapterStripping(
+          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures, blockedBilling: soloBlockedBilling, signal }),
+          adapterAdded
+        ),
+        log,
+        comboName: comboLookupName(modelStr),
+        comboStrategy: getActiveAdapterStrategy(requiredCapabilities, settings)
+      }),
+      models: soloAugmented, body, modelStr, request, apiKey, clientRawRequest, routingFailures, signal,
+    });
+  }
+
+  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { routingFailures, blockedBilling: soloBlockedBilling, signal });
+}
+
+/**
+ * Rate-limit hold for a combo.
+ *
+ * Each model inside a combo runs with the hold off, because a limited model
+ * should fall through to the next one, not wait. Only when the whole combo has
+ * failed, and every model that had an account failed on a rate limit, is there
+ * nothing left to fall back to. Then the whole combo waits and is re-run, so the
+ * first model to come back answers, whichever one it is. A fusion combo is held
+ * the same way when no panel model could answer.
+ */
+async function withComboLimitHold({ run, models, body, modelStr, request, apiKey, clientRawRequest, routingFailures, signal = null }: ComboLimitHoldArgs): Promise<Response> {
+  const pass = async (): Promise<PassResult> => {
+    const mark = routingFailures.length;
+    const response = await run();
+    if (response.ok) return { success: true, response };
+    const failures = routingFailures.slice(mark);
+    // A model with no account configured can't be waited on, but doesn't stop
+    // the models that do have accounts from being waited on.
+    const limited = failures.some((f) => f.rateLimited) &&
+      failures.every((f) => f.rateLimited || f.unconfigured);
+    // A limited model with no known reset could be back any moment, so it
+    // pulls the first retry down to the minimum wait rather than being skipped.
+    const resets = failures.filter((f) => f.rateLimited).map((f) => (Number.isFinite(f.retryAtMs) ? f.retryAtMs as number : 0));
+    // The combo's own status and message come from whichever models failed
+    // first and last, so they can't say whether the combo as a whole is still
+    // limited. `limited` is that answer, and the hold reads it on every retry.
+    // When the hold ends on a real fault, name that fault, not whichever
+    // model happened to fail last.
+    const fault = failures.find((f) => !f.rateLimited && !f.unconfigured && f.error)?.error;
+    const message = fault || await response.clone().json().then((j: { error?: { message?: unknown } | unknown; message?: unknown } | null) => (j?.error as { message?: unknown } | undefined)?.message || j?.error || j?.message).catch(() => null);
+    return {
+      success: false,
+      limited,
+      status: response.status,
+      error: (typeof message === "string" && message) || "request failed",
+      retryAtMs: resets.length ? Math.min(...resets) : 0,
+      response,
+    };
+  };
+
+  const first = await pass();
+  if (first.success || !first.limited) return first.response;
+  // Nobody is left to wait for: a model skipped after a hang-up left no failure,
+  // so "every model limited" may only count the ones before it.
+  if (signal?.aborted) return first.response;
+  const limitHold = await resolveLimitHold(apiKey);
+  if (!limitHold.enabled) return first.response;
+
+  const sourceFormat = (request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null) || detectFormat(body);
+  // Any model in the combo may be the one that answers after the wait, and
+  // their response shapes can differ (a forceStream provider answers a client
+  // that didn't ask for a stream with JSON). Narrate only when every model
+  // would stream; otherwise hold silently, which is safe for either shape.
+  const infos = await leafModelInfos(models, { settings: (await getSettings()) as ChatSettings, required: detectRequiredCapabilities(body) });
+  const settings = await Promise.all(infos.map((info) => nodeSettings(info.provider || "")));
+  const willStream = infos.every((info, i) => clientReceivesStream({ body, provider: info.provider, model: info.model || "", sourceFormat, clientRawRequest, credentials: settings[i] }));
+  log.warn("LIMITHOLD", `combo ${modelStr}: all models rate-limited, holding`);
+  return holdUntilClear({ first, attempt: pass, willStream, sourceFormat, modelStr, provider: modelStr, signal, apiKey });
+}
+
+/**
+ * Provider/model of every model a combo can end up answering from. Follows a
+ * nested combo the way routeSingleModelChat runs it: with its capacity-adapter
+ * models added, and its judge when it is a fusion combo.
+ */
+async function leafModelInfos(
+  models: string[],
+  { settings, required }: { settings: ChatSettings; required: Set<string> },
+  seen: Set<string> = new Set(),
+): Promise<ModelInfo[]> {
+  const out: ModelInfo[] = [];
+  for (const m of models) {
+    if (seen.has(m)) continue;
+    seen.add(m);
+    const info: ModelInfo = await getModelInfo(m).catch(() => ({}));
+    const nested: string[] | null = info.provider ? null : await getComboModels(m).catch(() => null);
+    if (!nested) { out.push(info); continue; }
+    const strategy: ComboStrategyConfig = (settings.comboStrategies || {} as Record<string, ComboStrategyConfig>)[comboLookupName(m)] || {};
+    const isFusion = (strategy.fallbackStrategy || settings.comboStrategy) === "fusion";
+    const runs: string[] = isFusion ? [...nested] : augmentModelsWithCapacityAdapter(nested, required, settings);
+    if (isFusion && strategy.judgeModel?.trim()) runs.push(strategy.judgeModel.trim());
+    out.push(...await leafModelInfos(runs, { settings, required }, seen));
+  }
+  return out;
+}
+
+/** Wait out a limit: a narrated stream for streaming clients, a silent hang for JSON ones. */
+async function holdUntilClear({ first, attempt: rerun, willStream, sourceFormat, modelStr, provider, model, signal = null, apiKey = null }: HoldArgs): Promise<Response> {
+  // A hold can last hours: the key may run out of budget (other requests) or
+  // expire meanwhile, so each re-run checks it first. A refusal ends the hold.
+  const attempt = async (): Promise<PassResult> => {
+    const denied = await apiKeyLimitDenial(apiKey, { model: modelStr, format: sourceFormat });
+    if (denied) return { success: false, limited: false, status: denied.status, error: denied.message, response: denied.response };
+    return rerun();
+  };
+  if (!willStream) {
+    const settled = await awaitLimitClear({
+      retryAtMs: first.retryAtMs,
+      attempt,
+      provider,
+      model: model || modelStr,
+      signal,
+      log,
+    } as Parameters<typeof awaitLimitClear>[0]) as { response?: Response } | null;
+    return settled?.response || first.response;
+  }
+
+  return createLimitHoldResponse({
+    sourceFormat,
+    model: modelStr,
+    provider,
+    retryAtMs: first.retryAtMs,
+    attempt,
+    log,
+    signal,
+  } as Parameters<typeof createLimitHoldResponse>[0]);
+}
+
+/**
+ * Handle single model chat request
+ */
+async function handleSingleModelChat(
+  body: ChatBody,
+  modelStr: string,
+  clientRawRequest: ClientRawRequest | null = null,
+  request: Request | null = null,
+  apiKey: string | null = null,
+  { allowHold = true, routingFailures = [], blockedBilling = null, signal = null }: SingleModelOptions = {},
+): Promise<Response> {
+  // The client is gone: a combo's later models have no one to answer.
+  if (signal?.aborted) return clientAbortResult().response;
+  // An unfinished fusion panel is not proof of limit exhaustion. Successful
+  // panels with empty/unparseable content must also remain retryable.
+  const unconfirmed: RoutingFailure = { limited: false };
+  routingFailures.push(unconfirmed);
+  const response = await routeSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { allowHold, routingFailures, blockedBilling, signal });
+  if (!response.ok) routingFailures.splice(routingFailures.indexOf(unconfirmed), 1);
+  return response;
+}
+
+// Serialize the read-merge-write per row so concurrent requests can't lose
+// each other's flags (the repo's update replaces providerSpecificData whole).
+const betaWrites = new Map<string, Promise<void>>();
+function serialize(key: string, fn: () => Promise<void>): Promise<void> {
+  const next = (betaWrites.get(key) || Promise.resolve()).then(fn, fn);
+  betaWrites.set(key, next.catch(() => {}));
+  return next;
+}
+// Same rules as a saved node quirk: valid flag names only, at most 50.
+const union = (a?: string[] | null, b?: string[] | null): string[] =>
+  sanitizeNodeQuirks({ droppedBetas: [...(a || []), ...(b || [])] }, { keepEmpty: true }).droppedBetas || [];
+
+// Anthropic-compatible endpoint rejected some beta flags; remember them on the
+// connection (so later requests skip the failed try) and on the node (so the
+// endpoint page shows them and new keys inherit them). Re-reads both rows fresh
+// and touches only droppedBetas.
+export async function saveDroppedBetas(credentials: Credentials, provider: string, droppedBetas: string[]): Promise<void> {
+  credentials.providerSpecificData = {
+    ...(credentials.providerSpecificData || {}),
+    droppedBetas: union(credentials.providerSpecificData?.droppedBetas, droppedBetas),
+  };
+  const id = credentials.connectionId;
+  if (id) {
+    await serialize(`conn:${id}`, async () => {
+      const conn = await getProviderConnectionById(id);
+      if (!conn) return;
+      const psd = conn.providerSpecificData || {};
+      await updateProviderConnection(id, { providerSpecificData: { ...psd, droppedBetas: union(psd.droppedBetas, droppedBetas) } });
+    });
+  }
+  // A key on its own endpoint URL learned this about that endpoint, not the node's.
+  if (credentials.providerSpecificData?.ownBaseUrl) return;
+  await serialize(`node:${provider}`, async () => {
+    const node = await getProviderNodeById(provider).catch(() => null);
+    if (node) await updateProviderNode(provider, { droppedBetas: union(node.droppedBetas, droppedBetas) });
+  });
+}
+
+// A custom endpoint's own settings (streaming override, model routes), shaped like
+// credentials. A limit hold decides before any account is picked, so read the node.
+async function nodeSettings(provider: string): Promise<Credentials | null> {
+  if (!isOpenAICompatibleProvider(provider) && !isAnthropicCompatibleProvider(provider)) return null;
+  const node = await getProviderNodeById(provider).catch(() => null);
+  return node ? ({ providerSpecificData: node } as unknown as Credentials) : null;
+}
+
+// A model hung upstream (modelHang.js): a 504 without calling it, with Retry-After.
+function modelHungResult(provider: string, model: string, { retryAtMs, checking, reason }: { retryAtMs: number; checking: boolean; reason: string }): PassResult {
+  const message = `[${provider}/${model}] is not responding upstream: ${reason || HEADERS_TIMEOUT.text}`;
+  const next = checking ? "a check is running" : `next check in ${Math.max(1, Math.ceil((retryAtMs - Date.now()) / 1000))}s`;
+  const error = `${message} (${next})`;
+  log.warn("CHAT", error);
+  const response = unavailableResponse(HTTP_STATUS.GATEWAY_TIMEOUT, message, new Date(retryAtMs).toISOString(), next);
+  return { success: false, status: HTTP_STATUS.GATEWAY_TIMEOUT, error, limited: false, response };
+}
+
+// The error text without its "[504]: " status prefix.
+const withoutStatus = (error: string | undefined): string => (error || "").replace(/^\[\d+\]:\s*/, "");
+
+async function routeSingleModelChat(
+  body: ChatBody,
+  modelStr: string,
+  clientRawRequest: ClientRawRequest | null,
+  request: Request | null,
+  apiKey: string | null,
+  { allowHold, routingFailures, blockedBilling = null, signal = null }: { allowHold: boolean; routingFailures: RoutingFailure[]; blockedBilling?: Set<BillingSet> | null; signal?: AbortSignal | null },
+): Promise<Response> {
+  // Detect source format by endpoint + body (scoped per-call; handleChat's copy is a
+  // separate function and is not visible here)
+  const sourceFormatOverride = request?.url
+    ? detectFormatByEndpoint(new URL(request.url).pathname, body)
+    : null;
+  const modelInfo: ModelInfo = await getModelInfo(modelStr);
+
+  // If provider is null, this might be a combo name - check and handle
+  if (!modelInfo.provider) {
+    const comboModels = await getComboModels(modelStr);
+    if (comboModels) {
+      const chatSettings = (await getSettings()) as ChatSettings;
+      // Check for combo-specific strategy first, fallback to global
+      const comboKey = comboLookupName(modelStr);
+      const comboStrategies: Record<string, ComboStrategyConfig> = chatSettings.comboStrategies || {};
+      const comboSpecificStrategy = comboStrategies[comboKey]?.fallbackStrategy;
+      const comboStrategy = comboSpecificStrategy || chatSettings.comboStrategy || "fallback";
+      const requiredCapabilities = detectRequiredCapabilities(body);
+      const augmentedModels = await keepAllowedAdapterModels(apiKey, augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, chatSettings), comboModels);
+      const adapterAdded = augmentedModels.filter((m: string) => !comboModels.includes(m));
+
+      if (comboStrategy === "fusion") {
+        log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: fusion)`);
+        return handleFusionChat({
+          body,
+          models: comboModels,
+          handleSingleModel: (b: ChatBody, m: string, isPanel?: boolean) => {
+            let cleanRawReq = clientRawRequest;
+            if (isPanel && clientRawRequest) {
+              const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
+              cleanRawReq = { ...clientRawRequest, body: cleanBody };
+            }
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, { allowHold: false, routingFailures, signal });
+          },
+          log,
+          comboName: comboKey,
+          judgeModel: comboStrategies[comboKey]?.judgeModel,
+          tuning: comboStrategies[comboKey]?.fusionTuning,
+        });
+      }
+
+      const comboStickyLimit = chatSettings.comboStickyRoundRobinLimit;
+      log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+      return handleComboChat({
+        body,
+        models: augmentedModels,
+        handleSingleModel: withCapacityAdapterStripping(
+          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures, signal }),
+          adapterAdded
+        ),
+        log,
+        comboName: comboKey,
+        comboStrategy,
+        comboStickyLimit
+      });
+    }
+    routingFailures.push({ limited: false, unconfigured: true });
+    log.warn("CHAT", "Invalid model format", { model: modelStr });
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
+  }
+
+  const { provider, model } = modelInfo as Required<ModelInfo>;
+
+  if ((sourceFormatOverride || detectFormat(body)) === FORMATS.CLAUDE) {
+    const sideSearch = await answerClaudeSideSearch(body, { provider, model: body.model, request, apiKey, log, blockedBilling } as Parameters<typeof answerClaudeSideSearch>[1]);
+    if (sideSearch) return sideSearch;
+  }
+
+  body = await enrichClaudeBuiltinSearch(body, { provider, request, apiKey, log, blockedBilling } as Parameters<typeof enrichClaudeBuiltinSearch>[1]);
+
+  // Routing shown in the unified "▶" line (client model → provider/model)
+
+  // Extract userAgent from request
+  const userAgent = request?.headers?.get("user-agent") || "";
+
+  // Session→account affinity (Codex only, opt-in). A Codex conversation keeps a
+  // stable prompt_cache_key across turns, but the upstream prompt cache is
+  // per-account — so re-picking an account per turn throws that cache away.
+  // Pinning the session to one account is what makes the key pay off.
+  //
+  // Resolved before the loop so a retry after a failed account still knows the
+  // session, and skipped entirely (no settings read) for every other provider.
+  let affinityKey: string | null = null;
+  if (isAffinityProvider(provider)) {
+    const affinitySettings = await getSettings();
+    if (affinitySettings.codexSessionAffinity) {
+      affinityKey = affinityKeyFor({ provider, headers: request?.headers, body });
+    }
+  }
+
+  // Prompt-cache affinity for every other provider: a conversation that asks for
+  // a prompt cache prefers the keys that served it recently, which hold that cache.
+  const cacheKey = cacheAffinityKey({ provider, model, body, headers: clientRawRequest?.headers, tenant: apiKey });
+  // A custom endpoint: an OpenAI- or Anthropic-compatible node the user added.
+  const customEndpoint = isOpenAICompatibleProvider(provider) || isAnthropicCompatibleProvider(provider);
+  const connectionFilter = blockedBilling ? (c: { provider: string; authType?: string }) => !blockedBilling.has(connectionBilling(c)) : null;
+  // Total time this request has waited for a warm key, across passes.
+  let cacheWaitedMs = 0;
+  let promptTokens: number | null = null;
+  const waitBudget = () => warmWaitBudget({ waitedMs: cacheWaitedMs, promptTokens: () => (promptTokens ??= estimatePromptTokens(body)) });
+
+  // Rate-limit hold: when every account is limited we can keep the client's
+  // stream open and wait for the reset instead of returning an error.
+  const limitHold = allowHold ? await resolveLimitHold(apiKey) : { enabled: false, onPinned: false };
+
+  // One full pass over the available accounts. Returns a structured result so a
+  // limit can be retried later by the hold, rather than being burned into a
+  // Response the caller can no longer act on.
+  // The hold below needs the endpoint's settings ("Streaming: Always").
+  // avoidKeys: keys whose stream recently got no headers for this model, tried last (modelHang.js).
+  const accountPass = async (avoidKeys: string[]): Promise<PassResult> => {
+  // Fresh per pass: a retry after the reset must reconsider every account, not
+  // inherit exclusions from the pass that ran hours ago.
+  const excludeConnectionIds = new Set<string>();
+  const accountFailures: { account?: string; status?: number; error?: string }[] = [];
+  // One entry per account: a warm key retried after its 429 replaces its own.
+  const failureIndex = new Map<string, number>();
+  let lastError: string | null | undefined = null;
+  let lastStatus: number | null | undefined = null;
+  let lockedUntil = 0;
+  // Keys tried since this request's first header timeout, that one included.
+  let keysSinceHeadersTimeout = 0;
+  // Request-shaped 400/413/422 messages per account on a custom endpoint
+  // (sameRequestError.ts): the same one from enough keys is the request's fault.
+  const sameRequestErrors = createSameRequestErrorTally();
+  // Whether every key of the provider reaches one upstream the same way (same
+  // proxy or relay), read when first needed.
+  let sharedUpstream: boolean | null = null;
+
+  while (true) {
+    // The client is gone: try no more accounts, and lock none for its abort.
+    if (signal?.aborted) return clientAbortResult();
+    // A pin is a preference, not a requirement: getProviderCredentials ignores a
+    // connection that is excluded, model-locked or rate-limited and falls back to
+    // the configured strategy, so a dead pinned account never wedges a session.
+    const preferredConnectionId = affinityKey ? getAffinity(affinityKey) : null;
+    const warmConnectionIds = cacheKey ? getWarmKeys(cacheKey) : [];
+    // connectionId is always set on a selected account (real or the "noauth" virtual one).
+    const credentials = (await getProviderCredentials(provider, excludeConnectionIds, model, {
+      preferredConnectionId,
+      connectionFilter,
+      warmConnectionIds,
+      maxWarmWaitMs: warmConnectionIds.length > 0 ? waitBudget() : 0,
+      avoidConnectionIds: avoidKeys,
+    })) as (Credentials & { connectionId: string } & Record<string, any>) | null;
+
+    // The strategy's pick is cold, a warm key it would rank no worse is briefly
+    // rate-limited, and the prompt is big: waiting is cheaper than rebuilding
+    // the cache on the cold key.
+    if (credentials?.warmRetryAtMs) {
+      const waitMs = Math.max(0, credentials.warmRetryAtMs - Date.now());
+      log.info("CACHE", `waiting ${waitMs}ms for a key holding this conversation's prompt cache`);
+      cacheWaitedMs += waitMs;
+      await abortableSleep(waitMs, signal);
+      continue;
+    }
+
+    // All accounts unavailable
+    if (!credentials || credentials.allRateLimited) {
+      if (credentials?.allRateLimited) {
+        const locked = allLockedError(lastStatus, lastError, credentials, accountFailures);
+        const { status } = locked;
+        const summary = accountFailures.length > 0 ? summarizeAccountFailures(provider, model, accountFailures) : null;
+        const summarized = summary !== null && !(locked.swapped && locked.error);
+        const errorMsg = summarized ? summary : (locked.error || "Unavailable");
+        const prefixedError = summarized ? errorMsg : `[${provider}/${model}] ${errorMsg}`;
+        log.warn("CHAT", `${prefixedError} (${credentials.retryAfterHuman})`);
+        if (summary && !summarized) log.warn("CHAT", summary);
+        const retryAtMs = credentials.retryAfter ? new Date(credentials.retryAfter).getTime() : 0;
+        const limited = isLimitError(status, errorMsg);
+        return {
+          success: false,
+          status,
+          error: errorMsg,
+          limited,
+          limitsExhausted: credentials.allLimitsExhausted === true &&
+            accountFailures.every(failure => isLimitError(failure.status, failure.error)),
+          resetAtMs: credentials.providerResetAtMs,
+          retryAtMs,
+          response: unavailableResponse(status, prefixedError, credentials.retryAfter, credentials.retryAfterHuman),
+        };
+      }
+      if (excludeConnectionIds.size === 0) {
+        const error = blockedBilling
+          ? `No allowed account for ${provider}/${model}: bare model ids skip ${[...blockedBilling].join(", ")} billing. Allow it under Profile → Auto Combos, or ask for a provider/model id.`
+          : `No active credentials for provider: ${provider}`;
+        log.warn("AUTH", error);
+        return { success: false, unconfigured: true, status: HTTP_STATUS.NOT_FOUND, error, response: errorResponse(HTTP_STATUS.NOT_FOUND, error) };
+      }
+      log.warn("CHAT", "No more accounts available", { provider });
+      const { status } = allLockedError(lastStatus, lastError, null, accountFailures);
+      const errorMsg = summarizeAccountFailures(provider, model, accountFailures);
+      log.warn("CHAT", errorMsg);
+      // Every account was tried this pass and each one failed on a limit. That
+      // is the same "come back later" as allRateLimited above, reached before
+      // the accounts' locks were recorded, so it must be holdable too.
+      const allLimited = accountFailures.length > 0 && accountFailures.every(failure => isLimitError(failure.status, failure.error));
+      return { success: false, status, error: errorMsg,
+        limited: allLimited,
+        limitsExhausted: allLimited,
+        retryAtMs: lockedUntil,
+        response: errorResponse(status, errorMsg) };
+    }
+
+    // Bind before the turn runs, not after it succeeds: Codex fires side
+    // requests concurrently with the main turn, and they should land on the same
+    // account rather than racing to claim the session.
+    if (affinityKey && credentials.connectionId) bindAffinity(affinityKey, credentials.connectionId);
+
+    // Account selection shown in the unified "▶" line (acc:...)
+    const refreshedCredentials = (await checkAndRefreshToken(provider, credentials)) as Credentials;
+
+    // Ensure real project ID is available for providers that need it (P0 fix: cold miss)
+    if ((provider === "antigravity" || provider === "gemini-cli") && !refreshedCredentials.projectId) {
+      const pid = await getProjectIdForConnection(credentials.connectionId, refreshedCredentials.accessToken as string, provider);
+      if (pid) {
+        refreshedCredentials.projectId = pid;
+        // Persist to DB in background so subsequent requests have it immediately
+        updateProviderCredentials(credentials.connectionId, { projectId: pid }).catch(() => { });
+      }
+    }
+
+    // Use shared chatCore
+    const chatSettings = (await getSettings()) as ChatSettings;
+    const providerThinking = (chatSettings.providerThinking || {} as Record<string, unknown>)[provider] || null;
+    // Custom endpoints: keep this request for the endpoint page's "Recent requests".
+    const drainOnDisconnect = await keyHasBudget(apiKey);
+    const result = await recordEndpointRequests(provider, refreshedCredentials as Parameters<typeof recordEndpointRequests>[1], () => handleChatCore({
+      body: { ...body, model: `${provider}/${model}` },
+      modelInfo: { provider, model },
+      credentials: refreshedCredentials,
+      log,
+      clientRawRequest,
+      connectionId: credentials.connectionId,
+      userAgent,
+      apiKey,
+      ccFilterNaming: !!chatSettings.ccFilterNaming,
+      providerThinking,
+      sourceFormatOverride,
+      clientSignal: signal,
+      drainOnDisconnect,
+      onCredentialsRefreshed: async (newCreds: Record<string, unknown>) => {
+        await updateProviderCredentials(credentials.connectionId, {
+          ...newCreds,
+          existingProviderSpecificData: credentials.providerSpecificData,
+          testStatus: "active"
+        });
+      },
+      // Anthropic-compatible endpoint rejected some beta flags; remember them on the
+      // connection so later requests skip the failed first try.
+      onBetasRejected: (droppedBetas: string[]) => saveDroppedBetas(credentials, provider, droppedBetas),
+      // The executor's own headers budget for this call: a probe's lease and the
+      // Retry-After of requests waiting on it go by it.
+      onHeadersBudget: (budgetMs: number) => noteProbeBudget(provider, model, requestId, budgetMs),
+      onRequestSuccess: async () => {
+        await clearAccountError(credentials.connectionId, credentials, model);
+        // "Consecutive" strikes: a success clears the breaker for this pair.
+        clearAntigravityStrikes(credentials.connectionId, model);
+      }
+    } as Parameters<typeof handleChatCore>[0])
+      // A spread try that ends without a lock or a success (client gone, a
+      // request error that locks nothing, a throw) frees the next one too.
+      .finally(() => endSpreadProbe(credentials.connectionId, model))) as ChatCoreResult;
+
+    if (result.success) {
+      noteModelServed(provider, model);
+      if (cacheKey) rememberWarmKey(cacheKey, credentials.connectionId, cacheTtlMs(body));
+      return result;
+    }
+    if (signal?.aborted) return clientAbortResult();
+
+    // Refresh Antigravity quota before deciding how long to lock the account.
+    let quotaResetMs: number | null = null;
+    let resetsAtMs = result.resetsAtMs;
+    if (provider === "antigravity" && (result.status === 409 || result.status === 429)) {
+      quotaResetMs = await handleAntigravityQuotaError(
+        credentials.connectionId, result.status, model,
+        refreshedCredentials.accessToken, credentials.providerSpecificData
+      );
+      if (quotaResetMs) resetsAtMs = quotaResetMs;
+    }
+
+    let shouldFallback = true;
+    let cooldownMs = 0;
+    // On a custom endpoint, a request error (bad body, unknown model) still tries
+    // the next key, in case it was key-specific, but locks nothing: one bad
+    // conversation mustn't make the pool "unavailable" for everyone else.
+    // Built-in providers keep their usual short locks.
+    if (customEndpoint && isRequestError(result.status, result.error)) {
+      log.warn("AUTH", `${credentials.connectionName} request error [${result.status}], not locking`);
+      // No-auth providers hand back the same virtual connection whatever is
+      // excluded, so "try the next key" would resend the same request forever.
+      if (credentials.id === "noauth") shouldFallback = false;
+    } else if (!(provider === "antigravity" && quotaResetMs)) {
+      ({ shouldFallback, cooldownMs } = await markAccountUnavailable(
+        credentials.connectionId, result.status as number, result.error as string, provider, model, resetsAtMs as Parameters<typeof markAccountUnavailable>[5],
+        credentials.apiKey,
+      ));
+    }
+    // Earliest point any account tried this pass may be usable again.
+    const unlockAt = resetsAtMs || (cooldownMs ? Date.now() + cooldownMs : 0);
+    if (unlockAt && (!lockedUntil || unlockAt < lockedUntil)) lockedUntil = unlockAt;
+
+    // Hold for the pinned account rather than rotating away from it. Opt-in:
+    // rotating is instant, so waiting only pays when prompt-cache continuity is
+    // worth more than the delay.
+    if (
+      shouldFallback &&
+      limitHold.enabled &&
+      limitHold.onPinned &&
+      affinityKey &&
+      getAffinity(affinityKey) === credentials.connectionId &&
+      isLimitError(result.status, result.error)
+    ) {
+      log.warn("LIMITHOLD", `pinned ACC:${credentials.connectionName} limited — holding instead of rotating`);
+      return {
+        success: false,
+        status: result.status,
+        error: result.error,
+        limited: true,
+        retryAtMs: resetsAtMs || Date.now() + (cooldownMs || 0),
+        response: result.response,
+      };
+    }
+
+    // No response headers in time: this request may be too slow for the model,
+    // or the model hung. Either way it tries few keys, and none once it's hung.
+    const headersTimedOut = !!result.headersTimeout;
+    const hang = result.headersTimeout
+      ? noteHeadersTimeout(provider, model, { requestId, connectionId: credentials.connectionId, stream: result.headersTimeout.stream, reason: withoutStatus(result.error) })
+      : null;
+    if (keysSinceHeadersTimeout > 0 || headersTimedOut) keysSinceHeadersTimeout++;
+
+    if (shouldFallback) {
+      const failure = { account: credentials.connectionName, status: result.status, error: result.error };
+      const seen = failureIndex.get(credentials.connectionId);
+      if (seen === undefined) failureIndex.set(credentials.connectionId, accountFailures.push(failure) - 1);
+      else accountFailures[seen] = failure;
+      if (hang?.hung) return modelHungResult(provider, model, hang);
+      if (keysSinceHeadersTimeout >= HEADERS_TIMEOUT.maxKeysPerRequest) {
+        const errorMsg = summarizeAccountFailures(provider, model, accountFailures);
+        log.warn("CHAT", `${errorMsg} (no more keys for this request)`);
+        return { success: false, status: HTTP_STATUS.GATEWAY_TIMEOUT, error: errorMsg, limited: false, response: errorResponse(HTTP_STATUS.GATEWAY_TIMEOUT, errorMsg) };
+      }
+      // Enough keys refused this request with the same message: the rest would too.
+      // Keys on one upstream agree up to numbers (stopAfter keys). Otherwise
+      // max(stopAfter, 2) distinct upstreams must give the very same context or
+      // token limit message naming both sizes, never a 413, since their limits
+      // may differ.
+      // Built-in providers keep walking: their accounts differ in plan and region.
+      const agreement = customEndpoint
+        ? sameRequestErrors.note(credentials.connectionId, connectionUpstream(credentials), result.status, result.error)
+        : null;
+      if (agreement === "exact" || (agreement === "normalized" && (sharedUpstream ??= await keysShareOneUpstream(provider)))) {
+        const from = agreement === "exact" ? `${sameRequestErrors.exactAfter} upstreams` : `${sameRequestErrors.stopAfter} accounts`;
+        log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} same request error (${result.status}) from ${from}, not trying the rest`);
+        return result;
+      }
+      // A warm key just rate-limited for a short while stays in play: the next
+      // selection waits for it (or picks another warm key) rather than rebuilding
+      // the cache on a cold one.
+      if (
+        cooldownMs > 0 &&
+        warmConnectionIds.includes(credentials.connectionId) &&
+        isLimitError(result.status, result.error) &&
+        warmRetryAt(Date.now() + cooldownMs, waitBudget()) !== null
+      ) {
+        log.info("CACHE", `ACC:${credentials.connectionName} rate-limited (${result.status}), keeping this conversation on its warm keys`);
+        lastError = result.error;
+        lastStatus = result.status;
+        continue;
+      }
+      log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);
+      // Stale-anchor recovery: the pinned account just went away, so drop the pin
+      // and let the next iteration rebind. Guarded on the id, so a concurrent turn
+      // that already moved the session elsewhere is left alone.
+      if (affinityKey) releaseAffinity(affinityKey, credentials.connectionId);
+      excludeConnectionIds.add(credentials.connectionId);
+      lastError = result.error;
+      lastStatus = result.status;
+      continue;
+    }
+
+    // A keyless provider has no account to lock or rotate to, so a limit lands
+    // here instead of in allRateLimited. It is still a "come back later" — but
+    // only on a real 429: isLimitError's text match would also catch permanent
+    // errors like "quota project not set", which no amount of waiting fixes.
+    if (credentials.id === "noauth") {
+      return { ...result, limited: result.status === HTTP_STATUS.RATE_LIMITED, retryAtMs: resetsAtMs || 0 };
+    }
+    return result;
+  }
+  };
+
+  // Tells this request's header timeouts from other requests' (modelHang.js).
+  const requestId = randomUUID();
+  // A model hung upstream fails at once, but for one request at a time probing it.
+  const runAccountLoop = async (): Promise<PassResult> => {
+    const hang = checkModelHang(provider, model, requestId);
+    if (hang.blocked) return modelHungResult(provider, model, hang);
+    try {
+      return await accountPass(hang.avoidKeys);
+    } finally {
+      releaseProbe(provider, model, requestId);
+    }
+  };
+
+  const first = await runAccountLoop();
+  if (first.success) return first.response;
+  routingFailures.push({
+    limited: first.limitsExhausted === true && !limitHold.enabled,
+    resetAtMs: first.resetAtMs,
+    // Read by withComboLimitHold, which decides for the combo as a whole.
+    rateLimited: first.limited === true,
+    unconfigured: first.unconfigured === true,
+    retryAtMs: first.retryAtMs,
+    error: first.error,
+  });
+
+  if (!first.limited || !limitHold.enabled || signal?.aborted) return first.response;
+
+  // Non-streaming clients have no stream to narrate into, so the request just
+  // hangs until the limit clears and the real JSON comes back. `body.stream`
+  // alone is not the answer — an Accept: application/json client (AI SDK) or
+  // deepseek-tui resolves to JSON without ever setting it, and handing those an
+  // SSE banner would break a request that used to return a clean error.
+  const holdSourceFormat = sourceFormatOverride || detectFormat(body);
+  const willStream = clientReceivesStream({ body, provider, model, sourceFormat: holdSourceFormat, clientRawRequest, credentials: await nodeSettings(provider) });
+  return holdUntilClear({
+    apiKey,
+    first,
+    attempt: runAccountLoop,
+    willStream,
+    sourceFormat: holdSourceFormat,
+    modelStr,
+    provider,
+    model,
+    signal,
+  });
+}

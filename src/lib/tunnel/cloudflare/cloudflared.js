@@ -5,6 +5,7 @@ import os from "os";
 import { execSync, spawn } from "child_process";
 import { savePid, loadPid, clearPid } from "./pid.js";
 import { DATA_DIR } from "@/lib/dataDir.js";
+import { rememberOwnCloudflared } from "@/lib/appProcesses.js";
 
 const BIN_DIR = path.join(DATA_DIR, "bin");
 const BINARY_NAME = "cloudflared";
@@ -204,6 +205,7 @@ export async function spawnCloudflared(tunnelToken) {
 
   cloudflaredProcess = child;
   savePid(child.pid);
+  rememberOwnCloudflared(child, () => { intentionalKill = true; child.kill("SIGKILL"); });
 
   return new Promise((resolve, reject) => {
     let connectionCount = 0;
@@ -304,6 +306,7 @@ export async function spawnQuickTunnel(localPort, onUrlUpdate) {
 
   cloudflaredProcess = child;
   savePid(child.pid);
+  rememberOwnCloudflared(child, () => { intentionalKill = true; child.kill("SIGKILL"); });
 
   return new Promise((resolve, reject) => {
     let resolved = false;

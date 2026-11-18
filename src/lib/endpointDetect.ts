@@ -1,0 +1,1666 @@
+// Endpoint detection for "Add endpoint": paste a URL + key, work out the protocol,
+// base URL, models and auth, using FREE requests only. Nothing here may trigger a
+// billed generation: chat probes send an empty `messages` array, which every API
+// we know rejects with a 400 before running a model, and every probe carries a
+// tiny output cap in case a proxy fills the empty conversation in anyway.
+//
+// Results are tri-state. Every probe is recorded in `steps` (status + the first
+// part of the body, secrets redacted) so the user can see why we concluded anything.
+//
+// Imported by the dashboard too: no node:* imports in this file.
+
+import type { CatalogLabModel, CatalogProvider, EndpointCatalog } from "./endpointCatalog.js";
+import { redactQueryParamsInText, BEARER_TOKEN_RE } from "open-sse/utils/redact.js";
+
+// ---- Types -------------------------------------------------------------------
+
+export type Protocol = "anthropic" | "openai-chat" | "openai-responses";
+export type KeyConfirmed = "confirmed" | "likely" | "unknown";
+export type ModelsSource = "models" | "catalog" | "guessed" | "none";
+export type StopReason = "auth" | "denied" | "rate" | "generated" | "failing" | "deadline" | "aborted";
+// What one run says about the key it was given, for callers choosing between
+// keys: it got through, it was refused, it was rate-limited before anything
+// was found, or nothing is known about it (the endpoint failed, or the model
+// probes were cut short before they told anything).
+export type KeyVerdict = "accepted" | "refused" | "rate-limited" | null;
+// Stops that mean the key itself can't be used.
+const keyStop = (s: StopReason | null) => s === "auth" || s === "denied";
+type ErrorShape = "anthropic" | "openai" | "generic";
+export type Classification = "network" | "rate" | "server" | "generated" | "html" | "ok" | "gated" | "auth" | "other" | "missing" | "unknown-model" | "accepted" | "model-denied";
+
+// One probe, as shown to the user (secrets redacted).
+export interface DetectStep {
+  label: string;
+  method: string;
+  url: string;
+  status: number;           // 0 = network error
+  preview: string;
+  html?: boolean;
+  retried?: boolean;
+}
+
+// Quirks read off the free probes' error bodies.
+export interface DetectQuirks {
+  maxCompletionTokens?: boolean;
+  generatesOnEmpty?: boolean;
+  apiKeyHeader?: boolean;
+}
+
+// What detectEndpoint returns. `ok: false` carries `error` (and maybe
+// clientGated / authRejected / rateLimited); `ok: true` carries the rest.
+export interface DetectResult {
+  ok: boolean;
+  error?: string;
+  baseUrl?: string;
+  steps: DetectStep[];
+  protocol?: Protocol;
+  protocols?: Protocol[];
+  routes?: Record<string, Protocol>;
+  byProtocol?: Partial<Record<Protocol, string[]>> | null;
+  models?: string[];
+  modelsSource?: ModelsSource;
+  listComplete?: boolean; // false: /models stopped on a failed page or the page cap
+  keyConfirmed?: KeyConfirmed;
+  quirks?: DetectQuirks;
+  partial?: boolean;
+  partialReason?: string | null;
+  authRejected?: boolean;
+  rateLimited?: boolean;
+  clientGated?: boolean;
+  suggestedName?: string;
+  suggestedPrefix?: string;
+  // Which failure screen fits, when ok is false.
+  failure?: FailureKind;
+  keyVerdict?: KeyVerdict;
+  // Why model checks stopped early, if they did.
+  stopReason?: StopReason | null;
+  // Per API that was asked about models one by one: how far it got, and the
+  // ids never asked (so "Check the rest" can ask just those).
+  checks?: Partial<Record<Protocol, ModelCheck>>;
+  // The provider's own site: name and icon (data: URL), when it had them.
+  site?: SiteInfo | null;
+}
+
+export type FailureKind = "key" | "unreachable" | "down" | "gated" | "rate" | "html" | "catch-all" | "no-api" | "timeout" | "cancelled" | "bad-url";
+
+export interface ModelCheck {
+  total: number;
+  checked: number;
+  found: number;
+  unchecked: string[];
+  stopped: StopReason | null;
+}
+
+export interface SiteInfo {
+  name: string | null;
+  icon: string | null;   // data: URL, a copy (never hotlinked)
+  host: string;          // where it came from ("acme.ai")
+}
+
+// What discoverModels returns. The routing fields are only set when it was
+// asked about several protocols; `complete` is then per protocol.
+export interface DiscoverResult {
+  models: string[];
+  source: ModelsSource;
+  catalogName?: string;
+  steps: DetectStep[];
+  complete: boolean | Record<string, boolean>;
+  partial: boolean;
+  partialReason: string | null;
+  authRejected: boolean;
+  routes?: Record<string, string>;
+  counts?: Record<string, number>;
+  byProtocol?: Record<string, string[]>;
+  allComplete?: boolean;
+}
+
+// The catalog as synced (see endpointCatalog.js), or a bare provider list.
+export type CatalogInput = CatalogProvider[] | Partial<EndpointCatalog>;
+type MatchedProvider = CatalogProvider & { score: number };
+
+type HeaderMap = Record<string, string>;
+// The subset of fetch the probes use; tests inject a fake.
+export interface ProbeResponse {
+  status: number;
+  text(): Promise<string>;
+  headers?: { get?(name: string): string | null } | null;
+}
+export type DetectFetch = (url: string, init: { method: string; headers: HeaderMap; body?: string; signal: AbortSignal }) => Promise<ProbeResponse>;
+type Sleep = (ms: number) => Promise<unknown>;
+
+// Live progress for the dashboard (the detect route streams these as NDJSON).
+// Paths, model ids and a short redacted error code ("invalid_api_key") only:
+// never the key, a header or a whole response body.
+// `path` is relative to the URL the user gave ("/v1/chat/completions").
+// `sent` is the running count of requests sent so far.
+export type DetectProgress =
+  | { type: "request"; n: number; label: string; method: string; path: string }
+  | { type: "response"; n: number; status: number; kind: Classification; retrying?: boolean; sent: number; hint?: string }
+  | { type: "throttled"; waitMs: number; sent: number }
+  | { type: "models-start"; protocol: string; path: string; total: number; lanes: number }
+  | { type: "probe"; id: string; lane: number }
+  | { type: "probe-result"; id: string; lane: number; known: boolean; skipped?: boolean; sent: number }
+  | { type: "models-done"; protocol: string; path: string; total: number; checked: number; found: number; stopped: StopReason | null };
+export type DetectProgressFn = (e: DetectProgress) => void;
+interface ProbeResult { status: number; text: string; json: unknown; step: DetectStep; contentType?: string | null; skipped?: boolean }
+// `halted()` says why probing must end (deadline or client abort), or null.
+// `quiet`: report no request/response progress (model probes report their own).
+type Prober = ((label: string, method: string, target: string, opts?: { headers?: HeaderMap; body?: Record<string, unknown>; quiet?: boolean }) => Promise<ProbeResult>) & { halted(): StopReason | null; emit: DetectProgressFn; relPath(target: string): string; sent(): number };
+interface AuthHeaders { bearer: HeaderMap; "x-api-key": HeaderMap; "api-key": HeaderMap; both: HeaderMap }
+interface ProbeSpec { path: string; label: string; headers: HeaderMap; body: Record<string, unknown> }
+// Parsed JSON, read defensively: any property may be anything.
+type Json = Record<string, unknown>;
+
+const PROBE_TIMEOUT_MS = 8000;
+const BODY_PREVIEW = 300;
+const PROBE_CONCURRENCY = 3;     // model probes in flight per path
+const MAX_CANDIDATES = 40;       // ids asked about per path when no provider matched
+const MAX_MATCHED_CANDIDATES = 80; // a matched provider's own list, at most
+const MAX_EXTRA_CANDIDATES = 60;   // recent lab models asked about on top of a matched list
+const MODELS_PER_FAMILY = 3;     // newest releases kept per family (claude-opus: 5-5, 5, 4-8)
+const MAX_RATE_RETRIES = 3;      // per probe, on 429
+const MAX_RETRY_WAIT_MS = 10_000;
+const MAX_MODEL_PAGES = 10;      // /models pagination cap
+const PROBE_BODY_MAX = 4 * 1024 * 1024; // a probe reads at most this much
+const CANARY = "10router-no-such-model";
+const CONTROL_PATH = "/10router-no-such-path";
+export const DETECT_DEADLINE_MS = 45_000; // whole detection; the UI gives up at 60s
+const MAX_CONSECUTIVE_FAILURES = 6; // network / timeout / 5xx in a row on one path
+const UNREACHABLE_AFTER = 2;     // network failures with no answer at all = the host is unreachable
+const MODEL_DENIED_STOP = 3;     // the same model-access refusal on this many models = the key, not the model
+const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// Paths users paste that aren't part of the base URL.
+const TRAILING_PATHS = ["/chat/completions", "/messages", "/responses", "/models", "/embeddings", "/completions"];
+
+// Hosts on the user's own network: no scheme typed means http, not https.
+const LAN_HOST_RE = /^(localhost|.+\.localhost|.+\.local|.+\.lan|.+\.internal|.+\.home\.arpa|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|169\.254\.\d+\.\d+|0\.0\.0\.0|\[(::1?|f[cd][0-9a-f:]*|fe80[0-9a-f:]*)\])$/i;
+export function isLanHost(host: unknown): boolean {
+  const h = String(host || "").toLowerCase().replace(/\.+$/, "");
+  if (!h) return false;
+  // Single-label names are docker/compose service names ("ollama", "vllm").
+  return LAN_HOST_RE.test(h) || (!h.includes(".") && !h.startsWith("["));
+}
+
+// Host part of a URL typed without a scheme: "user@ollama:11434/v1" -> "ollama".
+function bareHost(s: string): string {
+  const authority = s.split(/[/?#]/)[0].replace(/^[^@]*@/, "");
+  return authority.startsWith("[") ? authority.replace(/\].*$/, "]") : authority.replace(/:\d*$/, "");
+}
+
+// Cut a pasted URL down to its base. Keeps query params (Azure api-version).
+export function normalizeUrl(raw: unknown): string | null {
+  let s = String(raw || "").trim().replace(/^["'<`“‘]+|["'>`”’]+$/g, "");
+  if (!s) return null;
+  if (!/^https?:\/\//i.test(s)) s = (isLanHost(bareHost(s)) ? "http://" : "https://") + s.replace(/^\/+/, "");
+  let url;
+  try { url = new URL(s); } catch { return null; }
+  let path = url.pathname.replace(/\/+$/, "");
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const p of TRAILING_PATHS) {
+      if (path.toLowerCase().endsWith(p)) { path = path.slice(0, -p.length).replace(/\/+$/, ""); changed = true; }
+    }
+  }
+  return `${url.origin}${path}${url.search}`;
+}
+
+// base + path, keeping the base's query string (Azure ?api-version=) after the path.
+export function joinUrl(base: string, path = "", params: Record<string, unknown> | null = null): string {
+  const u = new URL(base);
+  u.pathname = u.pathname.replace(/\/+$/, "") + path;
+  if (params) for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v as string);
+  return u.toString();
+}
+
+// Azure OpenAI / AI Foundry: keys go in an `api-key` header, not Bearer.
+export function isAzureHost(base: string): boolean {
+  try {
+    const u = new URL(base);
+    return /\.(openai\.azure\.com|cognitiveservices\.azure\.com|services\.ai\.azure\.com|azure-api\.net)$/i.test(u.hostname) || u.searchParams.has("api-version");
+  } catch { return false; }
+}
+
+// Strip what people paste around a key: zero-width chars, smart or plain quotes,
+// a header name, "Bearer ", whitespace and line breaks.
+const QUOTES = "\"'`“”‘’«»‹›";
+const EDGE_QUOTES_RE = new RegExp(`^[${QUOTES}]+|[${QUOTES}]+$`, "g");
+export function cleanKey(raw: unknown): string {
+  let s = String(raw || "").replace(/[​-‍⁠﻿­]/g, "");
+  for (let prev: string | null = null; prev !== s;) {
+    prev = s;
+    s = s.trim().replace(EDGE_QUOTES_RE, "").trim()
+      .replace(/^(authorization|x-api-key|api-key)\s*[:=]\s*/i, "")
+      .replace(/^Bearer\s+/i, "");
+  }
+  return s.replace(/\s+/g, "");
+}
+
+// Removes the key (and any key-looking query param or bearer token) from text
+// shown to the user, in every form a server might echo it: raw, JSON-escaped
+// ("/" -> "\/"), URL-encoded and base64. A short key is only replaced as a whole
+// token, so a 3-char key doesn't turn every word containing it into "<key>".
+// The secret query-param rule and bearer rule are shared with the request logger (open-sse/utils/redact.js).
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// btoa needs Latin-1; go through UTF-8 bytes so any key encodes.
+const base64 = (s: string) => btoa(Array.from(new TextEncoder().encode(s), (b) => String.fromCharCode(b)).join(""));
+function keyForms(key: string): string[] {
+  const b64 = base64(key);
+  const forms = [key, key.replace(/\//g, "\\/"), encodeURIComponent(key), b64, b64.replace(/=+$/, ""), b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")];
+  // Longest first, so a form that contains another is replaced whole.
+  return [...new Set(forms)].filter(Boolean).sort((a, b) => b.length - a.length);
+}
+export function makeRedactor(key: string): (text: unknown) => string {
+  const forms = key ? keyForms(key) : [];
+  const short = key && key.length < 12 ? new RegExp(`(^|[^A-Za-z0-9_-])(${forms.map(escapeRe).join("|")})(?![A-Za-z0-9_-])`, "g") : null;
+  return (text) => {
+    let s = String(text ?? "");
+    if (short) s = s.replace(short, "$1<key>");
+    else for (const f of forms) s = s.split(f).join("<key>");
+    return redactQueryParamsInText(s, "<redacted>").replace(BEARER_TOKEN_RE, "$1<redacted>");
+  };
+}
+
+// Candidate bases to probe: as given, plus `/v1` when the user stopped short of it.
+export function candidateBases(base: string): string[] {
+  const out = [base];
+  const u = new URL(base);
+  if (!/\/v\d+(beta)?$/i.test(u.pathname)) out.push(`${u.origin}${u.pathname.replace(/\/+$/, "")}/v1${u.search}`);
+  return out;
+}
+
+// Raw entries of every model-list shape we've seen.
+function modelEntries(json: unknown): unknown[] | null {
+  const j = json as Json | null | undefined;
+  return Array.isArray(json) ? json
+    : Array.isArray(j?.data) ? j.data
+    : Array.isArray(j?.models) ? j.models
+    : Array.isArray(j?.result) ? j.result
+    : null;
+}
+const entryId = (m: unknown) => String(typeof m === "string" ? m : ((m as Json | null)?.id || (m as Json | null)?.name || (m as Json | null)?.model || "")).replace(/^models\//, "").trim();
+
+// Not chat models: embeddings, speech, transcription, image generation, rerankers.
+const NON_CHAT_ID_RE = /embed|whisper|dall-e|gpt-image|imagen|stable-diffusion|sdxl|moderation|rerank|transcribe|(^|[-_/.])tts([-_.]|$)|text-to-speech|(^|[-_/])speech([-_]|$)/i;
+function isChatEntry(m: unknown, id: string): boolean {
+  if (m && typeof m === "object") {
+    const o = m as Json;
+    const methods = o.supportedGenerationMethods || o.supported_generation_methods;
+    if (Array.isArray(methods) && methods.length && !methods.some((x) => /generateContent|chat|complet/i.test(x as string))) return false;
+    const type = String(o.type || o.task || o.model_type || "").toLowerCase();
+    if (/embed|image|audio|speech|tts|rerank|moderation|transcri/.test(type)) return false;
+    const outMods = (o.architecture as Json | null | undefined)?.output_modalities || o.output_modalities;
+    if (Array.isArray(outMods) && outMods.length && !outMods.includes("text")) return false;
+  }
+  return !NON_CHAT_ID_RE.test(id);
+}
+
+// Model ids from a list, deduped, in order. Non-chat models are dropped unless
+// that would leave nothing (a dedicated embeddings server is still a list).
+export function parseModelList(json: unknown, { chatOnly = true }: { chatOnly?: boolean } = {}): string[] {
+  const arr = modelEntries(json);
+  if (!arr) return [];
+  const all = arr.map((m): [unknown, string] => [m, entryId(m)]).filter(([, id]) => id);
+  const chat = chatOnly ? all.filter(([m, id]) => isChatEntry(m, id)) : all;
+  return [...new Set((chat.length ? chat : all).map(([, id]) => id))];
+}
+
+// The next page of a model list, or null. Same origin only: the key goes with it.
+export function nextModelPage(json: unknown, url: string): string | null {
+  if (!json || typeof json !== "object" || Array.isArray(json)) return null;
+  const j = json as Json;
+  let next: string | null = null;
+  if (j.has_more && j.last_id) next = joinUrl(url.replace(/[?&]after_id=[^&]*/, ""), "", { after_id: j.last_id });
+  const link = j.next || j.next_page_url || (j.links as Json | null | undefined)?.next || (j.pagination as Json | null | undefined)?.next;
+  if (!next && typeof link === "string" && link) next = new URL(link, url).toString();
+  const token = j.nextPageToken || j.next_page_token;
+  if (!next && token) next = joinUrl(url, "", { pageToken: token });
+  if (!next) return null;
+  try { return new URL(next).origin === new URL(url).origin ? next : null; } catch { return null; }
+}
+
+// Decode one punycode label ("xn--mnchen-3ya" -> "münchen"), RFC 3492.
+function punyDecode(input: string): string {
+  const base = 36, tMin = 1, tMax = 26;
+  const adapt = (delta: number, points: number, first: boolean) => {
+    delta = first ? Math.floor(delta / 700) : delta >> 1;
+    delta += Math.floor(delta / points);
+    let k = 0;
+    for (; delta > ((base - tMin) * tMax) >> 1; k += base) delta = Math.floor(delta / (base - tMin));
+    return Math.floor(k + ((base - tMin + 1) * delta) / (delta + 38));
+  };
+  const out: number[] = [];
+  const b = Math.max(input.lastIndexOf("-"), 0);
+  for (let j = 0; j < b; j++) out.push(input.charCodeAt(j));
+  let n = 128, i = 0, bias = 72;
+  for (let idx = b > 0 ? b + 1 : 0; idx < input.length;) {
+    const oldi = i;
+    for (let w = 1, k = base; ; k += base) {
+      if (idx >= input.length) throw new Error("bad punycode");
+      const c = input.charCodeAt(idx++);
+      const digit = c >= 48 && c <= 57 ? c - 22 : c >= 65 && c <= 90 ? c - 65 : c >= 97 && c <= 122 ? c - 97 : base;
+      if (digit >= base) throw new Error("bad punycode");
+      i += digit * w;
+      const t = k <= bias ? tMin : k >= bias + tMax ? tMax : k - bias;
+      if (digit < t) break;
+      w *= base - t;
+    }
+    bias = adapt(i - oldi, out.length + 1, oldi === 0);
+    n += Math.floor(i / (out.length + 1));
+    i %= out.length + 1;
+    out.splice(i++, 0, n);
+  }
+  return String.fromCodePoint(...out);
+}
+const decodeHost = (host: string) => host.split(".").map((l) => { if (!/^xn--/i.test(l)) return l; try { return punyDecode(l.slice(4)); } catch { return l; } }).join(".");
+
+// Name, prefix and icon from the host. Prefix: initials of a multi-part name,
+// else its first 4 letters; [a-z0-9] only.
+const HOST_SKIP = new Set(["api", "gateway", "llm", "ai", "www", "inference", "openai", "v1", "app"]);
+// Second-level labels under a country TLD: api.foo.co.uk -> "foo".
+const SECOND_LEVEL = new Set(["co", "com", "net", "org", "ac", "gov", "edu", "or", "ne", "go", "gob", "mil", "ltd", "plc", "nic", "info", "biz"]);
+export function suggestName(base: string): string {
+  const { hostname } = new URL(base);
+  if (isLanHost(hostname) || /^\d+\.\d+\.\d+\.\d+$|^\[/.test(hostname)) return "Local endpoint";
+  const labels = decodeHost(hostname.toLowerCase().replace(/\.+$/, "")).split(".").filter(Boolean);
+  if (labels.length > 1) {
+    const tld = labels.pop()!;
+    if (tld.length === 2 && labels.length > 1 && SECOND_LEVEL.has(labels[labels.length - 1])) labels.pop();
+  }
+  const parts = labels.filter((p) => !HOST_SKIP.has(p));
+  const label = parts[parts.length - 1] || labels[labels.length - 1] || hostname;
+  const brand = label.replace(/computing$/, "").replace(/-.*$/, "") || label;
+  return brand.charAt(0).toUpperCase() + brand.slice(1);
+}
+export function makePrefix(name: unknown, taken: readonly unknown[] = []): string {
+  const plain = String(name || "").normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const words = plain.replace(/([a-z])([A-Z])/g, "$1 $2").split(/[^A-Za-z0-9]+/).filter(Boolean);
+  let p = (words.length > 1 ? words.map((w) => w[0]).join("") : (words[0] || "ep").slice(0, 4)).toLowerCase().replace(/[^a-z0-9]/g, "") || "ep";
+  const used = new Set(taken.map((t) => String(t).toLowerCase()));
+  if (!used.has(p)) return p;
+  for (let i = 2; ; i++) if (!used.has(`${p}${i}`)) return `${p}${i}`;
+}
+
+// Endpoints with no model list (/v1/models 404) can still be asked about one
+// model at a time for free, when they reject an unknown model id before
+// anything else. Candidate ids come from the models.dev catalog, synced daily:
+// `catalog` is [{ id, name, api, models: [ids] }] (see modelCatalog/sync.js).
+
+// "https://${ACCOUNT}.gateway.example/api/v1" ->
+// host regex (placeholders match one label) + path.
+function apiPattern(api: unknown): { host: RegExp; path: string } | null {
+  const m = /^https?:\/\/([^/]+)(\/[^?#]*)?/i.exec(String(api || ""));
+  if (!m) return null;
+  const hostRe = m[1].toLowerCase().split(/\$\{[^}]*\}/)
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("[^/.]+");
+  return { host: new RegExp(`^${hostRe}$`), path: (m[2] || "").replace(/\/+$/, "") };
+}
+
+// The catalog provider whose API URL matches this base, best path match first.
+export function matchCatalogProvider(base: string, catalog: CatalogProvider[] = []): MatchedProvider | null {
+  const u = new URL(base);
+  const host = u.hostname.toLowerCase();
+  const path = u.pathname.replace(/\/+$/, "");
+  let best: MatchedProvider | null = null;
+  for (const p of catalog) {
+    const pat = apiPattern(p.api);
+    if (!pat || !pat.host.test(host)) continue;
+    const score = path === pat.path ? 3 : path.startsWith(pat.path) || pat.path.startsWith(path) ? 2 : 1;
+    if (!best || score > best.score) best = { ...p, score };
+  }
+  return best;
+}
+
+// Generation number from a model id. Families that version in whole steps
+// (claude-opus-4-5 / 4-8, gpt-5.x) group by the whole number; families that
+// ship "3.5, 3.6, 3.7" as separate generations (qwen, glm) keep the decimal.
+// Callers pick which with `decimal`.
+export function majorVersion(id: unknown, decimal = false): number {
+  const m = /(\d+)(?:[.-](\d+))?/.exec(String(id).replace(/^[a-z]+-?[a-z]*?(?=\d)/i, "").replace(/^[a-z]+(?=\d)/i, ""));
+  if (!m) return 0;
+  return decimal && m[2] !== undefined && m[2].length === 1 ? +`${m[1]}.${m[2]}` : +m[1];
+}
+
+// Snapshot suffixes: a date ("-20251001", "-2025-10-01", "-0613", "-250514")
+// or a channel tag ("-latest", "-preview", "-exp-0827"). Gateways usually serve
+// the undated alias, so a snapshot is only dropped when its alias is also a
+// candidate; a catalog id that only exists dated is kept.
+const SNAPSHOT_SUFFIX_RE = /(-\d{4}-?\d{2}-?\d{2}|-\d{6}|-\d{4}|-latest|-preview(-[\w.]+)?|-exp(-[\w.]+)?)$/i;
+export function snapshotAlias(id: unknown): string | null {
+  let s = String(id);
+  for (let prev: string | null = null; prev !== s;) { prev = s; s = s.replace(SNAPSHOT_SUFFIX_RE, ""); }
+  return s !== id && s ? s : null;
+}
+export function dropSnapshots(ids: string[]): string[] {
+  const set = new Set(ids.map((x) => String(x).toLowerCase()));
+  return ids.filter((id) => { const alias = snapshotAlias(id); return !alias || !set.has(alias.toLowerCase()); });
+}
+
+// The newest `gens` major versions of every model family the labs ship, at most
+// `perFamily` releases each, and only families with a release in the last
+// `maxAgeDays`. Old generations are left out on purpose: nobody adds an
+// endpoint for them.
+export function recentLabModels(labs: CatalogLabModel[] = [], gens = 3, maxAgeDays = 365, now = Date.now(), perFamily = MODELS_PER_FAMILY): string[] {
+  const cutoff = new Date(now - maxAgeDays * 864e5).toISOString().slice(0, 10);
+  const kept = new Set(dropSnapshots(labs.map((m) => m.id)));
+  const byFamily = new Map<string, CatalogLabModel[]>();
+  for (const m of labs) {
+    if (!kept.has(m.id)) continue;
+    const key = `${m.lab}/${m.family}`;
+    if (!byFamily.has(key)) byFamily.set(key, []);
+    byFamily.get(key)!.push(m);
+  }
+  const out: CatalogLabModel[] = [];
+  for (const models of byFamily.values()) {
+    if (!models.some((m) => m.date >= cutoff)) continue; // family went quiet
+    // Whole-number versions unless the family's whole numbers barely move
+    // (all its recent models share one major: qwen3.x, glm-5.x).
+    // Versionless ids ("qwen-max", "qwen-plus") are aliases for whatever is
+    // current, so they always stay. Everything else must be a recent generation.
+    const versioned = models.filter((m) => majorVersion(m.id) > 0);
+    const decimal = new Set(versioned.map((m) => majorVersion(m.id))).size < gens;
+    const gen = (m: CatalogLabModel) => majorVersion(m.id, decimal);
+    const keep = [...new Set(versioned.map(gen))].sort((a, b) => b - a).slice(0, gens);
+    const versionless = models.filter((m) => majorVersion(m.id) === 0);
+    versionless.concat(versioned.filter((m) => keep.includes(gen(m)))
+      .sort((a, b) => b.date.localeCompare(a.date) || majorVersion(b.id, true) - majorVersion(a.id, true))
+      .slice(0, perFamily))
+      .forEach((m) => out.push(m));
+  }
+  return [...new Set(out.sort((a, b) => b.date.localeCompare(a.date)).map((m) => m.id))];
+}
+
+// Gateways often prefix a vendor's ids with its name ("openai-gpt-5").
+// Learn the prefixes from the matched provider's own list.
+// Only a real prefix counts: "openai-gpt-5" is, "deepseek-r1" and "mistral-large2" aren't.
+function vendorPrefixes(models: string[] = []): Set<string> {
+  const seen = new Set<string>();
+  for (const id of models) { const p = vendorPrefix(id); if (p) seen.add(p); }
+  return seen;
+}
+function vendorPrefix(id: string): string | null {
+  const m = /^(openai|anthropic|google|meta|mistral|deepseek|xai|qwen|moonshot)-(.+)$/i.exec(id);
+  return m && LAB_PREFIX[m[1].toLowerCase()].test(m[2].toLowerCase()) ? m[1].toLowerCase() : null;
+}
+const LAB_PREFIX: Record<string, RegExp> = { openai: /^(gpt|o\d)/, anthropic: /^claude/, google: /^gem/, meta: /^(llama|muse)/, mistral: /^(mistral|ministral|devstral|codestral|magistral|pixtral)/, deepseek: /^deepseek/, xai: /^grok/, qwen: /^qwen/, moonshot: /^kimi/ };
+
+// Case-insensitive dedupe, first spelling wins.
+const dedupe = (ids: string[]): string[] => { const seen = new Set<string>(); return ids.filter((id) => { const k = String(id).toLowerCase(); if (!id || seen.has(k)) return false; seen.add(k); return true; }); };
+
+// True for a model the labs have moved on from: the catalog knows it (with or
+// without a gateway prefix) but it's no longer one of the recent releases.
+function outdatedTest(labs: CatalogLabModel[], recent = recentLabModels(labs)): (id: string) => boolean {
+  const current = new Set(recent.map((id) => id.toLowerCase()));
+  const known = new Set(labs.map((m) => m.id.toLowerCase()));
+  const bare = (id: string) => { const p = vendorPrefix(id); return (p ? id.slice(p.length + 1) : id).toLowerCase(); };
+  // A dated snapshot of a current model (claude-haiku-4-5-20251001) is current too.
+  return (id) => { const b = bare(id); const alias = snapshotAlias(b)?.toLowerCase(); return known.has(b) && !current.has(b) && !(alias && current.has(alias)); };
+}
+export function outdatedModels(ids: string[], catalog: CatalogInput = {}): string[] {
+  const labs = Array.isArray(catalog) ? [] : catalog.labs || [];
+  if (!labs.length) return [];
+  const stale = outdatedTest(labs);
+  return ids.filter(stale);
+}
+
+// What to ask about when there's no /models: the matched provider's list first,
+// then the latest generations from every lab, newest first, each under the
+// gateway's own prefixes and bare. Models the labs have moved on from are left
+// out of both (catalogs keep listing claude-opus-4-5 long after 5-5 ships).
+// Capped: every id is one request per path.
+export function candidateModels(base: string, catalog: CatalogInput = {}): { matched: MatchedProvider | null; ids: string[] } {
+  const providers = Array.isArray(catalog) ? catalog : catalog.providers || [];
+  const matched = matchCatalogProvider(base, providers);
+  const labs = (catalog as Partial<EndpointCatalog>).labs || [];
+  const recent = recentLabModels(labs);
+  const stale = outdatedTest(labs, recent);
+  const prefixes = vendorPrefixes(matched?.models);
+  const variants = (id: string) => [...[...prefixes].filter((p) => LAB_PREFIX[p]?.test(id)).map((p) => `${p}-${id}`), id];
+  // Newest first, so a cut-short run still reaches them; ids the labs don't date keep their place after.
+  const dated = new Map(labs.map((m) => [m.id.toLowerCase(), m.date]));
+  const dateOf = (id: string) => { const p = vendorPrefix(id); return dated.get((p ? id.slice(p.length + 1) : id).toLowerCase()) || ""; };
+  const own = dedupe(dropSnapshots((matched?.models || []).filter((id) => !NON_CHAT_ID_RE.test(id) && !stale(id))))
+    .map((id, i) => ({ id, i, d: dateOf(id) }))
+    .sort((a, b) => (b.d && a.d ? b.d.localeCompare(a.d) : a.d ? -1 : b.d ? 1 : 0) || a.i - b.i)
+    .map((x) => x.id).slice(0, MAX_MATCHED_CANDIDATES);
+  const ownKeys = new Set(own.map((id) => id.toLowerCase()));
+  const rest = dedupe(recent.flatMap(variants)).filter((id) => !ownKeys.has(id.toLowerCase()));
+  const ids = matched ? [...own, ...rest.slice(0, MAX_EXTRA_CANDIDATES)] : rest.slice(0, MAX_CANDIDATES);
+  return { matched, ids };
+}
+
+// ---- Reading responses -------------------------------------------------------
+
+// Error-body fragments that mean "your request reached a real model endpoint".
+const UNKNOWN_MODEL_RE = /unknown model|model[^"]{0,40}(not found|does not exist|not supported|invalid|is not available|not available)|model\s+[\\]?["'`][^"'`]{1,100}[\\]?["'`]\s+(not found|does not exist|is not available)|no such model|invalid model|model_not_found|无可用渠道/i;
+// Known to the endpoint but not usable here.
+// Seen on a gateway: "not eligible for this model" (account tier), "Model ... is unavailable".
+const NOT_SERVABLE_RE = /legacy|does not support this endpoint|deprecated model|not eligible for this model|model\b.{0,120}?\bis unavailable/i;
+const CLIENT_GATE_RE = /unauthorized client|client (is )?not allowed|unsupported client/i;
+// Auth complaints, including the ones sent as 400 (Gemini: API_KEY_INVALID).
+const AUTH_MSG_RE = /unauthori[sz]ed|invalid[ _-](api[ _-]?)?key|api[ _-]?key[^"]{0,20}(not valid|invalid|expired|revoked|missing|required)|incorrect api key|API_KEY_INVALID|authentication|invalid[_ ]token|access token|permission[_ ]denied|forbidden/i;
+const KEY_IN_400_RE = /API_KEY_INVALID|api key not valid|invalid[ _-]api[ _-]?key|incorrect api key|api key (expired|revoked)/i;
+// A 401/403 about one model, not the key (LiteLLM: "key not allowed to access
+// model", "no access to m2", "does not have access to model x").
+const MODEL_ACCESS_RE = /not allowed to access (the )?model|(no|not have|without) access to (the )?model|(access|permission) (to|for) (use |access )?(the |this )?model|model[^"]{0,40}(access (is )?denied|not permitted|not allowed|no permission)|team not allowed to access/i;
+const NO_ACCESS_TO_RE = (model: string) => new RegExp(`no access to [\\\\]?["'\`]?${escapeRe(model)}(?![\\w.:/-])`, "i");
+// The model id appears in the body as a whole token.
+const namesModel = (text: string, model: string) => model.length >= 2 && new RegExp(`(^|[^\\w.:/-])${escapeRe(model)}(?![\\w.:/-])`, "i").test(text);
+
+const isHtml = (ct: string | null | undefined, text: string) => /text\/html/i.test(ct || "") || /^\s*<(!doctype|html|head|body)/i.test(text || "");
+const htmlTitle = (text: string) => (/<title[^>]*>([^<]{1,120})/i.exec(text || "")?.[1] || "").trim();
+
+// An error body an API wrote: anthropic {type:"error",error:{type}}, openai
+// {error:{message}} / {error:"..."}, gemini [{error:{...}}], plain {message|detail}.
+function apiErrorShape(json: unknown): ErrorShape | null {
+  const j0: unknown = Array.isArray(json) ? json[0] : json;
+  if (!j0 || typeof j0 !== "object") return null;
+  const j = j0 as Json;
+  const err = j.error as Json;
+  if (j.type === "error" && j.error && typeof j.error === "object" && err.type) return "anthropic";
+  if (j.error && typeof j.error === "object" && (err.message || err.code || err.type)) return "openai";
+  if (typeof j.error === "string" && j.error) return "openai";
+  if (typeof j.message === "string" || typeof j.detail === "string" || Array.isArray(j.detail) || Array.isArray(j.errors)) return "generic";
+  return null;
+}
+// What an error says, without what changes per request: JSON is parsed, volatile
+// fields (request ids, timestamps, the echoed model) dropped, and the error's
+// message / type / code kept; ids, uuids and the asked-about model are masked in
+// the text. Two requests rejected for the same reason get the same signature.
+const VOLATILE_KEY_RE = /^(id|request_?id|requestid|trace_?id|traceid|span_?id|correlation_?id|x[-_]request[-_]id|created(_at)?|timestamp|time|date|ts|model|model_id|path|url|uri|instance|method)$/i;
+function maskText(text: string, model?: string): string {
+  let t = String(text);
+  if (model) t = t.split(model).join("<model>");
+  return t
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<id>")
+    .replace(/\b(req|request|trace|msg|chatcmpl|resp)[_-][A-Za-z0-9]{6,}\b/g, "<id>")
+    .replace(/\b\d{4}-\d{2}-\d{2}[T ][\d:.]+Z?\b/g, "<time>")
+    .replace(/\b[0-9a-f]{16,}\b/gi, "<id>")
+    .replace(/\b\d{9,}\b/g, "<n>")
+    .replace(/\/10router-no-such-path|\/(chat\/completions|messages|responses)\b/g, "<path>")
+    .replace(/\s+/g, " ").trim();
+}
+function stripVolatile(v: unknown, model?: string): unknown {
+  if (Array.isArray(v)) return v.map((x) => stripVolatile(x, model));
+  if (v && typeof v === "object") {
+    const out: Json = {};
+    for (const k of Object.keys(v).sort()) if (!VOLATILE_KEY_RE.test(k)) out[k] = stripVolatile((v as Json)[k], model);
+    return out;
+  }
+  return typeof v === "string" ? maskText(v, model) : v;
+}
+export function errorSignature(r: Pick<ProbeResult, "status" | "text" | "json">, model?: string): string {
+  const j0: unknown = Array.isArray(r.json) ? r.json[0] : r.json;
+  if (j0 && typeof j0 === "object") {
+    const j = j0 as Json;
+    const err = j.error && typeof j.error === "object" ? j.error as Json : null;
+    const core = err ? { message: err.message, type: err.type, code: err.code, status: err.status }
+      : { error: j.error, message: j.message, detail: j.detail, type: j.type, code: j.code, errors: j.errors };
+    return `${r.status} ${JSON.stringify(stripVolatile(core, model))}`;
+  }
+  return `${r.status} ${maskText(r.text, model)}`;
+}
+
+// A 404 that means "no such route" rather than "no such model".
+function isRouteMissing(r: ProbeResult): boolean {
+  if (r.status === 405) return true;
+  if (r.status !== 404) return false;
+  if (UNKNOWN_MODEL_RE.test(r.text)) return false;
+  if (r.step.html || !r.json) return true;
+  const j = r.json as Json | null;
+  const msg = String(j?.detail ?? (j?.error as Json | null | undefined)?.message ?? j?.error ?? j?.message ?? "").trim();
+  return !msg || /^(404[: ]*)?(not found|page not found|route .* not found|no route|cannot (post|get) .*|invalid url.*)\.?$/i.test(msg);
+}
+const isStream = (r: ProbeResult) => /text\/event-stream|application\/x-ndjson/i.test(r.contentType || "") || /^\s*(data|event):/.test(r.text || "");
+// A 2xx carrying generated output: the empty body didn't stop it. Streams count
+// too: a 2xx stream is a model running, whatever the first event says.
+const generated = (r: ProbeResult): boolean => r.status >= 200 && r.status < 300 && !r.step.html && (isStream(r) || (!!r.json
+  && (Array.isArray((r.json as Json).choices) || Array.isArray((r.json as Json).content) || Array.isArray((r.json as Json).output) || (r.json as Json).type === "message" || (r.json as Json).object === "response")));
+// A 2xx whose body is an error object (some gateways answer errors with 200).
+const errorIn2xx = (r: ProbeResult): boolean => {
+  const j = (Array.isArray(r.json) ? r.json[0] : r.json) as Json | null;
+  return !!j && typeof j === "object" && (j.error !== undefined && j.error !== null && j.error !== false || j.type === "error" || j.success === false);
+};
+
+// A 401/403 that refuses one model rather than the key: it says so, or (on a
+// model probe) it names the model it was asked about.
+const explicitModelDenial = (r: ProbeResult, model: string) => MODEL_ACCESS_RE.test(r.text) || NO_ACCESS_TO_RE(model).test(r.text);
+function modelDenied(r: ProbeResult, model: string, modelProbe: boolean): boolean {
+  if (explicitModelDenial(r, model)) return true;
+  return modelProbe && namesModel(r.text, model) && !KEY_IN_400_RE.test(r.text);
+}
+
+// One label per response, so every caller reads statuses the same way.
+// `model`: the id the request asked about, so a 401/403 that refuses only that
+// model reads as "model-denied". `modelProbe`: any non-error 2xx means a model ran.
+export function classify(r: ProbeResult, { model, modelProbe = false }: { model?: string; modelProbe?: boolean } = {}): Classification {
+  if (r.status === 0) return "network";
+  if (r.status === 429) return "rate";
+  if (r.status >= 500) return "server";
+  if (r.status >= 200 && r.status < 300) {
+    if (r.step.html) return "html";
+    if (generated(r) || (modelProbe && !errorIn2xx(r))) return "generated";
+    return "ok";
+  }
+  if (r.status === 401 || r.status === 403) {
+    if (r.step.html) return "html";
+    if (CLIENT_GATE_RE.test(r.text)) return "gated";
+    if (model && modelDenied(r, model, modelProbe)) return "model-denied";
+    return apiErrorShape(r.json) || AUTH_MSG_RE.test(r.text) || r.status === 401 ? "auth" : "other";
+  }
+  if (r.step.html) return isRouteMissing(r) ? "missing" : "html";
+  if (isRouteMissing(r)) return "missing";
+  if ((r.status === 400 || r.status === 422) && KEY_IN_400_RE.test(r.text)) return "auth";
+  if (UNKNOWN_MODEL_RE.test(r.text)) return "unknown-model";
+  if ((r.status === 400 || r.status === 422) && apiErrorShape(r.json) && !AUTH_MSG_RE.test(r.text)) return "accepted";
+  return "other";
+}
+
+const ANTHROPIC = { "anthropic-version": "2023-06-01" };
+
+function authHeaders(key: string): AuthHeaders {
+  return {
+    bearer: key ? { authorization: `Bearer ${key}` } : {},
+    "x-api-key": key ? { "x-api-key": key } : {},
+    "api-key": key ? { "api-key": key } : {},
+    both: key ? { authorization: `Bearer ${key}`, "x-api-key": key } : {},
+  };
+}
+
+// Empty-body requests: a real API rejects them with 400 before running a model.
+// Each still carries the smallest output cap the API allows (Responses: 16).
+function probeSpecs(AUTH: AuthHeaders, openaiAuth: HeaderMap = AUTH.bearer): Record<Protocol, ProbeSpec> {
+  return {
+    anthropic: { path: "/messages", label: "POST /messages (empty)", headers: { ...AUTH.both, ...ANTHROPIC }, body: { model: "probe", max_tokens: 1, messages: [] } },
+    "openai-chat": { path: "/chat/completions", label: "POST /chat/completions (empty)", headers: openaiAuth, body: { model: "probe", messages: [], max_tokens: 1, stream: false } },
+    "openai-responses": { path: "/responses", label: "POST /responses (empty)", headers: openaiAuth, body: { model: "probe", input: [], max_output_tokens: 16, stream: false } },
+  };
+}
+
+// A few words on why a request failed, for the live list: the error's code,
+// type or message ("invalid_api_key"), or the page title for HTML.
+function errorHint(json: unknown, text: string, html?: boolean): string {
+  if (html) { const t = htmlTitle(text); return t ? `HTML page "${t}"` : "HTML page"; }
+  const j0: unknown = Array.isArray(json) ? json[0] : json;
+  if (!j0 || typeof j0 !== "object") return "";
+  const j = j0 as Json;
+  const err = j.error && typeof j.error === "object" ? j.error as Json : null;
+  const pick = (...v: unknown[]) => v.find((x) => typeof x === "string" && x.trim()) as string | undefined;
+  const code = pick(err?.code, typeof j.error === "string" ? j.error : undefined, j.code);
+  if (code && /^[\w.-]{2,40}$/.test(code)) return code;
+  const msg = pick(err?.message, j.message, j.detail, code, err?.type) || "";
+  return msg.replace(/\s+/g, " ").trim();
+}
+export function networkHint(preview: string, timeoutMs = PROBE_TIMEOUT_MS): string {
+  if (/timeout|timed out|aborted/i.test(preview)) return `no answer in ${Math.round(timeoutMs / 1000)}s`;
+  if (/ECONNREFUSED|refused/i.test(preview)) return "connection refused";
+  if (/ENOTFOUND|EAI_AGAIN|getaddrinfo|did not resolve/i.test(preview)) return "host not found";
+  if (/certificate|SSL|TLS/i.test(preview)) return "TLS error";
+  if (/not allowed|private|blocked/i.test(preview)) return "address not allowed";
+  return "no answer";
+}
+
+// Records every request as a step (status + body preview, secrets redacted).
+// Retries 429s a few times, honouring Retry-After (capped). Every fetch gets the
+// per-probe timeout combined with the caller's signal, so a client that hangs up
+// stops the probing; past `deadlineAt` (or once aborted) no request is sent and
+// the probe comes back `skipped` with status 0.
+interface ProberArgs { fetchFn: DetectFetch; key: string; steps: DetectStep[]; timeoutMs: number; sleep?: Sleep; signal?: AbortSignal | null; deadlineAt?: number; onProgress?: DetectProgressFn | null; root?: string }
+function makeProber({ fetchFn, key, steps, timeoutMs, sleep = defaultSleep, signal = null, deadlineAt = Infinity, onProgress = null, root = "" }: ProberArgs): Prober {
+  const redact = makeRedactor(key);
+  // A throwing listener must not break detection.
+  const emit: DetectProgressFn = (e) => { if (onProgress) try { onProgress(e); } catch { /* ignore */ } };
+  // Path relative to the URL the user gave, redacted, no query (Azure keys can sit there).
+  let rootPath = "";
+  try { rootPath = new URL(root).pathname.replace(/\/+$/, ""); } catch { /* none */ }
+  const relPath = (target: string): string => {
+    let path: string;
+    try { path = new URL(target).pathname; } catch { return ""; }
+    if (rootPath && path.startsWith(rootPath)) path = path.slice(rootPath.length) || "/";
+    return redact(path);
+  };
+  let n = 0;
+  const halted = (): StopReason | null => signal?.aborted ? "aborted" : Date.now() >= deadlineAt ? "deadline" : null;
+  const skipped = (label: string, method: string, target: string, why: StopReason): ProbeResult =>
+    ({ status: 0, text: "", json: null, skipped: true, step: { label, method, url: redact(target), status: 0, preview: why === "aborted" ? "Cancelled" : "Skipped: out of time" } });
+  const run = async (label: string, method: string, target: string, { headers = {}, body, quiet = false }: { headers?: HeaderMap; body?: Record<string, unknown>; quiet?: boolean } = {}): Promise<ProbeResult> => {
+    const id = ++n;
+    for (let attempt = 0; ; attempt++) {
+      const why = halted();
+      if (why) return skipped(label, method, target, why); // not recorded: nothing was sent
+      if (!quiet && attempt === 0) emit({ type: "request", n: id, label, method, path: relPath(target) });
+      // status is set below before the step is recorded.
+      const step: Omit<DetectStep, "status"> & { status: number | null } = { label, method, url: redact(target), status: null, preview: "" };
+      let res: ProbeResponse | null = null;
+      const timeout = AbortSignal.timeout(Math.max(1, Math.min(timeoutMs, deadlineAt - Date.now())));
+      try {
+        res = await fetchFn(target, {
+          method,
+          headers: { accept: "application/json", ...(body ? { "content-type": "application/json" } : {}), ...headers },
+          body: body ? JSON.stringify(body) : undefined,
+          signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
+        });
+      } catch (e) {
+        const stop = halted();
+        if (stop) return skipped(label, method, target, stop);
+        step.status = 0;
+        step.preview = redact((e as Error | null)?.message || String(e)).slice(0, BODY_PREVIEW);
+        steps.push(step as DetectStep);
+        if (!quiet) emit({ type: "response", n: id, status: 0, kind: "network", sent: steps.length, hint: networkHint(step.preview, timeoutMs) });
+        return { status: 0, text: "", json: null, step: step as DetectStep };
+      }
+      // Only a preview and the JSON are used: don't hold a runaway body in memory.
+      const r0 = res as Parameters<typeof readCapped>[0];
+      const text = await (r0.body || r0.arrayBuffer ? readCapped(r0, PROBE_BODY_MAX).then(({ bytes }) => new TextDecoder().decode(bytes)) : res.text()).catch(() => "");
+      const contentType = res.headers?.get?.("content-type") ?? null;
+      step.status = res.status;
+      step.preview = redact(text).replace(/\s+/g, " ").slice(0, BODY_PREVIEW);
+      step.html = isHtml(contentType, text);
+      steps.push(step as DetectStep);
+      if (res.status === 429 && attempt < MAX_RATE_RETRIES) {
+        const ra = res.headers?.get?.("retry-after");
+        const secs = ra && /^\d+(\.\d+)?$/.test(ra.trim()) ? +ra : ra ? (Date.parse(ra) - Date.now()) / 1000 : NaN;
+        const wait = Number.isFinite(secs) && secs >= 0 ? secs * 1000 : 500 * 2 ** attempt;
+        if (wait <= MAX_RETRY_WAIT_MS && Date.now() + wait < deadlineAt && !signal?.aborted) {
+          step.retried = true;
+          if (!quiet) emit({ type: "response", n: id, status: 429, kind: "rate", retrying: true, sent: steps.length });
+          emit({ type: "throttled", waitMs: Math.round(wait), sent: steps.length });
+          await sleep(wait); continue;
+        }
+      }
+      let json: unknown = null;
+      try { json = JSON.parse(text); } catch { /* not JSON */ }
+      const result: ProbeResult = { status: res.status, text, json, contentType, step: step as DetectStep };
+      if (!quiet) emit({ type: "response", n: id, status: res.status, kind: classify(result), sent: steps.length, hint: redact(errorHint(json, text, step.html)).slice(0, 60) || undefined });
+      return result;
+    }
+  };
+  return Object.assign(run, { halted, emit, relPath, sent: () => steps.length });
+}
+
+// Model probes carry only the model, the empty conversation and a 1-token cap,
+// so the model name is the first thing validated. OpenAI-style gateways can
+// reject max_tokens first and ask for max_completion_tokens: then the cap
+// moves to max_completion_tokens.
+// stream:false stays explicit: a gateway that streams by default would otherwise
+// answer with an SSE stream.
+function modelBody(p: ProbeSpec, model: string, { maxCompletionTokens = false }: DetectQuirks = {}): Record<string, unknown> {
+  const { max_tokens: _cap, ...rest } = p.body;
+  if (p.path === "/chat/completions") return maxCompletionTokens ? { ...rest, model, max_completion_tokens: 1, stream: false } : { ...rest, model, max_tokens: 1, stream: false };
+  return { ...p.body, model };
+}
+const MAX_COMPLETION_RE = /max_completion_tokens/i;
+
+const PARTIAL_REASON: Record<StopReason, string> = {
+  auth: "The key was rejected part-way through, so some models weren't checked.",
+  denied: "The key isn't allowed to use any of the models checked.",
+  rate: "The endpoint kept rate-limiting, so some models weren't checked.",
+  generated: "The endpoint ran a model on an empty request, so model checks were stopped to avoid charges.",
+  failing: "The endpoint kept failing (network errors, timeouts or 5xx), so some models weren't checked.",
+  deadline: "Detection ran out of time, so some models weren't checked.",
+  aborted: "Detection was cancelled, so some models weren't checked.",
+};
+
+// Tracks network/timeout/5xx failures in a row on one path.
+function failureCounter() {
+  let run = 0;
+  return (k: Classification): boolean => { run = k === "network" || k === "server" ? run + 1 : 0; return run >= MAX_CONSECUTIVE_FAILURES; };
+}
+// Tracks model-access refusals by signature (the refusal with the model id
+// taken out, so "no access to m1" and "no access to m2" match). Returns how many
+// different models got this same refusal.
+function deniedCounter() {
+  const seen = new Map<string, Set<string>>();
+  let most = 0;
+  const count = (r: ProbeResult, model: string): number => {
+    const sig = errorSignature(r, model);
+    if (!seen.has(sig)) seen.set(sig, new Set());
+    const models = seen.get(sig)!;
+    models.add(model.toLowerCase());
+    most = Math.max(most, models.size);
+    return models.size;
+  };
+  return Object.assign(count, { most: () => most });
+}
+
+// Ask about each id with an empty body. Returns { ids, complete, stopped }:
+// `ids` null when the endpoint doesn't validate model names first (then probing
+// tells us nothing). `complete` is false when a probe failed (network error,
+// 429, 5xx) so a missing id may just mean "couldn't ask"; `stopped` names why
+// probing ended early (auth | rate | generated).
+interface ProbeModelsArgs { probe: Prober; base: string; protocol: string; AUTH: AuthHeaders; openaiAuth: HeaderMap; ids: string[]; quirks?: DetectQuirks; concurrency?: number }
+interface ProbeModelsOut { ids: string[] | null; complete: boolean; stopped: StopReason | null; check: ModelCheck | null }
+async function probeModels({ probe, base, protocol, AUTH, openaiAuth, ids, quirks = {}, concurrency = PROBE_CONCURRENCY }: ProbeModelsArgs): Promise<ProbeModelsOut> {
+  const out: ProbeModelsOut = { ids: null, complete: false, stopped: null, check: null };
+  const p = (probeSpecs(AUTH, openaiAuth) as Partial<Record<string, ProbeSpec>>)[protocol];
+  if (!p || !ids.length) return out;
+  const url = joinUrl(base, p.path);
+  // Canary: a made-up id must be refused as unknown, or "accepted" means nothing.
+  let canary = await probe("Check model (made-up id)", "POST", url, { headers: p.headers, body: modelBody(p, CANARY, quirks) });
+  if (p.path === "/chat/completions" && !quirks.maxCompletionTokens && canary.status === 400 && MAX_COMPLETION_RE.test(canary.text)) {
+    quirks.maxCompletionTokens = true;
+    canary = await probe("Check model (made-up id, max_completion_tokens)", "POST", url, { headers: p.headers, body: modelBody(p, CANARY, quirks) });
+  }
+  if (canary.skipped) { out.stopped = probe.halted(); return out; }
+  const ck = classify(canary, { model: CANARY, modelProbe: true });
+  if (ck === "auth") { out.stopped = "auth"; return out; }
+  if (ck === "rate") { out.stopped = "rate"; return out; }
+  if (ck === "generated") { out.stopped = "generated"; out.ids = []; quirks.generatesOnEmpty = true; return out; }
+  // A made-up id refused as "no access to that model" works as well (LiteLLM).
+  if (ck !== "unknown-model" && ck !== "model-denied") return { ...out, complete: ck !== "network" && ck !== "server" };
+  const ok: string[] = [];
+  let failed = false;
+  const failing = failureCounter();
+  const denied = deniedCounter();
+  const queue = dedupe(ids);
+  const total = queue.length;
+  const path = probe.relPath(url);
+  let checked = 0;
+  const unasked: string[] = []; // taken off the queue but never answered (skipped)
+  probe.emit({ type: "models-start", protocol, path, total, lanes: concurrency });
+  await Promise.all(Array.from({ length: concurrency }, async (_, lane) => {
+    for (let id: string | undefined; !out.stopped && (id = queue.shift()) !== undefined;) {
+      probe.emit({ type: "probe", id, lane });
+      const r = await probe(`Check model ${id}`, "POST", url, { headers: p.headers, body: modelBody(p, id, quirks), quiet: true });
+      if (r.skipped) { unasked.push(id); probe.emit({ type: "probe-result", id, lane, known: false, skipped: true, sent: probe.sent() }); out.stopped ||= probe.halted(); break; }
+      const before = ok.length;
+      const k = classify(r, { model: id, modelProbe: true });
+      if (failing(k)) out.stopped ||= "failing";
+      // That model isn't served to this key: mark it and go on. A generic 401/403
+      // that merely names the model is weaker evidence, so the same one on
+      // several models (with none accepted) is the key. An explicit "not allowed
+      // to access model" never stops early: a restricted key (LiteLLM) gets it
+      // for every model but the few it may use.
+      if (k === "model-denied") { if (denied(r, id) >= MODEL_DENIED_STOP && !ok.length && !explicitModelDenial(r, id)) out.stopped ||= "auth"; }
+      else if (k === "auth" || k === "gated") out.stopped ||= "auth";           // not "not served"
+      else if (k === "rate") out.stopped ||= "rate";
+      else if (k === "generated") { ok.push(id); quirks.generatesOnEmpty = true; out.stopped ||= "generated"; } // served, but stop spending
+      else if (k === "network" || k === "server" || k === "html") failed = true;
+      else if (k === "accepted" && !NOT_SERVABLE_RE.test(r.text)) ok.push(id);
+      // Only a served / not-served answer counts as checked; a 429, a refused
+      // key or a failure didn't tell us, so the id goes back on the "unasked" list.
+      const told = !(k === "rate" || k === "auth" || k === "gated" || k === "network" || k === "server" || k === "html");
+      if (told) checked++; else unasked.push(id);
+      probe.emit({ type: "probe-result", id, lane, known: ok.length > before, skipped: !told || undefined, sent: probe.sent() });
+    }
+  }));
+  // Every model asked about was refused alike: the key can't use any of them.
+  if (!out.stopped && !ok.length && denied.most() >= MODEL_DENIED_STOP) out.stopped = "denied";
+  probe.emit({ type: "models-done", protocol, path, total, checked, found: ok.length, stopped: out.stopped });
+  out.complete = !failed && !out.stopped;
+  // Keep catalog order, not completion order.
+  const order = new Map(ids.map((id, i) => [id, i]));
+  out.ids = ok.sort((a, b) => order.get(a)! - order.get(b)!);
+  const rest = new Set([...unasked, ...queue].map((x) => x.toLowerCase()));
+  out.check = { total, checked, found: ok.length, unchecked: dedupe(ids).filter((x) => rest.has(x.toLowerCase())), stopped: out.stopped };
+  return out;
+}
+
+// GET /models with pagination. Returns { ids, listed, auth } where `listed`
+// means a real list answered (even an empty one).
+// `complete`: every page answered (no failed page, no page cap hit).
+async function fetchModelList(probe: Prober, base: string, label: string, headers: HeaderMap): Promise<{ ids: string[]; listed: boolean; complete: boolean; first: ProbeResult }> {
+  let url: string | null = joinUrl(base, "/models");
+  const ids: string[] = [];
+  let first: ProbeResult | null = null;
+  for (let page = 0; page < MAX_MODEL_PAGES && url; page++) {
+    const r = await probe(page ? `${label} page ${page + 1}` : label, "GET", url, { headers });
+    if (!first) first = r;
+    if (!(r.status >= 200 && r.status < 300) || r.step.html || !modelEntries(r.json)) break;
+    ids.push(...parseModelList(r.json));
+    url = nextModelPage(r.json, url);
+  }
+  const listed = !!first && first.status >= 200 && first.status < 300 && !first.step.html && !!modelEntries(first.json);
+  // The loop always runs at least once, so `first` is set.
+  return { ids: dedupe(ids), listed, complete: listed && !url, first: first as ProbeResult };
+}
+
+// Which API path a model should use when the endpoint serves it on several.
+// Claude stays on Anthropic Messages (thinking, tool_use and cache_control pass
+// through untranslated); everything else prefers Responses, then Chat.
+export function chooseRoute<P extends string>(model: string, protocols: P[]): P {
+  if (protocols.length === 1) return protocols[0];
+  const has = (p: string): p is P => (protocols as string[]).includes(p);
+  if (/claude/i.test(model) && has("anthropic")) return "anthropic" as P;
+  return ["openai-responses", "openai-chat", "anthropic"].find(has) || protocols[0];
+}
+
+// model -> route, from { protocol: [models] }. `primary` = the protocol serving
+// the most models (the node's own type); routes only list models that leave it.
+export function buildRoutes<P extends string>(byProtocol: Partial<Record<P, string[]>>, fixedPrimary: P | null = null): { primary: P | null; models: string[]; routes: Record<string, P>; counts: Record<string, number> } {
+  const serving = new Map<string, P[]>();
+  for (const [proto, ids] of Object.entries(byProtocol) as [P, string[] | undefined][]) for (const id of ids || []) {
+    if (!serving.has(id)) serving.set(id, []);
+    serving.get(id)!.push(proto);
+  }
+  const all: Record<string, P> = {};
+  for (const [id, protos] of serving) all[id] = chooseRoute(id, protos);
+  const counts: Record<string, number> = {};
+  for (const p of Object.values(all)) counts[p] = (counts[p] || 0) + 1;
+  const primary = fixedPrimary || (Object.keys(counts).sort((a, b) => counts[b] - counts[a] || (a === "anthropic" ? -1 : 1))[0] as P | undefined) || null;
+  const routes = Object.fromEntries(Object.entries(all).filter(([, p]) => p !== primary));
+  return { primary, models: [...serving.keys()], routes, counts };
+}
+
+// Models for an already-known endpoint (the "Import models" button): /models
+// first, then the catalog probe. Free requests only.
+// Adds `partial` + `partialReason` when probing stopped early, and
+// `authRejected` when the key was refused.
+export interface DiscoverOptions {
+  baseUrl?: string | null;
+  apiKey?: unknown;
+  protocol: string;
+  protocols?: string[];
+  fetchFn: DetectFetch;
+  catalog?: CatalogInput;
+  timeoutMs?: number;
+  quirks?: DetectQuirks;
+  sleep?: Sleep;
+  // Client hang-up: stops probing. deadlineMs: the whole run's time budget.
+  signal?: AbortSignal | null;
+  deadlineMs?: number;
+  deadlineAt?: number;
+  // Live progress (see DetectProgress). Paths and model ids only.
+  onProgress?: DetectProgressFn | null;
+}
+export async function discoverModels({ baseUrl, apiKey, protocol, protocols, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS, quirks = {}, sleep, signal = null, deadlineMs = DETECT_DEADLINE_MS, deadlineAt = Date.now() + deadlineMs, onProgress = null }: DiscoverOptions): Promise<DiscoverResult> {
+  // Two-path endpoint: discover on each path, then route each model.
+  if (protocols && protocols.length > 1) {
+    const steps: DetectStep[] = [];
+    const byProtocol: Record<string, string[]> = {};
+    const complete: Record<string, boolean> = {};
+    let source: ModelsSource = "none", catalogName: string | undefined, partialReason: string | null = null, authRejected = false;
+    for (const p of protocols) {
+      const r = await discoverModels({ baseUrl, apiKey, protocol: p, fetchFn, catalog, timeoutMs, quirks, sleep, signal, deadlineAt, onProgress });
+      steps.push(...r.steps);
+      byProtocol[p] = r.models;
+      complete[p] = r.complete as boolean; // single-path result
+      partialReason ||= r.partialReason;
+      authRejected ||= r.authRejected;
+      if (r.models.length && source === "none") { source = r.source; catalogName = r.catalogName; }
+      if (r.authRejected) break; // same key on every path
+      if (signal?.aborted || Date.now() >= deadlineAt) { partialReason ||= PARTIAL_REASON[signal?.aborted ? "aborted" : "deadline"]; break; }
+    }
+    for (const p of protocols) if (!(p in complete)) { complete[p] = false; byProtocol[p] = []; }
+    // The node's own path is fixed here (it's already saved), so route against it.
+    const { models, routes, counts } = buildRoutes(byProtocol, protocol);
+    // Routes are only trustworthy when every path was asked about every model.
+    const allComplete = protocols.every((p) => complete[p]);
+    return { models, source, catalogName, steps, routes, counts, byProtocol, complete, allComplete, partial: !!partialReason, partialReason, authRejected };
+  }
+  const key = cleanKey(apiKey);
+  const base = String(baseUrl || "").replace(/\/+$/, "").replace(/\/messages$/, "");
+  const steps: DetectStep[] = [];
+  const probe = makeProber({ fetchFn, key, steps, timeoutMs, sleep, signal, deadlineAt, onProgress, root: base });
+  const AUTH = authHeaders(key);
+  // Azure, or a node detection saw accept only the `api-key` header.
+  const azure = isAzureHost(base) || !!quirks.apiKeyHeader;
+  const openaiAuth = azure ? AUTH["api-key"] : AUTH.bearer;
+  const styles: [string, HeaderMap][] = protocol === "anthropic" ? [["x-api-key", { ...AUTH.both, ...ANTHROPIC }]] : [[azure ? "api-key" : "bearer", openaiAuth]];
+  let sawAuth = false;
+  for (const [style, h] of [["none", {}], ...styles] as [string, HeaderMap][]) {
+    const r = await fetchModelList(probe, base, `GET /models (${style === "none" ? "no auth" : style})`, h);
+    if (r.ids.length) return { models: r.ids, source: "models", steps, complete: true, partial: false, partialReason: null, authRejected: false };
+    const k = classify(r.first);
+    if (style !== "none" && (k === "auth" || k === "gated")) sawAuth = true;
+    if (k === "missing" || k === "network") break;
+  }
+  const { matched, ids } = candidateModels(base, catalog);
+  const res = await probeModels({ probe, base, protocol, AUTH, openaiAuth, ids, quirks });
+  // A /models 401 alone isn't a refused key when the model probes got through
+  // (the canary was validated, or the endpoint answered without checking).
+  const authRejected = keyStop(res.stopped) || (sawAuth && res.ids === null && !res.complete && !res.stopped);
+  const halted = res.stopped ? null : probe.halted();
+  const partialReason = res.stopped ? PARTIAL_REASON[res.stopped] : authRejected ? PARTIAL_REASON.auth : halted ? PARTIAL_REASON[halted] : null;
+  const meta = { steps, complete: res.complete && !authRejected && !halted, partial: !!partialReason, partialReason, authRejected };
+  if (res.ids?.length) return { models: res.ids, source: matched ? "catalog" : "guessed", catalogName: matched?.name, ...meta };
+  return { models: [], source: "none", ...meta };
+}
+
+// Probe runner. `fetchFn` is injected so tests (and the SSRF-safe fetch) can supply it.
+export interface DetectOptions {
+  url: unknown;
+  apiKey?: unknown;
+  fetchFn: DetectFetch;
+  catalog?: CatalogInput;
+  timeoutMs?: number;
+  sleep?: Sleep;
+  // Client hang-up: stops probing. deadlineMs: the whole detection's time budget.
+  signal?: AbortSignal | null;
+  deadlineMs?: number;
+  // Live progress (see DetectProgress). Paths and model ids only, never the key.
+  onProgress?: DetectProgressFn | null;
+  // Leave out step 4 (asking about models one by one): the endpoint page's
+  // Re-detect checks only the API, URL and fixes; models have their own check.
+  skipModels?: boolean;
+}
+
+// DETECT_ANTHROPIC_FIRST_HINTS: comma-separated URL substrings (any case) for
+// gateways whose Anthropic Messages API should be probed first. Empty by
+// default. Quotes around an entry or the whole list (an env-file habit) are
+// dropped. Read on first use, so this module stays safe to import in the browser.
+export const parseHintList = (raw: unknown): string[] => String(raw ?? "").split(",")
+  .map((s) => s.trim().replace(/^['"]+|['"]+$/g, "").trim().toLowerCase()).filter(Boolean);
+let hintCache: string[] | null = null;
+export function anthropicFirstHints(): string[] {
+  return (hintCache ??= parseHintList(typeof process === "undefined" ? "" : process.env?.DETECT_ANTHROPIC_FIRST_HINTS));
+}
+// Probe Messages first: the URL names Anthropic or Claude or matches a
+// configured hint, or the key is an Anthropic one.
+export function prefersAnthropic(base: unknown, key: string, hints: readonly string[] = anthropicFirstHints()): boolean {
+  const url = String(base).toLowerCase();
+  return /anthropic|claude/.test(url) || hints.some((h) => url.includes(h)) || /^sk-ant-/.test(key);
+}
+
+export async function detectEndpoint({ url, apiKey, fetchFn, catalog = {}, timeoutMs = PROBE_TIMEOUT_MS, sleep, signal = null, deadlineMs = DETECT_DEADLINE_MS, onProgress = null, skipModels = false }: DetectOptions): Promise<DetectResult> {
+  const key = cleanKey(apiKey);
+  const base0 = normalizeUrl(url);
+  const steps: DetectStep[] = [];
+  if (!base0) return { ok: false, error: "That doesn't look like a URL.", steps };
+
+  const deadlineAt = Date.now() + deadlineMs;
+  const probe = makeProber({ fetchFn, key, steps, timeoutMs, sleep, signal, deadlineAt, onProgress, root: base0 });
+  const AUTH = authHeaders(key);
+  const azure = isAzureHost(base0);
+
+  let models: string[] = [];
+  let base = base0;
+  let modelsAuth: string | null = null;
+  let listComplete = false; // GET /models answered every page
+  let sawAuthFail = false;
+  const listRefused = new Set<string>(); // auth styles GET /models refused
+  let clientGated = false;
+  let rateLimited = false;
+  let probeAuthFail = false; // a POST probe, not just GET /models, refused the key
+  let keyedListRefused = false; // GET /models listed without a key, and refused this one
+  // A host that never answers (timeouts, refused, no DNS): two such requests
+  // with nothing else heard back is enough; waiting on the rest only burns time.
+  let netFails = 0, answered = false;
+  const heard = (k: Classification) => { if (k === "network") netFails++; else answered = true; };
+  const unreachable = () => netFails >= UNREACHABLE_AFTER && !answered;
+  const note = (k: Classification) => {
+    if (k === "auth") sawAuthFail = true;
+    if (k === "gated") clientGated = true;
+    if (k === "rate") rateLimited = true;
+  };
+
+  // 1. Model list: no auth, then each auth style, on each candidate base.
+  const listStyles: [string, HeaderMap][] = [["none", {}], ...(azure ? [["api-key", AUTH["api-key"]] as [string, HeaderMap]] : []), ["bearer", AUTH.bearer], ["x-api-key", { ...AUTH["x-api-key"], ...ANTHROPIC }], ...(azure ? [] : [["api-key", AUTH["api-key"]] as [string, HeaderMap]])];
+  outer:
+  for (const b of candidateBases(base0)) {
+    for (const [style, h] of listStyles) {
+      if (style !== "none" && !key) continue;
+      // api-key is only a fallback after Bearer was refused (Azure-style).
+      if (style === "api-key" && !azure && !sawAuthFail) continue;
+      const r = await fetchModelList(probe, b, `GET /models (${style === "none" ? "no auth" : style})`, h);
+      if (r.listed && (r.ids.length || Array.isArray((r.first.json as Json | null)?.data))) {
+        models = r.ids; base = b; modelsAuth = style; listComplete = r.complete;
+        // Without a key some gateways list only their public models: ask with it too.
+        if (style === "none" && key) {
+          const k = await fetchModelList(probe, b, "GET /models (bearer)", AUTH.bearer);
+          if (k.listed) models = dedupe([...models, ...k.ids]);
+          else if (classify(k.first) === "auth") keyedListRefused = true;
+          listComplete &&= k.listed && k.complete;
+        }
+        break outer;
+      }
+      const k = classify(r.first);
+      heard(k);
+      if (style !== "none") note(k); else if (k === "gated") clientGated = true;
+      if (style !== "none" && k === "auth") listRefused.add(style);
+      if (k === "missing" || k === "network") break; // nothing at this path for any auth
+    }
+  }
+  const openaiAuth = modelsAuth === "api-key" || (azure && modelsAuth !== "bearer") ? AUTH["api-key"] : AUTH.bearer;
+  const PROBES = probeSpecs(AUTH, openaiAuth);
+
+  // 2. Protocol: empty-body probes. Anthropic first when the URL/key hints at it.
+  // Found = an API-shaped 400/422 (or an unknown-model error, vLLM/Ollama answer
+  // that with 404). 5xx, HTML, plain "Not Found" and auth errors are not.
+  const preferAnthropic = prefersAnthropic(base0, key);
+  const order: Protocol[] = preferAnthropic ? ["anthropic", "openai-chat", "openai-responses"] : ["openai-chat", "openai-responses", "anthropic"];
+  // A model-access 401/403 on model "probe" counts too: the path and key work.
+  const found: { proto: Protocol; base: string; shape: ErrorShape | null; sig: string }[] = [];
+  const generatesOnEmpty = new Set<Protocol>();
+  let serverErrors = 0;
+  for (const b of models.length ? [base] : candidateBases(base0)) {
+    for (const proto of order) {
+      const p = PROBES[proto];
+      if (unreachable()) break;
+      const r = await probe(p.label, "POST", joinUrl(b, p.path), { headers: p.headers, body: p.body });
+      if (r.skipped) break;
+      const k = classify(r, { model: String(p.body.model) });
+      heard(k);
+      note(k);
+      if (k === "auth") probeAuthFail = true;
+      if (k === "server") serverErrors++;
+      if (k === "accepted" || k === "unknown-model" || k === "model-denied") found.push({ proto, base: b, shape: apiErrorShape(r.json), sig: errorSignature(r, String(p.body.model)) });
+      else if (k === "generated") { found.push({ proto, base: b, shape: null, sig: "" }); generatesOnEmpty.add(proto); }
+    }
+    if (found.length || probe.halted() || unreachable()) { if (found.length) base = found[0].base; break; }
+  }
+
+  // A server that answers every path alike (a catch-all 400) isn't evidence of
+  // any protocol: send the same request (same model, same auth) to a path no API
+  // has. If it gets the same kind of answer, keep only paths whose error is shaped
+  // like their own protocol and says something other than the catch-all.
+  // Bodies are compared normalized, so an echoed request id doesn't tell them apart.
+  let filtered = found;
+  if (found.length) {
+    const controls = new Map<string, { sig: string; catchAll: boolean } | null>();
+    for (const f of found) {
+      if (!f.sig) continue; // generated: nothing to compare
+      const p = PROBES[f.proto];
+      const ctlKey = JSON.stringify([p.headers, p.body]);
+      if (controls.has(ctlKey)) continue;
+      const ctl = await probe(`Control (made-up path, as ${f.proto})`, "POST", joinUrl(base, CONTROL_PATH), { headers: p.headers, body: p.body });
+      if (ctl.skipped) { controls.set(ctlKey, null); continue; }
+      const ck = classify(ctl, { model: String(p.body.model) });
+      controls.set(ctlKey, { sig: errorSignature(ctl, String(p.body.model)), catchAll: ck === "accepted" || ck === "unknown-model" || ck === "model-denied" });
+    }
+    filtered = found.filter((f) => {
+      const p = PROBES[f.proto];
+      const ctl = f.sig ? controls.get(JSON.stringify([p.headers, p.body])) : null;
+      if (!ctl?.catchAll) return true;
+      return f.sig !== ctl.sig && (f.proto === "anthropic" ? f.shape === "anthropic" : f.shape === "openai");
+    });
+  }
+
+  // The key worked with some auth style, so a refusal of another style isn't a refused key.
+  const keyAccepted = !!modelsAuth && modelsAuth !== "none";
+  const stop0 = probe.halted();
+  if (!filtered.length && stop0) {
+    return { ok: false, failure: stop0 === "aborted" ? "cancelled" : "timeout", error: stop0 === "aborted" ? "Detection was cancelled." : "Detection ran out of time before an API answered. Try again.", baseUrl: base0, steps, partial: true, partialReason: PARTIAL_REASON[stop0], clientGated, authRejected: false, rateLimited, keyVerdict: null };
+  }
+
+  if (!filtered.length) {
+    const last = steps[steps.length - 1];
+    const html = steps.find((s) => s.html);
+    // Only GET /models refused the key, and the API paths answer 5xx: an
+    // admin-only list in front of a server that is down, not a dead key.
+    const keyRefused = sawAuthFail && !keyAccepted && (probeAuthFail || !serverErrors);
+    const failure: FailureKind = clientGated ? "gated" : keyRefused ? "key" : rateLimited ? "rate" : found.length ? "catch-all"
+      : serverErrors ? "down" : html ? "html" : unreachable() || last?.status === 0 ? "unreachable" : "no-api";
+    const error = clientGated ? "This endpoint only accepts specific clients."
+      : keyRefused ? "The key was rejected."
+      : rateLimited ? "The endpoint is rate-limiting requests. Try again in a minute."
+      : found.length ? "This server answers every request the same way, so no API could be identified."
+      : serverErrors ? "The endpoint returned server errors (5xx). It may be down; try again later."
+      : html ? `This isn't an API response${htmlTitle(html.preview) ? ` (got "${htmlTitle(html.preview)}")` : ""}.`
+      : last?.status === 0 ? `Couldn't reach it: ${last.preview}`
+      : "No OpenAI or Anthropic API found at this URL.";
+    // A GET /models refusal alone can be an admin-only list.
+    // GET /models took the key and the POSTs refused it, with nothing else
+    // answering (no 5xx, no gate): it can list, not use.
+    const keyVerdict: KeyVerdict = failure === "key" ? (probeAuthFail ? "refused" : null) : failure === "rate" ? "rate-limited"
+      : failure === "no-api" && keyAccepted && probeAuthFail ? "refused" : null;
+    return { ok: false, failure, error, baseUrl: base0, steps, clientGated, authRejected: sawAuthFail && !keyAccepted && !clientGated, rateLimited, keyVerdict };
+  }
+
+  const protocol = filtered[0].proto;
+  // Quirks we can read off the free probes' error bodies.
+  const quirks: DetectQuirks = {};
+  if (steps.some((st) => /chat\/completions/.test(st.url) && MAX_COMPLETION_RE.test(st.preview))) quirks.maxCompletionTokens = true;
+  if (generatesOnEmpty.size) quirks.generatesOnEmpty = true; // model probes may set it too
+  if (openaiAuth === AUTH["api-key"] && key) quirks.apiKeyHeader = true;
+  const protocols = [...new Set(filtered.map((f) => f.proto))];
+
+  // 3. Is the key really checked? A bad key must be refused, or "works" means nothing.
+  let keyConfirmed: KeyConfirmed = modelsAuth && modelsAuth !== "none" ? "likely" : "unknown";
+  if (key && !generatesOnEmpty.has(protocol)) {
+    const p = PROBES[protocol];
+    const bad = "10router-bad-key-check";
+    const badHeaders = Object.fromEntries(Object.entries(p.headers).map(([k, v]) => [k, k === "authorization" ? `Bearer ${bad}` : k === "x-api-key" || k === "api-key" ? bad : v]));
+    const r = await probe("Bad-key check", "POST", joinUrl(base, p.path), { headers: badHeaders, body: p.body });
+    const k = classify(r);
+    if (!r.skipped) keyConfirmed = k === "auth" ? "confirmed" : r.status === 400 ? "unknown" : keyConfirmed;
+  }
+
+  // 4. No list? Ask about candidate models one at a time, still free. When
+  // several APIs answered, ask on each: they can serve different models.
+  let modelsSource: ModelsSource = models.length ? "models" : "none";
+  const { matched, ids: candidates } = candidateModels(base, catalog);
+  let routes: Record<string, Protocol> = {};
+  let byProtocol: Partial<Record<Protocol, string[]>> | null = null;
+  let primary: Protocol = protocol;
+  let partialReason: string | null = null;
+  // Only a model-probe refusal counts as a refused key here: the protocol probes
+  // already got through with the key, and a /models refusal of one auth style
+  // says nothing about the style that worked.
+  let probesRefusedKey = false;
+  let stopReason: StopReason | null = null;
+  const modelStops = new Set<StopReason>(); // every stop, not just the first
+  let inconclusive = false; // some API's model probes ended before they told anything
+  let blocked: StopReason | null = null; // a stop that applies to every path
+  const checks: Partial<Record<Protocol, ModelCheck>> = {};
+  if (!models.length && !skipModels) {
+    byProtocol = {};
+    for (const proto of protocols) {
+      if (generatesOnEmpty.has(proto)) { byProtocol[proto] = []; partialReason ||= PARTIAL_REASON.generated; stopReason ||= "generated"; continue; }
+      if (blocked) {
+        // Never asked on this API (same key / limiter / clock on every path).
+        checks[proto] = { total: dedupe(candidates).length, checked: 0, found: 0, unchecked: dedupe(candidates), stopped: blocked };
+        continue;
+      }
+      const res = await probeModels({ probe, base, protocol: proto, AUTH, openaiAuth, ids: candidates, quirks });
+      byProtocol[proto] = res.ids || [];
+      if (res.check) checks[proto] = res.check;
+      if (res.stopped) { partialReason ||= PARTIAL_REASON[res.stopped]; stopReason ||= res.stopped; modelStops.add(res.stopped); if (keyStop(res.stopped)) probesRefusedKey = true; }
+      // Cut short, or the made-up-id check itself failed (5xx, network).
+      if (res.stopped === "failing" || res.stopped === "deadline" || res.stopped === "aborted" || (res.ids === null && !res.stopped && !res.complete && candidates.length)) inconclusive = true;
+      // Some models got no answer (5xx, network) without a stop: still partial.
+      if (!res.stopped && !res.complete && candidates.length) partialReason ||= PARTIAL_REASON.failing;
+      if (res.stopped && res.stopped !== "generated" && res.stopped !== "failing") blocked = res.stopped;
+    }
+    const built = buildRoutes(byProtocol);
+    if (built.models.length) {
+      models = built.models;
+      routes = built.routes;
+      primary = built.primary as Protocol; // set: there are models
+      modelsSource = matched ? "catalog" : "guessed";
+    }
+  }
+  const stop1 = probe.halted();
+  if (stop1) { partialReason ||= PARTIAL_REASON[stop1]; stopReason ||= stop1; }
+  // The probes passed, but the key was refused while asking about models
+  // (revoked key on an endpoint with no /models): say so, not "no list".
+  // GET /models refusing the very style the found path uses still counts, unless
+  // the bad-key check showed the path checks keys (then the real one passed).
+  const pathStyle = primary === "anthropic" ? ["bearer", "x-api-key"] : [openaiAuth === AUTH["api-key"] ? "api-key" : "bearer"];
+  const listRefusedPathStyle = pathStyle.every((st) => listRefused.has(st)) && keyConfirmed !== "confirmed";
+  const authRejected = !models.length && !keyAccepted && (probesRefusedKey || listRefusedPathStyle);
+  // The free probes got through with this key. A key the bad-key check
+  // confirmed, or that GET /models took, works. A public list that refused it
+  // when sent with the key doesn't vouch for it. Anything found or generated
+  // means it works. It was refused only if the model probes stopped on the key
+  // itself, and limited only if a rate limit stopped them first. A key that
+  // got through but could use none of the models asked about (limited, out of
+  // credit), or that only GET /models refused in the API path's style, is
+  // unknown: another key may do better. So are probes cut short by time or
+  // failures.
+  const confirmed = keyConfirmed === "confirmed";
+  // The keyed list retry sends Bearer: it only speaks for a path that takes Bearer.
+  const bearerPath = pathStyle.length === 1 && pathStyle[0] === "bearer";
+  const keyVerdict: KeyVerdict = generatesOnEmpty.size || modelStops.has("generated") ? "accepted"
+    : keyedListRefused && bearerPath && !confirmed ? "refused"
+    : models.length ? "accepted"
+    : modelStops.has("auth") && !keyAccepted && !confirmed ? "refused"
+    : modelStops.has("rate") ? "rate-limited"
+    // A 402 (out of credit) on the model probes: that key can't use anything.
+    : modelStops.has("auth") || modelStops.has("denied") || listRefusedPathStyle || steps.some((s) => s.status === 402) ? null
+    : keyAccepted || confirmed || !inconclusive ? "accepted"
+    : null;
+
+  const name = matched?.name || suggestName(base);
+  return {
+    ok: true,
+    protocol: primary,
+    protocols,
+    routes,
+    byProtocol,
+    baseUrl: base,
+    models,
+    modelsSource,
+    ...(modelsSource === "models" ? { listComplete } : {}),
+    keyConfirmed,
+    quirks,
+    partial: !!partialReason,
+    partialReason,
+    authRejected,
+    keyVerdict,
+    suggestedName: name,
+    suggestedPrefix: makePrefix(name),
+    stopReason,
+    ...(Object.keys(checks).length ? { checks } : {}),
+    steps,
+  };
+}
+
+// "Check the rest": ask about `ids` on one known API, `concurrency` at a time
+// (1 by default: the first run stopped early, often on a rate limit). Free
+// requests only, same as detection. Starts with the made-up-id canary again,
+// since a limiter or a revoked key can change the answer.
+export interface CheckModelsOptions {
+  baseUrl: string;
+  apiKey?: unknown;
+  protocol: Protocol;
+  ids: string[];
+  fetchFn: DetectFetch;
+  quirks?: DetectQuirks;
+  concurrency?: number;
+  timeoutMs?: number;
+  sleep?: Sleep;
+  signal?: AbortSignal | null;
+  deadlineMs?: number;
+  onProgress?: DetectProgressFn | null;
+}
+export interface CheckModelsResult {
+  ok: boolean;
+  error?: string;
+  models: string[];
+  check: ModelCheck;
+  partialReason: string | null;
+  steps: DetectStep[];
+}
+export const MAX_RECHECK_IDS = 200;
+export async function checkModels({ baseUrl, apiKey, protocol, ids, fetchFn, quirks = {}, concurrency = 1, timeoutMs = PROBE_TIMEOUT_MS, sleep, signal = null, deadlineMs = DETECT_DEADLINE_MS, onProgress = null }: CheckModelsOptions): Promise<CheckModelsResult> {
+  const key = cleanKey(apiKey);
+  const base = String(baseUrl || "").replace(/\/+$/, "");
+  const list = dedupe((ids || []).map((x) => String(x)).filter((x) => x && x.length <= 200)).slice(0, MAX_RECHECK_IDS);
+  const steps: DetectStep[] = [];
+  const empty: ModelCheck = { total: list.length, checked: 0, found: 0, unchecked: list, stopped: null };
+  if (!list.length) return { ok: true, models: [], check: empty, partialReason: null, steps };
+  const probe = makeProber({ fetchFn, key, steps, timeoutMs, sleep, signal, deadlineAt: Date.now() + deadlineMs, onProgress, root: base });
+  const AUTH = authHeaders(key);
+  const openaiAuth = isAzureHost(base) || quirks.apiKeyHeader ? AUTH["api-key"] : AUTH.bearer;
+  const q = { ...quirks };
+  const res = await probeModels({ probe, base, protocol, AUTH, openaiAuth, ids: list, quirks: q, concurrency: Math.max(1, Math.min(PROBE_CONCURRENCY, concurrency)) });
+  if (!res.check) {
+    const why = res.stopped || probe.halted();
+    return { ok: false, error: why ? PARTIAL_REASON[why] : "The endpoint no longer answers model checks the way it did, so nothing was asked.", models: [], check: { ...empty, stopped: why }, partialReason: why ? PARTIAL_REASON[why] : null, steps };
+  }
+  return { ok: true, models: res.ids || [], check: res.check, partialReason: res.stopped ? PARTIAL_REASON[res.stopped] : null, steps };
+}
+
+// ---- Site name + icon ---------------------------------------------------------
+// The provider's own site, fetched with no key: its root (and the bare domain
+// when the API host is api./gateway./llm.…). Name from og:site_name →
+// application-name → apple-mobile-web-app-title → <title> (tagline cut off);
+// icon from apple-touch-icon → largest <link rel=icon> → /favicon.ico, copied
+// as a data: URL (an image under 256 KB, at least 32px when the size can be
+// read). `fetchFn` is the SSRF-guarded probe fetch: redirects are followed here,
+// one hop at a time, so every hop goes through the guard again.
+
+export interface SiteResponse {
+  status: number;
+  headers: { get(name: string): string | null };
+  body?: ReadableStream<Uint8Array> | null;
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
+export type SiteFetch = (url: string, init: { method: string; headers: HeaderMap; signal: AbortSignal; redirect?: "manual" }) => Promise<SiteResponse>;
+
+// Read at most `max` bytes of a body, then cancel the rest, so a huge or
+// endless (chunked, no content-length) response can't be buffered whole.
+// `over` is true when the body had more than `max` bytes.
+export async function readCapped(res: { body?: ReadableStream<Uint8Array> | null; arrayBuffer?: () => Promise<ArrayBuffer> }, max: number): Promise<{ bytes: Uint8Array; over: boolean }> {
+  if (!res.body) {
+    const all = res.arrayBuffer ? new Uint8Array(await res.arrayBuffer()) : new Uint8Array(0);
+    return { bytes: all.subarray(0, max), over: all.length > max };
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0, over = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (size + value.length > max) { chunks.push(value.subarray(0, max - size)); size = max; over = true; break; }
+      chunks.push(value); size += value.length;
+    }
+  } finally {
+    if (over) reader.cancel().catch(() => {}); else reader.releaseLock();
+  }
+  const bytes = new Uint8Array(size);
+  let off = 0;
+  for (const c of chunks) { bytes.set(c, off); off += c.length; }
+  return { bytes, over };
+}
+
+// Drop a body we won't read (a redirect, an error page) so its connection is freed.
+export const discardBody = (res: { body?: ReadableStream<Uint8Array> | null }) => { res.body?.cancel().catch(() => {}); };
+
+const SITE_TIMEOUT_MS = 4000;
+const SITE_HTML_MAX = 512 * 1024;
+const ICON_MAX_BYTES = 256 * 1024;
+const ICON_MIN_PX = 32;
+const ICON_SHARP_PX = 96;   // smaller than this, try the next site root for a bigger one
+const SITE_UA = "Mozilla/5.0 (compatible; 10router endpoint setup)";
+// Titles of walls, errors and default pages: not a name.
+const JUNK_TITLE_RE = /^(just a moment|attention required|access denied|forbidden|not found|404|403|401|500|502|503|error|sign ?in|log ?in|login|welcome to nginx|nginx|apache|it works|index of|untitled|home|cloudflare|redirecting|loading)\b/i;
+
+const decodeEntities = (s: string) => s
+  .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(+n))
+  .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+  .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&");
+
+function tagAttrs(tag: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const m of tag.matchAll(/([a-z_:-]+)\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/gi)) out[m[1].toLowerCase()] = decodeEntities(m[3] ?? m[4] ?? m[5] ?? "");
+  return out;
+}
+
+// Cut a tagline: "Acme | Fast inference" -> "Acme".
+export function cleanSiteName(raw: unknown): string | null {
+  let t = decodeEntities(String(raw || "")).replace(/\s+/g, " ").trim();
+  if (!t) return null;
+  t = t.split(/\s+[|·•–—-]\s+|\s*:\s+/)[0].trim();
+  if (!t || t.length > 40 || JUNK_TITLE_RE.test(t)) return null;
+  return t;
+}
+
+export interface SiteHtmlInfo { name: string | null; icons: { href: string; size: number; rank: number }[] }
+export function parseSiteHtml(html: string, pageUrl: string): SiteHtmlInfo {
+  const head = html.slice(0, SITE_HTML_MAX);
+  const metas = [...head.matchAll(/<meta\b[^>]*>/gi)].map((m) => tagAttrs(m[0]));
+  const meta = (key: string) => metas.find((a) => (a.property || a.name || "").toLowerCase() === key)?.content;
+  const title = /<title[^>]*>([^<]{1,200})/i.exec(head)?.[1];
+  const name = cleanSiteName(meta("og:site_name")) || cleanSiteName(meta("application-name")) || cleanSiteName(meta("apple-mobile-web-app-title")) || cleanSiteName(title);
+  const icons: SiteHtmlInfo["icons"] = [];
+  for (const m of head.matchAll(/<link\b[^>]*>/gi)) {
+    const a = tagAttrs(m[0]);
+    const rel = (a.rel || "").toLowerCase().split(/\s+/);
+    if (!a.href || a.href.startsWith("data:")) continue;
+    const rank = rel.includes("apple-touch-icon") || rel.includes("apple-touch-icon-precomposed") ? 0 : rel.includes("icon") ? 1 : -1;
+    if (rank < 0) continue;
+    const size = Math.max(0, ...String(a.sizes || "").split(/\s+/).map((s) => parseInt(s, 10) || 0));
+    try { icons.push({ href: new URL(a.href, pageUrl).toString(), size: /svg/i.test(a.type || a.href) ? 512 : size, rank }); } catch { /* bad href */ }
+  }
+  icons.sort((x, y) => x.rank - y.rank || y.size - x.size);
+  return { name, icons };
+}
+
+// Pixel size from the image header, when it's a format we can read (PNG, ICO,
+// GIF, JPEG). Null when unknown (SVG, WebP…): not rejected for size then.
+export function imageSize(b: Uint8Array): number | null {
+  if (b.length > 24 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) {
+    const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    return Math.min(v.getUint32(16), v.getUint32(20));
+  }
+  if (b.length > 6 && b[0] === 0 && b[1] === 0 && b[2] === 1 && b[3] === 0) {
+    const count = b[4] | (b[5] << 8);
+    let best = 0;
+    for (let i = 0; i < count && 6 + i * 16 + 1 < b.length; i++) best = Math.max(best, b[6 + i * 16] || 256);
+    return best || null;
+  }
+  if (b.length > 10 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return Math.min(b[6] | (b[7] << 8), b[8] | (b[9] << 8));
+  if (b.length > 4 && b[0] === 0xff && b[1] === 0xd8) {
+    for (let i = 2; i + 9 < b.length;) {
+      if (b[i] !== 0xff) { i++; continue; }
+      const marker = b[i + 1];
+      const len = (b[i + 2] << 8) | b[i + 3];
+      if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) return Math.min((b[i + 5] << 8) | b[i + 6], (b[i + 7] << 8) | b[i + 8]);
+      i += 2 + len;
+    }
+  }
+  // WebP: VP8X canvas, VP8 (lossy) frame or VP8L (lossless) header.
+  if (b.length > 30 && b[0] === 0x52 && b[1] === 0x49 && b[8] === 0x57 && b[9] === 0x45) {
+    const fourcc = String.fromCharCode(b[12], b[13], b[14], b[15]);
+    const u24 = (i: number) => b[i] | (b[i + 1] << 8) | (b[i + 2] << 16);
+    if (fourcc === "VP8X") return Math.min(u24(24) + 1, u24(27) + 1);
+    if (fourcc === "VP8 ") return Math.min((b[26] | (b[27] << 8)) & 0x3fff, (b[28] | (b[29] << 8)) & 0x3fff);
+    if (fourcc === "VP8L" && b[20] === 0x2f) {
+      const bits = b[21] | (b[22] << 8) | (b[23] << 16) | (b[24] << 24);
+      return Math.min((bits & 0x3fff) + 1, ((bits >>> 14) & 0x3fff) + 1);
+    }
+  }
+  return null;
+}
+
+const sniffImage = (b: Uint8Array): string | null =>
+  b[0] === 0x89 && b[1] === 0x50 ? "image/png"
+    : b[0] === 0 && b[1] === 0 && b[2] === 1 ? "image/x-icon"
+    : b[0] === 0x47 && b[1] === 0x49 ? "image/gif"
+    : b[0] === 0xff && b[1] === 0xd8 ? "image/jpeg"
+    : b[0] === 0x52 && b[1] === 0x49 && b[8] === 0x57 ? "image/webp"
+    : null;
+
+function toBase64(b: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+// The site roots to try: the API's origin, then the bare domain.
+export function siteRoots(base: string): string[] {
+  let u: URL;
+  try { u = new URL(base); } catch { return []; }
+  if (isLanHost(u.hostname) || /^\d+\.\d+\.\d+\.\d+$|^\[/.test(u.hostname)) return [];
+  const roots = [u.origin];
+  const labels = u.hostname.split(".");
+  // acme-1234.gateway.example -> gateway.example; api.x.ai -> x.ai
+  if (labels.length > 2) {
+    const tail = labels.slice(-2);
+    const keep = tail[0].length <= 3 && SECOND_LEVEL.has(tail[0]) ? labels.slice(-3) : tail;
+    roots.push(`${u.protocol}//${keep.join(".")}`);
+  }
+  return [...new Set(roots)];
+}
+
+export async function fetchSiteInfo(base: string, fetchFn: SiteFetch, { signal = null, timeoutMs = SITE_TIMEOUT_MS }: { signal?: AbortSignal | null; timeoutMs?: number } = {}): Promise<SiteInfo | null> {
+  const roots = siteRoots(base);
+  if (!roots.length) return null;
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const sig = signal ? AbortSignal.any([timeout, signal]) : timeout;
+  // GET with manual redirects (same or other host: no key is ever sent here).
+  const get = async (url: string, accept: string): Promise<{ res: SiteResponse; url: string } | null> => {
+    let current = url;
+    for (let hop = 0; hop < 4; hop++) {
+      const res = await fetchFn(current, { method: "GET", headers: { accept, "user-agent": SITE_UA }, signal: sig, redirect: "manual" });
+      const loc = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
+      if (!loc) {
+        if (res.status >= 200 && res.status < 300) return { res, url: current };
+        discardBody(res);
+        return null;
+      }
+      discardBody(res);
+      const next = new URL(loc, current);
+      if (next.protocol !== "https:" && next.protocol !== "http:") return null;
+      current = next.toString();
+    }
+    return null;
+  };
+  const readIcon = async (url: string, hint = 0): Promise<{ url: string; px: number } | null> => {
+    try {
+      const r = await get(url, "image/*");
+      if (!r) return null;
+      const len = Number(r.res.headers.get("content-length") || 0);
+      if (len > ICON_MAX_BYTES) { discardBody(r.res); return null; }
+      const { bytes, over } = await readCapped(r.res, ICON_MAX_BYTES);
+      if (!bytes.length || over) return null;
+      const ct = (r.res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+      const svg = ct === "image/svg+xml" || (/^\s*(?:(?:<\?xml[^>]*>|<!--[\s\S]*?-->|<!DOCTYPE[^>]*>)\s*)*<svg\b/i.test(new TextDecoder().decode(bytes.subarray(0, 1024))));
+      const type = svg ? "image/svg+xml" : sniffImage(bytes);
+      if (!type) return null; // not an image (an HTML 200 for a missing favicon)
+      const px = svg ? Infinity : imageSize(bytes);
+      if (px !== null && px < ICON_MIN_PX) return null;
+      // No size in the header (WebP): trust the page's <link sizes>.
+      return { url: `data:${type};base64,${toBase64(bytes)}`, px: px ?? (hint || ICON_MIN_PX) };
+    } catch { return null; }
+  };
+  let name: string | null = null;
+  let icon: { url: string; px: number } | null = null;
+  let host = "";
+  for (const root of roots) {
+    if (sig.aborted) break;
+    let info: SiteHtmlInfo = { name: null, icons: [] };
+    let page = root;
+    try {
+      const r = await get(`${root}/`, "text/html,application/xhtml+xml");
+      const ct = r?.res.headers.get("content-type") || "";
+      if (r && /html/i.test(ct)) { page = r.url; info = parseSiteHtml(new TextDecoder().decode((await readCapped(r.res, SITE_HTML_MAX)).bytes), r.url); }
+      else if (r) discardBody(r.res);
+    } catch { /* unreachable root: try the next */ }
+    if (!name && info.name) { name = info.name; host ||= new URL(page).hostname.replace(/^www\./, ""); }
+    // A small icon (a 32px favicon on the API host) keeps looking: the bare
+    // domain usually has a sharp app icon. The biggest one found wins.
+    if (!icon || icon.px < ICON_SHARP_PX) {
+      for (const cand of [...info.icons.slice(0, 3), { href: `${new URL(page).origin}/favicon.ico`, size: 0 }]) {
+        if (sig.aborted) break;
+        const got = await readIcon(cand.href, cand.size);
+        if (got && (!icon || got.px > icon.px)) { icon = got; host = new URL(page).hostname.replace(/^www\./, ""); }
+        // Unsized links sort first, so a small one doesn't end the search early.
+        if (icon && icon.px >= ICON_SHARP_PX) break;
+      }
+    }
+    if (name && icon && icon.px >= ICON_SHARP_PX) break;
+  }
+  if (!name && !icon) return null;
+  return { name, icon: icon?.url ?? null, host: host || new URL(roots[0]).hostname };
+}
+
+// ---- Test message (opt-in, ~1 token) -------------------------------------------
+// The one request that may cost a few tokens, and only when the user asks for it, with
+// the model they picked. Sends "hi" with a 1-token cap. On Anthropic Messages it
+// sends `betas` (Claude Code's flags); a 400 naming rejected flags drops exactly
+// those and retries once, so the dialog can say which flag the endpoint refused.
+export interface TestMessageOptions {
+  baseUrl: string;
+  apiKey?: unknown;
+  protocol: Protocol;
+  model: string;
+  fetchFn: DetectFetch;
+  betas?: string[];
+  quirks?: DetectQuirks & { stripBeta?: boolean; droppedBetas?: string[] };
+  parseRejected: (body: string) => string[];
+  timeoutMs?: number;
+  signal?: AbortSignal | null;
+}
+export interface TestMessageResult {
+  ok: boolean;
+  status: number;
+  model: string;
+  dropped: string[];
+  sentBetas: string[];
+  error?: string;
+  tokens?: number | null;
+  steps: DetectStep[];
+}
+export async function sendTestMessage({ baseUrl, apiKey, protocol, model, fetchFn, betas = [], quirks = {}, parseRejected, timeoutMs = 20_000, signal = null }: TestMessageOptions): Promise<TestMessageResult> {
+  const key = cleanKey(apiKey);
+  const base = String(baseUrl || "").replace(/\/+$/, "");
+  const steps: DetectStep[] = [];
+  const probe = makeProber({ fetchFn, key, steps, timeoutMs, signal, root: base });
+  const AUTH = authHeaders(key);
+  const openaiAuth = isAzureHost(base) || quirks.apiKeyHeader ? AUTH["api-key"] : AUTH.bearer;
+  const hi = [{ role: "user", content: "hi" }];
+  const usage = (j: unknown): number | null => {
+    const u = (j as Json | null)?.usage as Json | undefined;
+    const n = u?.output_tokens ?? u?.completion_tokens;
+    return typeof n === "number" ? n : null;
+  };
+  const fail = (r: ProbeResult, sent: string[], dropped: string[]): TestMessageResult => ({
+    ok: false, status: r.status, model, dropped, sentBetas: sent, steps,
+    error: r.status === 0 ? r.step.preview || "No answer" : `${r.status}${errorHint(r.json, r.text, r.step.html) ? ` · ${makeRedactor(key)(errorHint(r.json, r.text, r.step.html)).slice(0, 160)}` : ""}`,
+  });
+  if (protocol === "anthropic") {
+    const known = new Set(quirks.droppedBetas || []);
+    let send = quirks.stripBeta ? [] : betas.filter((b) => !known.has(b));
+    const dropped: string[] = [];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const headers = { ...AUTH.both, ...ANTHROPIC, ...(send.length ? { "anthropic-beta": send.join(",") } : {}) };
+      const r = await probe(attempt ? "Test message (without rejected beta flags)" : "Test message", "POST", joinUrl(base, "/messages"), { headers, body: { model, max_tokens: 1, messages: hi } });
+      if (r.status >= 200 && r.status < 300 && !errorIn2xx(r)) return { ok: true, status: r.status, model, dropped, sentBetas: send, tokens: usage(r.json), steps };
+      const rejected = r.status === 400 ? parseRejected(r.text).filter((b) => send.includes(b)) : [];
+      if (!rejected.length || attempt) return fail(r, send, dropped);
+      dropped.push(...rejected);
+      send = send.filter((b) => !rejected.includes(b));
+    }
+  }
+  const responses = protocol === "openai-responses";
+  const body = responses ? { model, input: "hi", max_output_tokens: 16, stream: false }
+    : quirks.maxCompletionTokens ? { model, messages: hi, max_completion_tokens: 1, stream: false } : { model, messages: hi, max_tokens: 1, stream: false };
+  const r = await probe("Test message", "POST", joinUrl(base, responses ? "/responses" : "/chat/completions"), { headers: openaiAuth, body });
+  if (r.status >= 200 && r.status < 300 && !errorIn2xx(r)) return { ok: true, status: r.status, model, dropped: [], sentBetas: [], tokens: usage(r.json), steps };
+  return fail(r, [], []);
+}

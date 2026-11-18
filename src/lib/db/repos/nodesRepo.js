@@ -56,6 +56,8 @@ export async function createProviderNode(data) {
   const db = await getAdapter();
   const now = new Date().toISOString();
   const node = {
+    // Optional extras (endpoint quirks, verified); the named fields below win.
+    ...data,
     id: data.id || uuidv4(),
     type: data.type,
     name: data.name,

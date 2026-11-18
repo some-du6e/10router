@@ -110,6 +110,13 @@ export async function getCodexUsage(accessToken, proxyOptions = null, providerSp
       },
     }, proxyOptions);
 
+    // A rejected token is not an outage. Say so, so the usage route's
+    // auth-expired detection force-refreshes and retries instead of
+    // reporting a transient failure.
+    if (response.status === 401 || response.status === 403) {
+      return { message: `Codex access token expired or was revoked (${response.status}). Re-authorize this connection.` };
+    }
+
     if (!response.ok) {
       return { message: `Codex connected. Usage API temporarily unavailable (${response.status}).` };
     }

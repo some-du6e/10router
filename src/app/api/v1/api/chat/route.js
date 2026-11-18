@@ -32,6 +32,9 @@ export async function POST(request) {
   } catch {}
 
   const response = await handleChat(request);
+  // An error (a refused key, a failed upstream) keeps its status and body;
+  // transforming it would turn it into an empty 200.
+  if (!response.ok) return response;
   return transformToOllama(response, modelName);
 }
 

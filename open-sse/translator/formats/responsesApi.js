@@ -1,4 +1,5 @@
 import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM } from "../schema/index.js";
+import { responsesContentPartToChat, responsesOutputToChatContent } from "../concerns/toolContent.js";
 
 /**
  * Normalize Responses API input to array format.
@@ -67,17 +68,7 @@ export function convertResponsesApiFormat(body) {
       }
 
       // Convert content: input_text → text, output_text → text, input_image → image_url
-      const content = Array.isArray(item.content)
-        ? item.content.map(c => {
-          if (c.type === RESPONSES_ITEM.INPUT_TEXT) return { type: OPENAI_BLOCK.TEXT, text: c.text };
-          if (c.type === RESPONSES_ITEM.OUTPUT_TEXT) return { type: OPENAI_BLOCK.TEXT, text: c.text };
-          if (c.type === RESPONSES_ITEM.INPUT_IMAGE) {
-            const url = c.image_url || c.file_id || "";
-            return { type: OPENAI_BLOCK.IMAGE_URL, image_url: { url, detail: c.detail || "auto" } };
-          }
-          return c;
-        })
-        : item.content;
+      const content = Array.isArray(item.content) ? item.content.map(responsesContentPartToChat) : item.content;
       result.messages.push({ role: item.role, content });
     }
     else if (itemType === RESPONSES_ITEM.FUNCTION_CALL) {
@@ -110,7 +101,7 @@ export function convertResponsesApiFormat(body) {
       pendingToolResults.push({
         role: ROLE.TOOL,
         tool_call_id: item.call_id,
-        content: typeof item.output === "string" ? item.output : JSON.stringify(item.output)
+        content: responsesOutputToChatContent(item.output)
       });
     }
     else if (itemType === RESPONSES_ITEM.REASONING) {

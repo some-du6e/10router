@@ -1,4 +1,20 @@
-import { importDb } from "../src/lib/db/index.js";
+// importDb wipes every table first. Without DATA_DIR that is the real install
+// in ~/.9router, so refuse to run rather than erase someone's accounts.
+if (!process.env.DATA_DIR) {
+  console.error("seed-demo: set DATA_DIR to a throwaway directory. It wipes the database there.");
+  process.exit(1);
+}
+
+// getDataDir() silently falls back to ~/.9router when DATA_DIR isn't writable
+// or is a Unix path on Windows. Check where it actually resolved.
+const { DATA_DIR } = await import("../src/lib/dataDir.js");
+const path = await import("node:path");
+if (path.resolve(DATA_DIR) !== path.resolve(process.env.DATA_DIR)) {
+  console.error(`seed-demo: DATA_DIR resolved to ${DATA_DIR}, not ${process.env.DATA_DIR}. Refusing to wipe it.`);
+  process.exit(1);
+}
+
+const { importDb } = await import("../src/lib/db/index.js");
 
 const now = Date.now();
 const iso = (hoursAgo = 0) => new Date(now - hoursAgo * 60 * 60 * 1000).toISOString();

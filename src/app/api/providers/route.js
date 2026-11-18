@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { withoutProviderDataSecrets } from "open-sse/utils/redact.js";
+import { QUIRK_KEYS } from "@/shared/utils/nodeQuirks";
 import {
   getProviderConnections,
   createProviderConnection,
@@ -9,6 +11,8 @@ import {
 import { APIKEY_PROVIDERS } from "@/shared/constants/config";
 import { AI_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { normalizeProviderId, normalizeProviderSpecificData } from "@/lib/providerNormalization";
+import { resolveKeyBaseUrl, withKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
+import { isLocalRequest } from "@/dashboardGuard";
 
 export const dynamic = "force-dynamic";
 
@@ -73,6 +77,8 @@ export async function GET() {
         accessToken: undefined,
         refreshToken: undefined,
         idToken: undefined,
+        // Copilot's bearer token, Kiro IDC's client secret, ... live here too.
+        providerSpecificData: withoutProviderDataSecrets(c.providerSpecificData),
       };
     });
 
@@ -81,6 +87,22 @@ export async function GET() {
     console.log("Error fetching providers:", error);
     return NextResponse.json({ error: "Failed to fetch providers" }, { status: 500 });
   }
+}
+
+const nodeQuirksOf = (node) => Object.fromEntries(QUIRK_KEYS.filter((k) => node[k] !== undefined).map((k) => [k, node[k]]));
+
+// Unnamed provider keys display as e.g. "pat-…7f2a". The masked value is shown
+// in the dashboard, so it never reveals more than a third of the key: short
+// keys (self-hosted vLLM, LM Studio) show only a recognisable prefix like "sk-".
+function maskApiKey(key) {
+  const k = String(key);
+  const dash = k.indexOf("-");
+  const head = dash > 0 && dash < 5 ? k.slice(0, dash + 1) : "";
+  if (k.length < 12) return `${head || "key"}…`;
+  // A 4-char tail, plus the head only while both stay within a third of the key.
+  const tail = k.slice(-4);
+  const shown = head && head.length + tail.length <= k.length / 3 ? head : "key";
+  return `${shown}…${tail}`;
 }
 
 // POST /api/providers - Create new connection (API Key only, OAuth via separate flow)
@@ -119,7 +141,9 @@ export async function POST(request) {
     if (!apiKey && provider !== "ollama-local") {
       return NextResponse.json({ error: `${isWebCookieProvider ? "Cookie value" : "API Key"} is required` }, { status: 400 });
     }
-    const connectionName = name || displayName || AI_PROVIDERS[provider]?.name;
+    // Key names are optional for user-added endpoints; unnamed keys show masked.
+    const isCompatibleNode = isOpenAICompatibleProvider(provider) || isAnthropicCompatibleProvider(provider);
+    const connectionName = name || displayName || AI_PROVIDERS[provider]?.name || (isCompatibleNode && apiKey ? maskApiKey(apiKey) : undefined);
     if (!connectionName) {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
     }
@@ -138,6 +162,7 @@ export async function POST(request) {
         apiType: node.apiType,
         baseUrl: node.baseUrl,
         nodeName: node.name,
+        ...nodeQuirksOf(node),
       };
     } else if (isAnthropicCompatibleProvider(provider)) {
       const node = await getProviderNodeById(provider);
@@ -148,6 +173,7 @@ export async function POST(request) {
         prefix: node.prefix,
         baseUrl: node.baseUrl,
         nodeName: node.name,
+        ...nodeQuirksOf(node),
       };
     } else if (isCustomEmbeddingProvider(provider)) {
       const node = await getProviderNodeById(provider);
@@ -159,6 +185,14 @@ export async function POST(request) {
         baseUrl: node.baseUrl,
         nodeName: node.name,
       };
+    }
+
+    // A key on another account or region of the same API can bring its own
+    // base URL; failover across keys then fails over across endpoints.
+    if (isCompatibleNode && typeof body.baseUrl === "string" && body.baseUrl.trim()) {
+      const keyUrl = await resolveKeyBaseUrl(body.baseUrl, providerSpecificData.baseUrl, { remote: !isLocalRequest(request) });
+      if (!keyUrl.ok) return NextResponse.json({ error: keyUrl.error, field: "baseUrl" }, { status: 400 });
+      providerSpecificData = withKeyBaseUrl(providerSpecificData, keyUrl);
     }
 
     const mergedProviderSpecificData = {
@@ -191,6 +225,7 @@ export async function POST(request) {
     const result = { ...newConnection };
     delete result.apiKey;
 
+    result.providerSpecificData = withoutProviderDataSecrets(result.providerSpecificData);
     return NextResponse.json({ connection: result }, { status: 201 });
   } catch (error) {
     if (error?.code === "PROVIDER_NAME_CONFLICT") {

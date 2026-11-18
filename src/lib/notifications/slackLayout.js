@@ -1,5 +1,6 @@
 import { NOTIFICATION_EVENTS } from "./constants.js";
 import { notificationProviderName } from "./providerName.js";
+import { maskEmails } from "./redact.js";
 
 const MAX_FIELDS = 10;
 const MAX_LABEL_LENGTH = 75;
@@ -59,20 +60,48 @@ function formatResetAt(value) {
   return date.toISOString().replace("T", " ").replace(".000Z", " UTC");
 }
 
+// Slack renders <!date^…> in each viewer's own time zone, like Discord's <t:…>.
+// The fallback text shows on clients that can't render it (and in notifications).
+function slackDateToken(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const seconds = Math.floor(date.getTime() / 1000);
+  return `<!date^${seconds}^{date_short_pretty} at {time}|${formatResetAt(value)}>`;
+}
+
 function templateValues(payload) {
   const remaining = payload?.quota?.remainingPercentage;
   return {
     provider: payload?.provider ? notificationProviderName(payload.provider) : "Not provided",
-    account: payload?.connection?.name || "Not provided",
+    account: maskEmails(payload?.connection?.name) || "Not provided",
     limit: payload?.quota?.name || "Not provided",
     resetAt: formatResetAt(payload?.quota?.resetAt),
     remaining: Number.isFinite(remaining) ? `${Math.max(0, Math.round(remaining))}%` : "Not provided",
   };
 }
 
+const TEMPLATE_PATTERN = /\{\{(provider|account|limit|resetAt|remaining)\}\}/g;
+
 export function renderSlackTemplate(template, payload) {
   const values = templateValues(payload);
-  return String(template).replace(/\{\{(provider|account|limit|resetAt|remaining)\}\}/g, (_, key) => values[key]);
+  return String(template).replace(TEMPLATE_PATTERN, (_, key) => values[key]);
+}
+
+// Escapes the user's template text and values, but leaves the date token raw so
+// Slack can localize it.
+function renderSlackMrkdwn(template, payload) {
+  const values = templateValues(payload);
+  const dateToken = slackDateToken(payload?.quota?.resetAt);
+  let out = "";
+  let last = 0;
+  for (const match of String(template).matchAll(TEMPLATE_PATTERN)) {
+    out += escapeMrkdwn(template.slice(last, match.index));
+    const key = match[1];
+    out += key === "resetAt" && dateToken ? dateToken : escapeMrkdwn(values[key]);
+    last = match.index + match[0].length;
+  }
+  return out + escapeMrkdwn(String(template).slice(last));
 }
 
 function slackSummary(eventType) {
@@ -101,7 +130,7 @@ export function buildSlackPayload(channel, message, payload) {
   const layout = normalizeSlackLayout(channel?.config?.slackLayout);
   const fields = layout.fields.map((field) => ({
     type: "mrkdwn",
-    text: `*${escapeMrkdwn(field.label)}*\n${escapeMrkdwn(renderSlackTemplate(field.value, payload))}`,
+    text: `*${escapeMrkdwn(field.label)}*\n${renderSlackMrkdwn(field.value, payload)}`,
   }));
 
   const blocks = [

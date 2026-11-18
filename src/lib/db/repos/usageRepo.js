@@ -2,8 +2,10 @@ import { EventEmitter } from "events";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
+import { addApiKeySpendSync } from "./apiKeysRepo.js";
 
-function maskApiKey(key) {
+/** Show enough of a key to recognise it, never enough to use it. */
+export function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
   if (key.length <= 8) return key.charAt(0) + "***";
   return key.slice(0, 8) + "***";
@@ -25,6 +27,8 @@ if (!global._pendingTimers) global._pendingTimers = {};
 if (!global._recentRing) global._recentRing = { items: [], initialized: false };
 if (!global._connectionMapCache) global._connectionMapCache = { map: {}, ts: 0 };
 if (!global._statsEmitTimers) global._statsEmitTimers = { pending: null, update: null };
+if (!global._usageLastUsedIndex) global._usageLastUsedIndex = new WeakMap();
+if (!global._usageStatsInFlight) global._usageStatsInFlight = new Map();
 
 const pendingRequests = global._pendingRequests;
 const lastErrorProvider = global._lastErrorProvider;
@@ -34,6 +38,40 @@ const connCache = global._connectionMapCache;
 const statsEmitTimers = global._statsEmitTimers;
 
 export const statsEmitter = global._statsEmitter;
+
+// Latest usageHistory timestamp per (provider, model, connectionId, apiKey,
+// endpoint), kept per adapter. getUsageStats used to rescan every history row
+// to find these on each call, and the usage stream calls it for every open
+// dashboard tab after every request. Timestamps are ISO strings, so string
+// order is time order.
+function lastUsedKey(r) {
+  return [r.provider, r.model, r.connectionId, r.apiKey, r.endpoint].map((v) => v ?? "").join("\u0000");
+}
+
+function getLastUsedIndex(db) {
+  let index = global._usageLastUsedIndex.get(db);
+  if (index) return index;
+  index = new Map();
+  const rows = db.all(
+    `SELECT provider, model, connectionId, apiKey, endpoint, MAX(timestamp) AS timestamp FROM usageHistory GROUP BY provider, model, connectionId, apiKey, endpoint`
+  );
+  global._usageLastUsedIndex.set(db, index);
+  for (const r of rows) recordLastUsed(db, r);
+  return index;
+}
+
+function recordLastUsed(db, entry) {
+  const index = global._usageLastUsedIndex.get(db);
+  if (!index) return;
+  const row = {
+    provider: entry.provider || null, model: entry.model || null,
+    connectionId: entry.connectionId || null, apiKey: entry.apiKey || null,
+    endpoint: entry.endpoint || null, timestamp: entry.timestamp,
+  };
+  const key = lastUsedKey(row);
+  const current = index.get(key);
+  if (!current || row.timestamp > current.timestamp) index.set(key, row);
+}
 
 function scheduleStatsEvent(event, delayMs = 150) {
   const key = event === "update" ? "update" : "pending";
@@ -275,8 +313,12 @@ export async function saveRequestUsage(entry) {
       const cur = db.get(`SELECT value FROM _meta WHERE key = 'totalRequestsLifetime'`);
       const next = (cur ? parseInt(cur.value, 10) : 0) + 1;
       db.run(`INSERT INTO _meta(key, value) VALUES('totalRequestsLifetime', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [String(next)]);
+
+      // The key's running spend, so budget checks never have to sum history.
+      addApiKeySpendSync(db, entry.apiKey, entry.cost, entry.timestamp);
     });
 
+    recordLastUsed(db, entry);
     pushToRing(entry);
     scheduleStatsEvent("update", 250);
   } catch (e) {
@@ -358,6 +400,23 @@ export async function getConnectionValue() {
   return out;
 }
 
+/**
+ * The last `days` local days, oldest first, each { date, requests, cost }.
+ * Dense: a day with no traffic reads as zero rather than being dropped, or a
+ * chart silently compresses idle days out of the timeline.
+ * @param {Map<string, { requests?: number, cost?: number }>} byDate keyed by local date ("2026-11-07")
+ */
+function denseDaily(byDate, days) {
+  const daily = [];
+  const today = new Date();
+  for (let i = days - 1; i >= 0; i--) {
+    const key = getLocalDateKey(new Date(today.getFullYear(), today.getMonth(), today.getDate() - i).getTime());
+    const hit = byDate.get(key);
+    daily.push({ date: key, requests: hit?.requests || 0, cost: hit?.cost || 0 });
+  }
+  return daily;
+}
+
 function monthKeyOf(dateKey) {
   return String(dateKey || "").slice(0, 7);
 }
@@ -409,16 +468,7 @@ export async function getConnectionDetail(connectionId, opts = {}) {
     monthly.set(mk, m);
   }
 
-  // Dense series — a day with no traffic must read as zero, not be dropped,
-  // or the chart silently compresses idle days out of the timeline.
-  const daily = [];
-  const today = new Date();
-  for (let i = dailyDays - 1; i >= 0; i--) {
-    const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - i);
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    const hit = byDate.get(key);
-    daily.push({ date: key, requests: hit?.requests || 0, cost: hit?.cost || 0 });
-  }
+  const daily = denseDaily(byDate, dailyDays);
 
   // ---- per-model split, errors and tail, from raw history ---------------
   const byModel = db.all(
@@ -466,7 +516,67 @@ export async function getConnectionDetail(connectionId, opts = {}) {
   };
 }
 
+/**
+ * Spend detail for one client API key: per day (local dates, dense, so idle
+ * days read as zero), per model, and the latest requests.
+ *
+ * @param {string} apiKey the raw key; never returned
+ * @param {{ dailyDays?: number, recentLimit?: number }} [opts]
+ */
+export async function getApiKeyUsageDetail(apiKey, opts = {}) {
+  const { dailyDays = 30, recentLimit = 10 } = opts;
+  if (!apiKey) return null;
+  const db = await getAdapter();
+
+  const byDate = new Map();
+  for (const row of loadDaysInRange(db, dailyDays)) {
+    const day = parseJson(row.data, {});
+    let requests = 0;
+    let cost = 0;
+    for (const entry of Object.values(day?.byApiKey || {})) {
+      if (entry?.apiKey !== apiKey) continue;
+      requests += entry.requests || 0;
+      cost += entry.cost || 0;
+    }
+    if (requests || cost) byDate.set(row.dateKey, { requests, cost });
+  }
+  const daily = denseDaily(byDate, dailyDays);
+
+  const byModel = db.all(
+    `SELECT model, provider, COUNT(*) AS requests, SUM(cost) AS cost,
+            SUM(promptTokens) AS promptTokens, SUM(completionTokens) AS completionTokens
+       FROM usageHistory WHERE apiKey = ?
+       GROUP BY model, provider ORDER BY cost DESC, requests DESC LIMIT 20`,
+    [apiKey]
+  ).map((r) => ({
+    model: r.model || "unknown", provider: r.provider || null, requests: r.requests || 0, cost: r.cost || 0,
+    promptTokens: r.promptTokens || 0, completionTokens: r.completionTokens || 0,
+  }));
+
+  const recent = db.all(
+    `SELECT timestamp, model, provider, promptTokens, completionTokens, cost, status
+       FROM usageHistory WHERE apiKey = ? ORDER BY id DESC LIMIT ?`,
+    [apiKey, recentLimit]
+  ).map((r) => ({
+    timestamp: r.timestamp, model: r.model, provider: r.provider || null,
+    promptTokens: r.promptTokens || 0, completionTokens: r.completionTokens || 0,
+    cost: r.cost || 0, status: r.status || "ok",
+  }));
+
+  return { daily, byModel, recent };
+}
+
 export async function getUsageStats(period = "all") {
+  // Every open dashboard tab asks for stats on the same update event; let
+  // concurrent callers share one computation.
+  const inFlight = global._usageStatsInFlight;
+  if (inFlight.has(period)) return inFlight.get(period);
+  const promise = computeUsageStats(period).finally(() => inFlight.delete(period));
+  inFlight.set(period, promise);
+  return promise;
+}
+
+async function computeUsageStats(period) {
   const db = await getAdapter();
 
   const [{ getProviderConnections }, { getApiKeys }, { getProviderNodes }] = await Promise.all([
@@ -661,12 +771,9 @@ export async function getUsageStats(period = "all") {
     }
 
     // Overlay precise lastUsed timestamps from history
-    const overlayCutoff = maxDays ? Date.now() - maxDays * 86400000 : 0;
-    const histRows = db.all(
-      `SELECT timestamp, provider, model, connectionId, apiKey, endpoint FROM usageHistory WHERE timestamp >= ?`,
-      [new Date(overlayCutoff).toISOString()]
-    );
-    for (const e of histRows) {
+    const overlayCutoff = new Date(maxDays ? Date.now() - maxDays * 86400000 : 0).toISOString();
+    for (const e of getLastUsedIndex(db).values()) {
+      if (e.timestamp < overlayCutoff) continue;
       const ts = e.timestamp;
       const modelKey = e.provider ? `${e.model} (${e.provider})` : e.model;
       if (stats.byModel[modelKey] && new Date(ts) > new Date(stats.byModel[modelKey].lastUsed)) stats.byModel[modelKey].lastUsed = ts;

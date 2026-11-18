@@ -1,0 +1,112 @@
+name: Stream early headers
+
+on:
+  pull_request:
+    paths:
+      - "open-sse/utils/earlyHeaders.js"
+      - "open-sse/utils/replyShape.js"
+      - "open-sse/utils/streamHandler.js"
+      - "open-sse/utils/streamHelpers.js"
+      - "open-sse/utils/responsesStreamHelpers.js"
+      - "open-sse/utils/sseConstants.js"
+      - "open-sse/config/runtimeConfig.js"
+      - "open-sse/config/errorConfig.js"
+      - "open-sse/handlers/chatCore.js"
+      - "open-sse/handlers/chatCore/streamingHandler.js"
+      - "open-sse/handlers/chatCore/nonStreamingHandler.js"
+      - "open-sse/handlers/chatCore/sseToJsonHandler.js"
+      - "open-sse/utils/error.js"
+      - "tests/unit/force-stream-config.test.js"
+      - "open-sse/handlers/chatCore/jsonToSse.ts"
+      - "src/sse/handlers/chat.ts"
+      - "open-sse/utils/limitHold.js"
+      - "open-sse/services/combo.js"
+      - "src/sse/services/limitHoldConfig.js"
+      - "src/app/api/v1/codex/responses/route.js"
+      - "src/sse/services/finalRoutingError.js"
+      - "src/app/api/v1/messages/route.js"
+      - "src/app/api/v1/chat/completions/route.js"
+      - "src/app/api/v1/responses/route.js"
+      - "src/app/api/v1/responses/compact/route.js"
+      - "src/app/api/v1/api/chat/route.js"
+      - "src/app/api/v1beta/models/**"
+      - "tests/unit/stream-early-headers*.test.js"
+      - "tests/unit/chat-core-client-signal.test.js"
+      - "tests/unit/client-receives-stream.test.js"
+      - "tests/unit/chat-core-transport-selection.test.js"
+      - ".github/workflows/stream-early-headers.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Unit test
+        working-directory: tests
+        run: >
+          ./node_modules/.bin/vitest run
+          unit/stream-early-headers.test.js
+          unit/stream-early-headers-routes.test.js
+          unit/chat-core-client-signal.test.js
+          unit/stream-keepalive.test.js
+          unit/responses-abort-terminal.test.js
+          unit/final-routing-error.test.js
+          unit/limit-hold-integration.test.js
+          unit/limit-hold.test.js
+          unit/upstream-json-reply.test.js
+          unit/account-failure-handler.test.js
+          unit/chat-core-failure-detail.test.js
+          unit/chat-core-transport-selection.test.js
+          unit/force-stream-config.test.js
+          unit/client-receives-stream.test.js
+      - name: Lint
+        run: >
+          ./node_modules/.bin/eslint
+          open-sse/utils/earlyHeaders.js
+          open-sse/utils/replyShape.js
+          open-sse/config/runtimeConfig.js
+          open-sse/config/errorConfig.js
+          open-sse/handlers/chatCore.js
+          open-sse/handlers/chatCore/streamingHandler.js
+          open-sse/handlers/chatCore/nonStreamingHandler.js
+          open-sse/handlers/chatCore/sseToJsonHandler.js
+          open-sse/utils/error.js
+          src/sse/handlers/chat.ts
+          src/app/api/v1/messages/route.js
+          src/app/api/v1/chat/completions/route.js
+          src/app/api/v1/responses/route.js
+          src/app/api/v1/codex/responses/route.js
+          src/app/api/v1/responses/compact/route.js
+          "src/app/api/v1beta/models/[...path]/route.js"
+          open-sse/utils/limitHold.js
+          src/sse/services/finalRoutingError.js
+          open-sse/utils/streamHelpers.js
+          open-sse/utils/responsesStreamHelpers.js
+          open-sse/utils/sseConstants.js
+          tests/unit/stream-early-headers.test.js
+          tests/unit/stream-early-headers-routes.test.js
+          tests/unit/chat-core-client-signal.test.js
+      # Fails only on errors in chat.ts, so unrelated type errors elsewhere
+      # don't block it.
+      - name: Type check
+        run: |
+          set +e
+          ./node_modules/.bin/tsc --noEmit -p . > tsc.log 2>&1
+          code=$?
+          set -e
+          tail -5 tsc.log
+          if [ "$code" -gt 2 ] || ! [ -x ./node_modules/.bin/tsc ]; then echo "tsc did not run (exit $code)"; exit 1; fi
+          if grep -E "src/sse/handlers/chat\.ts" tsc.log; then exit 1; fi
