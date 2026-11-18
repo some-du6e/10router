@@ -8,6 +8,8 @@ on:
       - "src/app/api/usage/providers/route.js"
       - "src/lib/requestDetailLabels.ts"
       - "src/lib/db/**"
+      - "src/shared/utils/requestConversation.js"
+      - "open-sse/utils/redact.js"
       - "src/shared/constants/providers.js"
       - "open-sse/handlers/chatCore.js"
       - "open-sse/handlers/chatCore/requestDetail.js"

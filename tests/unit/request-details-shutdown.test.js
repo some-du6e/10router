@@ -167,7 +167,8 @@ describe("request details on shutdown", () => {
     expect(consoleError).not.toHaveBeenCalled();
   });
 
-  it("skips full payloads for the rest of a pass when the signal lands while its first row is compressed", async () => {
+  // A pass packs its newest row first.
+  it("skips full payloads for the rest of a pass when the signal lands while its newest row is compressed", async () => {
     let signalled;
     state.onGzip = () => { signalled = runSignalListeners("SIGTERM"); };
     await repo.saveRequestDetail(bigRow("mid-a"));
@@ -176,8 +177,8 @@ describe("request details on shutdown", () => {
     await signalled;
 
     expect(state.events).toEqual(["insert mid-a", "insert mid-b", "close"]);
-    expect(typeof state.fullData["mid-a"]).toBe("string");
-    expect(state.fullData["mid-b"]).toBeNull();
+    expect(typeof state.fullData["mid-b"]).toBe("string");
+    expect(state.fullData["mid-a"]).toBeNull();
     expect(consoleError).not.toHaveBeenCalled();
   });
 
