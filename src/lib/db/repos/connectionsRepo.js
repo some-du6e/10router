@@ -310,8 +310,11 @@ export async function createProviderConnection(data) {
 // apiKeyUsed is the key a failing request used: if another key has been stored
 // since, the request's auth streak fields, autoDisable and demote are dropped.
 // patchProviderSpecificData applies data.providerSpecificData over the stored
-// one in this transaction instead of replacing it.
-export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, noteServed = false, apiKeyUsed, patchProviderSpecificData = false } = {}) {
+// one in this transaction instead of replacing it (undefined values and a
+// null patch change nothing). stampLastRefreshAt sets lastRefreshAt to now
+// when data carries an access token other than the stored one and no
+// lastRefreshAt of its own.
+export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, noteServed = false, apiKeyUsed, patchProviderSpecificData = false, stampLastRefreshAt = false } = {}) {
   const db = await getAdapter();
   let result;
   let servesChanged = false;
@@ -320,8 +323,12 @@ export async function updateProviderConnection(id, data, { autoDisable = null, d
     if (!row) { result = null; return; }
     const existing = rowToConn(row);
     const merged = { ...existing, ...data, updatedAt: new Date().toISOString() };
-    if (patchProviderSpecificData && data.providerSpecificData) {
-      merged.providerSpecificData = { ...(existing.providerSpecificData || {}), ...data.providerSpecificData };
+    if (patchProviderSpecificData && "providerSpecificData" in data) {
+      const patch = Object.entries(data.providerSpecificData || {}).filter(([, value]) => value !== undefined);
+      merged.providerSpecificData = { ...(existing.providerSpecificData || {}), ...Object.fromEntries(patch) };
+    }
+    if (stampLastRefreshAt && data.accessToken && data.accessToken !== existing.accessToken && !data.lastRefreshAt) {
+      merged.lastRefreshAt = merged.updatedAt;
     }
     const staleKey = apiKeyUsed !== undefined && existing.apiKey !== apiKeyUsed;
     if (staleKey) {

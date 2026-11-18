@@ -4,6 +4,7 @@ import {
   refreshTokenByProvider,
 } from "./tokenRefresh.js";
 import { PROVIDER_OAUTH } from "../providers/index.js";
+import { expiresAtFromNow } from "../utils/tokenExpiry.js";
 
 // Single source: codex.oauth.maxRefreshAgeMs (8 days) — proactive refresh window
 export const CODEX_MAX_REFRESH_AGE_MS = PROVIDER_OAUTH["codex"]?.maxRefreshAgeMs;
@@ -18,11 +19,6 @@ function parseTimeMs(value) {
 
   const parsed = new Date(value).getTime();
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-function toExpiresAt(expiresIn, nowMs = Date.now()) {
-  if (!expiresIn) return null;
-  return new Date(nowMs + expiresIn * 1000).toISOString();
 }
 
 export function getCredentialExpiryMs(credentials) {
@@ -96,9 +92,10 @@ export function mergeRefreshedCredentials(provider, currentCredentials, refreshe
   const idToken = refreshedCredentials.idToken ?? currentCredentials?.idToken;
   if (idToken) next.idToken = idToken;
 
-  if (refreshedCredentials.expiresIn) {
-    next.expiresIn = refreshedCredentials.expiresIn;
-    next.expiresAt = toExpiresAt(refreshedCredentials.expiresIn, nowMs);
+  const expiresAt = expiresAtFromNow(refreshedCredentials.expiresIn, nowMs);
+  if (expiresAt) {
+    next.expiresIn = Number(refreshedCredentials.expiresIn);
+    next.expiresAt = expiresAt;
   } else if (refreshedCredentials.expiresAt) {
     next.expiresAt = refreshedCredentials.expiresAt;
   }

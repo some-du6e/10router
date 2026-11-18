@@ -10,6 +10,11 @@ on:
       - "open-sse/services/oauthCredentialManager.js"
       - "open-sse/services/tokenRefresh.js"
       - "open-sse/services/tokenRefresh/providers.js"
+      - "open-sse/services/tokenRefresh/dedup.js"
+      - "open-sse/utils/tokenExpiry.js"
+      - "open-sse/executors/github.js"
+      - "open-sse/executors/antigravity.js"
+      - "open-sse/executors/gemini-cli.js"
       - "open-sse/services/kiroModels.js"
       - "src/lib/oauth/kiroExternalIdp.js"
       - "open-sse/handlers/chatCore.js"
@@ -26,6 +31,9 @@ on:
       - "src/sse/services/codexPooledUsage.js"
       - "src/app/api/v1/models/route.js"
       - "src/app/api/providers/*/models/route.js"
+      - "src/app/api/providers/*/test/testUtils.js"
+      - "src/app/api/usage/*/route.js"
+      - "src/app/api/translator/send/route.js"
       - "tests/package.json"
       - "tests/vitest.config.js"
       - "tests/vitest.shared.js"
@@ -33,6 +41,12 @@ on:
       - "tests/unit/refresh-metadata-patch.test.js"
       - "tests/unit/kiro-external-idp.test.js"
       - "tests/unit/codex-stale-refresh.test.js"
+      - "tests/unit/refresh-retry-credentials.test.js"
+      - "tests/unit/token-refresh-generic.test.js"
+      - "tests/unit/background-token-refresh.test.js"
+      - "tests/unit/xai-video-handler.test.js"
+      - "tests/unit/xai-video-core.test.js"
+      - "tests/unit/image-generation.test.js"
       - ".github/workflows/gateway-refresh.yml"
   workflow_dispatch:
 
@@ -61,6 +75,7 @@ jobs:
           unit/refresh-metadata-patch.test.js
           unit/kiro-external-idp.test.js
           unit/codex-stale-refresh.test.js
+          unit/refresh-retry-credentials.test.js
           unit/token-refresh-generic.test.js
           unit/background-token-refresh.test.js
           unit/xai-video-handler.test.js
@@ -83,24 +98,22 @@ jobs:
           src/sse/handlers/fetch.js
           src/sse/handlers/videoGeneration.js
           src/sse/handlers/embeddings.js
+          src/sse/handlers/chat.ts
           src/sse/services/codexPooledUsage.js
           src/app/api/v1/models/route.js
           "src/app/api/providers/[id]/models/route.js"
+          "src/app/api/providers/[id]/test/testUtils.js"
+          "src/app/api/usage/[connectionId]/route.js"
+          src/app/api/translator/send/route.js
+          open-sse/utils/tokenExpiry.js
+          open-sse/executors/github.js
+          open-sse/executors/antigravity.js
+          open-sse/executors/gemini-cli.js
           tests/unit/gateway-refresh-persistence.test.js
           tests/unit/refresh-metadata-patch.test.js
           tests/unit/kiro-external-idp.test.js
           tests/unit/codex-stale-refresh.test.js
-      # Fails only on errors in chat.ts, so unrelated type errors elsewhere
-      # don't block it.
-      - name: Type check chat.ts
-        run: |
-          set +e
-          ./node_modules/.bin/tsc --noEmit -p . > tsc.log 2>&1
-          code=$?
-          set -e
-          tail -5 tsc.log
-          if [ "$code" -gt 2 ] || ! [ -x ./node_modules/.bin/tsc ]; then echo "tsc did not run (exit $code)"; exit 1; fi
-          if grep -F "src/sse/handlers/chat.ts" tsc.log; then exit 1; fi
+          tests/unit/refresh-retry-credentials.test.js
 
   # The suite is not all-green on master (see AGENTS.md), so this runs it on
   # both the base and this branch and fails only on tests that pass on the base

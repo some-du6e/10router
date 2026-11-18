@@ -120,10 +120,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
       streamToClient: wantsStream,
       binaryOutput,
       onCredentialsRefreshed: async (newCreds) => {
-        await updateProviderCredentials(credentials.connectionId, {
-          ...newCreds,
-          testStatus: "active"
-        });
+        await updateProviderCredentials(credentials.connectionId, newCreds);
       },
       onRequestSuccess: async () => {
         await clearAccountError(credentials.connectionId, credentials, model);

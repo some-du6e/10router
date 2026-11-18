@@ -410,7 +410,7 @@ export class GithubExecutor extends BaseExecutor {
     }
 
     if (copilotResult) {
-      return { accessToken: credentials.accessToken, refreshToken: credentials.refreshToken, copilotToken: copilotResult.token, copilotTokenExpiresAt: copilotResult.expiresAt };
+      return { copilotToken: copilotResult.token, copilotTokenExpiresAt: copilotResult.expiresAt };
     }
 
     return null;

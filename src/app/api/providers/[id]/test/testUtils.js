@@ -1,4 +1,5 @@
 import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
+import { updateProviderCredentials } from "@/sse/services/tokenRefresh.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { testProxyUrl } from "@/lib/network/proxyTest";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
@@ -871,22 +872,7 @@ export async function testSingleConnection(id) {
   };
 
   if (result.refreshed && result.newTokens) {
-    if (result.newTokens.accessToken) updateData.accessToken = result.newTokens.accessToken;
-    if (result.newTokens.refreshToken) updateData.refreshToken = result.newTokens.refreshToken;
-    if (result.newTokens.idToken) updateData.idToken = result.newTokens.idToken;
-    if (result.newTokens.lastRefreshAt) updateData.lastRefreshAt = result.newTokens.lastRefreshAt;
-    if (result.newTokens.expiresIn) updateData.expiresIn = result.newTokens.expiresIn;
-    if (result.newTokens.expiresIn) {
-      updateData.expiresAt = new Date(Date.now() + result.newTokens.expiresIn * 1000).toISOString();
-    } else if (result.newTokens.expiresAt) {
-      updateData.expiresAt = result.newTokens.expiresAt;
-    }
-    if (result.newTokens.providerSpecificData) {
-      updateData.providerSpecificData = {
-        ...(connection.providerSpecificData || {}),
-        ...result.newTokens.providerSpecificData,
-      };
-    }
+    await updateProviderCredentials(id, result.newTokens);
   }
 
   await updateProviderConnection(id, updateData);

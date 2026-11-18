@@ -77,7 +77,6 @@ export class GeminiCLIExecutor extends BaseExecutor {
         accessToken: tokens.access_token,
         refreshToken: tokens.refresh_token || credentials.refreshToken,
         expiresIn: tokens.expires_in,
-        projectId: credentials.projectId
       };
     } catch (error) {
       log?.error?.("TOKEN", `Gemini CLI refresh error: ${error.message}`);

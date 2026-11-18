@@ -54,7 +54,7 @@ import { handleVideoCreate, handleVideoGet } from "../../src/sse/handlers/videoG
 const refreshed = {
   accessToken: "new-access", refreshToken: "new-refresh", idToken: "new-identity", expiresIn: 3600,
 };
-const PATCH = { patchProviderSpecificData: true };
+const PATCH = { patchProviderSpecificData: true, stampLastRefreshAt: true };
 
 function savedUpdate() {
   expect(mocks.update).toHaveBeenCalledOnce();
@@ -83,22 +83,14 @@ describe("updateProviderCredentials", () => {
     expect(mocks.get).not.toHaveBeenCalled();
   });
 
-  it("stamps lastRefreshAt when it saves a new access token", async () => {
-    const before = Date.now();
+  it("leaves the lastRefreshAt stamp to the repo, which sees whether the token changed", async () => {
     await updateProviderCredentials("account", refreshed);
-    const saved = savedUpdate();
-    expect(Date.parse(saved.lastRefreshAt)).toBeGreaterThanOrEqual(before);
-    expect(Date.parse(saved.lastRefreshAt)).toBeLessThanOrEqual(Date.now());
+    expect(savedUpdate()).not.toHaveProperty("lastRefreshAt");
   });
 
   it("keeps the lastRefreshAt a refresh result carries", async () => {
     await updateProviderCredentials("account", { ...refreshed, lastRefreshAt: "2026-10-11T12:00:00.000Z" });
     expect(savedUpdate().lastRefreshAt).toBe("2026-10-11T12:00:00.000Z");
-  });
-
-  it("does not stamp lastRefreshAt when no access token is saved", async () => {
-    await updateProviderCredentials("account", { projectId: "project" });
-    expect(savedUpdate()).not.toHaveProperty("lastRefreshAt");
   });
 
   it("still saves the rotated tokens when expiresIn is not a number", async () => {
@@ -113,14 +105,16 @@ describe("updateProviderCredentials", () => {
 
   it("falls back to expiresAt when expiresIn is not a number", async () => {
     await updateProviderCredentials("account", {
-      accessToken: "new-access", expiresIn: Number.NaN, expiresAt: "2099-01-01T00:00:00.000Z",
+      accessToken: "new-access", expiresIn: "soon", expiresAt: "2099-01-01T00:00:00.000Z",
     });
     expect(savedUpdate().expiresAt).toBe("2099-01-01T00:00:00.000Z");
   });
 
-  it("persists testStatus", async () => {
-    await updateProviderCredentials("account", { ...refreshed, testStatus: "active" });
-    expect(savedUpdate().testStatus).toBe("active");
+  it("does not touch testStatus or the error fields; clearAccountError owns those", async () => {
+    await updateProviderCredentials("account", { ...refreshed, testStatus: "active", lastError: null });
+    const saved = savedUpdate();
+    expect(saved).not.toHaveProperty("testStatus");
+    expect(saved).not.toHaveProperty("lastError");
   });
 
   it("puts top-level Copilot fields in the same patch as providerSpecificData", async () => {
@@ -156,9 +150,8 @@ describe("gateway handler refresh callbacks", () => {
     const saved = savedUpdate();
     expect(saved).toMatchObject({
       accessToken: refreshed.accessToken, refreshToken: refreshed.refreshToken,
-      idToken: refreshed.idToken, expiresIn: 3600, testStatus: "active",
+      idToken: refreshed.idToken, expiresIn: 3600,
     });
-    expect(Date.parse(saved.lastRefreshAt)).toBeGreaterThanOrEqual(before);
     expect(Date.parse(saved.expiresAt)).toBeGreaterThanOrEqual(before + 3600_000);
     expect(Date.parse(saved.expiresAt)).toBeLessThanOrEqual(Date.now() + 3600_000);
   });

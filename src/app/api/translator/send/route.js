@@ -1,36 +1,7 @@
-import { getProviderConnections, updateProviderConnection } from "@/lib/localDb.js";
+import { getProviderConnections } from "@/lib/localDb.js";
 import { getExecutor } from "open-sse/index.js";
-
-async function persistRefreshedCredentials(connection, newCredentials) {
-  const updateData = {};
-
-  if (newCredentials.accessToken) updateData.accessToken = newCredentials.accessToken;
-  if (newCredentials.refreshToken) updateData.refreshToken = newCredentials.refreshToken;
-  if (newCredentials.idToken) updateData.idToken = newCredentials.idToken;
-  if (newCredentials.lastRefreshAt) updateData.lastRefreshAt = newCredentials.lastRefreshAt;
-  if (newCredentials.expiresIn) {
-    updateData.expiresIn = newCredentials.expiresIn;
-    updateData.expiresAt = new Date(Date.now() + newCredentials.expiresIn * 1000).toISOString();
-  } else if (newCredentials.expiresAt) {
-    updateData.expiresAt = newCredentials.expiresAt;
-  }
-
-  const providerSpecificUpdates = {
-    ...(newCredentials.providerSpecificData || {}),
-    ...(newCredentials.copilotToken ? { copilotToken: newCredentials.copilotToken } : {}),
-    ...(newCredentials.copilotTokenExpiresAt ? { copilotTokenExpiresAt: newCredentials.copilotTokenExpiresAt } : {}),
-  };
-  if (Object.keys(providerSpecificUpdates).length > 0) {
-    updateData.providerSpecificData = {
-      ...(connection.providerSpecificData || {}),
-      ...providerSpecificUpdates,
-    };
-  }
-
-  if (Object.keys(updateData).length > 0) {
-    await updateProviderConnection(connection.id, updateData);
-  }
-}
+import { applyRefreshedCredentials } from "open-sse/services/oauthCredentialManager.js";
+import { updateProviderCredentials } from "@/sse/services/tokenRefresh.js";
 
 export async function POST(request) {
   try {
@@ -68,8 +39,8 @@ export async function POST(request) {
     if (response.status === 401 || response.status === 403) {
       const newCredentials = await executor.refreshCredentials(credentials, console);
       if (newCredentials?.accessToken || newCredentials?.copilotToken) {
-        Object.assign(credentials, newCredentials);
-        await persistRefreshedCredentials(connection, newCredentials);
+        applyRefreshedCredentials(credentials, newCredentials);
+        await updateProviderCredentials(connection.id, newCredentials);
         ({ response } = await executor.execute({ model, body, stream, credentials }));
       }
     }

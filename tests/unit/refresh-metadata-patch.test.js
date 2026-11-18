@@ -11,7 +11,8 @@ const originalFetch = global.fetch;
 const TOKEN_ENDPOINT = "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token";
 const unexpectedFetch = async (url) => { throw new Error(`unexpected fetch: ${url}`); };
 let fetchImpl = unexpectedFetch;
-let tempDir, db, sseRefresh, oauth, engineRefresh;
+const executorRefresh = vi.fn();
+let tempDir, db, sseRefresh, oauth, engineRefresh, GithubExecutor, usageRoute;
 
 beforeAll(async () => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "10router-refresh-patch-"));
@@ -19,10 +20,17 @@ beforeAll(async () => {
   // proxyFetch keeps the fetch it finds at import, so install the stub first.
   global.fetch = (...args) => fetchImpl(...args);
   vi.resetModules();
+  vi.doMock("../../open-sse/executors/index.js", () => ({
+    getExecutor: () => ({ refreshCredentials: executorRefresh, needsRefresh: () => true }),
+  }));
+  // The usage route imports the engine entry only to patch fetch.
+  vi.doMock("../../open-sse/index.js", () => ({}));
   db = await import("../../src/lib/db/index.js");
   sseRefresh = await import("../../src/sse/services/tokenRefresh.js");
   oauth = await import("../../open-sse/services/oauthCredentialManager.js");
   engineRefresh = await import("../../open-sse/services/tokenRefresh.js");
+  ({ GithubExecutor } = await import("../../open-sse/executors/github.js"));
+  usageRoute = await import("../../src/app/api/usage/[connectionId]/route.js");
 });
 
 afterEach(() => {
@@ -30,6 +38,8 @@ afterEach(() => {
 });
 
 afterAll(() => {
+  vi.doUnmock("../../open-sse/executors/index.js");
+  vi.doUnmock("../../open-sse/index.js");
   global.fetch = originalFetch;
   if (originalDataDir === undefined) delete process.env.DATA_DIR;
   else process.env.DATA_DIR = originalDataDir;
@@ -52,6 +62,33 @@ describe("updateProviderConnection patchProviderSpecificData", () => {
     const conn = await addConnection("xai", { accountId: "stored", session: "old" });
     await db.updateProviderConnection(conn.id, { providerSpecificData: { session: "new" } });
     expect(await storedData(conn.id)).toEqual({ session: "new" });
+  });
+
+  it("treats a null patch as empty and skips undefined values", async () => {
+    const conn = await addConnection("xai", { accountId: "stored", session: "old" });
+    await db.updateProviderConnection(conn.id, { providerSpecificData: null }, { patchProviderSpecificData: true });
+    expect(await storedData(conn.id)).toEqual({ accountId: "stored", session: "old" });
+    await db.updateProviderConnection(conn.id, { providerSpecificData: { session: undefined, plan: "new" } }, { patchProviderSpecificData: true });
+    expect(await storedData(conn.id)).toEqual({ accountId: "stored", session: "old", plan: "new" });
+  });
+});
+
+describe("updateProviderConnection stampLastRefreshAt", () => {
+  it("stamps lastRefreshAt only when the access token changes", async () => {
+    const conn = await addConnection("xai", { accountId: "stored" });
+    await db.updateProviderConnection(conn.id, { lastRefreshAt: "2026-01-01T00:00:00.000Z" });
+    await db.updateProviderConnection(conn.id, { accessToken: "stored-access" }, { stampLastRefreshAt: true });
+    expect((await db.getProviderConnectionById(conn.id)).lastRefreshAt).toBe("2026-01-01T00:00:00.000Z");
+
+    const before = Date.now();
+    await db.updateProviderConnection(conn.id, { accessToken: "new-access" }, { stampLastRefreshAt: true });
+    expect(Date.parse((await db.getProviderConnectionById(conn.id)).lastRefreshAt)).toBeGreaterThanOrEqual(before);
+  });
+
+  it("keeps a lastRefreshAt the write carries", async () => {
+    const conn = await addConnection("xai", {});
+    await db.updateProviderConnection(conn.id, { accessToken: "new-access", lastRefreshAt: "2026-02-02T00:00:00.000Z" }, { stampLastRefreshAt: true });
+    expect((await db.getProviderConnectionById(conn.id)).lastRefreshAt).toBe("2026-02-02T00:00:00.000Z");
   });
 });
 
@@ -93,7 +130,45 @@ describe("refresh results keep newer stored metadata", () => {
     expect(stored.providerSpecificData).toEqual({ ...config, profileArn: "profile-new", region: "eu-west-1" });
   });
 
-  it("shared refreshProviderCredentials path", async () => {
+  it("GitHub Copilot-only refresh leaves the stored GitHub tokens and lastRefreshAt alone", async () => {
+    const conn = await addConnection("github", { githubLogin: "login" });
+    await db.updateProviderConnection(conn.id, { refreshToken: "newest-refresh", lastRefreshAt: "2026-11-01T00:00:00.000Z" });
+    fetchImpl = vi.fn(async () => Response.json({ token: "fresh-copilot", expires_at: 4102444800 }));
+    const refreshed = await new GithubExecutor().refreshCredentials({ accessToken: "stored-access", refreshToken: "stale-refresh" }, null);
+    expect(refreshed).toEqual({ copilotToken: "fresh-copilot", copilotTokenExpiresAt: 4102444800 });
+    await sseRefresh.updateProviderCredentials(conn.id, refreshed);
+    expect(await db.getProviderConnectionById(conn.id)).toMatchObject({
+      accessToken: "stored-access", refreshToken: "newest-refresh", lastRefreshAt: "2026-11-01T00:00:00.000Z",
+      providerSpecificData: { githubLogin: "login", copilotToken: "fresh-copilot", copilotTokenExpiresAt: 4102444800 },
+    });
+  });
+
+  it("usage polling saves through updateProviderCredentials", async () => {
+    const config = { authMethod: "external_idp", clientId: "client-id", tokenEndpoint: TOKEN_ENDPOINT, scope: "offline_access" };
+    const conn = await addConnection("kiro", { ...config, profileArn: "profile-new", region: "eu-west-1" });
+    executorRefresh.mockResolvedValueOnce({ accessToken: "usage-access", refreshToken: "usage-rotated", expiresIn: "soon", providerSpecificData: config });
+    const { connection, refreshed } = await usageRoute.refreshAndUpdateCredentials({ id: conn.id }, true);
+    expect(refreshed).toBe(true);
+    expect(connection).toMatchObject({ accessToken: "usage-access", refreshToken: "usage-rotated" });
+    expect(connection.providerSpecificData).toEqual({ ...config, profileArn: "profile-new", region: "eu-west-1" });
+    expect(await db.getProviderConnectionById(conn.id)).toMatchObject({
+      accessToken: "usage-access", refreshToken: "usage-rotated",
+      providerSpecificData: { ...config, profileArn: "profile-new", region: "eu-west-1" },
+    });
+  });
+
+  it("mergeRefreshedCredentials ignores a non-numeric expiresIn and keeps the rotated token", async () => {
+    const conn = await addConnection("codex", { chatgptAccountId: "account" });
+    const refreshed = oauth.mergeRefreshedCredentials("codex", { connectionId: conn.id, refreshToken: "stored-refresh" }, {
+      accessToken: "codex-access", refreshToken: "codex-rotated", expiresIn: "soon",
+    });
+    expect(refreshed).toMatchObject({ accessToken: "codex-access", refreshToken: "codex-rotated" });
+    expect(refreshed).not.toHaveProperty("expiresAt");
+    await sseRefresh.updateProviderCredentials(conn.id, refreshed);
+    expect((await db.getProviderConnectionById(conn.id)).refreshToken).toBe("codex-rotated");
+  });
+
+  it("mergeRefreshedCredentials", async () => {
     const conn = await addConnection("codex", { chatgptAccountId: "account", workspace: "renamed" });
     const current = {
       connectionId: conn.id, refreshToken: "stored-refresh",

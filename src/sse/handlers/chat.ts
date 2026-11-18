@@ -844,10 +844,7 @@ async function routeSingleModelChat(
       clientSignal: signal,
       drainOnDisconnect,
       onCredentialsRefreshed: async (newCreds: Record<string, unknown>) => {
-        await updateProviderCredentials(credentials.connectionId, {
-          ...newCreds,
-          testStatus: "active"
-        });
+        await updateProviderCredentials(credentials.connectionId, newCreds);
       },
       // Anthropic-compatible endpoint rejected some beta flags; remember them on the
       // connection so later requests skip the failed first try.

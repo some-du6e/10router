@@ -1,7 +1,8 @@
 // Ensure proxyFetch is loaded to patch globalThis.fetch
 import "open-sse/index.js";
 
-import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
+import { getProviderConnectionById } from "@/lib/localDb";
+import { buildCredentialUpdates, updateProviderCredentials } from "@/sse/services/tokenRefresh.js";
 import { getUsageForProvider } from "open-sse/services/usage.js";
 import { isUnrecoverableRefreshError } from "open-sse/services/tokenRefresh.js";
 import { getExecutor } from "open-sse/executors/index.js";
@@ -72,59 +73,16 @@ export async function refreshAndUpdateCredentials(connection, force = false, pro
     throw new Error("Failed to refresh credentials. Please re-authorize the connection.");
   }
 
-  // Build update object
-  const now = new Date().toISOString();
-  const updateData = {
-    updatedAt: now,
-  };
+  await updateProviderCredentials(connection.id, refreshResult);
 
-  // Update accessToken if present
-  if (refreshResult.accessToken) {
-    updateData.accessToken = refreshResult.accessToken;
-  }
-
-  // Update refreshToken if present
-  if (refreshResult.refreshToken) {
-    updateData.refreshToken = refreshResult.refreshToken;
-  }
-
-  if (refreshResult.idToken) {
-    updateData.idToken = refreshResult.idToken;
-  }
-
-  if (refreshResult.lastRefreshAt) {
-    updateData.lastRefreshAt = refreshResult.lastRefreshAt;
-  }
-
-  // Update token expiry
-  if (refreshResult.expiresIn) {
-    updateData.expiresAt = new Date(Date.now() + refreshResult.expiresIn * 1000).toISOString();
-    updateData.expiresIn = refreshResult.expiresIn;
-  } else if (refreshResult.expiresAt) {
-    updateData.expiresAt = refreshResult.expiresAt;
-  }
-
-  // Handle provider-specific data (copilotToken for GitHub, etc.)
-  const providerSpecificUpdates = {
-    ...(refreshResult.providerSpecificData || {}),
-    ...(refreshResult.copilotToken ? { copilotToken: refreshResult.copilotToken } : {}),
-    ...(refreshResult.copilotTokenExpiresAt ? { copilotTokenExpiresAt: refreshResult.copilotTokenExpiresAt } : {}),
-  };
-  if (Object.keys(providerSpecificUpdates).length > 0) {
-    updateData.providerSpecificData = {
-      ...(connection.providerSpecificData || {}),
-      ...providerSpecificUpdates,
-    };
-  }
-
-  // Update database
-  await updateProviderConnection(connection.id, updateData);
-
-  // Return updated connection
+  // The patch applied to this request's copy, the way the DB applied it.
+  const updates = buildCredentialUpdates(refreshResult);
   const updatedConnection = {
     ...connection,
-    ...updateData,
-    providerSpecificData: updateData.providerSpecificData || connection.providerSpecificData,
+    ...updates,
+    providerSpecificData: updates.providerSpecificData
+      ? { ...(connection.providerSpecificData || {}), ...updates.providerSpecificData }
+      : connection.providerSpecificData,
   };
 
   return {

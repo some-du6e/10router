@@ -207,10 +207,7 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
       credentials: refreshedCredentials,
       log,
       onCredentialsRefreshed: async (newCreds) => {
-        await updateProviderCredentials(credentials.connectionId, {
-          ...newCreds,
-          testStatus: "active"
-        });
+        await updateProviderCredentials(credentials.connectionId, newCreds);
       },
       onRequestSuccess: async () => {
         await clearAccountError(credentials.connectionId, credentials, searchLockKey);

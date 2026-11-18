@@ -26,6 +26,7 @@ import {
   refreshProviderCredentials as _refreshProviderCredentials,
   shouldRefreshCredentials as _shouldRefreshCredentials,
 } from "open-sse/services/oauthCredentialManager.js";
+import { expiresAtFromNow } from "open-sse/utils/tokenExpiry.js";
 
 export const TOKEN_EXPIRY_BUFFER_MS = BUFFER_MS;
 
@@ -87,17 +88,6 @@ export function releaseConnection(connectionId) {
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
-/**
- * Compute an ISO expiry timestamp from a relative expiresIn (seconds).
- * @param {number} expiresIn
- * @returns {string|null} null when expiresIn is not a usable number of seconds
- */
-function toExpiresAt(expiresIn) {
-  const seconds = Number(expiresIn);
-  if (!expiresIn || !Number.isFinite(seconds) || seconds <= 0) return null;
-  return normalizeExpiresAt(Date.now() + seconds * 1000);
-}
-
 function normalizeExpiresAt(expiresAt) {
   if (!expiresAt) return null;
   const date = new Date(expiresAt);
@@ -150,8 +140,44 @@ function _refreshProjectId(provider, connectionId, accessToken) {
 // ─── Local-specific: persist credentials to localDb ──────────────────────────
 
 /**
- * Persist updated credentials for a connection to localDb.
- * Only fields that are present in `newCredentials` are written.
+ * The connection fields a refresh result changes. `providerSpecificData` in
+ * the result is a patch (top-level Copilot fields join it); nothing else is read.
+ *
+ * @param {object} newCredentials
+ * @returns {object}
+ */
+export function buildCredentialUpdates(newCredentials) {
+  const updates = {};
+
+  if (newCredentials.accessToken)         updates.accessToken  = newCredentials.accessToken;
+  if (newCredentials.refreshToken)        updates.refreshToken = newCredentials.refreshToken;
+  if (newCredentials.idToken)             updates.idToken = newCredentials.idToken;
+  if (newCredentials.lastRefreshAt)       updates.lastRefreshAt = newCredentials.lastRefreshAt;
+  const expiresInAt = expiresAtFromNow(newCredentials.expiresIn);
+  if (expiresInAt) {
+    updates.expiresAt = expiresInAt;
+    updates.expiresIn = Number(newCredentials.expiresIn);
+  } else if (newCredentials.expiresAt) {
+    const expiresAt = normalizeExpiresAt(newCredentials.expiresAt);
+    updates.expiresAt = expiresAt || newCredentials.expiresAt;
+    if (expiresAt) {
+      updates.expiresIn = Math.max(1, Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000));
+    }
+  }
+  const providerSpecificData = {
+    ...(newCredentials.providerSpecificData || {}),
+    ...(newCredentials.copilotToken ? { copilotToken: newCredentials.copilotToken } : {}),
+    ...(newCredentials.copilotTokenExpiresAt ? { copilotTokenExpiresAt: newCredentials.copilotTokenExpiresAt } : {}),
+  };
+  if (Object.keys(providerSpecificData).length > 0) updates.providerSpecificData = providerSpecificData;
+  if (newCredentials.projectId)            updates.projectId = newCredentials.projectId;
+  return updates;
+}
+
+/**
+ * Persist a refresh result for a connection to localDb: only the fields it
+ * carries, its providerSpecificData applied over the stored row, and
+ * lastRefreshAt stamped when the access token changed.
  *
  * @param {string} connectionId
  * @param {object} newCredentials
@@ -159,37 +185,11 @@ function _refreshProjectId(provider, connectionId, accessToken) {
  */
 export async function updateProviderCredentials(connectionId, newCredentials) {
   try {
-    const updates = {};
-
-    if (newCredentials.accessToken) {
-      updates.accessToken = newCredentials.accessToken;
-      updates.lastRefreshAt = new Date().toISOString();
-    }
-    if (newCredentials.refreshToken)        updates.refreshToken = newCredentials.refreshToken;
-    if (newCredentials.idToken)             updates.idToken = newCredentials.idToken;
-    if (newCredentials.lastRefreshAt)       updates.lastRefreshAt = newCredentials.lastRefreshAt;
-    if (newCredentials.testStatus)          updates.testStatus = newCredentials.testStatus;
-    if (newCredentials.expiresAt)           updates.expiresAt = newCredentials.expiresAt;
-    const expiresInAt = toExpiresAt(newCredentials.expiresIn);
-    if (expiresInAt) {
-      updates.expiresAt = expiresInAt;
-      updates.expiresIn = Number(newCredentials.expiresIn);
-    } else if (newCredentials.expiresAt) {
-      const expiresAt = normalizeExpiresAt(newCredentials.expiresAt);
-      if (expiresAt) {
-        updates.expiresAt = expiresAt;
-        updates.expiresIn = Math.max(1, Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000));
-      }
-    }
-    const providerSpecificData = {
-      ...(newCredentials.providerSpecificData || {}),
-      ...(newCredentials.copilotToken ? { copilotToken: newCredentials.copilotToken } : {}),
-      ...(newCredentials.copilotTokenExpiresAt ? { copilotTokenExpiresAt: newCredentials.copilotTokenExpiresAt } : {}),
-    };
-    if (Object.keys(providerSpecificData).length > 0) updates.providerSpecificData = providerSpecificData;
-    if (newCredentials.projectId)            updates.projectId = newCredentials.projectId;
-
-    const result = await updateProviderConnection(connectionId, updates, { patchProviderSpecificData: true });
+    const updates = buildCredentialUpdates(newCredentials);
+    const result = await updateProviderConnection(connectionId, updates, {
+      patchProviderSpecificData: true,
+      stampLastRefreshAt: true,
+    });
     log.info("TOKEN_REFRESH", "Credentials updated in localDb", {
       connectionId,
       success: !!result
@@ -266,7 +266,7 @@ export async function checkAndRefreshToken(provider, credentials, options = {}) 
       creds = {
         ...creds,
         ...newCreds,
-        expiresAt: toExpiresAt(newCreds.expiresIn)
+        expiresAt: expiresAtFromNow(newCreds.expiresIn)
           || normalizeExpiresAt(newCreds.expiresAt) || newCreds.expiresAt || creds.expiresAt,
         providerSpecificData: newCreds.providerSpecificData
           ? { ...creds.providerSpecificData, ...newCreds.providerSpecificData }
@@ -294,15 +294,13 @@ export async function checkAndRefreshToken(provider, credentials, options = {}) 
       });
 
       const copilotTokenResult = await refreshCopilotToken(creds.accessToken);
-      if (copilotTokenResult) {
-        const copilotPatch = {
+      if (copilotTokenResult?.token) {
+        const copilotPatch = buildCredentialUpdates({
           copilotToken:          copilotTokenResult.token,
           copilotTokenExpiresAt: copilotTokenResult.expiresAt,
-        };
+        }).providerSpecificData;
 
-        await updateProviderCredentials(creds.connectionId, {
-          providerSpecificData: copilotPatch,
-        });
+        await updateProviderCredentials(creds.connectionId, { providerSpecificData: copilotPatch });
 
         creds.providerSpecificData = { ...creds.providerSpecificData, ...copilotPatch };
         creds.copilotToken = copilotTokenResult.token;
