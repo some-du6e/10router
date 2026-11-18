@@ -1,3 +1,4 @@
+import { createHmac, randomBytes } from "node:crypto";
 import { EventEmitter } from "events";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
@@ -11,8 +12,34 @@ export function maskApiKey(key) {
   return key.slice(0, 8) + "***";
 }
 
+if (!global._usageStatsKeySecret) global._usageStatsKeySecret = randomBytes(32);
+
+/**
+ * The byApiKey row id. Keys on one machine share their first 8 characters, so
+ * rows need more than the masked key to stay apart; a keyed hash with a
+ * per-process secret does that without letting anyone recover a weak key.
+ */
+export function apiKeyStatsKey(apiKey, model, provider) {
+  return `${apiKeyStatsId(apiKey)}|${model ?? ""}|${provider || "unknown"}`;
+}
+
+function hasApiKey(apiKey) {
+  return Boolean(apiKey) && typeof apiKey === "string" && apiKey !== "local-no-key";
+}
+
+function apiKeyStatsId(apiKey) {
+  if (!hasApiKey(apiKey)) return "local-no-key";
+  return `key-${createHmac("sha256", global._usageStatsKeySecret).update(apiKey).digest("hex").slice(0, 16)}`;
+}
+
+/** A key's name, or for a deleted or unknown key its masked form plus a short tag. */
+function apiKeyLabel(apiKey, apiKeyMap) {
+  if (!hasApiKey(apiKey)) return "Local (No API Key)";
+  return apiKeyMap[apiKey]?.name || `${maskApiKey(apiKey)} #${apiKeyStatsId(apiKey).slice(4, 10)}`;
+}
+
 const PENDING_TIMEOUT_MS = 60 * 1000;
-const RING_CAP = 50;
+const RING_CAP = 100;
 const CONN_CACHE_TTL_MS = 30 * 1000;
 const PERIOD_MS = { "24h": 86400000, "7d": 604800000, "30d": 2592000000, "60d": 5184000000 };
 
@@ -24,7 +51,7 @@ if (!global._statsEmitter) {
   global._statsEmitter.setMaxListeners(50);
 }
 if (!global._pendingTimers) global._pendingTimers = {};
-if (!global._recentRing) global._recentRing = { items: [], initialized: false };
+if (!global._recentRing) global._recentRing = { items: [], ready: null };
 if (!global._connectionMapCache) global._connectionMapCache = { map: {}, ts: 0 };
 if (!global._statsEmitTimers) global._statsEmitTimers = { pending: null, update: null };
 if (!global._usageLastUsedIndex) global._usageLastUsedIndex = new WeakMap();
@@ -155,9 +182,14 @@ async function getConnectionMapCached() {
   return connCache.map;
 }
 
-async function ensureRingInitialized() {
-  if (recentRing.initialized) return;
-  recentRing.initialized = true;
+// Every caller awaits the same load, so a request that arrives while the ring
+// is loading doesn't read it empty.
+function ensureRingInitialized() {
+  recentRing.ready ||= loadRing();
+  return recentRing.ready;
+}
+
+async function loadRing() {
   try {
     const db = await getAdapter();
     const rows = db.all(`SELECT timestamp, provider, model, connectionId, apiKey, endpoint, cost, status, tokens FROM usageHistory ORDER BY id DESC LIMIT ?`, [RING_CAP]);
@@ -273,7 +305,7 @@ export async function getActiveRequests() {
     .slice(0, 20);
 
   const errorProvider = (Date.now() - lastErrorProvider.ts < 10000) ? lastErrorProvider.provider : "";
-  return { activeRequests, recentRequests, errorProvider };
+  return { activeRequests, recentRequests, errorProvider, pending: pendingRequests };
 }
 
 export async function saveRequestUsage(entry) {
@@ -733,15 +765,17 @@ async function computeUsageStats(period) {
         if (dateKey > (stats.byAccount[accountKey].lastUsed || "")) stats.byAccount[accountKey].lastUsed = dateKey;
       }
 
-      for (const [akKey, ak] of Object.entries(day.byApiKey || {})) {
-        const rawModel = ak.rawModel || "";
-        const provider = ak.provider || "";
+      for (const [dayKey, ak] of Object.entries(day.byApiKey || {})) {
+        // The day's own key is `${rawApiKey}|model|provider`; it never leaves here.
+        const [keyPart, modelPart, providerPart] = dayKey.split("|");
+        const rawModel = ak.rawModel ?? modelPart ?? "";
+        const provider = ak.provider ?? (providerPart === "unknown" ? "" : providerPart) ?? "";
         const providerDisplayName = providerNodeNameMap[provider] || provider;
-        const apiKeyVal = ak.apiKey;
-        const keyInfo = apiKeyVal ? apiKeyMap[apiKeyVal] : null;
-        const keyName = keyInfo?.name || (apiKeyVal ? apiKeyVal.slice(0, 8) + "..." : "Local (No API Key)");
+        const apiKeyVal = ak.apiKey !== undefined ? ak.apiKey : (keyPart === "local-no-key" ? null : keyPart);
+        const keyName = apiKeyLabel(apiKeyVal, apiKeyMap);
         const apiKeyMasked = maskApiKey(apiKeyVal);
         const apiKeyKey = apiKeyMasked || "local-no-key";
+        const akKey = apiKeyStatsKey(apiKeyVal, rawModel, provider);
         if (!stats.byApiKey[akKey]) {
           stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey, lastUsed: dateKey };
         }
@@ -784,9 +818,7 @@ async function computeUsageStats(period) {
         if (stats.byAccount[accountKey] && new Date(ts) > new Date(stats.byAccount[accountKey].lastUsed)) stats.byAccount[accountKey].lastUsed = ts;
       }
 
-      const apiKeyKey = (e.apiKey && typeof e.apiKey === "string")
-        ? `${e.apiKey}|${e.model}|${e.provider || "unknown"}`
-        : "local-no-key";
+      const apiKeyKey = apiKeyStatsKey(e.apiKey, e.model, e.provider);
       if (stats.byApiKey[apiKeyKey] && new Date(ts) > new Date(stats.byApiKey[apiKeyKey].lastUsed)) stats.byApiKey[apiKeyKey].lastUsed = ts;
 
       const endpoint = e.endpoint || "Unknown";
@@ -853,25 +885,14 @@ async function computeUsageStats(period) {
         if (new Date(r.timestamp) > new Date(stats.byAccount[accountKey].lastUsed)) stats.byAccount[accountKey].lastUsed = r.timestamp;
       }
 
-      if (r.apiKey && typeof r.apiKey === "string") {
-        const keyInfo = apiKeyMap[r.apiKey];
-        const keyName = keyInfo?.name || r.apiKey.slice(0, 8) + "...";
-        const apiKeyMasked = maskApiKey(r.apiKey);
-        const akKey = `${apiKeyMasked}|${r.model}|${r.provider || "unknown"}`;
-        if (!stats.byApiKey[akKey]) {
-          stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey: apiKeyMasked, lastUsed: r.timestamp };
-        }
-        const ake = stats.byApiKey[akKey];
-        ake.requests++; ake.promptTokens += promptTokens; ake.completionTokens += completionTokens; ake.cachedTokens += cachedTokens; ake.cost += entryCost;
-        if (new Date(r.timestamp) > new Date(ake.lastUsed)) ake.lastUsed = r.timestamp;
-      } else {
-        if (!stats.byApiKey["local-no-key"]) {
-          stats.byApiKey["local-no-key"] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked: null, keyName: "Local (No API Key)", apiKeyKey: "local-no-key", lastUsed: r.timestamp };
-        }
-        const ake = stats.byApiKey["local-no-key"];
-        ake.requests++; ake.promptTokens += promptTokens; ake.completionTokens += completionTokens; ake.cachedTokens += cachedTokens; ake.cost += entryCost;
-        if (new Date(r.timestamp) > new Date(ake.lastUsed)) ake.lastUsed = r.timestamp;
+      const apiKeyMasked = maskApiKey(r.apiKey);
+      const akKey = apiKeyStatsKey(r.apiKey, r.model, r.provider);
+      if (!stats.byApiKey[akKey]) {
+        stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked, keyName: apiKeyLabel(r.apiKey, apiKeyMap), apiKeyKey: apiKeyMasked || "local-no-key", lastUsed: r.timestamp };
       }
+      const ake = stats.byApiKey[akKey];
+      ake.requests++; ake.promptTokens += promptTokens; ake.completionTokens += completionTokens; ake.cachedTokens += cachedTokens; ake.cost += entryCost;
+      if (new Date(r.timestamp) > new Date(ake.lastUsed)) ake.lastUsed = r.timestamp;
 
       const endpoint = r.endpoint || "Unknown";
       const epKey = `${endpoint}|${r.model}|${r.provider || "unknown"}`;
