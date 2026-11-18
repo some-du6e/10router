@@ -100,7 +100,8 @@ export async function handleImageGenerationCore({
     requestBody = await adapter.buildBody(model, body);
     headers = adapter.buildHeaders(credentials, requestBody, model, body);
   } catch (error) {
-    return createErrorResult(HTTP_STATUS.BAD_REQUEST, error.message || `Invalid ${provider} image request`);
+    // Nothing reached the upstream, so the account is not at fault.
+    return { ...createErrorResult(HTTP_STATUS.BAD_REQUEST, error.message || `Invalid ${provider} image request`), notSent: true };
   }
 
   log?.debug?.("IMAGE", `${provider.toUpperCase()} | ${model} | prompt="${body.prompt.slice(0, 50)}..."`);

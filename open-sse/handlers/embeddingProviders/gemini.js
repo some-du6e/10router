@@ -1,20 +1,23 @@
 // Google Gemini embeddings — embedContent / batchEmbedContents
+import { modelPathSegment } from "../../utils/modelPath.js";
+
 const BASE = "https://generativelanguage.googleapis.com/v1beta";
 
-function modelPath(model) {
-  return model.startsWith("models/") ? model : `models/${model}`;
+// The id without the "models/" prefix a client may send.
+function modelId(model) {
+  return String(model).replace(/^models\//, "");
 }
 
 export default {
   buildUrl: (model, creds, { input } = {}) => {
     const apiKey = creds.apiKey || creds.accessToken;
-    const path = modelPath(model);
     const op = Array.isArray(input) ? "batchEmbedContents" : "embedContent";
-    return `${BASE}/${path}:${op}?key=${encodeURIComponent(apiKey)}`;
+    return `${BASE}/models/${modelPathSegment(modelId(model))}:${op}?key=${encodeURIComponent(apiKey)}`;
   },
   buildHeaders: () => ({ "Content-Type": "application/json" }),
   buildBody: (model, { input, dimensions }) => {
-    const m = modelPath(model);
+    // The resource name in the body, which must name the model in the URL.
+    const m = `models/${modelId(model)}`;
     const outputDimensionality = Number(dimensions);
     const hasOutputDimensionality = Number.isFinite(outputDimensionality) && outputDimensionality > 0;
     if (Array.isArray(input)) {

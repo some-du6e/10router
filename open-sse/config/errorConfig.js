@@ -183,9 +183,9 @@ export const MODEL_REFUSAL = /does not have access to (?:the )?model|model_not_f
 export const OPERATION_REFUSAL = /insufficient (?:permissions?|scopes?|privileges?)|missing (?:required )?(?:scopes?|permissions?)|permission denied for this operation|not (?:allowed|permitted|authorized) to perform this operation/;
 
 // Account errors some upstreams send as 400: a bad key (Gemini: "API key not
-// valid", API_KEY_INVALID) or no money left (Anthropic: "Your credit balance is
-// too low"; Cursor usage limits).
-export const BAD_KEY_TEXTS = ["api key not valid", "api_key_invalid", "invalid api key", "invalid_api_key", "invalid x-api-key"];
+// valid", API_KEY_INVALID; others "Incorrect API key") or no money left
+// (Anthropic: "Your credit balance is too low"; Cursor usage limits).
+export const BAD_KEY_TEXTS = ["api key not valid", "api_key_invalid", "invalid api key", "invalid_api_key", "invalid x-api-key", "incorrect api key"];
 export const BILLING_TEXTS = [
   "credit balance", "insufficient_quota", "insufficient balance", "billing_hard_limit_reached",
   "billing account", "billing details", "usage limit reached", "usage limit exceeded",

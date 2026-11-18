@@ -28,6 +28,7 @@ import { createHash } from "crypto";
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { reportedFetch } from "../utils/upstreamAttempt.js";
 import { SSE_DONE } from "../utils/sseConstants.js";
 import { FETCH_CONNECT_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { headersTimer } from "../utils/headersTimeout.js";
@@ -398,8 +399,14 @@ async function wrapQoderSSE(response, model) {
             }
           }
         }
-      } catch {
-        // fall through to terminal [DONE] + close
+      } catch (error) {
+        // A client hang-up isn't the end of the answer: pass it on, so the
+        // reader sees a hang-up (and it is charged) rather than a short reply.
+        if (error?.name === "AbortError") {
+          controller.error(error);
+          doneEmitted = true;
+        }
+        // Anything else falls through to terminal [DONE] + close
       } finally {
         if (!doneEmitted) {
           try {
@@ -446,7 +453,10 @@ export class QoderExecutor extends BaseExecutor {
   //   - body encoded with QoderEncodeBody before signing
   //   - COSY headers built from the *encoded* body bytes
   //   - response stream re-wrapped from {statusCodeValue, body} to OpenAI SSE
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, onUpstreamAttempt = null }) {
+    // Nothing is upstream while the PAT is exchanged or the model config
+    // refreshed; the chat request below reports its own send.
+    onUpstreamAttempt?.(0);
     // PAT (pt-...) → exchange for short-lived job token + resolve userId so
     // downstream COSY signing + catalog fetch work. Device tokens (dt-...) and
     // job tokens (jt-...) skip this and are used directly.
@@ -545,12 +555,12 @@ export class QoderExecutor extends BaseExecutor {
 
     let response;
     try {
-      response = await proxyAwareFetch(
+      response = await reportedFetch(onUpstreamAttempt, signal, () => proxyAwareFetch(
         url,
         { method: "POST", headers, body: encodedBodyBuf, signal: headersTimeout.signal },
         proxyOptions,
         { headersTimeoutMs: timeoutMs },
-      );
+      ));
     } catch (error) {
       throw headersTimeout.error(error) || error;
     } finally {

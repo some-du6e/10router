@@ -29,6 +29,15 @@ on:
       - "tests/unit/stream-floor-wiring.test.js"
       - "tests/unit/limit-hold-integration.test.js"
       - "tests/unit/stream-early-headers.test.js"
+      - "tests/unit/hang-up-charge.test.js"
+      - "tests/unit/routing-guards.test.js"
+      - "tests/unit/upstream-request-isolation.test.js"
+      - "tests/unit/anthropic-beta-rejection.test.js"
+      - "tests/unit/xai-video-handler.test.js"
+      - "tests/unit/xai-video-core.test.js"
+      - "tests/unit/gemini-native-endpoint.test.js"
+      - "tests/unit/proxy-fetch-headers-timeout.test.js"
+      - "tests/unit/devin-cli-executor.test.js"
       - ".github/workflows/api-key-budgets.yml"
   workflow_dispatch:
 
@@ -64,6 +73,15 @@ jobs:
           unit/limit-hold-integration.test.js
           unit/stream-early-headers.test.js
           unit/embedding-usage-persistence.test.js
+          unit/hang-up-charge.test.js
+          unit/routing-guards.test.js
+          unit/upstream-request-isolation.test.js
+          unit/anthropic-beta-rejection.test.js
+          unit/xai-video-handler.test.js
+          unit/xai-video-core.test.js
+          unit/gemini-native-endpoint.test.js
+          unit/proxy-fetch-headers-timeout.test.js
+          unit/devin-cli-executor.test.js
       - name: Lint
         run: >
           ./node_modules/.bin/eslint
@@ -98,6 +116,63 @@ jobs:
           tests/unit/api-key-budgets-drain.test.js
           tests/unit/stream-abort-usage.test.js
           tests/unit/stream-floor-wiring.test.js
+          open-sse/utils/upstreamAttempt.ts
+          open-sse/utils/modelPath.ts
+          open-sse/utils/hangUpCharge.ts
+          open-sse/utils/kiroSessionReplay.js
+          open-sse/config/runtimeConfig.js
+          open-sse/services/accountFallback.js
+          open-sse/handlers/chatCore.js
+          open-sse/executors/base.js
+          open-sse/executors/azure.js
+          open-sse/executors/codex.js
+          open-sse/executors/default.js
+          open-sse/executors/github.js
+          open-sse/executors/kiro.js
+          open-sse/executors/mimo-free.js
+          open-sse/executors/qoder.js
+          open-sse/executors/vertex.js
+          open-sse/executors/windsurf.js
+          open-sse/executors/zed.js
+          open-sse/shared/zedAuth.js
+          open-sse/translator/request/claude-to-kiro.js
+          open-sse/translator/request/openai-to-kiro.js
+          open-sse/handlers/embeddingsCore.js
+          open-sse/handlers/imageGenerationCore.js
+          open-sse/handlers/sttCore.js
+          open-sse/handlers/videoCore.js
+          open-sse/handlers/search/chatSearch.js
+          open-sse/handlers/embeddingProviders/gemini.js
+          open-sse/handlers/imageProviders/blackForestLabs.js
+          open-sse/handlers/imageProviders/cloudflareAi.js
+          open-sse/handlers/imageProviders/falAi.js
+          open-sse/handlers/imageProviders/gemini.js
+          open-sse/handlers/imageProviders/huggingface.js
+          open-sse/handlers/ttsProviders/elevenlabs.js
+          open-sse/handlers/ttsProviders/gemini.js
+          open-sse/handlers/ttsProviders/genericFormats.js
+          src/sse/handlers/chat.ts
+          src/sse/handlers/embeddings.js
+          src/sse/handlers/fetch.js
+          src/sse/handlers/imageGeneration.js
+          src/sse/handlers/search.js
+          src/sse/handlers/stt.js
+          src/sse/handlers/systemone.js
+          src/sse/handlers/tts.js
+          src/sse/handlers/videoGeneration.js
+          tests/unit/hang-up-charge.test.js
+          tests/unit/routing-guards.test.js
+          tests/unit/upstream-request-isolation.test.js
+          tests/unit/xai-video-handler.test.js
+          tests/unit/xai-video-core.test.js
+          tests/unit/gemini-native-endpoint.test.js
+          tests/unit/proxy-fetch-headers-timeout.test.js
+          tests/unit/devin-cli-executor.test.js
+          open-sse/config/errorConfig.js
+          open-sse/utils/proxyFetch.js
+          open-sse/executors/devin-cli.js
+          open-sse/handlers/chatCore/sseToJsonHandler.js
+          "src/app/api/v1beta/models/[...path]/route.js"
       # Fails only on errors in the .ts files this change touches, so unrelated
       # type errors elsewhere don't block it.
       - name: Type check chat.ts and the endpoint requests route
