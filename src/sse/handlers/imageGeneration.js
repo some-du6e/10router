@@ -80,7 +80,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
 
   const { provider, model } = modelInfo;
   // Refused before any account is tried, so it locks none.
-  const badModel = modelIdProblem(model);
+  const badModel = modelIdProblem(model, { segments: true });
   if (badModel) return errorResponse(HTTP_STATUS.BAD_REQUEST, badModel);
 
   // noAuth providers — no credential needed
@@ -138,7 +138,11 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
 
     if (result.success) return result.response;
 
-    const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, null, credentials.apiKey);
+    // A request that couldn't be built never reached the upstream: try the
+    // next account (its settings may differ) but lock none.
+    const { shouldFallback } = result.notSent
+      ? { shouldFallback: true }
+      : await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, null, credentials.apiKey);
 
     if (shouldFallback) {
       excludeConnectionIds.add(credentials.connectionId);

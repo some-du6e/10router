@@ -3,6 +3,7 @@ import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { refreshTokenByProvider } from "../services/tokenRefresh.js";
 import { PROVIDER_MEDIA } from "../providers/index.js";
 import { sanitizeSecrets } from "../utils/redact.js";
+import { modelPathSegment } from "../utils/modelPath.js";
 
 // Upstream fetch deadline for video job submission/polling (the job itself is
 // async upstream — this only bounds the HTTP round-trip, not video rendering).
@@ -19,9 +20,11 @@ export function getVideoConfig(provider) {
 }
 
 
+// A poll id is one escaped path segment; "." or ".." (also as %2e) would
+// resolve to the API root with the owner's key, so modelPathSegment refuses it.
 function buildUpstreamUrl(config, action, requestId) {
   const base = config.baseUrl.replace(/\/$/, "");
-  return requestId ? `${base}/${encodeURIComponent(requestId)}` : `${base}/${action}`;
+  return requestId ? `${base}/${modelPathSegment(requestId)}` : `${base}/${action}`;
 }
 
 function buildHeaders({ token, contentType, idempotencyKey }) {
@@ -84,7 +87,12 @@ export async function handleVideoProxyCore({
   }
 
   const method = requestId ? "GET" : "POST";
-  const url = buildUpstreamUrl(config, action, requestId);
+  let url;
+  try {
+    url = buildUpstreamUrl(config, action, requestId);
+  } catch (error) {
+    return { ...createErrorResult(HTTP_STATUS.BAD_REQUEST, `Invalid video request id: ${error.message}`), notSent: true };
+  }
   const fetchSignal = combineSignals(signal, timeoutMs);
 
   const doFetch = (token) =>

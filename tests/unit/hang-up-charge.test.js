@@ -25,6 +25,11 @@ vi.mock("../../open-sse/utils/requestLogger.js", () => ({
     logConvertedResponse: vi.fn(), logError: vi.fn(), logOpenAIRequest: vi.fn(), appendConvertedChunk: vi.fn(),
   }),
 }));
+const usageWrites = vi.fn();
+vi.mock("@/lib/usageDb.js", async () => {
+  const actual = await vi.importActual("@/lib/usageDb.js");
+  return { ...actual, saveRequestUsage: (entry, ...rest) => { usageWrites(entry); return actual.saveRequestUsage(entry, ...rest); } };
+});
 vi.mock("@/sse/services/auth.js", async () => {
   const actual = await vi.importActual("@/sse/services/auth.js");
   return {
@@ -124,24 +129,32 @@ const answerAfter = (ms, init, make) => new Promise((resolve, reject) => {
 
 const CHAT_CHUNK = "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n";
 
-async function usageRowNow(key) {
+async function usageRows(key) {
   return (await (await import("@/lib/db/driver.js")).getAdapter())
-    .get("SELECT promptTokens, completionTokens FROM usageHistory WHERE apiKey = ?", [key.key]);
+    .all("SELECT promptTokens, completionTokens FROM usageHistory WHERE apiKey = ?", [key.key]);
 }
 
+// Usage writes this key's request started. A hang-up charge starts its write
+// before handleChat returns, so once it has returned this count is final.
+const writesFor = (key) => usageWrites.mock.calls.filter(([entry]) => entry?.apiKey === key.key).length;
+
+/** The one usage row the request was charged; a second would be a double charge. */
 async function usageRow(key) {
-  let row;
-  await vi.waitFor(async () => {
-    row = await usageRowNow(key);
-    expect(row).toBeTruthy();
-  }, { timeout: 3000, interval: 20 });
-  return row;
+  expect(writesFor(key)).toBe(1);
+  await vi.waitFor(async () => { expect((await usageRows(key)).length).toBeGreaterThan(0); }, { timeout: 3000, interval: 20 });
+  const rows = await usageRows(key);
+  expect(rows).toHaveLength(1);
+  return rows[0];
 }
 
+/** The request (handleChat has returned) was charged nothing. */
 async function expectNoUsage(key) {
-  await sleep(300);
-  expect(await usageRowNow(key)).toBeFalsy();
+  expect(writesFor(key)).toBe(0);
+  expect(await usageRows(key)).toEqual([]);
 }
+
+// Output tokens the floor gives for `ms` of generation.
+const floorFor = (ms) => Math.floor((ms / 1000) * STREAM_ABORT_FLOOR_TPS);
 
 describe("hang-up after the request went upstream", () => {
   it("charges a non-streaming request cut before the upstream answered", async () => {
@@ -152,7 +165,7 @@ describe("hang-up after the request went upstream", () => {
     const row = await usageRow(key);
     expect(row.promptTokens).toBeGreaterThan(2000);
     // About a second of generation at the floor rate.
-    expect(row.completionTokens).toBeGreaterThan(100);
+    expect(row.completionTokens).toBeGreaterThanOrEqual(floorFor(1000));
     const stored = await db.getApiKeyById(key.id);
     expect(stored.requestCount).toBe(1);
     expect(stored.spentUsd).toBeGreaterThan(0);
@@ -174,7 +187,7 @@ describe("hang-up after the request went upstream", () => {
     await chat(key, { stream: false }, c.signal);
     const row = await usageRow(key);
     expect(row.promptTokens).toBeGreaterThan(2000);
-    expect(row.completionTokens).toBeGreaterThan(100);
+    expect(row.completionTokens).toBeGreaterThanOrEqual(floorFor(1000));
   });
 
   it("charges a JSON request to an always-streaming provider, cut mid-stream, from the stream's first byte", async () => {
@@ -184,21 +197,31 @@ describe("hang-up after the request went upstream", () => {
     await chat(key, { stream: false }, c.signal, "openai/gpt-hangup");
     const row = await usageRow(key);
     expect(row.promptTokens).toBeGreaterThan(2000);
-    expect(row.completionTokens).toBeGreaterThan(100);
+    expect(row.completionTokens).toBeGreaterThanOrEqual(floorFor(1000));
   });
 
-  it("charges a JSON request to Codex cut after its first output delta", async () => {
+  it("charges a JSON request to Codex from its headers, not from the first delta it read ahead to", async () => {
     const key = await newKey("codex-forced-sse");
     credentialsMock.mockImplementation(async () => ({ ...UPSTREAM_CREDS, apiKey: undefined, accessToken: "upstream-test-token" }));
     const delta = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n";
     const c = client();
-    fetchMock.mockImplementation(c.after(1100, async (_url, init) => stalledBody(init, "text/event-stream", delta)));
+    // Headers at once (reasoning starts), the first output delta 1.5s later,
+    // the hang-up 100ms after that. Codex returns only once it has the delta.
+    fetchMock.mockImplementation(async (_url, init) => new Response(new ReadableStream({
+      start(controller) {
+        const timer = setTimeout(() => {
+          controller.enqueue(new TextEncoder().encode(delta));
+          setTimeout(c.hangUp, 100);
+        }, 1500);
+        onAbort(init.signal, () => { clearTimeout(timer); controller.error(abortError()); });
+      },
+    }), { status: 200, headers: { "content-type": "text/event-stream" } }));
     await chat(key, { stream: false }, c.signal, "codex/gpt-5.3-codex");
     expect(fetchMock.mock.calls[0][0]).toMatch(/\/responses$/);
     const row = await usageRow(key);
     expect(row.promptTokens).toBeGreaterThan(2000);
-    // Codex reads ahead to that delta before returning; the floor starts when its fetch returned.
-    expect(row.completionTokens).toBeGreaterThan(100);
+    // From the headers: over 1.5s. From when execute() returned it would be about 0.1s.
+    expect(row.completionTokens).toBeGreaterThanOrEqual(floorFor(1500));
   });
 
   it("charges a stream cut before its first byte for its input only", async () => {
@@ -226,14 +249,15 @@ describe("where the time floor starts", () => {
   it("an SSE body's floor starts at its first byte, not when the request was sent", async () => {
     const key = await newKey("sse-first-byte");
     const c = client();
-    fetchMock.mockImplementation((_url, init) => answerAfter(1000, init, () => {
+    fetchMock.mockImplementation((_url, init) => answerAfter(3000, init, () => {
       setTimeout(c.hangUp, 50);
       return stalledBody(init, "text/event-stream", CHAT_CHUNK);
     }));
     await chat(key, { stream: false }, c.signal);
     const row = await usageRow(key);
     expect(row.promptTokens).toBeGreaterThan(2000);
-    expect(row.completionTokens).toBeLessThan(50);
+    // About 50ms of stream; from dispatch it would be over 3s.
+    expect(row.completionTokens).toBeLessThan(floorFor(2000));
   });
 
   it("a JSON body's floor starts when the request was sent", async () => {
@@ -242,7 +266,7 @@ describe("where the time floor starts", () => {
     fetchMock.mockImplementation(c.after(1100, (_url, init) => answerAfter(1000, init, () => stalledBody(init, "application/json", "{\"id\":"))));
     await chat(key, { stream: false }, c.signal);
     const row = await usageRow(key);
-    expect(row.completionTokens).toBeGreaterThan(100);
+    expect(row.completionTokens).toBeGreaterThanOrEqual(floorFor(1000));
   });
 });
 
@@ -277,7 +301,36 @@ describe("no attempt in flight, no charge", () => {
     await chat(key, { stream: true }, c.signal);
     const row = await usageRow(key);
     expect(row.promptTokens).toBeGreaterThan(2000);
-    expect(row.completionTokens).toBeGreaterThan(100);
+    expect(row.completionTokens).toBeGreaterThanOrEqual(floorFor(1000));
+  });
+});
+
+describe("executors that wrap the body", () => {
+  // Their own reply stream around the upstream's: a hang-up must still reach
+  // the reader as one, not as a short answer.
+  async function wrappedHangUp(provider, model, wrap) {
+    const key = await newKey(`wrapped-${provider}`);
+    const c = client();
+    vi.spyOn(getExecutor(provider), "execute").mockImplementationOnce(c.after(1100, async ({ signal }) => ({
+      response: await wrap(stalledBody({ signal }, "text/event-stream", null), signal),
+      url: "https://upstream.example", headers: {}, transformedBody: null,
+    })));
+    await chat(key, { stream: false }, c.signal, `${provider}/${model}`);
+    return usageRow(key);
+  }
+
+  it("charges a Windsurf reply cut mid-generation", async () => {
+    const row = await wrappedHangUp("windsurf", "model-a", (upstream) => getExecutor("windsurf").transformToSSE(upstream, "model-a"));
+    expect(row.promptTokens).toBeGreaterThan(2000);
+    expect(row.completionTokens).toBeGreaterThan(0);
+  });
+
+  it("charges a Qoder reply cut mid-generation", async () => {
+    const { __test__: qoder } = await import("open-sse/executors/qoder.js");
+    const frame = `data: ${JSON.stringify({ statusCodeValue: 200, body: JSON.stringify({ choices: [{ index: 0, delta: { content: "partial" } }] }) })}\n`;
+    const row = await wrappedHangUp("qoder", "model-a", (_upstream, signal) => qoder.wrapQoderSSE(stalledBody({ signal }, "text/event-stream", frame), "model-a"));
+    expect(row.promptTokens).toBeGreaterThan(2000);
+    expect(row.completionTokens).toBeGreaterThan(0);
   });
 });
 
@@ -293,7 +346,7 @@ describe("work an executor does while the body is read", () => {
     await chat(key, { stream: false }, c.signal);
     const row = await usageRow(key);
     expect(row.promptTokens).toBeGreaterThan(2000);
-    expect(row.completionTokens).toBeGreaterThan(100);
+    expect(row.completionTokens).toBeGreaterThanOrEqual(floorFor(1000));
   });
 
   it("charges a Kiro hang-up while its repair retry backs off after a 503", async () => {
@@ -324,7 +377,7 @@ describe("hang-up around a token refresh", () => {
     await chat(key, { stream: false }, c.signal);
     const row = await usageRow(key);
     expect(row.promptTokens).toBeGreaterThan(2000);
-    expect(row.completionTokens).toBeGreaterThan(100);
+    expect(row.completionTokens).toBeGreaterThanOrEqual(floorFor(1000));
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -332,13 +385,30 @@ describe("hang-up around a token refresh", () => {
     const key = await newKey("refresh-retry-mid-body");
     refreshed();
     const c = client();
-    fetchMock.mockImplementationOnce((_url, init) => answerAfter(1000, init, unauthorized));
+    fetchMock.mockImplementationOnce((_url, init) => answerAfter(3000, init, unauthorized));
     fetchMock.mockImplementation(c.after(100, async (_url, init) => stalledBody(init, "application/json", "{\"id\":")));
     await chat(key, { stream: false }, c.signal);
     const row = await usageRow(key);
     expect(row.promptTokens).toBeGreaterThan(2000);
-    // About 0.1s from the retry; from the first attempt it would be over 1.1s.
-    expect(row.completionTokens).toBeLessThan(50);
+    // About 0.1s from the retry; from the first attempt it would be over 3s.
+    expect(row.completionTokens).toBeLessThan(floorFor(2000));
+  });
+
+  it("floors a hang-up on a retried SSE reply from when the retry answered", async () => {
+    const key = await newKey("refresh-retry-sse");
+    refreshed();
+    const c = client();
+    fetchMock.mockImplementationOnce(async () => unauthorized());
+    // The retry answers after 3s; the client leaves 100ms into its stream.
+    fetchMock.mockImplementation((_url, init) => answerAfter(3000, init, () => {
+      setTimeout(c.hangUp, 100);
+      return stalledBody(init, "text/event-stream", CHAT_CHUNK);
+    }));
+    await chat(key, { stream: false }, c.signal);
+    const row = await usageRow(key);
+    expect(row.promptTokens).toBeGreaterThan(2000);
+    // From the 401's arrival it would be over 3s.
+    expect(row.completionTokens).toBeLessThan(floorFor(2000));
   });
 });
 

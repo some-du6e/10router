@@ -92,12 +92,16 @@ them. A backup carries the totals, so a key restored onto another install
   upstream was answering as a stream (a provider set to always stream), from
   its first byte. Only an attempt still in flight counts: a hang-up while
   10router backs off before retrying a 5xx, prepares the request (Codex
-  downloading images; Vertex, Zed or MiMo fetching a token; Zed or Qoder
-  fetching a model catalog), or refreshes a token costs nothing, and after a
-  token refresh the floor starts at the retry. Once the reply is being read,
-  work an executor does inside it (Kiro's repair retry) doesn't change that. Executors
-  that buffer the whole answer and report a hang-up as an error (Cursor, Trae)
-  are charged from when their attempt was sent, streaming or not.
+  downloading images; Vertex, Zed or MiMo fetching a token; Qoder exchanging
+  its access token; Zed or Qoder fetching a model catalog), or refreshes a
+  token costs nothing, and after a token refresh the floor starts at the
+  retry. GitHub Copilot's own requests to `/responses` and `/v1/messages`
+  count as the attempt. Once the reply is being read, work an executor does
+  inside it (Kiro's repair retry) doesn't change that. Executors that buffer
+  the whole answer and report a hang-up as an error (Cursor, Trae) are
+  charged from when their attempt was sent, streaming or not, and those that
+  wrap the reply (Windsurf, Qoder) pass the hang-up on rather than ending it
+  as a short answer.
 - **Opt-in: drain to the real usage.** With `STREAM_DRAIN_MAX_MS` set (it is
   `0`, off, by default), a key with a budget whose client hangs up keeps the
   upstream running: 10router closes the client's stream at once but reads the

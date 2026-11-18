@@ -11,6 +11,7 @@ import { getModelInfo } from "../services/model.js";
 import { handleVideoProxyCore, getVideoConfig } from "open-sse/handlers/videoCore.js";
 import { sanitizeSecrets } from "open-sse/utils/redact.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
+import { modelIdProblem } from "open-sse/utils/modelPath.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import * as log from "../utils/logger.js";
@@ -28,6 +29,9 @@ const CREATE_ROTATION_STATUSES = new Set([
   HTTP_STATUS.FORBIDDEN,
   HTTP_STATUS.RATE_LIMITED,
 ]);
+
+// Poll failures that say something about the account, not the job id asked for.
+const ACCOUNT_POLL_FAILURE = (status) => CREATE_ROTATION_STATUSES.has(status) || status === HTTP_STATUS.PAYMENT_REQUIRED || status >= HTTP_STATUS.SERVER_ERROR || !status;
 
 async function requireValidApiKey(request) {
   const apiKey = extractApiKey(request);
@@ -112,6 +116,11 @@ export async function handleVideoCreate(request, action) {
   const resolved = await resolveVideoProvider(bodyInfo.parsed);
   if (resolved.error) return resolved.error;
   const { provider, model } = resolved;
+  // An empty id ("xai/") would lock the account for every model.
+  if (bodyInfo.parsed?.model) {
+    const badModel = modelIdProblem(model);
+    if (badModel) return errorResponse(HTTP_STATUS.BAD_REQUEST, badModel);
+  }
 
   // Strip the provider prefix (e.g. "xai/grok-imagine-video") before forwarding;
   // otherwise forward the original bytes untouched.
@@ -169,10 +178,15 @@ export async function handleVideoCreate(request, action) {
       return withConnectionHeader(result.response, credentials.connectionId);
     }
 
-    // Record the failure (dashboard shows lastError/errorCode → user sees re-auth is needed)
-    const { shouldFallback } = await markAccountUnavailable(
-      credentials.connectionId, result.status, sanitizeSecrets(result.error, refreshedCredentials), provider, model, null, credentials.apiKey
-    );
+    // Record the failure (dashboard shows lastError/errorCode → user sees re-auth is needed).
+    // Without a model (a multipart body isn't read) the lock covers the whole
+    // account, so only the account's own auth or rate-limit failures take one;
+    // a rejected request just comes back to the client.
+    const { shouldFallback } = model || CREATE_ROTATION_STATUSES.has(result.status)
+      ? await markAccountUnavailable(
+        credentials.connectionId, result.status, sanitizeSecrets(result.error, refreshedCredentials), provider, model, null, credentials.apiKey
+      )
+      : { shouldFallback: false };
 
     if (shouldFallback && CREATE_ROTATION_STATUSES.has(result.status)) {
       excludeConnectionIds.add(credentials.connectionId);
@@ -230,8 +244,13 @@ export async function handleVideoGet(request, requestId) {
     return withConnectionHeader(result.response, credentials.connectionId);
   }
 
-  await markAccountUnavailable(
-    credentials.connectionId, result.status, sanitizeSecrets(result.error, refreshedCredentials), provider, null, null, credentials.apiKey
-  );
+  // A poll has no model, so a lock here covers the whole account: only the
+  // account's own failures (auth, limits, upstream errors) take one. An
+  // unknown or invalid job id is the client's.
+  if (!result.notSent && ACCOUNT_POLL_FAILURE(result.status)) {
+    await markAccountUnavailable(
+      credentials.connectionId, result.status, sanitizeSecrets(result.error, refreshedCredentials), provider, null, null, credentials.apiKey
+    );
+  }
   return result.response;
 }

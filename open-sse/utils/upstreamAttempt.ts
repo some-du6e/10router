@@ -1,3 +1,6 @@
+/** chatCore's hook: when the upstream attempt in flight was sent, or 0 when none is. */
+export type UpstreamAttemptHook = ((ts: number) => void) | null | undefined;
+
 /**
  * An executor's own upstream call, reported to chatCore's `onUpstreamAttempt`
  * hook (the contract is on BaseExecutor.execute): the send time right before
@@ -6,7 +9,11 @@
  * charged. Executors call `onUpstreamAttempt(0)` themselves while they only
  * prepare (fetch a token or a catalog), since nothing is upstream then.
  */
-export async function reportedFetch(onUpstreamAttempt, signal, send) {
+export async function reportedFetch(
+  onUpstreamAttempt: UpstreamAttemptHook,
+  signal: AbortSignal | null | undefined,
+  send: () => Promise<Response>,
+): Promise<Response> {
   onUpstreamAttempt?.(signal?.aborted ? 0 : Date.now());
   const response = await send();
   if (!response?.ok) onUpstreamAttempt?.(0);

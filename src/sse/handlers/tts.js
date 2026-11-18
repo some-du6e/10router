@@ -78,7 +78,7 @@ async function handleSingleModelTts(body, modelStr, responseFormat, language, st
 
   const { provider, model } = modelInfo;
   // Refused before any account is tried, so it locks none.
-  const badModel = modelIdProblem(model);
+  const badModel = modelIdProblem(model, { segments: true });
   if (badModel) return errorResponse(HTTP_STATUS.BAD_REQUEST, badModel);
   log.info("ROUTING", `Provider: ${provider}, Voice: ${model}`);
 

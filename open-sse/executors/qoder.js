@@ -399,8 +399,14 @@ async function wrapQoderSSE(response, model) {
             }
           }
         }
-      } catch {
-        // fall through to terminal [DONE] + close
+      } catch (error) {
+        // A client hang-up isn't the end of the answer: pass it on, so the
+        // reader sees a hang-up (and it is charged) rather than a short reply.
+        if (error?.name === "AbortError") {
+          controller.error(error);
+          doneEmitted = true;
+        }
+        // Anything else falls through to terminal [DONE] + close
       } finally {
         if (!doneEmitted) {
           try {

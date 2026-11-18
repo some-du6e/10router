@@ -635,12 +635,16 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     return createErrorResult(statusCode, errMsg, resetsAtMs);
   }
 
-  // The body handlers answer 499 only when the client hung up mid-read. An SSE
-  // body is charged from its first byte (executors that read ahead before
-  // returning, Codex and Kiro, record when it really started), a JSON one from
-  // when its attempt was sent.
+  // The body handlers answer 499 only when the client hung up mid-read. An
+  // executor whose body wrapper turned the hang-up into a short or broken
+  // reply shows up as a failure with the client gone; that is charged too
+  // (a success already recorded its own usage). An SSE body is charged from
+  // its first byte (executors that read ahead before returning, Codex and
+  // Kiro, record when it really started), a JSON one from when its attempt
+  // was sent.
   const charged = (result, sse) => {
-    if (result?.status === HTTP_STATUS.CLIENT_CLOSED_REQUEST) chargeHangUp(sse ? providerResponse.upstreamStartedAt || upstreamRespondedAt : attemptStart);
+    const hungUp = result?.status === HTTP_STATUS.CLIENT_CLOSED_REQUEST || (result && !result.success && clientSignal?.aborted);
+    if (hungUp) chargeHangUp(sse ? providerResponse.upstreamStartedAt || upstreamRespondedAt : attemptStart);
     return result;
   };
   const sharedCtx = { provider, model, body, stream, clientRequest, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqTag, log, clientSignal };

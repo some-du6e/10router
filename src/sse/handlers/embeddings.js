@@ -162,7 +162,11 @@ export async function handleEmbeddings(request) {
       return result.response;
     }
 
-    const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, null, credentials.apiKey);
+    // A request that couldn't be built never reached the upstream: try the
+    // next account (its settings may differ) but lock none.
+    const { shouldFallback } = result.notSent
+      ? { shouldFallback: true }
+      : await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, null, credentials.apiKey);
 
     if (shouldFallback) {
       log.warn("AUTH", `Account ${credentials.connectionName} unavailable (${result.status}), trying fallback`);

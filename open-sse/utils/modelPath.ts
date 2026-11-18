@@ -2,6 +2,7 @@
 // keeps a crafted id ("x/../other-model#") from turning into a different
 // upstream model than the one priced and logged. ":" and "@" are legal inside
 // a segment and appear in real ids, so they stay.
+import { isReservedLockName } from "../services/accountFallback.js";
 
 function encodeSegment(segment: string): string {
   return encodeURIComponent(segment).replace(/%3A/gi, ":").replace(/%40/g, "@");
@@ -28,15 +29,22 @@ export function modelPathSegment(model: unknown): string {
 }
 
 /**
- * Why a requested model id can never be sent upstream, or null when it can:
- * empty (a bare "provider/"), or a "/"-separated part that is empty, "." or
- * "..", written plainly or percent-encoded. Handlers check this before they
- * pick an account, so a refused id is the client's 400 and locks no account.
- * It is the rule modelPathSegments applies, and stricter than modelPathSegment.
+ * Why a requested model id can never be sent upstream, or null when it can.
+ * Handlers check this before they pick an account, so a refused id is the
+ * client's 400 and locks no account. Refused everywhere: a name the router's
+ * own locks use (`__all`, `websearch:…`, `webfetch:…`), and an id that is
+ * empty (a bare "provider/"), "." or "..", plainly or percent-encoded (the
+ * modelPathSegment rule, for chat and embeddings, which escape a "/" in the
+ * id). With `segments`, for handlers whose providers keep "/" in the path
+ * (images, speech, transcription), each "/"-separated part is checked the
+ * same way (the modelPathSegments rule).
  */
-export function modelIdProblem(model: unknown): string | null {
+export function modelIdProblem(model: unknown, { segments = false }: { segments?: boolean } = {}): string | null {
+  const id = String(model ?? "");
+  if (id && isReservedLockName(id)) return `Model id "${id}" is reserved`;
   try {
-    modelPathSegments(model);
+    if (segments) modelPathSegments(id);
+    else modelPathSegment(id);
     return null;
   } catch (error) {
     return (error as Error).message;

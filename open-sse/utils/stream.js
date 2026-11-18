@@ -211,7 +211,6 @@ export function createSSEStream(options = {}) {
     if (finishSeen && hasValidUsage(parsed.usage)) finalUsageSeen = true;
   };
 
-
   /**
    * The usage to bill when the final usage never arrived: input as reported
    * (Anthropic's message_start) or estimated from the request; output the

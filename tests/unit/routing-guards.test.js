@@ -47,6 +47,7 @@ const { handleImageGeneration } = await import("@/sse/handlers/imageGeneration.j
 const { handleEmbeddings } = await import("@/sse/handlers/embeddings.js");
 const { handleTts } = await import("@/sse/handlers/tts.js");
 const { handleStt } = await import("@/sse/handlers/stt.js");
+const { handleSystemone } = await import("@/sse/handlers/systemone.js");
 const { DEFAULT_TIMING } = await import("open-sse/utils/limitHold.js");
 const { MAX_COMBO_DEPTH } = await import("open-sse/config/runtimeConfig.js");
 
@@ -208,8 +209,9 @@ describe("an allowlist naming a combo", () => {
 });
 
 describe("a model id no upstream can be asked for", () => {
-  // "gemini/" is an empty id: a lock on it would cover every model of the account.
-  for (const model of ["gemini/", "gemini/%2e%2e", "vertex/x/../y", "azure/.", "openai/models//x"]) {
+  // "gemini/" is an empty id: a lock on it would cover every model of the
+  // account. "__all", "websearch:…" and "webfetch:…" are the router's own lock names.
+  for (const model of ["gemini/", "gemini/%2e%2e", "azure/.", "openai/__all", "gemini/websearch:gemini", "ollama/webfetch:ollama"]) {
     it(`refuses chat to ${model} with a 400, locking no account`, async () => {
       const key = await newKey(`bad-id-${model}`);
       const res = await handleChat(chatRequest(key, model));
@@ -219,6 +221,45 @@ describe("a model id no upstream can be asked for", () => {
       expect(upstream.mark).not.toHaveBeenCalled();
     });
   }
+
+  it("routes a self-hosted chat id with a leading or inner slash (escaped as one segment)", async () => {
+    const key = await newKey("leading-slash-id");
+    for (const model of ["openai//models/served-model", "openai/models//x"]) {
+      upstream.core.mockClear();
+      const res = await handleChat(chatRequest(key, model));
+      expect(res.status).toBe(200);
+      expect(upstream.core).toHaveBeenCalledTimes(1);
+    }
+    expect(reached()).toEqual(["openai/models//x"]);
+  });
+
+  it("locks no account for an embeddings request its provider can't build", async () => {
+    // Gemini embeddings strips "models/", leaving nothing to put in the URL.
+    const key = await newKey("unbuildable-embedding");
+    upstream.credentials.mockReset();
+    upstream.credentials
+      .mockResolvedValueOnce({ connectionId: "conn-1", connectionName: "acct", apiKey: "upstream-key" })
+      .mockResolvedValue(null);
+    const res = await handleEmbeddings(new Request("http://localhost/v1/embeddings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key.key}` },
+      body: JSON.stringify({ model: "gemini/models/", input: "hi" }),
+    }));
+    expect(res.status).toBe(400);
+    expect(upstream.mark).not.toHaveBeenCalled();
+  });
+
+  it("refuses one for System One too", async () => {
+    const key = await newKey("bad-id-systemone");
+    const res = await handleSystemone(new Request("http://localhost/v1/systemone", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key.key}` },
+      body: JSON.stringify({ model: "openrouter/", state: {}, questions: { q: "?" } }),
+    }));
+    expect(res.status).toBe(400);
+    expect(upstream.credentials).not.toHaveBeenCalled();
+    expect(upstream.mark).not.toHaveBeenCalled();
+  });
 
   it("refuses one for images, embeddings, text-to-speech and transcription too", async () => {
     const key = await newKey("bad-id-media");
@@ -233,7 +274,7 @@ describe("a model id no upstream can be asked for", () => {
     const responses = [
       await handleImageGeneration(json("/v1/images/generations", { model: "huggingface/", prompt: "a cat" })),
       await handleImageGeneration(json("/v1/images/generations", { model: "cloudflare-ai/@cf/%2e%2e/x", prompt: "a cat" })),
-      await handleEmbeddings(json("/v1/embeddings", { model: "gemini/models/", input: "hi" })),
+      await handleEmbeddings(json("/v1/embeddings", { model: "gemini/%2e%2e", input: "hi" })),
       await handleTts(json("/v1/audio/speech", { model: "elevenlabs/eleven_v2/..", input: "hi" })),
       await handleStt(new Request("http://localhost/v1/audio/transcriptions", { method: "POST", headers: { Authorization: `Bearer ${key.key}` }, body: form })),
     ];
