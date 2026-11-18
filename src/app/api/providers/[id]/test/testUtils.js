@@ -317,149 +317,129 @@ function isTokenExpired(connection) {
   return shouldRefreshCredentials(connection.provider, connection);
 }
 
+/** The connection fields a refresh result updates. */
+function refreshedTokenFields(connection, tokens) {
+  const fields = {
+    accessToken: tokens.accessToken,
+    refreshToken: tokens.refreshToken || connection.refreshToken,
+  };
+  if (tokens.idToken) fields.idToken = tokens.idToken;
+  if (tokens.lastRefreshAt) fields.lastRefreshAt = tokens.lastRefreshAt;
+  if (tokens.expiresIn) {
+    fields.expiresIn = tokens.expiresIn;
+    fields.expiresAt = new Date(Date.now() + tokens.expiresIn * 1000).toISOString();
+  } else if (tokens.expiresAt) {
+    fields.expiresAt = tokens.expiresAt;
+  }
+  if (tokens.providerSpecificData) {
+    fields.providerSpecificData = { ...(connection.providerSpecificData || {}), ...tokens.providerSpecificData };
+  }
+  return fields;
+}
+
+/**
+ * The error text a thrown probe leaves in lastError. Node's fetch puts a bad
+ * header value, token included, in its message, so that becomes a fixed text
+ * and any credential left in the message is redacted.
+ */
+export function probeErrorMessage(err, secrets = []) {
+  const message = String(err?.message || err || "Connection test failed");
+  if (err instanceof TypeError && /header/i.test(message)) return "Malformed access token";
+  const variants = secrets
+    .filter((s) => typeof s === "string" && s.length >= 8)
+    .flatMap((s) => [s, s.trim(), encodeURIComponent(s)])
+    .sort((a, b) => b.length - a.length);
+  return variants.reduce((text, s) => (s ? text.split(s).join("[REDACTED]") : text), message);
+}
+
 async function testOAuthConnection(connection, effectiveProxy = null) {
   let newTokens = null;
+  let savedRefreshToken = null;
   const refresh = async () => {
     const tokens = await refreshOAuthToken(connection);
     if (!tokens?.accessToken) return null;
-    // Rotation can invalidate the old refresh token even when the probe fails.
     newTokens = tokens;
+    // Rotation retires the old refresh token whatever the probe says, so save
+    // now, and only onto the row that still holds the token this test used.
+    const fields = refreshedTokenFields(connection, tokens);
+    const saved = await updateProviderConnection(connection.id, fields, { refreshTokenUsed: connection.refreshToken });
+    if (saved) savedRefreshToken = fields.refreshToken;
     return tokens;
   };
   let result;
   try {
     result = await probeOAuthConnection(connection, effectiveProxy, refresh);
   } catch (err) {
-    result = { valid: false, error: err.message, refreshed: false };
+    const secrets = [connection.accessToken, connection.refreshToken, newTokens?.accessToken, newTokens?.refreshToken];
+    result = { valid: false, error: probeErrorMessage(err, secrets) };
   }
-  return newTokens ? { ...result, refreshed: true, newTokens } : result;
+  return { ...result, refreshed: !!newTokens, newTokens, savedRefreshToken };
 }
 
 async function probeOAuthConnection(connection, effectiveProxy, refresh) {
   const config = OAUTH_TEST_CONFIG[connection.provider];
-  if (!config) return { valid: false, error: "Provider test not supported", refreshed: false };
-  if (!connection.accessToken) return { valid: false, error: "No access token", refreshed: false };
+  if (!config) return { valid: false, error: "Provider test not supported" };
+  if (!connection.accessToken) return { valid: false, error: "No access token" };
 
   // Cursor uses protobuf API - can only verify token exists, not test endpoint
-  if (config.tokenExists) {
-    return { valid: true, error: null, refreshed: false, newTokens: null };
-  }
+  if (config.tokenExists) return { valid: true, error: null };
 
+  const canRefresh = config.refreshable && !!connection.refreshToken;
   let accessToken = connection.accessToken;
+  // Guards against refreshing twice with a refresh token the first refresh used up.
   let refreshed = false;
-  let newTokens = null;
 
   const tokenExpired = isTokenExpired(connection);
-  if (config.refreshable && tokenExpired && connection.refreshToken) {
+  if (canRefresh && tokenExpired) {
     const tokens = await refresh();
-    if (tokens) {
-      accessToken = tokens.accessToken;
-      refreshed = true;
-      newTokens = tokens;
-    } else {
-      return { valid: false, error: "Token expired and refresh failed", refreshed: false };
-    }
+    if (!tokens) return { valid: false, error: "Token expired and refresh failed" };
+    accessToken = tokens.accessToken;
+    refreshed = true;
   }
 
   if (config.checkExpiry) {
-    if (refreshed) return { valid: true, error: null, refreshed, newTokens };
-    if (tokenExpired) return { valid: false, error: "Token expired", refreshed: false };
-    return { valid: true, error: null, refreshed: false, newTokens: null };
+    if (tokenExpired && !refreshed) return { valid: false, error: "Token expired" };
+    return { valid: true, error: null };
   }
 
+  const probe = (token) => probeOAuthAccess(connection, config, token, effectiveProxy);
+  const initial = await probe(accessToken);
+  if (initial.valid || initial.status !== 401 || !canRefresh || refreshed) return withoutStatus(initial);
+
+  const tokens = await refresh();
+  if (!tokens) return { valid: false, error: "Token invalid or revoked" };
+  return withoutStatus(await probe(tokens.accessToken));
+}
+
+function withoutStatus({ valid, error, warning }) {
+  return warning ? { valid, error, warning } : { valid, error };
+}
+
+/** One probe with `accessToken`: { valid, error, warning?, status }. */
+async function probeOAuthAccess(connection, config, accessToken, effectiveProxy) {
   if (connection.provider === "gemini-cli" || connection.provider === "antigravity") {
-    const initial = await probeCloudCodeAssistAccess(connection, accessToken, effectiveProxy);
-    if (initial.valid) return { valid: true, error: null, refreshed, newTokens };
-
-    if (initial.status === 401 && config.refreshable && !refreshed && connection.refreshToken) {
-      const tokens = await refresh();
-      if (tokens?.accessToken) {
-        const retry = await probeCloudCodeAssistAccess(connection, tokens.accessToken, effectiveProxy);
-        if (retry.valid) return { valid: true, error: null, refreshed: true, newTokens: tokens };
-        return { valid: false, error: retry.error, refreshed: true, newTokens: tokens };
-      }
-      return { valid: false, error: "Token invalid or revoked", refreshed: false };
-    }
-
-    return { valid: false, error: initial.error, refreshed };
+    return probeCloudCodeAssistAccess(connection, accessToken, effectiveProxy);
   }
 
   if (connection.provider === "cline") {
-    const tryProbe = async (token) => {
-      const res = await probeClineAccessToken(token);
-      if (res.ok) return { valid: true, error: null, refreshed, newTokens };
-      if (res.status === 401) return { valid: false, error: "Token invalid or revoked", refreshed };
-      if (res.status === 403) return { valid: false, error: "Access denied", refreshed };
-      return { valid: false, error: `API returned ${res.status}`, refreshed };
-    };
-
-    const initial = await tryProbe(accessToken);
-    if (initial.valid || initial.error !== "Token invalid or revoked" || !connection.refreshToken || refreshed) {
-      return initial;
-    }
-
-    const tokens = await refresh();
-    if (!tokens?.accessToken) {
-      return { valid: false, error: "Token invalid or revoked", refreshed: false };
-    }
-
-    refreshed = true;
-    newTokens = tokens;
-    accessToken = tokens.accessToken;
-    return await tryProbe(accessToken);
+    const res = await probeClineAccessToken(accessToken);
+    return { ...classifyOAuthProbeResult(res, {}), status: res.status };
   }
 
-  try {
-    const testUrl = config.buildUrl ? config.buildUrl(accessToken) : config.url;
-    const headers = config.noAuth
-      ? { ...config.extraHeaders }
-      : { [config.authHeader]: `${config.authPrefix}${accessToken}`, ...config.extraHeaders };
-    const fetchOpts = { method: config.method, headers };
-    if (config.body) fetchOpts.body = config.body;
-    const res = await fetchWithConnectionProxy(testUrl, fetchOpts, effectiveProxy);
-    const bodyText = !res.ok ? await res.text().catch(() => "") : "";
-
-    const classified = classifyOAuthProbeResult(res, config, bodyText);
-    if (classified.valid) {
-      return {
-        valid: true,
-        // soft success surfaces warning text without marking connection error
-        error: classified.soft ? classified.error : null,
-        warning: classified.soft ? classified.error : null,
-        refreshed,
-        newTokens,
-      };
-    }
-
-    if (res.status === 401 && config.refreshable && !refreshed && connection.refreshToken) {
-      const tokens = await refresh();
-      if (tokens) {
-        const retryUrl = config.buildUrl ? config.buildUrl(tokens.accessToken) : testUrl;
-        const retryHeaders = config.noAuth
-          ? { ...config.extraHeaders }
-          : { [config.authHeader]: `${config.authPrefix}${tokens.accessToken}`, ...config.extraHeaders };
-        const retryOpts = { method: config.method, headers: retryHeaders };
-        if (config.body) retryOpts.body = config.body;
-        const retryRes = await fetchWithConnectionProxy(retryUrl, retryOpts, effectiveProxy);
-        const retryBody = !retryRes.ok ? await retryRes.text().catch(() => "") : "";
-        const retryClassified = classifyOAuthProbeResult(retryRes, config, retryBody);
-        if (retryClassified.valid) {
-          return {
-            valid: true,
-            error: retryClassified.soft ? retryClassified.error : null,
-            warning: retryClassified.soft ? retryClassified.error : null,
-            refreshed: true,
-            newTokens: tokens,
-          };
-        }
-      }
-      return { valid: false, error: "Token invalid or revoked", refreshed: false };
-    }
-
-    return { valid: false, error: classified.error, refreshed };
-  } catch (err) {
-    return { valid: false, error: err.message, refreshed };
-  }
+  const testUrl = config.buildUrl ? config.buildUrl(accessToken) : config.url;
+  const headers = config.noAuth
+    ? { ...config.extraHeaders }
+    : { [config.authHeader]: `${config.authPrefix}${accessToken}`, ...config.extraHeaders };
+  const fetchOpts = { method: config.method, headers };
+  if (config.body) fetchOpts.body = config.body;
+  const res = await fetchWithConnectionProxy(testUrl, fetchOpts, effectiveProxy);
+  const bodyText = !res.ok ? await res.text().catch(() => "") : "";
+  const classified = classifyOAuthProbeResult(res, config, bodyText);
+  if (!classified.valid) return { valid: false, error: classified.error, status: res.status };
+  // Soft success surfaces warning text without marking the connection broken.
+  return classified.soft
+    ? { valid: true, error: classified.error, warning: classified.error, status: res.status }
+    : { valid: true, error: null, status: res.status };
 }
 
 async function fetchWithConnectionProxy(url, options = {}, effectiveProxy = null) {
@@ -888,26 +868,14 @@ export async function testSingleConnection(id) {
       : new Date().toISOString(),
   };
 
-  if (result.refreshed && result.newTokens) {
-    if (result.newTokens.accessToken) updateData.accessToken = result.newTokens.accessToken;
-    if (result.newTokens.refreshToken) updateData.refreshToken = result.newTokens.refreshToken;
-    if (result.newTokens.idToken) updateData.idToken = result.newTokens.idToken;
-    if (result.newTokens.lastRefreshAt) updateData.lastRefreshAt = result.newTokens.lastRefreshAt;
-    if (result.newTokens.expiresIn) updateData.expiresIn = result.newTokens.expiresIn;
-    if (result.newTokens.expiresIn) {
-      updateData.expiresAt = new Date(Date.now() + result.newTokens.expiresIn * 1000).toISOString();
-    } else if (result.newTokens.expiresAt) {
-      updateData.expiresAt = result.newTokens.expiresAt;
-    }
-    if (result.newTokens.providerSpecificData) {
-      updateData.providerSpecificData = {
-        ...(connection.providerSpecificData || {}),
-        ...result.newTokens.providerSpecificData,
-      };
-    }
+  // A refresh during the test already saved its tokens. The result describes
+  // those tokens, so it is recorded only while the row still holds them: a
+  // login that replaced them since keeps its own status.
+  if (!result.newTokens) {
+    await updateProviderConnection(id, updateData);
+  } else if (result.savedRefreshToken) {
+    await updateProviderConnection(id, updateData, { refreshTokenUsed: result.savedRefreshToken });
   }
-
-  await updateProviderConnection(id, updateData);
 
   return { valid: result.valid, error: result.error, refreshed: !!result.refreshed, latencyMs, testedAt: new Date().toISOString() };
 }

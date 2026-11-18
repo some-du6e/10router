@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createProviderConnection } from "@/models";
-import { extractCodexAccountInfo } from "@/lib/oauth/providers";
+import { extractCodexAccountInfo } from "@/lib/oauth/providerHelpers.js";
 
 /**
  * POST /api/oauth/codex/bulk-import
@@ -73,6 +73,9 @@ export async function POST(request) {
         throw new Error("Missing accessToken");
       }
       item.accessToken = item.accessToken.trim();
+      for (const field of ["idToken", "refreshToken"]) {
+        if (typeof item[field] === "string") item[field] = item[field].trim() || undefined;
+      }
 
       // Backfill missing identity fields from JWT claims
       const psd = item.providerSpecificData || {};

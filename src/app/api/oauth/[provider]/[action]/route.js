@@ -7,6 +7,7 @@ import {
   pollForToken
 } from "@/lib/oauth/providers";
 import { createProviderConnection } from "@/models";
+import { codexAccessTokenFields } from "@/lib/oauth/providerHelpers.js";
 import {
   startCodexProxy,
   stopCodexProxy,
@@ -300,22 +301,16 @@ export async function POST(request, { params }) {
         }
       }
 
-      // Detect if "code" is actually a raw JWT access token (starts with eyJ)
-      if (code && code.startsWith("eyJ") && code.includes(".")) {
-        const { extractCodexAccountInfo } = await import("@/lib/oauth/providers");
-        const info = extractCodexAccountInfo(code);
-
-        const { chatgptAccountId: accountId, chatgptPlanType: planType, email } = info;
-
-        const providerSpecificData = { authMethod: "access_token" };
-        if (accountId) providerSpecificData.chatgptAccountId = accountId;
-        if (planType) providerSpecificData.chatgptPlanType = planType;
+      // Codex: "code" may be a pasted raw JWT access token (starts with eyJ)
+      const rawToken = provider === "codex" && typeof code === "string" ? code.trim() : "";
+      if (rawToken.startsWith("eyJ") && rawToken.includes(".")) {
+        const { email, providerSpecificData } = codexAccessTokenFields(rawToken);
 
         const connection = await createProviderConnection({
           provider,
           authType: "access_token",
-          accessToken: code,
-          email: email || null,
+          accessToken: rawToken,
+          email,
           providerSpecificData,
           testStatus: "active",
         });

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createProviderConnection } from "@/models";
-import { extractCodexAccountInfo, decodeJwtPayload } from "@/lib/oauth/providerHelpers.js";
+import { codexAccessTokenFields } from "@/lib/oauth/providerHelpers.js";
 
 /**
  * POST /api/oauth/codex/import-token
@@ -22,14 +22,7 @@ export async function POST(request) {
 
     const token = accessToken.trim();
 
-    const info = extractCodexAccountInfo(token);
-    const email = info.email || null;
-    const providerSpecificData = { authMethod: "access_token" };
-    if (info.chatgptAccountId) providerSpecificData.chatgptAccountId = info.chatgptAccountId;
-    if (info.chatgptPlanType) providerSpecificData.chatgptPlanType = info.chatgptPlanType;
-    const payload = decodeJwtPayload(token);
-    if (payload?.exp) providerSpecificData.jwtExp = payload.exp;
-
+    const { email, providerSpecificData } = codexAccessTokenFields(token);
     const connectionName = name || email || "ChatGPT Access Token";
 
     // Save to database as access_token authType (no refresh token)
@@ -38,7 +31,7 @@ export async function POST(request) {
       authType: "access_token",
       accessToken: token,
       name: connectionName,
-      email: email,
+      email,
       providerSpecificData,
       testStatus: "active",
     });

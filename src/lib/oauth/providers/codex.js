@@ -54,7 +54,8 @@ const codex = {
       expiresIn: tokens.expires_in,
       lastRefreshAt: new Date().toISOString(),
     };
-    const email = info.email;
+    // `sub` keeps a token without an email claim matching its existing row.
+    const email = info.email || info.sub;
     if (email) mapped.email = email;
     if (info.chatgptAccountId || info.chatgptPlanType) {
       mapped.providerSpecificData = {

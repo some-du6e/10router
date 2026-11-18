@@ -211,13 +211,13 @@ export async function backfillCodexEmails() {
     const { getProviderConnections, updateProviderConnection } = await import("@/lib/localDb");
     const connections = await getProviderConnections();
     const targets = connections.filter((c) => {
-      if (c.provider !== "codex" || c.authType !== "oauth" || !c.idToken) return false;
+      if (c.provider !== "codex" || c.authType !== "oauth" || (!c.idToken && !c.accessToken)) return false;
       const hasEmail = !!c.email;
       const hasAccountInfo = !!c.providerSpecificData?.chatgptAccountId;
       return !hasEmail || !hasAccountInfo;
     });
     for (const conn of targets) {
-      const info = extractCodexAccountInfo(conn.idToken);
+      const info = extractCodexAccountInfo(conn.idToken, conn.accessToken);
       if (!info.email && !info.chatgptAccountId) continue;
       const patch = {};
       if (!conn.email && info.email) patch.email = info.email;
