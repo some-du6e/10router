@@ -257,10 +257,24 @@ export class CodexExecutor extends BaseExecutor {
     }
   }
 
-  async execute(args) {
+  // The compact flag is per request; keep it on a per-call view so a shared
+  // executor never builds one request's URL from another's body.
+  execute(args) {
+    // Strip the flag from a copy: chatCore passes the same body again when it
+    // retries after a token refresh, and that retry is still a compact call.
+    const call = Object.create(this);
+    if (!args.body) return call._execute(args);
+    const { _compact, ...body } = args.body;
+    call._isCompact = !!_compact;
+    return call._execute({ ...args, body });
+  }
+
+  async _execute(args) {
     const imgCount = Array.isArray(args.body?.input) ? args.body.input.reduce((n, it) => n + (Array.isArray(it.content) ? it.content.filter(c => c.type === "image_url").length : 0), 0) : 0;
     const inputLen = Array.isArray(args.body?.input) ? args.body.input.length : 0;
     dbg("CODEX", `execute start | inputItems=${inputLen} | images=${imgCount} | sessionId=${this._currentSessionId || "pending"}`);
+    // Nothing is upstream while images download; base.execute reports each send.
+    args.onUpstreamAttempt?.(0);
     if (imgCount > 0) {
       const t0 = Date.now();
       await this.prefetchImages(args.body, args.imageCacheKey);
@@ -292,6 +306,8 @@ export class CodexExecutor extends BaseExecutor {
         if (result.response) result.response.upstreamStartedAt = fetchedAt;
         return result;
       }
+      // The attempt came back with an error event.
+      args.onUpstreamAttempt?.(0);
       if (peek.accountFallback) {
         args.log?.warn?.("RETRY", `CODEX | SSE account fallback "${peek.message}"`);
         result.response = codexSseErrorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, peek.message || CODEX_MODEL_CAPACITY_MESSAGE);
@@ -397,8 +413,6 @@ export class CodexExecutor extends BaseExecutor {
    * Image fetching is handled separately in prefetchImages() so this stays sync.
    */
   transformRequest(model, body, stream, credentials) {
-    this._isCompact = !!body._compact;
-    delete body._compact;
     // Resolve conversation-stable session_id (priority: body → assistant-text → workspace → machine)
     this._currentSessionId = resolveCacheSessionId(body, credentials);
     // Convert string input to array format (Codex API requires input as array)

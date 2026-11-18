@@ -1,5 +1,6 @@
 import { nowSec, urlToBase64 } from "./_base.js";
 import { PROVIDER_MEDIA } from "../../providers/index.js";
+import { modelPathSegments } from "../../utils/modelPath.js";
 
 const BASE_URL = PROVIDER_MEDIA["cloudflare-ai"]?.imageConfig?.baseUrl;
 
@@ -141,7 +142,7 @@ export default {
   buildUrl: (model, creds) => {
     const accountId = creds?.providerSpecificData?.accountId;
     if (!accountId) throw new Error("cloudflare-ai requires accountId in providerSpecificData");
-    return `${BASE_URL}/${accountId}/ai/run/${model}`;
+    return `${BASE_URL}/${accountId}/ai/run/${modelPathSegments(model)}`;
   },
 
   buildHeaders: (creds, requestBody) => {

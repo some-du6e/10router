@@ -1,5 +1,6 @@
 // ElevenLabs TTS — voice id with optional model_id prefix
 import { Buffer } from "node:buffer";
+import { modelPathSegment } from "../../utils/modelPath.js";
 
 const VOICES_TTL = 24 * 60 * 60 * 1000;
 const _voicesCache = new Map(); // by API key
@@ -28,7 +29,9 @@ export default {
     let voiceId = model;
     if (model && model.includes("/")) [modelId, voiceId] = model.split("/");
 
-    const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+    // One escaped path segment: URL parsers read "\" as "/" and resolve "..",
+    // so a raw voice id could reach another endpoint with the owner's key.
+    const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${modelPathSegment(voiceId)}`, {
       method: "POST",
       headers: { "xi-api-key": credentials.apiKey, "Content-Type": "application/json" },
       body: JSON.stringify({

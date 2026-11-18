@@ -3,6 +3,7 @@ import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { refreshTokenByProvider } from "../services/tokenRefresh.js";
 import { PROVIDER_MEDIA } from "../providers/index.js";
 import { sanitizeSecrets } from "../utils/redact.js";
+import { modelPathSegment } from "../utils/modelPath.js";
 
 // Upstream fetch deadline for video job submission/polling (the job itself is
 // async upstream — this only bounds the HTTP round-trip, not video rendering).
@@ -19,9 +20,11 @@ export function getVideoConfig(provider) {
 }
 
 
+// A poll id is one escaped path segment; "." or ".." (also as %2e) would
+// resolve to the API root with the owner's key, so modelPathSegment refuses it.
 function buildUpstreamUrl(config, action, requestId) {
   const base = config.baseUrl.replace(/\/$/, "");
-  return requestId ? `${base}/${encodeURIComponent(requestId)}` : `${base}/${action}`;
+  return requestId ? `${base}/${modelPathSegment(requestId)}` : `${base}/${action}`;
 }
 
 function buildHeaders({ token, contentType, idempotencyKey }) {
@@ -84,7 +87,12 @@ export async function handleVideoProxyCore({
   }
 
   const method = requestId ? "GET" : "POST";
-  const url = buildUpstreamUrl(config, action, requestId);
+  let url;
+  try {
+    url = buildUpstreamUrl(config, action, requestId);
+  } catch (error) {
+    return { ...createErrorResult(HTTP_STATUS.BAD_REQUEST, `Invalid video request id: ${error.message}`), notSent: true };
+  }
   const fetchSignal = combineSignals(signal, timeoutMs);
 
   const doFetch = (token) =>
@@ -95,13 +103,22 @@ export async function handleVideoProxyCore({
       signal: fetchSignal,
     });
 
+  // A fetch that fails once the client has left is the client leaving, whatever
+  // the error says (the server may abort its signal with a reason that isn't an
+  // AbortError): no failure of the account (clientAborted: lock nothing). Our
+  // own deadline, or another abort, is a timeout. Returns null for other errors.
+  const abortedResult = (error) => {
+    if (signal?.aborted) return { ...createErrorResult(HTTP_STATUS.CLIENT_CLOSED_REQUEST, `[${provider}] video ${method} cancelled by the client`), clientAborted: true };
+    if (error?.name === "AbortError" || error?.name === "TimeoutError") return createErrorResult(HTTP_STATUS.REQUEST_TIMEOUT, `[${provider}] video ${method} aborted: ${error.message}`);
+    return null;
+  };
+
   let upstream;
   try {
     upstream = await doFetch(credentials?.accessToken || credentials?.apiKey);
   } catch (error) {
-    if (error?.name === "AbortError" || error?.name === "TimeoutError") {
-      return createErrorResult(HTTP_STATUS.REQUEST_TIMEOUT, `[${provider}] video ${method} aborted: ${error.message}`);
-    }
+    const aborted = abortedResult(error);
+    if (aborted) return aborted;
     // Never re-send a creation POST on network error — the job may already exist upstream.
     return createErrorResult(HTTP_STATUS.BAD_GATEWAY, sanitizeSecrets(`[${provider}] video upstream fetch failed: ${error.message}`, credentials));
   }
@@ -127,6 +144,8 @@ export async function handleVideoProxyCore({
       try {
         upstream = await doFetch(credentials.accessToken || credentials.apiKey);
       } catch (error) {
+        const aborted = abortedResult(error);
+        if (aborted) return aborted;
         return createErrorResult(HTTP_STATUS.BAD_GATEWAY, sanitizeSecrets(`[${provider}] video retry after refresh failed: ${error.message}`, credentials));
       }
     } else {
@@ -135,6 +154,8 @@ export async function handleVideoProxyCore({
   }
 
   const bodyText = await upstream.text().catch(() => "");
+  // The client left while the body was read: what came back says nothing about the account.
+  if (signal?.aborted) return abortedResult(null);
 
   if (!upstream.ok) {
     const message = sanitizeSecrets(bodyText || `HTTP ${upstream.status}`, credentials);
