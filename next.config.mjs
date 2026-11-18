@@ -1,6 +1,7 @@
 import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { parseGaMeasurementId } from "./src/shared/utils/gaMeasurementId.mjs";
 
 const projectRoot = dirname(fileURLToPath(import.meta.url));
 
@@ -62,6 +63,9 @@ const nextConfig = {
   },
   env: {
     NEXT_PUBLIC_GIT_COMMIT: GIT_COMMIT,
+    // Always inlined (empty when unset or invalid), so dynamic server renders
+    // can't pick up a value set only on the running server.
+    NEXT_PUBLIC_GA_ID: parseGaMeasurementId(process.env.NEXT_PUBLIC_GA_ID),
   },
   experimental: {
     // #1529/#1572: LLM clients can send long context or base64 image payloads through /v1 rewrites.

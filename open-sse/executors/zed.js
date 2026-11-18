@@ -18,6 +18,8 @@ import { BaseExecutor } from "./base.js";
 import { FORMATS } from "../translator/formats.js";
 import { initState } from "../translator/index.js";
 import { openaiToClaudeRequest } from "../translator/request/openai-to-claude.js";
+import { relaxForcedToolChoiceForThinking } from "../translator/concerns/toolChoice.js";
+import { normalizeClaudeToolSchemas } from "../translator/concerns/jsonSchema.js";
 import { openaiToGeminiRequest } from "../translator/request/openai-to-gemini.js";
 import { openaiToOpenAIResponsesRequest } from "../translator/request/openai-responses.js";
 import { claudeToOpenAIResponse } from "../translator/response/claude-to-openai.js";
@@ -50,9 +52,13 @@ function normalizeZedProvider(value, model) {
   return ZED_PROVIDER.openai;
 }
 
-function buildProviderRequest(provider, model, body, stream, credentials) {
+export function buildProviderRequest(provider, model, body, stream, credentials) {
   if (provider === ZED_PROVIDER.anthropic) {
-    return openaiToClaudeRequest(model, body, true);
+    // This Claude body never goes through prepareClaudeRequest or finalizeBody,
+    // so the tool-schema flattening and the forced-tool check run here.
+    const claudeBody = openaiToClaudeRequest(model, body, true);
+    if (Array.isArray(claudeBody.tools)) claudeBody.tools = normalizeClaudeToolSchemas(claudeBody.tools);
+    return relaxForcedToolChoiceForThinking(claudeBody, "zed");
   }
   if (provider === ZED_PROVIDER.google) {
     return openaiToGeminiRequest(model, body, true);

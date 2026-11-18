@@ -8,11 +8,11 @@ const net = require("net");
 const os = require("os");
 
 // Poll until the server accepts TCP connections on port, or timeout — avoids blind fixed waits.
-function waitServerReady(port, { timeoutMs = 15000, intervalMs = 150 } = {}) {
+function waitServerReady(host, port, { timeoutMs = 15000, intervalMs = 150 } = {}) {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve) => {
     const tryConnect = () => {
-      const socket = net.connect({ host: "127.0.0.1", port }, () => {
+      const socket = net.connect({ host, port }, () => {
         socket.destroy();
         resolve(true);
       });
@@ -63,6 +63,10 @@ function createSpinner(text) {
 }
 
 const pkg = require("./package.json");
+const { getDataDir, normalizeDataDirEnv } = require("./hooks/dataDir");
+// Before anything reads it: the server starts in its own directory, so it and
+// this process must get the same absolute DATA_DIR.
+normalizeDataDirEnv(process.env);
 const { ensureSqliteRuntime, buildEnvWithRuntime } = require("./hooks/sqliteRuntime");
 const { ensureTrayRuntime } = require("./hooks/trayRuntime");
 const args = process.argv.slice(2);
@@ -171,6 +175,12 @@ if (skipUpdate && !trayMode && !process.stdin.isTTY) {
   process.env.TRAY_MODE = "1";
 }
 
+// Every request the launcher, menu and Terminal UI make goes to this address.
+const api = require("./src/cli/api/client");
+const dialHost = api.hostForBind(host);
+api.configure({ port, host: dialHost });
+const { launcherEnv } = require("./src/cli/utils/launcherState");
+
 // Always use Node.js runtime with absolute path
 const RUNTIME = process.execPath;
 
@@ -185,37 +195,12 @@ function compareVersions(a, b) {
   return 0;
 }
 
-// Get app data dir (matches app/src/lib/dataDir.js convention).
-// NOTE: the ".9router" / "9router" directory names are retained for compatibility
-// with existing installs — deliberately NOT renamed during the 10router rebrand.
-function getAppDataDir() {
-  return process.platform === "win32"
-    ? path.join(process.env.APPDATA || "", "9router")
-    : path.join(os.homedir(), ".9router");
-}
-
-// Kill PID from file (best-effort, removes file after)
-function killByPidFile(pidFile) {
-  try {
-    if (!fs.existsSync(pidFile)) return;
-    const pid = parseInt(fs.readFileSync(pidFile, "utf8").trim(), 10);
-    if (!pid) return;
-    try {
-      if (process.platform === "win32") {
-        execSync(`taskkill /F /T /PID ${pid}`, { stdio: "ignore", windowsHide: true, timeout: 3000 });
-      } else {
-        process.kill(pid, "SIGKILL");
-      }
-    } catch { }
-    try { fs.unlinkSync(pidFile); } catch { }
-  } catch { }
-}
-
-// Kill tunnel processes (cloudflared/tailscale) by their PID files
+// Kill the server's cloudflared by its PID file
 function killTunnelByPidFile() {
-  const tunnelDir = path.join(getAppDataDir(), "tunnel");
-  killByPidFile(path.join(tunnelDir, "cloudflared.pid"));
-  killByPidFile(path.join(tunnelDir, "tailscale.pid"));
+  const { killByPidFile } = require("./src/cli/utils/pidFile");
+  const dataDir = getDataDir();
+  const binary = path.join(dataDir, "bin", process.platform === "win32" ? "cloudflared.exe" : "cloudflared");
+  killByPidFile(path.join(dataDir, "tunnel", "cloudflared.pid"), binary);
 }
 
 // Kill cloudflared whose --url targets this app's port (covers stale PID file case)
@@ -573,6 +558,7 @@ function startServer(updatePromise) {
       windowsHide: true,
       env: {
         ...buildEnvWithRuntime(process.env),
+        ...launcherEnv(),
         PORT: port.toString(),
         HOSTNAME: host
       }
@@ -600,8 +586,8 @@ function startServer(updatePromise) {
         const { killTray } = require("./src/cli/tray/tray");
         killTray();
       } catch (e) { }
-      // Kill cloudflared/tailscale via PID file (only this app's tunnel)
-      killTunnelByPidFile();
+      // Kill cloudflared via PID file (only this app's tunnel)
+      try { killTunnelByPidFile(); } catch { }
       // Kill server process directly
       if (server.pid) {
         process.kill(server.pid, "SIGKILL");
@@ -667,7 +653,7 @@ function startServer(updatePromise) {
     console.log(`\n🚀 ${pkg.name} v${pkg.version}`);
     console.log(`Server: http://${displayHost}:${port}`);
 
-    waitServerReady(port).then(() => {
+    waitServerReady(dialHost, port).then(() => {
       initTrayIcon();
       console.log("\n💡 Router is now running in system tray. Close this terminal if you want.");
       console.log("   Right-click tray icon to open dashboard or quit.\n");
@@ -677,7 +663,7 @@ function startServer(updatePromise) {
   }
 
   // Wait for server to be ready, then show interface menu loop + tray
-  waitServerReady(port).then(async () => {
+  waitServerReady(dialHost, port).then(async () => {
     // Resolve parallel update check (already running); don't block server start on it.
     const latestVersion = await latestVersionPromise;
     // Start tray icon alongside TUI

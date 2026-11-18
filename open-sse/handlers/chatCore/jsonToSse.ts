@@ -2,7 +2,8 @@
 // a client that asked to stream when the upstream answered with plain JSON.
 // Returns null for formats it cannot replay; the caller then sends the JSON.
 import { FORMATS } from "../../translator/formats.js";
-import { CLAUDE_BLOCK, RESPONSES_ITEM, ROLE } from "../../translator/schema/index.js";
+import { CLAUDE_BLOCK, RESPONSES_ITEM, RESPONSES_ITEM_ID_PREFIX, RESPONSES_STATUS, ROLE } from "../../translator/schema/index.js";
+import { responsesItemId, toolCallItemId } from "../../translator/concerns/responsesItemId.js";
 
 type Json = Record<string, any>;
 
@@ -53,18 +54,30 @@ function claudeEvents(body: Json): string {
   return out.join("");
 }
 
+const ITEM_ID_PREFIX_BY_TYPE: Record<string, string> = {
+  [RESPONSES_ITEM.MESSAGE]: RESPONSES_ITEM_ID_PREFIX.MESSAGE,
+  [RESPONSES_ITEM.REASONING]: RESPONSES_ITEM_ID_PREFIX.REASONING,
+  [RESPONSES_ITEM.FUNCTION_CALL]: RESPONSES_ITEM_ID_PREFIX.FUNCTION_CALL,
+  [RESPONSES_ITEM.CUSTOM_TOOL_CALL]: RESPONSES_ITEM_ID_PREFIX.CUSTOM_TOOL_CALL,
+};
+
 function responsesEvents(body: Json): string {
   let seq = 0;
   const ev = (data: Json) => sse({ ...data, sequence_number: seq++ }, data.type);
   const out = [
-    ev({ type: "response.created", response: { ...body, status: "in_progress", output: [] } }),
-    ev({ type: "response.in_progress", response: { ...body, status: "in_progress", output: [] } }),
+    ev({ type: "response.created", response: { ...body, status: RESPONSES_STATUS.IN_PROGRESS, output: [] } }),
+    ev({ type: "response.in_progress", response: { ...body, status: RESPONSES_STATUS.IN_PROGRESS, output: [] } }),
   ];
-  (body.output || []).forEach((item: Json, output_index: number) => {
+  // Every item event names its item. A body item without an id (from an
+  // upstream's own Responses JSON) gets one in the live stream's format, keyed
+  // on its output index (a choice index would give two messages one id), and
+  // the closing response carries the same ids.
+  const items: Json[] = (body.output || []).map((bodyItem: Json, output_index: number) => withItemId(bodyItem, body.id, output_index));
+  items.forEach((item: Json, output_index: number) => {
     // Each item opens empty and fills through deltas, so a client that
     // accumulates deltas onto the added item doesn't see the text twice.
     if (item.type === RESPONSES_ITEM.MESSAGE) {
-      out.push(ev({ type: "response.output_item.added", output_index, item: { ...item, status: "in_progress", content: [] } }));
+      out.push(ev({ type: "response.output_item.added", output_index, item: { ...item, status: RESPONSES_STATUS.IN_PROGRESS, content: [] } }));
       (item.content || []).forEach((part: Json, content_index: number) => {
         const at = { item_id: item.id, output_index, content_index };
         if (part.type !== RESPONSES_ITEM.OUTPUT_TEXT) {
@@ -80,7 +93,7 @@ function responsesEvents(body: Json): string {
       });
     } else if (item.type === RESPONSES_ITEM.FUNCTION_CALL) {
       const args = item.arguments || "";
-      out.push(ev({ type: "response.output_item.added", output_index, item: { ...item, status: "in_progress", arguments: "" } }));
+      out.push(ev({ type: "response.output_item.added", output_index, item: { ...item, status: RESPONSES_STATUS.IN_PROGRESS, arguments: "" } }));
       out.push(ev({ type: "response.function_call_arguments.delta", item_id: item.id, output_index, delta: args }));
       out.push(ev({ type: "response.function_call_arguments.done", item_id: item.id, output_index, arguments: args }));
     } else {
@@ -88,8 +101,23 @@ function responsesEvents(body: Json): string {
     }
     out.push(ev({ type: "response.output_item.done", output_index, item }));
   });
-  out.push(ev({ type: "response.completed", response: { ...body, status: body.status || "completed" } }));
+  // A reply cut short (max_output_tokens, content filter) ends with
+  // response.incomplete, the Responses API's terminal event for it.
+  const incomplete = body.status === RESPONSES_STATUS.INCOMPLETE;
+  out.push(ev({
+    type: incomplete ? "response.incomplete" : "response.completed",
+    response: { ...body, status: body.status || RESPONSES_STATUS.COMPLETED, ...(body.output ? { output: items } : {}) },
+  }));
   return out.join("");
+}
+
+function withItemId(item: Json, responseId: unknown, index: number): Json {
+  if (!item || typeof item !== "object" || item.id) return item;
+  const isCall = item.type === RESPONSES_ITEM.FUNCTION_CALL || item.type === RESPONSES_ITEM.CUSTOM_TOOL_CALL;
+  const id = isCall && item.call_id
+    ? toolCallItemId(item.type === RESPONSES_ITEM.CUSTOM_TOOL_CALL, item.call_id)
+    : responsesItemId(ITEM_ID_PREFIX_BY_TYPE[item.type] || RESPONSES_ITEM_ID_PREFIX.MESSAGE, responseId || "", index);
+  return { ...item, id };
 }
 
 export function jsonReplyToSse(body: unknown, sourceFormat: string): string | null {

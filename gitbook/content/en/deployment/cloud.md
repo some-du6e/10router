@@ -37,17 +37,18 @@ npm run build
 Create a `.env` file or export variables:
 
 ```bash
-export JWT_SECRET="your-secure-secret-change-this-to-random-string"
 export INITIAL_PASSWORD="your-secure-password"
 export DATA_DIR="/var/lib/10router"
 export NODE_ENV="production"
 ```
 
+> `JWT_SECRET` is optional. Leave it unset and 10router generates one once into `$DATA_DIR/jwt-secret`, so sessions survive restarts. Only for several instances behind one URL: generate one value once (`openssl rand -hex 32`), store it, and set that same value on every instance. Values under 32 characters or a documented placeholder are ignored.
+
 **Environment Variables:**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `JWT_SECRET` | Auto-generated | **MUST change in production!** Used for JWT token signing |
+| `JWT_SECRET` | Auto-generated (`$DATA_DIR/jwt-secret`) | Optional. Signs dashboard sessions. Set it only to share sessions across instances behind one URL (32+ characters; shorter values and documented placeholders are ignored) |
 | `INITIAL_PASSWORD` | unset | Optional headless bootstrap password (min 8 chars). When unset, first run requires the one-time setup token printed to the server console — there is no default password |
 | `DATA_DIR` | `~/.9router` | Database and data storage path (the directory name is unchanged from the previous release for backward compatibility) |
 | `NODE_ENV` | `development` | Set to `production` for deployment |
@@ -74,8 +75,10 @@ PM2 keeps your application running and restarts it on crashes:
 # Install PM2 globally
 npm install -g pm2
 
-# Start 10router with PM2
-pm2 start npm --name 10router -- start
+# Start 10router with PM2. --kill-timeout gives requests in flight time to
+# finish on `pm2 restart`/`stop`: it must be longer than SHUTDOWN_DRAIN_TIMEOUT_MS
+# (3 min by default); PM2's own default is 1.6 s.
+pm2 start npm --name 10router --kill-timeout 210000 -- start
 
 # Save PM2 configuration
 pm2 save
@@ -154,11 +157,12 @@ docker run -d \
   --name 10router \
   -p 3000:3000 \
   -p 20128:20128 \
-  -e JWT_SECRET="your-secure-secret-change-this" \
   -e INITIAL_PASSWORD="your-secure-password" \
   -v 10router-data:/app/data \
   10router
 ```
+
+> `JWT_SECRET` is left unset on purpose (see the note above): the secret generated in `$DATA_DIR/jwt-secret` persists across restarts.
 
 ### Option 2: Docker Compose
 
@@ -176,7 +180,6 @@ services:
       - "20128:20128"
     environment:
       - NODE_ENV=production
-      - JWT_SECRET=your-secure-secret-change-this
       - INITIAL_PASSWORD=your-secure-password
       - DATA_DIR=/app/data
     volumes:
@@ -186,6 +189,8 @@ services:
 volumes:
   10router-data:
 ```
+
+> `JWT_SECRET` is left unset on purpose (see the note above): the secret generated in `$DATA_DIR/jwt-secret` persists across restarts.
 
 **Run with Docker Compose:**
 
@@ -311,16 +316,15 @@ sudo certbot renew --dry-run
 
 ## 🔒 Security Considerations
 
-### 1. Change Default Credentials
+### 1. Secure the Dashboard Login
 
-**CRITICAL:** Change `JWT_SECRET` and `INITIAL_PASSWORD` before deployment:
+Set a strong `INITIAL_PASSWORD` before deployment, or leave it unset and finish first-run setup with the one-time setup token printed to the server console. There is no default password.
+
+`JWT_SECRET` is optional: 10router generates one into `$DATA_DIR/jwt-secret` and keeps it, so keep the data directory private. Set `JWT_SECRET` only to share sessions across several instances behind one URL, using one value of 32+ characters generated once and stored:
 
 ```bash
-# Generate secure JWT secret
-openssl rand -base64 32
-
-# Use this value for JWT_SECRET
-export JWT_SECRET="generated-secret-here"
+# Run once, store the value, and set it on every instance
+openssl rand -hex 32
 ```
 
 ### 2. Firewall Configuration
@@ -461,7 +465,7 @@ Ensure `proxy_buffering off` is set in Nginx configuration for SSE support.
 ```bash
 # Fix data directory permissions
 sudo chown -R $USER:$USER /var/lib/10router
-chmod 755 /var/lib/10router
+chmod 700 /var/lib/10router
 ```
 
 ---

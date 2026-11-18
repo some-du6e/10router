@@ -8,7 +8,11 @@ on:
       - "src/proxy.js"
       - "src/lib/auth/**"
       - "src/app/api/auth/login/**"
+      - "server-drain.js"
       - "next.config.mjs"
+      - ".env.example"
+      - "CHANGELOG.md"
+      - "gitbook/content/*/getting-started/installation.md"
       - "package.json"
       - "tests/package.json"
       - "tests/vitest.config.js"
@@ -18,6 +22,8 @@ on:
       - "tests/unit/custom-server-peer-headers.test.js"
       - "tests/unit/custom-server-h2c.test.js"
       - "tests/unit/codex-ws-bridge-peer.test.js"
+      - "tests/unit/codex-ws-translated.test.js"
+      - "tests/unit/server-drain-wiring.test.js"
       - "tests/unit/local-request-peer-trust-3294.test.js"
       - ".github/workflows/security-network-trust.yml"
   workflow_dispatch:
@@ -48,6 +54,8 @@ jobs:
           unit/custom-server-peer-headers.test.js
           unit/custom-server-h2c.test.js
           unit/codex-ws-bridge-peer.test.js
+          unit/codex-ws-translated.test.js
+          unit/server-drain-wiring.test.js
           unit/local-request-peer-trust-3294.test.js
       - name: Lint
         run: >

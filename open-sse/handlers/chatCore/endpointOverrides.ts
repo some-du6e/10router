@@ -42,7 +42,7 @@ interface ExecuteResult {
 }
 interface ExecutorLike {
   provider: string;
-  config: Record<string, unknown> & { retry?: Record<string, unknown>; timeoutMs?: number };
+  config: Record<string, unknown> & { retry?: Record<string, unknown>; timeoutMs?: number; headersTimeoutAttempts?: number };
   onMessagesPath(credentials: Credentials): boolean;
   buildUrl(model: string, stream: boolean, urlIndex?: number, credentials?: Credentials | null): string;
   buildHeaders(credentials: Credentials, stream?: boolean, url?: string, model?: string): Headers_;
@@ -105,6 +105,8 @@ function connectionOverrides(ex: ExecutorLike, o: RawOverrides | undefined, args
     if (o.retries !== undefined) {
       const n = Number(o.retries);
       config.retry = { ...(ex.config.retry || {}), ...Object.fromEntries(RETRY_STATUSES.map((s) => [s, { attempts: n, delayMs: RETRY_DELAY_MS }])) };
+      // A header timeout gets one attempt as long as the Timeout's attempts were (upstreamHeadersBudget).
+      config.headersTimeoutAttempts = n + 1;
     }
     next = Object.create(ex) as ExecutorLike;
     next.config = config;

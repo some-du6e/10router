@@ -1,80 +1,10 @@
-import { spawn, execSync } from "child_process";
+import { spawn } from "child_process";
 import path from "path";
 import fs from "fs";
-import os from "os";
 import { UPDATER_CONFIG } from "@/shared/constants/config";
+import { runtimeUpdaterPath } from "./appProcesses.js";
 
-const KILL_TIMEOUT_MS = 5000;
-const PROCESS_WAIT_MS = 1500;
-
-// Collect PIDs of all 10router-related processes (excluding current)
-function collectAppPids() {
-  const pids = [];
-  const platform = process.platform;
-
-  if (platform === "win32") {
-    try {
-      const psCmd = `powershell -NonInteractive -WindowStyle Hidden -Command "Get-WmiObject Win32_Process -Filter 'Name=\\"node.exe\\"' | Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation"`;
-      const output = execSync(psCmd, { encoding: "utf8", windowsHide: true, timeout: KILL_TIMEOUT_MS });
-      const lines = output.split("\n").slice(1).filter(l => l.trim());
-      lines.forEach(line => {
-        const lower = line.toLowerCase();
-        // Match anything running from 10router install dir or wrapper cli.js
-        const isAppProcess = lower.includes("10router") ||
-          lower.includes("next-server") ||
-          lower.includes("\\bin\\app\\") ||
-          lower.includes("/bin/app/") ||
-          lower.includes("cli.js");
-        if (isAppProcess) {
-          const match = line.match(/^"(\d+)"/);
-          if (match && match[1] && match[1] !== process.pid.toString()) pids.push(match[1]);
-        }
-      });
-    } catch { /* no processes */ }
-
-    // Kill cloudflared + tray binaries (hold app dir lock)
-    for (const procName of ["cloudflared", "tray_windows_release"]) {
-      try {
-        const cmd = `powershell -NonInteractive -WindowStyle Hidden -Command "Get-Process ${procName} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id"`;
-        const out = execSync(cmd, { encoding: "utf8", windowsHide: true, timeout: KILL_TIMEOUT_MS });
-        out.split("\n").forEach(l => {
-          const pid = l.trim();
-          if (pid && !isNaN(pid)) pids.push(pid);
-        });
-      } catch { /* not running */ }
-    }
-  } else {
-    try {
-      const output = execSync("ps aux 2>/dev/null", { encoding: "utf8", timeout: KILL_TIMEOUT_MS });
-      output.split("\n").forEach(line => {
-        const isAppProcess = line.includes("10router") ||
-          line.includes("next-server") ||
-          line.includes("cloudflared") ||
-          line.includes("/bin/app/") ||
-          line.includes("tray_darwin") ||
-          line.includes("tray_linux");
-        if (isAppProcess) {
-          const parts = line.trim().split(/\s+/);
-          const pid = parts[1];
-          if (pid && !isNaN(pid) && pid !== process.pid.toString()) pids.push(pid);
-        }
-      });
-    } catch { /* no processes */ }
-  }
-
-  return pids;
-}
-
-// Copy updater.js into DATA_DIR so npm -g can overwrite node_modules safely.
-// The "9router" / ".9router" dir name is deliberately kept for backward
-// compatibility with existing installs — not a missed rebrand.
-function getDataDir() {
-  if (process.env.DATA_DIR) return process.env.DATA_DIR;
-  if (process.platform === "win32") {
-    return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "9router");
-  }
-  return path.join(os.homedir(), ".9router");
-}
+export { collectAppPids, killAppProcesses, busyInstallPids, busyInstallMessage } from "./appProcesses.js";
 
 function resolveBundledUpdaterPath() {
   if (process.env.UPDATER_SCRIPT_PATH && fs.existsSync(process.env.UPDATER_SCRIPT_PATH)) {
@@ -89,11 +19,12 @@ function resolveBundledUpdaterPath() {
   return fromCwd;
 }
 
+// Copy updater.js into DATA_DIR so npm -g can overwrite node_modules safely.
 function ensureRuntimeUpdater(bundledPath) {
   try {
     if (!bundledPath || !fs.existsSync(bundledPath)) return bundledPath;
-    const runtimeDir = path.join(getDataDir(), "runtime", "updater");
-    const runtimePath = path.join(runtimeDir, "updater.js");
+    const runtimePath = runtimeUpdaterPath();
+    const runtimeDir = path.dirname(runtimePath);
     if (fs.existsSync(runtimePath)) {
       try {
         if (fs.statSync(bundledPath).size === fs.statSync(runtimePath).size) return runtimePath;
@@ -104,26 +35,6 @@ function ensureRuntimeUpdater(bundledPath) {
     return runtimePath;
   } catch {
     return bundledPath;
-  }
-}
-
-// Kill all app-related processes to release file locks (esp. on Windows)
-export async function killAppProcesses() {
-  const pids = collectAppPids();
-  const platform = process.platform;
-
-  pids.forEach(pid => {
-    try {
-      if (platform === "win32") {
-        execSync(`taskkill /F /PID ${pid} 2>nul`, { stdio: "ignore", shell: true, windowsHide: true, timeout: 3000 });
-      } else {
-        execSync(`kill -9 ${pid} 2>/dev/null`, { stdio: "ignore", timeout: 3000 });
-      }
-    } catch { /* already dead */ }
-  });
-
-  if (pids.length > 0) {
-    await new Promise(r => setTimeout(r, PROCESS_WAIT_MS));
   }
 }
 

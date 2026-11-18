@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getApiKeys, getCustomModels, getProviderNodeById } from "@/lib/localDb";
-import { getConsistentMachineId } from "@/shared/utils/machineId";
+import { CLI_TOKEN_HEADER, getCliToken } from "@/lib/auth/cliToken.js";
 import { UPDATER_CONFIG } from "@/shared/constants/config";
 import { clearEndpointRequests, errorMessage, getEndpointRequests, isCustomEndpoint, outputTokens, replyText } from "@/lib/endpointRequestLog.js";
 import { pickTestModel } from "./pick.js";
@@ -8,7 +8,6 @@ import { pickInternalKey } from "@/shared/utils/apiKeyLimits.js";
 
 export const dynamic = "force-dynamic";
 
-const CLI_TOKEN_SALT = "9r-cli-auth";
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,160}$/;
 type CustomModel = { id?: string; providerAlias?: string; type?: string; kind?: string };
 type Ctx = { params: Promise<{ id: string }> };
@@ -48,7 +47,7 @@ export async function POST(request: Request, { params }: Ctx) {
   if (!model || !MODEL_RE.test(model)) return NextResponse.json({ ok: false, error: "This endpoint has no models yet. Add one first." }, { status: 400 });
 
   const anthropic = node.type === "anthropic-compatible";
-  const headers: Record<string, string> = { "Content-Type": "application/json", "x-9r-cli-token": await (getConsistentMachineId as unknown as (salt: string) => Promise<string>)(CLI_TOKEN_SALT) };
+  const headers: Record<string, string> = { "Content-Type": "application/json", [CLI_TOKEN_HEADER]: await getCliToken() };
   try {
     const k = pickInternalKey(await getApiKeys());
     if (k) headers.Authorization = `Bearer ${k}`;

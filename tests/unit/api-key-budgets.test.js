@@ -442,13 +442,13 @@ describe("model allowlist", () => {
     const key = await newKey("list-bare", { allowedModels: ["claude-opus-5-5"] });
     const req = new Request("http://localhost/v1/models", { headers: { Authorization: `Bearer ${key.key}` } });
     const list = [
-      { id: "snow/claude-opus-5-5", object: "model", owned_by: "snow" },
+      { id: "ctso/claude-opus-5-5", object: "model", owned_by: "ctso" },
       { id: "cc/claude-opus-5-5", object: "model", owned_by: "cc" },
       { id: "cc/claude-sonnet-5-5", object: "model", owned_by: "cc" },
     ];
     const shown = await filterModelsForRequest(req, list);
     expect(shown).toEqual([{ id: "claude-opus-5-5", object: "model", owned_by: "10router" }]);
-    expect(JSON.stringify(shown)).not.toMatch(/snow|"cc/);
+    expect(JSON.stringify(shown)).not.toMatch(/ctso|"cc/);
   });
 
   it("keeps the real model's entry when a combo of it comes first, and still lists the combo", async () => {
@@ -456,7 +456,7 @@ describe("model allowlist", () => {
     const req = new Request("http://localhost/v1/models", { headers: { Authorization: `Bearer ${key.key}` } });
     const list = [
       { id: "safe-combo", object: "model", owned_by: "combo" },
-      { id: "snow/claude-opus-5-5", object: "model", owned_by: "snow", context_length: 200000 },
+      { id: "ctso/claude-opus-5-5", object: "model", owned_by: "ctso", context_length: 200000 },
     ];
     const shown = await filterModelsForRequest(req, list);
     expect(shown.map((m) => m.id)).toEqual(["safe-combo", "claude-opus-5-5"]);
@@ -473,7 +473,7 @@ describe("model allowlist", () => {
   it("lists a provider-prefixed allowed model as-is", async () => {
     const key = await newKey("list-prefixed", { allowedModels: ["cc/claude-opus-5-5"] });
     const req = new Request("http://localhost/v1/models", { headers: { Authorization: `Bearer ${key.key}` } });
-    const list = [{ id: "snow/claude-opus-5-5" }, { id: "cc/claude-opus-5-5" }];
+    const list = [{ id: "ctso/claude-opus-5-5" }, { id: "cc/claude-opus-5-5" }];
     expect((await filterModelsForRequest(req, list)).map((m) => m.id)).toEqual(["cc/claude-opus-5-5"]);
   });
 });

@@ -358,12 +358,134 @@ describe("dashboard guard first-run setup gate", () => {
     expect(response.url.pathname).toBe("/login");
   });
 
+  it("doesn't let a session from before a password-mode reset use the API", async () => {
+    // Unclaimed (no hash, no SSO): what Reset Password leaves in password mode.
+    mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
+    expect((await proxy(request("/api/settings", { host: "localhost:20128" }, "password-session"))).status).toBe(401);
+    expect((await proxy(request("/api/settings/database", { host: "localhost:20128" }, "password-session"))).status).toBe(401);
+    expect((await proxy(request("/api/auth/oidc/test", { host: "localhost:20128" }, "password-session"))).status).toBe(401);
+  });
+
+  it("lets a password session use the API and the SSO test routes once the instance is claimed", async () => {
+    mocks.getSettings.mockResolvedValue({ requireLogin: true, password: "$2a$10$storedhash" });
+    mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
+    expect(await proxy(request("/api/auth/oidc/test", { host: "localhost:20128" }, "password-session"))).toBe(mocks.nextResponse);
+  });
+
+  it("lets a password session use the API once the instance is claimed", async () => {
+    mocks.getSettings.mockResolvedValue({ requireLogin: true, password: "$2a$10$storedhash" });
+    mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
+
+    expect(await proxy(request("/api/settings", { host: "localhost:20128" }, "password-session"))).toBe(mocks.nextResponse);
+  });
+
   it("keeps the legacy default-password install on the normal login page", async () => {
     mocks.getMeta.mockResolvedValue("1");
 
     const response = await proxy(request("/login", { host: "localhost:20128" }));
 
     expect(response).toBe(mocks.nextResponse);
+  });
+
+  describe("after Reset Password in an SSO mode (Both, configured SSO, no password)", () => {
+    const ssoDuringSetup = {
+      requireLogin: true,
+      authMode: "both",
+      ssoType: "oidc",
+      oidcIssuerUrl: "https://idp.example.test",
+      oidcClientId: "client",
+      oidcClientSecret: "secret",
+    };
+    beforeEach(() => mocks.getSettings.mockResolvedValue(ssoDuringSetup));
+
+    it("keeps the login page, with its SSO button, reachable", async () => {
+      expect(await proxy(request("/login", { host: "localhost:20128" }))).toBe(mocks.nextResponse);
+    });
+
+    it("(guard) still serves /setup for the token", async () => {
+      expect(await proxy(request("/setup", { host: "localhost:20128" }))).toBe(mocks.nextResponse);
+    });
+
+    it("(guard) keeps the SSO routes public", async () => {
+      expect(await proxy(request("/api/auth/oidc/start", { host: "localhost:20128" }))).toBe(mocks.nextResponse);
+      expect(await proxy(request("/api/auth/oidc/callback", { host: "localhost:20128" }))).toBe(mocks.nextResponse);
+      expect(await proxy(request("/api/auth/saml/acs", { host: "localhost:20128" }))).toBe(mocks.nextResponse);
+    });
+
+    it("opens the dashboard to an SSO-signed-in session and sends anyone else to /login", async () => {
+      const anonymous = await proxy(request("/dashboard", { host: "localhost:20128" }));
+      expect(anonymous.url.pathname).toBe("/login");
+
+      mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true, oidc: true });
+      expect(await proxy(request("/dashboard", { host: "localhost:20128" }, "sso-session"))).toBe(mocks.nextResponse);
+    });
+
+    it("takes only a session from the SSO protocol configured now", async () => {
+      // OIDC is configured; a SAML session from before a switch doesn't count.
+      mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true, saml: true });
+      expect((await proxy(request("/dashboard", { host: "localhost:20128" }, "saml-session"))).url.pathname).toBe("/login");
+      expect((await proxy(request("/api/settings", { host: "localhost:20128" }, "saml-session"))).status).toBe(401);
+
+      // Switched to SAML (configured): now the OIDC session is the stale one.
+      mocks.getSettings.mockResolvedValue({ ...ssoDuringSetup, ssoType: "saml", samlEntryPoint: "https://idp.example.test/sso", samlCert: "cert" });
+      mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true, oidc: true });
+      expect((await proxy(request("/api/settings", { host: "localhost:20128" }, "oidc-session"))).status).toBe(401);
+      mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true, saml: true });
+      expect(await proxy(request("/api/settings", { host: "localhost:20128" }, "saml-session"))).toBe(mocks.nextResponse);
+    });
+
+    it("keeps the SSO settings test routes behind the same rule", async () => {
+      mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
+      for (const path of ["/api/auth/oidc/test", "/api/auth/saml/test"]) {
+        expect((await proxy(request(path, { host: "localhost:20128" }, "password-session"))).status, path).toBe(401);
+      }
+      mocks.getDashboardAuthSession.mockResolvedValue(null);
+      expect((await proxy(request("/api/auth/oidc/test", { host: "localhost:20128" }))).status).toBe(401);
+      // The SP metadata the IdP fetches stays public.
+      expect(await proxy(request("/api/auth/saml/metadata", { host: "localhost:20128" }))).toBe(mocks.nextResponse);
+    });
+
+    it("doesn't let a password session from before the reset into the dashboard", async () => {
+      mocks.verifyDashboardAuthToken.mockResolvedValue(true);
+      mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
+      const response = await proxy(request("/dashboard", { host: "localhost:20128" }, "password-session"));
+      expect(response.url.pathname).toBe("/login");
+    });
+
+    it("doesn't let a password session from before the reset use the API", async () => {
+      mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
+      for (const path of ["/api/settings", "/api/keys", "/api/providers"]) {
+        expect((await proxy(request(path, { host: "localhost:20128" }, "password-session"))).status, path).toBe(401);
+      }
+      // ALWAYS_PROTECTED routes too.
+      expect((await proxy(request("/api/settings/database", { host: "localhost:20128" }, "password-session"))).status).toBe(401);
+    });
+
+    it("lets an SSO session and the CLI token use the API", async () => {
+      mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true, oidc: true });
+      expect(await proxy(request("/api/settings", { host: "localhost:20128" }, "sso-session"))).toBe(mocks.nextResponse);
+
+      mocks.getDashboardAuthSession.mockResolvedValue(null);
+      expect(await proxy(request("/api/settings", { host: "localhost:20128", "x-9r-cli-token": "cli-token" }))).toBe(mocks.nextResponse);
+    });
+
+    it("doesn't let requireLogin=false open the dashboard to anonymous visitors", async () => {
+      mocks.getSettings.mockResolvedValue({ ...ssoDuringSetup, requireLogin: false });
+      for (const path of ["/dashboard", "/dashboard/providers"]) {
+        const response = await proxy(request(path, { host: "localhost:20128" }));
+        expect(response.status, path).toBe(307);
+        expect(response.url.pathname, path).toBe("/login");
+      }
+      const root = await proxy(request("/", { host: "localhost:20128" }));
+      expect(root.url.pathname).toBe("/dashboard");
+      expect((await proxy(request("/api/settings", { host: "localhost:20128" }))).status).toBe(401);
+    });
+
+    it("still funnels to /setup when the selected SSO isn't configured", async () => {
+      mocks.getSettings.mockResolvedValue({ requireLogin: true, authMode: "both", ssoType: "saml" });
+      const response = await proxy(request("/login", { host: "localhost:20128" }));
+      expect(response.url.pathname).toBe("/setup");
+    });
   });
 });
 

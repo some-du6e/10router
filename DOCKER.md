@@ -92,6 +92,16 @@ docker run --rm -p 20128:20128 \
   10router
 ```
 
+Google Analytics is off unless you build the image with a GA4 measurement ID:
+
+```bash
+docker build --build-arg NEXT_PUBLIC_GA_ID=G-XXXXXXXXXX -t 10router .
+```
+
+The ID is baked in at build time. The published images are built without it, so they never load analytics, and setting `NEXT_PUBLIC_GA_ID` in the compose `.env` or with `docker run -e` has no effect.
+
+`.env` and every other `.env.*` file except `.env.example`, in any folder, stay out of the build context (`.dockerignore`), so a `.env.production` next to the Dockerfile is never read during the build. Pass build-time values as build args: `--build-arg NEXT_PUBLIC_GA_ID=…` and `--build-arg NEXT_PUBLIC_CLOUD_URL=…` (the cloud URL the dashboard shows).
+
 ## Publish (automatic via CI)
 
 Push a git tag `v*` → GitHub Actions builds multi-platform (amd64+arm64) and pushes to:

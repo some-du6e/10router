@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "src/sse/services/auth.js"
+      - "src/sse/services/spreadLeases.js"
       - "open-sse/services/accountFallback.js"
       - "open-sse/config/errorConfig.js"
       - "open-sse/utils/limitHold.js"
@@ -14,6 +15,7 @@ on:
       - "tests/unit/all-locked-embeddings-status.test.js"
       - "tests/unit/limit-hold-integration.test.js"
       - "tests/unit/rate-limit-burst-benchmark.test.js"
+      - "tests/unit/spread-lease-release.test.js"
       - ".github/workflows/rate-limit-backoff.yml"
   workflow_dispatch:
 
@@ -44,6 +46,7 @@ jobs:
           unit/all-locked-embeddings-status.test.js
           unit/account-failure-handler.test.js
           unit/auto-disable-dead-keys.test.js
+          unit/spread-lease-release.test.js
           unit/github-monthly-usage-lock.test.js
           unit/limit-hold-integration.test.js
           unit/tts-stt-success-clears-account.test.js

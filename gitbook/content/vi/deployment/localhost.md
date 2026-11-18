@@ -131,7 +131,7 @@ Nếu thư mục data không truy cập được:
 ls -la ~/.9router
 
 # Fix permissions
-chmod 755 ~/.9router
+chmod 700 ~/.9router
 ```
 
 ---
