@@ -1,12 +1,13 @@
 // Black Forest Labs (FLUX) — async submit + polling_url
 import { sleep, nowSec, POLL_INTERVAL_MS, POLL_TIMEOUT_MS } from "./_base.js";
 import { PROVIDER_MEDIA } from "../../providers/index.js";
+import { modelPathSegments } from "../../utils/modelPath.js";
 
 const BASE_URL = PROVIDER_MEDIA["black-forest-labs"]?.imageConfig?.baseUrl;
 
 export default {
   async: true,
-  buildUrl: (model) => `${BASE_URL}/${model}`,
+  buildUrl: (model) => `${BASE_URL}/${modelPathSegments(model)}`,
   buildHeaders: (creds) => {
     const key = creds?.apiKey || creds?.accessToken;
     return { "Content-Type": "application/json", "x-key": key };

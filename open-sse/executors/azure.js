@@ -1,4 +1,5 @@
 import { DefaultExecutor } from "./default.js";
+import { modelPathSegment } from "../utils/modelPath.js";
 
 export class AzureExecutor extends DefaultExecutor {
   constructor() {
@@ -15,7 +16,7 @@ export class AzureExecutor extends DefaultExecutor {
       || "2024-10-01-preview";
 
     const deployment = credentials?.providerSpecificData?.deployment
-      || model
+      || (model ? modelPathSegment(model) : "")
       || process.env.AZURE_DEPLOYMENT
       || "gpt-4";
 

@@ -5,7 +5,7 @@
 import { getApiKeyPolicy, getModelAliases, getSettings } from "@/lib/db/index.js";
 import { BUILTIN_MODEL_ALIASES, stripContextWindowSuffix } from "open-sse/services/model.js";
 import { FORMATS } from "open-sse/translator/formats.js";
-import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
+import { HTTP_STATUS, MAX_COMBO_DEPTH } from "open-sse/config/runtimeConfig.js";
 import { buildErrorBody } from "open-sse/utils/error.js";
 import { budgetState, isKeyExpired } from "@/shared/utils/apiKeyLimits.js";
 import { extractApiKey } from "./auth.js";
@@ -94,23 +94,30 @@ export async function isModelAllowed(requested, allowedModels, lookup, depth = 0
   const req = canonicalModel(requested);
   if (!req) return false;
   const allowed = new Set(allowedModels.map(canonicalModel).filter(Boolean));
-  if (matchesAllowed(req, allowed)) return true;
 
+  // Routing finds combos and aliases by their exact name, so only an entry
+  // spelled exactly that way names one; other spellings check what it runs.
   const raw = stripContextWindowSuffix(String(requested).trim()).model;
-  const target = lookup?.aliases?.[raw];
-  if (typeof target === "string" && matchesAllowed(canonicalModel(target), allowed)) return true;
+  const namedExactly = () => allowedModels.some((e) => typeof e === "string" && stripContextWindowSuffix(e.trim()).model === raw);
 
-  // The depth cap stops a combo that (mis)lists itself from looping.
-  if (depth < 3 && !raw.includes("/") && lookup?.comboModels) {
+  if (!raw.includes("/") && lookup?.comboModels) {
     const members = await lookup.comboModels(raw);
     if (Array.isArray(members) && members.length > 0) {
+      if (namedExactly()) return true;
+      // Routing refuses a combo nested this deep (the requested one is depth
+      // 0) and moves on to the next member, so it reaches nothing and needs no
+      // permission. This also stops a combo that lists itself from looping.
+      if (depth >= MAX_COMBO_DEPTH) return true;
       for (const member of members) {
         if (!(await isModelAllowed(member, allowedModels, lookup, depth + 1))) return false;
       }
       return true;
     }
   }
-  return false;
+
+  const target = lookup?.aliases?.[raw];
+  if (typeof target === "string") return namedExactly() || matchesAllowed(canonicalModel(target), allowed);
+  return matchesAllowed(req, allowed);
 }
 
 // ---- Request checks ----------------------------------------------------------
