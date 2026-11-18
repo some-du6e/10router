@@ -5,24 +5,29 @@ import path from "node:path";
 
 const require = createRequire(import.meta.url);
 const autostart = require("../../cli/src/cli/tray/autostart.js");
-const { enableAutoStart, isAutoStartEnabled, macLaunchAgent, windowsStartupScript, linuxDesktopEntry } = autostart;
+const { enableAutoStart, isAutoStartEnabled, migrateMacLogs, macLaunchAgent, windowsStartupScript, linuxDesktopEntry } = autostart;
 
 const launch = { host: "127.0.0.1", port: 20200, dataDir: "/srv/router data" };
 const logs = { out: "/u/Library/Logs/10router/10router.log", err: "/u/Library/Logs/10router/10router.error.log" };
 
 // An in-memory machine: files written, modes set, commands run.
-function fakeSystem(platform, { existing = [] } = {}) {
-  const files = new Map();
+function fakeSystem(platform, { existing = [], files: initial = {}, owners = {} } = {}) {
+  const files = new Map(Object.entries(initial));
   const dirs = new Set();
   const modes = new Map();
   const present = new Set(existing);
   const fsFake = {
     existsSync: (p) => present.has(p) || files.has(p) || dirs.has(p),
     mkdirSync: (p) => { dirs.add(p); },
+    readFileSync: (p) => { if (!files.has(p)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" }); return files.get(p); },
     writeFileSync: (p, data) => { files.set(p, data); },
     openSync: (p) => { if (!files.has(p)) files.set(p, ""); return 3; },
     closeSync: () => {},
     chmodSync: (p, mode) => { modes.set(p, mode); },
+    lstatSync: (p) => {
+      if (!files.has(p)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      return { isFile: () => true, uid: owners[p] ?? 501 };
+    },
     unlinkSync: (p) => { files.delete(p); },
   };
   const execSync = vi.fn(() => "");
@@ -30,6 +35,7 @@ function fakeSystem(platform, { existing = [] } = {}) {
     sys: {
       platform,
       pid: 4242,
+      uid: 501,
       execPath: platform === "win32" ? "C:\\Program Files\\nodejs\\node.exe" : "/opt/node/bin/node",
       argv1: "",
       env: { DISPLAY: ":0", APPDATA: "C:\\Users\\me\\AppData\\Roaming" },
@@ -49,6 +55,7 @@ describe("enabling autostart writes an entry that restarts the same instance", (
     expect(plist).toContain("<string>--port</string>\n        <string>20200</string>");
     expect(plist).toContain("<string>--host</string>\n        <string>127.0.0.1</string>");
     expect(plist).toContain("<key>DATA_DIR</key>\n        <string>/srv/router data</string>");
+    expect(plist).toContain("<key>TENROUTER_AUTOSTART</key>\n        <string>1</string>");
     expect(plist).toContain("<string>/home/me/Library/Logs/10router/10router.log</string>");
     expect(plist).not.toContain("/tmp/");
     expect(m.modes.get("/home/me/Library/Logs/10router")).toBe(0o700);
@@ -67,6 +74,7 @@ describe("enabling autostart writes an entry that restarts the same instance", (
     expect([...data.subarray(0, 2)]).toEqual([0xff, 0xfe]);
     const vbs = data.subarray(2).toString("utf16le");
     expect(vbs).toContain('ProcessEnv("DATA_DIR") = "D:\\Données\\10router"');
+    expect(vbs).toContain('ProcessEnv("TENROUTER_AUTOSTART") = "1"');
     expect(vbs).toContain('""--port"" ""20200"" ""--host"" ""127.0.0.1""');
   });
 
@@ -74,13 +82,60 @@ describe("enabling autostart writes an entry that restarts the same instance", (
     const m = fakeSystem("linux", { existing: ["/opt/10router/cli.js"] });
     expect(enableAutoStart("/opt/10router/cli.js", launch, m.sys)).toBe(true);
     const entry = m.files.get("/home/me/.config/autostart/10router.desktop");
-    expect(entry).toContain('Exec="env" "DATA_DIR=/srv/router data" "/opt/node/bin/node" "/opt/10router/cli.js" "--tray" "--skip-update" "--port" "20200" "--host" "127.0.0.1"');
+    expect(entry).toContain('Exec="env" "TENROUTER_AUTOSTART=1" "DATA_DIR=/srv/router data" "/opt/node/bin/node" "/opt/10router/cli.js" "--tray" "--skip-update" "--port" "20200" "--host" "127.0.0.1"');
   });
 
   it("leaves DATA_DIR out when the launcher uses the default", () => {
     const m = fakeSystem("linux", { existing: ["/opt/10router/cli.js"] });
     enableAutoStart("/opt/10router/cli.js", { ...launch, dataDir: "" }, m.sys);
-    expect(m.files.get("/home/me/.config/autostart/10router.desktop")).toContain('Exec="/opt/node/bin/node"');
+    expect(m.files.get("/home/me/.config/autostart/10router.desktop")).toContain('Exec="env" "TENROUTER_AUTOSTART=1" "/opt/node/bin/node"');
+  });
+
+  it.each(["linux", "darwin", "win32"])("%s: writes nothing for a DATA_DIR with a line break", (platform) => {
+    const cli = platform === "win32" ? "C:\\npm\\10router\\cli.js" : "/opt/10router/cli.js";
+    const startup = "C:\\Users\\me\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup";
+    const m = fakeSystem(platform, { existing: [cli, startup] });
+    expect(enableAutoStart(cli, { ...launch, dataDir: "/srv/a\nExec=evil" }, m.sys)).toBe(false);
+    expect([...m.files.keys()].filter((f) => /\.(desktop|plist|vbs)$/.test(f))).toEqual([]);
+  });
+});
+
+describe("LaunchAgents written by an older 10router", () => {
+  const plistPath = "/home/me/Library/LaunchAgents/com.10router.autostart.plist";
+  const oldPlist = [
+    "<key>StandardOutPath</key>", "<string>/tmp/10router.log</string>",
+    "<key>StandardErrorPath</key>", "<string>/tmp/10router.error.log</string>",
+  ].join("\n");
+
+  it("moves the logs out of /tmp and deletes the old world-readable ones", () => {
+    const m = fakeSystem("darwin", { files: { [plistPath]: oldPlist, "/tmp/10router.log": "token", "/tmp/10router.error.log": "" } });
+    expect(migrateMacLogs(m.sys)).toBe(true);
+    const plist = m.files.get(plistPath);
+    expect(plist).toContain("<string>/home/me/Library/Logs/10router/10router.log</string>");
+    expect(plist).toContain("<string>/home/me/Library/Logs/10router/10router.error.log</string>");
+    expect(plist).not.toContain("/tmp/");
+    expect(m.files.has("/tmp/10router.log")).toBe(false);
+    expect(m.files.has("/tmp/10router.error.log")).toBe(false);
+    expect(m.modes.get("/home/me/Library/Logs/10router/10router.log")).toBe(0o600);
+    expect(m.execSync).not.toHaveBeenCalled();
+  });
+
+  it("leaves a /tmp file another user owns alone", () => {
+    const m = fakeSystem("darwin", { files: { [plistPath]: oldPlist, "/tmp/10router.log": "theirs" }, owners: { "/tmp/10router.log": 0 } });
+    migrateMacLogs(m.sys);
+    expect(m.files.get("/tmp/10router.log")).toBe("theirs");
+  });
+
+  it("does nothing for a current plist, without a plist, or off macOS", () => {
+    const current = fakeSystem("darwin", { files: { [plistPath]: "<string>/home/me/Library/Logs/10router/10router.log</string>" } });
+    expect(migrateMacLogs(current.sys)).toBe(false);
+    expect(migrateMacLogs(fakeSystem("darwin").sys)).toBe(false);
+    expect(migrateMacLogs(fakeSystem("linux", { files: { [plistPath]: oldPlist } }).sys)).toBe(false);
+  });
+
+  it("runs at every launcher start", () => {
+    const cli = fs.readFileSync(path.resolve(import.meta.dirname, "../../cli/cli.js"), "utf8");
+    expect(cli).toMatch(/^try \{ migrateMacLogs\(\); \} catch \{ \}$/m);
   });
 });
 

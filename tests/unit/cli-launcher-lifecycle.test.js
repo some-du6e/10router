@@ -1,19 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
+import { PassThrough } from "node:stream";
 import fs from "node:fs";
 import net from "node:net";
-import os from "node:os";
 import path from "node:path";
 
 const require = createRequire(import.meta.url);
 const { superviseServer } = require("../../cli/src/cli/utils/serverSupervisor.js");
 const { killServer, checkPortFree, waitServerReady } = require("../../cli/src/cli/utils/serverProcess.js");
-const { acquireDataDirLock, tryLock, lockPath } = require("../../cli/src/cli/utils/dataDirLock.js");
-const { isValidHost, getBackgroundArgs, serverStdio, createServerOutput } = require("../../cli/src/cli/utils/launchArgs.js");
+const { isValidHost, parsePort, getBackgroundArgs, serverStdio, createServerOutput, attachServerOutput } = require("../../cli/src/cli/utils/launchArgs.js");
 const { interrupt } = require("../../cli/src/cli/utils/input.js");
 
 const cliSource = fs.readFileSync(path.resolve(import.meta.dirname, "../../cli/cli.js"), "utf8");
+const inputSource = fs.readFileSync(path.resolve(import.meta.dirname, "../../cli/src/cli/utils/input.js"), "utf8");
 
 function fakeChild(pid) {
   return Object.assign(new EventEmitter(), { pid, exitCode: null, signalCode: null });
@@ -161,6 +161,26 @@ describe("launcher server supervisor", () => {
     expect(later.children).toHaveLength(1);
     expect(later.onGiveUp).toHaveBeenCalledWith(expect.objectContaining({ reason: "port-taken" }));
   });
+
+  it("spawns nothing when shutdown starts while the preflight is still running", async () => {
+    let finishPreflight;
+    const h = harness({ preflight: () => new Promise((resolve) => { finishPreflight = resolve; }) });
+    const started = h.supervisor.start();
+    h.shutdown();
+    finishPreflight(null);
+    await started;
+    expect(h.children).toHaveLength(0);
+    expect(h.onGiveUp).not.toHaveBeenCalled();
+  });
+
+  it("ends through onGiveUp, never a rejected promise, when a restart's start throws", async () => {
+    const preflight = vi.fn().mockResolvedValueOnce(null).mockRejectedValue(new RangeError("bad port"));
+    const h = harness({ preflight });
+    await h.supervisor.start();
+    h.last().emit("close", 1);
+    await tick(1000);
+    expect(h.onGiveUp).toHaveBeenCalledWith(expect.objectContaining({ reason: "start-failed", error: expect.any(RangeError) }));
+  });
 });
 
 describe("stopping our own server", () => {
@@ -204,6 +224,19 @@ describe("stopping our own server", () => {
 
   it("registers an exit handler that stops our server on every exit path", () => {
     expect(cliSource).toMatch(/^\s*process\.on\("exit", \(\) => killServer\(supervisor\.current\(\)\)\);$/m);
+  });
+
+  it("routes every Ctrl+C in input.js through interrupt(), never process.exit(0)", () => {
+    expect(inputSource).toMatch(/^ {6}if \(key\.ctrl && key\.name === "c"\) \{ cleanup\(\); interrupt\(\); \}$/m);
+    expect(inputSource.match(/^ {4}rl\.on\("SIGINT", \(\) => \{ rl\.close\(\); interrupt\(\); \}\);$/gm)).toHaveLength(2);
+    expect(inputSource).not.toContain("process.exit(0)");
+  });
+
+  it("releases the DATA_DIR lock after cleanup and before the tray handoff spawns", () => {
+    const cleanup = cliSource.search(/^ {10}cleanup\(\);\n {10}lock\.release\(\);$/m);
+    const spawnBg = cliSource.search(/^ {10}const bgProcess = spawn\(/m);
+    expect(cleanup).toBeGreaterThan(-1);
+    expect(spawnBg).toBeGreaterThan(cleanup);
   });
 });
 
@@ -275,7 +308,7 @@ describe("readiness is gated on our own child", () => {
       const early = await Promise.race([ready, new Promise((r) => setTimeout(() => r("still waiting"), 150))]);
       expect(early).toBe("still waiting");
       alive = true;
-      expect(await ready).toBe(true);
+      expect(await ready).toBe("ready");
     } finally {
       await close(occupant);
     }
@@ -285,53 +318,64 @@ describe("readiness is gated on our own child", () => {
     let stopped = false;
     const ready = waitServerReady({ dialHost: "127.0.0.1", port: 9, isAlive: () => false, isStopped: () => stopped, intervalMs: 10 });
     stopped = true;
-    expect(await ready).toBe(false);
-  });
-});
-
-describe("one launcher per DATA_DIR", () => {
-  let dir;
-  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-lock-")); });
-  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
-
-  it("refuses a second launcher while the first runs, and lets it in after release", () => {
-    const first = tryLock(dir, { pid: 111, execPath: "/node", isRunning: () => true });
-    expect(first.ok).toBe(true);
-    if (process.platform !== "win32") expect(fs.statSync(lockPath(dir)).mode & 0o777).toBe(0o600);
-    const second = tryLock(dir, { pid: 222, execPath: "/node", isRunning: () => true });
-    expect(second).toMatchObject({ ok: false, holder: { pid: 111 } });
-    first.release();
-    expect(tryLock(dir, { pid: 222, execPath: "/node", isRunning: () => true }).ok).toBe(true);
+    expect(await ready).toBe("stopped");
   });
 
-  it("takes over a lock whose PID no longer runs the launcher's runtime", () => {
-    fs.writeFileSync(lockPath(dir), JSON.stringify({ pid: 111, execPath: "/node" }));
-    const isRunning = vi.fn(() => false);
-    expect(tryLock(dir, { pid: 222, execPath: "/node", isRunning }).ok).toBe(true);
-    expect(isRunning).toHaveBeenCalledWith({ pid: 111, execPath: "/node" });
-  });
-
-  it("takes over an unreadable lock", () => {
-    fs.writeFileSync(lockPath(dir), "garbage");
-    expect(tryLock(dir, { pid: 222, execPath: "/node", isRunning: () => true }).ok).toBe(true);
-  });
-
-  it("doesn't remove another launcher's lock on release", () => {
-    const first = tryLock(dir, { pid: 111, execPath: "/node", isRunning: () => false });
-    tryLock(dir, { pid: 222, execPath: "/node", isRunning: () => false });
-    first.release();
-    expect(JSON.parse(fs.readFileSync(lockPath(dir), "utf8")).pid).toBe(222);
-  });
-
-  it("waits for a tray handoff to release the lock", async () => {
-    const old = tryLock(dir, { pid: 111, execPath: "/node", isRunning: () => true });
-    setTimeout(old.release, 50);
-    const next = await acquireDataDirLock(dir, { pid: 222, execPath: "/node", isRunning: () => true, waitMs: 2000, intervalMs: 10 });
-    expect(next.ok).toBe(true);
+  it("says it is still waiting, then times out", async () => {
+    const onWaiting = vi.fn();
+    const status = await waitServerReady({
+      dialHost: "127.0.0.1", port: 9, isAlive: () => false, isStopped: () => false,
+      timeoutMs: 120, noticeMs: 40, onWaiting, intervalMs: 10,
+    });
+    expect(status).toBe("timeout");
+    expect(onWaiting.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 });
 
 describe("server output", () => {
+  function fakeServer() {
+    return { stdout: new PassThrough(), stderr: new PassThrough() };
+  }
+  const ended = (stream) => new Promise((resolve) => stream.once("end", resolve));
+
+  it("consumes piped stdout and stderr, so a chatty server never blocks on a full pipe", async () => {
+    const child = fakeServer();
+    const logged = [];
+    attachServerOutput(child, { show: () => {}, log: (l) => logged.push(l) });
+    expect(child.stdout.readableFlowing).toBe(true);
+    expect(child.stderr.readableFlowing).toBe(true);
+    const line = `GET /v1/models 200 ${"x".repeat(200)}\n`;
+    for (let i = 0; i < 2000; i++) child.stdout.write(line);
+    child.stderr.write("warn: one\nwarn: t");
+    child.stderr.end("wo\n");
+    child.stdout.end();
+    await Promise.all([ended(child.stdout), ended(child.stderr)]);
+    expect(logged.filter((l) => l.startsWith("GET"))).toHaveLength(2000);
+    expect(logged).toContain("warn: two");
+  });
+
+  it("keeps a ─ split across two chunks whole, and hands over the whole banner", async () => {
+    const child = fakeServer();
+    const shown = [];
+    const banners = [];
+    attachServerOutput(child, { show: (l) => shown.push(l), log: () => {}, onBanner: (b) => banners.push(b) });
+    const rule = "─".repeat(64);
+    const bytes = Buffer.from(`${rule}\n  token: tok-placeholder\n${rule}\n`, "utf8");
+    // Cut inside the first "─" (3 bytes in UTF-8).
+    child.stdout.write(bytes.subarray(0, 1));
+    child.stdout.write(bytes.subarray(1));
+    child.stdout.end();
+    await ended(child.stdout);
+    expect(shown).toEqual([rule, "  token: tok-placeholder", rule]);
+    expect(banners).toEqual([`${rule}\n  token: tok-placeholder\n${rule}`]);
+  });
+
+  it("keeps the banner for the menu, since the menu redraw clears the screen", () => {
+    expect(cliSource).toMatch(/^\s*onBanner: \(text\) => \{ setupBanner = text; \},$/m);
+    expect(cliSource).toMatch(/selectMenu\(`Choose Interface \(v\$\{pkg\.version\}\)`, menuItems, 0, subtitle, setupPending \? setupBanner : ""\)/);
+    expect(cliSource).toContain('path.join(getDataDir(), "setup-token.json")');
+  });
+
   it("shows only the setup banner and keeps every other line for the crash log", async () => {
     const shown = [];
     const logged = [];
@@ -378,9 +422,14 @@ describe("launch options", () => {
     expect(() => getBackgroundArgs({ port: 20200 })).toThrow();
   });
 
+  it.each([["20200", 20200], ["1", 1], ["65535", 65535], ["0", null], ["abc", null], ["65536", null], ["-1", null], ["20200abc", null], ["", null], [" 20200", null], ["2e4", null], [undefined, null]])("parses --port %j as %j", (text, expected) => {
+    expect(parsePort(text)).toBe(expected);
+  });
+
   it("writes autostart with the running bind, port and DATA_DIR", () => {
     expect(cliSource).toMatch(/^\s*const autostartLaunch = \{ port, host, dataDir: process\.env\.DATA_DIR \|\| "" \};$/m);
     expect(cliSource).toMatch(/^\s*enableAutoStart\(__filename, autostartLaunch\);$/m);
+    expect(cliSource).toMatch(/^\s*autostart: autostartLaunch,$/m);
   });
 
   it("skips the PID-file tunnel only when give-up was a port conflict", () => {

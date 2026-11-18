@@ -44,15 +44,36 @@ function servesPort(args, port) {
   return new RegExp(`--url\\s+"?https?://(?:127\\.0\\.0\\.1|localhost):${port}(?![0-9])`).test(args);
 }
 
-// Where appUpdater copies the updater script (the 9router dir name is kept for
-// existing installs).
-export function runtimeUpdaterPath(env = process.env, platform = process.platform) {
+// The data directory (the 9router dir name is kept for existing installs).
+function dataDirOf(env, platform) {
   const paths = platform === "win32" ? path.win32 : path.posix;
-  const dataDir = env.DATA_DIR
+  return env.DATA_DIR
     || (platform === "win32"
       ? paths.join(env.APPDATA || paths.join(os.homedir(), "AppData", "Roaming"), "9router")
       : paths.join(os.homedir(), ".9router"));
-  return paths.join(dataDir, "runtime", "updater", "updater.js");
+}
+
+// Where appUpdater copies the updater script.
+export function runtimeUpdaterPath(env = process.env, platform = process.platform) {
+  const paths = platform === "win32" ? path.win32 : path.posix;
+  return paths.join(dataDirOf(env, platform), "runtime", "updater", "updater.js");
+}
+
+// The CLI launcher's one-per-DATA_DIR lock (cli/src/cli/utils/dataDirLock.js).
+export const LAUNCHER_LOCK_FILE = "launcher.lock";
+
+export function launcherLockPath(env = process.env, platform = process.platform) {
+  const paths = platform === "win32" ? path.win32 : path.posix;
+  return paths.join(dataDirOf(env, platform), LAUNCHER_LOCK_FILE);
+}
+
+// A launcher killed here can't remove its lock. Remove it only while it still
+// names that launcher, so a newer launcher's lock is never touched.
+function removeLauncherLock(launcherPid) {
+  const file = launcherLockPath();
+  try {
+    if (JSON.parse(fs.readFileSync(file, "utf8"))?.pid === launcherPid) fs.unlinkSync(file);
+  } catch { /* no lock, or not readable */ }
 }
 
 // The CLI package this server runs from: <pkg>/app/custom-server.js → <pkg>.
@@ -267,7 +288,7 @@ function stopOwnCloudflared() {
 // Stop this install's other processes so an update can replace its files.
 export async function killAppProcesses() {
   const ownCloudflared = stopOwnCloudflared();
-  const { pids, stateFile } = planKills();
+  const { pids, stateFile, launcher } = planKills();
   let killed = ownCloudflared ? 1 : 0;
   for (const pid of pids) {
     if (pid === ownCloudflared) continue;
@@ -278,6 +299,7 @@ export async function killAppProcesses() {
         process.kill(pid, "SIGKILL");
       }
       killed++;
+      if (pid === launcher) removeLauncherLock(launcher);
     } catch { /* already gone */ }
   }
   // A SIGKILLed launcher can't remove its own state file.

@@ -12,6 +12,7 @@ function system() {
   return {
     platform: process.platform,
     pid: process.pid,
+    uid: process.getuid?.(),
     execPath: process.execPath,
     argv1: process.argv[1],
     env: process.env,
@@ -23,6 +24,24 @@ function system() {
 
 // `launch` is { port, host, dataDir }: what the entry must start again.
 // dataDir is the launcher's absolute DATA_DIR, or empty for the default.
+
+// Every entry sets this, so cli.js knows its DATA_DIR came from an autostart
+// file and checks who owns that directory before using it.
+const AUTOSTART_ENV = "TENROUTER_AUTOSTART";
+
+function entryEnv(launch) {
+  const env = { [AUTOSTART_ENV]: "1" };
+  if (launch.dataDir) env.DATA_DIR = launch.dataDir;
+  return env;
+}
+
+// None of the entry formats can carry a line break safely.
+function refuseLineBreaks(values) {
+  for (const value of values) {
+    if (/[\r\n]/.test(value)) throw new Error(`autostart can't use a path with a line break: ${JSON.stringify(value)}`);
+  }
+  return values;
+}
 
 function escapeXml(value) {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
@@ -60,16 +79,18 @@ function quoteWindowsArg(value) {
 const vbsString = (value) => `"${value.replaceAll('"', '""')}"`;
 
 function macLogPaths(homedir) {
-  const dir = path.join(homedir, "Library", "Logs", APP_NAME);
-  return { dir, out: path.join(dir, "10router.log"), err: path.join(dir, "10router.error.log") };
+  const dir = path.posix.join(homedir, "Library", "Logs", APP_NAME);
+  return { dir, out: path.posix.join(dir, "10router.log"), err: path.posix.join(dir, "10router.error.log") };
 }
+
+// Where LaunchAgents written before 10router moved its logs sent them.
+const OLD_MAC_LOGS = ["/tmp/10router.log", "/tmp/10router.error.log"];
 
 function macLaunchAgent(nodePath, routerScript, launch, logs) {
   // EnvironmentVariables.PATH includes node's bin dir so child processes
   // spawned by cli.js (npm install at runtime, etc.) resolve.
-  const env = { PATH: `${path.dirname(nodePath)}:/usr/local/bin:/usr/bin:/bin` };
-  if (launch.dataDir) env.DATA_DIR = launch.dataDir;
-  const args = [nodePath, routerScript, ...getBackgroundArgs(launch)];
+  const env = { PATH: `${path.posix.dirname(nodePath)}:/usr/local/bin:/usr/bin:/bin`, ...entryEnv(launch) };
+  const args = refuseLineBreaks([nodePath, routerScript, ...getBackgroundArgs(launch)]);
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -101,7 +122,7 @@ ${Object.entries(env).map(([k, v]) => `        <key>${k}</key>\n        <string>
 // its command, in one pass, so each % is written as %TENROUTER_PCT%, which the
 // script sets to "%".
 function windowsStartupScript(nodePath, routerScript, launch) {
-  const command = [nodePath, routerScript, ...getBackgroundArgs(launch)]
+  const command = refuseLineBreaks([nodePath, routerScript, ...getBackgroundArgs(launch)])
     .map(quoteWindowsArg)
     .join(" ")
     .replaceAll("%", "%TENROUTER_PCT%");
@@ -110,7 +131,9 @@ function windowsStartupScript(nodePath, routerScript, launch) {
     'Set ProcessEnv = WshShell.Environment("Process")',
     'ProcessEnv("TENROUTER_PCT") = "%"',
   ];
-  if (launch.dataDir) lines.push(`ProcessEnv("DATA_DIR") = ${vbsString(launch.dataDir)}`);
+  for (const [name, value] of Object.entries(entryEnv(launch))) {
+    lines.push(`ProcessEnv("${name}") = ${vbsString(refuseLineBreaks([value])[0])}`);
+  }
   lines.push(`WshShell.Run ${vbsString(command)}, 0, False`, "");
   return lines.join("\r\n");
 }
@@ -122,8 +145,8 @@ function encodeVbs(text) {
 }
 
 function linuxDesktopEntry(nodePath, routerScript, launch) {
-  const command = [nodePath, routerScript, ...getBackgroundArgs(launch)];
-  if (launch.dataDir) command.unshift("env", `DATA_DIR=${launch.dataDir}`);
+  const env = Object.entries(entryEnv(launch)).map(([name, value]) => `${name}=${value}`);
+  const command = refuseLineBreaks(["env", ...env, nodePath, routerScript, ...getBackgroundArgs(launch)]);
   return `[Desktop Entry]
 Type=Application
 Name=10router
@@ -253,17 +276,9 @@ function isAgentSelfMacOS(sys) {
   }
 }
 
-function enableMacOS(cliPath, launch, sys) {
-  const plistPath = entryPath(sys);
-  sys.fs.mkdirSync(path.dirname(plistPath), { recursive: true });
-
-  // Invoke node + cli.js directly with absolute paths — no shell wrapper.
-  const routerScript = getCliJsPath(cliPath, sys);
-  // Don't write a broken plist that references a non-existent script.
-  if (!routerScript) return false;
-
-  // The tray's output includes the first-run setup token, so its logs are
-  // the user's own: ~/Library/Logs/10router, 0700, files 0600.
+// The tray's output includes the first-run setup token, so its logs are the
+// user's own: ~/Library/Logs/10router, 0700, files 0600.
+function prepareMacLogs(sys) {
   const logs = macLogPaths(sys.homedir);
   sys.fs.mkdirSync(logs.dir, { recursive: true, mode: 0o700 });
   sys.fs.chmodSync(logs.dir, 0o700);
@@ -271,7 +286,19 @@ function enableMacOS(cliPath, launch, sys) {
     sys.fs.closeSync(sys.fs.openSync(file, "a", 0o600));
     sys.fs.chmodSync(file, 0o600);
   }
+  return logs;
+}
 
+function enableMacOS(cliPath, launch, sys) {
+  const plistPath = entryPath(sys);
+  sys.fs.mkdirSync(path.posix.dirname(plistPath), { recursive: true });
+
+  // Invoke node + cli.js directly with absolute paths — no shell wrapper.
+  const routerScript = getCliJsPath(cliPath, sys);
+  // Don't write a broken plist that references a non-existent script.
+  if (!routerScript) return false;
+
+  const logs = prepareMacLogs(sys);
   sys.fs.writeFileSync(plistPath, macLaunchAgent(sys.execPath, routerScript, launch, logs));
 
   // No `launchctl load`: this is only ever called from a running instance,
@@ -279,6 +306,36 @@ function enableMacOS(cliPath, launch, sys) {
   // and servers failing on the taken port). launchd loads the plist at the
   // next login.
   return true;
+}
+
+// A LaunchAgent written by an older 10router logs to /tmp/10router.log, which
+// every user can read and which holds the setup token. Point it at the
+// private log folder (the rest of the plist is kept; launchd reads it at the
+// next login) and delete the old logs if they are this user's own files.
+// Returns true when it changed something.
+function migrateMacLogs(sys = system()) {
+  if (sys.platform !== "darwin") return false;
+  try {
+    const plistPath = entryPath(sys);
+    if (!sys.fs.existsSync(plistPath)) return false;
+    const plist = String(sys.fs.readFileSync(plistPath, "utf8"));
+    if (!OLD_MAC_LOGS.some((file) => plist.includes(`<string>${file}</string>`))) return false;
+    const logs = prepareMacLogs(sys);
+    const moved = plist
+      .replaceAll(`<string>${OLD_MAC_LOGS[0]}</string>`, `<string>${escapeXml(logs.out)}</string>`)
+      .replaceAll(`<string>${OLD_MAC_LOGS[1]}</string>`, `<string>${escapeXml(logs.err)}</string>`);
+    sys.fs.writeFileSync(plistPath, moved);
+    for (const file of OLD_MAC_LOGS) {
+      try {
+        // lstat: never follow a symlink someone planted in /tmp.
+        const st = sys.fs.lstatSync(file);
+        if (st.isFile() && st.uid === sys.uid) sys.fs.unlinkSync(file);
+      } catch { /* not there */ }
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function disableMacOS(sys) {
@@ -324,7 +381,7 @@ function disableWindows(sys) {
 
 function enableLinux(cliPath, launch, sys) {
   const desktopPath = entryPath(sys);
-  const autostartDir = path.dirname(desktopPath);
+  const autostartDir = path.posix.dirname(desktopPath);
 
   if (!sys.fs.existsSync(autostartDir)) {
     try { sys.fs.mkdirSync(autostartDir, { recursive: true }); }
@@ -350,6 +407,8 @@ module.exports = {
   enableAutoStart,
   disableAutoStart,
   isAutoStartEnabled,
+  migrateMacLogs,
+  AUTOSTART_ENV,
   macLaunchAgent,
   windowsStartupScript,
   linuxDesktopEntry

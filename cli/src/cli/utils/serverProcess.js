@@ -70,20 +70,33 @@ async function checkPortFree({ host, dialHost, port, attempts = 5, delayMs = 400
   return reason;
 }
 
-// Resolves true once our own child is alive and something answers on its
+// Resolves "ready" once our own child is alive and something answers on its
 // address. checkPortFree made sure nothing else answered there before the
-// child started, so that listener is the child. Never resolves true for a
-// dead child, so a port occupant never gets the CLI token. Resolves false
-// when isStopped() turns true.
-function waitServerReady({ dialHost, port, isAlive, isStopped, intervalMs = 150, connect = net.connect }) {
+// child started, so that listener is the child. Never "ready" for a dead
+// child, so a port occupant never gets the CLI token. Resolves "stopped" when
+// isStopped() turns true, and "timeout" after timeoutMs. onWaiting(elapsedMs)
+// is called every noticeMs while it waits.
+function waitServerReady({
+  dialHost, port, isAlive, isStopped,
+  timeoutMs = 120000, noticeMs = 15000, onWaiting = () => {},
+  intervalMs = 150, connect = net.connect,
+}) {
+  const started = Date.now();
+  let nextNotice = started + noticeMs;
   return new Promise((resolve) => {
     const retry = () => setTimeout(attempt, intervalMs);
     function attempt() {
-      if (isStopped()) return resolve(false);
+      if (isStopped()) return resolve("stopped");
+      const now = Date.now();
+      if (now - started >= timeoutMs) return resolve("timeout");
+      if (now >= nextNotice) {
+        nextNotice += noticeMs;
+        onWaiting(now - started);
+      }
       if (!isAlive()) return retry();
       const socket = connect({ host: dialHost, port }, () => {
         socket.destroy();
-        if (isAlive()) resolve(true);
+        if (isAlive()) resolve("ready");
         else retry();
       });
       socket.once("error", () => { socket.destroy(); retry(); });

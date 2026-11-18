@@ -19,7 +19,13 @@ function superviseServer({
   let child = null;
   let restarts = 0;
 
-  async function start() {
+  // Never rejects: a preflight or spawn that throws ends the launcher through
+  // onGiveUp, on the first start and on every restart.
+  function start() {
+    return run().catch((error) => onGiveUp({ reason: "start-failed", error, maxRestarts }));
+  }
+
+  async function run() {
     const blocked = await preflight();
     if (isShuttingDown()) return;
     if (blocked) {

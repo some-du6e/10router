@@ -260,7 +260,7 @@ export PORT="3000"
    Stop the program using port 20128, or start 10router on another port: 10router --port <port>
 ```
 
-10router checks the port before it starts its server and never stops another program to free it. A second 10router on the same data directory exits with `Another 10router launcher (PID …) is already using …` instead.
+10router checks the port before it starts its server and never stops another program to free it.
 
 **Solution 1: Stop the program using the port**
 
@@ -285,6 +285,19 @@ If it is an older 10router, quit it from its tray icon (or stop that process). O
 ```
 
 10router restarts a crashed server twice. When the third start also fails quickly, it stops and prints the server's crash log above that line. Run `10router --log` to see all server output.
+
+### Another 10router Launcher Is Already Using the Data Directory
+
+**Error:**
+```
+❌ Another 10router launcher (PID 12345) is already using /home/you/.9router.
+```
+
+Only one launcher runs per data directory. Quit the other one (tray icon → Quit), or give this one its own `DATA_DIR`. The lock is `launcher.lock` in the data directory. A lock left by a launcher that crashed or was killed is taken over automatically, because 10router checks that the PID in it is still the same process. If it still refuses while no 10router is running, delete `launcher.lock` and start again.
+
+### Auto-start on macOS
+
+Enabling auto-start (Hide to Tray, or the tray's Enable Auto-start) writes `~/Library/LaunchAgents/com.10router.autostart.plist`. It takes effect at your next login; it doesn't start a second copy right away. Its logs are in `~/Library/Logs/10router/`, readable only by you.
 
 ### Permission Denied
 

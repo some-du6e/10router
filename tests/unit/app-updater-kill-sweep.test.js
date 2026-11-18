@@ -53,7 +53,7 @@ vi.mock("../../src/lib/tunnel/cloudflare/pid.js", () => ({ loadPid: () => null }
 
 const { collectAppPids, killAppProcesses } = await import("../../src/lib/appUpdater.js");
 const {
-  busyInstallPids, busyInstallMessage, rememberOwnCloudflared, runtimeUpdaterPath,
+  busyInstallPids, busyInstallMessage, rememberOwnCloudflared, runtimeUpdaterPath, launcherLockPath, LAUNCHER_LOCK_FILE,
   LAUNCHER_PID_ENV, LAUNCHER_STATE_ENV, UPDATER_PID_ENV, POWERSHELL_UTF8,
 } = await import("../../src/lib/appProcesses.js");
 
@@ -430,6 +430,29 @@ describe("killAppProcesses", () => {
 
     expect(kill.mock.calls).toEqual([[launcher, "SIGKILL"]]);
     expect(fs.existsSync(file)).toBe(false);
+  });
+
+  // A SIGKILLed launcher can't remove its DATA_DIR lock either.
+  it.skipIf(uid === undefined)("removes launcher.lock when it names the launcher it killed, and only then", async () => {
+    const launcher = process.ppid;
+    vi.stubEnv("DATA_DIR", stateDir);
+    vi.stubEnv(LAUNCHER_PID_ENV, String(launcher));
+    table = [{ pid: launcher, ppid: 1, uid, created: Date.now() - 3_600_000, args: `/usr/bin/node ${PKG}/cli.js` }];
+    const lock = launcherLockPath();
+    expect(lock).toBe(path.join(stateDir, "launcher.lock"));
+
+    fs.writeFileSync(lock, JSON.stringify({ pid: launcher + 1, startTime: "x" }));
+    await killAppProcesses();
+    expect(fs.existsSync(lock)).toBe(true);
+
+    fs.writeFileSync(lock, JSON.stringify({ pid: launcher, startTime: "x" }));
+    await killAppProcesses();
+    expect(fs.existsSync(lock)).toBe(false);
+  });
+
+  it("names the lock file the way the CLI does", () => {
+    const { LOCK_FILE } = require("../../cli/src/cli/utils/dataDirLock.js");
+    expect(LAUNCHER_LOCK_FILE).toBe(LOCK_FILE);
   });
 
   it("stops this server's own cloudflared by its handle even when ps can't be read", async () => {

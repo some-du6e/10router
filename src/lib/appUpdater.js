@@ -1,6 +1,7 @@
 import { spawn } from "child_process";
 import path from "path";
 import fs from "fs";
+import { isIP } from "net";
 import { UPDATER_CONFIG } from "@/shared/constants/config";
 import { runtimeUpdaterPath } from "./appProcesses.js";
 
@@ -53,19 +54,30 @@ export function dialHostForBind(bindHost) {
   return host;
 }
 
-// Where this server listens. Under the CLI launcher (TENROUTER_LAUNCHER_PID
-// set) PORT and HOSTNAME are the --port/--host it was started with; without
-// it, HOSTNAME is usually just the machine's name, so it is not a bind.
-export function serverBind(env = process.env) {
-  const port = parseInt(env.PORT, 10) || UPDATER_CONFIG.appPort;
-  const host = env.TENROUTER_LAUNCHER_PID && env.HOSTNAME ? env.HOSTNAME : "";
+// Same rule as the CLI's --host check (cli/src/cli/utils/launchArgs.js): an IP
+// address or a plain hostname. The relaunch goes through npx.cmd with a
+// shell on Windows, so nothing else may reach its arguments.
+const HOSTNAME_RE = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
+export function isValidHost(host) {
+  return typeof host === "string" && !!host && (isIP(host) !== 0 || HOSTNAME_RE.test(host));
+}
+
+// Where this server listens. When the CLI launcher started this server (its
+// PID is in the env and it is our parent), PORT and HOSTNAME are the
+// --port/--host it was given. Otherwise HOSTNAME is usually just the
+// machine's name, so it is not a bind.
+export function serverBind(env = process.env, parentPid = process.ppid) {
+  const parsed = /^\d+$/.test(env.PORT || "") ? Number(env.PORT) : NaN;
+  const port = parsed >= 1 && parsed <= 65535 ? parsed : UPDATER_CONFIG.appPort;
+  const launched = env.TENROUTER_LAUNCHER_PID === String(parentPid);
+  const host = launched && isValidHost(env.HOSTNAME) ? env.HOSTNAME : "";
   return { port, host };
 }
 
 // Relaunch matching the original launch: tray stays tray, foreground stays
 // foreground, and a --host/--port bind comes back on the same address.
-export function buildRelaunchArgs(env = process.env) {
-  const { port, host } = serverBind(env);
+export function buildRelaunchArgs(env = process.env, parentPid = process.ppid) {
+  const { port, host } = serverBind(env, parentPid);
   const args = [UPDATER_CONFIG.npmPackageName];
   if (env.TRAY_MODE === "1") args.push("--tray");
   args.push("--skip-update", "--port", String(port));

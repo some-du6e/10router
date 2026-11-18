@@ -89,9 +89,11 @@ That's it! Start coding with FREE AI models.
 
 **Dashboard**: `http://localhost:20128/dashboard`
 
-Hide to Tray, and the tray's Enable Auto-start, keep the `--host`, `--port` and `DATA_DIR` you started with.
+Hide to Tray, and the tray's Enable Auto-start, keep the `--host`, `--port` and `DATA_DIR` you started with. On macOS, auto-start takes effect at your next login (it doesn't start a second copy now); its logs are in `~/Library/Logs/10router/`.
 
-**Port already in use**: 10router never stops another program to free its port. If something already listens on the port (another 10router included), it exits with `Can't start the server on <host>:<port>`. Stop that program, or pick another port with `--port`. Only one launcher runs per data directory; a second one exits and names the PID of the first. If the server itself keeps crashing (three failed starts in a row), 10router stops and prints the crash log; run with `--log` to see everything.
+**Port already in use**: 10router never stops another program to free its port. If something already listens on the port (another 10router included), it exits with `Can't start the server on <host>:<port>`. Stop that program, or pick another port with `--port`. If the server itself keeps crashing (three failed starts in a row), 10router stops and prints the crash log; run with `--log` to see everything.
+
+**One launcher per data directory**: a second `10router` on the same data directory exits with `Another 10router launcher (PID …) is already using …`. The lock is `launcher.lock` in the data directory (`~/.9router`, `%APPDATA%\9router` on Windows, or `DATA_DIR`). A lock left by a launcher that crashed or was killed is normally taken over on its own; if 10router still refuses while none is running, delete that file.
 
 ---
 

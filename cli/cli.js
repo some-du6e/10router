@@ -49,10 +49,10 @@ const { getDataDir, normalizeDataDirEnv } = require("./hooks/dataDir");
 normalizeDataDirEnv(process.env);
 const { ensureSqliteRuntime, buildEnvWithRuntime } = require("./hooks/sqliteRuntime");
 const { ensureTrayRuntime } = require("./hooks/trayRuntime");
-const { isValidHost, getBackgroundArgs, serverStdio, createServerOutput } = require("./src/cli/utils/launchArgs");
+const { isValidHost, parsePort, getBackgroundArgs, serverStdio, attachServerOutput } = require("./src/cli/utils/launchArgs");
 const { superviseServer } = require("./src/cli/utils/serverSupervisor");
 const { hasExited, killServer, checkPortFree, waitServerReady } = require("./src/cli/utils/serverProcess");
-const { acquireDataDirLock } = require("./src/cli/utils/dataDirLock");
+const { acquireDataDirLock, unsafeDataDirReason } = require("./src/cli/utils/dataDirLock");
 const args = process.argv.slice(2);
 
 // Subcommands (`10router xai video …`) run against an already-running gateway
@@ -104,15 +104,19 @@ let noBrowser = false;
 let skipUpdate = false;
 let showLog = false;
 let trayMode = false;
+// The last first-run setup banner the server printed. The menu redraw clears
+// the screen, so the menu shows it again while setup is still pending.
+let setupBanner = null;
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--port" || args[i] === "-p") {
-    port = parseInt(args[i + 1], 10) || DEFAULT_PORT;
-    i++;
-    if (port < 1 || port > 65535) {
-      console.error(`Invalid --port ${args[i]}: use a number from 1 to 65535.`);
+    const parsed = parsePort(args[i + 1]);
+    if (parsed === null) {
+      console.error(`Invalid --port ${JSON.stringify(args[i + 1] ?? "")}: use a whole number from 1 to 65535.`);
       process.exit(1);
     }
+    port = parsed;
+    i++;
   } else if (args[i] === "--host" || args[i] === "-H") {
     host = args[i + 1] || DEFAULT_HOST;
     i++;
@@ -288,6 +292,21 @@ if (!fs.existsSync(serverPath)) {
   process.exit(1);
 }
 
+// An autostart entry names its DATA_DIR in a file; refuse one that another
+// user owns or can write to.
+const { AUTOSTART_ENV, migrateMacLogs } = require("./src/cli/tray/autostart");
+if (process.env[AUTOSTART_ENV] === "1" && process.env.DATA_DIR) {
+  const unsafe = unsafeDataDirReason(process.env.DATA_DIR);
+  if (unsafe) {
+    console.error(`\n❌ Not using DATA_DIR ${process.env.DATA_DIR} from the autostart entry: ${unsafe}.`);
+    console.error(`   Make it yours and private (chown, then chmod go-w), or turn auto-start off and on again from the tray.`);
+    process.exit(1);
+  }
+}
+
+// Older macOS LaunchAgents logged the setup token to world-readable /tmp.
+try { migrateMacLogs(); } catch { }
+
 // Start server immediately; run update check in parallel (not on the critical path).
 const updatePromise = checkForUpdate();
 // One launcher per DATA_DIR, and it only manages the server it spawns.
@@ -300,7 +319,7 @@ acquireDataDirLock(getDataDir()).then((lock) => {
     process.exit(1);
   }
   process.on("exit", lock.release);
-  startServer(updatePromise);
+  startServer(updatePromise, lock);
 });
 
 // Show interface selection menu
@@ -337,7 +356,10 @@ async function showInterfaceMenu(latestVersion) {
     { label: "Exit", icon: "🚪" }
   );
 
-  const selected = await selectMenu(`Choose Interface (v${pkg.version})`, menuItems, 0, subtitle);
+  // The redraw clears the screen, so keep the setup token on it until setup
+  // consumes the token file (src/lib/auth/setupToken.js).
+  const setupPending = setupBanner && fs.existsSync(path.join(getDataDir(), "setup-token.json"));
+  const selected = await selectMenu(`Choose Interface (v${pkg.version})`, menuItems, 0, subtitle, setupPending ? setupBanner : "");
 
   const offset = latestVersion ? 1 : 0;
 
@@ -348,7 +370,7 @@ async function showInterfaceMenu(latestVersion) {
   return "exit";
 }
 
-function startServer(updatePromise) {
+function startServer(updatePromise, lock) {
   // Accept either a Promise (parallel update check) or a resolved value.
   const latestVersionPromise = Promise.resolve(updatePromise);
   const displayHost = getDisplayHost();
@@ -386,10 +408,11 @@ function startServer(updatePromise) {
     if (!showLog) {
       // Only the setup token reaches the terminal (or a LaunchAgent log);
       // request lines would land on the menu.
-      const output = createServerOutput({ show: (line) => console.log(line), log: remember });
-      child.stdout?.on("data", (data) => output.write(data));
-      child.stdout?.on("end", () => output.end());
-      child.stderr?.on("data", (data) => data.toString().split("\n").filter(Boolean).forEach(remember));
+      attachServerOutput(child, {
+        show: (line) => console.log(line),
+        log: remember,
+        onBanner: (text) => { setupBanner = text; },
+      });
     }
     return child;
   }
@@ -434,6 +457,8 @@ function startServer(updatePromise) {
       if (reason === "port-taken") {
         console.error(`\n❌ Can't start the server on ${host}:${port}: ${error.message}.`);
         console.error(`   Stop the program using port ${port}, or start 10router on another port: ${APP_NAME} --port <port>`);
+      } else if (reason === "start-failed") {
+        console.error(`\n❌ Failed to start the server: ${error?.message || error}`);
       } else {
         if (error) console.error("Failed to start server:", error.message);
         console.error(`\n❌ The server exited ${maxRestarts + 1} times in a row right after starting, so 10router stopped.`);
@@ -448,16 +473,29 @@ function startServer(updatePromise) {
   });
   // Every exit path, including ones that skip cleanup(), stops our server.
   process.on("exit", () => killServer(supervisor.current()));
-  supervisor.start().catch((err) => {
-    console.error("Failed to start server:", err.message);
+  supervisor.start();
+
+  // Resolves true once our own server answers. Gives up after two minutes
+  // with a message, so a server that never listens doesn't leave the
+  // launcher (and a tray with no Quit yet) hanging.
+  const READY_TIMEOUT_MS = 120000;
+  async function ownServerReady() {
+    const status = await waitServerReady({
+      dialHost,
+      port,
+      isAlive: () => !hasExited(supervisor.current()),
+      isStopped: () => isShuttingDown,
+      timeoutMs: READY_TIMEOUT_MS,
+      onWaiting: (ms) => console.log(`⏳ Still waiting for the server to answer on ${dialHost}:${port} (${Math.round(ms / 1000)}s)...`),
+    });
+    if (status !== "timeout") return status === "ready";
+    printCrashLog();
+    console.error(`\n❌ The server didn't answer on ${dialHost}:${port} within ${READY_TIMEOUT_MS / 1000}s, so 10router stopped.`);
+    console.error(`   Run ${APP_NAME} --log to see what the server is doing.`);
+    isShuttingDown = true;
+    cleanup();
     process.exit(1);
-  });
-  const ownServerReady = () => waitServerReady({
-    dialHost,
-    port,
-    isAlive: () => !hasExited(supervisor.current()),
-    isStopped: () => isShuttingDown,
-  });
+  }
 
   process.on("uncaughtException", (err) => {
     if (isShuttingDown) return;
@@ -587,6 +625,13 @@ function startServer(updatePromise) {
           // Windows/Linux: spawn detached bgProcess (systray works fine in child)
           console.log(`\n⏳ Starting background process... (tray icon will appear in ~3s)`);
 
+          // Hand over cleanly: stop our server and tray and release the
+          // DATA_DIR lock before bgProcess starts, so it finds the port free
+          // and the lock open however long the cleanup took.
+          isShuttingDown = true;
+          cleanup();
+          lock.release();
+
           const bgProcess = spawn(process.execPath, ["--dns-result-order=ipv4first", __filename, ...getBackgroundArgs({ port, host })], {
             detached: true,
             stdio: "ignore",
@@ -598,11 +643,6 @@ function startServer(updatePromise) {
           console.log(`🔔 10router is now running in background (PID: ${bgProcess.pid})`);
           console.log(`   Server: http://${displayHost}:${port}`);
           console.log(`\n💡 You can close this terminal. Right-click tray icon to quit.\n`);
-
-          // Stop our server so bgProcess can claim the port; it waits for
-          // this launcher's DATA_DIR lock and for the port to free up.
-          isShuttingDown = true;
-          cleanup();
           process.exit(0);
         } else if (choice === "exit") {
           isShuttingDown = true;
