@@ -11,6 +11,7 @@ import { createRequestLogger } from "../utils/requestLogger.js";
 import { getModelTargetFormat, getModelSupportedFormats, getModelStrip, getModelUpstreamId, getModelType, PROVIDER_ID_TO_ALIAS } from "../config/providerModels.js";
 import { PROVIDERS } from "../config/providers.js";
 import { createErrorResult, parseUpstreamError, formatProviderError, isClientAbort, clientAbortResult } from "../utils/error.js";
+import { isUpstreamHeadersTimeout } from "../utils/headersTimeout.js";
 import { classifyError, classifyThrownError } from "../utils/errorClass.js";
 import { HTTP_STATUS, STREAM_DRAIN_MAX_MS } from "../config/runtimeConfig.js";
 import { handleBypassRequest } from "../utils/bypassHandler.js";
@@ -20,6 +21,7 @@ import { getExecutor } from "../executors/index.js";
 import { supportsGrokCliReasoningEffort } from "../config/grokCli.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats } from "./chatCore/requestDetail.js";
 import { hangUpUsage } from "../utils/hangUpCharge.js";
+import { THINKING_OBJECT_KEYS, HISTORY_KEYS, ITEM_LIST_KEYS, OBJECT_LIST_KEYS, NESTED_ITEM_KEYS, ENVELOPE_KEY } from "../config/attemptCopy.js";
 import { handleForcedSSEToJson } from "./chatCore/sseToJsonHandler.js";
 import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
 import { jsonReplyToSse } from "./chatCore/jsonToSse.js";
@@ -31,6 +33,8 @@ import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
 import { defaultClaudeToolType } from "../translator/concerns/toolCall.js";
+import { takeToolMetadata } from "../translator/concerns/toolNamespace.js";
+import { mapToolDefinitions } from "../translator/concerns/toolChanges.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 import { streamOverride } from "./chatCore/endpointOverrides.js";
 
@@ -107,6 +111,54 @@ export function clientReceivesStream({ body, provider, model, sourceFormat, clie
   return !clientDemandsJson(body, clientRawRequest?.headers);
 }
 
+const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const shallowCopy = (value) => (isObject(value) ? { ...value } : value);
+
+// A history item (message, input item, Gemini content) with its own lists of
+// shallow-copied blocks.
+function copyItem(item) {
+  if (!isObject(item)) return item;
+  const copy = { ...item };
+  for (const key of ITEM_LIST_KEYS) {
+    if (Array.isArray(item[key])) copy[key] = item[key].map(shallowCopy);
+  }
+  return copy;
+}
+
+function copyLevels(obj) {
+  const copy = { ...obj };
+  for (const key of HISTORY_KEYS) {
+    if (Array.isArray(obj[key])) copy[key] = obj[key].map(copyItem);
+  }
+  for (const key of OBJECT_LIST_KEYS) {
+    if (Array.isArray(obj[key])) copy[key] = obj[key].map(shallowCopy);
+  }
+  for (const key of NESTED_ITEM_KEYS) {
+    if (isObject(obj[key])) copy[key] = copyItem(obj[key]);
+  }
+  return copy;
+}
+
+// The attempt's own copy of the body, down to the depth translators and
+// executors edit (config/attemptCopy.js), so nothing it changes reaches the
+// next attempt or the client's request.
+function copyBodyForAttempt(body) {
+  if (!isObject(body)) return body;
+  const copy = copyLevels(body);
+  if (isObject(body[ENVELOPE_KEY])) copy[ENVELOPE_KEY] = copyLevels(body[ENVELOPE_KEY]);
+  for (const key of THINKING_OBJECT_KEYS) {
+    if (body[key] === null || typeof body[key] !== "object") continue;
+    try { copy[key] = structuredClone(body[key]); } catch { copy[key] = { ...body[key] }; }
+  }
+  return copy;
+}
+
+// The client's history list, which every attempt at one request shares.
+function clientHistoryOf(body) {
+  const lists = [...HISTORY_KEYS.map((key) => body?.[key]), body?.[ENVELOPE_KEY]?.contents];
+  return lists.find(Array.isArray) || null;
+}
+
 /**
  * One attempt at one account. `clientSignal` aborts when the client hangs up.
  * While the attempt waits on the upstream, that aborts the upstream call (the
@@ -128,7 +180,7 @@ export async function handleChatCore(args) {
   }
 }
 
-async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onBetasRejected, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, sourceFormatOverride, providerThinking, clientSignal = null, drainOnDisconnect = false }, hangUp) {
+async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onBetasRejected, onHeadersBudget, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, sourceFormatOverride, providerThinking, clientSignal = null, drainOnDisconnect = false }, hangUp) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -142,6 +194,10 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   const reqTag = log?.tagForSession ? log.tagForSession(sessionSeed) : (log?.nextTag ? log.nextTag() : "");
 
   const sourceFormat = sourceFormatOverride || detectFormat(body);
+  // Images fetched for one attempt are kept for the rest of the client request.
+  // The client's signal is shared by every attempt, fusion panel and judge;
+  // without one, the client's history list (taken before anything replaces it).
+  const imageCacheKey = clientSignal || clientHistoryOf(body);
 
   // A previous turn may have been paused by a rate-limit hold, which wrote a
   // status banner into the assistant message the client just sent back. Add a
@@ -179,6 +235,13 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   if (useTransport && credentials) credentials.runtimeTransport = useTransport;
   const stripList = getModelStrip(alias, model);
   const upstreamModel = getModelUpstreamId(alias, model);
+
+  // Request details record the client's request: take it before the router
+  // adds its own thinking settings below or translation edits the body.
+  const clientRequestConfig = extractRequestConfig(body, undefined);
+  // The account and combo loops reuse the client's body for the next attempt, and
+  // translators and executors edit its nested objects in place.
+  body = copyBodyForAttempt(body);
 
   // Inject provider-level thinking config override (only if client hasn't set)
   // on/off → extended type (body.thinking), none/low/medium/high → effort type (body.reasoning_effort)
@@ -218,6 +281,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   // A client that sends Accept: application/json (AI SDK) wants JSON.
   if (clientDemandsJson(body, clientRawRequest?.headers) && !providerRequiresStreaming) stream = false;
   if (streamMode === "never") stream = false;
+  const clientRequest = { ...clientRequestConfig, stream };
 
   const reqLogger = await createRequestLogger(sourceFormat, targetFormat, model);
   if (clientRawRequest) reqLogger.logClientRawRequest(clientRawRequest.endpoint, clientRawRequest.body, clientRawRequest.headers);
@@ -245,7 +309,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     }
     // Convert remote image URLs to base64 for targets that can't fetch URLs.
     try {
-      const n = await prefetchRemoteImages(body, sourceFormat, targetFormat, { signal: undefined });
+      const n = await prefetchRemoteImages(body, sourceFormat, targetFormat, { signal: undefined, cacheKey: imageCacheKey });
       if (n > 0) log?.debug?.("MODALITY", `prefetched ${n} remote image(s) for ${targetFormat}`);
     } catch (e) { log?.warn?.("MODALITY", `image prefetch failed: ${e.message}`); }
   }
@@ -280,10 +344,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     }
     toolNameMap = translatedBody._toolNameMap;
     delete translatedBody._toolNameMap;
-    customToolNames = translatedBody._customToolNames;
-    delete translatedBody._customToolNames;
-    toolNamespaces = translatedBody._toolNamespaces;
-    delete translatedBody._toolNamespaces;
+    ({ customToolNames, toolNamespaces } = takeToolMetadata(translatedBody));
     translatedBody.model = stripThinkingSuffix(upstreamModel);
     stripContinuityFields(translatedBody);
   }
@@ -331,6 +392,8 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   if (finalFormat === FORMATS.CLAUDE && Array.isArray(translatedBody.tools)) {
     translatedBody.tools = defaultClaudeToolType(translatedBody.tools);
   }
+  // Tools added by value mid-conversation too, so they're sent the same way.
+  if (finalFormat === FORMATS.CLAUDE) translatedBody = mapToolDefinitions(translatedBody, (def) => defaultClaudeToolType([def])[0]);
 
   // Pin cache breakpoints to the final body; a stale anchor costs a full prefix rewrite.
   if (passthrough && clientTool === "claude") anchorClaudeCache(translatedBody);
@@ -428,7 +491,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   let upstreamRespondedAt = 0;
   try {
     dispatchedAt = clientSignal?.aborted ? 0 : Date.now();
-    const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onBetasRejected });
+    const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onBetasRejected, onHeadersBudget, imageCacheKey });
     upstreamRespondedAt = Date.now();
     providerResponse = result.response;
     providerUrl = result.url;
@@ -443,13 +506,14 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
       return endAsHangUp();
     }
     trackPendingRequest(model, provider, connectionId, false, true);
-    const failStatus = error?.name === "AbortError" ? HTTP_STATUS.CLIENT_CLOSED_REQUEST : HTTP_STATUS.BAD_GATEWAY;
+    const failStatus = error?.name === "AbortError" ? HTTP_STATUS.CLIENT_CLOSED_REQUEST
+      : isUpstreamHeadersTimeout(error) ? error.status : HTTP_STATUS.BAD_GATEWAY;
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${failStatus}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
       latency: { ttft: 0, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
-      request: extractRequestConfig(body, stream),
+      request: clientRequest,
       // Untagged error: the executor's own last edit, with the headers unknown.
       providerRequest: error?.transformedBody || executor.finalizeBody?.(translatedBody, null, credentials) || translatedBody || null,
       response: { error: error?.message || String(error), status: failStatus, thinking: null },
@@ -461,11 +525,12 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
       streamController.handleError(error);
       return clientAbortResult();
     }
-    const errMsg = formatProviderError(error ?? {}, provider, model, HTTP_STATUS.BAD_GATEWAY);
+    const errMsg = formatProviderError(error ?? {}, provider, model, failStatus);
     if (log?.errorLine) {
-      log.errorLine(reqTag, "✗", `ERROR 502 · ${provider}/${model} · ${Date.now() - requestStartTime}ms\n    ${errMsg}${error?.stack ? `\n    ${error.stack}` : ""}`);
+      log.errorLine(reqTag, "✗", `ERROR ${failStatus} · ${provider}/${model} · ${Date.now() - requestStartTime}ms\n    ${errMsg}${error?.stack ? `\n    ${error.stack}` : ""}`);
     }
-    return createErrorResult(HTTP_STATUS.BAD_GATEWAY, errMsg);
+    const failed = createErrorResult(failStatus, errMsg);
+    return isUpstreamHeadersTimeout(error) ? { ...failed, headersTimeout: { stream: error.stream === true } } : failed;
   }
 
   // Handle 401/403 - try token refresh (skip for noAuth providers)
@@ -491,7 +556,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
         }
         try {
           retryDispatchedAt = clientSignal?.aborted ? 0 : Date.now();
-          const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions });
+          const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onHeadersBudget, imageCacheKey });
           if (retryResult.response.ok) {
             providerResponse = retryResult.response;
             providerUrl = retryResult.url;
@@ -523,7 +588,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
       provider, model, connectionId,
       latency: { ttft: upstreamRespondedAt - requestStartTime, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
-      request: extractRequestConfig(body, stream),
+      request: clientRequest,
       providerRequest: finalBody || translatedBody || null,
       response: { error: message, status: statusCode, thinking: null },
       status: "error",
@@ -547,7 +612,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     chargeHangUp(sse ? providerResponse.upstreamStartedAt || upstreamRespondedAt : dispatchedAt);
     return clientAbortResult();
   };
-  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqTag, log, clientSignal, hangUpResult };
+  const sharedCtx = { provider, model, body, stream, clientRequest, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqTag, log, clientSignal, hangUpResult };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = endPending;
 

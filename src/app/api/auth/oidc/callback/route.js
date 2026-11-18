@@ -10,6 +10,7 @@ import {
   verifyOidcIdToken,
 } from "@/lib/auth/oidc";
 import { setDashboardAuthCookie } from "@/lib/auth/dashboardSession";
+import { isSsoPrincipalAllowed } from "@/lib/auth/ssoAllowlist.js";
 
 function clearOidcCookies(cookieStore) {
   cookieStore.delete("oidc_state");
@@ -72,10 +73,14 @@ export async function GET(request) {
     });
 
     clearOidcCookies(cookieStore);
+    const email = pickOidcEmail(payload);
+    if (!isSsoPrincipalAllowed({ subject: payload.sub, email, emailVerified: payload.email_verified })) {
+      return NextResponse.redirect(new URL("/login?error=sso_user_not_allowed", getPublicOrigin(request)));
+    }
     await setDashboardAuthCookie(cookieStore, request, {
       oidc: true,
       oidcSub: payload.sub || null,
-      oidcEmail: pickOidcEmail(payload) || null,
+      oidcEmail: email || null,
       oidcName: pickOidcDisplayName(payload),
     });
 

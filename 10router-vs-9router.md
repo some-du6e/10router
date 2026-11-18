@@ -41,6 +41,7 @@
 - Search, MCP probing, webhooks, and observability block requests to private addresses. Webhooks go out through pinned DNS.
 - The dashboard offers a re-auth action for invalid OAuth tokens and cleans up the dead credentials.
 - The IDE MITM traffic interception is gone, along with its startup code.
+- 9router loaded its own Google Analytics tag on every page, the OAuth callback page included, where some providers put tokens in the URL. 10router loads analytics only when built with `NEXT_PUBLIC_GA_ID`, and never on the callback page.
 
 ## Tests
 

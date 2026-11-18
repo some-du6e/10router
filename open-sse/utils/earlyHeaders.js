@@ -27,7 +27,8 @@ const MAX_MESSAGE = 2000;
 // what the Anthropic and OpenAI SDKs (and so Claude Code) retry as HTTP statuses.
 // Codex over HTTP (codex-rs api_bridge.rs; protocol/src/error.rs retry_delay)
 // retries 408, 409, 5xx and any other status but 400 at the turn level; a 429
-// becomes RetryLimit, retried only when the response carried Retry-After. In-band
+// becomes RetryLimit, retried only when the response carried Retry-After (0.166;
+// 0.137 has no retry_delay and never retries an HTTP 429). In-band
 // a 429 is rate_limit_exceeded, which Codex always retries (with backoff if no
 // delay is given), and 401/403/404 are final where HTTP would have retried them.
 function isRetryableFailure(status, headers = null) {

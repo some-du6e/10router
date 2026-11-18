@@ -6,6 +6,9 @@ import { promisify } from "util";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
+import { pickFields } from "@/lib/cliTools/statusFields.js";
+import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
+import { findUnsafeConfigValue, listFields, unsafeConfigValueError } from "@/lib/cliTools/configValue.js";
 
 const execAsync = promisify(exec);
 
@@ -52,6 +55,17 @@ const has10RouterConfig = (settings) => {
   return settings.customModels.some(m => m.id?.startsWith("custom:10router"));
 };
 
+// Only this router's custom models, without their apiKey: every entry in
+// customModels carries its provider's key, and this status reaches remote
+// dashboard sessions.
+const summarizeSettings = (settings) => {
+  if (!settings) return null;
+  const customModels = (Array.isArray(settings.customModels) ? settings.customModels : [])
+    .filter((m) => typeof m?.id === "string" && (m.id.startsWith("custom:10router") || m.id.startsWith("custom:9Router")))
+    .map((m) => pickFields(m, ["id", "index", "model", "baseUrl", "displayName", "provider"]));
+  return { customModels };
+};
+
 // GET - Check droid CLI and read current settings
 export async function GET() {
   try {
@@ -69,7 +83,7 @@ export async function GET() {
 
     return NextResponse.json({
       installed: true,
-      settings,
+      settings: summarizeSettings(settings),
       has10Router: has10RouterConfig(settings),
       settingsPath: getDroidSettingsPath(),
     });
@@ -91,6 +105,11 @@ export async function POST(request) {
     
     if (!baseUrl || modelsArray.length === 0) {
       return NextResponse.json({ error: "baseUrl and at least one model are required" }, { status: 400 });
+    }
+    // Droid expands ${VAR} in a custom model's apiKey.
+    const unsafeField = findUnsafeConfigValue({ baseUrl, apiKey, activeModel, ...listFields("models", modelsArray) });
+    if (unsafeField) {
+      return NextResponse.json({ error: unsafeConfigValueError(unsafeField) }, { status: 400 });
     }
 
     const droidDir = getDroidDir();
@@ -158,7 +177,7 @@ export async function POST(request) {
     }
 
     // Write settings
-    await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2));
+    await writePrivateFile(settingsPath, JSON.stringify(settings, null, 2));
 
     return NextResponse.json({
       success: true,
@@ -202,7 +221,7 @@ export async function DELETE() {
     }
 
     // Write updated settings
-    await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2));
+    await writePrivateFile(settingsPath, JSON.stringify(settings, null, 2));
 
     return NextResponse.json({
       success: true,

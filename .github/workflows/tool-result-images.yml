@@ -1,0 +1,247 @@
+name: Tool result images
+
+on:
+  pull_request:
+    paths:
+      - "open-sse/**"
+      - "src/app/api/v1/messages/count_tokens/**"
+      - "src/lib/usageDb.js"
+      - "src/shared/constants/providers.js"
+      - "tests/package.json"
+      - "tests/vitest.*.js"
+      - "tests/scripts/tool-result-images-before-after.mjs"
+      # every test file the test job runs
+      - "tests/unit/tool-result-images.test.js"
+      - "tests/unit/openai-responses-multiturn.test.js"
+      - "tests/unit/openai-responses-custom-tools.test.js"
+      - "tests/unit/openai-responses-namespace-tools.test.js"
+      - "tests/unit/openai-responses-empty-toolcalls.test.js"
+      - "tests/unit/openai-to-claude.test.js"
+      - "tests/unit/openai-to-claude-tools-no-type.test.js"
+      - "tests/unit/openai-to-kiro.test.js"
+      - "tests/unit/openai-to-commandcode.test.js"
+      - "tests/unit/openai-to-ollama-malformed.test.js"
+      - "tests/unit/file-block-routing.test.js"
+      - "tests/unit/modality-strip.test.js"
+      - "tests/unit/multimodal-drop-lock.test.js"
+      - "tests/unit/translator-request-normalization.test.js"
+      - "tests/unit/compatible-endpoint-translation.test.js"
+      - "tests/unit/count-tokens.test.js"
+      - "tests/unit/stream-abort-usage.test.js"
+      - "tests/unit/grok-cli-executor.test.js"
+      - "tests/unit/devin-cli-executor.test.js"
+      - "tests/unit/kiro-conversation-canonicalization.test.js"
+      - "tests/unit/alicode-cache-control-2069.test.js"
+      - "tests/unit/image-fetch-hardening.test.js"
+      - "tests/unit/combo-attempt-isolation.test.js"
+      - "tests/unit/prefetch-images.test.js"
+      - "tests/unit/codex-image-fetch.test.js"
+      - "tests/translator/bugs-codexCli-responses.test.js"
+      - "tests/translator/bugs-openai-bridge.test.js"
+      - "tests/translator/bugs-gemini-cursor-commandcode.test.js"
+      - "tests/translator/bugs-kiro.test.js"
+      - "tests/translator/bugs-antigravity.test.js"
+      - "tests/translator/bugs-toClaude-context.test.js"
+      - "tests/translator/format-roundtrip.test.js"
+      - "tests/translator/golden-request.test.js"
+      - "tests/translator/__snapshots__/golden-request.test.js.snap"
+      - "tests/translator/golden-translator-concerns.test.js"
+      - "tests/translator/claude-kiro-direct.test.js"
+      - "tests/translator/registerAll.js"
+      - ".github/workflows/tool-result-images.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Unit tests
+        working-directory: tests
+        run: >
+          ./node_modules/.bin/vitest run
+          unit/tool-result-images.test.js
+          unit/openai-responses-multiturn.test.js
+          unit/openai-responses-custom-tools.test.js
+          unit/openai-responses-namespace-tools.test.js
+          unit/openai-responses-empty-toolcalls.test.js
+          unit/openai-to-claude.test.js
+          unit/openai-to-claude-tools-no-type.test.js
+          unit/openai-to-kiro.test.js
+          unit/openai-to-commandcode.test.js
+          unit/openai-to-ollama-malformed.test.js
+          unit/file-block-routing.test.js
+          unit/modality-strip.test.js
+          unit/multimodal-drop-lock.test.js
+          unit/translator-request-normalization.test.js
+          unit/compatible-endpoint-translation.test.js
+          unit/count-tokens.test.js
+          unit/stream-abort-usage.test.js
+          unit/grok-cli-executor.test.js
+          translator/bugs-codexCli-responses.test.js
+          translator/bugs-openai-bridge.test.js
+          translator/bugs-gemini-cursor-commandcode.test.js
+          translator/bugs-kiro.test.js
+          translator/bugs-antigravity.test.js
+          translator/bugs-toClaude-context.test.js
+          translator/format-roundtrip.test.js
+          translator/golden-request.test.js
+          translator/golden-translator-concerns.test.js
+          translator/claude-kiro-direct.test.js
+          unit/kiro-conversation-canonicalization.test.js
+          unit/alicode-cache-control-2069.test.js
+          unit/image-fetch-hardening.test.js
+          unit/combo-attempt-isolation.test.js
+          unit/prefetch-images.test.js
+          unit/codex-image-fetch.test.js
+      # The runner sets XDG_CONFIG_HOME, which one of these tests expects unset.
+      - name: Devin CLI tests
+        working-directory: tests
+        run: env -u XDG_CONFIG_HOME ./node_modules/.bin/vitest run unit/devin-cli-executor.test.js
+      - name: Lint
+        run: >
+          ./node_modules/.bin/eslint
+          open-sse/translator/concerns/toolContent.ts
+          open-sse/translator/concerns/toolImageCap.ts
+          open-sse/utils/kiroSessionReplay.js
+          open-sse/translator/concerns/image.js
+          open-sse/translator/request/claude-to-kiro.js
+          open-sse/translator/index.ts
+          tests/unit/devin-cli-executor.test.js
+          open-sse/translator/concerns/modality.js
+          open-sse/translator/concerns/prefetch.js
+          open-sse/translator/concerns/toolCall.js
+          open-sse/config/attemptCopy.js
+          open-sse/handlers/chatCore.js
+          open-sse/executors/codex.js
+          open-sse/handlers/chatCore/requestDetail.js
+          tests/unit/combo-attempt-isolation.test.js
+          tests/unit/prefetch-images.test.js
+          tests/unit/codex-image-fetch.test.js
+          open-sse/translator/request/openai-responses.js
+          open-sse/translator/formats/responsesApi.js
+          open-sse/translator/request/openai-to-claude.ts
+          open-sse/translator/formats/openai.js
+          open-sse/translator/request/claude-to-openai.js
+          open-sse/translator/request/openai-to-gemini.js
+          open-sse/translator/request/openai-to-kiro.js
+          open-sse/translator/request/openai-to-ollama.js
+          open-sse/translator/request/openai-to-commandcode.js
+          open-sse/translator/schema/blocks.js
+          open-sse/executors/devin-cli.js
+          open-sse/executors/grok-cli.js
+          open-sse/utils/usageTracking.js
+          open-sse/config/mediaConfig.js
+          src/app/api/v1/messages/count_tokens/route.js
+          tests/unit/tool-result-images.test.js
+          tests/scripts/tool-result-images-before-after.mjs
+      # Fails only on errors in the .ts file this change touches, so unrelated
+      # type errors elsewhere don't block it.
+      - name: Type check the .ts files this change touches
+        run: |
+          set +e
+          ./node_modules/.bin/tsc --noEmit -p . > tsc.log 2>&1
+          code=$?
+          set -e
+          tail -5 tsc.log
+          if [ "$code" -gt 2 ] || ! [ -x ./node_modules/.bin/tsc ]; then echo "tsc did not run (exit $code)"; exit 1; fi
+          if grep -F -e "open-sse/translator/request/openai-to-claude.ts" -e "open-sse/translator/index.ts" -e "open-sse/translator/concerns/toolContent.ts" -e "open-sse/translator/concerns/toolImageCap.ts" tsc.log; then exit 1; fi
+
+  # The same Responses turn (a tool output holding a screenshot-sized image)
+  # translated by the base branch's code and by this branch's. Prints the tool
+  # result's shape and how much of the body is text. Fails if this branch sends
+  # the image's base64 inside any text field, or doesn't send it as an image.
+  before-after:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Check out the base branch next to this one
+        run: git worktree add ../base "origin/${{ github.base_ref || 'master' }}"
+      - name: Install dependencies (branch and base)
+        run: |
+          for dir in . ../base; do
+            (cd "$dir" && bun install --ignore-scripts)
+          done
+      - name: Before (base branch code)
+        run: bun tests/scripts/tool-result-images-before-after.mjs ../base --label "Before (base)"
+      - name: After (this branch)
+        run: bun tests/scripts/tool-result-images-before-after.mjs . --label "After (this branch)" --assert-clean
+
+  # The suite is not all-green on master (see AGENTS.md), so this runs it on
+  # both the base and this branch and fails only on tests that pass on the base
+  # and fail here.
+  no-new-failures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Check out the base branch next to this one
+        run: git worktree add ../base "origin/${{ github.base_ref || 'master' }}"
+      - name: Install dependencies (branch and base)
+        run: |
+          for dir in . ../base; do
+            (cd "$dir" && bun install --ignore-scripts && cd tests && bun install --ignore-scripts)
+          done
+      - name: Run the suite on the base
+        working-directory: ../base/tests
+        # Each run gets its own HOME: tests without a DATA_DIR use ~/.9router,
+        # and one run's database must not leak into the other.
+        run: |
+          mkdir -p "$RUNNER_TEMP/home-base"
+          HOME="$RUNNER_TEMP/home-base" ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/base.json" > /dev/null 2>&1 || true
+      - name: Run the suite on this branch
+        working-directory: tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/home-head"
+          HOME="$RUNNER_TEMP/home-head" ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/head.json" > /dev/null 2>&1 || true
+      - name: Compare
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const load = (file, root) => {
+              const r = JSON.parse(readFileSync(file, "utf8"));
+              const status = new Map();
+              for (const f of r.testResults) {
+                const rel = f.name.slice(f.name.indexOf("/tests/") + 1);
+                for (const a of f.assertionResults) status.set(`${rel} :: ${a.fullName}`, a.status);
+                // A file that failed to load has no assertions; count it as one failure.
+                if (!f.assertionResults.length && f.status === "failed") status.set(`${rel} :: (file failed to load)`, "failed");
+              }
+              return { status, total: r.numTotalTests, failed: r.numFailedTests };
+            };
+            const base = load(process.env.RUNNER_TEMP + "/base.json");
+            const head = load(process.env.RUNNER_TEMP + "/head.json");
+            console.log(`base: ${base.failed}/${base.total} failed, head: ${head.failed}/${head.total} failed`);
+            const regressions = [...head.status].filter(([k, s]) => s === "failed" && base.status.get(k) === "passed").map(([k]) => k);
+            const fixed = [...base.status].filter(([k, s]) => s === "failed" && head.status.get(k) === "passed").map(([k]) => k);
+            const newFailing = [...head.status].filter(([k, s]) => s === "failed" && !base.status.has(k)).map(([k]) => k);
+            if (fixed.length) console.log("Now passing:\n  " + fixed.join("\n  "));
+            if (newFailing.length) console.log("New tests failing:\n  " + newFailing.join("\n  "));
+            if (regressions.length) console.log("Passed on the base, fail here:\n  " + regressions.join("\n  "));
+            if (regressions.length || newFailing.length) process.exit(1);
+          '

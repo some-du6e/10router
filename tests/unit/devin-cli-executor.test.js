@@ -105,7 +105,7 @@ function makeFakeChild() {
   return child;
 }
 
-async function runExecute(credentials = {}) {
+async function runExecute(credentials = {}, body = { messages: [{ role: "user", content: "hi" }] }) {
   const child = makeFakeChild();
   spawnMock.mockImplementation((bin, args, opts) => {
     child.bin = bin;
@@ -116,7 +116,7 @@ async function runExecute(credentials = {}) {
   const exec = new DevinCliExecutor();
   const { response } = await exec.execute({
     model: "swe-1.6-fast",
-    body: { messages: [{ role: "user", content: "hi" }] },
+    body,
     credentials,
     log: { info() {}, debug() {} },
   });
@@ -186,6 +186,29 @@ describe("DevinCliExecutor ACP session/new", () => {
     expect(promptMsg).toBeTruthy();
     expect(Array.isArray(promptMsg.params.prompt)).toBe(true);
     expect(promptMsg.params.content).toBeUndefined();
+  });
+
+  it("names a tool's screenshot in the prompt as omitted, never inlining it or pointing at nothing", async () => {
+    const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const image = { type: "image_url", image_url: { url: `data:image/png;base64,${PNG_B64}` } };
+    const { child } = await runExecute({}, {
+      messages: [
+        { role: "user", content: "go" },
+        { role: "assistant", content: null, tool_calls: [
+          { id: "call_1", type: "function", function: { name: "screenshot", arguments: "{}" } },
+          { id: "call_2", type: "function", function: { name: "screenshot", arguments: "{}" } },
+        ] },
+        // a tool result still holding its image, and one whose image was moved to the next user turn
+        { role: "tool", tool_call_id: "call_1", content: [{ type: "text", text: "first" }, image] },
+        { role: "tool", tool_call_id: "call_2", content: "second\n[image 1 attached below]" },
+        { role: "user", content: [image] },
+      ],
+    });
+    const writes = child.writes.map((w) => JSON.parse(w.trim()));
+    const prompt = JSON.stringify(writes.find((m) => m.method === "session/prompt").params.prompt);
+    expect(prompt).not.toContain(PNG_B64);
+    expect(prompt).toContain("first\\n[image omitted]");
+    expect(prompt).toContain("[User]\\n[image omitted]");
   });
 
   it("completes the prompt without a -32602 Invalid params error", async () => {

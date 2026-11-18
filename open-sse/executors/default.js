@@ -8,6 +8,8 @@ import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { modelPathSegment } from "../utils/modelPath.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
+import { relaxForcedToolChoiceForThinking, relaxForcedChatToolChoiceForClaude } from "../translator/concerns/toolChoice.js";
+import { FORMATS } from "../translator/formats.js";
 import {
   dropFirstPartyBetas, dropFirstPartyFieldsWithoutBeta, filterBetaHeaders, isAnthropicApiUrl, parseRejectedBetas, sentBetas, stripBetaBodyFields, splitBetas,
   BETA_HEADER_KEYS,
@@ -80,10 +82,10 @@ export class DefaultExecutor extends BaseExecutor {
   transformRequest(model, body, _stream, credentials) {
     let transformed = this.applyJsonSchemaFallback(body);
 
-    // Snowflake's Cortex OpenAI-compatible endpoint rejects the legacy
-    // `max_tokens` field even though the rest of the Chat Completions shape is
-    // compatible. Keep this opt-in so other OpenAI-compatible gateways retain
-    // their existing request contract.
+    // Some OpenAI-compatible gateways reject the legacy `max_tokens` field even
+    // though the rest of the Chat Completions shape is compatible. Keep this
+    // opt-in so other OpenAI-compatible gateways retain their existing request
+    // contract.
     // Chat Completions only: Anthropic Messages requires max_tokens, and a
     // two-path node can route some models there.
     if (
@@ -136,8 +138,16 @@ export class DefaultExecutor extends BaseExecutor {
   // adds it back. Whether Anthropic 400s or ignores safeguards without the
   // beta is unverified; the claude and anthropic providers' fixed beta lists
   // lack it, so they never send it. headers = null (unknown) drops it.
+  //
+  // It is also the last look at the outgoing body, after transformRequest may
+  // have stripped reasoning fields: a forced tool_choice the Claude model would
+  // reject (see concerns/toolChoice.js) goes out as auto.
   finalizeBody(body, headers, credentials) {
-    return this.targetFormat(credentials) === "claude" ? dropFirstPartyFieldsWithoutBeta(body, headers) : body;
+    const out = super.finalizeBody(body, headers, credentials);
+    const format = this.targetFormat(credentials);
+    if (format === FORMATS.OPENAI) return relaxForcedChatToolChoiceForClaude(out, this.provider, out?.model);
+    if (format !== FORMATS.CLAUDE) return out;
+    return relaxForcedToolChoiceForThinking(dropFirstPartyFieldsWithoutBeta(out, headers), this.provider);
   }
 
   // Fallback json_schema → json_object for openai-compatible providers without native Structured Output.

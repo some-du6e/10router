@@ -65,6 +65,25 @@ describe("request detail full payload storage", () => {
     expect((await db.getRequestDetailById("race-1")).request._truncated).toBe(true);
   });
 
+  // Leaves the repo in shutdown mode, so it runs after the tests that store full payloads.
+  it("keeps a stored full payload when a shutdown flush updates the same row without one", async () => {
+    // A stream is saved twice under one id: at its start and at its end.
+    const request = bigRequest("stream");
+    const start = { id: "stream-1", timestamp: new Date(Date.UTC(2026, 0, 3)).toISOString(), provider: "openai", model: "gpt-4", status: "pending", request };
+    await db.saveRequestDetail(start);
+    await repo.__test__.flush();
+    expect((await db.getRequestDetailFullData("stream-1")).request).toEqual(request);
+
+    // The stream ends during the drain; its end save is written by the shutdown flush.
+    await db.saveRequestDetail({ ...start, status: "ok", response: { ok: true } });
+    await repo.__test__.shutdown();
+
+    const row = await db.getRequestDetailById("stream-1");
+    expect(row.status).toBe("ok");
+    expect(row.hasFullData).toBe(true);
+    expect((await db.getRequestDetailFullData("stream-1")).request).toEqual(request);
+  });
+
   it("reports a corrupt stored payload instead of treating it as missing", async () => {
     const { getAdapter } = await import("@/lib/db/driver.js");
     (await getAdapter()).run(`UPDATE requestDetails SET fullData = 'bm90IGd6aXA=' WHERE id = ?`, ["full-29"]);

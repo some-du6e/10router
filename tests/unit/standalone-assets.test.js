@@ -48,6 +48,17 @@ describe("standalone build assets", () => {
       .toBe("wrapper");
   });
 
+  // custom-server.js requires it, so a standalone build without it cannot boot.
+  it("copies the shutdown drain module next to the server wrapper", () => {
+    const projectRoot = createBuildFixture(".next");
+    writeFileSync(join(projectRoot, "custom-server.js"), "wrapper");
+    writeFileSync(join(projectRoot, "server-drain.js"), "drain");
+
+    copyStandaloneAssets({ projectRoot, distDir: ".next" });
+
+    expect(readFileSync(join(projectRoot, ".next", "standalone", "server-drain.js"), "utf8")).toBe("drain");
+  });
+
   it("does not modify workspace-traced CLI builds", () => {
     const projectRoot = createBuildFixture(".next-cli-build");
     const previousMode = process.env.NEXT_TRACING_ROOT_MODE;

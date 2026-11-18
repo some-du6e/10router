@@ -17,7 +17,8 @@ vi.mock("open-sse/services/tokenRefresh.js", () => ({
   refreshTokenByProvider: vi.fn(),
 }));
 
-import { handleVideoProxyCore, getVideoConfig, sanitizeSecrets, VIDEO_ACTIONS } from "open-sse/handlers/videoCore.js";
+import { handleVideoProxyCore, getVideoConfig, VIDEO_ACTIONS } from "open-sse/handlers/videoCore.js";
+import { sanitizeSecrets } from "open-sse/utils/redact.js";
 import { refreshTokenByProvider } from "open-sse/services/tokenRefresh.js";
 import { PROVIDER_MEDIA, PROVIDER_MODELS } from "open-sse/providers/index.js";
 

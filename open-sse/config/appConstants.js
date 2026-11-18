@@ -90,11 +90,24 @@ export const SESSION_HEADER_KEYS = [
 // affinity stays inert for every other provider.
 export const AFFINITY_PROVIDERS = new Set(["codex"]);
 
+// How inline binary shows up in request bodies: a data: URI, or a `data` field
+// on a base64 source (Anthropic) or a blob with a MIME type (Gemini).
+export const INLINE_MEDIA = {
+  // A real data URI (data:<type>/<subtype>; or ,), not text like an SSE "data: {...}" line.
+  dataUri: /^data:[\w.+-]+\/[\w.+-]+[;,]/i,
+  base64SourceType: "base64",
+  mimeTypeKeys: ["mimeType", "mime_type"],
+  dataKey: "data",
+};
+
 // Suffix added to client tools when forwarding to Antigravity provider (anti-ban cloaking)
 export const AG_TOOL_SUFFIX = "_ide";
 
 // Suffix added to client tools when forwarding to Claude provider (anti-ban cloaking)
 export const CLAUDE_TOOL_SUFFIX = "_ide";
+
+// Longest tool name Anthropic and OpenAI accept (^[a-zA-Z0-9_-]{1,64}$).
+export const MAX_TOOL_NAME_LENGTH = 64;
 
 // CC native default tools — these are Claude Code's own tools, kept as decoys
 // Client tools matching these names are skipped (not renamed), others get _cc suffix

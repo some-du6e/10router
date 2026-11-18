@@ -1,5 +1,5 @@
 // A client that leaves `stream` out is answered as a stream, but some upstreams
-// (Anthropic-style APIs, Snowflake Cortex) answer that same request with plain
+// (Anthropic-style APIs, some OpenAI-compatible gateways) answer that same request with plain
 // JSON. That JSON must come back as JSON, not JSON plus a stray "data: [DONE]".
 import { beforeEach, describe, expect, it, vi } from "vitest";
 

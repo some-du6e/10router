@@ -6,6 +6,7 @@ on:
       - "open-sse/**"
       - "src/sse/**"
       - "docs/API_KEY_BUDGETS.md"
+      - "CHANGELOG.md"
       - "tests/package.json"
       - "tests/vitest.config.js"
       - "tests/unit/hang-up-charge.test.js"
@@ -31,8 +32,12 @@ jobs:
         run: |
           bun install --ignore-scripts
           cd tests && bun install --ignore-scripts
+      # The Docker build type-checks with Next's generated types, so generate
+      # them first (as next-typecheck.yml does).
+      - name: Generate Next types
+        run: ./node_modules/.bin/next typegen
       - name: Typecheck
-        run: bun run typecheck
+        run: ./node_modules/.bin/tsc --noEmit -p .
       - name: Unit tests
         working-directory: tests
         run: >
@@ -44,6 +49,9 @@ jobs:
           unit/api-key-budgets-spend.test.js
           unit/anthropic-beta-rejection.test.js
 
+  # The suite is not all-green on master (see AGENTS.md), so this runs it on
+  # both the base and this branch and fails only on tests that pass on the base
+  # and fail here.
   no-new-failures:
     runs-on: ubuntu-latest
     timeout-minutes: 30
