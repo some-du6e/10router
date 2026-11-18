@@ -1,5 +1,6 @@
 import { MEMORY_CONFIG, UNDICI_HEADERS_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { isUndiciHeadersTimeout } from "./headersTimeout.js";
+import { isInvalidHeaderValueError, sanitizeSecrets } from "./redact.js";
 
 const originalFetch = globalThis.fetch;
 const proxyDispatchers = new Map();
@@ -254,11 +255,15 @@ async function fetchVia(url, options, proxyOptions, noHeadersTimeout = false) {
       // The upstream got the request and sent no headers (undici's own limit,
       // which a SOCKS proxy keeps): not the proxy failing, so not retried direct.
       if (isUndiciHeadersTimeout(proxyError)) throw proxyError;
+      // A refused header value fails direct too, and its message quotes the
+      // value (a bearer token, say): pass it on without logging or retrying.
+      if (isInvalidHeaderValueError(proxyError)) throw proxyError;
+      const reason = sanitizeSecrets(proxyError.message);
       // If strictProxy is enabled, fail hard instead of falling back to direct
       if (proxyOptions?.strictProxy === true) {
-        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`, { cause: proxyError });
+        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${reason}`, { cause: proxyError });
       }
-      console.warn(`[ProxyFetch] Proxy failed, falling back to direct: ${proxyError.message}`);
+      console.warn(`[ProxyFetch] Proxy failed, falling back to direct: ${reason}`);
       return direct(url, options);
     }
   }

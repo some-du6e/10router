@@ -89,26 +89,38 @@ function codexClaims(payload) {
 }
 
 /**
- * Email, subject, workspace and plan for a Codex account. ID-token claims come
- * first; the access token fills gaps only when there is no usable ID token or
- * both tokens name the same subject, so a stale ID token for one user and an
- * access token for another never mix.
+ * Email, subject, workspace and plan for a Codex account.
+ * - Only one decodable token: its claims.
+ * - Both name the same `sub`: ID-token claims first, the access token fills gaps.
+ * - Both name a `sub` and they differ: the access token's claims, since it is
+ *   the credential that gets stored and sent, and `subjectMismatch` is set.
+ * - Either lacks a `sub`: the ID token's claims alone, so a token pair that
+ *   can't be tied to one user never mixes.
  */
 export function extractCodexAccountInfo(idToken, accessToken) {
   const id = codexClaims(decodeJwtPayload(idToken));
   const access = codexClaims(decodeJwtPayload(accessToken));
-  const sources = [id];
-  if (access && (!id || (id.sub && id.sub === access.sub))) sources.push(access);
+  const subjectMismatch = !!(id?.sub && access?.sub && id.sub !== access.sub);
+  let sources;
+  if (!id || !access) sources = [id || access];
+  else if (subjectMismatch) sources = [access];
+  else if (id.sub && id.sub === access.sub) sources = [id, access];
+  else sources = [id];
   const pick = (field) => sources.map((claims) => claims?.[field]).find(Boolean);
   return {
     email: pick("email") || pick("preferredUsername"),
     sub: pick("sub"),
     chatgptAccountId: pick("chatgptAccountId"),
     chatgptPlanType: pick("chatgptPlanType"),
+    subjectMismatch,
   };
 }
 
-/** Connection fields for a pasted Codex access token: email and providerSpecificData. */
+/**
+ * Connection fields for a pasted Codex access token: email and providerSpecificData.
+ * @param {string} accessToken
+ * @returns {{ email: string | null, providerSpecificData: { authMethod: string, chatgptAccountId?: string, chatgptPlanType?: string, jwtExp?: number } }}
+ */
 export function codexAccessTokenFields(accessToken) {
   const info = extractCodexAccountInfo(null, accessToken);
   const providerSpecificData = { authMethod: "access_token" };

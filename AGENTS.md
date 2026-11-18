@@ -65,8 +65,8 @@ The dashboard draws Material Symbols from a subset font, `src/app/fonts/material
 
 ### Security
 - `custom-server.js` derives the client IP from the TCP socket and honours `X-Forwarded-For` only from a loopback proxy. Keep that guarantee in any request, IP, or rate-limit change.
-- A connection test saves a successful token refresh at once, before its probe, and only onto a row that still holds the refresh token it used (`updateProviderConnection`'s `refreshTokenUsed`). Rotating providers retire the old token whatever the probe says (`tests/unit/oauth-probe-refresh-persistence.test.js`).
-- Codex identity comes from `extractCodexAccountInfo(idToken, accessToken)`. The access token fills ID-token gaps only when the ID token is missing or names the same `sub`, so tokens from two users never merge into one row (`tests/unit/oauth-codex-identity.test.js`).
+- A connection test re-reads the row before refreshing and uses the stored tokens if another login rotated them. It saves a successful refresh as soon as it returns, before any probe that follows, and only onto a row that still holds the refresh token it used or the one it got (`updateProviderConnection`'s `refreshTokenUsed`). Its status is written under the same check. Rotating providers retire the old token whatever the probe says (`tests/unit/oauth-probe-refresh-persistence.test.js`, `tests/unit/connection-refresh-token-cas.test.js`).
+- Codex identity comes from `extractCodexAccountInfo(idToken, accessToken)`. The access token fills ID-token gaps only when the ID token is missing, undecodable, or names the same `sub`. When the two name different subjects, the access token's claims win, since it's the stored credential, and bulk import refuses the pair (`tests/unit/oauth-codex-identity.test.js`).
 - A fresh install has no default password. It prints a one-time setup token to the console (`src/lib/auth/setupState.js`, `setupToken.js`), or takes `INITIAL_PASSWORD` (8+ chars) for headless bootstrap. The env contract lives in `.env.example`.
 
 Auth rules and the tests that hold them (all run in the default suite and in `.github/workflows/security-sso-oauth.yml`):

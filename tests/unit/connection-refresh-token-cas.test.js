@@ -45,6 +45,21 @@ describe("refreshTokenUsed", () => {
     expect(row.testStatus).not.toBe("error");
   });
 
+  it("writes while the row holds any token in a list", async () => {
+    const conn = await addOAuth();
+    // A request that shared the refresh stored the new tokens first.
+    await db.updateProviderConnection(conn.id, { accessToken: "access-2", refreshToken: "refresh-2" });
+    const saved = await db.updateProviderConnection(conn.id, { accessToken: "access-2", refreshToken: "refresh-2", lastRefreshAt: "t" },
+      { refreshTokenUsed: ["refresh-1", "refresh-2"] });
+    expect(saved).toMatchObject({ refreshToken: "refresh-2", lastRefreshAt: "t" });
+  });
+
+  it("treats null as a row without a refresh token", async () => {
+    const conn = await db.createProviderConnection({ provider: "codex", authType: "access_token", email: "pasted@example.com", accessToken: "access-1" });
+    expect(await db.updateProviderConnection(conn.id, { testStatus: "error" }, { refreshTokenUsed: null })).toMatchObject({ testStatus: "error" });
+    expect(await db.updateProviderConnection(conn.id, { testStatus: "active" }, { refreshTokenUsed: "refresh-1" })).toBeNull();
+  });
+
   it("leaves updates without the option unconditional", async () => {
     const conn = await addOAuth();
     expect(await db.updateProviderConnection(conn.id, { testStatus: "active" })).toMatchObject({ testStatus: "active" });

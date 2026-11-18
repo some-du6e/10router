@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { createProviderConnection } from "@/models";
 import { codexAccessTokenFields } from "@/lib/oauth/providerHelpers.js";
 
+type SavedConnection = { id: string; provider: string; email?: string | null; name?: string };
+
 /**
  * POST /api/oauth/codex/import-token
  * Import a ChatGPT access token (created from chatgpt.com settings)
@@ -9,9 +11,9 @@ import { codexAccessTokenFields } from "@/lib/oauth/providerHelpers.js";
  *
  * Body: { accessToken: string, name?: string }
  */
-export async function POST(request) {
+export async function POST(request: Request) {
   try {
-    const { accessToken, name } = await request.json();
+    const { accessToken, name } = (await request.json()) as { accessToken?: unknown; name?: unknown };
 
     if (typeof accessToken !== "string" || !accessToken.trim()) {
       return NextResponse.json(
@@ -23,10 +25,10 @@ export async function POST(request) {
     const token = accessToken.trim();
 
     const { email, providerSpecificData } = codexAccessTokenFields(token);
-    const connectionName = name || email || "ChatGPT Access Token";
+    const connectionName = (typeof name === "string" && name) || email || "ChatGPT Access Token";
 
     // Save to database as access_token authType (no refresh token)
-    const connection = await createProviderConnection({
+    const connection = (await createProviderConnection({
       provider: "codex",
       authType: "access_token",
       accessToken: token,
@@ -34,7 +36,7 @@ export async function POST(request) {
       email,
       providerSpecificData,
       testStatus: "active",
-    });
+    })) as SavedConnection;
 
     return NextResponse.json({
       success: true,
@@ -49,6 +51,6 @@ export async function POST(request) {
     });
   } catch (error) {
     console.log("Codex access token import error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
   }
 }

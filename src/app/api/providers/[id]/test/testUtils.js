@@ -8,6 +8,7 @@ import {
   refreshProviderCredentials,
   shouldRefreshCredentials,
 } from "open-sse/services/oauthCredentialManager.js";
+import { isInvalidHeaderValueError, sanitizeSecrets } from "open-sse/utils/redact.js";
 import {
   GEMINI_CONFIG,
   ANTIGRAVITY_CONFIG,
@@ -338,42 +339,62 @@ function refreshedTokenFields(connection, tokens) {
 }
 
 /**
- * The error text a thrown probe leaves in lastError. Node's fetch puts a bad
- * header value, token included, in its message, so that becomes a fixed text
- * and any credential left in the message is redacted.
+ * The error text a thrown probe leaves in lastError. undici's refused-header
+ * error quotes the header value, token included, so it becomes a fixed text;
+ * any other message has bearer tokens and the given credentials redacted.
  */
-export function probeErrorMessage(err, secrets = []) {
+export function probeErrorMessage(err, credentials = []) {
+  if (isInvalidHeaderValueError(err)) return "Malformed access token";
   const message = String(err?.message || err || "Connection test failed");
-  if (err instanceof TypeError && /header/i.test(message)) return "Malformed access token";
-  const variants = secrets
-    .filter((s) => typeof s === "string" && s.length >= 8)
-    .flatMap((s) => [s, s.trim(), encodeURIComponent(s)])
-    .sort((a, b) => b.length - a.length);
-  return variants.reduce((text, s) => (s ? text.split(s).join("[REDACTED]") : text), message);
+  return credentials.reduce((text, creds) => sanitizeSecrets(text, creds), message);
 }
 
 async function testOAuthConnection(connection, effectiveProxy = null) {
-  let newTokens = null;
-  let savedRefreshToken = null;
+  // The refresh token the row must still hold for this test's status to be
+  // written. A refresh moves it to the token it saved, or to the one another
+  // login stored first.
+  let rowRefreshToken = connection.refreshToken ?? null;
+  let refreshed = false;
+  let superseded = false;
+  const seen = [connection];
   const refresh = async () => {
+    // A request, or another test, may have rotated the token since this
+    // snapshot; spending the old one again is refused, or revokes the session.
+    const latest = await getProviderConnectionById(connection.id);
+    if (!latest) {
+      superseded = true;
+      return null;
+    }
+    if ((latest.refreshToken ?? null) !== (connection.refreshToken ?? null)) {
+      seen.push(latest);
+      rowRefreshToken = latest.refreshToken ?? null;
+      return latest.accessToken ? { accessToken: latest.accessToken } : null;
+    }
     const tokens = await refreshOAuthToken(connection);
     if (!tokens?.accessToken) return null;
-    newTokens = tokens;
+    seen.push(tokens);
     // Rotation retires the old refresh token whatever the probe says, so save
-    // now, and only onto the row that still holds the token this test used.
+    // now. The row may hold the token this test used, or already the new one
+    // when a request shared this refresh (withCredentialRefreshLock).
     const fields = refreshedTokenFields(connection, tokens);
-    const saved = await updateProviderConnection(connection.id, fields, { refreshTokenUsed: connection.refreshToken });
-    if (saved) savedRefreshToken = fields.refreshToken;
+    const saved = await updateProviderConnection(connection.id, fields, {
+      refreshTokenUsed: [connection.refreshToken, fields.refreshToken],
+    });
+    if (saved) {
+      refreshed = true;
+      rowRefreshToken = fields.refreshToken;
+    } else {
+      superseded = true;
+    }
     return tokens;
   };
   let result;
   try {
     result = await probeOAuthConnection(connection, effectiveProxy, refresh);
   } catch (err) {
-    const secrets = [connection.accessToken, connection.refreshToken, newTokens?.accessToken, newTokens?.refreshToken];
-    result = { valid: false, error: probeErrorMessage(err, secrets) };
+    result = { valid: false, error: probeErrorMessage(err, seen) };
   }
-  return { ...result, refreshed: !!newTokens, newTokens, savedRefreshToken };
+  return { ...result, refreshed, superseded, rowRefreshToken };
 }
 
 async function probeOAuthConnection(connection, effectiveProxy, refresh) {
@@ -868,13 +889,11 @@ export async function testSingleConnection(id) {
       : new Date().toISOString(),
   };
 
-  // A refresh during the test already saved its tokens. The result describes
-  // those tokens, so it is recorded only while the row still holds them: a
-  // login that replaced them since keeps its own status.
-  if (!result.newTokens) {
-    await updateProviderConnection(id, updateData);
-  } else if (result.savedRefreshToken) {
-    await updateProviderConnection(id, updateData, { refreshTokenUsed: result.savedRefreshToken });
+  // An OAuth result describes the tokens the test ended with, so it is recorded
+  // only while the row still holds them: a login that replaced them meanwhile
+  // keeps its own status. (A refresh during the test already saved its tokens.)
+  if (!result.superseded) {
+    await updateProviderConnection(id, updateData, { refreshTokenUsed: result.rowRefreshToken });
   }
 
   return { valid: result.valid, error: result.error, refreshed: !!result.refreshed, latencyMs, testedAt: new Date().toISOString() };

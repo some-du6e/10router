@@ -77,6 +77,11 @@ export async function POST(request) {
         if (typeof item[field] === "string") item[field] = item[field].trim() || undefined;
       }
 
+      const info = extractCodexAccountInfo(item.idToken, item.accessToken);
+      if (info.subjectMismatch) {
+        throw new Error("idToken and accessToken belong to different users");
+      }
+
       // Backfill missing identity fields from JWT claims
       const psd = item.providerSpecificData || {};
       const needsEmail = !item.email;
@@ -84,7 +89,6 @@ export async function POST(request) {
       const needsPlanType = !psd.chatgptPlanType;
 
       if (needsEmail || needsAccountId || needsPlanType) {
-        const info = extractCodexAccountInfo(item.idToken, item.accessToken);
         if (needsEmail && info.email) item.email = info.email;
         if (needsAccountId && info.chatgptAccountId) {
           psd.chatgptAccountId = info.chatgptAccountId;

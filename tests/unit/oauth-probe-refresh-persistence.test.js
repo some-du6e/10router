@@ -16,7 +16,7 @@ const tokenWrites = () => update.mock.calls.filter(([, data]) => "accessToken" i
 const statusWrites = () => update.mock.calls.filter(([, data]) => "testStatus" in data);
 const expectTokensSaved = () => {
   expect(tokenWrites()).toEqual([["account-a", expect.objectContaining({ accessToken: "new-access", refreshToken: "new-refresh" }),
-    { refreshTokenUsed: "old-refresh" }]]);
+    { refreshTokenUsed: ["old-refresh", "new-refresh"] }]]);
 };
 const stubFetch = (...replies) => {
   const fetch = vi.fn();
@@ -113,13 +113,40 @@ describe("connection tests save a token refresh as soon as it succeeds", () => {
     stubFetch(status(401));
     expect(await testSingleConnection("account-a")).toMatchObject({ valid: false, refreshed: false, error: "Token invalid or revoked" });
     expect(tokenWrites()).toEqual([]);
-    expect(statusWrites()).toEqual([["account-a", expect.objectContaining({ testStatus: "error" })]]);
+    expect(statusWrites()).toEqual([["account-a", expect.objectContaining({ testStatus: "error" }), { refreshTokenUsed: "old-refresh" }]]);
   });
 
-  it("leaves a row alone once a newer login replaced the refresh token the test used", async () => {
-    update.mockImplementation(async (_id, _data, opts) => (opts?.refreshTokenUsed === "old-refresh" ? null : {}));
+  it("keeps the refresh token when the provider doesn't rotate it", async () => {
+    refresh.mockResolvedValue({ accessToken: "new-access", expiresIn: 3600 });
+    stubFetch(status(401), status(400));
+    expect(await testSingleConnection("account-a")).toMatchObject({ valid: true, refreshed: true });
+    expect(tokenWrites()).toEqual([["account-a", expect.objectContaining({ accessToken: "new-access", refreshToken: "old-refresh" }),
+      { refreshTokenUsed: ["old-refresh", "old-refresh"] }]]);
+    expect(statusWrites()).toEqual([["account-a", expect.objectContaining({ testStatus: "active" }), { refreshTokenUsed: "old-refresh" }]]);
+  });
+
+  it("records a test without a refresh only while the row still holds the token it tested", async () => {
+    stubFetch(status(403));
+    expect(await testSingleConnection("account-a")).toMatchObject({ valid: false, refreshed: false });
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(statusWrites()).toEqual([["account-a", expect.objectContaining({ testStatus: "error" }), { refreshTokenUsed: "old-refresh" }]]);
+  });
+
+  it("uses the stored tokens instead of refreshing when another login rotated them first", async () => {
+    get.mockResolvedValueOnce({ ...connection })
+      .mockResolvedValueOnce({ ...connection, accessToken: "request-access", refreshToken: "request-refresh" });
+    const fetch = stubFetch(status(401), status(400));
+    expect(await testSingleConnection("account-a")).toMatchObject({ valid: true, refreshed: false });
+    expect(refresh).not.toHaveBeenCalled();
+    expect(fetch.mock.calls[1][1].headers.Authorization).toBe("Bearer request-access");
+    expect(tokenWrites()).toEqual([]);
+    expect(statusWrites()).toEqual([["account-a", expect.objectContaining({ testStatus: "active" }), { refreshTokenUsed: "request-refresh" }]]);
+  });
+
+  it("does not report a refresh it couldn't save, nor record a status, once a newer login replaced the tokens", async () => {
+    update.mockImplementation(async (_id, _data, opts) => (Array.isArray(opts?.refreshTokenUsed) ? null : {}));
     stubFetch(status(401), status(403));
-    expect(await testSingleConnection("account-a")).toMatchObject({ valid: false, refreshed: true });
+    expect(await testSingleConnection("account-a")).toMatchObject({ valid: false, refreshed: false });
     expect(update).toHaveBeenCalledTimes(1);
     expect(statusWrites()).toEqual([]);
   });
@@ -132,7 +159,17 @@ describe("connection test errors never carry a credential", () => {
     let err;
     try { new Headers({ Authorization: `Bearer ${secret}\nmore` }); } catch (e) { err = e; }
     expect(err).toBeInstanceOf(TypeError);
-    expect(probeErrorMessage(err, [secret])).toBe("Malformed access token");
+    expect(probeErrorMessage(err, [{ accessToken: secret }])).toBe("Malformed access token");
+  });
+
+  it("passes other TypeErrors through", () => {
+    const err = new TypeError("Cannot read properties of undefined (reading 'headers')");
+    expect(probeErrorMessage(err, [{ accessToken: secret }])).toBe("Cannot read properties of undefined (reading 'headers')");
+  });
+
+  it("never throws on a credential that can't be URL-encoded", () => {
+    const loneSurrogate = "token-\uD800-value";
+    expect(probeErrorMessage(new Error(`failed for ${loneSurrogate}`), [{ accessToken: loneSurrogate }])).toBe("failed for [redacted]");
   });
 
   it("stores the fixed message when a malformed token makes the probe throw", async () => {
@@ -146,7 +183,7 @@ describe("connection test errors never carry a credential", () => {
     get.mockResolvedValue({ ...connection, accessToken: secret });
     stubFetch(new Error(`connect failed for ${secret}`));
     const result = await testSingleConnection("account-a");
-    expect(result.error).toBe("connect failed for [REDACTED]");
+    expect(result.error).toBe("connect failed for [redacted]");
     expect(JSON.stringify(update.mock.calls)).not.toContain(secret);
   });
 });

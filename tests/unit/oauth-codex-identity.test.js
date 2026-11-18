@@ -3,7 +3,7 @@ import { extractCodexAccountInfo, codexAccessTokenFields } from "../../src/lib/o
 import codex from "../../src/lib/oauth/providers/codex.js";
 import { backfillCodexEmails } from "../../src/lib/oauth/providers/index.js";
 import { POST as bulkImport } from "../../src/app/api/oauth/codex/bulk-import/route.js";
-import { POST as importToken } from "../../src/app/api/oauth/codex/import-token/route.js";
+import { POST as importToken } from "../../src/app/api/oauth/codex/import-token/route.ts";
 import { POST as oauthAction } from "../../src/app/api/oauth/[provider]/[action]/route.js";
 
 const { create, exchangeTokens, listConnections, updateConnection } = vi.hoisted(() => ({
@@ -61,12 +61,18 @@ describe("Codex claims", () => {
     expect(extractCodexAccountInfo(idToken, accessToken).email).toBe("owner@example.com");
   });
 
-  it("fills gaps from the access token only when both tokens name the same subject", () => {
-    const staleIdToken = jwt({ sub: "user-a", email: "a@example.com" });
+  it("uses the access token's claims alone when the two tokens name different subjects", () => {
+    const staleIdToken = jwt({ sub: "user-a", email: "a@example.com", account_id: "workspace-stale" });
     const otherUser = jwt({ sub: "user-b", [AUTH]: { chatgpt_account_id: "workspace-b", chatgpt_plan_type: "team" } });
-    expect(identity(extractCodexAccountInfo(staleIdToken, otherUser)))
-      .toEqual({ email: "a@example.com", chatgptAccountId: undefined, chatgptPlanType: undefined });
-    expect(extractCodexAccountInfo(jwt({ email: "a@example.com" }), otherUser).chatgptAccountId).toBeUndefined();
+    const info = extractCodexAccountInfo(staleIdToken, otherUser);
+    expect(identity(info)).toEqual({ email: undefined, chatgptAccountId: "workspace-b", chatgptPlanType: "team" });
+    expect(info).toMatchObject({ sub: "user-b", subjectMismatch: true });
+  });
+
+  it("uses the ID token's claims alone when either token has no subject", () => {
+    const otherUser = jwt({ sub: "user-b", [AUTH]: { chatgpt_account_id: "workspace-b" } });
+    expect(extractCodexAccountInfo(jwt({ email: "a@example.com" }), otherUser))
+      .toMatchObject({ email: "a@example.com", chatgptAccountId: undefined, subjectMismatch: false });
   });
 
   it("falls back to the access token when the ID token won't decode", () => {
@@ -97,6 +103,22 @@ describe("Codex OAuth mapping", () => {
     const mapped = codex.mapTokens({ id_token: jwt({ sub: "user-sub-only" }), access_token: jwt({ sub: "user-sub-only" }) });
     expect(mapped.email).toBe("user-sub-only");
   });
+
+  it("keeps the ID token's subject as the email when only an access token without a subject has one", () => {
+    const mapped = codex.mapTokens({
+      id_token: jwt({ sub: "user-sub-only" }),
+      access_token: jwt({ [PROFILE]: { email: "profile@example.com" } }),
+    });
+    expect(mapped.email).toBe("user-sub-only");
+  });
+
+  it("takes the profile email once both tokens name the same subject", () => {
+    const mapped = codex.mapTokens({
+      id_token: jwt({ sub: "user-a" }),
+      access_token: jwt({ sub: "user-a", [PROFILE]: { email: "profile@example.com" } }),
+    });
+    expect(mapped.email).toBe("profile@example.com");
+  });
 });
 
 describe("Codex imports", () => {
@@ -113,6 +135,14 @@ describe("Codex imports", () => {
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
       email: "owner@example.com", providerSpecificData: { chatgptAccountId: "workspace-a", chatgptPlanType: "team" },
     }));
+  });
+
+  it("refuses a bulk item whose ID and access tokens belong to different users", async () => {
+    const res = await bulkImport(request({ idToken: jwt({ sub: "user-b", email: "b@example.com" }), accessToken }));
+    expect(await res.json()).toMatchObject({
+      success: 0, failed: 1, results: [{ ok: false, error: "idToken and accessToken belong to different users" }],
+    });
+    expect(create).not.toHaveBeenCalled();
   });
 
   it("trims the tokens a bulk import saves", async () => {
@@ -181,6 +211,9 @@ describe("Codex identity backfill", () => {
     expect(updateConnection).toHaveBeenCalledWith("access-only", {
       email: "owner@example.com", providerSpecificData: { chatgptAccountId: "workspace-a", chatgptPlanType: "team" },
     });
-    expect(updateConnection).toHaveBeenCalledWith("stale-id", { email: "b@example.com" });
+    // The stored credential is the access token, so its user's claims win.
+    expect(updateConnection).toHaveBeenCalledWith("stale-id", {
+      providerSpecificData: { chatgptAccountId: "workspace-a", chatgptPlanType: "team" }, email: "owner@example.com",
+    });
   });
 });

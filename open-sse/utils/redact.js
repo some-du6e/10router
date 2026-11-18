@@ -4,6 +4,7 @@ import {
   SECRET_QUERY_PARAMS,
   SECRET_QUERY_PARAM_NAME_PATTERN,
   BEARER_TOKEN_PATTERN,
+  INVALID_HEADER_ERROR_PATTERN,
   CREDENTIAL_FIELDS,
   PROVIDER_DATA_SECRET_NAME_PATTERN,
   MIN_SECRET_VALUE_LENGTH,
@@ -120,8 +121,15 @@ export function withoutProviderDataSecrets(data) {
 // replaced whole.
 function secretForms(secret) {
   const json = JSON.stringify(secret).slice(1, -1);
-  const forms = [secret, json, json.replace(/\//g, "\\/"), secret.replace(/\//g, "\\/"), encodeURIComponent(secret)];
+  const forms = [secret, json, json.replace(/\//g, "\\/"), secret.replace(/\//g, "\\/")];
+  // A lone surrogate can't be URL-encoded (URIError); such a secret has no URL form.
+  try { forms.push(encodeURIComponent(secret)); } catch { /* no URL form */ }
   return [...new Set(forms)].sort((a, b) => b.length - a.length);
+}
+
+/** True for undici's TypeError for a header value it refuses, whose message quotes the value. */
+export function isInvalidHeaderValueError(err) {
+  return err instanceof TypeError && INVALID_HEADER_ERROR_PATTERN.test(String(err.message || ""));
 }
 
 /** Strips bearer tokens and the given credentials' values from text bound for clients or logs. */
