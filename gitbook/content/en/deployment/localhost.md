@@ -131,7 +131,7 @@ If the data directory is not accessible:
 ls -la ~/.9router
 
 # Fix permissions
-chmod 755 ~/.9router
+chmod 700 ~/.9router
 ```
 
 ---

@@ -23,7 +23,9 @@ export async function createSqlJsAdapter(filePath) {
 
   function persist() {
     const data = db.export();
-    fs.writeFileSync(filePath, Buffer.from(data));
+    // Owner-only from the first write: the file holds provider credentials, and
+    // on a fresh install it doesn't exist yet when the driver tightens modes.
+    fs.writeFileSync(filePath, Buffer.from(data), { mode: 0o600 });
     dirty = false;
   }
 

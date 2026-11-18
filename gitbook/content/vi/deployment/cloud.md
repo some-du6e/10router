@@ -37,17 +37,18 @@ npm run build
 Tạo file `.env` hoặc export biến:
 
 ```bash
-export JWT_SECRET="your-secure-secret-change-this-to-random-string"
 export INITIAL_PASSWORD="your-secure-password"
 export DATA_DIR="/var/lib/10router"
 export NODE_ENV="production"
 ```
 
+> `JWT_SECRET` là tùy chọn. Để trống và 10router sẽ tạo một lần vào `$DATA_DIR/jwt-secret`, nên phiên đăng nhập vẫn giữ sau khi khởi động lại. Chỉ khi chạy nhiều instance sau cùng một URL: tạo một giá trị một lần (`openssl rand -hex 32`), lưu lại và đặt cùng giá trị đó cho mọi instance. Giá trị dưới 32 ký tự hoặc placeholder trong tài liệu sẽ bị bỏ qua.
+
 **Biến môi trường:**
 
 | Biến | Mặc định | Mô tả |
 |----------|---------|-------------|
-| `JWT_SECRET` | Auto-generated | **PHẢI đổi trong production!** Dùng để ký JWT token |
+| `JWT_SECRET` | Auto-generated (`$DATA_DIR/jwt-secret`) | Tùy chọn. Dùng để ký phiên đăng nhập dashboard. Chỉ đặt khi cần chia sẻ phiên giữa các instance sau cùng một URL (từ 32 ký tự; giá trị ngắn hơn và placeholder trong tài liệu bị bỏ qua) |
 | `INITIAL_PASSWORD` | không đặt | Mật khẩu bootstrap headless tùy chọn (tối thiểu 8 ký tự). Nếu không đặt, lần chạy đầu cần setup token dùng một lần in ra console của server — không có mật khẩu mặc định |
 | `DATA_DIR` | `~/.9router` | Đường dẫn lưu database và data (tên thư mục giữ nguyên như bản phát hành trước để tương thích ngược) |
 | `NODE_ENV` | `development` | Đặt `production` cho deployment |
@@ -154,11 +155,12 @@ docker run -d \
   --name 10router \
   -p 3000:3000 \
   -p 20128:20128 \
-  -e JWT_SECRET="your-secure-secret-change-this" \
   -e INITIAL_PASSWORD="your-secure-password" \
   -v 10router-data:/app/data \
   10router
 ```
+
+> `JWT_SECRET` được cố ý để trống (xem ghi chú ở trên): secret được tạo trong `$DATA_DIR/jwt-secret` được giữ lại sau khi khởi động lại.
 
 ### Cách 2: Docker Compose
 
@@ -176,7 +178,6 @@ services:
       - "20128:20128"
     environment:
       - NODE_ENV=production
-      - JWT_SECRET=your-secure-secret-change-this
       - INITIAL_PASSWORD=your-secure-password
       - DATA_DIR=/app/data
     volumes:
@@ -186,6 +187,8 @@ services:
 volumes:
   10router-data:
 ```
+
+> `JWT_SECRET` được cố ý để trống (xem ghi chú ở trên): secret được tạo trong `$DATA_DIR/jwt-secret` được giữ lại sau khi khởi động lại.
 
 **Chạy với Docker Compose:**
 
@@ -311,16 +314,15 @@ sudo certbot renew --dry-run
 
 ## 🔒 Cân nhắc về Bảo mật
 
-### 1. Đổi credentials mặc định
+### 1. Bảo vệ đăng nhập dashboard
 
-**QUAN TRỌNG:** Đổi `JWT_SECRET` và `INITIAL_PASSWORD` trước khi deploy:
+Đặt `INITIAL_PASSWORD` mạnh trước khi deploy, hoặc để trống và hoàn tất thiết lập lần đầu bằng setup token dùng một lần được in ra console của server. Không có mật khẩu mặc định.
+
+`JWT_SECRET` là tùy chọn: 10router tạo một secret trong `$DATA_DIR/jwt-secret` và giữ lại, nên hãy giữ thư mục dữ liệu ở chế độ riêng tư. Chỉ đặt `JWT_SECRET` khi cần chia sẻ phiên đăng nhập giữa nhiều instance sau cùng một URL, dùng một giá trị từ 32 ký tự trở lên, tạo một lần và lưu lại:
 
 ```bash
-# Generate secure JWT secret
-openssl rand -base64 32
-
-# Use this value for JWT_SECRET
-export JWT_SECRET="generated-secret-here"
+# Chạy một lần, lưu giá trị và đặt cho mọi instance
+openssl rand -hex 32
 ```
 
 ### 2. Cấu hình Firewall
@@ -461,7 +463,7 @@ sudo nginx -t
 ```bash
 # Fix data directory permissions
 sudo chown -R $USER:$USER /var/lib/10router
-chmod 755 /var/lib/10router
+chmod 700 /var/lib/10router
 ```
 
 ---

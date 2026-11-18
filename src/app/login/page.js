@@ -4,6 +4,8 @@ import { useState, useEffect } from "react";
 import { Button } from "@/shared/components";
 import LogoMark from "@/shared/components/LogoMark";
 import useThemeStore from "@/store/themeStore";
+import { describeLoginError } from "@/lib/auth/loginErrors.js";
+import { loginLanding } from "@/lib/auth/loginLanding.js";
 import styles from "./login.module.css";
 
 function PasswordField({ id, label, ...props }) {
@@ -66,20 +68,17 @@ export default function LoginPage() {
 
         if (res.ok) {
           const data = await res.json();
-          if (data.needsSetup === true) {
-            window.location.assign("/setup");
+          const landing = loginLanding(data);
+          if (landing === "setup" || landing === "dashboard") {
+            window.location.assign(`/${landing}`);
             return;
           }
           // A restricted session that reloaded the page lands back here: keep
           // it on the change form instead of bouncing it to a locked dashboard.
-          if (data.authenticated === true && data.mustChangePassword === true) {
+          if (landing === "change-password") {
             setMustChange(true);
             setHasPassword(false);
             setLegacyPassword(true);
-            return;
-          }
-          if (data.authenticated === true || data.requireLogin === false) {
-            window.location.assign("/dashboard");
             return;
           }
           setHasPassword(!!data.hasPassword);
@@ -90,6 +89,9 @@ export default function LoginPage() {
           setOidcLoginLabel(data.oidcLoginLabel || "Sign in with OIDC");
           setSamlConfigured(data.samlConfigured === true);
           setSamlLoginLabel(data.samlLoginLabel || "Sign in with SAML SSO");
+          // SSO routes send a failed sign-in back here with ?error=.
+          const ssoError = describeLoginError(new URLSearchParams(window.location.search).get("error"));
+          if (ssoError) setError(ssoError);
         } else {
           // Safe fallback on non-OK response to avoid infinite loading state.
           setHasPassword(true);
@@ -249,7 +251,7 @@ export default function LoginPage() {
                   {legacyPassword && <p className={styles.notice}>This instance uses the old default password. You will set a new one after signing in.</p>}
                   <details className={styles.recovery} key={resetHint ? "reset" : "default"} open={resetHint ? true : undefined}>
                     <summary>Forgot your password?</summary>
-                    <p>On the host, open the <code>10router</code> CLI, choose <strong>Settings</strong>, then <strong>Reset Password</strong>. Finish setup with the token it prints.</p>
+                    <p>On the host, open the <code>10router</code> CLI, choose <strong>Settings</strong>, then <strong>Reset Password</strong>, and follow what it prints (or sign in with <code>INITIAL_PASSWORD</code> if it&apos;s set).</p>
                   </details>
                 </form>
               ) : error && <p id="login-error" role="alert" className={styles.error}>{error}</p>}

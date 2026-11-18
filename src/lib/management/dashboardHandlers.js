@@ -33,8 +33,11 @@ function readCookie(request, name) {
 }
 
 /**
- * The same rule the proxy applies to dashboard APIs, checked again in the
- * route: minting a management key must not rest on the proxy alone.
+ * Checked again in the route, so minting a management key doesn't rest on the
+ * proxy alone: a valid session that isn't a forced-password-change one, or
+ * requireLogin=false on a claimed instance. The proxy in front adds only a
+ * session from the currently configured SSO protocol while setup is pending
+ * (acceptsDashboardSession); this check doesn't repeat it.
  */
 async function dashboardSessionOk(request) {
   const session = await getDashboardAuthSession(readCookie(request, "auth_token"));
@@ -59,7 +62,13 @@ async function parseScopes(raw) {
   if (errors.length) return { error: errors.join("; ") };
   const nodes = await getProviderNodes().catch(() => []);
   const known = new Set([...Object.keys(AI_PROVIDERS), ...nodes.map((n) => n.id)].map((id) => String(id).toLowerCase()));
-  for (const list of [scopes.clientKeys.providers, scopes.providerKeys.providers]) {
+  const hostEndpoints = Object.keys(scopes.providerKeys.baseUrlHosts || {});
+  // A provider-keys scope that is off grants nothing, so its providers may
+  // still name a deleted endpoint: the dialog keeps the list rather than empty
+  // it, since an empty list would mean "any provider" once it's turned back on.
+  // Turning it on checks the list again.
+  const providerKeyIds = scopes.providerKeys.enabled ? scopes.providerKeys.providers : null;
+  for (const list of [scopes.clientKeys.providers, providerKeyIds, hostEndpoints]) {
     for (const p of list || []) {
       if (!known.has(canonicalProviderId(p))) return { error: `Unknown provider "${p}"` };
     }

@@ -1,0 +1,239 @@
+import { createRequire } from "node:module";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+// On a graceful restart the drain runs the app's SIGTERM listeners in the order
+// they were added. The database adapter's listener (close, then exit) is added
+// when the DB opens, which can be before this repo is imported; its buffered
+// rows must still be written before the close.
+
+const require = createRequire(import.meta.url);
+const { gateShutdownSignals } = require("../../server-drain.js");
+
+const state = vi.hoisted(() => ({
+  events: [],
+  fullData: {},
+  closed: false,
+  adapterGates: [],
+  onTransaction: null,
+  failNextTransaction: false,
+  onGzip: null,
+}));
+
+// Lets a test act while a full payload is being compressed.
+vi.mock("node:zlib", async (importOriginal) => {
+  const real = await importOriginal();
+  const gzip = (buffer, callback) => {
+    const hook = state.onGzip;
+    state.onGzip = null;
+    hook?.();
+    real.gzip(buffer, callback);
+  };
+  return { ...real, default: { ...real, gzip }, gzip };
+});
+
+vi.mock("@/lib/db/driver.js", () => {
+  const ensureOpen = () => {
+    if (state.closed) throw new TypeError("The database connection is not open");
+  };
+  const db = {
+    driver: "node:sqlite",
+    transaction(fn) {
+      ensureOpen();
+      if (state.failNextTransaction) {
+        state.failNextTransaction = false;
+        throw new Error("disk I/O error");
+      }
+      const result = fn();
+      const hook = state.onTransaction;
+      state.onTransaction = null;
+      hook?.();
+      return result;
+    },
+    run(sql, params = []) {
+      ensureOpen();
+      if (sql.startsWith("INSERT")) {
+        state.events.push(`insert ${params[0]}`);
+        state.fullData[params[0]] = params[7];
+      }
+      return { changes: 0 };
+    },
+    get() { ensureOpen(); return { c: 0 }; },
+    all() { ensureOpen(); return []; },
+  };
+  return {
+    // Each call waits on the next queued gate, if any.
+    getAdapter: async () => {
+      const gate = state.adapterGates.shift();
+      if (gate) await gate;
+      return db;
+    },
+  };
+});
+
+// Full payloads on: rows over the size cap also get a gzipped full copy.
+vi.mock("@/lib/db/repos/settingsRepo.js", () => ({
+  getSettings: async () => ({
+    enableObservability: true,
+    showSensitiveRequestDetails: true,
+    observabilityBatchSize: 2,
+    observabilityFlushIntervalMs: 60_000,
+  }),
+}));
+
+function gate() {
+  let open;
+  const promise = new Promise((resolve) => { open = resolve; });
+  return { promise, open };
+}
+
+// Over the 128 KB cap that applies with full payloads on.
+const bigRow = (id) => ({ id, model: "m", request: { messages: [{ role: "user", content: "x".repeat(200_000) }] } });
+
+const SIGNALS = ["SIGTERM", "SIGINT", "beforeExit", "exit"];
+const before = Object.fromEntries(SIGNALS.map((name) => [name, process.listeners(name)]));
+const realEmit = process.emit;
+let repo;
+let runSignalListeners;
+let consoleError;
+
+// Like the adapters: close the connection, then exit.
+const closeDb = () => {
+  state.events.push("close");
+  state.closed = true;
+  process.exit(0);
+};
+
+const removeListenersAddedSince = (snapshot) => {
+  for (const name of SIGNALS) {
+    for (const listener of process.listeners(name)) {
+      if (!snapshot[name].includes(listener)) process.off(name, listener);
+    }
+  }
+};
+let beforeRepo;
+
+beforeAll(() => {
+  vi.stubEnv("ENABLE_REQUEST_LOGS", "true");
+  runSignalListeners = gateShutdownSignals(process, () => {});
+  process.on("SIGTERM", closeDb);
+  beforeRepo = Object.fromEntries(SIGNALS.map((name) => [name, process.listeners(name)]));
+});
+
+afterAll(() => {
+  process.emit = realEmit;
+  removeListenersAddedSince(before);
+  vi.unstubAllEnvs();
+});
+
+// Each test gets its own copy of the repo (buffer, running flush, shutdown
+// flag), registered after the adapter's listener, and drops it afterwards.
+beforeEach(async () => {
+  state.events.length = 0;
+  state.fullData = {};
+  state.closed = false;
+  state.adapterGates = [];
+  state.onTransaction = null;
+  state.failNextTransaction = false;
+  state.onGzip = null;
+  consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.resetModules();
+  repo = await import("@/lib/db/repos/requestDetailsRepo.js");
+  return () => {
+    removeListenersAddedSince(beforeRepo);
+    consoleError.mockRestore();
+  };
+});
+
+describe("request details on shutdown", () => {
+  it("stops packing full payloads in a running flush once shutdown starts", async () => {
+    const first = gate();
+    const second = gate();
+    state.adapterGates = [first.promise, second.promise];
+    await repo.saveRequestDetail(bigRow("big-a"));
+    await repo.saveRequestDetail(bigRow("big-b")); // starts a flush, held at the first gate
+    await repo.saveRequestDetail(bigRow("big-c")); // left for that flush's next pass
+    first.open();
+    // The first pass, before any signal, keeps full payloads.
+    await vi.waitFor(() => expect(state.events).toEqual(["insert big-a", "insert big-b"]));
+    expect(typeof state.fullData["big-a"]).toBe("string");
+    expect(typeof state.fullData["big-b"]).toBe("string");
+
+    // The next pass is held at the second gate when the signal arrives.
+    setTimeout(second.open, 20);
+    await runSignalListeners("SIGTERM");
+
+    expect(state.events).toEqual(["insert big-a", "insert big-b", "insert big-c", "close"]);
+    expect(state.fullData["big-c"]).toBeNull();
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it("skips full payloads for the rest of a pass when the signal lands while its first row is compressed", async () => {
+    let signalled;
+    state.onGzip = () => { signalled = runSignalListeners("SIGTERM"); };
+    await repo.saveRequestDetail(bigRow("mid-a"));
+    await repo.saveRequestDetail(bigRow("mid-b")); // starts one pass with both rows
+    await vi.waitFor(() => expect(signalled).toBeDefined());
+    await signalled;
+
+    expect(state.events).toEqual(["insert mid-a", "insert mid-b", "close"]);
+    expect(typeof state.fullData["mid-a"]).toBe("string");
+    expect(state.fullData["mid-b"]).toBeNull();
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it("writes the buffered rows before the adapter registered ahead of it closes the database", async () => {
+    await repo.saveRequestDetail({ id: "last-row", model: "m" });
+    expect(state.events).toEqual([]);
+
+    await runSignalListeners("SIGTERM");
+
+    expect(state.events).toEqual(["insert last-row", "close"]);
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it("waits for a flush already running before the database closes", async () => {
+    const held = gate();
+    state.adapterGates = [held.promise];
+    await repo.saveRequestDetail({ id: "row-a", model: "m" });
+    // The second row reaches the batch size and starts a flush, held at getAdapter.
+    await repo.saveRequestDetail({ id: "row-b", model: "m" });
+    setTimeout(held.open, 20);
+
+    await runSignalListeners("SIGTERM");
+
+    expect(state.events).toEqual(["insert row-a", "insert row-b", "close"]);
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it("writes a batch saved while the previous flush is finishing, with no further save or signal", async () => {
+    // Runs inside the flush's last transaction; both saves push a tick later,
+    // after that flush has found the buffer empty.
+    state.onTransaction = () => {
+      repo.saveRequestDetail({ id: "late-a", model: "m" });
+      repo.saveRequestDetail({ id: "late-b", model: "m" });
+    };
+    await repo.saveRequestDetail({ id: "row-1", model: "m" });
+    await repo.saveRequestDetail({ id: "row-2", model: "m" });
+
+    await vi.waitFor(() => expect(state.events).toEqual(["insert row-1", "insert row-2", "insert late-a", "insert late-b"]));
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it("still writes later rows after a batch whose transaction failed", async () => {
+    state.failNextTransaction = true;
+    await repo.saveRequestDetail({ id: "lost-1", model: "m" });
+    await repo.saveRequestDetail({ id: "lost-2", model: "m" });
+    await repo.__test__.flush();
+    expect(consoleError).toHaveBeenCalledWith("[requestDetailsRepo] Batch write failed:", expect.any(Error));
+
+    await repo.saveRequestDetail({ id: "kept-1", model: "m" });
+    await repo.saveRequestDetail({ id: "kept-2", model: "m" });
+    await repo.__test__.flush();
+    expect(state.events).toEqual(["insert kept-1", "insert kept-2"]);
+  });
+
+  it("does not leave an exit listener that can't finish an async write", () => {
+    const added = process.listeners("exit").filter((listener) => !before.exit.includes(listener));
+    expect(added).toEqual([]);
+  });
+});

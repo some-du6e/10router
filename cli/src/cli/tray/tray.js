@@ -1,9 +1,16 @@
 const { exec } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const { recordChild, forgetChild } = require("../utils/launcherState");
 
 let trayInstance = null;
 let isWinTray = false;
+
+// The Go tray binary's ChildProcess (systray2 keeps it in _process).
+function trayProcessOf(instance) {
+  if (!instance) return null;
+  return instance._process || (typeof instance.process === "function" ? instance.process() : null);
+}
 
 /**
  * Get icon base64 from file — used for systray (mac/linux)
@@ -132,6 +139,7 @@ function initWindowsTray(options) {
     });
 
     isWinTray = true;
+    if (trayInstance) recordChild("tray", trayInstance.pid);
     return trayInstance;
   } catch (err) {
     return null;
@@ -225,15 +233,22 @@ function initUnixTray(options) {
       });
     });
 
+    // The Go binary runs from systray's copy dir, so the server can only find
+    // it through this record (see utils/launcherState.js).
+    const instance = trayInstance;
+    const recordTrayPid = () => {
+      try { recordChild("tray", trayProcessOf(instance)?.pid); } catch (e) {}
+    };
+
     if (isV2) {
       // systray2 exposes a ready() promise instead of onReady/onError. Surface
       // failures (binary crash, EACCES, etc.) so users can see why the icon
       // didn't appear instead of getting a misleading "running in tray" log.
-      trayInstance.ready().catch((err) => {
+      trayInstance.ready().then(recordTrayPid, (err) => {
         process.stderr.write(`[10router] tray failed to start: ${err && err.message ? err.message : err}\n`);
       });
     } else {
-      trayInstance.onReady(() => {});
+      trayInstance.onReady(recordTrayPid);
       trayInstance.onError(() => {});
     }
 
@@ -254,6 +269,7 @@ function killTray() {
   const wasWin = isWinTray;
   trayInstance = null;
   if (!instance) return Promise.resolve();
+  forgetChild("tray");
 
   if (wasWin) {
     try { instance.kill(); } catch (e) {}
@@ -263,7 +279,7 @@ function killTray() {
   // Unix: get the Go tray child process handle.
   let proc = null;
   try {
-    proc = instance._process || (typeof instance.process === "function" ? instance.process() : null);
+    proc = trayProcessOf(instance);
   } catch (e) {}
 
   // Graceful shutdown: send {type:"exit"} via IPC so the Go binary can call

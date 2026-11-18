@@ -62,7 +62,7 @@ async function showSettingsMenu(breadcrumb = []) {
         action: async () => { await disableTunnel(); return true; }
       },
       {
-        label: "🔑 Reset Password (re-run setup)",
+        label: "🔑 Reset Password",
         action: async () => { await resetPassword(); return true; }
       },
       {
@@ -135,12 +135,13 @@ async function disableTunnel() {
 
 /**
  * Clear the dashboard password via server API (writes the live SQLite DB) and
- * put the instance back into first-run setup. There is no default password:
- * the server mints a one-time setup token, printed here and on the server
- * console, which must be used at /setup before the token expires.
+ * print what the server says happened. Without INITIAL_PASSWORD the instance
+ * goes back to first-run setup and the server mints a one-time setup token,
+ * printed here and on the server console. With INITIAL_PASSWORD set, no token
+ * is minted: that password is the way back in.
  */
 async function resetPassword() {
-  const ok = await confirm("Clear the dashboard password and re-run first-time setup?");
+  const ok = await confirm("Clear the dashboard password? You'll get a setup token, or sign in with INITIAL_PASSWORD if it's set.");
   if (!ok) {
     showStatus("Cancelled", "info");
     await pause();
@@ -149,12 +150,15 @@ async function resetPassword() {
 
   const result = await api.resetPassword();
   if (result.success) {
-    const { token, expiresInSec } = result.data || {};
-    if (token) {
-      const minutes = Math.max(1, Math.round((expiresInSec || 300) / 60));
-      showStatus("Password cleared. Open the dashboard to finish setup.", "success");
-      console.log(`\n  Setup token: ${COLORS.cyan}${token}${COLORS.reset}`);
-      console.log(`  ${COLORS.dim}Valid for ${minutes} minutes — restart 10router for a new one.${COLORS.reset}\n`);
+    const { token, expiresInSec, message } = result.data || {};
+    if (message || token) {
+      // Newer servers say what the reset did (mode switch, INITIAL_PASSWORD, setup token).
+      showStatus(message || "Password cleared. Open the dashboard to finish setup.", "success");
+      if (token) {
+        const minutes = Math.max(1, Math.round((expiresInSec || 300) / 60));
+        console.log(`\n  Setup token: ${COLORS.cyan}${token}${COLORS.reset}`);
+        console.log(`  ${COLORS.dim}Valid for ${minutes} minutes — restart 10router for a new one.${COLORS.reset}\n`);
+      }
     } else {
       showStatus("Password cleared. Check the server console for the setup token.", "success");
     }

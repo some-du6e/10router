@@ -1067,7 +1067,6 @@ npm install
 npm run build
 
 # Configuration
-export JWT_SECRET="votre-secret-sécurisé-changez-le"
 export INITIAL_PASSWORD="votre-mot-de-passe"
 export DATA_DIR="/var/lib/9router"
 export PORT="20128"
@@ -1087,6 +1086,8 @@ pm2 start npm --name 9router -- start
 pm2 save
 pm2 startup
 ```
+
+> `JWT_SECRET` est facultatif. Laissez-le vide et 10router en génère un une seule fois dans `$DATA_DIR/jwt-secret`, donc les sessions survivent aux redémarrages. Uniquement pour plusieurs instances derrière une même URL : générez une valeur une fois (`openssl rand -hex 32`), conservez-la et définissez cette même valeur sur chaque instance. Les valeurs de moins de 32 caractères ou un placeholder documenté sont ignorés.
 
 ### Docker
 
@@ -1138,7 +1139,7 @@ docker pull decolua/9router:latest   # mise à jour vers la dernière version
 
 | Variable                                             | Par défaut                                  | Description                                                                                  |
 | ---------------------------------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `JWT_SECRET`                                         | Généré automatiquement (`~/.9router/jwt-secret`) | Secret de signature JWT pour le cookie d'authentification du tableau de bord (remplacez-le pour partager entre instances) |
+| `JWT_SECRET`                                         | Généré automatiquement (`~/.9router/jwt-secret`) | Secret de signature JWT pour le cookie d'authentification du tableau de bord ; définissez-le uniquement pour partager les sessions entre instances (32 caractères ou plus ; les valeurs plus courtes et les placeholders documentés sont ignorés) |
 | `INITIAL_PASSWORD`                                   | `123456`                                    | Mot de passe de première connexion quand aucun hash n'est enregistré                          |
 | `DATA_DIR`                                           | `~/.9router`                                | Emplacement principal des données de l'app (SQLite dans `$DATA_DIR/db/data.sqlite`)          |
 | `PORT`                                               | défaut du framework                         | Port du service (`20128` dans les exemples)                                                   |
@@ -1155,6 +1156,7 @@ docker pull decolua/9router:latest   # mise à jour vers la dernière version
 | `REQUIRE_API_KEY`                                    | `false`                                     | Applique la clé API Bearer sur les routes `/v1/*` (recommandé pour les déploiements exposés à Internet) |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` | vide                                        | Proxy sortant optionnel pour les appels aux fournisseurs externes                              |
 | `SEARXNG_URL`                                        | `http://localhost:8888/search`              | Endpoint du fournisseur de recherche web SearXNG intégré, sans authentification               |
+| `DETECT_ANTHROPIC_FIRST_HINTS`                       | vide                                        | Fragments d'URL qui font tester d'abord Anthropic Messages par « Add endpoint ». Séparés par des virgules, sans tenir compte de la casse ; les guillemets autour d'une entrée sont ignorés. Les URL qui nomment Anthropic ou Claude et les clés `sk-ant-` le font déjà. Chaque fragment est cherché n'importe où dans l'URL de l'endpoint (schéma, hôte, chemin, query ; un chemin d'API final comme `/chat/completions` est retiré avant) : choisissez une partie distinctive de l'hôte. Redémarrez après modification. |
 
 Remarques :
 

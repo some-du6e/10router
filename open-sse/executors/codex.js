@@ -6,7 +6,7 @@ import {
   shouldRefreshCredentials,
 } from "../services/oauthCredentialManager.js";
 import { normalizeResponsesInput } from "../translator/formats/responsesApi.js";
-import { fetchImageAsBase64 } from "../translator/concerns/image.js";
+import { fetchImageOnce } from "../translator/concerns/prefetch.js";
 import { getModelUpstreamId } from "../config/providerModels.js";
 import { getThinkingLevels } from "../providers/thinkingLevels.js";
 import { DEFAULT_RETRY_CONFIG, HTTP_STATUS, resolveRetryEntry } from "../config/runtimeConfig.js";
@@ -236,9 +236,11 @@ export class CodexExecutor extends BaseExecutor {
   /**
    * Prefetch remote image URLs and inline them as base64 data URIs.
    * Runs before execute() because Codex backend cannot fetch remote images.
-   * Mutates body.input in place.
+   * Replaces each input item's content list; body is the attempt's own copy.
+   * `cacheKey` is the client request's (chatCore's imageCacheKey), so another
+   * account or combo model reuses the download.
    */
-  async prefetchImages(body) {
+  async prefetchImages(body, cacheKey = null) {
     if (!Array.isArray(body?.input)) return;
     for (const item of body.input) {
       if (!Array.isArray(item.content)) continue;
@@ -248,7 +250,7 @@ export class CodexExecutor extends BaseExecutor {
         const detail = c.image_url?.detail || "auto";
         if (!url) return c;
         if (url.startsWith("data:")) return { type: "input_image", image_url: url, detail };
-        const fetched = await fetchImageAsBase64(url, { timeoutMs: 15000 });
+        const fetched = await fetchImageOnce(url, { cacheKey, timeoutMs: 15000 });
         return { type: "input_image", image_url: fetched?.url || url, detail };
       });
       item.content = await Promise.all(pending);
@@ -261,10 +263,10 @@ export class CodexExecutor extends BaseExecutor {
     dbg("CODEX", `execute start | inputItems=${inputLen} | images=${imgCount} | sessionId=${this._currentSessionId || "pending"}`);
     if (imgCount > 0) {
       const t0 = Date.now();
-      await this.prefetchImages(args.body);
+      await this.prefetchImages(args.body, args.imageCacheKey);
       dbg("CODEX", `prefetchImages done | ${Date.now() - t0}ms`);
     } else {
-      await this.prefetchImages(args.body);
+      await this.prefetchImages(args.body, args.imageCacheKey);
     }
 
     // Retry loop for SSE-level overloaded errors (200 OK body contains event: error)
@@ -452,8 +454,7 @@ export class CodexExecutor extends BaseExecutor {
       const effort = normalizeReasoningEffort(body.model, body.reasoning_effort || modelEffort || 'low');
       body.reasoning = { effort, summary: "auto" };
     } else {
-      body.reasoning.effort = normalizeReasoningEffort(body.model, body.reasoning.effort);
-      if (!body.reasoning.summary) body.reasoning.summary = "auto";
+      body.reasoning = { ...body.reasoning, effort: normalizeReasoningEffort(body.model, body.reasoning.effort), summary: body.reasoning.summary || "auto" };
     }
     delete body.reasoning_effort;
 
