@@ -146,7 +146,9 @@ const sameCapped = (a, b) => a.length === b.length && a.every((c, i) => c === b[
 // FULL_DATA_MAX_BYTES. For the same capped objects as an earlier save (a
 // stream's start save), that save's packed copy, or its JSON when it is still
 // waiting (`earlier`), so nothing is serialized again. `fieldJson` holds the
-// compact JSON truncateField already built for each field.
+// compact JSON truncateField already built for each field. The capped objects
+// are kept only as WeakRefs (`cappedRefs`), so a waiting copy never keeps them,
+// or the strings their previews came from, alive.
 function fullCopySource(item, record, fieldJson = {}, earlier = null) {
   const parts = [];
   let chars = 0;
@@ -164,12 +166,14 @@ function fullCopySource(item, record, fieldJson = {}, earlier = null) {
   const capped = parts.map(([key]) => record[key]);
   const prior = packedFullData.get(capped[0]);
   if (prior?.keys === keys && sameCapped(prior.capped, capped)) return { packed: prior.packed, bytes: prior.packed.length };
-  if (earlier?.json && earlier.keys === keys && sameCapped(earlier.capped, capped)) return { json: earlier.json, keys, capped, bytes: earlier.bytes };
+  if (earlier?.json && earlier.keys === keys && sameCapped(earlier.cappedRefs.map((ref) => ref.deref()), capped)) {
+    return { json: earlier.json, keys, cappedRefs: earlier.cappedRefs, bytes: earlier.bytes };
+  }
   try {
     const json = `{${parts.map(([key, value]) => `${JSON.stringify(key)}:${value ?? JSON.stringify(item[key])}`).join(",")}}`;
     // A UTF-16 code unit is at most 3 UTF-8 bytes, so only count bytes when that bound could exceed the limit.
     if (json.length * 3 > FULL_DATA_MAX_BYTES && Buffer.byteLength(json, "utf8") > FULL_DATA_MAX_BYTES) return null;
-    return { json, keys, capped, bytes: json.length * JSON_BYTES_PER_CHAR };
+    return { json, keys, cappedRefs: capped.map((c) => new WeakRef(c)), bytes: json.length * JSON_BYTES_PER_CHAR };
   } catch {
     return null;
   }
@@ -181,7 +185,9 @@ async function packSource(source) {
   if (source.packed) return source.packed;
   try {
     const packed = (await gzipAsync(source.json)).toString("base64");
-    packedFullData.set(source.capped[0], { keys: source.keys, capped: source.capped, packed });
+    // Kept for a later save of the same objects (a stream's end save) only while they live.
+    const capped = source.cappedRefs.map((ref) => ref.deref());
+    if (capped.every(Boolean)) packedFullData.set(capped[0], { keys: source.keys, capped, packed });
     return packed;
   } catch {
     return null;
@@ -334,16 +340,14 @@ async function writeBufferedRows() {
       const db = await getAdapter();
       const config = await getObservabilityConfig();
 
-      // sql.js rewrites the whole DB file on every write, so it skips full payloads.
-      // So does a flush once shutdown starts, checked per row: gzip eats into
-      // the drain's listener budget, and the database closes when that runs out.
-      const wantFull = config.keepFullData && db.driver !== "sql.js";
+      // A flush once shutdown starts packs nothing, checked per row: gzip eats
+      // into the drain's listener budget, and the database closes when that runs out.
       const rows = [];
       for (const save of saves) {
         // Only a row's newest save has a copy in fullRing, so a write packs
         // at most FULL_DATA_KEEP_ROWS.
         const source = takeCopy(save);
-        rows.push({ save, fullData: wantFull && source && !shuttingDown ? await packSource(source) : null });
+        rows.push({ save, fullData: config.keepFullData && source && !shuttingDown ? await packSource(source) : null });
       }
       // The setting may have been turned off (and stored payloads cleared)
       // while compression was awaited. Nothing awaits between this check and
@@ -427,9 +431,9 @@ function armFlushTimer() {
   }, configCache.value?.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS);
 }
 
-function dropSave(index) {
-  const [dropped] = writeBuffer.splice(index, 1);
-  // A dropped save takes its waiting copy with it.
+// A dropped save takes its waiting copy with it.
+function dropOldestSave() {
+  const dropped = writeBuffer.shift();
   queuedBytes -= dropped.bytes;
   takeCopy(dropped);
 }
@@ -448,7 +452,7 @@ export async function saveRequestDetail(detail) {
 
   // Past either cap the oldest saves go; the newest always stays.
   while (writeBuffer.length > 1 && (writeBuffer.length > SAVES_PER_ROW * config.maxRecords
-    || queuedBytes + inFlightBytes > limits.queuedRecordsMaxBytes)) dropSave(0);
+    || queuedBytes + inFlightBytes > limits.queuedRecordsMaxBytes)) dropOldestSave();
 
   // Trigger immediate flush if batch threshold reached.
   // flushToDatabase() drains entire buffer in a loop, so all pushes during await are persisted.

@@ -84,7 +84,8 @@ jobs:
   # Informational, for the PR's "Before": this branch's test against the base
   # branch's code. Every source file under open-sse/ and src/ that this branch
   # modifies is checked out from the base (files it adds stay, unused); the
-  # tests stay. Reports what fails and why; it never fails the run itself.
+  # tests stay. Reports what fails and why; test failures there don't fail the
+  # run, only a step that can't run at all does.
   before-on-base:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -112,7 +113,7 @@ jobs:
         if: env.compare == 'yes'
         working-directory: tests
         # Failures are the point here, so vitest's exit code is only reported.
-        # With no report (vitest crashed before writing one) it says so and passes.
+        # With no readable report (vitest crashed before writing one) it says so and passes.
         run: |
           status=0
           ./node_modules/.bin/vitest run --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/before.json" \
@@ -120,14 +121,16 @@ jobs:
           VITEST_STATUS="$status" node --input-type=module -e '
             import { existsSync, readFileSync, appendFileSync } from "node:fs";
             const file = process.env.RUNNER_TEMP + "/before.json";
-            if (!existsSync(file)) {
-              const line = `Informational. Before: vitest exited ${process.env.VITEST_STATUS} without a report.`;
+            const exited = `vitest exited ${process.env.VITEST_STATUS}`;
+            let r = null;
+            try { if (existsSync(file)) r = JSON.parse(readFileSync(file, "utf8")); } catch { r = null; }
+            if (!r) {
+              const line = `Informational. Before: ${exited} without a readable report.`;
               console.log(line);
               appendFileSync(process.env.GITHUB_STEP_SUMMARY, line + "\n");
               process.exit(0);
             }
-            const r = JSON.parse(readFileSync(file, "utf8"));
-            const lines = [`Informational. Before (base code, this branch tests): ${r.numFailedTests} failed, ${r.numPassedTests} passed of ${r.numTotalTests}`];
+            const lines = [`Informational. Before (base code, this branch tests): ${r.numFailedTests} failed, ${r.numPassedTests} passed of ${r.numTotalTests}; ${exited}`];
             for (const f of r.testResults) {
               const rel = f.name.slice(f.name.indexOf("/tests/") + 1);
               if (!f.assertionResults.length && f.status === "failed") lines.push(`  ${rel}: failed to load`);

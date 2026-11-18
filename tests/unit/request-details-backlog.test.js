@@ -91,6 +91,19 @@ async function saveTracked(rowIds, timestampOf) {
   return refs;
 }
 
+// Saves a row whose only message is one flat string of `chars` characters.
+async function saveHugeMessage(id, chars) {
+  const content = JSON.parse(JSON.stringify("q".repeat(chars)));
+  await db.saveRequestDetail(detail(id, at(7, 2000), { messages: [{ role: "user", content }] }));
+}
+
+async function heapAfterGc() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  gc();
+  gc();
+  return process.memoryUsage().heapUsed;
+}
+
 async function aliveAfterGc(refs) {
   await new Promise((resolve) => setTimeout(resolve, 0));
   gc();
@@ -257,6 +270,8 @@ describe("request detail backlog", { timeout: 120_000 }, () => {
       limits.queuedRecordsMaxBytes = limit;
       for (let i = 1; i <= 30; i++) await db.saveRequestDetail(detail(`bytes-${pad(i, 3)}`, at(6, i)));
       expect(repo.__test__.queued()).toBe(5);
+      // The dropped saves took their waiting copies with them.
+      expect(repo.__test__.ringSize()).toBe(5);
       expect(repo.__test__.queuedBytes() + repo.__test__.inFlightBytes()).toBeLessThanOrEqual(limit);
     } finally {
       release();
@@ -290,12 +305,42 @@ describe("request detail backlog", { timeout: 120_000 }, () => {
     }
   });
 
+  it("writes a backlog in transactions of at most 200 rows", async () => {
+    const writes = vi.spyOn(adapter, "transaction");
+    try {
+      // A row cap high enough that none of the 450 saves is dropped.
+      await configure({ observabilityMaxRecords: 300 });
+      for (let i = 0; i < 450; i++) await db.saveRequestDetail(detail(`split-${pad(i, 3)}`, at(7, 600 + i), { messages: [] }));
+      writes.mockClear();
+      await repo.__test__.flush();
+      expect(writes).toHaveBeenCalledTimes(3);
+      expect(storedIds()).toContain("split-449");
+    } finally {
+      writes.mockRestore();
+      await configure(BASE_SETTINGS);
+    }
+  });
+
+  it("lets a dropped body's message strings go while its full copy waits", async () => {
+    // A save whose message is one 12 MB string (under the 16 MB copy limit): its
+    // copy waits in the ring, but neither the ring nor the capped preview may
+    // keep the original string as well.
+    const CHARS = 12 * MB;
+    const before = await heapAfterGc();
+    await saveHugeMessage("huge-message", CHARS);
+    expect(repo.__test__.ringSize()).toBeGreaterThan(0);
+    // The waiting copy's JSON (one byte a char here), not the string twice.
+    expect((await heapAfterGc()) - before).toBeLessThan(CHARS * 1.5);
+    await repo.__test__.flush();
+    expect((await db.getRequestDetailFullData("huge-message")).request.messages[0].content).toHaveLength(CHARS);
+  });
+
   it("builds no full copy for a save made after shutdown", async () => {
     vi.resetModules();
     const fresh = await import("@/lib/db/repos/requestDetailsRepo.js");
     try {
       await fresh.__test__.shutdown();
-      await fresh.saveRequestDetail(detail("after-shutdown", at(7, 500)));
+      await fresh.saveRequestDetail(detail("after-shutdown", at(7, 2100)));
       expect(fresh.__test__.queued()).toBe(1);
       expect(fresh.__test__.ringSize()).toBe(0);
       await fresh.__test__.flush();
@@ -356,6 +401,7 @@ describe("request detail backlog", { timeout: 120_000 }, () => {
       release();
       await flushing;
       expect(consoleError).toHaveBeenCalledWith("[requestDetailsRepo] Batch write failed:", expect.any(Error));
+      expect(fresh.__test__.inFlightBytes()).toBe(0);
       expect(storedIds()).not.toContain("left-c");
 
       // Only the re-armed timer can write them now.
