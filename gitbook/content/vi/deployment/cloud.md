@@ -53,7 +53,7 @@ export NODE_ENV="production"
 | `DATA_DIR` | `~/.9router` | Đường dẫn lưu database và data (tên thư mục giữ nguyên như bản phát hành trước để tương thích ngược) |
 | `NODE_ENV` | `development` | Đặt `production` cho deployment |
 | `ENABLE_REQUEST_LOGS` | `false` | Bật debug request/response logs |
-| `TRUST_PROXY` | `false` | Đặt `true` khi một proxy trên máy này không gửi `X-Forwarded-For`/`X-Real-IP` và đổi `Host` thành `localhost`, để không kết nối loopback nào được coi là cục bộ. Cấu hình Nginx bên dưới không cần biến này |
+| `TRUST_PROXY` | `false` | Đặt `true` khi một công cụ chuyển tiếp trên máy này không thêm `X-Forwarded-For` (socat, `ssh -R`, tunnel TCP): `Host` của client đến nguyên vẹn, nên client có thể gửi `Host: localhost` và được coi là cục bộ. Khi bật, không kết nối loopback nào được coi là cục bộ. Cấu hình Nginx bên dưới không cần biến này |
 
 ### Bước 5: Tạo Data Directory
 
@@ -360,7 +360,7 @@ ssh -L 3000:localhost:3000 user@your-server.com
 # Then open http://localhost:3000 in your browser
 ```
 
-Request đi qua Nginx (hoặc bất kỳ proxy hay tunnel nào trên server) được coi là từ xa: cần API key cho `/v1`, còn các route chỉ dành cho máy cục bộ (MCP server, điều khiển tunnel, Reset Password) và endpoint có URL nội bộ (như Ollama trên `localhost`) trả về 403 hoặc "URL not allowed". Với những việc đó, dùng SSH tunnel ở trên hoặc CLI trên server. Giữ các dòng `X-Real-IP` và `X-Forwarded-For` trong cấu hình Nginx để khóa đăng nhập đếm riêng từng client, và giữ `Host $host` (hoặc gửi `X-Forwarded-Host`) để các lệnh gọi API của chính dashboard được chấp nhận.
+Request đi qua Nginx (hoặc bất kỳ proxy hay tunnel nào trên server) được coi là từ xa: cần API key cho `/v1`, còn các route chỉ dành cho máy cục bộ (MCP server, điều khiển tunnel, Reset Password) và endpoint có URL nội bộ (như Ollama trên `localhost`) trả về 403 hoặc "URL not allowed". Với những việc đó, dùng SSH tunnel tới cổng của app (`ssh -L 20128:localhost:20128 user@your-server.com`, rồi mở `http://localhost:20128`) hoặc CLI trên server. Giữ các dòng `X-Real-IP` và `X-Forwarded-For` trong cấu hình Nginx để khóa đăng nhập đếm riêng từng client, và giữ `Host $host` (hoặc gửi `X-Forwarded-Host`) để các lệnh gọi API của chính dashboard được chấp nhận.
 
 ### 4. Cập nhật định kỳ
 

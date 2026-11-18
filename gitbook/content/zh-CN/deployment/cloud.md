@@ -53,7 +53,7 @@ export NODE_ENV="production"
 | `DATA_DIR` | `~/.9router` | 数据库与数据存储路径 （目录名称与旧版本保持一致，以确保向后兼容） |
 | `NODE_ENV` | `development` | 部署时设为 `production` |
 | `ENABLE_REQUEST_LOGS` | `false` | 启用 debug 请求/响应日志 |
-| `TRUST_PROXY` | `false` | 当本机上的代理不发送 `X-Forwarded-For`/`X-Real-IP` 且把 `Host` 改写为 `localhost` 时设为 `true`,这样任何回环连接都不再算作本机。下面的 Nginx 配置不需要它 |
+| `TRUST_PROXY` | `false` | 当本机上的转发工具不添加 `X-Forwarded-For` 时(socat、`ssh -R`、TCP 隧道)设为 `true`:客户端自己的 `Host` 会原样到达,发送 `Host: localhost` 就会被当作本机。设为 `true` 后任何回环连接都不再算作本机。下面的 Nginx 配置不需要它 |
 
 ### 步骤 5:创建数据目录
 
@@ -360,7 +360,7 @@ ssh -L 3000:localhost:3000 user@your-server.com
 # 然后在浏览器打开 http://localhost:3000
 ```
 
-经过 Nginx(或服务器上任何代理、隧道)的请求被视为远程请求:`/v1` 需要 API 密钥,仅限本机的路由(MCP 服务器、隧道控制、重置密码)以及使用私有 URL 的端点(例如 `localhost` 上的 Ollama)会返回 403 或 "URL not allowed"。这些操作请使用上面的 SSH 隧道或服务器上的 CLI。保留 Nginx 配置中的 `X-Real-IP` 和 `X-Forwarded-For` 两行,让登录锁定按客户端分别计数;并保留 `Host $host`(或发送 `X-Forwarded-Host`),让仪表盘自身的 API 调用被接受。
+经过 Nginx(或服务器上任何代理、隧道)的请求被视为远程请求:`/v1` 需要 API 密钥,仅限本机的路由(MCP 服务器、隧道控制、重置密码)以及使用私有 URL 的端点(例如 `localhost` 上的 Ollama)会返回 403 或 "URL not allowed"。这些操作请使用到应用自身端口的 SSH 隧道(`ssh -L 20128:localhost:20128 user@your-server.com`,然后打开 `http://localhost:20128`)或服务器上的 CLI。保留 Nginx 配置中的 `X-Real-IP` 和 `X-Forwarded-For` 两行,让登录锁定按客户端分别计数;并保留 `Host $host`(或发送 `X-Forwarded-Host`),让仪表盘自身的 API 调用被接受。
 
 ### 4. 定期更新
 

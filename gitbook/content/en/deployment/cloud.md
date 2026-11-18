@@ -53,7 +53,7 @@ export NODE_ENV="production"
 | `DATA_DIR` | `~/.9router` | Database and data storage path (the directory name is unchanged from the previous release for backward compatibility) |
 | `NODE_ENV` | `development` | Set to `production` for deployment |
 | `ENABLE_REQUEST_LOGS` | `false` | Enable debug request/response logs |
-| `TRUST_PROXY` | `false` | Set `true` when a proxy on this machine sends no `X-Forwarded-For`/`X-Real-IP` and rewrites `Host` to `localhost`, so no loopback connection counts as local. The Nginx config below needs no setting |
+| `TRUST_PROXY` | `false` | Set `true` when a forwarder on this machine adds no `X-Forwarded-For` (socat, `ssh -R`, a TCP tunnel): its clients' own `Host` reaches 10router, so one could send `Host: localhost` and count as local. With it, no loopback connection counts as local. The Nginx config below needs no setting |
 
 ### Step 5: Create Data Directory
 
@@ -362,7 +362,7 @@ ssh -L 3000:localhost:3000 user@your-server.com
 # Then open http://localhost:3000 in your browser
 ```
 
-Requests through Nginx (or any proxy or tunnel on the server) are treated as remote: they need an API key for `/v1`, and the local-only routes (MCP servers, tunnel controls, Reset Password) and endpoints with a private URL (such as an Ollama on `localhost`) answer 403 or "URL not allowed". Use the SSH tunnel above, or the CLI on the server, for those. Keep the `X-Real-IP` and `X-Forwarded-For` lines in the Nginx config so the login lockout counts each client separately, and keep `Host $host`, or send `X-Forwarded-Host`, so the dashboard's own API calls are accepted.
+Requests through Nginx (or any proxy or tunnel on the server) are treated as remote: they need an API key for `/v1`, and the local-only routes (MCP servers, tunnel controls, Reset Password) and endpoints with a private URL (such as an Ollama on `localhost`) answer 403 or "URL not allowed". For those, use an SSH tunnel to the app's own port (`ssh -L 20128:localhost:20128 user@your-server.com`, then open `http://localhost:20128`) or the CLI on the server. Keep the `X-Real-IP` and `X-Forwarded-For` lines in the Nginx config so the login lockout counts each client separately, and keep `Host $host`, or send `X-Forwarded-Host`, so the dashboard's own API calls are accepted.
 
 ### 4. Regular Updates
 

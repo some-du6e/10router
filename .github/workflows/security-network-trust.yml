@@ -80,6 +80,7 @@ jobs:
           tests/unit/auth-login-mode.test.js
           tests/unit/custom-server-peer-headers.test.js
           tests/unit/login-route-limiter.test.js
+          tests/unit/local-request-peer-trust-3294.test.js
 
   no-new-failures:
     runs-on: ubuntu-latest

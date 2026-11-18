@@ -3,7 +3,7 @@ import { getSettings } from "@/lib/localDb";
 import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
 import { setDashboardAuthCookie } from "@/lib/auth/dashboardSession";
-import { checkLock, recordFail, recordSuccess, getClientIp, reserveAttempt, releaseAttempt } from "@/lib/auth/loginLimiter";
+import { checkLock, recordFail, recordSuccess, getClientIp, reserveAttempt, releaseAttempt, LOCAL_LOGIN_KEY } from "@/lib/auth/loginLimiter";
 import { isLocalRequest, isTunnelHost } from "@/dashboardGuard";
 import { getAuthBootstrapState, getBootstrapSecret } from "@/lib/auth/setupState";
 import { getConfiguredSsoType, isPasswordLoginDisabled } from "@/lib/auth/authMode.js";
@@ -12,9 +12,11 @@ const RESET_HINT = "Forgot password? Run 10router CLI → Settings → Reset Pas
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" };
 
 export async function POST(request) {
-  const ip = getClientIp(request);
-  const local = isLocalRequest(request);
-  const lock = reserveAttempt(ip, { local });
+  // Logins from this machine share their own bucket: remote clients never land
+  // in it, so they can't lock the owner out, and a forwarder that makes a remote
+  // client look local (see TRUST_PROXY) still gets limited.
+  const ip = isLocalRequest(request) ? LOCAL_LOGIN_KEY : getClientIp(request);
+  const lock = reserveAttempt(ip);
   if (!lock.ok) {
     return NextResponse.json(
       { error: `Too many failed attempts. Try again in ${lock.retryAfter}s. ${RESET_HINT}`, retryAfter: lock.retryAfter, resetHint: RESET_HINT },
@@ -103,8 +105,6 @@ export async function POST(request) {
       return NextResponse.json({ success: true, mustChangePassword: false }, { headers: NO_STORE_HEADERS });
     }
 
-    // A login from this machine is never locked out (see reserveAttempt).
-    if (local) return NextResponse.json({ error: "Invalid password." }, { status: 401 });
     const { remainingBeforeLock } = recordFail(ip);
     const postLock = checkLock(ip);
     if (postLock.locked) {
@@ -120,6 +120,6 @@ export async function POST(request) {
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   } finally {
-    releaseAttempt(ip, { local });
+    releaseAttempt(ip);
   }
 }

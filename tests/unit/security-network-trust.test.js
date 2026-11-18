@@ -1,6 +1,6 @@
 // Who counts as local, remote or rate-limited: the custom-server.js wrapper's
 // verdict on loopback hops and the address it keys on, and the login limiter's
-// lockout under concurrency, key rotation and remote attempts on the owner's bucket.
+// lockout under concurrency, key rotation and the shared and local buckets.
 import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach, vi } from "vitest";
 import { createRequire } from "node:module";
 import http from "node:http";
@@ -8,7 +8,7 @@ import http from "node:http";
 const require = createRequire(import.meta.url);
 const SERVER_PATH = require.resolve("../../custom-server.js");
 const originalCreateServer = http.createServer;
-const { isLoopbackHost, isOnThisMachine, clientIpFor } = require(SERVER_PATH).__test__;
+const { isLoopbackHost, isOnThisMachine, clientIpFor, isTunnelTraffic, bridgeForwardHeaders } = require(SERVER_PATH).__test__;
 
 afterAll(() => {
   // custom-server.js wraps http.createServer when loaded; leave the module as found.
@@ -62,45 +62,59 @@ describe("custom-server wrapper: who is local and which address it keys on", () 
   });
 
   it("treats any forwarding header from a loopback hop as a proxy", async () => {
-    for (const extra of [{ forwarded: "for=203.0.113.9" }, { "x-forwarded-proto": "https" }, { "cf-connecting-ip": "203.0.113.9" }]) {
+    for (const extra of [{ forwarded: "for=203.0.113.9" }, { "x-forwarded-proto": "https" }, { "cf-connecting-ip": "203.0.113.9" }, { "cf-ray": "abc-LAX" }, { "tailscale-funnel-request": "?1" }]) {
       const h = await get({ host: `localhost:${port}`, ...extra });
       expect(h["x-9r-via-proxy"], JSON.stringify(extra)).toBe("1");
     }
   });
 
-  it("treats every loopback hop as a proxy when TRUST_PROXY=true", async () => {
+  // socat, ssh -R or a TCP tunnel passes the client's bytes through: a remote
+  // client that sends Host: localhost looks exactly like a local one.
+  it("makes a header-less forwarder's clients remote only with TRUST_PROXY=true", async () => {
+    const spoofed = { host: `localhost:${port}` };
+    expect((await get(spoofed))["x-9r-via-proxy"]).toBeUndefined();
     vi.stubEnv("TRUST_PROXY", "true");
-    const h = await get({ host: `localhost:${port}` });
+    const h = await get(spoofed);
     expect(h["x-9r-via-proxy"]).toBe("1");
     expect(h["x-9r-real-ip"]).toBe("unknown");
   });
 
-  // nginx with only `proxy_set_header X-Real-IP $remote_addr`: the client's own
-  // X-Forwarded-For passes through untouched.
-  it("keys on X-Real-IP from a proxy that sets only that, whatever X-Forwarded-For the client sent", async () => {
-    const h = await get({ host: "router.example.com", "x-real-ip": "203.0.113.8", "x-forwarded-for": "198.51.100.66" });
+  // Caddy, Traefik, cloudflared and Tailscale append to X-Forwarded-For and pass
+  // a client's own X-Real-IP through untouched.
+  it("keys on the appended hop behind an appending proxy, however the client rotates X-Real-IP", async () => {
+    const keys = new Set();
+    for (const realIp of ["198.51.100.1", "198.51.100.2", "203.0.113.7", "127.0.0.1"]) {
+      const h = await get({ host: "router.example.com", "x-real-ip": realIp, "x-forwarded-for": `198.51.100.${Math.floor(Math.random() * 200)}, 203.0.113.7` });
+      keys.add(h["x-9r-real-ip"]);
+    }
+    expect([...keys]).toEqual(["203.0.113.7"]);
+  });
+
+  // nginx with only `proxy_set_header X-Real-IP $remote_addr` and no X-Forwarded-For.
+  it("keys on X-Real-IP from a proxy that sets only that", async () => {
+    const h = await get({ host: "router.example.com", "x-real-ip": "203.0.113.8" });
     expect(h["x-9r-real-ip"]).toBe("203.0.113.8");
   });
 
-  // A proxy with only `$proxy_add_x_forwarded_for`: the client's entries come first.
-  it("keys on the hop a proxy that only appends X-Forwarded-For added, not the client's entries", async () => {
-    const h = await get({ host: "router.example.com", "x-forwarded-for": "198.51.100.2, 203.0.113.7" });
-    expect(h["x-9r-real-ip"]).toBe("203.0.113.7");
-  });
-
-  it("never keys a proxied request on a loopback address from a header", async () => {
+  it("never keys a proxied request on a loopback or non-address value from a header", async () => {
     for (const extra of [
       { "x-forwarded-for": "127.0.0.1" },
       { "x-forwarded-for": "127.0.0.1, ::1" },
+      { "x-forwarded-for": "local" },
+      { "x-forwarded-for": "unknown, 127.0.0.1" },
       { "x-real-ip": "127.0.0.1" },
-      { "x-real-ip": "::1", "x-forwarded-for": "localhost" },
+      { "x-real-ip": "local" },
     ]) {
       const h = await get({ host: "router.example.com", ...extra });
       expect(h["x-9r-real-ip"], JSON.stringify(extra)).toBe("unknown");
       expect(h["x-9r-via-proxy"], JSON.stringify(extra)).toBe("1");
     }
-    const h = await get({ host: "router.example.com", "x-real-ip": "127.0.0.1", "x-forwarded-for": "203.0.113.7" });
-    expect(h["x-9r-real-ip"]).toBe("203.0.113.7");
+  });
+
+  it("stamps tunnel traffic from a loopback peer, and drops a client's own stamp", async () => {
+    expect((await get({ host: "abc.trycloudflare.com", "cf-ray": "abc-LAX", "cf-connecting-ip": "203.0.113.9" }))["x-9r-via-tunnel"]).toBe("1");
+    expect((await get({ host: "box.tail0.ts.net", "tailscale-funnel-request": "?1" }))["x-9r-via-tunnel"]).toBe("1");
+    expect((await get({ host: "router.example.com", "x-9r-via-tunnel": "1" }))["x-9r-via-tunnel"]).toBeUndefined();
   });
 });
 
@@ -118,27 +132,37 @@ describe("isOnThisMachine and clientIpFor", () => {
     expect(clientIpFor(LOCAL_HOST, socketIp)).toBe(socketIp || "unknown");
   });
 
-  it.each(["x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host", "x-forwarded-proto", "cf-connecting-ip", "true-client-ip"])(
+  it.each(["x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host", "x-forwarded-proto", "cf-connecting-ip", "true-client-ip", "cf-ray", "tailscale-funnel-request"])(
     "%s from a loopback peer means a proxy",
     (name) => {
       expect(isOnThisMachine({ ...LOCAL_HOST, [name]: "203.0.113.9" }, "127.0.0.1")).toBe(false);
     }
   );
 
-  it("treats a request with no Host from loopback as local", () => {
+  it("uses Host only to rule a request out, never to rule it in", () => {
     expect(isOnThisMachine({}, "::1")).toBe(true);
+    expect(isOnThisMachine({ host: "router.example.com" }, "127.0.0.1")).toBe(false);
+    vi.stubEnv("TRUST_PROXY", "true");
+    expect(isOnThisMachine({ host: "localhost" }, "127.0.0.1")).toBe(false);
+    expect(isOnThisMachine({}, "127.0.0.1")).toBe(false);
   });
 
   it.each([
     ["the rightmost hop", { "x-forwarded-for": "198.51.100.1, 203.0.113.7" }, "203.0.113.7"],
     ["the rightmost non-loopback hop", { "x-forwarded-for": "198.51.100.1, 203.0.113.7, 127.0.0.1, ::1" }, "203.0.113.7"],
     ["past empty entries", { "x-forwarded-for": "203.0.113.7, , " }, "203.0.113.7"],
+    ["past entries that aren't addresses", { "x-forwarded-for": "203.0.113.7, local, unknown" }, "203.0.113.7"],
     ["unknown for empty entries only", { "x-forwarded-for": " , ," }, "unknown"],
     ["unknown for an all-loopback chain", { "x-forwarded-for": "127.0.0.1, ::1, ::ffff:127.0.0.1, [::1]:5000" }, "unknown"],
-    ["X-Real-IP over X-Forwarded-For", { "x-real-ip": "203.0.113.8", "x-forwarded-for": "198.51.100.1" }, "203.0.113.8"],
+    ["X-Forwarded-For over X-Real-IP", { "x-real-ip": "203.0.113.8", "x-forwarded-for": "198.51.100.1" }, "198.51.100.1"],
+    ["X-Forwarded-For over CF-Connecting-IP", { "cf-connecting-ip": "203.0.113.8", "x-forwarded-for": "198.51.100.1" }, "198.51.100.1"],
+    ["unknown, not X-Real-IP, when X-Forwarded-For has nothing usable", { "x-real-ip": "203.0.113.8", "x-forwarded-for": "127.0.0.1" }, "unknown"],
+    ["X-Real-IP with no X-Forwarded-For", { "x-real-ip": "203.0.113.8" }, "203.0.113.8"],
     ["the last X-Real-IP when it was sent twice", { "x-real-ip": "198.51.100.1, 203.0.113.8" }, "203.0.113.8"],
-    ["X-Forwarded-For past a loopback X-Real-IP", { "x-real-ip": "127.0.0.1", "x-forwarded-for": "203.0.113.7" }, "203.0.113.7"],
+    ["CF-Connecting-IP with neither", { "cf-connecting-ip": "203.0.113.9", "cf-ray": "abc-LAX" }, "203.0.113.9"],
+    ["an IPv4 hop with a port", { "x-forwarded-for": "203.0.113.7:4444" }, "203.0.113.7"],
     ["an IPv6 hop", { "x-forwarded-for": "2001:db8::7" }, "2001:db8::7"],
+    ["a bracketed IPv6 hop with a port", { "x-forwarded-for": "[2001:db8::7]:443" }, "2001:db8::7"],
     ["unknown when only Host says it is proxied", { host: "router.example.com" }, "unknown"],
   ])("behind a loopback proxy, keys on %s", (_name, headers, expected) => {
     expect(clientIpFor({ ...LOCAL_HOST, ...headers }, "127.0.0.1")).toBe(expected);
@@ -146,6 +170,14 @@ describe("isOnThisMachine and clientIpFor", () => {
 
   it("keys a direct remote peer on its socket, whatever it sends", () => {
     expect(clientIpFor({ "x-forwarded-for": "203.0.113.7", "x-real-ip": "203.0.113.8" }, "198.51.100.9")).toBe("198.51.100.9");
+  });
+
+  it("calls only a loopback peer with tunnel headers tunnel traffic", () => {
+    expect(isTunnelTraffic({ "cf-ray": "x" }, "127.0.0.1")).toBe(true);
+    expect(isTunnelTraffic({ "cf-connecting-ip": "203.0.113.9" }, "::1")).toBe(true);
+    expect(isTunnelTraffic({ "tailscale-funnel-request": "?1" }, "127.0.0.1")).toBe(true);
+    expect(isTunnelTraffic({ "cf-ray": "x" }, "198.51.100.9")).toBe(false);
+    expect(isTunnelTraffic({ host: "abc.trycloudflare.com" }, "127.0.0.1")).toBe(false);
   });
 
   it.each([
@@ -168,6 +200,20 @@ describe("isOnThisMachine and clientIpFor", () => {
   });
 });
 
+describe("bridgeForwardHeaders follows the same rule as the wrapper", () => {
+  const HANDSHAKE = { authorization: "Bearer sk-x" };
+
+  it("marks a loopback handshake with a non-loopback Host and no forwarding header as remote", () => {
+    expect(bridgeForwardHeaders({ ...HANDSHAKE, host: "router.example.com" }, "127.0.0.1", 2)["x-forwarded-for"]).toBe("127.0.0.1");
+  });
+
+  it("keeps a loopback handshake with a loopback Host local, unless TRUST_PROXY=true", () => {
+    expect(bridgeForwardHeaders({ ...HANDSHAKE, host: "localhost:20128" }, "127.0.0.1", 2)["x-forwarded-for"]).toBeUndefined();
+    vi.stubEnv("TRUST_PROXY", "true");
+    expect(bridgeForwardHeaders({ ...HANDSHAKE, host: "localhost:20128" }, "127.0.0.1", 2)["x-forwarded-for"]).toBe("127.0.0.1");
+  });
+});
+
 describe("login limiter", () => {
   let limiter;
 
@@ -179,10 +225,10 @@ describe("login limiter", () => {
     vi.useRealTimers();
   });
 
-  const fail = (ip) => {
-    expect(limiter.reserveAttempt(ip).ok).toBe(true);
-    limiter.recordFail(ip);
-    limiter.releaseAttempt(ip);
+  const fail = (key) => {
+    expect(limiter.reserveAttempt(key).ok).toBe(true);
+    limiter.recordFail(key);
+    limiter.releaseAttempt(key);
   };
 
   it("caps concurrent attempts in flight for one key at the lockout threshold", () => {
@@ -211,15 +257,15 @@ describe("login limiter", () => {
   });
 
   it("clears a key's failures on a success but keeps the other attempts still in flight", () => {
-    const ip = "203.0.113.5";
-    for (let i = 0; i < 3; i++) limiter.reserveAttempt(ip);
-    limiter.recordFail(ip);
-    limiter.recordFail(ip);
-    limiter.recordSuccess(ip); // one of the three
-    limiter.releaseAttempt(ip);
+    const key = "203.0.113.5";
+    for (let i = 0; i < 3; i++) limiter.reserveAttempt(key);
+    limiter.recordFail(key);
+    limiter.recordFail(key);
+    limiter.recordSuccess(key); // one of the three
+    limiter.releaseAttempt(key);
     // Two still in flight and no failures left: three more fit, a fourth doesn't.
-    for (let i = 0; i < 3; i++) expect(limiter.reserveAttempt(ip).ok).toBe(true);
-    expect(limiter.reserveAttempt(ip).ok).toBe(false);
+    for (let i = 0; i < 3; i++) expect(limiter.reserveAttempt(key).ok).toBe(true);
+    expect(limiter.reserveAttempt(key).ok).toBe(false);
   });
 
   it("clears a key's failures on a normal success", () => {
@@ -232,23 +278,35 @@ describe("login limiter", () => {
 
   it("doesn't let failures from many addresses block a fresh address's login", () => {
     for (let i = 0; i < 200; i++) {
-      const ip = `198.51.${Math.floor(i / 250)}.${i % 250}`;
-      for (let n = 0; n < 4; n++) fail(ip);
+      const key = `198.51.0.${i}`;
+      for (let n = 0; n < 4; n++) fail(key);
     }
     expect(limiter.reserveAttempt("203.0.113.200").ok).toBe(true);
   });
 
-  it("never locks a login from this machine, even when its address's bucket is locked", () => {
+  it("keeps the local bucket apart: remote failures never lock it, local ones do", () => {
     for (let i = 0; i < 5; i++) fail("127.0.0.1");
-    expect(limiter.checkLock("127.0.0.1").locked).toBe(true);
-    expect(limiter.reserveAttempt("127.0.0.1", { local: true })).toEqual({ ok: true });
+    for (let i = 0; i < 5; i++) fail(limiter.SHARED_LOGIN_KEY);
+    expect(limiter.reserveAttempt(limiter.LOCAL_LOGIN_KEY).ok).toBe(true);
+    limiter.releaseAttempt(limiter.LOCAL_LOGIN_KEY);
+    for (let i = 0; i < 5; i++) fail(limiter.LOCAL_LOGIN_KEY);
+    expect(limiter.checkLock(limiter.LOCAL_LOGIN_KEY).locked).toBe(true);
   });
 
-  it("keeps no record of logins from this machine", () => {
-    limiter.reserveAttempt("127.0.0.1", { local: true });
-    limiter.recordFail("127.0.0.1", { local: true });
-    limiter.releaseAttempt("127.0.0.1", { local: true });
-    expect(limiter.__test__.size()).toBe(0);
+  it("locks the shared unknown bucket for a short fixed time that never escalates", () => {
+    vi.useFakeTimers();
+    for (let round = 0; round < 4; round++) {
+      for (let i = 0; i < 5; i++) fail("unknown");
+      expect(limiter.checkLock("unknown"), `round ${round}`).toEqual({ locked: true, retryAfter: 15 });
+      vi.advanceTimersByTime(15_001);
+      expect(limiter.checkLock("unknown").locked).toBe(false);
+    }
+    // An address bucket escalates: 30 s, then 2 min.
+    for (let i = 0; i < 5; i++) fail("203.0.113.9");
+    expect(limiter.checkLock("203.0.113.9").retryAfter).toBe(30);
+    vi.advanceTimersByTime(30_001);
+    for (let i = 0; i < 5; i++) fail("203.0.113.9");
+    expect(limiter.checkLock("203.0.113.9").retryAfter).toBe(120);
   });
 
   it("forgets an address whose attempt left nothing to remember", () => {
@@ -268,6 +326,24 @@ describe("login limiter", () => {
     vi.advanceTimersByTime(60 * 60 * 1000 + 1);
     // The four old failures are gone: five fresh attempts fit.
     for (let i = 0; i < 5; i++) expect(limiter.reserveAttempt("203.0.113.8").ok).toBe(true);
+  });
+
+  it.each([
+    ["an IPv4 address as is", "203.0.113.7", "203.0.113.7"],
+    ["IPv6 on its /64", "2001:db8:1:2:aaaa:bbbb:cccc:dddd", "2001:db8:1:2::/64"],
+    ["a compressed IPv6 address on its /64", "2001:db8::7", "2001:db8:0:0::/64"],
+    ["leading zeros away", "2001:0db8:0001:0002::1", "2001:db8:1:2::/64"],
+    ["an IPv4-mapped address as IPv4", "::ffff:203.0.113.7", "203.0.113.7"],
+    ["an IPv6 address with a zone", "fe80::1%eth0", "fe80:0:0:0::/64"],
+    ["the shared key as is", "unknown", "unknown"],
+  ])("keys %s", (_name, address, expected) => {
+    expect(limiter.limiterKeyFor(address)).toBe(expected);
+  });
+
+  it("puts two addresses in one IPv6 /64 in one bucket", () => {
+    for (let i = 0; i < 5; i++) fail(limiter.limiterKeyFor(`2001:db8:1:2::${i + 1}`));
+    expect(limiter.checkLock(limiter.limiterKeyFor("2001:db8:1:2:ffff::9")).locked).toBe(true);
+    expect(limiter.checkLock(limiter.limiterKeyFor("2001:db8:1:3::1")).locked).toBe(false);
   });
 });
 

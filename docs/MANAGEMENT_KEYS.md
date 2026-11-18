@@ -23,10 +23,13 @@ accepts nothing else.
 a client key from anywhere else. Codex's WebSocket transport follows the same
 rule. A client on this machine stays local: a loopback connection with no
 forwarding header (`X-Forwarded-For`, `X-Real-IP`, `Forwarded`,
-`X-Forwarded-Host`, `X-Forwarded-Proto`, `CF-Connecting-IP`, `True-Client-IP`)
-and a `Host` of `localhost`, `127.0.0.1`, `[::1]` or `0.0.0.0`. A remote client,
-or one that came through a reverse proxy or tunnel on this machine, is treated
-as remote, and so is every loopback connection when `TRUST_PROXY=true`.
+`X-Forwarded-Host`, `X-Forwarded-Proto`, `True-Client-IP`, `CF-Connecting-IP`,
+`Cf-Ray`, `Tailscale-Funnel-Request`), no `Host` other than `localhost`,
+`127.0.0.1`, `[::1]` or `0.0.0.0`, and `TRUST_PROXY` unset. A remote client, or
+one that came through a reverse proxy or tunnel on this machine, is treated as
+remote. A forwarder that adds no forwarding header (socat, `ssh -R`, a TCP
+tunnel) passes its clients' own `Host` through, so it needs `TRUST_PROXY=true`,
+which makes every loopback connection remote.
 
 ## Scopes
 

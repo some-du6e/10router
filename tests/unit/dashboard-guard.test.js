@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from "vitest";
 import { createRequire } from "node:module";
 import http from "node:http";
 
@@ -675,11 +675,29 @@ describe("dashboard guard Origin must match Host for cookie and login-off access
   it("serves the dashboard's own requests, with or without a default port, and behind a Host-rewriting proxy", async () => {
     mocks.getSettings.mockResolvedValue(OPEN);
     expect(await proxy(request("/api/settings", { host: "192.168.1.10:20128", origin: "http://192.168.1.10:20128" }))).toBe(mocks.nextResponse);
-    expect(await proxy(request("/api/settings", { host: "router.example.com:443", origin: "https://router.example.com" }))).toBe(mocks.nextResponse);
     expect(await proxy(request("/api/settings", { host: "127.0.0.1:20128", "x-forwarded-host": "router.example.com", origin: "https://router.example.com" }))).toBe(mocks.nextResponse);
     mocks.getSettings.mockResolvedValue(CLAIMED);
     mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
     expect(await proxy(request("/api/settings", { host: "router.example.com", origin: "https://router.example.com" }, "session"))).toBe(mocks.nextResponse);
+    expect(await proxy(request("/api/settings", { host: "router.example.com:443", origin: "https://router.example.com" }, "session"))).toBe(mocks.nextResponse);
+  });
+
+  // nginx `proxy_set_header Host $host` drops the port of a proxy on 8443.
+  it("serves the dashboard behind a proxy on a non-default port whose Host has no port", async () => {
+    mocks.getSettings.mockResolvedValue(CLAIMED);
+    mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
+    expect(await proxy(request("/api/settings", { host: "router.example.com", origin: "https://router.example.com:8443" }, "session"))).toBe(mocks.nextResponse);
+    const otherPort = await proxy(request("/api/settings", { host: "router.example.com:8443", origin: "https://router.example.com:9443" }, "session"));
+    expect(otherPort.status).toBe(401);
+  });
+
+  // A page with Referrer-Policy: no-referrer sends `Origin: null` even to itself.
+  it("takes Sec-Fetch-Site: same-origin as proof, Origin: null from a no-referrer page included", async () => {
+    mocks.getSettings.mockResolvedValue(CLAIMED);
+    mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
+    expect(await proxy(request("/api/settings", { host: "router.example.com", origin: "null", "sec-fetch-site": "same-origin" }, "session"))).toBe(mocks.nextResponse);
+    expect((await proxy(request("/api/settings", { host: "router.example.com", origin: "null" }, "session"))).status).toBe(401);
+    expect((await proxy(request("/api/settings", { host: "router.example.com", origin: "null", "sec-fetch-site": "cross-site" }, "session"))).status).toBe(401);
   });
 
   it("still admits clients that send no Origin, and the CLI token from anywhere", async () => {
@@ -689,13 +707,114 @@ describe("dashboard guard Origin must match Host for cookie and login-off access
     expect(await proxy(request("/api/settings", { host: "192.168.1.10:20128", origin: "http://attacker.example", "x-9r-cli-token": "cli-token" }))).toBe(mocks.nextResponse);
   });
 
-  it("compares the whole host, port included", () => {
+  it("compares host and port, letting a Host without a port match any", () => {
     const check = (headers) => __test__.isOtherOriginBrowserRequest(request("/api/settings", headers));
     expect(check({ host: "localhost:20128", origin: "http://localhost:3000" })).toBe(true);
     expect(check({ host: "localhost:20128", origin: "http://localhost:20128" })).toBe(false);
     expect(check({ host: "LOCALHOST:20128", origin: "http://localhost:20128" })).toBe(false);
+    expect(check({ host: "router.example.com", origin: "https://router.example.com:8443" })).toBe(false);
+    expect(check({ host: "router.example.com:443", origin: "https://router.example.com" })).toBe(false);
+    expect(check({ host: "router.example.com.", origin: "https://router.example.com" })).toBe(false);
+    expect(check({ host: "evil.example", origin: "https://router.example.com" })).toBe(true);
     expect(check({ host: "localhost:20128" })).toBe(false);
     expect(check({ origin: "http://localhost:20128" })).toBe(true);
+  });
+});
+
+// With login off, a page on a domain the attacker points at this machine (DNS
+// rebinding) is same-origin with it, so only Hosts that can't be rebound get in.
+describe("dashboard guard login-off Host allowlist", () => {
+  const OPEN = { requireLogin: false, password: "$2a$10$storedhash", tunnelUrl: "https://abc.trycloudflare.com" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getSettings.mockResolvedValue(OPEN);
+    mocks.getConsistentMachineId.mockResolvedValue("cli-token");
+    mocks.getDashboardAuthSession.mockResolvedValue(null);
+    mocks.getMeta.mockResolvedValue("0");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each(["localhost:20128", "127.0.0.1:20128", "[::1]:20128", "0.0.0.0:20128", "192.168.1.10:20128", "[2001:db8::5]:20128", "10.0.0.7"])(
+    "admits the %s Host",
+    async (host) => {
+      expect(await proxy(request("/api/settings", { host, origin: `http://${host}` }))).toBe(mocks.nextResponse);
+    }
+  );
+
+  it("refuses a rebound name, even same-origin", async () => {
+    for (const host of ["rebind.attacker.example", "rebind.attacker.example:20128", "localhost.attacker.example"]) {
+      const response = await proxy(request("/api/settings", { host, origin: `http://${host}`, "sec-fetch-site": "same-origin" }));
+      expect(response.status, host).toBe(401);
+    }
+  });
+
+  it("admits the configured tunnel and base URL hosts", async () => {
+    mocks.getSettings.mockResolvedValue({ ...OPEN, tunnelDashboardAccess: true });
+    expect(await proxy(request("/api/settings", { host: "abc.trycloudflare.com" }))).toBe(mocks.nextResponse);
+    expect((await proxy(request("/api/settings", { host: "router.example.com" }))).status).toBe(401);
+    vi.stubEnv("BASE_URL", "https://router.example.com");
+    expect(await proxy(request("/api/settings", { host: "router.example.com" }))).toBe(mocks.nextResponse);
+    vi.stubEnv("BASE_URL", "");
+    vi.stubEnv("NEXT_PUBLIC_BASE_URL", "https://Router.Example.com:8443/");
+    expect(await proxy(request("/api/settings", { host: "router.example.com:8443" }))).toBe(mocks.nextResponse);
+  });
+
+  it("leaves a session and the CLI token alone on any Host", async () => {
+    mocks.getSettings.mockResolvedValue({ ...OPEN, requireLogin: true });
+    mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
+    expect(await proxy(request("/api/settings", { host: "router.example.com" }, "session"))).toBe(mocks.nextResponse);
+    mocks.getDashboardAuthSession.mockResolvedValue(null);
+    expect(await proxy(request("/api/settings", { host: "router.example.com", "x-9r-cli-token": "cli-token" }))).toBe(mocks.nextResponse);
+  });
+});
+
+// A spawn route reached by GET (<img>, EventSource) from another page carries no
+// Origin, and over http://0.0.0.0 (not a secure context) no Sec-Fetch-Site either.
+describe("dashboard guard local-only GET routes need same-origin proof", () => {
+  const OPEN = { requireLogin: false, password: "$2a$10$storedhash" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
+    mocks.getSettings.mockResolvedValue(OPEN);
+    mocks.getConsistentMachineId.mockResolvedValue("cli-token");
+    mocks.getDashboardAuthSession.mockResolvedValue(null);
+    mocks.getMeta.mockResolvedValue("0");
+  });
+
+  it("refuses a proof-less GET to an MCP spawn route, 0.0.0.0 included", async () => {
+    for (const host of ["0.0.0.0:20128", "localhost:20128", "127.0.0.1:20128"]) {
+      const response = await proxy(localRequest("/api/mcp/browsermcp/sse", { host }));
+      expect(response.status, host).toBe(403);
+    }
+  });
+
+  it("serves the dashboard's own GET, a typed URL, a matching Origin and the CLI token", async () => {
+    for (const headers of [
+      { "sec-fetch-site": "same-origin" },
+      { "sec-fetch-site": "none" },
+      { origin: "http://0.0.0.0:20128" },
+      { "x-9r-cli-token": "cli-token" },
+    ]) {
+      expect(await proxy(localRequest("/api/mcp/browsermcp/sse", { host: "0.0.0.0:20128", ...headers })), JSON.stringify(headers)).toBe(mocks.nextResponse);
+    }
+  });
+
+  it("leaves non-GET local-only requests to the Origin checks", async () => {
+    const post = { ...localRequest("/api/tunnel/enable", { host: "localhost:20128" }), method: "POST" };
+    expect(await proxy(post)).toBe(mocks.nextResponse);
+  });
+
+  it("knows proof when it sees it", () => {
+    const proof = (headers) => __test__.hasSameOriginProof(request("/api/mcp/x/sse", headers));
+    expect(proof({ host: "localhost:20128" })).toBe(false);
+    expect(proof({ host: "localhost:20128", "sec-fetch-site": "cross-site" })).toBe(false);
+    expect(proof({ host: "localhost:20128", origin: "http://evil.example" })).toBe(false);
+    expect(proof({ host: "localhost:20128", origin: "http://localhost:20128" })).toBe(true);
+    expect(proof({ host: "localhost:20128", "sec-fetch-site": "same-origin" })).toBe(true);
   });
 });
 
@@ -767,8 +886,22 @@ describe("dashboard guard tunnel host", () => {
     const broken = { ...TUNNEL, tunnelUrl: "not a url", tailscaleUrl: "::" };
     expect(isTunnelHost(request("/", { host: "abc.trycloudflare.com" }), broken)).toBe(false);
     mocks.getSettings.mockResolvedValue(broken);
-    expect(await proxy(request("/api/keys", { host: "abc.trycloudflare.com" }))).toBe(mocks.nextResponse);
+    // No 500: the page loads, and the open API refuses a Host it can't place.
     expect(await proxy(request("/dashboard", { host: "abc.trycloudflare.com" }))).toBe(mocks.nextResponse);
+    expect((await proxy(request("/api/keys", { host: "abc.trycloudflare.com" }))).status).toBe(401);
+  });
+
+  // A stale stored URL (the quick tunnel got a new name) must not let tunnel traffic in.
+  it("treats traffic custom-server.js stamped as tunnel traffic as tunnel traffic, whatever its Host", async () => {
+    const stale = { ...TUNNEL, tunnelUrl: "https://old.trycloudflare.com" };
+    mocks.getSettings.mockResolvedValue(stale);
+    process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
+    const stamped = { "x-9r-peer-token": PEER_TOKEN, "x-9r-real-ip": "203.0.113.9", "x-9r-via-proxy": "1", "x-9r-via-tunnel": "1" };
+    expect(isTunnelHost(request("/", { host: "new.trycloudflare.com", ...stamped }), stale)).toBe(true);
+    expect((await proxy(request("/api/keys", { host: "new.trycloudflare.com", ...stamped }))).status).toBe(403);
+    expect((await proxy(request("/dashboard", { host: "new.trycloudflare.com", ...stamped }))).url.pathname).toBe("/login");
+    // A client's own stamp, without the wrapper's proof, means nothing.
+    expect(isTunnelHost(request("/", { host: "new.trycloudflare.com", "x-9r-via-tunnel": "1" }), stale)).toBe(false);
   });
 
   it("redirects the dashboard pages on the tunnel host to /login while access is off", async () => {

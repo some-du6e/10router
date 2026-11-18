@@ -2,6 +2,7 @@ const http = require("http");
 const crypto = require("crypto");
 const path = require("path");
 const fs = require("fs");
+const net = require("net");
 const { pathToFileURL } = require("url");
 const { createDrain, installShutdownDrain, parseDrainTimeout } = require("./server-drain.js");
 
@@ -201,40 +202,81 @@ function isLoopbackHost(value) {
   return LOOPBACK_HOSTS.has(name);
 }
 
+// Sent by Cloudflare's edge (so by cloudflared) and by Tailscale Funnel. From a
+// loopback peer they mean the request crossed a public tunnel.
+const TUNNEL_HEADERS = ["cf-ray", "cf-connecting-ip", "tailscale-funnel-request"];
+
 // Any of these from a loopback peer means a proxy or tunnel relayed someone else.
-const FORWARDING_HEADERS = ["x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host", "x-forwarded-proto", "cf-connecting-ip", "true-client-ip"];
+const FORWARDING_HEADERS = [
+  "x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host", "x-forwarded-proto", "true-client-ip",
+  ...TUNNEL_HEADERS,
+];
 
 /**
  * A loopback peer is a client on this machine only when nothing says it relays
- * someone else: no forwarding header, and no Host other than a loopback one. A
- * forward that sends neither (socat, a proxy that rewrites Host) looks like a
- * local client, so TRUST_PROXY=true treats every loopback peer as a proxy.
+ * someone else: no forwarding header, and TRUST_PROXY unset. Host never proves a
+ * request local, since the client chooses it; a non-loopback Host (a
+ * Host-preserving proxy, a rebound DNS name) only proves it remote. A forwarder
+ * that adds no forwarding header (socat, ssh -R, a TCP tunnel, nginx without
+ * proxy_set_header lines) passes the client's own bytes and Host through, so it
+ * can't be told apart from a local client: such a setup must set TRUST_PROXY=true.
  */
 function isOnThisMachine(headers, socketIp) {
   if (!isLoopbackHost(socketIp)) return false;
   if (process.env.TRUST_PROXY === "true") return false;
   if (FORWARDING_HEADERS.some((name) => headers[name])) return false;
-  return !headers.host || isLoopbackHost(headers.host);
+  if (headers.host && !isLoopbackHost(headers.host)) return false;
+  return true;
+}
+
+// One address from a header, without brackets or port; "" unless it is an IP.
+function addressOf(value) {
+  let text = String(value || "").trim();
+  if (text.startsWith("[")) {
+    const end = text.indexOf("]");
+    text = end === -1 ? "" : text.slice(1, end);
+  } else if (text.indexOf(":") !== -1 && text.indexOf(":") === text.lastIndexOf(":")) {
+    text = text.slice(0, text.indexOf(":"));
+  }
+  return net.isIP(text) ? text : "";
+}
+
+// An address from a header the limiter may key on: an IP that isn't loopback,
+// which would put a remote client in the bucket of this machine's own logins.
+function usableAddress(value) {
+  const address = addressOf(value);
+  return address && !isLoopbackHost(address) ? address : "";
 }
 
 /**
- * The address to key on. Behind a proxy on this machine: X-Real-IP first (a
- * proxy that sets it replaces whatever the client sent), else the rightmost
- * X-Forwarded-For hop (the one the proxy appended; everything left of it is the
- * client's). A loopback address from a header is never used: it would put a
- * remote client in the bucket of the owner's own logins. With nothing usable,
- * every such request shares "unknown".
+ * The address to key on. Behind a proxy on this machine, the rightmost
+ * X-Forwarded-For entry that is a usable address: the hop the nearest proxy
+ * appended (Caddy, Traefik, cloudflared and Tailscale append; everything left
+ * of it is the client's). Only with no X-Forwarded-For at all, the proxy's
+ * X-Real-IP, then CF-Connecting-IP: a proxy that only appends passes a client's
+ * own X-Real-IP through, so it can't outrank the appended hop. With nothing
+ * usable, every such request shares "unknown".
  */
 function clientIpFor(headers, socketIp) {
   if (!isLoopbackHost(socketIp)) return socketIp || "unknown";
   if (isOnThisMachine(headers, socketIp)) return socketIp;
-  const realIp = String(headers["x-real-ip"] || "").split(",").pop().trim();
-  if (realIp && !isLoopbackHost(realIp)) return realIp;
-  const hops = String(headers["x-forwarded-for"] || "").split(",").map((hop) => hop.trim());
-  for (let i = hops.length - 1; i >= 0; i--) {
-    if (hops[i] && !isLoopbackHost(hops[i])) return hops[i];
+  const xff = String(headers["x-forwarded-for"] || "");
+  if (xff.trim()) {
+    const hops = xff.split(",");
+    for (let i = hops.length - 1; i >= 0; i--) {
+      const address = usableAddress(hops[i]);
+      if (address) return address;
+    }
+    return "unknown";
   }
-  return "unknown";
+  const realIp = String(headers["x-real-ip"] || "").split(",").pop();
+  return usableAddress(realIp) || usableAddress(headers["cf-connecting-ip"]) || "unknown";
+}
+
+// A loopback peer carrying a tunnel's headers: Cloudflare or Tailscale Funnel
+// traffic, whatever Host it claims.
+function isTunnelTraffic(headers, socketIp) {
+  return isLoopbackHost(socketIp) && TUNNEL_HEADERS.some((name) => headers[name]);
 }
 
 /**
@@ -586,9 +628,11 @@ function startBackgroundTokenRefreshFromCustomServer() {
     });
 }
 
-// Wrap Next standalone HTTP server: derive client IP from the TCP socket
-// (unspoofable) and strip client-supplied forwarding headers so downstream
-// rate-limiting keys on the real peer address instead of attacker-controlled XFF.
+// Wrap Next standalone HTTP server: decide who each request comes from (above)
+// and stamp the verdict as x-9r-real-ip / x-9r-via-proxy / x-9r-via-tunnel, with
+// the peer token proving the stamp. Client-sent x-9r-* headers are replaced, and
+// X-Forwarded-For is removed so nothing downstream keys on it. The other
+// forwarding headers pass through unchanged.
 http.createServer = (...args) => {
   const handler = args.find((a) => typeof a === "function");
   const rest = args.filter((a) => typeof a !== "function");
@@ -601,16 +645,20 @@ http.createServer = (...args) => {
     // and the turn fails with a 502 frame.
     const ownBridgeTurn = isLoopbackHost(socketIp) && req.headers["x-9r-peer-token"] === PEER_TOKEN;
     if (!drain.track(req, res, { admit: ownBridgeTurn })) return;
-    // x-9r-via-proxy marks every request not from a client on this machine.
+    // x-9r-via-proxy marks every request not from a client on this machine;
+    // x-9r-via-tunnel, one that crossed a Cloudflare or Tailscale tunnel.
     const local = isOnThisMachine(req.headers, socketIp);
     const ip = clientIpFor(req.headers, socketIp);
+    const viaTunnel = isTunnelTraffic(req.headers, socketIp);
     delete req.headers["x-9r-real-ip"];
     delete req.headers["x-forwarded-for"];
     delete req.headers["x-9r-via-proxy"];
+    delete req.headers["x-9r-via-tunnel"];
     delete req.headers["x-9r-peer-token"];
     req.headers["x-9r-real-ip"] = ip;
     req.headers["x-9r-peer-token"] = PEER_TOKEN;
     if (!local) req.headers["x-9r-via-proxy"] = "1";
+    if (viaTunnel) req.headers["x-9r-via-tunnel"] = "1";
     return handler(req, res);
   };
   const server = origCreate(...rest, wrapped);
@@ -683,7 +731,7 @@ http.createServer = (...args) => {
   return server;
 };
 
-module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn, MAX_ERROR_BODY, drain, isLoopbackHost, isOnThisMachine, clientIpFor } };
+module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn, MAX_ERROR_BODY, drain, isLoopbackHost, isOnThisMachine, clientIpFor, isTunnelTraffic } };
 
 if (require.main === module) {
   // Before the app loads: its own signal listeners must not see SIGTERM first.

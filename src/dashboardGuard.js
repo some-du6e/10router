@@ -126,30 +126,53 @@ function isCrossSiteBrowserRequest(request) {
   return !!site && site !== "same-origin" && site !== "none";
 }
 
+// The Host the browser used, as a URL (scheme from Origin), or null.
+function hostUrl(host, protocol) {
+  if (!host || !host.trim()) return null;
+  try {
+    return new URL(`${protocol}//${host.trim()}`);
+  } catch {
+    return null;
+  }
+}
+
+// Same host name, and the same port unless Host carries none (nginx's $host drops
+// it). Default ports compare equal, since URL drops them.
+function originMatchesHost(originUrl, host) {
+  const target = hostUrl(host, originUrl.protocol);
+  if (!target || target.hostname.replace(/\.$/, "") !== originUrl.hostname.replace(/\.$/, "")) return false;
+  return !target.port || target.port === originUrl.port;
+}
+
 // A browser sends Origin on every cross-origin POST and fetch, plain HTTP included,
 // where it sends no Sec-Fetch-Site. A request whose Origin isn't this server came
 // from another page, so neither a session cookie nor requireLogin=false admits it.
-// "This server" is the Host the browser used: the Host header, or X-Forwarded-Host
-// from a proxy that rewrites Host (a page can't set that header on a cross-origin
-// request without a CORS preflight, which this server never grants).
+// Sec-Fetch-Site: same-origin settles it first (it also covers `Origin: null` from a
+// no-referrer page). Otherwise "this server" is the Host the browser used: the Host
+// header, or X-Forwarded-Host from a proxy that rewrites Host (a page can't set that
+// header on a cross-origin request without a CORS preflight, which is never granted).
 function isOtherOriginBrowserRequest(request) {
+  if (request.headers.get("sec-fetch-site") === "same-origin") return false;
   const origin = request.headers.get("origin");
   if (!origin) return false;
   let originUrl;
   try {
     originUrl = new URL(origin);
   } catch {
-    return true; // "null" (sandboxed frame, file://) or junk
+    return true; // "null" (sandboxed frame, file://, no-referrer) or junk
   }
   const hosts = [request.headers.get("host"), (request.headers.get("x-forwarded-host") || "").split(",")[0]];
-  return !hosts.some((host) => {
-    if (!host || !host.trim()) return false;
-    try {
-      return new URL(`${originUrl.protocol}//${host.trim()}`).host === originUrl.host;
-    } catch {
-      return false;
-    }
-  });
+  return !hosts.some((host) => originMatchesHost(originUrl, host));
+}
+
+// Proof a browser request came from this server's own page: Sec-Fetch-Site
+// same-origin (or none: typed, bookmarked), or an Origin that matches the Host. A
+// GET from another page carries neither when the target isn't a secure context
+// (http://0.0.0.0, a LAN address), so the absence of a cross-site marker isn't enough.
+function hasSameOriginProof(request) {
+  const site = request.headers.get("sec-fetch-site");
+  if (site === "same-origin" || site === "none") return true;
+  return !!request.headers.get("origin") && !isOtherOriginBrowserRequest(request);
 }
 
 function hostnameOf(value) {
@@ -160,12 +183,31 @@ function hostnameOf(value) {
   }
 }
 
-// The request came in on the Cloudflare tunnel or Tailscale URL. A malformed stored
-// URL matches nothing rather than throwing.
+// The request came in on the Cloudflare tunnel or Tailscale URL, or crossed one:
+// custom-server.js stamps x-9r-via-tunnel on a loopback peer carrying Cloudflare
+// or Tailscale Funnel headers, so a stale stored URL can't let tunnel traffic in.
+// A malformed stored URL matches nothing rather than throwing.
 export function isTunnelHost(request, settings) {
+  if (hasTrustedPeerHeaders(request) && request.headers.get("x-9r-via-tunnel")) return true;
   const host = (request.headers.get("host") || "").split(":")[0].toLowerCase().replace(/\.$/, "");
   if (!host) return false;
   return [settings?.tunnelUrl, settings?.tailscaleUrl].some((url) => hostnameOf(url) === host);
+}
+
+// With login off, a page on any domain that resolves to this machine (DNS
+// rebinding) would be same-origin with it. So the open dashboard API answers only
+// Hosts that can't be rebound: loopback names, IP literals, and the hosts this
+// install was given (tunnel, Tailscale, BASE_URL / NEXT_PUBLIC_BASE_URL).
+function isAllowedOpenHost(request, settings) {
+  const raw = request.headers.get("host");
+  if (!raw) return true;
+  const url = hostUrl(raw, "http:");
+  if (!url) return false;
+  const name = url.hostname.toLowerCase().replace(/\.$/, "");
+  if (isLoopbackHostname(name)) return true;
+  if (name.startsWith("[") || /^\d{1,3}(\.\d{1,3}){3}$/.test(name)) return true;
+  return [settings?.tunnelUrl, settings?.tailscaleUrl, process.env.BASE_URL, process.env.NEXT_PUBLIC_BASE_URL]
+    .some((value) => hostnameOf(value) === name);
 }
 
 export function isLocalRequest(request) {
@@ -205,9 +247,18 @@ async function canAccessPublicLlmApi(request) {
 
 async function canAccessLocalOnlyRoute(request) {
   if (await hasValidCliToken(request)) return true;
-  // Browser on host: loopback Host + Origin (blocks tunnel/CSRF) + auth (JWT or requireLogin=false)
-  if (isLocalRequest(request) && await isAuthenticated(request)) return true;
-  return false;
+  // Browser on host: loopback peer + Origin (blocks tunnel/CSRF) + auth (JWT or requireLogin=false)
+  if (!isLocalRequest(request)) return false;
+  // These routes spawn processes or read host secrets, and a GET from another page
+  // (<img>, EventSource) can reach one with no Origin and, on http://0.0.0.0, no
+  // Sec-Fetch-Site either. Without the CLI token, a GET needs same-origin proof.
+  if (isSafeMethod(request) && !hasSameOriginProof(request)) return false;
+  return await isAuthenticated(request);
+}
+
+function isSafeMethod(request) {
+  const method = String(request.method || "GET").toUpperCase();
+  return method === "GET" || method === "HEAD";
 }
 
 // The only endpoints a restricted (forced-password-change) session may reach.
@@ -259,6 +310,7 @@ async function isAuthenticated(request) {
   // has never been set up must never be open, whatever the stored flag says.
   if (settings && settings.requireLogin === false) {
     if (isCrossSiteBrowserRequest(request) || isOtherOriginBrowserRequest(request)) return false;
+    if (!isAllowedOpenHost(request, settings)) return false;
     return !(await needsSetup(settings));
   }
   return false;
@@ -273,6 +325,8 @@ export const __test__ = {
   isLocalRequest,
   isLoopbackHostname,
   isOtherOriginBrowserRequest,
+  hasSameOriginProof,
+  isAllowedOpenHost,
   isPublicLlmApi,
   extractApiKey,
   canAccessPublicLlmApi,

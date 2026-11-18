@@ -53,7 +53,7 @@ export NODE_ENV="production"
 | `DATA_DIR` | `~/.9router` | Ruta de almacenamiento de la base de datos (el nombre del directorio no ha cambiado respecto a la versión anterior por compatibilidad) |
 | `NODE_ENV` | `development` | Establece a `production` para despliegue |
 | `ENABLE_REQUEST_LOGS` | `false` | Habilita logs de debug de request/response |
-| `TRUST_PROXY` | `false` | Ponlo en `true` cuando un proxy en esta máquina no envía `X-Forwarded-For`/`X-Real-IP` y reescribe `Host` a `localhost`, para que ninguna conexión loopback cuente como local. La configuración de Nginx de abajo no lo necesita |
+| `TRUST_PROXY` | `false` | Ponlo en `true` cuando un reenviador en esta máquina no añade `X-Forwarded-For` (socat, `ssh -R`, un túnel TCP): el `Host` de sus clientes llega tal cual, así que uno podría enviar `Host: localhost` y contar como local. Con él, ninguna conexión loopback cuenta como local. La configuración de Nginx de abajo no lo necesita |
 
 ### Paso 5: Crear el directorio de datos
 
@@ -360,7 +360,7 @@ ssh -L 3000:localhost:3000 user@your-server.com
 # Luego abre http://localhost:3000 en tu navegador
 ```
 
-Las peticiones que pasan por Nginx (o por cualquier proxy o túnel en el servidor) se tratan como remotas: necesitan una clave API para `/v1`, y las rutas solo locales (servidores MCP, controles del túnel, Reset Password) y los endpoints con una URL privada (como un Ollama en `localhost`) responden 403 o "URL not allowed". Para eso usa el túnel SSH de arriba o el CLI en el servidor. Mantén las líneas `X-Real-IP` y `X-Forwarded-For` en la configuración de Nginx para que el bloqueo de login cuente cada cliente por separado, y mantén `Host $host`, o envía `X-Forwarded-Host`, para que se acepten las llamadas a la API del propio dashboard.
+Las peticiones que pasan por Nginx (o por cualquier proxy o túnel en el servidor) se tratan como remotas: necesitan una clave API para `/v1`, y las rutas solo locales (servidores MCP, controles del túnel, Reset Password) y los endpoints con una URL privada (como un Ollama en `localhost`) responden 403 o "URL not allowed". Para eso usa un túnel SSH al puerto de la app (`ssh -L 20128:localhost:20128 user@your-server.com` y luego abre `http://localhost:20128`) o el CLI en el servidor. Mantén las líneas `X-Real-IP` y `X-Forwarded-For` en la configuración de Nginx para que el bloqueo de login cuente cada cliente por separado, y mantén `Host $host`, o envía `X-Forwarded-Host`, para que se acepten las llamadas a la API del propio dashboard.
 
 ### 4. Actualizaciones regulares
 

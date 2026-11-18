@@ -43,6 +43,7 @@ vi.mock("@/lib/auth/setupState", () => ({
 }));
 vi.mock("@/lib/auth/loginLimiter", () => ({
   ...mocks.limiter,
+  LOCAL_LOGIN_KEY: "local",
   // The real rule: the stamped address when the wrapper proved it, else one bucket.
   getClientIp: (request) => (request.headers.get("x-9r-peer-token") === PEER_TOKEN && request.headers.get("x-9r-real-ip")) || "unknown",
 }));
@@ -92,7 +93,7 @@ describe("login route and the limiter", () => {
     expect(response.status).toBe(200);
     expect(mocks.limiter.recordSuccess).toHaveBeenCalledWith("203.0.113.7");
     expect(mocks.limiter.releaseAttempt).toHaveBeenCalledTimes(1);
-    expect(mocks.limiter.releaseAttempt).toHaveBeenCalledWith("203.0.113.7", { local: false });
+    expect(mocks.limiter.releaseAttempt).toHaveBeenCalledWith("203.0.113.7");
   });
 
   it("releases once after a wrong password, and counts the failure", async () => {
@@ -135,17 +136,33 @@ describe("login route and the limiter", () => {
     expect(mocks.limiter.releaseAttempt).toHaveBeenCalledTimes(1);
   });
 
-  it("tells the limiter a login came from this machine, and doesn't count its failures", async () => {
+  it("limits a login from this machine in its own bucket", async () => {
     const response = await login(loginRequest({ body: JSON.stringify({ password: "wrong" }), headers: LOCAL }));
     expect(response.status).toBe(401);
-    expect(mocks.limiter.reserveAttempt).toHaveBeenCalledWith("127.0.0.1", { local: true });
-    expect(mocks.limiter.releaseAttempt).toHaveBeenCalledWith("127.0.0.1", { local: true });
-    expect(mocks.limiter.recordFail).not.toHaveBeenCalled();
+    expect(mocks.limiter.reserveAttempt).toHaveBeenCalledWith("local");
+    expect(mocks.limiter.recordFail).toHaveBeenCalledWith("local");
+    expect(mocks.limiter.releaseAttempt).toHaveBeenCalledTimes(1);
+    expect(mocks.limiter.releaseAttempt).toHaveBeenCalledWith("local");
   });
 
-  it("tells the limiter a proxied login is remote", async () => {
+  it("keys a proxied login on its address, never on the local bucket", async () => {
     await login(loginRequest({ headers: REMOTE }));
-    expect(mocks.limiter.reserveAttempt).toHaveBeenCalledWith("203.0.113.7", { local: false });
+    expect(mocks.limiter.reserveAttempt).toHaveBeenCalledWith("203.0.113.7");
+    // A forwarded request claiming a loopback peer address is still remote.
+    vi.clearAllMocks();
+    mocks.limiter.reserveAttempt.mockReturnValue({ ok: true });
+    await login(loginRequest({ headers: { ...REMOTE, "x-9r-real-ip": "127.0.0.1" } }));
+    expect(mocks.limiter.reserveAttempt).toHaveBeenCalledWith("127.0.0.1");
+    expect(mocks.limiter.reserveAttempt).not.toHaveBeenCalledWith("local");
+  });
+
+  it("blocks login for traffic stamped as tunnel traffic, whatever the stored tunnel URL", async () => {
+    mocks.getSettings.mockResolvedValue({ requireLogin: true, tunnelUrl: "https://old.trycloudflare.com" });
+    const response = await login(loginRequest({ headers: { ...REMOTE, host: "new.trycloudflare.com", "x-9r-via-tunnel": "1" } }));
+    expect(response.status).toBe(403);
+    // Without the wrapper's proof the stamp means nothing.
+    const forged = await login(loginRequest({ headers: { ...REMOTE, "x-9r-peer-token": "guess", host: "new.trycloudflare.com", "x-9r-via-tunnel": "1" } }));
+    expect(forged.status).toBe(200);
   });
 
   it("blocks login on the tunnel host however the Host is written", async () => {
