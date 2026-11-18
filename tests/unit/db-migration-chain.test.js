@@ -85,6 +85,59 @@ describe("Schema migrations", () => {
     expect(upgraded.get("SELECT value FROM kv WHERE scope = 'modelAliases' AND key = 'default'").value).toBe('"cx/gpt-6"');
   });
 
+  it("removes token saver settings and request-detail fields on upgrade, after a backup", async () => {
+    const { getAdapter } = await import("@/lib/db/driver.js");
+    const db = await getAdapter();
+    db.run("INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data", [
+      JSON.stringify({ tunnelEnabled: true, rtkEnabled: true, headroomPort: 8787, cavemanLevel: "full", pxpipeMinChars: 1 }),
+    ]);
+    db.run("INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES('r1', '2026-01-01', 'p', 'm', 'c', 'ok', ?)", [
+      JSON.stringify({ id: "r1", pxpipe: { saved: 10 }, request: { model: "m" } }),
+    ]);
+    db.run("UPDATE _meta SET value = '3' WHERE key IN ('schemaVersion', 'backupSchemaVersion')");
+    db.close?.();
+
+    delete global._dbAdapter;
+    vi.resetModules();
+    const { getAdapter: restart } = await import("@/lib/db/driver.js");
+    const upgraded = await restart();
+    expect(JSON.parse(upgraded.get("SELECT data FROM settings WHERE id = 1").data)).toEqual({ tunnelEnabled: true });
+    expect(JSON.parse(upgraded.get("SELECT data FROM requestDetails WHERE id = 'r1'").data)).toEqual({ id: "r1", request: { model: "m" } });
+    const { BACKUPS_DIR } = await import("@/lib/db/paths.js");
+    const { SCHEMA_VERSION } = await import("@/lib/db/schema.js");
+    expect(fs.readdirSync(BACKUPS_DIR).some((d) => d.includes(`schema-3-to-${SCHEMA_VERSION}`))).toBe(true);
+  });
+
+  it("backs up a v4 DB before building the key lifespan index", async () => {
+    const { getAdapter } = await import("@/lib/db/driver.js");
+    const db = await getAdapter();
+    db.exec("DROP INDEX IF EXISTS idx_uh_conn_ok");
+    db.run("UPDATE _meta SET value = '4' WHERE key IN ('schemaVersion', 'backupSchemaVersion')");
+    db.close?.();
+
+    delete global._dbAdapter;
+    vi.resetModules();
+    const { getAdapter: restart } = await import("@/lib/db/driver.js");
+    const upgraded = await restart();
+    expect(upgraded.all("PRAGMA index_list(usageHistory)").map((i) => i.name)).toContain("idx_uh_conn_ok");
+    const { BACKUPS_DIR } = await import("@/lib/db/paths.js");
+    expect(fs.readdirSync(BACKUPS_DIR).some((d) => d.includes("schema-4-to-"))).toBe(true);
+  });
+
+  it("leaves unreadable settings in place when removing token saver settings", async () => {
+    const { getAdapter } = await import("@/lib/db/driver.js");
+    const db = await getAdapter();
+    db.run("INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data", ["{not json"]);
+    db.run("UPDATE _meta SET value = '3' WHERE key = 'schemaVersion'");
+    db.close?.();
+
+    delete global._dbAdapter;
+    vi.resetModules();
+    const { getAdapter: restart } = await import("@/lib/db/driver.js");
+    const upgraded = await restart();
+    expect(upgraded.get("SELECT data FROM settings WHERE id = 1").data).toBe("{not json");
+  });
+
   it("ignores retired proxy credentials and aliases in backup imports", async () => {
     const { importDb, exportDb } = await import("@/lib/db/index.js");
     await importDb({

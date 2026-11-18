@@ -2,11 +2,14 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import { getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
+import { demotedLabel, isDemotionError, getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
+import { lifespanLabel } from "@/shared/utils/keyLifespan";
 import PropTypes from "prop-types";
 import { Card, Badge, Button, Modal, Select, Toggle, EditConnectionModal, ConfirmModal } from "@/shared/components";
+import { useSecretInputProps } from "@/shared/components/Input";
 import { providerRoutingOptions, SOONEST_RESET_HINT } from "@/shared/constants/accountRouting";
 import { useBlurEmails } from "@/shared/hooks/useBlurEmails";
+import { fetchKeyLifespans, withLifespans, withToggledActive } from "../utils";
 
 // ── CooldownTimer ──────────────────────────────────────────────
 function CooldownTimer({ until }) {
@@ -40,6 +43,8 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
   const [isCooldown, setIsCooldown] = useState(false);
   const proxyDropdownRef = useRef(null);
 
+  const demoted = demotedLabel(connection);
+  const lifespan = lifespanLabel(connection);
   const proxyPoolMap = new Map((proxyPools || []).map((p) => [p.id, p]));
   const boundProxyPoolId = connection.providerSpecificData?.proxyPoolId || null;
   const boundProxyPool = boundProxyPoolId ? proxyPoolMap.get(boundProxyPoolId) : null;
@@ -133,8 +138,18 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
             </Badge>
             {hasAnyProxy && <Badge variant={proxyBadgeVariant} size="sm">Proxy</Badge>}
             {isCooldown && connection.isActive !== false && <CooldownTimer until={modelLockUntil} />}
-            {connection.lastError && connection.isActive !== false && (
+            {demoted && <span className="text-xs text-amber-600 dark:text-amber-400 truncate max-w-[260px]" title={demoted.title}>{demoted.text}</span>}
+            {lifespan && <span className="text-xs text-text-muted truncate max-w-[260px]" title={lifespan.title}>{lifespan.text}</span>}
+            {connection.lastError && connection.isActive !== false && !isDemotionError(connection) && (
               <span className="text-xs text-red-500 truncate max-w-[300px]" title={connection.lastError}>{connection.lastError}</span>
+            )}
+            {connection.isActive === false && connection.autoDisabledAt && (
+              <span
+                className="text-xs text-red-500 truncate max-w-[360px]"
+                title={`Turned off automatically ${new Date(connection.autoDisabledAt).toLocaleString()}: ${connection.autoDisabledReason || ""}`}
+              >
+                Turned off automatically: {connection.autoDisabledReason}
+              </span>
             )}
             <span className="text-xs text-text-muted">#{connection.priority}</span>
           </div>
@@ -193,6 +208,8 @@ ConnectionRow.propTypes = {
     testStatus: PropTypes.string,
     isActive: PropTypes.bool,
     lastError: PropTypes.string,
+    autoDisabledAt: PropTypes.string,
+    autoDisabledReason: PropTypes.string,
     priority: PropTypes.number,
   }).isRequired,
   proxyPools: PropTypes.array,
@@ -211,6 +228,7 @@ ConnectionRow.propTypes = {
 function AddApiKeyModal({ isOpen, provider, providerName, proxyPools, onSave, onClose }) {
   const NONE = "__none__";
   const [formData, setFormData] = useState({ name: "", apiKey: "", priority: 1, proxyPoolId: NONE });
+  const secretInput = useSecretInputProps();
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -272,7 +290,7 @@ function AddApiKeyModal({ isOpen, provider, providerName, proxyPools, onSave, on
         <div className="flex gap-2">
           <div className="flex-1">
             <label className="text-xs text-text-muted mb-1 block">API Key</label>
-            <input type="password" className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary" value={formData.apiKey} onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })} />
+            <input {...secretInput} className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary" value={formData.apiKey} onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })} />
           </div>
           <div className="pt-6">
             <Button onClick={handleValidate} disabled={!formData.apiKey || validating || saving} variant="secondary">
@@ -327,15 +345,16 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
 
   const fetch_ = useCallback(async () => {
     try {
-      const [connRes, proxyRes, settingsRes] = await Promise.all([
+      const [connRes, proxyRes, settingsRes, lifespans] = await Promise.all([
         fetch("/api/providers", { cache: "no-store" }),
         fetch("/api/proxy-pools?isActive=true", { cache: "no-store" }),
         fetch("/api/settings", { cache: "no-store" }),
+        fetchKeyLifespans(providerId),
       ]);
       const connData = await connRes.json();
       const proxyData = await proxyRes.json();
       const settingsData = settingsRes.ok ? await settingsRes.json() : {};
-      if (connRes.ok) setConnections((connData.connections || []).filter((c) => c.provider === providerId));
+      if (connRes.ok) setConnections(withLifespans((connData.connections || []).filter((c) => c.provider === providerId), lifespans));
       if (proxyRes.ok) setProxyPools(proxyData.proxyPools || []);
       const override = (settingsData.providerStrategies || {})[providerId] || {};
       setProviderStrategy(override.fallbackStrategy || null);
@@ -392,7 +411,9 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
   const handleToggleActive = async (id, isActive) => {
     try {
       const res = await fetch(`/api/providers/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isActive }) });
-      if (res.ok) setConnections((prev) => prev.map((c) => c.id === id ? { ...c, isActive } : c));
+      if (!res.ok) return;
+      const { connection: saved } = await res.json();
+      setConnections((prev) => prev.map((c) => c.id === id ? withToggledActive(c, isActive, saved) : c));
     } catch (e) { console.log("toggle error:", e); }
   };
 

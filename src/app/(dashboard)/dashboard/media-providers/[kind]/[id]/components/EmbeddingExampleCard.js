@@ -2,10 +2,12 @@
 
 import { useState, useEffect } from "react";
 import { Card } from "@/shared/components";
+import { useSecretInputProps } from "@/shared/components/Input";
 import { getProviderAlias, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { Row } from "./exampleShared";
+import { pickInternalKey } from "@/shared/utils/apiKeyLimits.js";
 
 const DEFAULT_RESPONSE_EXAMPLE = `{
   "object": "list",
@@ -27,6 +29,7 @@ export function EmbeddingExampleCard({ providerId, customAlias }) {
   const [input, setInput] = useState("The quick brown fox jumps over the lazy dog");
   const [dimensions, setDimensions] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const secretInput = useSecretInputProps();
   const [useTunnel, setUseTunnel] = useState(false);
   const [localEndpoint, setLocalEndpoint] = useState("");
   const [tunnelEndpoint, setTunnelEndpoint] = useState("");
@@ -40,7 +43,7 @@ export function EmbeddingExampleCard({ providerId, customAlias }) {
     setLocalEndpoint(window.location.origin);
     fetch("/api/keys")
       .then((r) => r.json())
-      .then((d) => { setApiKey((d.keys || []).find((k) => k.isActive !== false)?.key || ""); })
+      .then((d) => { setApiKey(pickInternalKey(d.keys) || ""); })
       .catch(() => {});
     fetch("/api/tunnel/status")
       .then((r) => r.json())
@@ -158,7 +161,7 @@ export function EmbeddingExampleCard({ providerId, customAlias }) {
         {/* API Key */}
         <Row label="API Key">
           <input
-            type="password"
+            {...secretInput}
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             placeholder="sk-..."

@@ -3,6 +3,9 @@ services:
     image: some-du6e/10router:latest
     container_name: 10router
     restart: always
+    # Longer than SHUTDOWN_DRAIN_TIMEOUT_MS (3 min by default), so in-flight
+    # requests can finish on `docker compose down` / a redeploy.
+    stop_grace_period: 3m30s
     ports:
       - "20128:20128"
     volumes:
@@ -16,16 +19,6 @@ services:
       PORT: "20128"
       HOSTNAME: "0.0.0.0"
       NODE_ENV: production
-      HEADROOM_URL: http://headroom:8787
-    depends_on:
-      - headroom
-
-  headroom:
-    image: ghcr.io/chopratejas/headroom:latest
-    container_name: headroom
-    restart: always
-    ports:
-      - "8787:8787"
 
 volumes:
   # Kept as "9router-data" on purpose: renaming the named volume would orphan existing user data.

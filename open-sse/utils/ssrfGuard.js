@@ -46,6 +46,8 @@ const BLOCKED_V4_RANGES = [
   [ipv4ToInt("169.254.0.0"), 16], // includes 169.254.169.254 cloud metadata
   [ipv4ToInt("172.16.0.0"), 12],
   [ipv4ToInt("192.168.0.0"), 16],
+  [ipv4ToInt("192.0.0.0"), 24], // IETF protocol assignments (incl. DS-Lite 192.0.0.0/29)
+  [ipv4ToInt("198.18.0.0"), 15], // benchmarking; often routed to internal test nets
 ];
 
 function isBlockedIpv4Int(ip) {
@@ -130,9 +132,18 @@ function isBlockedIpv6Groups(g) {
   // group index 5) and NAT64 well-known prefix 64:ff9b::/96 — both embed a
   // real IPv4 address in the low 32 bits; check it against the same IPv4
   // blocklist regardless of which prefix wraps it.
+  // site-local fec0::/10 (deprecated, still routed on some internal networks)
+  if ((g[0] & 0xffc0) === 0xfec0) return true;
   const low32 = ((g[6] << 16) | g[7]) >>> 0;
   if ([0, 1, 2, 3, 4].every(isZero) && g[5] === 0xffff) return isBlockedIpv4Int(low32);
+  // IPv4-translated ::ffff:0:a.b.c.d (SIIT, RFC 2765)
+  if ([0, 1, 2, 3].every(isZero) && g[4] === 0xffff && g[5] === 0) return isBlockedIpv4Int(low32);
   if (g[0] === 0x0064 && g[1] === 0xff9b && [2, 3, 4, 5].every(isZero)) return isBlockedIpv4Int(low32);
+  // NAT64 local-use 64:ff9b:1::/48 (RFC 8215): the v4 can sit anywhere in the
+  // low bits depending on prefix length, so block the whole range.
+  if (g[0] === 0x0064 && g[1] === 0xff9b && g[2] === 0x0001) return true;
+  // 6to4 2002::/16: the embedded IPv4 is groups 1-2.
+  if (g[0] === 0x2002) return isBlockedIpv4Int(((g[1] << 16) | g[2]) >>> 0);
   // IPv4-compatible ::a.b.c.d/96 (deprecated, still parseable) — excludes :: and ::1
   // which already matched above.
   if ([0, 1, 2, 3, 4, 5].every(isZero) && low32 !== 0 && low32 !== 1) return isBlockedIpv4Int(low32);

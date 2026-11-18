@@ -5,10 +5,11 @@ import PropTypes from "prop-types";
 import { Button, Badge, Input, Modal, Select } from "@/shared/components";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { planBulkAdd } from "@/shared/utils/bulkAdd";
+import { describePastedKeyConfig, parsePastedKeyConfig } from "@/shared/utils/parsePastedKeyConfig";
 
 const BULK_PLACEHOLDER = `name1|sk-key1\nname2|sk-key2\nsk-key-only-auto-named`;
 
-export default function AddApiKeyModal({ isOpen, provider, providerName, isCompatible, isAnthropic, authType, authHint, website, proxyPools, error, existingNames, onSave, onBulkDone, onClose }) {
+export default function AddApiKeyModal({ isOpen, provider, providerName, isCompatible, isAnthropic, nodeBaseUrl, authType, authHint, website, proxyPools, error, existingNames, onSave, onBulkDone, onClose }) {
   const NONE_PROXY_POOL_VALUE = "__none__";
   const isOllamaLocal = provider === "ollama-local";
   const isCookie = authType === "cookie";
@@ -30,7 +31,10 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
     priority: 1,
     proxyPoolId: NONE_PROXY_POOL_VALUE,
     ollamaHostUrl: "",
+    baseUrl: "",
   });
+  const [showBaseUrl, setShowBaseUrl] = useState(false);
+  const [pasteHint, setPasteHint] = useState("");
   const [azureData, setAzureData] = useState({
     azureEndpoint: "",
     apiVersion: "2024-10-01-preview",
@@ -51,6 +55,39 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
   const [mode, setMode] = useState("single"); // "single" | "bulk"
   const [bulkText, setBulkText] = useState("");
   const [bulkResult, setBulkResult] = useState(null); // { success, failed }
+
+  // A pasted Claude Code config or env lines fill the key and, on custom
+  // endpoints, the key's own URL. Returns false for a plain key.
+  const applyPastedConfig = (text) => {
+    const apiType = isCompatible ? (isAnthropic ? "anthropic" : "openai") : provider === "openai" ? "openai" : undefined;
+    const parsed = parsePastedKeyConfig(text, { endpointUrl: nodeBaseUrl, keyUrl: !!isCompatible, apiType });
+    if (!parsed) return false;
+    const urlField = parsed.baseUrl || parsed.sameAsEndpoint || parsed.badUrl ? { baseUrl: parsed.baseUrl } : {};
+    // A URL-only paste keeps a key already in the field.
+    const keptKey = !parsed.apiKey && !!formData.apiKey.trim();
+    setFormData((prev) => ({ ...prev, apiKey: parsed.apiKey || (keptKey ? prev.apiKey : ""), ...urlField }));
+    if (parsed.baseUrl) setShowBaseUrl((shown) => shown || "paste");
+    setPasteHint(describePastedKeyConfig(parsed, { keptKey }));
+    return true;
+  };
+  const apiKeyFieldProps = {
+    value: formData.apiKey,
+    // An <input> loses a paste's line breaks, so read the clipboard text itself.
+    onPaste: (e) => {
+      if (applyPastedConfig(e.clipboardData?.getData("text") || "")) e.preventDefault();
+    },
+    onChange: (e) => {
+      const value = e.target.value;
+      // Typing adds one character at a time; more at once is a drop or autofill.
+      // A paste was already read in onPaste, with its line breaks.
+      const pasted = e.nativeEvent?.inputType?.startsWith("insertFromPaste");
+      if (!pasted && value.length - formData.apiKey.length > 1 && applyPastedConfig(value)) return;
+      setPasteHint("");
+      setFormData({ ...formData, apiKey: value });
+    },
+    hint: pasteHint || undefined,
+    hintLive: true,
+  };
 
   const buildProviderSpecificData = () => {
     if (isOllamaLocal && formData.ollamaHostUrl.trim()) {
@@ -73,13 +110,16 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
     return undefined;
   };
 
+  // Compatible keys can point at another account or region of the same API.
+  const keyBaseUrl = () => (isCompatible && formData.baseUrl.trim() ? { baseUrl: formData.baseUrl.trim() } : {});
+
   const handleValidate = async () => {
     setValidating(true);
     try {
       const res = await fetch("/api/providers/validate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider, apiKey: formData.apiKey, providerSpecificData: buildProviderSpecificData() }),
+        body: JSON.stringify({ provider, apiKey: formData.apiKey, providerSpecificData: buildProviderSpecificData(), ...keyBaseUrl() }),
       });
       const data = await res.json();
       setValidationResult(data.valid ? "success" : "failed");
@@ -93,10 +133,9 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
   const handleSubmit = async () => {
     if (!provider) return;
     if (!isOllamaLocal && !formData.apiKey) return;
-    if (!isOllamaLocal) {
-      // Non-ollama providers require a name
-      if (!formData.name) return;
-    }
+    // Names are required except for Ollama and custom endpoints, where the
+    // server falls back to the masked key.
+    if (!isOllamaLocal && !isCompatible && !formData.name) return;
     if (isCompatible && !formData.defaultModel.trim()) return;
 
     setSaving(true);
@@ -108,7 +147,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
         const res = await fetch("/api/providers/validate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ provider, apiKey: formData.apiKey, providerSpecificData: buildProviderSpecificData() }),
+          body: JSON.stringify({ provider, apiKey: formData.apiKey, providerSpecificData: buildProviderSpecificData(), ...keyBaseUrl() }),
         });
         const data = await res.json();
         isValid = !!data.valid;
@@ -126,7 +165,8 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
         priority: formData.priority,
         proxyPoolId: formData.proxyPoolId === NONE_PROXY_POOL_VALUE ? null : formData.proxyPoolId,
         testStatus: isValid ? "active" : "unknown",
-        providerSpecificData: buildProviderSpecificData()
+        providerSpecificData: buildProviderSpecificData(),
+        ...keyBaseUrl(),
       });
     } finally {
       setSaving(false);
@@ -187,6 +227,61 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
 
   if (!provider) return null;
 
+  // Custom endpoints: key, optional name, and an optional per-key URL tucked
+  // behind a toggle. The endpoint already knows its own URL and models.
+  if (isCompatible) {
+    const submitCompatible = async () => {
+      const apiKey = formData.apiKey.trim();
+      if (!apiKey || saving) return;
+      setSaving(true);
+      try {
+        await onSave({ name: formData.name.trim(), apiKey, testStatus: "unknown", ...keyBaseUrl() });
+      } finally {
+        setSaving(false);
+      }
+    };
+    return (
+      <Modal isOpen={isOpen} title="Add key" onClose={onClose}>
+        <form className="flex flex-col gap-4" onSubmit={(e) => { e.preventDefault(); submitCompatible(); }}>
+          <Input
+            label="API key"
+            type="password"
+            icon="key"
+            {...apiKeyFieldProps}
+            placeholder="Paste a key"
+            ignorePasswordManagers
+            autoFocus
+          />
+          <Input
+            label={<>Name <span className="font-normal text-text-muted">(optional)</span></>}
+            value={formData.name}
+            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+            placeholder="Shown as the masked key if left blank"
+            ignorePasswordManagers
+          />
+          {showBaseUrl ? (
+            <Input
+              label={<>Endpoint URL <span className="font-normal text-text-muted">(optional)</span></>}
+              value={formData.baseUrl}
+              onChange={(e) => setFormData({ ...formData, baseUrl: e.target.value })}
+              placeholder={nodeBaseUrl || "https://..."}
+              hint="Leave empty to use the endpoint's URL. Use this when this key belongs to another account or region."
+              autoFocus={showBaseUrl === "button"}
+            />
+          ) : (
+            <button type="button" onClick={() => setShowBaseUrl("button")} className="self-start text-xs text-primary hover:underline">
+              Use a different endpoint URL for this key
+            </button>
+          )}
+          {error && <p role="alert" className="text-xs text-red-500 break-words">{error}</p>}
+          <Button type="submit" fullWidth disabled={saving || !formData.apiKey.trim()}>
+            {saving ? "Adding…" : "Add key"}
+          </Button>
+        </form>
+      </Modal>
+    );
+  }
+
   return (
     <Modal isOpen={isOpen} title={`Add ${providerName || provider} ${credentialLabel}`} onClose={onClose}>
       <div className="flex flex-col gap-4">
@@ -232,6 +327,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
           value={formData.name}
           onChange={(e) => setFormData({ ...formData, name: e.target.value })}
           placeholder={isOllamaLocal ? "Ollama Local" : "Production Key"}
+          hint={isCompatible ? "Optional. Unnamed keys show as the masked key." : undefined}
         />
         {isOllamaLocal && (
           <div className="flex gap-2">
@@ -256,8 +352,10 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
               type={isCookie ? "text" : "password"}
               value={formData.apiKey}
               onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
+              {...(isCookie ? {} : apiKeyFieldProps)}
               placeholder={credentialPlaceholder}
               className="flex-1"
+              ignorePasswordManagers
             />
             <div className="pt-6">
               <Button onClick={handleValidate} disabled={!formData.apiKey || validating || saving} variant="secondary">
@@ -300,6 +398,19 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
             placeholder={isAnthropic ? "claude-3-5-sonnet-latest" : "gpt-4o-mini"}
           />
         )}
+        {isCompatible && (showBaseUrl ? (
+          <Input
+            label="Different endpoint URL"
+            value={formData.baseUrl}
+            onChange={(e) => setFormData({ ...formData, baseUrl: e.target.value })}
+            placeholder={nodeBaseUrl || "https://..."}
+            hint="Leave empty to use the provider's URL. Use this when this key belongs to another account or region."
+          />
+        ) : (
+          <button type="button" onClick={() => setShowBaseUrl("button")} className="self-start text-xs text-primary hover:underline">
+            Use a different endpoint URL for this key
+          </button>
+        ))}
         {isOllamaLocal && (
           <p className="text-xs text-text-muted">
             Leave blank to use <code>http://localhost:11434</code>. For remote Ollama, enter the full host URL (e.g. <code>http://192.168.1.10:11434</code>).
@@ -393,7 +504,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
         </p>
 
         <div className="flex gap-2">
-          <Button onClick={handleSubmit} fullWidth disabled={saving || (!isOllamaLocal && (!formData.name || !formData.apiKey)) || (isCompatible && !formData.defaultModel.trim()) || (isAzure && (!azureData.azureEndpoint || !azureData.deployment || !azureData.organization)) || (isCloudflareAi && !cloudflareData.accountId)}>
+          <Button onClick={handleSubmit} fullWidth disabled={saving || (!isOllamaLocal && ((!formData.name && !isCompatible) || !formData.apiKey)) || (isCompatible && !formData.defaultModel.trim()) || (isAzure && (!azureData.azureEndpoint || !azureData.deployment || !azureData.organization)) || (isCloudflareAi && !cloudflareData.accountId)}>
             {saving ? "Saving..." : "Save"}
           </Button>
           <Button onClick={onClose} variant="ghost" fullWidth>
@@ -412,6 +523,7 @@ AddApiKeyModal.propTypes = {
   providerName: PropTypes.string,
   isCompatible: PropTypes.bool,
   isAnthropic: PropTypes.bool,
+  nodeBaseUrl: PropTypes.string,
   authType: PropTypes.string,
   authHint: PropTypes.string,
   website: PropTypes.string,

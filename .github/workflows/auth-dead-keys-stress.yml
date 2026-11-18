@@ -1,0 +1,60 @@
+name: Dead-key stress
+
+# Replays the dead-key routing scenarios (tests/unit/auto-disable-stress.test.js)
+# on this branch, pinned. A manual run also replays them on master's auth code
+# for comparison.
+on:
+  pull_request:
+    paths:
+      - "src/sse/**"
+      - "src/lib/**"
+      - "src/shared/**"
+      - "open-sse/**"
+      - "tests/unit/auto-disable-stress.test.js"
+      - "tests/unit/auto-disable-stress.pinned.json"
+      - "tests/vitest.stress.config.js"
+      - "tests/vitest.shared.js"
+      - "tests/package.json"
+      - ".github/workflows/auth-dead-keys-stress.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Stress, this branch (pinned)
+        working-directory: tests
+        env:
+          STRESS_PIN: "1"
+          STRESS_OUT: ${{ runner.temp }}/stress-branch.json
+        run: ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-stress.test.js
+      # For comparison only, on a manual run: master's numbers never fail the job.
+      - name: Stress, master's auth code
+        if: always() && github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        env:
+          STRESS_OUT: ${{ runner.temp }}/stress-master.json
+        run: |
+          git checkout origin/master -- src open-sse
+          cd tests && ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/auto-disable-stress.test.js
+      - name: Results
+        if: always()
+        run: |
+          echo "this branch:"; cat "$RUNNER_TEMP/stress-branch.json" || true
+          echo; echo "master:"; cat "$RUNNER_TEMP/stress-master.json" 2>/dev/null || echo "(manual runs only)"

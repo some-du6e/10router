@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import PropTypes from "prop-types";
 import {
   Card,
@@ -8,7 +8,6 @@ import {
   Badge,
   Button,
   Toggle,
-  SegmentedControl,
 } from "@/shared/components";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import { getProviderIconSrc } from "@/shared/utils/providerIcon";
@@ -27,13 +26,16 @@ import { useHeaderSearchStore } from "@/store/headerSearchStore";
 import {
   VENDORS,
   VENDOR_BY_ROUTE,
-  rankScore,
-  vendorRankScore,
+  rankOf,
+  CUSTOM_ENDPOINT_RANK,
 } from "@/shared/constants/providerVendors";
 import ModelAvailabilityBadge from "./components/ModelAvailabilityBadge";
 import VendorProviderCard from "./components/VendorProviderCard";
+import CustomEndpointCard from "./components/CustomEndpointCard";
 import AddCompatibleModal from "./components/AddCompatibleModal";
+import AddEndpointModal from "./components/AddEndpointModal";
 import { STATUS_FILTER_OPTIONS, matchesStatusFilter } from "./utils";
+import { arrive, findArrivedCard, snapshotGrid } from "./arrive.js";
 
 function getStatusDisplay(connected, error, errorCode) {
   const parts = [];
@@ -104,27 +106,51 @@ function getConnectionErrorTag(connection) {
 
 const APIKEY_INITIAL_VISIBLE = 20;
 
-const VIEW_OPTIONS = [
-  { value: "vendor", label: "By vendor", icon: "workspaces" },
-  { value: "classic", label: "Classic", icon: "grid_view" },
-];
-
 const AUTH_FILTERS = [
   { value: "all", label: "All" },
   { value: "oauth", label: "OAuth" },
   { value: "apikey", label: "API Key" },
   { value: "free", label: "Free" },
+  { value: "custom", label: "Custom" },
 ];
 
-// Endpoints the user added themselves outrank anything we shipped a score for.
-const CUSTOM_PROVIDER_SCORE = 1000;
+// What CustomEndpointCard shows beyond name and URL: verified state, site
+// icon, impersonation and beta auto-fixes, all saved on the node.
+function endpointCardFields(node) {
+  return {
+    verified: node.verified,
+    icon: node.icon,
+    iconUrl: node.iconUrl,
+    tint: node.tint,
+    mimic: node.mimic,
+    stripBeta: node.stripBeta,
+    droppedBetas: node.droppedBetas,
+    createdAt: node.createdAt,
+  };
+}
+
+// Saved custom models per endpoint id, for the "N models" pill.
+function countModels(models) {
+  const counts = {};
+  for (const m of models || []) {
+    if (m?.providerAlias && (m.type || "llm") === "llm") counts[m.providerAlias] = (counts[m.providerAlias] || 0) + 1;
+  }
+  return counts;
+}
 
 export default function ProvidersPage() {
   const [connections, setConnections] = useState([]);
   const [providerNodes, setProviderNodes] = useState([]);
+  // providerAlias -> saved model count; null until loaded.
+  const [modelCounts, setModelCounts] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showAllApikey, setShowAllApikey] = useState(false);
+  // Classic is a legacy escape hatch, toggled in Settings.
   const [view, setView] = useState("vendor");
+  const [showAddEndpointModal, setShowAddEndpointModal] = useState(false);
+  // A just-added endpoint waiting for its card to land: { id, before, at }.
+  const gridRef = useRef(null);
+  const arrivingRef = useRef(null);
   const [authFilter, setAuthFilter] = useState("all");
   const [connectedOnly, setConnectedOnly] = useState(false);
   const [showAddCompatibleModal, setShowAddCompatibleModal] = useState(false);
@@ -176,6 +202,13 @@ export default function ProvidersPage() {
     });
 
   useEffect(() => {
+    fetch("/api/settings")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((s) => { if (s?.legacyProvidersView === true) setView("classic"); })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
     const fetchData = async () => {
       try {
         const [connectionsRes, nodesRes] = await Promise.all([
@@ -194,6 +227,17 @@ export default function ProvidersPage() {
       }
     };
     fetchData();
+  }, []);
+
+  useEffect(() => {
+    const load = () =>
+      fetch("/api/models/custom")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => d && setModelCounts(countModels(d.models)))
+        .catch(() => {});
+    load();
+    window.addEventListener("customModelChanged", load);
+    return () => window.removeEventListener("customModelChanged", load);
   }, []);
 
   const getProviderStats = (providerId, authType) => {
@@ -297,6 +341,9 @@ export default function ProvidersPage() {
       color: "#10A37F",
       textIcon: "OC",
       apiType: node.apiType,
+      baseUrl: node.baseUrl,
+      modelRoutes: node.modelRoutes,
+      ...endpointCardFields(node),
     }))
     .filter(
       (p) => matchSearch(p.name) && matchStatus(getProviderStats(p.id, "apikey")),
@@ -309,6 +356,9 @@ export default function ProvidersPage() {
       name: node.name || "Anthropic Compatible",
       color: "#D97757",
       textIcon: "AC",
+      baseUrl: node.baseUrl,
+      modelRoutes: node.modelRoutes,
+      ...endpointCardFields(node),
     }))
     .filter(
       (p) => matchSearch(p.name) && matchStatus(getProviderStats(p.id, "apikey")),
@@ -387,7 +437,7 @@ export default function ProvidersPage() {
       return (a.name || "").localeCompare(b.name || "");
     });
   // --- "By vendor" view -----------------------------------------------------
-  // One card per real-world vendor, ranked by capability. Everything comes from
+  // One card per real-world vendor, in the user's own ranking (RANK_ORDER). Everything comes from
   // the same *_PROVIDERS maps and getProviderStats as the classic view, so the
   // two views can never disagree about connection counts.
   const allProviderEntries = {
@@ -459,7 +509,7 @@ export default function ProvidersPage() {
       key: `vendor:${vendor.id}`,
       vendor,
       routes: kept,
-      score: vendorRankScore(vendor),
+      rank: rankOf(vendor.id),
     };
   }).filter(Boolean);
 
@@ -474,19 +524,21 @@ export default function ProvidersPage() {
       kind: "single",
       key: `single:${route.id}`,
       route,
-      score: rankScore(route.id),
+      rank: rankOf(route.id),
     }));
 
   // User-added OpenAI/Anthropic-compatible endpoints. They aren't in the
-  // registry, so they can't be ranked or grouped — but they are the user's own
-  // providers, so they sort to the top rather than being dropped from the view.
+  // registry, so they can't be grouped; they land right after OpenRouter,
+  // oldest first, so a new one goes at the end of that run.
   const customCards = [...compatibleProviders, ...anthropicCompatibleProviders]
+    .sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")))
     .filter(
-      () => authFilter === "all" || authFilter === "apikey",
+      () => authFilter === "all" || authFilter === "apikey" || authFilter === "custom",
     )
     .map((info) => ({
       kind: "single",
       key: `single:${info.id}`,
+      custom: true,
       route: {
         id: info.id,
         name: info.name,
@@ -496,16 +548,19 @@ export default function ProvidersPage() {
         isReady: false,
         ...getProviderStats(info.id, "apikey"),
       },
-      score: CUSTOM_PROVIDER_SCORE,
+      rank: CUSTOM_ENDPOINT_RANK,
     }))
     .filter((card) => !connectedOnly || card.route.connected > 0);
 
+  // Stable sort: custom endpoints keep their creation order within their slot.
   const rankedCards = [...vendorCards, ...singleCards, ...customCards].sort(
     (a, b) =>
-      b.score - a.score ||
-      (a.vendor?.name || a.route?.name || "").localeCompare(
-        b.vendor?.name || b.route?.name || "",
-      ),
+      a.rank - b.rank ||
+      (a.custom && b.custom
+        ? 0
+        : (a.vendor?.name || a.route?.name || "").localeCompare(
+            b.vendor?.name || b.route?.name || "",
+          )),
   );
 
   const isApikeySearching = !!searchQuery.trim() || statusFilter !== "all";
@@ -514,6 +569,22 @@ export default function ProvidersPage() {
       ? apikeyEntries
       : apikeyEntries.slice(0, APIKEY_INITIAL_VISIBLE);
   const hiddenApikeyCount = apikeyEntries.length - APIKEY_INITIAL_VISIBLE;
+
+  // Land a just-added endpoint once its card is in the grid. Runs before paint
+  // so the FLIP starts from the old positions. The card can show up a render
+  // late (e.g. "Connected only" waits for its key), so the wait lasts a few
+  // seconds before giving up on a card that's filtered out.
+  useLayoutEffect(() => {
+    const pending = arrivingRef.current;
+    if (!pending) return;
+    const card = findArrivedCard(gridRef.current, pending.id);
+    if (card) {
+      arrivingRef.current = null;
+      arrive(gridRef.current, card, pending.before);
+    } else if (Date.now() - pending.at > 3000) {
+      arrivingRef.current = null;
+    }
+  });
 
   if (loading) {
     return (
@@ -534,13 +605,6 @@ export default function ProvidersPage() {
 
   const viewTabs = (
     <div className="flex min-w-0 flex-col gap-3">
-      <SegmentedControl
-        size="sm"
-        options={VIEW_OPTIONS}
-        value={view}
-        onChange={setView}
-        className="w-max max-w-full"
-      />
       {view === "vendor" && (
         <div className="flex flex-wrap items-center gap-2">
           {AUTH_FILTERS.map((f) => (
@@ -569,14 +633,41 @@ export default function ProvidersPage() {
             <span className="material-symbols-outlined text-[14px]">link</span>
             Connected only
           </button>
+          <Button icon="add_link" onClick={() => setShowAddEndpointModal(true)}>
+            Add endpoint
+          </Button>
         </div>
       )}
     </div>
   );
 
+  const addEndpointModal = (
+    <AddEndpointModal
+      isOpen={showAddEndpointModal}
+      onClose={() => setShowAddEndpointModal(false)}
+      takenPrefixes={providerNodes.map((n) => n.prefix).filter(Boolean)}
+      onCreated={(node, { keyError, modelsFailed = 0, modelsTotal = 0 } = {}) => {
+        arrivingRef.current = { id: node.id, before: snapshotGrid(gridRef.current), at: Date.now() };
+        // A retried save can hand back a node that's already in the list.
+        setProviderNodes((prev) => (prev.some((n) => n.id === node.id) ? prev : [...prev, node]));
+        setShowAddEndpointModal(false);
+        // Pick up the key the modal just created so the card shows it connected.
+        fetch("/api/providers").then((r) => r.json()).then((d) => d.connections && setConnections(d.connections)).catch(() => {});
+        const problems = [
+          keyError && `its key wasn't saved (${keyError})`,
+          modelsFailed > 0 && `${modelsFailed} of ${modelsTotal} model${modelsTotal === 1 ? "" : "s"} weren't saved`,
+        ].filter(Boolean);
+        if (problems.length) notify.warning(`${node.name} added, but ${problems.join(" and ")}. Fix it on the endpoint page.`);
+        else notify.success(`${node.name} added`);
+      }}
+    />
+  );
+
   if (view === "vendor") {
     return (
-      <div className="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
+      // Halve the layout's lg:p-10 top padding on this page only.
+      <div className="flex min-w-0 flex-col gap-6 px-1 sm:px-0 lg:-mt-5">
+        {addEndpointModal}
         {viewTabs}
         {rankedCards.length === 0 ? (
           <div className="text-center py-8 border border-dashed border-border rounded-xl">
@@ -588,13 +679,23 @@ export default function ProvidersPage() {
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">
+          <div ref={gridRef} className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">
             {rankedCards.map((card) =>
               card.kind === "vendor" ? (
                 <VendorProviderCard
                   key={card.key}
                   vendor={card.vendor}
                   routes={card.routes}
+                />
+              ) : card.custom ? (
+                <CustomEndpointCard
+                  key={card.key}
+                  provider={card.route.info}
+                  stats={card.route}
+                  modelCount={modelCounts ? modelCounts[card.route.id] || 0 : null}
+                  onToggle={(active) =>
+                    handleToggleProvider(card.route.id, "apikey", active)
+                  }
                 />
               ) : (
                 <ApiKeyProviderCard
@@ -623,6 +724,7 @@ export default function ProvidersPage() {
 
   return (
     <div className="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
+      {addEndpointModal}
       {viewTabs}
       <div className="flex items-center justify-end">
         <select
@@ -659,6 +761,15 @@ export default function ProvidersPage() {
           <div className="grid grid-cols-1 gap-2 sm:flex sm:w-auto">
             <Button
               size="sm"
+              icon="bolt"
+              onClick={() => setShowAddEndpointModal(true)}
+              className="w-full sm:w-auto"
+            >
+              Add endpoint
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
               icon="add"
               onClick={() => setShowAddAnthropicCompatibleModal(true)}
               className="w-full sm:w-auto"
@@ -886,7 +997,8 @@ export default function ProvidersPage() {
         isOpen={showAddCompatibleModal}
         onClose={() => setShowAddCompatibleModal(false)}
         onCreated={(node) => {
-          setProviderNodes((prev) => [...prev, node]);
+          // POST hands back the existing node for a duplicate save.
+          setProviderNodes((prev) => (prev.some((n) => n.id === node.id) ? prev : [...prev, node]));
           setShowAddCompatibleModal(false);
         }}
       />
@@ -895,7 +1007,8 @@ export default function ProvidersPage() {
         isOpen={showAddAnthropicCompatibleModal}
         onClose={() => setShowAddAnthropicCompatibleModal(false)}
         onCreated={(node) => {
-          setProviderNodes((prev) => [...prev, node]);
+          // POST hands back the existing node for a duplicate save.
+          setProviderNodes((prev) => (prev.some((n) => n.id === node.id) ? prev : [...prev, node]));
           setShowAddAnthropicCompatibleModal(false);
         }}
       />

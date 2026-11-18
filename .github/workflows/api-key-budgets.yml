@@ -1,0 +1,172 @@
+name: API key budgets
+
+on:
+  pull_request:
+    paths:
+      - "open-sse/**"
+      - "src/shared/utils/apiKeyLimits.js"
+      - "src/shared/utils/clientApiKey.js"
+      - "src/dashboardGuard.js"
+      - "src/sse/services/keyLimits.js"
+      - "src/sse/services/model.js"
+      - "src/shared/utils/formatAmounts.js"
+      - "src/sse/services/auth.js"
+      - "src/sse/handlers/**"
+      - "src/lib/db/**"
+      - "src/app/api/keys/**"
+      - "src/app/api/v1/**"
+      - "src/app/api/v1beta/**"
+      - "src/app/api/models/test/ping.js"
+      - "src/app/api/providers/*/requests/route.ts"
+      - "src/app/(dashboard)/dashboard/endpoint/**"
+      - "src/app/(dashboard)/dashboard/accounts/*/ActivityChart.js"
+      - "src/app/(dashboard)/dashboard/media-providers/**"
+      - "docs/API_KEY_BUDGETS.md"
+      - "tests/package.json"
+      - "tests/vitest.config.js"
+      - "tests/unit/api-key-budgets*.test.js"
+      - "tests/unit/stream-abort-usage.test.js"
+      - "tests/unit/stream-floor-wiring.test.js"
+      - "tests/unit/limit-hold-integration.test.js"
+      - "tests/unit/stream-early-headers.test.js"
+      - ".github/workflows/api-key-budgets.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Unit tests
+        working-directory: tests
+        run: >
+          ./node_modules/.bin/vitest run
+          unit/api-key-budgets.test.js
+          unit/api-key-budgets-migration.test.js
+          unit/api-key-budgets-spend.test.js
+          unit/api-key-budgets-drain.test.js
+          unit/stream-abort-usage.test.js
+          unit/stream-floor-wiring.test.js
+          unit/db-migration-chain.test.js
+          unit/dashboard-guard.test.js
+          unit/limit-hold-integration.test.js
+          unit/stream-early-headers.test.js
+          unit/embedding-usage-persistence.test.js
+      - name: Lint
+        run: >
+          ./node_modules/.bin/eslint
+          src/shared/utils/apiKeyLimits.js
+          src/shared/utils/clientApiKey.js
+          src/sse/services/keyLimits.js
+          src/sse/services/auth.js
+          src/dashboardGuard.js
+          open-sse/utils/stream.js
+          open-sse/utils/streamHandler.js
+          open-sse/handlers/chatCore/streamingHandler.js
+          src/lib/db/repos/usageRepo.js
+          src/app/api/v1/api/chat/route.js
+          src/app/api/v1/codex/models/route.js
+          src/app/api/v1beta/models/route.js
+          src/lib/db/repos/apiKeysRepo.js
+          src/lib/db/migrations/005-api-key-budgets.js
+          src/lib/db/schema.js
+          src/lib/db/index.js
+          src/app/api/v1/key/route.js
+          "src/app/api/keys/[id]/route.js"
+          "src/app/api/keys/[id]/usage/route.js"
+          "src/app/(dashboard)/dashboard/endpoint/components/KeyLimitsModal.js"
+          "src/app/(dashboard)/dashboard/endpoint/components/KeyUsageModal.js"
+          "src/app/(dashboard)/dashboard/endpoint/components/KeySpendSummary.js"
+          "src/app/(dashboard)/dashboard/endpoint/components/keyFormat.js"
+          "src/app/(dashboard)/dashboard/endpoint/components/BudgetBar.js"
+          "src/app/(dashboard)/dashboard/accounts/[id]/ActivityChart.js"
+          tests/unit/api-key-budgets.test.js
+          tests/unit/api-key-budgets-migration.test.js
+          tests/unit/api-key-budgets-spend.test.js
+          tests/unit/api-key-budgets-drain.test.js
+          tests/unit/stream-abort-usage.test.js
+          tests/unit/stream-floor-wiring.test.js
+      # Fails only on errors in the .ts files this change touches, so unrelated
+      # type errors elsewhere don't block it.
+      - name: Type check chat.ts and the endpoint requests route
+        run: |
+          set +e
+          ./node_modules/.bin/tsc --noEmit -p . > tsc.log 2>&1
+          code=$?
+          set -e
+          tail -5 tsc.log
+          if [ "$code" -gt 2 ] || ! [ -x ./node_modules/.bin/tsc ]; then echo "tsc did not run (exit $code)"; exit 1; fi
+          if grep -F "src/sse/handlers/chat.ts" tsc.log; then exit 1; fi
+          if grep -F "providers/[id]/requests/route.ts" tsc.log; then exit 1; fi
+
+  # The suite is not all-green on master (see AGENTS.md), so this runs it on
+  # both the base and this branch and fails only on tests that pass on the base
+  # and fail here.
+  no-new-failures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Check out the base branch next to this one
+        run: git worktree add ../base "origin/${{ github.base_ref || 'master' }}"
+      - name: Install dependencies (branch and base)
+        run: |
+          for dir in . ../base; do
+            (cd "$dir" && bun install --ignore-scripts && cd tests && bun install --ignore-scripts)
+          done
+      - name: Run the suite on the base
+        working-directory: ../base/tests
+        # Each run gets its own HOME: tests without a DATA_DIR use ~/.9router,
+        # and one run's database must not leak into the other.
+        run: |
+          mkdir -p "$RUNNER_TEMP/home-base"
+          HOME="$RUNNER_TEMP/home-base" ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/base.json" > /dev/null 2>&1 || true
+      - name: Run the suite on this branch
+        working-directory: tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/home-head"
+          HOME="$RUNNER_TEMP/home-head" ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/head.json" > /dev/null 2>&1 || true
+      - name: Compare
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const load = (file, root) => {
+              const r = JSON.parse(readFileSync(file, "utf8"));
+              const status = new Map();
+              for (const f of r.testResults) {
+                const rel = f.name.slice(f.name.indexOf("/tests/") + 1);
+                for (const a of f.assertionResults) status.set(`${rel} :: ${a.fullName}`, a.status);
+                // A file that failed to load has no assertions; count it as one failure.
+                if (!f.assertionResults.length && f.status === "failed") status.set(`${rel} :: (file failed to load)`, "failed");
+              }
+              return { status, total: r.numTotalTests, failed: r.numFailedTests };
+            };
+            const base = load(process.env.RUNNER_TEMP + "/base.json");
+            const head = load(process.env.RUNNER_TEMP + "/head.json");
+            console.log(`base: ${base.failed}/${base.total} failed, head: ${head.failed}/${head.total} failed`);
+            const regressions = [...head.status].filter(([k, s]) => s === "failed" && base.status.get(k) === "passed").map(([k]) => k);
+            const fixed = [...base.status].filter(([k, s]) => s === "failed" && head.status.get(k) === "passed").map(([k]) => k);
+            const newFailing = [...head.status].filter(([k, s]) => s === "failed" && !base.status.has(k)).map(([k]) => k);
+            if (fixed.length) console.log("Now passing:\n  " + fixed.join("\n  "));
+            if (newFailing.length) console.log("New tests failing:\n  " + newFailing.join("\n  "));
+            if (regressions.length) console.log("Passed on the base, fail here:\n  " + regressions.join("\n  "));
+            if (regressions.length || newFailing.length) process.exit(1);
+          '

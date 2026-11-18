@@ -1,0 +1,87 @@
+import { NextResponse } from "next/server";
+import { getProviderConnectionById, getProviderNodeById, updateProviderNode, getProviderConnections, updateProviderConnection } from "@/models";
+import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
+import { isLocalRequest } from "@/dashboardGuard";
+import { assertPublicUrlResolved } from "@/shared/utils/ssrfGuard.js";
+import { discoverModels } from "@/lib/endpointDetect.js";
+import { getEndpointCatalog } from "@/lib/endpointCatalog.js";
+import { makeProbeFetch } from "@/lib/probeFetch.js";
+
+export const dynamic = "force-dynamic";
+
+type ProviderSpecificData = Record<string, unknown> & {
+  baseUrl?: string;
+  apiType?: string;
+  modelRoutes?: Record<string, string>;
+  ownBaseUrl?: boolean;
+  apiKeyHeader?: string | boolean;
+  maxCompletionTokens?: boolean;
+};
+type Connection = { id: string; provider: string; apiKey?: string; providerSpecificData?: ProviderSpecificData | null };
+
+// Routes are relative to the node's own path: drop entries that point back at it.
+async function saveRoutes(nodeId: string, ownProtocol: string, routes: Record<string, string>) {
+  const modelRoutes = Object.fromEntries(Object.entries(routes).filter(([, p]) => p !== ownProtocol));
+  const node = await getProviderNodeById(nodeId);
+  if (!node) return;
+  await updateProviderNode(nodeId, { modelRoutes });
+  const connections = (await getProviderConnections({ provider: nodeId })) as Connection[];
+  await Promise.all(connections.map((c) => updateProviderConnection(c.id, { providerSpecificData: { ...(c.providerSpecificData || {}), modelRoutes } })));
+}
+
+// GET /api/providers/[id]/discover-models - Model ids for a user-added endpoint.
+// Uses /models when it exists; otherwise asks about catalog models one at a time
+// with empty-body requests (free). Never sends a billed generation.
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const { id } = await params;
+    const connection = (await getProviderConnectionById(id)) as Connection | null;
+    if (!connection) return NextResponse.json({ error: "Connection not found" }, { status: 404 });
+
+    const anthropic = isAnthropicCompatibleProvider(connection.provider);
+    if (!anthropic && !isOpenAICompatibleProvider(connection.provider)) {
+      return NextResponse.json({ error: "Only for custom endpoints" }, { status: 400 });
+    }
+    const baseUrl = connection.providerSpecificData?.baseUrl;
+    if (!baseUrl) return NextResponse.json({ error: "No base URL configured" }, { status: 400 });
+
+    const remote = !isLocalRequest(request);
+    if (remote) {
+      try { await assertPublicUrlResolved(baseUrl); }
+      catch { return NextResponse.json({ error: "URL not allowed" }, { status: 400 }); }
+    }
+
+    const protocol = anthropic ? "anthropic" : connection.providerSpecificData?.apiType === "responses" ? "openai-responses" : "openai-chat";
+    // Two-path nodes: probe every path this endpoint already routes to.
+    const existing = connection.providerSpecificData?.modelRoutes || {};
+    const protocols: string[] = [...new Set([protocol, ...Object.values(existing)])];
+    const result = await discoverModels({
+      baseUrl,
+      apiKey: connection.apiKey,
+      protocol,
+      protocols,
+      fetchFn: makeProbeFetch(remote),
+      // Saved quirks: the `api-key` header style and the max_completion_tokens cap.
+      quirks: {
+        ...(connection.providerSpecificData?.apiKeyHeader ? { apiKeyHeader: true } : {}),
+        ...(connection.providerSpecificData?.maxCompletionTokens ? { maxCompletionTokens: true } : {}),
+      },
+      catalog: await getEndpointCatalog(),
+      signal: request.signal, // a client that gives up stops the probing too
+    });
+    // A path that errored mid-probe would drop its models from the routes, so
+    // only replace saved routes when every path finished.
+    // A stopped run (key refused, rate-limited) is partial too: never save then.
+    // A key with its own endpoint URL may sit on another account with other
+    // models, so what it sees must not rewrite routes for the node's other keys.
+    const ownEndpoint = !!connection.providerSpecificData?.ownBaseUrl;
+    if (result.routes && result.allComplete && !result.partial && !ownEndpoint) await saveRoutes(connection.provider, protocol, result.routes);
+    return NextResponse.json({
+      models: result.models.map((m: string) => ({ id: m })), source: result.source, catalogName: result.catalogName, routes: result.routes, steps: result.steps,
+      partial: !!result.partial, partialReason: result.partialReason || null, authRejected: !!result.authRejected,
+    });
+  } catch (error) {
+    console.log("Error discovering models:", error instanceof Error ? error.message : undefined);
+    return NextResponse.json({ error: "Failed to discover models" }, { status: 500 });
+  }
+}

@@ -3,16 +3,15 @@ import REGISTRY from "open-sse/providers/registry/index.js";
 import {
   VENDORS,
   VENDOR_BY_ROUTE,
-  RANK_SCORES,
-  AAII_SCORES,
-  rankScore,
-  vendorRankScore,
-  DEFAULT_SCORE,
+  RANK_ORDER,
+  UNRANKED,
+  CUSTOM_ENDPOINT_RANK,
+  rankOf,
 } from "@/shared/constants/providerVendors.js";
 
 const REGISTRY_IDS = new Set(REGISTRY.map((r) => r.id));
 
-// VENDORS and RANK_SCORES are hand-maintained tables keyed by registry id.
+// VENDORS and RANK_ORDER are hand-maintained tables keyed by registry or vendor id.
 // These tests catch the silent failure mode: an id is renamed or removed
 // upstream and the vendor card quietly loses an endpoint.
 describe("provider vendor grouping", () => {
@@ -23,9 +22,14 @@ describe("provider vendor grouping", () => {
     expect(missing).toEqual([]);
   });
 
-  it("every ranked id is a real registry entry", () => {
-    const missing = Object.keys(RANK_SCORES).filter((id) => !REGISTRY_IDS.has(id));
-    expect(missing).toEqual([]);
+  it("every ranked id is a vendor card or a stand-alone registry entry", () => {
+    const vendorIds = new Set(VENDORS.map((v) => v.id));
+    const bad = RANK_ORDER.filter((id) => !vendorIds.has(id) && (!REGISTRY_IDS.has(id) || VENDOR_BY_ROUTE[id]));
+    expect(bad).toEqual([]);
+  });
+
+  it("ranks each card once", () => {
+    expect(new Set(RANK_ORDER).size).toBe(RANK_ORDER.length);
   });
 
   it("no endpoint is claimed by two vendors", () => {
@@ -56,24 +60,17 @@ describe("provider vendor grouping", () => {
     }
   });
 
-  it("every AAII-scored lab is an actual vendor", () => {
-    const ids = new Set(VENDORS.map((v) => v.id));
-    expect(Object.keys(AAII_SCORES).filter((id) => !ids.has(id))).toEqual([]);
+  it("follows the user's ranking: labs, then gateways", () => {
+    expect(RANK_ORDER.slice(0, 4)).toEqual(["anthropic", "openai", "openrouter", "xai"]);
+    expect(rankOf("anthropic")).toBeLessThan(rankOf("google"));
   });
 
-  it("a vendor ranks by its strongest endpoint", () => {
-    const openai = VENDORS.find((v) => v.id === "openai");
-    expect(vendorRankScore(openai)).toBe(rankScore("codex"));
+  it("unranked ids sort after every ranked one", () => {
+    expect(rankOf("definitely-not-a-provider")).toBe(UNRANKED);
   });
 
-  it("unknown ids fall back to the default score", () => {
-    expect(rankScore("definitely-not-a-provider")).toBe(DEFAULT_SCORE);
-  });
-
-  it("frontier labs outrank aggregators and resellers", () => {
-    expect(rankScore("claude")).toBeGreaterThan(rankScore("openrouter"));
-    expect(rankScore("openrouter")).toBeGreaterThan(rankScore("groq"));
-    // Cursor fronts Claude/GPT, so it beats an open-weights-only host.
-    expect(rankScore("cursor")).toBeGreaterThan(rankScore("chutes"));
+  it("custom endpoints land right after OpenRouter", () => {
+    expect(CUSTOM_ENDPOINT_RANK).toBeGreaterThan(rankOf("openrouter"));
+    expect(CUSTOM_ENDPOINT_RANK).toBeLessThan(rankOf("xai"));
   });
 });

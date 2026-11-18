@@ -6,6 +6,9 @@ import { promisify } from "util";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
+import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
+import { checkNewBaseUrl } from "@/lib/cliTools/keepKeyTarget.js";
+import { findUnsafeConfigValue, unsafeConfigValueError } from "@/lib/cliTools/configValue.js";
 
 const execAsync = promisify(exec);
 
@@ -79,8 +82,12 @@ export async function GET() {
 export async function POST(request) {
   try {
     const { baseUrl, apiKey, model } = await request.json();
-    if (!baseUrl || !apiKey || !model) {
+    if (typeof baseUrl !== "string" || !baseUrl.trim() || !apiKey || !model) {
       return NextResponse.json({ error: "baseUrl, apiKey and model are required" }, { status: 400 });
+    }
+    const unsafeField = findUnsafeConfigValue({ baseUrl, apiKey, model });
+    if (unsafeField) {
+      return NextResponse.json({ error: unsafeConfigValueError(unsafeField) }, { status: 400 });
     }
 
     await fs.mkdir(getDataDir(), { recursive: true });
@@ -89,6 +96,19 @@ export async function POST(request) {
     const normalizedBaseUrl = baseUrl.endsWith("/v1") ? baseUrl.slice(0, -3) : baseUrl;
 
     const globalState = (await readJson(getGlobalStatePath())) || {};
+
+    // Cline sends openAiHeaders (which can carry a token) with every OpenAI-provider
+    // request, and this route leaves them in place.
+    const storedHeaders = globalState.openAiHeaders;
+    const target = await checkNewBaseUrl({
+      tool: "Cline",
+      baseUrl: normalizedBaseUrl,
+      storedBaseUrl: globalState.openAiBaseUrl,
+      otherCredentials: storedHeaders && Object.keys(storedHeaders).length ? ["openAiHeaders"] : [],
+      where: "globalState.json",
+    });
+    if (target.error) return NextResponse.json({ error: target.error }, { status: 400 });
+
     globalState.actModeApiProvider = "openai";
     globalState.planModeApiProvider = "openai";
     globalState.openAiBaseUrl = normalizedBaseUrl;
@@ -98,7 +118,7 @@ export async function POST(request) {
 
     const secrets = (await readJson(getSecretsPath())) || {};
     secrets.openAiApiKey = apiKey;
-    await fs.writeFile(getSecretsPath(), JSON.stringify(secrets, null, 2));
+    await writePrivateFile(getSecretsPath(), JSON.stringify(secrets, null, 2));
 
     return NextResponse.json({ success: true, message: "Cline settings applied successfully!", globalStatePath: getGlobalStatePath() });
   } catch (error) {
@@ -125,7 +145,7 @@ export async function DELETE() {
 
     const secrets = (await readJson(getSecretsPath())) || {};
     delete secrets.openAiApiKey;
-    await fs.writeFile(getSecretsPath(), JSON.stringify(secrets, null, 2));
+    await writePrivateFile(getSecretsPath(), JSON.stringify(secrets, null, 2));
 
     return NextResponse.json({ success: true, message: "10router settings removed from Cline" });
   } catch (error) {

@@ -1,23 +1,16 @@
 import { NextResponse } from "next/server";
 import { getSettings, validateApiKey } from "@/lib/localDb";
-import { getConsistentMachineId } from "@/shared/utils/machineId";
+import { CLI_TOKEN_HEADER, isValidCliToken } from "@/lib/auth/cliToken.js";
 import { verifyDashboardAuthToken, getDashboardAuthSession } from "@/lib/auth/dashboardSession";
 import { needsSetup } from "@/lib/auth/setupState";
+import { acceptsDashboardSession, getConfiguredSsoType } from "@/lib/auth/authMode.js";
 import { hasTrustedPeerHeaders } from "@/lib/auth/trustedPeer";
-
-const CLI_TOKEN_HEADER = "x-9r-cli-token";
-const CLI_TOKEN_SALT = "9r-cli-auth";
-
-let cachedCliToken = null;
-async function getCliToken() {
-  if (!cachedCliToken) cachedCliToken = await getConsistentMachineId(CLI_TOKEN_SALT);
-  return cachedCliToken;
-}
+import { extractClientApiKey } from "@/shared/utils/clientApiKey.js";
+import { containsManagementKey } from "@/shared/utils/managementKey.js";
+import { isManagementApiPath, authenticateManagementKey } from "@/lib/management/auth.js";
 
 async function hasValidCliToken(request) {
-  const token = request.headers.get(CLI_TOKEN_HEADER);
-  if (!token) return false;
-  return token === await getCliToken();
+  return await isValidCliToken(request.headers.get(CLI_TOKEN_HEADER));
 }
 
 // Public API paths — no auth required (LLM API has its own key auth inside handler).
@@ -30,15 +23,22 @@ const PUBLIC_API_PATHS = [
   "/api/auth/status",
   "/api/auth/setup",
   "/api/auth/change-password",
-  "/api/auth/oidc",
-  "/api/auth/saml",
+  // The SSO sign-in itself. The settings test routes (/api/auth/oidc/test,
+  // /api/auth/saml/test) are dashboard APIs and stay behind the session check.
+  "/api/auth/oidc/start",
+  "/api/auth/oidc/callback",
+  "/api/auth/saml/start",
+  "/api/auth/saml/acs",
+  "/api/auth/saml/metadata",
   "/api/version",
   "/api/settings/require-login",
 ];
 
 // Public top-level prefixes (LLM API endpoints with their own API key auth).
 // Keep root-level rewrites here too: middleware runs before Next.js rewrites.
-const PUBLIC_PREFIXES = ["/v1", "/v1beta", "/api/v1", "/api/v1beta", "/codex", "/responses", "/systemone"];
+// Every source of a next.config.mjs rewrite to /api/v1* belongs here; the
+// guard test checks that against the config.
+const PUBLIC_PREFIXES = ["/v1", "/v1beta", "/api/v1", "/api/v1beta", "/codex", "/responses", "/systemone", "/backend-api"];
 
 // Always require JWT token regardless of requireLogin setting
 const ALWAYS_PROTECTED = [
@@ -84,9 +84,6 @@ const LOCAL_ONLY_PATHS = [
   "/api/oauth/cursor/auto-import",
   "/api/oauth/kiro/auto-import",
   "/api/auth/reset-password",
-  "/api/headroom/start",
-  "/api/headroom/stop",
-  "/api/headroom/proxy",
 ];
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
@@ -138,15 +135,7 @@ function isPublicLlmApi(pathname) {
   return PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
-function extractApiKey(request) {
-  const authHeader = request.headers.get("Authorization");
-  if (authHeader?.startsWith("Bearer ")) return authHeader.slice(7);
-  const apiKeyHeader = request.headers.get("x-api-key");
-  if (apiKeyHeader) return apiKeyHeader;
-  const googleApiKeyHeader = request.headers.get("x-goog-api-key");
-  if (googleApiKeyHeader) return googleApiKeyHeader;
-  return request.nextUrl.searchParams?.get("key") || null;
-}
+const extractApiKey = extractClientApiKey;
 
 async function hasValidApiKey(request) {
   const apiKey = extractApiKey(request);
@@ -181,9 +170,17 @@ async function readSession(request) {
 // A restricted session is deliberately NOT a valid token anywhere else: it is
 // issued after a last login on the old default password and unlocks only the
 // change-password endpoint.
+//
+// While setup is pending (after Reset Password, in any mode), only a session
+// from the SSO protocol configured now counts, for pages and API alike: a
+// password session from before the reset must not reach /api/settings and
+// repoint SSO (acceptsDashboardSession). The CLI token and the setup routes
+// don't go through here.
 async function hasValidToken(request) {
   const session = await readSession(request);
-  return !!session && session.pwChange !== true;
+  if (!session || session.pwChange === true) return false;
+  const settings = await loadSettings();
+  return acceptsDashboardSession(session, settings, await needsSetup(settings));
 }
 
 async function hasRestrictedSession(request) {
@@ -220,17 +217,31 @@ export const __test__ = {
   extractApiKey,
   canAccessPublicLlmApi,
   canAccessLocalOnlyRoute,
+  isPublicApi,
 };
 
 export async function proxy(request) {
   const { pathname } = request.nextUrl;
 
+  // The management API takes a management key and nothing else: no session,
+  // no CLI token, no requireLogin=false. It is the only place a management
+  // key is accepted; everywhere below, one counts for nothing. The routes
+  // authenticate it again to act as it.
+  if (isManagementApiPath(pathname)) {
+    const auth = await authenticateManagementKey(request);
+    if (auth.ok) return NextResponse.next();
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
+  }
+
   // First-run gate: until someone claims the instance with the console setup
-  // token, every dashboard/login page funnels to /setup.
+  // token, every dashboard/login page funnels to /setup. When a configured SSO
+  // protocol is selected (after Reset Password with SSO on), /login and the
+  // dashboard stay reachable, and the dashboard block below lets only an SSO
+  // session in; /setup still takes the token.
   if (pathname === "/setup" || pathname.startsWith("/dashboard") || pathname === "/login" || pathname === "/") {
     const settings = await loadSettings();
     const setupPending = await needsSetup(settings);
-    if (setupPending && pathname !== "/setup") {
+    if (setupPending && pathname !== "/setup" && !getConfiguredSsoType(settings)) {
       return NextResponse.redirect(new URL("/setup", request.url));
     }
     if (!setupPending && pathname === "/setup") {
@@ -270,6 +281,12 @@ export async function proxy(request) {
   }
 
   if (isPublicLlmApi(pathname)) {
+    // Refused even from loopback: a handler would otherwise record usage
+    // against the presented token, writing the management secret to the log.
+    // Anywhere in the token, so padding ("Bearer  10r-mgmt-…") can't slip one past.
+    if (containsManagementKey(extractApiKey(request))) {
+      return NextResponse.json({ error: "A management key can't be used for inference. Use a client API key." }, { status: 401 });
+    }
     if (await canAccessPublicLlmApi(request)) return NextResponse.next();
     return NextResponse.json({ error: "API key required for remote API access" }, { status: 401 });
   }
@@ -286,10 +303,13 @@ export async function proxy(request) {
   if (pathname.startsWith("/dashboard")) {
     let requireLogin = true;
     let tunnelDashboardAccess = true;
+    let setupPending = false;
+    let settings = null;
 
     try {
-      const settings = await loadSettings();
+      settings = await loadSettings();
       if (settings) {
+        setupPending = await needsSetup(settings);
         requireLogin = settings.requireLogin !== false;
         tunnelDashboardAccess = settings.tunnelDashboardAccess === true;
 
@@ -305,6 +325,15 @@ export async function proxy(request) {
       }
     } catch {
       // On error, keep defaults (require login, block tunnel)
+    }
+
+    // Setup pending: the first-run gate only let this through for SSO sign-in,
+    // so a session from the configured SSO is the only way in. requireLogin=false
+    // never opens an unclaimed instance, and a session from before the reset
+    // doesn't count.
+    if (setupPending) {
+      if (acceptsDashboardSession(await readSession(request), settings, true)) return NextResponse.next();
+      return NextResponse.redirect(new URL("/login", request.url));
     }
 
     // If login not required, allow through
