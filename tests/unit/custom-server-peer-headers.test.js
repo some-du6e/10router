@@ -74,10 +74,11 @@ describe("custom-server peer header sanitizing", () => {
     expect(headers["x-forwarded-for"]).toBeUndefined();
   });
 
-  it("uses X-Real-IP only when there is no X-Forwarded-For", async () => {
+  it("stamps X-Forwarded-For first and X-Real-IP as the other login key when both are sent", async () => {
     const both = await get({ "x-real-ip": "203.0.113.8", "x-forwarded-for": "198.51.100.66" });
     expect(both["x-9r-via-proxy"]).toBe("1");
     expect(both["x-9r-real-ip"]).toBe("198.51.100.66");
+    expect(both["x-9r-alt-ips"]).toBe("203.0.113.8");
 
     const realIpOnly = await get({ "x-real-ip": "203.0.113.8" });
     expect(realIpOnly["x-9r-real-ip"]).toBe("203.0.113.8");
