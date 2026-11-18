@@ -41,65 +41,88 @@ function getEntry(key: string): Entry | null {
   return e;
 }
 
-export function checkLock(key: string): LockState {
-  const e = getEntry(key);
-  if (!e || !e.lockUntil) return { locked: false };
-  const remaining = e.lockUntil - now();
-  if (remaining <= 0) return { locked: false };
-  return { locked: true, retryAfter: Math.ceil(remaining / 1000) };
+/**
+ * One key, or several for one login (see getClientKeys): a login counts against
+ * every one of its keys and is refused while any of them is locked.
+ */
+export type Keys = string | readonly string[];
+
+function keyList(keys: Keys): string[] {
+  return [...new Set(typeof keys === "string" ? [keys] : keys)];
+}
+
+export function checkLock(keys: Keys): LockState {
+  let retryAfter = 0;
+  for (const key of keyList(keys)) {
+    const e = getEntry(key);
+    const remaining = e && e.lockUntil ? e.lockUntil - now() : 0;
+    if (remaining > 0) retryAfter = Math.max(retryAfter, Math.ceil(remaining / 1000));
+  }
+  return retryAfter ? { locked: true, retryAfter } : { locked: false };
 }
 
 /**
  * Claim one password attempt before any await. Concurrent attempts count against
  * the lockout while they are in flight, so a burst cannot outrun it. Pair every
- * successful reservation with releaseAttempt().
+ * successful reservation with releaseAttempt() on the same keys.
  */
-export function reserveAttempt(key: string): Reservation {
-  const lock = checkLock(key);
+export function reserveAttempt(keys: Keys): Reservation {
+  const lock = checkLock(keys);
   if (lock.locked) return { ok: false, retryAfter: lock.retryAfter };
-  const e = getEntry(key) ?? newEntry();
-  if (e.fails + e.inFlight >= MAX_FAILS_BEFORE_LOCK) return { ok: false, retryAfter: 1 };
-  e.inFlight += 1;
-  attempts.set(key, e);
+  const list = keyList(keys);
+  const entries = list.map((key) => getEntry(key) ?? newEntry());
+  if (entries.some((e) => e.fails + e.inFlight >= MAX_FAILS_BEFORE_LOCK)) return { ok: false, retryAfter: 1 };
+  entries.forEach((e, i) => {
+    e.inFlight += 1;
+    attempts.set(list[i], e);
+  });
   return { ok: true };
 }
 
-export function releaseAttempt(key: string): void {
-  const e = attempts.get(key);
-  if (!e || !e.inFlight) return;
-  e.inFlight -= 1;
-  // Nothing left to remember: don't keep one entry per address that ever tried.
-  if (!e.inFlight && !e.fails && !e.lockUntil && !e.lockLevel) attempts.delete(key);
+export function releaseAttempt(keys: Keys): void {
+  for (const key of keyList(keys)) {
+    const e = attempts.get(key);
+    if (!e || !e.inFlight) continue;
+    e.inFlight -= 1;
+    // Nothing left to remember: don't keep one entry per address that ever tried.
+    if (!e.inFlight && !e.fails && !e.lockUntil && !e.lockLevel) attempts.delete(key);
+  }
 }
 
-export function recordFail(key: string): { remainingBeforeLock: number } {
-  const e = getEntry(key) ?? newEntry();
-  e.fails += 1;
-  e.lastFailAt = now();
-  if (e.fails >= MAX_FAILS_BEFORE_LOCK) {
-    if (key === SHARED_LOGIN_KEY) {
-      e.lockUntil = now() + SHARED_LOCK_MS;
-    } else {
-      e.lockUntil = now() + LOCK_STEPS_MS[Math.min(e.lockLevel, LOCK_STEPS_MS.length - 1)];
-      e.lockLevel += 1;
+export function recordFail(keys: Keys): { remainingBeforeLock: number } {
+  let remainingBeforeLock = MAX_FAILS_BEFORE_LOCK;
+  for (const key of keyList(keys)) {
+    const e = getEntry(key) ?? newEntry();
+    e.fails += 1;
+    e.lastFailAt = now();
+    if (e.fails >= MAX_FAILS_BEFORE_LOCK) {
+      if (key === SHARED_LOGIN_KEY) {
+        e.lockUntil = now() + SHARED_LOCK_MS;
+      } else {
+        e.lockUntil = now() + LOCK_STEPS_MS[Math.min(e.lockLevel, LOCK_STEPS_MS.length - 1)];
+        e.lockLevel += 1;
+      }
+      e.fails = 0;
     }
-    e.fails = 0;
+    attempts.set(key, e);
+    remainingBeforeLock = Math.min(remainingBeforeLock, Math.max(0, MAX_FAILS_BEFORE_LOCK - e.fails));
   }
-  attempts.set(key, e);
-  return { remainingBeforeLock: Math.max(0, MAX_FAILS_BEFORE_LOCK - e.fails) };
+  return { remainingBeforeLock };
 }
 
-export function recordSuccess(key: string): void {
-  const e = attempts.get(key);
-  if (!e) return;
-  // A lock that concurrent failures set while this attempt was in flight stands.
-  if (e.lockUntil > now()) return;
-  // Other attempts still hold reservations on this entry: clear its history, keep the count.
-  if (e.inFlight > 1) {
-    Object.assign(e, { fails: 0, lockUntil: 0, lockLevel: 0, lastFailAt: 0 });
-    return;
+export function recordSuccess(keys: Keys): void {
+  for (const key of keyList(keys)) {
+    const e = attempts.get(key);
+    if (!e) continue;
+    // A lock that concurrent failures set while this attempt was in flight stands.
+    if (e.lockUntil > now()) continue;
+    // Other attempts still hold reservations on this entry: clear its history, keep the count.
+    if (e.inFlight > 1) {
+      Object.assign(e, { fails: 0, lockUntil: 0, lockLevel: 0, lastFailAt: 0 });
+      continue;
+    }
+    attempts.delete(key);
   }
-  attempts.delete(key);
 }
 
 // The eight 16-bit groups of an IPv6 address, or null.
@@ -137,18 +160,27 @@ export function limiterKeyFor(address: string): string {
 
 /**
  * The key to limit a login on. custom-server.js stamps x-9r-real-ip with the
- * address it chose (the socket, or the hop a proxy on this machine appended; see
- * clientIpFor there) and proves it with the peer token. Without that proof (a
+ * address it chose (the socket, or what a proxy in front reported; see
+ * clientKeysFor there) and proves it with the peer token. Without that proof (a
  * bare `next start` or `next dev`) no header can be trusted, so every request
  * shares SHARED_LOGIN_KEY and rotating a header can't escape the limiter. The
- * login route keys a client on this machine on LOCAL_LOGIN_KEY instead.
+ * password login route keys a client on this machine on LOCAL_LOGIN_KEY instead.
  */
 export function getClientIp(request: Request): string {
-  if (hasTrustedPeerHeaders(request)) {
-    const realIp = request.headers.get("x-9r-real-ip");
-    if (realIp) return limiterKeyFor(realIp);
-  }
-  return SHARED_LOGIN_KEY;
+  return getClientKeys(request)[0];
+}
+
+/**
+ * Every key a password login counts against: x-9r-real-ip, plus x-9r-alt-ips
+ * when a proxy sent both X-Forwarded-For and X-Real-IP and either could be the
+ * one the client wrote.
+ */
+export function getClientKeys(request: Request): string[] {
+  if (!hasTrustedPeerHeaders(request)) return [SHARED_LOGIN_KEY];
+  const realIp = request.headers.get("x-9r-real-ip");
+  if (!realIp) return [SHARED_LOGIN_KEY];
+  const alt = (request.headers.get("x-9r-alt-ips") || "").split(",").map((value) => value.trim()).filter(Boolean);
+  return [...new Set([realIp, ...alt].map(limiterKeyFor))];
 }
 
 export const __test__ = {

@@ -53,7 +53,8 @@ export NODE_ENV="production"
 | `DATA_DIR` | `~/.9router` | データベースとデータの保存パス （ディレクトリ名は後方互換性のため以前のリリースから変更されていません） |
 | `NODE_ENV` | `development` | デプロイ時は `production` に設定 |
 | `ENABLE_REQUEST_LOGS` | `false` | デバッグリクエスト/レスポンスログを有効化 |
-| `TRUST_PROXY` | `false` | このマシン上の転送ツールが `X-Forwarded-For` を付けない場合(socat、`ssh -R`、TCP トンネル)は `true` にしてください。クライアント自身の `Host` がそのまま届くため、`Host: localhost` を送ればローカル扱いになってしまいます。`true` にするとループバック接続をローカルとして扱いません。下の Nginx 設定では不要です |
+| `TRUST_PROXY` | 未設定 | このマシン上の転送ツールが転送ヘッダー(`X-Forwarded-For`、`X-Real-IP` など)を一切付けない場合(socat、`ssh -R`、TCP トンネル)は `true` にしてください。クライアント自身の `Host` がそのまま届くため、`Host: localhost` を送ればローカル扱いになってしまいます。`true` にするとループバック接続をローカルとして扱わないため、サーバー上のツールにも API キーか CLI トークンが必要になります。別ホストやコンテナのリバースプロキシには IP/CIDR のカンマ区切りリスト(`192.168.1.10,10.0.0.0/8`)を指定すると、その転送ヘッダーを読みます。下の Nginx 設定では不要です |
+| `ALLOWED_HOSTS` | 未設定 | 「Require login」がオフのとき、`localhost`、IP アドレス、トンネル URL、`BASE_URL` に加えてダッシュボード API が応答するホスト名(カンマ区切り) |
 
 ### ステップ5: データディレクトリを作成
 
@@ -346,21 +347,22 @@ sudo ufw enable
 
 ### 3. ダッシュボードアクセスを制限
 
-APIアクセスのみ必要な場合、ダッシュボードポートを制限:
+Nginx 経由の API アクセスだけが必要な場合は、アプリ自身のポートを外部から遮断:
 
 ```bash
-# ダッシュボードへのlocalhostアクセスのみ許可
+# 10router 本体へは localhost からのアクセスのみ許可
+sudo ufw deny 20128/tcp
 sudo ufw deny 3000/tcp
 ```
 
-SSHトンネル経由でダッシュボードにアクセス:
+アプリのポートへの SSH トンネルでダッシュボードにアクセス(このマシンからのアクセスとして扱われます):
 
 ```bash
-ssh -L 3000:localhost:3000 user@your-server.com
-# ブラウザで http://localhost:3000 を開く
+ssh -L 20128:localhost:20128 user@your-server.com
+# ブラウザで http://localhost:20128 を開く
 ```
 
-Nginx(またはサーバー上の任意のプロキシやトンネル)経由のリクエストはリモートとして扱われます。`/v1` には API キーが必要で、ローカル専用ルート(MCP サーバー、トンネル操作、パスワードリセット)とプライベート URL のエンドポイント(`localhost` の Ollama など)は 403 または "URL not allowed" を返します。これらにはアプリ自身のポートへの SSH トンネル(`ssh -L 20128:localhost:20128 user@your-server.com` の後に `http://localhost:20128` を開く)か、サーバー上の CLI を使ってください。ログインのロックアウトがクライアントごとに数えられるよう、Nginx 設定の `X-Real-IP` と `X-Forwarded-For` の行は残してください。ダッシュボード自身の API 呼び出しが受け付けられるよう、`Host $host` も残すか、`X-Forwarded-Host` を送ってください。
+Nginx(またはサーバー上の任意のプロキシやトンネル)経由のリクエストはリモートとして扱われます。`/v1` には API キーが必要で、ローカル専用ルート(MCP サーバー、トンネル操作、パスワードリセット)とプライベート URL のエンドポイント(`localhost` の Ollama など)は 403 または "URL not allowed" を返します。これらには上の SSH トンネル(`ssh -L 20128:localhost:20128`)か、サーバー上の CLI を使ってください。ログインのロックアウトがクライアントごとに数えられるよう、Nginx 設定の `X-Real-IP` と `X-Forwarded-For` の行は残してください。ダッシュボード自身の API 呼び出しが受け付けられるよう、`Host $host` も残すか、`X-Forwarded-Host` を送ってください。
 
 ### 4. 定期的な更新
 

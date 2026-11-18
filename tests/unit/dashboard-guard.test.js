@@ -52,6 +52,14 @@ const { proxy, isTunnelHost, __test__ } = await import("../../src/dashboardGuard
 
 const PEER_TOKEN = "peer-token-fixture";
 
+// The login-off Host allowlist reads these; every test starts with them unset.
+beforeEach(() => {
+  for (const name of ["BASE_URL", "NEXT_PUBLIC_BASE_URL", "ALLOWED_HOSTS", "TRUST_PROXY"]) vi.stubEnv(name, "");
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 function request(pathname, headers = {}, cookieValue = undefined) {
   const normalizedHeaders = new Headers(headers);
   return {
@@ -760,6 +768,16 @@ describe("dashboard guard login-off Host allowlist", () => {
     vi.stubEnv("BASE_URL", "");
     vi.stubEnv("NEXT_PUBLIC_BASE_URL", "https://Router.Example.com:8443/");
     expect(await proxy(request("/api/settings", { host: "router.example.com:8443" }))).toBe(mocks.nextResponse);
+  });
+
+  it("admits every host ALLOWED_HOSTS lists, as names or URLs", async () => {
+    vi.stubEnv("ALLOWED_HOSTS", " router.example.com , https://Box.Example.net:8443/, nas.lan:20128 ,, ");
+    for (const host of ["router.example.com", "router.example.com.:443", "box.example.net:8443", "nas.lan:20128", "NAS.LAN"]) {
+      expect(await proxy(request("/api/settings", { host })), host).toBe(mocks.nextResponse);
+    }
+    for (const host of ["other.example.com", "example.com", "lan"]) {
+      expect((await proxy(request("/api/settings", { host }))).status, host).toBe(401);
+    }
   });
 
   it("leaves a session and the CLI token alone on any Host", async () => {

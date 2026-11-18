@@ -41,12 +41,11 @@ vi.mock("@/lib/auth/setupState", () => ({
   getBootstrapSecret: mocks.getBootstrapSecret,
   needsSetup: vi.fn(async () => false),
 }));
-vi.mock("@/lib/auth/loginLimiter", () => ({
-  ...mocks.limiter,
-  LOCAL_LOGIN_KEY: "local",
-  // The real rule: the stamped address when the wrapper proved it, else one bucket.
-  getClientIp: (request) => (request.headers.get("x-9r-peer-token") === PEER_TOKEN && request.headers.get("x-9r-real-ip")) || "unknown",
-}));
+vi.mock("@/lib/auth/loginLimiter", async () => {
+  const actual = await vi.importActual("../../src/lib/auth/loginLimiter.ts");
+  // The real keys (stamped address and alternates, or one shared bucket); spies for the rest.
+  return { ...mocks.limiter, LOCAL_LOGIN_KEY: actual.LOCAL_LOGIN_KEY, getClientKeys: actual.getClientKeys };
+});
 
 const { POST: login } = await import("../../src/app/api/auth/login/route.js");
 
@@ -91,15 +90,15 @@ describe("login route and the limiter", () => {
   it("releases once after a successful login", async () => {
     const response = await login(loginRequest({ headers: REMOTE }));
     expect(response.status).toBe(200);
-    expect(mocks.limiter.recordSuccess).toHaveBeenCalledWith("203.0.113.7");
+    expect(mocks.limiter.recordSuccess).toHaveBeenCalledWith(["203.0.113.7"]);
     expect(mocks.limiter.releaseAttempt).toHaveBeenCalledTimes(1);
-    expect(mocks.limiter.releaseAttempt).toHaveBeenCalledWith("203.0.113.7");
+    expect(mocks.limiter.releaseAttempt).toHaveBeenCalledWith(["203.0.113.7"]);
   });
 
   it("releases once after a wrong password, and counts the failure", async () => {
     const response = await login(loginRequest({ body: JSON.stringify({ password: "wrong" }), headers: REMOTE }));
     expect(response.status).toBe(401);
-    expect(mocks.limiter.recordFail).toHaveBeenCalledWith("203.0.113.7");
+    expect(mocks.limiter.recordFail).toHaveBeenCalledWith(["203.0.113.7"]);
     expect(mocks.limiter.releaseAttempt).toHaveBeenCalledTimes(1);
   });
 
@@ -139,21 +138,35 @@ describe("login route and the limiter", () => {
   it("limits a login from this machine in its own bucket", async () => {
     const response = await login(loginRequest({ body: JSON.stringify({ password: "wrong" }), headers: LOCAL }));
     expect(response.status).toBe(401);
-    expect(mocks.limiter.reserveAttempt).toHaveBeenCalledWith("local");
-    expect(mocks.limiter.recordFail).toHaveBeenCalledWith("local");
+    expect(mocks.limiter.reserveAttempt).toHaveBeenCalledWith(["local"]);
+    expect(mocks.limiter.recordFail).toHaveBeenCalledWith(["local"]);
     expect(mocks.limiter.releaseAttempt).toHaveBeenCalledTimes(1);
-    expect(mocks.limiter.releaseAttempt).toHaveBeenCalledWith("local");
+    expect(mocks.limiter.releaseAttempt).toHaveBeenCalledWith(["local"]);
   });
 
   it("keys a proxied login on its address, never on the local bucket", async () => {
     await login(loginRequest({ headers: REMOTE }));
-    expect(mocks.limiter.reserveAttempt).toHaveBeenCalledWith("203.0.113.7");
+    expect(mocks.limiter.reserveAttempt).toHaveBeenCalledWith(["203.0.113.7"]);
     // A forwarded request claiming a loopback peer address is still remote.
     vi.clearAllMocks();
     mocks.limiter.reserveAttempt.mockReturnValue({ ok: true });
     await login(loginRequest({ headers: { ...REMOTE, "x-9r-real-ip": "127.0.0.1" } }));
-    expect(mocks.limiter.reserveAttempt).toHaveBeenCalledWith("127.0.0.1");
-    expect(mocks.limiter.reserveAttempt).not.toHaveBeenCalledWith("local");
+    expect(mocks.limiter.reserveAttempt).toHaveBeenCalledWith(["127.0.0.1"]);
+    expect(mocks.limiter.reserveAttempt).not.toHaveBeenCalledWith(["local"]);
+  });
+
+  it("counts a login behind a proxy that sent both headers against both keys", async () => {
+    const headers = { ...REMOTE, "x-9r-alt-ips": "198.51.100.1" };
+    await login(loginRequest({ body: JSON.stringify({ password: "wrong" }), headers }));
+    const keys = ["203.0.113.7", "198.51.100.1"];
+    expect(mocks.limiter.reserveAttempt).toHaveBeenCalledWith(keys);
+    expect(mocks.limiter.recordFail).toHaveBeenCalledWith(keys);
+    expect(mocks.limiter.releaseAttempt).toHaveBeenCalledWith(keys);
+    // Without the wrapper's proof, neither stamp counts: the shared bucket.
+    vi.clearAllMocks();
+    mocks.limiter.reserveAttempt.mockReturnValue({ ok: true });
+    await login(loginRequest({ headers: { ...headers, "x-9r-peer-token": "guess" } }));
+    expect(mocks.limiter.reserveAttempt).toHaveBeenCalledWith(["unknown"]);
   });
 
   it("blocks login for traffic stamped as tunnel traffic, whatever the stored tunnel URL", async () => {

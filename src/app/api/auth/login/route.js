@@ -3,7 +3,7 @@ import { getSettings } from "@/lib/localDb";
 import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
 import { setDashboardAuthCookie } from "@/lib/auth/dashboardSession";
-import { checkLock, recordFail, recordSuccess, getClientIp, reserveAttempt, releaseAttempt, LOCAL_LOGIN_KEY } from "@/lib/auth/loginLimiter";
+import { checkLock, recordFail, recordSuccess, getClientKeys, reserveAttempt, releaseAttempt, LOCAL_LOGIN_KEY } from "@/lib/auth/loginLimiter";
 import { isLocalRequest, isTunnelHost } from "@/dashboardGuard";
 import { getAuthBootstrapState, getBootstrapSecret } from "@/lib/auth/setupState";
 import { getConfiguredSsoType, isPasswordLoginDisabled } from "@/lib/auth/authMode.js";
@@ -14,8 +14,9 @@ const NO_STORE_HEADERS = { "Cache-Control": "no-store" };
 export async function POST(request) {
   // Logins from this machine share their own bucket: remote clients never land
   // in it, so they can't lock the owner out, and a forwarder that makes a remote
-  // client look local (see TRUST_PROXY) still gets limited.
-  const ip = isLocalRequest(request) ? LOCAL_LOGIN_KEY : getClientIp(request);
+  // client look local (see TRUST_PROXY) still gets limited. A remote login may
+  // have two keys (X-Forwarded-For and X-Real-IP); it counts against both.
+  const ip = isLocalRequest(request) ? [LOCAL_LOGIN_KEY] : getClientKeys(request);
   const lock = reserveAttempt(ip);
   if (!lock.ok) {
     return NextResponse.json(

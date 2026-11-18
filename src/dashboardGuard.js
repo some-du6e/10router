@@ -183,9 +183,10 @@ function hostnameOf(value) {
   }
 }
 
-// The request came in on the Cloudflare tunnel or Tailscale URL, or crossed one:
-// custom-server.js stamps x-9r-via-tunnel on a loopback peer carrying Cloudflare
-// or Tailscale Funnel headers, so a stale stored URL can't let tunnel traffic in.
+// The request came in on the Cloudflare tunnel or Tailscale URL. custom-server.js
+// also stamps x-9r-via-tunnel on a loopback peer whose Host is a *.trycloudflare.com
+// or *.ts.net name, so a stale stored URL can't let tunnel traffic in. A
+// Cloudflare-proxied domain in front of a reverse proxy isn't tunnel traffic.
 // A malformed stored URL matches nothing rather than throwing.
 export function isTunnelHost(request, settings) {
   if (hasTrustedPeerHeaders(request) && request.headers.get("x-9r-via-tunnel")) return true;
@@ -197,7 +198,16 @@ export function isTunnelHost(request, settings) {
 // With login off, a page on any domain that resolves to this machine (DNS
 // rebinding) would be same-origin with it. So the open dashboard API answers only
 // Hosts that can't be rebound: loopback names, IP literals, and the hosts this
-// install was given (tunnel, Tailscale, BASE_URL / NEXT_PUBLIC_BASE_URL).
+// install was given: the tunnel and Tailscale URLs, BASE_URL / NEXT_PUBLIC_BASE_URL,
+// and ALLOWED_HOSTS (a comma list of host names or URLs, for an install reached
+// by several names, such as a tunnel domain and a LAN name).
+function allowedHostNames(settings) {
+  const listed = String(process.env.ALLOWED_HOSTS || "").split(",").map((entry) => entry.trim()).filter(Boolean);
+  return [settings?.tunnelUrl, settings?.tailscaleUrl, process.env.BASE_URL, process.env.NEXT_PUBLIC_BASE_URL, ...listed]
+    .map((value) => (value && !String(value).includes("://") ? hostUrl(String(value), "http:")?.hostname.toLowerCase().replace(/\.$/, "") || "" : hostnameOf(value)))
+    .filter(Boolean);
+}
+
 function isAllowedOpenHost(request, settings) {
   const raw = request.headers.get("host");
   if (!raw) return true;
@@ -206,8 +216,7 @@ function isAllowedOpenHost(request, settings) {
   const name = url.hostname.toLowerCase().replace(/\.$/, "");
   if (isLoopbackHostname(name)) return true;
   if (name.startsWith("[") || /^\d{1,3}(\.\d{1,3}){3}$/.test(name)) return true;
-  return [settings?.tunnelUrl, settings?.tailscaleUrl, process.env.BASE_URL, process.env.NEXT_PUBLIC_BASE_URL]
-    .some((value) => hostnameOf(value) === name);
+  return allowedHostNames(settings).includes(name);
 }
 
 export function isLocalRequest(request) {

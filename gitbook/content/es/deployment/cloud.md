@@ -53,7 +53,8 @@ export NODE_ENV="production"
 | `DATA_DIR` | `~/.9router` | Ruta de almacenamiento de la base de datos (el nombre del directorio no ha cambiado respecto a la versión anterior por compatibilidad) |
 | `NODE_ENV` | `development` | Establece a `production` para despliegue |
 | `ENABLE_REQUEST_LOGS` | `false` | Habilita logs de debug de request/response |
-| `TRUST_PROXY` | `false` | Ponlo en `true` cuando un reenviador en esta máquina no añade `X-Forwarded-For` (socat, `ssh -R`, un túnel TCP): el `Host` de sus clientes llega tal cual, así que uno podría enviar `Host: localhost` y contar como local. Con él, ninguna conexión loopback cuenta como local. La configuración de Nginx de abajo no lo necesita |
+| `TRUST_PROXY` | sin definir | `true` cuando un reenviador en esta máquina no añade ninguna cabecera de reenvío (`X-Forwarded-For`, `X-Real-IP`, …), como socat, `ssh -R` o un túnel TCP: el `Host` de sus clientes llega tal cual, así que uno podría enviar `Host: localhost` y contar como local. Con él, ninguna conexión loopback cuenta como local, así que las herramientas del propio servidor también necesitan una clave API o el token del CLI. O una lista de IP/CIDR (`192.168.1.10,10.0.0.0/8`) para un proxy inverso en otro host o contenedor, cuyas cabeceras de reenvío se leen entonces. La configuración de Nginx de abajo no lo necesita |
+| `ALLOWED_HOSTS` | sin definir | Con "Require login" desactivado, nombres de host extra (lista separada por comas) a los que responde la API del dashboard, además de `localhost`, las direcciones IP, las URL de túnel y `BASE_URL` |
 
 ### Paso 5: Crear el directorio de datos
 
@@ -346,21 +347,22 @@ sudo ufw enable
 
 ### 3. Restringir el acceso al dashboard
 
-Si solo necesitas acceso por API, restringe el puerto del dashboard:
+Si solo necesitas acceso por API a través de Nginx, bloquea desde fuera los puertos de la propia app:
 
 ```bash
-# Solo permitir acceso localhost al dashboard
+# Solo permitir acceso localhost a 10router
+sudo ufw deny 20128/tcp
 sudo ufw deny 3000/tcp
 ```
 
-Accede al dashboard vía túnel SSH:
+Accede al dashboard con un túnel SSH al puerto de la app, que cuenta como esta máquina:
 
 ```bash
-ssh -L 3000:localhost:3000 user@your-server.com
-# Luego abre http://localhost:3000 en tu navegador
+ssh -L 20128:localhost:20128 user@your-server.com
+# Luego abre http://localhost:20128 en tu navegador
 ```
 
-Las peticiones que pasan por Nginx (o por cualquier proxy o túnel en el servidor) se tratan como remotas: necesitan una clave API para `/v1`, y las rutas solo locales (servidores MCP, controles del túnel, Reset Password) y los endpoints con una URL privada (como un Ollama en `localhost`) responden 403 o "URL not allowed". Para eso usa un túnel SSH al puerto de la app (`ssh -L 20128:localhost:20128 user@your-server.com` y luego abre `http://localhost:20128`) o el CLI en el servidor. Mantén las líneas `X-Real-IP` y `X-Forwarded-For` en la configuración de Nginx para que el bloqueo de login cuente cada cliente por separado, y mantén `Host $host`, o envía `X-Forwarded-Host`, para que se acepten las llamadas a la API del propio dashboard.
+Las peticiones que pasan por Nginx (o por cualquier proxy o túnel en el servidor) se tratan como remotas: necesitan una clave API para `/v1`, y las rutas solo locales (servidores MCP, controles del túnel, Reset Password) y los endpoints con una URL privada (como un Ollama en `localhost`) responden 403 o "URL not allowed". Para eso usa el túnel SSH de arriba (`ssh -L 20128:localhost:20128`) o el CLI en el servidor. Mantén las líneas `X-Real-IP` y `X-Forwarded-For` en la configuración de Nginx para que el bloqueo de login cuente cada cliente por separado, y mantén `Host $host`, o envía `X-Forwarded-Host`, para que se acepten las llamadas a la API del propio dashboard.
 
 ### 4. Actualizaciones regulares
 

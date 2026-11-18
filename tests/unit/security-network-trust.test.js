@@ -8,12 +8,22 @@ import http from "node:http";
 const require = createRequire(import.meta.url);
 const SERVER_PATH = require.resolve("../../custom-server.js");
 const originalCreateServer = http.createServer;
-const { isLoopbackHost, isOnThisMachine, clientIpFor, isTunnelTraffic, bridgeForwardHeaders } = require(SERVER_PATH).__test__;
+const originalPeerToken = process.env.NINEROUTER_PEER_TOKEN;
+const { isLoopbackHost, isOnThisMachine, clientIpFor, clientKeysFor, isTrustedProxyPeer, isTunnelTraffic, bridgeForwardHeaders } =
+  require(SERVER_PATH).__test__;
 
 afterAll(() => {
-  // custom-server.js wraps http.createServer when loaded; leave the module as found.
+  // custom-server.js wraps http.createServer and sets the peer token when
+  // loaded; leave both as found.
   http.createServer = originalCreateServer;
   delete require.cache[SERVER_PATH];
+  if (originalPeerToken === undefined) delete process.env.NINEROUTER_PEER_TOKEN;
+  else process.env.NINEROUTER_PEER_TOKEN = originalPeerToken;
+});
+
+beforeEach(() => {
+  // Every test starts from the defaults; the ones that need a mode stub it.
+  vi.stubEnv("TRUST_PROXY", "");
 });
 
 afterEach(() => {
@@ -81,19 +91,34 @@ describe("custom-server wrapper: who is local and which address it keys on", () 
 
   // Caddy, Traefik, cloudflared and Tailscale append to X-Forwarded-For and pass
   // a client's own X-Real-IP through untouched.
-  it("keys on the appended hop behind an appending proxy, however the client rotates X-Real-IP", async () => {
-    const keys = new Set();
-    for (const realIp of ["198.51.100.1", "198.51.100.2", "203.0.113.7", "127.0.0.1"]) {
-      const h = await get({ host: "router.example.com", "x-real-ip": realIp, "x-forwarded-for": `198.51.100.${Math.floor(Math.random() * 200)}, 203.0.113.7` });
-      keys.add(h["x-9r-real-ip"]);
+  it("stamps the appended hop on every login behind an appending proxy, however the client rotates X-Real-IP", async () => {
+    const rotations = [
+      ["198.51.100.1", "198.51.100.10"],
+      ["198.51.100.2", "198.51.100.20"],
+      ["192.0.2.3", "192.0.2.30"],
+      ["127.0.0.1", "198.51.100.40"],
+    ];
+    for (const [realIp, clientXff] of rotations) {
+      const h = await get({ host: "router.example.com", "x-real-ip": realIp, "x-forwarded-for": `${clientXff}, 203.0.113.7` });
+      expect(h["x-9r-real-ip"], realIp).toBe("203.0.113.7");
+      expect(h["x-9r-alt-ips"], realIp).toBe(realIp === "127.0.0.1" ? undefined : realIp);
     }
-    expect([...keys]).toEqual(["203.0.113.7"]);
   });
 
-  // nginx with only `proxy_set_header X-Real-IP $remote_addr` and no X-Forwarded-For.
-  it("keys on X-Real-IP from a proxy that sets only that", async () => {
-    const h = await get({ host: "router.example.com", "x-real-ip": "203.0.113.8" });
-    expect(h["x-9r-real-ip"]).toBe("203.0.113.8");
+  // nginx with only `proxy_set_header X-Real-IP $remote_addr`: the client's own
+  // X-Forwarded-For passes through, so its entries rotate and X-Real-IP is fixed.
+  it("stamps the proxy's X-Real-IP on every login behind nginx that sets only that, however the client rotates X-Forwarded-For", async () => {
+    for (const clientXff of ["198.51.100.1", "198.51.100.2, 198.51.100.3", "192.0.2.9"]) {
+      const h = await get({ host: "router.example.com", "x-real-ip": "203.0.113.8", "x-forwarded-for": clientXff });
+      expect([h["x-9r-real-ip"], ...(h["x-9r-alt-ips"] || "").split(",")], clientXff).toContain("203.0.113.8");
+    }
+    const realIpOnly = await get({ host: "router.example.com", "x-real-ip": "203.0.113.8" });
+    expect(realIpOnly["x-9r-real-ip"]).toBe("203.0.113.8");
+    expect(realIpOnly["x-9r-alt-ips"]).toBeUndefined();
+  });
+
+  it("drops a client's own x-9r-alt-ips", async () => {
+    expect((await get({ host: `localhost:${port}`, "x-9r-alt-ips": "203.0.113.1" }))["x-9r-alt-ips"]).toBeUndefined();
   });
 
   it("never keys a proxied request on a loopback or non-address value from a header", async () => {
@@ -111,10 +136,54 @@ describe("custom-server wrapper: who is local and which address it keys on", () 
     }
   });
 
-  it("stamps tunnel traffic from a loopback peer, and drops a client's own stamp", async () => {
+  it("stamps tunnel traffic by Host, and drops a client's own stamp", async () => {
     expect((await get({ host: "abc.trycloudflare.com", "cf-ray": "abc-LAX", "cf-connecting-ip": "203.0.113.9" }))["x-9r-via-tunnel"]).toBe("1");
     expect((await get({ host: "box.tail0.ts.net", "tailscale-funnel-request": "?1" }))["x-9r-via-tunnel"]).toBe("1");
+    // A Cloudflare-proxied domain in front of a reverse proxy on this machine.
+    expect((await get({ host: "router.example.com", "cf-ray": "abc-LAX", "cf-connecting-ip": "203.0.113.9", "x-forwarded-for": "203.0.113.9" }))["x-9r-via-tunnel"]).toBeUndefined();
     expect((await get({ host: "router.example.com", "x-9r-via-tunnel": "1" }))["x-9r-via-tunnel"]).toBeUndefined();
+  });
+});
+
+describe("TRUST_PROXY", () => {
+  it("as true, keys every loopback request on the shared bucket, whatever its headers", () => {
+    vi.stubEnv("TRUST_PROXY", "true");
+    for (const headers of [{ host: "localhost" }, { "x-forwarded-for": "203.0.113.7" }, { "x-real-ip": "203.0.113.8" }]) {
+      expect(isOnThisMachine(headers, "127.0.0.1"), JSON.stringify(headers)).toBe(false);
+      expect(clientKeysFor(headers, "127.0.0.1"), JSON.stringify(headers)).toEqual(["unknown"]);
+    }
+    // A direct remote peer is still its socket.
+    expect(clientKeysFor({ "x-forwarded-for": "203.0.113.7" }, "198.51.100.9")).toEqual(["198.51.100.9"]);
+  });
+
+  it("as a list of addresses and CIDRs, reads forwarding headers from those peers only", () => {
+    vi.stubEnv("TRUST_PROXY", "192.168.1.10, 10.0.0.0/8,2001:db8:aa::/48");
+    const headers = { host: "router.example.com", "x-forwarded-for": "198.51.100.9, 203.0.113.7" };
+    for (const peer of ["192.168.1.10", "::ffff:192.168.1.10", "10.20.30.40", "2001:db8:aa:1::5"]) {
+      expect(isTrustedProxyPeer(peer), peer).toBe(true);
+      expect(clientKeysFor(headers, peer), peer).toEqual(["203.0.113.7"]);
+      expect(isOnThisMachine(headers, peer), peer).toBe(false);
+    }
+    for (const peer of ["192.168.1.11", "11.0.0.1", "2001:db8:ab::5"]) {
+      expect(isTrustedProxyPeer(peer), peer).toBe(false);
+      expect(clientKeysFor(headers, peer), peer).toEqual([peer]);
+    }
+    // Loopback keeps its own rules: a client on this machine is still local.
+    expect(isOnThisMachine({ host: "localhost" }, "127.0.0.1")).toBe(true);
+  });
+
+  it("ignores malformed list entries", () => {
+    vi.stubEnv("TRUST_PROXY", "not-an-ip, 10.0.0.0/99, 192.168.1.10");
+    expect(isTrustedProxyPeer("192.168.1.10")).toBe(true);
+    expect(isTrustedProxyPeer("10.0.0.1")).toBe(false);
+  });
+
+  it("trusts nothing extra when unset or false", () => {
+    for (const value of ["", "false"]) {
+      vi.stubEnv("TRUST_PROXY", value);
+      expect(isTrustedProxyPeer("192.168.1.10")).toBe(false);
+      expect(isOnThisMachine({ host: "localhost" }, "127.0.0.1")).toBe(true);
+    }
   });
 });
 
@@ -154,9 +223,9 @@ describe("isOnThisMachine and clientIpFor", () => {
     ["past entries that aren't addresses", { "x-forwarded-for": "203.0.113.7, local, unknown" }, "203.0.113.7"],
     ["unknown for empty entries only", { "x-forwarded-for": " , ," }, "unknown"],
     ["unknown for an all-loopback chain", { "x-forwarded-for": "127.0.0.1, ::1, ::ffff:127.0.0.1, [::1]:5000" }, "unknown"],
-    ["X-Forwarded-For over X-Real-IP", { "x-real-ip": "203.0.113.8", "x-forwarded-for": "198.51.100.1" }, "198.51.100.1"],
+    ["X-Forwarded-For first when both are sent", { "x-real-ip": "203.0.113.8", "x-forwarded-for": "198.51.100.1" }, "198.51.100.1"],
     ["X-Forwarded-For over CF-Connecting-IP", { "cf-connecting-ip": "203.0.113.8", "x-forwarded-for": "198.51.100.1" }, "198.51.100.1"],
-    ["unknown, not X-Real-IP, when X-Forwarded-For has nothing usable", { "x-real-ip": "203.0.113.8", "x-forwarded-for": "127.0.0.1" }, "unknown"],
+    ["X-Real-IP when X-Forwarded-For has nothing usable", { "x-real-ip": "203.0.113.8", "x-forwarded-for": "127.0.0.1" }, "203.0.113.8"],
     ["X-Real-IP with no X-Forwarded-For", { "x-real-ip": "203.0.113.8" }, "203.0.113.8"],
     ["the last X-Real-IP when it was sent twice", { "x-real-ip": "198.51.100.1, 203.0.113.8" }, "203.0.113.8"],
     ["CF-Connecting-IP with neither", { "cf-connecting-ip": "203.0.113.9", "cf-ray": "abc-LAX" }, "203.0.113.9"],
@@ -172,12 +241,37 @@ describe("isOnThisMachine and clientIpFor", () => {
     expect(clientIpFor({ "x-forwarded-for": "203.0.113.7", "x-real-ip": "203.0.113.8" }, "198.51.100.9")).toBe("198.51.100.9");
   });
 
-  it("calls only a loopback peer with tunnel headers tunnel traffic", () => {
-    expect(isTunnelTraffic({ "cf-ray": "x" }, "127.0.0.1")).toBe(true);
-    expect(isTunnelTraffic({ "cf-connecting-ip": "203.0.113.9" }, "::1")).toBe(true);
-    expect(isTunnelTraffic({ "tailscale-funnel-request": "?1" }, "127.0.0.1")).toBe(true);
-    expect(isTunnelTraffic({ "cf-ray": "x" }, "198.51.100.9")).toBe(false);
-    expect(isTunnelTraffic({ host: "abc.trycloudflare.com" }, "127.0.0.1")).toBe(false);
+  it.each([
+    ["both, when a proxy sent X-Forwarded-For and X-Real-IP", { "x-forwarded-for": "198.51.100.1, 203.0.113.7", "x-real-ip": "203.0.113.8" }, ["203.0.113.7", "203.0.113.8"]],
+    ["one, when they agree", { "x-forwarded-for": "203.0.113.7", "x-real-ip": "203.0.113.7" }, ["203.0.113.7"]],
+    ["X-Forwarded-For alone", { "x-forwarded-for": "203.0.113.7" }, ["203.0.113.7"]],
+    ["no CF-Connecting-IP next to either", { "x-real-ip": "203.0.113.8", "cf-connecting-ip": "203.0.113.9" }, ["203.0.113.8"]],
+  ])("behind a loopback proxy, lists %s", (_name, headers, expected) => {
+    expect(clientKeysFor({ host: "router.example.com", ...headers }, "127.0.0.1")).toEqual(expected);
+  });
+
+  // The owner's bucket is a name no address can spell.
+  it("never returns the local login key, whatever the headers say", async () => {
+    const { LOCAL_LOGIN_KEY } = await import("../../src/lib/auth/loginLimiter.js");
+    const values = [LOCAL_LOGIN_KEY, LOCAL_LOGIN_KEY.toUpperCase(), ` ${LOCAL_LOGIN_KEY} `, `${LOCAL_LOGIN_KEY}:80`, `[${LOCAL_LOGIN_KEY}]`, `${LOCAL_LOGIN_KEY}, ${LOCAL_LOGIN_KEY}`, "unknown", "127.0.0.1", "::1", ""];
+    for (const value of values) {
+      for (const name of ["x-forwarded-for", "x-real-ip", "cf-connecting-ip"]) {
+        for (const socketIp of ["127.0.0.1", "::1"]) {
+          const keys = clientKeysFor({ host: "router.example.com", [name]: value }, socketIp);
+          expect(keys, `${name}: ${JSON.stringify(value)}`).not.toContain(LOCAL_LOGIN_KEY);
+        }
+      }
+    }
+  });
+
+  it("calls a loopback peer with a quick-tunnel or Tailscale Host tunnel traffic, and nothing else", () => {
+    expect(isTunnelTraffic({ host: "abc.trycloudflare.com" }, "127.0.0.1")).toBe(true);
+    expect(isTunnelTraffic({ host: "ABC.TryCloudflare.com.:443" }, "::1")).toBe(true);
+    expect(isTunnelTraffic({ host: "box.tail0.ts.net" }, "127.0.0.1")).toBe(true);
+    expect(isTunnelTraffic({ host: "abc.trycloudflare.com" }, "198.51.100.9")).toBe(false);
+    expect(isTunnelTraffic({ host: "router.example.com", "cf-ray": "x", "cf-connecting-ip": "203.0.113.9" }, "127.0.0.1")).toBe(false);
+    expect(isTunnelTraffic({ host: "trycloudflare.com.attacker.example" }, "127.0.0.1")).toBe(false);
+    expect(isTunnelTraffic({}, "127.0.0.1")).toBe(false);
   });
 
   it.each([
@@ -206,6 +300,14 @@ describe("bridgeForwardHeaders follows the same rule as the wrapper", () => {
   it("marks a loopback handshake with a non-loopback Host and no forwarding header as remote", () => {
     expect(bridgeForwardHeaders({ ...HANDSHAKE, host: "router.example.com" }, "127.0.0.1", 2)["x-forwarded-for"]).toBe("127.0.0.1");
   });
+
+  it.each(["forwarded", "x-forwarded-host", "x-forwarded-proto", "true-client-ip", "cf-connecting-ip", "cf-ray", "tailscale-funnel-request"])(
+    "marks a loopback handshake carrying %s as remote, Host: localhost or not",
+    (name) => {
+      const h = bridgeForwardHeaders({ ...HANDSHAKE, host: "localhost", [name]: "203.0.113.9" }, "127.0.0.1", 2);
+      expect(h["x-forwarded-for"]).toBe("127.0.0.1");
+    }
+  );
 
   it("keeps a loopback handshake with a loopback Host local, unless TRUST_PROXY=true", () => {
     expect(bridgeForwardHeaders({ ...HANDSHAKE, host: "localhost:20128" }, "127.0.0.1", 2)["x-forwarded-for"]).toBeUndefined();
@@ -284,13 +386,42 @@ describe("login limiter", () => {
     expect(limiter.reserveAttempt("203.0.113.200").ok).toBe(true);
   });
 
-  it("keeps the local bucket apart: remote failures never lock it, local ones do", () => {
-    for (let i = 0; i < 5; i++) fail("127.0.0.1");
-    for (let i = 0; i < 5; i++) fail(limiter.SHARED_LOGIN_KEY);
-    expect(limiter.reserveAttempt(limiter.LOCAL_LOGIN_KEY).ok).toBe(true);
-    limiter.releaseAttempt(limiter.LOCAL_LOGIN_KEY);
+  it("locks the local bucket after failures from this machine", () => {
     for (let i = 0; i < 5; i++) fail(limiter.LOCAL_LOGIN_KEY);
     expect(limiter.checkLock(limiter.LOCAL_LOGIN_KEY).locked).toBe(true);
+  });
+
+  // The proxy writes one of the two headers; the client rotates the other.
+  it.each([
+    ["Caddy (appended X-Forwarded-For fixed, X-Real-IP rotated)", (i) => ["203.0.113.7", `198.51.100.${i}`]],
+    ["nginx with only X-Real-IP (X-Forwarded-For rotated, X-Real-IP fixed)", (i) => [`198.51.100.${i}`, "203.0.113.8"]],
+  ])("stops a client behind %s after five guesses", (_name, keysFor) => {
+    for (let i = 1; i <= 5; i++) fail(keysFor(i));
+    for (let i = 6; i <= 20; i++) expect(limiter.reserveAttempt(keysFor(i)).ok, `rotation ${i}`).toBe(false);
+  });
+
+  it("counts a burst with rotating keys against the fixed one", () => {
+    const results = Array.from({ length: 20 }, (_, i) => limiter.reserveAttempt(["203.0.113.7", `198.51.100.${i}`]));
+    expect(results.filter((r) => r.ok)).toHaveLength(5);
+  });
+
+  it("refuses while any key is locked, and reports the longest wait", () => {
+    vi.useFakeTimers();
+    for (let i = 0; i < 5; i++) fail("203.0.113.10");
+    vi.advanceTimersByTime(10_000);
+    for (let i = 0; i < 5; i++) fail("203.0.113.11");
+    const both = limiter.reserveAttempt(["203.0.113.10", "203.0.113.11"]);
+    expect(both).toEqual({ ok: false, retryAfter: 30 });
+    expect(limiter.checkLock(["203.0.113.12", "203.0.113.10"])).toEqual({ locked: true, retryAfter: 20 });
+  });
+
+  it("clears every key on a success, and releases each once", () => {
+    const keys = ["203.0.113.13", "203.0.113.14"];
+    fail(keys);
+    limiter.reserveAttempt(keys);
+    limiter.recordSuccess(keys);
+    limiter.releaseAttempt(keys);
+    expect(limiter.__test__.size()).toBe(0);
   });
 
   it("locks the shared unknown bucket for a short fixed time that never escalates", () => {
