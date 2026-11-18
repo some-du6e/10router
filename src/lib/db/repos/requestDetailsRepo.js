@@ -23,12 +23,16 @@ const SAME_MS_SLACK = 8;
 // copy: enough to cover the newest FULL_DATA_KEEP_ROWS rows. Older saves keep
 // only their capped record.
 const MAX_FULL_CANDIDATES = SAVES_PER_ROW * FULL_DATA_KEEP_ROWS + SAME_MS_SLACK;
-// And at most this much of that JSON in all (estimated at 2 bytes a char),
-// oldest dropped first: a few huge histories can't fill memory either.
+// And at most this much in all, oldest dropped first, so a few huge histories
+// can't fill memory either: that JSON (each distinct string once), plus the
+// packed copies a running write holds. Estimated at 2 bytes a char.
 const FULL_CANDIDATES_MAX_BYTES = 256 * 1024 * 1024;
 // Capped records waiting to be written, queued and in a running write together
-// (estimated the same way). Past it the oldest queued saves are dropped.
+// (estimated the same way). Past it the oldest queued records are cut down to
+// a small one (degradeRecord); the saves themselves all stay.
 const QUEUED_RECORDS_MAX_BYTES = 64 * 1024 * 1024;
+// A degraded record keeps each payload as a preview of this many characters.
+const DEGRADED_PREVIEW_CHARS = 2 * 1024;
 // One write takes at most this many rows, or this much of their records, so a
 // backlog is drained in bounded steps.
 const MAX_ROWS_PER_WRITE = 200;
@@ -115,9 +119,13 @@ async function readObservabilityConfig() {
 let writeBuffer = [];
 let queuedBytes = 0;
 let inFlightBytes = 0;
-// The saves, queued or in a running write, that still hold the JSON of their
-// cut fields (entry.full), oldest first, and that JSON's estimated bytes.
+// The saves, queued or in a running write, that still hold what their full
+// copy is made from (entry.full), oldest first.
 let fullCandidates = [];
+// Every string those saves and a running write hold for full copies, each
+// distinct one once: string → { text, refs }. Equal JSON from two saves (a
+// stream's start and end, or the same body on two keys) is one string.
+const heldStrings = new Map();
 let fullCandidateBytes = 0;
 // The byte budgets; tests set smaller ones.
 const limits = {
@@ -145,11 +153,12 @@ const cappedPayloads = new WeakMap();   // payload object → its capped copy
 const packedFullData = new WeakMap();   // first capped field → its packed full copy
 
 // The fields truncateField cut, as [key, json, capped] parts to pack, or null
-// when none was cut or together they are over FULL_DATA_MAX_BYTES (never
-// packed). `json` is the compact JSON truncateField built (`fieldJson`), so a
-// field isn't serialized again. A field capped from truncateField's cache has
-// none: `jsonFor(capped)` may supply it (an earlier save's), else it is
-// serialized here. Parts an earlier save packed the same way need no JSON.
+// when none was cut, they can't be serialized, or together they are over
+// FULL_DATA_MAX_BYTES (UTF-8): such a save gets no full copy. `json` is the
+// compact JSON truncateField built (`fieldJson`), so a field isn't serialized
+// again. A field capped from truncateField's cache has none: `jsonFor(capped)`
+// may supply it (a queued save's), else it is serialized here. Parts an
+// earlier save packed the same way need no JSON.
 function fullDataParts(item, record, fieldJson = {}, jsonFor = () => undefined) {
   const parts = [];
   let chars = 0;
@@ -163,22 +172,28 @@ function fullDataParts(item, record, fieldJson = {}, jsonFor = () => undefined) 
   // payloads without serializing them a second time.
   if (!parts.length || chars > FULL_DATA_MAX_BYTES) return null;
   if (priorPack(parts)) return parts;
+  let utf8 = 0;
   for (const part of parts) {
     if (part[1] === undefined) part[1] = jsonFor(part[2]);
     if (part[1] === undefined) {
       try { part[1] = JSON.stringify(item[part[0]]); } catch { return null; }
       if (typeof part[1] !== "string") return null;
     }
+    // A UTF-16 code unit is at most 3 UTF-8 bytes, so only count bytes when that bound could exceed the limit.
+    utf8 += part[1].length * 3 > FULL_DATA_MAX_BYTES ? Buffer.byteLength(part[1], "utf8") : part[1].length;
   }
-  return parts;
+  return utf8 > FULL_DATA_MAX_BYTES ? null : parts;
 }
+
+const liveCapped = (part) => (part[2] instanceof WeakRef ? part[2].deref() : part[2]);
 
 // The packed copy of an earlier save with the same capped fields
 // (truncateField's cache): the same bytes.
 function priorPack(parts) {
-  const prior = packedFullData.get(parts[0][2]);
+  const capped = parts.map(liveCapped);
+  const prior = capped[0] && packedFullData.get(capped[0]);
   const keys = parts.map(([key]) => key).join();
-  return prior?.keys === keys && prior.capped.every((capped, i) => capped === parts[i][2]) ? prior.packed : null;
+  return prior?.keys === keys && prior.capped.every((c, i) => c === capped[i]) ? prior.packed : null;
 }
 
 // Gzips the parts into one JSON object, or null. Compression runs on the
@@ -189,10 +204,11 @@ async function packParts(parts) {
   if (parts.some(([, json]) => typeof json !== "string")) return null;
   try {
     const json = `{${parts.map(([key, value]) => `${JSON.stringify(key)}:${value}`).join(",")}}`;
-    // A UTF-16 code unit is at most 3 UTF-8 bytes, so only count bytes when that bound could exceed the limit.
     if (json.length * 3 > FULL_DATA_MAX_BYTES && Buffer.byteLength(json, "utf8") > FULL_DATA_MAX_BYTES) return null;
     const packed = (await gzipAsync(json)).toString("base64");
-    packedFullData.set(parts[0][2], { keys: parts.map(([key]) => key).join(), capped: parts.map(([, , capped]) => capped), packed });
+    // Kept for a later save of the same objects (a stream's end save) only while they live.
+    const capped = parts.map(liveCapped);
+    if (capped.every(Boolean)) packedFullData.set(capped[0], { keys: parts.map(([key]) => key).join(), capped, packed });
     return packed;
   } catch {
     return null;
@@ -205,36 +221,71 @@ async function packFullData(item, record, fieldJson) {
   return parts ? packParts(parts) : null;
 }
 
-// A queued save keeps the JSON of its cut fields, for a full copy. Only the
-// newest MAX_FULL_CANDIDATES such saves do, within FULL_CANDIDATES_MAX_BYTES;
-// the oldest go first.
-function holdFull(entry, parts) {
-  const bytes = parts.reduce((sum, [, json]) => sum + (typeof json === "string" ? estimateBytes(json) : 0), 0);
-  entry.full = { parts, bytes };
-  fullCandidates.push(entry);
-  fullCandidateBytes += bytes;
-  while (fullCandidates.length > MAX_FULL_CANDIDATES || fullCandidateBytes > limits.fullCandidatesMaxBytes) dropFull(fullCandidates.shift());
+// Counts a string held for full copies once, however many hold it, and
+// returns the one instance they all share.
+function holdString(text) {
+  const held = heldStrings.get(text);
+  if (held) { held.refs++; return held.text; }
+  heldStrings.set(text, { text, refs: 1 });
+  fullCandidateBytes += estimateBytes(text);
+  return text;
 }
 
-// Lets a save's JSON go; pruneFullCandidates then takes it off the list.
+function releaseString(text) {
+  const held = heldStrings.get(text);
+  if (!held || --held.refs > 0) return;
+  heldStrings.delete(text);
+  fullCandidateBytes -= estimateBytes(text);
+}
+
+// A queued save keeps what its full copy is made from: the packed copy an
+// earlier save made of the same objects, or the JSON of its cut fields, never
+// the body itself. Capped objects are held weakly, so nothing here keeps a
+// body or an earlier packed copy alive.
+function holdFull(entry, parts) {
+  const prior = priorPack(parts);
+  entry.full = prior
+    ? { packed: holdString(prior), parts: null }
+    : { packed: null, parts: parts.map(([key, json, capped]) => [key, holdString(json), new WeakRef(capped)]) };
+  fullCandidates.push(entry);
+  enforceFullBudget();
+}
+
+// Only the newest MAX_FULL_CANDIDATES saves keep theirs, within
+// FULL_CANDIDATES_MAX_BYTES (a running write's packed copies count too); the
+// oldest go first.
+function enforceFullBudget() {
+  while (fullCandidates.length > 0
+    && (fullCandidates.length > MAX_FULL_CANDIDATES || fullCandidateBytes > limits.fullCandidatesMaxBytes)) dropFull(fullCandidates.shift());
+}
+
+// Lets a save's strings go; pruneFullCandidates then takes it off the list.
 function dropFull(entry) {
-  if (!entry?.full) return;
-  fullCandidateBytes -= entry.full.bytes;
+  const full = entry?.full;
+  if (!full) return;
   entry.full = null;
+  if (full.packed) releaseString(full.packed);
+  for (const [, json] of full.parts ?? []) releaseString(json);
 }
 
 function pruneFullCandidates() {
   fullCandidates = fullCandidates.filter((entry) => entry.full);
 }
 
-// The JSON a save still held for this capped field: a stream's start save
+// The JSON a queued save holds for this capped field: a stream's start save
 // shares its request objects with its end save.
 function jsonInWindow(capped) {
   for (let i = fullCandidates.length - 1; i >= 0; i--) {
-    const part = fullCandidates[i].full?.parts.find((p) => p[2] === capped && typeof p[1] === "string");
+    const part = fullCandidates[i].full?.parts?.find((p) => p[2].deref() === capped);
     if (part) return part[1];
   }
   return undefined;
+}
+
+// The full copy of a save, from what it holds; null when it has none.
+async function packHeld(full) {
+  if (!full) return null;
+  return full.packed ?? packParts(full.parts);
 }
 
 // sql.js rewrites the whole DB file on every write, so it never stores full payloads.
@@ -247,7 +298,8 @@ async function unpackFullData(value) {
 }
 
 export const __test__ = { sanitizeHeaders, getMaxJsonSize, truncateField, prettyJsonPrefix, packFullData, unpackFullData, rowLimit, limits, MAX_FULL_CANDIDATES, MAX_ROWS_PER_WRITE,
-  buffered: () => writeBuffer.length, queuedBytes: () => queuedBytes, fullCandidates: () => fullCandidates.length, fullCandidateBytes: () => fullCandidateBytes,
+  buffered: () => writeBuffer.length, queuedBytes: () => queuedBytes, inFlightBytes: () => inFlightBytes,
+  fullCandidates: () => fullCandidates.length, fullCandidateBytes: () => fullCandidateBytes,
   flush: () => flushToDatabase(), shutdown: () => _shutdownHandler() };
 
 function generateDetailId(model) {
@@ -384,10 +436,46 @@ function queueEntry(item, { maxJsonSize, keepFullData }) {
   const entry = {
     id: record.id, timestamp: record.timestamp, provider: record.provider, model: record.model,
     connectionId: record.connectionId, status: record.status, data, bytes: estimateBytes(data),
-    keepFullData: fullCopy, cut, full: null,
+    keepFullData: fullCopy, degraded: false, full: null,
   };
-  // Only the JSON of the cut fields is kept, never the body it came from.
   return { entry, parts: fullCopy && cut ? fullDataParts(item, record, fieldJson, jsonInWindow) : null };
+}
+
+// A queued record cut down when the queue is over its byte budget: the row,
+// its status, tokens, latency and error stay; each payload over
+// DEGRADED_PREVIEW_CHARS becomes a preview of that length.
+function degradeRecord(data) {
+  const record = JSON.parse(data);
+  for (const key of PAYLOAD_KEYS) {
+    const value = record[key];
+    if (value == null || typeof value !== "object") continue;
+    const capped = value._truncated === true;
+    const text = capped ? String(value._preview ?? "") : JSON.stringify(value);
+    if (!capped && text.length <= DEGRADED_PREVIEW_CHARS) continue;
+    const originalSize = capped ? value._originalSize ?? null : text.length;
+    const preview = text.slice(0, DEGRADED_PREVIEW_CHARS);
+    record[key] = {
+      _truncated: true,
+      _originalSize: originalSize,
+      _omittedSize: originalSize === null ? null : Math.max(0, originalSize - preview.length),
+      _preview: preview,
+      _structuredPreview: null,
+    };
+  }
+  return stringifyJson(record);
+}
+
+// Cuts the oldest queued records down until the queue, with a running write's
+// records, fits its byte budget. Every save stays: past the budget a backlog
+// keeps its rows, with smaller payloads.
+function degradeQueue() {
+  for (const entry of writeBuffer) {
+    if (queuedBytes + inFlightBytes <= limits.queuedRecordsMaxBytes) return;
+    if (entry.degraded) continue;
+    const data = degradeRecord(entry.data);
+    queuedBytes += estimateBytes(data) - entry.bytes;
+    Object.assign(entry, { data, bytes: estimateBytes(data), degraded: true });
+  }
 }
 
 const UPSERT_PREFIX = `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data, fullData) VALUES(?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp, provider = excluded.provider, model = excluded.model, connectionId = excluded.connectionId, status = excluded.status, data = excluded.data, `;
@@ -467,29 +555,38 @@ async function writeEntries(entries) {
     ? entries.filter((entry, i) => entry.keepFullData && lastSave.get(entry.id) === i && keeping.has(entry.id))
     : [];
   // Newest first: saves made meanwhile push the oldest out of fullCandidates.
-  // A save with nothing cut packs to nothing; one whose JSON is gone (pushed
-  // out, or over the limits) isn't packed.
+  // A save with no full copy (nothing cut, too big, pushed out) stores none,
+  // and clears the copy an earlier save of its row stored, which no longer
+  // matches it. The copies wait here, counted against the window's budget,
+  // until they're written.
   const packed = new Map();
-  for (const entry of toPack.sort(newestFirst)) {
-    if (shuttingDown) break;
-    if (!entry.cut) { packed.set(entry, null); continue; }
-    const full = entry.full;
-    if (full) packed.set(entry, await packParts(full.parts));
+  try {
+    for (const entry of toPack.sort(newestFirst)) {
+      if (shuttingDown) break;
+      const copy = await packHeld(entry.full);
+      if (copy) {
+        holdString(copy);
+        enforceFullBudget();
+      }
+      packed.set(entry, copy);
+    }
+    writeRows(db, entries, packed, { wantFull, maxRecords, stale: generation !== configCache.generation });
+  } finally {
+    for (const copy of packed.values()) if (copy) releaseString(copy);
   }
-  // A row not packed keeps the full copy an earlier save stored (a stream's
-  // start save shares its id with its end save); the trim clears it unless the
-  // row is among the newest.
+}
+
+// A row this write didn't pack (shutdown) keeps the full copy an earlier save
+// stored; the trim clears it unless the row is among the newest. `stale`: the
+// setting was turned off (and stored payloads cleared) while compression was
+// awaited. Nothing awaits between that check and the transaction, so a clear
+// can't slip in after it.
+function writeRows(db, entries, packed, { wantFull, maxRecords, stale }) {
   const rows = entries.map((entry) => ({
     entry,
-    fullData: packed.get(entry) ?? null,
-    keepStored: wantFull && !packed.has(entry),
+    fullData: stale ? null : packed.get(entry) ?? null,
+    keepStored: wantFull && !stale && !packed.has(entry),
   }));
-  // The setting may have been turned off (and stored payloads cleared)
-  // while compression was awaited. Nothing awaits between this check and
-  // the transaction, so a clear can't slip in after it.
-  if (generation !== configCache.generation) {
-    for (const row of rows) { row.fullData = null; row.keepStored = false; }
-  }
 
   db.transaction(() => {
     for (const { entry, fullData, keepStored } of rows) {
@@ -534,21 +631,17 @@ export async function saveRequestDetail(detail) {
   // packed), or are the oldest of several huge ones.
   if (parts) holdFull(entry, parts);
   // Past SAVES_PER_ROW × maxRecords queued saves, the oldest are ones the trim
-  // would delete anyway; past the byte budget (a running write's records
-  // count too), the oldest go as well. The newest save always stays.
-  const maxQueued = SAVES_PER_ROW * rowLimit(config.maxRecords);
-  let drop = 0;
-  let dropBytes = 0;
-  while (writeBuffer.length - drop > 1
-    && (writeBuffer.length - drop > maxQueued || queuedBytes - dropBytes + inFlightBytes > limits.queuedRecordsMaxBytes)) {
-    dropBytes += writeBuffer[drop].bytes;
-    drop++;
-  }
-  if (drop > 0) {
-    for (const dropped of writeBuffer.splice(0, drop)) dropFull(dropped);
-    queuedBytes -= dropBytes;
+  // would delete anyway: they're dropped. Past the byte budget the oldest
+  // records are only cut down.
+  const excess = writeBuffer.length - SAVES_PER_ROW * rowLimit(config.maxRecords);
+  if (excess > 0) {
+    for (const dropped of writeBuffer.splice(0, excess)) {
+      queuedBytes -= dropped.bytes;
+      dropFull(dropped);
+    }
     pruneFullCandidates();
   }
+  degradeQueue();
 
   // Trigger immediate flush if batch threshold reached.
   // flushToDatabase() drains entire buffer in a loop, so all pushes during await are persisted.
