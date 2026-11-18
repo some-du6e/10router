@@ -1,11 +1,28 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { execSync } = require("child_process");
+const childProcess = require("child_process");
 const { getBackgroundArgs } = require("../utils/launchArgs");
 
 const APP_NAME = "10router";
 const APP_LABEL = "com.10router.autostart";
+
+// Everything this module reads from the machine. Tests pass their own.
+function system() {
+  return {
+    platform: process.platform,
+    pid: process.pid,
+    execPath: process.execPath,
+    argv1: process.argv[1],
+    env: process.env,
+    homedir: os.homedir(),
+    fs,
+    execSync: childProcess.execSync,
+  };
+}
+
+// `launch` is { port, host, dataDir }: what the entry must start again.
+// dataDir is the launcher's absolute DATA_DIR, or empty for the default.
 
 function escapeXml(value) {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
@@ -19,11 +36,40 @@ function quoteDesktopArg(value) {
   return quoted.replaceAll("\\", "\\\\").replaceAll("%", "%%");
 }
 
-function macLaunchAgent(nodePath, routerScript, options) {
+// Windows command-line quoting (the rules CommandLineToArgvW and node.exe
+// parse by): backslashes are literal except before a quote, where they are
+// doubled, and a quote inside the argument becomes \".
+function quoteWindowsArg(value) {
+  let out = '"';
+  let backslashes = 0;
+  for (const ch of value) {
+    if (ch === "\\") {
+      backslashes++;
+    } else if (ch === '"') {
+      out += "\\".repeat(backslashes * 2 + 1) + '"';
+      backslashes = 0;
+    } else {
+      out += "\\".repeat(backslashes) + ch;
+      backslashes = 0;
+    }
+  }
+  return out + "\\".repeat(backslashes * 2) + '"';
+}
+
+// A VBScript string literal: quotes are doubled.
+const vbsString = (value) => `"${value.replaceAll('"', '""')}"`;
+
+function macLogPaths(homedir) {
+  const dir = path.join(homedir, "Library", "Logs", APP_NAME);
+  return { dir, out: path.join(dir, "10router.log"), err: path.join(dir, "10router.error.log") };
+}
+
+function macLaunchAgent(nodePath, routerScript, launch, logs) {
   // EnvironmentVariables.PATH includes node's bin dir so child processes
   // spawned by cli.js (npm install at runtime, etc.) resolve.
-  const launchPath = `${path.dirname(nodePath)}:/usr/local/bin:/usr/bin:/bin`;
-  const args = [nodePath, routerScript, ...getBackgroundArgs(options)];
+  const env = { PATH: `${path.dirname(nodePath)}:/usr/local/bin:/usr/bin:/bin` };
+  if (launch.dataDir) env.DATA_DIR = launch.dataDir;
+  const args = [nodePath, routerScript, ...getBackgroundArgs(launch)];
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -36,39 +82,53 @@ ${args.map((arg) => `        <string>${escapeXml(arg)}</string>`).join("\n")}
     </array>
     <key>EnvironmentVariables</key>
     <dict>
-        <key>PATH</key>
-        <string>${escapeXml(launchPath)}</string>
+${Object.entries(env).map(([k, v]) => `        <key>${k}</key>\n        <string>${escapeXml(v)}</string>`).join("\n")}
     </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <false/>
     <key>StandardOutPath</key>
-    <string>/tmp/10router.log</string>
+    <string>${escapeXml(logs.out)}</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/10router.error.log</string>
+    <string>${escapeXml(logs.err)}</string>
 </dict>
 </plist>`;
 }
 
 // Run node + cli.js directly, hidden window. Avoids the fragile `10router.cmd`
-// lookup that depended on the npm prefix path. Inside a VBScript string each
-// quote is doubled, so ""arg"" passes "arg" to the command line.
-function windowsStartupScript(nodePath, routerScript, options) {
-  const command = [nodePath, routerScript, ...getBackgroundArgs(options)]
-    .map((arg) => `""${arg.replaceAll('"', '""')}""`)
-    .join(" ");
-  return `Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run "${command}", 0, False
-`;
+// lookup that depended on the npm prefix path. WshShell.Run expands %NAME% in
+// its command, in one pass, so each % is written as %TENROUTER_PCT%, which the
+// script sets to "%".
+function windowsStartupScript(nodePath, routerScript, launch) {
+  const command = [nodePath, routerScript, ...getBackgroundArgs(launch)]
+    .map(quoteWindowsArg)
+    .join(" ")
+    .replaceAll("%", "%TENROUTER_PCT%");
+  const lines = [
+    'Set WshShell = CreateObject("WScript.Shell")',
+    'Set ProcessEnv = WshShell.Environment("Process")',
+    'ProcessEnv("TENROUTER_PCT") = "%"',
+  ];
+  if (launch.dataDir) lines.push(`ProcessEnv("DATA_DIR") = ${vbsString(launch.dataDir)}`);
+  lines.push(`WshShell.Run ${vbsString(command)}, 0, False`, "");
+  return lines.join("\r\n");
 }
 
-function linuxDesktopEntry(nodePath, routerScript, options) {
+// WSH reads a script as ANSI unless it starts with a UTF-16LE byte order
+// mark, which would garble a non-ASCII user folder.
+function encodeVbs(text) {
+  return Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, "utf16le")]);
+}
+
+function linuxDesktopEntry(nodePath, routerScript, launch) {
+  const command = [nodePath, routerScript, ...getBackgroundArgs(launch)];
+  if (launch.dataDir) command.unshift("env", `DATA_DIR=${launch.dataDir}`);
   return `[Desktop Entry]
 Type=Application
 Name=10router
 Comment=10router API Proxy
-Exec=${[nodePath, routerScript, ...getBackgroundArgs(options)].map(quoteDesktopArg).join(" ")}
+Exec=${command.map(quoteDesktopArg).join(" ")}
 Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
@@ -92,37 +152,39 @@ X-GNOME-Autostart-enabled=true
  * Returns null if no candidate exists — callers should not write an autostart
  * entry pointing at a non-existent script.
  */
-function getCliJsPath(cliPath) {
+function getCliJsPath(cliPath, sys) {
+  const p = pathFor(sys);
   if (cliPath) {
-    const resolved = path.resolve(cliPath);
-    if (fs.existsSync(resolved)) return resolved;
+    const resolved = p.resolve(cliPath);
+    if (sys.fs.existsSync(resolved)) return resolved;
   }
-  if (process.argv[1]) {
-    const resolved = path.resolve(process.argv[1]);
-    if (path.basename(resolved) === "cli.js" && fs.existsSync(resolved)) {
+  if (sys.argv1) {
+    const resolved = p.resolve(sys.argv1);
+    if (p.basename(resolved) === "cli.js" && sys.fs.existsSync(resolved)) {
       return resolved;
     }
   }
   const computed = path.resolve(__dirname, "..", "..", "..", "cli.js");
-  if (fs.existsSync(computed)) return computed;
+  if (sys.fs.existsSync(computed)) return computed;
   return null;
 }
 
 /**
- * Enable auto startup on OS boot
+ * Enable auto startup on OS login
  * @param {string} cliPath - Optional path to cli.js (defaults to auto-detect)
+ * @param {{port: number, host: string, dataDir?: string}} launch
  * @returns {boolean} success
  */
-function enableAutoStart(cliPath, options) {
-  const platform = process.platform;
+function enableAutoStart(cliPath, launch, sys = system()) {
+  const { platform } = sys;
 
   if (!["darwin", "win32", "linux"].includes(platform)) return false;
-  if (platform === "linux" && !process.env.DISPLAY) return false;
+  if (platform === "linux" && !sys.env.DISPLAY) return false;
 
   try {
-    if (platform === "darwin") return enableMacOS(cliPath, options);
-    if (platform === "win32") return enableWindows(cliPath, options);
-    if (platform === "linux") return enableLinux(cliPath, options);
+    if (platform === "darwin") return enableMacOS(cliPath, launch, sys);
+    if (platform === "win32") return enableWindows(cliPath, launch, sys);
+    if (platform === "linux") return enableLinux(cliPath, launch, sys);
   } catch (err) {
     // Silent fail — autostart is optional
   }
@@ -133,48 +195,37 @@ function enableAutoStart(cliPath, options) {
  * Disable auto startup
  * @returns {boolean} success
  */
-function disableAutoStart() {
-  const platform = process.platform;
+function disableAutoStart(sys = system()) {
   try {
-    if (platform === "darwin") return disableMacOS();
-    if (platform === "win32") return disableWindows();
-    if (platform === "linux") return disableLinux();
+    if (sys.platform === "darwin") return disableMacOS(sys);
+    if (sys.platform === "win32") return disableWindows(sys);
+    if (sys.platform === "linux") return disableLinux(sys);
   } catch (err) {}
   return false;
 }
 
-/**
- * Check if autostart is enabled.
- *
- * On macOS, both the plist file and the launchd registration must be present —
- * otherwise the tray menu would lie about the state (showing "✓ Enabled" even
- * when launchd has the agent in a failed state or hasn't loaded it).
- */
-function isAutoStartEnabled() {
-  const platform = process.platform;
+// Paths follow the target platform's rules (the host's, outside tests).
+const pathFor = (sys) => (sys.platform === "win32" ? path.win32 : path.posix);
 
+function entryPath(sys) {
+  if (sys.platform === "darwin") return path.posix.join(sys.homedir, "Library", "LaunchAgents", `${APP_LABEL}.plist`);
+  if (sys.platform === "win32") return path.win32.join(sys.env.APPDATA || "", "Microsoft", "Windows", "Start Menu", "Programs", "Startup", `${APP_NAME}.vbs`);
+  if (sys.platform === "linux") return path.posix.join(sys.homedir, ".config", "autostart", `${APP_NAME}.desktop`);
+  return null;
+}
+
+/**
+ * Autostart is on when its entry exists. On macOS that is the plist: it is
+ * written but not loaded while this instance runs (see enableMacOS), and
+ * launchd loads it at the next login.
+ */
+function isAutoStartEnabled(sys = system()) {
   try {
-    if (platform === "darwin") {
-      const plistPath = path.join(os.homedir(), "Library", "LaunchAgents", `${APP_LABEL}.plist`);
-      if (!fs.existsSync(plistPath)) return false;
-      try {
-        execSync(`launchctl list ${APP_LABEL}`, {
-          stdio: ["ignore", "ignore", "ignore"],
-          timeout: 3000
-        });
-        return true;
-      } catch (e) {
-        return false;
-      }
-    } else if (platform === "win32") {
-      const startupPath = path.join(process.env.APPDATA || "", "Microsoft", "Windows", "Start Menu", "Programs", "Startup", `${APP_NAME}.vbs`);
-      return fs.existsSync(startupPath);
-    } else if (platform === "linux") {
-      const desktopPath = path.join(os.homedir(), ".config", "autostart", `${APP_NAME}.desktop`);
-      return fs.existsSync(desktopPath);
-    }
-  } catch (e) {}
-  return false;
+    const file = entryPath(sys);
+    return !!file && sys.fs.existsSync(file);
+  } catch (e) {
+    return false;
+  }
 }
 
 // ============ macOS ============
@@ -183,140 +234,114 @@ function isAutoStartEnabled() {
  * Returns true when the current Node process IS the running instance that
  * launchd is managing under our agent label.
  *
- * `launchctl unload <plist>` (and `load`) for an Aqua user-domain agent sends
- * SIGTERM to the running process. When the running 10router cli.js was itself
- * spawned by the autostart launchd agent (i.e. user enabled autostart at
- * some point, then rebooted, then clicked the tray icon's "Disable
- * Auto-start" menu item), an unload would kill the very process executing
- * the click handler — and the tray icon would disappear instead of the menu
- * label flipping back to "Enable Auto-start". This helper lets the enable
- * and disable paths sidestep that by skipping launchctl when we'd otherwise
- * be killing ourselves.
+ * `launchctl unload <plist>` for an Aqua user-domain agent sends SIGTERM to
+ * the running process. When the running cli.js was itself started by the
+ * autostart agent, an unload from the tray's "Disable Auto-start" would kill
+ * the process handling the click.
  */
-function isAgentSelfMacOS() {
+function isAgentSelfMacOS(sys) {
   try {
-    const output = execSync(`launchctl list ${APP_LABEL}`, {
+    const output = sys.execSync(`launchctl list ${APP_LABEL}`, {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 3000
     });
     const match = output.match(/"PID"\s*=\s*(\d+)/);
-    return !!(match && parseInt(match[1], 10) === process.pid);
+    return !!(match && parseInt(match[1], 10) === sys.pid);
   } catch (e) {
     return false;
   }
 }
 
-function enableMacOS(cliPath, options) {
-  const launchAgentsDir = path.join(os.homedir(), "Library", "LaunchAgents");
-  const plistPath = path.join(launchAgentsDir, `${APP_LABEL}.plist`);
+function enableMacOS(cliPath, launch, sys) {
+  const plistPath = entryPath(sys);
+  sys.fs.mkdirSync(path.dirname(plistPath), { recursive: true });
 
-  if (!fs.existsSync(launchAgentsDir)) {
-    fs.mkdirSync(launchAgentsDir, { recursive: true });
-  }
-
-  const nodePath = process.execPath;
-  const routerScript = getCliJsPath(cliPath);
+  // Invoke node + cli.js directly with absolute paths — no shell wrapper.
+  const routerScript = getCliJsPath(cliPath, sys);
   // Don't write a broken plist that references a non-existent script.
   if (!routerScript) return false;
 
-  // Invoke node + cli.js directly with absolute paths — no shell wrapper.
-  // The previous design ran `zsh -l -c "..."` so a login shell would source
-  // nvm/.zshrc and set PATH; that's fragile (nvm.sh sourcing varies by user,
-  // some setups don't put node on PATH from a non-interactive login shell).
-  fs.writeFileSync(plistPath, macLaunchAgent(nodePath, routerScript, options));
-
-  // If we're the running agent already, launchctl unload/load would send
-  // ourselves SIGTERM. Skip it — the plist file is updated on disk and
-  // launchd will pick it up at next login. isAutoStartEnabled() will still
-  // return true because launchctl already has the agent loaded.
-  if (isAgentSelfMacOS()) {
-    return true;
+  // The tray's output includes the first-run setup token, so its logs are
+  // the user's own: ~/Library/Logs/10router, 0700, files 0600.
+  const logs = macLogPaths(sys.homedir);
+  sys.fs.mkdirSync(logs.dir, { recursive: true, mode: 0o700 });
+  sys.fs.chmodSync(logs.dir, 0o700);
+  for (const file of [logs.out, logs.err]) {
+    sys.fs.closeSync(sys.fs.openSync(file, "a", 0o600));
+    sys.fs.chmodSync(file, 0o600);
   }
 
-  // Register with launchd in the current session. Without this, the agent
-  // only takes effect on the next user login and the user has no signal that
-  // anything actually happened. `unload` first defends against re-enable
-  // replacing an existing plist.
-  try {
-    execSync(`launchctl unload "${plistPath}"`, { stdio: "ignore" });
-  } catch (e) {}
-  try {
-    execSync(`launchctl load -w "${plistPath}"`, { stdio: "ignore" });
-  } catch (e) {
-    // Even if load fails, the plist is on disk and will be picked up at next
-    // login; report success based on the file write.
-  }
+  sys.fs.writeFileSync(plistPath, macLaunchAgent(sys.execPath, routerScript, launch, logs));
+
+  // No `launchctl load`: this is only ever called from a running instance,
+  // and RunAtLoad would start a second one right away (a second tray icon,
+  // and servers failing on the taken port). launchd loads the plist at the
+  // next login.
   return true;
 }
 
-function disableMacOS() {
-  const plistPath = path.join(os.homedir(), "Library", "LaunchAgents", `${APP_LABEL}.plist`);
+function disableMacOS(sys) {
+  const plistPath = entryPath(sys);
 
   // Don't kill ourselves: when the current process is the running agent,
-  // `launchctl unload` would send SIGTERM and the user clicking
-  // "Disable Auto-start" from the tray menu would lose their tray icon
-  // instead of just flipping the menu label. Skip the unload — removing the
-  // plist file is enough to prevent the agent from starting on next login.
-  if (!isAgentSelfMacOS()) {
+  // `launchctl unload` would send SIGTERM. Removing the plist is enough to
+  // keep it from starting at the next login.
+  if (!isAgentSelfMacOS(sys)) {
     try {
-      execSync(`launchctl unload "${plistPath}"`, { stdio: "ignore" });
+      sys.execSync(`launchctl unload "${plistPath}"`, { stdio: "ignore" });
     } catch (e) {}
   }
 
-  if (fs.existsSync(plistPath)) {
-    fs.unlinkSync(plistPath);
+  if (sys.fs.existsSync(plistPath)) {
+    sys.fs.unlinkSync(plistPath);
   }
   return true;
 }
 
 // ============ Windows ============
 
-function enableWindows(cliPath, options) {
-  const startupDir = path.join(process.env.APPDATA || "", "Microsoft", "Windows", "Start Menu", "Programs", "Startup");
-  const vbsPath = path.join(startupDir, `${APP_NAME}.vbs`);
+function enableWindows(cliPath, launch, sys) {
+  const vbsPath = entryPath(sys);
+  if (!sys.fs.existsSync(path.win32.dirname(vbsPath))) return false;
 
-  if (!fs.existsSync(startupDir)) return false;
-
-  const nodePath = process.execPath;
-  const routerScript = getCliJsPath(cliPath);
+  const routerScript = getCliJsPath(cliPath, sys);
   if (!routerScript) return false;
 
-  fs.writeFileSync(vbsPath, windowsStartupScript(nodePath, routerScript, options));
+  sys.fs.writeFileSync(vbsPath, encodeVbs(windowsStartupScript(sys.execPath, routerScript, launch)));
   return true;
 }
 
-function disableWindows() {
-  const vbsPath = path.join(process.env.APPDATA || "", "Microsoft", "Windows", "Start Menu", "Programs", "Startup", `${APP_NAME}.vbs`);
-  if (fs.existsSync(vbsPath)) {
-    fs.unlinkSync(vbsPath);
+function disableWindows(sys) {
+  const vbsPath = entryPath(sys);
+  if (sys.fs.existsSync(vbsPath)) {
+    sys.fs.unlinkSync(vbsPath);
   }
   return true;
 }
 
 // ============ Linux ============
 
-function enableLinux(cliPath, options) {
-  const autostartDir = path.join(os.homedir(), ".config", "autostart");
-  const desktopPath = path.join(autostartDir, `${APP_NAME}.desktop`);
+function enableLinux(cliPath, launch, sys) {
+  const desktopPath = entryPath(sys);
+  const autostartDir = path.dirname(desktopPath);
 
-  if (!fs.existsSync(autostartDir)) {
-    try { fs.mkdirSync(autostartDir, { recursive: true }); }
+  if (!sys.fs.existsSync(autostartDir)) {
+    try { sys.fs.mkdirSync(autostartDir, { recursive: true }); }
     catch (e) { return false; }
   }
 
-  const nodePath = process.execPath;
-  const routerScript = getCliJsPath(cliPath);
+  const routerScript = getCliJsPath(cliPath, sys);
   if (!routerScript) return false;
 
-  fs.writeFileSync(desktopPath, linuxDesktopEntry(nodePath, routerScript, options));
+  sys.fs.writeFileSync(desktopPath, linuxDesktopEntry(sys.execPath, routerScript, launch));
   return true;
 }
 
-function disableLinux() {
-  const desktopPath = path.join(os.homedir(), ".config", "autostart", `${APP_NAME}.desktop`);
-  if (fs.existsSync(desktopPath)) {
-    fs.unlinkSync(desktopPath);
+function disableLinux(sys) {
+  const desktopPath = entryPath(sys);
+  if (sys.fs.existsSync(desktopPath)) {
+    sys.fs.unlinkSync(desktopPath);
   }
   return true;
 }

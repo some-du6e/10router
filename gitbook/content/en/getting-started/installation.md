@@ -256,24 +256,35 @@ export PORT="3000"
 
 **Error:**
 ```
-Error: listen EADDRINUSE: address already in use :::20128
+❌ Can't start the server on 0.0.0.0:20128: another process is already listening on 127.0.0.1:20128.
+   Stop the program using port 20128, or start 10router on another port: 10router --port <port>
 ```
 
-**Solution 1: Kill existing process**
+10router checks the port before it starts its server and never stops another program to free it. A second 10router on the same data directory exits with `Another 10router launcher (PID …) is already using …` instead.
+
+**Solution 1: Stop the program using the port**
 
 ```bash
 # Find process using port 20128
 lsof -i :20128
-
-# Kill process
-kill -9 <PID>
 ```
+
+If it is an older 10router, quit it from its tray icon (or stop that process). Otherwise stop whatever it is, the way you normally would.
 
 **Solution 2: Use different port**
 
 ```bash
 10router --port 3000
 ```
+
+### Server Keeps Crashing
+
+**Error:**
+```
+❌ The server exited 3 times in a row right after starting, so 10router stopped.
+```
+
+10router restarts a crashed server twice. When the third start also fails quickly, it stops and prints the server's crash log above that line. Run `10router --log` to see all server output.
 
 ### Permission Denied
 

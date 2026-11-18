@@ -80,12 +80,18 @@ That's it! Start coding with FREE AI models.
 ```bash
 10router                   # Start with default settings
 10router --port 8080        # Custom port
+10router --host 127.0.0.1   # Bind address (default 0.0.0.0, every interface)
 10router --no-browser       # Don't open browser
+10router --log              # Show all server output (default: only the first-run setup token)
 10router --skip-update      # Skip auto-update check
 10router --help             # Show all options
 ```
 
 **Dashboard**: `http://localhost:20128/dashboard`
+
+Hide to Tray, and the tray's Enable Auto-start, keep the `--host`, `--port` and `DATA_DIR` you started with.
+
+**Port already in use**: 10router never stops another program to free its port. If something already listens on the port (another 10router included), it exits with `Can't start the server on <host>:<port>`. Stop that program, or pick another port with `--port`. Only one launcher runs per data directory; a second one exits and names the PID of the first. If the server itself keeps crashing (three failed starts in a row), 10router stops and prints the crash log; run with `--log` to see everything.
 
 ---
 

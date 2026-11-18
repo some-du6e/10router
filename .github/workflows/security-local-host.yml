@@ -19,6 +19,11 @@ on:
       - "cli/src/cli/utils/launcherState.js"
       - "cli/src/cli/utils/launchArgs.js"
       - "cli/src/cli/utils/serverSupervisor.js"
+      - "cli/src/cli/utils/serverProcess.js"
+      - "cli/src/cli/utils/dataDirLock.js"
+      - "cli/src/cli/utils/input.js"
+      - "src/lib/auth/setupToken.js"
+      - "tests/unit/app-updater-relaunch.test.js"
       - "cli/AGENTS.md"
       - "open-sse/handlers/ttsProviders/localDevice.js"
       - "src/lib/appUpdater.js"
@@ -89,6 +94,7 @@ jobs:
           unit/cli-pid-file.test.js
           unit/cli-launcher-lifecycle.test.js
           unit/cli-autostart-bind.test.js
+          unit/app-updater-relaunch.test.js
 
   # known-fails.txt lags master, so compare against the base branch run instead.
   no-new-failures:

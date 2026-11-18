@@ -4,27 +4,7 @@ const { spawn, exec } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const https = require("https");
-const net = require("net");
 const os = require("os");
-
-// Poll until the server accepts TCP connections on port, or timeout — avoids blind fixed waits.
-function waitServerReady(host, port, { timeoutMs = 15000, intervalMs = 150 } = {}) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve) => {
-    const tryConnect = () => {
-      const socket = net.connect({ host, port }, () => {
-        socket.destroy();
-        resolve(true);
-      });
-      socket.on("error", () => {
-        socket.destroy();
-        if (Date.now() >= deadline) return resolve(false);
-        setTimeout(tryConnect, intervalMs);
-      });
-    };
-    tryConnect();
-  });
-}
 
 // Native spinner - no external dependency
 function createSpinner(text) {
@@ -69,8 +49,10 @@ const { getDataDir, normalizeDataDirEnv } = require("./hooks/dataDir");
 normalizeDataDirEnv(process.env);
 const { ensureSqliteRuntime, buildEnvWithRuntime } = require("./hooks/sqliteRuntime");
 const { ensureTrayRuntime } = require("./hooks/trayRuntime");
-const { getBackgroundArgs, serverStdio } = require("./src/cli/utils/launchArgs");
+const { isValidHost, getBackgroundArgs, serverStdio, createServerOutput } = require("./src/cli/utils/launchArgs");
 const { superviseServer } = require("./src/cli/utils/serverSupervisor");
+const { hasExited, killServer, checkPortFree, waitServerReady } = require("./src/cli/utils/serverProcess");
+const { acquireDataDirLock } = require("./src/cli/utils/dataDirLock");
 const args = process.argv.slice(2);
 
 // Subcommands (`10router xai video …`) run against an already-running gateway
@@ -100,8 +82,6 @@ const INSTALL_CMD_LATEST = `npm i -g ${APP_NAME}@latest --prefer-online`;
 
 const DEFAULT_PORT = 20128;
 const DEFAULT_HOST = "0.0.0.0";
-const MAX_RESTARTS = 2;
-const RESTART_RESET_MS = 30000; // Reset counter if alive > 30s
 
 // First non-internal IPv4 — the address remote peers actually reach when bound to 0.0.0.0.
 function getLanIp() {
@@ -129,9 +109,17 @@ for (let i = 0; i < args.length; i++) {
   if (args[i] === "--port" || args[i] === "-p") {
     port = parseInt(args[i + 1], 10) || DEFAULT_PORT;
     i++;
+    if (port < 1 || port > 65535) {
+      console.error(`Invalid --port ${args[i]}: use a number from 1 to 65535.`);
+      process.exit(1);
+    }
   } else if (args[i] === "--host" || args[i] === "-H") {
     host = args[i + 1] || DEFAULT_HOST;
     i++;
+    if (!isValidHost(host)) {
+      console.error(`Invalid --host ${JSON.stringify(host)}: use an IP address or a hostname (letters, digits, dots, hyphens).`);
+      process.exit(1);
+    }
   } else if (args[i] === "--no-browser" || args[i] === "-n") {
     noBrowser = true;
   } else if (args[i] === "--log" || args[i] === "-l") {
@@ -149,7 +137,8 @@ Options:
   -p, --port <port>   Port to run the server (default: ${DEFAULT_PORT})
   -H, --host <host>   Host to bind (default: ${DEFAULT_HOST})
   -n, --no-browser    Don't open browser automatically
-  -l, --log           Show server logs (default: hidden)
+  -l, --log           Show all server output (default: only the first-run
+                      setup token; the rest is printed if the server crashes)
   -t, --tray          Run in system tray mode (background)
   --skip-update       Skip auto-update check
   -h, --help          Show this help message
@@ -301,8 +290,18 @@ if (!fs.existsSync(serverPath)) {
 
 // Start server immediately; run update check in parallel (not on the critical path).
 const updatePromise = checkForUpdate();
-// Only manage the child we spawn. An occupied port belongs to its existing owner.
-startServer(updatePromise);
+// One launcher per DATA_DIR, and it only manages the server it spawns.
+acquireDataDirLock(getDataDir()).then((lock) => {
+  if (!lock.ok) {
+    const holder = lock.holder ? ` (PID ${lock.holder.pid})` : "";
+    console.error(`\n❌ Another 10router launcher${holder} is already using ${getDataDir()}.`);
+    console.error(`   Quit it first (tray icon → Quit), or give this one its own DATA_DIR.`);
+    console.error(`   If no 10router is running, delete ${lock.file} and try again.`);
+    process.exit(1);
+  }
+  process.on("exit", lock.release);
+  startServer(updatePromise);
+});
 
 // Show interface selection menu
 async function showInterfaceMenu(latestVersion) {
@@ -360,8 +359,15 @@ function startServer(updatePromise) {
     if (lanIp) console.log(`\x1b[33m⚠ Network-exposed: reachable at http://${lanIp}:${port} (bound 0.0.0.0). Use --host 127.0.0.1 for local-only.\x1b[0m`);
   }
 
+  // What an autostart entry or a tray relaunch must start again.
+  const autostartLaunch = { port, host, dataDir: process.env.DATA_DIR || "" };
+
   const CRASH_LOG_LINES = 50;
   let crashLog = [];
+  function remember(line) {
+    crashLog.push(line);
+    if (crashLog.length > CRASH_LOG_LINES) crashLog = crashLog.slice(-CRASH_LOG_LINES);
+  }
 
   function spawnServer() {
     crashLog = [];
@@ -377,18 +383,16 @@ function startServer(updatePromise) {
         HOSTNAME: host
       }
     });
-    if (!showLog && child.stderr) {
-      child.stderr.on("data", (data) => {
-        const lines = data.toString().split("\n").filter(Boolean);
-        crashLog.push(...lines);
-        if (crashLog.length > CRASH_LOG_LINES) crashLog = crashLog.slice(-CRASH_LOG_LINES);
-      });
+    if (!showLog) {
+      // Only the setup token reaches the terminal (or a LaunchAgent log);
+      // request lines would land on the menu.
+      const output = createServerOutput({ show: (line) => console.log(line), log: remember });
+      child.stdout?.on("data", (data) => output.write(data));
+      child.stdout?.on("end", () => output.end());
+      child.stderr?.on("data", (data) => data.toString().split("\n").filter(Boolean).forEach(remember));
     }
     return child;
   }
-
-  // Suppress all errors during shutdown (systray lib throws JSON parse errors)
-  let isShuttingDown = false;
 
   function printCrashLog() {
     if (!crashLog.length) return;
@@ -397,8 +401,27 @@ function startServer(updatePromise) {
     console.error("--- End crash log ---\n");
   }
 
+  // Suppress all errors during shutdown (systray lib throws JSON parse errors)
+  let isShuttingDown = false;
+  let isCleaningUp = false;
+
+  // Stop the tray, the tunnel named in the PID file, and our server.
+  function cleanup({ killPidFileTunnel = true } = {}) {
+    if (isCleaningUp) return;
+    isCleaningUp = true;
+    try {
+      const { killTray } = require("./src/cli/tray/tray");
+      killTray();
+    } catch (e) { }
+    if (killPidFileTunnel) {
+      try { killTunnelByPidFile(); } catch { }
+    }
+    killServer(supervisor.current());
+  }
+
   const supervisor = superviseServer({
     spawn: spawnServer,
+    preflight: () => checkPortFree({ host, dialHost, port }),
     isShuttingDown: () => isShuttingDown,
     onExit: (code) => process.exit(code),
     onRestart: ({ code, error, delay, attempt, maxRestarts }) => {
@@ -406,46 +429,36 @@ function startServer(updatePromise) {
       console.error(`\n⚠️  Server exited (code=${code ?? "unknown"}). Restarting in ${delay / 1000}s... (${attempt}/${maxRestarts})`);
       printCrashLog();
     },
-    onGiveUp: ({ error }) => {
-      if (error) console.error("Failed to start server:", error.message);
+    onGiveUp: ({ reason, error, maxRestarts }) => {
       printCrashLog();
-      console.error(`Server failed after ${MAX_RESTARTS} restarts. Is another process using port ${port}?`);
+      if (reason === "port-taken") {
+        console.error(`\n❌ Can't start the server on ${host}:${port}: ${error.message}.`);
+        console.error(`   Stop the program using port ${port}, or start 10router on another port: ${APP_NAME} --port <port>`);
+      } else {
+        if (error) console.error("Failed to start server:", error.message);
+        console.error(`\n❌ The server exited ${maxRestarts + 1} times in a row right after starting, so 10router stopped.`);
+        console.error(`   The crash log is above. Run ${APP_NAME} --log to see all server output.`);
+      }
       isShuttingDown = true;
-      // The port is most likely held by another instance on this DATA_DIR, so
-      // its tunnel PID file is not ours. Our own server's cloudflared goes with
-      // its process group.
-      cleanup({ strayTunnel: false });
+      // After a crash, the tunnel in the PID file is our server's leftover.
+      // After a port conflict it may belong to whatever holds the port.
+      cleanup({ killPidFileTunnel: reason === "crash" });
       process.exit(1);
     },
-    maxRestarts: MAX_RESTARTS,
-    resetMs: RESTART_RESET_MS,
   });
-  supervisor.start();
+  // Every exit path, including ones that skip cleanup(), stops our server.
+  process.on("exit", () => killServer(supervisor.current()));
+  supervisor.start().catch((err) => {
+    console.error("Failed to start server:", err.message);
+    process.exit(1);
+  });
+  const ownServerReady = () => waitServerReady({
+    dialHost,
+    port,
+    isAlive: () => !hasExited(supervisor.current()),
+    isStopped: () => isShuttingDown,
+  });
 
-  // Cleanup function - force kill server process
-  let isCleaningUp = false;
-  function cleanup({ strayTunnel = true } = {}) {
-    if (isCleaningUp) return;
-    isCleaningUp = true;
-    const server = supervisor.current();
-    try {
-      // Kill tray if running
-      try {
-        const { killTray } = require("./src/cli/tray/tray");
-        killTray();
-      } catch (e) { }
-      // Kill cloudflared via PID file (only this app's tunnel)
-      if (strayTunnel) {
-        try { killTunnelByPidFile(); } catch { }
-      }
-      // Kill server process directly
-      if (server.pid) {
-        process.kill(server.pid, "SIGKILL");
-      }
-      // Also try to kill process group
-      process.kill(-server.pid, "SIGKILL");
-    } catch (e) { }
-  }
   process.on("uncaughtException", (err) => {
     if (isShuttingDown) return;
     console.error("Error:", err.message);
@@ -478,8 +491,8 @@ function startServer(updatePromise) {
       const { initTray } = require("./src/cli/tray/tray");
       initTray({
         port,
-        host,
         cliPath: __filename,
+        autostart: autostartLaunch,
         onQuit: () => {
           isShuttingDown = true;
           console.log("\n👋 Shutting down from tray...");
@@ -502,7 +515,8 @@ function startServer(updatePromise) {
     console.log(`\n🚀 ${pkg.name} v${pkg.version}`);
     console.log(`Server: http://${displayHost}:${port}`);
 
-    waitServerReady(dialHost, port).then(() => {
+    ownServerReady().then((ready) => {
+      if (!ready) return;
       initTrayIcon();
       console.log("\n💡 Router is now running in system tray. Close this terminal if you want.");
       console.log("   Right-click tray icon to open dashboard or quit.\n");
@@ -512,7 +526,10 @@ function startServer(updatePromise) {
   }
 
   // Wait for server to be ready, then show interface menu loop + tray
-  waitServerReady(dialHost, port).then(async () => {
+  // The menu asks the server for its tunnel status with the CLI token, so it
+  // waits for our own server, never just any listener on the port.
+  ownServerReady().then(async (ready) => {
+    if (!ready) return;
     // Resolve parallel update check (already running); don't block server start on it.
     const latestVersion = await latestVersionPromise;
     // Start tray icon alongside TUI
@@ -549,7 +566,7 @@ function startServer(updatePromise) {
           // Enable auto startup on OS boot
           try {
             const { enableAutoStart } = require("./src/cli/tray/autostart");
-            enableAutoStart(__filename, { port, host });
+            enableAutoStart(__filename, autostartLaunch);
           } catch (e) { }
 
           if (process.platform === "darwin") {
@@ -582,7 +599,9 @@ function startServer(updatePromise) {
           console.log(`   Server: http://${displayHost}:${port}`);
           console.log(`\n💡 You can close this terminal. Right-click tray icon to quit.\n`);
 
-          // cleanup() kills server so bgProcess can claim the port fresh
+          // Stop our server so bgProcess can claim the port; it waits for
+          // this launcher's DATA_DIR lock and for the port to free up.
+          isShuttingDown = true;
           cleanup();
           process.exit(0);
         } else if (choice === "exit") {

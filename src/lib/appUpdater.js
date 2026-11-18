@@ -38,23 +38,47 @@ function ensureRuntimeUpdater(bundledPath) {
   }
 }
 
-// Resolve npx/10router binary to relaunch after update (cross-platform)
+// Resolve npx to relaunch after update (cross-platform). `npx 10router` works
+// regardless of global bin path changes after npm i -g.
 function resolveRelaunchCommand() {
-  const isWin = process.platform === "win32";
-  // Prefer `npx 10router` — works regardless of global bin path changes after npm i -g
-  const npx = isWin ? "npx.cmd" : "npx";
-  return { cmd: npx, args: [UPDATER_CONFIG.npmPackageName] };
+  return { cmd: process.platform === "win32" ? "npx.cmd" : "npx" };
+}
+
+// The address a local client dials for a server bound to `bindHost`
+// (mirrors cli/src/cli/api/client.js hostForBind).
+export function dialHostForBind(bindHost) {
+  const host = String(bindHost || "").trim().replace(/^\[(.*)\]$/, "$1");
+  if (!host || host === "0.0.0.0" || host === "localhost") return "127.0.0.1";
+  if (host === "::") return "::1";
+  return host;
+}
+
+// Where this server listens. Under the CLI launcher (TENROUTER_LAUNCHER_PID
+// set) PORT and HOSTNAME are the --port/--host it was started with; without
+// it, HOSTNAME is usually just the machine's name, so it is not a bind.
+export function serverBind(env = process.env) {
+  const port = parseInt(env.PORT, 10) || UPDATER_CONFIG.appPort;
+  const host = env.TENROUTER_LAUNCHER_PID && env.HOSTNAME ? env.HOSTNAME : "";
+  return { port, host };
+}
+
+// Relaunch matching the original launch: tray stays tray, foreground stays
+// foreground, and a --host/--port bind comes back on the same address.
+export function buildRelaunchArgs(env = process.env) {
+  const { port, host } = serverBind(env);
+  const args = [UPDATER_CONFIG.npmPackageName];
+  if (env.TRAY_MODE === "1") args.push("--tray");
+  args.push("--skip-update", "--port", String(port));
+  if (host) args.push("--host", host);
+  return args;
 }
 
 // Spawn detached headless updater (Node process) then exit current server
 export function spawnUpdaterAndExit(packageName = UPDATER_CONFIG.npmPackageName) {
   const updaterPath = ensureRuntimeUpdater(resolveBundledUpdaterPath());
-  const isTray = process.env.TRAY_MODE === "1";
   const relaunch = resolveRelaunchCommand();
-  // Relaunch matching original env: tray stays tray, foreground stays foreground
-  const relaunchArgs = isTray
-    ? [...relaunch.args, "--tray", "--skip-update"]
-    : [...relaunch.args, "--skip-update"];
+  const relaunchArgs = buildRelaunchArgs();
+  const bind = serverBind();
 
   spawn(process.execPath, [updaterPath], {
     detached: true,
@@ -71,7 +95,10 @@ export function spawnUpdaterAndExit(packageName = UPDATER_CONFIG.npmPackageName)
       UPDATER_WAIT_MIN_MS: String(UPDATER_CONFIG.waitForExitMinMs),
       UPDATER_WAIT_MAX_MS: String(UPDATER_CONFIG.waitForExitMaxMs),
       UPDATER_WAIT_CHECK_MS: String(UPDATER_CONFIG.waitForExitCheckMs),
-      UPDATER_APP_PORT: String(UPDATER_CONFIG.appPort),
+      // The updater waits for this server's port to free up, then for the
+      // relaunched one to answer, on the address it is bound to.
+      UPDATER_APP_PORT: String(bind.port),
+      UPDATER_APP_HOST: dialHostForBind(bind.host),
       UPDATER_RELAUNCH: "1",
       UPDATER_RELAUNCH_CMD: relaunch.cmd,
       UPDATER_RELAUNCH_ARGS: JSON.stringify(relaunchArgs),
