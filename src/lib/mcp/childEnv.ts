@@ -47,7 +47,7 @@ function isSafeNodeOptions(value: string | undefined): boolean {
 
 export function buildChildEnv(env: NodeJS.ProcessEnv = process.env, cwd: string = process.cwd()): NodeJS.ProcessEnv {
   const referenced = npmrcReferences(env, cwd);
-  const out: NodeJS.ProcessEnv = {};
+  const out = {} as NodeJS.ProcessEnv;
   for (const [key, value] of Object.entries(env)) {
     const upper = key.toUpperCase();
     // npm hands npm_config_node_options to Node as NODE_OPTIONS, past the check below.
