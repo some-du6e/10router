@@ -12,8 +12,67 @@ function escapeXml(value) {
     .replaceAll('"', "&quot;").replaceAll("'", "&apos;");
 }
 
+// Desktop Entry spec: quote the argument and backslash-escape " ` $ \ inside
+// it, then apply the string-value escape (\ becomes \\) and write % as %%.
 function quoteDesktopArg(value) {
-  return `"${value.replace(/[\\"`$]/g, "\\$&")}"`;
+  const quoted = `"${value.replace(/[\\"`$]/g, "\\$&")}"`;
+  return quoted.replaceAll("\\", "\\\\").replaceAll("%", "%%");
+}
+
+function macLaunchAgent(nodePath, routerScript, options) {
+  // EnvironmentVariables.PATH includes node's bin dir so child processes
+  // spawned by cli.js (npm install at runtime, etc.) resolve.
+  const launchPath = `${path.dirname(nodePath)}:/usr/local/bin:/usr/bin:/bin`;
+  const args = [nodePath, routerScript, ...getBackgroundArgs(options)];
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${APP_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+${args.map((arg) => `        <string>${escapeXml(arg)}</string>`).join("\n")}
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>${escapeXml(launchPath)}</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/tmp/10router.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/10router.error.log</string>
+</dict>
+</plist>`;
+}
+
+// Run node + cli.js directly, hidden window. Avoids the fragile `10router.cmd`
+// lookup that depended on the npm prefix path. Inside a VBScript string each
+// quote is doubled, so ""arg"" passes "arg" to the command line.
+function windowsStartupScript(nodePath, routerScript, options) {
+  const command = [nodePath, routerScript, ...getBackgroundArgs(options)]
+    .map((arg) => `""${arg.replaceAll('"', '""')}""`)
+    .join(" ");
+  return `Set WshShell = CreateObject("WScript.Shell")
+WshShell.Run "${command}", 0, False
+`;
+}
+
+function linuxDesktopEntry(nodePath, routerScript, options) {
+  return `[Desktop Entry]
+Type=Application
+Name=10router
+Comment=10router API Proxy
+Exec=${[nodePath, routerScript, ...getBackgroundArgs(options)].map(quoteDesktopArg).join(" ")}
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
+`;
 }
 
 /**
@@ -165,39 +224,7 @@ function enableMacOS(cliPath, options) {
   // The previous design ran `zsh -l -c "..."` so a login shell would source
   // nvm/.zshrc and set PATH; that's fragile (nvm.sh sourcing varies by user,
   // some setups don't put node on PATH from a non-interactive login shell).
-  // EnvironmentVariables.PATH explicitly includes node's bin dir so child
-  // processes spawned by cli.js (npm install at runtime, etc.) resolve.
-  const launchPath = `${path.dirname(nodePath)}:/usr/local/bin:/usr/bin:/bin`;
-
-  const plistContent = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>${APP_LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>${escapeXml(nodePath)}</string>
-        <string>${escapeXml(routerScript)}</string>
-${getBackgroundArgs(options).map((arg) => `        <string>${escapeXml(arg)}</string>`).join("\n")}
-    </array>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>${escapeXml(launchPath)}</string>
-    </dict>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <false/>
-    <key>StandardOutPath</key>
-    <string>/tmp/10router.log</string>
-    <key>StandardErrorPath</key>
-    <string>/tmp/10router.error.log</string>
-</dict>
-</plist>`;
-
-  fs.writeFileSync(plistPath, plistContent);
+  fs.writeFileSync(plistPath, macLaunchAgent(nodePath, routerScript, options));
 
   // If we're the running agent already, launchctl unload/load would send
   // ourselves SIGTERM. Skip it — the plist file is updated on disk and
@@ -255,12 +282,7 @@ function enableWindows(cliPath, options) {
   const routerScript = getCliJsPath(cliPath);
   if (!routerScript) return false;
 
-  // Run node + cli.js directly, hidden window. Avoids the fragile
-  // `10router.cmd` lookup that depended on the npm prefix path.
-  const vbsContent = `Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run "${[nodePath, routerScript, ...getBackgroundArgs(options)].map((arg) => `""${arg.replaceAll('"', '""')}""`).join(" ")}", 0, False
-`;
-  fs.writeFileSync(vbsPath, vbsContent);
+  fs.writeFileSync(vbsPath, windowsStartupScript(nodePath, routerScript, options));
   return true;
 }
 
@@ -287,16 +309,7 @@ function enableLinux(cliPath, options) {
   const routerScript = getCliJsPath(cliPath);
   if (!routerScript) return false;
 
-  const desktopContent = `[Desktop Entry]
-Type=Application
-Name=10router
-Comment=10router API Proxy
-Exec=${[nodePath, routerScript, ...getBackgroundArgs(options)].map(quoteDesktopArg).join(" ")}
-Hidden=false
-NoDisplay=false
-X-GNOME-Autostart-enabled=true
-`;
-  fs.writeFileSync(desktopPath, desktopContent);
+  fs.writeFileSync(desktopPath, linuxDesktopEntry(nodePath, routerScript, options));
   return true;
 }
 
@@ -311,5 +324,8 @@ function disableLinux() {
 module.exports = {
   enableAutoStart,
   disableAutoStart,
-  isAutoStartEnabled
+  isAutoStartEnabled,
+  macLaunchAgent,
+  windowsStartupScript,
+  linuxDesktopEntry
 };

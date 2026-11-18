@@ -1,9 +1,9 @@
-# CLI repair rules
+# CLI launcher rules
 
 | Rule | Enforcement |
 | --- | --- |
-| Manage only the launcher-owned server child; recovery must stop after shutdown and avoid overlapping starts. | `tests/unit/cli-launcher-lifecycle.test.js` exercises retries, shutdown, and unrelated-process safety. |
-| Build tray relaunch and autostart arguments with `getBackgroundArgs` so host and port survive on every platform. | `src/cli/utils/launchArgs.js` and `tests/unit/cli-autostart-bind.test.js`. |
-| Keep first-run server output visible so the setup token can be read without `--log`. | `tests/unit/cli-launcher-lifecycle.test.js`. |
+| The launcher manages only the server child it spawned. Don't kill processes found by name or by port: a port held by something else stays with its owner, and the launcher gives up after `MAX_RESTARTS`. | `src/cli/utils/serverSupervisor.js`, `tests/unit/cli-launcher-lifecycle.test.js` |
+| Build tray relaunch and autostart arguments with `getBackgroundArgs` so host and port survive on every platform. | `src/cli/utils/launchArgs.js`, `tests/unit/cli-autostart-bind.test.js` |
+| Server stdout stays visible without `--log`, because the first-run setup token is printed there. | `serverStdio` in `src/cli/utils/launchArgs.js` |
 
-Run from `tests/` with `npx vitest run unit/cli-launcher-lifecycle.test.js unit/cli-autostart-bind.test.js`. Both suites also run in deterministic regression CI.
+Run from `tests/` with `./node_modules/.bin/vitest run unit/cli-launcher-lifecycle.test.js unit/cli-autostart-bind.test.js`. CI runs both in `.github/workflows/security-local-host.yml`.

@@ -45,7 +45,7 @@ function isTraySupported() {
 
 /**
  * Initialize system tray with menu
- * @param {Object} options - { port, onQuit, onOpenDashboard }
+ * @param {Object} options - { port, host, cliPath, onQuit, onOpenDashboard }
  * @returns {Object|null} tray instance or null if not supported/failed
  */
 function initTray(options) {
@@ -334,5 +334,7 @@ function openBrowser(url) {
 
 module.exports = {
   initTray,
-  killTray
+  killTray,
+  handleClick,
+  MENU_INDEX
 };

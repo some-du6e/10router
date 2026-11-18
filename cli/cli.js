@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const { spawn, exec, execSync } = require("child_process");
+const { spawn, exec } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const https = require("https");
@@ -69,7 +69,8 @@ const { getDataDir, normalizeDataDirEnv } = require("./hooks/dataDir");
 normalizeDataDirEnv(process.env);
 const { ensureSqliteRuntime, buildEnvWithRuntime } = require("./hooks/sqliteRuntime");
 const { ensureTrayRuntime } = require("./hooks/trayRuntime");
-const { getBackgroundArgs } = require("./src/cli/utils/launchArgs");
+const { getBackgroundArgs, serverStdio } = require("./src/cli/utils/launchArgs");
+const { superviseServer } = require("./src/cli/utils/serverSupervisor");
 const args = process.argv.slice(2);
 
 // Subcommands (`10router xai video …`) run against an already-running gateway
@@ -99,6 +100,8 @@ const INSTALL_CMD_LATEST = `npm i -g ${APP_NAME}@latest --prefer-online`;
 
 const DEFAULT_PORT = 20128;
 const DEFAULT_HOST = "0.0.0.0";
+const MAX_RESTARTS = 2;
+const RESTART_RESET_MS = 30000; // Reset counter if alive > 30s
 
 // First non-internal IPv4 — the address remote peers actually reach when bound to 0.0.0.0.
 function getLanIp() {
@@ -346,9 +349,6 @@ async function showInterfaceMenu(latestVersion) {
   return "exit";
 }
 
-const MAX_RESTARTS = 2;
-const RESTART_RESET_MS = 30000; // Reset counter if alive > 30s
-
 function startServer(updatePromise) {
   // Accept either a Promise (parallel update check) or a resolved value.
   const latestVersionPromise = Promise.resolve(updatePromise);
@@ -360,19 +360,14 @@ function startServer(updatePromise) {
     if (lanIp) console.log(`\x1b[33m⚠ Network-exposed: reachable at http://${lanIp}:${port} (bound 0.0.0.0). Use --host 127.0.0.1 for local-only.\x1b[0m`);
   }
 
-  let restartCount = 0;
-  let serverStartTime = Date.now();
-
   const CRASH_LOG_LINES = 50;
   let crashLog = [];
 
   function spawnServer() {
-    serverStartTime = Date.now();
     crashLog = [];
     const child = spawn(RUNTIME, ["--dns-result-order=ipv4first", "--max-old-space-size=6144", serverPath], {
       cwd: standaloneDir,
-      // Setup tokens are printed to stdout and must remain visible without --log.
-      stdio: showLog ? "inherit" : ["ignore", "inherit", "pipe"],
+      stdio: serverStdio(showLog),
       detached: true,
       windowsHide: true,
       env: {
@@ -392,13 +387,47 @@ function startServer(updatePromise) {
     return child;
   }
 
-  let server = spawnServer();
+  // Suppress all errors during shutdown (systray lib throws JSON parse errors)
+  let isShuttingDown = false;
+
+  function printCrashLog() {
+    if (!crashLog.length) return;
+    console.error("\n--- Server crash log ---");
+    crashLog.forEach(l => console.error(l));
+    console.error("--- End crash log ---\n");
+  }
+
+  const supervisor = superviseServer({
+    spawn: spawnServer,
+    isShuttingDown: () => isShuttingDown,
+    onExit: (code) => process.exit(code),
+    onRestart: ({ code, error, delay, attempt, maxRestarts }) => {
+      if (error) console.error("Failed to start server:", error.message);
+      console.error(`\n⚠️  Server exited (code=${code ?? "unknown"}). Restarting in ${delay / 1000}s... (${attempt}/${maxRestarts})`);
+      printCrashLog();
+    },
+    onGiveUp: ({ error }) => {
+      if (error) console.error("Failed to start server:", error.message);
+      printCrashLog();
+      console.error(`Server failed after ${MAX_RESTARTS} restarts. Is another process using port ${port}?`);
+      isShuttingDown = true;
+      // The port is most likely held by another instance on this DATA_DIR, so
+      // its tunnel PID file is not ours. Our own server's cloudflared goes with
+      // its process group.
+      cleanup({ strayTunnel: false });
+      process.exit(1);
+    },
+    maxRestarts: MAX_RESTARTS,
+    resetMs: RESTART_RESET_MS,
+  });
+  supervisor.start();
 
   // Cleanup function - force kill server process
   let isCleaningUp = false;
-  function cleanup() {
+  function cleanup({ strayTunnel = true } = {}) {
     if (isCleaningUp) return;
     isCleaningUp = true;
+    const server = supervisor.current();
     try {
       // Kill tray if running
       try {
@@ -406,7 +435,9 @@ function startServer(updatePromise) {
         killTray();
       } catch (e) { }
       // Kill cloudflared via PID file (only this app's tunnel)
-      try { killTunnelByPidFile(); } catch { }
+      if (strayTunnel) {
+        try { killTunnelByPidFile(); } catch { }
+      }
       // Kill server process directly
       if (server.pid) {
         process.kill(server.pid, "SIGKILL");
@@ -415,9 +446,6 @@ function startServer(updatePromise) {
       process.kill(-server.pid, "SIGKILL");
     } catch (e) { }
   }
-
-  // Suppress all errors during shutdown (systray lib throws JSON parse errors)
-  let isShuttingDown = false;
   process.on("uncaughtException", (err) => {
     if (isShuttingDown) return;
     console.error("Error:", err.message);
@@ -464,8 +492,6 @@ function startServer(updatePromise) {
       // Tray not available - continue without it
     }
   };
-
-  attachServerEvents();
 
   // Tray-only mode: no TUI, just tray icon
   if (trayMode) {
@@ -572,56 +598,4 @@ function startServer(updatePromise) {
       process.exit(1);
     }
   });
-
-  function attachServerEvents() {
-    // A failed spawn emits both error and close. Schedule recovery only once.
-    let failed = false;
-    server.on("error", (err) => {
-      if (failed) return;
-      failed = true;
-      console.error("Failed to start server:", err.message);
-      if (!isShuttingDown) tryRestart();
-      else { cleanup(); process.exit(1); }
-    });
-
-    server.on("close", (code) => {
-      if (failed) return;
-      failed = true;
-      if (isShuttingDown || code === 0) {
-        process.exit(code || 0);
-        return;
-      }
-      tryRestart(code);
-    });
-  }
-
-  function tryRestart(code) {
-    const aliveMs = Date.now() - serverStartTime;
-    // Reset counter if last run was stable
-    if (aliveMs >= RESTART_RESET_MS) restartCount = 0;
-
-    if (restartCount >= MAX_RESTARTS) {
-      console.error(`Server failed after ${MAX_RESTARTS} restarts. Check the port and server crash log above.`);
-      isShuttingDown = true;
-      cleanup();
-      process.exit(1);
-      return;
-    }
-
-    restartCount++;
-    const delay = Math.min(1000 * restartCount, 10000);
-    console.error(`\n⚠️  Server exited (code=${code ?? "unknown"}). Restarting in ${delay / 1000}s... (${restartCount}/${MAX_RESTARTS})`);
-    if (crashLog.length) {
-      console.error("\n--- Server crash log ---");
-      crashLog.forEach(l => console.error(l));
-      console.error("--- End crash log ---\n");
-    }
-
-    setTimeout(() => {
-      if (isShuttingDown) return;
-      server = spawnServer();
-      attachServerEvents();
-    }, delay);
-  }
-
 }
