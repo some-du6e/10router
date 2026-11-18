@@ -1,3 +1,4 @@
+import { createHmac, randomBytes } from "node:crypto";
 import { EventEmitter } from "events";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
@@ -11,8 +12,22 @@ export function maskApiKey(key) {
   return key.slice(0, 8) + "***";
 }
 
+if (!global._usageStatsKeySecret) global._usageStatsKeySecret = randomBytes(32);
+
+/**
+ * The byApiKey row id. Keys on one machine share their first 8 characters, so
+ * rows need more than the masked key to stay apart; a keyed hash with a
+ * per-process secret does that without letting anyone recover a weak key.
+ */
+export function apiKeyStatsKey(apiKey, model, provider) {
+  const keyId = apiKey && typeof apiKey === "string" && apiKey !== "local-no-key"
+    ? `key-${createHmac("sha256", global._usageStatsKeySecret).update(apiKey).digest("hex").slice(0, 16)}`
+    : "local-no-key";
+  return `${keyId}|${model ?? ""}|${provider || "unknown"}`;
+}
+
 const PENDING_TIMEOUT_MS = 60 * 1000;
-const RING_CAP = 50;
+const RING_CAP = 100;
 const CONN_CACHE_TTL_MS = 30 * 1000;
 const PERIOD_MS = { "24h": 86400000, "7d": 604800000, "30d": 2592000000, "60d": 5184000000 };
 
@@ -733,15 +748,18 @@ async function computeUsageStats(period) {
         if (dateKey > (stats.byAccount[accountKey].lastUsed || "")) stats.byAccount[accountKey].lastUsed = dateKey;
       }
 
-      for (const [akKey, ak] of Object.entries(day.byApiKey || {})) {
-        const rawModel = ak.rawModel || "";
-        const provider = ak.provider || "";
+      for (const [dayKey, ak] of Object.entries(day.byApiKey || {})) {
+        // The day's own key is `${rawApiKey}|model|provider`; it never leaves here.
+        const [keyPart, modelPart, providerPart] = dayKey.split("|");
+        const rawModel = ak.rawModel ?? modelPart ?? "";
+        const provider = ak.provider ?? (providerPart === "unknown" ? "" : providerPart) ?? "";
         const providerDisplayName = providerNodeNameMap[provider] || provider;
-        const apiKeyVal = ak.apiKey;
+        const apiKeyVal = ak.apiKey !== undefined ? ak.apiKey : (keyPart === "local-no-key" ? null : keyPart);
         const keyInfo = apiKeyVal ? apiKeyMap[apiKeyVal] : null;
         const keyName = keyInfo?.name || (apiKeyVal ? apiKeyVal.slice(0, 8) + "..." : "Local (No API Key)");
         const apiKeyMasked = maskApiKey(apiKeyVal);
         const apiKeyKey = apiKeyMasked || "local-no-key";
+        const akKey = apiKeyStatsKey(apiKeyVal, rawModel, provider);
         if (!stats.byApiKey[akKey]) {
           stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey, lastUsed: dateKey };
         }
@@ -784,9 +802,7 @@ async function computeUsageStats(period) {
         if (stats.byAccount[accountKey] && new Date(ts) > new Date(stats.byAccount[accountKey].lastUsed)) stats.byAccount[accountKey].lastUsed = ts;
       }
 
-      const apiKeyKey = (e.apiKey && typeof e.apiKey === "string")
-        ? `${e.apiKey}|${e.model}|${e.provider || "unknown"}`
-        : "local-no-key";
+      const apiKeyKey = apiKeyStatsKey(e.apiKey, e.model, e.provider);
       if (stats.byApiKey[apiKeyKey] && new Date(ts) > new Date(stats.byApiKey[apiKeyKey].lastUsed)) stats.byApiKey[apiKeyKey].lastUsed = ts;
 
       const endpoint = e.endpoint || "Unknown";
@@ -857,7 +873,7 @@ async function computeUsageStats(period) {
         const keyInfo = apiKeyMap[r.apiKey];
         const keyName = keyInfo?.name || r.apiKey.slice(0, 8) + "...";
         const apiKeyMasked = maskApiKey(r.apiKey);
-        const akKey = `${apiKeyMasked}|${r.model}|${r.provider || "unknown"}`;
+        const akKey = apiKeyStatsKey(r.apiKey, r.model, r.provider);
         if (!stats.byApiKey[akKey]) {
           stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey: apiKeyMasked, lastUsed: r.timestamp };
         }

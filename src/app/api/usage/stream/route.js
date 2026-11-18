@@ -4,8 +4,8 @@ export const dynamic = "force-dynamic";
 
 const PING = new TextEncoder().encode(": ping\n\n");
 
-// The dashboard merges only these fields from the stream; full stats (which
-// include per-key usage) come from /api/usage/stats.
+// The dashboard merges only these fields from the stream; full stats come
+// from /api/usage/stats.
 async function liveFrame(encoder) {
   const { activeRequests, recentRequests, errorProvider, pending } = await getActiveRequests();
   return encoder.encode(`data: ${JSON.stringify({ activeRequests, recentRequests, errorProvider, pending })}\n\n`);

@@ -4,6 +4,11 @@ on:
   pull_request:
     paths:
       - "src/app/api/usage/stream/**"
+      - "src/app/api/usage/stats/**"
+      - "src/app/api/usage/history/**"
+      - "src/shared/components/UsageStats.js"
+      - "tests/unit/usage-stats-last-used.test.js"
+      - "tests/unit/security-audit.test.js"
       - "src/lib/usageDb.js"
       - "src/lib/db/repos/usageRepo.js"
       - "src/lib/notifications/**"
@@ -38,6 +43,8 @@ jobs:
         run: >
           ./node_modules/.bin/vitest run
           unit/usage-stream-lifecycle.test.js
+          unit/usage-stats-last-used.test.js
+          unit/security-audit.test.js
           unit/notification-response-lifecycle.test.js
           unit/notification-display-names.test.js
           unit/quota-notifications.test.js
@@ -48,6 +55,7 @@ jobs:
           src/app/api/usage/stream/route.js
           src/lib/notifications/http.js
           tests/unit/usage-stream-lifecycle.test.js
+          tests/unit/usage-stats-last-used.test.js
           tests/unit/notification-response-lifecycle.test.js
 
   # The suite is not all-green on master (see AGENTS.md), so this runs it on

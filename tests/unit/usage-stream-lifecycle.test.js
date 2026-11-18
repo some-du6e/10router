@@ -111,6 +111,20 @@ describe("usage stream lifecycle", () => {
     expect((await reader.read()).done).toBe(true);
   });
 
+  it("skips pings for a client that stops reading", async () => {
+    const controller = await connect();
+    usage.active.mockResolvedValueOnce(live(1));
+    statsEmitter.emit("pending");
+    await vi.waitFor(() => expect(usage.active).toHaveBeenCalledTimes(2));
+    await afterPendingWork();
+    vi.advanceTimersByTime(25000);
+
+    expect(await readJson()).toEqual(LIVE);
+    expect((await readJson()).activeRequests[0].count).toBe(1);
+    controller.abort();
+    expect((await reader.read()).done).toBe(true);
+  });
+
   it("pings every 25 seconds while connected", async () => {
     await connect();
     await readFrame();
@@ -187,11 +201,13 @@ describe("usage stream lifecycle", () => {
     open();
     response = await response;
     await vi.waitFor(() => expect(usage.active).toHaveBeenCalledTimes(1));
+    const enqueue = vi.spyOn(ReadableStreamDefaultController.prototype, "enqueue");
 
     const canceled = response.body.cancel();
     resolveLive(LIVE);
     await canceled;
     await afterPendingWork();
+    expect(enqueue).not.toHaveBeenCalled();
     expectCleanedUp();
     response = null;
   });

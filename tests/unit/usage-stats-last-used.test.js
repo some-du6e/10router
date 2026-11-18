@@ -9,7 +9,9 @@ process.env.DATA_DIR = dataDir;
 vi.resetModules();
 
 const { getAdapter } = await import("../../src/lib/db/driver.js");
-const { getUsageStats, saveRequestUsage } = await import("../../src/lib/db/repos/usageRepo.js");
+const {
+  apiKeyStatsKey, getActiveRequests, getUsageStats, saveRequestUsage, trackPendingRequest,
+} = await import("../../src/lib/db/repos/usageRepo.js");
 
 afterAll(() => {
   if (originalDataDir === undefined) delete process.env.DATA_DIR;
@@ -38,7 +40,7 @@ describe("getUsageStats lastUsed", () => {
     const stats = await getUsageStats("all");
     expect(stats.byModel["gpt-x (openai)"].lastUsed).toBe(newer);
     expect(Object.values(stats.byAccount)[0].lastUsed).toBe(newer);
-    expect(stats.byApiKey["sk-test-1234567890|gpt-x|openai"].lastUsed).toBe(newer);
+    expect(stats.byApiKey[apiKeyStatsKey("sk-test-1234567890", "gpt-x", "openai")].lastUsed).toBe(newer);
     expect(stats.byEndpoint["/v1/chat/completions|gpt-x|openai"].lastUsed).toBe(newer);
   });
 
@@ -67,15 +69,21 @@ describe("getUsageStats lastUsed", () => {
     expect(lastUsed).toEqual([aAt, bAt]);
   });
 
-  it("keeps a separate lastUsed per API key", async () => {
+  // Keys made on one machine share their first 8 characters, the masked part.
+  it.each(["all", "7d", "24h"])("keeps a separate row and lastUsed per API key (%s)", async (period) => {
+    const model = `gpt-key-${period}`;
     const aAt = new Date(Date.now() - 2 * 3600000).toISOString();
     const bAt = new Date(Date.now() - 1800000).toISOString();
-    await saveRequestUsage(entry(aAt, { model: "gpt-key", apiKey: "sk-key-aaaaaaaaaa" }));
-    await saveRequestUsage(entry(bAt, { model: "gpt-key", apiKey: "sk-key-bbbbbbbbbb" }));
+    await saveRequestUsage(entry(aAt, { model, apiKey: "sk-mach1-aaaaaaaaaa" }));
+    await saveRequestUsage(entry(bAt, { model, apiKey: "sk-mach1-bbbbbbbbbb" }));
 
-    const stats = await getUsageStats("all");
-    expect(stats.byApiKey["sk-key-aaaaaaaaaa|gpt-key|openai"].lastUsed).toBe(aAt);
-    expect(stats.byApiKey["sk-key-bbbbbbbbbb|gpt-key|openai"].lastUsed).toBe(bAt);
+    const stats = await getUsageStats(period);
+    const a = stats.byApiKey[apiKeyStatsKey("sk-mach1-aaaaaaaaaa", model, "openai")];
+    const b = stats.byApiKey[apiKeyStatsKey("sk-mach1-bbbbbbbbbb", model, "openai")];
+    expect(a).toMatchObject({ requests: 1, rawModel: model, apiKeyMasked: "sk-mach1***", keyName: "sk-mach1..." });
+    expect(b).toMatchObject({ requests: 1, rawModel: model, apiKeyMasked: "sk-mach1***" });
+    expect(a.lastUsed).toBe(aAt);
+    expect(b.lastUsed).toBe(bAt);
   });
 
   it("does not let an older request saved later replace a newer lastUsed", async () => {
@@ -120,5 +128,51 @@ describe("getUsageStats lastUsed", () => {
   it("shares one computation between concurrent callers", async () => {
     const [a, b] = await Promise.all([getUsageStats("all"), getUsageStats("all")]);
     expect(a).toBe(b);
+  });
+});
+
+describe("API keys in usage responses", () => {
+  const rawKey = "sk-placeholder-secret-0001";
+  const model = "gpt-leak";
+
+  it.each(["24h", "7d", "30d", "60d", "all"])("the %s stats never contain the raw key", async (period) => {
+    await saveRequestUsage(entry(new Date(Date.now() - 60000).toISOString(), { model, apiKey: rawKey }));
+    const stats = await getUsageStats(period);
+
+    expect(JSON.stringify(stats)).not.toContain(rawKey.slice(0, 12));
+    const rows = Object.values(stats.byApiKey).filter((row) => row.rawModel === model);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ apiKeyMasked: "sk-place***", keyName: "sk-place..." });
+  });
+
+  const historyRoute = () => import("../../src/app/api/usage/history/route.js");
+  const statsRoute = () => import("../../src/app/api/usage/stats/route.js");
+
+  it.each([
+    ["history", historyRoute, undefined],
+    ["stats (default 7d)", statsRoute, "http://localhost/api/usage/stats"],
+    ["stats 30d", statsRoute, "http://localhost/api/usage/stats?period=30d"],
+    ["stats all", statsRoute, "http://localhost/api/usage/stats?period=all"],
+  ])("the %s route never returns the raw key", async (_name, loadRoute, url) => {
+    await saveRequestUsage(entry(new Date(Date.now() - 60000).toISOString(), { model, apiKey: rawKey }));
+    const { GET } = await loadRoute();
+    const res = await GET(url ? new Request(url) : undefined);
+    const body = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(body).toContain(model);
+    expect(body).not.toContain(rawKey.slice(0, 12));
+  });
+});
+
+describe("getActiveRequests", () => {
+  it("reports requests in flight in pending", async () => {
+    trackPendingRequest("gpt-pending", "openai", "conn-pending", true);
+    const { pending } = await getActiveRequests();
+    expect(pending.byModel["gpt-pending (openai)"]).toBe(1);
+    expect(pending.byAccount["conn-pending"]["gpt-pending (openai)"]).toBe(1);
+
+    trackPendingRequest("gpt-pending", "openai", "conn-pending", false);
+    expect((await getActiveRequests()).pending.byModel["gpt-pending (openai)"]).toBeUndefined();
   });
 });
