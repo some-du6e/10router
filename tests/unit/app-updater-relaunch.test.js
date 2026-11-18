@@ -56,7 +56,7 @@ describe("dashboard update relaunch", () => {
   });
 
   it("the updater waits on and opens the address it was given", () => {
-    const updater = fs.readFileSync(path.join(repoRoot, "src/lib/updater/updater.js"), "utf8");
+    const updater = fs.readFileSync(path.join(repoRoot, "src/lib/updater/updater.js"), "utf8").replace(/\r\n/g, "\n");
     expect(updater).toContain("socket.connect(appPort, appHost);");
     expect(updater).toContain('const appHost = process.env.UPDATER_APP_HOST || "127.0.0.1";');
   });

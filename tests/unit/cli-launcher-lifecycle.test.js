@@ -3,17 +3,25 @@ import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import { PassThrough } from "node:stream";
 import fs from "node:fs";
+import http from "node:http";
 import net from "node:net";
 import path from "node:path";
 
 const require = createRequire(import.meta.url);
 const { superviseServer } = require("../../cli/src/cli/utils/serverSupervisor.js");
-const { killServer, checkPortFree, waitServerReady } = require("../../cli/src/cli/utils/serverProcess.js");
+const {
+  killServer, checkPortFree, waitServerReady, newLaunchNonce, launchProof, provesLaunchNonce,
+  LAUNCH_NONCE_ENV, LAUNCH_CHALLENGE_HEADER, LAUNCH_PROOF_HEADER,
+} = require("../../cli/src/cli/utils/serverProcess.js");
+const { setupTokenLive, bannerToStdout, SETUP_WINDOW_MS } = require("../../cli/src/cli/utils/launchArgs.js");
+const api = require("../../cli/src/cli/api/client.js");
 const { isValidHost, parsePort, getBackgroundArgs, serverStdio, createServerOutput, attachServerOutput } = require("../../cli/src/cli/utils/launchArgs.js");
 const { interrupt } = require("../../cli/src/cli/utils/input.js");
 
-const cliSource = fs.readFileSync(path.resolve(import.meta.dirname, "../../cli/cli.js"), "utf8");
-const inputSource = fs.readFileSync(path.resolve(import.meta.dirname, "../../cli/src/cli/utils/input.js"), "utf8");
+// Normalized so the line checks hold on a CRLF checkout too.
+const source = (rel) => fs.readFileSync(path.resolve(import.meta.dirname, "../..", rel), "utf8").replace(/\r\n/g, "\n");
+const cliSource = source("cli/cli.js");
+const inputSource = source("cli/src/cli/utils/input.js");
 
 function fakeChild(pid) {
   return Object.assign(new EventEmitter(), { pid, exitCode: null, signalCode: null });
@@ -162,6 +170,20 @@ describe("launcher server supervisor", () => {
     expect(later.onGiveUp).toHaveBeenCalledWith(expect.objectContaining({ reason: "port-taken" }));
   });
 
+  it("calls onStart for the first child and every restarted one", async () => {
+    const onStart = vi.fn();
+    const children = [];
+    const supervisor = superviseServer({
+      spawn: () => { const c = fakeChild(2000 + children.length); children.push(c); return c; },
+      isShuttingDown: () => false, onExit: vi.fn(), onGiveUp: vi.fn(), onStart,
+    });
+    await supervisor.start();
+    children[0].emit("close", 1);
+    await tick(1000);
+    expect(onStart.mock.calls.map(([c]) => c)).toEqual(children);
+    expect(children).toHaveLength(2);
+  });
+
   it("spawns nothing when shutdown starts while the preflight is still running", async () => {
     let finishPreflight;
     const h = harness({ preflight: () => new Promise((resolve) => { finishPreflight = resolve; }) });
@@ -299,36 +321,130 @@ describe("port preflight", () => {
   });
 });
 
+// An HTTP server on 127.0.0.1 that answers /api/health like ours would, given
+// a nonce, or like any other program, without one.
+function healthServer(nonce) {
+  return new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      const challenge = req.headers[LAUNCH_CHALLENGE_HEADER];
+      const headers = { "content-type": "application/json" };
+      if (nonce && req.url === "/api/health" && challenge) headers[LAUNCH_PROOF_HEADER] = launchProof(nonce, challenge);
+      res.writeHead(200, headers);
+      res.end('{"ok":true}');
+    });
+    server.listen({ host: "127.0.0.1", port: 0 }, () => resolve(server));
+  });
+}
+
 describe("readiness is gated on our own child", () => {
-  it("doesn't report a port occupant as our server", async () => {
-    const occupant = await listen();
-    let alive = false;
+  it("accepts only a server that proves the launch nonce", async () => {
+    const nonce = newLaunchNonce();
+    const ours = await healthServer(nonce);
+    const occupant = await healthServer(null);
+    const impostor = await healthServer(newLaunchNonce());
     try {
-      const ready = waitServerReady({ dialHost: "127.0.0.1", port: occupant.address().port, isAlive: () => alive, isStopped: () => false, intervalMs: 10 });
-      const early = await Promise.race([ready, new Promise((r) => setTimeout(() => r("still waiting"), 150))]);
-      expect(early).toBe("still waiting");
-      alive = true;
-      expect(await ready).toBe("ready");
+      expect(await provesLaunchNonce({ host: "127.0.0.1", port: ours.address().port, nonce })).toBe(true);
+      expect(await provesLaunchNonce({ host: "127.0.0.1", port: occupant.address().port, nonce })).toBe(false);
+      expect(await provesLaunchNonce({ host: "127.0.0.1", port: impostor.address().port, nonce })).toBe(false);
+      expect(await provesLaunchNonce({ host: "127.0.0.1", port: 9, nonce })).toBe(false);
     } finally {
-      await close(occupant);
+      await Promise.all([close(ours), close(occupant), close(impostor)]);
     }
+  });
+
+  it("the server's /api/health answers the challenge with the same proof", async () => {
+    const nonce = newLaunchNonce();
+    vi.stubEnv(LAUNCH_NONCE_ENV, nonce);
+    try {
+      const { GET } = await import("../../src/app/api/health/route.js");
+      const challenge = "0123456789abcdef0123456789abcdef";
+      const res = await GET(new Request("http://127.0.0.1/api/health", { headers: { [LAUNCH_CHALLENGE_HEADER]: challenge } }));
+      expect(res.headers.get(LAUNCH_PROOF_HEADER)).toBe(launchProof(nonce, challenge));
+      const plain = await GET(new Request("http://127.0.0.1/api/health"));
+      expect(plain.headers.get(LAUNCH_PROOF_HEADER)).toBeNull();
+      const odd = await GET(new Request("http://127.0.0.1/api/health", { headers: { [LAUNCH_CHALLENGE_HEADER]: "not hex" } }));
+      expect(odd.headers.get(LAUNCH_PROOF_HEADER)).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("names the nonce env and headers the way the server does", async () => {
+    const server = await import("../../src/lib/launchProof.js");
+    expect([server.LAUNCH_NONCE_ENV, server.LAUNCH_CHALLENGE_HEADER, server.LAUNCH_PROOF_HEADER]).toEqual([LAUNCH_NONCE_ENV, LAUNCH_CHALLENGE_HEADER, LAUNCH_PROOF_HEADER]);
+    expect(server.launchProof("n", "c")).toBe(launchProof("n", "c"));
+  });
+
+  it("waits while the child is dead or the answer isn't ours", async () => {
+    let alive = false;
+    let ours = false;
+    const isOurs = vi.fn(async () => ours);
+    const ready = waitServerReady({ isAlive: () => alive, isStopped: () => false, isOurs, intervalMs: 5 });
+    const early = await Promise.race([ready, new Promise((r) => setTimeout(() => r("still waiting"), 60))]);
+    expect(early).toBe("still waiting");
+    expect(isOurs).not.toHaveBeenCalled();
+    alive = true;
+    const later = await Promise.race([ready, new Promise((r) => setTimeout(() => r("still waiting"), 60))]);
+    expect(later).toBe("still waiting");
+    ours = true;
+    expect(await ready).toBe("ready");
   });
 
   it("stops waiting on shutdown", async () => {
     let stopped = false;
-    const ready = waitServerReady({ dialHost: "127.0.0.1", port: 9, isAlive: () => false, isStopped: () => stopped, intervalMs: 10 });
+    const ready = waitServerReady({ isAlive: () => false, isStopped: () => stopped, isOurs: async () => true, intervalMs: 10 });
     stopped = true;
     expect(await ready).toBe("stopped");
   });
 
   it("says it is still waiting, then times out", async () => {
-    const onWaiting = vi.fn();
-    const status = await waitServerReady({
-      dialHost: "127.0.0.1", port: 9, isAlive: () => false, isStopped: () => false,
-      timeoutMs: 120, noticeMs: 40, onWaiting, intervalMs: 10,
+    vi.useFakeTimers();
+    try {
+      const onWaiting = vi.fn();
+      const status = waitServerReady({
+        isAlive: () => false, isStopped: () => false, isOurs: async () => true,
+        timeoutMs: 120000, noticeMs: 15000, onWaiting, intervalMs: 150,
+      });
+      await vi.advanceTimersByTimeAsync(120200);
+      expect(await status).toBe("timeout");
+      expect(onWaiting.mock.calls.map(([ms]) => Math.round(ms / 15000))).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("re-checks readiness after every (re)start, and the API client waits for it", () => {
+    expect(cliSource).toMatch(/^ {4}onStart: \(\) => \{\n {6}readiness = ownServerReady\(\);\n {6}api\.pauseUntil\(readiness\);\n/m);
+    expect(cliSource).toMatch(/^ {2}api\.pauseUntil\(serverReady\(\)\);$/m);
+    expect(cliSource).toMatch(/^ {8}\[LAUNCH_NONCE_ENV\]: launchNonce,$/m);
+    expect(cliSource).toMatch(/isOurs: \(\) => provesLaunchNonce\(\{ host: dialHost, port, nonce: launchNonce \}\)/);
+  });
+});
+
+describe("API client gate", () => {
+  afterEach(() => { api.pauseUntil(null); vi.restoreAllMocks(); });
+
+  it("sends nothing, CLI token included, until readiness passes", async () => {
+    const request = vi.spyOn(http, "request");
+    api.pauseUntil(Promise.resolve(false));
+    const result = await api.getTunnelStatus();
+    expect(result.success).toBe(false);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("holds requests while readiness is pending, then sends them", async () => {
+    const request = vi.spyOn(http, "request").mockImplementation(() => {
+      const req = Object.assign(new EventEmitter(), { write() {}, end() { queueMicrotask(() => req.emit("error", new Error("stub"))); }, setTimeout() {}, destroy() {} });
+      return req;
     });
-    expect(status).toBe("timeout");
-    expect(onWaiting.mock.calls.length).toBeGreaterThanOrEqual(2);
+    let pass;
+    api.pauseUntil(new Promise((resolve) => { pass = resolve; }));
+    const pending = api.getTunnelStatus();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(request).not.toHaveBeenCalled();
+    pass(true);
+    await pending;
+    expect(request).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -371,9 +487,34 @@ describe("server output", () => {
   });
 
   it("keeps the banner for the menu, since the menu redraw clears the screen", () => {
-    expect(cliSource).toMatch(/^\s*onBanner: \(text\) => \{ setupBanner = text; \},$/m);
+    expect(cliSource).toMatch(/^\s*setupBanner = text;$/m);
     expect(cliSource).toMatch(/selectMenu\(`Choose Interface \(v\$\{pkg\.version\}\)`, menuItems, 0, subtitle, setupPending \? setupBanner : ""\)/);
-    expect(cliSource).toContain('path.join(getDataDir(), "setup-token.json")');
+    expect(cliSource).toMatch(/^ {2}const setupPending = setupBanner && setupTokenLive\(path\.join\(getDataDir\(\), "setup-token\.json"\)\);$/m);
+  });
+
+  it("drops the banner from the menu once the token file is gone or the token expired", () => {
+    const now = 1_800_000_000_000;
+    const file = (createdAt) => () => JSON.stringify({ token: "t", createdAt });
+    expect(setupTokenLive("/f", { now, readFile: file(now - 60_000) })).toBe(true);
+    expect(setupTokenLive("/f", { now, readFile: file(now - SETUP_WINDOW_MS) })).toBe(false);
+    expect(setupTokenLive("/f", { now, readFile: () => { throw Object.assign(new Error("ENOENT"), { code: "ENOENT" }); } })).toBe(false);
+    expect(setupTokenLive("/f", { now, readFile: () => "garbage" })).toBe(false);
+  });
+
+  it("uses the server's setup window", async () => {
+    const { SETUP_WINDOW_MS: serverWindow } = await import("../../src/lib/auth/setupToken.js");
+    expect(SETUP_WINDOW_MS).toBe(serverWindow);
+  });
+
+  // The journal and ~/.xsession-errors are often readable by other users.
+  it("keeps the token out of stdout for Linux tray and autostart runs", () => {
+    expect(bannerToStdout({ platform: "linux", trayMode: true, autostart: false })).toBe(false);
+    expect(bannerToStdout({ platform: "linux", trayMode: false, autostart: true })).toBe(false);
+    expect(bannerToStdout({ platform: "linux", trayMode: false, autostart: false })).toBe(true);
+    expect(bannerToStdout({ platform: "darwin", trayMode: true, autostart: true })).toBe(true);
+    expect(bannerToStdout({ platform: "win32", trayMode: true, autostart: false })).toBe(true);
+    expect(cliSource).toMatch(/^ {2}const showBanner = bannerToStdout\(\{ trayMode, autostart: process\.env\[AUTOSTART_ENV\] === "1" \}\);$/m);
+    expect(cliSource).toMatch(/^ {8}show: showBanner \? \(line\) => console\.log\(line\) : \(\) => \{\},$/m);
   });
 
   it("shows only the setup banner and keeps every other line for the crash log", async () => {
@@ -441,6 +582,17 @@ describe("launch options", () => {
     const trayBranch = cliSource.search(/^ {2}if \(trayMode\) \{$/m);
     expect(start).toBeGreaterThan(-1);
     expect(trayBranch).toBeGreaterThan(start);
+  });
+
+  // The self-heal runs npm in $DATA_DIR/runtime; a planted .npmrc there would
+  // run code before the check could refuse the directory.
+  it("checks an autostart DATA_DIR before the npm self-heal runs", () => {
+    const check = cliSource.search(/^ {2}const unsafe = unsafeDataDirReason\(process\.env\.DATA_DIR\);$/m);
+    const sqlite = cliSource.search(/^try \{ ensureSqliteRuntime\(\{ silent: true \}\); \} catch \{\}$/m);
+    const tray = cliSource.search(/^try \{ ensureTrayRuntime\(\{ silent: true \}\); \} catch \{\}$/m);
+    expect(check).toBeGreaterThan(-1);
+    expect(sqlite).toBeGreaterThan(check);
+    expect(tray).toBeGreaterThan(check);
   });
 
   // A top-level binding declared below the startup call is still in its

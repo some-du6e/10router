@@ -23,6 +23,8 @@ on:
       - "cli/src/cli/utils/dataDirLock.js"
       - "cli/src/cli/utils/input.js"
       - "src/lib/auth/setupToken.js"
+      - "src/lib/launchProof.js"
+      - "src/app/api/health/route.js"
       - "tests/unit/app-updater-relaunch.test.js"
       - "tests/unit/cli-data-dir-lock.test.js"
       - "cli/AGENTS.md"

@@ -3,6 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { loadPid as loadCloudflaredPid } from "@/lib/tunnel/cloudflare/pid.js";
+import { getDataDir } from "@/lib/dataDir";
 
 // Shutdown and update stop only processes this install started and recorded:
 // - the CLI launcher that spawned this server (it passes its PID in the env),
@@ -44,27 +45,25 @@ function servesPort(args, port) {
   return new RegExp(`--url\\s+"?https?://(?:127\\.0\\.0\\.1|localhost):${port}(?![0-9])`).test(args);
 }
 
-// The data directory (the 9router dir name is kept for existing installs).
-function dataDirOf(env, platform) {
+// Where appUpdater copies the updater script (the 9router dir name is kept for
+// existing installs).
+export function runtimeUpdaterPath(env = process.env, platform = process.platform) {
   const paths = platform === "win32" ? path.win32 : path.posix;
-  return env.DATA_DIR
+  const dataDir = env.DATA_DIR
     || (platform === "win32"
       ? paths.join(env.APPDATA || paths.join(os.homedir(), "AppData", "Roaming"), "9router")
       : paths.join(os.homedir(), ".9router"));
-}
-
-// Where appUpdater copies the updater script.
-export function runtimeUpdaterPath(env = process.env, platform = process.platform) {
-  const paths = platform === "win32" ? path.win32 : path.posix;
-  return paths.join(dataDirOf(env, platform), "runtime", "updater", "updater.js");
+  return paths.join(dataDir, "runtime", "updater", "updater.js");
 }
 
 // The CLI launcher's one-per-DATA_DIR lock (cli/src/cli/utils/dataDirLock.js).
+// getDataDir applies the same fallbacks as the CLI's copy (a Unix-style path
+// on Windows, a DATA_DIR it can't create), so this is the file the launcher
+// locked.
 export const LAUNCHER_LOCK_FILE = "launcher.lock";
 
-export function launcherLockPath(env = process.env, platform = process.platform) {
-  const paths = platform === "win32" ? path.win32 : path.posix;
-  return paths.join(dataDirOf(env, platform), LAUNCHER_LOCK_FILE);
+export function launcherLockPath() {
+  return path.join(getDataDir(), LAUNCHER_LOCK_FILE);
 }
 
 // A launcher killed here can't remove its lock. Remove it only while it still

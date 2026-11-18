@@ -5,7 +5,8 @@ import os from "node:os";
 import path from "node:path";
 
 const require = createRequire(import.meta.url);
-const { acquireDataDirLock, tryLock, lockPath, processStartTime, unsafeDataDirReason, LOCK_FILE } = require("../../cli/src/cli/utils/dataDirLock.js");
+const { acquireDataDirLock, tryLock, lockPath, processStartTime, holderRuns, unsafeDataDirReason, LOCK_FILE, UNKNOWN } = require("../../cli/src/cli/utils/dataDirLock.js");
+const cliSource = () => fs.readFileSync(path.resolve(import.meta.dirname, "../../cli/cli.js"), "utf8").replace(/\r\n/g, "\n");
 
 let dir;
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-lock-")); });
@@ -63,6 +64,62 @@ describe("one launcher per DATA_DIR", () => {
     expect(leftovers()).toEqual([]);
   });
 
+  // A third launcher creates a lock between A moving B's fresh lock aside and
+  // putting it back. A must not carry on as if the way were clear.
+  it("reports a conflict when a third launcher got in during a takeover", () => {
+    writeLock({ pid: 111, startTime: "dead" });
+    let b;
+    let c;
+    const rename = fs.renameSync;
+    const spy = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      rename(from, to);
+      if (b?.ok && !c && fs.readFileSync(to, "utf8").includes('"pid":222')) {
+        c = tryLock(dir, { pid: 444, startTime: "tc", isRunning: () => false });
+      }
+    });
+    try {
+      const aIsRunning = (holder) => {
+        if (holder.pid === 111 && !b) b = tryLock(dir, { pid: 222, startTime: "tb", isRunning: () => false });
+        return holder.pid !== 111;
+      };
+      const a = tryLock(dir, { pid: 333, startTime: "ta", isRunning: aIsRunning });
+      expect(c.ok).toBe(true);
+      expect(a).toMatchObject({ ok: false, conflict: true, holder: { pid: 444 } });
+      expect(readLock().pid).toBe(444);
+      expect(leftovers()).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("without its own start time, writes no lock but still refuses a live holder", () => {
+    writeLock({ pid: 111, startTime: "t1" });
+    expect(tryLock(dir, { pid: 222, startTime: null, isRunning: running([111, "t1"]) })).toMatchObject({ ok: false, holder: { pid: 111 } });
+    fs.unlinkSync(lockPath(dir));
+    const free = tryLock(dir, { pid: 222, startTime: null, isRunning: () => true });
+    expect(free.ok).toBe(true);
+    expect(fs.existsSync(lockPath(dir))).toBe(false);
+    free.release();
+  });
+
+  it.skipIf(process.platform !== "linux")("reads its own start time once per acquire, however long it waits", async () => {
+    writeLock({ pid: 111, startTime: "t1" });
+    const read = fs.readFileSync;
+    const ownStat = `/proc/${process.pid}/stat`;
+    let reads = 0;
+    const spy = vi.spyOn(fs, "readFileSync").mockImplementation((file, ...rest) => {
+      if (file === ownStat) reads++;
+      return read(file, ...rest);
+    });
+    try {
+      const result = await acquireDataDirLock(dir, { pid: 222, isRunning: running([111, "t1"]), waitMs: 60, intervalMs: 10 });
+      expect(result.ok).toBe(false);
+      expect(reads).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("doesn't remove another launcher's lock on release", () => {
     const first = tryLock(dir, { pid: 111, startTime: "t1", isRunning: () => false });
     tryLock(dir, { pid: 222, startTime: "t2", isRunning: () => false });
@@ -92,11 +149,22 @@ describe("one launcher per DATA_DIR", () => {
     expect(next.ok).toBe(true);
   });
 
-  it("locks against this process for real", () => {
+  const realStartTime = typeof processStartTime(process.pid) === "string";
+
+  it.skipIf(!realStartTime)("locks against this process for real", () => {
     const mine = tryLock(dir);
     expect(mine.ok).toBe(true);
     expect(tryLock(dir, { pid: process.pid + 1, startTime: "other" })).toMatchObject({ ok: false, holder: { pid: process.pid } });
     mine.release();
+  });
+
+  // Same PID, different start time: the PID now belongs to another run.
+  it.skipIf(!realStartTime)("treats a lock with this live PID but another start time as stale", () => {
+    writeLock({ pid: process.pid, startTime: "lstart:Thu Jan  1 00:00:00 1970" });
+    expect(holderRuns({ pid: process.pid, startTime: "lstart:Thu Jan  1 00:00:00 1970" })).toBe(false);
+    const next = tryLock(dir, { pid: process.pid + 1, startTime: "other" });
+    expect(next.ok).toBe(true);
+    expect(readLock().pid).toBe(process.pid + 1);
   });
 });
 
@@ -110,20 +178,32 @@ describe("process start time", () => {
     expect(readFile).toHaveBeenCalledWith("/proc/4242/stat", "utf8");
   });
 
-  it("asks ps for lstart where there is no /proc", () => {
+  it("asks ps for lstart in UTC where there is no /proc", () => {
     const run = vi.fn(() => "Wed Nov 18 15:25:02 2026\n");
     expect(processStartTime(4242, { platform: "darwin", readFile: enoent, run })).toBe("lstart:Wed Nov 18 15:25:02 2026");
     expect(run).toHaveBeenCalledWith("ps", ["-p", "4242", "-o", "lstart="], expect.any(Object));
+    // lstart is local time: a timezone change must not make a live holder look new.
+    expect(run.mock.calls[0][2].env).toMatchObject({ TZ: "UTC", LC_ALL: "C" });
   });
 
-  it("is null when the process is gone", () => {
-    const run = vi.fn(() => { throw new Error("exit 1"); });
-    expect(processStartTime(4242, { platform: "darwin", readFile: enoent, run })).toBeNull();
+  it("is null (no such process) when ps exits 1 or prints nothing", () => {
+    const exit1 = () => { throw Object.assign(new Error("Command failed: ps"), { status: 1, signal: null }); };
+    expect(processStartTime(4242, { platform: "darwin", readFile: enoent, run: exit1 })).toBeNull();
+    expect(processStartTime(4242, { platform: "darwin", readFile: enoent, run: () => "\n" })).toBeNull();
   });
 
-  it("is null for another user's process that /proc won't show", () => {
+  it("is UNKNOWN when ps times out, is missing or fails otherwise", () => {
+    const timeout = () => { throw Object.assign(new Error("spawnSync ps ETIMEDOUT"), { code: "ETIMEDOUT", signal: "SIGTERM", status: null }); };
+    const missing = () => { throw Object.assign(new Error("spawnSync ps ENOENT"), { code: "ENOENT" }); };
+    const other = () => { throw Object.assign(new Error("ps: bad option"), { status: 2 }); };
+    for (const run of [timeout, missing, other]) {
+      expect(processStartTime(4242, { platform: "darwin", readFile: enoent, run })).toBe(UNKNOWN);
+    }
+  });
+
+  it("is UNKNOWN when /proc refuses to show the process", () => {
     const readFile = () => { throw Object.assign(new Error("EACCES"), { code: "EACCES" }); };
-    expect(processStartTime(4242, { platform: "linux", readFile, run: vi.fn() })).toBeNull();
+    expect(processStartTime(4242, { platform: "linux", readFile, run: vi.fn() })).toBe(UNKNOWN);
   });
 
   it("uses the Win32 CreationDate on Windows, not just the image name", () => {
@@ -134,6 +214,15 @@ describe("process start time", () => {
     expect(args.at(-1)).toContain("ProcessId=4242");
     expect(args.at(-1)).toContain("CreationDate");
     expect(processStartTime(4242, { platform: "win32", run: () => "" })).toBeNull();
+    expect(processStartTime(4242, { platform: "win32", run: () => { throw new Error("timed out"); } })).toBe(UNKNOWN);
+  });
+
+  // A holder we can't check might be running: refusing is the safe side.
+  it("counts a holder whose start time can't be read as alive", () => {
+    expect(holderRuns({ pid: 4242, startTime: "t" }, () => UNKNOWN)).toBe(true);
+    expect(holderRuns({ pid: 4242, startTime: "t" }, () => null)).toBe(false);
+    expect(holderRuns({ pid: 4242, startTime: "t" }, () => "other")).toBe(false);
+    expect(holderRuns({ pid: 4242, startTime: "t" }, () => "t")).toBe(true);
   });
 
   it.skipIf(process.platform !== "linux")("is stable for this process", () => {
@@ -165,7 +254,7 @@ describe("DATA_DIR from an autostart entry", () => {
   });
 
   it("is checked by cli.js only when the entry set TENROUTER_AUTOSTART", () => {
-    const cli = fs.readFileSync(path.resolve(import.meta.dirname, "../../cli/cli.js"), "utf8");
+    const cli = cliSource();
     expect(cli).toMatch(/^if \(process\.env\[AUTOSTART_ENV\] === "1" && process\.env\.DATA_DIR\) \{$/m);
     expect(cli).toMatch(/^ {2}const unsafe = unsafeDataDirReason\(process\.env\.DATA_DIR\);$/m);
   });

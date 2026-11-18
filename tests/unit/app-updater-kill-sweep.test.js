@@ -441,13 +441,25 @@ describe("killAppProcesses", () => {
     const lock = launcherLockPath();
     expect(lock).toBe(path.join(stateDir, "launcher.lock"));
 
-    fs.writeFileSync(lock, JSON.stringify({ pid: launcher + 1, startTime: "x" }));
-    await killAppProcesses();
-    expect(fs.existsSync(lock)).toBe(true);
+    // Only setTimeout is faked: the process-age checks read the real clock.
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      // killAppProcesses waits for the killed processes to go before returning.
+      const kill = async () => {
+        const done = killAppProcesses();
+        await vi.runAllTimersAsync();
+        await done;
+      };
+      fs.writeFileSync(lock, JSON.stringify({ pid: launcher + 1, startTime: "x" }));
+      await kill();
+      expect(fs.existsSync(lock)).toBe(true);
 
-    fs.writeFileSync(lock, JSON.stringify({ pid: launcher, startTime: "x" }));
-    await killAppProcesses();
-    expect(fs.existsSync(lock)).toBe(false);
+      fs.writeFileSync(lock, JSON.stringify({ pid: launcher, startTime: "x" }));
+      await kill();
+      expect(fs.existsSync(lock)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("names the lock file the way the CLI does", () => {

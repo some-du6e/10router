@@ -309,6 +309,18 @@ function enableMacOS(cliPath, launch, sys) {
   return true;
 }
 
+// True when this process's stdout or stderr is the file `st` describes.
+function writesTo(st, sys) {
+  return [1, 2].some((fd) => {
+    try {
+      const out = sys.fs.fstatSync(fd);
+      return out.dev === st.dev && out.ino === st.ino;
+    } catch {
+      return false;
+    }
+  });
+}
+
 // A LaunchAgent written by an older 10router logs to /tmp/10router.log, which
 // every user can read and which holds the setup token. Point it at the
 // private log folder (the rest of the plist is kept; launchd reads it at the
@@ -330,7 +342,11 @@ function migrateMacLogs(sys = system()) {
       try {
         // lstat: never follow a symlink someone planted in /tmp.
         const st = sys.fs.lstatSync(file);
-        if (st.isFile() && st.uid === sys.uid) sys.fs.unlinkSync(file);
+        if (!st.isFile() || st.uid !== sys.uid) continue;
+        // Started by that old agent, this process is still writing to the
+        // file: make it private instead of deleting what it writes to.
+        if (writesTo(st, sys)) sys.fs.chmodSync(file, 0o600);
+        else sys.fs.unlinkSync(file);
       } catch { /* not there */ }
     }
     return true;

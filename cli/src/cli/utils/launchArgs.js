@@ -1,4 +1,26 @@
 const net = require("net");
+const fs = require("fs");
+
+// src/lib/auth/setupToken.js SETUP_WINDOW_MS: how long a setup token works.
+const SETUP_WINDOW_MS = 5 * 60 * 1000;
+
+// Whether the setup banner is still worth showing: the token file exists (it
+// is deleted once setup uses it) and its token hasn't expired.
+function setupTokenLive(file, { now = Date.now(), readFile = fs.readFileSync } = {}) {
+  try {
+    const createdAt = Number(JSON.parse(readFile(file, "utf8"))?.createdAt);
+    return createdAt > 0 && now < createdAt + SETUP_WINDOW_MS;
+  } catch {
+    return false;
+  }
+}
+
+// On Linux a tray or autostart launch writes stdout to the journal or
+// ~/.xsession-errors, which other users can often read, so the token itself
+// stays out of it there.
+function bannerToStdout({ platform = process.platform, trayMode, autostart }) {
+  return !(platform === "linux" && (trayMode || autostart));
+}
 
 // A hostname label: letters, digits and inner hyphens, at most 63 characters.
 const HOSTNAME = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
@@ -91,4 +113,7 @@ function attachServerOutput(child, { show, log, onBanner }) {
   }
 }
 
-module.exports = { isValidHost, parsePort, getBackgroundArgs, serverStdio, createServerOutput, attachServerOutput };
+module.exports = {
+  isValidHost, parsePort, getBackgroundArgs, serverStdio, createServerOutput, attachServerOutput,
+  setupTokenLive, bannerToStdout, SETUP_WINDOW_MS,
+};

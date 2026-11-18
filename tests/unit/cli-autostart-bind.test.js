@@ -11,7 +11,7 @@ const launch = { host: "127.0.0.1", port: 20200, dataDir: "/srv/router data" };
 const logs = { out: "/u/Library/Logs/10router/10router.log", err: "/u/Library/Logs/10router/10router.error.log" };
 
 // An in-memory machine: files written, modes set, commands run.
-function fakeSystem(platform, { existing = [], files: initial = {}, owners = {} } = {}) {
+function fakeSystem(platform, { existing = [], files: initial = {}, owners = {}, fds = {} } = {}) {
   const files = new Map(Object.entries(initial));
   const dirs = new Set();
   const modes = new Map();
@@ -26,7 +26,12 @@ function fakeSystem(platform, { existing = [], files: initial = {}, owners = {} 
     chmodSync: (p, mode) => { modes.set(p, mode); },
     lstatSync: (p) => {
       if (!files.has(p)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-      return { isFile: () => true, uid: owners[p] ?? 501 };
+      // Each path is its own inode on device 1.
+      return { isFile: () => true, uid: owners[p] ?? 501, dev: 1, ino: [...p].reduce((n, ch) => n * 31 + ch.charCodeAt(0), 7) % 1e9 };
+    },
+    fstatSync: (fd) => {
+      if (!(fd in fds)) throw Object.assign(new Error("EBADF"), { code: "EBADF" });
+      return fds[fd];
     },
     unlinkSync: (p) => { files.delete(p); },
   };
@@ -120,6 +125,20 @@ describe("LaunchAgents written by an older 10router", () => {
     expect(m.execSync).not.toHaveBeenCalled();
   });
 
+  // Started by that old agent, this process still writes its stdout there.
+  it("makes a /tmp log this process is writing to private instead of deleting it", () => {
+    const probe = fakeSystem("darwin", { files: { "/tmp/10router.log": "" } });
+    const out = probe.sys.fs.lstatSync("/tmp/10router.log");
+    const m = fakeSystem("darwin", {
+      files: { [plistPath]: oldPlist, "/tmp/10router.log": "token", "/tmp/10router.error.log": "" },
+      fds: { 1: { dev: out.dev, ino: out.ino }, 2: { dev: 9, ino: 9 } },
+    });
+    expect(migrateMacLogs(m.sys)).toBe(true);
+    expect(m.files.has("/tmp/10router.log")).toBe(true);
+    expect(m.modes.get("/tmp/10router.log")).toBe(0o600);
+    expect(m.files.has("/tmp/10router.error.log")).toBe(false);
+  });
+
   it("leaves a /tmp file another user owns alone", () => {
     const m = fakeSystem("darwin", { files: { [plistPath]: oldPlist, "/tmp/10router.log": "theirs" }, owners: { "/tmp/10router.log": 0 } });
     migrateMacLogs(m.sys);
@@ -134,7 +153,7 @@ describe("LaunchAgents written by an older 10router", () => {
   });
 
   it("runs at every launcher start", () => {
-    const cli = fs.readFileSync(path.resolve(import.meta.dirname, "../../cli/cli.js"), "utf8");
+    const cli = fs.readFileSync(path.resolve(import.meta.dirname, "../../cli/cli.js"), "utf8").replace(/\r\n/g, "\n");
     expect(cli).toMatch(/^try \{ migrateMacLogs\(\); \} catch \{ \}$/m);
   });
 });
@@ -172,7 +191,7 @@ describe("autostart escaping", () => {
 
 describe("tray auto-start toggle", () => {
   it("enables autostart with the launch options cli.js passed in", () => {
-    const tray = fs.readFileSync(path.resolve(import.meta.dirname, "../../cli/src/cli/tray/tray.js"), "utf8");
+    const tray = fs.readFileSync(path.resolve(import.meta.dirname, "../../cli/src/cli/tray/tray.js"), "utf8").replace(/\r\n/g, "\n");
     expect(tray).toMatch(/^\s*else enableAutoStart\(options\.cliPath, options\.autostart\);$/m);
   });
 });

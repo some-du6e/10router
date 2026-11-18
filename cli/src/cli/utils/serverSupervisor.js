@@ -13,6 +13,9 @@ function superviseServer({
   onExit,
   onGiveUp,
   onRestart = () => {},
+  // Called with each child right after it is spawned, the first and every
+  // restarted one (cli.js re-runs its readiness check there).
+  onStart = () => {},
   maxRestarts = MAX_RESTARTS,
   resetMs = RESTART_RESET_MS,
 }) {
@@ -36,6 +39,7 @@ function superviseServer({
     const startedAt = Date.now();
     const current = spawn();
     child = current;
+    onStart(current);
 
     // A failed spawn emits both error and close; act on the first only.
     let ended = false;

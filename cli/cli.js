@@ -49,9 +49,11 @@ const { getDataDir, normalizeDataDirEnv } = require("./hooks/dataDir");
 normalizeDataDirEnv(process.env);
 const { ensureSqliteRuntime, buildEnvWithRuntime } = require("./hooks/sqliteRuntime");
 const { ensureTrayRuntime } = require("./hooks/trayRuntime");
-const { isValidHost, parsePort, getBackgroundArgs, serverStdio, attachServerOutput } = require("./src/cli/utils/launchArgs");
+const { isValidHost, parsePort, getBackgroundArgs, serverStdio, attachServerOutput, setupTokenLive, bannerToStdout } = require("./src/cli/utils/launchArgs");
 const { superviseServer } = require("./src/cli/utils/serverSupervisor");
-const { hasExited, killServer, checkPortFree, waitServerReady } = require("./src/cli/utils/serverProcess");
+const {
+  hasExited, killServer, checkPortFree, waitServerReady, newLaunchNonce, provesLaunchNonce, LAUNCH_NONCE_ENV,
+} = require("./src/cli/utils/serverProcess");
 const { acquireDataDirLock, unsafeDataDirReason } = require("./src/cli/utils/dataDirLock");
 const args = process.argv.slice(2);
 
@@ -66,6 +68,19 @@ if (args[0] === "xai" && args[1] === "video") {
       process.exit(1);
     });
   return;
+}
+
+// An autostart entry names its DATA_DIR in a file; refuse one that another
+// user owns or can write to. This runs before the self-heal below, which runs
+// npm in $DATA_DIR/runtime, where a planted .npmrc would run code as you.
+const { AUTOSTART_ENV, migrateMacLogs } = require("./src/cli/tray/autostart");
+if (process.env[AUTOSTART_ENV] === "1" && process.env.DATA_DIR) {
+  const unsafe = unsafeDataDirReason(process.env.DATA_DIR);
+  if (unsafe) {
+    console.error(`\n❌ Not using DATA_DIR ${process.env.DATA_DIR} from the autostart entry: ${unsafe}.`);
+    console.error(`   Make it yours and private (chown, then chmod go-w), or turn auto-start off and on again from the tray.`);
+    process.exit(1);
+  }
 }
 
 // Self-heal SQLite runtime deps (sql.js + better-sqlite3) into ~/.9router/runtime
@@ -292,18 +307,6 @@ if (!fs.existsSync(serverPath)) {
   process.exit(1);
 }
 
-// An autostart entry names its DATA_DIR in a file; refuse one that another
-// user owns or can write to.
-const { AUTOSTART_ENV, migrateMacLogs } = require("./src/cli/tray/autostart");
-if (process.env[AUTOSTART_ENV] === "1" && process.env.DATA_DIR) {
-  const unsafe = unsafeDataDirReason(process.env.DATA_DIR);
-  if (unsafe) {
-    console.error(`\n❌ Not using DATA_DIR ${process.env.DATA_DIR} from the autostart entry: ${unsafe}.`);
-    console.error(`   Make it yours and private (chown, then chmod go-w), or turn auto-start off and on again from the tray.`);
-    process.exit(1);
-  }
-}
-
 // Older macOS LaunchAgents logged the setup token to world-readable /tmp.
 try { migrateMacLogs(); } catch { }
 
@@ -357,8 +360,8 @@ async function showInterfaceMenu(latestVersion) {
   );
 
   // The redraw clears the screen, so keep the setup token on it until setup
-  // consumes the token file (src/lib/auth/setupToken.js).
-  const setupPending = setupBanner && fs.existsSync(path.join(getDataDir(), "setup-token.json"));
+  // consumes the token file (src/lib/auth/setupToken.js) or the token expires.
+  const setupPending = setupBanner && setupTokenLive(path.join(getDataDir(), "setup-token.json"));
   const selected = await selectMenu(`Choose Interface (v${pkg.version})`, menuItems, 0, subtitle, setupPending ? setupBanner : "");
 
   const offset = latestVersion ? 1 : 0;
@@ -391,6 +394,11 @@ function startServer(updatePromise, lock) {
     if (crashLog.length > CRASH_LOG_LINES) crashLog = crashLog.slice(-CRASH_LOG_LINES);
   }
 
+  // Proves to the readiness check that the server answering is ours.
+  const launchNonce = newLaunchNonce();
+  const tokenFile = path.join(getDataDir(), "setup-token.json");
+  const showBanner = bannerToStdout({ trayMode, autostart: process.env[AUTOSTART_ENV] === "1" });
+
   function spawnServer() {
     crashLog = [];
     const child = spawn(RUNTIME, ["--dns-result-order=ipv4first", "--max-old-space-size=6144", serverPath], {
@@ -401,17 +409,22 @@ function startServer(updatePromise, lock) {
       env: {
         ...buildEnvWithRuntime(process.env),
         ...launcherEnv(),
+        [LAUNCH_NONCE_ENV]: launchNonce,
         PORT: port.toString(),
         HOSTNAME: host
       }
     });
     if (!showLog) {
       // Only the setup token reaches the terminal (or a LaunchAgent log);
-      // request lines would land on the menu.
+      // request lines would land on the menu. On Linux tray/autostart runs
+      // the token stays out of stdout; it is in the owner-only token file.
       attachServerOutput(child, {
-        show: (line) => console.log(line),
+        show: showBanner ? (line) => console.log(line) : () => {},
         log: remember,
-        onBanner: (text) => { setupBanner = text; },
+        onBanner: (text) => {
+          setupBanner = text;
+          if (!showBanner) console.log(`🔑 First-run setup: open /setup and paste the token from ${tokenFile} (only you can read it).`);
+        },
       });
     }
     return child;
@@ -442,9 +455,24 @@ function startServer(updatePromise, lock) {
     killServer(supervisor.current());
   }
 
+  // Readiness is checked again after every (re)start, and the API client
+  // (menu, tray, Terminal UI) waits for it, so the CLI token only ever goes to
+  // a server that proved it holds launchNonce.
+  const READY_TIMEOUT_MS = 120000;
+  let readiness = null;
+  let firstStarted;
+  const started = new Promise((resolve) => { firstStarted = resolve; });
+  const serverReady = () => started.then(() => readiness);
+  api.pauseUntil(serverReady());
+
   const supervisor = superviseServer({
     spawn: spawnServer,
     preflight: () => checkPortFree({ host, dialHost, port }),
+    onStart: () => {
+      readiness = ownServerReady();
+      api.pauseUntil(readiness);
+      firstStarted();
+    },
     isShuttingDown: () => isShuttingDown,
     onExit: (code) => process.exit(code),
     onRestart: ({ code, error, delay, attempt, maxRestarts }) => {
@@ -475,16 +503,14 @@ function startServer(updatePromise, lock) {
   process.on("exit", () => killServer(supervisor.current()));
   supervisor.start();
 
-  // Resolves true once our own server answers. Gives up after two minutes
-  // with a message, so a server that never listens doesn't leave the
-  // launcher (and a tray with no Quit yet) hanging.
-  const READY_TIMEOUT_MS = 120000;
+  // Resolves true once our own server answers and proves the nonce. Gives up
+  // after two minutes with a message, so a server that never listens doesn't
+  // leave the launcher (and a tray with no Quit yet) hanging.
   async function ownServerReady() {
     const status = await waitServerReady({
-      dialHost,
-      port,
       isAlive: () => !hasExited(supervisor.current()),
       isStopped: () => isShuttingDown,
+      isOurs: () => provesLaunchNonce({ host: dialHost, port, nonce: launchNonce }),
       timeoutMs: READY_TIMEOUT_MS,
       onWaiting: (ms) => console.log(`⏳ Still waiting for the server to answer on ${dialHost}:${port} (${Math.round(ms / 1000)}s)...`),
     });
@@ -553,7 +579,7 @@ function startServer(updatePromise, lock) {
     console.log(`\n🚀 ${pkg.name} v${pkg.version}`);
     console.log(`Server: http://${displayHost}:${port}`);
 
-    ownServerReady().then((ready) => {
+    serverReady().then((ready) => {
       if (!ready) return;
       initTrayIcon();
       console.log("\n💡 Router is now running in system tray. Close this terminal if you want.");
@@ -566,7 +592,7 @@ function startServer(updatePromise, lock) {
   // Wait for server to be ready, then show interface menu loop + tray
   // The menu asks the server for its tunnel status with the CLI token, so it
   // waits for our own server, never just any listener on the port.
-  ownServerReady().then(async (ready) => {
+  serverReady().then(async (ready) => {
     if (!ready) return;
     // Resolve parallel update check (already running); don't block server start on it.
     const latestVersion = await latestVersionPromise;
