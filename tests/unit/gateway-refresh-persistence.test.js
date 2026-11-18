@@ -19,6 +19,10 @@ vi.mock("../../src/sse/services/auth.js", () => ({
   markAccountUnavailable: vi.fn(), clearAccountError: vi.fn(),
   extractApiKey: () => null, isValidApiKey: vi.fn(),
 }));
+vi.mock("../../src/sse/services/keyLimits.js", () => ({
+  checkApiKeyLimits: async () => null,
+  checkApiKeyExpiry: async () => null,
+}));
 vi.mock("../../src/sse/services/model.js", () => ({
   getModelInfo: async () => ({ provider: "xai", model: "imagine" }),
   getComboModels: async () => null,
@@ -38,7 +42,6 @@ vi.mock("../../open-sse/handlers/fetch/index.js", () => ({ handleFetchCore: mock
 vi.mock("../../open-sse/handlers/videoCore.js", () => ({
   handleVideoProxyCore: mocks.core,
   getVideoConfig: () => ({}),
-  sanitizeSecrets: (error) => error,
 }));
 
 import { updateProviderCredentials } from "../../src/sse/services/tokenRefresh.js";
