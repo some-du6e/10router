@@ -2,6 +2,7 @@ import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { parseVertexSaJson, refreshVertexToken, refreshGoogleToken } from "../services/tokenRefresh.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { reportedFetch } from "../utils/upstreamAttempt.js";
 import { modelPathSegment } from "../utils/modelPath.js";
 
 // Cache project IDs resolved from raw API keys { apiKey → projectId }
@@ -166,14 +167,12 @@ export class VertexExecutor extends BaseExecutor {
     const headers = this.buildHeaders(credentials, stream);
     const transformedBody = this.transformRequest(model, body, stream, credentials);
 
-    onUpstreamAttempt?.(signal?.aborted ? 0 : Date.now());
-    const response = await proxyAwareFetch(url, {
+    const response = await reportedFetch(onUpstreamAttempt, signal, () => proxyAwareFetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify(transformedBody),
       signal,
-    }, proxyOptions);
-    if (!response.ok) onUpstreamAttempt?.(0);
+    }, proxyOptions));
 
     return { response, url, headers, transformedBody };
   }

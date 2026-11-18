@@ -33,6 +33,7 @@ import { createSameRequestErrorTally } from "open-sse/services/sameRequestError.
 import { connectionUpstream } from "../services/connectionUpstream.js";
 import { checkModelHang, noteHeadersTimeout, noteModelServed, noteProbeBudget, releaseProbe } from "open-sse/services/modelHang.js";
 import { HEADERS_TIMEOUT } from "open-sse/config/errorConfig.js";
+import { modelIdProblem } from "open-sse/utils/modelPath.js";
 import { detectFormatByEndpoint, FORMATS } from "open-sse/translator/formats.js";
 import { detectFormat } from "open-sse/services/provider.js";
 import * as log from "../utils/logger.js";
@@ -676,6 +677,16 @@ async function routeSingleModelChat(
   }
 
   const { provider, model } = modelInfo as Required<ModelInfo>;
+
+  // An id no upstream can be asked for is the client's error: refused before
+  // any account is tried, so it can't lock one (an empty id would lock the
+  // account for every model).
+  const badModel = modelIdProblem(model);
+  if (badModel) {
+    routingFailures.push({ limited: false, unconfigured: true });
+    log.warn("CHAT", "Invalid model id", { model: modelStr });
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, badModel);
+  }
 
   if ((sourceFormatOverride || detectFormat(body)) === FORMATS.CLAUDE) {
     const sideSearch = await answerClaudeSideSearch(body, { provider, model: body.model, request, apiKey, log, blockedBilling } as Parameters<typeof answerClaudeSideSearch>[1]);

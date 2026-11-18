@@ -434,9 +434,21 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   // client had already left, or the last attempt came back with an error and
   // the next isn't out). Set here before each execute(); executors that retry
   // or prepare inside execute() keep it exact through onUpstreamAttempt.
+  // Executors that never report keep this start.
   let attemptStart = 0;
-  const onUpstreamAttempt = (ts) => { attemptStart = ts; };
-  const startAttempt = () => { attemptStart = clientSignal?.aborted ? 0 : Date.now(); };
+  // Only while execute() runs: once it has returned, the attempt it reported
+  // is the one being read, whatever an executor does inside the body.
+  let executing = false;
+  const onUpstreamAttempt = (ts) => { if (executing) attemptStart = ts; };
+  const runAttempt = async (args) => {
+    attemptStart = clientSignal?.aborted ? 0 : Date.now();
+    executing = true;
+    try {
+      return await executor.execute({ ...args, onUpstreamAttempt });
+    } finally {
+      executing = false;
+    }
+  };
   // A hang-up while an attempt is in flight still costs the owner, so it is
   // charged like a cut-short stream: input, plus the time floor from floorFrom.
   // By default a JSON upstream's floor starts with the attempt (it generates
@@ -498,8 +510,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   // A 401/403 sent the request through a token refresh and a retry.
   let authRetried = false;
   try {
-    startAttempt();
-    const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onBetasRejected, onHeadersBudget, onUpstreamAttempt, imageCacheKey });
+    const result = await runAttempt({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onBetasRejected, onHeadersBudget, imageCacheKey });
     upstreamRespondedAt = Date.now();
     providerResponse = result.response;
     providerUrl = result.url;
@@ -565,8 +576,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
           try { await onCredentialsRefreshed(newCredentials); } catch (e) { log?.warn?.("TOKEN", `onCredentialsRefreshed failed: ${e.message}`); }
         }
         try {
-          startAttempt();
-          const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onHeadersBudget, onUpstreamAttempt, imageCacheKey });
+          const retryResult = await runAttempt({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onHeadersBudget, imageCacheKey });
           if (retryResult.response.ok) {
             upstreamRespondedAt = Date.now();
             providerResponse = retryResult.response;

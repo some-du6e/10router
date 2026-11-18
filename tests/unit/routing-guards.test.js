@@ -12,14 +12,14 @@ const originalDataDir = process.env.DATA_DIR;
 process.env.DATA_DIR = tempDir;
 delete global._dbAdapter;
 
-const upstream = { credentials: vi.fn(), core: vi.fn(), comboLookups: 0 };
+const upstream = { credentials: vi.fn(), core: vi.fn(), mark: vi.fn(), comboLookups: 0 };
 
 vi.mock("@/sse/services/auth.js", async () => {
   const actual = await vi.importActual("@/sse/services/auth.js");
   return {
     ...actual,
     getProviderCredentials: (...args) => upstream.credentials(...args),
-    markAccountUnavailable: async () => ({ shouldFallback: false, cooldownMs: 0 }),
+    markAccountUnavailable: (...args) => upstream.mark(...args),
     clearAccountError: async () => {},
   };
 });
@@ -43,6 +43,10 @@ vi.mock("@/sse/services/model.js", async (importOriginal) => {
 const db = await import("@/lib/db/index.js");
 const { getAdapter } = await import("@/lib/db/driver.js");
 const { handleChat } = await import("@/sse/handlers/chat.js");
+const { handleImageGeneration } = await import("@/sse/handlers/imageGeneration.js");
+const { handleEmbeddings } = await import("@/sse/handlers/embeddings.js");
+const { handleTts } = await import("@/sse/handlers/tts.js");
+const { handleStt } = await import("@/sse/handlers/stt.js");
 const { DEFAULT_TIMING } = await import("open-sse/utils/limitHold.js");
 const { MAX_COMBO_DEPTH } = await import("open-sse/config/runtimeConfig.js");
 
@@ -96,6 +100,8 @@ afterAll(() => {
 beforeEach(() => {
   upstream.credentials.mockReset();
   upstream.core.mockReset();
+  upstream.mark.mockReset();
+  upstream.mark.mockResolvedValue({ shouldFallback: false, cooldownMs: 0 });
   upstream.comboLookups = 0;
   upstream.credentials.mockResolvedValue({ connectionId: "conn-1", connectionName: "acct", accessToken: "t" });
   upstream.core.mockImplementation(async () => ({ success: true, response: new Response(JSON.stringify({ ok: true }), { status: 200 }) }));
@@ -198,6 +204,42 @@ describe("an allowlist naming a combo", () => {
   it("still allows a differently-cased combo whose members are all allowed", async () => {
     const key = await newKey("case-members", { allowedModels: ["TEAM-A", "openai/model-ok"] });
     expect((await handleChat(chatRequest(key, "team-a"))).status).toBe(200);
+  });
+});
+
+describe("a model id no upstream can be asked for", () => {
+  // "gemini/" is an empty id: a lock on it would cover every model of the account.
+  for (const model of ["gemini/", "gemini/%2e%2e", "vertex/x/../y", "azure/.", "openai/models//x"]) {
+    it(`refuses chat to ${model} with a 400, locking no account`, async () => {
+      const key = await newKey(`bad-id-${model}`);
+      const res = await handleChat(chatRequest(key, model));
+      expect(res.status).toBe(400);
+      expect(upstream.credentials).not.toHaveBeenCalled();
+      expect(upstream.core).not.toHaveBeenCalled();
+      expect(upstream.mark).not.toHaveBeenCalled();
+    });
+  }
+
+  it("refuses one for images, embeddings, text-to-speech and transcription too", async () => {
+    const key = await newKey("bad-id-media");
+    const json = (path, body) => new Request(`http://localhost${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key.key}` },
+      body: JSON.stringify(body),
+    });
+    const form = new FormData();
+    form.append("model", "gemini/");
+    form.append("file", new File([new Uint8Array([1, 2, 3])], "a.wav", { type: "audio/wav" }));
+    const responses = [
+      await handleImageGeneration(json("/v1/images/generations", { model: "huggingface/", prompt: "a cat" })),
+      await handleImageGeneration(json("/v1/images/generations", { model: "cloudflare-ai/@cf/%2e%2e/x", prompt: "a cat" })),
+      await handleEmbeddings(json("/v1/embeddings", { model: "gemini/models/", input: "hi" })),
+      await handleTts(json("/v1/audio/speech", { model: "elevenlabs/eleven_v2/..", input: "hi" })),
+      await handleStt(new Request("http://localhost/v1/audio/transcriptions", { method: "POST", headers: { Authorization: `Bearer ${key.key}` }, body: form })),
+    ];
+    expect(responses.map((r) => r.status)).toEqual([400, 400, 400, 400, 400]);
+    expect(upstream.credentials).not.toHaveBeenCalled();
+    expect(upstream.mark).not.toHaveBeenCalled();
   });
 });
 

@@ -237,7 +237,10 @@ class ZedExecutor extends BaseExecutor {
     }
   }
 
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, onUpstreamAttempt = null }) {
+    // Nothing is upstream while the model catalog or the LLM token is fetched;
+    // zedLlmFetch reports when the completion request goes out.
+    onUpstreamAttempt?.(0);
     const { provider } = await this.resolveModel(model, credentials, signal, log);
     const providerRequest = buildProviderRequest(provider, model, body, stream, credentials);
     const bodyRecord = body || {};
@@ -252,6 +255,7 @@ class ZedExecutor extends BaseExecutor {
     const response = await zedLlmFetch(credentials, "/completions", {
       config: this.config,
       signal,
+      onUpstreamAttempt,
       fetchOptions: {
         method: "POST",
         headers: {

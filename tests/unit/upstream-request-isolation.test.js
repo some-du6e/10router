@@ -30,6 +30,10 @@ const { default: cloudflareImages } = await import("../../open-sse/handlers/imag
 const { default: geminiImages } = await import("../../open-sse/handlers/imageProviders/gemini.js");
 const { default: geminiEmbeddings } = await import("../../open-sse/handlers/embeddingProviders/gemini.js");
 const { handleSttCore } = await import("../../open-sse/handlers/sttCore.js");
+const { default: elevenLabs } = await import("../../open-sse/handlers/ttsProviders/elevenlabs.js");
+const { KiroExecutor } = await import("../../open-sse/executors/kiro.js");
+const { GithubExecutor } = await import("../../open-sse/executors/github.js");
+const { MimoFreeExecutor, __test__: mimo } = await import("../../open-sse/executors/mimo-free.js");
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
@@ -159,6 +163,108 @@ describe("model path helpers", () => {
       expect(res.status).toBe(400);
     }
     expect(calls).toHaveLength(1);
+  });
+
+  it("an ElevenLabs voice id reaches only its own text-to-speech path", async () => {
+    const calls = [];
+    vi.stubGlobal("fetch", vi.fn(async (url) => { calls.push(url); return new Response(new Uint8Array(2048), { status: 200 }); }));
+    // URL parsers read "\" as "/" and resolve "..": unescaped, this would reach /v1/sound-generation.
+    await elevenLabs.synthesize("hi", "eleven_v2/..\\..\\v1\\sound-generation", { apiKey: "k" });
+    await elevenLabs.synthesize("hi", "eleven_v2/voice?x=1#y", { apiKey: "k" });
+    await elevenLabs.synthesize("hi", "plain-voice-id", { apiKey: "k" });
+    expect(calls.map(target)).toEqual([
+      "/v1/text-to-speech/..%5C..%5Cv1%5Csound-generation",
+      "/v1/text-to-speech/voice%3Fx%3D1%23y",
+      "/v1/text-to-speech/plain-voice-id",
+    ]);
+    expect(new URL(calls[1]).search).toBe("");
+    for (const bad of ["eleven_v2/..", "eleven_v2/%2e%2E", ".."]) {
+      await expect(elevenLabs.synthesize("hi", bad, { apiKey: "k" })).rejects.toThrow(/Invalid model id/);
+    }
+    expect(calls).toHaveLength(3);
+  });
+});
+
+describe("executors report the upstream attempt in flight", () => {
+  // The value chatCore would hold when each upstream call is made.
+  function recorder() {
+    const seen = [];
+    let current = "unset";
+    return {
+      hook: (ts) => { current = ts; },
+      at: (label) => seen.push([label, current === "unset" ? "unset" : current > 0 ? "sent" : 0]),
+      get current() { return current; },
+      seen,
+    };
+  }
+
+  it("GitHub reports its escalation to /responses as the attempt", async () => {
+    const r = recorder();
+    fetchMock.mockImplementation(async (url) => {
+      if (String(url).endsWith("/responses")) {
+        r.at("responses");
+        return sse();
+      }
+      r.at("chat");
+      return new Response("{\"error\":{\"message\":\"model is not accessible via the /chat/completions endpoint\"}}", { status: 400 });
+    });
+    const result = await new GithubExecutor().execute({
+      model: "gpt-codex-test",
+      body: { messages: [{ role: "user", content: "hi" }] },
+      stream: true,
+      credentials: { accessToken: "t", copilotToken: "t" },
+      onUpstreamAttempt: r.hook,
+    });
+    expect(result.response.ok).toBe(true);
+    expect(r.seen).toEqual([["chat", "sent"], ["responses", "sent"]]);
+    expect(r.current).toBeGreaterThan(0);
+  });
+
+  it("MiMo reports nothing in flight while it bootstraps its token, and the chat call once sent", async () => {
+    mimo.resetJwtCache();
+    const r = recorder();
+    let chats = 0;
+    fetchMock.mockImplementation(async (url) => {
+      if (url === mimo.BOOTSTRAP_URL) {
+        r.at("bootstrap");
+        return new Response(JSON.stringify({ jwt: "header.payload.signature" }), { status: 200 });
+      }
+      r.at("chat");
+      // The first JWT is refused, so it bootstraps again and retries.
+      return ++chats === 1 ? new Response("expired", { status: 401 }) : sse();
+    });
+    const result = await new MimoFreeExecutor().execute({
+      model: "mimo-test",
+      body: { messages: [{ role: "user", content: "hi" }] },
+      stream: true,
+      credentials: {},
+      onUpstreamAttempt: r.hook,
+    });
+    expect(result.response.ok).toBe(true);
+    expect(r.seen).toEqual([["bootstrap", 0], ["chat", "sent"], ["bootstrap", 0], ["chat", "sent"]]);
+    expect(r.current).toBeGreaterThan(0);
+  });
+
+  it("Kiro's repair retry, run while the body is read, reports no attempt of its own", async () => {
+    const afterReturn = [];
+    let returned = false;
+    const hook = (ts) => { if (returned) afterReturn.push(ts); };
+    // An empty first answer sends Kiro's integrity gate to a repair retry, refused here.
+    fetchMock
+      .mockResolvedValueOnce(new Response(new ReadableStream({ start(c) { c.close(); } }), { status: 200 }))
+      .mockResolvedValue(new Response("unauthorized", { status: 401 }));
+    const result = await new KiroExecutor().execute({
+      model: "kiro-test",
+      body: { systemPrompt: "base", conversationState: {} },
+      stream: true,
+      credentials: { accessToken: "t", providerSpecificData: { kiroToolCallRepair: true } },
+      onUpstreamAttempt: hook,
+    });
+    returned = true;
+    expect(await result.response.text()).toContain("kiro_integrity_retry_upstream_error");
+    // The repair retry ran (through each of Kiro's base URLs), after execute() returned.
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
+    expect(afterReturn).toEqual([]);
   });
 });
 

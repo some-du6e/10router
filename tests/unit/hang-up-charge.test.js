@@ -281,6 +281,36 @@ describe("no attempt in flight, no charge", () => {
   });
 });
 
+describe("work an executor does while the body is read", () => {
+  it("can't clear the attempt being read", async () => {
+    const key = await newKey("body-phase-report");
+    const c = client();
+    vi.spyOn(getExecutor("openrouter"), "execute").mockImplementationOnce(c.after(1100, async ({ signal, onUpstreamAttempt }) => {
+      // A retry run from inside the body (as Kiro's repair does) backing off.
+      setTimeout(() => onUpstreamAttempt?.(0), 50);
+      return { response: stalledBody({ signal }, "application/json", "{\"id\":"), url: "https://upstream.example", headers: {}, transformedBody: null };
+    }));
+    await chat(key, { stream: false }, c.signal);
+    const row = await usageRow(key);
+    expect(row.promptTokens).toBeGreaterThan(2000);
+    expect(row.completionTokens).toBeGreaterThan(100);
+  });
+
+  it("charges a Kiro hang-up while its repair retry backs off after a 503", async () => {
+    const key = await newKey("kiro-repair-backoff");
+    credentialsMock.mockImplementation(async () => ({ ...UPSTREAM_CREDS, apiKey: undefined, accessToken: "upstream-test-token", providerSpecificData: { kiroToolCallRepair: true } }));
+    const c = client();
+    // An empty first answer sends Kiro to a repair retry; that 503s and backs off 2s.
+    fetchMock.mockImplementationOnce(async () => new Response(new ReadableStream({ start(ctrl) { ctrl.close(); } }), { status: 200 }));
+    fetchMock.mockImplementationOnce(c.after(300, async () => new Response("overloaded", { status: 503 })));
+    fetchMock.mockImplementation(neverAnswers);
+    await chat(key, { stream: false }, c.signal, "kiro/claude-sonnet-4.5");
+    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+    const row = await usageRow(key);
+    expect(row.promptTokens).toBeGreaterThan(2000);
+  });
+});
+
 describe("hang-up around a token refresh", () => {
   const unauthorized = () => new Response("{\"error\":\"expired\"}", { status: 401 });
   const refreshed = () => vi.spyOn(getExecutor("openrouter"), "refreshCredentials").mockResolvedValue({ accessToken: "refreshed-token" });

@@ -28,6 +28,22 @@ export function modelPathSegment(model: unknown): string {
 }
 
 /**
+ * Why a requested model id can never be sent upstream, or null when it can:
+ * empty (a bare "provider/"), or a "/"-separated part that is empty, "." or
+ * "..", written plainly or percent-encoded. Handlers check this before they
+ * pick an account, so a refused id is the client's 400 and locks no account.
+ * It is the rule modelPathSegments applies, and stricter than modelPathSegment.
+ */
+export function modelIdProblem(model: unknown): string | null {
+  try {
+    modelPathSegments(model);
+    return null;
+  } catch (error) {
+    return (error as Error).message;
+  }
+}
+
+/**
  * A model id whose "/" separates path segments (Hugging Face "org/name",
  * Cloudflare "@cf/vendor/name", fal.ai "vendor/model/variant"): each segment
  * escaped on its own, and none empty, ".", ".." or encoding one of those.

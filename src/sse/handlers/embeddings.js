@@ -10,6 +10,7 @@ import { getSettings } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
 import { handleEmbeddingsCore } from "open-sse/handlers/embeddingsCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
+import { modelIdProblem } from "open-sse/utils/modelPath.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
@@ -87,6 +88,12 @@ export async function handleEmbeddings(request) {
   }
 
   const { provider, model } = modelInfo;
+  // Refused before any account is tried, so it locks none.
+  const badModel = modelIdProblem(model);
+  if (badModel) {
+    log.warn("EMBEDDINGS", "Invalid model id", { model: modelStr });
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, badModel);
+  }
 
   if (modelStr !== `${provider}/${model}`) {
     log.info("ROUTING", `${modelStr} → ${provider}/${model}`);
