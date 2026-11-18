@@ -231,9 +231,18 @@ describe("getActiveRequests", () => {
 
   it("gives concurrent callers on a cold ring the loaded rows", async () => {
     await saveRequestUsage(entry(new Date(Date.now() - 60000).toISOString(), { model: "gpt-cold" }));
+    // A cold adapter makes the ring's load take extra ticks, as on a fresh start.
+    const adapter = global._dbAdapter.instance;
+    global._dbAdapter.instance = null;
     Object.assign(global._recentRing, { items: [], ready: null, initialized: false });
 
-    const [first, second] = await Promise.all([getActiveRequests(), getActiveRequests()]);
+    let first;
+    let second;
+    try {
+      [first, second] = await Promise.all([getActiveRequests(), getActiveRequests()]);
+    } finally {
+      global._dbAdapter.instance = adapter;
+    }
     expect(first.recentRequests.length).toBeGreaterThan(0);
     expect(second.recentRequests).toEqual(first.recentRequests);
   });
