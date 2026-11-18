@@ -229,6 +229,15 @@ describe("getActiveRequests", () => {
     expect((await getActiveRequests()).pending.byModel["gpt-pending (openai)"]).toBeUndefined();
   });
 
+  it("gives concurrent callers on a cold ring the loaded rows", async () => {
+    await saveRequestUsage(entry(new Date(Date.now() - 60000).toISOString(), { model: "gpt-cold" }));
+    Object.assign(global._recentRing, { items: [], ready: null, initialized: false });
+
+    const [first, second] = await Promise.all([getActiveRequests(), getActiveRequests()]);
+    expect(first.recentRequests.length).toBeGreaterThan(0);
+    expect(second.recentRequests).toEqual(first.recentRequests);
+  });
+
   it("lists the same recent requests as the stats after many duplicates", async () => {
     const base = Date.now() - 50000;
     for (let i = 0; i < 20; i++) {

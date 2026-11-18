@@ -54,8 +54,10 @@ jobs:
           ./node_modules/.bin/eslint
           src/app/api/usage/stream/route.js
           src/lib/notifications/http.js
+          src/lib/db/repos/usageRepo.js
           tests/unit/usage-stream-lifecycle.test.js
           tests/unit/usage-stats-last-used.test.js
+          tests/unit/security-audit.test.js
           tests/unit/notification-response-lifecycle.test.js
 
   # The suite is not all-green on master (see AGENTS.md), so this runs it on

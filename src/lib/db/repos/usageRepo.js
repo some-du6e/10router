@@ -51,7 +51,7 @@ if (!global._statsEmitter) {
   global._statsEmitter.setMaxListeners(50);
 }
 if (!global._pendingTimers) global._pendingTimers = {};
-if (!global._recentRing) global._recentRing = { items: [], initialized: false };
+if (!global._recentRing) global._recentRing = { items: [], ready: null };
 if (!global._connectionMapCache) global._connectionMapCache = { map: {}, ts: 0 };
 if (!global._statsEmitTimers) global._statsEmitTimers = { pending: null, update: null };
 if (!global._usageLastUsedIndex) global._usageLastUsedIndex = new WeakMap();
@@ -182,9 +182,14 @@ async function getConnectionMapCached() {
   return connCache.map;
 }
 
-async function ensureRingInitialized() {
-  if (recentRing.initialized) return;
-  recentRing.initialized = true;
+// Every caller awaits the same load, so a request that arrives while the ring
+// is loading doesn't read it empty.
+function ensureRingInitialized() {
+  recentRing.ready ||= loadRing();
+  return recentRing.ready;
+}
+
+async function loadRing() {
   try {
     const db = await getAdapter();
     const rows = db.all(`SELECT timestamp, provider, model, connectionId, apiKey, endpoint, cost, status, tokens FROM usageHistory ORDER BY id DESC LIMIT ?`, [RING_CAP]);
