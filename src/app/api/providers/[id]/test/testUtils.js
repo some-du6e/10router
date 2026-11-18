@@ -7,6 +7,7 @@ import { resolveOllamaLocalHost, PROVIDERS } from "open-sse/config/providers.js"
 import {
   refreshProviderCredentials,
   shouldRefreshCredentials,
+  withCredentialRefreshLock,
 } from "open-sse/services/oauthCredentialManager.js";
 import { isInvalidHeaderValueError, sanitizeSecrets } from "open-sse/utils/redact.js";
 import {
@@ -218,8 +219,25 @@ async function probeCloudCodeAssistAccess(connection, accessToken, effectiveProx
 
 async function refreshOAuthToken(connection) {
   const provider = connection.provider;
+  if (!connection.refreshToken) return null;
+  // refreshProviderCredentials takes the refresh lock itself; taking it here too
+  // would wait on its own promise.
+  if (provider === "codex" || provider === "grok-cli" || provider === "xai") {
+    try {
+      return await refreshProviderCredentials(provider, connection, console);
+    } catch (err) {
+      console.log(`Error refreshing ${provider} token:`, err.message);
+      return null;
+    }
+  }
+  // The request path's lock, so a test never spends a refresh token a request
+  // is already refreshing: it gets that refresh's result instead.
+  return withCredentialRefreshLock(provider, connection, () => requestTokenRefresh(connection));
+}
+
+async function requestTokenRefresh(connection) {
+  const provider = connection.provider;
   const refreshToken = connection.refreshToken;
-  if (!refreshToken) return null;
 
   try {
     if (provider === "gemini-cli" || provider === "antigravity") {
@@ -237,10 +255,6 @@ async function refreshOAuthToken(connection) {
       if (!response.ok) return null;
       const data = await response.json();
       return { accessToken: data.access_token, expiresIn: data.expires_in, refreshToken: data.refresh_token || refreshToken };
-    }
-
-    if (provider === "codex" || provider === "grok-cli" || provider === "xai") {
-      return await refreshProviderCredentials(provider, connection, console);
     }
 
     if (provider === "claude") {
@@ -356,7 +370,11 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
   let rowRefreshToken = connection.refreshToken ?? null;
   let refreshed = false;
   let superseded = false;
+  // The tokens the test works with: the snapshot, then any stored tokens it adopts.
+  let current = connection;
   const seen = [connection];
+  // Resolves to { accessToken, adopted } or null. `adopted` marks tokens another
+  // login stored, which the probe may still refresh once.
   const refresh = async () => {
     // A request, or another test, may have rotated the token since this
     // snapshot; spending the old one again is refused, or revokes the session.
@@ -365,20 +383,25 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
       superseded = true;
       return null;
     }
-    if ((latest.refreshToken ?? null) !== (connection.refreshToken ?? null)) {
+    if ((latest.refreshToken ?? null) !== (current.refreshToken ?? null)) {
       seen.push(latest);
+      if (!latest.accessToken) {
+        superseded = true;
+        return null;
+      }
+      current = latest;
       rowRefreshToken = latest.refreshToken ?? null;
-      return latest.accessToken ? { accessToken: latest.accessToken } : null;
+      return { accessToken: latest.accessToken, adopted: true };
     }
-    const tokens = await refreshOAuthToken(connection);
+    const tokens = await refreshOAuthToken(current);
     if (!tokens?.accessToken) return null;
     seen.push(tokens);
     // Rotation retires the old refresh token whatever the probe says, so save
     // now. The row may hold the token this test used, or already the new one
     // when a request shared this refresh (withCredentialRefreshLock).
-    const fields = refreshedTokenFields(connection, tokens);
+    const fields = refreshedTokenFields(current, tokens);
     const saved = await updateProviderConnection(connection.id, fields, {
-      refreshTokenUsed: [connection.refreshToken, fields.refreshToken],
+      refreshTokenUsed: [...new Set([current.refreshToken, fields.refreshToken])],
     });
     if (saved) {
       refreshed = true;
@@ -386,7 +409,7 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
     } else {
       superseded = true;
     }
-    return tokens;
+    return { accessToken: tokens.accessToken, adopted: false };
   };
   let result;
   try {
@@ -407,29 +430,39 @@ async function probeOAuthConnection(connection, effectiveProxy, refresh) {
 
   const canRefresh = config.refreshable && !!connection.refreshToken;
   let accessToken = connection.accessToken;
-  // Guards against refreshing twice with a refresh token the first refresh used up.
-  let refreshed = false;
+  // Set by a real refresh, so the test never refreshes twice with a refresh
+  // token the first refresh used up. Adopting stored tokens doesn't set it.
+  let spentRefresh = false;
+  const tryRefresh = async () => {
+    const tokens = await refresh();
+    if (tokens && !tokens.adopted) spentRefresh = true;
+    return tokens;
+  };
 
   const tokenExpired = isTokenExpired(connection);
+  let replaced = false;
   if (canRefresh && tokenExpired) {
-    const tokens = await refresh();
+    const tokens = await tryRefresh();
     if (!tokens) return { valid: false, error: "Token expired and refresh failed" };
     accessToken = tokens.accessToken;
-    refreshed = true;
+    replaced = true;
   }
 
   if (config.checkExpiry) {
-    if (tokenExpired && !refreshed) return { valid: false, error: "Token expired" };
+    if (tokenExpired && !replaced) return { valid: false, error: "Token expired" };
     return { valid: true, error: null };
   }
 
   const probe = (token) => probeOAuthAccess(connection, config, token, effectiveProxy);
-  const initial = await probe(accessToken);
-  if (initial.valid || initial.status !== 401 || !canRefresh || refreshed) return withoutStatus(initial);
-
-  const tokens = await refresh();
-  if (!tokens) return { valid: false, error: "Token invalid or revoked" };
-  return withoutStatus(await probe(tokens.accessToken));
+  let result = await probe(accessToken);
+  // A rejected token gets one real refresh; adopted tokens a request stored
+  // don't use it up. Two rounds at most.
+  for (let round = 0; round < 2 && !result.valid && result.status === 401 && canRefresh && !spentRefresh; round++) {
+    const tokens = await tryRefresh();
+    if (!tokens) return { valid: false, error: "Token invalid or revoked" };
+    result = await probe(tokens.accessToken);
+  }
+  return withoutStatus(result);
 }
 
 function withoutStatus({ valid, error, warning }) {
@@ -850,16 +883,18 @@ export async function testSingleConnection(id) {
   if (!connection) return { valid: false, error: "Connection not found", latencyMs: 0, testedAt: new Date().toISOString() };
 
   const effectiveProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+  const isKeyAuth = connection.authType === "apikey" || connection.authType === "cookie";
 
   if (effectiveProxy.connectionProxyEnabled && effectiveProxy.connectionProxyUrl && !effectiveProxy.vercelRelayUrl) {
     const proxyResult = await testProxyUrl({ proxyUrl: effectiveProxy.connectionProxyUrl });
     if (!proxyResult.ok) {
       const proxyError = proxyResult.error || `Proxy test failed with status ${proxyResult.status}`;
+      // An OAuth row's status is written only while it holds the tokens this test read.
       await updateProviderConnection(id, {
         testStatus: "error",
         lastError: proxyError,
         lastErrorAt: new Date().toISOString(),
-      });
+      }, isKeyAuth ? undefined : { refreshTokenUsed: connection.refreshToken ?? null });
       return { valid: false, error: proxyError, latencyMs: 0, testedAt: new Date().toISOString() };
     }
   }
@@ -867,7 +902,7 @@ export async function testSingleConnection(id) {
   const start = Date.now();
   let result;
 
-  if (connection.authType === "apikey" || connection.authType === "cookie") {
+  if (isKeyAuth) {
     result = await testApiKeyConnection(connection, effectiveProxy);
   } else {
     result = await testOAuthConnection(connection, effectiveProxy);

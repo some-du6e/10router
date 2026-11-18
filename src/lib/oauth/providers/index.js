@@ -221,13 +221,12 @@ export async function backfillCodexEmails() {
       if (!info.email && !info.chatgptAccountId) continue;
       const patch = {};
       if (!conn.email && info.email) patch.email = info.email;
-      if (info.chatgptAccountId || info.chatgptPlanType) {
-        patch.providerSpecificData = {
-          ...(conn.providerSpecificData || {}),
-          chatgptAccountId: info.chatgptAccountId,
-          chatgptPlanType: info.chatgptPlanType,
-        };
-      }
+      // Fill only what the row lacks; a stored workspace or plan is kept.
+      const psd = conn.providerSpecificData || {};
+      const fill = {};
+      if (!psd.chatgptAccountId && info.chatgptAccountId) fill.chatgptAccountId = info.chatgptAccountId;
+      if (!psd.chatgptPlanType && info.chatgptPlanType) fill.chatgptPlanType = info.chatgptPlanType;
+      if (Object.keys(fill).length) patch.providerSpecificData = { ...psd, ...fill };
       if (Object.keys(patch).length) {
         await updateProviderConnection(conn.id, patch);
       }

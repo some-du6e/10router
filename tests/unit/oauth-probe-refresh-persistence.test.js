@@ -1,10 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { probeErrorMessage, testSingleConnection } from "../../src/app/api/providers/[id]/test/testUtils.js";
 
-const { get, update, refresh, expired } = vi.hoisted(() => ({ get: vi.fn(), update: vi.fn(), refresh: vi.fn(), expired: vi.fn() }));
+const { get, update, refresh, expired, lock, proxyConfig, proxyTest } = vi.hoisted(() => ({
+  get: vi.fn(), update: vi.fn(), refresh: vi.fn(), expired: vi.fn(), lock: vi.fn(), proxyConfig: vi.fn(), proxyTest: vi.fn(),
+}));
 vi.mock("@/lib/localDb", () => ({ getProviderConnectionById: get, updateProviderConnection: update }));
-vi.mock("@/lib/network/connectionProxy", () => ({ resolveConnectionProxyConfig: async () => ({}) }));
-vi.mock("open-sse/services/oauthCredentialManager.js", () => ({ refreshProviderCredentials: refresh, shouldRefreshCredentials: expired }));
+vi.mock("@/lib/network/connectionProxy", () => ({ resolveConnectionProxyConfig: proxyConfig }));
+vi.mock("@/lib/network/proxyTest", () => ({ testProxyUrl: proxyTest }));
+vi.mock("open-sse/services/oauthCredentialManager.js", () => ({
+  refreshProviderCredentials: refresh, shouldRefreshCredentials: expired, withCredentialRefreshLock: lock,
+}));
 
 const connection = { id: "account-a", provider: "codex", authType: "oauth", accessToken: "old-access", refreshToken: "old-refresh" };
 const rotated = { accessToken: "new-access", refreshToken: "new-refresh", expiresIn: 3600 };
@@ -30,11 +35,13 @@ const stubFetch = (...replies) => {
 const status = (code, body = "probe failed") => () => new Response(body, { status: code });
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   get.mockResolvedValue({ ...connection });
   update.mockResolvedValue({});
   refresh.mockResolvedValue({ ...rotated });
   expired.mockReturnValue(false);
+  lock.mockImplementation(async (_provider, _credentials, refreshFn) => refreshFn());
+  proxyConfig.mockResolvedValue({});
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -121,7 +128,7 @@ describe("connection tests save a token refresh as soon as it succeeds", () => {
     stubFetch(status(401), status(400));
     expect(await testSingleConnection("account-a")).toMatchObject({ valid: true, refreshed: true });
     expect(tokenWrites()).toEqual([["account-a", expect.objectContaining({ accessToken: "new-access", refreshToken: "old-refresh" }),
-      { refreshTokenUsed: ["old-refresh", "old-refresh"] }]]);
+      { refreshTokenUsed: ["old-refresh"] }]]);
     expect(statusWrites()).toEqual([["account-a", expect.objectContaining({ testStatus: "active" }), { refreshTokenUsed: "old-refresh" }]]);
   });
 
@@ -143,12 +150,80 @@ describe("connection tests save a token refresh as soon as it succeeds", () => {
     expect(statusWrites()).toEqual([["account-a", expect.objectContaining({ testStatus: "active" }), { refreshTokenUsed: "request-refresh" }]]);
   });
 
+  it("refreshes adopted tokens once, with the stored refresh token, when they are refused", async () => {
+    const stored = { ...connection, accessToken: "request-access", refreshToken: "request-refresh" };
+    get.mockResolvedValueOnce({ ...connection }).mockResolvedValue(stored);
+    const fetch = stubFetch(status(401), status(401), status(400));
+    expect(await testSingleConnection("account-a")).toMatchObject({ valid: true, refreshed: true });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(refresh.mock.calls[0][1]).toMatchObject({ refreshToken: "request-refresh" });
+    expect(fetch.mock.calls.map(([, init]) => init.headers.Authorization))
+      .toEqual(["Bearer old-access", "Bearer request-access", "Bearer new-access"]);
+    expect(tokenWrites()).toEqual([["account-a", expect.objectContaining({ accessToken: "new-access", refreshToken: "new-refresh" }),
+      { refreshTokenUsed: ["request-refresh", "new-refresh"] }]]);
+    expect(statusWrites()).toEqual([["account-a", expect.objectContaining({ testStatus: "active" }), { refreshTokenUsed: "new-refresh" }]]);
+  });
+
+  it("records nothing once another login left the row without an access token", async () => {
+    get.mockResolvedValueOnce({ ...connection }).mockResolvedValue({ ...connection, accessToken: null, refreshToken: "request-refresh" });
+    stubFetch(status(401));
+    expect(await testSingleConnection("account-a")).toMatchObject({ valid: false, refreshed: false });
+    expect(refresh).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("records nothing once the row was deleted during the test", async () => {
+    get.mockResolvedValueOnce({ ...connection }).mockResolvedValue(null);
+    stubFetch(status(401));
+    expect(await testSingleConnection("account-a")).toMatchObject({ valid: false, refreshed: false });
+    expect(refresh).not.toHaveBeenCalled();
+    expect(statusWrites()).toEqual([]);
+  });
+
   it("does not report a refresh it couldn't save, nor record a status, once a newer login replaced the tokens", async () => {
     update.mockImplementation(async (_id, _data, opts) => (Array.isArray(opts?.refreshTokenUsed) ? null : {}));
     stubFetch(status(401), status(403));
     expect(await testSingleConnection("account-a")).toMatchObject({ valid: false, refreshed: false });
     expect(update).toHaveBeenCalledTimes(1);
     expect(statusWrites()).toEqual([]);
+  });
+
+  it("records a proxy failure on an OAuth row only while it holds the tokens the test read", async () => {
+    proxyConfig.mockResolvedValue({ connectionProxyEnabled: true, connectionProxyUrl: "http://proxy.example.test:3128" });
+    proxyTest.mockResolvedValue({ ok: false, error: "proxy down" });
+    expect(await testSingleConnection("account-a")).toMatchObject({ valid: false, error: "proxy down" });
+    expect(statusWrites()).toEqual([["account-a", expect.objectContaining({ testStatus: "error", lastError: "proxy down" }),
+      { refreshTokenUsed: "old-refresh" }]]);
+  });
+});
+
+describe("connection tests share the request path's refresh lock", () => {
+  it.each(["claude", "gemini-cli", "antigravity", "kiro", "cline"])("refreshes %s inside withCredentialRefreshLock", async (provider) => {
+    get.mockResolvedValue({ ...connection, provider });
+    expired.mockReturnValue(true);
+    stubFetch(tokenReply, status(200));
+    await testSingleConnection("account-a");
+    expect(lock).toHaveBeenCalledWith(provider, expect.objectContaining({ id: "account-a", refreshToken: "old-refresh" }), expect.any(Function));
+    expectTokensSaved();
+  });
+
+  it("takes a refresh a request already started instead of spending the token again", async () => {
+    get.mockResolvedValue({ ...connection, provider: "gemini-cli" });
+    expired.mockReturnValue(true);
+    lock.mockImplementation(async () => ({ accessToken: "new-access", refreshToken: "new-refresh", expiresIn: 3600 }));
+    const fetch = stubFetch(status(200));
+    expect(await testSingleConnection("account-a")).toMatchObject({ valid: true, refreshed: true });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls[0][0]).not.toContain("oauth2.googleapis.com");
+    expectTokensSaved();
+  });
+
+  it("leaves Codex to refreshProviderCredentials, which takes the lock itself", async () => {
+    expired.mockReturnValue(true);
+    stubFetch(status(400));
+    await testSingleConnection("account-a");
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(lock).not.toHaveBeenCalled();
   });
 });
 
@@ -185,5 +260,24 @@ describe("connection test errors never carry a credential", () => {
     const result = await testSingleConnection("account-a");
     expect(result.error).toBe("connect failed for [redacted]");
     expect(JSON.stringify(update.mock.calls)).not.toContain(secret);
+  });
+
+  it("redacts the refreshed access token from a retry that throws", async () => {
+    const refreshedToken = "rotated-access-token-0123456789abcdef";
+    refresh.mockResolvedValue({ ...rotated, accessToken: refreshedToken });
+    stubFetch(status(401), new Error(`upstream rejected ${refreshedToken} during retry`));
+    const result = await testSingleConnection("account-a");
+    expect(result.error).toBe("upstream rejected [redacted] during retry");
+    expect(JSON.stringify(statusWrites())).not.toContain(refreshedToken);
+  });
+
+  it("redacts adopted stored tokens from a probe that throws", async () => {
+    const storedToken = "stored-access-token-0123456789abcdef";
+    get.mockResolvedValueOnce({ ...connection })
+      .mockResolvedValue({ ...connection, accessToken: storedToken, refreshToken: "request-refresh" });
+    stubFetch(status(401), new Error(`upstream rejected ${storedToken} after re-read`));
+    const result = await testSingleConnection("account-a");
+    expect(result.error).toBe("upstream rejected [redacted] after re-read");
+    expect(JSON.stringify(statusWrites())).not.toContain(storedToken);
   });
 });

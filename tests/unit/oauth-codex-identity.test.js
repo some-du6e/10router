@@ -137,12 +137,12 @@ describe("Codex imports", () => {
     }));
   });
 
-  it("refuses a bulk item whose ID and access tokens belong to different users", async () => {
-    const res = await bulkImport(request({ idToken: jwt({ sub: "user-b", email: "b@example.com" }), accessToken }));
-    expect(await res.json()).toMatchObject({
-      success: 0, failed: 1, results: [{ ok: false, error: "idToken and accessToken belong to different users" }],
-    });
-    expect(create).not.toHaveBeenCalled();
+  it("imports a pair whose tokens name different subjects under the access token's identity", async () => {
+    const res = await bulkImport(request({ idToken: jwt({ sub: "user-b", email: "b@example.com", account_id: "workspace-b" }), accessToken }));
+    expect(await res.json()).toMatchObject({ success: 1, failed: 0 });
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      email: "owner@example.com", providerSpecificData: { chatgptAccountId: "workspace-a", chatgptPlanType: "team" },
+    }));
   });
 
   it("trims the tokens a bulk import saves", async () => {
@@ -205,9 +205,15 @@ describe("Codex identity backfill", () => {
       { id: "access-only", provider: "codex", authType: "oauth", accessToken },
       { id: "no-tokens", provider: "codex", authType: "oauth" },
       { id: "stale-id", provider: "codex", authType: "oauth", idToken: jwt({ sub: "user-b", email: "b@example.com" }), accessToken },
+      { id: "kept-workspace", provider: "codex", authType: "oauth", providerSpecificData: { chatgptAccountId: "workspace-kept", region: "x" },
+        accessToken: jwt({ sub: "user-c", email: "c@example.com", plan_type: "plus" }) },
     ]);
     await backfillCodexEmails();
-    expect(updateConnection).toHaveBeenCalledTimes(2);
+    expect(updateConnection).toHaveBeenCalledTimes(3);
+    // Only missing fields are filled: the stored workspace stays.
+    expect(updateConnection).toHaveBeenCalledWith("kept-workspace", {
+      email: "c@example.com", providerSpecificData: { chatgptAccountId: "workspace-kept", region: "x", chatgptPlanType: "plus" },
+    });
     expect(updateConnection).toHaveBeenCalledWith("access-only", {
       email: "owner@example.com", providerSpecificData: { chatgptAccountId: "workspace-a", chatgptPlanType: "team" },
     });

@@ -261,7 +261,8 @@ async function fetchVia(url, options, proxyOptions, noHeadersTimeout = false) {
       const reason = sanitizeSecrets(proxyError.message);
       // If strictProxy is enabled, fail hard instead of falling back to direct
       if (proxyOptions?.strictProxy === true) {
-        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${reason}`, { cause: proxyError });
+        // No `cause`: the original error's text is what was just redacted.
+        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${reason}`);
       }
       console.warn(`[ProxyFetch] Proxy failed, falling back to direct: ${reason}`);
       return direct(url, options);

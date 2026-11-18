@@ -1,6 +1,7 @@
 // A proxied fetch that fails never puts a credential in the server log or in the
 // strictProxy error (open-sse/utils/proxyFetch.js). undici is mocked: these check
 // what is logged and retried, not sockets.
+import { inspect } from "node:util";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("undici", () => {
@@ -55,5 +56,7 @@ describe("proxyAwareFetch error text", () => {
     const failure = await proxyAwareFetch(URL, { headers: {} }, { ...viaProxy, strictProxy: true }).catch((e) => e);
     expect(failure.message).toContain("strictProxy=true");
     expect(failure.message).not.toContain(TOKEN);
+    // Logging the error prints its cause chain too.
+    expect(inspect(failure, { depth: 10 })).not.toContain(TOKEN);
   });
 });
