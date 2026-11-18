@@ -8,6 +8,7 @@ import { initState, translateRequest, translateResponse } from "../translator/in
 import { FORMATS } from "../translator/formats.js";
 import { parseSSELine, formatSSE } from "../utils/streamHelpers.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { reportedFetch } from "../utils/upstreamAttempt.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
 import { relaxForcedToolChoiceForThinking } from "../translator/concerns/toolChoice.js";
 import { SSE_DONE } from "../utils/sseConstants.js";
@@ -165,7 +166,7 @@ export class GithubExecutor extends BaseExecutor {
     return result;
   }
 
-  async executeWithResponsesEndpoint({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+  async executeWithResponsesEndpoint({ model, body, stream, credentials, signal, log, proxyOptions = null, onUpstreamAttempt = null }) {
     const url = this.config.responsesUrl;
     const headers = this.buildHeaders(credentials, stream);
 
@@ -173,12 +174,12 @@ export class GithubExecutor extends BaseExecutor {
 
     log?.debug("GITHUB", "Sending translated request to /responses");
 
-    const response = await proxyAwareFetch(url, {
+    const response = await reportedFetch(onUpstreamAttempt, signal, () => proxyAwareFetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify(transformedBody),
       signal
-    }, proxyOptions);
+    }, proxyOptions));
 
     if (!response.ok) {
       return { response, url, headers, transformedBody };
@@ -250,7 +251,7 @@ export class GithubExecutor extends BaseExecutor {
   // see the note in execute() above), so we translate to Anthropic-native ourselves.
   // This is what makes prepareClaudeRequest() (translator/formats/claude.js) inject
   // cache_control — /chat/completions never gets there, so it never sees cache tokens.
-  async executeWithMessagesEndpoint({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+  async executeWithMessagesEndpoint({ model, body, stream, credentials, signal, log, proxyOptions = null, onUpstreamAttempt = null }) {
     const url = this.config.messagesUrl;
     const headers = this.buildHeaders(credentials, stream);
 
@@ -270,12 +271,12 @@ export class GithubExecutor extends BaseExecutor {
 
     log?.debug("GITHUB", "Sending translated request to /v1/messages");
 
-    const response = await proxyAwareFetch(url, {
+    const response = await reportedFetch(onUpstreamAttempt, signal, () => proxyAwareFetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify(transformedBody),
       signal
-    }, proxyOptions);
+    }, proxyOptions));
 
     if (!response.ok) {
       return { response, url, headers, transformedBody };

@@ -8,8 +8,8 @@ function clone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
 
-function sessionKey(connectionId, conversationId) {
-  return `${connectionId || ""}:${conversationId || ""}`;
+function sessionKey(clientScope, connectionId, conversationId) {
+  return `${clientScope || ""}:${connectionId || ""}:${conversationId || ""}`;
 }
 
 function ensureUserMessageModelId(message, modelId) {
@@ -66,6 +66,7 @@ function rememberSessionStart(key, entry) {
 export function applyKiroSessionReplay({
   conversationId,
   connectionId,
+  clientScope = "",
   modelId,
   systemPrompt = "",
   contentPrefix = "",
@@ -73,7 +74,7 @@ export function applyKiroSessionReplay({
   history = [],
   currentMessage,
 } = {}) {
-  const key = sessionKey(connectionId, conversationId);
+  const key = sessionKey(clientScope, connectionId, conversationId);
   const existing = conversationId ? sessionStartStore.get(key) : null;
   const baseHistory = clone(history) || [];
   const baseCurrent = clone(currentMessage) || { userInputMessage: { content: "" } };

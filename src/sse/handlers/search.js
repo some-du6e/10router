@@ -6,6 +6,7 @@ import {
   isValidApiKey,
 } from "../services/auth.js";
 import { allLockedError } from "open-sse/utils/limitHold.js";
+import { WEBSEARCH_LOCK_PREFIX } from "open-sse/services/accountFallback.js";
 import { getSettings, getCombos } from "@/lib/localDb";
 import { AI_PROVIDERS, resolveProviderId } from "@/shared/constants/providers.js";
 import { handleSearchCore } from "open-sse/handlers/search/index.js";
@@ -163,7 +164,7 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
   // an account-wide `__all` lock, which on the credentialFallback path takes
   // the shared chat key (e.g. glm) offline for chat as well. Must be passed to
   // getProviderCredentials too, so the lock is read back under the same key.
-  const searchLockKey = `websearch:${providerId}`;
+  const searchLockKey = `${WEBSEARCH_LOCK_PREFIX}${providerId}`;
 
   while (true) {
     // Provider that actually owns the connection in use — differs from

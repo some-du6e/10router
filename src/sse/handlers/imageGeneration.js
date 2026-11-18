@@ -10,6 +10,7 @@ import { getSettings } from "@/lib/localDb";
 import { getModelInfo, getComboModels, comboLookupName } from "../services/model.js";
 import { handleImageGenerationCore } from "open-sse/handlers/imageGenerationCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
+import { modelIdProblem } from "open-sse/utils/modelPath.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { handleComboChat } from "open-sse/services/combo.js";
@@ -78,6 +79,9 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
   const { provider, model } = modelInfo;
+  // Refused before any account is tried, so it locks none.
+  const badModel = modelIdProblem(model, { segments: true });
+  if (badModel) return errorResponse(HTTP_STATUS.BAD_REQUEST, badModel);
 
   // noAuth providers — no credential needed
   if (NO_AUTH_PROVIDERS.has(provider)) {
@@ -129,7 +133,13 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
 
     if (result.success) return result.response;
 
-    const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, null, credentials.apiKey);
+    // A request that couldn't be built never reached the upstream: try the
+    // next account (its settings may differ) but lock none. A connection that
+    // can't be excluded (a virtual one with no id) would come back forever.
+    if (result.notSent && (!credentials.connectionId || excludeConnectionIds.has(credentials.connectionId))) return result.response;
+    const { shouldFallback } = result.notSent
+      ? { shouldFallback: true }
+      : await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, null, credentials.apiKey);
 
     if (shouldFallback) {
       excludeConnectionIds.add(credentials.connectionId);

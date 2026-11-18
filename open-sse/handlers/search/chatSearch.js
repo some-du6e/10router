@@ -5,11 +5,15 @@
  */
 import { PROVIDER_MEDIA } from "../../providers/index.js";
 import { ANTIGRAVITY_IDE_USER_AGENT } from "../../providers/shared.js";
+import { modelPathSegment } from "../../utils/modelPath.js";
 
 // Default search model + endpoint derive from registry searchViaChat (single source)
 const searchModel = (id) => PROVIDER_MEDIA[id]?.searchViaChat?.defaultModel;
-const searchEndpoint = (id, model) =>
-  (PROVIDER_MEDIA[id]?.searchViaChat?.endpoint || "").replace("{model}", model || "");
+// The model goes into the path as one escaped segment.
+const searchEndpoint = (id, model) => {
+  const endpoint = PROVIDER_MEDIA[id]?.searchViaChat?.endpoint || "";
+  return endpoint.includes("{model}") ? endpoint.replace("{model}", () => modelPathSegment(model)) : endpoint;
+};
 
 const REQUEST_TIMEOUT_MS = 15000;
 const DEFAULT_MAX_RESULTS = 10;
@@ -469,7 +473,12 @@ export async function handleChatSearch({
       ? Math.floor(maxResults)
       : DEFAULT_MAX_RESULTS;
   const useModel = model || searchModel(provider);
-  const url = cfg.endpoint(useModel);
+  let url;
+  try {
+    url = cfg.endpoint(useModel);
+  } catch (err) {
+    return { success: false, status: 400, error: err?.message || "Invalid model id" };
+  }
   const body = cfg.buildBody(query, useModel, credentials);
   const headers = cfg.buildHeaders(token);
 

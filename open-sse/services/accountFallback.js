@@ -140,6 +140,20 @@ export function getModelLockKey(model) {
   return model ? `${MODEL_LOCK_PREFIX}${model}` : MODEL_LOCK_ALL;
 }
 
+/** Lock scopes kept next to the model locks: web search and web fetch, per provider. */
+export const WEBSEARCH_LOCK_PREFIX = "websearch:";
+export const WEBFETCH_LOCK_PREFIX = "webfetch:";
+
+/**
+ * Would a lock on this model id land on one of the router's own scopes (the
+ * account-wide lock, or a web search/fetch lock)? Such an id can't be a
+ * client's model: handlers refuse it before any account is tried.
+ */
+export function isReservedLockName(model) {
+  const id = String(model ?? "");
+  return getModelLockKey(id) === MODEL_LOCK_ALL || id.startsWith(WEBSEARCH_LOCK_PREFIX) || id.startsWith(WEBFETCH_LOCK_PREFIX);
+}
+
 /**
  * When a model's lock on a connection ends, in ms: the later of `modelLock_${model}`
  * and the account-wide `modelLock___all`. 0 when neither is set or parses.

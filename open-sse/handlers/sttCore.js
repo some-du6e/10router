@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { createErrorResult } from "../utils/error.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
+import { modelPathSegment, modelPathSegments } from "../utils/modelPath.js";
 
 // Build auth headers from sttConfig + token
 function buildAuthHeaders(cfg, token) {
@@ -107,7 +108,7 @@ async function transcribeGemini(cfg, file, model, token, formData) {
     : "Generate a transcript of the speech. Return only the transcribed text, no commentary.";
   if (typeof lang === "string" && lang.trim()) promptText += ` Language: ${lang.trim()}.`;
 
-  const url = `${cfg.baseUrl}/${model}:generateContent?key=${token}`;
+  const url = `${cfg.baseUrl}/${modelPathSegment(model)}:generateContent?key=${token}`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -123,8 +124,12 @@ async function transcribeGemini(cfg, file, model, token, formData) {
 
 // HuggingFace: POST raw binary to {baseUrl}/{model_id}
 async function transcribeHuggingFace(cfg, file, model, token) {
-  if (model.includes("..") || model.includes("//")) return createErrorResult(400, "Invalid model ID");
-  const url = `${cfg.baseUrl.replace(/\/+$/, "")}/${model}`;
+  let url;
+  try {
+    url = `${cfg.baseUrl.replace(/\/+$/, "")}/${modelPathSegments(model)}`;
+  } catch {
+    return createErrorResult(400, "Invalid model ID");
+  }
   const buf = await file.arrayBuffer();
   const res = await fetch(url, {
     method: "POST",

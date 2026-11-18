@@ -81,9 +81,28 @@ them. A backup carries the totals, so a key restored onto another install
   set higher than the client asked (Claude raises it for tools or a thinking
   budget), and never below what the provider reported or visibly streamed.
   Completed streams are charged exactly what the provider reports, however
-  long they ran. Set `STREAM_ABORT_FLOOR_TPS` to change the rate (`0` turns
-  the floor off). This applies to every key, so the usage page counts cut-short
-  requests the same way.
+  long they ran. A stream cut before its first byte pays for its input only.
+  Set `STREAM_ABORT_FLOOR_TPS` to change the rate (`0` turns the floor off).
+  This applies to every key, so the usage page counts cut-short requests the
+  same way.
+- **Non-streaming requests cut short.** A client that hangs up on a
+  non-streaming request while it is upstream is charged the same kind of
+  estimate: its input, plus the time floor from when that attempt was sent
+  (a JSON upstream generates its whole answer before it replies), or, when the
+  upstream was answering as a stream (a provider set to always stream), from
+  its first byte. Only an attempt still in flight counts: a hang-up while
+  10router backs off before retrying a 5xx, prepares the request (Codex
+  downloading images; Vertex, Zed or MiMo fetching a token; Qoder exchanging
+  its access token; Zed or Qoder fetching a model catalog), or refreshes a
+  token costs nothing, and after a token refresh the floor starts at the
+  retry. GitHub Copilot's own requests to `/responses` and `/v1/messages`
+  count as the attempt. Once the reply is being read, work an executor does
+  inside it (Kiro's repair retry) doesn't change that. Executors that buffer
+  the whole answer and report a hang-up as an error (Cursor, Trae) are
+  charged from when their attempt was sent, streaming or not, and those that
+  wrap the reply (Windsurf, Qoder, Devin CLI) pass the hang-up on rather than
+  ending it as a short answer. A reply that just ends when the client leaves,
+  leaving nothing to answer with, is charged the same way, once.
 - **Opt-in: drain to the real usage.** With `STREAM_DRAIN_MAX_MS` set (it is
   `0`, off, by default), a key with a budget whose client hangs up keeps the
   upstream running: 10router closes the client's stream at once but reads the
@@ -132,21 +151,30 @@ them. A backup carries the totals, so a key restored onto another install
   refused and the search goes to the model's provider instead.
 - **Rate-limit hold.** A request held open while its provider's limit resets
   is checked again before each retry, so a key that runs out of budget or
-  expires during the wait gets its error instead of the retry.
+  expires during the wait gets its error instead of the retry. With "Require
+  API key" on, a key that is disabled or deleted during the wait ends the hold
+  with a 401.
 
 ## Model allowlist matching
 
 A requested model is allowed when:
 
-- it is on the list (case and a trailing context window like `[1m]` are
-  ignored);
+- it is a plain model id on the list (case and a trailing context window like
+  `[1m]` are ignored);
 - a bare id on the list (`claude-opus-5-5`) matches that model from any
   provider (`cc/claude-opus-5-5`). A provider-prefixed entry (`cc/claude-opus-5-5`)
   matches only that provider, and not the bare id, which can route to any
   provider;
-- it is a model alias whose target is allowed;
-- it is a combo whose every member is allowed (for a fusion combo, its judge
-  too), or a combo named on the list.
+- it is a model alias named on the list exactly as it is spelled, or one whose
+  target is allowed;
+- it is a combo named on the list exactly as it is spelled, or one whose every
+  member is allowed (for a fusion combo, its judge too).
+
+Combos and aliases are routed by their exact name, so their case matters:
+with `team-a` on the list, a separate combo or alias named `Team-A` is not
+named by it, and its members or target are checked instead. A combo nested
+more than 4 deep (the requested one counts as 1) is never routed, so it
+neither needs nor gives permission.
 
 Provider aliases count as the provider (`cc/x` and `claude/x` are the same
 entry). A bare id matches one level only: `claude-opus-5-5` allows
