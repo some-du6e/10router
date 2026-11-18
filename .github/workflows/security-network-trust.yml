@@ -24,6 +24,7 @@ on:
       - "tests/unit/codex-ws-bridge-peer.test.js"
       - "tests/unit/codex-ws-translated.test.js"
       - "tests/unit/server-drain-wiring.test.js"
+      - "tests/unit/auth-login-mode.test.js"
       - "tests/unit/local-request-peer-trust-3294.test.js"
       - ".github/workflows/security-network-trust.yml"
   workflow_dispatch:
@@ -56,6 +57,7 @@ jobs:
           unit/codex-ws-bridge-peer.test.js
           unit/codex-ws-translated.test.js
           unit/server-drain-wiring.test.js
+          unit/auth-login-mode.test.js
           unit/local-request-peer-trust-3294.test.js
       - name: Lint
         run: >

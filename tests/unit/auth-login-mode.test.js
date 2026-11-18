@@ -21,6 +21,8 @@ vi.mock("@/lib/auth/dashboardSession", () => ({
 }));
 vi.mock("@/lib/auth/loginLimiter", () => ({
   checkLock: () => ({ locked: false }),
+  reserveAttempt: () => ({ ok: true }),
+  releaseAttempt: vi.fn(),
   recordFail: () => ({ remainingBeforeLock: 4 }),
   recordSuccess: vi.fn(),
   getClientIp: () => "127.0.0.1",
