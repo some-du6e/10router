@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -80,8 +81,13 @@ describe("getUsageStats lastUsed", () => {
     const stats = await getUsageStats(period);
     const a = stats.byApiKey[apiKeyStatsKey("sk-mach1-aaaaaaaaaa", model, "openai")];
     const b = stats.byApiKey[apiKeyStatsKey("sk-mach1-bbbbbbbbbb", model, "openai")];
-    expect(a).toMatchObject({ requests: 1, rawModel: model, apiKeyMasked: "sk-mach1***", keyName: "sk-mach1..." });
+    expect(a).toMatchObject({ requests: 1, rawModel: model, apiKeyMasked: "sk-mach1***" });
     expect(b).toMatchObject({ requests: 1, rawModel: model, apiKeyMasked: "sk-mach1***" });
+    // Unknown keys are labelled with the masked key and a tag, so the
+    // dashboard (which groups by keyName) keeps them apart.
+    expect(a.keyName).toMatch(/^sk-mach1\*\*\* #[0-9a-f]{6}$/);
+    expect(b.keyName).toMatch(/^sk-mach1\*\*\* #[0-9a-f]{6}$/);
+    expect(a.keyName).not.toBe(b.keyName);
     expect(a.lastUsed).toBe(aAt);
     expect(b.lastUsed).toBe(bAt);
   });
@@ -142,7 +148,52 @@ describe("API keys in usage responses", () => {
     expect(JSON.stringify(stats)).not.toContain(rawKey.slice(0, 12));
     const rows = Object.values(stats.byApiKey).filter((row) => row.rawModel === model);
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ apiKeyMasked: "sk-place***", keyName: "sk-place..." });
+    expect(rows[0].apiKeyMasked).toBe("sk-place***");
+    expect(rows[0].keyName).toMatch(/^sk-place\*\*\* #[0-9a-f]{6}$/);
+  });
+
+  it.each(["24h", "all"])("labels a short key without showing it (%s)", async (period) => {
+    const shortKey = "sk-tiny9";
+    await saveRequestUsage(entry(new Date(Date.now() - 60000).toISOString(), { model: "gpt-short", apiKey: shortKey }));
+    const stats = await getUsageStats(period);
+    const row = stats.byApiKey[apiKeyStatsKey(shortKey, "gpt-short", "openai")];
+
+    expect(row.apiKeyMasked).toBe("s***");
+    expect(row.keyName).toMatch(/^s\*\*\* #[0-9a-f]{6}$/);
+    expect(JSON.stringify(stats)).not.toContain(shortKey);
+  });
+
+  it("keys the row id with a server secret, not a plain hash of the key", () => {
+    const id = apiKeyStatsKey(rawKey, model, "openai").split("|")[0];
+    expect(id).toMatch(/^key-[0-9a-f]{16}$/);
+    expect(id).not.toBe(`key-${createHash("sha256").update(rawKey).digest("hex").slice(0, 16)}`);
+  });
+
+  it("keeps no-key traffic in one row per model on Today/24h too", async () => {
+    const at = new Date(Date.now() - 60000).toISOString();
+    await saveRequestUsage(entry(at, { model: "gpt-local-a", apiKey: undefined }));
+    await saveRequestUsage(entry(at, { model: "gpt-local-b", apiKey: undefined }));
+    const stats = await getUsageStats("24h");
+
+    expect(stats.byApiKey["local-no-key"]).toBeUndefined();
+    expect(stats.byApiKey["local-no-key|gpt-local-a|openai"]).toMatchObject({ requests: 1, rawModel: "gpt-local-a", keyName: "Local (No API Key)", apiKeyMasked: null });
+    expect(stats.byApiKey["local-no-key|gpt-local-b|openai"]).toMatchObject({ requests: 1, rawModel: "gpt-local-b" });
+  });
+
+  it("masks a legacy daily row that has no stored key, model or provider", async () => {
+    const legacyKey = "sk-legacy-rawkey-0001";
+    const counts = { requests: 2, promptTokens: 3, completionTokens: 4, cachedTokens: 0, cost: 0 };
+    const db = await getAdapter();
+    db.run(`INSERT OR REPLACE INTO usageDaily(dateKey, data) VALUES(?, ?)`, [
+      "2020-01-01",
+      JSON.stringify({ ...counts, byApiKey: { [`${legacyKey}|gpt-legacy|openai`]: counts } }),
+    ]);
+    const stats = await getUsageStats("all");
+
+    expect(JSON.stringify(stats)).not.toContain(legacyKey.slice(0, 12));
+    expect(stats.byApiKey[apiKeyStatsKey(legacyKey, "gpt-legacy", "openai")]).toMatchObject({
+      requests: 2, rawModel: "gpt-legacy", provider: "openai", apiKeyMasked: "sk-legac***",
+    });
   });
 
   const historyRoute = () => import("../../src/app/api/usage/history/route.js");
@@ -168,11 +219,28 @@ describe("API keys in usage responses", () => {
 describe("getActiveRequests", () => {
   it("reports requests in flight in pending", async () => {
     trackPendingRequest("gpt-pending", "openai", "conn-pending", true);
-    const { pending } = await getActiveRequests();
-    expect(pending.byModel["gpt-pending (openai)"]).toBe(1);
-    expect(pending.byAccount["conn-pending"]["gpt-pending (openai)"]).toBe(1);
-
-    trackPendingRequest("gpt-pending", "openai", "conn-pending", false);
+    try {
+      const { pending } = await getActiveRequests();
+      expect(pending.byModel["gpt-pending (openai)"]).toBe(1);
+      expect(pending.byAccount["conn-pending"]["gpt-pending (openai)"]).toBe(1);
+    } finally {
+      trackPendingRequest("gpt-pending", "openai", "conn-pending", false);
+    }
     expect((await getActiveRequests()).pending.byModel["gpt-pending (openai)"]).toBeUndefined();
+  });
+
+  it("lists the same recent requests as the stats after many duplicates", async () => {
+    const base = Date.now() - 50000;
+    for (let i = 0; i < 20; i++) {
+      await saveRequestUsage(entry(new Date(base + i * 1000).toISOString(), { model: `gpt-ring-${i}` }));
+    }
+    const dupAt = new Date(Date.now() - 5000).toISOString();
+    for (let i = 0; i < 60; i++) await saveRequestUsage(entry(dupAt, { model: "gpt-ring-dup" }));
+
+    const pick = ({ timestamp, model, provider, promptTokens, completionTokens }) => ({ timestamp, model, provider, promptTokens, completionTokens });
+    const live = (await getActiveRequests()).recentRequests.map(pick);
+    const stats = (await getUsageStats("24h")).recentRequests.map(pick);
+    expect(live).toHaveLength(20);
+    expect(live).toEqual(stats);
   });
 });

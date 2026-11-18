@@ -7,7 +7,7 @@ vi.mock("@/lib/usageDb", async () => {
 });
 
 import { statsEmitter } from "@/lib/usageDb";
-import { GET } from "../../src/app/api/usage/stream/route.js";
+import { GET, HEAD } from "../../src/app/api/usage/stream/route.js";
 
 const LIVE = { activeRequests: [], recentRequests: [], errorProvider: "", pending: { byModel: {}, byAccount: {} } };
 const live = (count) => ({ ...LIVE, activeRequests: [{ model: "model-a", provider: "provider-a", account: "Account A", count }] });
@@ -57,6 +57,13 @@ async function readFrame() {
 
 const readJson = async () => JSON.parse((await readFrame()).replace(/^data: /, ""));
 
+// A closed stream reports desiredSize 0, which alone keeps writes away from
+// enqueue; report room so only the route's closed check can.
+function spyOnEnqueueAsIfReading() {
+  vi.spyOn(ReadableStreamDefaultController.prototype, "desiredSize", "get").mockReturnValue(1);
+  return vi.spyOn(ReadableStreamDefaultController.prototype, "enqueue").mockImplementation(() => {});
+}
+
 function expectCleanedUp() {
   expect(statsEmitter.listenerCount("update")).toBe(0);
   expect(statsEmitter.listenerCount("pending")).toBe(0);
@@ -96,33 +103,42 @@ describe("usage stream lifecycle", () => {
     expect(usage.stats).not.toHaveBeenCalled();
   });
 
-  it("keeps only the newest frame for a client that stops reading", async () => {
+  it("sends one fresh frame, read once, to a client that stopped reading", async () => {
     const controller = await connect();
-    for (const count of [1, 2, 3]) {
-      usage.active.mockResolvedValueOnce(live(count));
-      statsEmitter.emit("pending");
-    }
-    await vi.waitFor(() => expect(usage.active).toHaveBeenCalledTimes(4));
+    for (let i = 0; i < 3; i++) statsEmitter.emit("pending");
     await afterPendingWork();
+    expect(usage.active).toHaveBeenCalledTimes(1);
 
+    usage.active.mockResolvedValue(live(3));
     expect(await readJson()).toEqual(LIVE);
     expect((await readJson()).activeRequests[0].count).toBe(3);
+    expect(usage.active).toHaveBeenCalledTimes(2);
     controller.abort();
     expect((await reader.read()).done).toBe(true);
   });
 
   it("skips pings for a client that stops reading", async () => {
     const controller = await connect();
-    usage.active.mockResolvedValueOnce(live(1));
     statsEmitter.emit("pending");
-    await vi.waitFor(() => expect(usage.active).toHaveBeenCalledTimes(2));
     await afterPendingWork();
     vi.advanceTimersByTime(25000);
 
+    usage.active.mockResolvedValue(live(1));
     expect(await readJson()).toEqual(LIVE);
     expect((await readJson()).activeRequests[0].count).toBe(1);
     controller.abort();
     expect((await reader.read()).done).toBe(true);
+  });
+
+  it.each([
+    ["HEAD export", () => HEAD()],
+    ["GET called for HEAD", () => GET(new Request("http://localhost/api/usage/stream", { method: "HEAD" }))],
+  ])("opens no stream for HEAD (%s)", async (_name, call) => {
+    const res = await call();
+    expect(res.headers.get("content-type")).toBe("text/event-stream");
+    expect(res.body).toBeNull();
+    expect(usage.active).not.toHaveBeenCalled();
+    expectCleanedUp();
   });
 
   it("pings every 25 seconds while connected", async () => {
@@ -175,7 +191,7 @@ describe("usage stream lifecycle", () => {
     response = await response;
     reader = response.body.getReader();
     await vi.waitFor(() => expect(usage.active).toHaveBeenCalledTimes(1));
-    const enqueue = vi.spyOn(ReadableStreamDefaultController.prototype, "enqueue");
+    const enqueue = spyOnEnqueueAsIfReading();
 
     controller.abort();
     resolveLive(LIVE);
@@ -201,7 +217,7 @@ describe("usage stream lifecycle", () => {
     open();
     response = await response;
     await vi.waitFor(() => expect(usage.active).toHaveBeenCalledTimes(1));
-    const enqueue = vi.spyOn(ReadableStreamDefaultController.prototype, "enqueue");
+    const enqueue = spyOnEnqueueAsIfReading();
 
     const canceled = response.body.cancel();
     resolveLive(LIVE);

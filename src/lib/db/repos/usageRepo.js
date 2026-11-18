@@ -20,10 +20,22 @@ if (!global._usageStatsKeySecret) global._usageStatsKeySecret = randomBytes(32);
  * per-process secret does that without letting anyone recover a weak key.
  */
 export function apiKeyStatsKey(apiKey, model, provider) {
-  const keyId = apiKey && typeof apiKey === "string" && apiKey !== "local-no-key"
-    ? `key-${createHmac("sha256", global._usageStatsKeySecret).update(apiKey).digest("hex").slice(0, 16)}`
-    : "local-no-key";
-  return `${keyId}|${model ?? ""}|${provider || "unknown"}`;
+  return `${apiKeyStatsId(apiKey)}|${model ?? ""}|${provider || "unknown"}`;
+}
+
+function hasApiKey(apiKey) {
+  return Boolean(apiKey) && typeof apiKey === "string" && apiKey !== "local-no-key";
+}
+
+function apiKeyStatsId(apiKey) {
+  if (!hasApiKey(apiKey)) return "local-no-key";
+  return `key-${createHmac("sha256", global._usageStatsKeySecret).update(apiKey).digest("hex").slice(0, 16)}`;
+}
+
+/** A key's name, or for a deleted or unknown key its masked form plus a short tag. */
+function apiKeyLabel(apiKey, apiKeyMap) {
+  if (!hasApiKey(apiKey)) return "Local (No API Key)";
+  return apiKeyMap[apiKey]?.name || `${maskApiKey(apiKey)} #${apiKeyStatsId(apiKey).slice(4, 10)}`;
 }
 
 const PENDING_TIMEOUT_MS = 60 * 1000;
@@ -755,8 +767,7 @@ async function computeUsageStats(period) {
         const provider = ak.provider ?? (providerPart === "unknown" ? "" : providerPart) ?? "";
         const providerDisplayName = providerNodeNameMap[provider] || provider;
         const apiKeyVal = ak.apiKey !== undefined ? ak.apiKey : (keyPart === "local-no-key" ? null : keyPart);
-        const keyInfo = apiKeyVal ? apiKeyMap[apiKeyVal] : null;
-        const keyName = keyInfo?.name || (apiKeyVal ? apiKeyVal.slice(0, 8) + "..." : "Local (No API Key)");
+        const keyName = apiKeyLabel(apiKeyVal, apiKeyMap);
         const apiKeyMasked = maskApiKey(apiKeyVal);
         const apiKeyKey = apiKeyMasked || "local-no-key";
         const akKey = apiKeyStatsKey(apiKeyVal, rawModel, provider);
@@ -869,25 +880,14 @@ async function computeUsageStats(period) {
         if (new Date(r.timestamp) > new Date(stats.byAccount[accountKey].lastUsed)) stats.byAccount[accountKey].lastUsed = r.timestamp;
       }
 
-      if (r.apiKey && typeof r.apiKey === "string") {
-        const keyInfo = apiKeyMap[r.apiKey];
-        const keyName = keyInfo?.name || r.apiKey.slice(0, 8) + "...";
-        const apiKeyMasked = maskApiKey(r.apiKey);
-        const akKey = apiKeyStatsKey(r.apiKey, r.model, r.provider);
-        if (!stats.byApiKey[akKey]) {
-          stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey: apiKeyMasked, lastUsed: r.timestamp };
-        }
-        const ake = stats.byApiKey[akKey];
-        ake.requests++; ake.promptTokens += promptTokens; ake.completionTokens += completionTokens; ake.cachedTokens += cachedTokens; ake.cost += entryCost;
-        if (new Date(r.timestamp) > new Date(ake.lastUsed)) ake.lastUsed = r.timestamp;
-      } else {
-        if (!stats.byApiKey["local-no-key"]) {
-          stats.byApiKey["local-no-key"] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked: null, keyName: "Local (No API Key)", apiKeyKey: "local-no-key", lastUsed: r.timestamp };
-        }
-        const ake = stats.byApiKey["local-no-key"];
-        ake.requests++; ake.promptTokens += promptTokens; ake.completionTokens += completionTokens; ake.cachedTokens += cachedTokens; ake.cost += entryCost;
-        if (new Date(r.timestamp) > new Date(ake.lastUsed)) ake.lastUsed = r.timestamp;
+      const apiKeyMasked = maskApiKey(r.apiKey);
+      const akKey = apiKeyStatsKey(r.apiKey, r.model, r.provider);
+      if (!stats.byApiKey[akKey]) {
+        stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked, keyName: apiKeyLabel(r.apiKey, apiKeyMap), apiKeyKey: apiKeyMasked || "local-no-key", lastUsed: r.timestamp };
       }
+      const ake = stats.byApiKey[akKey];
+      ake.requests++; ake.promptTokens += promptTokens; ake.completionTokens += completionTokens; ake.cachedTokens += cachedTokens; ake.cost += entryCost;
+      if (new Date(r.timestamp) > new Date(ake.lastUsed)) ake.lastUsed = r.timestamp;
 
       const endpoint = r.endpoint || "Unknown";
       const epKey = `${endpoint}|${r.model}|${r.provider || "unknown"}`;
