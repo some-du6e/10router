@@ -36,7 +36,7 @@ export async function POST(request: Request) {
       email,
       providerSpecificData,
       testStatus: "active",
-    })) as SavedConnection;
+    })) as unknown as SavedConnection; // the untyped JS repo infers `undefined`
 
     return NextResponse.json({
       success: true,
