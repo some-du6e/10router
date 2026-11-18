@@ -2,6 +2,8 @@ import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { parseVertexSaJson, refreshVertexToken, refreshGoogleToken } from "../services/tokenRefresh.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { reportedFetch } from "../utils/upstreamAttempt.js";
+import { modelPathSegment } from "../utils/modelPath.js";
 
 // Cache project IDs resolved from raw API keys { apiKey → projectId }
 const projectIdCache = new Map();
@@ -92,14 +94,14 @@ export class VertexExecutor extends BaseExecutor {
         );
       }
       const location = credentials?.providerSpecificData?.location || "us-central1";
-      let url = `https://aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${model}:${action}`;
+      let url = `https://aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${modelPathSegment(model)}:${action}`;
       if (stream) url += "?alt=sse";
       return url;
     }
 
     // Raw API key: use global publishers endpoint with ?key= param
     // ?alt=sse is required for proper SSE streaming (matches every other Gemini executor)
-    let url = `https://aiplatform.googleapis.com/v1/publishers/google/models/${model}:${action}`;
+    let url = `https://aiplatform.googleapis.com/v1/publishers/google/models/${modelPathSegment(model)}:${action}`;
     if (stream) url += "?alt=sse";
     if (rawKey) url += stream ? `&key=${rawKey}` : `?key=${rawKey}`;
     return url;
@@ -128,7 +130,9 @@ export class VertexExecutor extends BaseExecutor {
     return { accessToken: result.accessToken, expiresAt: result.expiresAt };
   }
 
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, onUpstreamAttempt = null }) {
+    // Nothing is upstream while a token is minted or a project resolved.
+    onUpstreamAttempt?.(0);
     const saJson = parseVertexSaJson(credentials?.apiKey);
     const adcJson = parseVertexAdcJson(credentials?.apiKey);
 
@@ -163,12 +167,12 @@ export class VertexExecutor extends BaseExecutor {
     const headers = this.buildHeaders(credentials, stream);
     const transformedBody = this.transformRequest(model, body, stream, credentials);
 
-    const response = await proxyAwareFetch(url, {
+    const response = await reportedFetch(onUpstreamAttempt, signal, () => proxyAwareFetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify(transformedBody),
       signal,
-    }, proxyOptions);
+    }, proxyOptions));
 
     return { response, url, headers, transformedBody };
   }

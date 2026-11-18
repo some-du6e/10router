@@ -558,6 +558,12 @@ export class WindsurfExecutor extends BaseExecutor {
           emit(`data: ${JSON.stringify(finishPayload)}\n\n`);
           emit("data: [DONE]\n\n");
         } catch (err) {
+          // A client hang-up isn't an upstream error: pass it on, so the
+          // reader sees a hang-up (and it is charged) rather than a short reply.
+          if (err?.name === "AbortError") {
+            controller.error(err);
+            return;
+          }
           const msg = err?.message ? String(err.message) : String(err);
           emit(`data: ${JSON.stringify({
             error: { message: `Windsurf stream error: ${msg}`, type: "windsurf_error" },

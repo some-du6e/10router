@@ -6,6 +6,7 @@ import {
   isValidApiKey,
 } from "../services/auth.js";
 import { allLockedError } from "open-sse/utils/limitHold.js";
+import { WEBFETCH_LOCK_PREFIX } from "open-sse/services/accountFallback.js";
 import { getSettings, getCombos } from "@/lib/localDb";
 import { AI_PROVIDERS, resolveProviderId } from "@/shared/constants/providers.js";
 import { handleFetchCore } from "open-sse/handlers/fetch/index.js";
@@ -167,7 +168,7 @@ async function handleSingleProviderFetch(body, providerInput, request, apiKey, s
   // Keep web-fetch failures scoped to this capability. Providers such as
   // Ollama use the same connection for chat and fetch, so an upstream fetch
   // failure must not take the account offline for LLM requests.
-  const fetchLockKey = `webfetch:${providerId}`;
+  const fetchLockKey = `${WEBFETCH_LOCK_PREFIX}${providerId}`;
 
   while (true) {
     const credentials = await getProviderCredentials(providerId, excludeConnectionIds, fetchLockKey);

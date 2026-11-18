@@ -251,6 +251,9 @@ async function fetchVia(url, options, proxyOptions, noHeadersTimeout = false) {
       const dispatcher = await getDispatcher(proxyUrl, { noHeadersTimeout });
       return await originalFetch(url, { ...options, dispatcher });
     } catch (proxyError) {
+      // The caller aborted (a client hang-up, or its own timer): not the proxy
+      // failing. Passed on as is, so it still reads as an abort.
+      if (proxyError?.name === "AbortError" || options?.signal?.aborted) throw proxyError;
       // The upstream got the request and sent no headers (undici's own limit,
       // which a SOCKS proxy keeps): not the proxy failing, so not retried direct.
       if (isUndiciHeadersTimeout(proxyError)) throw proxyError;

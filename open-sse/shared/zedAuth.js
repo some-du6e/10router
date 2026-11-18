@@ -299,8 +299,13 @@ export function shouldRefreshZedLlmToken(response) {
 export async function zedLlmFetch(credentials, path, options = {}) {
   const config = options.config || {};
   const url = zedUrl(config, "llmBaseUrl", path, ZED_LLM_BASE_URL);
+  // options.onUpstreamAttempt: chatCore's hook, told when the request itself
+  // is sent (not the token fetch before it).
+  const report = options.onUpstreamAttempt;
   const buildRequest = async (forceRefresh) => {
+    report?.(0);
     const token = await fetchZedLlmToken(credentials, { ...options, forceRefresh });
+    report?.(options.signal?.aborted ? 0 : Date.now());
     return proxyAwareFetch(url, {
       ...options.fetchOptions,
       headers: {
@@ -315,6 +320,7 @@ export async function zedLlmFetch(credentials, path, options = {}) {
   if (shouldRefreshZedLlmToken(response)) {
     response = await buildRequest(true);
   }
+  if (!response.ok) report?.(0);
   return response;
 }
 
