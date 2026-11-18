@@ -1,6 +1,7 @@
 // Saves wait in memory until a flush writes them. A flush must keep up with the
 // requests feeding it, and whatever the backlog, only a few saves may hold the
 // JSON of a whole body, within a byte budget, and none may hold the body itself.
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -20,6 +21,8 @@ let repo;
 let adapter;
 const gzip = vi.fn();
 let gate = Promise.resolve();
+// Which gate a gzip call waits on, by its input.
+let gateFor = () => gate;
 
 beforeAll(async () => {
   vi.stubEnv("ENABLE_REQUEST_LOGS", "true");
@@ -29,7 +32,7 @@ beforeAll(async () => {
   vi.resetModules();
   vi.doMock("node:zlib", async (importOriginal) => {
     const zlib = await importOriginal();
-    gzip.mockImplementation((input, callback) => { gate.then(() => zlib.gzip(input, callback)); });
+    gzip.mockImplementation((input, callback) => { gateFor(String(input)).then(() => zlib.gzip(input, callback)); });
     return { ...zlib, gzip };
   });
   db = await import("@/lib/db/index.js");
@@ -65,6 +68,8 @@ async function configure(settings) {
 }
 
 const bigRequest = (tag, chars = 200 * 1024) => ({ messages: [{ role: "user", content: `${tag}:` + "x".repeat(chars) }] });
+// Hard to compress, so a packed copy is about as big as its JSON.
+const noisy = (tag, chars = 200 * 1024) => ({ messages: [{ role: "user", content: `${tag}:${randomBytes(Math.ceil((chars * 3) / 4)).toString("base64")}` }] });
 const detail = (id, timestamp, request = bigRequest(id)) => ({ id, timestamp, provider: "openai", model: "gpt-4", status: "ok", request, response: { ok: true } });
 const at = (month, second) => new Date(Date.UTC(2026, month, 1, 0, 0, second)).toISOString();
 const pad = (n, width = 2) => String(n).padStart(width, "0");
@@ -95,7 +100,9 @@ async function heapAfterGc() {
   await tick();
   gc();
   gc();
-  return process.memoryUsage().heapUsed;
+  // Node keeps big strings (a packed copy's base64) outside the V8 heap.
+  const { heapUsed, external } = process.memoryUsage();
+  return heapUsed + external;
 }
 
 // Holds every gzip until the returned release runs.
@@ -126,10 +133,14 @@ describe("request detail backlog", { timeout: 120_000 }, () => {
     await db.saveRequestDetail(detail("tie-b", at(1, 6)));
     // The stream ends last, under its start save's id and with the same body.
     const stringify = vi.spyOn(JSON, "stringify");
-    await db.saveRequestDetail(detail("stream", at(1, 59), stream));
-    await repo.__test__.flush();
-    const serializedAgain = stringify.mock.calls.filter(([value]) => value === stream).length;
-    stringify.mockRestore();
+    let serializedAgain;
+    try {
+      await db.saveRequestDetail(detail("stream", at(1, 59), stream));
+      await repo.__test__.flush();
+      serializedAgain = stringify.mock.calls.filter(([value]) => value === stream).length;
+    } finally {
+      stringify.mockRestore();
+    }
 
     const packed = gzippedIds();
     expect(packed).toHaveLength(25);
@@ -203,6 +214,48 @@ describe("request detail backlog", { timeout: 120_000 }, () => {
     expect(await aliveAfterGc(refs)).toBe(0);
     expect((await heapAfterGc()) - before).toBeLessThan(24 * MB);
     expect(idsWithFullData()).toContain("late-069");
+  });
+
+  it("doesn't keep an earlier save's packed copy alive once its stream is gone", async () => {
+    // Each stream's start save is packed while its end save waits; then the
+    // streams end (their bodies go). The end saves hold only their own JSON.
+    const ROWS = 25;
+    const BODY = MB;
+    gzip.mockClear();
+    const before = await heapAfterGc();
+    // Start saves' copies wait on one gate, end saves' (which have a reply) on another.
+    let openStarts;
+    let openEnds;
+    const starts = new Promise((resolve) => { openStarts = resolve; });
+    const ends = new Promise((resolve) => { openEnds = resolve; });
+    gateFor = (input) => (input.includes('"providerResponse"') ? ends : starts);
+    const release = () => { openStarts(); openEnds(); gateFor = () => gate; };
+    let flushing;
+    try {
+      let bodies = Array.from({ length: ROWS }, (_, i) => noisy(`pin-${pad(i)}`, BODY));
+      for (let i = 0; i < ROWS; i++) await db.saveRequestDetail(detail(`pin-${pad(i)}`, at(4, 30 + i), bodies[i]));
+      flushing = repo.__test__.flush();
+      await vi.waitFor(() => expect(gzip).toHaveBeenCalledTimes(1));
+      // The end saves also cut a reply, so their copy isn't the start save's.
+      const reply = { content: "r".repeat(20 * 1024) };
+      for (let i = 0; i < ROWS; i++) await db.saveRequestDetail({ ...detail(`pin-${pad(i)}`, at(4, 90 + i), bodies[i]), providerResponse: reply });
+      // Let the start saves' write finish; the end saves' write is held.
+      openStarts();
+      await vi.waitFor(() => expect(gzip).toHaveBeenCalledTimes(ROWS + 1), { timeout: 60_000, interval: 50 });
+      bodies = null;
+      gzip.mockClear();
+
+      const held = repo.__test__.fullCandidateBytes?.() ?? 0;
+      expect(held).toBeGreaterThan(0);
+      // The end saves' JSON (one byte a char here, half the estimate) and the
+      // one being compressed; not the 25 packed start copies as well.
+      // A window holding its capped objects strongly also keeps those copies
+      // (about held / 2 more) and fails this.
+      expect((await heapAfterGc()) - before).toBeLessThan((held / 2) * 1.2 + BODY * 2 + 8 * MB);
+    } finally {
+      release();
+      await flushing?.catch(() => {});
+    }
   });
 
   it("keeps the saved JSON within its byte budget, oldest dropped first", async () => {
@@ -288,7 +341,11 @@ describe("request detail backlog", { timeout: 120_000 }, () => {
 
       // The stream ends, then 30 more saves: all far over what's left of the budget.
       await db.saveRequestDetail(streaming(at(7, 10), { content: "all done", type: "streaming" }, { prompt_tokens: 10, completion_tokens: 5 }));
-      for (let i = 0; i < 30; i++) await db.saveRequestDetail(detail(`deg-${pad(i)}`, at(7, 20 + i)));
+      for (let i = 0; i < 30; i++) {
+        // One carries a long string payload, which is cut down too.
+        const save = detail(`deg-${pad(i)}`, at(7, 20 + i));
+        await db.saveRequestDetail(i === 1 ? { ...save, providerResponse: "z".repeat(10_000) } : save);
+      }
 
       expect(repo.__test__.buffered()).toBe(31);
       expect(repo.__test__.queuedBytes() + repo.__test__.inFlightBytes()).toBeLessThanOrEqual(limit);
@@ -303,6 +360,91 @@ describe("request detail backlog", { timeout: 120_000 }, () => {
     expect(row.response.content).toBe("all done");
     expect(row.request._truncated).toBe(true);
     expect(storedIds()).toEqual(expect.arrayContaining(["deg-00", "deg-29"]));
+    // A cut-down row offers no full copy; the newest, untouched ones still do.
+    expect((await db.getRequestDetailById("deg-00")).hasFullData).toBe(false);
+    expect((await db.getRequestDetailById("deg-29")).hasFullData).toBe(true);
+    const stringRow = await db.getRequestDetailById("deg-01");
+    expect(stringRow.providerResponse._truncated).toBe(true);
+    expect(stringRow.providerResponse._preview).toBe("z".repeat(1024));
+  });
+
+  it("caps the queue at what fits its byte budget cut down, then drops the oldest cut-down saves", async () => {
+    const { limits } = repo.__test__;
+    const budget = limits.queuedRecordsMaxBytes;
+    const release = holdGzip();
+    let flushing;
+    let limit = 0;
+    try {
+      for (let i = 0; i < 6; i++) await db.saveRequestDetail(detail(`cap-held-${i}`, at(7, 40 + i)));
+      gzip.mockClear();
+      flushing = repo.__test__.flush();
+      await vi.waitFor(() => expect(gzip).toHaveBeenCalledTimes(1));
+      // Room for 15 cut-down records by count, but only 30 KB of bytes left.
+      limit = repo.__test__.inFlightBytes() + 30 * 1024;
+      limits.queuedRecordsMaxBytes = limit;
+      const maxQueued = Math.floor(limit / (10 * 1024));
+      for (let i = 0; i < 40; i++) await db.saveRequestDetail(detail(`cap-${pad(i)}`, at(7, 60 + i)));
+
+      expect(repo.__test__.buffered()).toBeLessThanOrEqual(maxQueued);
+      expect(repo.__test__.buffered()).toBeGreaterThan(0);
+      expect(repo.__test__.queuedBytes() + repo.__test__.inFlightBytes()).toBeLessThanOrEqual(limit);
+    } finally {
+      release();
+      await flushing?.catch(() => {});
+      limits.queuedRecordsMaxBytes = budget;
+    }
+    expect(storedIds()).toContain("cap-39");
+    expect(storedIds()).not.toContain("cap-00");
+  });
+
+  it("packs a body sent to several keys once, and holds its JSON once", async () => {
+    // Ten failover attempts: equal bodies, separate objects.
+    const json = JSON.stringify(bigRequest("failover"));
+    for (let i = 0; i < 10; i++) await db.saveRequestDetail(detail(`failover-${i}`, at(7, 120 + i), bigRequest("failover")));
+    expect(repo.__test__.fullCandidates()).toBe(10);
+    expect(repo.__test__.fullCandidateBytes()).toBe(2 * json.length);
+    gzip.mockClear();
+    await repo.__test__.flush();
+    expect(gzip).toHaveBeenCalledTimes(1);
+    for (const id of ["failover-0", "failover-9"]) expect((await db.getRequestDetailFullData(id)).request).toEqual(bigRequest("failover"));
+  });
+
+  it("stops packing a write's older rows at the budget, and never takes the newest saves' slots for it", async () => {
+    const { limits } = repo.__test__;
+    const budget = limits.fullCandidatesMaxBytes;
+    limits.fullCandidatesMaxBytes = MB;
+    let release = holdGzip();
+    let flushing;
+    try {
+      // Two saves fit the window (about 400 KB of JSON each).
+      await db.saveRequestDetail(detail("mid-old", at(7, 140), noisy("mid-old")));
+      await db.saveRequestDetail(detail("mid-new", at(7, 141), noisy("mid-new")));
+      gzip.mockClear();
+      flushing = repo.__test__.flush();
+      await vi.waitFor(() => expect(gzip).toHaveBeenCalledTimes(1));
+      // Two newer saves arrive while the write compresses its newest row.
+      await db.saveRequestDetail(detail("after-0", at(7, 142), noisy("after-0")));
+      await db.saveRequestDetail(detail("after-1", at(7, 143), noisy("after-1")));
+      // Let that write finish, and hold the next one, which takes the two newer saves.
+      release();
+      release = holdGzip();
+      await vi.waitFor(() => expect(gzip).toHaveBeenCalledTimes(2));
+      // The first write's copy took it past the budget: its older row got none,
+      // and the newer saves kept their slots.
+      expect(repo.__test__.fullCandidates()).toBe(2);
+      expect(await db.getRequestDetailFullData("mid-old")).toBeNull();
+      expect(await db.getRequestDetailFullData("mid-new")).not.toBeNull();
+      release();
+      await flushing;
+      // The second write packed its newest row, and that copy filled the budget.
+      expect(gzip).toHaveBeenCalledTimes(2);
+      expect(await db.getRequestDetailFullData("after-1")).not.toBeNull();
+      expect(await db.getRequestDetailFullData("after-0")).toBeNull();
+    } finally {
+      release();
+      await flushing?.catch(() => {});
+      limits.fullCandidatesMaxBytes = budget;
+    }
   });
 
   it("splits a backlog into writes of at most writeMaxBytes", async () => {
