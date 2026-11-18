@@ -7,10 +7,7 @@ on:
       - "src/app/api/usage/request-details/**"
       - "src/app/api/usage/providers/route.js"
       - "src/lib/requestDetailLabels.ts"
-      - "src/lib/db/repos/requestDetailsRepo.js"
-      - "src/lib/db/repos/connectionsRepo.js"
-      - "src/lib/db/repos/nodesRepo.js"
-      - "src/lib/db/index.js"
+      - "src/lib/db/**"
       - "src/shared/constants/providers.js"
       - "open-sse/handlers/chatCore.js"
       - "open-sse/handlers/chatCore/requestDetail.js"
@@ -18,6 +15,9 @@ on:
       - "open-sse/handlers/chatCore/nonStreamingHandler.js"
       - "open-sse/handlers/chatCore/sseToJsonHandler.js"
       - "tests/unit/request-details-*.test.js"
+      - "tests/package.json"
+      - "tests/vitest.config.js"
+      - "tests/vitest.shared.js"
       - ".github/workflows/request-details.yml"
   workflow_dispatch:
 
@@ -77,6 +77,57 @@ jobs:
           tail -5 tsc.log
           if [ "$code" -gt 2 ] || ! [ -x ./node_modules/.bin/tsc ]; then echo "tsc did not run (exit $code)"; exit 1; fi
           if grep -E "requestDetailLabels\.ts|request-details/\[id\]/route\.ts" tsc.log; then exit 1; fi
+
+  # Informational, for the PR's "Before": this branch's test against the base
+  # branch's code. Every source file under open-sse/ and src/ that this branch
+  # modifies is checked out from the base (files it adds stay, unused); the
+  # tests stay. Reports what fails and why; it never fails the run itself.
+  before-on-base:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Check out the base branch's code for the changed source files
+        run: |
+          base="origin/${{ github.base_ref || 'master' }}"
+          changed=$(git diff --name-only --diff-filter=M "$base"...HEAD -- open-sse src)
+          if [ -z "$changed" ]; then echo "No source files changed from $base; nothing to compare."; exit 0; fi
+          echo "$changed"
+          git checkout "$base" -- $changed
+          echo "compare=yes" >> "$GITHUB_ENV"
+      - name: Run this branch's test on it (informational)
+        if: env.compare == 'yes'
+        working-directory: tests
+        run: |
+          ./node_modules/.bin/vitest run --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/before.json" \
+            unit/request-details-backlog.test.js || true
+          node --input-type=module -e '
+            import { readFileSync, appendFileSync } from "node:fs";
+            const r = JSON.parse(readFileSync(process.env.RUNNER_TEMP + "/before.json", "utf8"));
+            const lines = [`Informational. Before (base code, this branch tests): ${r.numFailedTests} failed, ${r.numPassedTests} passed of ${r.numTotalTests}`];
+            for (const f of r.testResults) {
+              const rel = f.name.slice(f.name.indexOf("/tests/") + 1);
+              if (!f.assertionResults.length && f.status === "failed") lines.push(`  ${rel}: failed to load`);
+              for (const a of f.assertionResults) {
+                if (a.status !== "failed") continue;
+                lines.push(`  ${rel} :: ${a.fullName}`);
+                const why = (a.failureMessages || [])[0]?.split("\n")[0];
+                if (why) lines.push(`    ${why}`);
+              }
+            }
+            console.log(lines.join("\n"));
+            appendFileSync(process.env.GITHUB_STEP_SUMMARY, "```\n" + lines.join("\n") + "\n```\n");
+          '
 
   # The suite is not all-green on master (see AGENTS.md), so this runs it on
   # both the base and this branch and fails only on tests that pass on the base

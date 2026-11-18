@@ -14,6 +14,14 @@ const CONFIG_CACHE_TTL_MS = 5000;
 // Full copies of oversized payloads are kept only for the newest rows, and
 // only when "Show full request details" is on, so the DB can't balloon.
 const FULL_DATA_KEEP_ROWS = 25;
+// Saves one row gets at most: a stream's row is saved when it starts and ends.
+const SAVES_PER_ROW = 2;
+// Queued saves that may still keep their whole bodies for a full copy: enough
+// to cover the newest FULL_DATA_KEEP_ROWS rows. Older saves keep only their
+// capped record, so the queue never holds more bodies than this.
+const MAX_FULL_CANDIDATES = SAVES_PER_ROW * FULL_DATA_KEEP_ROWS;
+// Rows written per transaction, so a backlog is drained in bounded steps.
+const MAX_ROWS_PER_WRITE = 200;
 const FULL_DATA_MAX_BYTES = 16 * 1024 * 1024;
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
@@ -91,10 +99,15 @@ async function readObservabilityConfig() {
   }
 }
 
+// Saves waiting to be written, as queueEntry builds them.
 let writeBuffer = [];
+// The saves, queued or in a running flush, that still hold their bodies
+// (entry.full), oldest first; at most MAX_FULL_CANDIDATES.
+let fullCandidates = [];
 let flushTimer = null;
 let activeFlush = null;
 let shuttingDown = false;
+let flushIntervalMs = DEFAULT_FLUSH_INTERVAL_MS;
 
 // Credential headers never reach a stored request detail (the dashboard renders
 // them and cloud sync uploads them).
@@ -149,7 +162,7 @@ async function unpackFullData(value) {
   return JSON.parse((await gunzipAsync(Buffer.from(value, "base64"))).toString("utf8"));
 }
 
-export const __test__ = { sanitizeHeaders, getMaxJsonSize, truncateField, prettyJsonPrefix, packFullData, unpackFullData, idsKeepingFullData, buffered: () => writeBuffer.length, flush: () => flushToDatabase(), shutdown: () => _shutdownHandler() };
+export const __test__ = { sanitizeHeaders, getMaxJsonSize, truncateField, prettyJsonPrefix, packFullData, unpackFullData, buffered: () => writeBuffer.length, fullCandidates: () => fullCandidates.length, MAX_FULL_CANDIDATES, flush: () => flushToDatabase(), shutdown: () => _shutdownHandler() };
 
 function generateDetailId(model) {
   const timestamp = new Date().toISOString();
@@ -230,18 +243,64 @@ function truncateField(obj, maxSize, fieldJson, key) {
   return obj;
 }
 
-// Ids, out of one flush's rows, that still hold a full copy once its trim
-// (FULL_DATA_KEEP_ROWS) has run: ordered as the trim orders them, by the
-// timestamp each row ends up with (its last save in the batch), then id. Rows
-// already in the table are older, so none of them can push one of these out.
-function idsKeepingFullData(items) {
+// The newest FULL_DATA_KEEP_ROWS ids of one write's saves, ordered as the trim
+// orders rows: by the timestamp each row ends up with (its last save here),
+// then id. Whatever the table already holds, every row of this write that the
+// trim leaves a full copy on is one of these.
+function idsKeepingFullData(entries) {
   const stamps = new Map();
-  for (const item of items) {
-    stamps.delete(item.id);
-    stamps.set(item.id, String(item.timestamp));
-  }
-  const newestFirst = [...stamps].sort(([aId, a], [bId, b]) => (a !== b ? (a < b ? 1 : -1) : aId < bId ? 1 : aId > bId ? -1 : 0));
+  for (const entry of entries) stamps.set(entry.id, String(entry.timestamp));
+  const newestFirst = [...stamps].sort(([aId, a], [bId, b]) => (a !== b ? (a < b ? 1 : -1) : aId < bId ? 1 : -1));
   return new Set(newestFirst.slice(0, FULL_DATA_KEEP_ROWS).map(([id]) => id));
+}
+
+// maxRecords as a usable row count: a missing or broken setting can't turn the
+// queue's cap or the table's trim off.
+function rowLimit(maxRecords) {
+  const n = Math.floor(Number(maxRecords));
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_MAX_RECORDS;
+}
+
+// A save as it waits to be written: the columns and the capped record as JSON,
+// built now so the save holds no body. Only a save whose fields were cut and
+// that may get a full copy also keeps the request it came from (`full`), until
+// newer saves push it out of fullCandidates or it is written.
+function queueEntry(item, { maxJsonSize, keepFullData }) {
+  if (!item.id) item.id = generateDetailId(item.model);
+  if (!item.timestamp) item.timestamp = new Date().toISOString();
+  if (item.request?.headers) item.request.headers = sanitizeHeaders(item.request.headers);
+  // A binary upstream body (Windsurf's protobuf starts with the API key) is
+  // stored as its size only.
+  for (const key of PAYLOAD_KEYS) if (isBinaryBody(item[key])) item[key] = binaryBodyMarker(item[key]);
+
+  const fieldJson = keepFullData ? {} : undefined;
+  const record = {
+    id: item.id,
+    provider: item.provider || null,
+    model: item.model || null,
+    connectionId: item.connectionId || null,
+    timestamp: item.timestamp,
+    status: item.status || null,
+    latency: item.latency || {},
+    tokens: item.tokens || {},
+    request: truncateField(item.request, maxJsonSize, fieldJson, "request"),
+    providerRequest: truncateField(item.providerRequest, maxJsonSize, fieldJson, "providerRequest"),
+    providerResponse: truncateField(item.providerResponse, maxJsonSize, fieldJson, "providerResponse"),
+    response: truncateField(item.response, maxJsonSize, fieldJson, "response"),
+    errorClass: item.errorClass || undefined,
+  };
+  const cut = PAYLOAD_KEYS.some((key) => record[key]?._truncated === true && item[key] != null);
+  return {
+    id: record.id, timestamp: record.timestamp, provider: record.provider, model: record.model,
+    connectionId: record.connectionId, status: record.status, data: stringifyJson(record),
+    keepFullData: keepFullData === true, cut,
+    full: keepFullData && cut ? { item, record, fieldJson } : null,
+  };
+}
+
+// Drops the bodies of saves that left fullCandidates' window or were written.
+function pruneFullCandidates() {
+  fullCandidates = fullCandidates.filter((entry) => entry.full);
 }
 
 const UPSERT_PREFIX = `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data, fullData) VALUES(?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp, provider = excluded.provider, model = excluded.model, connectionId = excluded.connectionId, status = excluded.status, data = excluded.data, `;
@@ -258,82 +317,16 @@ function flushToDatabase() {
 
 async function writeBufferedRows() {
   try {
-    // Drain entire buffer (loop in case more pushed during await)
+    // Drain the buffer, saves added during an await included, in bounded writes.
     while (writeBuffer.length > 0) {
-      const items = writeBuffer.splice(0, writeBuffer.length);
-      const generation = configCache.generation;
-      const db = await getAdapter();
-      const config = await getObservabilityConfig();
-
-      // sql.js rewrites the whole DB file on every write, so it skips full payloads.
-      // So does a flush once shutdown starts, checked per row: gzip eats into
-      // the drain's listener budget, and the database closes when that runs out.
-      const wantFull = config.keepFullData && db.driver !== "sql.js";
-      const keepFull = wantFull && !shuttingDown;
-      for (const item of items) {
-        if (!item.id) item.id = generateDetailId(item.model);
-        if (!item.timestamp) item.timestamp = new Date().toISOString();
+      const entries = writeBuffer.splice(0, MAX_ROWS_PER_WRITE);
+      try {
+        await writeEntries(entries);
+      } finally {
+        // Written or lost, these saves hold no bodies from here on.
+        for (const entry of entries) entry.full = null;
+        pruneFullCandidates();
       }
-      // Only rows the trim leaves a full copy on are packed. Gzipping every
-      // row of a backlog made the flush slower than the requests feeding it,
-      // and each waiting row holds its request's whole body.
-      const packIds = keepFull ? idsKeepingFullData(items) : null;
-      const rows = [];
-      for (const item of items) {
-        if (item.request?.headers) item.request.headers = sanitizeHeaders(item.request.headers);
-        // A binary upstream body (Windsurf's protobuf starts with the API key) is
-        // stored as its size only.
-        for (const key of PAYLOAD_KEYS) if (isBinaryBody(item[key])) item[key] = binaryBodyMarker(item[key]);
-
-        const fieldJson = packIds?.has(item.id) ? {} : undefined;
-        const record = {
-          id: item.id,
-          provider: item.provider || null,
-          model: item.model || null,
-          connectionId: item.connectionId || null,
-          timestamp: item.timestamp,
-          status: item.status || null,
-          latency: item.latency || {},
-          tokens: item.tokens || {},
-          request: truncateField(item.request, config.maxJsonSize, fieldJson, "request"),
-          providerRequest: truncateField(item.providerRequest, config.maxJsonSize, fieldJson, "providerRequest"),
-          providerResponse: truncateField(item.providerResponse, config.maxJsonSize, fieldJson, "providerResponse"),
-          response: truncateField(item.response, config.maxJsonSize, fieldJson, "response"),
-          errorClass: item.errorClass || undefined,
-        };
-        const pack = fieldJson !== undefined && !shuttingDown;
-        // A row not packed keeps the full copy an earlier save stored (a
-        // stream's start save shares its id with its end save); the trim
-        // clears it unless the row is among the newest.
-        rows.push({ record, fullData: pack ? await packFullData(item, record, fieldJson) : null, keepStored: wantFull && !pack });
-      }
-      // The setting may have been turned off (and stored payloads cleared)
-      // while compression was awaited. Nothing awaits between this check and
-      // the transaction, so a clear can't slip in after it.
-      if (generation !== configCache.generation) {
-        for (const row of rows) { row.fullData = null; row.keepStored = false; }
-      }
-
-      db.transaction(() => {
-        for (const { record, fullData, keepStored } of rows) {
-          db.run(keepStored ? UPSERT_KEEP_STORED_FULL_SQL : UPSERT_SQL,
-            [record.id, record.timestamp, record.provider, record.model, record.connectionId, record.status, stringifyJson(record), fullData]
-          );
-        }
-
-        db.run(
-          `UPDATE requestDetails SET fullData = NULL WHERE fullData IS NOT NULL AND id NOT IN (SELECT id FROM requestDetails ORDER BY timestamp DESC, id DESC LIMIT ?)`,
-          [FULL_DATA_KEEP_ROWS]
-        );
-
-        const cnt = db.get(`SELECT COUNT(*) as c FROM requestDetails`);
-        if (cnt && cnt.c > config.maxRecords) {
-          db.run(
-            `DELETE FROM requestDetails WHERE id IN (SELECT id FROM requestDetails ORDER BY timestamp ASC LIMIT ?)`,
-            [cnt.c - config.maxRecords]
-          );
-        }
-      });
     }
   } catch (e) {
     console.error("[requestDetailsRepo] Batch write failed:", e);
@@ -341,30 +334,102 @@ async function writeBufferedRows() {
     // Cleared in the same tick as the last empty-buffer check, so a row saved
     // after it starts a new flush instead of joining one that's done.
     activeFlush = null;
+    // A failed write leaves the saves made during it queued, and the save that
+    // reached the batch size may have cancelled the timer: write them later.
+    armFlushTimer();
   }
+}
+
+async function writeEntries(entries) {
+  const generation = configCache.generation;
+  const db = await getAdapter();
+  const config = await getObservabilityConfig();
+  const maxRecords = rowLimit(config.maxRecords);
+
+  // sql.js rewrites the whole DB file on every write, so it skips full payloads.
+  // So does a flush once shutdown starts, checked per row: gzip eats into
+  // the drain's listener budget, and the database closes when that runs out.
+  const wantFull = config.keepFullData && db.driver !== "sql.js";
+  // Only a row's last save here, and only rows the trim leaves a full copy on,
+  // are packed. Gzipping every save of a backlog made the flush slower than
+  // the requests feeding it.
+  const keeping = wantFull ? idsKeepingFullData(entries) : null;
+  const lastSave = new Map(entries.map((entry, i) => [entry.id, i]));
+  const rows = [];
+  for (const [i, entry] of entries.entries()) {
+    const full = entry.full;
+    const pack = wantFull && !shuttingDown && entry.keepFullData && lastSave.get(entry.id) === i
+      && keeping.has(entry.id) && (full !== null || !entry.cut);
+    // A row not packed keeps the full copy an earlier save stored (a stream's
+    // start save shares its id with its end save); the trim clears it unless
+    // the row is among the newest.
+    rows.push({ entry, fullData: pack && full ? await packFullData(full.item, full.record, full.fieldJson) : null, keepStored: wantFull && !pack });
+  }
+  // The setting may have been turned off (and stored payloads cleared)
+  // while compression was awaited. Nothing awaits between this check and
+  // the transaction, so a clear can't slip in after it.
+  if (generation !== configCache.generation) {
+    for (const row of rows) { row.fullData = null; row.keepStored = false; }
+  }
+
+  db.transaction(() => {
+    for (const { entry, fullData, keepStored } of rows) {
+      db.run(keepStored ? UPSERT_KEEP_STORED_FULL_SQL : UPSERT_SQL,
+        [entry.id, entry.timestamp, entry.provider, entry.model, entry.connectionId, entry.status, entry.data, fullData]
+      );
+    }
+
+    db.run(
+      `UPDATE requestDetails SET fullData = NULL WHERE fullData IS NOT NULL AND id NOT IN (SELECT id FROM requestDetails ORDER BY timestamp DESC, id DESC LIMIT ?)`,
+      [FULL_DATA_KEEP_ROWS]
+    );
+
+    const cnt = db.get(`SELECT COUNT(*) as c FROM requestDetails`);
+    if (cnt && cnt.c > maxRecords) {
+      db.run(
+        `DELETE FROM requestDetails WHERE id IN (SELECT id FROM requestDetails ORDER BY timestamp ASC LIMIT ?)`,
+        [cnt.c - maxRecords]
+      );
+    }
+  });
+}
+
+function armFlushTimer() {
+  if (flushTimer || writeBuffer.length === 0) return;
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    flushToDatabase().catch(() => {});
+  }, flushIntervalMs);
 }
 
 export async function saveRequestDetail(detail) {
   const config = await getObservabilityConfig();
   if (!config.enabled) {return;}
+  flushIntervalMs = config.flushIntervalMs;
 
-  writeBuffer.push(detail);
-  // A row holds its request's whole body until it is written. Past twice
-  // maxRecords (a stream saves its row twice) the oldest waiting rows are ones
-  // the flush's trim would delete anyway, so they're dropped here.
-  const maxBuffered = 2 * config.maxRecords;
-  if (writeBuffer.length > maxBuffered) writeBuffer.splice(0, writeBuffer.length - maxBuffered);
+  const entry = queueEntry(detail, config);
+  writeBuffer.push(entry);
+  if (entry.full) {
+    fullCandidates.push(entry);
+    // Saves this far back can't end up among the newest FULL_DATA_KEEP_ROWS
+    // rows (a later save of the same row would be the one packed).
+    while (fullCandidates.length > MAX_FULL_CANDIDATES) fullCandidates.shift().full = null;
+  }
+  // Past SAVES_PER_ROW × maxRecords queued saves, the oldest are ones the trim
+  // would delete anyway. A running write holds at most MAX_ROWS_PER_WRITE more.
+  const maxQueued = SAVES_PER_ROW * rowLimit(config.maxRecords);
+  if (writeBuffer.length > maxQueued) {
+    for (const dropped of writeBuffer.splice(0, writeBuffer.length - maxQueued)) dropped.full = null;
+    pruneFullCandidates();
+  }
 
   // Trigger immediate flush if batch threshold reached.
   // flushToDatabase() drains entire buffer in a loop, so all pushes during await are persisted.
   if (writeBuffer.length >= config.batchSize) {
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
     flushToDatabase().catch((e) => console.error("[requestDetailsRepo] flush err:", e));
-  } else if (!flushTimer) {
-    flushTimer = setTimeout(() => {
-      flushTimer = null;
-      flushToDatabase().catch(() => {});
-    }, config.flushIntervalMs);
+  } else {
+    armFlushTimer();
   }
 }
 
@@ -434,6 +499,9 @@ export async function getRequestDetailById(id) {
 export async function clearRequestDetailFullData() {
   configCache.value = null;
   configCache.generation += 1;
+  // Queued saves won't get a full copy now: let their bodies go.
+  for (const entry of fullCandidates) entry.full = null;
+  fullCandidates = [];
   const db = await getAdapter();
   const { changes } = db.run(`UPDATE requestDetails SET fullData = NULL WHERE fullData IS NOT NULL`);
   // Give the freed pages back so the payloads don't linger in the file. The
