@@ -90,6 +90,7 @@ function macLaunchAgent(nodePath, routerScript, launch, logs) {
   // EnvironmentVariables.PATH includes node's bin dir so child processes
   // spawned by cli.js (npm install at runtime, etc.) resolve.
   const env = { PATH: `${path.posix.dirname(nodePath)}:/usr/local/bin:/usr/bin:/bin`, ...entryEnv(launch) };
+  refuseLineBreaks(Object.values(env));
   const args = refuseLineBreaks([nodePath, routerScript, ...getBackgroundArgs(launch)]);
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
