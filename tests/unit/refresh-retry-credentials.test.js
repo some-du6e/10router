@@ -6,16 +6,30 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // of the new tokens must not fail a request that can go on with them.
 
 const mocks = vi.hoisted(() => ({
-  executorRefresh: vi.fn(), execute: vi.fn(), refreshByProvider: vi.fn(),
+  executorRefresh: vi.fn(), execute: vi.fn(), refreshByProvider: vi.fn(), refreshKiro: vi.fn(),
   connections: vi.fn(), getById: vi.fn(), update: vi.fn(), kiroModels: vi.fn(),
 }));
 
 vi.mock("../../open-sse/executors/index.js", () => ({
-  getExecutor: () => ({ refreshCredentials: mocks.executorRefresh, needsRefresh: () => true }),
+  getExecutor: () => ({ execute: mocks.execute, refreshCredentials: mocks.executorRefresh, needsRefresh: () => true }),
 }));
 vi.mock("../../open-sse/services/tokenRefresh.js", async (importOriginal) => ({
   ...(await importOriginal()),
   refreshTokenByProvider: mocks.refreshByProvider,
+  refreshKiroToken: mocks.refreshKiro,
+}));
+// chatCore's logging and usage side effects
+vi.mock("../../open-sse/utils/requestLogger.js", () => ({
+  createRequestLogger: vi.fn(async () => ({
+    logClientRawRequest: vi.fn(), logRawRequest: vi.fn(), logTargetRequest: vi.fn(), logError: vi.fn(),
+  })),
+}));
+vi.mock("../../open-sse/translator/concerns/prefetch.js", () => ({ prefetchRemoteImages: vi.fn(async () => 0) }));
+vi.mock("@/lib/usageDb.js", () => ({
+  trackPendingRequest: vi.fn(),
+  appendRequestLog: vi.fn(() => Promise.resolve()),
+  saveRequestDetail: vi.fn(() => Promise.resolve()),
+  saveRequestUsage: vi.fn(() => Promise.resolve()),
 }));
 vi.mock("../../open-sse/handlers/imageProviders/index.js", () => ({
   getImageAdapter: () => ({
@@ -50,6 +64,8 @@ vi.mock("../../src/lib/localDb.js", () => db);
 vi.mock("../../src/models/index.js", () => db);
 vi.mock("../../src/lib/disabledModelsDb.js", () => ({ getDisabledModels: async () => ({}) }));
 
+import { createHash } from "node:crypto";
+import { handleChatCore } from "../../open-sse/handlers/chatCore.js";
 import { handleImageGenerationCore } from "../../open-sse/handlers/imageGenerationCore.js";
 import { handleEmbeddingsCore } from "../../open-sse/handlers/embeddingsCore.js";
 import { handleVideoProxyCore } from "../../open-sse/handlers/videoCore.js";
@@ -104,7 +120,51 @@ function translatorExecutor() {
   return seen;
 }
 
+// A Kiro IDC account, and the patch its refresh returns when it looks up a missing profile.
+const idcAccount = () => ({
+  accessToken: "old-access", refreshToken: "old-refresh",
+  providerSpecificData: { authMethod: "idc", region: "eu-west-1", clientId: "client-1" },
+});
+const profilePatch = { profileArn: "arn:aws:codewhisperer:eu-west-1:000000000000:profile/EXAMPLE" };
+
 describe("retry after a patch-only refresh keeps the request's other credential fields", () => {
+  it("chat", async () => {
+    const seen = [];
+    mocks.execute.mockImplementation(async ({ credentials }) => {
+      seen.push({ accessToken: credentials.accessToken, providerSpecificData: { ...credentials.providerSpecificData } });
+      const response = seen.length === 1
+        ? json({ error: { message: "expired" } }, 401)
+        : json({ id: "c1", object: "chat.completion", model: "m", choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1 } });
+      return { response, url: "https://chat.example.test", headers: {}, transformedBody: {} };
+    });
+    mocks.executorRefresh.mockResolvedValueOnce({ accessToken: "new-access", providerSpecificData: profilePatch });
+    const body = { model: "m", stream: false, messages: [{ role: "user", content: "Hi" }] };
+    await handleChatCore({
+      body, modelInfo: { provider: "openai", model: "m" }, credentials: idcAccount(),
+      clientRawRequest: { endpoint: "/v1/chat/completions", body, headers: {} }, connectionId: "conn-1",
+      log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+    expect(seen).toHaveLength(2);
+    expect(seen[1].accessToken).toBe("new-access");
+    expect(seen[1].providerSpecificData).toMatchObject({ authMethod: "idc", region: "eu-west-1", clientId: "client-1", ...profilePatch });
+  });
+
+  it("Kiro model catalog", async () => {
+    const { resolveKiroModels } = await vi.importActual("../../open-sse/services/kiroModels.js");
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce(json({ message: "expired" }, 401))
+      .mockResolvedValueOnce(json({ models: [{ modelId: "kiro-model" }] }));
+    mocks.refreshKiro.mockResolvedValueOnce({ accessToken: "new-access", providerSpecificData: profilePatch });
+    const result = await resolveKiroModels(idcAccount(), { forceRefresh: true });
+    expect(result?.models?.length).toBeGreaterThan(0);
+    const [url, init] = global.fetch.mock.calls[1];
+    expect(url).toContain("profileArn=" + encodeURIComponent(profilePatch.profileArn));
+    expect(init.headers.Authorization).toBe("Bearer new-access");
+    // The fingerprint is seeded from clientId: still there on the retry.
+    const machineId = createHash("sha256").update("client-1").digest("hex");
+    expect(init.headers["User-Agent"]).toContain(machineId);
+  });
+
   it("image generation", async () => {
     global.fetch = vi.fn().mockResolvedValueOnce(json({ error: "expired" }, 401)).mockResolvedValueOnce(json({ created: 1, data: [] }));
     const onCredentialsRefreshed = vi.fn();
