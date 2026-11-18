@@ -1,78 +1,76 @@
-import { getUsageStats, statsEmitter, getActiveRequests } from "@/lib/usageDb";
+import { statsEmitter, getActiveRequests } from "@/lib/usageDb";
 
 export const dynamic = "force-dynamic";
 
+const PING = new TextEncoder().encode(": ping\n\n");
+
+// The dashboard merges only these fields from the stream; full stats (which
+// include per-key usage) come from /api/usage/stats.
+async function liveFrame(encoder) {
+  const { activeRequests, recentRequests, errorProvider, pending } = await getActiveRequests();
+  return encoder.encode(`data: ${JSON.stringify({ activeRequests, recentRequests, errorProvider, pending })}\n\n`);
+}
+
 export async function GET(request) {
   const encoder = new TextEncoder();
-  const state = { closed: false, keepalive: null, send: null, sendPending: null, cachedStats: null, controller: null };
+  let controller;
+  let closed = false;
+  let keepalive = null;
+  let latest = null;
 
   // Next.js disconnects can abort the request without canceling the response body.
   const cleanup = () => {
-    if (state.closed) return;
-    state.closed = true;
-    if (state.send) statsEmitter.off("update", state.send);
-    if (state.sendPending) statsEmitter.off("pending", state.sendPending);
-    clearInterval(state.keepalive);
+    if (closed) return;
+    closed = true;
+    latest = null;
+    statsEmitter.off("update", push);
+    statsEmitter.off("pending", push);
+    clearInterval(keepalive);
     request.signal.removeEventListener("abort", cleanup);
-    try { state.controller?.close(); } catch {}
+    try { controller.close(); } catch {}
   };
+
+  // A client that stops reading (a sleeping laptop) keeps only the newest
+  // frame waiting instead of one per event; pull() sends it once it reads again.
+  const write = (bytes, keepLatest) => {
+    if (closed) return;
+    try {
+      if (controller.desiredSize > 0) controller.enqueue(bytes);
+      else if (keepLatest) latest = bytes;
+    } catch {
+      cleanup();
+    }
+  };
+
+  async function push() {
+    if (closed) return;
+    try {
+      write(await liveFrame(encoder), true);
+    } catch {
+      cleanup();
+    }
+  }
+
   request.signal.addEventListener("abort", cleanup, { once: true });
 
   const stream = new ReadableStream({
-    async start(controller) {
-      state.controller = controller;
-      if (request.signal.aborted) {
-        cleanup();
-        return;
-      }
-      // Full stats refresh (heavy) + immediate lightweight push
-      state.send = async () => {
-        if (state.closed) return;
-        try {
-          // Push lightweight update immediately so UI reflects changes fast
-          if (state.cachedStats) {
-            const { activeRequests, recentRequests, errorProvider } = await getActiveRequests();
-            if (state.closed) return;
-            const quickStats = { ...state.cachedStats, activeRequests, recentRequests, errorProvider };
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify(quickStats)}\n\n`));
-          }
-          // Then do full recalc and update cache
-          const stats = await getUsageStats();
-          if (state.closed) return;
-          state.cachedStats = stats;
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(stats)}\n\n`));
-        } catch {
-          cleanup();
-        }
-      };
+    async start(c) {
+      controller = c;
+      if (request.signal.aborted) return cleanup();
 
-      // Lightweight push: only refresh activeRequests + recentRequests on pending changes
-      state.sendPending = async () => {
-        if (state.closed || !state.cachedStats) return;
-        try {
-          const { activeRequests, recentRequests, errorProvider } = await getActiveRequests();
-          if (state.closed) return;
-          const stats = { ...state.cachedStats, activeRequests, recentRequests, errorProvider };
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(stats)}\n\n`));
-        } catch {
-          cleanup();
-        }
-      };
+      await push();
+      if (closed) return;
 
-      await state.send();
-      if (state.closed) return;
+      statsEmitter.on("update", push);
+      statsEmitter.on("pending", push);
+      keepalive = setInterval(() => write(PING, false), 25000);
+    },
 
-      statsEmitter.on("update", state.send);
-      statsEmitter.on("pending", state.sendPending);
-
-      state.keepalive = setInterval(() => {
-        if (state.closed) { clearInterval(state.keepalive); return; }
-        try {
-          controller.enqueue(encoder.encode(": ping\n\n"));
-        } catch {
-          cleanup();
-        }
-      }, 25000);
+    pull(c) {
+      if (!latest) return;
+      const bytes = latest;
+      latest = null;
+      c.enqueue(bytes);
     },
 
     cancel() {

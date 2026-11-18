@@ -5,9 +5,11 @@ on:
     paths:
       - "src/app/api/usage/stream/**"
       - "src/lib/usageDb.js"
+      - "src/lib/db/repos/usageRepo.js"
       - "src/lib/notifications/**"
       - "tests/package.json"
       - "tests/vitest.config.js"
+      - "tests/vitest.shared.js"
       - "tests/unit/usage-stream-lifecycle.test.js"
       - "tests/unit/notification-*.test.js"
       - "tests/unit/quota-notification*.test.js"

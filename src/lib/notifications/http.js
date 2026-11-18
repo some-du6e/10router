@@ -91,9 +91,8 @@ export async function notificationFetch(urlValue, options = {}, deps = {}) {
       const detail = await readResponseText(response);
       throw new Error(`Notification request failed (${response.status})${detail ? `: ${detail}` : ""}`);
     }
-    return response;
+    return response.status;
   } finally {
-    // Senders only use the status; closing the dispatcher waits on unread bodies.
     try { await response?.body?.cancel?.(); } catch {}
     clearTimeout(timeout);
     await dispatcher?.close().catch(() => {});
