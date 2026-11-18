@@ -7,7 +7,9 @@ on:
       - "Dockerfile"
       - "DOCKER.md"
       - "cli/cli.js"
+      - "cli/package.json"
       - "cli/scripts/build-cli.js"
+      - "cli/hooks/dataDir.js"
       - "cli/hooks/sqliteRuntime.js"
       - "cli/src/cli/api/client.js"
       - "cli/src/cli/terminalUI.js"
@@ -18,6 +20,8 @@ on:
       - "src/lib/appProcesses.js"
       - "src/lib/updater/updater.js"
       - "src/lib/dataDir.js"
+      - "src/lib/auth/cliToken.ts"
+      - "src/shared/utils/machineId.js"
       - "src/lib/tunnel/cloudflare/cloudflared.js"
       - "src/lib/tunnel/cloudflare/pid.js"
       - "src/lib/mcp/**"
@@ -35,6 +39,8 @@ on:
       - "tests/unit/cli-local-host-hardening.test.js"
       - "tests/unit/version-routes.test.js"
       - "tests/unit/cloudflared-own-handle.test.js"
+      - "tests/unit/cli-data-dir.test.js"
+      - "tests/unit/cli-client-data-dir.test.js"
       - "tests/vitest.config.js"
       - "package.json"
       - "tests/package.json"
@@ -70,6 +76,8 @@ jobs:
           unit/cli-local-host-hardening.test.js
           unit/version-routes.test.js
           unit/cloudflared-own-handle.test.js
+          unit/cli-data-dir.test.js
+          unit/cli-client-data-dir.test.js
 
   # known-fails.txt lags master, so compare against the base branch run instead.
   no-new-failures:

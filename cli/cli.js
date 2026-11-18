@@ -63,6 +63,10 @@ function createSpinner(text) {
 }
 
 const pkg = require("./package.json");
+const { getDataDir, absoluteDataDir } = require("./hooks/dataDir");
+// Before anything reads it: the server starts in its own directory, so it and
+// this process must get the same absolute DATA_DIR.
+if (process.env.DATA_DIR) process.env.DATA_DIR = absoluteDataDir(process.env.DATA_DIR);
 const { ensureSqliteRuntime, buildEnvWithRuntime } = require("./hooks/sqliteRuntime");
 const { ensureTrayRuntime } = require("./hooks/trayRuntime");
 const args = process.argv.slice(2);
@@ -191,15 +195,6 @@ function compareVersions(a, b) {
   return 0;
 }
 
-// Get app data dir (matches app/src/lib/dataDir.js convention).
-// NOTE: the ".9router" / "9router" directory names are retained for compatibility
-// with existing installs — deliberately NOT renamed during the 10router rebrand.
-function getAppDataDir() {
-  return process.platform === "win32"
-    ? path.join(process.env.APPDATA || "", "9router")
-    : path.join(os.homedir(), ".9router");
-}
-
 // Kill PID from file (best-effort, removes file after)
 function killByPidFile(pidFile) {
   try {
@@ -219,7 +214,7 @@ function killByPidFile(pidFile) {
 
 // Kill tunnel processes (cloudflared/tailscale) by their PID files
 function killTunnelByPidFile() {
-  const tunnelDir = path.join(getAppDataDir(), "tunnel");
+  const tunnelDir = path.join(getDataDir(), "tunnel");
   killByPidFile(path.join(tunnelDir, "cloudflared.pid"));
   killByPidFile(path.join(tunnelDir, "tailscale.pid"));
 }

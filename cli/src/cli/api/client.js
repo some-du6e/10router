@@ -3,8 +3,8 @@ const https = require("https");
 const crypto = require("crypto");
 const fs = require("node:fs");
 const path = require("node:path");
-const os = require("node:os");
 const { machineIdSync } = require("node-machine-id");
+const { getDataDir } = require("../../../hooks/dataDir");
 
 // Default configuration
 const DEFAULT_CONFIG = {
@@ -15,17 +15,8 @@ const DEFAULT_CONFIG = {
 
 const CLI_TOKEN_HEADER = "x-9r-cli-token";
 const CLI_TOKEN_SALT = "9r-cli-auth";
-// Must match src/lib/dataDir.js: the server keeps the "9router" directory for existing installs.
-const APP_NAME = "9router";
 
-function getDataDir() {
-  if (process.env.DATA_DIR) return process.env.DATA_DIR;
-  if (process.platform === "win32") {
-    return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), APP_NAME);
-  }
-  return path.join(os.homedir(), `.${APP_NAME}`);
-}
-
+// The server's data directory, where it keeps machine-id and auth/cli-secret.
 const MACHINE_ID_FILE = path.join(getDataDir(), "machine-id");
 const AUTH_DIR = path.join(getDataDir(), "auth");
 const CLI_SECRET_FILE = path.join(AUTH_DIR, "cli-secret");
@@ -59,10 +50,11 @@ function loadCliSecret() {
 }
 
 function getCliToken() {
-  if (cachedCliToken !== null) return cachedCliToken;
+  if (cachedCliToken) return cachedCliToken;
   const raw = loadRawMachineId();
+  if (!raw) return "";
   const secret = loadCliSecret();
-  cachedCliToken = raw ? crypto.createHash("sha256").update(raw + CLI_TOKEN_SALT + secret).digest("hex").substring(0, 16) : "";
+  cachedCliToken = crypto.createHash("sha256").update(raw + CLI_TOKEN_SALT + secret).digest("hex").substring(0, 16);
   return cachedCliToken;
 }
 
@@ -506,7 +498,6 @@ async function disableTunnel() {
 
 module.exports = {
   configure,
-  getDataDir,
   hostForBind,
   
   // Providers
