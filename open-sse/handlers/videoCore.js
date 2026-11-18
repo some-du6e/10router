@@ -1,6 +1,7 @@
 import { createErrorResult } from "../utils/error.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { refreshTokenByProvider } from "../services/tokenRefresh.js";
+import { applyRefreshedCredentials } from "../services/oauthCredentialManager.js";
 import { PROVIDER_MEDIA } from "../providers/index.js";
 import { sanitizeSecrets } from "../utils/redact.js";
 
@@ -119,7 +120,7 @@ export async function handleVideoProxyCore({
     }
     if (refreshed?.accessToken) {
       log?.info?.("TOKEN", `${provider.toUpperCase()} | refreshed for video ${method}`);
-      Object.assign(credentials, refreshed);
+      applyRefreshedCredentials(credentials, refreshed);
       if (onCredentialsRefreshed) await onCredentialsRefreshed(refreshed);
       try {
         await upstream.body?.cancel?.();

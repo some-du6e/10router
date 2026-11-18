@@ -67,6 +67,18 @@ export function mergeProviderSpecificData(existing, next) {
   };
 }
 
+// A refresh result's providerSpecificData holds only what the refresh changed.
+// This applies a result to the in-memory credentials, keeping the other fields.
+export function applyRefreshedCredentials(credentials, refreshedCredentials) {
+  const providerSpecificData = mergeProviderSpecificData(
+    credentials.providerSpecificData,
+    refreshedCredentials?.providerSpecificData
+  );
+  Object.assign(credentials, refreshedCredentials);
+  if (providerSpecificData) credentials.providerSpecificData = providerSpecificData;
+  return credentials;
+}
+
 export function mergeRefreshedCredentials(provider, currentCredentials, refreshedCredentials, nowMs = Date.now()) {
   if (!refreshedCredentials) return null;
   if (isUnrecoverableRefreshError(refreshedCredentials)) return refreshedCredentials;
@@ -94,10 +106,7 @@ export function mergeRefreshedCredentials(provider, currentCredentials, refreshe
   if (refreshedCredentials.projectId) next.projectId = refreshedCredentials.projectId;
 
   if (refreshedCredentials.providerSpecificData) {
-    next.providerSpecificData = mergeProviderSpecificData(
-      currentCredentials?.providerSpecificData,
-      refreshedCredentials.providerSpecificData
-    );
+    next.providerSpecificData = { ...refreshedCredentials.providerSpecificData };
   }
 
   if (refreshedCredentials.copilotToken) next.copilotToken = refreshedCredentials.copilotToken;

@@ -846,7 +846,6 @@ async function routeSingleModelChat(
       onCredentialsRefreshed: async (newCreds: Record<string, unknown>) => {
         await updateProviderCredentials(credentials.connectionId, {
           ...newCreds,
-          existingProviderSpecificData: credentials.providerSpecificData,
           testStatus: "active"
         });
       },

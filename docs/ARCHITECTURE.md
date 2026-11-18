@@ -304,7 +304,7 @@ sequenceDiagram
     Test-->>UI: validation result
 ```
 
-Refresh during live traffic is executed inside `open-sse/handlers/chatCore.js` via executor `refreshCredentials()`.
+Refresh during live traffic runs inside the chat, image, embeddings and video cores (`open-sse/handlers/chatCore.js`, `imageGenerationCore.js`, `embeddingsCore.js`, `videoCore.js`), through the executor's `refreshCredentials()` (video calls `refreshTokenByProvider()`). Every refresh is saved through `updateProviderCredentials()` (`src/sse/services/tokenRefresh.js`), which applies the result's `providerSpecificData` over the stored row inside `updateProviderConnection()`'s transaction, so a refresh changes only the fields it returned.
 
 ## Cloud Sync Lifecycle (Enable / Sync / Disable)
 

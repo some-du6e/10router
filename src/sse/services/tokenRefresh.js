@@ -90,10 +90,12 @@ export function releaseConnection(connectionId) {
 /**
  * Compute an ISO expiry timestamp from a relative expiresIn (seconds).
  * @param {number} expiresIn
- * @returns {string}
+ * @returns {string|null} null when expiresIn is not a usable number of seconds
  */
 function toExpiresAt(expiresIn) {
-  return new Date(Date.now() + expiresIn * 1000).toISOString();
+  const seconds = Number(expiresIn);
+  if (!expiresIn || !Number.isFinite(seconds) || seconds <= 0) return null;
+  return normalizeExpiresAt(Date.now() + seconds * 1000);
 }
 
 function normalizeExpiresAt(expiresAt) {
@@ -159,14 +161,19 @@ export async function updateProviderCredentials(connectionId, newCredentials) {
   try {
     const updates = {};
 
-    if (newCredentials.accessToken)         updates.accessToken  = newCredentials.accessToken;
+    if (newCredentials.accessToken) {
+      updates.accessToken = newCredentials.accessToken;
+      updates.lastRefreshAt = new Date().toISOString();
+    }
     if (newCredentials.refreshToken)        updates.refreshToken = newCredentials.refreshToken;
     if (newCredentials.idToken)             updates.idToken = newCredentials.idToken;
     if (newCredentials.lastRefreshAt)       updates.lastRefreshAt = newCredentials.lastRefreshAt;
+    if (newCredentials.testStatus)          updates.testStatus = newCredentials.testStatus;
     if (newCredentials.expiresAt)           updates.expiresAt = newCredentials.expiresAt;
-    if (newCredentials.expiresIn) {
-      updates.expiresAt = toExpiresAt(newCredentials.expiresIn);
-      updates.expiresIn = newCredentials.expiresIn;
+    const expiresInAt = toExpiresAt(newCredentials.expiresIn);
+    if (expiresInAt) {
+      updates.expiresAt = expiresInAt;
+      updates.expiresIn = Number(newCredentials.expiresIn);
     } else if (newCredentials.expiresAt) {
       const expiresAt = normalizeExpiresAt(newCredentials.expiresAt);
       if (expiresAt) {
@@ -174,31 +181,15 @@ export async function updateProviderCredentials(connectionId, newCredentials) {
         updates.expiresIn = Math.max(1, Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000));
       }
     }
-    if (newCredentials.providerSpecificData) {
-      // Refresh payloads are patches. Read current metadata here so callers
-      // cannot erase account identity or overwrite newer background updates.
-      const existing = await getProviderConnectionById(connectionId);
-      updates.providerSpecificData = {
-        ...(newCredentials.existingProviderSpecificData || {}),
-        ...(existing?.providerSpecificData || {}),
-        ...newCredentials.providerSpecificData,
-      };
-    }
-    if (newCredentials.copilotToken || newCredentials.copilotTokenExpiresAt) {
-      const existing = updates.providerSpecificData
-        ? null
-        : await getProviderConnectionById(connectionId);
-      updates.providerSpecificData = {
-        ...(newCredentials.existingProviderSpecificData || {}),
-        ...(existing?.providerSpecificData || {}),
-        ...(updates.providerSpecificData || {}),
-        ...(newCredentials.copilotToken ? { copilotToken: newCredentials.copilotToken } : {}),
-        ...(newCredentials.copilotTokenExpiresAt ? { copilotTokenExpiresAt: newCredentials.copilotTokenExpiresAt } : {}),
-      };
-    }
+    const providerSpecificData = {
+      ...(newCredentials.providerSpecificData || {}),
+      ...(newCredentials.copilotToken ? { copilotToken: newCredentials.copilotToken } : {}),
+      ...(newCredentials.copilotTokenExpiresAt ? { copilotTokenExpiresAt: newCredentials.copilotTokenExpiresAt } : {}),
+    };
+    if (Object.keys(providerSpecificData).length > 0) updates.providerSpecificData = providerSpecificData;
     if (newCredentials.projectId)            updates.projectId = newCredentials.projectId;
 
-    const result = await updateProviderConnection(connectionId, updates);
+    const result = await updateProviderConnection(connectionId, updates, { patchProviderSpecificData: true });
     log.info("TOKEN_REFRESH", "Credentials updated in localDb", {
       connectionId,
       success: !!result
@@ -269,20 +260,14 @@ export async function checkAndRefreshToken(provider, credentials, options = {}) 
 
     const newCreds = await _refreshProviderCredentials(provider, creds, log);
     if (newCreds?.accessToken || newCreds?.apiKey || newCreds?.copilotToken) {
-      const mergedCreds = {
-        ...newCreds,
-        existingProviderSpecificData: creds.providerSpecificData,
-      };
-
       // Persist to DB (non-blocking path continues below)
-      await updateProviderCredentials(creds.connectionId, mergedCreds);
+      await updateProviderCredentials(creds.connectionId, newCreds);
 
       creds = {
         ...creds,
         ...newCreds,
-        expiresAt: newCreds.expiresIn
-          ? toExpiresAt(newCreds.expiresIn)
-          : normalizeExpiresAt(newCreds.expiresAt) || newCreds.expiresAt || creds.expiresAt,
+        expiresAt: toExpiresAt(newCreds.expiresIn)
+          || normalizeExpiresAt(newCreds.expiresAt) || newCreds.expiresAt || creds.expiresAt,
         providerSpecificData: newCreds.providerSpecificData
           ? { ...creds.providerSpecificData, ...newCreds.providerSpecificData }
           : creds.providerSpecificData,
@@ -310,17 +295,16 @@ export async function checkAndRefreshToken(provider, credentials, options = {}) 
 
       const copilotTokenResult = await refreshCopilotToken(creds.accessToken);
       if (copilotTokenResult) {
-        const updatedSpecific = {
-          ...creds.providerSpecificData,
+        const copilotPatch = {
           copilotToken:          copilotTokenResult.token,
           copilotTokenExpiresAt: copilotTokenResult.expiresAt,
         };
 
         await updateProviderCredentials(creds.connectionId, {
-          providerSpecificData: updatedSpecific,
+          providerSpecificData: copilotPatch,
         });
 
-        creds.providerSpecificData = updatedSpecific;
+        creds.providerSpecificData = { ...creds.providerSpecificData, ...copilotPatch };
         creds.copilotToken = copilotTokenResult.token;
       }
     }

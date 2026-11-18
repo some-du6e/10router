@@ -309,7 +309,9 @@ export async function createProviderConnection(data) {
 // noteServed, authDemoteOkAt marks the success for the stored records.
 // apiKeyUsed is the key a failing request used: if another key has been stored
 // since, the request's auth streak fields, autoDisable and demote are dropped.
-export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, noteServed = false, apiKeyUsed } = {}) {
+// patchProviderSpecificData applies data.providerSpecificData over the stored
+// one in this transaction instead of replacing it.
+export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, noteServed = false, apiKeyUsed, patchProviderSpecificData = false } = {}) {
   const db = await getAdapter();
   let result;
   let servesChanged = false;
@@ -318,6 +320,9 @@ export async function updateProviderConnection(id, data, { autoDisable = null, d
     if (!row) { result = null; return; }
     const existing = rowToConn(row);
     const merged = { ...existing, ...data, updatedAt: new Date().toISOString() };
+    if (patchProviderSpecificData && data.providerSpecificData) {
+      merged.providerSpecificData = { ...(existing.providerSpecificData || {}), ...data.providerSpecificData };
+    }
     const staleKey = apiKeyUsed !== undefined && existing.apiKey !== apiKeyUsed;
     if (staleKey) {
       for (const f of AUTH_STREAK_FIELDS) {

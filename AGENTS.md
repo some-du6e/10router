@@ -59,13 +59,13 @@ State lives in SQLite under `src/lib/db/` (the old `db.json` is gone). `driver.j
 - Import from `@/lib/db/index.js`. `src/lib/localDb.js` is a compatibility shim. Per-entity logic lives in `src/lib/db/repos/`, migrations in `src/lib/db/migrations/`.
 - The DB path comes from `src/lib/db/paths.js`: `DATA_DIR`, else `~/.9router/`. The directory keeps that name for existing installs.
 - Usage and logs (`src/lib/usageDb.js`) always write to `~/.9router` and ignore `DATA_DIR`.
-- An `onCredentialsRefreshed` callback passes the whole refresh result to `updateProviderCredentials` (`src/sse/services/tokenRefresh.js`), which merges `providerSpecificData` over what is stored now. `tests/unit/gateway-refresh-persistence.test.js` holds this for the image, search, fetch and video handlers.
 
 ### Icons
 The dashboard draws Material Symbols from a subset font, `src/app/fonts/material-symbols-outlined.woff2`, holding only the icons the source names (listed in the `.icons.txt` beside it). An icon outside the subset renders as its raw name, so after using a new icon name, rerun `node scripts/subset-icon-font.mjs` (needs python3 with `fonttools` and `brotli`) and commit both files; `tests/unit/icon-font-subset.test.js` goes red until you do. The font loads through `next/font/local` in `src/app/layout.js`. Importing `material-symbols/*.css` would pull the full 3.9 MB font back in. The logo is an inline SVG (`src/shared/components/LogoMark.tsx`) so it paints before the font arrives; use it rather than a `hub` icon for the brand mark.
 
 ### Security
 - `custom-server.js` derives the client IP from the TCP socket and honours `X-Forwarded-For` only from a loopback proxy. Keep that guarantee in any request, IP, or rate-limit change.
+- A token refresh result's `providerSpecificData` holds only the fields the refresh changed. Callers pass the whole result to `updateProviderCredentials`, which has `updateProviderConnection` (`patchProviderSpecificData`) apply it over the stored row in one transaction; the cores apply it to the request's copy with `applyRefreshedCredentials`. `tests/unit/gateway-refresh-persistence.test.js` and `refresh-metadata-patch.test.js` hold this.
 - A fresh install has no default password. It prints a one-time setup token to the console (`src/lib/auth/setupState.js`, `setupToken.js`), or takes `INITIAL_PASSWORD` (8+ chars) for headless bootstrap. The env contract lives in `.env.example`.
 
 Auth rules and the tests that hold them (all run in the default suite and in `.github/workflows/security-sso-oauth.yml`):

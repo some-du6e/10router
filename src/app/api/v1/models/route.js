@@ -64,7 +64,6 @@ const LIVE_MODEL_RESOLVERS = {
         await updateProviderCredentials(conn.id, {
           copilotToken: refreshed.copilotToken,
           copilotTokenExpiresAt: refreshed.copilotTokenExpiresAt,
-          existingProviderSpecificData: conn.providerSpecificData || {},
         });
       },
     });
@@ -92,10 +91,7 @@ const LIVE_MODEL_RESOLVERS = {
         strictProxy: proxy.strictProxy === true,
       },
       onCredentialsRefreshed: async (refreshed) => {
-        await updateProviderCredentials(conn.id, {
-          ...refreshed,
-          existingProviderSpecificData: conn.providerSpecificData || {},
-        });
+        await updateProviderCredentials(conn.id, refreshed);
       },
     });
     return result?.models?.length ? { models: result.models } : null;

@@ -99,11 +99,7 @@ const buildOAuthResolver = ({ refreshFn, fetchFn, parseFn, errorLabel }) => asyn
     if (!response.ok && (response.status === 401 || response.status === 403) && refreshToken) {
       const refreshed = await refreshFn(connection);
       if (refreshed?.accessToken) {
-        await updateProviderCredentials(connection.id, {
-          accessToken: refreshed.accessToken,
-          refreshToken: refreshed.refreshToken || refreshToken,
-          expiresIn: refreshed.expiresIn,
-        });
+        await updateProviderCredentials(connection.id, refreshed);
         connection.accessToken = refreshed.accessToken;
         if (refreshed.refreshToken) connection.refreshToken = refreshed.refreshToken;
         response = await fetchFn(refreshed.accessToken, connection);
@@ -301,11 +297,7 @@ const PROVIDER_MODELS_CONFIG = {
           log: console,
           onCredentialsRefreshed: async (refreshed) => {
             if (refreshed?.accessToken) {
-              await updateProviderCredentials(connection.id, {
-                accessToken: refreshed.accessToken,
-                refreshToken: refreshed.refreshToken || connection.refreshToken,
-                expiresIn: refreshed.expiresIn,
-              });
+              await updateProviderCredentials(connection.id, refreshed);
               connection.accessToken = refreshed.accessToken;
               if (refreshed.refreshToken) connection.refreshToken = refreshed.refreshToken;
             }
@@ -405,10 +397,7 @@ const PROVIDER_MODELS_CONFIG = {
           strictProxy: proxy.strictProxy === true,
         },
         onCredentialsRefreshed: async (refreshed) => {
-          await updateProviderCredentials(connection.id, {
-            ...refreshed,
-            existingProviderSpecificData: connection.providerSpecificData || {},
-          });
+          await updateProviderCredentials(connection.id, refreshed);
         },
       });
       if (result.models.length) return result;

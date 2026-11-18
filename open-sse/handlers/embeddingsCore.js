@@ -2,6 +2,7 @@ import { createErrorResult, parseUpstreamError, formatProviderError } from "../u
 import { HTTP_STATUS, FETCH_CONNECT_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { getExecutor } from "../executors/index.js";
 import { refreshWithRetry } from "../services/tokenRefresh.js";
+import { applyRefreshedCredentials } from "../services/oauthCredentialManager.js";
 import { getEmbeddingAdapter } from "./embeddingProviders/index.js";
 
 /**
@@ -90,7 +91,7 @@ export async function handleEmbeddingsCore({
 
     if (newCredentials?.accessToken || newCredentials?.apiKey) {
       log?.info?.("TOKEN", `${provider.toUpperCase()} | refreshed for embeddings`);
-      Object.assign(credentials, newCredentials);
+      applyRefreshedCredentials(credentials, newCredentials);
       if (onCredentialsRefreshed) await onCredentialsRefreshed(newCredentials);
 
       try {

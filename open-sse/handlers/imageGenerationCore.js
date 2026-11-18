@@ -1,6 +1,7 @@
 import { createErrorResult, parseUpstreamError, formatProviderError } from "../utils/error.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { refreshWithRetry } from "../services/tokenRefresh.js";
+import { applyRefreshedCredentials } from "../services/oauthCredentialManager.js";
 import { getExecutor } from "../executors/index.js";
 import { getImageAdapter } from "./imageProviders/index.js";
 import { urlToBase64 } from "./imageProviders/_base.js";
@@ -134,7 +135,7 @@ export async function handleImageGenerationCore({
 
     if (newCredentials?.accessToken || newCredentials?.apiKey) {
       log?.info?.("TOKEN", `${provider.toUpperCase()} | refreshed for image generation`);
-      Object.assign(credentials, newCredentials);
+      applyRefreshedCredentials(credentials, newCredentials);
       if (onCredentialsRefreshed) await onCredentialsRefreshed(newCredentials);
 
       try {

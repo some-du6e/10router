@@ -3,18 +3,36 @@ name: Gateway token refresh
 on:
   pull_request:
     paths:
+      # updateProviderCredentials and the metadata patch it writes
       - "src/sse/services/tokenRefresh.js"
+      - "src/lib/db/repos/connectionsRepo.js"
+      # Refresh results and how the cores apply them in memory
+      - "open-sse/services/oauthCredentialManager.js"
+      - "open-sse/services/tokenRefresh.js"
+      - "open-sse/services/tokenRefresh/providers.js"
+      - "open-sse/services/kiroModels.js"
+      - "src/lib/oauth/kiroExternalIdp.js"
+      - "open-sse/handlers/chatCore.js"
+      - "open-sse/handlers/embeddingsCore.js"
+      - "open-sse/handlers/imageGenerationCore.js"
+      - "open-sse/handlers/videoCore.js"
+      # Callers of updateProviderCredentials
       - "src/sse/handlers/imageGeneration.js"
       - "src/sse/handlers/search.js"
       - "src/sse/handlers/fetch.js"
       - "src/sse/handlers/videoGeneration.js"
-      - "src/lib/db/repos/connectionsRepo.js"
-      - "open-sse/services/tokenRefresh.js"
-      - "open-sse/services/oauthCredentialManager.js"
-      - "AGENTS.md"
+      - "src/sse/handlers/embeddings.js"
+      - "src/sse/handlers/chat.ts"
+      - "src/sse/services/codexPooledUsage.js"
+      - "src/app/api/v1/models/route.js"
+      - "src/app/api/providers/*/models/route.js"
       - "tests/package.json"
       - "tests/vitest.config.js"
+      - "tests/vitest.shared.js"
       - "tests/unit/gateway-refresh-persistence.test.js"
+      - "tests/unit/refresh-metadata-patch.test.js"
+      - "tests/unit/kiro-external-idp.test.js"
+      - "tests/unit/codex-stale-refresh.test.js"
       - ".github/workflows/gateway-refresh.yml"
   workflow_dispatch:
 
@@ -40,18 +58,49 @@ jobs:
         run: >
           ./node_modules/.bin/vitest run
           unit/gateway-refresh-persistence.test.js
+          unit/refresh-metadata-patch.test.js
+          unit/kiro-external-idp.test.js
           unit/codex-stale-refresh.test.js
           unit/token-refresh-generic.test.js
+          unit/background-token-refresh.test.js
           unit/xai-video-handler.test.js
+          unit/xai-video-core.test.js
+          unit/image-generation.test.js
       - name: Lint
         run: >
           ./node_modules/.bin/eslint
           src/sse/services/tokenRefresh.js
+          src/lib/db/repos/connectionsRepo.js
+          open-sse/services/oauthCredentialManager.js
+          open-sse/services/kiroModels.js
+          src/lib/oauth/kiroExternalIdp.js
+          open-sse/handlers/chatCore.js
+          open-sse/handlers/embeddingsCore.js
+          open-sse/handlers/imageGenerationCore.js
+          open-sse/handlers/videoCore.js
           src/sse/handlers/imageGeneration.js
           src/sse/handlers/search.js
           src/sse/handlers/fetch.js
           src/sse/handlers/videoGeneration.js
+          src/sse/handlers/embeddings.js
+          src/sse/services/codexPooledUsage.js
+          src/app/api/v1/models/route.js
+          "src/app/api/providers/[id]/models/route.js"
           tests/unit/gateway-refresh-persistence.test.js
+          tests/unit/refresh-metadata-patch.test.js
+          tests/unit/kiro-external-idp.test.js
+          tests/unit/codex-stale-refresh.test.js
+      # Fails only on errors in chat.ts, so unrelated type errors elsewhere
+      # don't block it.
+      - name: Type check chat.ts
+        run: |
+          set +e
+          ./node_modules/.bin/tsc --noEmit -p . > tsc.log 2>&1
+          code=$?
+          set -e
+          tail -5 tsc.log
+          if [ "$code" -gt 2 ] || ! [ -x ./node_modules/.bin/tsc ]; then echo "tsc did not run (exit $code)"; exit 1; fi
+          if grep -F "src/sse/handlers/chat.ts" tsc.log; then exit 1; fi
 
   # The suite is not all-green on master (see AGENTS.md), so this runs it on
   # both the base and this branch and fails only on tests that pass on the base

@@ -50,15 +50,23 @@ import { handleSearch } from "../../src/sse/handlers/search.js";
 import { handleFetch } from "../../src/sse/handlers/fetch.js";
 import { handleVideoCreate, handleVideoGet } from "../../src/sse/handlers/videoGeneration.js";
 
+// The shape refreshTokenByProvider returns for xai: no lastRefreshAt.
 const refreshed = {
-  accessToken: "new-access", refreshToken: "new-refresh", idToken: "new-identity",
-  expiresIn: 3600, lastRefreshAt: "2026-10-11T12:00:00.000Z",
-  providerSpecificData: { session: "new-session" },
+  accessToken: "new-access", refreshToken: "new-refresh", idToken: "new-identity", expiresIn: 3600,
 };
+const PATCH = { patchProviderSpecificData: true };
+
+function savedUpdate() {
+  expect(mocks.update).toHaveBeenCalledOnce();
+  const [connectionId, saved, options] = mocks.update.mock.calls[0];
+  expect(connectionId).toBe("account");
+  expect(options).toEqual(PATCH);
+  return saved;
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.get.mockResolvedValue({ providerSpecificData: { accountId: "identity", session: "old-session" } });
+  mocks.get.mockResolvedValue({ providerSpecificData: { accountId: "identity" } });
   mocks.update.mockResolvedValue({ id: "account" });
   mocks.core.mockImplementation(async ({ onCredentialsRefreshed }) => {
     await onCredentialsRefreshed(refreshed);
@@ -66,32 +74,71 @@ beforeEach(() => {
   });
 });
 
-describe("gateway credential refresh persistence", () => {
-  it("preserves stored metadata when the caller only supplies a refresh patch", async () => {
-    expect(await updateProviderCredentials("account", refreshed)).toBe(true);
-    expect(mocks.update).toHaveBeenCalledWith("account", expect.objectContaining({
-      providerSpecificData: { accountId: "identity", session: "new-session" },
-    }));
+describe("updateProviderCredentials", () => {
+  it("sends only the refresh's metadata, as a patch the repo applies over the stored row", async () => {
+    expect(await updateProviderCredentials("account", {
+      ...refreshed, providerSpecificData: { session: "new-session" },
+    })).toBe(true);
+    expect(savedUpdate().providerSpecificData).toEqual({ session: "new-session" });
+    expect(mocks.get).not.toHaveBeenCalled();
   });
 
-  it("prefers current stored metadata to the caller's stale snapshot", async () => {
+  it("stamps lastRefreshAt when it saves a new access token", async () => {
+    const before = Date.now();
+    await updateProviderCredentials("account", refreshed);
+    const saved = savedUpdate();
+    expect(Date.parse(saved.lastRefreshAt)).toBeGreaterThanOrEqual(before);
+    expect(Date.parse(saved.lastRefreshAt)).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("keeps the lastRefreshAt a refresh result carries", async () => {
+    await updateProviderCredentials("account", { ...refreshed, lastRefreshAt: "2026-10-11T12:00:00.000Z" });
+    expect(savedUpdate().lastRefreshAt).toBe("2026-10-11T12:00:00.000Z");
+  });
+
+  it("does not stamp lastRefreshAt when no access token is saved", async () => {
+    await updateProviderCredentials("account", { projectId: "project" });
+    expect(savedUpdate()).not.toHaveProperty("lastRefreshAt");
+  });
+
+  it("still saves the rotated tokens when expiresIn is not a number", async () => {
+    expect(await updateProviderCredentials("account", {
+      accessToken: "new-access", refreshToken: "rotated-refresh", expiresIn: "soon",
+    })).toBe(true);
+    const saved = savedUpdate();
+    expect(saved).toMatchObject({ accessToken: "new-access", refreshToken: "rotated-refresh" });
+    expect(saved).not.toHaveProperty("expiresIn");
+    expect(saved).not.toHaveProperty("expiresAt");
+  });
+
+  it("falls back to expiresAt when expiresIn is not a number", async () => {
     await updateProviderCredentials("account", {
-      ...refreshed, existingProviderSpecificData: { accountId: "stale", custom: "preserved" },
+      accessToken: "new-access", expiresIn: Number.NaN, expiresAt: "2099-01-01T00:00:00.000Z",
     });
-    expect(mocks.update).toHaveBeenCalledWith("account", expect.objectContaining({
-      providerSpecificData: { accountId: "identity", custom: "preserved", session: "new-session" },
-    }));
+    expect(savedUpdate().expiresAt).toBe("2099-01-01T00:00:00.000Z");
   });
 
-  it("preserves stored account metadata for top-level Copilot token refreshes", async () => {
+  it("persists testStatus", async () => {
+    await updateProviderCredentials("account", { ...refreshed, testStatus: "active" });
+    expect(savedUpdate().testStatus).toBe("active");
+  });
+
+  it("puts top-level Copilot fields in the same patch as providerSpecificData", async () => {
+    await updateProviderCredentials("account", {
+      providerSpecificData: { session: "new-session" }, copilotToken: "fresh-copilot", copilotTokenExpiresAt: 1234,
+    });
+    expect(savedUpdate().providerSpecificData).toEqual({
+      session: "new-session", copilotToken: "fresh-copilot", copilotTokenExpiresAt: 1234,
+    });
+  });
+
+  it("sends only the Copilot fields for a Copilot-only refresh", async () => {
     await updateProviderCredentials("account", { copilotToken: "fresh-copilot", copilotTokenExpiresAt: 1234 });
-    expect(mocks.update).toHaveBeenCalledWith("account", expect.objectContaining({
-      providerSpecificData: {
-        accountId: "identity", session: "old-session", copilotToken: "fresh-copilot", copilotTokenExpiresAt: 1234,
-      },
-    }));
+    expect(savedUpdate().providerSpecificData).toEqual({ copilotToken: "fresh-copilot", copilotTokenExpiresAt: 1234 });
   });
+});
 
+describe("gateway handler refresh callbacks", () => {
   it.each([
     ["image", (request) => handleImageGeneration(request)],
     ["search", (request) => handleSearch(request)],
@@ -106,14 +153,12 @@ describe("gateway credential refresh persistence", () => {
     }));
     expect(response.status).toBe(200);
     expect(mocks.core).toHaveBeenCalledOnce();
-    expect(mocks.update).toHaveBeenCalledOnce();
-    const [connectionId, saved] = mocks.update.mock.calls[0];
-    expect(connectionId).toBe("account");
+    const saved = savedUpdate();
     expect(saved).toMatchObject({
       accessToken: refreshed.accessToken, refreshToken: refreshed.refreshToken,
-      idToken: refreshed.idToken, lastRefreshAt: refreshed.lastRefreshAt, expiresIn: 3600,
-      providerSpecificData: { accountId: "identity", session: "new-session" },
+      idToken: refreshed.idToken, expiresIn: 3600, testStatus: "active",
     });
+    expect(Date.parse(saved.lastRefreshAt)).toBeGreaterThanOrEqual(before);
     expect(Date.parse(saved.expiresAt)).toBeGreaterThanOrEqual(before + 3600_000);
     expect(Date.parse(saved.expiresAt)).toBeLessThanOrEqual(Date.now() + 3600_000);
   });
