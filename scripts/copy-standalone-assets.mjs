@@ -43,6 +43,11 @@ export function copyStandaloneAssets({ projectRoot = process.cwd(), distDir = pr
     cpSync(serverWrapperSource, serverWrapperDestination, { force: true });
     console.log(`[standalone-assets] Copied custom-server.js to ${serverWrapperDestination}`);
   }
+  // custom-server.js requires it at boot.
+  const drainSource = resolve(projectRoot, "server-drain.js");
+  if (existsSync(drainSource)) {
+    cpSync(drainSource, resolve(standaloneDir, "server-drain.js"), { force: true });
+  }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(dirname(fileURLToPath(import.meta.url)), "copy-standalone-assets.mjs")) {

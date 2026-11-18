@@ -17,7 +17,7 @@ for (const entry of REGISTRY) {
   for (const a of entry.aliases || []) ALIAS_TO_PROVIDER_ID[a] = entry.id;
 }
 
-const BUILTIN_MODEL_ALIASES = {
+export const BUILTIN_MODEL_ALIASES = {
   "grok-build": "gcli/grok-build",
 };
 

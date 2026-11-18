@@ -3,8 +3,8 @@
 // sql.js is bundled in bin/app already; node:sqlite / bun:sqlite are built-in.
 const { execSync, spawnSync } = require("child_process");
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
+const { getDataDir } = require("./dataDir");
 
 // Gate the pinned version by Node major, mirroring src/lib/db/driver.js gating
 // style: 13.x is N-API and ships per-platform prebuilds inside the package, so
@@ -14,15 +14,6 @@ const [NODE_MAJOR] = process.versions.node.split(".").map(Number);
 const USE_NAPI_BUILD = NODE_MAJOR >= 22;
 const BETTER_SQLITE3_VERSION = USE_NAPI_BUILD ? "13.0.3" : "12.6.2";
 const SQL_JS_VERSION = "1.14.1";
-
-// NOTE: the ".9router" / "9router" directory names are retained for compatibility
-// with existing installs — deliberately NOT renamed during the 10router rebrand.
-function getDataDir() {
-  if (process.env.DATA_DIR) return process.env.DATA_DIR;
-  return process.platform === "win32"
-    ? path.join(process.env.APPDATA || os.homedir(), "9router")
-    : path.join(os.homedir(), ".9router");
-}
 
 function getRuntimeDir() {
   return path.join(getDataDir(), "runtime");

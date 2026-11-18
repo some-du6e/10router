@@ -8,6 +8,8 @@ import { translateResponse, initState } from "../translator/index.js";
 import { FORMATS } from "../translator/formats.js";
 import { ROLE, OPENAI_FINISH } from "../translator/schema/index.js";
 import { formatSSE } from "./stream.js";
+import { abortableSleep } from "./abortableSleep.js";
+import { isRequestError } from "../services/accountFallback.js";
 
 // Present in every banner we emit. Later requests carry the banner back inside
 // their history; detecting this marker is what triggers the "ignore that line"
@@ -40,12 +42,23 @@ export function isLimitError(status, errorText = "") {
   const text = typeof errorText === "string" ? errorText.toLowerCase() : "";
   return (
     text.includes("usage_limit_reached") ||
+    text.includes("usage limit") ||
     text.includes("rate limit") ||
     text.includes("rate_limit") ||
     text.includes("quota") ||
     text.includes("premium request") ||
     text.includes("resource_exhausted")
   );
+}
+
+/**
+ * Is a retry's failure still a limit? A result that already decided says so
+ * with `limited` — a combo, whose status and message come from whichever of its
+ * models failed first and last, or a keyless provider, held only on a real 429.
+ * Anything else is classified from its error.
+ */
+function stillLimited(result) {
+  return typeof result?.limited === "boolean" ? result.limited : isLimitError(result?.status, result?.error);
 }
 
 /** "2h 14m" / "45s" — approximate on purpose, this is a status line not a contract. */
@@ -192,15 +205,15 @@ export async function awaitLimitClear({ retryAtMs, attempt, provider, model, sig
   log?.info?.("LIMITHOLD", `${provider}/${model} holding (non-streaming), first retry in ${formatDuration(waitMs)}`);
 
   while (!signal?.aborted && Date.now() < deadline) {
-    await new Promise((resolve) => {
-      const timer = setTimeout(resolve, waitMs);
-      signal?.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
-    });
+    // Never sleep past the ceiling: a reset days away would otherwise pin the
+    // connection for days before the deadline is even looked at.
+    waitMs = Math.min(waitMs, Math.max(deadline - Date.now(), 0));
+    await abortableSleep(waitMs, signal);
     if (signal?.aborted) break;
 
     last = await attempt();
     if (last?.success) return last;
-    if (last && !isLimitError(last.status, last.error)) return last;
+    if (last && !stillLimited(last)) return last;
     waitMs = Math.max((last?.retryAtMs || 0) - Date.now(), recheckMs);
   }
   if (Date.now() >= deadline) {
@@ -219,9 +232,10 @@ export async function awaitLimitClear({ retryAtMs, attempt, provider, model, sig
  * @param {number} options.retryAtMs - epoch ms the provider says the limit resets
  * @param {function} options.attempt - re-runs the request; resolves to the account-loop result
  * @param {object} options.log
+ * @param {AbortSignal} [options.signal] - the client's hang-up signal; the hold ends when it fires
  * @returns {Response} streaming response that starts with the banner
  */
-export function createLimitHoldResponse({ sourceFormat, model, provider, retryAtMs, attempt, log, timing }) {
+export function createLimitHoldResponse({ sourceFormat, model, provider, retryAtMs, attempt, log, timing, signal = null }) {
   const { keepaliveMs, minWaitMs, recheckMs } = { ...DEFAULT_TIMING, ...(timing || {}) };
   const encoder = new TextEncoder();
   const state = initState(sourceFormat);
@@ -229,21 +243,26 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
   state._holdId = `chatcmpl-hold-${Date.now()}`;
 
   let cancelled = false;
-  let wakeTimer = null;
   let keepaliveTimer = null;
   const abortController = new AbortController();
 
   const stop = () => {
     cancelled = true;
-    if (wakeTimer) clearTimeout(wakeTimer);
     if (keepaliveTimer) clearInterval(keepaliveTimer);
-    wakeTimer = null;
     keepaliveTimer = null;
     abortController.abort();
   };
 
   const stream = new ReadableStream({
     async start(controller) {
+      // The client may have left before the hold was built, or leave during it
+      // without the body being cancelled: end it rather than wait on no one.
+      if (signal?.aborted) {
+        stop();
+        controller.close();
+        return;
+      }
+      signal?.addEventListener?.("abort", stop, { once: true });
       const write = (text) => {
         if (cancelled) return;
         try {
@@ -261,15 +280,6 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
       // which is what stops an intermediate proxy reaping an idle connection.
       keepaliveTimer = setInterval(() => write(`: 10router limit-hold\n\n`), keepaliveMs);
 
-      const sleep = (ms) =>
-        new Promise((resolve) => {
-          wakeTimer = setTimeout(resolve, ms);
-          abortController.signal.addEventListener("abort", () => {
-            if (wakeTimer) clearTimeout(wakeTimer);
-            resolve();
-          }, { once: true });
-        });
-
       let splicedRealStream = false;
       let attemptNo = 1;
       let waitMs = Math.max((retryAtMs || 0) - Date.now(), minWaitMs);
@@ -278,7 +288,7 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
 
       try {
         while (!cancelled) {
-          await sleep(waitMs);
+          await abortableSleep(waitMs, abortController.signal);
           if (cancelled) break;
 
           attemptNo += 1;
@@ -308,7 +318,7 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
             break;
           }
 
-          if (result && !isLimitError(result.status, result.error)) {
+          if (result && !stillLimited(result)) {
             // Not a limit any more — a real fault. Say so in the stream rather
             // than waiting forever on something that will never clear.
             for (const piece of renderTextChunks(sourceFormat, model, `\n──── ✗ ${provider} error: ${result.error || "request failed"} · ${LIMIT_HOLD_SENTINEL} ────\n`, state)) {
@@ -346,4 +356,27 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
       "Access-Control-Allow-Origin": "*",
     },
   });
+}
+
+// The status and error a request gets when every account is locked. A 401/403
+// this pass hit on one key loses to a retryable code the reported key got on
+// this model (lastErrorOwn), or to a 429/5xx another key hit in the same pass,
+// so the client waits instead of reporting an auth failure. Unless a key in the
+// pass hit a limit, a 401/403 or 404 pass then reports a request error.
+export function allLockedError(lastStatus, lastError, credentials, failures = []) {
+  const soonest = Number(credentials?.lastErrorCode) || null;
+  const retryable = status => status === 429 || status >= 500;
+  const authFailed = lastStatus === 401 || lastStatus === 403;
+  if (authFailed) {
+    if (soonest && retryable(soonest) && credentials.lastErrorOwn !== false) return { status: soonest, error: credentials.lastError || null, swapped: true };
+    // By status: a bodyless 403 reads "You exceeded your current quota".
+    const retry = failures.find(f => retryable(f.status));
+    if (retry) return { status: retry.status, error: retry.error || null, swapped: true };
+  }
+  if ((authFailed || lastStatus === 404) && !failures.some(f => isLimitError(f.status, f.error))) {
+    const fixable = failures.filter(f => isRequestError(f.status, f.error));
+    const pick = fixable.find(f => f.status !== 404) ?? (authFailed ? fixable[0] : null);
+    if (pick) return { status: pick.status, error: pick.error || null, swapped: true };
+  }
+  return { status: lastStatus || soonest || 503, error: lastError || credentials?.lastError || null, swapped: false };
 }

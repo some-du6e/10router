@@ -111,10 +111,8 @@ describe("openaiToClaudeRequest", () => {
 
       const result = openaiToClaudeRequest("claude-sonnet-4.5", body, false);
 
-      // Should have system but without JSON instructions
-      expect(result.system).toBeDefined();
-      
-      const systemText = result.system
+      // No system content in, so no system block out (no JSON instructions either)
+      const systemText = (result.system ?? [])
         .filter(s => s.type === "text")
         .map(s => s.text)
         .join("\n");

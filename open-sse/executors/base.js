@@ -1,9 +1,11 @@
-import { HTTP_STATUS, RETRY_CONFIG, DEFAULT_RETRY_CONFIG, resolveRetryEntry, FETCH_CONNECT_TIMEOUT_MS } from "../config/runtimeConfig.js";
+import { HTTP_STATUS, RETRY_CONFIG, DEFAULT_RETRY_CONFIG, resolveRetryEntry, upstreamHeadersBudget } from "../config/runtimeConfig.js";
+import { headersTimer } from "../utils/headersTimeout.js";
 import { shouldRefreshCredentials } from "../services/oauthCredentialManager.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { dbg } from "../utils/debugLog.js";
 import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from "../providers/shared.js";
-import { resolveOpenAICompatibleApiType } from "../services/provider.js";
+import { appendUrlPath, resolveOpenAICompatibleApiType } from "../services/provider.js";
+import { inlineToolChangesWithoutBeta } from "../utils/anthropicBeta.js";
 
 /**
  * BaseExecutor - Base class for provider executors
@@ -30,14 +32,12 @@ export class BaseExecutor {
   buildUrl(model, stream, urlIndex = 0, credentials = null) {
     if (this.provider?.startsWith?.("openai-compatible-")) {
       const baseUrl = credentials?.providerSpecificData?.baseUrl || OPENAI_COMPAT_BASE;
-      const normalized = baseUrl.replace(/\/$/, "");
       const path = resolveOpenAICompatibleApiType(this.provider, credentials) === "responses" ? "/responses" : "/chat/completions";
-      return `${normalized}${path}`;
+      return appendUrlPath(baseUrl, path);
     }
     if (this.provider?.startsWith?.("anthropic-compatible-")) {
       const baseUrl = credentials?.providerSpecificData?.baseUrl || ANTHROPIC_COMPAT_BASE;
-      const normalized = baseUrl.replace(/\/$/, "");
-      return `${normalized}/messages`;
+      return appendUrlPath(baseUrl, "/messages");
     }
     const baseUrls = this.getBaseUrls();
     return baseUrls[urlIndex] || baseUrls[0] || this.config.baseUrl;
@@ -80,6 +80,18 @@ export class BaseExecutor {
     return body;
   }
 
+  // Last change to the body, once the outgoing headers are final (e.g. drop a
+  // field whose beta flag isn't going out). Called by execute() below, once
+  // per URL attempt, with that attempt's headers; by the Translator preview
+  // with the headers it shows; and by chatCore with headers = null for its
+  // error log. An executor that overrides execute() and sends Claude-format
+  // bodies must call it itself.
+  // Here: mid-conversation tool changes go out only with a beta that allows
+  // them; otherwise they're folded into tools[].
+  finalizeBody(body, headers, credentials) {
+    return inlineToolChangesWithoutBeta(body, headers);
+  }
+
   shouldRetry(status, urlIndex) {
     return status === HTTP_STATUS.RATE_LIMITED && urlIndex + 1 < this.getFallbackCount();
   }
@@ -97,8 +109,12 @@ export class BaseExecutor {
     return { status: response.status, message: bodyText || `HTTP ${response.status}` };
   }
 
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, onHeadersBudget = null }) {
     const fallbackCount = this.getFallbackCount();
+    // How long each URL waits for response headers; the caller learns the
+    // whole call's (a hung model's probe goes by it).
+    const { ms: timeoutMs, setBy } = upstreamHeadersBudget({ stream, timeoutMs: this.config?.timeoutMs, attempts: this.config?.headersTimeoutAttempts });
+    onHeadersBudget?.(timeoutMs * fallbackCount);
     let lastError = null;
     let lastStatus = 0;
     const retryAttemptsByUrl = {};
@@ -126,28 +142,26 @@ export class BaseExecutor {
 
     for (let urlIndex = 0; urlIndex < fallbackCount; urlIndex++) {
       const url = this.buildUrl(model, stream, urlIndex, credentials);
-      const transformedBody = this.transformRequest(model, body, stream, credentials);
+      const transformed = this.transformRequest(model, body, stream, credentials);
       const headers = this.buildHeaders(credentials, stream, url, model);
+      const transformedBody = this.finalizeBody(transformed, headers, credentials);
 
       if (!retryAttemptsByUrl[urlIndex]) retryAttemptsByUrl[urlIndex] = 0;
 
-      // Abort if upstream doesn't return response headers within connection timeout
-      const connectCtrl = new AbortController();
-      const timeoutMs = this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS;
-      const connectTimer = setTimeout(() => connectCtrl.abort(new Error("fetch connect timeout")), timeoutMs);
-      const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
+      // Abort if upstream doesn't return response headers in time
+      const headersTimeout = headersTimer(timeoutMs, signal, { stream, setBy });
 
       try {
         const bodyStr = JSON.stringify(transformedBody);
         const fetchT0 = Date.now();
-        dbg("FETCH", `${this.provider.toUpperCase()} → ${url} | body=${bodyStr.length}B | connectTimeout=${timeoutMs}ms`);
+        dbg("FETCH", `${this.provider.toUpperCase()} → ${url} | body=${bodyStr.length}B | headersTimeout=${timeoutMs}ms`);
         const response = await proxyAwareFetch(url, {
           method: "POST",
           headers,
           body: bodyStr,
-          signal: mergedSignal
-        }, proxyOptions);
-        clearTimeout(connectTimer);
+          signal: headersTimeout.signal
+        }, proxyOptions, { headersTimeoutMs: timeoutMs });
+        headersTimeout.clear();
         const ct = response.headers?.get?.("content-type") || "";
         const cl = response.headers?.get?.("content-length") || "?";
         dbg("FETCH", `${this.provider.toUpperCase()} ← ${response.status} | ttft=${Date.now() - fetchT0}ms | ct=${ct} | cl=${cl}`);
@@ -161,16 +175,23 @@ export class BaseExecutor {
         }
 
         return { response, url, headers, transformedBody };
-      } catch (error) {
-        clearTimeout(connectTimer);
+      } catch (caught) {
+        headersTimeout.clear();
+        const timedOut = headersTimeout.error(caught);
+        const error = timedOut || caught;
+        // Request logs keep what was (or would have been) sent, not the pre-transform body.
+        // Non-enumerable, so logging the error doesn't print the prompt.
+        if (error && typeof error === "object" && Object.isExtensible(error)) {
+          Object.defineProperty(error, "transformedBody", { value: transformedBody, enumerable: false, configurable: true, writable: true });
+        }
         lastError = error;
-        const isConnectTimeout = connectCtrl.signal.aborted && error.name === "AbortError";
-        dbg("FETCH", `${this.provider.toUpperCase()} ✖ ${error.name}: ${error.message}${isConnectTimeout ? " (connect timeout)" : ""}`);
-        // Connect timeout is internal — convert to retryable network error, don't propagate AbortError
-        if (error.name === "AbortError" && !isConnectTimeout) throw error;
+        dbg("FETCH", `${this.provider.toUpperCase()} ✖ ${error?.name}: ${error?.message}`);
+        // The client hung up
+        if (!timedOut && error?.name === "AbortError") throw error;
 
-        // Map network/fetch exceptions to 502 retry config
-        if (await tryRetry(urlIndex, HTTP_STATUS.BAD_GATEWAY, `network "${error.message}"`)) { urlIndex--; continue; }
+        // Network/fetch exceptions use the 502 retry config. A header timeout
+        // already had its whole budget: only the next base URL is tried.
+        if (!timedOut && await tryRetry(urlIndex, HTTP_STATUS.BAD_GATEWAY, `network "${error?.message}"`)) { urlIndex--; continue; }
 
         if (urlIndex + 1 < fallbackCount) {
           log?.debug?.("RETRY", `Error on ${url}, trying fallback ${urlIndex + 1}`);

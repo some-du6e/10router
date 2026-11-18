@@ -6,6 +6,8 @@ import { promisify } from "util";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
+import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
+import { findUnsafeConfigValue, unsafeConfigValueError } from "@/lib/cliTools/configValue.js";
 
 const execAsync = promisify(exec);
 
@@ -77,6 +79,11 @@ export async function POST(request) {
     if (!baseUrl || !apiKey || !model) {
       return NextResponse.json({ error: "baseUrl, apiKey and model are required" }, { status: 400 });
     }
+    // Kilo Code is OpenCode-based: {env:VAR} and {file:path} substitution.
+    const unsafeField = findUnsafeConfigValue({ baseUrl, apiKey, model });
+    if (unsafeField) {
+      return NextResponse.json({ error: unsafeConfigValueError(unsafeField) }, { status: 400 });
+    }
 
     await fs.mkdir(getDataDir(), { recursive: true });
 
@@ -89,14 +96,14 @@ export async function POST(request) {
       baseUrl: normalizedBaseUrl,
       model,
     };
-    await fs.writeFile(getAuthPath(), JSON.stringify(auth, null, 2));
+    await writePrivateFile(getAuthPath(), JSON.stringify(auth, null, 2));
 
     // Best-effort: update VS Code extension settings
     try {
       const vscode = (await readJson(getVscodeSettingsPath())) || {};
       vscode["kilocode.customProvider"] = { name: "10router", baseURL: normalizedBaseUrl, apiKey };
       vscode["kilocode.defaultModel"] = model;
-      await fs.writeFile(getVscodeSettingsPath(), JSON.stringify(vscode, null, 2));
+      await writePrivateFile(getVscodeSettingsPath(), JSON.stringify(vscode, null, 2));
     } catch { /* VS Code settings not writable */ }
 
     return NextResponse.json({ success: true, message: "Kilo Code settings applied successfully!", authPath: getAuthPath() });
@@ -114,14 +121,14 @@ export async function DELETE() {
     }
     delete auth["openai-compatible"];
     delete auth["10router"];
-    await fs.writeFile(getAuthPath(), JSON.stringify(auth, null, 2));
+    await writePrivateFile(getAuthPath(), JSON.stringify(auth, null, 2));
 
     try {
       const vscode = await readJson(getVscodeSettingsPath());
       if (vscode) {
         delete vscode["kilocode.customProvider"];
         delete vscode["kilocode.defaultModel"];
-        await fs.writeFile(getVscodeSettingsPath(), JSON.stringify(vscode, null, 2));
+        await writePrivateFile(getVscodeSettingsPath(), JSON.stringify(vscode, null, 2));
       }
     } catch { /* ignore */ }
 

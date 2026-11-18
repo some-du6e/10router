@@ -2,20 +2,14 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { getSettings } from "@/lib/localDb";
 import { fetchOidcDiscovery, getPublicOrigin, probeOidcClientSecret } from "@/lib/auth/oidc";
-import { verifyDashboardAuthToken } from "@/lib/auth/dashboardSession";
+import { dashboardSessionAllowed } from "@/lib/auth/dashboardAccess.js";
 
-async function canAccessTestRoute() {
-  const settings = await getSettings();
-  if (settings.requireLogin === false) return true;
-
-  const cookieStore = await cookies();
-  const token = cookieStore.get("auth_token")?.value;
-  return await verifyDashboardAuthToken(token);
-}
+const normalizeIssuer = (value) => String(value || "").trim().replace(/\/+$/, "");
 
 export async function POST(request) {
   try {
-    if (!(await canAccessTestRoute())) {
+    const cookieStore = await cookies();
+    if (!(await dashboardSessionAllowed(cookieStore.get("auth_token")?.value))) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -25,11 +19,17 @@ export async function POST(request) {
     const issuerUrl = String(body.issuerUrl || settings.oidcIssuerUrl || "").trim();
     const clientId = String(body.clientId || settings.oidcClientId || "").trim();
     const scopes = String(body.scopes || settings.oidcScopes || "openid profile email").trim() || "openid profile email";
-    const clientSecret = String(
-      Object.prototype.hasOwnProperty.call(body, "clientSecret")
-        ? body.clientSecret
-        : settings.oidcClientSecret || ""
-    ).trim();
+    const secretInBody = Object.prototype.hasOwnProperty.call(body, "clientSecret");
+    // The stored secret only ever goes to the stored issuer's token endpoint: a
+    // test against another issuer has to bring its own secret.
+    const sameIssuer = !!issuerUrl && normalizeIssuer(issuerUrl) === normalizeIssuer(settings.oidcIssuerUrl);
+    if (!secretInBody && !sameIssuer && settings.oidcClientSecret) {
+      return NextResponse.json(
+        { error: "Enter the client secret to test a different issuer; the saved one is only sent to the saved issuer." },
+        { status: 400 }
+      );
+    }
+    const clientSecret = String(secretInBody ? body.clientSecret : settings.oidcClientSecret || "").trim();
 
     if (!issuerUrl) {
       return NextResponse.json({ error: "Issuer URL is required" }, { status: 400 });

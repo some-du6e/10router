@@ -1,0 +1,776 @@
+// A Codex request with MCP namespaces whose tools share short names, sent to a
+// Claude model behind a Chat Completions endpoint or an Anthropic-compatible one.
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@/lib/usageDb.js", () => ({
+  appendRequestLog: vi.fn(async () => {}),
+  saveRequestDetail: vi.fn(async () => {}),
+  saveRequestUsage: vi.fn(async () => {}),
+}));
+
+const { FORMATS } = await import("../../open-sse/translator/formats.js");
+const { initState, translateRequest, translateResponse } = await import("../../open-sse/translator/index.js");
+const { translateNonStreamingResponse } = await import("../../open-sse/handlers/chatCore/nonStreamingHandler.js");
+const { handleForcedSSEToJson } = await import("../../open-sse/handlers/chatCore/sseToJsonHandler.js");
+const { takeToolMetadata } = await import("../../open-sse/translator/concerns/toolNamespace.js");
+const { openaiResponsesToOpenAIRequest, openaiToOpenAIResponsesRequest } = await import("../../open-sse/translator/request/openai-responses.js");
+const { jsonReplyToSse } = await import("../../open-sse/handlers/chatCore/jsonToSse.js");
+const { relaxForcedToolChoiceForThinking, relaxForcedChatToolChoiceForClaude } = await import("../../open-sse/translator/concerns/toolChoice.js");
+
+const MODEL = "claude-opus-5-5";
+const WIRE_NAME = /^[a-zA-Z0-9_-]{1,64}$/;
+const PATCH = "*** Begin Patch\n*** Add File: hello.txt\n+hi\n*** End Patch\n";
+
+const schema = (props = {}) => ({ type: "object", properties: props, additionalProperties: false });
+const fn = (name, props) => ({ type: "function", name, description: `${name} tool`, strict: false, parameters: schema(props) });
+const ns = (name, tools) => ({ type: "namespace", name, description: `${name} server`, tools });
+
+// The tool list Codex sent when the upstream answered "tools: Tool names must be unique."
+function codexTools(nsSuffix = "") {
+  return [
+    fn("exec_command", { cmd: { type: "string" } }),
+    fn("write_stdin", { session_id: { type: "number" }, chars: { type: "string" } }),
+    fn("list_mcp_resources"),
+    fn("list_mcp_resource_templates"),
+    fn("read_mcp_resource", { server: { type: "string" }, uri: { type: "string" } }),
+    fn("update_plan"),
+    fn("get_goal"),
+    fn("create_goal"),
+    fn("update_goal"),
+    fn("request_user_input"),
+    {
+      type: "custom",
+      name: "apply_patch",
+      description: "Use the `apply_patch` tool to edit files.",
+      format: { type: "grammar", syntax: "lark", definition: "start: begin_patch hunk+ end_patch" },
+    },
+    fn("view_image", { path: { type: "string" } }),
+    fn("spawn_agent"),
+    fn("send_message"),
+    fn("followup_task"),
+    fn("wait_agent"),
+    fn("close_agent"),
+    fn("list_agents"),
+    { type: "web_search", external_web_access: true },
+    ns(`mcp__cua_repl${nsSuffix}`, [fn("js", { code: { type: "string" } }), fn("js_reset")]),
+    ns(`mcp__node_repl${nsSuffix}`, [fn("js", { code: { type: "string" } }), fn("js_add_node_module_dir", { dir: { type: "string" } }), fn("js_reset")]),
+  ];
+}
+
+const TOP_LEVEL = [
+  "exec_command", "write_stdin", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource",
+  "update_plan", "get_goal", "create_goal", "update_goal", "request_user_input", "apply_patch", "view_image",
+  "spawn_agent", "send_message", "followup_task", "wait_agent", "close_agent", "list_agents",
+];
+
+const userTurn = (text) => ({ type: "message", role: "user", content: [{ type: "input_text", text }] });
+
+function codexRequest({ input = [userTurn("reset the node repl")], nsSuffix = "", stream = true } = {}) {
+  return {
+    model: MODEL,
+    instructions: "You are Codex.",
+    stream,
+    store: false,
+    tool_choice: "auto",
+    parallel_tool_calls: true,
+    tools: codexTools(nsSuffix),
+    input,
+  };
+}
+
+// The two routes a Claude model behind a custom endpoint takes.
+const ROUTES = [
+  { label: "Chat Completions endpoint", target: FORMATS.OPENAI, provider: "openai-compatible-chat-acme" },
+  { label: "Anthropic-compatible endpoint", target: FORMATS.CLAUDE, provider: "anthropic-compatible-acme" },
+];
+
+function translate(route, request = codexRequest()) {
+  return translateRequest(
+    FORMATS.OPENAI_RESPONSES, route.target, MODEL, structuredClone(request), request.stream,
+    { apiKey: "key-a" }, route.provider, null, [], null, null,
+  );
+}
+
+const toolName = (tool) => tool.function?.name ?? tool.name;
+
+// The data of every event jsonReplyToSse writes for a Responses body.
+const replayEvents = (body) => jsonReplyToSse(body, FORMATS.OPENAI_RESPONSES).split("\n\n").filter(Boolean)
+  .map((block) => JSON.parse(block.split("\n").find((l) => l.startsWith("data: ")).slice(6)));
+
+// How chatCore pulls the metadata off the translated request, and stream.js seeds the state with it.
+function responsesState(req) {
+  return { ...initState(FORMATS.OPENAI_RESPONSES), ...takeToolMetadata(req) };
+}
+
+function claudeToolUseStream(name, inputJson) {
+  return [
+    { type: "message_start", message: { id: "msg_1", model: MODEL, usage: { input_tokens: 1, output_tokens: 0 } } },
+    { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_1", name, input: {} } },
+    { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: inputJson } },
+    { type: "content_block_stop", index: 0 },
+    { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 3 } },
+    { type: "message_stop" },
+  ];
+}
+
+function chatToolCallStream(name, argumentsJson) {
+  return [
+    { id: "chatcmpl-1", model: MODEL, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name, arguments: "" } }] } }] },
+    { id: "chatcmpl-1", model: MODEL, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: argumentsJson } }] } }] },
+    { id: "chatcmpl-1", model: MODEL, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+  ];
+}
+
+// The upstream calls `wireName`; return the output items Codex receives.
+function streamCall(route, req, wireName, args) {
+  const state = responsesState(req);
+  const chunks = route.target === FORMATS.CLAUDE ? claudeToolUseStream(wireName, args) : chatToolCallStream(wireName, args);
+  const events = [];
+  for (const chunk of chunks) events.push(...(translateResponse(route.target, FORMATS.OPENAI_RESPONSES, chunk, state) || []));
+  const done = events.filter((e) => e.event === "response.output_item.done").map((e) => e.data.item);
+  const added = events.filter((e) => e.event === "response.output_item.added").map((e) => e.data.item);
+  const completed = events.find((e) => e.event === "response.completed")?.data?.response?.output || [];
+  return { done, added, completed };
+}
+
+function nonStreamCall(route, req, wireName, args, finish = null) {
+  const callId = route.target === FORMATS.CLAUDE ? "toolu_1" : "call_1";
+  const body = route.target === FORMATS.CLAUDE
+    ? {
+      id: "msg_1", type: "message", role: "assistant", model: MODEL,
+      content: [{ type: "tool_use", id: callId, name: wireName, input: JSON.parse(args) }],
+      stop_reason: finish || "tool_use", usage: { input_tokens: 1, output_tokens: 3 },
+    }
+    : {
+      id: "chatcmpl-1", object: "chat.completion", model: MODEL,
+      choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [{ id: callId, type: "function", function: { name: wireName, arguments: args } }] }, finish_reason: finish || "tool_calls" }],
+      usage: { prompt_tokens: 1, completion_tokens: 3, total_tokens: 4 },
+    };
+  const { customToolNames, toolNamespaces } = takeToolMetadata(req);
+  const out = translateNonStreamingResponse(body, route.target, FORMATS.OPENAI_RESPONSES, customToolNames, toolNamespaces);
+  return { out, callId };
+}
+
+describe("Codex MCP namespaces with shared tool names", () => {
+  describe.each(ROUTES)("$label", (route) => {
+    it("declares every tool upstream under a unique, valid name", () => {
+      const names = translate(route).tools.map(toolName);
+
+      expect(new Set(names).size).toBe(names.length);
+      for (const n of names) {
+        expect(n).toMatch(WIRE_NAME);
+        expect(n).not.toContain("::");
+        expect(n).not.toContain(".");
+      }
+      expect(names).toEqual(expect.arrayContaining([
+        ...TOP_LEVEL,
+        "mcp__cua_repl__js", "mcp__cua_repl__js_reset",
+        "mcp__node_repl__js", "mcp__node_repl__js_reset",
+        "js_add_node_module_dir",
+      ]));
+      expect(names).toHaveLength(TOP_LEVEL.length + 5);
+    });
+
+    it("qualifies a namespace that already ends in a separator without doubling it", () => {
+      const names = translate(route, codexRequest({ nsSuffix: "__" })).tools.map(toolName);
+
+      expect(new Set(names).size).toBe(names.length);
+      expect(names).toEqual(expect.arrayContaining(["mcp__node_repl__js", "mcp__cua_repl__js_reset"]));
+    });
+
+    it("streams a qualified call back as a function_call with the original name and namespace", () => {
+      const req = translate(route);
+      const { done, added, completed } = streamCall(route, req, "mcp__node_repl__js_reset", "{}");
+      const callId = route.target === FORMATS.CLAUDE ? "toolu_1" : "call_1";
+      const expected = {
+        id: `fc_${callId}`,
+        type: "function_call",
+        arguments: "{}",
+        call_id: callId,
+        name: "js_reset",
+        namespace: "mcp__node_repl",
+      };
+
+      expect(done).toEqual([expected]);
+      expect(added).toEqual([{ ...expected, arguments: "" }]);
+      expect(completed).toEqual([expected]);
+    });
+
+    it("streams a call to a namespaced tool that kept its name with its namespace", () => {
+      const req = translate(route);
+      const { done } = streamCall(route, req, "js_add_node_module_dir", "{\"dir\":\"/tmp\"}");
+
+      expect(done).toHaveLength(1);
+      expect(done[0]).toMatchObject({ type: "function_call", name: "js_add_node_module_dir", namespace: "mcp__node_repl", arguments: "{\"dir\":\"/tmp\"}" });
+    });
+
+    it("returns a non-streaming qualified call with the original name and namespace", () => {
+      const req = translate(route, codexRequest({ stream: false }));
+      const { out, callId } = nonStreamCall(route, req, "mcp__cua_repl__js", "{\"code\":\"1+1\"}");
+
+      expect(out.object).toBe("response");
+      expect(out.output).toEqual([{
+        type: "function_call",
+        id: `fc_${callId}`,
+        call_id: callId,
+        name: "js",
+        namespace: "mcp__cua_repl",
+        arguments: "{\"code\":\"1+1\"}",
+      }]);
+    });
+
+    it("replays earlier namespaced calls under the names the tools are declared with", () => {
+      const req = translate(route, codexRequest({
+        input: [
+          userTurn("run 1+1 in both repls"),
+          { type: "function_call", call_id: "call_a", name: "js", namespace: "mcp__cua_repl", arguments: "{\"code\":\"1+1\"}" },
+          { type: "function_call", call_id: "call_b", name: "js", namespace: "mcp__node_repl", arguments: "{\"code\":\"1+1\"}" },
+          { type: "function_call_output", call_id: "call_a", output: "2" },
+          { type: "function_call_output", call_id: "call_b", output: "2" },
+          userTurn("now reset them"),
+        ],
+      }));
+      const declared = new Set(req.tools.map(toolName));
+      const replayed = route.target === FORMATS.CLAUDE
+        ? req.messages.flatMap((m) => (Array.isArray(m.content) ? m.content : [])).filter((b) => b.type === "tool_use")
+          .map((b) => ({ id: b.id, name: b.name }))
+        : req.messages.flatMap((m) => m.tool_calls || []).map((tc) => ({ id: tc.id, name: tc.function.name }));
+
+      expect(replayed).toEqual([
+        { id: "call_a", name: "mcp__cua_repl__js" },
+        { id: "call_b", name: "mcp__node_repl__js" },
+      ]);
+      for (const { name } of replayed) expect(declared.has(name)).toBe(true);
+    });
+  });
+
+  it("returns a forced-SSE JSON reply with the original name and namespace", async () => {
+    const req = translate(ROUTES[0], codexRequest({ stream: false }));
+    const raw = chatToolCallStream("mcp__node_repl__js", "{\"code\":\"1\"}")
+      .map((chunk) => `data: ${JSON.stringify(chunk)}`).concat(["data: [DONE]", ""]).join("\n\n");
+    const encoder = new TextEncoder();
+    const result = await handleForcedSSEToJson({
+      providerResponse: new Response(new ReadableStream({
+        start(controller) { controller.enqueue(encoder.encode(raw)); controller.close(); },
+      }), { headers: { "content-type": "text/event-stream" } }),
+      sourceFormat: FORMATS.OPENAI_RESPONSES,
+      targetFormat: FORMATS.OPENAI,
+      provider: "openai-compatible-chat-acme",
+      model: MODEL,
+      body: { model: MODEL, input: [] },
+      stream: false,
+      requestStartTime: Date.now(),
+      connectionId: "conn-a",
+      clientRawRequest: { endpoint: "/v1/responses" },
+      ...takeToolMetadata(req),
+      trackDone: vi.fn(),
+      appendLog: vi.fn(),
+    });
+    const json = await result.response.json();
+
+    expect(json.output).toEqual([expect.objectContaining({
+      type: "function_call", call_id: "call_1", name: "js", namespace: "mcp__node_repl", arguments: "{\"code\":\"1\"}",
+    })]);
+  });
+});
+
+describe("Codex apply_patch (freeform custom tool) on a Claude model", () => {
+  describe.each(ROUTES)("$label", (route) => {
+    it("declares apply_patch as a tool taking one string input", () => {
+      const tool = translate(route).tools.find((t) => toolName(t) === "apply_patch");
+      const params = route.target === FORMATS.CLAUDE ? tool.input_schema : tool.function.parameters;
+
+      expect(params).toMatchObject({ type: "object", properties: { input: { type: "string" } }, required: ["input"] });
+      expect(Object.keys(params.properties)).toEqual(["input"]);
+      if (route.target === FORMATS.CLAUDE) expect(tool.type).toBeUndefined();
+    });
+
+    it("streams the model's call back as a custom_tool_call with raw text input", () => {
+      const req = translate(route);
+      const { done, completed } = streamCall(route, req, "apply_patch", JSON.stringify({ input: PATCH }));
+      const callId = route.target === FORMATS.CLAUDE ? "toolu_1" : "call_1";
+      const expected = { id: `ctc_${callId}`, type: "custom_tool_call", input: PATCH, call_id: callId, name: "apply_patch" };
+
+      expect(done).toEqual([expected]);
+      expect(completed).toEqual([expected]);
+    });
+
+    it("returns a non-streaming call as a custom_tool_call with raw text input", () => {
+      const req = translate(route, codexRequest({ stream: false }));
+      const { out, callId } = nonStreamCall(route, req, "apply_patch", JSON.stringify({ input: PATCH }));
+
+      expect(out.output).toEqual([{ type: "custom_tool_call", id: `ctc_${callId}`, call_id: callId, name: "apply_patch", input: PATCH }]);
+    });
+
+    it("replays an earlier apply_patch call as the same one-string input", () => {
+      const req = translate(route, codexRequest({
+        input: [
+          userTurn("add hello.txt"),
+          { type: "custom_tool_call", call_id: "call_p", name: "apply_patch", input: PATCH },
+          { type: "custom_tool_call_output", call_id: "call_p", output: "Success." },
+        ],
+      }));
+      const args = route.target === FORMATS.CLAUDE
+        ? req.messages.flatMap((m) => (Array.isArray(m.content) ? m.content : [])).find((b) => b.type === "tool_use").input
+        : JSON.parse(req.messages.find((m) => m.tool_calls).tool_calls[0].function.arguments);
+
+      expect(args).toEqual({ input: PATCH });
+    });
+  });
+});
+
+describe("Codex web_search on a Claude model behind a custom endpoint", () => {
+  describe.each(ROUTES)("$label", (route) => {
+    it("is dropped, not sent as a function", () => {
+      const tools = translate(route).tools;
+
+      expect(tools.some((t) => t.type === "web_search")).toBe(false);
+      expect(tools.map(toolName)).not.toContain("web_search");
+    });
+
+    it("is dropped even when it carries a name", () => {
+      const request = codexRequest();
+      request.tools = request.tools.map((t) => (t.type === "web_search" ? { ...t, name: "web_search" } : t));
+      const tools = translate(route, request).tools;
+
+      expect(tools.some((t) => t.type === "web_search")).toBe(false);
+      expect(tools.map(toolName)).not.toContain("web_search");
+    });
+  });
+});
+
+describe("Codex tool names that would still collide after qualifying", () => {
+  describe.each(ROUTES)("$label", (route) => {
+    const request = (tools) => ({ ...codexRequest(), tools });
+
+    it("gives each tool its own name when a qualified name is also a plain tool's name", () => {
+      const req = translate(route, request([
+        ns("mcp__a", [fn("js")]), ns("mcp__a_", [fn("_js")]), ns("mcp__b", [fn("js"), fn("_js")]),
+        fn("mcp__a__js"), fn("mcp__b__js"),
+      ]));
+      const names = req.tools.map(toolName);
+
+      expect(names).toHaveLength(6);
+      expect(new Set(names).size).toBe(6);
+      for (const n of names) expect(n).toMatch(WIRE_NAME);
+    });
+
+    it("gives each tool its own name when its name is not a valid upstream name", () => {
+      const req = translate(route, request([
+        ns("mcp__docs", [fn("search.v2"), fn("search_v2")]),
+        fn("files::read"), fn("files__read"),
+        ns("mcp__wiki", [fn("search.v2")]),
+      ]));
+      const names = req.tools.map(toolName);
+
+      expect(names).toHaveLength(5);
+      expect(new Set(names).size).toBe(5);
+      for (const n of names) {
+        expect(n).toMatch(WIRE_NAME);
+        expect(n).not.toContain("::");
+        expect(n).not.toContain(".");
+      }
+    });
+
+    it("maps a sanitized top-level name back to the name Codex declared", () => {
+      const req = translate(route, request([fn("files::read"), fn("files__read")]));
+      const wire = req.tools.map(toolName).find((n) => n !== "files__read");
+      const { done } = streamCall(route, req, wire, "{}");
+
+      expect(wire).toMatch(WIRE_NAME);
+
+      expect(done).toHaveLength(1);
+      expect(done[0].name).toBe("files::read");
+      expect(done[0]).not.toHaveProperty("namespace");
+    });
+
+    it("caps a long qualified name and keeps the pair distinct", () => {
+      const longNs = `mcp__${"very_long_server_name_".repeat(5)}`;
+      const req = translate(route, request([ns(`${longNs}one`, [fn("js")]), ns(`${longNs}two`, [fn("js")])]));
+      const names = req.tools.map(toolName);
+
+      expect(new Set(names).size).toBe(2);
+      for (const n of names) expect(n).toMatch(WIRE_NAME);
+    });
+
+    it("drops tools whose name is blank", () => {
+      const names = translate(route, request([fn(" "), fn(""), ns("mcp__a", [fn("\t")]), fn("shell")])).tools.map(toolName);
+
+      expect(names).toEqual(["shell"]);
+    });
+  });
+});
+
+describe("Codex history replay", () => {
+  const request = (tools, input) => ({ ...codexRequest(), tools, input });
+
+  it("drops the namespace from a renamed call, so a Chat → Responses hop replays it flat", () => {
+    const chat = openaiResponsesToOpenAIRequest(MODEL, request(codexTools(), [
+      userTurn("run it"),
+      { type: "function_call", call_id: "call_a", name: "js", namespace: "mcp__node_repl", arguments: "{}" },
+      { type: "function_call", call_id: "call_b", name: "js_add_node_module_dir", namespace: "mcp__node_repl", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_a", output: "ok" },
+      { type: "function_call_output", call_id: "call_b", output: "ok" },
+    ]), true, null);
+    const calls = chat.messages.flatMap((m) => m.tool_calls || []);
+
+    expect(calls[0]).not.toHaveProperty("namespace");
+    expect(calls[0].function.name).toBe("mcp__node_repl__js");
+    // A call that kept its name keeps its namespace.
+    expect(calls[1].namespace).toBe("mcp__node_repl");
+
+    // How the github and zed executors send a Chat body to a Responses upstream.
+    const replayed = openaiToOpenAIResponsesRequest(MODEL, chat, true, null).input.filter((i) => i.type === "function_call");
+    expect(replayed[0]).toMatchObject({ name: "mcp__node_repl__js" });
+    expect(replayed[0]).not.toHaveProperty("namespace");
+    expect(replayed[1]).toMatchObject({ name: "js_add_node_module_dir", namespace: "mcp__node_repl" });
+  });
+
+  describe.each(ROUTES)("$label", (route) => {
+    const custom = (name) => ({ type: "custom", name, description: name, format: { type: "text" } });
+    const TOOLS = [fn("run"), ns("mcp__x", [custom("run")])];
+
+    it.each([
+      ["with its namespace", { namespace: "mcp__x" }],
+      ["without a namespace", {}],
+    ])("keeps a plain function call plain after an earlier custom call of the same name %s", (_label, extra) => {
+      const req = translate(route, request(TOOLS, [
+        userTurn("go"),
+        { type: "custom_tool_call", call_id: "call_c", name: "run", input: "x", ...extra },
+        { type: "custom_tool_call_output", call_id: "call_c", output: "ok" },
+      ]));
+      const names = req.tools.map(toolName);
+
+      expect(names).toEqual(["run", "mcp__x__run"]);
+      expect(req._customToolNames).toEqual(["mcp__x__run"]);
+      const { done } = streamCall(route, req, "run", "{}");
+      expect(done[0]).toMatchObject({ type: "function_call", name: "run", arguments: "{}" });
+      expect(done[0]).not.toHaveProperty("namespace");
+    });
+
+    it("still returns a custom call to a tool only an earlier turn declared", () => {
+      const req = translate(route, request([fn("shell")], [
+        userTurn("go"),
+        { type: "custom_tool_call", call_id: "call_c", name: "old_patch", input: "x" },
+        { type: "custom_tool_call_output", call_id: "call_c", output: "ok" },
+      ]));
+
+      expect(req._customToolNames).toEqual(["old_patch"]);
+    });
+  });
+});
+
+describe("non-streaming reply status for a Codex request", () => {
+  describe.each(ROUTES)("$label", (route) => {
+    const finish = route.target === FORMATS.CLAUDE ? "max_tokens" : "length";
+
+    it(`reports a reply cut off by ${finish} as incomplete`, () => {
+      const req = translate(route, codexRequest({ stream: false }));
+      const { out } = nonStreamCall(route, req, "exec_command", "{\"cmd\":\"ls\"}", finish);
+
+      expect(out.status).toBe("incomplete");
+      expect(out.incomplete_details).toEqual({ reason: "max_output_tokens" });
+    });
+
+    it("reports a finished tool call as completed", () => {
+      const req = translate(route, codexRequest({ stream: false }));
+      const { out } = nonStreamCall(route, req, "exec_command", "{\"cmd\":\"ls\"}");
+
+      expect(out.status).toBe("completed");
+      expect(out).not.toHaveProperty("incomplete_details");
+    });
+  });
+
+  it("reports a filtered Chat reply as incomplete with content_filter", () => {
+    const req = translate(ROUTES[0], codexRequest({ stream: false }));
+    const { out } = nonStreamCall(ROUTES[0], req, "exec_command", "{}", "content_filter");
+
+    expect(out).toMatchObject({ status: "incomplete", incomplete_details: { reason: "content_filter" } });
+  });
+
+  it("reports an unknown finish reason as completed", () => {
+    const req = translate(ROUTES[0], codexRequest({ stream: false }));
+    const { out } = nonStreamCall(ROUTES[0], req, "exec_command", "{}", "something_new");
+
+    expect(out.status).toBe("completed");
+  });
+
+  it("replays an incomplete Responses body to a streaming client as response.incomplete", () => {
+    const req = translate(ROUTES[0], codexRequest({ stream: false }));
+    const { out } = nonStreamCall(ROUTES[0], req, "exec_command", "{}", "length");
+    const events = jsonReplyToSse(out, FORMATS.OPENAI_RESPONSES).split("\n\n").filter(Boolean)
+      .map((block) => block.split("\n").find((l) => l.startsWith("event: ")).slice(7));
+
+    expect(events.at(-1)).toBe("response.incomplete");
+    expect(events).not.toContain("response.completed");
+    expect(jsonReplyToSse({ ...out, status: "completed" }, FORMATS.OPENAI_RESPONSES)).toContain("event: response.completed");
+  });
+
+  it("gives every output item an id, and the replay names it on every item event", () => {
+    const out = translateNonStreamingResponse({
+      id: "chatcmpl-9", object: "chat.completion", model: MODEL,
+      choices: [{ index: 0, finish_reason: "tool_calls", message: {
+        role: "assistant", reasoning_content: "thinking it over", content: "running it",
+        tool_calls: [{ id: "call_1", type: "function", function: { name: "exec_command", arguments: "{}" } }],
+      } }],
+    }, FORMATS.OPENAI, FORMATS.OPENAI_RESPONSES, null, null);
+
+    expect(out.id).toBe("resp_9");
+    // The ids the live stream gives the same reply: upstream id as sent, choice index.
+    expect(out.output.map((i) => i.id)).toEqual(["rs_resp_chatcmpl-9_0", "msg_resp_chatcmpl-9_0", "fc_call_1"]);
+
+    const events = replayEvents(out);
+    const itemEvents = events.filter((e) => e.output_index !== undefined);
+    for (const e of itemEvents) {
+      const id = e.item?.id ?? e.item_id;
+      expect(id).toBe(out.output[e.output_index].id);
+    }
+    expect(itemEvents.filter((e) => e.type === "response.output_text.delta").map((e) => e.item_id)).toEqual(["msg_resp_chatcmpl-9_0"]);
+  });
+
+  it("gives a reply the same item ids streamed and not streamed", () => {
+    const chunks = [
+      { id: "chatcmpl-9", model: MODEL, choices: [{ index: 0, delta: { reasoning_content: "thinking it over" } }] },
+      { id: "chatcmpl-9", model: MODEL, choices: [{ index: 0, delta: { content: "running it" } }] },
+      { id: "chatcmpl-9", model: MODEL, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "exec_command", arguments: "{}" } }] } }] },
+      { id: "chatcmpl-9", model: MODEL, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+    ];
+    const state = initState(FORMATS.OPENAI_RESPONSES);
+    const streamed = chunks.flatMap((c) => translateResponse(FORMATS.OPENAI, FORMATS.OPENAI_RESPONSES, c, state) || [])
+      .filter((e) => e.event === "response.output_item.done").map((e) => e.data.item.id);
+    const body = translateNonStreamingResponse({
+      id: "chatcmpl-9", object: "chat.completion", model: MODEL,
+      choices: [{ index: 0, finish_reason: "tool_calls", message: {
+        role: "assistant", reasoning_content: "thinking it over", content: "running it",
+        tool_calls: [{ id: "call_1", type: "function", function: { name: "exec_command", arguments: "{}" } }],
+      } }],
+    }, FORMATS.OPENAI, FORMATS.OPENAI_RESPONSES, null, null);
+
+    expect(body.output.map((i) => i.id).sort()).toEqual([...streamed].sort());
+  });
+
+  it("names items that arrive without an id when it replays them, closing response included", () => {
+    const body = {
+      id: "resp_x", object: "response", status: "completed",
+      output: [
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "hi", annotations: [] }] },
+        { type: "function_call", call_id: "call_7", name: "exec_command", arguments: "{}" },
+        { type: "custom_tool_call", call_id: "call_8", name: "apply_patch", input: PATCH },
+      ],
+    };
+    const events = replayEvents(body);
+    const want = ["msg_resp_x_0", "fc_call_7", "ctc_call_8"];
+
+    for (const e of events.filter((ev) => ev.output_index !== undefined)) expect(e.item?.id ?? e.item_id).toBe(want[e.output_index]);
+    expect(events.at(-1).response.output.map((i) => i.id)).toEqual(want);
+  });
+
+  it("turns a Gemini reply into a Responses body with the client's tool name", () => {
+    const req = translate({ target: FORMATS.GEMINI, provider: "gemini" }, codexRequest({ stream: false }));
+    const { customToolNames, toolNamespaces } = takeToolMetadata(req);
+    const out = translateNonStreamingResponse({
+      candidates: [{
+        content: { role: "model", parts: [{ functionCall: { name: "mcp__cua_repl__js", args: { code: "1" } } }] },
+        finishReason: "STOP",
+      }],
+      usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 2, totalTokenCount: 3 },
+      modelVersion: MODEL,
+    }, FORMATS.GEMINI, FORMATS.OPENAI_RESPONSES, customToolNames, toolNamespaces);
+
+    expect(out).toMatchObject({ object: "response", status: "completed" });
+    expect(out.output).toEqual([expect.objectContaining({
+      type: "function_call", name: "js", namespace: "mcp__cua_repl", arguments: "{\"code\":\"1\"}",
+    })]);
+  });
+});
+
+describe("a forced tool_choice that names no declared tool", () => {
+  const choiceFor = (choice, tools = codexTools()) =>
+    openaiResponsesToOpenAIRequest(MODEL, { ...codexRequest(), tools, tool_choice: choice }, true, null).tool_choice;
+
+  it.each([
+    ["a bare name only declared qualified", { type: "function", name: "js" }],
+    ["a hosted tool", { type: "function", name: "web_search" }],
+    ["a namespace that doesn't have it", { type: "function", name: "js", namespace: "mcp__other" }],
+    ["an unknown custom tool", { type: "custom", name: "old_patch" }],
+  ])("falls back to auto for %s", (_label, choice) => {
+    expect(choiceFor(choice)).toBe("auto");
+  });
+
+  it("falls back to auto for a deferred tool", () => {
+    const tools = [fn("shell"), { ...fn("later"), defer_loading: true }];
+
+    expect(choiceFor({ type: "function", name: "later" }, tools)).toBe("auto");
+  });
+
+  it("falls back to auto for a blank tool", () => {
+    expect(choiceFor({ type: "function", name: " " }, [fn("shell"), fn(" ")])).toBe("auto");
+  });
+
+  it("still forces a declared tool", () => {
+    expect(choiceFor({ type: "function", name: "js_add_node_module_dir", namespace: "mcp__node_repl" }))
+      .toEqual({ type: "function", function: { name: "js_add_node_module_dir" } });
+  });
+});
+
+describe("a forced tool_choice on a Claude model", () => {
+  const PROVIDER = "anthropic-compatible-acme";
+  const CHAT_PROVIDER = "openai-compatible-chat-acme";
+  const ADAPTIVE = { type: "adaptive" };
+  const ENABLED = { type: "enabled", budget_tokens: 2048 };
+  const claudeBody = (model, thinking, choice = { type: "tool", name: "shell", disable_parallel_tool_use: true }) => ({
+    model, ...(thinking ? { thinking } : {}), tool_choice: choice,
+  });
+  const claudeChoice = (model, thinking, choice) => relaxForcedToolChoiceForThinking(claudeBody(model, thinking, choice), PROVIDER).tool_choice;
+  const chatChoice = (model, extra = {}, choice = { type: "function", function: { name: "shell" } }, final = true) =>
+    relaxForcedChatToolChoiceForClaude({ model, tool_choice: choice, ...extra }, CHAT_PROVIDER, model, final).tool_choice;
+
+  // These reject "any"/"tool" whatever the thinking setting.
+  // claude-fable-5-1-thinking has no exact row, so it reaches the *claude*fable-5-1* pattern.
+  it.each(["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-mythos-5-1", "claude-opus-5.5", "claude-sonnet-5.5", "claude-fable-5.1", "claude-mythos-5.1", "claude-fable-5-1-thinking"])(
+    "%s always gets auto", (model) => {
+      expect(claudeChoice(model, null)).toEqual({ type: "auto", disable_parallel_tool_use: true });
+      expect(claudeChoice(model, ADAPTIVE).type).toBe("auto");
+      expect(claudeChoice(model, null, { type: "any" })).toEqual({ type: "auto" });
+      expect(chatChoice(model)).toBe("auto");
+      expect(chatChoice(model, {}, "required")).toBe("auto");
+    },
+  );
+
+  // These think by default (or on request) and still accept a forced tool.
+  it.each(["claude-opus-5", "claude-fable-5", "claude-mythos-5", "claude-sonnet-5", "claude-haiku-5-5"])(
+    "%s keeps the forced tool with thinking on", (model) => {
+      expect(claudeChoice(model, ADAPTIVE).type).toBe("tool");
+      expect(claudeChoice(model, null, { type: "any" }).type).toBe("any");
+      expect(chatChoice(model, { reasoning_effort: "high" })).toEqual({ type: "function", function: { name: "shell" } });
+      expect(chatChoice(model, { reasoning_effort: "high" }, "required")).toBe("required");
+    },
+  );
+
+  // Claude 4.x rejects a forced tool only while thinking is on.
+  it.each(["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-8"])("%s gets auto only with thinking on", (model) => {
+    expect(claudeChoice(model, null).type).toBe("tool");
+    expect(claudeChoice(model, { type: "disabled" }).type).toBe("tool");
+    expect(claudeChoice(model, ENABLED).type).toBe("auto");
+    expect(claudeChoice(model, ENABLED, { type: "any" })).toEqual({ type: "auto" });
+    expect(chatChoice(model)).toEqual({ type: "function", function: { name: "shell" } });
+    expect(chatChoice(model, { reasoning_effort: "none" })).toEqual({ type: "function", function: { name: "shell" } });
+    expect(chatChoice(model, { reasoning_effort: "high" })).toBe("auto");
+    expect(chatChoice(model, { reasoning_effort: "high" }, "required")).toBe("auto");
+    // Before an executor has had its say, a thinking-dependent choice is left alone.
+    expect(chatChoice(model, { reasoning_effort: "high" }, "required", false)).toBe("required");
+  });
+
+  it.each(["glm-5.2", "kimi-k3", "deepseek-v4", "gpt-6-sol"])("leaves %s alone", (model) => {
+    expect(claudeChoice(model, ADAPTIVE).type).toBe("tool");
+    expect(chatChoice(model, { reasoning_effort: "high" }, "required")).toBe("required");
+  });
+
+  it("is applied to the body the executor sends, on both wires", async () => {
+    const { DefaultExecutor } = await import("../../open-sse/executors/default.js");
+    const claudeSent = new DefaultExecutor(PROVIDER).finalizeBody(claudeBody("claude-opus-5-5", null), {}, { apiKey: "key-a" });
+    const chatSent = new DefaultExecutor(CHAT_PROVIDER).finalizeBody(
+      { model: "claude-sonnet-4-6", reasoning_effort: "high", tool_choice: "required" }, {}, { apiKey: "key-a", providerSpecificData: { baseUrl: "https://acme.example/v1" } },
+    );
+
+    expect(claudeSent.tool_choice.type).toBe("auto");
+    expect(chatSent.tool_choice).toBe("auto");
+  });
+
+  it("keeps the forced tool on a Claude-backed kimchi model whose reasoning the executor strips", async () => {
+    const { KimchiExecutor } = await import("../../open-sse/executors/kimchi.js");
+    const executor = new KimchiExecutor();
+    const credentials = { apiKey: "key-a" };
+    const model = "claude-sonnet-4-6";
+    const chat = translateRequest(FORMATS.OPENAI, FORMATS.OPENAI, model, {
+      model, stream: true, reasoning_effort: "high",
+      messages: [{ role: "user", content: "run it" }],
+      tools: [{ type: "function", function: { name: "shell", parameters: { type: "object", properties: {} } } }],
+      tool_choice: { type: "function", function: { name: "shell" } },
+    }, true, credentials, "kimchi", null, [], null, null);
+    expect(chat.tool_choice).toEqual({ type: "function", function: { name: "shell" } });
+
+    const sent = executor.finalizeBody(executor.transformRequest(model, chat, true, credentials), {}, credentials);
+    expect(sent.reasoning_effort).toBeUndefined();
+    expect(sent.tool_choice).toEqual({ type: "function", function: { name: "shell" } });
+  });
+
+  describe("through translateRequest to a Claude body, with no executor", () => {
+    const toClaude = (model, extra) => translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, model, {
+      model, stream: true,
+      messages: [{ role: "user", content: "run it" }],
+      tools: [{ type: "function", function: { name: "shell", parameters: { type: "object", properties: {} } } }],
+      ...extra,
+    }, true, { apiKey: "key-a" }, PROVIDER, null, [], null, null);
+
+    it("sends auto for a model that rejects a forced tool", () => {
+      expect(toClaude("claude-opus-5-5", { tool_choice: { type: "function", function: { name: "shell" } } }).tool_choice).toEqual({ type: "auto" });
+      expect(toClaude("claude-sonnet-5-5", { tool_choice: "required" }).tool_choice).toEqual({ type: "auto" });
+    });
+
+    it("keeps the forced tool on Opus 5 with a reasoning effort", () => {
+      const out = toClaude("claude-opus-5", { tool_choice: { type: "function", function: { name: "shell" } }, reasoning_effort: "high" });
+
+      expect(out.thinking?.type).toBe("adaptive");
+      expect(out.tool_choice).toEqual({ type: "tool", name: "shell" });
+    });
+
+    it("leaves the thinking check on Haiku 4.5 to the outgoing body", () => {
+      const withThinking = toClaude("claude-haiku-4-5", { tool_choice: "required", reasoning_effort: "high" });
+      const without = toClaude("claude-haiku-4-5", { tool_choice: "required" });
+
+      // The endpoint's overrides could still drop thinking, so translation keeps the choice.
+      expect(withThinking.thinking?.type).toBe("enabled");
+      expect(withThinking.tool_choice).toEqual({ type: "any" });
+      expect(without.thinking).toBeUndefined();
+      expect(without.tool_choice).toEqual({ type: "any" });
+    });
+
+    it.each(["claude-opus-5.5", "claude-sonnet-5.5"])("never sends disabled thinking to %s", (model) => {
+      for (const reasoning_effort of ["none", undefined]) {
+        const out = toClaude(model, { reasoning_effort });
+        expect(out.thinking?.type).not.toBe("disabled");
+      }
+    });
+  });
+
+  describe("on the outgoing body after an endpoint's overrides", () => {
+    const send = async (model, overrides, extra = {}) => {
+      const { DefaultExecutor } = await import("../../open-sse/executors/default.js");
+      const credentials = { apiKey: "key-a", providerSpecificData: { baseUrl: "https://acme.example/v1", ...(overrides ? { overrides } : {}) } };
+      const body = translateRequest(FORMATS.OPENAI, FORMATS.CLAUDE, model, {
+        model, stream: true, reasoning_effort: "high",
+        messages: [{ role: "user", content: "run it" }],
+        tools: [{ type: "function", function: { name: "exec_command", parameters: { type: "object", properties: {} } } }],
+        tool_choice: { type: "function", function: { name: "exec_command" } },
+        ...extra,
+      }, true, credentials, PROVIDER, null, [], null, null);
+      const executor = new DefaultExecutor(PROVIDER);
+      return executor.finalizeBody(executor.transformRequest(model, body, true, credentials), {}, credentials);
+    };
+
+    it("sends auto on Sonnet 4.6 when thinking goes out", async () => {
+      const sent = await send("claude-sonnet-4-6", null);
+
+      expect(sent.thinking?.type).toBe("adaptive");
+      expect(sent.tool_choice).toEqual({ type: "auto" });
+    });
+
+    it("keeps the forced tool on Sonnet 4.6 when the endpoint drops thinking", async () => {
+      const sent = await send("claude-sonnet-4-6", { drop: "thinking" });
+
+      expect(sent.thinking).toBeUndefined();
+      expect(sent.tool_choice).toEqual({ type: "tool", name: "exec_command" });
+    });
+
+    it("judges the model the endpoint renames to, not the one asked for", async () => {
+      const toOpus55 = await send("claude-opus-5", { models: "claude-opus-5 => claude-opus-5-5" });
+      const toOpus5 = await send("claude-sonnet-4-6", { models: "claude-sonnet-4-6 => claude-opus-5" });
+
+      expect(toOpus55.model).toBe("claude-opus-5-5");
+      expect(toOpus55.tool_choice).toEqual({ type: "auto" });
+      expect(toOpus5.model).toBe("claude-opus-5");
+      expect(toOpus5.tool_choice).toEqual({ type: "tool", name: "exec_command" });
+    });
+  });
+});

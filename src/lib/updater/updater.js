@@ -210,7 +210,8 @@ function relaunchApp() {
       stdio: "ignore",
       windowsHide: true,
       shell: isWin,
-      env: { ...process.env, UPDATER_RELAUNCH: "", UPDATER_RELAUNCH_CMD: "", UPDATER_RELAUNCH_ARGS: "" },
+      // The relaunched server may stop this updater on its next shutdown/update.
+      env: { ...process.env, UPDATER_RELAUNCH: "", UPDATER_RELAUNCH_CMD: "", UPDATER_RELAUNCH_ARGS: "", TENROUTER_UPDATER_PID: String(process.pid) },
     });
     child.unref();
     pushLog(`[updater] relaunched: ${cmd} ${args.join(" ")} (pid=${child.pid})`);

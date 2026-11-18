@@ -9,6 +9,13 @@ const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
   isOidcConfigured: vi.fn(),
   getDashboardAuthSession: vi.fn(),
+  getMeta: vi.fn(),
+}));
+
+// The bootstrap state reads the legacy-grace flag from _meta.
+vi.mock("@/lib/db/helpers/metaStore.js", () => ({
+  getMeta: mocks.getMeta,
+  setMeta: vi.fn(),
 }));
 
 vi.mock("next/server", () => ({
@@ -39,6 +46,43 @@ describe("GET /api/auth/status", () => {
     mocks.getSettings.mockResolvedValue({ requireLogin: true, authMode: "password" });
     mocks.cookies.mockResolvedValue({ get: vi.fn(() => ({ value: "session-token" })) });
     mocks.isOidcConfigured.mockReturnValue(false);
+    mocks.getMeta.mockResolvedValue("0");
+  });
+
+  it("offers SSO sign-in while setup is pending after a reset with a configured SSO", async () => {
+    mocks.getSettings.mockResolvedValue({
+      requireLogin: true,
+      authMode: "both",
+      ssoType: "oidc",
+      oidcIssuerUrl: "https://idp.example.test",
+      oidcClientId: "client",
+      oidcClientSecret: "secret",
+    });
+    mocks.getDashboardAuthSession.mockResolvedValue(null);
+
+    const response = await GET();
+
+    expect(response.body.needsSetup).toBe(true);
+    expect(response.body.ssoLoginAvailable).toBe(true);
+  });
+
+  it("offers no SSO sign-in when the selected SSO isn't configured", async () => {
+    mocks.getSettings.mockResolvedValue({ requireLogin: true, authMode: "both", ssoType: "saml" });
+    mocks.getDashboardAuthSession.mockResolvedValue(null);
+
+    const response = await GET();
+
+    expect(response.body.needsSetup).toBe(true);
+    expect(response.body.ssoLoginAvailable).toBe(false);
+  });
+
+  it("offers no SSO sign-in when status can't be read", async () => {
+    mocks.getSettings.mockRejectedValue(new Error("database unavailable"));
+
+    const response = await GET();
+
+    expect(response.body.ssoLoginAvailable).toBe(false);
+    expect(response.body.needsSetup).toBe(false);
   });
 
   it("reports an authenticated session when the auth cookie is valid", async () => {

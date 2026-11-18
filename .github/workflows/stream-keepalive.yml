@@ -1,0 +1,48 @@
+name: Stream keepalive
+
+on:
+  pull_request:
+    paths:
+      - "open-sse/utils/streamHandler.js"
+      - "open-sse/utils/sseConstants.js"
+      - "open-sse/config/runtimeConfig.js"
+      - "open-sse/handlers/chatCore/streamingHandler.js"
+      - "tests/unit/stream-keepalive.test.js"
+      - ".github/workflows/stream-keepalive.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Unit test
+        working-directory: tests
+        run: >
+          ./node_modules/.bin/vitest run
+          unit/stream-keepalive.test.js
+          unit/responses-abort-terminal.test.js
+          unit/upstream-json-reply.test.js
+          unit/force-stream-config.test.js
+          unit/chat-core-failure-detail.test.js
+          unit/chat-core-transport-selection.test.js
+      - name: Lint
+        run: >
+          ./node_modules/.bin/eslint
+          open-sse/utils/streamHandler.js
+          open-sse/utils/sseConstants.js
+          open-sse/config/runtimeConfig.js
+          open-sse/handlers/chatCore/streamingHandler.js
+          tests/unit/stream-keepalive.test.js
