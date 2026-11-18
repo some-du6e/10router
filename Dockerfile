@@ -17,6 +17,12 @@ ARG SOURCE_COMMIT
 ARG NEXT_PUBLIC_GA_ID
 ENV NEXT_PUBLIC_GA_ID=$NEXT_PUBLIC_GA_ID
 
+# The dashboard reads NEXT_PUBLIC_CLOUD_URL in the browser, so it is inlined at
+# build time too: pass it with `--build-arg`. `.env*` files never reach the
+# build context (`.dockerignore`). A bare ARG is visible to `npm run build` only
+# when passed, so an unset value stays unset instead of being baked in as "".
+ARG NEXT_PUBLIC_CLOUD_URL
+
 RUN apk --no-cache upgrade && apk --no-cache add python3 make g++ linux-headers
 
 COPY package.json ./

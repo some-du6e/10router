@@ -8,11 +8,11 @@ const net = require("net");
 const os = require("os");
 
 // Poll until the server accepts TCP connections on port, or timeout — avoids blind fixed waits.
-function waitServerReady(port, { timeoutMs = 15000, intervalMs = 150 } = {}) {
+function waitServerReady(host, port, { timeoutMs = 15000, intervalMs = 150 } = {}) {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve) => {
     const tryConnect = () => {
-      const socket = net.connect({ host: "127.0.0.1", port }, () => {
+      const socket = net.connect({ host, port }, () => {
         socket.destroy();
         resolve(true);
       });
@@ -170,6 +170,12 @@ if (skipUpdate && !trayMode && !process.stdin.isTTY) {
   trayMode = true;
   process.env.TRAY_MODE = "1";
 }
+
+// Every request the launcher, menu and Terminal UI make goes to this address.
+const api = require("./src/cli/api/client");
+const dialHost = api.hostForBind(host);
+api.configure({ port, host: dialHost });
+const { launcherEnv } = require("./src/cli/utils/launcherState");
 
 // Always use Node.js runtime with absolute path
 const RUNTIME = process.execPath;
@@ -573,6 +579,7 @@ function startServer(updatePromise) {
       windowsHide: true,
       env: {
         ...buildEnvWithRuntime(process.env),
+        ...launcherEnv(),
         PORT: port.toString(),
         HOSTNAME: host
       }
@@ -667,7 +674,7 @@ function startServer(updatePromise) {
     console.log(`\n🚀 ${pkg.name} v${pkg.version}`);
     console.log(`Server: http://${displayHost}:${port}`);
 
-    waitServerReady(port).then(() => {
+    waitServerReady(dialHost, port).then(() => {
       initTrayIcon();
       console.log("\n💡 Router is now running in system tray. Close this terminal if you want.");
       console.log("   Right-click tray icon to open dashboard or quit.\n");
@@ -677,7 +684,7 @@ function startServer(updatePromise) {
   }
 
   // Wait for server to be ready, then show interface menu loop + tray
-  waitServerReady(port).then(async () => {
+  waitServerReady(dialHost, port).then(async () => {
     // Resolve parallel update check (already running); don't block server start on it.
     const latestVersion = await latestVersionPromise;
     // Start tray icon alongside TUI

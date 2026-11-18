@@ -8,7 +8,7 @@ const { machineIdSync } = require("node-machine-id");
 
 // Default configuration
 const DEFAULT_CONFIG = {
-  host: "localhost",
+  host: "127.0.0.1",
   port: 20128,
   protocol: "http:",
 };
@@ -63,6 +63,15 @@ function getCliToken() {
   const secret = loadCliSecret();
   cachedCliToken = raw ? crypto.createHash("sha256").update(raw + CLI_TOKEN_SALT + secret).digest("hex").substring(0, 16) : "";
   return cachedCliToken;
+}
+
+// Address the CLI dials for a server bound to bindHost. "localhost" may
+// resolve to ::1 first, where another local user could be listening.
+function hostForBind(bindHost) {
+  const host = String(bindHost || "").trim().replace(/^\[(.*)\]$/, "$1");
+  if (!host || host === "0.0.0.0" || host === "localhost") return "127.0.0.1";
+  if (host === "::") return "::1";
+  return host;
 }
 
 /**
@@ -496,6 +505,7 @@ async function disableTunnel() {
 
 module.exports = {
   configure,
+  hostForBind,
   
   // Providers
   getProviders,
