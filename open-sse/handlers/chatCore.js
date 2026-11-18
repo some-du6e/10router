@@ -430,15 +430,21 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     streamController.handleComplete();
     return clientAbortResult();
   };
-  // When the request went upstream (0 = not yet, or the client had already left).
-  let dispatchedAt = 0;
-  let retryDispatchedAt = 0;
-  // A hang-up after the request went upstream still costs the owner, so it is
+  // When the upstream attempt in flight was sent. 0: none is (not sent yet, the
+  // client had already left, or the last attempt came back with an error and
+  // the next isn't out). Set here before each execute(); executors that retry
+  // or prepare inside execute() keep it exact through onUpstreamAttempt.
+  let attemptStart = 0;
+  const onUpstreamAttempt = (ts) => { attemptStart = ts; };
+  const startAttempt = () => { attemptStart = clientSignal?.aborted ? 0 : Date.now(); };
+  // A hang-up while an attempt is in flight still costs the owner, so it is
   // charged like a cut-short stream: input, plus the time floor from floorFrom.
-  const chargeHangUp = (floorFrom) => {
-    if (!dispatchedAt) return;
+  // By default a JSON upstream's floor starts with the attempt (it generates
+  // before it answers); a stream's starts at its first byte, which never came.
+  const chargeHangUp = (floorFrom = stream ? null : attemptStart) => {
+    if (!attemptStart) return;
     const tokens = hangUpUsage({ body, sentBody: finalBody || translatedBody, floorFrom });
-    saveUsageStats({ provider, model, tokens, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, label: "HANG-UP USAGE", silent: true });
+    saveUsageStats({ provider, model, tokens, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
   };
   // The client hung up: drop the upstream call.
   if (clientSignal?.aborted) streamController.abort();
@@ -489,9 +495,11 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   // any retries and backoff sleeps inside the executor (a 503 retried 3 times with
   // 2s sleeps records over 6s). Upstream-error rows report it as ttft.
   let upstreamRespondedAt = 0;
+  // A 401/403 sent the request through a token refresh and a retry.
+  let authRetried = false;
   try {
-    dispatchedAt = clientSignal?.aborted ? 0 : Date.now();
-    const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onBetasRejected, onHeadersBudget, imageCacheKey });
+    startAttempt();
+    const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onBetasRejected, onHeadersBudget, onUpstreamAttempt, imageCacheKey });
     upstreamRespondedAt = Date.now();
     providerResponse = result.response;
     providerUrl = result.url;
@@ -501,8 +509,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody);
   } catch (error) {
     if (isClientAbort(error, clientSignal)) {
-      // A JSON upstream generates before it answers; a stream's floor starts at its first byte.
-      chargeHangUp(stream ? null : dispatchedAt);
+      chargeHangUp();
       return endAsHangUp();
     }
     trackPendingRequest(model, provider, connectionId, false, true);
@@ -535,6 +542,9 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
 
   // Handle 401/403 - try token refresh (skip for noAuth providers)
   if (!executor.noAuth && (providerResponse.status === HTTP_STATUS.UNAUTHORIZED || providerResponse.status === HTTP_STATUS.FORBIDDEN)) {
+    // That attempt is over; nothing is in flight until the retry goes out.
+    attemptStart = 0;
+    authRetried = true;
     try {
       // Mutate credentials after each successful refresh: rotating refresh_token
       // providers (xAI/grok-cli) issue a new RT on every refresh; without this,
@@ -555,14 +565,21 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
           try { await onCredentialsRefreshed(newCredentials); } catch (e) { log?.warn?.("TOKEN", `onCredentialsRefreshed failed: ${e.message}`); }
         }
         try {
-          retryDispatchedAt = clientSignal?.aborted ? 0 : Date.now();
-          const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onHeadersBudget, imageCacheKey });
+          startAttempt();
+          const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onHeadersBudget, onUpstreamAttempt, imageCacheKey });
           if (retryResult.response.ok) {
+            upstreamRespondedAt = Date.now();
             providerResponse = retryResult.response;
             providerUrl = retryResult.url;
             providerResponseFormat = retryResult.responseFormat || targetFormat;
+          } else if (!clientSignal?.aborted) {
+            attemptStart = 0;
           }
-        } catch { log?.warn?.("TOKEN", `${provider.toUpperCase()} | retry after refresh failed`); }
+        } catch (error) {
+          // A hang-up leaves the retry in flight, to be charged below.
+          if (!isClientAbort(error, clientSignal)) attemptStart = 0;
+          log?.warn?.("TOKEN", `${provider.toUpperCase()} | retry after refresh failed`);
+        }
       } else {
         log?.warn?.("TOKEN", `${provider.toUpperCase()} | refresh failed`);
       }
@@ -571,11 +588,15 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     }
   }
 
-  // Hung up during the token refresh: the 401/403 is a disconnect, not a failure.
-  // A retry that already went upstream with the new token is charged.
+  // Hung up with an error in hand: a disconnect, not a failure. Either during
+  // the token refresh (a retry already sent with the new token is charged), or
+  // while an executor that buffers through generation (Cursor, Trae) was
+  // reading, which it reports as an error response: charged from the attempt,
+  // streaming or not.
   if (!providerResponse.ok && clientSignal?.aborted) {
     providerResponse.body?.cancel().catch(() => { });
-    if (retryDispatchedAt) chargeHangUp(stream ? null : retryDispatchedAt);
+    if (authRetried) chargeHangUp();
+    else chargeHangUp(attemptStart);
     return endAsHangUp();
   }
 
@@ -604,21 +625,21 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     return createErrorResult(statusCode, errMsg, resetsAtMs);
   }
 
-  // A handler's hang-up while reading the body: an SSE body is charged from its
-  // first byte, a JSON one from when it was sent.
-  const hangUpResult = ({ sse = false } = {}) => {
-    // Executors that read ahead before returning (Codex, Kiro) record when the
-    // response really started.
-    chargeHangUp(sse ? providerResponse.upstreamStartedAt || upstreamRespondedAt : dispatchedAt);
-    return clientAbortResult();
+  // The body handlers answer 499 only when the client hung up mid-read. An SSE
+  // body is charged from its first byte (executors that read ahead before
+  // returning, Codex and Kiro, record when it really started), a JSON one from
+  // when its attempt was sent.
+  const charged = (result, sse) => {
+    if (result?.status === HTTP_STATUS.CLIENT_CLOSED_REQUEST) chargeHangUp(sse ? providerResponse.upstreamStartedAt || upstreamRespondedAt : attemptStart);
+    return result;
   };
-  const sharedCtx = { provider, model, body, stream, clientRequest, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqTag, log, clientSignal, hangUpResult };
+  const sharedCtx = { provider, model, body, stream, clientRequest, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqTag, log, clientSignal };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = endPending;
 
   // Provider forced streaming but client wants JSON
   if (!clientRequestedStreaming && providerRequiresStreaming) {
-    const result = await handleForcedSSEToJson({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, customToolNames, toolNamespaces, trackDone, appendLog });
+    const result = charged(await handleForcedSSEToJson({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, customToolNames, toolNamespaces, trackDone, appendLog }), true);
     if (result) { streamController.handleComplete(); return result; }
   }
 
@@ -630,7 +651,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   const upstreamType = (providerResponse.headers?.get?.("content-type") || "").toLowerCase();
   const upstreamSentJson = upstreamType.includes("application/json") && !upstreamType.includes("text/event-stream");
   if (!stream || upstreamSentJson) {
-    const result = await handleNonStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, reqLogger, toolNameMap, customToolNames, toolNamespaces, trackDone, appendLog });
+    const result = charged(await handleNonStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, reqLogger, toolNameMap, customToolNames, toolNamespaces, trackDone, appendLog }), upstreamType.includes("text/event-stream"));
     streamController.handleComplete();
     // The client asked to stream: replay the finished reply as its own SSE.
     if (clientRequestedStreaming && result?.success) {

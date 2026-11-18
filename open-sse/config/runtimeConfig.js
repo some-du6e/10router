@@ -193,6 +193,11 @@ export const UNDICI_HEADERS_TIMEOUT_MS = 300 * 1000;
 // Gemini native TTS fetch timeout: abort if Google does not return response headers in time.
 export const GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS = envMs("GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS", 45 * 1000);
 
+// How many combos deep a request may nest (the requested combo counts as 1).
+// A deeper combo, like one already being expanded, fails as that member.
+// Routing (src/sse/handlers/chat.ts) and key allowlists (keyLimits.js) share it.
+export const MAX_COMBO_DEPTH = 4;
+
 // Default token limits
 export const DEFAULT_MAX_TOKENS = 64000;
 export const DEFAULT_MIN_TOKENS = 32000;

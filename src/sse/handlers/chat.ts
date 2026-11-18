@@ -27,7 +27,7 @@ import { checkApiKeyLimits, apiKeyLimitDenial, keepAllowedAdapterModels, keyHasB
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
-import { HTTP_STATUS, NON_STREAM_EARLY_HEADERS_MS, STREAM_EARLY_HEADERS_MS } from "open-sse/config/runtimeConfig.js";
+import { HTTP_STATUS, MAX_COMBO_DEPTH, NON_STREAM_EARLY_HEADERS_MS, STREAM_EARLY_HEADERS_MS } from "open-sse/config/runtimeConfig.js";
 import { isRequestError } from "open-sse/services/accountFallback.js";
 import { createSameRequestErrorTally } from "open-sse/services/sameRequestError.js";
 import { connectionUpstream } from "../services/connectionUpstream.js";
@@ -154,9 +154,6 @@ interface SingleModelOptions {
   // Combos already being expanded on the way to this model, outermost first.
   comboPath?: string[];
 }
-
-// Nesting deeper than this is treated like a cycle.
-const MAX_COMBO_DEPTH = 4;
 
 interface RoutedChatArgs {
   body: ChatBody;
@@ -386,7 +383,7 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
         body,
         models: soloAugmented,
         handleSingleModel: withCapacityAdapterStripping(
-          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures, blockedBilling: soloBlockedBilling, signal, comboPath: [comboLookupName(modelStr)] }),
+          (b: ChatBody, m: string) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, { allowHold: false, routingFailures, blockedBilling: soloBlockedBilling, signal }),
           adapterAdded
         ),
         log,

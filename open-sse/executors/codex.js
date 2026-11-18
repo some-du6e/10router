@@ -273,6 +273,8 @@ export class CodexExecutor extends BaseExecutor {
     const imgCount = Array.isArray(args.body?.input) ? args.body.input.reduce((n, it) => n + (Array.isArray(it.content) ? it.content.filter(c => c.type === "image_url").length : 0), 0) : 0;
     const inputLen = Array.isArray(args.body?.input) ? args.body.input.length : 0;
     dbg("CODEX", `execute start | inputItems=${inputLen} | images=${imgCount} | sessionId=${this._currentSessionId || "pending"}`);
+    // Nothing is upstream while images download; base.execute reports each send.
+    args.onUpstreamAttempt?.(0);
     if (imgCount > 0) {
       const t0 = Date.now();
       await this.prefetchImages(args.body, args.imageCacheKey);
@@ -304,6 +306,8 @@ export class CodexExecutor extends BaseExecutor {
         if (result.response) result.response.upstreamStartedAt = fetchedAt;
         return result;
       }
+      // The attempt came back with an error event.
+      args.onUpstreamAttempt?.(0);
       if (peek.accountFallback) {
         args.log?.warn?.("RETRY", `CODEX | SSE account fallback "${peek.message}"`);
         result.response = codexSseErrorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, peek.message || CODEX_MODEL_CAPACITY_MESSAGE);
@@ -409,7 +413,6 @@ export class CodexExecutor extends BaseExecutor {
    * Image fetching is handled separately in prefetchImages() so this stays sync.
    */
   transformRequest(model, body, stream, credentials) {
-    delete body._compact;
     // Resolve conversation-stable session_id (priority: body → assistant-text → workspace → machine)
     this._currentSessionId = resolveCacheSessionId(body, credentials);
     // Convert string input to array format (Codex API requires input as array)

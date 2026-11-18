@@ -29,6 +29,10 @@ on:
       - "tests/unit/stream-floor-wiring.test.js"
       - "tests/unit/limit-hold-integration.test.js"
       - "tests/unit/stream-early-headers.test.js"
+      - "tests/unit/hang-up-charge.test.js"
+      - "tests/unit/routing-guards.test.js"
+      - "tests/unit/upstream-request-isolation.test.js"
+      - "tests/unit/anthropic-beta-rejection.test.js"
       - ".github/workflows/api-key-budgets.yml"
   workflow_dispatch:
 
@@ -64,6 +68,10 @@ jobs:
           unit/limit-hold-integration.test.js
           unit/stream-early-headers.test.js
           unit/embedding-usage-persistence.test.js
+          unit/hang-up-charge.test.js
+          unit/routing-guards.test.js
+          unit/upstream-request-isolation.test.js
+          unit/anthropic-beta-rejection.test.js
       - name: Lint
         run: >
           ./node_modules/.bin/eslint

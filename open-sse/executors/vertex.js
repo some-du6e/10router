@@ -129,7 +129,9 @@ export class VertexExecutor extends BaseExecutor {
     return { accessToken: result.accessToken, expiresAt: result.expiresAt };
   }
 
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, onUpstreamAttempt = null }) {
+    // Nothing is upstream while a token is minted or a project resolved.
+    onUpstreamAttempt?.(0);
     const saJson = parseVertexSaJson(credentials?.apiKey);
     const adcJson = parseVertexAdcJson(credentials?.apiKey);
 
@@ -164,12 +166,14 @@ export class VertexExecutor extends BaseExecutor {
     const headers = this.buildHeaders(credentials, stream);
     const transformedBody = this.transformRequest(model, body, stream, credentials);
 
+    onUpstreamAttempt?.(signal?.aborted ? 0 : Date.now());
     const response = await proxyAwareFetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify(transformedBody),
       signal,
     }, proxyOptions);
+    if (!response.ok) onUpstreamAttempt?.(0);
 
     return { response, url, headers, transformedBody };
   }

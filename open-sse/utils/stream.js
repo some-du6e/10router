@@ -5,10 +5,10 @@ import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, estimateOutputT
 import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE } from "./streamHelpers.js";
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
-import { RESPONSES_COMPLETION_WAIT_MS, STREAM_ABORT_FLOOR_TPS } from "../config/runtimeConfig.js";
+import { RESPONSES_COMPLETION_WAIT_MS } from "../config/runtimeConfig.js";
 
 import { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER } from "./sseConstants.js";
-import { outputCap } from "./hangUpCharge.js";
+import { sentOutputCap, floorTokens } from "./hangUpCharge.js";
 
 export { COLORS, formatSSE };
 export { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER };
@@ -211,13 +211,6 @@ export function createSSEStream(options = {}) {
     if (finishSeen && hasValidUsage(parsed.usage)) finalUsageSeen = true;
   };
 
-  const capOf = outputCap;
-  const sentBody = () => {
-    const b = sse.upstreamBody;
-    if (typeof b !== "string") return b || null;
-    try { return JSON.parse(b); } catch { return {}; }
-  };
-  const maxOutputTokens = () => { const up = sentBody(); return up ? capOf(up) : capOf(body); };
 
   /**
    * The usage to bill when the final usage never arrived: input as reported
@@ -232,11 +225,11 @@ export function createSSEStream(options = {}) {
     const reportedOut = Math.max(0, ...outKeys.map((k) => (Number(reported[k]) > 1 ? Number(reported[k]) : 0)));
     const startedAt = sse.upstreamStartedAt ?? ttftAt;
     const endedAt = floorEndAt ?? Date.now();
-    const floor = answerCut && startedAt ? Math.floor((Math.max(0, endedAt - startedAt) / 1000) * STREAM_ABORT_FLOOR_TPS) : 0;
+    const floor = answerCut ? floorTokens(startedAt, endedAt) : 0;
     const visible = estimateOutputTokens(totalContentLength);
     let out = Math.max(reportedOut, visible, floor);
     // The cap bounds the floor only: what was reported or visibly streamed stands.
-    const cap = maxOutputTokens();
+    const cap = sentOutputCap(sse.upstreamBody, body);
     if (cap) out = Math.max(Math.min(out, cap), reportedOut, visible);
     const billed = reported ? { ...reported } : estimateBillingUsage(body, 0, fmt);
     const keys = outKeys.length ? outKeys : ["completion_tokens" in billed ? "completion_tokens" : "output_tokens"];

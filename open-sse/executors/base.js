@@ -109,7 +109,10 @@ export class BaseExecutor {
     return { status: response.status, message: bodyText || `HTTP ${response.status}` };
   }
 
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, onHeadersBudget = null }) {
+  // `onUpstreamAttempt(ts)`: when the attempt now in flight was sent, or 0 when
+  // none is (backing off before a retry, or the last attempt came back with an
+  // error). A client that hangs up is charged only while one is in flight.
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, onHeadersBudget = null, onUpstreamAttempt = null }) {
     const fallbackCount = this.getFallbackCount();
     // How long each URL waits for response headers; the caller learns the
     // whole call's (a hung model's probe goes by it).
@@ -136,6 +139,7 @@ export class BaseExecutor {
       }
       retryAttemptsByUrl[urlIndex]++;
       log?.debug?.("RETRY", `${reason} retry ${retryAttemptsByUrl[urlIndex]}/${attempts} after ${waitMs / 1000}s`);
+      onUpstreamAttempt?.(0);
       await new Promise(resolve => setTimeout(resolve, waitMs));
       return true;
     };
@@ -155,6 +159,7 @@ export class BaseExecutor {
         const bodyStr = JSON.stringify(transformedBody);
         const fetchT0 = Date.now();
         dbg("FETCH", `${this.provider.toUpperCase()} → ${url} | body=${bodyStr.length}B | headersTimeout=${timeoutMs}ms`);
+        onUpstreamAttempt?.(signal?.aborted ? 0 : fetchT0);
         const response = await proxyAwareFetch(url, {
           method: "POST",
           headers,
@@ -168,6 +173,7 @@ export class BaseExecutor {
 
         if (await tryRetry(urlIndex, response.status, `status ${response.status}`, response)) { urlIndex--; continue; }
 
+        if (!response.ok) onUpstreamAttempt?.(0);
         if (this.shouldRetry(response.status, urlIndex)) {
           log?.debug?.("RETRY", `${response.status} on ${url}, trying fallback ${urlIndex + 1}`);
           lastStatus = response.status;
@@ -186,8 +192,9 @@ export class BaseExecutor {
         }
         lastError = error;
         dbg("FETCH", `${this.provider.toUpperCase()} ✖ ${error?.name}: ${error?.message}`);
-        // The client hung up
+        // The client hung up: the attempt was in flight.
         if (!timedOut && error?.name === "AbortError") throw error;
+        onUpstreamAttempt?.(0);
 
         // Network/fetch exceptions use the 502 retry config. A header timeout
         // already had its whole budget: only the next base URL is tried.

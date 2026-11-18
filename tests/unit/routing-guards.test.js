@@ -44,6 +44,7 @@ const db = await import("@/lib/db/index.js");
 const { getAdapter } = await import("@/lib/db/driver.js");
 const { handleChat } = await import("@/sse/handlers/chat.js");
 const { DEFAULT_TIMING } = await import("open-sse/utils/limitHold.js");
+const { MAX_COMBO_DEPTH } = await import("open-sse/config/runtimeConfig.js");
 
 async function newKey(name, limits = {}) {
   const created = await db.createApiKey(name, "machine-routing-0001");
@@ -69,6 +70,19 @@ beforeAll(async () => {
   await db.createCombo({ name: "pong", models: ["ping"] });
   await db.createCombo({ name: "team-a", models: ["openai/model-ok"] });
   await db.createCombo({ name: "Team-A", models: ["anthropic/model-denied"] });
+  // Five deep: d5 is one level past the cap, so d1 falls through to shallow.
+  await db.createCombo({ name: "d1", models: ["d2", "openai/shallow"] });
+  await db.createCombo({ name: "d2", models: ["d3"] });
+  await db.createCombo({ name: "d3", models: ["d4"] });
+  await db.createCombo({ name: "d4", models: ["d5"] });
+  await db.createCombo({ name: "d5", models: ["openai/deep"] });
+  // Exactly at the cap: c4 still routes.
+  await db.createCombo({ name: "c1", models: ["c2"] });
+  await db.createCombo({ name: "c2", models: ["c3"] });
+  await db.createCombo({ name: "c3", models: ["c4"] });
+  await db.createCombo({ name: "c4", models: ["openai/at-cap"] });
+  await db.setModelAlias("fast", "openai/model-ok");
+  await db.setModelAlias("Fast", "anthropic/model-denied");
 });
 
 afterAll(() => {
@@ -93,7 +107,8 @@ describe("a combo that contains itself", () => {
     const res = await handleChat(chatRequest(key, "loopy"));
     expect(res.status).toBe(200);
     expect(reached()).toEqual(["openai/gpt-fallback"]);
-    expect(upstream.comboLookups).toBeLessThan(10);
+    // One lookup per combo on the way: loopy, then the repeat it refuses.
+    expect(upstream.comboLookups).toBe(2);
   });
 
   it("stops a cycle through another combo too", async () => {
@@ -101,7 +116,31 @@ describe("a combo that contains itself", () => {
     const res = await handleChat(chatRequest(key, "ping"));
     expect(res.status).toBe(200);
     expect(reached()).toEqual(["openai/gpt-after-ping"]);
-    expect(upstream.comboLookups).toBeLessThan(10);
+    // ping, pong, then the repeated ping it refuses.
+    expect(upstream.comboLookups).toBe(3);
+  });
+});
+
+describe("combos nested past the cap", () => {
+  it(`skips a combo nested more than ${MAX_COMBO_DEPTH} deep and reaches the next member`, async () => {
+    const key = await newKey("too-deep");
+    const res = await handleChat(chatRequest(key, "d1"));
+    expect(res.status).toBe(200);
+    expect(reached()).toEqual(["openai/shallow"]);
+  });
+
+  it("routes a combo exactly at the cap, for a key whose allowlist covers its model", async () => {
+    const key = await newKey("at-cap", { allowedModels: ["openai/at-cap"] });
+    const res = await handleChat(chatRequest(key, "c1"));
+    expect(res.status).toBe(200);
+    expect(reached()).toEqual(["openai/at-cap"]);
+  });
+
+  it("lets an allowlisted key through a combo whose too-deep member reaches nothing", async () => {
+    const key = await newKey("too-deep-allowlist", { allowedModels: ["openai/shallow"] });
+    const res = await handleChat(chatRequest(key, "d1"));
+    expect(res.status).toBe(200);
+    expect(reached()).toEqual(["openai/shallow"]);
   });
 });
 
@@ -159,5 +198,16 @@ describe("an allowlist naming a combo", () => {
   it("still allows a differently-cased combo whose members are all allowed", async () => {
     const key = await newKey("case-members", { allowedModels: ["TEAM-A", "openai/model-ok"] });
     expect((await handleChat(chatRequest(key, "team-a"))).status).toBe(200);
+  });
+});
+
+describe("an allowlist naming an alias", () => {
+  it("allows only the alias spelled that way, not one differing by case", async () => {
+    const key = await newKey("case-alias", { allowedModels: ["fast"] });
+    expect((await handleChat(chatRequest(key, "fast"))).status).toBe(200);
+    expect(reached()).toEqual(["openai/model-ok"]);
+    upstream.core.mockClear();
+    expect((await handleChat(chatRequest(key, "Fast"))).status).toBe(403);
+    expect(upstream.core).not.toHaveBeenCalled();
   });
 });

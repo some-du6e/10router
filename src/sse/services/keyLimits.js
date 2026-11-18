@@ -5,7 +5,7 @@
 import { getApiKeyPolicy, getModelAliases, getSettings } from "@/lib/db/index.js";
 import { BUILTIN_MODEL_ALIASES, stripContextWindowSuffix } from "open-sse/services/model.js";
 import { FORMATS } from "open-sse/translator/formats.js";
-import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
+import { HTTP_STATUS, MAX_COMBO_DEPTH } from "open-sse/config/runtimeConfig.js";
 import { buildErrorBody } from "open-sse/utils/error.js";
 import { budgetState, isKeyExpired } from "@/shared/utils/apiKeyLimits.js";
 import { extractApiKey } from "./auth.js";
@@ -104,8 +104,10 @@ export async function isModelAllowed(requested, allowedModels, lookup, depth = 0
     const members = await lookup.comboModels(raw);
     if (Array.isArray(members) && members.length > 0) {
       if (namedExactly()) return true;
-      // The depth cap stops a combo that (mis)lists itself from looping.
-      if (depth >= 3) return false;
+      // Routing refuses a combo nested this deep (the requested one is depth
+      // 0) and moves on to the next member, so it reaches nothing and needs no
+      // permission. This also stops a combo that lists itself from looping.
+      if (depth >= MAX_COMBO_DEPTH) return true;
       for (const member of members) {
         if (!(await isModelAllowed(member, allowedModels, lookup, depth + 1))) return false;
       }

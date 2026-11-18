@@ -218,7 +218,7 @@ function translateToClientBody(responseBody, targetFormat, sourceFormat) {
 /**
  * Handle non-streaming response from provider.
  */
-export async function handleNonStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, body, stream, clientRequest = null, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, toolNamespaces, trackDone, appendLog, reqTag, log, clientSignal = null, hangUpResult = clientAbortResult }) {
+export async function handleNonStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, body, stream, clientRequest = null, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, toolNamespaces, trackDone, appendLog, reqTag, log, clientSignal = null }) {
   trackDone();
   const contentType = providerResponse.headers.get("content-type") || "";
   let responseBody;
@@ -229,7 +229,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
       sseText = await providerResponse.text();
     } catch (err) {
       // A client hang-up aborts the upstream body mid-read; that's no upstream failure.
-      if (isClientAbort(err, clientSignal)) return hangUpResult({ sse: true });
+      if (isClientAbort(err, clientSignal)) return clientAbortResult();
       appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
       return createErrorResult(HTTP_STATUS.BAD_GATEWAY, `Upstream SSE body from ${provider} failed: ${err?.message || err}`);
     }
@@ -243,7 +243,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     try {
       responseBody = await providerResponse.json();
     } catch (err) {
-      if (isClientAbort(err, clientSignal)) return hangUpResult();
+      if (isClientAbort(err, clientSignal)) return clientAbortResult();
       appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
       console.error(`[ChatCore] Failed to parse JSON from ${provider}:`, err.message);
       return createErrorResult(HTTP_STATUS.BAD_GATEWAY, `Invalid JSON response from ${provider}`);
