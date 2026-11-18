@@ -1,14 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { probeErrorMessage, testSingleConnection } from "../../src/app/api/providers/[id]/test/testUtils.js";
 
-const { get, update, refresh, expired, lock, proxyConfig, proxyTest } = vi.hoisted(() => ({
-  get: vi.fn(), update: vi.fn(), refresh: vi.fn(), expired: vi.fn(), lock: vi.fn(), proxyConfig: vi.fn(), proxyTest: vi.fn(),
+// `refresh` is the engine's refreshTokenByProvider (Codex, Grok CLI, xAI); the
+// other providers refresh through the stubbed fetch.
+const { get, update, refresh, merge, expired, lock, proxyConfig, proxyTest } = vi.hoisted(() => ({
+  get: vi.fn(), update: vi.fn(), refresh: vi.fn(), merge: vi.fn(), expired: vi.fn(), lock: vi.fn(),
+  proxyConfig: vi.fn(), proxyTest: vi.fn(),
 }));
 vi.mock("@/lib/localDb", () => ({ getProviderConnectionById: get, updateProviderConnection: update }));
 vi.mock("@/lib/network/connectionProxy", () => ({ resolveConnectionProxyConfig: proxyConfig }));
 vi.mock("@/lib/network/proxyTest", () => ({ testProxyUrl: proxyTest }));
+vi.mock("open-sse/services/tokenRefresh.js", () => ({ refreshTokenByProvider: refresh }));
 vi.mock("open-sse/services/oauthCredentialManager.js", () => ({
-  refreshProviderCredentials: refresh, shouldRefreshCredentials: expired, withCredentialRefreshLock: lock,
+  mergeRefreshedCredentials: merge, shouldRefreshCredentials: expired, withCredentialRefreshLock: lock,
 }));
 
 const connection = { id: "account-a", provider: "codex", authType: "oauth", accessToken: "old-access", refreshToken: "old-refresh" };
@@ -41,6 +45,7 @@ beforeEach(() => {
   refresh.mockResolvedValue({ ...rotated });
   expired.mockReturnValue(false);
   lock.mockImplementation(async (_provider, _credentials, refreshFn) => refreshFn());
+  merge.mockImplementation((_provider, _credentials, refreshed) => refreshed);
   proxyConfig.mockResolvedValue({});
 });
 afterEach(() => vi.unstubAllGlobals());
@@ -218,12 +223,41 @@ describe("connection tests share the request path's refresh lock", () => {
     expectTokensSaved();
   });
 
-  it("leaves Codex to refreshProviderCredentials, which takes the lock itself", async () => {
+  it("refreshes Codex inside the lock through the engine's unlocked refresh", async () => {
     expired.mockReturnValue(true);
     stubFetch(status(400));
     await testSingleConnection("account-a");
+    expect(lock).toHaveBeenCalledWith("codex", expect.objectContaining({ id: "account-a" }), expect.any(Function));
     expect(refresh).toHaveBeenCalledTimes(1);
-    expect(lock).not.toHaveBeenCalled();
+    expect(merge).toHaveBeenCalledWith("codex", expect.objectContaining({ refreshToken: "old-refresh" }), expect.objectContaining(rotated));
+    expectTokensSaved();
+  });
+
+  it("re-reads the row inside the lock, so a rotation saved under it is adopted, not spent again", async () => {
+    let readsInsideLock = 0;
+    let handedToSharers;
+    lock.mockImplementation(async (_provider, _credentials, refreshFn) => {
+      const before = get.mock.calls.length;
+      handedToSharers = await refreshFn();
+      readsInsideLock = get.mock.calls.length - before;
+      return handedToSharers;
+    });
+    get.mockResolvedValueOnce({ ...connection })
+      .mockResolvedValue({ ...connection, accessToken: "request-access", refreshToken: "request-refresh", lastRefreshAt: "2026-01-01T00:00:00.000Z" });
+    stubFetch(status(401), status(400));
+    expect(await testSingleConnection("account-a")).toMatchObject({ valid: true, refreshed: false });
+    expect(readsInsideLock).toBe(1);
+    expect(refresh).not.toHaveBeenCalled();
+    // A request that shares this lock gets the stored tokens rather than nothing.
+    expect(handedToSharers).toMatchObject({ accessToken: "request-access", refreshToken: "request-refresh" });
+  });
+
+  it("stamps lastRefreshAt on its save, so the request path adopts the test's tokens", async () => {
+    const before = Date.now();
+    stubFetch(status(401), status(400));
+    await testSingleConnection("account-a");
+    const { lastRefreshAt } = tokenWrites()[0][1];
+    expect(Date.parse(lastRefreshAt)).toBeGreaterThanOrEqual(before);
   });
 });
 

@@ -5,10 +5,11 @@ import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/sha
 import { getDefaultModel } from "open-sse/config/providerModels.js";
 import { resolveOllamaLocalHost, PROVIDERS } from "open-sse/config/providers.js";
 import {
-  refreshProviderCredentials,
+  mergeRefreshedCredentials,
   shouldRefreshCredentials,
   withCredentialRefreshLock,
 } from "open-sse/services/oauthCredentialManager.js";
+import { refreshTokenByProvider } from "open-sse/services/tokenRefresh.js";
 import { isInvalidHeaderValueError, sanitizeSecrets } from "open-sse/utils/redact.js";
 import {
   GEMINI_CONFIG,
@@ -217,22 +218,31 @@ async function probeCloudCodeAssistAccess(connection, accessToken, effectiveProx
   };
 }
 
-async function refreshOAuthToken(connection) {
+const ENGINE_REFRESH_PROVIDERS = new Set(["codex", "grok-cli", "xai"]);
+
+/**
+ * One refresh with `connection`'s refresh token, for a caller already holding
+ * withCredentialRefreshLock. Codex, Grok CLI and xAI use the engine's refresh;
+ * refreshProviderCredentials would take the lock again and wait on itself, so
+ * its body runs here.
+ */
+async function refreshUnlocked(connection) {
   const provider = connection.provider;
   if (!connection.refreshToken) return null;
-  // refreshProviderCredentials takes the refresh lock itself; taking it here too
-  // would wait on its own promise.
-  if (provider === "codex" || provider === "grok-cli" || provider === "xai") {
-    try {
-      return await refreshProviderCredentials(provider, connection, console);
-    } catch (err) {
-      console.log(`Error refreshing ${provider} token:`, err.message);
-      return null;
-    }
+  if (!ENGINE_REFRESH_PROVIDERS.has(provider)) return requestTokenRefresh(connection);
+  try {
+    return mergeRefreshedCredentials(provider, connection, await refreshTokenByProvider(provider, connection, console));
+  } catch (err) {
+    console.log(`Error refreshing ${provider} token:`, err.message);
+    return null;
   }
-  // The request path's lock, so a test never spends a refresh token a request
-  // is already refreshing: it gets that refresh's result instead.
-  return withCredentialRefreshLock(provider, connection, () => requestTokenRefresh(connection));
+}
+
+/** The token fields of a stored row, for a caller that shares this test's refresh. */
+function storedTokens(row) {
+  if (!row.accessToken) return null;
+  const fields = ["accessToken", "refreshToken", "idToken", "expiresAt", "lastRefreshAt", "providerSpecificData"];
+  return Object.fromEntries(fields.filter((f) => row[f] != null).map((f) => [f, row[f]]));
 }
 
 async function requestTokenRefresh(connection) {
@@ -339,7 +349,9 @@ function refreshedTokenFields(connection, tokens) {
     refreshToken: tokens.refreshToken || connection.refreshToken,
   };
   if (tokens.idToken) fields.idToken = tokens.idToken;
-  if (tokens.lastRefreshAt) fields.lastRefreshAt = tokens.lastRefreshAt;
+  // Stamped, so the request path's checkAndRefreshToken sees the row as newer
+  // than its own snapshot and adopts these tokens instead of refreshing again.
+  fields.lastRefreshAt = tokens.lastRefreshAt || new Date().toISOString();
   if (tokens.expiresIn) {
     fields.expiresIn = tokens.expiresIn;
     fields.expiresAt = new Date(Date.now() + tokens.expiresIn * 1000).toISOString();
@@ -376,24 +388,39 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
   // Resolves to { accessToken, adopted } or null. `adopted` marks tokens another
   // login stored, which the probe may still refresh once.
   const refresh = async () => {
-    // A request, or another test, may have rotated the token since this
-    // snapshot; spending the old one again is refused, or revokes the session.
-    const latest = await getProviderConnectionById(connection.id);
-    if (!latest) {
+    let gone = false;
+    let adoptedRow = null;
+    // Inside the lock the request path's proactive and background refresh take,
+    // so the re-read can't miss a rotation that one is about to save. A refresh
+    // already holding the lock hands this test its result instead.
+    const tokens = await withCredentialRefreshLock(current.provider, current, async () => {
+      // A request, another test or a new sign-in may have rotated the token
+      // since this read; spending the old one again is refused, or revokes the session.
+      const latest = await getProviderConnectionById(connection.id);
+      if (!latest) {
+        gone = true;
+        return null;
+      }
+      if ((latest.refreshToken ?? null) !== (current.refreshToken ?? null)) {
+        adoptedRow = latest;
+        return storedTokens(latest);
+      }
+      return refreshUnlocked(current);
+    });
+    if (gone) {
       superseded = true;
       return null;
     }
-    if ((latest.refreshToken ?? null) !== (current.refreshToken ?? null)) {
-      seen.push(latest);
-      if (!latest.accessToken) {
+    if (adoptedRow) {
+      seen.push(adoptedRow);
+      if (!adoptedRow.accessToken) {
         superseded = true;
         return null;
       }
-      current = latest;
-      rowRefreshToken = latest.refreshToken ?? null;
-      return { accessToken: latest.accessToken, adopted: true };
+      current = adoptedRow;
+      rowRefreshToken = adoptedRow.refreshToken ?? null;
+      return { accessToken: adoptedRow.accessToken, adopted: true };
     }
-    const tokens = await refreshOAuthToken(current);
     if (!tokens?.accessToken) return null;
     seen.push(tokens);
     // Rotation retires the old refresh token whatever the probe says, so save
