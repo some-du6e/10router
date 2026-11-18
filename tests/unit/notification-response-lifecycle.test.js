@@ -41,4 +41,15 @@ describe("notification response lifecycle", () => {
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(cancel.mock.invocationCallOrder[0]).toBeLessThan(close.mock.invocationCallOrder[0]);
   });
+
+  it("still closes the dispatcher and returns the response when body cancel throws", async () => {
+    const response = { ok: true, status: 204, body: { cancel: vi.fn(() => { throw new TypeError("locked"); }) } };
+    const close = vi.fn().mockResolvedValue(undefined);
+    await expect(notificationFetch("https://example.test/hook", {}, {
+      fetch: vi.fn().mockResolvedValue(response),
+      assertDestination: vi.fn().mockResolvedValue([{ address: "203.0.113.10", family: 4 }]),
+      createDispatcher: () => ({ close }),
+    })).resolves.toBe(response);
+    expect(close).toHaveBeenCalledTimes(1);
+  });
 });

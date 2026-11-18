@@ -93,9 +93,8 @@ export async function notificationFetch(urlValue, options = {}, deps = {}) {
     }
     return response;
   } finally {
-    // Senders only need the HTTP status. Release unread bodies before closing
-    // the pinned dispatcher, which otherwise waits for the response to finish.
-    await response?.body?.cancel?.().catch(() => {});
+    // Senders only use the status; closing the dispatcher waits on unread bodies.
+    try { await response?.body?.cancel?.(); } catch {}
     clearTimeout(timeout);
     await dispatcher?.close().catch(() => {});
   }
