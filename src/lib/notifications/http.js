@@ -76,8 +76,9 @@ export async function notificationFetch(urlValue, options = {}, deps = {}) {
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), NOTIFICATION_CONFIG.requestTimeoutMs);
+  let response;
   try {
-    const response = await fetchImpl(url, {
+    response = await fetchImpl(url, {
       ...fetchOptions,
       redirect: "manual",
       signal: controller.signal,
@@ -90,8 +91,9 @@ export async function notificationFetch(urlValue, options = {}, deps = {}) {
       const detail = await readResponseText(response);
       throw new Error(`Notification request failed (${response.status})${detail ? `: ${detail}` : ""}`);
     }
-    return response;
+    return response.status;
   } finally {
+    try { await response?.body?.cancel?.(); } catch {}
     clearTimeout(timeout);
     await dispatcher?.close().catch(() => {});
   }
