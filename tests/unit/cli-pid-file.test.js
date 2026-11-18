@@ -110,18 +110,13 @@ describe("CLI cloudflared PID file", () => {
     expect(run).not.toHaveBeenCalledWith("taskkill", expect.anything(), expect.anything());
   });
 
-  it("keeps the PID file on Windows when tasklist can't run", () => {
+  // The server reads this file without checking the PID, so an unverifiable
+  // one must not be left behind for it.
+  it("removes the PID file on Windows when tasklist can't run, without taskkill", () => {
     const exe = path.join(tmp, "bin", "cloudflared.exe");
     const run = vi.fn((cmd) => { if (cmd === "tasklist") throw Object.assign(new Error("ETIMEDOUT"), { code: "ETIMEDOUT" }); return ""; });
     expect(killByPidFile(pidFile, exe, { platform: "win32", run, kill: vi.fn() })).toBe(false);
     expect(run).not.toHaveBeenCalledWith("taskkill", expect.anything(), expect.anything());
-    expect(fs.existsSync(pidFile)).toBe(true);
-  });
-
-  it("removes the PID file on Windows when tasklist shows no match", () => {
-    const exe = path.join(tmp, "bin", "cloudflared.exe");
-    const run = vi.fn((cmd) => (cmd === "tasklist" ? '"explorer.exe","4242","Console","1","99,000 K"\r\n' : ""));
-    killByPidFile(pidFile, exe, { platform: "win32", run, kill: vi.fn() });
     expect(fs.existsSync(pidFile)).toBe(false);
   });
 
