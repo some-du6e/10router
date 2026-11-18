@@ -290,6 +290,21 @@ describe("handleVideoProxyCore", () => {
     expect(result.clientAborted).toBe(true);
   });
 
+  it("reports a hang-up while the body is read as a client abort, whatever status came back", async () => {
+    const ctrl = new AbortController();
+    const reason = Object.assign(new Error("Response aborted"), { name: "ResponseAborted" });
+    // The headers say 500; the client leaves before the body is in.
+    global.fetch.mockResolvedValueOnce(new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("{\"error\":"));
+        setTimeout(() => { ctrl.abort(reason); controller.error(reason); }, 10);
+      },
+    }), { status: 500 }));
+    const result = await handleVideoProxyCore({ provider: "xai", requestId: "job-1", credentials: { accessToken: "tok" }, signal: ctrl.signal });
+    expect(result.status).toBe(499);
+    expect(result.clientAborted).toBe(true);
+  });
+
   it("reports a hang-up during the retry after a refresh as a client abort, not a 502", async () => {
     const ctrl = new AbortController();
     const reason = Object.assign(new Error("Response aborted"), { name: "ResponseAborted" });

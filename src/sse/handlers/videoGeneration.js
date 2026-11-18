@@ -12,7 +12,6 @@ import { handleVideoProxyCore, getVideoConfig } from "open-sse/handlers/videoCor
 import { sanitizeSecrets } from "open-sse/utils/redact.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { modelIdProblem } from "open-sse/utils/modelPath.js";
-import { namesAccount, namesAccountOrLimit, namesBadKey } from "open-sse/services/accountFallback.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import * as log from "../utils/logger.js";
@@ -35,22 +34,20 @@ const CREATE_ROTATION_STATUSES = new Set([
 const ACCOUNT_STATUSES = new Set([...CREATE_ROTATION_STATUSES, HTTP_STATUS.PAYMENT_REQUIRED]);
 
 /**
- * A failure that says something about the account rather than the request:
- * an account status, an upstream error, or error text naming the key (some
- * upstreams answer a revoked key with a 400). A client that left, or a
- * request that never went out, says nothing about it. Only these lock the
- * account; a rejected request or unknown job id just goes back to the client.
+ * A failure that says something about the account rather than the request,
+ * judged by status only: an account status, or (for a create with a model,
+ * whose lock covers just that model) a 5xx. A lock with no model covers the
+ * whole account, so it takes an account status. A client that left, or a
+ * request that never went out, says nothing about the account.
  *
- * Upstream error text can echo what the client sent (a job id, a field), so
- * the client's own id is cut out first. And a lock with no model covers the
- * whole account, so there only the bad-key and billing texts count, not the
- * looser limit and capacity phrases a client could get echoed back.
+ * Upstream error text is not read: it can echo what the client sent (a job
+ * id, a prompt), so matching it would let a client lock or rotate the pool.
+ * A revoked key that answers 400 is therefore not locked here.
  */
-function isAccountFailure(result, { model = null, requestId = null } = {}) {
+function isAccountFailure(result, { model = null } = {}) {
   if (result.notSent || result.clientAborted) return false;
-  if (ACCOUNT_STATUSES.has(result.status) || result.status >= HTTP_STATUS.SERVER_ERROR) return true;
-  const text = requestId ? String(result.error ?? "").split(String(requestId)).join("") : result.error;
-  return model ? namesAccountOrLimit(text) : namesAccount(text);
+  if (ACCOUNT_STATUSES.has(result.status)) return true;
+  return !!model && result.status >= HTTP_STATUS.SERVER_ERROR;
 }
 
 async function requireValidApiKey(request) {
@@ -207,8 +204,7 @@ export async function handleVideoCreate(request, action) {
       )
       : { shouldFallback: false };
 
-    // A bad key refused as a 400 created no job either, so the next account may try.
-    if (shouldFallback && (CREATE_ROTATION_STATUSES.has(result.status) || namesBadKey(result.error))) {
+    if (shouldFallback && CREATE_ROTATION_STATUSES.has(result.status)) {
       excludeConnectionIds.add(credentials.connectionId);
       lastError = result.error;
       lastStatus = result.status;
@@ -266,7 +262,7 @@ export async function handleVideoGet(request, requestId) {
 
   // A poll has no model, so a lock here covers the whole account: only an
   // account failure takes one. An unknown or invalid job id is the client's.
-  if (isAccountFailure(result, { requestId })) {
+  if (isAccountFailure(result)) {
     await markAccountUnavailable(
       credentials.connectionId, result.status, sanitizeSecrets(result.error, refreshedCredentials), provider, null, null, credentials.apiKey
     );
