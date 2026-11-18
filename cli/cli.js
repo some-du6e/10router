@@ -586,8 +586,8 @@ function startServer(updatePromise) {
         const { killTray } = require("./src/cli/tray/tray");
         killTray();
       } catch (e) { }
-      // Kill cloudflared/tailscale via PID file (only this app's tunnel)
-      killTunnelByPidFile();
+      // Kill cloudflared via PID file (only this app's tunnel)
+      try { killTunnelByPidFile(); } catch { }
       // Kill server process directly
       if (server.pid) {
         process.kill(server.pid, "SIGKILL");

@@ -12,7 +12,8 @@ function samePath(a, b, realpath) {
 }
 
 // True only when pid is running expectedPath (the server's
-// <DATA_DIR>/bin/cloudflared, or cloudflared.exe on Windows).
+// <DATA_DIR>/bin/cloudflared, or cloudflared.exe on Windows). null when
+// Windows can't tell (tasklist missing or timed out).
 function runsBinary(pid, expectedPath, {
   platform = process.platform,
   run = execFileSync,
@@ -23,7 +24,12 @@ function runsBinary(pid, expectedPath, {
   try {
     if (platform === "win32") {
       // tasklist only gives the image name.
-      const out = String(run("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8", windowsHide: true, timeout: 3000 }));
+      let out;
+      try {
+        out = String(run("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8", windowsHide: true, timeout: 3000 }));
+      } catch {
+        return null;
+      }
       const row = out.match(/^"([^"]+)","(\d+)"/m);
       return !!row && Number(row[2]) === pid && row[1].toLowerCase() === expectedName;
     }
@@ -53,7 +59,10 @@ function killByPidFile(pidFile, expectedPath, options = {}) {
     if (!fs.existsSync(pidFile)) return false;
     const pid = parseInt(fs.readFileSync(pidFile, "utf8").trim(), 10);
     let killed = false;
-    if (pid > 0 && runsBinary(pid, expectedPath, { ...options, platform, run })) {
+    const ours = pid > 0 ? runsBinary(pid, expectedPath, { ...options, platform, run }) : false;
+    // Keep the file when the check couldn't run, so the next start can retry.
+    if (ours === null) return false;
+    if (ours) {
       try {
         if (platform === "win32") {
           run("taskkill", ["/F", "/T", "/PID", String(pid)], { stdio: "ignore", windowsHide: true, timeout: 3000 });
