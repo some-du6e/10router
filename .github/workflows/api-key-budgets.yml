@@ -34,6 +34,11 @@ on:
       - "tests/unit/upstream-request-isolation.test.js"
       - "tests/unit/anthropic-beta-rejection.test.js"
       - "tests/unit/xai-video-handler.test.js"
+      - "tests/unit/xai-video-core.test.js"
+      - "tests/unit/gemini-native-endpoint.test.js"
+      - "tests/unit/proxy-fetch-headers-timeout.test.js"
+      - "tests/unit/devin-cli-executor.test.js"
+      - "src/app/api/v1beta/models/**"
       - ".github/workflows/api-key-budgets.yml"
   workflow_dispatch:
 
@@ -74,6 +79,10 @@ jobs:
           unit/upstream-request-isolation.test.js
           unit/anthropic-beta-rejection.test.js
           unit/xai-video-handler.test.js
+          unit/xai-video-core.test.js
+          unit/gemini-native-endpoint.test.js
+          unit/proxy-fetch-headers-timeout.test.js
+          unit/devin-cli-executor.test.js
       - name: Lint
         run: >
           ./node_modules/.bin/eslint
@@ -156,6 +165,15 @@ jobs:
           tests/unit/routing-guards.test.js
           tests/unit/upstream-request-isolation.test.js
           tests/unit/xai-video-handler.test.js
+          tests/unit/xai-video-core.test.js
+          tests/unit/gemini-native-endpoint.test.js
+          tests/unit/proxy-fetch-headers-timeout.test.js
+          tests/unit/devin-cli-executor.test.js
+          open-sse/config/errorConfig.js
+          open-sse/utils/proxyFetch.js
+          open-sse/executors/devin-cli.js
+          open-sse/handlers/chatCore/sseToJsonHandler.js
+          "src/app/api/v1beta/models/[...path]/route.js"
       # Fails only on errors in the .ts files this change touches, so unrelated
       # type errors elsewhere don't block it.
       - name: Type check chat.ts and the endpoint requests route

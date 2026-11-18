@@ -637,18 +637,24 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
 
   // The body handlers answer 499 only when the client hung up mid-read. An
   // executor whose body wrapper turned the hang-up into a short or broken
-  // reply shows up as a failure with the client gone; that is charged too
-  // (a success already recorded its own usage). An SSE body is charged from
+  // reply shows up as a failure with the client gone; that is charged too.
+  // Neither is charged once the handler has recorded the reply's usage (it
+  // logs the tokens right before it saves them), so a handler that fails
+  // after that can't charge the request twice. An SSE body is charged from
   // its first byte (executors that read ahead before returning, Codex and
   // Kiro, record when it really started), a JSON one from when its attempt
   // was sent.
+  let usageRecorded = false;
   const charged = (result, sse) => {
     const hungUp = result?.status === HTTP_STATUS.CLIENT_CLOSED_REQUEST || (result && !result.success && clientSignal?.aborted);
-    if (hungUp) chargeHangUp(sse ? providerResponse.upstreamStartedAt || upstreamRespondedAt : attemptStart);
+    if (hungUp && !usageRecorded) chargeHangUp(sse ? providerResponse.upstreamStartedAt || upstreamRespondedAt : attemptStart);
     return result;
   };
   const sharedCtx = { provider, model, body, stream, clientRequest, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqTag, log, clientSignal };
-  const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
+  const appendLog = (extra) => {
+    if (extra?.tokens) usageRecorded = true;
+    return appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
+  };
   const trackDone = endPending;
 
   // Provider forced streaming but client wants JSON

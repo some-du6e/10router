@@ -7,7 +7,8 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 
-// Each test waits on real timers (the floor is time-based), up to a 2s retry backoff.
+// Each test waits on real timers (the floor is time-based): upstreams that
+// answer after up to 3s, and Kiro's 2s backoff before a retry.
 vi.setConfig({ testTimeout: 20000 });
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "10router-hang-up-"));
@@ -142,13 +143,18 @@ const writesFor = (key) => usageWrites.mock.calls.filter(([entry]) => entry?.api
 async function usageRow(key) {
   expect(writesFor(key)).toBe(1);
   await vi.waitFor(async () => { expect((await usageRows(key)).length).toBeGreaterThan(0); }, { timeout: 3000, interval: 20 });
+  // Then again a moment later, so a late second charge fails too.
+  await sleep(150);
+  expect(writesFor(key)).toBe(1);
   const rows = await usageRows(key);
   expect(rows).toHaveLength(1);
   return rows[0];
 }
 
-/** The request (handleChat has returned) was charged nothing. */
+/** The request (handleChat has returned) was charged nothing, then or a moment later. */
 async function expectNoUsage(key) {
+  expect(writesFor(key)).toBe(0);
+  await sleep(150);
   expect(writesFor(key)).toBe(0);
   expect(await usageRows(key)).toEqual([]);
 }
@@ -302,6 +308,38 @@ describe("no attempt in flight, no charge", () => {
     const row = await usageRow(key);
     expect(row.promptTokens).toBeGreaterThan(2000);
     expect(row.completionTokens).toBeGreaterThanOrEqual(floorFor(1000));
+  });
+});
+
+describe("a reply that ends cleanly when the client leaves", () => {
+  it("is charged once when it leaves nothing to answer with", async () => {
+    // Some upstreams (or wrappers) just close the body on abort; the handler
+    // then fails to parse it rather than seeing a hang-up.
+    const key = await newKey("closes-on-abort");
+    const c = client();
+    fetchMock.mockImplementation(c.after(1100, async (_url, init) => new Response(new ReadableStream({
+      start(controller) { onAbort(init.signal, () => controller.close()); },
+    }), { status: 200, headers: { "content-type": "text/event-stream" } })));
+    await chat(key, { stream: false }, c.signal);
+    const row = await usageRow(key);
+    expect(row.promptTokens).toBeGreaterThan(2000);
+  });
+});
+
+describe("a Codex reply with a null content part", () => {
+  it("is answered and charged once, from its own usage", async () => {
+    const key = await newKey("codex-null-items");
+    credentialsMock.mockImplementation(async () => ({ ...UPSTREAM_CREDS, apiKey: undefined, accessToken: "upstream-test-token" }));
+    const item = { type: "message", role: "assistant", content: [null, { type: "output_text", text: "ok" }] };
+    const completed = { type: "response.completed", response: { id: "resp_1", status: "completed", usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 } } };
+    const event = (data) => `event: ${data.type}\ndata: ${JSON.stringify(data)}\n\n`;
+    const text = event({ type: "response.output_text.delta", delta: "ok" }) + event({ type: "response.output_item.done", output_index: 0, item }) + event(completed);
+    fetchMock.mockImplementation(async () => new Response(text, { status: 200, headers: { "content-type": "text/event-stream" } }));
+    const res = await handleChat(request(key, { stream: false }, undefined, "codex/gpt-5.3-codex"));
+    expect(res.status).toBe(200);
+    expect((await res.json()).choices[0].message.content).toBe("ok");
+    const row = await usageRow(key);
+    expect(row.completionTokens).toBe(7);
   });
 });
 

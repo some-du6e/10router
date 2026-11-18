@@ -401,7 +401,9 @@ export class DevinCliExecutor extends BaseExecutor {
     const sseStream = new ReadableStream({
       start(controller) {
         const enc = new TextEncoder();
-        const emit = (data) => controller.enqueue(enc.encode(data));
+        // Once the client is gone the stream is errored: later output is dropped.
+        let clientGone = false;
+        const emit = (data) => { if (!clientGone) controller.enqueue(enc.encode(data)); };
 
         // Inherit the parent environment so devin resolves stored CLI credentials
         // (~/.local/share/devin/credentials.toml from `devin auth login`). Do NOT
@@ -440,6 +442,7 @@ export class DevinCliExecutor extends BaseExecutor {
 
         child.on("error", (err) => {
           spawnError = err;
+          if (clientGone) return;
           const msg =
             err.message.includes("ENOENT") || err.message.includes("not found")
               ? `Devin CLI not found: ${devinBin}. Install via https://cli.devin.ai or set CLI_DEVIN_BIN env var.`
@@ -450,12 +453,6 @@ export class DevinCliExecutor extends BaseExecutor {
           emit("data: [DONE]\n\n");
           controller.close();
         });
-
-        if (signal) {
-          signal.addEventListener("abort", () => {
-            if (!child.killed) child.kill("SIGTERM");
-          });
-        }
 
         // ── JSON-RPC state machine ──────────────────────────────────────────
         let idCounter = 1;
@@ -468,6 +465,24 @@ export class DevinCliExecutor extends BaseExecutor {
         let roleEmitted = false;
         let totalText = "";
         let finished = false;
+
+        // A client hang-up stops devin and reaches the reader as an abort, not
+        // as a finished (or failed) answer: the exit it causes must not end the
+        // stream with [DONE] or an error frame, or the hang-up goes uncharged.
+        const onAbort = () => {
+          if (!child.killed) child.kill("SIGTERM");
+          if (finished) return;
+          finished = true;
+          clientGone = true;
+          const reason = signal?.reason;
+          const error = reason?.name === "AbortError" ? reason : Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+          try { controller.error(error); } catch { /* already closed */ }
+          cleanupMcp();
+        };
+        if (signal) {
+          if (signal.aborted) onAbort();
+          else signal.addEventListener("abort", onAbort, { once: true });
+        }
 
         const sendRpc = (method, params) => {
           if (stdinClosed || child.stdin.destroyed) return;

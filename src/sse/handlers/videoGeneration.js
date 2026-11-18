@@ -12,6 +12,7 @@ import { handleVideoProxyCore, getVideoConfig } from "open-sse/handlers/videoCor
 import { sanitizeSecrets } from "open-sse/utils/redact.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { modelIdProblem } from "open-sse/utils/modelPath.js";
+import { namesAccountOrLimit } from "open-sse/services/accountFallback.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import * as log from "../utils/logger.js";
@@ -30,8 +31,20 @@ const CREATE_ROTATION_STATUSES = new Set([
   HTTP_STATUS.RATE_LIMITED,
 ]);
 
-// Poll failures that say something about the account, not the job id asked for.
-const ACCOUNT_POLL_FAILURE = (status) => CREATE_ROTATION_STATUSES.has(status) || status === HTTP_STATUS.PAYMENT_REQUIRED || status >= HTTP_STATUS.SERVER_ERROR || !status;
+// Statuses that are about the account (auth, payment, limits), whatever was asked.
+const ACCOUNT_STATUSES = new Set([...CREATE_ROTATION_STATUSES, HTTP_STATUS.PAYMENT_REQUIRED]);
+
+/**
+ * A failure that says something about the account rather than the request:
+ * an account status, an upstream error, or error text naming the key or a
+ * limit (some upstreams answer a revoked key with a 400). A client that left,
+ * or a request that never went out, says nothing about it. Only these lock
+ * the account; a rejected request or unknown job id just goes back to the client.
+ */
+function isAccountFailure(result) {
+  if (result.notSent || result.clientAborted) return false;
+  return ACCOUNT_STATUSES.has(result.status) || result.status >= HTTP_STATUS.SERVER_ERROR || namesAccountOrLimit(result.error);
+}
 
 async function requireValidApiKey(request) {
   const apiKey = extractApiKey(request);
@@ -178,11 +191,10 @@ export async function handleVideoCreate(request, action) {
       return withConnectionHeader(result.response, credentials.connectionId);
     }
 
-    // Record the failure (dashboard shows lastError/errorCode → user sees re-auth is needed).
-    // Without a model (a multipart body isn't read) the lock covers the whole
-    // account, so only the account's own auth or rate-limit failures take one;
-    // a rejected request just comes back to the client.
-    const { shouldFallback } = model || CREATE_ROTATION_STATUSES.has(result.status)
+    // Record an account failure (dashboard shows lastError/errorCode → user sees
+    // re-auth is needed). Without a model (a multipart body isn't read) the lock
+    // covers the whole account, which is right only for such a failure.
+    const { shouldFallback } = isAccountFailure(result)
       ? await markAccountUnavailable(
         credentials.connectionId, result.status, sanitizeSecrets(result.error, refreshedCredentials), provider, model, null, credentials.apiKey
       )
@@ -244,10 +256,9 @@ export async function handleVideoGet(request, requestId) {
     return withConnectionHeader(result.response, credentials.connectionId);
   }
 
-  // A poll has no model, so a lock here covers the whole account: only the
-  // account's own failures (auth, limits, upstream errors) take one. An
-  // unknown or invalid job id is the client's.
-  if (!result.notSent && ACCOUNT_POLL_FAILURE(result.status)) {
+  // A poll has no model, so a lock here covers the whole account: only an
+  // account failure takes one. An unknown or invalid job id is the client's.
+  if (isAccountFailure(result)) {
     await markAccountUnavailable(
       credentials.connectionId, result.status, sanitizeSecrets(result.error, refreshedCredentials), provider, null, null, credentials.apiKey
     );

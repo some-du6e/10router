@@ -100,8 +100,9 @@ them. A backup carries the totals, so a key restored onto another install
   inside it (Kiro's repair retry) doesn't change that. Executors that buffer
   the whole answer and report a hang-up as an error (Cursor, Trae) are
   charged from when their attempt was sent, streaming or not, and those that
-  wrap the reply (Windsurf, Qoder) pass the hang-up on rather than ending it
-  as a short answer.
+  wrap the reply (Windsurf, Qoder, Devin CLI) pass the hang-up on rather than
+  ending it as a short answer. A reply that just ends when the client leaves,
+  leaving nothing to answer with, is charged the same way, once.
 - **Opt-in: drain to the real usage.** With `STREAM_DRAIN_MAX_MS` set (it is
   `0`, off, by default), a key with a budget whose client hangs up keeps the
   upstream running: 10router closes the client's stream at once but reads the

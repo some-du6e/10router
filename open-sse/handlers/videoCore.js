@@ -103,13 +103,18 @@ export async function handleVideoProxyCore({
       signal: fetchSignal,
     });
 
+  // A client that left is no failure of the account (clientAborted: lock
+  // nothing); our own deadline or another abort is a timeout.
+  const abortedResult = (error) => (signal?.aborted
+    ? { ...createErrorResult(HTTP_STATUS.CLIENT_CLOSED_REQUEST, `[${provider}] video ${method} cancelled by the client`), clientAborted: true }
+    : createErrorResult(HTTP_STATUS.REQUEST_TIMEOUT, `[${provider}] video ${method} aborted: ${error.message}`));
+  const isAbort = (error) => error?.name === "AbortError" || error?.name === "TimeoutError";
+
   let upstream;
   try {
     upstream = await doFetch(credentials?.accessToken || credentials?.apiKey);
   } catch (error) {
-    if (error?.name === "AbortError" || error?.name === "TimeoutError") {
-      return createErrorResult(HTTP_STATUS.REQUEST_TIMEOUT, `[${provider}] video ${method} aborted: ${error.message}`);
-    }
+    if (isAbort(error)) return abortedResult(error);
     // Never re-send a creation POST on network error — the job may already exist upstream.
     return createErrorResult(HTTP_STATUS.BAD_GATEWAY, sanitizeSecrets(`[${provider}] video upstream fetch failed: ${error.message}`, credentials));
   }
@@ -135,6 +140,7 @@ export async function handleVideoProxyCore({
       try {
         upstream = await doFetch(credentials.accessToken || credentials.apiKey);
       } catch (error) {
+        if (isAbort(error)) return abortedResult(error);
         return createErrorResult(HTTP_STATUS.BAD_GATEWAY, sanitizeSecrets(`[${provider}] video retry after refresh failed: ${error.message}`, credentials));
       }
     } else {

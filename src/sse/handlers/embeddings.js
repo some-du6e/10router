@@ -163,7 +163,9 @@ export async function handleEmbeddings(request) {
     }
 
     // A request that couldn't be built never reached the upstream: try the
-    // next account (its settings may differ) but lock none.
+    // next account (its settings may differ) but lock none. A connection that
+    // can't be excluded (a virtual one with no id) would come back forever.
+    if (result.notSent && (!credentials.connectionId || excludeConnectionIds.has(credentials.connectionId))) return result.response;
     const { shouldFallback } = result.notSent
       ? { shouldFallback: true }
       : await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, null, credentials.apiKey);

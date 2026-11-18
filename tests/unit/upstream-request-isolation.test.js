@@ -427,7 +427,9 @@ describe("every model id put in a URL path is escaped", () => {
     expect(urls).toHaveLength(1);
   });
 
-  it("Gemini speech-to-text and text-to-speech keep the model in one segment", async () => {
+  // Gemini TTS only ever puts one of its own known model ids in the path, so
+  // its half is hardening, not a fix: no client id reaches that URL.
+  it("Gemini speech-to-text keeps the model in one segment (and TTS's fixed ids stay one segment)", async () => {
     const urls = [];
     vi.stubGlobal("fetch", vi.fn(async (url) => { urls.push(url); return new Response(JSON.stringify({ candidates: [] }), { status: 200 }); }));
     const formData = new FormData();

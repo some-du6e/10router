@@ -228,9 +228,8 @@ describe("a model id no upstream can be asked for", () => {
       upstream.core.mockClear();
       const res = await handleChat(chatRequest(key, model));
       expect(res.status).toBe(200);
-      expect(upstream.core).toHaveBeenCalledTimes(1);
+      expect(reached()).toEqual([model]);
     }
-    expect(reached()).toEqual(["openai/models//x"]);
   });
 
   it("locks no account for an embeddings request its provider can't build", async () => {
@@ -246,6 +245,21 @@ describe("a model id no upstream can be asked for", () => {
       body: JSON.stringify({ model: "gemini/models/", input: "hi" }),
     }));
     expect(res.status).toBe(400);
+    expect(upstream.mark).not.toHaveBeenCalled();
+  });
+
+  it("stops when an unbuildable request's connection can't be excluded (a no-auth virtual one)", async () => {
+    const key = await newKey("unbuildable-noauth");
+    upstream.credentials.mockReset();
+    // A virtual connection: no id, and it comes back whatever is excluded.
+    upstream.credentials.mockResolvedValue({ id: "noauth", connectionName: "local", apiKey: "upstream-key" });
+    const res = await handleEmbeddings(new Request("http://localhost/v1/embeddings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key.key}` },
+      body: JSON.stringify({ model: "gemini/models/", input: "hi" }),
+    }));
+    expect(res.status).toBe(400);
+    expect(upstream.credentials).toHaveBeenCalledTimes(1);
     expect(upstream.mark).not.toHaveBeenCalled();
   });
 
