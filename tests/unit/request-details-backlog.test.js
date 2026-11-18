@@ -83,8 +83,10 @@ async function saveTracked(rowIds, timestampOf) {
     const request = bigRequest(id);
     const providerRequest = bigRequest(`${id}-upstream`);
     const providerResponse = { content: "y".repeat(150 * 1024) };
-    refs.push(...[request, request.messages, request.messages[0], providerRequest, providerResponse].map((o) => new WeakRef(o)));
-    await db.saveRequestDetail({ ...detail(id, timestampOf(id), request), providerRequest, providerResponse });
+    // Small enough to be stored as it is, not cut.
+    const response = { ok: true, id };
+    refs.push(...[request, request.messages, request.messages[0], providerRequest, providerResponse, response].map((o) => new WeakRef(o)));
+    await db.saveRequestDetail({ ...detail(id, timestampOf(id), request), providerRequest, providerResponse, response });
   }
   return refs;
 }
@@ -126,7 +128,7 @@ describe("request detail backlog", { timeout: 120_000 }, () => {
   it("holds no payload once a save returns, with full details on", async () => {
     const refs = await saveTracked(ids(40, "held-"), (id) => at(2, lastNumber(id)));
     expect(await aliveAfterGc(refs)).toBe(0);
-    expect(repo.__test__.ringSize?.()).toBe(25);
+    expect(repo.__test__.ringSize()).toBe(25);
     await repo.__test__.flush();
     expect(idsWithFullData()).toContain("held-39");
   });
@@ -134,16 +136,17 @@ describe("request detail backlog", { timeout: 120_000 }, () => {
   it("reuses a waiting start save's JSON for its stream's end save", async () => {
     const request = bigRequest("reuse");
     await db.saveRequestDetail(detail("reuse", at(2, 50), request));
+    // Through the end save and the flush that packs it.
     const stringify = vi.spyOn(JSON, "stringify");
     let serialized;
     try {
       await db.saveRequestDetail({ ...detail("reuse", at(2, 51), request), status: "ok", tokens: { prompt_tokens: 3, completion_tokens: 2 } });
+      await repo.__test__.flush();
       serialized = stringify.mock.calls.filter(([value]) => value === request).length;
     } finally {
       stringify.mockRestore();
     }
     expect(serialized).toBe(0);
-    await repo.__test__.flush();
     expect((await db.getRequestDetailFullData("reuse")).request).toEqual(request);
   });
 
@@ -226,8 +229,9 @@ describe("request detail backlog", { timeout: 120_000 }, () => {
       release();
       await flushing?.catch(() => {});
     }
-    // One held, then at most 25 for the next write.
-    expect(gzip.mock.calls.length).toBeLessThanOrEqual(26);
+    // One held, then 25 for the next write: the newest 25 rows.
+    expect(gzip).toHaveBeenCalledTimes(26);
+    expect(idsWithFullData().filter((id) => id.startsWith("slow-"))).toEqual(ids(201, "slow-", 3).slice(-25));
     expect(repo.__test__.queued()).toBe(0);
     const kept = adapter.all(`SELECT id FROM requestDetails ORDER BY timestamp DESC`).map((r) => r.id);
     expect(kept).toHaveLength(MAX_RECORDS);
@@ -235,58 +239,50 @@ describe("request detail backlog", { timeout: 120_000 }, () => {
     expect(kept[MAX_RECORDS - 1]).toBe("slow-161");
   });
 
-  it("caps the queue by bytes, a running write's included, and never drops an end save", async () => {
+  it("caps the queue by bytes, a running write's included, dropping the oldest saves", async () => {
     const { limits } = repo.__test__;
     const cap = limits.queuedRecordsMaxBytes;
-    // A stream's start save is written first; its end save will be the oldest queued.
-    const stream = bigRequest("capped-stream");
-    await db.saveRequestDetail({ ...detail("capped-stream", at(6, 0), stream), status: "pending" });
-    await repo.__test__.flush();
     const release = holdGzip();
     let flushing;
     let limit;
     try {
-      await db.saveRequestDetail(detail("bytes-000", at(6, 1)));
+      await db.saveRequestDetail(detail("bytes-000", at(6, 0)));
       gzip.mockClear();
       flushing = repo.__test__.flush();
       await vi.waitFor(() => expect(gzip).toHaveBeenCalledTimes(1));
       const inFlight = repo.__test__.inFlightBytes();
       expect(inFlight).toBeGreaterThan(0);
-      await db.saveRequestDetail({ ...detail("capped-stream", at(6, 2), stream), status: "ok", tokens: { prompt_tokens: 7, completion_tokens: 3 } });
-      // Room for the running write and about five more records.
-      limit = inFlight + 5 * repo.__test__.queuedBytes();
+      // Room for the running write and five more records of the same size.
+      limit = 6 * inFlight;
       limits.queuedRecordsMaxBytes = limit;
-      for (let i = 2; i <= 30; i++) await db.saveRequestDetail(detail(`bytes-${pad(i, 3)}`, at(6, 1 + i)));
+      for (let i = 1; i <= 30; i++) await db.saveRequestDetail(detail(`bytes-${pad(i, 3)}`, at(6, i)));
+      expect(repo.__test__.queued()).toBe(5);
       expect(repo.__test__.queuedBytes() + repo.__test__.inFlightBytes()).toBeLessThanOrEqual(limit);
-      expect(repo.__test__.queued()).toBeLessThan(30);
     } finally {
       release();
       await flushing?.catch(() => {});
       limits.queuedRecordsMaxBytes = cap;
     }
-    expect(storedIds()).toContain("bytes-030");
-    expect(storedIds()).not.toContain("bytes-002");
-    const row = await db.getRequestDetailById("capped-stream");
-    expect(row.status).toBe("ok");
-    expect(row.tokens).toEqual({ prompt_tokens: 7, completion_tokens: 3 });
+    expect(storedIds()).toEqual(expect.arrayContaining(["bytes-026", "bytes-030"]));
+    expect(storedIds()).not.toContain("bytes-025");
   });
 
-  it("uses the default row limit for a negative maxRecords", async () => {
-    await configure({ observabilityMaxRecords: -1 });
+  it.each([-1, "abc", 0.5])("uses the default row limit for maxRecords %j", async (maxRecords) => {
     const release = holdGzip();
     let flushing;
     try {
+      await configure({ observabilityMaxRecords: maxRecords });
       await db.saveRequestDetail(detail("limit-000", at(7, 0)));
       gzip.mockClear();
       flushing = repo.__test__.flush();
       await vi.waitFor(() => expect(gzip).toHaveBeenCalled());
-      for (let i = 1; i <= 450; i++) await db.saveRequestDetail(detail(`limit-${pad(i, 3)}`, at(7, i), { messages: [] }));
-      // Twice the 200 fallback.
+      for (let i = 1; i <= 410; i++) await db.saveRequestDetail(detail(`limit-${pad(i, 3)}`, at(7, i), { messages: [] }));
+      // Twice the 200 fallback, and the trim keeps 200.
       expect(repo.__test__.queued()).toBe(400);
       release();
       await flushing;
       expect(adapter.get(`SELECT COUNT(*) AS c FROM requestDetails`).c).toBe(200);
-      expect(storedIds()).toContain("limit-450");
+      expect(storedIds()).toContain("limit-410");
     } finally {
       release();
       await flushing?.catch(() => {});
@@ -294,9 +290,24 @@ describe("request detail backlog", { timeout: 120_000 }, () => {
     }
   });
 
-  it("holds no payload while full details are off", async () => {
-    await configure({ showSensitiveRequestDetails: false });
+  it("builds no full copy for a save made after shutdown", async () => {
+    vi.resetModules();
+    const fresh = await import("@/lib/db/repos/requestDetailsRepo.js");
     try {
+      await fresh.__test__.shutdown();
+      await fresh.saveRequestDetail(detail("after-shutdown", at(7, 500)));
+      expect(fresh.__test__.queued()).toBe(1);
+      expect(fresh.__test__.ringSize()).toBe(0);
+      await fresh.__test__.flush();
+      expect((await db.getRequestDetailById("after-shutdown")).hasFullData).toBe(false);
+    } finally {
+      await fresh.__test__.flush();
+    }
+  });
+
+  it("holds no payload while full details are off", async () => {
+    try {
+      await configure({ showSensitiveRequestDetails: false });
       const refs = await saveTracked(ids(30, "off-"), (id) => at(8, lastNumber(id)));
       expect(await aliveAfterGc(refs)).toBe(0);
       expect(repo.__test__.ringSize()).toBe(0);
@@ -324,7 +335,6 @@ describe("request detail backlog", { timeout: 120_000 }, () => {
   });
 
   it("writes the saves left behind a failed write without another save", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     vi.resetModules();
     const fresh = await import("@/lib/db/repos/requestDetailsRepo.js");
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -332,6 +342,7 @@ describe("request detail backlog", { timeout: 120_000 }, () => {
     let failOnce;
     let flushing;
     try {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       await db.updateSettings({ observabilityBatchSize: 2 });
       await fresh.clearRequestDetailFullData();
       failOnce = vi.spyOn(adapter, "transaction").mockImplementationOnce(() => { throw new Error("disk full"); });

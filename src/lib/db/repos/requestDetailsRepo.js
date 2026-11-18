@@ -15,20 +15,21 @@ const CONFIG_CACHE_TTL_MS = 5000;
 // only when "Show full request details" is on, so the DB can't balloon.
 const FULL_DATA_KEEP_ROWS = 25;
 const FULL_DATA_MAX_BYTES = 16 * 1024 * 1024;
-// Sizes below are counted from string lengths. The JSON here is almost all
-// ASCII, which V8 stores at one byte a character.
-const BYTES_PER_CHAR_ESTIMATE = 1;
+// JSON sizes are counted at 2 bytes a character: V8 stores a whole string that
+// way once it holds any character above U+00FF, which prompts almost always do.
+// A packed copy is base64, one byte a character.
+const JSON_BYTES_PER_CHAR = 2;
 // The most the full copies waiting to be written may take (see fullRing).
 const FULL_RING_MAX_BYTES = 256 * 1024 * 1024;
 // A stream's row is saved twice, when it starts and when it ends, so past
 // SAVES_PER_ROW × maxRecords queued saves the oldest are ones the trim would
 // delete anyway. Queued records, a running write's included, are also capped
-// in bytes; past that the oldest saves go, but never one of a row saved before
-// (a stream's end save), which would leave the row looking unfinished.
+// in bytes, which only a stalled write reaches; past it the oldest saves go,
+// so a stream's end save can be lost and its row left looking unfinished.
 const SAVES_PER_ROW = 2;
-const QUEUED_RECORDS_MAX_BYTES = 256 * 1024 * 1024;
-// How many recent row ids are remembered to tell an end save from a new row.
-const RECENT_IDS_MAX = 10000;
+const QUEUED_RECORDS_MAX_BYTES = 128 * 1024 * 1024;
+// Rows written per transaction, so a catch-up write stays bounded.
+const MAX_ROWS_PER_WRITE = 200;
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
 const PAYLOAD_KEYS = ["request", "providerRequest", "providerResponse", "response"];
@@ -117,14 +118,11 @@ function rowLimit(maxRecords) {
 let writeBuffer = [];
 let queuedBytes = 0;
 let inFlightBytes = 0;
-// Ids of recent saves, oldest first: a save of one of these is a row's later
-// save (a stream's end save).
-const recentIds = new Set();
 let flushTimer = null;
 let activeFlush = null;
 let shuttingDown = false;
-// The driver, read once (sql.js never stores full copies).
-let driver = null;
+// The database driver, read once (sql.js never stores full copies).
+let dbDriver = null;
 // The byte caps; tests set smaller ones.
 const limits = { fullRingMaxBytes: FULL_RING_MAX_BYTES, queuedRecordsMaxBytes: QUEUED_RECORDS_MAX_BYTES };
 
@@ -165,13 +163,13 @@ function fullCopySource(item, record, fieldJson = {}, earlier = null) {
   const keys = parts.map(([key]) => key).join();
   const capped = parts.map(([key]) => record[key]);
   const prior = packedFullData.get(capped[0]);
-  if (prior?.keys === keys && sameCapped(prior.capped, capped)) return { packed: prior.packed, bytes: prior.packed.length * BYTES_PER_CHAR_ESTIMATE };
+  if (prior?.keys === keys && sameCapped(prior.capped, capped)) return { packed: prior.packed, bytes: prior.packed.length };
   if (earlier?.json && earlier.keys === keys && sameCapped(earlier.capped, capped)) return { json: earlier.json, keys, capped, bytes: earlier.bytes };
   try {
     const json = `{${parts.map(([key, value]) => `${JSON.stringify(key)}:${value ?? JSON.stringify(item[key])}`).join(",")}}`;
     // A UTF-16 code unit is at most 3 UTF-8 bytes, so only count bytes when that bound could exceed the limit.
     if (json.length * 3 > FULL_DATA_MAX_BYTES && Buffer.byteLength(json, "utf8") > FULL_DATA_MAX_BYTES) return null;
-    return { json, keys, capped, bytes: json.length * BYTES_PER_CHAR_ESTIMATE };
+    return { json, keys, capped, bytes: json.length * JSON_BYTES_PER_CHAR };
   } catch {
     return null;
   }
@@ -194,9 +192,8 @@ async function packSource(source) {
 // on: row id → the source of its newest save's copy (that save is
 // `source.save`), oldest-inserted first. Only FULL_DATA_KEEP_ROWS rows keep a
 // copy after the trim, so a 26th id pushes the oldest out. Going over
-// FULL_RING_MAX_BYTES does too, so with large payloads fewer rows get one; such
-// a row keeps the copy an earlier save of it stored (a stream's start save).
-// Queued saves hold only their capped record.
+// FULL_RING_MAX_BYTES does too, so with large payloads fewer than 25 rows get
+// a new copy. Queued saves hold only their capped record.
 const fullRing = new Map();
 let fullRingBytes = 0;
 
@@ -205,12 +202,7 @@ function setRingEntry(id, source) {
   if (!source) return;
   fullRing.set(id, source);
   fullRingBytes += source.bytes;
-  while (fullRing.size > FULL_DATA_KEEP_ROWS) deleteRingEntry(fullRing.keys().next().value);
-  while (fullRingBytes > limits.fullRingMaxBytes) {
-    const oldest = fullRing.keys().next().value;
-    fullRing.get(oldest).save.keepStored = true;
-    deleteRingEntry(oldest);
-  }
+  while (fullRing.size > FULL_DATA_KEEP_ROWS || fullRingBytes > limits.fullRingMaxBytes) deleteRingEntry(fullRing.keys().next().value);
 }
 
 function deleteRingEntry(id) {
@@ -318,9 +310,10 @@ function truncateField(obj, maxSize, fieldJson, key) {
   return obj;
 }
 
-const UPSERT_PREFIX = `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data, fullData) VALUES(?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp, provider = excluded.provider, model = excluded.model, connectionId = excluded.connectionId, status = excluded.status, data = excluded.data, `;
-const UPSERT_SQL = `${UPSERT_PREFIX}fullData = excluded.fullData`;
-const UPSERT_KEEP_STORED_FULL_SQL = `${UPSERT_PREFIX}fullData = COALESCE(excluded.fullData, requestDetails.fullData)`;
+// A row written without a full copy keeps the one an earlier save of it stored
+// (a stream's start save). Turning full details off clears stored copies, and
+// the trim keeps them on the newest 25 rows only.
+const UPSERT_SQL = `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data, fullData) VALUES(?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp, provider = excluded.provider, model = excluded.model, connectionId = excluded.connectionId, status = excluded.status, data = excluded.data, fullData = COALESCE(excluded.fullData, requestDetails.fullData)`;
 
 // A flush already running drains the whole buffer, rows added meanwhile too,
 // so callers wait on it rather than start a second one. Shutdown joins it as
@@ -334,9 +327,9 @@ async function writeBufferedRows() {
   try {
     // Drain entire buffer (loop in case more pushed during await)
     while (writeBuffer.length > 0) {
-      const saves = writeBuffer.splice(0, writeBuffer.length);
-      inFlightBytes = queuedBytes;
-      queuedBytes = 0;
+      const saves = writeBuffer.splice(0, MAX_ROWS_PER_WRITE);
+      inFlightBytes = saves.reduce((sum, save) => sum + save.bytes, 0);
+      queuedBytes -= inFlightBytes;
       const generation = configCache.generation;
       const db = await getAdapter();
       const config = await getObservabilityConfig();
@@ -348,26 +341,20 @@ async function writeBufferedRows() {
       const rows = [];
       for (const save of saves) {
         // Only a row's newest save has a copy in fullRing, so a write packs
-        // at most FULL_DATA_KEEP_ROWS. Every other row stores none, as the trim
-        // would leave it, except one whose copy was pushed out for size.
+        // at most FULL_DATA_KEEP_ROWS.
         const source = takeCopy(save);
-        const fullData = wantFull && source && !shuttingDown ? await packSource(source) : null;
-        // A row skipped for shutdown keeps the full copy an earlier save stored
-        // (a stream's start save shares its id with its end save).
-        rows.push({ save, fullData, keepStored: wantFull && (shuttingDown || save.keepStored === true) });
+        rows.push({ save, fullData: wantFull && source && !shuttingDown ? await packSource(source) : null });
       }
       // The setting may have been turned off (and stored payloads cleared)
       // while compression was awaited. Nothing awaits between this check and
       // the transaction, so a clear can't slip in after it.
       if (generation !== configCache.generation) {
-        for (const row of rows) { row.fullData = null; row.keepStored = false; }
+        for (const row of rows) row.fullData = null;
       }
 
       db.transaction(() => {
-        for (const { save, fullData, keepStored } of rows) {
-          db.run(keepStored ? UPSERT_KEEP_STORED_FULL_SQL : UPSERT_SQL,
-            [save.id, save.timestamp, save.provider, save.model, save.connectionId, save.status, save.data, fullData]
-          );
+        for (const { save, fullData } of rows) {
+          db.run(UPSERT_SQL, [save.id, save.timestamp, save.provider, save.model, save.connectionId, save.status, save.data, fullData]);
         }
 
         db.run(
@@ -383,7 +370,6 @@ async function writeBufferedRows() {
           );
         }
       });
-      inFlightBytes = 0;
     }
   } catch (e) {
     console.error("[requestDetailsRepo] Batch write failed:", e);
@@ -428,7 +414,7 @@ function buildSave(item, maxJsonSize, keepFull) {
   const data = stringifyJson(record);
   const save = {
     id: record.id, timestamp: record.timestamp, provider: record.provider, model: record.model,
-    connectionId: record.connectionId, status: record.status, data, bytes: data.length * BYTES_PER_CHAR_ESTIMATE,
+    connectionId: record.connectionId, status: record.status, data, bytes: data.length * JSON_BYTES_PER_CHAR,
   };
   return { save, source: keepFull ? fullCopySource(item, record, fieldJson, fullRing.get(item.id)) : null };
 }
@@ -443,6 +429,7 @@ function armFlushTimer() {
 
 function dropSave(index) {
   const [dropped] = writeBuffer.splice(index, 1);
+  // A dropped save takes its waiting copy with it.
   queuedBytes -= dropped.bytes;
   takeCopy(dropped);
 }
@@ -452,25 +439,16 @@ export async function saveRequestDetail(detail) {
   if (!config.enabled) {return;}
 
   // No full copies are built during the shutdown drain, or on sql.js.
-  const keepFull = config.keepFullData && !shuttingDown && (driver ??= (await getAdapter()).driver) !== "sql.js";
+  const keepFull = config.keepFullData && !shuttingDown && (dbDriver ??= (await getAdapter()).driver) !== "sql.js";
   const { save, source } = buildSave(detail, config.maxJsonSize, keepFull);
-  // A later save of a row already saved (a stream's end save) is never dropped for size.
-  save.laterSave = recentIds.delete(save.id);
-  recentIds.add(save.id);
-  if (recentIds.size > RECENT_IDS_MAX) recentIds.delete(recentIds.values().next().value);
   writeBuffer.push(save);
   queuedBytes += save.bytes;
   // A stream's end save replaces its start save's copy; one with none clears it.
   if (keepFull) setRingEntry(save.id, source && { ...source, save });
 
-  // Past the count cap the oldest saves go: rows the trim would delete anyway.
-  while (writeBuffer.length > SAVES_PER_ROW * config.maxRecords) dropSave(0);
-  // Past the byte cap (a running write's records counted) the oldest go too,
-  // except a row's later save. The newest always stays.
-  for (let i = 0; i < writeBuffer.length - 1 && queuedBytes + inFlightBytes > limits.queuedRecordsMaxBytes;) {
-    if (writeBuffer[i].laterSave) i++;
-    else dropSave(i);
-  }
+  // Past either cap the oldest saves go; the newest always stays.
+  while (writeBuffer.length > 1 && (writeBuffer.length > SAVES_PER_ROW * config.maxRecords
+    || queuedBytes + inFlightBytes > limits.queuedRecordsMaxBytes)) dropSave(0);
 
   // Trigger immediate flush if batch threshold reached.
   // flushToDatabase() drains entire buffer in a loop, so all pushes during await are persisted.

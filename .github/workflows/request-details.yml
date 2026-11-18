@@ -110,15 +110,23 @@ jobs:
           echo "compare=yes" >> "$GITHUB_ENV"
       - name: Run this branch's test on it (informational)
         if: env.compare == 'yes'
-        # Informational: a missing report (the test file failed to load) mustn't fail the run.
-        continue-on-error: true
         working-directory: tests
+        # Failures are the point here, so vitest's exit code is only reported.
+        # With no report (vitest crashed before writing one) it says so and passes.
         run: |
+          status=0
           ./node_modules/.bin/vitest run --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/before.json" \
-            unit/request-details-backlog.test.js || true
-          node --input-type=module -e '
-            import { readFileSync, appendFileSync } from "node:fs";
-            const r = JSON.parse(readFileSync(process.env.RUNNER_TEMP + "/before.json", "utf8"));
+            unit/request-details-backlog.test.js || status=$?
+          VITEST_STATUS="$status" node --input-type=module -e '
+            import { existsSync, readFileSync, appendFileSync } from "node:fs";
+            const file = process.env.RUNNER_TEMP + "/before.json";
+            if (!existsSync(file)) {
+              const line = `Informational. Before: vitest exited ${process.env.VITEST_STATUS} without a report.`;
+              console.log(line);
+              appendFileSync(process.env.GITHUB_STEP_SUMMARY, line + "\n");
+              process.exit(0);
+            }
+            const r = JSON.parse(readFileSync(file, "utf8"));
             const lines = [`Informational. Before (base code, this branch tests): ${r.numFailedTests} failed, ${r.numPassedTests} passed of ${r.numTotalTests}`];
             for (const f of r.testResults) {
               const rel = f.name.slice(f.name.indexOf("/tests/") + 1);
