@@ -277,13 +277,27 @@ describe("handleVideoProxyCore", () => {
     expect(result.clientAborted).toBe(true);
   });
 
+  it("reports a hang-up as one whatever error the aborted fetch throws", async () => {
+    // The server aborts the request's signal with its own reason, not an AbortError.
+    const ctrl = new AbortController();
+    const reason = Object.assign(new Error("Response aborted"), { name: "ResponseAborted" });
+    global.fetch.mockImplementationOnce(async () => {
+      ctrl.abort(reason);
+      throw reason;
+    });
+    const result = await handleVideoProxyCore({ provider: "xai", requestId: "job-1", credentials: { accessToken: "tok" }, signal: ctrl.signal });
+    expect(result.status).toBe(499);
+    expect(result.clientAborted).toBe(true);
+  });
+
   it("reports a hang-up during the retry after a refresh as a client abort, not a 502", async () => {
     const ctrl = new AbortController();
+    const reason = Object.assign(new Error("Response aborted"), { name: "ResponseAborted" });
     global.fetch
       .mockResolvedValueOnce(jsonResponse({ error: "expired" }, 401))
       .mockImplementationOnce(async () => {
-        ctrl.abort();
-        throw Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+        ctrl.abort(reason);
+        throw reason;
       });
     refreshTokenByProvider.mockResolvedValueOnce({ accessToken: "tok-NEW" });
     const result = await handleVideoProxyCore({ provider: "xai", action: "generations", rawBody: "{}", credentials: { accessToken: "tok-OLD", refreshToken: "ref" }, signal: ctrl.signal });

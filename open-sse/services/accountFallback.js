@@ -62,13 +62,27 @@ export function isRequestError(status, errorText) {
   return REQUEST_ERROR_STATUSES.has(status) && !namesAccountOrLimit(errorText);
 }
 
+const lowerText = (errorText) => (errorText
+  ? (typeof errorText === "string" ? errorText : JSON.stringify(errorText)).toLowerCase()
+  : "");
+
 /** The error text is about the key (bad key, no money) or a limit, whatever its status. */
 export function namesAccountOrLimit(errorText) {
-  const lowerError = errorText
-    ? (typeof errorText === "string" ? errorText : JSON.stringify(errorText)).toLowerCase()
-    : "";
+  const lowerError = lowerText(errorText);
   if (ACCOUNT_ERROR_TEXTS.some((t) => lowerError.includes(t))) return true;
   return ERROR_RULES.some((rule) => rule.text && lowerError.includes(rule.text));
+}
+
+/** The error text says the key is bad or out of money (not a limit or capacity phrase). */
+export function namesAccount(errorText) {
+  const lowerError = lowerText(errorText);
+  return ACCOUNT_ERROR_TEXTS.some((t) => lowerError.includes(t));
+}
+
+/** The error text says the key itself is bad. */
+export function namesBadKey(errorText) {
+  const lowerError = lowerText(errorText);
+  return BAD_KEY_TEXTS.some((t) => lowerError.includes(t));
 }
 
 /** A 504 from a chat call that got no response headers in time (utils/headersTimeout.js). */

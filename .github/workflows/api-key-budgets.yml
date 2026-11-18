@@ -38,7 +38,6 @@ on:
       - "tests/unit/gemini-native-endpoint.test.js"
       - "tests/unit/proxy-fetch-headers-timeout.test.js"
       - "tests/unit/devin-cli-executor.test.js"
-      - "src/app/api/v1beta/models/**"
       - ".github/workflows/api-key-budgets.yml"
   workflow_dispatch:
 

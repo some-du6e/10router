@@ -252,11 +252,29 @@ describe("a model id no upstream can be asked for", () => {
     const key = await newKey("unbuildable-noauth");
     upstream.credentials.mockReset();
     // A virtual connection: no id, and it comes back whatever is excluded.
-    upstream.credentials.mockResolvedValue({ id: "noauth", connectionName: "local", apiKey: "upstream-key" });
+    // Bounded, so a regression fails here instead of looping forever.
+    const virtual = { id: "noauth", connectionName: "local", apiKey: "upstream-key" };
+    upstream.credentials.mockResolvedValueOnce(virtual).mockResolvedValueOnce(virtual).mockResolvedValue(null);
     const res = await handleEmbeddings(new Request("http://localhost/v1/embeddings", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key.key}` },
       body: JSON.stringify({ model: "gemini/models/", input: "hi" }),
+    }));
+    expect(res.status).toBe(400);
+    expect(upstream.credentials).toHaveBeenCalledTimes(1);
+    expect(upstream.mark).not.toHaveBeenCalled();
+  });
+
+  it("stops an unbuildable image request on a no-auth virtual connection too", async () => {
+    const key = await newKey("unbuildable-image-noauth");
+    upstream.credentials.mockReset();
+    // No accountId: the Cloudflare adapter can't build the URL.
+    const virtual = { id: "noauth", connectionName: "local", apiKey: "upstream-key" };
+    upstream.credentials.mockResolvedValueOnce(virtual).mockResolvedValueOnce(virtual).mockResolvedValue(null);
+    const res = await handleImageGeneration(new Request("http://localhost/v1/images/generations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key.key}` },
+      body: JSON.stringify({ model: "cloudflare-ai/@cf/vendor/model-a", prompt: "a cat" }),
     }));
     expect(res.status).toBe(400);
     expect(upstream.credentials).toHaveBeenCalledTimes(1);

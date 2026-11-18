@@ -27,9 +27,15 @@ vi.mock("../../open-sse/utils/requestLogger.js", () => ({
   }),
 }));
 const usageWrites = vi.fn();
+// Request details pass through, unless a test makes one call do something else.
+const detailOverride = vi.fn();
 vi.mock("@/lib/usageDb.js", async () => {
   const actual = await vi.importActual("@/lib/usageDb.js");
-  return { ...actual, saveRequestUsage: (entry, ...rest) => { usageWrites(entry); return actual.saveRequestUsage(entry, ...rest); } };
+  return {
+    ...actual,
+    saveRequestUsage: (entry, ...rest) => { usageWrites(entry); return actual.saveRequestUsage(entry, ...rest); },
+    saveRequestDetail: (...args) => (detailOverride.getMockImplementation() ? detailOverride(...args) : actual.saveRequestDetail(...args)),
+  };
 });
 vi.mock("@/sse/services/auth.js", async () => {
   const actual = await vi.importActual("@/sse/services/auth.js");
@@ -323,6 +329,29 @@ describe("a reply that ends cleanly when the client leaves", () => {
     await chat(key, { stream: false }, c.signal);
     const row = await usageRow(key);
     expect(row.promptTokens).toBeGreaterThan(2000);
+  });
+});
+
+describe("a handler that fails after recording the reply's usage", () => {
+  it("isn't charged again for the client having left", async () => {
+    const key = await newKey("fails-after-usage");
+    credentialsMock.mockImplementation(async () => ({ ...UPSTREAM_CREDS, apiKey: undefined, accessToken: "upstream-test-token" }));
+    const c = client();
+    // Saving the request detail comes right after the usage: the client leaves
+    // then, and the save throws, so the handler answers with a failure.
+    detailOverride.mockImplementation(() => { c.hangUp(); throw new Error("detail store failed"); });
+    try {
+      const completed = { type: "response.completed", response: { id: "resp_1", status: "completed", usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 } } };
+      const event = (data) => `event: ${data.type}\ndata: ${JSON.stringify(data)}\n\n`;
+      const text = event({ type: "response.output_text.delta", delta: "ok" }) + event(completed);
+      fetchMock.mockImplementation(async () => new Response(text, { status: 200, headers: { "content-type": "text/event-stream" } }));
+      await chat(key, { stream: false }, c.signal, "codex/gpt-5.3-codex");
+    } finally {
+      detailOverride.mockReset();
+    }
+    // The reply's own usage, and no hang-up charge on top of it.
+    const row = await usageRow(key);
+    expect(row.completionTokens).toBe(7);
   });
 });
 
