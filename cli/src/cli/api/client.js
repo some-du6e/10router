@@ -43,7 +43,7 @@ function loadCliSecret() {
   } catch {}
   cachedCliSecret = crypto.randomBytes(32).toString("hex");
   try {
-    fs.mkdirSync(AUTH_DIR, { recursive: true });
+    fs.mkdirSync(AUTH_DIR, { recursive: true, mode: 0o700 });
     fs.writeFileSync(CLI_SECRET_FILE, cachedCliSecret, { mode: 0o600 });
   } catch {}
   return cachedCliSecret;

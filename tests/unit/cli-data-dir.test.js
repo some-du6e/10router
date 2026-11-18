@@ -70,9 +70,13 @@ describe("CLI data directory helper", () => {
   it("ignores a Unix-style DATA_DIR on Windows", () => {
     setPlatform("win32");
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.stubEnv("DATA_DIR", "/var/lib/placeholder");
+    // Writable, so only the Windows rule (not a failed mkdir) can reject it.
+    const dir = path.join(tmp, "unix");
+    expect(dir.startsWith("/")).toBe(true);
+    vi.stubEnv("DATA_DIR", dir);
     vi.stubEnv("APPDATA", path.join(tmp, "appdata"));
     expect(bothDirs()).toBe(path.join(tmp, "appdata", "9router"));
+    expect(fs.existsSync(dir)).toBe(false);
   });
 
   it("falls back to the default when DATA_DIR can't be created", () => {
@@ -101,6 +105,30 @@ describe("CLI DATA_DIR resolution", () => {
 
   it("leaves a Unix-style path on Windows for the server to ignore", () => {
     setPlatform("win32");
-    expect(cliHelper.absoluteDataDir("/var/lib/placeholder", "/elsewhere")).toBe("/var/lib/placeholder");
+    // Resolve the way Windows would, where "/x" becomes "C:\x".
+    vi.spyOn(path, "resolve").mockImplementation(path.win32.resolve);
+    expect(cliHelper.absoluteDataDir("/var/lib/placeholder", "C:\\elsewhere")).toBe("/var/lib/placeholder");
+  });
+
+  it("rewrites DATA_DIR in the env against INIT_CWD when npm set it", () => {
+    const env = { DATA_DIR: "data", INIT_CWD: path.join(tmp, "shell") };
+    cliHelper.normalizeDataDirEnv(env, undefined);
+    expect(env.DATA_DIR).toBe(path.join(tmp, "shell", "data"));
+  });
+
+  it("rewrites DATA_DIR in the env against the given directory", () => {
+    vi.stubEnv("HOME", path.join(tmp, "home"));
+    const relative = { DATA_DIR: "data" };
+    cliHelper.normalizeDataDirEnv(relative, path.join(tmp, "shell"));
+    expect(relative.DATA_DIR).toBe(path.join(tmp, "shell", "data"));
+    const tilde = { DATA_DIR: "~/data" };
+    cliHelper.normalizeDataDirEnv(tilde, path.join(tmp, "shell"));
+    expect(tilde.DATA_DIR).toBe(path.join(tmp, "home", "data"));
+  });
+
+  it("leaves an unset DATA_DIR unset", () => {
+    const env = { INIT_CWD: path.join(tmp, "shell") };
+    cliHelper.normalizeDataDirEnv(env);
+    expect("DATA_DIR" in env).toBe(false);
   });
 });

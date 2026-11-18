@@ -45,4 +45,12 @@ function absoluteDataDir(value, cwd = process.cwd()) {
   return path.resolve(cwd, dir);
 }
 
-module.exports = { getDataDir, absoluteDataDir };
+// Rewrite env.DATA_DIR as absolute, in place, before anything reads it.
+// INIT_CWD is where the user ran npm from; npm runs the postinstall (and
+// package scripts) in the package directory instead.
+function normalizeDataDirEnv(env = process.env, cwd = env.INIT_CWD || process.cwd()) {
+  if (env.DATA_DIR) env.DATA_DIR = absoluteDataDir(env.DATA_DIR, cwd);
+  return env;
+}
+
+module.exports = { getDataDir, absoluteDataDir, normalizeDataDirEnv };

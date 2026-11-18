@@ -63,10 +63,10 @@ function createSpinner(text) {
 }
 
 const pkg = require("./package.json");
-const { getDataDir, absoluteDataDir } = require("./hooks/dataDir");
+const { getDataDir, normalizeDataDirEnv } = require("./hooks/dataDir");
 // Before anything reads it: the server starts in its own directory, so it and
 // this process must get the same absolute DATA_DIR.
-if (process.env.DATA_DIR) process.env.DATA_DIR = absoluteDataDir(process.env.DATA_DIR);
+normalizeDataDirEnv(process.env);
 const { ensureSqliteRuntime, buildEnvWithRuntime } = require("./hooks/sqliteRuntime");
 const { ensureTrayRuntime } = require("./hooks/trayRuntime");
 const args = process.argv.slice(2);
@@ -195,28 +195,12 @@ function compareVersions(a, b) {
   return 0;
 }
 
-// Kill PID from file (best-effort, removes file after)
-function killByPidFile(pidFile) {
-  try {
-    if (!fs.existsSync(pidFile)) return;
-    const pid = parseInt(fs.readFileSync(pidFile, "utf8").trim(), 10);
-    if (!pid) return;
-    try {
-      if (process.platform === "win32") {
-        execSync(`taskkill /F /T /PID ${pid}`, { stdio: "ignore", windowsHide: true, timeout: 3000 });
-      } else {
-        process.kill(pid, "SIGKILL");
-      }
-    } catch { }
-    try { fs.unlinkSync(pidFile); } catch { }
-  } catch { }
-}
-
 // Kill tunnel processes (cloudflared/tailscale) by their PID files
 function killTunnelByPidFile() {
+  const { killByPidFile } = require("./src/cli/utils/pidFile");
   const tunnelDir = path.join(getDataDir(), "tunnel");
-  killByPidFile(path.join(tunnelDir, "cloudflared.pid"));
-  killByPidFile(path.join(tunnelDir, "tailscale.pid"));
+  killByPidFile(path.join(tunnelDir, "cloudflared.pid"), ["cloudflared"]);
+  killByPidFile(path.join(tunnelDir, "tailscale.pid"), ["tailscale", "tailscaled"]);
 }
 
 // Kill cloudflared whose --url targets this app's port (covers stale PID file case)

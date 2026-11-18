@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createRequire } from "node:module";
+import { createRequire, Module } from "node:module";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -9,6 +9,7 @@ import path from "node:path";
 const require = createRequire(import.meta.url);
 const CLIENT = require.resolve("../../cli/src/cli/api/client.js");
 const HELPER = require.resolve("../../cli/hooks/dataDir.js");
+const MACHINE_ID = createRequire(CLIENT).resolve("node-machine-id");
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
 
 let tmp;
@@ -25,8 +26,18 @@ afterEach(() => {
   vi.resetModules();
   delete require.cache[CLIENT];
   delete require.cache[HELPER];
+  delete require.cache[MACHINE_ID];
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+// Make node-machine-id fail for the client, as it does on some hosts.
+function breakMachineIdSync() {
+  const stub = new Module(MACHINE_ID);
+  stub.filename = MACHINE_ID;
+  stub.loaded = true;
+  stub.exports = { machineIdSync: () => { throw new Error("no machine id"); } };
+  require.cache[MACHINE_ID] = stub;
+}
 
 // Load the server's token check and a fresh client, both reading the current
 // env and platform at load time (that is when they fix their file paths).
@@ -91,5 +102,20 @@ describe("CLI API client token", () => {
     expect(await server.isValidCliToken(token)).toBe(true);
     expect(fs.existsSync(path.join(dataDir, "auth", "cli-secret"))).toBe(true);
     expect(fs.existsSync(path.join(tmp, "home", ".9router"))).toBe(false);
+  });
+
+  it("is not stuck empty when the client starts before the server has written its files", async () => {
+    breakMachineIdSync();
+    delete require.cache[CLIENT];
+    delete require.cache[HELPER];
+    const client = require(CLIENT);
+    expect(await tokenSentBy(client)).toBe("");
+
+    vi.resetModules();
+    const server = await import("../../src/lib/auth/cliToken.js");
+    await server.getCliToken();
+    const token = await tokenSentBy(client);
+    expect(token).toMatch(/^[0-9a-f]{16}$/);
+    expect(await server.isValidCliToken(token)).toBe(true);
   });
 });

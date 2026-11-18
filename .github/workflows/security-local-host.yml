@@ -10,6 +10,8 @@ on:
       - "cli/package.json"
       - "cli/scripts/build-cli.js"
       - "cli/hooks/dataDir.js"
+      - "cli/hooks/postinstall.js"
+      - "cli/src/cli/utils/pidFile.js"
       - "cli/hooks/sqliteRuntime.js"
       - "cli/src/cli/api/client.js"
       - "cli/src/cli/terminalUI.js"
@@ -41,6 +43,7 @@ on:
       - "tests/unit/cloudflared-own-handle.test.js"
       - "tests/unit/cli-data-dir.test.js"
       - "tests/unit/cli-client-data-dir.test.js"
+      - "tests/unit/cli-pid-file.test.js"
       - "tests/vitest.config.js"
       - "package.json"
       - "tests/package.json"
@@ -78,6 +81,7 @@ jobs:
           unit/cloudflared-own-handle.test.js
           unit/cli-data-dir.test.js
           unit/cli-client-data-dir.test.js
+          unit/cli-pid-file.test.js
 
   # known-fails.txt lags master, so compare against the base branch run instead.
   no-new-failures:
