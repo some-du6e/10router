@@ -24,9 +24,9 @@ function billedUsage(usage, body, texts, fieldNames = FORMATS.OPENAI) {
 
 function textFromResponsesMessageItem(item) {
   if (!item?.content || !Array.isArray(item.content)) return "";
-  const byType = item.content.find((c) => c.type === "output_text");
+  const byType = item.content.find((c) => c?.type === "output_text");
   if (typeof byType?.text === "string") return byType.text;
-  const anyText = item.content.find((c) => typeof c.text === "string");
+  const anyText = item.content.find((c) => typeof c?.text === "string");
   if (typeof anyText?.text === "string") return anyText.text;
   return "";
 }
@@ -192,7 +192,7 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
       let finalResp;
 
       // Extract tool calls from Responses API output (function_call items)
-      const funcCallItems = (jsonResponse.output || []).filter(item => item.type === "function_call");
+      const funcCallItems = (jsonResponse.output || []).filter(item => item?.type === "function_call");
       const toolCalls = funcCallItems.map((item, idx) => ({
         id: item.call_id || `call_${item.name}_${Date.now()}_${idx}`,
         type: "function",
