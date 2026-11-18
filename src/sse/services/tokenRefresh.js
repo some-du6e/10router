@@ -179,28 +179,37 @@ export function buildCredentialUpdates(newCredentials) {
  * carries, its providerSpecificData applied over the stored row, and
  * lastRefreshAt stamped when the access token changed.
  *
+ * `options` go to updateProviderConnection (for example refreshTokenUsed);
+ * the patch and stamp options are on unless set otherwise. Errors propagate.
+ *
  * @param {string} connectionId
  * @param {object} newCredentials
- * @returns {Promise<boolean>}
+ * @param {object} [options]
+ * @returns {Promise<object|null>} the saved row, or null when nothing was written
  */
-export async function updateProviderCredentials(connectionId, newCredentials) {
+export async function updateProviderCredentials(connectionId, newCredentials, options = {}) {
+  const updates = buildCredentialUpdates(newCredentials);
+  const result = await updateProviderConnection(connectionId, updates, {
+    patchProviderSpecificData: true,
+    stampLastRefreshAt: true,
+    ...options,
+  });
+  log.info("TOKEN_REFRESH", "Credentials updated in localDb", {
+    connectionId,
+    success: !!result
+  });
+  return result ?? null;
+}
+
+async function saveOrLog(connectionId, newCredentials) {
   try {
-    const updates = buildCredentialUpdates(newCredentials);
-    const result = await updateProviderConnection(connectionId, updates, {
-      patchProviderSpecificData: true,
-      stampLastRefreshAt: true,
-    });
-    log.info("TOKEN_REFRESH", "Credentials updated in localDb", {
-      connectionId,
-      success: !!result
-    });
-    return !!result;
+    return await updateProviderCredentials(connectionId, newCredentials);
   } catch (error) {
     log.error("TOKEN_REFRESH", "Error updating credentials in localDb", {
       connectionId,
       error: error.message,
     });
-    return false;
+    return null;
   }
 }
 
@@ -260,8 +269,8 @@ export async function checkAndRefreshToken(provider, credentials, options = {}) 
 
     const newCreds = await _refreshProviderCredentials(provider, creds, log);
     if (newCreds?.accessToken || newCreds?.apiKey || newCreds?.copilotToken) {
-      // Persist to DB (non-blocking path continues below)
-      await updateProviderCredentials(creds.connectionId, newCreds);
+      // The request goes on with the new tokens even if the save fails.
+      await saveOrLog(creds.connectionId, newCreds);
 
       creds = {
         ...creds,
@@ -300,7 +309,7 @@ export async function checkAndRefreshToken(provider, credentials, options = {}) 
           copilotTokenExpiresAt: copilotTokenResult.expiresAt,
         }).providerSpecificData;
 
-        await updateProviderCredentials(creds.connectionId, { providerSpecificData: copilotPatch });
+        await saveOrLog(creds.connectionId, { providerSpecificData: copilotPatch });
 
         creds.providerSpecificData = { ...creds.providerSpecificData, ...copilotPatch };
         creds.copilotToken = copilotTokenResult.token;

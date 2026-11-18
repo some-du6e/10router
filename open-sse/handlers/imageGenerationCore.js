@@ -136,7 +136,9 @@ export async function handleImageGenerationCore({
     if (newCredentials?.accessToken || newCredentials?.apiKey) {
       log?.info?.("TOKEN", `${provider.toUpperCase()} | refreshed for image generation`);
       applyRefreshedCredentials(credentials, newCredentials);
-      if (onCredentialsRefreshed) await onCredentialsRefreshed(newCredentials);
+      if (onCredentialsRefreshed) {
+        try { await onCredentialsRefreshed(newCredentials); } catch (e) { log?.warn?.("TOKEN", `onCredentialsRefreshed failed: ${e.message}`); }
+      }
 
       try {
         const retryBody = await adapter.buildBody(model, body);

@@ -75,7 +75,7 @@ export class GeminiCLIExecutor extends BaseExecutor {
 
       return {
         accessToken: tokens.access_token,
-        refreshToken: tokens.refresh_token || credentials.refreshToken,
+        ...(tokens.refresh_token ? { refreshToken: tokens.refresh_token } : {}),
         expiresIn: tokens.expires_in,
       };
     } catch (error) {

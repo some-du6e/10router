@@ -121,7 +121,9 @@ export async function handleVideoProxyCore({
     if (refreshed?.accessToken) {
       log?.info?.("TOKEN", `${provider.toUpperCase()} | refreshed for video ${method}`);
       applyRefreshedCredentials(credentials, refreshed);
-      if (onCredentialsRefreshed) await onCredentialsRefreshed(refreshed);
+      if (onCredentialsRefreshed) {
+        try { await onCredentialsRefreshed(refreshed); } catch (e) { log?.warn?.("TOKEN", `onCredentialsRefreshed failed: ${e.message}`); }
+      }
       try {
         await upstream.body?.cancel?.();
       } catch { /* noop */ }

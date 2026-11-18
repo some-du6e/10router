@@ -86,11 +86,10 @@ export function mergeRefreshedCredentials(provider, currentCredentials, refreshe
   if (refreshedCredentials.apiKey) next.apiKey = refreshedCredentials.apiKey;
   if (refreshedCredentials.token) next.token = refreshedCredentials.token;
 
-  const refreshToken = refreshedCredentials.refreshToken ?? currentCredentials?.refreshToken;
-  if (refreshToken) next.refreshToken = refreshToken;
-
-  const idToken = refreshedCredentials.idToken ?? currentCredentials?.idToken;
-  if (idToken) next.idToken = idToken;
+  // Only what the refresher returned: echoing the request's own tokens could
+  // write them over newer stored ones.
+  if (refreshedCredentials.refreshToken) next.refreshToken = refreshedCredentials.refreshToken;
+  if (refreshedCredentials.idToken) next.idToken = refreshedCredentials.idToken;
 
   const expiresAt = expiresAtFromNow(refreshedCredentials.expiresIn, nowMs);
   if (expiresAt) {

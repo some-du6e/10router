@@ -31,7 +31,6 @@ on:
       - "src/sse/services/codexPooledUsage.js"
       - "src/app/api/v1/models/route.js"
       - "src/app/api/providers/*/models/route.js"
-      - "src/app/api/providers/*/test/testUtils.js"
       - "src/app/api/usage/*/route.js"
       - "src/app/api/translator/send/route.js"
       - "tests/package.json"
@@ -42,6 +41,7 @@ on:
       - "tests/unit/kiro-external-idp.test.js"
       - "tests/unit/codex-stale-refresh.test.js"
       - "tests/unit/refresh-retry-credentials.test.js"
+      - "tests/unit/codex-refresh-token.test.js"
       - "tests/unit/token-refresh-generic.test.js"
       - "tests/unit/background-token-refresh.test.js"
       - "tests/unit/xai-video-handler.test.js"
@@ -76,6 +76,7 @@ jobs:
           unit/kiro-external-idp.test.js
           unit/codex-stale-refresh.test.js
           unit/refresh-retry-credentials.test.js
+          unit/codex-refresh-token.test.js
           unit/token-refresh-generic.test.js
           unit/background-token-refresh.test.js
           unit/xai-video-handler.test.js
@@ -102,7 +103,6 @@ jobs:
           src/sse/services/codexPooledUsage.js
           src/app/api/v1/models/route.js
           "src/app/api/providers/[id]/models/route.js"
-          "src/app/api/providers/[id]/test/testUtils.js"
           "src/app/api/usage/[connectionId]/route.js"
           src/app/api/translator/send/route.js
           open-sse/utils/tokenExpiry.js
@@ -114,6 +114,7 @@ jobs:
           tests/unit/kiro-external-idp.test.js
           tests/unit/codex-stale-refresh.test.js
           tests/unit/refresh-retry-credentials.test.js
+          tests/unit/codex-refresh-token.test.js
 
   # The suite is not all-green on master (see AGENTS.md), so this runs it on
   # both the base and this branch and fails only on tests that pass on the base

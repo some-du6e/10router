@@ -12,7 +12,7 @@ const TOKEN_ENDPOINT = "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/
 const unexpectedFetch = async (url) => { throw new Error(`unexpected fetch: ${url}`); };
 let fetchImpl = unexpectedFetch;
 const executorRefresh = vi.fn();
-let tempDir, db, sseRefresh, oauth, engineRefresh, GithubExecutor, usageRoute;
+let tempDir, db, sseRefresh, oauth, engineRefresh, GithubExecutor, GeminiCLIExecutor, AntigravityExecutor, usageRoute;
 
 beforeAll(async () => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "10router-refresh-patch-"));
@@ -30,6 +30,8 @@ beforeAll(async () => {
   oauth = await import("../../open-sse/services/oauthCredentialManager.js");
   engineRefresh = await import("../../open-sse/services/tokenRefresh.js");
   ({ GithubExecutor } = await import("../../open-sse/executors/github.js"));
+  ({ GeminiCLIExecutor } = await import("../../open-sse/executors/gemini-cli.js"));
+  ({ AntigravityExecutor } = await import("../../open-sse/executors/antigravity.js"));
   usageRoute = await import("../../src/app/api/usage/[connectionId]/route.js");
 });
 
@@ -143,17 +145,65 @@ describe("refresh results keep newer stored metadata", () => {
     });
   });
 
-  it("usage polling saves through updateProviderCredentials", async () => {
+  it("usage polling keeps metadata stored while its refresh ran", async () => {
     const config = { authMethod: "external_idp", clientId: "client-id", tokenEndpoint: TOKEN_ENDPOINT, scope: "offline_access" };
-    const conn = await addConnection("kiro", { ...config, profileArn: "profile-new", region: "eu-west-1" });
-    executorRefresh.mockResolvedValueOnce({ accessToken: "usage-access", refreshToken: "usage-rotated", expiresIn: "soon", providerSpecificData: config });
+    const conn = await addConnection("kiro", { ...config, profileArn: "profile-old", region: "eu-west-1" });
+    executorRefresh.mockImplementationOnce(async (credentials) => {
+      expect(credentials.providerSpecificData.profileArn).toBe("profile-old");
+      // Another request stores a newer profile after the route read the row.
+      await db.updateProviderConnection(conn.id, { providerSpecificData: { ...credentials.providerSpecificData, profileArn: "profile-newer" } });
+      return { accessToken: "usage-access", refreshToken: "usage-rotated", expiresIn: 3600, providerSpecificData: config };
+    });
     const { connection, refreshed } = await usageRoute.refreshAndUpdateCredentials({ id: conn.id }, true);
     expect(refreshed).toBe(true);
     expect(connection).toMatchObject({ accessToken: "usage-access", refreshToken: "usage-rotated" });
-    expect(connection.providerSpecificData).toEqual({ ...config, profileArn: "profile-new", region: "eu-west-1" });
     expect(await db.getProviderConnectionById(conn.id)).toMatchObject({
       accessToken: "usage-access", refreshToken: "usage-rotated",
-      providerSpecificData: { ...config, profileArn: "profile-new", region: "eu-west-1" },
+      providerSpecificData: { ...config, profileArn: "profile-newer", region: "eu-west-1" },
+    });
+  });
+
+  it("usage polling still saves the rotated token when expiresIn is not a number", async () => {
+    const conn = await addConnection("kiro", { region: "eu-west-1" });
+    executorRefresh.mockResolvedValueOnce({ accessToken: "usage-access-2", refreshToken: "usage-rotated-2", expiresIn: "soon" });
+    const { refreshed } = await usageRoute.refreshAndUpdateCredentials({ id: conn.id }, true);
+    expect(refreshed).toBe(true);
+    expect(await db.getProviderConnectionById(conn.id)).toMatchObject({
+      accessToken: "usage-access-2", refreshToken: "usage-rotated-2",
+    });
+  });
+
+  it.each([
+    ["gemini-cli", () => new GeminiCLIExecutor()],
+    ["antigravity", () => new AntigravityExecutor()],
+  ])("%s refresh echoes neither the request's refresh token nor its projectId", async (provider, makeExecutor) => {
+    const conn = await db.createProviderConnection({
+      provider, authType: "oauth", accessToken: "stored-access", refreshToken: "newest-refresh", projectId: "project-newest",
+    });
+    fetchImpl = vi.fn(async () => Response.json({ access_token: `${provider}-access`, expires_in: 3600 }));
+    const refreshed = await makeExecutor().refreshCredentials({
+      connectionId: conn.id, accessToken: "stale-access", refreshToken: "stale-refresh", projectId: "project-stale",
+    }, null);
+    expect(refreshed).toMatchObject({ accessToken: `${provider}-access`, expiresIn: 3600 });
+    expect(refreshed).not.toHaveProperty("refreshToken");
+    expect(refreshed).not.toHaveProperty("projectId");
+    await sseRefresh.updateProviderCredentials(conn.id, refreshed);
+    expect(await db.getProviderConnectionById(conn.id)).toMatchObject({
+      accessToken: `${provider}-access`, refreshToken: "newest-refresh", projectId: "project-newest",
+    });
+  });
+
+  it("mergeRefreshedCredentials leaves out tokens the refresher didn't return", async () => {
+    const conn = await addConnection("codex", { chatgptAccountId: "account" });
+    await db.updateProviderConnection(conn.id, { refreshToken: "newest-refresh", idToken: "newest-id" });
+    const refreshed = oauth.mergeRefreshedCredentials("codex", {
+      connectionId: conn.id, refreshToken: "stale-refresh", idToken: "stale-id",
+    }, { accessToken: "codex-access-3", expiresIn: 3600 });
+    expect(refreshed).not.toHaveProperty("refreshToken");
+    expect(refreshed).not.toHaveProperty("idToken");
+    await sseRefresh.updateProviderCredentials(conn.id, refreshed);
+    expect(await db.getProviderConnectionById(conn.id)).toMatchObject({
+      accessToken: "codex-access-3", refreshToken: "newest-refresh", idToken: "newest-id",
     });
   });
 

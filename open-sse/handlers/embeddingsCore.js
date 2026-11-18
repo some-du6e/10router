@@ -92,7 +92,9 @@ export async function handleEmbeddingsCore({
     if (newCredentials?.accessToken || newCredentials?.apiKey) {
       log?.info?.("TOKEN", `${provider.toUpperCase()} | refreshed for embeddings`);
       applyRefreshedCredentials(credentials, newCredentials);
-      if (onCredentialsRefreshed) await onCredentialsRefreshed(newCredentials);
+      if (onCredentialsRefreshed) {
+        try { await onCredentialsRefreshed(newCredentials); } catch (e) { log?.warn?.("TOKEN", `onCredentialsRefreshed failed: ${e.message}`); }
+      }
 
       try {
         const retryHeaders = adapter.buildHeaders(credentials, ctx);

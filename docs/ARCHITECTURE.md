@@ -304,7 +304,7 @@ sequenceDiagram
     Test-->>UI: validation result
 ```
 
-Refresh during live traffic runs inside the chat, image, embeddings and video cores (`open-sse/handlers/chatCore.js`, `imageGenerationCore.js`, `embeddingsCore.js`, `videoCore.js`), through the executor's `refreshCredentials()` (video calls `refreshTokenByProvider()`), and each applies the result to the request's copy with `applyRefreshedCredentials()`. Those refreshes, the proactive one in `checkAndRefreshToken()`, usage polling, the connection test, model listing and the translator's send all save through `updateProviderCredentials()` (`src/sse/services/tokenRefresh.js`). It writes only the fields the result carries: `updateProviderConnection()` applies the result's `providerSpecificData` over the stored row and stamps `lastRefreshAt` when the access token changed, in one transaction.
+Refresh during live traffic runs inside the chat, image, embeddings and video cores (`open-sse/handlers/chatCore.js`, `imageGenerationCore.js`, `embeddingsCore.js`, `videoCore.js`), through the executor's `refreshCredentials()` (video calls `refreshTokenByProvider()`), and each applies the result to the request's copy with `applyRefreshedCredentials()`. Those refreshes, the proactive one in `checkAndRefreshToken()`, usage polling, model listing and the translator's send all save through `updateProviderCredentials()` (`src/sse/services/tokenRefresh.js`). It writes only the fields the result carries: `updateProviderConnection()` applies the result's `providerSpecificData` over the stored row and stamps `lastRefreshAt` when the access token changed, in one transaction.
 
 ## Cloud Sync Lifecycle (Enable / Sync / Disable)
 

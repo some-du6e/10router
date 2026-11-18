@@ -77,7 +77,7 @@ describe("Codex Refresh Token", () => {
   });
 
   describe("CodexExecutor credential lifecycle", () => {
-    it("should refresh Codex credentials and preserve omitted id_token", async () => {
+    it("should refresh Codex credentials and keep an omitted id_token on the request only", async () => {
       mockFetchWithJson({
           access_token: "new-access",
           refresh_token: "rotated-refresh-token",
@@ -85,16 +85,20 @@ describe("Codex Refresh Token", () => {
       });
 
       const { CodexExecutor } = await import("../../open-sse/executors/codex.js");
+      const { applyRefreshedCredentials } = await import("../../open-sse/services/oauthCredentialManager.js");
       const executor = new CodexExecutor();
-      const result = await executor.refreshCredentials({
+      const credentials = {
         connectionId: "codex-1",
         refreshToken: "old-refresh-token",
         idToken: "old-id-token",
-      }, null);
+      };
+      const result = await executor.refreshCredentials(credentials, null);
 
       expect(result.accessToken).toBe("new-access");
       expect(result.refreshToken).toBe("rotated-refresh-token");
-      expect(result.idToken).toBe("old-id-token");
+      // Not echoed into the saved result, so it can't overwrite a newer stored one.
+      expect(result).not.toHaveProperty("idToken");
+      expect(applyRefreshedCredentials({ ...credentials }, result).idToken).toBe("old-id-token");
       expect(result.lastRefreshAt).toBeTruthy();
       expect(result.expiresAt).toBeTruthy();
     });

@@ -78,9 +78,26 @@ describe("updateProviderCredentials", () => {
   it("sends only the refresh's metadata, as a patch the repo applies over the stored row", async () => {
     expect(await updateProviderCredentials("account", {
       ...refreshed, providerSpecificData: { session: "new-session" },
-    })).toBe(true);
+    })).toEqual({ id: "account" });
     expect(savedUpdate().providerSpecificData).toEqual({ session: "new-session" });
     expect(mocks.get).not.toHaveBeenCalled();
+  });
+
+  it("passes extra options through and lets them override the defaults", async () => {
+    await updateProviderCredentials("account", refreshed, { refreshTokenUsed: "old-refresh", stampLastRefreshAt: false });
+    expect(mocks.update).toHaveBeenCalledWith("account", expect.any(Object), {
+      patchProviderSpecificData: true, stampLastRefreshAt: false, refreshTokenUsed: "old-refresh",
+    });
+  });
+
+  it("returns null when the repo wrote nothing", async () => {
+    mocks.update.mockResolvedValueOnce(null);
+    expect(await updateProviderCredentials("account", refreshed)).toBeNull();
+  });
+
+  it("lets a database error reach the caller", async () => {
+    mocks.update.mockRejectedValueOnce(new Error("database is locked"));
+    await expect(updateProviderCredentials("account", refreshed)).rejects.toThrow("database is locked");
   });
 
   it("leaves the lastRefreshAt stamp to the repo, which sees whether the token changed", async () => {
@@ -96,7 +113,7 @@ describe("updateProviderCredentials", () => {
   it("still saves the rotated tokens when expiresIn is not a number", async () => {
     expect(await updateProviderCredentials("account", {
       accessToken: "new-access", refreshToken: "rotated-refresh", expiresIn: "soon",
-    })).toBe(true);
+    })).toEqual({ id: "account" });
     const saved = savedUpdate();
     expect(saved).toMatchObject({ accessToken: "new-access", refreshToken: "rotated-refresh" });
     expect(saved).not.toHaveProperty("expiresIn");
