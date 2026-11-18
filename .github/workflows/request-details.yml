@@ -110,6 +110,8 @@ jobs:
           echo "compare=yes" >> "$GITHUB_ENV"
       - name: Run this branch's test on it (informational)
         if: env.compare == 'yes'
+        # Informational: a missing report (the test file failed to load) mustn't fail the run.
+        continue-on-error: true
         working-directory: tests
         run: |
           ./node_modules/.bin/vitest run --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/before.json" \

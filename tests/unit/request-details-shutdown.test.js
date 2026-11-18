@@ -148,7 +148,8 @@ describe("request details on shutdown", () => {
   it("stops packing full payloads in a running flush once shutdown starts", async () => {
     const first = gate();
     const second = gate();
-    state.adapterGates = [first.promise, second.promise];
+    // The first save reads the adapter once (its driver); then the flush's passes.
+    state.adapterGates = [null, first.promise, second.promise];
     await repo.saveRequestDetail(bigRow("big-a"));
     await repo.saveRequestDetail(bigRow("big-b")); // starts a flush, held at the first gate
     await repo.saveRequestDetail(bigRow("big-c")); // left for that flush's next pass
@@ -193,7 +194,8 @@ describe("request details on shutdown", () => {
 
   it("waits for a flush already running before the database closes", async () => {
     const held = gate();
-    state.adapterGates = [held.promise];
+    // The first save reads the adapter once (its driver); then the flush.
+    state.adapterGates = [null, held.promise];
     await repo.saveRequestDetail({ id: "row-a", model: "m" });
     // The second row reaches the batch size and starts a flush, held at getAdapter.
     await repo.saveRequestDetail({ id: "row-b", model: "m" });
