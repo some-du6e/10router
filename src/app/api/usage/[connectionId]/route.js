@@ -2,7 +2,7 @@
 import "open-sse/index.js";
 
 import { getProviderConnectionById } from "@/lib/localDb";
-import { buildCredentialUpdates, updateProviderCredentials } from "@/sse/services/tokenRefresh.js";
+import { buildCredentialUpdates, saveRefreshedCredentials } from "@/sse/services/tokenRefresh.js";
 import { getUsageForProvider } from "open-sse/services/usage.js";
 import { isUnrecoverableRefreshError } from "open-sse/services/tokenRefresh.js";
 import { getExecutor } from "open-sse/executors/index.js";
@@ -73,7 +73,7 @@ export async function refreshAndUpdateCredentials(connection, force = false, pro
     throw new Error("Failed to refresh credentials. Please re-authorize the connection.");
   }
 
-  await updateProviderCredentials(connection.id, refreshResult);
+  await saveRefreshedCredentials(connection.id, refreshResult);
 
   // The patch applied to this request's copy, the way the DB applied it.
   const updates = buildCredentialUpdates(refreshResult);

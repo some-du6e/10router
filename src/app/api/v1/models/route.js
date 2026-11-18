@@ -29,7 +29,10 @@ const LIVE_MODEL_RESOLVERS = {
       accessToken: conn.accessToken,
       refreshToken: conn.refreshToken,
       providerSpecificData: conn.providerSpecificData || {}
-    }, { log: console });
+    }, {
+      log: console,
+      onCredentialsRefreshed: (refreshed) => updateProviderCredentials(conn.id, refreshed),
+    });
     return result?.models?.length ? { models: result.models } : null;
   },
   qoder: async (conn) => {

@@ -201,7 +201,11 @@ export async function updateProviderCredentials(connectionId, newCredentials, op
   return result ?? null;
 }
 
-async function saveOrLog(connectionId, newCredentials) {
+/**
+ * updateProviderCredentials for callers that go on with the new tokens either
+ * way: a failed save is logged and returns null instead of throwing.
+ */
+export async function saveRefreshedCredentials(connectionId, newCredentials) {
   try {
     return await updateProviderCredentials(connectionId, newCredentials);
   } catch (error) {
@@ -270,7 +274,7 @@ export async function checkAndRefreshToken(provider, credentials, options = {}) 
     const newCreds = await _refreshProviderCredentials(provider, creds, log);
     if (newCreds?.accessToken || newCreds?.apiKey || newCreds?.copilotToken) {
       // The request goes on with the new tokens even if the save fails.
-      await saveOrLog(creds.connectionId, newCreds);
+      await saveRefreshedCredentials(creds.connectionId, newCreds);
 
       creds = {
         ...creds,
@@ -309,7 +313,7 @@ export async function checkAndRefreshToken(provider, credentials, options = {}) 
           copilotTokenExpiresAt: copilotTokenResult.expiresAt,
         }).providerSpecificData;
 
-        await saveOrLog(creds.connectionId, { providerSpecificData: copilotPatch });
+        await saveRefreshedCredentials(creds.connectionId, { providerSpecificData: copilotPatch });
 
         creds.providerSpecificData = { ...creds.providerSpecificData, ...copilotPatch };
         creds.copilotToken = copilotTokenResult.token;
