@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { createRequire } from "node:module";
+import { createRequire, Module } from "node:module";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -110,10 +110,43 @@ describe("CLI DATA_DIR resolution", () => {
     expect(cliHelper.absoluteDataDir("/var/lib/placeholder", "C:\\elsewhere")).toBe("/var/lib/placeholder");
   });
 
-  it("rewrites DATA_DIR in the env against INIT_CWD when npm set it", () => {
-    const env = { DATA_DIR: "data", INIT_CWD: path.join(tmp, "shell") };
-    cliHelper.normalizeDataDirEnv(env, undefined);
-    expect(env.DATA_DIR).toBe(path.join(tmp, "shell", "data"));
+  it("resolves against the process's own directory by default, not INIT_CWD", () => {
+    // npm sets INIT_CWD for everything under `npm run`, including a CLI
+    // started from a subdirectory, so it must not win at runtime.
+    const env = { DATA_DIR: "data", INIT_CWD: path.join(tmp, "npm-root") };
+    cliHelper.normalizeDataDirEnv(env);
+    expect(env.DATA_DIR).toBe(path.join(process.cwd(), "data"));
+  });
+
+  it("is called by the postinstall with INIT_CWD, where npm was run", () => {
+    const seen = [];
+    const stub = (file, exports) => {
+      const key = require.resolve(file);
+      const mod = new Module(key);
+      mod.filename = key;
+      mod.loaded = true;
+      mod.exports = exports;
+      require.cache[key] = mod;
+      return key;
+    };
+    const stubbed = [
+      stub("../../cli/hooks/sqliteRuntime.js", { ensureSqliteRuntime: () => seen.push(process.env.DATA_DIR) }),
+      stub("../../cli/hooks/trayRuntime.js", { ensureTrayRuntime: () => {} }),
+    ];
+    const postinstall = require.resolve("../../cli/hooks/postinstall.js");
+    vi.spyOn(process, "exit").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.stubEnv("DATA_DIR", "data");
+    vi.stubEnv("INIT_CWD", tmp);
+    try {
+      delete require.cache[postinstall];
+      require(postinstall);
+    } finally {
+      delete require.cache[postinstall];
+      for (const key of stubbed) delete require.cache[key];
+    }
+    expect(seen).toEqual([path.join(tmp, "data")]);
+    expect(process.exit).toHaveBeenCalledWith(0);
   });
 
   it("rewrites DATA_DIR in the env against the given directory", () => {

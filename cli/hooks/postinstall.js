@@ -3,7 +3,8 @@
 // Postinstall: warm-up SQLite deps into ~/.9router/runtime so the first
 // `10router` start doesn't need network. Failure here is non-fatal —
 // cli.js will retry at runtime if anything is missing.
-require("./dataDir").normalizeDataDirEnv(process.env);
+// npm runs this in the package directory; INIT_CWD is where the user ran npm.
+require("./dataDir").normalizeDataDirEnv(process.env, process.env.INIT_CWD || process.cwd());
 const { ensureSqliteRuntime } = require("./sqliteRuntime");
 const { ensureTrayRuntime } = require("./trayRuntime");
 

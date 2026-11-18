@@ -195,12 +195,12 @@ function compareVersions(a, b) {
   return 0;
 }
 
-// Kill tunnel processes (cloudflared/tailscale) by their PID files
+// Kill the server's cloudflared by its PID file
 function killTunnelByPidFile() {
   const { killByPidFile } = require("./src/cli/utils/pidFile");
-  const tunnelDir = path.join(getDataDir(), "tunnel");
-  killByPidFile(path.join(tunnelDir, "cloudflared.pid"), ["cloudflared"]);
-  killByPidFile(path.join(tunnelDir, "tailscale.pid"), ["tailscale", "tailscaled"]);
+  const dataDir = getDataDir();
+  const binary = path.join(dataDir, "bin", process.platform === "win32" ? "cloudflared.exe" : "cloudflared");
+  killByPidFile(path.join(dataDir, "tunnel", "cloudflared.pid"), binary);
 }
 
 // Kill cloudflared whose --url targets this app's port (covers stale PID file case)

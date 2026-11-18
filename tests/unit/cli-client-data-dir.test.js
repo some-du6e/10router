@@ -102,6 +102,21 @@ describe("CLI API client token", () => {
     expect(await server.isValidCliToken(token)).toBe(true);
     expect(fs.existsSync(path.join(dataDir, "auth", "cli-secret"))).toBe(true);
     expect(fs.existsSync(path.join(tmp, "home", ".9router"))).toBe(false);
+    if (process.platform !== "win32") {
+      // The server created auth/; only this user may read the secret.
+      expect(fs.statSync(path.join(dataDir, "auth")).mode & 0o777).toBe(0o700);
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("creates auth/ as 0700 when the client gets there first", async () => {
+    const dataDir = path.join(tmp, "home", ".9router");
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(path.join(dataDir, "machine-id"), "placeholder-machine-id");
+    delete require.cache[CLIENT];
+    delete require.cache[HELPER];
+    const client = require(CLIENT);
+    expect(await tokenSentBy(client)).toMatch(/^[0-9a-f]{16}$/);
+    expect(fs.statSync(path.join(dataDir, "auth")).mode & 0o777).toBe(0o700);
   });
 
   it("is not stuck empty when the client starts before the server has written its files", async () => {

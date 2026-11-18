@@ -1,38 +1,59 @@
-// Stop a tunnel process the server recorded in a PID file. A PID file can name
+// Stop the cloudflared the server recorded in a PID file. A PID file can name
 // a process that is no longer ours: one from a container sharing DATA_DIR, or
-// a PID reused after a reboot. So the PID is killed only while its program is
-// one of the expected names; otherwise the stale file is just removed.
+// a PID reused after a reboot. So the PID is killed only while it runs the
+// server's own binary; otherwise the stale file is just removed.
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
 
-// Program name (without directory or .exe, lower case) of a running PID, or
-// null when it can't be read.
-function programName(pid, { platform = process.platform, run = execFileSync } = {}) {
+function samePath(a, b, realpath) {
+  const real = (p) => { try { return realpath(p); } catch { return path.resolve(p); } };
+  return real(a) === real(b);
+}
+
+// True only when pid is running expectedPath (the server's
+// <DATA_DIR>/bin/cloudflared, or cloudflared.exe on Windows).
+function runsBinary(pid, expectedPath, {
+  platform = process.platform,
+  run = execFileSync,
+  readlink = fs.readlinkSync,
+  realpath = fs.realpathSync,
+} = {}) {
+  const expectedName = path.basename(expectedPath).toLowerCase();
   try {
-    let name;
     if (platform === "win32") {
+      // tasklist only gives the image name.
       const out = String(run("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8", windowsHide: true, timeout: 3000 }));
       const row = out.match(/^"([^"]+)","(\d+)"/m);
-      if (!row || Number(row[2]) !== pid) return null;
-      name = row[1];
-    } else {
-      name = String(run("ps", ["-p", String(pid), "-o", "comm="], { encoding: "utf8", timeout: 3000 })).trim();
+      return !!row && Number(row[2]) === pid && row[1].toLowerCase() === expectedName;
     }
-    if (!name) return null;
-    return path.basename(name.replace(/\\/g, "/")).toLowerCase().replace(/\.exe$/, "");
+
+    // Linux (BusyBox included): /proc/<pid>/exe is the binary itself.
+    try {
+      return samePath(readlink(`/proc/${pid}/exe`), expectedPath, realpath);
+    } catch (e) {
+      // Another user's process: not ours to kill.
+      if (e?.code === "EACCES" || e?.code === "EPERM") return false;
+    }
+
+    // No /proc (macOS): its ps prints the full path of the binary.
+    const comm = String(run("ps", ["-p", String(pid), "-o", "comm="], { encoding: "utf8", timeout: 3000 })).trim();
+    if (!comm) return false;
+    if (path.isAbsolute(comm)) return samePath(comm, expectedPath, realpath);
+    return path.basename(comm) === path.basename(expectedPath);
   } catch {
-    return null;
+    return false;
   }
 }
 
 // Returns true when it killed the process.
-function killByPidFile(pidFile, expectedNames, { platform = process.platform, run = execFileSync, kill = process.kill.bind(process) } = {}) {
+function killByPidFile(pidFile, expectedPath, options = {}) {
+  const { platform = process.platform, run = execFileSync, kill = process.kill.bind(process) } = options;
   try {
     if (!fs.existsSync(pidFile)) return false;
     const pid = parseInt(fs.readFileSync(pidFile, "utf8").trim(), 10);
     let killed = false;
-    if (pid > 0 && expectedNames.includes(programName(pid, { platform, run }))) {
+    if (pid > 0 && runsBinary(pid, expectedPath, { ...options, platform, run })) {
       try {
         if (platform === "win32") {
           run("taskkill", ["/F", "/T", "/PID", String(pid)], { stdio: "ignore", windowsHide: true, timeout: 3000 });
@@ -49,4 +70,4 @@ function killByPidFile(pidFile, expectedNames, { platform = process.platform, ru
   }
 }
 
-module.exports = { programName, killByPidFile };
+module.exports = { runsBinary, killByPidFile };
