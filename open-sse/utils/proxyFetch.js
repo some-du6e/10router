@@ -264,8 +264,12 @@ async function fetchVia(url, options, proxyOptions, noHeadersTimeout = false) {
       const reason = sanitizeSecrets(proxyError.message);
       // If strictProxy is enabled, fail hard instead of falling back to direct
       if (proxyOptions?.strictProxy === true) {
-        // No `cause`: the original error's text is what was just redacted.
-        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${reason}`);
+        // Callers classify by the cause, so it stays, unless redaction changed
+        // its text: then a copy with the redacted text, name and code stands in.
+        const cause = reason === proxyError.message
+          ? proxyError
+          : Object.assign(new Error(reason), { name: proxyError.name, code: proxyError.code });
+        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${reason}`, { cause });
       }
       console.warn(`[ProxyFetch] Proxy failed, falling back to direct: ${reason}`);
       return direct(url, options);
