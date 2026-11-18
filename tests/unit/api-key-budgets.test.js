@@ -28,6 +28,17 @@ vi.mock("@/sse/services/tokenRefresh.js", () => ({
   checkAndRefreshToken: async (_p, c) => c,
   updateProviderCredentials: async () => {},
 }));
+vi.mock("@/sse/services/codexPooledUsage", () => ({ getPooledCodexRateLimitHeaders: () => ({}) }));
+// Which providers serve a bare id, when a test sets it; otherwise the real catalog.
+const autoComboState = vi.hoisted(() => ({ models: null, catalog: null }));
+vi.mock("@/sse/services/autoCombo.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    resolveAutoCombo: async (model, ...rest) => (autoComboState.models && !model.includes("/") ? autoComboState.models : actual.resolveAutoCombo(model, ...rest)),
+    getAutoComboCatalogMatches: (model) => autoComboState.catalog ?? actual.getAutoComboCatalogMatches(model),
+  };
+});
 vi.mock("open-sse/handlers/chatCore.js", async (importOriginal) => ({
   ...(await importOriginal()),
   handleChatCore: (...args) => upstream.core(...args),
@@ -44,7 +55,8 @@ const { getAdapter } = await import("@/lib/db/driver.js");
 const { saveRequestUsage, updateSettings, createApiKey, updateApiKey, getApiKeyById, createCombo, setModelAlias, updatePricing } = db;
 const { handleChat } = await import("@/sse/handlers/chat.js");
 const { handleEmbeddings } = await import("@/sse/handlers/embeddings.js");
-const { checkApiKeyLimits, filterModelsForRequest, isModelAllowed, keepAllowedAdapterModels } = await import("@/sse/services/keyLimits.js");
+const { checkApiKeyLimits, filterModelsForRequest, isModelAllowed, keepAllowedAdapterModels, keepAllowedComboMembers, requestKeyAllowsModel } = await import("@/sse/services/keyLimits.js");
+const { POST: codexResponsesPost } = await import("@/app/api/v1/codex/responses/route.js");
 const { GET: getOwnKey } = await import("@/app/api/v1/key/route.js");
 const { PUT: putKey } = await import("@/app/api/keys/[id]/route.js");
 const { GET: getKeyUsage } = await import("@/app/api/keys/[id]/usage/route.js");
@@ -97,6 +109,8 @@ beforeEach(() => {
   upstream.credentials.mockReset();
   upstream.core.mockReset();
   upstream.adapterPool = [];
+  autoComboState.models = null;
+  autoComboState.catalog = null;
   upstream.credentials.mockResolvedValue({ connectionId: "conn-1", connectionName: "acct", accessToken: "t" });
   upstream.core.mockImplementation(async () => ({ success: true, response: new Response(JSON.stringify({ ok: true }), { status: 200 }) }));
 });
@@ -310,6 +324,85 @@ describe("model allowlist", () => {
     expect(await isModelAllowed("fast", ["claude-opus-5-5"], lookup)).toBe(true);
     expect(await isModelAllowed("c", ["claude-opus-5-5"], lookup)).toBe(true);
     expect(await isModelAllowed("anything", null, lookup)).toBe(true);
+  });
+
+  it("requestKeyAllowsModel reads the request's key: a cx/ entry allows the Codex model, not the bare id", async () => {
+    const key = await newKey("codex-only", { allowedModels: ["cx/gpt-x"] });
+    expect(await requestKeyAllowsModel(chatRequest(key, "gpt-x"), "cx/gpt-x")).toBe(true);
+    expect(await requestKeyAllowsModel(chatRequest(key, "gpt-x"), "gpt-x")).toBe(false);
+    const bare = await newKey("bare-allowed", { allowedModels: ["gpt-x"] });
+    expect(await requestKeyAllowsModel(chatRequest(bare, "gpt-x"), "gpt-x[1m]")).toBe(true);
+    const open = await newKey("no-allowlist");
+    expect(await requestKeyAllowsModel(chatRequest(open, "gpt-x"), "anything")).toBe(true);
+    expect(await requestKeyAllowsModel(chatRequest(null, "gpt-x"), "anything")).toBe(true);
+    expect(await requestKeyAllowsModel(chatRequest({ key: "sk-not-issued-by-10router" }, "gpt-x"), "anything")).toBe(true);
+  });
+
+  it("a cx/-only key sending a bare id through the Codex ingress gets past the limits to Codex", async () => {
+    // Codex and another provider both serve it, so without the key check the
+    // ingress would hand over an auto combo and the bare id would be refused.
+    autoComboState.models = ["cx/gpt-x", "ctso/openai-gpt-x"];
+    autoComboState.catalog = [{ id: "cx/gpt-x", provider: "codex" }, { id: "ctso/openai-gpt-x", provider: "ctso" }];
+    const key = await newKey("codex-ingress-only", { allowedModels: ["cx/gpt-x"] });
+    const res = await codexResponsesPost(new Request("http://localhost/backend-api/codex/responses", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key.key}` },
+      body: JSON.stringify({ model: "gpt-x", input: "hi" }),
+    }));
+    expect(res.status).toBe(200);
+    expect(upstream.core).toHaveBeenCalledTimes(1);
+    expect(upstream.core.mock.calls[0][0].modelInfo).toMatchObject({ provider: "codex", model: "gpt-x" });
+    // The same bare id on /v1 is refused: the ingress pin is what lets it through.
+    expect((await handleChat(chatRequest(key, "gpt-x"))).status).toBe(403);
+  });
+
+  it("drops only the auto combo members an openai- match added, unless the allowlist names them", async () => {
+    const key = await newKey("bare-gpt-x", { allowedModels: ["gpt-x"] });
+    expect(await keepAllowedComboMembers(key.key, ["ctso/openai-gpt-x", "openai/gpt-x"])).toEqual(["openai/gpt-x"]);
+    expect(await keepAllowedComboMembers(null, ["ctso/openai-gpt-x"])).toEqual(["ctso/openai-gpt-x"]);
+    const both = await newKey("both-spellings", { allowedModels: ["gpt-x", "openai-gpt-x"] });
+    expect(await keepAllowedComboMembers(both.key, ["ctso/openai-gpt-x", "openai/gpt-x"])).toEqual(["ctso/openai-gpt-x", "openai/gpt-x"]);
+    // Dotted spellings and nested ids were always members of the bare id.
+    const opus = await newKey("bare-opus", { allowedModels: ["claude-opus-5-5"] });
+    expect(await keepAllowedComboMembers(opus.key, ["kr/claude-opus-5.5", "or/anthropic/claude-opus-5-5", "ctso/openai-claude-opus-5-5"]))
+      .toEqual(["kr/claude-opus-5.5", "or/anthropic/claude-opus-5-5"]);
+
+    // Handed in by an ingress: the openai- member is skipped, a dotted one kept.
+    const res = await handleChat(chatRequest(key, "gpt-x"), null, { autoCombo: ["ctso/openai-gpt-x", "openai/gpt.x"] });
+    expect(res.status).toBe(200);
+    expect(upstream.core.mock.calls.map(([args]) => `${args.modelInfo.provider}/${args.modelInfo.model}`)).toEqual(["openai/gpt.x"]);
+
+    upstream.core.mockClear();
+    const refused = await handleChat(chatRequest(key, "gpt-x"), null, { autoCombo: ["ctso/openai-gpt-x"] });
+    expect(refused.status).toBe(403);
+    expect((await refused.json()).error.code).toBe("model_not_allowed");
+    const refusedClaude = await handleChat(chatRequest(key, "gpt-x", { endpoint: "/v1/messages" }), null, { autoCombo: ["ctso/openai-gpt-x"] });
+    expect(refusedClaude.status).toBe(403);
+    expect(await refusedClaude.json()).toMatchObject({ type: "error", error: { type: "permission_error" } });
+    expect(upstream.core).not.toHaveBeenCalled();
+  });
+
+  it("on /v1, an auto combo handleChat resolves itself keeps dotted and nested members for a bare allowlist entry", async () => {
+    const key = await newKey("v1-bare-opus", { allowedModels: ["claude-opus-5-5"] });
+    autoComboState.models = ["ctso/openai-claude-opus-5-5", "kr/claude-opus-5.5", "or/anthropic/claude-opus-5-5"];
+    const res = await handleChat(chatRequest(key, "claude-opus-5-5"));
+    expect(res.status).toBe(200);
+    expect(upstream.core).toHaveBeenCalledTimes(1);
+    expect(upstream.core.mock.calls[0][0].modelInfo.model).not.toMatch(/openai-/);
+
+    upstream.core.mockClear();
+    autoComboState.models = ["or/anthropic/claude-opus-5-5"];
+    expect((await handleChat(chatRequest(key, "claude-opus-5-5"))).status).toBe(200);
+    expect(upstream.core).toHaveBeenCalledTimes(1);
+
+    // Only openai- members: as before openai- matching, no auto combo forms
+    // and the bare id routes on its own.
+    upstream.core.mockClear();
+    autoComboState.models = ["ctso/openai-claude-opus-5-5"];
+    const solo = await handleChat(chatRequest(key, "claude-opus-5-5"));
+    expect(solo.status).toBe(200);
+    expect(upstream.core).toHaveBeenCalledTimes(1);
+    expect(upstream.core.mock.calls[0][0].modelInfo.model).not.toMatch(/openai-/);
   });
 
   it("a provider alias counts as the provider (cc = claude)", async () => {

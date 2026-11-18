@@ -180,7 +180,18 @@ Provider aliases count as the provider (`cc/x` and `claude/x` are the same
 entry). A bare id matches one level only: `claude-opus-5-5` allows
 `cc/claude-opus-5-5`, but `cc/x` on the list does not allow `openrouter/cc/x`.
 The capacity adapter (Settings → Capacity adapter) never routes an allowlisted
-key to a model outside its list.
+key to a model outside its list. An auto combo for an allowed bare id keeps
+every provider whose own name for the model is that id (case, dots and a
+provider path aside: `kr/claude-opus-5.5`, `or/anthropic/claude-opus-5-5`),
+but a provider matched only through a leading `openai-` (`ctso/openai-gpt-x`
+for `gpt-x`) stays in only when the list allows its full id or has a bare
+`openai-gpt-x`. When none is left, the bare id routes as if no auto combo had
+formed (on the Codex ingress, a 403 `model_not_allowed`).
+
+On the Codex ingress (`/backend-api/codex`), a `cx/<id>` entry also lets the
+client send the bare `<id>`: the ingress routes a bare id that such a key may
+not use straight to Codex as `cx/<id>`, and that is what the list checks. On
+`/v1` the bare id stays refused, since it can route to any provider.
 
 `GET /v1/models`, `GET /v1/models/{kind}`, the Codex catalog
 (`/backend-api/codex/models`) and the Gemini list (`/v1beta/models`), called

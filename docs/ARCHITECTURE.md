@@ -112,8 +112,10 @@ Important compatibility routes:
 - `src/app/api/v1/responses/route.js`
 - `src/app/api/v1/models/route.js`
 - `src/app/api/v1/codex/*` — Codex-native ingress served at `/backend-api/codex`
-  (`responses` and `responses/compact` reuse the `/v1` handlers, `[...path]`
-  acknowledges Codex's advisory side-calls). `models` serves the routed models in
+  (`responses` and `responses/compact` both go through `routeCodexRequest` in
+  `src/sse/services/codexIngress.ts`, which picks Codex, an auto combo with Codex
+  accounts first, or the model as named, then call `handleChat` like the `/v1`
+  routes; `[...path]` acknowledges Codex's advisory side-calls). `models` serves the routed models in
   Codex's `{ "models": [...] }` shape (`src/lib/codex/modelCatalog.js`), which
   replaces Codex's own catalog once it decodes. A routed model that Codex's own
   lookup matches to a model in Codex's bundled catalog (vendored in
@@ -267,6 +269,8 @@ flowchart TD
     Q -- Yes --> E
     Q -- No --> R[Return all unavailable]
 ```
+
+The combo models come from a combo the user made (`getComboModels`), else from a list the route already resolved (the Codex ingress hands `handleChat` its Codex-first auto combo as `autoCombo`), else from an auto combo of every connected provider serving a bare id (`resolveAutoCombo` in `src/sse/services/autoCombo.ts`).
 
 Fallback decisions are driven by `open-sse/services/accountFallback.js` using status codes and error-message heuristics.
 
