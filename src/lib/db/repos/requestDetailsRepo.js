@@ -149,7 +149,7 @@ async function unpackFullData(value) {
   return JSON.parse((await gunzipAsync(Buffer.from(value, "base64"))).toString("utf8"));
 }
 
-export const __test__ = { sanitizeHeaders, getMaxJsonSize, truncateField, prettyJsonPrefix, packFullData, unpackFullData, flush: () => flushToDatabase(), shutdown: () => _shutdownHandler() };
+export const __test__ = { sanitizeHeaders, getMaxJsonSize, truncateField, prettyJsonPrefix, packFullData, unpackFullData, idsKeepingFullData, buffered: () => writeBuffer.length, flush: () => flushToDatabase(), shutdown: () => _shutdownHandler() };
 
 function generateDetailId(model) {
   const timestamp = new Date().toISOString();
@@ -230,6 +230,20 @@ function truncateField(obj, maxSize, fieldJson, key) {
   return obj;
 }
 
+// Ids, out of one flush's rows, that still hold a full copy once its trim
+// (FULL_DATA_KEEP_ROWS) has run: ordered as the trim orders them, by the
+// timestamp each row ends up with (its last save in the batch), then id. Rows
+// already in the table are older, so none of them can push one of these out.
+function idsKeepingFullData(items) {
+  const stamps = new Map();
+  for (const item of items) {
+    stamps.delete(item.id);
+    stamps.set(item.id, String(item.timestamp));
+  }
+  const newestFirst = [...stamps].sort(([aId, a], [bId, b]) => (a !== b ? (a < b ? 1 : -1) : aId < bId ? 1 : aId > bId ? -1 : 0));
+  return new Set(newestFirst.slice(0, FULL_DATA_KEEP_ROWS).map(([id]) => id));
+}
+
 const UPSERT_PREFIX = `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data, fullData) VALUES(?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp, provider = excluded.provider, model = excluded.model, connectionId = excluded.connectionId, status = excluded.status, data = excluded.data, `;
 const UPSERT_SQL = `${UPSERT_PREFIX}fullData = excluded.fullData`;
 const UPSERT_KEEP_STORED_FULL_SQL = `${UPSERT_PREFIX}fullData = COALESCE(excluded.fullData, requestDetails.fullData)`;
@@ -256,16 +270,22 @@ async function writeBufferedRows() {
       // the drain's listener budget, and the database closes when that runs out.
       const wantFull = config.keepFullData && db.driver !== "sql.js";
       const keepFull = wantFull && !shuttingDown;
-      const rows = [];
       for (const item of items) {
         if (!item.id) item.id = generateDetailId(item.model);
         if (!item.timestamp) item.timestamp = new Date().toISOString();
+      }
+      // Only rows the trim leaves a full copy on are packed. Gzipping every
+      // row of a backlog made the flush slower than the requests feeding it,
+      // and each waiting row holds its request's whole body.
+      const packIds = keepFull ? idsKeepingFullData(items) : null;
+      const rows = [];
+      for (const item of items) {
         if (item.request?.headers) item.request.headers = sanitizeHeaders(item.request.headers);
         // A binary upstream body (Windsurf's protobuf starts with the API key) is
         // stored as its size only.
         for (const key of PAYLOAD_KEYS) if (isBinaryBody(item[key])) item[key] = binaryBodyMarker(item[key]);
 
-        const fieldJson = keepFull ? {} : undefined;
+        const fieldJson = packIds?.has(item.id) ? {} : undefined;
         const record = {
           id: item.id,
           provider: item.provider || null,
@@ -281,9 +301,10 @@ async function writeBufferedRows() {
           response: truncateField(item.response, config.maxJsonSize, fieldJson, "response"),
           errorClass: item.errorClass || undefined,
         };
-        const pack = keepFull && !shuttingDown;
-        // A row skipped only for shutdown keeps the full copy an earlier save
-        // stored (a stream's start save shares its id with its end save).
+        const pack = fieldJson !== undefined && !shuttingDown;
+        // A row not packed keeps the full copy an earlier save stored (a
+        // stream's start save shares its id with its end save); the trim
+        // clears it unless the row is among the newest.
         rows.push({ record, fullData: pack ? await packFullData(item, record, fieldJson) : null, keepStored: wantFull && !pack });
       }
       // The setting may have been turned off (and stored payloads cleared)
@@ -328,6 +349,11 @@ export async function saveRequestDetail(detail) {
   if (!config.enabled) {return;}
 
   writeBuffer.push(detail);
+  // A row holds its request's whole body until it is written. Past twice
+  // maxRecords (a stream saves its row twice) the oldest waiting rows are ones
+  // the flush's trim would delete anyway, so they're dropped here.
+  const maxBuffered = 2 * config.maxRecords;
+  if (writeBuffer.length > maxBuffered) writeBuffer.splice(0, writeBuffer.length - maxBuffered);
 
   // Trigger immediate flush if batch threshold reached.
   // flushToDatabase() drains entire buffer in a loop, so all pushes during await are persisted.
