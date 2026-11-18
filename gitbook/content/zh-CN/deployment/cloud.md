@@ -37,17 +37,18 @@ npm run build
 创建 `.env` 文件或导出变量:
 
 ```bash
-export JWT_SECRET="your-secure-secret-change-this-to-random-string"
 export INITIAL_PASSWORD="your-secure-password"
 export DATA_DIR="/var/lib/10router"
 export NODE_ENV="production"
 ```
 
+> `JWT_SECRET` 是可选的。不设置时，10router 会在 `$DATA_DIR/jwt-secret` 中生成一次，重启后会话依然有效。仅当多个实例位于同一 URL 后面时：生成一个值（`openssl rand -hex 32`），保存好，并在每个实例上设置相同的值。少于 32 个字符的值或文档中的占位符会被忽略。
+
 **环境变量:**
 
 | 变量 | 默认值 | 说明 |
 |----------|---------|-------------|
-| `JWT_SECRET` | 自动生成 | **生产环境必须修改!** 用于 JWT token 签名 |
+| `JWT_SECRET` | 自动生成 (`$DATA_DIR/jwt-secret`) | 可选。用于签名仪表盘会话。仅在同一 URL 后的多个实例之间共享会话时设置（至少 32 个字符；更短的值和文档中的占位符会被忽略） |
 | `INITIAL_PASSWORD` | 不设置 | 可选的无头引导密码(至少 8 个字符)。不设置时,首次启动需要服务器控制台打印的一次性 setup token —— 没有默认密码 |
 | `DATA_DIR` | `~/.9router` | 数据库与数据存储路径 （目录名称与旧版本保持一致，以确保向后兼容） |
 | `NODE_ENV` | `development` | 部署时设为 `production` |
@@ -154,11 +155,12 @@ docker run -d \
   --name 10router \
   -p 3000:3000 \
   -p 20128:20128 \
-  -e JWT_SECRET="your-secure-secret-change-this" \
   -e INITIAL_PASSWORD="your-secure-password" \
   -v 10router-data:/app/data \
   10router
 ```
+
+> 这里有意不设置 `JWT_SECRET`（见上文说明）：在 `$DATA_DIR/jwt-secret` 中生成的密钥在重启后保持不变。
 
 ### 方式 2:Docker Compose
 
@@ -176,7 +178,6 @@ services:
       - "20128:20128"
     environment:
       - NODE_ENV=production
-      - JWT_SECRET=your-secure-secret-change-this
       - INITIAL_PASSWORD=your-secure-password
       - DATA_DIR=/app/data
     volumes:
@@ -186,6 +187,8 @@ services:
 volumes:
   10router-data:
 ```
+
+> 这里有意不设置 `JWT_SECRET`（见上文说明）：在 `$DATA_DIR/jwt-secret` 中生成的密钥在重启后保持不变。
 
 **使用 Docker Compose 运行:**
 
@@ -311,16 +314,15 @@ sudo certbot renew --dry-run
 
 ## 🔒 安全注意事项
 
-### 1. 修改默认凭据
+### 1. 保护仪表盘登录
 
-**关键:** 部署前修改 `JWT_SECRET` 和 `INITIAL_PASSWORD`:
+部署前设置强 `INITIAL_PASSWORD`，或者不设置，并使用服务器控制台打印的一次性设置令牌完成首次设置。没有默认密码。
+
+`JWT_SECRET` 是可选的：10router 会在 `$DATA_DIR/jwt-secret` 中生成并保留它，因此请保持数据目录私有。仅当多个实例位于同一 URL 后面需要共享会话时才设置 `JWT_SECRET`，使用一次性生成并保存的 32 个字符以上的值：
 
 ```bash
-# 生成安全的 JWT secret
-openssl rand -base64 32
-
-# 将该值用于 JWT_SECRET
-export JWT_SECRET="generated-secret-here"
+# 只运行一次，保存该值，并在每个实例上设置
+openssl rand -hex 32
 ```
 
 ### 2. 防火墙配置
@@ -461,7 +463,7 @@ sudo nginx -t
 ```bash
 # 修复数据目录权限
 sudo chown -R $USER:$USER /var/lib/10router
-chmod 755 /var/lib/10router
+chmod 700 /var/lib/10router
 ```
 
 ---

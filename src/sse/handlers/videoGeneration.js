@@ -5,13 +5,16 @@ import {
   extractApiKey,
   isValidApiKey,
 } from "../services/auth.js";
+import { allLockedError } from "open-sse/utils/limitHold.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
-import { handleVideoProxyCore, getVideoConfig, sanitizeSecrets } from "open-sse/handlers/videoCore.js";
+import { handleVideoProxyCore, getVideoConfig } from "open-sse/handlers/videoCore.js";
+import { sanitizeSecrets } from "open-sse/utils/redact.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import * as log from "../utils/logger.js";
+import { checkApiKeyLimits, checkApiKeyExpiry } from "../services/keyLimits.js";
 
 // Video generation is xAI-only today; requests without a provider prefix
 // (bare model id, or multipart bodies we deliberately don't parse) land here.
@@ -102,6 +105,10 @@ export async function handleVideoCreate(request, action) {
   const bodyInfo = await readForwardableBody(request);
   if (bodyInfo.error) return bodyInfo.error;
 
+  // A multipart body isn't parsed, so its model is unknown: an allowlisted key is refused.
+  const limitDenied = await checkApiKeyLimits(extractApiKey(request), { model: bodyInfo.parsed?.model ?? null });
+  if (limitDenied) return limitDenied;
+
   const resolved = await resolveVideoProvider(bodyInfo.parsed);
   if (resolved.error) return resolved.error;
   const { provider, model } = resolved;
@@ -125,8 +132,8 @@ export async function handleVideoCreate(request, action) {
 
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
-        const errorMsg = lastError || credentials.lastError || "Unavailable";
-        const status = lastStatus || Number(credentials.lastErrorCode) || HTTP_STATUS.SERVICE_UNAVAILABLE;
+        const { status, error } = allLockedError(lastStatus, lastError, credentials);
+        const errorMsg = error || "Unavailable";
         return unavailableResponse(status, `[${provider}/${model || "video"}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman);
       }
       if (excludeConnectionIds.size === 0) {
@@ -164,7 +171,7 @@ export async function handleVideoCreate(request, action) {
 
     // Record the failure (dashboard shows lastError/errorCode → user sees re-auth is needed)
     const { shouldFallback } = await markAccountUnavailable(
-      credentials.connectionId, result.status, sanitizeSecrets(result.error, refreshedCredentials), provider, model
+      credentials.connectionId, result.status, sanitizeSecrets(result.error, refreshedCredentials), provider, model, null, credentials.apiKey
     );
 
     if (shouldFallback && CREATE_ROTATION_STATUSES.has(result.status)) {
@@ -186,6 +193,9 @@ export async function handleVideoCreate(request, action) {
 export async function handleVideoGet(request, requestId) {
   const authError = await requireValidApiKey(request);
   if (authError) return authError;
+  // Polling a job the key already paid for: only expiry applies, not budget or models.
+  const limitDenied = await checkApiKeyExpiry(extractApiKey(request));
+  if (limitDenied) return limitDenied;
 
   if (!requestId) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing video request id");
 
@@ -221,7 +231,7 @@ export async function handleVideoGet(request, requestId) {
   }
 
   await markAccountUnavailable(
-    credentials.connectionId, result.status, sanitizeSecrets(result.error, refreshedCredentials), provider, null
+    credentials.connectionId, result.status, sanitizeSecrets(result.error, refreshedCredentials), provider, null, null, credentials.apiKey
   );
   return result.response;
 }

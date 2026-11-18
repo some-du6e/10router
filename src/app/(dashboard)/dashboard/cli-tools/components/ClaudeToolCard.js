@@ -7,6 +7,7 @@ import BaseUrlSelect from "./BaseUrlSelect";
 import { rememberEndpoint } from "./cliEndpointPresets";
 import ApiKeySelect from "./ApiKeySelect";
 import { matchKnownEndpoint } from "./cliEndpointMatch";
+import { KEEP_EXISTING_KEY, initialKeySelection, keepOptionLabel } from "@/lib/cliTools/keepKey.js";
 
 const CLOUD_URL = process.env.NEXT_PUBLIC_CLOUD_URL;
 
@@ -53,6 +54,7 @@ export default function ClaudeToolCard({
   const [exaMcpEnabled, setExaMcpEnabled] = useState(false);
   const [maxContextTokens, setMaxContextTokens] = useState("");
   const hasInitializedModels = useRef(false);
+  const hasInitializedKey = useRef(false);
 
   const currentBaseUrl = claudeStatus?.settings?.env?.ANTHROPIC_BASE_URL || "";
 
@@ -131,13 +133,23 @@ export default function ClaudeToolCard({
           }
         }
       });
-      // Restore key from settings.json; ApiKeySelect matches it against saved presets
-      const tokenFromFile = env.ANTHROPIC_AUTH_TOKEN;
-      if (tokenFromFile) {
-        setSelectedApiKey(tokenFromFile);
-      }
     }
   }, [claudeStatus, apiKeys, tool.defaultModels, onModelMappingChange]);
+
+  // Preselect the key settings.json already has. The status never carries the
+  // token: one of our keys comes back by id. Another key is kept by default only
+  // while settings.json points at this instance; one for another endpoint (another
+  // gateway's, or a deleted key) stays selectable but isn't the default.
+  const keyPointsHere = configStatus === "configured";
+  const keptKeyLabel = keepOptionLabel({ keyStatus: claudeStatus?.authToken, pointsHere: keyPointsHere });
+  const keptCustomKey = !!keptKeyLabel;
+  useEffect(() => {
+    if (hasInitializedKey.current || !claudeStatus?.installed) return;
+    const selection = initialKeySelection({ keyStatus: claudeStatus.authToken, pointsHere: keyPointsHere, apiKeys });
+    if (!selection) return; // wait for the key list
+    if (selection.value) setSelectedApiKey(selection.value);
+    hasInitializedKey.current = true;
+  }, [claudeStatus, apiKeys, keyPointsHere]);
 
   const checkClaudeStatus = async () => {
     setCheckingClaude(true);
@@ -195,7 +207,11 @@ export default function ClaudeToolCard({
         // Remember the endpoint so it stays selectable next time
         rememberEndpoint(getEffectiveBaseUrl(), { tunnelPublicUrl, tailscaleUrl });
         setMessage({ type: "success", text: "Settings applied successfully!" });
-        setClaudeStatus(prev => ({ ...prev, hasBackup: true, settings: { ...prev?.settings, env }, exaMcpEnabled }));
+        const { ANTHROPIC_AUTH_TOKEN: _token, ...shownEnv } = env;
+        const authToken = keyToUse && keyToUse !== KEEP_EXISTING_KEY
+          ? { set: true, ownKeyId: apiKeys?.find((k) => k.key === keyToUse)?.id ?? null }
+          : undefined;
+        setClaudeStatus(prev => ({ ...prev, hasBackup: true, settings: { ...prev?.settings, env: shownEnv }, exaMcpEnabled, ...(authToken ? { authToken } : {}) }));
       } else {
         setMessage({ type: "error", text: data.error || "Failed to apply settings" });
       }
@@ -216,6 +232,7 @@ export default function ClaudeToolCard({
         setMessage({ type: "success", text: "Settings reset successfully!" });
         tool.defaultModels.forEach((model) => onModelMappingChange(model.alias, model.defaultValue || ""));
         setSelectedApiKey("");
+        setClaudeStatus(prev => ({ ...prev, authToken: { set: false, ownKeyId: null } }));
         setExaMcpEnabled(false);
         setMaxContextTokens("");
       } else {
@@ -239,9 +256,11 @@ export default function ClaudeToolCard({
 
   // Generate settings.json content for manual copy
   const getManualConfigs = () => {
-    const keyToUse = (selectedApiKey && selectedApiKey.trim())
-      ? selectedApiKey
-      : (!cloudEnabled ? "sk_10router" : "<API_KEY_FROM_DASHBOARD>");
+    const keyToUse = selectedApiKey === KEEP_EXISTING_KEY
+      ? "<YOUR_EXISTING_KEY>"
+      : (selectedApiKey && selectedApiKey.trim())
+        ? selectedApiKey
+        : (!cloudEnabled ? "sk_10router" : "<API_KEY_FROM_DASHBOARD>");
     const env = { ANTHROPIC_BASE_URL: getEffectiveBaseUrl(), ANTHROPIC_AUTH_TOKEN: keyToUse };
     tool.defaultModels.forEach((model) => {
       const targetModel = modelMappings[model.alias];
@@ -358,7 +377,7 @@ export default function ClaudeToolCard({
                 <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr_auto] sm:items-center sm:gap-2">
                   <span className="text-xs font-semibold text-text-main sm:text-right sm:text-sm">API Key</span>
                   <span className="material-symbols-outlined hidden text-text-muted text-[14px] sm:inline">arrow_forward</span>
-                  <ApiKeySelect value={selectedApiKey} onChange={setSelectedApiKey} apiKeys={apiKeys} cloudEnabled={cloudEnabled} />
+                  <ApiKeySelect value={selectedApiKey} onChange={setSelectedApiKey} apiKeys={apiKeys} cloudEnabled={cloudEnabled} keepExisting={keptCustomKey} keepLabel={keptKeyLabel} />
                 </div>
 
                 {/* Model Mappings */}

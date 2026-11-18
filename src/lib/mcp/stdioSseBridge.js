@@ -1,9 +1,10 @@
 // Inline stdio<->SSE bridge for MCP. Spawns one child per plugin on demand,
 // broadcasts JSON-RPC frames over SSE, accepts client messages via HTTP POST.
 
-const { spawn } = require("child_process");
-const crypto = require("crypto");
-const { LOCAL_STDIO_PLUGINS } = require("@/shared/constants/coworkPlugins");
+import { spawn } from "child_process";
+import crypto from "crypto";
+import { LOCAL_STDIO_PLUGINS } from "@/shared/constants/coworkPlugins";
+import { buildChildEnv } from "./childEnv.js";
 
 const G_KEY = "__10routerMcpBridges";
 const MAX_TEXT_CHARS = 50000;
@@ -114,7 +115,7 @@ function getOrSpawn(name) {
   const plugin = findPlugin(name);
   if (!plugin) throw new Error(`Unknown local plugin: ${name}`);
 
-  const proc = spawn(plugin.command, plugin.args, { stdio: ["pipe", "pipe", "pipe"], env: process.env });
+  const proc = spawn(plugin.command, plugin.args, { stdio: ["pipe", "pipe", "pipe"], env: buildChildEnv() });
   entry = { proc, sessions: new Map(), buffer: "" };
   store.set(name, entry);
 
@@ -180,4 +181,4 @@ function isRunning(name) {
   return !!(entry?.proc && !entry.proc.killed && entry.proc.exitCode === null);
 }
 
-module.exports = { getOrSpawn, registerSession, unregisterSession, sendToChild, isRunning, findPlugin, killAllBridges };
+export { getOrSpawn, registerSession, unregisterSession, sendToChild, isRunning, findPlugin, killAllBridges };

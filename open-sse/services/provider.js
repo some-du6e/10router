@@ -1,5 +1,6 @@
 import { PROVIDERS } from "../config/providers.js";
 import { OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from "../providers/shared.js";
+import { ROLE } from "../translator/schema/roles.js";
 
 const OPENAI_COMPATIBLE_PREFIX = "openai-compatible-";
 const OPENAI_COMPATIBLE_DEFAULTS = {
@@ -142,6 +143,45 @@ export function getTargetFormat(provider, credentials = null) {
   return config.format || "openai";
 }
 
+// Two-path custom endpoints: a node detected as anthropic-compatible (or
+// openai-compatible) can also answer on the other API. providerSpecificData
+// .modelRoutes maps model -> "anthropic" | "openai-chat" | "openai-responses";
+// when a model's route differs from the node's own path, send it there instead.
+const ROUTE_FORMATS = { anthropic: "claude", "openai-chat": "openai", "openai-responses": "openai-responses" };
+const ROUTE_PATHS = { anthropic: "/messages", "openai-chat": "/chat/completions", "openai-responses": "/responses" };
+const ANTHROPIC_VERSION = "2023-06-01";
+
+// Append an API path to a user-entered base URL, keeping any query string
+// (Azure's ?api-version=) after the path.
+export function appendUrlPath(baseUrl, path, stripPath = null) {
+  const raw = String(baseUrl || "");
+  const q = raw.indexOf("?");
+  let base = (q === -1 ? raw : raw.slice(0, q)).replace(/\/+$/, "");
+  if (stripPath) base = base.replace(stripPath, "");
+  if (!base) return "";
+  return `${base}${path}${q === -1 ? "" : raw.slice(q)}`;
+}
+
+export function resolveCompatibleRoute(provider, model, credentials) {
+  if (!isOpenAICompatible(provider) && !isAnthropicCompatible(provider)) return null;
+  const psd = credentials?.providerSpecificData || {};
+  const route = psd.modelRoutes?.[model];
+  const format = ROUTE_FORMATS[route];
+  if (!format || format === getTargetFormat(provider, credentials)) return null;
+  const baseUrl = appendUrlPath(psd.baseUrl, ROUTE_PATHS[route], /\/(messages|chat\/completions|responses)$/);
+  if (!baseUrl) return null;
+  const transport = { format, baseUrl, compatibleRoute: route };
+  if (route === "anthropic") {
+    // Same auth as the anthropic-compatible node path: x-api-key + Bearer.
+    transport.auth = { combined: true, header: "x-api-key", scheme: "raw", anthropicVersion: true };
+    transport.headers = { "anthropic-version": ANTHROPIC_VERSION };
+  } else {
+    transport.auth = { combined: true, header: "Authorization", scheme: "bearer" };
+    transport.headers = {};
+  }
+  return transport;
+}
+
 // Resolve which transport to use for a provider given the client sourceFormat.
 // Multi-endpoint providers (transport.transports[]) pick the entry matching sourceFormat
 // to avoid lossy translation; falls back to the default transport when no match.
@@ -152,12 +192,14 @@ export function resolveTransport(provider, sourceFormat) {
   return transports.find(t => t.format === sourceFormat) || null;
 }
 
-// Check if last message is from user
+// Check if last message is from user. Trailing system turns (Claude Code's
+// mid-conversation reminders) don't change whose turn it is.
 export function isLastMessageFromUser(body) {
   const messages = body.messages || body.contents;
   if (!messages?.length) return true;
-  const lastMsg = messages[messages.length - 1];
-  return lastMsg?.role === "user";
+  if (!Array.isArray(messages)) return messages[messages.length - 1]?.role === ROLE.USER;
+  const lastMsg = messages.findLast((m) => m?.role !== ROLE.SYSTEM);
+  return !lastMsg || lastMsg.role === ROLE.USER;
 }
 
 // Check if request has thinking config
@@ -165,7 +207,6 @@ export function hasThinkingConfig(body) {
   return !!(body.reasoning_effort || body.thinking?.type === "enabled");
 }
 
-// Normalize provider-native thinking config based on last message role.
 // OpenAI reasoning_effort is request-level and must survive tool-result turns.
 export function normalizeThinkingConfig(body) {
   if (!isLastMessageFromUser(body)) {

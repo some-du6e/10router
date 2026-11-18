@@ -52,6 +52,9 @@ source/*
 .cursor/*
 docs/*
 !docs/ARCHITECTURE.md
+!docs/FAST_FAIL.md
+!docs/API_KEY_BUDGETS.md
+!docs/MANAGEMENT_KEYS.md
 test/*
 open-sse/test/*
 RM.vn.md
@@ -62,6 +65,8 @@ Thanks.md
 PUBLIC.en.md
 PR/*
 package-lock.json
+bun.lock
+bun.lockb
 
 
 #Ignore vscode AI rules
@@ -80,7 +85,8 @@ open-sse.old/
 graphify-out/*
 
 # Local-only working dirs (notes, vendored repos, scripts, skills)
-.claude/
+.claude/*
+!.claude/skills/
 .docs/
 .repo/
 .script/
@@ -90,3 +96,7 @@ graphify-out/*
 
 # Kiro local workspace state
 .kiro/
+
+# faithful-demo workspaces: captured pages and demo builds, kept out of the app CSS scan
+mockups/
+.next-demo/
