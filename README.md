@@ -302,6 +302,7 @@ container.
 | `ENABLE_REQUEST_LOGS` | `false` | Enables request/response logs under `logs/` |
 | `AUTH_COOKIE_SECURE` | `false` | Force `Secure` auth cookie (set `true` behind an HTTPS reverse proxy) |
 | `REQUIRE_API_KEY` | `false` | Enforce Bearer API key on `/v1/*` (recommended for internet-exposed deploys) |
+| `TRUST_PROXY` | `false` | `true` when a reverse proxy or tunnel on the same machine sends no forwarding header and rewrites `Host` to `localhost`: no loopback connection then counts as local. A proxy that sends `X-Forwarded-For`/`X-Real-IP` or keeps the public `Host` is already treated as remote. Remote clients need an API key for `/v1`. |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` | empty | Outbound proxy for upstream provider calls |
 | `SEARXNG_URL` | `http://localhost:8888/search` | Endpoint for the built-in unauthenticated SearXNG web-search provider. Must resolve to a public address (the SSRF guard blocks private hosts). Claude Code's WebSearch only falls back to SearXNG when this is set. |
 | `DETECT_ANTHROPIC_FIRST_HINTS` | empty | URL substrings that make Add endpoint probe Anthropic Messages first. Comma-separated, any case; quotes around entries are ignored. URLs naming Anthropic or Claude and `sk-ant-` keys already do. A hint matches anywhere in the endpoint URL (scheme, host, path, query; a trailing API path like `/chat/completions` is cut off first), so use a distinctive piece of the host. Restart after changing it. |

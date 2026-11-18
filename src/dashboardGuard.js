@@ -86,11 +86,13 @@ const LOCAL_ONLY_PATHS = [
   "/api/auth/reset-password",
 ];
 
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
 
 // Accepts a Host header, a URL hostname or a raw socket address. Splitting on the first
 // colon only works for IPv4 and would reduce every IPv6 form to "", so a dual-stack
-// listener handing back ::ffff:127.0.0.1 would not read as loopback.
+// listener handing back ::ffff:127.0.0.1 would not read as loopback. Same rule as
+// isLoopbackHost in custom-server.js (which can't import from src/); the parity table
+// in tests/unit/dashboard-guard.test.js holds them together.
 function isLoopbackHostname(h) {
   if (!h) return false;
   let name = String(h).trim().toLowerCase();
@@ -124,23 +126,51 @@ function isCrossSiteBrowserRequest(request) {
   return !!site && site !== "same-origin" && site !== "none";
 }
 
+// A browser sends Origin on every cross-origin POST and fetch, plain HTTP included,
+// where it sends no Sec-Fetch-Site. A request whose Origin isn't this server came
+// from another page, so neither a session cookie nor requireLogin=false admits it.
+// "This server" is the Host the browser used: the Host header, or X-Forwarded-Host
+// from a proxy that rewrites Host (a page can't set that header on a cross-origin
+// request without a CORS preflight, which this server never grants).
+function isOtherOriginBrowserRequest(request) {
+  const origin = request.headers.get("origin");
+  if (!origin) return false;
+  let originUrl;
+  try {
+    originUrl = new URL(origin);
+  } catch {
+    return true; // "null" (sandboxed frame, file://) or junk
+  }
+  const hosts = [request.headers.get("host"), (request.headers.get("x-forwarded-host") || "").split(",")[0]];
+  return !hosts.some((host) => {
+    if (!host || !host.trim()) return false;
+    try {
+      return new URL(`${originUrl.protocol}//${host.trim()}`).host === originUrl.host;
+    } catch {
+      return false;
+    }
+  });
+}
+
 function hostnameOf(value) {
   try {
-    return value ? new URL(value).hostname.toLowerCase() : "";
+    return value ? new URL(value).hostname.toLowerCase().replace(/\.$/, "") : "";
   } catch {
     return "";
   }
 }
 
-function isTunnelHost(request, settings) {
+// The request came in on the Cloudflare tunnel or Tailscale URL. A malformed stored
+// URL matches nothing rather than throwing.
+export function isTunnelHost(request, settings) {
   const host = (request.headers.get("host") || "").split(":")[0].toLowerCase().replace(/\.$/, "");
   if (!host) return false;
   return [settings?.tunnelUrl, settings?.tailscaleUrl].some((url) => hostnameOf(url) === host);
 }
 
 export function isLocalRequest(request) {
-  // Stamped by custom-server.js when forwarding headers exist: request came through
-  // a reverse proxy, so the loopback socket is the proxy hop, not the end-user.
+  // Stamped by custom-server.js on every request not from a client on this machine
+  // (isOnThisMachine there): a loopback socket that is a proxy hop, not the end user.
   if (request.headers.get("x-9r-via-proxy")) return false;
   if (!isLoopbackPeer(request)) return false;
   const origin = request.headers.get("origin");
@@ -201,6 +231,7 @@ async function readSession(request) {
 // repoint SSO (acceptsDashboardSession). The CLI token and the setup routes
 // don't go through here.
 async function hasValidToken(request) {
+  if (isOtherOriginBrowserRequest(request)) return false;
   const session = await readSession(request);
   if (!session || session.pwChange === true) return false;
   const settings = await loadSettings();
@@ -227,7 +258,8 @@ async function isAuthenticated(request) {
   // requireLogin=false is an opt-out for a *claimed* instance. An instance that
   // has never been set up must never be open, whatever the stored flag says.
   if (settings && settings.requireLogin === false) {
-    return !isCrossSiteBrowserRequest(request) && !(await needsSetup(settings));
+    if (isCrossSiteBrowserRequest(request) || isOtherOriginBrowserRequest(request)) return false;
+    return !(await needsSetup(settings));
   }
   return false;
 }
@@ -239,6 +271,8 @@ function isPublicApi(pathname) {
 
 export const __test__ = {
   isLocalRequest,
+  isLoopbackHostname,
+  isOtherOriginBrowserRequest,
   isPublicLlmApi,
   extractApiKey,
   canAccessPublicLlmApi,

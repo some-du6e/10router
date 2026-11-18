@@ -1,4 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
+import { createRequire } from "node:module";
+import http from "node:http";
 
 const mocks = vi.hoisted(() => ({
   nextResponse: Symbol("next"),
@@ -46,7 +48,7 @@ vi.mock("@/lib/auth/oidc", () => ({
   isOidcConfigured: () => false,
 }));
 
-const { proxy, __test__ } = await import("../../src/dashboardGuard.js");
+const { proxy, isTunnelHost, __test__ } = await import("../../src/dashboardGuard.js");
 
 const PEER_TOKEN = "peer-token-fixture";
 
@@ -625,5 +627,157 @@ describe("dashboard guard network trust", () => {
     expect(await proxy(request("/api/cli-tools/claude-settings", { host: "localhost:20128", "sec-fetch-site": "same-origin" }))).toBe(mocks.nextResponse);
     expect(await proxy(request("/api/cli-tools/claude-settings", { host: "localhost:20128" }))).toBe(mocks.nextResponse);
     expect(await proxy(localRequest("/api/mcp/browsermcp/sse", { host: "localhost:20128", "sec-fetch-site": "same-origin" }))).toBe(mocks.nextResponse);
+  });
+
+  it("decides keyless /v1 from this machine by Sec-Fetch-Site when there is no Origin", async () => {
+    mocks.getSettings.mockResolvedValue({ requireLogin: true, password: "$2a$10$storedhash" });
+    const crossSite = await proxy(localRequest("/v1/models", { host: "localhost:20128", "sec-fetch-site": "cross-site" }));
+    expect(crossSite.status).toBe(401);
+    // A typed URL or bookmark (none) and a non-browser client (no header) stay local.
+    expect(await proxy(localRequest("/v1/models", { host: "localhost:20128", "sec-fetch-site": "none" }))).toBe(mocks.nextResponse);
+    expect(await proxy(localRequest("/v1/models", { host: "localhost:20128" }))).toBe(mocks.nextResponse);
+    expect(mocks.validateApiKey).not.toHaveBeenCalled();
+  });
+});
+
+describe("dashboard guard Origin must match Host for cookie and login-off access", () => {
+  const OPEN = { requireLogin: false, password: "$2a$10$storedhash" };
+  const CLAIMED = { requireLogin: true, password: "$2a$10$storedhash" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
+    mocks.validateApiKey.mockResolvedValue(false);
+    mocks.getConsistentMachineId.mockResolvedValue("cli-token");
+    mocks.verifyDashboardAuthToken.mockResolvedValue(false);
+    mocks.getDashboardAuthSession.mockResolvedValue(null);
+    mocks.getMeta.mockResolvedValue("0");
+  });
+
+  // Plain HTTP on a LAN address: browsers send no Sec-Fetch-* there, only Origin.
+  it("refuses another page's request over plain HTTP when login is off", async () => {
+    mocks.getSettings.mockResolvedValue(OPEN);
+    for (const origin of ["http://attacker.example", "http://192.168.1.20:20128", "null"]) {
+      const response = await proxy(request("/api/cli-tools/claude-settings", { host: "192.168.1.10:20128", origin }));
+      expect(response.status, origin).toBe(401);
+    }
+  });
+
+  it("refuses another page's request that carries the session cookie", async () => {
+    mocks.getSettings.mockResolvedValue(CLAIMED);
+    mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
+    const api = await proxy(request("/api/settings", { host: "192.168.1.10:20128", origin: "http://attacker.example" }, "session"));
+    expect(api.status).toBe(401);
+    const always = await proxy(request("/api/settings/database", { host: "192.168.1.10:20128", origin: "http://attacker.example" }, "session"));
+    expect(always.status).toBe(401);
+  });
+
+  it("serves the dashboard's own requests, with or without a default port, and behind a Host-rewriting proxy", async () => {
+    mocks.getSettings.mockResolvedValue(OPEN);
+    expect(await proxy(request("/api/settings", { host: "192.168.1.10:20128", origin: "http://192.168.1.10:20128" }))).toBe(mocks.nextResponse);
+    expect(await proxy(request("/api/settings", { host: "router.example.com:443", origin: "https://router.example.com" }))).toBe(mocks.nextResponse);
+    expect(await proxy(request("/api/settings", { host: "127.0.0.1:20128", "x-forwarded-host": "router.example.com", origin: "https://router.example.com" }))).toBe(mocks.nextResponse);
+    mocks.getSettings.mockResolvedValue(CLAIMED);
+    mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
+    expect(await proxy(request("/api/settings", { host: "router.example.com", origin: "https://router.example.com" }, "session"))).toBe(mocks.nextResponse);
+  });
+
+  it("still admits clients that send no Origin, and the CLI token from anywhere", async () => {
+    mocks.getSettings.mockResolvedValue(OPEN);
+    expect(await proxy(request("/api/settings", { host: "192.168.1.10:20128" }))).toBe(mocks.nextResponse);
+    mocks.getSettings.mockResolvedValue(CLAIMED);
+    expect(await proxy(request("/api/settings", { host: "192.168.1.10:20128", origin: "http://attacker.example", "x-9r-cli-token": "cli-token" }))).toBe(mocks.nextResponse);
+  });
+
+  it("compares the whole host, port included", () => {
+    const check = (headers) => __test__.isOtherOriginBrowserRequest(request("/api/settings", headers));
+    expect(check({ host: "localhost:20128", origin: "http://localhost:3000" })).toBe(true);
+    expect(check({ host: "localhost:20128", origin: "http://localhost:20128" })).toBe(false);
+    expect(check({ host: "LOCALHOST:20128", origin: "http://localhost:20128" })).toBe(false);
+    expect(check({ host: "localhost:20128" })).toBe(false);
+    expect(check({ origin: "http://localhost:20128" })).toBe(true);
+  });
+});
+
+// custom-server.js can't import from src/, so it has its own copy of the
+// loopback rule. The two must agree on every form either one sees.
+describe("loopback host rule parity with custom-server.js", () => {
+  const require = createRequire(import.meta.url);
+  const SERVER_PATH = require.resolve("../../custom-server.js");
+  const originalCreateServer = http.createServer;
+  let isLoopbackHost;
+  let peerToken;
+
+  beforeAll(() => {
+    peerToken = process.env.NINEROUTER_PEER_TOKEN;
+    ({ isLoopbackHost } = require(SERVER_PATH).__test__);
+  });
+  afterAll(() => {
+    http.createServer = originalCreateServer;
+    delete require.cache[SERVER_PATH];
+    if (peerToken === undefined) delete process.env.NINEROUTER_PEER_TOKEN;
+    else process.env.NINEROUTER_PEER_TOKEN = peerToken;
+  });
+
+  it.each([
+    "localhost", "LOCALHOST", "localhost:20128", "127.0.0.1", "127.0.0.1:20128", "0.0.0.0", "0.0.0.0:20128",
+    "::1", "[::1]", "[::1]:20128", "::ffff:127.0.0.1", "[::ffff:127.0.0.1]:20128", " 127.0.0.1 ",
+    "[::1", "127.0.0.2", "10.0.0.1", "192.168.1.10:20128", "2001:db8::1", "router.example.com",
+    "localhost.example.com", "unknown", "",
+  ])("%j", (value) => {
+    expect(__test__.isLoopbackHostname(value)).toBe(isLoopbackHost(value));
+  });
+
+  it("treats 0.0.0.0 as loopback in both", () => {
+    expect(__test__.isLoopbackHostname("0.0.0.0:20128")).toBe(true);
+    expect(isLoopbackHost("0.0.0.0:20128")).toBe(true);
+  });
+});
+
+describe("dashboard guard tunnel host", () => {
+  const TUNNEL = { requireLogin: false, password: "$2a$10$storedhash", tunnelUrl: "https://abc.trycloudflare.com", tailscaleUrl: "https://box.tail0.ts.net" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getSettings.mockResolvedValue(TUNNEL);
+    mocks.validateApiKey.mockResolvedValue(false);
+    mocks.getConsistentMachineId.mockResolvedValue("cli-token");
+    mocks.getDashboardAuthSession.mockResolvedValue(null);
+    mocks.getMeta.mockResolvedValue("0");
+  });
+
+  it.each([
+    ["exact", "abc.trycloudflare.com", true],
+    ["mixed case", "ABC.TryCloudflare.com", true],
+    ["trailing dot", "abc.trycloudflare.com.", true],
+    ["trailing dot and port", "abc.trycloudflare.com.:443", true],
+    ["port", "box.tail0.ts.net:443", true],
+    ["another host", "router.example.com", false],
+    ["a subdomain of it", "x.abc.trycloudflare.com", false],
+    ["no Host", "", false],
+  ])("matches the %s Host", (_name, host, expected) => {
+    expect(isTunnelHost(request("/api/keys", host ? { host } : {}), TUNNEL)).toBe(expected);
+  });
+
+  it("matches a stored URL with a trailing dot or upper case", () => {
+    expect(isTunnelHost(request("/", { host: "abc.trycloudflare.com" }), { tunnelUrl: "https://ABC.trycloudflare.com./" })).toBe(true);
+  });
+
+  it("matches nothing, rather than throwing, for a malformed stored URL", async () => {
+    const broken = { ...TUNNEL, tunnelUrl: "not a url", tailscaleUrl: "::" };
+    expect(isTunnelHost(request("/", { host: "abc.trycloudflare.com" }), broken)).toBe(false);
+    mocks.getSettings.mockResolvedValue(broken);
+    expect(await proxy(request("/api/keys", { host: "abc.trycloudflare.com" }))).toBe(mocks.nextResponse);
+    expect(await proxy(request("/dashboard", { host: "abc.trycloudflare.com" }))).toBe(mocks.nextResponse);
+  });
+
+  it("redirects the dashboard pages on the tunnel host to /login while access is off", async () => {
+    for (const host of ["abc.trycloudflare.com", "ABC.trycloudflare.com.:443"]) {
+      const response = await proxy(request("/dashboard", { host }));
+      expect(response.status, host).toBe(307);
+      expect(response.url.pathname, host).toBe("/login");
+    }
+    mocks.getSettings.mockResolvedValue({ ...TUNNEL, tunnelDashboardAccess: true });
+    expect(await proxy(request("/dashboard", { host: "abc.trycloudflare.com" }))).toBe(mocks.nextResponse);
   });
 });

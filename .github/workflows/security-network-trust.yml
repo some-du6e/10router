@@ -12,7 +12,13 @@ on:
       - "next.config.mjs"
       - ".env.example"
       - "CHANGELOG.md"
+      - "AGENTS.md"
+      - "README.md"
+      - "i18n/README.*.md"
+      - "docs/ARCHITECTURE.md"
+      - "docs/MANAGEMENT_KEYS.md"
       - "gitbook/content/*/getting-started/installation.md"
+      - "gitbook/content/*/deployment/cloud.md"
       - "package.json"
       - "tests/package.json"
       - "tests/vitest.config.js"
@@ -25,6 +31,7 @@ on:
       - "tests/unit/codex-ws-translated.test.js"
       - "tests/unit/server-drain-wiring.test.js"
       - "tests/unit/auth-login-mode.test.js"
+      - "tests/unit/login-route-limiter.test.js"
       - "tests/unit/local-request-peer-trust-3294.test.js"
       - ".github/workflows/security-network-trust.yml"
   workflow_dispatch:
@@ -58,17 +65,21 @@ jobs:
           unit/codex-ws-translated.test.js
           unit/server-drain-wiring.test.js
           unit/auth-login-mode.test.js
+          unit/login-route-limiter.test.js
           unit/local-request-peer-trust-3294.test.js
       - name: Lint
         run: >
           ./node_modules/.bin/eslint
           custom-server.js
           src/dashboardGuard.js
-          src/lib/auth/loginLimiter.js
+          src/lib/auth/loginLimiter.ts
           src/app/api/auth/login/route.js
           next.config.mjs
           tests/unit/security-network-trust.test.js
           tests/unit/dashboard-guard.test.js
+          tests/unit/auth-login-mode.test.js
+          tests/unit/custom-server-peer-headers.test.js
+          tests/unit/login-route-limiter.test.js
 
   no-new-failures:
     runs-on: ubuntu-latest

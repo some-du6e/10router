@@ -561,6 +561,9 @@ Runtime visibility sources:
 
 ## Security-Sensitive Boundaries
 
+- Who a request comes from: `custom-server.js` decides it from the TCP socket and stamps `x-9r-real-ip` / `x-9r-via-proxy` with a per-process peer token; `src/` trusts those stamps only with the token (`src/lib/auth/trustedPeer.js`). A client on this machine (`isOnThisMachine`) is a loopback socket with no forwarding header and a `Host` of `localhost`, `127.0.0.1`, `[::1]` or `0.0.0.0`; it alone gets keyless `/v1`, the local-only routes and private endpoint URLs. A reverse proxy or tunnel on this machine is remote (`TRUST_PROXY=true` makes every loopback connection remote, for a proxy that sends no forwarding header). The address the login lockout keys on (`clientIpFor`) is the socket for a direct peer; behind a loopback proxy it is the proxy's `X-Real-IP`, else the rightmost `X-Forwarded-For` hop, never a loopback address from a header, else `unknown`
+- Password login lockout (`src/lib/auth/loginLimiter.ts`): per client, 5 failures (attempts in flight included) lock for 30 s, then 2 m, 10 m, 30 m; failures reset an hour after the last one. There is no global limit. Logins from this machine are never locked
+- Browser requests (`src/dashboardGuard.js`): a request another site started (`Sec-Fetch-Site: cross-site`/`same-site` with no `Origin`) is never local, and one whose `Origin` isn't the `Host` (or a Host-rewriting proxy's `X-Forwarded-Host`) gets nothing from a session cookie or `requireLogin=false`. Every page sends `X-Frame-Options: DENY` and `frame-ancestors 'none'`. With tunnel dashboard access off, the tunnel and Tailscale hosts get 403 on every non-public `/api/*` and a redirect from `/dashboard`
 - JWT secret (`JWT_SECRET`, at least 32 characters; shorter values and documented placeholders are ignored in favour of the generated `$DATA_DIR/jwt-secret`, see `src/lib/auth/authSecret.js`) secures dashboard session cookie verification/signing
 - First-run bootstrap: there is **no default dashboard password**. An unclaimed
   install mints a one-time setup token (`$DATA_DIR/setup-token.json`, 0600),
@@ -587,6 +590,7 @@ Environment variables actively used by code:
 - App/auth: `JWT_SECRET`, `INITIAL_PASSWORD`, `SSO_ALLOWED_USERS` (optional OIDC/SAML allowlist of emails, `@domain` suffixes or subject IDs; unset allows every IdP account; OIDC email entries only match an IdP-verified email, so list Entra ID users by subject ID; SAML email entries trust the asserted email, so prefer NameID entries where users can edit theirs)
 - Storage: `DATA_DIR`
 - Security hashing: `API_KEY_SECRET`, `MACHINE_ID_SALT`
+- Reverse proxy: `TRUST_PROXY` (`true`: a proxy runs in front on this machine, so no loopback connection counts as local and the login lockout keys on the proxy's `X-Real-IP` or last `X-Forwarded-For` hop; needed only for a proxy that sends no forwarding header and rewrites `Host`)
 - Logging: `ENABLE_REQUEST_LOGS`
 - Sync/cloud URLing: `NEXT_PUBLIC_BASE_URL`, `NEXT_PUBLIC_CLOUD_URL`
 - Analytics (optional, build-time): `NEXT_PUBLIC_GA_ID`. A Google Analytics 4 measurement ID (`G-` followed by uppercase letters and digits); anything else, or unset, builds without analytics. `next.config.mjs` inlines it during `next build`, so setting it on a running server does nothing. The tag never loads on `/callback`.

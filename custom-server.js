@@ -68,23 +68,6 @@ const drain = createDrain({ timeoutMs: parseDrainTimeout(process.env.SHUTDOWN_DR
 const CODEX_WS_PATH = "/backend-api/codex/responses";
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const MAX_WS_MESSAGE_BYTES = 64 * 1024 * 1024;
-const MAX_CODEX_WS_CONNECTIONS = 64;
-const CODEX_WS_IDLE_MS = 5 * 60 * 1000;
-const MAX_CODEX_WS_PER_CLIENT = 8;
-let codexWsConnections = 0;
-const codexWsByClient = new Map();
-
-// Same setting and default as next.config.mjs's proxyClientMaxBodySize.
-function parseByteSize(value) {
-  const match = /^\s*(\d+(?:\.\d+)?)\s*(b|kb|mb|gb)?\s*$/i.exec(String(value || ""));
-  if (!match) return null;
-  const unit = { b: 1, kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3 }[(match[2] || "b").toLowerCase()];
-  return Math.floor(Number(match[1]) * unit);
-}
-const MAX_H2C_BODY_BYTES = parseByteSize(
-  process.env.TENROUTER_PROXY_CLIENT_MAX_BODY_SIZE || process.env.NINEROUTER_PROXY_CLIENT_MAX_BODY_SIZE || "128mb"
-) || 128 * 1024 * 1024;
-const H2C_BODY_TIMEOUT_MS = 30_000;
 const MAX_ERROR_TEXT = 2000;
 // Big enough for a JSON error envelope that echoes a long request, so it still
 // parses; small enough to bound what one rejected turn holds (UTF-16 units).
@@ -189,38 +172,69 @@ function createWsDecoder(onMessage, onClose, onPing) {
   };
 }
 
-function isLoopbackSocketIp(ip) {
-  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+// ─── Who a request comes from ────────────────────────────────────────────────
+//
+// Two helpers decide it, and every caller goes through them:
+//   - isOnThisMachine: a client on this machine, which gets keyless /v1 and the
+//     local-only routes;
+//   - clientIpFor: the address the login limiter and logs key on.
+// Forwarding headers count only from a loopback peer (a reverse proxy on this
+// machine); a direct remote peer is always its socket address.
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
+
+// Accepts a socket address, a Host header (with or without port, IPv6 in
+// brackets) or one X-Forwarded-For entry. isLoopbackHostname in
+// src/dashboardGuard.js is the same rule (this file ships standalone and can't
+// import src/); the parity table in tests/unit/dashboard-guard.test.js holds them together.
+function isLoopbackHost(value) {
+  if (!value) return false;
+  let name = String(value).trim().toLowerCase();
+  if (name.startsWith("[")) {
+    const end = name.indexOf("]");
+    if (end === -1) return false;
+    name = name.slice(1, end);
+  } else if (name.indexOf(":") !== -1 && name.indexOf(":") === name.lastIndexOf(":")) {
+    name = name.slice(0, name.indexOf(":"));
+  }
+  if (name.startsWith("::ffff:")) name = name.slice(7);
+  return LOOPBACK_HOSTS.has(name);
 }
 
+// Any of these from a loopback peer means a proxy or tunnel relayed someone else.
 const FORWARDING_HEADERS = ["x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host", "x-forwarded-proto", "cf-connecting-ip", "true-client-ip"];
 
-function isLoopbackHostHeader(host) {
-  if (!host) return true;
-  let name = String(host).trim().toLowerCase();
-  if (name.startsWith("[")) name = name.slice(1, name.indexOf("]"));
-  else if (name.indexOf(":") !== -1 && name.indexOf(":") === name.lastIndexOf(":")) name = name.slice(0, name.indexOf(":"));
-  return name === "localhost" || isLoopbackSocketIp(name);
+/**
+ * A loopback peer is a client on this machine only when nothing says it relays
+ * someone else: no forwarding header, and no Host other than a loopback one. A
+ * forward that sends neither (socat, a proxy that rewrites Host) looks like a
+ * local client, so TRUST_PROXY=true treats every loopback peer as a proxy.
+ */
+function isOnThisMachine(headers, socketIp) {
+  if (!isLoopbackHost(socketIp)) return false;
+  if (process.env.TRUST_PROXY === "true") return false;
+  if (FORWARDING_HEADERS.some((name) => headers[name])) return false;
+  return !headers.host || isLoopbackHost(headers.host);
 }
 
-// A loopback peer is a client on this machine only when nothing says otherwise:
-// any forwarding header, a non-loopback Host, or BEHIND_PROXY=true marks it as a
-// local reverse proxy or tunnel relaying someone else.
-function isProxiedRequest(headers, socketIp) {
-  if (!isLoopbackSocketIp(socketIp)) return FORWARDING_HEADERS.some((name) => headers[name]);
-  if (process.env.BEHIND_PROXY === "true") return true;
-  return FORWARDING_HEADERS.some((name) => headers[name]) || !isLoopbackHostHeader(headers.host);
-}
-
-// The rightmost non-loopback X-Forwarded-For entry is the one the nearest
-// proxy appended; everything left of it is client-authored.
-function forwardedClientIp(headers) {
-  const hops = String(headers["x-forwarded-for"] || "").split(",").map((s) => s.trim()).filter(Boolean);
+/**
+ * The address to key on. Behind a proxy on this machine: X-Real-IP first (a
+ * proxy that sets it replaces whatever the client sent), else the rightmost
+ * X-Forwarded-For hop (the one the proxy appended; everything left of it is the
+ * client's). A loopback address from a header is never used: it would put a
+ * remote client in the bucket of the owner's own logins. With nothing usable,
+ * every such request shares "unknown".
+ */
+function clientIpFor(headers, socketIp) {
+  if (!isLoopbackHost(socketIp)) return socketIp || "unknown";
+  if (isOnThisMachine(headers, socketIp)) return socketIp;
+  const realIp = String(headers["x-real-ip"] || "").split(",").pop().trim();
+  if (realIp && !isLoopbackHost(realIp)) return realIp;
+  const hops = String(headers["x-forwarded-for"] || "").split(",").map((hop) => hop.trim());
   for (let i = hops.length - 1; i >= 0; i--) {
-    if (!isLoopbackSocketIp(hops[i])) return hops[i];
+    if (hops[i] && !isLoopbackHost(hops[i])) return hops[i];
   }
-  if (hops.length) return hops[hops.length - 1];
-  return headers["x-real-ip"] ? String(headers["x-real-ip"]).trim() : "";
+  return "unknown";
 }
 
 /**
@@ -255,8 +269,7 @@ function bridgeForwardHeaders(handshakeHeaders, socketIp, payloadLength) {
   }
   forwarded.accept = "text/event-stream";
   forwarded["accept-encoding"] = "identity";
-  const loopback = isLoopbackSocketIp(socketIp);
-  if (!loopback || isProxiedRequest(handshakeHeaders, socketIp)) forwarded["x-forwarded-for"] = socketIp || "unknown";
+  if (!isOnThisMachine(handshakeHeaders, socketIp)) forwarded["x-forwarded-for"] = socketIp || "unknown";
   return forwarded;
 }
 
@@ -380,32 +393,6 @@ function handleCodexUpgrade(req, socket, head, port) {
     }
   }
 
-  // Remote clients get a share of the cap so one can't take every slot. Behind
-  // a loopback proxy they all share its socket address, so key on the hop the
-  // proxy appended. A client on this machine is exempt.
-  const socketIp = socket.remoteAddress || "";
-  const proxied = isProxiedRequest(req.headers, socketIp);
-  const clientKey = !proxied && isLoopbackSocketIp(socketIp)
-    ? null
-    : (isLoopbackSocketIp(socketIp) && forwardedClientIp(req.headers)) || socketIp;
-  const clientConnections = clientKey === null ? 0 : codexWsByClient.get(clientKey) || 0;
-  if (codexWsConnections >= MAX_CODEX_WS_CONNECTIONS || clientConnections >= MAX_CODEX_WS_PER_CLIENT) {
-    socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nRetry-After: 5\r\n\r\n");
-    return socket.destroy();
-  }
-  codexWsConnections += 1;
-  if (clientKey !== null) codexWsByClient.set(clientKey, clientConnections + 1);
-  let counted = true;
-  const release = () => {
-    if (!counted) return;
-    counted = false;
-    codexWsConnections -= 1;
-    if (clientKey === null) return;
-    const left = (codexWsByClient.get(clientKey) || 1) - 1;
-    if (left > 0) codexWsByClient.set(clientKey, left);
-    else codexWsByClient.delete(clientKey);
-  };
-
   socket.write(
     "HTTP/1.1 101 Switching Protocols\r\n" +
       "Upgrade: websocket\r\n" +
@@ -516,7 +503,6 @@ function handleCodexUpgrade(req, socket, head, port) {
       releaseTurn = drain.hold();
       inflight = bridgeCodexTurn(request, port, req.headers, peerIp, send, (error, rejectedStatus) => {
         inflight = null;
-        armIdle();
         try {
           // The client is already gone — its socket handler abandoned this turn.
           if (closed) return;
@@ -553,30 +539,10 @@ function handleCodexUpgrade(req, socket, head, port) {
   // is often already here — dropping `head` would hang the turn forever.
   if (head && head.length) feed(head);
   socket.on("data", feed);
-  // Idle means no turn since connect or since the last turn ended. Pings and
-  // ignored frames don't count, so they can't hold a connection slot forever.
-  let idleTimer = null;
-  function armIdle() {
-    clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-      if (closed) return;
-      if (inflight) return armIdle();
-      close(1001, "idle timeout");
-      socket.destroy();
-    }, CODEX_WS_IDLE_MS);
-    idleTimer.unref?.();
-  }
-  armIdle();
   const abandon = () => {
-    clearTimeout(idleTimer);
     closed = true;
-    release();
     abortInflight();
   };
-  socket.on("end", () => {
-    close(1000, "");
-    socket.destroy();
-  });
   socket.on("error", abandon);
   socket.on("close", abandon);
 }
@@ -633,20 +599,18 @@ http.createServer = (...args) => {
     // before a shutdown signal, is still served and counted. One whose TCP
     // connect hadn't been accepted when server.close() ran is reset instead,
     // and the turn fails with a 502 frame.
-    const ownBridgeTurn = isLoopbackSocketIp(socketIp) && req.headers["x-9r-peer-token"] === PEER_TOKEN;
+    const ownBridgeTurn = isLoopbackHost(socketIp) && req.headers["x-9r-peer-token"] === PEER_TOKEN;
     if (!drain.track(req, res, { admit: ownBridgeTurn })) return;
-    const viaProxy = isProxiedRequest(req.headers, socketIp);
-    // Trust forwarding headers only when the TCP peer is a local reverse proxy.
-    // Direct/public sockets remain keyed by the unspoofable peer address.
-    const proxyIp = isLoopbackSocketIp(socketIp) ? forwardedClientIp(req.headers) : "";
-    const ip = proxyIp || socketIp;
+    // x-9r-via-proxy marks every request not from a client on this machine.
+    const local = isOnThisMachine(req.headers, socketIp);
+    const ip = clientIpFor(req.headers, socketIp);
     delete req.headers["x-9r-real-ip"];
     delete req.headers["x-forwarded-for"];
     delete req.headers["x-9r-via-proxy"];
     delete req.headers["x-9r-peer-token"];
     req.headers["x-9r-real-ip"] = ip;
     req.headers["x-9r-peer-token"] = PEER_TOKEN;
-    if (viaProxy) req.headers["x-9r-via-proxy"] = "1";
+    if (!local) req.headers["x-9r-via-proxy"] = "1";
     return handler(req, res);
   };
   const server = origCreate(...rest, wrapped);
@@ -683,14 +647,9 @@ http.createServer = (...args) => {
       socket.destroy();
       return true;
     }
-    if (contentLength > MAX_H2C_BODY_BYTES) {
-      socket.end("HTTP/1.1 413 Payload Too Large\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-      return true;
-    }
     const chunks = [head];
     let received = head.length;
     const serve = () => {
-      socket.setTimeout(0);
       // Replay the upgraded request through the existing HTTP/1.1 handler.
       const replay = new http.IncomingMessage(socket);
       Object.assign(replay, { method: req.method, url: req.url, headers: req.headers, complete: true });
@@ -707,7 +666,6 @@ http.createServer = (...args) => {
     };
     if (received >= contentLength) serve();
     else {
-      socket.setTimeout(H2C_BODY_TIMEOUT_MS, () => socket.destroy());
       socket.on("data", function readBody(chunk) {
         chunks.push(chunk);
         received += chunk.length;
@@ -725,7 +683,7 @@ http.createServer = (...args) => {
   return server;
 };
 
-module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn, MAX_ERROR_BODY, drain, forwardedClientIp, isProxiedRequest, parseByteSize } };
+module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn, MAX_ERROR_BODY, drain, isLoopbackHost, isOnThisMachine, clientIpFor } };
 
 if (require.main === module) {
   // Before the app loads: its own signal listeners must not see SIGTERM first.

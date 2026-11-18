@@ -4,37 +4,29 @@ import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
 import { setDashboardAuthCookie } from "@/lib/auth/dashboardSession";
 import { checkLock, recordFail, recordSuccess, getClientIp, reserveAttempt, releaseAttempt } from "@/lib/auth/loginLimiter";
-import { isLocalRequest } from "@/dashboardGuard";
+import { isLocalRequest, isTunnelHost } from "@/dashboardGuard";
 import { getAuthBootstrapState, getBootstrapSecret } from "@/lib/auth/setupState";
 import { getConfiguredSsoType, isPasswordLoginDisabled } from "@/lib/auth/authMode.js";
 
 const RESET_HINT = "Forgot password? Run 10router CLI → Settings → Reset Password, then follow what it prints (or sign in with INITIAL_PASSWORD if it's set).";
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" };
 
-function isTunnelRequest(request, settings) {
-  const host = (request.headers.get("host") || "").split(":")[0].toLowerCase();
-  const tunnelHost = settings.tunnelUrl ? new URL(settings.tunnelUrl).hostname.toLowerCase() : "";
-  const tailscaleHost = settings.tailscaleUrl ? new URL(settings.tailscaleUrl).hostname.toLowerCase() : "";
-  return (tunnelHost && host === tunnelHost) || (tailscaleHost && host === tailscaleHost);
-}
-
 export async function POST(request) {
   const ip = getClientIp(request);
   const local = isLocalRequest(request);
   const lock = reserveAttempt(ip, { local });
+  if (!lock.ok) {
+    return NextResponse.json(
+      { error: `Too many failed attempts. Try again in ${lock.retryAfter}s. ${RESET_HINT}`, retryAfter: lock.retryAfter, resetHint: RESET_HINT },
+      { status: 429, headers: { "Retry-After": String(lock.retryAfter) } }
+    );
+  }
   try {
-    if (!lock.ok) {
-      return NextResponse.json(
-        { error: `Too many failed attempts. Try again in ${lock.retryAfter}s. ${RESET_HINT}`, retryAfter: lock.retryAfter, resetHint: RESET_HINT },
-        { status: 429, headers: { "Retry-After": String(lock.retryAfter) } }
-      );
-    }
-
     const { password } = await request.json();
     const settings = await getSettings();
 
     // Block login via tunnel/tailscale if dashboard access is disabled
-    if (isTunnelRequest(request, settings) && settings.tunnelDashboardAccess !== true) {
+    if (isTunnelHost(request, settings) && settings.tunnelDashboardAccess !== true) {
       return NextResponse.json({ error: "Dashboard access via tunnel is disabled" }, { status: 403 });
     }
 
@@ -111,7 +103,9 @@ export async function POST(request) {
       return NextResponse.json({ success: true, mustChangePassword: false }, { headers: NO_STORE_HEADERS });
     }
 
-    const { remainingBeforeLock } = recordFail(ip, { local });
+    // A login from this machine is never locked out (see reserveAttempt).
+    if (local) return NextResponse.json({ error: "Invalid password." }, { status: 401 });
+    const { remainingBeforeLock } = recordFail(ip);
     const postLock = checkLock(ip);
     if (postLock.locked) {
       return NextResponse.json(
@@ -126,6 +120,6 @@ export async function POST(request) {
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   } finally {
-    if (lock.ok) releaseAttempt(ip);
+    releaseAttempt(ip, { local });
   }
 }
