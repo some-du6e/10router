@@ -113,11 +113,15 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
     }
   };
 
+  const handleClose = () => {
+    if (!saving) onClose();
+  };
+
   const isEdit = !!combo;
 
   return (
     <>
-      <Modal isOpen={isOpen} onClose={onClose} title={title || (isEdit ? "Edit Combo" : "Create Combo")}>
+      <Modal isOpen={isOpen} onClose={handleClose} title={title || (isEdit ? "Edit Combo" : "Create Combo")}>
         <div className="flex flex-col gap-3">
           <div>
             {forcePrefix ? (
@@ -166,7 +170,7 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
 
           {saveError && <p role="alert" className="text-sm text-red-500">{saveError}</p>}
           <div className="flex flex-col gap-2 pt-1 sm:flex-row">
-            <Button onClick={onClose} variant="ghost" fullWidth size="sm">Cancel</Button>
+            <Button onClick={handleClose} variant="ghost" fullWidth size="sm" disabled={saving}>Cancel</Button>
             <Button onClick={handleSave} fullWidth size="sm" disabled={!name.trim() || !!nameError || saving}>
               {saving ? "Saving..." : isEdit ? "Save" : "Create"}
             </Button>

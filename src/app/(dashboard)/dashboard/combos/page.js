@@ -730,13 +730,17 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
     }
   };
 
+  const handleClose = () => {
+    if (!saving) onClose();
+  };
+
   const isEdit = !!combo;
 
   return (
     <>
       <Modal
         isOpen={isOpen}
-        onClose={onClose}
+        onClose={handleClose}
         title={isEdit ? "Edit Combo" : "Create Combo"}
       >
         <div className="flex flex-col gap-3">
@@ -803,7 +807,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
           {/* Actions */}
           {saveError && <p role="alert" className="text-sm text-red-500">{saveError}</p>}
           <div className="flex flex-col gap-2 pt-1 sm:flex-row">
-            <Button onClick={onClose} variant="ghost" fullWidth size="sm">
+            <Button onClick={handleClose} variant="ghost" fullWidth size="sm" disabled={saving}>
               Cancel
             </Button>
             <Button

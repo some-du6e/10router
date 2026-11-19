@@ -87,7 +87,9 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
           <h2 className="text-xl font-semibold">Pricing Configuration</h2>
           <button
             onClick={onClose}
-            className="text-text-muted hover:text-text text-2xl leading-none"
+            className="text-text-muted hover:text-text text-2xl leading-none disabled:opacity-50"
+            disabled={saving}
+            aria-label="Close"
           >
             ×
           </button>
