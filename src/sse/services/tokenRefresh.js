@@ -1,6 +1,6 @@
 // Re-export from open-sse with local logger
 import * as log from "../utils/logger.js";
-import { getProviderConnectionById, updateProviderConnection } from "../../lib/localDb.js";
+import { getProviderConnectionById } from "../../lib/localDb.js";
 import {
   getProjectIdForConnection,
   invalidateProjectId,
@@ -26,6 +26,10 @@ import {
   refreshProviderCredentials as _refreshProviderCredentials,
   shouldRefreshCredentials as _shouldRefreshCredentials,
 } from "open-sse/services/oauthCredentialManager.js";
+import { expiresAtFromNow, normalizeExpiresAt } from "open-sse/utils/tokenExpiry.js";
+import { buildCredentialUpdates, saveRefreshedCredentials, updateProviderCredentials } from "./credentialSave.js";
+
+export { buildCredentialUpdates, saveRefreshedCredentials, updateProviderCredentials };
 
 export const TOKEN_EXPIRY_BUFFER_MS = BUFFER_MS;
 
@@ -88,22 +92,6 @@ export function releaseConnection(connectionId) {
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 /**
- * Compute an ISO expiry timestamp from a relative expiresIn (seconds).
- * @param {number} expiresIn
- * @returns {string}
- */
-function toExpiresAt(expiresIn) {
-  return new Date(Date.now() + expiresIn * 1000).toISOString();
-}
-
-function normalizeExpiresAt(expiresAt) {
-  if (!expiresAt) return null;
-  const date = new Date(expiresAt);
-  if (!Number.isFinite(date.getTime())) return null;
-  return date.toISOString();
-}
-
-/**
  * Providers that carry a real Google project ID.
  * @param {string} provider
  * @returns {boolean}
@@ -145,64 +133,6 @@ function _refreshProjectId(provider, connectionId, accessToken) {
     });
 }
 
-// ─── Local-specific: persist credentials to localDb ──────────────────────────
-
-/**
- * Persist updated credentials for a connection to localDb.
- * Only fields that are present in `newCredentials` are written.
- *
- * @param {string} connectionId
- * @param {object} newCredentials
- * @returns {Promise<boolean>}
- */
-export async function updateProviderCredentials(connectionId, newCredentials) {
-  try {
-    const updates = {};
-
-    if (newCredentials.accessToken)         updates.accessToken  = newCredentials.accessToken;
-    if (newCredentials.refreshToken)        updates.refreshToken = newCredentials.refreshToken;
-    if (newCredentials.idToken)             updates.idToken = newCredentials.idToken;
-    if (newCredentials.lastRefreshAt)       updates.lastRefreshAt = newCredentials.lastRefreshAt;
-    if (newCredentials.expiresAt)           updates.expiresAt = newCredentials.expiresAt;
-    if (newCredentials.expiresIn) {
-      updates.expiresAt = toExpiresAt(newCredentials.expiresIn);
-      updates.expiresIn = newCredentials.expiresIn;
-    } else if (newCredentials.expiresAt) {
-      const expiresAt = normalizeExpiresAt(newCredentials.expiresAt);
-      if (expiresAt) {
-        updates.expiresAt = expiresAt;
-        updates.expiresIn = Math.max(1, Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000));
-      }
-    }
-    if (newCredentials.providerSpecificData) {
-      updates.providerSpecificData = {
-        ...(newCredentials.existingProviderSpecificData || {}),
-        ...newCredentials.providerSpecificData,
-      };
-    }
-    if (newCredentials.copilotToken || newCredentials.copilotTokenExpiresAt) {
-      updates.providerSpecificData = {
-        ...(updates.providerSpecificData || newCredentials.existingProviderSpecificData || {}),
-        ...(newCredentials.copilotToken ? { copilotToken: newCredentials.copilotToken } : {}),
-        ...(newCredentials.copilotTokenExpiresAt ? { copilotTokenExpiresAt: newCredentials.copilotTokenExpiresAt } : {}),
-      };
-    }
-    if (newCredentials.projectId)            updates.projectId = newCredentials.projectId;
-
-    const result = await updateProviderConnection(connectionId, updates);
-    log.info("TOKEN_REFRESH", "Credentials updated in localDb", {
-      connectionId,
-      success: !!result
-    });
-    return !!result;
-  } catch (error) {
-    log.error("TOKEN_REFRESH", "Error updating credentials in localDb", {
-      connectionId,
-      error: error.message,
-    });
-    return false;
-  }
-}
 
 // ─── Local-specific: proactive token refresh ─────────────────────────────────
 
@@ -260,20 +190,14 @@ export async function checkAndRefreshToken(provider, credentials, options = {}) 
 
     const newCreds = await _refreshProviderCredentials(provider, creds, log);
     if (newCreds?.accessToken || newCreds?.apiKey || newCreds?.copilotToken) {
-      const mergedCreds = {
-        ...newCreds,
-        existingProviderSpecificData: creds.providerSpecificData,
-      };
-
-      // Persist to DB (non-blocking path continues below)
-      await updateProviderCredentials(creds.connectionId, mergedCreds);
+      // The request goes on with the new tokens even if the save fails.
+      await saveRefreshedCredentials(creds.connectionId, newCreds);
 
       creds = {
         ...creds,
         ...newCreds,
-        expiresAt: newCreds.expiresIn
-          ? toExpiresAt(newCreds.expiresIn)
-          : normalizeExpiresAt(newCreds.expiresAt) || newCreds.expiresAt || creds.expiresAt,
+        expiresAt: expiresAtFromNow(newCreds.expiresIn)
+          || normalizeExpiresAt(newCreds.expiresAt) || newCreds.expiresAt || creds.expiresAt,
         providerSpecificData: newCreds.providerSpecificData
           ? { ...creds.providerSpecificData, ...newCreds.providerSpecificData }
           : creds.providerSpecificData,
@@ -300,18 +224,15 @@ export async function checkAndRefreshToken(provider, credentials, options = {}) 
       });
 
       const copilotTokenResult = await refreshCopilotToken(creds.accessToken);
-      if (copilotTokenResult) {
-        const updatedSpecific = {
-          ...creds.providerSpecificData,
+      if (copilotTokenResult?.token) {
+        const copilotPatch = buildCredentialUpdates({
           copilotToken:          copilotTokenResult.token,
           copilotTokenExpiresAt: copilotTokenResult.expiresAt,
-        };
+        }).providerSpecificData;
 
-        await updateProviderCredentials(creds.connectionId, {
-          providerSpecificData: updatedSpecific,
-        });
+        await saveRefreshedCredentials(creds.connectionId, { providerSpecificData: copilotPatch });
 
-        creds.providerSpecificData = updatedSpecific;
+        creds.providerSpecificData = { ...creds.providerSpecificData, ...copilotPatch };
         creds.copilotToken = copilotTokenResult.token;
       }
     }

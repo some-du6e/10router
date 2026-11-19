@@ -1,4 +1,5 @@
 import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
+import { updateProviderCredentials } from "@/sse/services/credentialSave.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { testProxyUrl } from "@/lib/network/proxyTest";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
@@ -342,28 +343,6 @@ function isTokenExpired(connection) {
   return shouldRefreshCredentials(connection.provider, connection);
 }
 
-/** The connection fields a refresh result updates. */
-function refreshedTokenFields(connection, tokens) {
-  const fields = {
-    accessToken: tokens.accessToken,
-    refreshToken: tokens.refreshToken || connection.refreshToken,
-  };
-  if (tokens.idToken) fields.idToken = tokens.idToken;
-  // Stamped, so the request path's checkAndRefreshToken sees the row as newer
-  // than its own snapshot and adopts these tokens instead of refreshing again.
-  fields.lastRefreshAt = tokens.lastRefreshAt || new Date().toISOString();
-  if (tokens.expiresIn) {
-    fields.expiresIn = tokens.expiresIn;
-    fields.expiresAt = new Date(Date.now() + tokens.expiresIn * 1000).toISOString();
-  } else if (tokens.expiresAt) {
-    fields.expiresAt = tokens.expiresAt;
-  }
-  if (tokens.providerSpecificData) {
-    fields.providerSpecificData = { ...(connection.providerSpecificData || {}), ...tokens.providerSpecificData };
-  }
-  return fields;
-}
-
 /**
  * The error text a thrown probe leaves in lastError. undici's refused-header
  * error quotes the header value, token included, so it becomes a fixed text;
@@ -426,13 +405,17 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
     // Rotation retires the old refresh token whatever the probe says, so save
     // now. The row may hold the token this test used, or already the new one
     // when a request shared this refresh (withCredentialRefreshLock).
-    const fields = refreshedTokenFields(current, tokens);
-    const saved = await updateProviderConnection(connection.id, fields, {
-      refreshTokenUsed: [...new Set([current.refreshToken, fields.refreshToken])],
-    });
+    const refreshToken = tokens.refreshToken || current.refreshToken;
+    const saved = await updateProviderCredentials(connection.id, {
+      ...tokens,
+      refreshToken,
+      // Stamped, so the request path's checkAndRefreshToken sees the row as newer
+      // than its own snapshot and adopts these tokens instead of refreshing again.
+      lastRefreshAt: tokens.lastRefreshAt || new Date().toISOString(),
+    }, { refreshTokenUsed: [...new Set([current.refreshToken, refreshToken])] });
     if (saved) {
       refreshed = true;
-      rowRefreshToken = fields.refreshToken;
+      rowRefreshToken = refreshToken;
     } else {
       superseded = true;
     }

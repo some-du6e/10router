@@ -29,7 +29,10 @@ const LIVE_MODEL_RESOLVERS = {
       accessToken: conn.accessToken,
       refreshToken: conn.refreshToken,
       providerSpecificData: conn.providerSpecificData || {}
-    }, { log: console });
+    }, {
+      log: console,
+      onCredentialsRefreshed: (refreshed) => updateProviderCredentials(conn.id, refreshed),
+    });
     return result?.models?.length ? { models: result.models } : null;
   },
   qoder: async (conn) => {
@@ -64,7 +67,6 @@ const LIVE_MODEL_RESOLVERS = {
         await updateProviderCredentials(conn.id, {
           copilotToken: refreshed.copilotToken,
           copilotTokenExpiresAt: refreshed.copilotTokenExpiresAt,
-          existingProviderSpecificData: conn.providerSpecificData || {},
         });
       },
     });
@@ -92,10 +94,7 @@ const LIVE_MODEL_RESOLVERS = {
         strictProxy: proxy.strictProxy === true,
       },
       onCredentialsRefreshed: async (refreshed) => {
-        await updateProviderCredentials(conn.id, {
-          ...refreshed,
-          existingProviderSpecificData: conn.providerSpecificData || {},
-        });
+        await updateProviderCredentials(conn.id, refreshed);
       },
     });
     return result?.models?.length ? { models: result.models } : null;
