@@ -34,6 +34,10 @@ export const SECRET_QUERY_PARAM_NAME_PATTERN = /key|token|secret|auth|sig/i;
 // `Authorization: Bearer <token>` inside free text.
 export const BEARER_TOKEN_PATTERN = /(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi;
 
+// The TypeError undici throws for a header value it refuses, which quotes the
+// whole value (`Bearer <token>` included).
+export const INVALID_HEADER_ERROR_PATTERN = /invalid header value|invalid character in header/i;
+
 // Stored credential fields whose values must never appear in output.
 export const CREDENTIAL_FIELDS = ["apiKey", "accessToken", "refreshToken", "idToken", "copilotToken"];
 // Secrets some providers keep in providerSpecificData (Copilot's bearer token,

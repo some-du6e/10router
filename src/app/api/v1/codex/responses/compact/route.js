@@ -5,11 +5,16 @@
 import { handleChat } from "@/sse/handlers/chat.js";
 import { initTranslators } from "open-sse/translator/index.js";
 import { routeCodexRequest } from "@/sse/services/codexIngress.js";
+import { withMemoryAdmission, carryAdmission } from "@/sse/services/memoryAdmission.js";
 
 export { OPTIONS } from "../../../responses/compact/route.js";
 
-export async function POST(request) {
-  initTranslators();
-  const routed = await routeCodexRequest(request, { compact: true });
-  return handleChat(routed.request);
+// Admitted before routeCodexRequest reads the body; handleChat runs under the
+// same admission.
+export function POST(request) {
+  return withMemoryAdmission(request, async () => {
+    initTranslators();
+    const routed = await routeCodexRequest(request, { compact: true });
+    return handleChat(carryAdmission(request, routed.request));
+  });
 }

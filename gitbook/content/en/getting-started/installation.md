@@ -256,24 +256,62 @@ export PORT="3000"
 
 **Error:**
 ```
-Error: listen EADDRINUSE: address already in use :::20128
+❌ Can't start the server on 0.0.0.0:20128: another process is already listening on 127.0.0.1:20128.
+   Stop the program using port 20128, or start 10router on another port: 10router --port <port>
 ```
 
-**Solution 1: Kill existing process**
+10router checks the port before it starts its server and never stops another program to free it.
+
+**Solution 1: Stop the program using the port**
 
 ```bash
 # Find process using port 20128
 lsof -i :20128
-
-# Kill process
-kill -9 <PID>
 ```
+
+If it is an older 10router, quit it from its tray icon (or stop that process). Otherwise stop whatever it is, the way you normally would.
 
 **Solution 2: Use different port**
 
 ```bash
 10router --port 3000
 ```
+
+### Server Keeps Crashing
+
+**Error:**
+```
+❌ The server exited 3 times in a row right after starting, so 10router stopped.
+```
+
+10router restarts a crashed server twice. When the third start also fails quickly, it stops and prints the server's crash log above that line. Run `10router --log` to see all server output.
+
+### Another 10router Launcher Is Already Using the Data Directory
+
+**Error:**
+```
+❌ Another 10router launcher (PID 12345) is already using /home/you/.9router.
+```
+
+Only one launcher runs per data directory. Quit the other one (tray icon → Quit), or give this one its own `DATA_DIR`. The lock is `launcher.lock` in the data directory. A lock left by a launcher that crashed or was killed is taken over automatically, because 10router checks that the PID in it is still the same process. If it still refuses while no 10router is running, delete `launcher.lock` and start again.
+
+Two related messages:
+
+```
+❌ /home/you/.9router/launcher.lock names a launcher (PID 12345) that 10router can't check, so it may still be running.
+```
+
+10router couldn't read that process's start time (for example, it belongs to another user and `/proc` hides it). It retries for about 12 seconds and takes the lock over only if it was written before the machine last booted. Otherwise, quit the other launcher, or delete `launcher.lock` if none is running.
+
+```
+❌ Stopping: another 10router launcher replaced /home/you/.9router/launcher.lock, so it may be running on this data directory.
+```
+
+Before each server start, 10router checks the lock is still its own. If another launcher took it over in a race, this one stops rather than run two servers on one data directory. Start it again once the other one has quit, or use a different `DATA_DIR`.
+
+### Auto-start on macOS
+
+Enabling auto-start (Hide to Tray, or the tray's Enable Auto-start) writes `~/Library/LaunchAgents/com.10router.autostart.plist`. It takes effect at your next login; it doesn't start a second copy right away. Its logs are in `~/Library/Logs/10router/`, readable only by you.
 
 ### Permission Denied
 

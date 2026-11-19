@@ -1,5 +1,6 @@
 import { MEMORY_CONFIG, UNDICI_HEADERS_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { isUndiciHeadersTimeout } from "./headersTimeout.js";
+import { isInvalidHeaderValueError, sanitizeSecrets } from "./redact.js";
 
 const originalFetch = globalThis.fetch;
 const proxyDispatchers = new Map();
@@ -201,6 +202,40 @@ async function getDirectDispatcher() {
   return directDispatcher;
 }
 
+// Node's fetch (undici) clones a request it may redirect: it tees the body, sends
+// one branch and leaves the other unread, so a copy of the whole body stays
+// queued off the JS heap until the response ends (a stream: minutes). With
+// redirect "error" it sends the request itself (window: null is already the case
+// in Node). A body that can be sent again goes out that way, and the request is
+// sent again as the caller asked when the upstream answers with a redirect
+// (which that follows) or a 421 (which fetch retries by re-sending the body it
+// has already sent, so it fails with a length mismatch). Neither reply means the
+// upstream acted on the request. Bun's fetch fails these differently, so this is
+// Node only.
+const SEND_WITHOUT_CLONE = Boolean(process.versions?.undici) && !process.versions?.bun;
+const UNDICI_REDIRECT_ERROR = "unexpected redirect";
+const UNDICI_LENGTH_MISMATCH = "UND_ERR_REQ_CONTENT_LENGTH_MISMATCH";
+
+function canSendAgain(body) {
+  return typeof body === "string" || body instanceof ArrayBuffer || ArrayBuffer.isView(body) || body instanceof URLSearchParams;
+}
+
+function needsTheClone(error) {
+  return error?.name === "TypeError" && (error.cause?.message === UNDICI_REDIRECT_ERROR || error.cause?.code === UNDICI_LENGTH_MISMATCH);
+}
+
+async function send(target, init) {
+  if (!SEND_WITHOUT_CLONE || !init || init.redirect !== undefined || "window" in init || !canSendAgain(init.body)) {
+    return originalFetch(target, init);
+  }
+  try {
+    return await originalFetch(target, { ...init, redirect: "error", window: null });
+  } catch (error) {
+    if (!needsTheClone(error)) throw error;
+    return originalFetch(target, init);
+  }
+}
+
 // An optional observer the app installs on globalThis (the custom-endpoint
 // request log, src/lib/endpointRequestLog.ts, on runtimes whose undici lacks the
 // body diagnostics channels). Kept as a global so the engine imports nothing
@@ -227,7 +262,7 @@ async function fetchVia(url, options, proxyOptions, noHeadersTimeout = false) {
   const targetUrl = typeof url === "string" ? url : url.toString();
   const direct = async (target, init) => {
     const dispatcher = noHeadersTimeout ? await getDirectDispatcher() : null;
-    return originalFetch(target, dispatcher ? { ...init, dispatcher } : init);
+    return send(target, dispatcher ? { ...init, dispatcher } : init);
   };
 
   // Vercel relay: forward request via relay headers
@@ -249,7 +284,7 @@ async function fetchVia(url, options, proxyOptions, noHeadersTimeout = false) {
   if (proxyUrl) {
     try {
       const dispatcher = await getDispatcher(proxyUrl, { noHeadersTimeout });
-      return await originalFetch(url, { ...options, dispatcher });
+      return await send(url, { ...options, dispatcher });
     } catch (proxyError) {
       // The caller aborted (a client hang-up, or its own timer): not the proxy
       // failing. Passed on as is, so it still reads as an abort.
@@ -257,11 +292,20 @@ async function fetchVia(url, options, proxyOptions, noHeadersTimeout = false) {
       // The upstream got the request and sent no headers (undici's own limit,
       // which a SOCKS proxy keeps): not the proxy failing, so not retried direct.
       if (isUndiciHeadersTimeout(proxyError)) throw proxyError;
+      // A refused header value fails direct too, and its message quotes the
+      // value (a bearer token, say): pass it on without logging or retrying.
+      if (isInvalidHeaderValueError(proxyError)) throw proxyError;
+      const reason = sanitizeSecrets(proxyError.message);
       // If strictProxy is enabled, fail hard instead of falling back to direct
       if (proxyOptions?.strictProxy === true) {
-        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`, { cause: proxyError });
+        // Callers classify by the cause, so it stays, unless redaction changed
+        // its text: then a copy with the redacted text, name and code stands in.
+        const cause = reason === proxyError.message
+          ? proxyError
+          : Object.assign(new Error(reason), { name: proxyError.name, code: proxyError.code });
+        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${reason}`, { cause });
       }
-      console.warn(`[ProxyFetch] Proxy failed, falling back to direct: ${proxyError.message}`);
+      console.warn(`[ProxyFetch] Proxy failed, falling back to direct: ${reason}`);
       return direct(url, options);
     }
   }

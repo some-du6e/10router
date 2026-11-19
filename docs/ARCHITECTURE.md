@@ -308,7 +308,7 @@ sequenceDiagram
     Test-->>UI: validation result
 ```
 
-Refresh during live traffic is executed inside `open-sse/handlers/chatCore.js` via executor `refreshCredentials()`.
+Refresh during live traffic runs inside the chat, image, embeddings and video cores (`open-sse/handlers/chatCore.js`, `imageGenerationCore.js`, `embeddingsCore.js`, `videoCore.js`), through the executor's `refreshCredentials()` (video calls `refreshTokenByProvider()`), and each applies the result to the request's copy with `applyRefreshedCredentials()`. Those refreshes, the proactive one in `checkAndRefreshToken()`, usage polling, the connection test (with its `refreshTokenUsed` check), model listing and the translator's send all save through `updateProviderCredentials()` (`src/sse/services/credentialSave.js`). It writes only the fields the result carries: `updateProviderConnection()` applies the result's `providerSpecificData` over the stored row and stamps `lastRefreshAt` when the access token changed, in one transaction.
 
 ## Cloud Sync Lifecycle (Enable / Sync / Disable)
 
@@ -452,7 +452,9 @@ flowchart LR
     Next --> SyncCloud
 ```
 
-Restarts: on SIGTERM/SIGINT `custom-server.js` drains (`server-drain.js`). It closes the listening socket, so new connections are refused for the whole drain, and waits up to `SHUTDOWN_DRAIN_TIMEOUT_MS` for in-flight model requests before running the app's own shutdown listeners and exiting. It only helps if the container's stop grace period is longer than that timeout. Never run two instances on one `DATA_DIR` to overlap a restart: SQLite / sql.js writes are last-writer-wins, and rotating OAuth refresh tokens would be lost.
+Restarts: on SIGTERM/SIGINT `custom-server.js` drains (`server-drain.js`). It closes the listening socket, so new connections are refused for the whole drain, and waits up to `SHUTDOWN_DRAIN_TIMEOUT_MS` for in-flight model requests before running the app's own shutdown listeners and exiting. It only helps if the container's stop grace period is longer than that timeout. `installExitRecorder` (also in `server-drain.js`) logs an `[Exit]` line on every exit the process makes itself, with the code, uptime, memory, open requests and its cause: the caller of `process.exit()`, an uncaught exception or unhandled rejection (Node's `_fatalException` on the stack), or "the event loop ran empty". A restart with no `[Exit]` line was a kill from outside, such as the kernel's OOM killer. Never run two instances on one `DATA_DIR` to overlap a restart: SQLite / sql.js writes are last-writer-wins, and rotating OAuth refresh tokens would be lost.
+
+Memory admission: every chat request (`handleChat`, and the Codex and compact routes before they read the body) passes `src/sse/services/memoryAdmission.js` first, which keeps a burst of big prompts from taking the process past its memory limit. See [MEMORY_ADMISSION.md](MEMORY_ADMISSION.md).
 
 ## Module Mapping (Decision-Critical)
 
@@ -597,6 +599,7 @@ Environment variables actively used by code:
 - Outbound proxy: `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and lowercase variants
 - Endpoint detection: `DETECT_ANTHROPIC_FIRST_HINTS` (URL substrings that get Anthropic Messages probed first)
 - Shutdown: `SHUTDOWN_DRAIN_TIMEOUT_MS` (default `180000`; `0`/`off`/`false` disables). How long `custom-server.js` waits on SIGTERM/SIGINT for in-flight model requests (`/v1*`, `/api/v1*`, `/v1beta*`, `/api/v1beta*`, `/responses`, `/systemone`, `/codex/*`, `/backend-api/codex/*`, Codex WebSocket turns, a budgeted key's post-hang-up usage read) before exiting; see `server-drain.js` and the README's deploy notes. The stop timeout of whatever stops the process (container grace period, PM2 `kill_timeout`, systemd `TimeoutStopSec`) must be longer than this, or it kills the process first.
+- Memory admission: `INFLIGHT_BODY_BUDGET_MB` (default `900`; `0` disables), `INFLIGHT_QUEUE_WAIT_MS` (default `15000`), `INFLIGHT_RETRY_AFTER_S` (default `10`), `MEMORY_HIGH_WATER_MB` (default 80% of the cgroup memory limit, off without one; `0` disables). See [MEMORY_ADMISSION.md](MEMORY_ADMISSION.md).
 - Platform/runtime helpers (not app-specific config): `APPDATA`, `NODE_ENV`, `PORT`, `HOSTNAME`
 
 ## Known Architectural Notes

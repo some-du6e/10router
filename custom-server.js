@@ -3,7 +3,7 @@ const crypto = require("crypto");
 const path = require("path");
 const fs = require("fs");
 const { pathToFileURL } = require("url");
-const { createDrain, installShutdownDrain, parseDrainTimeout } = require("./server-drain.js");
+const { createDrain, installExitRecorder, installShutdownDrain, parseDrainTimeout } = require("./server-drain.js");
 
 const origCreate = http.createServer.bind(http);
 
@@ -495,6 +495,14 @@ function handleCodexUpgrade(req, socket, head, port) {
 const PEER_TOKEN = crypto.randomBytes(24).toString("hex");
 process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
 
+// The CLI launcher's readiness nonce (src/lib/launchProof.js) stays inside
+// this process: it moves to a process-global and leaves the env, so the
+// children that inherit the env (cloudflared, tailscale, the updater) never
+// see it.
+const LAUNCH_NONCE_KEY = Symbol.for("10router.launchNonce");
+if (globalThis[LAUNCH_NONCE_KEY] === undefined) globalThis[LAUNCH_NONCE_KEY] = process.env.TENROUTER_LAUNCH_NONCE || null;
+delete process.env.TENROUTER_LAUNCH_NONCE;
+
 let backgroundRefreshStarted = false;
 
 function startBackgroundTokenRefreshFromCustomServer() {
@@ -555,7 +563,11 @@ http.createServer = (...args) => {
     delete req.headers["x-forwarded-for"];
     delete req.headers["x-9r-via-proxy"];
     delete req.headers["x-9r-peer-token"];
+    delete req.headers["x-9r-real-port"];
     req.headers["x-9r-real-ip"] = ip;
+    // The socket's own source port. The launch proof is bound to it, so a
+    // relayed challenge gets a proof for the relay's connection.
+    req.headers["x-9r-real-port"] = String(req.socket?.remotePort ?? "");
     req.headers["x-9r-peer-token"] = PEER_TOKEN;
     if (viaProxy) req.headers["x-9r-via-proxy"] = "1";
     return handler(req, res);
@@ -635,6 +647,7 @@ module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCod
 if (require.main === module) {
   // Before the app loads: its own signal listeners must not see SIGTERM first.
   installShutdownDrain(process, drain);
+  installExitRecorder(process, { inflight: () => drain.inflight });
   const standalone = path.join(__dirname, "server.js");
   if (fs.existsSync(standalone)) {
     require(standalone);

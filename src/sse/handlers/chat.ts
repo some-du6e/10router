@@ -64,6 +64,8 @@ import { detectClientTool } from "open-sse/utils/clientDetector.js";
 import { sanitizeNodeQuirks } from "@/shared/utils/nodeQuirks.js";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers.js";
 import { recordEndpointRequests } from "@/lib/endpointRequestLog.js";
+import { withMemoryAdmission } from "../services/memoryAdmission.js";
+import type { AdmissionTicket } from "../services/memoryAdmission.js";
 
 // ---- Types -------------------------------------------------------------------
 
@@ -201,6 +203,18 @@ interface HoldArgs {
   apiKey?: string | null;
 }
 
+interface HandleChatOptions {
+  // Routes whose response goes straight to the client turn this on; wrappers
+  // that reshape the response (Ollama, Gemini) need its real status.
+  earlyHeaders?: boolean;
+  // An auto combo the route already resolved (the Codex ingress), routed in
+  // this order instead of resolving one here. Set by server code only.
+  autoCombo?: string[];
+  // The members of autoCombo to wait on when they were rate-limited and
+  // nothing behind them answered.
+  autoComboHome?: string[];
+}
+
 /**
  * Handle chat completion request
  * Supports: OpenAI, Claude, Gemini, OpenAI Responses API formats
@@ -209,21 +223,30 @@ interface HoldArgs {
 export async function handleChat(
   request: Request,
   clientRawRequest: ClientRawRequest | null = null,
-  {
-    // Routes whose response goes straight to the client turn this on; wrappers
-    // that reshape the response (Ollama, Gemini) need its real status.
-    earlyHeaders = false,
-    // An auto combo the route already resolved (the Codex ingress), routed in
-    // this order instead of resolving one here. Set by server code only.
-    autoCombo,
-    // The members of autoCombo to wait on when they were rate-limited and
-    // nothing behind them answered.
-    autoComboHome = [],
-  }: { earlyHeaders?: boolean; autoCombo?: string[]; autoComboHome?: string[] } = {},
+  options: HandleChatOptions = {},
+): Promise<Response> {
+  // Waits for memory room before the body is read (memoryAdmission.js), and
+  // holds that room until the reply has ended.
+  return withMemoryAdmission(request, (ticket) => admittedChat(request, clientRawRequest, options, ticket));
+}
+
+// The body is read and parsed in its own call, so its text is not kept for the
+// request's lifetime by handleChat's suspended frame.
+async function readJsonBody(request: Request, ticket: AdmissionTicket | null): Promise<ChatBody> {
+  const text = await request.text();
+  ticket?.noteBodyLength(text.length);
+  return JSON.parse(text);
+}
+
+async function admittedChat(
+  request: Request,
+  clientRawRequest: ClientRawRequest | null,
+  { earlyHeaders = false, autoCombo, autoComboHome = [] }: HandleChatOptions,
+  ticket: AdmissionTicket | null,
 ): Promise<Response> {
   let body: ChatBody;
   try {
-    body = await request.json();
+    body = await readJsonBody(request, ticket);
   } catch {
     log.warn("CHAT", "Invalid JSON body");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
@@ -330,7 +353,8 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
   // the list an ingress resolved or else one resolved here.
   const userComboModels = await getComboModels(modelStr);
   const ingress = userComboModels ? null : ingressCombo;
-  let resolved: string[] | null = userComboModels ?? ingress?.models ?? (await resolveAutoCombo(modelStr, BUILTIN_MODEL_ALIASES, settings));
+  // Right after a restart this waits for the model list; a hang-up ends the wait.
+  let resolved: string[] | null = userComboModels ?? ingress?.models ?? (await resolveAutoCombo(modelStr, BUILTIN_MODEL_ALIASES, settings, { signal }));
   if (resolved && !userComboModels) {
     // The key's allowlist let the bare id through; a member matched only
     // through a leading `openai-` has another name and has to pass too.
@@ -1008,11 +1032,7 @@ async function routeSingleModelChat(
       clientSignal: signal,
       drainOnDisconnect,
       onCredentialsRefreshed: async (newCreds: Record<string, unknown>) => {
-        await updateProviderCredentials(credentials.connectionId, {
-          ...newCreds,
-          existingProviderSpecificData: credentials.providerSpecificData,
-          testStatus: "active"
-        });
+        await updateProviderCredentials(credentials.connectionId, newCreds);
       },
       // Anthropic-compatible endpoint rejected some beta flags; remember them on the
       // connection so later requests skip the failed first try.

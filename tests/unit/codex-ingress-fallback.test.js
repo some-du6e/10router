@@ -1,23 +1,33 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const aliases = vi.hoisted(() => ({ value: {} }));
 const combos = vi.hoisted(() => ({ value: {} }));
 // What the Codex route handed handleChat: the body it forwarded and the options.
 const seen = vi.hoisted(() => ({ body: null, request: null, opts: null }));
-const autoCombo = vi.hoisted(() => ({ models: null, catalog: [] }));
+// The auto combo and catalog matches the route sees; `real` uses the real
+// auto-combo module instead, catalog wait included.
+const autoCombo = vi.hoisted(() => ({ models: null, catalog: [], real: false }));
 // Models the client key may use; null = no allowlist.
 const keyAllows = vi.hoisted(() => ({ value: null }));
+// `hang` makes the auto-combo catalog build never finish, as when the server
+// has just started and its first build is stuck.
+const connections = vi.hoisted(() => ({ hang: false }));
 
 vi.mock("@/lib/localDb", () => ({
   getModelAliases: async () => aliases.value,
   getComboByName: async (name) => combos.value[name] || null,
+  // No provider connected, so the auto-combo catalog builds empty at once.
+  getProviderConnections: () => (connections.hang ? new Promise(() => {}) : Promise.resolve([])),
 }));
 
-vi.mock("@/sse/services/autoCombo.js", async (importOriginal) => ({
-  ...(await importOriginal()),
-  resolveAutoCombo: async () => autoCombo.models,
-  getAutoComboCatalogMatches: () => autoCombo.catalog,
-}));
+vi.mock("@/sse/services/autoCombo.js", async (importOriginal) => {
+  const real = await importOriginal();
+  return {
+    ...real,
+    resolveAutoCombo: async (...args) => (autoCombo.real ? real.resolveAutoCombo(...args) : autoCombo.models),
+    getAutoComboCatalogMatches: (...args) => (autoCombo.real ? real.getAutoComboCatalogMatches(...args) : autoCombo.catalog),
+  };
+});
 
 vi.mock("@/sse/services/keyLimits.js", () => ({
   requestKeyAllowsModel: async (_request, model) => keyAllows.value === null || keyAllows.value.includes(model),
@@ -64,6 +74,7 @@ beforeEach(() => {
   seen.opts = null;
   autoCombo.models = null;
   autoCombo.catalog = [];
+  autoCombo.real = false;
   keyAllows.value = null;
 });
 
@@ -199,6 +210,54 @@ describe("Codex ingress model fallback", () => {
   it("still falls back to Codex for an unknown model with a selector", async () => {
     await post({ model: "gpt-5.6-luna[1m]", input: [] });
     expect(seen.body.model).toBe("cx/gpt-5.6-luna[1m]");
+  });
+
+  describe("while the model list is still building after a restart", () => {
+    // A fresh module set, so the catalog starts cold.
+    async function coldPost(body, signal) {
+      autoCombo.real = true;
+      delete globalThis._autoComboCatalog;
+      vi.resetModules();
+      const { POST: coldPOST } = await import("@/app/api/v1/codex/responses/route.js");
+      return coldPOST(new Request("http://local/backend-api/codex/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal,
+      }));
+    }
+
+    afterEach(() => {
+      connections.hang = false;
+      vi.useRealTimers();
+      delete globalThis._autoComboCatalog;
+    });
+
+    it("goes ahead after about 20 s, well before a proxy's ~100 s limit", async () => {
+      connections.hang = true;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      let done = false;
+      const pending = coldPost({ model: "gpt-5.6-luna", input: [] }).then(() => { done = true; });
+      await vi.advanceTimersByTimeAsync(19_500);
+      expect(done).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await pending;
+      expect(seen.body.model).toBe("cx/gpt-5.6-luna");
+    });
+
+    it("stops waiting as soon as the client hangs up", async () => {
+      connections.hang = true;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      const controller = new AbortController();
+      let done = false;
+      const pending = coldPost({ model: "gpt-5.6-luna", input: [] }, controller.signal).then(() => { done = true; });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(done).toBe(false);
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(0);
+      await pending;
+      expect(done).toBe(true);
+    });
   });
 
   it("passes a bodyless or non-JSON request straight through", async () => {

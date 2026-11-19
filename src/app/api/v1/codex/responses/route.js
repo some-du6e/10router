@@ -11,13 +11,20 @@ import { handleChat } from "@/sse/handlers/chat.js";
 import { initTranslators } from "open-sse/translator/index.js";
 import { getPooledCodexRateLimitHeaders } from "@/sse/services/codexPooledUsage";
 import { routeCodexRequest } from "@/sse/services/codexIngress.js";
+import { withMemoryAdmission, carryAdmission } from "@/sse/services/memoryAdmission.js";
 
 export { OPTIONS } from "../../responses/route.js";
 
-export async function POST(request) {
+// Admitted before routeCodexRequest reads the body, so a request waiting for
+// memory room holds no parsed copy; handleChat runs under the same admission.
+export function POST(request) {
+  return withMemoryAdmission(request, () => codexPost(request));
+}
+
+async function codexPost(request) {
   initTranslators();
   const routed = await routeCodexRequest(request);
-  const response = await handleChat(routed.request, null, {
+  const response = await handleChat(carryAdmission(request, routed.request), null, {
     earlyHeaders: true,
     autoCombo: routed.autoCombo ?? undefined,
     autoComboHome: routed.autoCombo ? routed.autoComboHome : undefined,

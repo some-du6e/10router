@@ -55,7 +55,7 @@ describe("Codex stale refresh snapshots", () => {
     const result = await checkAndRefreshToken("codex", stale, { force: true });
     expect(mocks.refresh).toHaveBeenCalledWith("codex", expect.objectContaining({ refreshToken: "new-refresh" }), expect.any(Object));
     expect(result.refreshToken).toBe("next-refresh");
-    expect(mocks.update).toHaveBeenCalledWith("account", expect.objectContaining({ refreshToken: "next-refresh" }));
+    expect(mocks.update).toHaveBeenCalledWith("account", expect.objectContaining({ refreshToken: "next-refresh" }), { patchProviderSpecificData: true, stampLastRefreshAt: true });
   });
 
   it("does not replace a request snapshot with older DB tokens", async () => {

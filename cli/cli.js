@@ -1,30 +1,10 @@
 #!/usr/bin/env node
 
-const { spawn, exec, execSync } = require("child_process");
+const { spawn, exec } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const https = require("https");
-const net = require("net");
 const os = require("os");
-
-// Poll until the server accepts TCP connections on port, or timeout — avoids blind fixed waits.
-function waitServerReady(host, port, { timeoutMs = 15000, intervalMs = 150 } = {}) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve) => {
-    const tryConnect = () => {
-      const socket = net.connect({ host, port }, () => {
-        socket.destroy();
-        resolve(true);
-      });
-      socket.on("error", () => {
-        socket.destroy();
-        if (Date.now() >= deadline) return resolve(false);
-        setTimeout(tryConnect, intervalMs);
-      });
-    };
-    tryConnect();
-  });
-}
 
 // Native spinner - no external dependency
 function createSpinner(text) {
@@ -69,6 +49,12 @@ const { getDataDir, normalizeDataDirEnv } = require("./hooks/dataDir");
 normalizeDataDirEnv(process.env);
 const { ensureSqliteRuntime, buildEnvWithRuntime } = require("./hooks/sqliteRuntime");
 const { ensureTrayRuntime } = require("./hooks/trayRuntime");
+const { isValidHost, parsePort, getBackgroundArgs, serverStdio, attachServerOutput, setupTokenLive, bannerToStdout } = require("./src/cli/utils/launchArgs");
+const { superviseServer } = require("./src/cli/utils/serverSupervisor");
+const {
+  hasExited, killServer, checkPortFree, waitServerReady, newLaunchNonce, provesLaunchNonce, createReadinessGate, LAUNCH_NONCE_ENV,
+} = require("./src/cli/utils/serverProcess");
+const { acquireDataDirLock, unsafeDataDirReason } = require("./src/cli/utils/dataDirLock");
 const args = process.argv.slice(2);
 
 // Subcommands (`10router xai video …`) run against an already-running gateway
@@ -82,6 +68,19 @@ if (args[0] === "xai" && args[1] === "video") {
       process.exit(1);
     });
   return;
+}
+
+// An autostart entry names its DATA_DIR in a file; refuse one that another
+// user owns or can write to. This runs before the self-heal below, which runs
+// npm in $DATA_DIR/runtime, where a planted .npmrc would run code as you.
+const { AUTOSTART_ENV, migrateMacLogs, writesToLegacyLog } = require("./src/cli/tray/autostart");
+if (process.env[AUTOSTART_ENV] === "1" && process.env.DATA_DIR) {
+  const unsafe = unsafeDataDirReason(process.env.DATA_DIR);
+  if (unsafe) {
+    console.error(`\n❌ Not using DATA_DIR ${process.env.DATA_DIR} from the autostart entry: ${unsafe}.`);
+    console.error(`   Make it yours and private (chown, then chmod go-w), or turn auto-start off and on again from the tray.`);
+    process.exit(1);
+  }
 }
 
 // Self-heal SQLite runtime deps (sql.js + better-sqlite3) into ~/.9router/runtime
@@ -113,12 +112,6 @@ function getLanIp() {
 function getDisplayHost() {
   return host === DEFAULT_HOST ? "localhost" : host;
 }
-const MAX_PORT_ATTEMPTS = 10;
-// Identifiers for killAllAppProcesses - only kill 10router specifically
-const PROCESS_IDENTIFIERS = [
-  '10router'  // Only package name - avoid killing other apps
-];
-
 // Parse arguments
 let port = DEFAULT_PORT;
 let host = DEFAULT_HOST;
@@ -126,14 +119,26 @@ let noBrowser = false;
 let skipUpdate = false;
 let showLog = false;
 let trayMode = false;
+// The last first-run setup banner the server printed. The menu redraw clears
+// the screen, so the menu shows it again while setup is still pending.
+let setupBanner = null;
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--port" || args[i] === "-p") {
-    port = parseInt(args[i + 1], 10) || DEFAULT_PORT;
+    const parsed = parsePort(args[i + 1]);
+    if (parsed === null) {
+      console.error(`Invalid --port ${JSON.stringify(args[i + 1] ?? "")}: use a whole number from 1 to 65535.`);
+      process.exit(1);
+    }
+    port = parsed;
     i++;
   } else if (args[i] === "--host" || args[i] === "-H") {
     host = args[i + 1] || DEFAULT_HOST;
     i++;
+    if (!isValidHost(host)) {
+      console.error(`Invalid --host ${JSON.stringify(host)}: use an IP address or a hostname (letters, digits, dots, hyphens).`);
+      process.exit(1);
+    }
   } else if (args[i] === "--no-browser" || args[i] === "-n") {
     noBrowser = true;
   } else if (args[i] === "--log" || args[i] === "-l") {
@@ -151,7 +156,8 @@ Options:
   -p, --port <port>   Port to run the server (default: ${DEFAULT_PORT})
   -H, --host <host>   Host to bind (default: ${DEFAULT_HOST})
   -n, --no-browser    Don't open browser automatically
-  -l, --log           Show server logs (default: hidden)
+  -l, --log           Show all server output (default: only the first-run
+                      setup token; the rest is printed if the server crashes)
   -t, --tray          Run in system tray mode (background)
   --skip-update       Skip auto-update check
   -h, --help          Show this help message
@@ -202,182 +208,6 @@ function killTunnelByPidFile() {
   const binary = path.join(dataDir, "bin", process.platform === "win32" ? "cloudflared.exe" : "cloudflared");
   killByPidFile(path.join(dataDir, "tunnel", "cloudflared.pid"), binary);
 }
-
-// Kill cloudflared whose --url targets this app's port (covers stale PID file case)
-function killCloudflaredByAppPort(appPort) {
-  if (!appPort) return [];
-  const portMatchers = [`localhost:${appPort}`, `127.0.0.1:${appPort}`];
-  const pids = [];
-  try {
-    if (process.platform === "win32") {
-      const psCmd = `powershell -NonInteractive -WindowStyle Hidden -Command "Get-WmiObject Win32_Process -Filter 'Name=\\"cloudflared.exe\\"' | Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation"`;
-      const output = execSync(psCmd, { encoding: "utf8", windowsHide: true, timeout: 5000 });
-      const lines = output.split("\n").slice(1).filter(l => l.trim());
-      lines.forEach(line => {
-        if (portMatchers.some(m => line.includes(m))) {
-          const match = line.match(/^"(\d+)"/);
-          if (match && match[1]) pids.push(match[1]);
-        }
-      });
-    } else {
-      const output = execSync("ps -eo pid,command 2>/dev/null", { encoding: "utf8", timeout: 5000 });
-      output.split("\n").forEach(line => {
-        if (line.includes("cloudflared") && portMatchers.some(m => line.includes(m))) {
-          const parts = line.trim().split(/\s+/);
-          const pid = parts[0];
-          if (pid && !isNaN(pid)) pids.push(pid);
-        }
-      });
-    }
-  } catch { }
-  return pids;
-}
-
-// Kill all 10router processes
-function killAllAppProcesses(appPort) {
-  return new Promise((resolve) => {
-    try {
-      // Tunnel processes run on separate ports.
-      // killing them doesn't free the app port, so don't block the critical path.
-      setImmediate(() => {
-        try { killTunnelByPidFile(); } catch {}
-        try { killCloudflaredByAppPort(appPort); } catch {}
-      });
-
-      const platform = process.platform;
-      let pids = [];
-
-      if (platform === "win32") {
-        // Windows: use WMI to get full CommandLine (tasklist /V doesn't include it)
-        try {
-          const psCmd = `powershell -NonInteractive -WindowStyle Hidden -Command "Get-WmiObject Win32_Process -Filter 'Name=\\"node.exe\\"' | Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation"`;
-          const output = execSync(psCmd, {
-            encoding: "utf8",
-            windowsHide: true,
-            timeout: 5000
-          });
-          const lines = output.split("\n").slice(1).filter(l => l.trim());
-          lines.forEach(line => {
-            // Whitelist: real node process running 10router/cli.js, or next-server.
-            // Avoids killing editors/grep/strace/cursor that just have "10router" in cmdline.
-            const cmd = line.toLowerCase();
-            const isAppProcess =
-              (cmd.includes("node") && cmd.includes("10router") && (cmd.includes("cli.js") || cmd.includes("\\10router") || cmd.includes("/10router")))
-              || cmd.includes("next-server");
-            if (isAppProcess) {
-              const match = line.match(/^"(\d+)"/);
-              if (match && match[1] && match[1] !== process.pid.toString()) {
-                pids.push(match[1]);
-              }
-            }
-          });
-        } catch (e) {
-          // No processes found or error - continue
-        }
-      } else {
-        // macOS/Linux: use ps to find all matching processes
-        try {
-          const output = execSync('ps aux 2>/dev/null', {
-            encoding: 'utf8',
-            timeout: 5000
-          });
-          const lines = output.split('\n');
-
-          lines.forEach(line => {
-            // Whitelist: real node process running 10router/cli.js, or next-server.
-            // Avoids killing grep/strace/editors/cursor that incidentally match "10router".
-            const cmd = line.toLowerCase();
-            const isAppProcess =
-              (cmd.includes("node") && cmd.includes("10router") && (cmd.includes("cli.js") || cmd.includes("/10router")))
-              || cmd.includes("next-server");
-            if (isAppProcess) {
-              const parts = line.trim().split(/\s+/);
-              const pid = parts[1];
-              if (pid && !isNaN(pid) && pid !== process.pid.toString()) {
-                pids.push(pid);
-              }
-            }
-          });
-        } catch (e) {
-          // No processes found or error - continue
-        }
-      }
-
-      // Kill all found processes
-      if (pids.length > 0) {
-        pids.forEach(pid => {
-          try {
-            if (platform === "win32") {
-              execSync(`taskkill /F /PID ${pid} 2>nul`, { stdio: 'ignore', shell: true, windowsHide: true, timeout: 3000 });
-            } else {
-              execSync(`kill -9 ${pid} 2>/dev/null`, { stdio: 'ignore', timeout: 3000 });
-            }
-          } catch (err) {
-            // Process already dead or can't kill - continue
-          }
-        });
-
-        // Wait for processes to fully terminate
-        setTimeout(() => resolve(), 1000);
-      } else {
-        resolve();
-      }
-    } catch (err) {
-      // Silent fail - continue anyway
-      resolve();
-    }
-  });
-}
-
-// Sleep helper using SharedArrayBuffer wait (sync, no busy-loop)
-// Kill any process on specific port
-function killProcessOnPort(port) {
-  return new Promise((resolve) => {
-    try {
-      const platform = process.platform;
-      let pid;
-
-      if (platform === "win32") {
-        try {
-          const output = execSync(`netstat -ano | findstr :${port}`, {
-            encoding: 'utf8',
-            shell: true,
-            windowsHide: true,
-            timeout: 5000
-          }).trim();
-          const lines = output.split('\n').filter(l => l.includes('LISTENING'));
-          if (lines.length > 0) {
-            pid = lines[0].trim().split(/\s+/).pop();
-            execSync(`taskkill /F /PID ${pid} 2>nul`, { stdio: 'ignore', shell: true, windowsHide: true, timeout: 3000 });
-          }
-        } catch (e) {
-          // Port is free or error
-        }
-      } else {
-        // macOS/Linux
-        try {
-          const pidOutput = execSync(`lsof -ti:${port}`, {
-            encoding: 'utf8',
-            stdio: ['pipe', 'pipe', 'ignore']
-          }).trim();
-          if (pidOutput) {
-            pid = pidOutput.split('\n')[0];
-            execSync(`kill -9 ${pid} 2>/dev/null`, { stdio: 'ignore', timeout: 3000 });
-          }
-        } catch (e) {
-          // Port is free or error
-        }
-      }
-
-      // Wait for port to be released
-      setTimeout(() => resolve(), 500);
-    } catch (err) {
-      // Silent fail - continue anyway
-      resolve();
-    }
-  });
-}
-
 
 // Detect if running in restricted environment (Codespaces, Docker)
 function isRestrictedEnvironment() {
@@ -477,11 +307,27 @@ if (!fs.existsSync(serverPath)) {
   process.exit(1);
 }
 
+// Older macOS LaunchAgents logged the setup token to world-readable /tmp.
+try { migrateMacLogs(); } catch { }
+
 // Start server immediately; run update check in parallel (not on the critical path).
 const updatePromise = checkForUpdate();
-killAllAppProcesses(port)
-  .then(() => killProcessOnPort(port))
-  .then(() => startServer(updatePromise));
+// One launcher per DATA_DIR, and it only manages the server it spawns.
+acquireDataDirLock(getDataDir()).then((lock) => {
+  if (!lock.ok) {
+    const holder = lock.holder ? ` (PID ${lock.holder.pid})` : "";
+    if (lock.unknown) {
+      console.error(`\n❌ ${lock.file} names a launcher${holder} that 10router can't check, so it may still be running.`);
+    } else {
+      console.error(`\n❌ Another 10router launcher${holder} is already using ${getDataDir()}.`);
+    }
+    console.error(`   Quit it first (tray icon → Quit), or give this one its own DATA_DIR.`);
+    console.error(`   If no 10router is running, delete ${lock.file} and try again.`);
+    process.exit(1);
+  }
+  process.on("exit", lock.release);
+  startServer(updatePromise, lock);
+});
 
 // Show interface selection menu
 async function showInterfaceMenu(latestVersion) {
@@ -517,7 +363,10 @@ async function showInterfaceMenu(latestVersion) {
     { label: "Exit", icon: "🚪" }
   );
 
-  const selected = await selectMenu(`Choose Interface (v${pkg.version})`, menuItems, 0, subtitle);
+  // The redraw clears the screen, so keep the setup token on it until setup
+  // consumes the token file (src/lib/auth/setupToken.js) or the token expires.
+  const setupPending = setupBanner && setupTokenLive(path.join(getDataDir(), "setup-token.json"));
+  const selected = await selectMenu(`Choose Interface (v${pkg.version})`, menuItems, 0, subtitle, setupPending ? setupBanner : "");
 
   const offset = latestVersion ? 1 : 0;
 
@@ -528,10 +377,7 @@ async function showInterfaceMenu(latestVersion) {
   return "exit";
 }
 
-const MAX_RESTARTS = 2;
-const RESTART_RESET_MS = 30000; // Reset counter if alive > 30s
-
-function startServer(updatePromise) {
+function startServer(updatePromise, lock) {
   // Accept either a Promise (parallel update check) or a resolved value.
   const latestVersionPromise = Promise.resolve(updatePromise);
   const displayHost = getDisplayHost();
@@ -542,63 +388,149 @@ function startServer(updatePromise) {
     if (lanIp) console.log(`\x1b[33m⚠ Network-exposed: reachable at http://${lanIp}:${port} (bound 0.0.0.0). Use --host 127.0.0.1 for local-only.\x1b[0m`);
   }
 
-  let restartCount = 0;
-  let serverStartTime = Date.now();
+  // What an autostart entry or a tray relaunch must start again.
+  const autostartLaunch = { port, host, dataDir: process.env.DATA_DIR || "" };
 
   const CRASH_LOG_LINES = 50;
   let crashLog = [];
+  function remember(line) {
+    crashLog.push(line);
+    if (crashLog.length > CRASH_LOG_LINES) crashLog = crashLog.slice(-CRASH_LOG_LINES);
+  }
+
+  // Proves to the readiness check that the server answering is ours.
+  const launchNonce = newLaunchNonce();
+  const tokenFile = path.join(getDataDir(), "setup-token.json");
+  const showBanner = bannerToStdout({ trayMode, autostart: process.env[AUTOSTART_ENV] === "1", legacyLog: writesToLegacyLog() });
 
   function spawnServer() {
-    serverStartTime = Date.now();
     crashLog = [];
     const child = spawn(RUNTIME, ["--dns-result-order=ipv4first", "--max-old-space-size=6144", serverPath], {
       cwd: standaloneDir,
-      stdio: showLog ? "inherit" : ["ignore", "ignore", "pipe"],
+      stdio: serverStdio(showLog),
       detached: true,
       windowsHide: true,
       env: {
         ...buildEnvWithRuntime(process.env),
         ...launcherEnv(),
+        [LAUNCH_NONCE_ENV]: launchNonce,
         PORT: port.toString(),
         HOSTNAME: host
       }
     });
-    if (!showLog && child.stderr) {
-      child.stderr.on("data", (data) => {
-        const lines = data.toString().split("\n").filter(Boolean);
-        crashLog.push(...lines);
-        if (crashLog.length > CRASH_LOG_LINES) crashLog = crashLog.slice(-CRASH_LOG_LINES);
+    if (!showLog) {
+      // Only the setup token reaches the terminal (or a LaunchAgent log);
+      // request lines would land on the menu. On Linux tray/autostart runs
+      // the token stays out of stdout; it is in the owner-only token file.
+      attachServerOutput(child, {
+        show: showBanner ? (line) => console.log(line) : () => {},
+        log: remember,
+        onBanner: (text) => {
+          setupBanner = text;
+          if (!showBanner) console.log(`🔑 First-run setup: open /setup and paste the token from ${tokenFile} (only you can read it).`);
+        },
       });
     }
     return child;
   }
 
-  let server = spawnServer();
-
-  // Cleanup function - force kill server process
-  let isCleaningUp = false;
-  function cleanup() {
-    if (isCleaningUp) return;
-    isCleaningUp = true;
-    try {
-      // Kill tray if running
-      try {
-        const { killTray } = require("./src/cli/tray/tray");
-        killTray();
-      } catch (e) { }
-      // Kill cloudflared via PID file (only this app's tunnel)
-      try { killTunnelByPidFile(); } catch { }
-      // Kill server process directly
-      if (server.pid) {
-        process.kill(server.pid, "SIGKILL");
-      }
-      // Also try to kill process group
-      process.kill(-server.pid, "SIGKILL");
-    } catch (e) { }
+  function printCrashLog() {
+    if (!crashLog.length) return;
+    console.error("\n--- Server crash log ---");
+    crashLog.forEach(l => console.error(l));
+    console.error("--- End crash log ---\n");
   }
 
   // Suppress all errors during shutdown (systray lib throws JSON parse errors)
   let isShuttingDown = false;
+  let isCleaningUp = false;
+
+  // Stop the tray, the tunnel named in the PID file, and our server.
+  function cleanup({ killPidFileTunnel = true } = {}) {
+    if (isCleaningUp) return;
+    isCleaningUp = true;
+    try {
+      const { killTray } = require("./src/cli/tray/tray");
+      killTray();
+    } catch (e) { }
+    if (killPidFileTunnel) {
+      try { killTunnelByPidFile(); } catch { }
+    }
+    killServer(supervisor.current());
+  }
+
+  // Readiness is checked again after every (re)start, and the API client
+  // (menu, tray, Terminal UI) waits for it, so the CLI token only ever goes to
+  // a server that proved it holds launchNonce.
+  const READY_TIMEOUT_MS = 120000;
+  // Closed from now until the first child proves itself, and again from each
+  // crash until the respawned child does (createReadinessGate).
+  const gate = createReadinessGate((promise) => api.pauseUntil(promise));
+  const firstReady = gate.ended();
+  const serverReady = () => firstReady;
+
+  const supervisor = superviseServer({
+    spawn: spawnServer,
+    // Before every start: the DATA_DIR lock must still be ours (a takeover
+    // race can replace it), and the port must be free.
+    preflight: () => (lock.stillHeld()
+      ? checkPortFree({ host, dialHost, port })
+      : Promise.resolve(Object.assign(new Error(`another 10router launcher replaced ${lock.file}`), { code: "ELOCKLOST" }))),
+    onStart: () => gate.started(ownServerReady()),
+    isShuttingDown: () => isShuttingDown,
+    onExit: (code) => process.exit(code),
+    onRestart: ({ code, error, delay, attempt, maxRestarts }) => {
+      gate.ended();
+      if (error) console.error("Failed to start server:", error.message);
+      console.error(`\n⚠️  Server exited (code=${code ?? "unknown"}). Restarting in ${delay / 1000}s... (${attempt}/${maxRestarts})`);
+      printCrashLog();
+    },
+    onGiveUp: ({ reason, error, maxRestarts }) => {
+      gate.failed();
+      printCrashLog();
+      if (error?.code === "ELOCKLOST") {
+        console.error(`\n❌ Stopping: ${error.message}, so it may be running on this data directory.`);
+      } else if (reason === "port-taken") {
+        console.error(`\n❌ Can't start the server on ${host}:${port}: ${error.message}.`);
+        console.error(`   Stop the program using port ${port}, or start 10router on another port: ${APP_NAME} --port <port>`);
+      } else if (reason === "start-failed") {
+        console.error(`\n❌ Failed to start the server: ${error?.message || error}`);
+      } else {
+        if (error) console.error("Failed to start server:", error.message);
+        console.error(`\n❌ The server exited ${maxRestarts + 1} times in a row right after starting, so 10router stopped.`);
+        console.error(`   The crash log is above. Run ${APP_NAME} --log to see all server output.`);
+      }
+      isShuttingDown = true;
+      // After a crash, the tunnel in the PID file is our server's leftover.
+      // After a port conflict it may belong to whatever holds the port.
+      cleanup({ killPidFileTunnel: reason === "crash" });
+      process.exit(1);
+    },
+  });
+  // Every exit path, including ones that skip cleanup(), stops our server.
+  process.on("exit", () => killServer(supervisor.current()));
+  supervisor.start();
+
+  // Resolves true once our own server answers and proves the nonce. Gives up
+  // after two minutes with a message, so a server that never listens doesn't
+  // leave the launcher (and a tray with no Quit yet) hanging.
+  async function ownServerReady() {
+    const status = await waitServerReady({
+      isAlive: () => !hasExited(supervisor.current()),
+      isStopped: () => isShuttingDown,
+      isOurs: () => provesLaunchNonce({ host: dialHost, port, nonce: launchNonce }),
+      timeoutMs: READY_TIMEOUT_MS,
+      onWaiting: (ms) => console.log(`⏳ Still waiting for the server to answer on ${dialHost}:${port} (${Math.round(ms / 1000)}s)...`),
+    });
+    if (status !== "timeout") return status === "ready";
+    printCrashLog();
+    console.error(`\n❌ The server didn't answer on ${dialHost}:${port} within ${READY_TIMEOUT_MS / 1000}s, so 10router stopped.`);
+    console.error(`   Run ${APP_NAME} --log to see what the server is doing.`);
+    isShuttingDown = true;
+    cleanup();
+    process.exit(1);
+  }
+
   process.on("uncaughtException", (err) => {
     if (isShuttingDown) return;
     console.error("Error:", err.message);
@@ -631,6 +563,8 @@ function startServer(updatePromise) {
       const { initTray } = require("./src/cli/tray/tray");
       initTray({
         port,
+        cliPath: __filename,
+        autostart: autostartLaunch,
         onQuit: () => {
           isShuttingDown = true;
           console.log("\n👋 Shutting down from tray...");
@@ -653,7 +587,8 @@ function startServer(updatePromise) {
     console.log(`\n🚀 ${pkg.name} v${pkg.version}`);
     console.log(`Server: http://${displayHost}:${port}`);
 
-    waitServerReady(dialHost, port).then(() => {
+    serverReady().then((ready) => {
+      if (!ready) return;
       initTrayIcon();
       console.log("\n💡 Router is now running in system tray. Close this terminal if you want.");
       console.log("   Right-click tray icon to open dashboard or quit.\n");
@@ -663,7 +598,10 @@ function startServer(updatePromise) {
   }
 
   // Wait for server to be ready, then show interface menu loop + tray
-  waitServerReady(dialHost, port).then(async () => {
+  // The menu asks the server for its tunnel status with the CLI token, so it
+  // waits for our own server, never just any listener on the port.
+  serverReady().then(async (ready) => {
+    if (!ready) return;
     // Resolve parallel update check (already running); don't block server start on it.
     const latestVersion = await latestVersionPromise;
     // Start tray icon alongside TUI
@@ -681,8 +619,6 @@ function startServer(updatePromise) {
           console.log(`Run this after exit:\n`);
           console.log(`   \x1b[33m${INSTALL_CMD_LATEST}\x1b[0m\n`);
           cleanup();
-          await killAllAppProcesses(port);
-          await killProcessOnPort(port);
           setTimeout(() => process.exit(0), 200);
           return;
         } else if (choice === "web") {
@@ -702,7 +638,7 @@ function startServer(updatePromise) {
           // Enable auto startup on OS boot
           try {
             const { enableAutoStart } = require("./src/cli/tray/autostart");
-            enableAutoStart(__filename);
+            enableAutoStart(__filename, autostartLaunch);
           } catch (e) { }
 
           if (process.platform === "darwin") {
@@ -723,7 +659,14 @@ function startServer(updatePromise) {
           // Windows/Linux: spawn detached bgProcess (systray works fine in child)
           console.log(`\n⏳ Starting background process... (tray icon will appear in ~3s)`);
 
-          const bgProcess = spawn(process.execPath, ["--dns-result-order=ipv4first", __filename, "--tray", "--skip-update", "-p", port.toString()], {
+          // Hand over cleanly: stop our server and tray and release the
+          // DATA_DIR lock before bgProcess starts, so it finds the port free
+          // and the lock open however long the cleanup took.
+          isShuttingDown = true;
+          cleanup();
+          lock.release();
+
+          const bgProcess = spawn(process.execPath, ["--dns-result-order=ipv4first", __filename, ...getBackgroundArgs({ port, host })], {
             detached: true,
             stdio: "ignore",
             windowsHide: true,
@@ -734,9 +677,6 @@ function startServer(updatePromise) {
           console.log(`🔔 10router is now running in background (PID: ${bgProcess.pid})`);
           console.log(`   Server: http://${displayHost}:${port}`);
           console.log(`\n💡 You can close this terminal. Right-click tray icon to quit.\n`);
-
-          // cleanup() kills server so bgProcess can claim the port fresh
-          cleanup();
           process.exit(0);
         } else if (choice === "exit") {
           isShuttingDown = true;
@@ -751,50 +691,4 @@ function startServer(updatePromise) {
       process.exit(1);
     }
   });
-
-  function attachServerEvents() {
-    server.on("error", (err) => {
-      console.error("Failed to start server:", err.message);
-      if (!isShuttingDown) tryRestart();
-      else { cleanup(); process.exit(1); }
-    });
-
-    server.on("close", (code) => {
-      if (isShuttingDown || code === 0) {
-        process.exit(code || 0);
-        return;
-      }
-      tryRestart(code);
-    });
-  }
-
-  function tryRestart(code) {
-    const aliveMs = Date.now() - serverStartTime;
-    // Reset counter if last run was stable
-    if (aliveMs >= RESTART_RESET_MS) restartCount = 0;
-
-    if (restartCount >= MAX_RESTARTS) {
-      console.error(`Server crashed ${MAX_RESTARTS} times. Restarting...`);
-      restartCount = 0;
-      server = spawnServer();
-      attachServerEvents();
-      return;
-    }
-
-    restartCount++;
-    const delay = Math.min(1000 * restartCount, 10000);
-    console.error(`\n⚠️  Server exited (code=${code ?? "unknown"}). Restarting in ${delay / 1000}s... (${restartCount}/${MAX_RESTARTS})`);
-    if (crashLog.length) {
-      console.error("\n--- Server crash log ---");
-      crashLog.forEach(l => console.error(l));
-      console.error("--- End crash log ---\n");
-    }
-
-    setTimeout(() => {
-      server = spawnServer();
-      attachServerEvents();
-    }, delay);
-  }
-
-  attachServerEvents();
 }

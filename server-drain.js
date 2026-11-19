@@ -4,6 +4,8 @@
 // SIGTERM/SIGINT the server stops taking connections, answers any request that
 // still arrives on an open keep-alive socket with a 503, and waits for the
 // model requests already running (long SSE streams included) before it exits.
+// installExitRecorder logs an `[Exit]` line for every exit the process makes
+// itself, naming the code that called process.exit().
 //
 // CommonJS with no dependencies: it is copied next to custom-server.js into the
 // standalone build, the Docker image and the CLI package, outside Next's
@@ -346,6 +348,54 @@ function installShutdownDrain(proc, drain) {
   return true;
 }
 
+const mb = (bytes) => Math.round(bytes / 1048576);
+
+// Frames in a stack taken inside an "exit" listener: the process.exit() call,
+// and Node ending the process on an uncaught exception or rejection.
+const EXIT_FRAME = /^\s*at (?:\S+\.)?exit \(/;
+const FATAL_FRAME = /\b_fatalException\b/;
+const REJECTION_FRAME = /\b(?:processPromiseRejections|throwUnhandledRejectionsMode)\b/;
+const CALLER_FRAMES = 8;
+
+function exitCause(lines, code) {
+  const at = lines.findIndex((line) => EXIT_FRAME.test(line));
+  if (at !== -1) return `process.exit() called from:\n${lines.slice(at + 1, at + 1 + CALLER_FRAMES).join("\n")}`;
+  const fatal = lines.findIndex((line) => FATAL_FRAME.test(line));
+  if (fatal !== -1) {
+    const rejection = lines.slice(fatal).some((line) => REJECTION_FRAME.test(line));
+    return `${rejection ? "an unhandled promise rejection" : "an uncaught exception"} ended the process (Node prints it above)`;
+  }
+  // Nonzero with neither: Node ended the process itself, not an empty loop.
+  if (code !== 0) return "no process.exit() call: an uncaught exception or a fatal error in Node";
+  return "the event loop ran empty: nothing was listening or pending";
+}
+
+/**
+ * Log how the process ends, so a restart names its cause: one line with the
+ * exit code, uptime, memory and the model requests still open, then who called
+ * process.exit(). An "exit" listener runs inside that call, so its stack shows
+ * the caller. Node's own exit on an uncaught exception or rejection shows as
+ * `_fatalException`; with neither frame and code 0 the event loop ran empty. A kill
+ * from outside (SIGKILL, the kernel's OOM killer) runs no listener, so a
+ * restart with no `[Exit]` line at all points there.
+ */
+function installExitRecorder(proc, { log = console.log, inflight = () => 0 } = {}) {
+  proc.on("exit", (code) => {
+    let memory = "";
+    try {
+      const usage = proc.memoryUsage();
+      memory = `, rss ${mb(usage.rss)} MB, heap ${mb(usage.heapUsed)} MB`;
+    } catch { /* not available */ }
+    let open = "?";
+    try { open = inflight(); } catch { /* unknown */ }
+    const limit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 40;
+    const lines = String(new Error().stack || "").split("\n");
+    Error.stackTraceLimit = limit;
+    log(`[Exit] exiting with code ${code} after ${Math.round(proc.uptime())}s with ${open} request(s) open${memory}\n  ${exitCause(lines, code)}`);
+  });
+}
+
 module.exports = {
   BACKGROUND_WORK_KEY,
   DEFAULT_DRAIN_TIMEOUT_MS,
@@ -354,6 +404,7 @@ module.exports = {
   MAX_DRAIN_TIMEOUT_MS,
   createDrain,
   gateShutdownSignals,
+  installExitRecorder,
   installShutdownDrain,
   isLongLived,
   isModelTraffic,
