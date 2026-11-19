@@ -309,7 +309,10 @@ export async function createProviderConnection(data) {
 // noteServed, authDemoteOkAt marks the success for the stored records.
 // apiKeyUsed is the key a failing request used: if another key has been stored
 // since, the request's auth streak fields, autoDisable and demote are dropped.
-export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, noteServed = false, apiKeyUsed } = {}) {
+// refreshTokenUsed (a refresh token, or a list of them; null means none) makes
+// the whole write conditional: it lands only while the row holds one of them,
+// and otherwise returns null.
+export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, noteServed = false, apiKeyUsed, refreshTokenUsed } = {}) {
   const db = await getAdapter();
   let result;
   let servesChanged = false;
@@ -317,6 +320,13 @@ export async function updateProviderConnection(id, data, { autoDisable = null, d
     const row = db.get(`SELECT * FROM providerConnections WHERE id = ?`, [id]);
     if (!row) { result = null; return; }
     const existing = rowToConn(row);
+    if (refreshTokenUsed !== undefined) {
+      const allowed = [refreshTokenUsed].flat().map((token) => token ?? null);
+      if (!allowed.includes(existing.refreshToken ?? null)) {
+        result = null;
+        return;
+      }
+    }
     const merged = { ...existing, ...data, updatedAt: new Date().toISOString() };
     const staleKey = apiKeyUsed !== undefined && existing.apiKey !== apiKeyUsed;
     if (staleKey) {
