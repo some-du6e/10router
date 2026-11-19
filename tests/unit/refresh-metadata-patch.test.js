@@ -75,6 +75,29 @@ describe("updateProviderConnection patchProviderSpecificData", () => {
   });
 });
 
+describe("updateProviderConnection refreshTokenUsed with the refresh options", () => {
+  it("applies the patch and the stamp only when the compare-and-set passes", async () => {
+    const conn = await addConnection("xai", { accountId: "stored" });
+    await db.updateProviderConnection(conn.id, { lastRefreshAt: "2026-01-01T00:00:00.000Z" });
+    const options = { refreshTokenUsed: ["stored-refresh", "rotated-refresh"], patchProviderSpecificData: true, stampLastRefreshAt: true };
+
+    const saved = await sseRefresh.updateProviderCredentials(conn.id, {
+      accessToken: "rotated-access", refreshToken: "rotated-refresh", providerSpecificData: { session: "s1" },
+    }, { refreshTokenUsed: options.refreshTokenUsed });
+    expect(saved).toMatchObject({ accessToken: "rotated-access", refreshToken: "rotated-refresh" });
+    const stored = await db.getProviderConnectionById(conn.id);
+    expect(stored.providerSpecificData).toEqual({ accountId: "stored", session: "s1" });
+    expect(stored.lastRefreshAt).not.toBe("2026-01-01T00:00:00.000Z");
+
+    // The row moved on to a token this write didn't use: nothing lands.
+    expect(await db.updateProviderConnection(conn.id, { accessToken: "late-access", providerSpecificData: { session: "late" } },
+      { ...options, refreshTokenUsed: "stored-refresh" })).toBeNull();
+    expect(await db.getProviderConnectionById(conn.id)).toMatchObject({
+      accessToken: "rotated-access", providerSpecificData: { accountId: "stored", session: "s1" },
+    });
+  });
+});
+
 describe("updateProviderConnection stampLastRefreshAt", () => {
   it("stamps lastRefreshAt only when the access token changes", async () => {
     const conn = await addConnection("xai", { accountId: "stored" });

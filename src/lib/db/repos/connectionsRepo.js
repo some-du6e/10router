@@ -309,12 +309,15 @@ export async function createProviderConnection(data) {
 // noteServed, authDemoteOkAt marks the success for the stored records.
 // apiKeyUsed is the key a failing request used: if another key has been stored
 // since, the request's auth streak fields, autoDisable and demote are dropped.
+// refreshTokenUsed (a refresh token, or a list of them; null means none) makes
+// the whole write conditional: it lands only while the row holds one of them,
+// and otherwise returns null.
 // patchProviderSpecificData applies data.providerSpecificData over the stored
 // one in this transaction instead of replacing it (undefined values and a
 // null patch change nothing). stampLastRefreshAt sets lastRefreshAt to now
 // when data carries an access token other than the stored one and no
 // lastRefreshAt of its own.
-export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, noteServed = false, apiKeyUsed, patchProviderSpecificData = false, stampLastRefreshAt = false } = {}) {
+export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, noteServed = false, apiKeyUsed, refreshTokenUsed, patchProviderSpecificData = false, stampLastRefreshAt = false } = {}) {
   const db = await getAdapter();
   let result;
   let servesChanged = false;
@@ -322,6 +325,13 @@ export async function updateProviderConnection(id, data, { autoDisable = null, d
     const row = db.get(`SELECT * FROM providerConnections WHERE id = ?`, [id]);
     if (!row) { result = null; return; }
     const existing = rowToConn(row);
+    if (refreshTokenUsed !== undefined) {
+      const allowed = [refreshTokenUsed].flat().map((token) => token ?? null);
+      if (!allowed.includes(existing.refreshToken ?? null)) {
+        result = null;
+        return;
+      }
+    }
     const merged = { ...existing, ...data, updatedAt: new Date().toISOString() };
     if (patchProviderSpecificData && "providerSpecificData" in data) {
       const patch = Object.entries(data.providerSpecificData || {}).filter(([, value]) => value !== undefined);

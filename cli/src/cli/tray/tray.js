@@ -45,7 +45,7 @@ function isTraySupported() {
 
 /**
  * Initialize system tray with menu
- * @param {Object} options - { port, onQuit, onOpenDashboard }
+ * @param {Object} options - { port, cliPath, autostart: { port, host, dataDir }, onQuit, onOpenDashboard }
  * @returns {Object|null} tray instance or null if not supported/failed
  */
 function initTray(options) {
@@ -104,7 +104,7 @@ function handleClick(index, options, onAutostartToggle) {
     try {
       const { enableAutoStart, disableAutoStart } = require("./autostart");
       if (enabled) disableAutoStart();
-      else enableAutoStart();
+      else enableAutoStart(options.cliPath, options.autostart);
       onAutostartToggle(!enabled);
     } catch (e) {}
   } else if (index === MENU_INDEX.QUIT) {

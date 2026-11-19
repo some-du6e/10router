@@ -5,7 +5,9 @@ on:
     paths:
       # updateProviderCredentials and the metadata patch it writes
       - "src/sse/services/tokenRefresh.js"
+      - "src/sse/services/credentialSave.js"
       - "src/lib/db/repos/connectionsRepo.js"
+      - "src/app/api/providers/*/test/testUtils.js"
       # Refresh results and how the cores apply them in memory
       - "open-sse/services/oauthCredentialManager.js"
       - "open-sse/services/tokenRefresh.js"
@@ -42,6 +44,8 @@ on:
       - "tests/unit/codex-stale-refresh.test.js"
       - "tests/unit/refresh-retry-credentials.test.js"
       - "tests/unit/codex-refresh-token.test.js"
+      - "tests/unit/oauth-probe-refresh-persistence.test.js"
+      - "tests/unit/connection-refresh-token-cas.test.js"
       - "tests/unit/token-refresh-generic.test.js"
       - "tests/unit/background-token-refresh.test.js"
       - "tests/unit/xai-video-handler.test.js"
@@ -77,6 +81,8 @@ jobs:
           unit/codex-stale-refresh.test.js
           unit/refresh-retry-credentials.test.js
           unit/codex-refresh-token.test.js
+          unit/oauth-probe-refresh-persistence.test.js
+          unit/connection-refresh-token-cas.test.js
           unit/token-refresh-generic.test.js
           unit/background-token-refresh.test.js
           unit/xai-video-handler.test.js
@@ -86,6 +92,8 @@ jobs:
         run: >
           ./node_modules/.bin/eslint
           src/sse/services/tokenRefresh.js
+          src/sse/services/credentialSave.js
+          "src/app/api/providers/[id]/test/testUtils.js"
           src/lib/db/repos/connectionsRepo.js
           open-sse/services/oauthCredentialManager.js
           open-sse/services/kiroModels.js
@@ -115,6 +123,7 @@ jobs:
           tests/unit/codex-stale-refresh.test.js
           tests/unit/refresh-retry-credentials.test.js
           tests/unit/codex-refresh-token.test.js
+          tests/unit/oauth-probe-refresh-persistence.test.js
 
   # The suite is not all-green on master (see AGENTS.md), so this runs it on
   # both the base and this branch and fails only on tests that pass on the base

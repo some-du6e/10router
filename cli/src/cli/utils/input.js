@@ -19,6 +19,14 @@ const COLORS = {
   bgBrand: "\x1b[48;2;236;72;153m"
 };
 
+// In raw mode Ctrl+C arrives as a keypress, not a signal. Hand it to the
+// launcher's SIGINT handler, which stops the server it started; exiting here
+// would leave that detached server running.
+function interrupt() {
+  if (process.listenerCount("SIGINT") > 0) process.emit("SIGINT", "SIGINT");
+  else process.exit(130);
+}
+
 // Prime stdin once globally. Toggling raw mode between menus adds latency on
 // macOS, so we keep raw mode on for the whole TUI session.
 let rawPrimed = false;
@@ -50,6 +58,7 @@ function suspendRawFor(fn) {
 async function prompt(question) {
   return suspendRawFor(() => new Promise((resolve) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.on("SIGINT", () => { rl.close(); interrupt(); });
     rl.question(question, (answer) => {
       rl.close();
       resolve((answer || "").trim());
@@ -81,6 +90,7 @@ async function confirm(question) {
 async function pause(message = "Press Enter to continue...") {
   return suspendRawFor(() => new Promise((resolve) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.on("SIGINT", () => { rl.close(); interrupt(); });
     rl.question(message, () => { rl.close(); resolve(); });
   }));
 }
@@ -139,7 +149,7 @@ async function selectMenu(title, items, defaultIndex = 0, subtitle = "", headerC
       if (key.name === "down") return move(1);
       if (key.name === "return") { cleanup(); resolve(selectedIndex); return; }
       if (key.name === "escape") { cleanup(); resolve(-1); return; }
-      if (key.ctrl && key.name === "c") { cleanup(); process.exit(0); }
+      if (key.ctrl && key.name === "c") { cleanup(); interrupt(); }
     };
 
     process.stdin.on("keypress", onKeypress);
@@ -153,5 +163,6 @@ module.exports = {
   confirm,
   pause,
   selectMenu,
+  interrupt,
   COLORS
 };

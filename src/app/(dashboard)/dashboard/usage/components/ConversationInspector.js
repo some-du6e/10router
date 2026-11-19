@@ -34,7 +34,7 @@ export function FullPayloadNotice({ fullPayload, className = "mt-2", label = "Lo
     return (
       <span className={`${className} block`}>
         {fullPayload.error ||
-          "The full payload isn't stored for this request. Only the newest 25 requests keep one (up to 16 MB), while \"Show full request details\" is on."}
+          "The full payload isn't stored for this request. Only the newest requests keep one: up to 25, fewer when payloads are large (up to 16 MB each), while \"Show full request details\" is on."}
       </span>
     );
   return (
