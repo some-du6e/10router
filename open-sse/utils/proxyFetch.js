@@ -205,19 +205,23 @@ async function getDirectDispatcher() {
 // Node's fetch (undici) clones a request it may redirect: it tees the body, sends
 // one branch and leaves the other unread, so a copy of the whole body stays
 // queued off the JS heap until the response ends (a stream: minutes). With
-// redirect "error" and no window it sends the request itself. A body that can be
-// sent again goes out that way; if the upstream answers with a redirect, the
-// request is sent again as the caller asked, which follows it. Bun's fetch fails
-// a redirect differently, so this is Node only.
+// redirect "error" it sends the request itself (window: null is already the case
+// in Node). A body that can be sent again goes out that way, and the request is
+// sent again as the caller asked when the upstream answers with a redirect
+// (which that follows) or a 421 (which fetch retries by re-sending the body it
+// has already sent, so it fails with a length mismatch). Neither reply means the
+// upstream acted on the request. Bun's fetch fails these differently, so this is
+// Node only.
 const SEND_WITHOUT_CLONE = Boolean(process.versions?.undici) && !process.versions?.bun;
 const UNDICI_REDIRECT_ERROR = "unexpected redirect";
+const UNDICI_LENGTH_MISMATCH = "UND_ERR_REQ_CONTENT_LENGTH_MISMATCH";
 
 function canSendAgain(body) {
   return typeof body === "string" || body instanceof ArrayBuffer || ArrayBuffer.isView(body) || body instanceof URLSearchParams;
 }
 
-function isUnexpectedRedirect(error) {
-  return error?.name === "TypeError" && error.cause?.message === UNDICI_REDIRECT_ERROR;
+function needsTheClone(error) {
+  return error?.name === "TypeError" && (error.cause?.message === UNDICI_REDIRECT_ERROR || error.cause?.code === UNDICI_LENGTH_MISMATCH);
 }
 
 async function send(target, init) {
@@ -227,7 +231,7 @@ async function send(target, init) {
   try {
     return await originalFetch(target, { ...init, redirect: "error", window: null });
   } catch (error) {
-    if (!isUnexpectedRedirect(error)) throw error;
+    if (!needsTheClone(error)) throw error;
     return originalFetch(target, init);
   }
 }

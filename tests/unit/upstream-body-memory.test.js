@@ -35,7 +35,12 @@ beforeAll(async () => {
         res.writeHead(Number(moved[1]), { location: "/echo" });
         return res.end();
       }
-      if (path === "/echo") {
+      // 421 on the first request (or every one, for /misdirected-always).
+      if (path === "/misdirected-always" || (path === "/misdirected-once" && hits.get(path) === 1)) {
+        res.writeHead(421, { "content-type": "text/plain" });
+        return res.end("misdirected");
+      }
+      if (path === "/echo" || path === "/misdirected-once") {
         res.writeHead(200, { "content-type": "application/json" });
         return res.end(JSON.stringify({ method: req.method, bytes }));
       }
@@ -82,7 +87,8 @@ describe("upstream request body memory", () => {
   it("keeps no copy of a streaming request's body through the executor", async () => {
     const executor = new BaseExecutor("test-upstream", { baseUrl: `${base}/v1/chat/completions` });
     const start = async (i) => (await executor.execute({ model: `model-${i}`, body: prompt(i), stream: true, credentials: { apiKey: "test-key-0000" } })).response;
-    // It doesn't grow with the number of streams: unfixed, 2 hold 16 MB and 8 hold 64 MB.
+    // The same bound at 2 and 8 streams: it doesn't grow with them. Without the
+    // fix each stream holds its whole body, so 2 already hold 16.0 MB.
     for (const n of [2, 8]) {
       const { held, responses } = await heldWhileStreaming(n, start);
       expect(held).toBeLessThan(4 * MB);
@@ -90,33 +96,80 @@ describe("upstream request body memory", () => {
     }
   }, 60_000);
 
+  const IN_FLIGHT = 4;
+  const send = (body, init = {}) => proxyAwareFetch(`${base}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body,
+    ...init,
+  });
+
   it("keeps no copy of a string body sent with proxyAwareFetch", async () => {
-    const start = (i) => proxyAwareFetch(`${base}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(prompt(i)),
-    });
-    const { held, responses } = await heldWhileStreaming(4, start);
+    const { held, responses } = await heldWhileStreaming(IN_FLIGHT, (i) => send(JSON.stringify(prompt(i))));
     expect(held).toBeLessThan(4 * MB);
     await finish(responses);
+  }, 60_000);
+
+  // undici copies a byte body when it takes it. Node 22's undici (6.x) moves that
+  // copy into the stream, so nothing stays; Node 24's (7.x) keeps it as the
+  // body's source: one body per stream, against two with the clone.
+  it("keeps at most one copy of a byte body, one fewer than with the clone", async () => {
+    const bytes = (i) => new TextEncoder().encode(JSON.stringify(prompt(i)));
+    const cloned = await heldWhileStreaming(IN_FLIGHT, (i) => send(bytes(i), { redirect: "follow" }));
+    await finish(cloned.responses);
+    const { held, responses } = await heldWhileStreaming(IN_FLIGHT, (i) => send(bytes(i)));
+    await finish(responses);
+    expect(held).toBeLessThan(cloned.held - (IN_FLIGHT * BODY_MB - 4) * MB);
+    if (Number(process.versions.undici.split(".")[0]) < 7) expect(held).toBeLessThan(4 * MB);
+    else expect(held).toBeLessThan((IN_FLIGHT * BODY_MB + 4) * MB);
   }, 60_000);
 });
 
 describe("upstream redirects", () => {
   const post = (path, init = {}) => proxyAwareFetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: '{"x":1}', ...init });
 
+  // The redirecting URL gets the request twice: the send without the clone,
+  // then the one that follows.
+  const expectSentTwiceThenFollowed = (status) => {
+    expect(hits.get(`/moved-${status}`)).toBe(2);
+    expect(hits.get("/echo")).toBe(1);
+  };
+
   it.each([307, 308])("follows a %i with the same method and body", async (status) => {
+    hits.clear();
     const res = await post(`/moved-${status}`);
     expect(res.status).toBe(200);
     expect(res.redirected).toBe(true);
     expect(res.url).toBe(`${base}/echo`);
     expect(await res.json()).toEqual({ method: "POST", bytes: 7 });
+    expectSentTwiceThenFollowed(status);
   });
 
   it.each([301, 302, 303])("follows a %i as a GET without the body, as fetch does", async (status) => {
+    hits.clear();
     const res = await post(`/moved-${status}`);
     expect(res.status).toBe(200);
+    expect(res.redirected).toBe(true);
+    expect(res.url).toBe(`${base}/echo`);
     expect(await res.json()).toEqual({ method: "GET", bytes: 0 });
+    expectSentTwiceThenFollowed(status);
+  });
+
+  // fetch retries a 421 once on a new connection, re-sending the body.
+  it("retries a 421 as fetch does", async () => {
+    hits.clear();
+    const res = await post("/misdirected-once");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ method: "POST", bytes: 7 });
+  });
+
+  it("returns a repeated 421 as fetch does", async () => {
+    const plain = await post("/misdirected-always", { redirect: "follow" });
+    const res = await post("/misdirected-always");
+    expect(res.status).toBe(421);
+    expect(await res.text()).toBe("misdirected");
+    expect(plain.status).toBe(421);
+    expect(await plain.text()).toBe("misdirected");
   });
 
   // An explicit redirect "follow" is fetch's own behavior, untouched. Node 22's
