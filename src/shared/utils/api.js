@@ -1,82 +1,34 @@
 /**
- * API utility functions for making HTTP requests
+ * API utility functions for making HTTP requests.
+ * Every helper resolves with the parsed JSON body (null for 204) and throws on
+ * a non-2xx response, with `status` and `data` attached to the error.
  */
-
-const DEFAULT_HEADERS = {
-  "Content-Type": "application/json",
-};
 
 /**
- * Make a GET request
+ * @param {string} method - HTTP method
  * @param {string} url - API endpoint
- * @param {object} options - Fetch options
- * @returns {Promise<object>}
+ * @param {object} [data] - Request body, sent as JSON when defined
+ * @param {object} [options] - Fetch options
+ * @returns {Promise<object|null>}
  */
-export async function get(url, options = {}) {
+async function request(method, url, data, options = {}) {
   const response = await fetch(url, {
-    method: "GET",
+    method,
+    ...(data === undefined ? {} : { body: JSON.stringify(data) }),
     ...options,
     headers: mergeHeaders(options.headers),
   });
   return handleResponse(response);
 }
 
-/**
- * Make a POST request
- * @param {string} url - API endpoint
- * @param {object} data - Request body
- * @param {object} options - Fetch options
- * @returns {Promise<object>}
- */
-export async function post(url, data, options = {}) {
-  const response = await fetch(url, {
-    method: "POST",
-    body: JSON.stringify(data),
-    ...options,
-    headers: mergeHeaders(options.headers),
-  });
-  return handleResponse(response);
-}
+export const get = (url, options) => request("GET", url, undefined, options);
+export const post = (url, data, options) => request("POST", url, data, options);
+export const put = (url, data, options) => request("PUT", url, data, options);
+export const patch = (url, data, options) => request("PATCH", url, data, options);
+export const del = (url, options) => request("DELETE", url, undefined, options);
 
-/**
- * Make a PUT request
- * @param {string} url - API endpoint
- * @param {object} data - Request body
- * @param {object} options - Fetch options
- * @returns {Promise<object>}
- */
-export async function put(url, data, options = {}) {
-  const response = await fetch(url, {
-    method: "PUT",
-    body: JSON.stringify(data),
-    ...options,
-    headers: mergeHeaders(options.headers),
-  });
-  return handleResponse(response);
-}
-
-/**
- * Make a DELETE request
- * @param {string} url - API endpoint
- * @param {object} options - Fetch options
- * @returns {Promise<object>}
- */
-export async function del(url, options = {}) {
-  const response = await fetch(url, {
-    method: "DELETE",
-    ...options,
-    headers: mergeHeaders(options.headers),
-  });
-  return handleResponse(response);
-}
-
-/**
- * Handle API response
- * @param {Response} response - Fetch response
- * @returns {Promise<object>}
- */
 async function handleResponse(response) {
-  if (response.ok && response.status === 204) return null;
+  if (response.status === 204) return null;
   const data = await response.json().catch((error) => {
     if (response.ok) throw error;
     return null;
@@ -94,13 +46,9 @@ async function handleResponse(response) {
 }
 
 function mergeHeaders(customHeaders) {
-  const headers = new Headers(DEFAULT_HEADERS);
-  new Headers(customHeaders).forEach((value, key) => headers.set(key, value));
+  const headers = new Headers(customHeaders);
+  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   return headers;
-}
-
-export function patch(url, data, options = {}) {
-  return post(url, data, { ...options, method: "PATCH" });
 }
 
 const api = { get, post, put, patch, del };
