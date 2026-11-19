@@ -37,7 +37,9 @@ export function upstreamErrorMessage(text, status) {
     const detailMsg = Array.isArray(detail)
       ? detail.map((d) => str(d?.msg)).filter(Boolean).join("; ")
       : str(detail) || str(detail?.message);
-    return str(parsed?.error?.message) || str(parsed?.message) || str(detailMsg) || str(parsed?.error) || str(text) || fallback;
+    // NestJS validation sends `message` as an array of strings.
+    const message = Array.isArray(parsed?.message) ? parsed.message.map(str).filter(Boolean).join("; ") : parsed?.message;
+    return str(parsed?.error?.message) || str(message) || str(detailMsg) || str(parsed?.error) || str(text) || fallback;
   } catch {
     return str(text) || fallback;
   }

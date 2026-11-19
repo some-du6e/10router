@@ -139,7 +139,7 @@ async function handleSingleModelTts(body, modelStr, responseFormat, language, st
     if (result.upstreamRejected) {
       // A connection that can't be excluded would come back forever.
       if (excludeConnectionIds.has(credentials.connectionId)) return result.response;
-      log.warn("AUTH", `${credentials.connectionName} rejected the request [${result.status}], not locking`);
+      log.warn("AUTH", `${credentials.connectionName} rejected the request [${result.upstreamStatus}], not locking`);
       excludeConnectionIds.add(credentials.connectionId);
       rejectedError ??= result.error;
       continue;

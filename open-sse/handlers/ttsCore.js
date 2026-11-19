@@ -76,7 +76,7 @@ export async function handleTtsCore({ provider, model, input, credentials, respo
     // the client as a 400, marked so the caller can try another server without
     // locking this one.
     if (isRequestError(err?.status, err?.message)) {
-      return { ...createErrorResult(HTTP_STATUS.BAD_REQUEST, err.message), upstreamRejected: true };
+      return { ...createErrorResult(HTTP_STATUS.BAD_REQUEST, err.message), upstreamRejected: true, upstreamStatus: err.status };
     }
     return createErrorResult(HTTP_STATUS.BAD_GATEWAY, err.message || "TTS synthesis failed");
   }

@@ -14,6 +14,7 @@ vi.mock("@/sse/utils/logger.js", () => ({ request: vi.fn(), info: vi.fn(), warn:
 
 import { handleTts } from "@/sse/handlers/tts.js";
 import selfhostedTts from "../../open-sse/handlers/ttsProviders/selfhostedTts.js";
+import * as log from "@/sse/utils/logger.js";
 import { formatFromContentType } from "../../open-sse/handlers/ttsProviders/_base.js";
 import { FORMAT_HANDLERS } from "../../open-sse/handlers/ttsProviders/genericFormats.js";
 
@@ -47,6 +48,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  // Drops values a test queued with mockResolvedValueOnce and didn't use.
+  mocks.credentials.mockReset();
 });
 
 describe("self-hosted TTS response formats", () => {
@@ -77,12 +80,20 @@ describe("self-hosted TTS response formats", () => {
 });
 
 describe("self-hosted TTS errors", () => {
-  it.each([400, 422])("answers an upstream %i about the request with a 400 and locks no connection", async (status) => {
+  it.each([400, 404, 422])("answers an upstream %i about the request with a 400 and locks no connection", async (status) => {
     upstream.mockResolvedValue(Response.json({ detail: "unsupported format" }, { status }));
     const response = await handleTts(speech({ response_format: "flac" }));
     expect(response.status).toBe(400);
     expect((await response.json()).error.message).toBe("unsupported format");
     expect(mocks.markUnavailable).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalledWith("AUTH", expect.stringContaining(`[${status}]`));
+  });
+
+  it("joins a NestJS-style message array", async () => {
+    upstream.mockResolvedValue(Response.json({ statusCode: 400, error: "Bad Request", message: ["voice must be a string", "speed must be a number"] }, { status: 400 }));
+    const response = await handleTts(speech({}));
+    expect(response.status).toBe(400);
+    expect((await response.json()).error.message).toBe("voice must be a string; speed must be a number");
   });
 
   it.each([
