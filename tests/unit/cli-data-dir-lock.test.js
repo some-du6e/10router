@@ -86,10 +86,73 @@ describe("one launcher per DATA_DIR", () => {
       expect(c.ok).toBe(true);
       expect(a).toMatchObject({ ok: false, conflict: true, holder: { pid: 444 } });
       expect(readLock().pid).toBe(444);
-      expect(leftovers()).toEqual([]);
+      // B's lock, moved aside by A, is left alone rather than deleted, and B
+      // finds out at its next check (before every server start).
+      const aside = leftovers();
+      expect(aside).toHaveLength(1);
+      expect(JSON.parse(fs.readFileSync(path.join(dir, aside[0]), "utf8")).pid).toBe(222);
+      expect(b.stillHeld()).toBe(false);
+      expect(c.stillHeld()).toBe(true);
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it.each(["EPERM", "EROFS"])("still refuses a live holder when it can't create its own lock (%s)", (code) => {
+    writeLock({ pid: 111, startTime: "t1" });
+    const write = fs.writeFileSync;
+    const spy = vi.spyOn(fs, "writeFileSync").mockImplementation((file, ...rest) => {
+      if (String(file).endsWith(".tmp")) throw Object.assign(new Error(code), { code });
+      return write(file, ...rest);
+    });
+    try {
+      expect(tryLock(dir, { pid: 222, startTime: "t2", isRunning: running([111, "t1"]) })).toMatchObject({ ok: false, holder: { pid: 111 } });
+      fs.unlinkSync(lockPath(dir));
+      // Nobody holds it: run without a lock rather than not at all.
+      expect(tryLock(dir, { pid: 222, startTime: "t2", isRunning: running([111, "t1"]) }).ok).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  describe("a holder that can't be checked", () => {
+    const unknown = () => UNKNOWN;
+
+    it("is refused, not taken over, while the check fails", () => {
+      writeLock({ pid: 111, startTime: "t1" });
+      expect(tryLock(dir, { pid: 222, startTime: "t2", isRunning: unknown })).toMatchObject({ ok: false, unknown: true, holder: { pid: 111 } });
+    });
+
+    it("is retried until the deadline, and refused if its lock is from this boot", async () => {
+      writeLock({ pid: 111, startTime: "t1" });
+      const isRunning = vi.fn(unknown);
+      const result = await acquireDataDirLock(dir, { pid: 222, startTime: "t2", isRunning, waitMs: 0, unknownWaitMs: 60, intervalMs: 10 });
+      expect(result).toMatchObject({ ok: false, unknown: true, file: lockPath(dir) });
+      expect(isRunning.mock.calls.length).toBeGreaterThan(2);
+      expect(readLock().pid).toBe(111);
+    });
+
+    it("is taken over when its lock was written before this boot", async () => {
+      writeLock({ pid: 111, startTime: "t1" });
+      fs.utimesSync(lockPath(dir), new Date(0), new Date(0));
+      const result = await acquireDataDirLock(dir, { pid: 222, startTime: "t2", isRunning: unknown, waitMs: 0, unknownWaitMs: 20, intervalMs: 10 });
+      expect(result.ok).toBe(true);
+      expect(readLock().pid).toBe(222);
+    });
+
+    it("stops being retried as soon as the check works", async () => {
+      writeLock({ pid: 111, startTime: "t1" });
+      let calls = 0;
+      const isRunning = () => (++calls < 3 ? UNKNOWN : false);
+      const result = await acquireDataDirLock(dir, { pid: 222, startTime: "t2", isRunning, waitMs: 0, unknownWaitMs: 5000, intervalMs: 5 });
+      expect(result.ok).toBe(true);
+    });
+
+    it("by default waits longer than one start-time probe can take", () => {
+      const src = fs.readFileSync(path.resolve(import.meta.dirname, "../../cli/src/cli/utils/dataDirLock.js"), "utf8");
+      expect(src).toMatch(/unknownWaitMs = 12000/);
+      expect(src).toMatch(/timeout: 5000/);
+    });
   });
 
   it("without its own start time, writes no lock but still refuses a live holder", () => {
@@ -217,12 +280,17 @@ describe("process start time", () => {
     expect(processStartTime(4242, { platform: "win32", run: () => { throw new Error("timed out"); } })).toBe(UNKNOWN);
   });
 
-  // A holder we can't check might be running: refusing is the safe side.
-  it("counts a holder whose start time can't be read as alive", () => {
-    expect(holderRuns({ pid: 4242, startTime: "t" }, () => UNKNOWN)).toBe(true);
+  it("reports a holder whose start time can't be read as UNKNOWN, never stale", () => {
+    expect(holderRuns({ pid: 4242, startTime: "t" }, () => UNKNOWN)).toBe(UNKNOWN);
     expect(holderRuns({ pid: 4242, startTime: "t" }, () => null)).toBe(false);
     expect(holderRuns({ pid: 4242, startTime: "t" }, () => "other")).toBe(false);
     expect(holderRuns({ pid: 4242, startTime: "t" }, () => "t")).toBe(true);
+  });
+
+  // hidepid: another user's process, which can't tell us anything.
+  it("is UNKNOWN when /proc says EPERM", () => {
+    const readFile = () => { throw Object.assign(new Error("EPERM"), { code: "EPERM" }); };
+    expect(processStartTime(4242, { platform: "linux", readFile, run: vi.fn() })).toBe(UNKNOWN);
   });
 
   it.skipIf(process.platform !== "linux")("is stable for this process", () => {

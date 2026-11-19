@@ -321,6 +321,21 @@ function writesTo(st, sys) {
   });
 }
 
+// True when this process (macOS) writes stdout or stderr to one of the old
+// /tmp logs, whoever owns it: a LaunchAgent from an older version started it.
+// Its output then goes to a file other users may read, so the setup token is
+// kept out of it.
+function writesToLegacyLog(sys = system()) {
+  if (sys.platform !== "darwin") return false;
+  return OLD_MAC_LOGS.some((file) => {
+    try {
+      return writesTo(sys.fs.lstatSync(file), sys);
+    } catch {
+      return false;
+    }
+  });
+}
+
 // A LaunchAgent written by an older 10router logs to /tmp/10router.log, which
 // every user can read and which holds the setup token. Point it at the
 // private log folder (the rest of the plist is kept; launchd reads it at the
@@ -425,6 +440,7 @@ module.exports = {
   disableAutoStart,
   isAutoStartEnabled,
   migrateMacLogs,
+  writesToLegacyLog,
   AUTOSTART_ENV,
   macLaunchAgent,
   windowsStartupScript,

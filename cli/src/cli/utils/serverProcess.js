@@ -7,31 +7,47 @@ const { execFileSync } = require("child_process");
 
 // The launcher's half of src/lib/launchProof.js: the server gets a random
 // nonce in its env and proves it holds it by answering a fresh challenge on
-// /api/health with HMAC-SHA256(nonce, challenge).
+// /api/health with HMAC-SHA256(nonce, challenge|peer host|peer port|salt). The
+// peer is this connection as the server saw it, which the launcher knows as
+// its own socket's local address and port, so a relayed proof doesn't match.
 const LAUNCH_NONCE_ENV = "TENROUTER_LAUNCH_NONCE";
 const LAUNCH_CHALLENGE_HEADER = "x-9r-launch-challenge";
 const LAUNCH_PROOF_HEADER = "x-9r-launch-proof";
+const LAUNCH_SALT_HEADER = "x-9r-launch-salt";
 
 function newLaunchNonce() {
   return crypto.randomBytes(32).toString("hex");
 }
 
-function launchProof(nonce, challenge) {
-  return crypto.createHmac("sha256", nonce).update(challenge).digest("hex");
+// An IPv4 peer on a dual-stack socket shows as ::ffff:a.b.c.d.
+function normalizePeerHost(host) {
+  return String(host || "").replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/i, "");
 }
 
-// True only when whatever answers on host:port proves it holds `nonce`.
+function launchProof(nonce, challenge, peerHost, peerPort, salt) {
+  return crypto.createHmac("sha256", nonce)
+    .update(`${challenge}|${normalizePeerHost(peerHost)}|${peerPort}|${salt}`)
+    .digest("hex");
+}
+
+// True only when whatever answers on host:port proves it holds `nonce`, for
+// this very connection.
 function provesLaunchNonce({ host, port, nonce, request = http.request, timeoutMs = 2000 }) {
   const challenge = crypto.randomBytes(16).toString("hex");
-  const expected = Buffer.from(launchProof(nonce, challenge));
   return new Promise((resolve) => {
     let settled = false;
+    let socket = null;
     const done = (value) => { if (!settled) { settled = true; resolve(value); } };
-    const req = request({ host, port, path: "/api/health", method: "GET", headers: { [LAUNCH_CHALLENGE_HEADER]: challenge } }, (res) => {
+    const req = request({ host, port, path: "/api/health", method: "GET", agent: false, headers: { [LAUNCH_CHALLENGE_HEADER]: challenge } }, (res) => {
       res.resume();
+      const salt = String(res.headers?.[LAUNCH_SALT_HEADER] || "");
       const proof = Buffer.from(String(res.headers?.[LAUNCH_PROOF_HEADER] || ""));
+      const local = socket || res.socket;
+      if (!salt || !local?.localAddress || !local.localPort) return done(false);
+      const expected = Buffer.from(launchProof(nonce, challenge, local.localAddress, local.localPort, salt));
       done(proof.length === expected.length && crypto.timingSafeEqual(proof, expected));
     });
+    req.on("socket", (s) => { socket = s; });
     req.setTimeout(timeoutMs, () => { req.destroy(); done(false); });
     req.on("error", () => done(false));
     req.end();
@@ -136,8 +152,41 @@ function waitServerReady({
   });
 }
 
+// Keeps the API client's gate closed whenever there is no proven server: from
+// the start, and from the moment a child exits until the next child's
+// readiness passes. Without that, a request sent between a crash and the
+// respawn would pass the previous child's (already resolved) check and could
+// reach whatever took the port in between.
+//   ended()   a child exited (or none started yet): close the gate until the
+//             next started(); returns the promise the gate now waits for
+//   started() a child was spawned: the gate follows its readiness check
+//   failed()  no next child is coming (give-up): the gate resolves false
+function createReadinessGate(setGate) {
+  let next = null;
+  let resolveNext = null;
+  return {
+    ended() {
+      if (!next) {
+        next = new Promise((resolve) => { resolveNext = resolve; });
+        setGate(next);
+      }
+      return next;
+    },
+    started(readiness) {
+      setGate(readiness);
+      if (resolveNext) resolveNext(readiness);
+      next = resolveNext = null;
+    },
+    failed() {
+      if (resolveNext) resolveNext(false);
+      else setGate(Promise.resolve(false));
+      next = resolveNext = null;
+    },
+  };
+}
+
 module.exports = {
   hasExited, killServer, checkPortFree, waitServerReady,
-  newLaunchNonce, launchProof, provesLaunchNonce,
-  LAUNCH_NONCE_ENV, LAUNCH_CHALLENGE_HEADER, LAUNCH_PROOF_HEADER,
+  newLaunchNonce, launchProof, provesLaunchNonce, createReadinessGate,
+  LAUNCH_NONCE_ENV, LAUNCH_CHALLENGE_HEADER, LAUNCH_PROOF_HEADER, LAUNCH_SALT_HEADER,
 };

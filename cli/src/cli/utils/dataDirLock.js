@@ -8,6 +8,7 @@
 // Windows logoff) or a PID reused after a reboot leaves a lock that is simply
 // taken over. When the holder's start time can't be read, it counts as live.
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const { execFileSync } = require("child_process");
@@ -51,6 +52,8 @@ function processStartTime(pid, {
     return fields[19] ? `ticks:${fields[19]}` : UNKNOWN;
   } catch (err) {
     // ENOENT: no such process, or no /proc at all (macOS); ps tells which.
+    // EACCES/EPERM (hidepid): another user's process, which can't tell us
+    // anything; UNKNOWN, like any other failure.
     if (err?.code !== "ENOENT") return UNKNOWN;
   }
   try {
@@ -65,10 +68,11 @@ function processStartTime(pid, {
   }
 }
 
-// Only a definite "different start time" or "no such process" makes a lock stale.
+// true (same process still runs), false (gone, or the PID is another run), or
+// UNKNOWN (couldn't tell). Only false makes a lock stale.
 function holderRuns(holder, probe = processStartTime) {
   const now = probe(holder.pid);
-  return now === UNKNOWN || now === holder.startTime;
+  return now === UNKNOWN ? UNKNOWN : now === holder.startTime;
 }
 
 function ownStartTime() {
@@ -112,7 +116,9 @@ function createAtomically(file, content) {
 // renamed to a unique name (atomic) and deleted only if what moved is still
 // the stale content that was judged. Otherwise another launcher replaced it in
 // between, and it is put back. Returns "conflict" when putting it back fails
-// because a third launcher has created a lock meanwhile.
+// because a third launcher has created a lock meanwhile; the moved lock is
+// then left where it is (that launcher's stillHeld() turns false) instead of
+// being deleted.
 function removeStale(file, staleRaw) {
   const aside = `${file}.stale.${unique()}`;
   try {
@@ -120,23 +126,35 @@ function removeStale(file, staleRaw) {
   } catch {
     return "gone"; // already removed, or moved by another launcher
   }
-  let result = "removed";
-  if (readRaw(aside) !== staleRaw) {
-    result = "restored";
-    try {
-      fs.linkSync(aside, file);
-    } catch (err) {
-      if (err?.code === "EEXIST") result = "conflict";
-    }
+  if (readRaw(aside) === staleRaw) {
+    try { fs.unlinkSync(aside); } catch { }
+    return "removed";
+  }
+  try {
+    fs.linkSync(aside, file);
+  } catch (err) {
+    if (err?.code === "EEXIST") return "conflict";
   }
   try { fs.unlinkSync(aside); } catch { }
-  return result;
+  return "restored";
 }
 
-// Returns { ok: true, release } or { ok: false, holder, file[, conflict] }.
-// Without startTime nothing is written (no one could tell later that the lock
-// went stale), but a live holder still refuses.
-function tryLock(dataDir, { pid = process.pid, startTime = ownStartTime(), isRunning = holderRuns } = {}) {
+// Lock file age check for a holder that can't be checked: a lock written
+// before this boot can't belong to a running process.
+function writtenBeforeBoot(file, { now = Date.now(), uptimeSec = os.uptime() } = {}) {
+  try {
+    return fs.statSync(file).mtimeMs < now - uptimeSec * 1000;
+  } catch {
+    return false;
+  }
+}
+
+// Returns { ok: true, release, stillHeld } or { ok: false, holder, file }
+// plus `conflict` (a three-way takeover race) or `unknown` (the holder's
+// start time couldn't be read). Without startTime nothing is written (no one
+// could tell later that the lock went stale), but a live holder still refuses.
+// takeOverUnknown: treat a holder that can't be checked as stale.
+function tryLock(dataDir, { pid = process.pid, startTime = ownStartTime(), isRunning = holderRuns, takeOverUnknown = false } = {}) {
   const file = lockPath(dataDir);
   const content = startTime ? JSON.stringify({ pid, startTime }) : null;
   const release = () => {
@@ -144,30 +162,35 @@ function tryLock(dataDir, { pid = process.pid, startTime = ownStartTime(), isRun
       try { fs.unlinkSync(file); } catch { }
     }
   };
-  const live = (raw) => {
+  // Whether the lock still holds our content: false once another launcher's
+  // takeover race replaced it.
+  const stillHeld = () => !content || readRaw(file) === content;
+  const unlocked = { ok: true, release: () => {}, stillHeld: () => true };
+  // A refusal for this lock content, or null when it is stale.
+  const refusal = (raw) => {
     const holder = parseHolder(raw);
-    return holder && holder.pid !== pid && isRunning(holder) ? holder : null;
+    if (!holder || holder.pid === pid) return null;
+    const state = isRunning(holder);
+    if (state === true) return { ok: false, holder, file };
+    if (state === UNKNOWN && !takeOverUnknown) return { ok: false, holder, file, unknown: true };
+    return null;
   };
 
-  if (!content) {
-    const holder = live(readRaw(file) ?? "");
-    return holder ? { ok: false, holder, file } : { ok: true, release };
-  }
+  if (!content) return refusal(readRaw(file) ?? "") || unlocked;
 
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-      if (createAtomically(file, content)) return { ok: true, release };
+      if (createAtomically(file, content)) return { ok: true, release, stillHeld };
     } catch {
       // Can't create a lock at all (read-only dir, no hard links on this
       // filesystem): still refuse a live holder, else run unlocked.
-      const holder = live(readRaw(file) ?? "");
-      return holder ? { ok: false, holder, file } : { ok: true, release: () => {} };
+      return refusal(readRaw(file) ?? "") || unlocked;
     }
     const raw = readRaw(file);
     if (raw === null) continue; // released in between
-    const holder = live(raw);
-    if (holder) return { ok: false, holder, file };
+    const refused = refusal(raw);
+    if (refused) return refused;
     if (removeStale(file, raw) === "conflict") {
       return { ok: false, holder: parseHolder(readRaw(file) ?? ""), file, conflict: true };
     }
@@ -175,13 +198,24 @@ function tryLock(dataDir, { pid = process.pid, startTime = ownStartTime(), isRun
   return { ok: false, holder: parseHolder(readRaw(file) ?? ""), file };
 }
 
-// Waits up to waitMs for a holder to let go. Reads this launcher's own start
-// time once.
-async function acquireDataDirLock(dataDir, { waitMs = 3000, intervalMs = 100, startTime = ownStartTime(), ...options } = {}) {
-  const deadline = Date.now() + waitMs;
+// Waits up to waitMs for a live holder to let go, and up to unknownWaitMs
+// (longer than one start-time probe can take) while the holder can't be
+// checked. After that, a holder that still can't be checked is taken over
+// only when its lock was written before this boot. Reads this launcher's own
+// start time once.
+async function acquireDataDirLock(dataDir, {
+  waitMs = 3000, unknownWaitMs = 12000, intervalMs = 100, startTime = ownStartTime(), uptimeSec, ...options
+} = {}) {
+  const started = Date.now();
   for (;;) {
     const result = tryLock(dataDir, { ...options, startTime });
-    if (result.ok || result.conflict || Date.now() >= deadline) return result;
+    if (result.ok || result.conflict) return result;
+    const waited = Date.now() - started;
+    if (!result.unknown && waited >= waitMs) return result;
+    if (result.unknown && waited >= unknownWaitMs) {
+      if (!writtenBeforeBoot(result.file, { uptimeSec })) return result;
+      return tryLock(dataDir, { ...options, startTime, takeOverUnknown: true });
+    }
     await new Promise((r) => setTimeout(r, intervalMs));
   }
 }
@@ -199,4 +233,4 @@ function unsafeDataDirReason(dir, { stat = fs.statSync, uid = process.getuid?.()
   return null;
 }
 
-module.exports = { acquireDataDirLock, tryLock, lockPath, processStartTime, holderRuns, unsafeDataDirReason, LOCK_FILE, UNKNOWN };
+module.exports = { acquireDataDirLock, tryLock, lockPath, processStartTime, holderRuns, writtenBeforeBoot, unsafeDataDirReason, LOCK_FILE, UNKNOWN };

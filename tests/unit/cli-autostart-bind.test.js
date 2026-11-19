@@ -5,7 +5,7 @@ import path from "node:path";
 
 const require = createRequire(import.meta.url);
 const autostart = require("../../cli/src/cli/tray/autostart.js");
-const { enableAutoStart, isAutoStartEnabled, migrateMacLogs, macLaunchAgent, windowsStartupScript, linuxDesktopEntry } = autostart;
+const { enableAutoStart, isAutoStartEnabled, migrateMacLogs, writesToLegacyLog, macLaunchAgent, windowsStartupScript, linuxDesktopEntry } = autostart;
 
 const launch = { host: "127.0.0.1", port: 20200, dataDir: "/srv/router data" };
 const logs = { out: "/u/Library/Logs/10router/10router.log", err: "/u/Library/Logs/10router/10router.error.log" };
@@ -137,6 +137,18 @@ describe("LaunchAgents written by an older 10router", () => {
     expect(m.files.has("/tmp/10router.log")).toBe(true);
     expect(m.modes.get("/tmp/10router.log")).toBe(0o600);
     expect(m.files.has("/tmp/10router.error.log")).toBe(false);
+  });
+
+  // Then the setup token must stay off stdout, whoever owns that file.
+  it("tells when stdout is an old /tmp log, whoever owns it", () => {
+    const probe = fakeSystem("darwin", { files: { "/tmp/10router.log": "" } });
+    const out = probe.sys.fs.lstatSync("/tmp/10router.log");
+    const fds = { 1: { dev: out.dev, ino: out.ino } };
+    expect(writesToLegacyLog(fakeSystem("darwin", { files: { "/tmp/10router.log": "" }, fds }).sys)).toBe(true);
+    expect(writesToLegacyLog(fakeSystem("darwin", { files: { "/tmp/10router.log": "" }, owners: { "/tmp/10router.log": 0 }, fds }).sys)).toBe(true);
+    expect(writesToLegacyLog(fakeSystem("darwin", { files: { "/tmp/10router.log": "" }, fds: { 1: { dev: 9, ino: 9 } } }).sys)).toBe(false);
+    expect(writesToLegacyLog(fakeSystem("darwin").sys)).toBe(false);
+    expect(writesToLegacyLog(fakeSystem("linux", { files: { "/tmp/10router.log": "" }, fds }).sys)).toBe(false);
   });
 
   it("leaves a /tmp file another user owns alone", () => {

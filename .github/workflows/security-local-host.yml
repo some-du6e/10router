@@ -24,6 +24,9 @@ on:
       - "cli/src/cli/utils/input.js"
       - "src/lib/auth/setupToken.js"
       - "src/lib/launchProof.js"
+      - "src/lib/auth/trustedPeer.js"
+      - "custom-server.js"
+      - "tests/unit/launch-proof.test.js"
       - "src/app/api/health/route.js"
       - "tests/unit/app-updater-relaunch.test.js"
       - "tests/unit/cli-data-dir-lock.test.js"
@@ -99,6 +102,7 @@ jobs:
           unit/cli-autostart-bind.test.js
           unit/app-updater-relaunch.test.js
           unit/cli-data-dir-lock.test.js
+          unit/launch-proof.test.js
 
   # known-fails.txt lags master, so compare against the base branch run instead.
   no-new-failures:

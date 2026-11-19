@@ -17,8 +17,10 @@ function setupTokenLive(file, { now = Date.now(), readFile = fs.readFileSync } =
 
 // On Linux a tray or autostart launch writes stdout to the journal or
 // ~/.xsession-errors, which other users can often read, so the token itself
-// stays out of it there.
-function bannerToStdout({ platform = process.platform, trayMode, autostart }) {
+// stays out of it there. The same goes for a macOS launch whose stdout is an
+// old world-readable /tmp log (legacyLog).
+function bannerToStdout({ platform = process.platform, trayMode, autostart, legacyLog = false }) {
+  if (legacyLog) return false;
   return !(platform === "linux" && (trayMode || autostart));
 }
 

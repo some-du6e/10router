@@ -1,20 +1,30 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import { PassThrough } from "node:stream";
 import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 
 const require = createRequire(import.meta.url);
 const { superviseServer } = require("../../cli/src/cli/utils/serverSupervisor.js");
-const {
-  killServer, checkPortFree, waitServerReady, newLaunchNonce, launchProof, provesLaunchNonce,
-  LAUNCH_NONCE_ENV, LAUNCH_CHALLENGE_HEADER, LAUNCH_PROOF_HEADER,
-} = require("../../cli/src/cli/utils/serverProcess.js");
+const { killServer, checkPortFree, waitServerReady, createReadinessGate } = require("../../cli/src/cli/utils/serverProcess.js");
 const { setupTokenLive, bannerToStdout, SETUP_WINDOW_MS } = require("../../cli/src/cli/utils/launchArgs.js");
+
+// client.js picks its data dir (machine-id, auth/cli-secret) when it loads, so
+// point it at a temp dir first: nothing here may write into the real home.
+const previousDataDir = process.env.DATA_DIR;
+const clientDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-lifecycle-data-"));
+fs.writeFileSync(path.join(clientDataDir, "machine-id"), "test-machine-id");
+process.env.DATA_DIR = clientDataDir;
 const api = require("../../cli/src/cli/api/client.js");
+afterAll(() => {
+  if (previousDataDir === undefined) delete process.env.DATA_DIR;
+  else process.env.DATA_DIR = previousDataDir;
+  fs.rmSync(clientDataDir, { recursive: true, force: true });
+});
 const { isValidHost, parsePort, getBackgroundArgs, serverStdio, createServerOutput, attachServerOutput } = require("../../cli/src/cli/utils/launchArgs.js");
 const { interrupt } = require("../../cli/src/cli/utils/input.js");
 
@@ -321,60 +331,9 @@ describe("port preflight", () => {
   });
 });
 
-// An HTTP server on 127.0.0.1 that answers /api/health like ours would, given
-// a nonce, or like any other program, without one.
-function healthServer(nonce) {
-  return new Promise((resolve) => {
-    const server = http.createServer((req, res) => {
-      const challenge = req.headers[LAUNCH_CHALLENGE_HEADER];
-      const headers = { "content-type": "application/json" };
-      if (nonce && req.url === "/api/health" && challenge) headers[LAUNCH_PROOF_HEADER] = launchProof(nonce, challenge);
-      res.writeHead(200, headers);
-      res.end('{"ok":true}');
-    });
-    server.listen({ host: "127.0.0.1", port: 0 }, () => resolve(server));
-  });
-}
-
+// The launch proof itself (custom-server stamping, /api/health, relays) is
+// covered end to end in tests/unit/launch-proof.test.js.
 describe("readiness is gated on our own child", () => {
-  it("accepts only a server that proves the launch nonce", async () => {
-    const nonce = newLaunchNonce();
-    const ours = await healthServer(nonce);
-    const occupant = await healthServer(null);
-    const impostor = await healthServer(newLaunchNonce());
-    try {
-      expect(await provesLaunchNonce({ host: "127.0.0.1", port: ours.address().port, nonce })).toBe(true);
-      expect(await provesLaunchNonce({ host: "127.0.0.1", port: occupant.address().port, nonce })).toBe(false);
-      expect(await provesLaunchNonce({ host: "127.0.0.1", port: impostor.address().port, nonce })).toBe(false);
-      expect(await provesLaunchNonce({ host: "127.0.0.1", port: 9, nonce })).toBe(false);
-    } finally {
-      await Promise.all([close(ours), close(occupant), close(impostor)]);
-    }
-  });
-
-  it("the server's /api/health answers the challenge with the same proof", async () => {
-    const nonce = newLaunchNonce();
-    vi.stubEnv(LAUNCH_NONCE_ENV, nonce);
-    try {
-      const { GET } = await import("../../src/app/api/health/route.js");
-      const challenge = "0123456789abcdef0123456789abcdef";
-      const res = await GET(new Request("http://127.0.0.1/api/health", { headers: { [LAUNCH_CHALLENGE_HEADER]: challenge } }));
-      expect(res.headers.get(LAUNCH_PROOF_HEADER)).toBe(launchProof(nonce, challenge));
-      const plain = await GET(new Request("http://127.0.0.1/api/health"));
-      expect(plain.headers.get(LAUNCH_PROOF_HEADER)).toBeNull();
-      const odd = await GET(new Request("http://127.0.0.1/api/health", { headers: { [LAUNCH_CHALLENGE_HEADER]: "not hex" } }));
-      expect(odd.headers.get(LAUNCH_PROOF_HEADER)).toBeNull();
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
-
-  it("names the nonce env and headers the way the server does", async () => {
-    const server = await import("../../src/lib/launchProof.js");
-    expect([server.LAUNCH_NONCE_ENV, server.LAUNCH_CHALLENGE_HEADER, server.LAUNCH_PROOF_HEADER]).toEqual([LAUNCH_NONCE_ENV, LAUNCH_CHALLENGE_HEADER, LAUNCH_PROOF_HEADER]);
-    expect(server.launchProof("n", "c")).toBe(launchProof("n", "c"));
-  });
-
   it("waits while the child is dead or the answer isn't ours", async () => {
     let alive = false;
     let ours = false;
@@ -413,11 +372,78 @@ describe("readiness is gated on our own child", () => {
     }
   });
 
-  it("re-checks readiness after every (re)start, and the API client waits for it", () => {
-    expect(cliSource).toMatch(/^ {4}onStart: \(\) => \{\n {6}readiness = ownServerReady\(\);\n {6}api\.pauseUntil\(readiness\);\n/m);
-    expect(cliSource).toMatch(/^ {2}api\.pauseUntil\(serverReady\(\)\);$/m);
+  it("re-checks readiness after every (re)start, and closes the gate the moment a child exits", () => {
+    expect(cliSource).toMatch(/^ {2}const gate = createReadinessGate\(\(promise\) => api\.pauseUntil\(promise\)\);$/m);
+    expect(cliSource).toMatch(/^ {4}onStart: \(\) => gate\.started\(ownServerReady\(\)\),$/m);
+    expect(cliSource).toMatch(/^ {4}onRestart: \(\{ code, error, delay, attempt, maxRestarts \}\) => \{\n {6}gate\.ended\(\);$/m);
+    expect(cliSource).toMatch(/^ {4}onGiveUp: \(\{ reason, error, maxRestarts \}\) => \{\n {6}gate\.failed\(\);$/m);
     expect(cliSource).toMatch(/^ {8}\[LAUNCH_NONCE_ENV\]: launchNonce,$/m);
     expect(cliSource).toMatch(/isOurs: \(\) => provesLaunchNonce\(\{ host: dialHost, port, nonce: launchNonce \}\)/);
+  });
+
+  it("checks the DATA_DIR lock is still ours before every start", () => {
+    expect(cliSource).toMatch(/^ {4}preflight: \(\) => \(lock\.stillHeld\(\)\n {6}\? checkPortFree\(\{ host, dialHost, port \}\)/m);
+  });
+});
+
+describe("readiness gate across restarts", () => {
+  function track() {
+    const gates = [];
+    const gate = createReadinessGate((p) => gates.push(p));
+    return { gate, gates, current: () => gates.at(-1) };
+  }
+  const settled = async (promise) => Promise.race([promise.then((v) => ({ v })), new Promise((r) => setTimeout(() => r("pending"), 20))]);
+
+  // Between a crash and the respawn (restart delay plus the port check) the
+  // previous child's resolved check must not let a request through to
+  // whatever took the port.
+  it("holds requests from a crash until the next child proves itself", async () => {
+    const t = track();
+    const first = t.gate.ended();
+    t.gate.started(Promise.resolve(true));
+    expect(await first).toBe(true);
+    expect(await t.current()).toBe(true);
+
+    const between = t.gate.ended();
+    expect(t.current()).toBe(between);
+    expect(await settled(between)).toBe("pending");
+
+    let prove;
+    t.gate.started(new Promise((r) => { prove = r; }));
+    expect(await settled(between)).toBe("pending");
+    prove(true);
+    expect(await between).toBe(true);
+  });
+
+  it("resolves false when no next child is coming", async () => {
+    const t = track();
+    t.gate.started(Promise.resolve(true));
+    const between = t.gate.ended();
+    t.gate.failed();
+    expect(await between).toBe(false);
+    expect(await t.current()).toBe(false);
+  });
+
+  it("a second exit before the respawn keeps the same closed gate", () => {
+    const t = track();
+    const a = t.gate.ended();
+    const b = t.gate.ended();
+    expect(b).toBe(a);
+    expect(t.gates).toHaveLength(1);
+  });
+
+  it("the API client sends nothing while the gate is closed", async () => {
+    const request = vi.spyOn(http, "request");
+    const t = createReadinessGate((p) => api.pauseUntil(p));
+    t.ended();
+    const pending = api.getTunnelStatus();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(request).not.toHaveBeenCalled();
+    t.failed();
+    expect((await pending).success).toBe(false);
+    expect(request).not.toHaveBeenCalled();
+    api.pauseUntil(null);
+    request.mockRestore();
   });
 });
 
@@ -513,7 +539,9 @@ describe("server output", () => {
     expect(bannerToStdout({ platform: "linux", trayMode: false, autostart: false })).toBe(true);
     expect(bannerToStdout({ platform: "darwin", trayMode: true, autostart: true })).toBe(true);
     expect(bannerToStdout({ platform: "win32", trayMode: true, autostart: false })).toBe(true);
-    expect(cliSource).toMatch(/^ {2}const showBanner = bannerToStdout\(\{ trayMode, autostart: process\.env\[AUTOSTART_ENV\] === "1" \}\);$/m);
+    // macOS started by an older LaunchAgent: stdout is a world-readable /tmp log.
+    expect(bannerToStdout({ platform: "darwin", trayMode: true, autostart: false, legacyLog: true })).toBe(false);
+    expect(cliSource).toMatch(/^ {2}const showBanner = bannerToStdout\(\{ trayMode, autostart: process\.env\[AUTOSTART_ENV\] === "1", legacyLog: writesToLegacyLog\(\) \}\);$/m);
     expect(cliSource).toMatch(/^ {8}show: showBanner \? \(line\) => console\.log\(line\) : \(\) => \{\},$/m);
   });
 

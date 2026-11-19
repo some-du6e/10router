@@ -52,7 +52,7 @@ const { ensureTrayRuntime } = require("./hooks/trayRuntime");
 const { isValidHost, parsePort, getBackgroundArgs, serverStdio, attachServerOutput, setupTokenLive, bannerToStdout } = require("./src/cli/utils/launchArgs");
 const { superviseServer } = require("./src/cli/utils/serverSupervisor");
 const {
-  hasExited, killServer, checkPortFree, waitServerReady, newLaunchNonce, provesLaunchNonce, LAUNCH_NONCE_ENV,
+  hasExited, killServer, checkPortFree, waitServerReady, newLaunchNonce, provesLaunchNonce, createReadinessGate, LAUNCH_NONCE_ENV,
 } = require("./src/cli/utils/serverProcess");
 const { acquireDataDirLock, unsafeDataDirReason } = require("./src/cli/utils/dataDirLock");
 const args = process.argv.slice(2);
@@ -73,7 +73,7 @@ if (args[0] === "xai" && args[1] === "video") {
 // An autostart entry names its DATA_DIR in a file; refuse one that another
 // user owns or can write to. This runs before the self-heal below, which runs
 // npm in $DATA_DIR/runtime, where a planted .npmrc would run code as you.
-const { AUTOSTART_ENV, migrateMacLogs } = require("./src/cli/tray/autostart");
+const { AUTOSTART_ENV, migrateMacLogs, writesToLegacyLog } = require("./src/cli/tray/autostart");
 if (process.env[AUTOSTART_ENV] === "1" && process.env.DATA_DIR) {
   const unsafe = unsafeDataDirReason(process.env.DATA_DIR);
   if (unsafe) {
@@ -316,7 +316,11 @@ const updatePromise = checkForUpdate();
 acquireDataDirLock(getDataDir()).then((lock) => {
   if (!lock.ok) {
     const holder = lock.holder ? ` (PID ${lock.holder.pid})` : "";
-    console.error(`\n❌ Another 10router launcher${holder} is already using ${getDataDir()}.`);
+    if (lock.unknown) {
+      console.error(`\n❌ ${lock.file} names a launcher${holder} that 10router can't check, so it may still be running.`);
+    } else {
+      console.error(`\n❌ Another 10router launcher${holder} is already using ${getDataDir()}.`);
+    }
     console.error(`   Quit it first (tray icon → Quit), or give this one its own DATA_DIR.`);
     console.error(`   If no 10router is running, delete ${lock.file} and try again.`);
     process.exit(1);
@@ -397,7 +401,7 @@ function startServer(updatePromise, lock) {
   // Proves to the readiness check that the server answering is ours.
   const launchNonce = newLaunchNonce();
   const tokenFile = path.join(getDataDir(), "setup-token.json");
-  const showBanner = bannerToStdout({ trayMode, autostart: process.env[AUTOSTART_ENV] === "1" });
+  const showBanner = bannerToStdout({ trayMode, autostart: process.env[AUTOSTART_ENV] === "1", legacyLog: writesToLegacyLog() });
 
   function spawnServer() {
     crashLog = [];
@@ -459,30 +463,34 @@ function startServer(updatePromise, lock) {
   // (menu, tray, Terminal UI) waits for it, so the CLI token only ever goes to
   // a server that proved it holds launchNonce.
   const READY_TIMEOUT_MS = 120000;
-  let readiness = null;
-  let firstStarted;
-  const started = new Promise((resolve) => { firstStarted = resolve; });
-  const serverReady = () => started.then(() => readiness);
-  api.pauseUntil(serverReady());
+  // Closed from now until the first child proves itself, and again from each
+  // crash until the respawned child does (createReadinessGate).
+  const gate = createReadinessGate((promise) => api.pauseUntil(promise));
+  const firstReady = gate.ended();
+  const serverReady = () => firstReady;
 
   const supervisor = superviseServer({
     spawn: spawnServer,
-    preflight: () => checkPortFree({ host, dialHost, port }),
-    onStart: () => {
-      readiness = ownServerReady();
-      api.pauseUntil(readiness);
-      firstStarted();
-    },
+    // Before every start: the DATA_DIR lock must still be ours (a takeover
+    // race can replace it), and the port must be free.
+    preflight: () => (lock.stillHeld()
+      ? checkPortFree({ host, dialHost, port })
+      : Promise.resolve(Object.assign(new Error(`another 10router launcher replaced ${lock.file}`), { code: "ELOCKLOST" }))),
+    onStart: () => gate.started(ownServerReady()),
     isShuttingDown: () => isShuttingDown,
     onExit: (code) => process.exit(code),
     onRestart: ({ code, error, delay, attempt, maxRestarts }) => {
+      gate.ended();
       if (error) console.error("Failed to start server:", error.message);
       console.error(`\n⚠️  Server exited (code=${code ?? "unknown"}). Restarting in ${delay / 1000}s... (${attempt}/${maxRestarts})`);
       printCrashLog();
     },
     onGiveUp: ({ reason, error, maxRestarts }) => {
+      gate.failed();
       printCrashLog();
-      if (reason === "port-taken") {
+      if (error?.code === "ELOCKLOST") {
+        console.error(`\n❌ Stopping: ${error.message}, so it may be running on this data directory.`);
+      } else if (reason === "port-taken") {
         console.error(`\n❌ Can't start the server on ${host}:${port}: ${error.message}.`);
         console.error(`   Stop the program using port ${port}, or start 10router on another port: ${APP_NAME} --port <port>`);
       } else if (reason === "start-failed") {
