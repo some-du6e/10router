@@ -5,6 +5,7 @@
 // (`synthesizeViaConfig` reads `cfg.baseUrl`) and never looks at the connection,
 // which is exactly the limitation this provider exists to lift.
 import { Buffer } from "node:buffer";
+import { formatFromContentType, upstreamErrorMessage } from "./_base.js";
 
 const DEFAULT_BASE_URL = "http://localhost:8880";
 const DEFAULT_MODEL = "kokoro";
@@ -64,11 +65,11 @@ export default {
       }),
     });
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
+      const text = await res.text().catch(() => "");
       // The status lets ttsCore tell a rejected request from a failing server.
-      throw Object.assign(new Error(err?.error?.message || `Self-hosted TTS failed: ${res.status}`), { status: res.status });
+      throw Object.assign(new Error(upstreamErrorMessage(text, res.status)), { status: res.status });
     }
     const buf = await res.arrayBuffer();
-    return { base64: Buffer.from(buf).toString("base64"), format: audioFormat };
+    return { base64: Buffer.from(buf).toString("base64"), format: formatFromContentType(res.headers.get("content-type"), audioFormat) };
   },
 };

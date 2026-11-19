@@ -22,6 +22,10 @@ const CREDENTIALED_PROVIDERS = new Set(
     .map(([id]) => id)
 );
 
+// OpenAI's speech formats, plus `json` (base64 audio in a JSON body). The value
+// ends up in the reply's Content-Type, so nothing else gets through.
+const RESPONSE_FORMATS = ["mp3", "opus", "aac", "flac", "wav", "pcm", "json"];
+
 export async function handleTts(request) {
   const { body, error } = await readJsonObject(request, { logTag: "TTS" });
   if (error) return error;
@@ -47,6 +51,9 @@ export async function handleTts(request) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "response_format must be a non-empty string");
   }
   const responseFormat = requestedFormat == null ? "mp3" : requestedFormat.trim().toLowerCase();
+  if (!RESPONSE_FORMATS.includes(responseFormat)) {
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, `response_format must be one of ${RESPONSE_FORMATS.join(", ")}`);
+  }
 
   const noModel = missingModel(modelStr, "TTS");
   if (noModel) return noModel;
@@ -121,8 +128,21 @@ async function handleSingleModelTts(body, modelStr, responseFormat, language, st
         .catch((error) => log.warn("AUTH", `Could not clear ${credentials.connectionName} errors: ${error.message}`));
       return result.response;
     }
-    // A request the upstream rejected (handleTtsCore's 400) fails the same on
-    // every account, so it locks none.
+    // This connection's server rejected the request. Another connection may be
+    // a different server (self-hosted ones each have their own baseUrl), so try
+    // it, but lock none: the request, not the account, was at fault. When none
+    // is left, the loop above answers with this 400.
+    if (result.upstreamRejected) {
+      // A connection that can't be excluded would come back forever.
+      if (!credentials.connectionId || excludeConnectionIds.has(credentials.connectionId)) return result.response;
+      log.warn("AUTH", `${credentials.connectionName} rejected the request [${result.status}], not locking`);
+      excludeConnectionIds.add(credentials.connectionId);
+      lastError = result.error;
+      lastStatus = result.status;
+      continue;
+    }
+    // handleTtsCore's own 400s (no input, provider without TTS) are the same
+    // on every account.
     if (result.status === HTTP_STATUS.BAD_REQUEST) return result.response;
 
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, null, credentials.apiKey);

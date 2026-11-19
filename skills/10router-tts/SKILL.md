@@ -28,7 +28,7 @@ curl "$TENROUTER_URL/v1/audio/voices?provider=edge-tts&lang=vi" | jq '.data[].mo
 |---|---|---|
 | `model` | yes | voice ID from `/v1/models/tts` |
 | `input` | yes | text to speak |
-| `response_format` | no | `mp3` (default, raw bytes), `json` (`{audio: base64, format}`), or an audio format the provider serves, such as `wav` or `opus` |
+| `response_format` | no | `mp3` (default, raw bytes) or `json` (`{audio: base64, format}`, any provider). Self-hosted TTS also takes `opus`, `aac`, `flac`, `wav` or `pcm`; other providers send their own fixed format. Anything else is a 400 |
 
 `response_format` can also go in the query (`?response_format=json`). The query parameter wins over the body field.
 
@@ -58,7 +58,7 @@ await writeFile("speech.mp3", Buffer.from(await r.arrayBuffer()));
 
 ## Response shape
 
-Default → raw audio bytes (Content-Type `audio/mp3`). Another audio format (`wav`, say) → raw bytes as `audio/<format>`, from providers that honor it.
+Default → raw audio bytes (Content-Type `audio/<format>`, the format the provider returned: `audio/mp3` for most). On self-hosted TTS, an audio `response_format` (`wav`, say) asks the server for that format.
 
 `"response_format": "json"` in the body, or `?response_format=json`:
 ```json

@@ -1,5 +1,3 @@
-// Routes that read the JSON body themselves, before or instead of handleChat,
-// answer a malformed or non-object body with a 400 rather than a 500.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { handleChatMock } = vi.hoisted(() => ({ handleChatMock: vi.fn() }));
@@ -61,9 +59,6 @@ describe("/v1/responses/compact", () => {
 });
 
 describe("Codex compact ingress", () => {
-  // routeCodexRequest rebuilds the body as { ...body, _compact: true, model },
-  // so null and [] reach handleChat as { _compact: true }, which it answers with
-  // 400 Missing model.
   it.each(["null", "[]"])("forwards %s as { _compact: true }", async (raw) => {
     const { POST } = await import("../../src/app/api/v1/codex/responses/compact/route.js");
     await POST(post("/backend-api/codex/responses/compact", raw));

@@ -155,7 +155,7 @@ Management domains:
 
 Main flow modules:
 
-- Entry: `src/sse/handlers/chat.js`
+- Entry: `src/sse/handlers/chat.ts`
 - Core orchestration: `open-sse/handlers/chatCore.js`
 - Provider execution adapters: `open-sse/executors/*`
 - Format detection/provider config: `open-sse/services/provider.js`

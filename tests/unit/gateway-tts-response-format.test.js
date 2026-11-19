@@ -90,6 +90,20 @@ describe("TTS response_format at JSON ingress", () => {
     expect(mocks.synthesize).not.toHaveBeenCalled();
   });
 
+  it.each(["mp3,text/html", "ogg", "text/html", "made-up"])("rejects format %s, which is not a speech format, before synthesis", async (response_format) => {
+    const response = await handleTts(request({ response_format }));
+    expect(response.status).toBe(400);
+    expect((await response.json()).error.message).toBe("response_format must be one of mp3, opus, aac, flac, wav, pcm, json");
+    expect(mocks.synthesize).not.toHaveBeenCalled();
+  });
+
+  it("rejects a header-unsafe format from the query too", async () => {
+    const response = await handleTts(request({}, "?response_format=mp3%0d%0aX-Injected:%201"));
+    expect(response.status).toBe(400);
+    expect(response.headers.get("X-Injected")).toBeNull();
+    expect(mocks.synthesize).not.toHaveBeenCalled();
+  });
+
   it("treats response_format null as the mp3 default", async () => {
     const response = await handleTts(request({ response_format: null }));
     expect(response.status).toBe(200);

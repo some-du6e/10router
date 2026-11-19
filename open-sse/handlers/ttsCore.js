@@ -72,9 +72,12 @@ export async function handleTtsCore({ provider, model, input, credentials, respo
   } catch (err) {
     // An adapter attaches the upstream status when the upstream answered. A
     // 400/422 that isn't about the key or a limit rejected this request (an
-    // unsupported format, say), so it goes back to the client as a 400.
-    const status = rejectedRequest(err) ? HTTP_STATUS.BAD_REQUEST : HTTP_STATUS.BAD_GATEWAY;
-    return createErrorResult(status, err.message || "TTS synthesis failed");
+    // unsupported format, say), so it goes back to the client as a 400, marked
+    // so the caller can try another server without locking this one.
+    if (rejectedRequest(err)) {
+      return { ...createErrorResult(HTTP_STATUS.BAD_REQUEST, err.message), upstreamRejected: true };
+    }
+    return createErrorResult(HTTP_STATUS.BAD_GATEWAY, err.message || "TTS synthesis failed");
   }
 }
 

@@ -14,6 +14,7 @@ on:
       - "open-sse/handlers/ttsCore.js"
       - "open-sse/handlers/ttsProviders/**"
       - "open-sse/utils/error.js"
+      - "open-sse/services/accountFallback.js"
       - "open-sse/config/runtimeConfig.js"
       - "src/sse/services/memoryAdmission.js"
       - "src/sse/services/codexIngress.ts"
@@ -70,6 +71,7 @@ jobs:
           src/sse/handlers/tts.js
           open-sse/handlers/ttsCore.js
           open-sse/handlers/ttsProviders/selfhostedTts.js
+          open-sse/handlers/ttsProviders/_base.js
           src/app/api/v1/responses/compact/route.js
           "src/app/api/v1beta/models/[...path]/route.js"
           src/app/api/v1/messages/count_tokens/route.js
