@@ -110,12 +110,17 @@ describe("request detail capping on a repeated save", () => {
     const providerRequest = big("t");
     await db.saveRequestDetail(detail("twice", request, providerRequest, progress));
     await repo.__test__.flush();
-    await db.saveRequestDetail(detail("twice", request, providerRequest, done));
+    // From the second save on: the save caps and builds the copy, the flush packs it.
     const stringify = vi.spyOn(JSON, "stringify");
-    gzip.mockClear();
-    await repo.__test__.flush();
-    const again = stringify.mock.calls.filter(([value]) => value === request || value === providerRequest).length;
-    stringify.mockRestore();
+    let again;
+    try {
+      await db.saveRequestDetail(detail("twice", request, providerRequest, done));
+      gzip.mockClear();
+      await repo.__test__.flush();
+      again = stringify.mock.calls.filter(([value]) => value === request || value === providerRequest).length;
+    } finally {
+      stringify.mockRestore();
+    }
     expect(again).toBe(0);
     expect(gzip).not.toHaveBeenCalled();
     expect(await db.getRequestDetailFullData("twice")).toEqual({ request, providerRequest });
