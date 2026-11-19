@@ -48,10 +48,12 @@ const execFileSync = vi.fn((cmd, args) => {
   }
   return "";
 });
-vi.mock("child_process", () => ({ execFileSync, spawn: vi.fn() }));
+const spawn = vi.fn(() => ({ unref: () => {} }));
+vi.mock("child_process", () => ({ execFileSync, spawn }));
 vi.mock("../../src/lib/tunnel/cloudflare/pid.js", () => ({ loadPid: () => null }));
 
-const { collectAppPids, killAppProcesses } = await import("../../src/lib/appUpdater.js");
+const { collectAppPids, killAppProcesses, spawnUpdaterAndExit } = await import("../../src/lib/appUpdater.js");
+const { UPDATER_CONFIG } = await import("../../src/shared/constants/config.js");
 const {
   busyInstallPids, busyInstallMessage, rememberOwnCloudflared, runtimeUpdaterPath, launcherLockPath, LAUNCHER_LOCK_FILE,
   LAUNCHER_PID_ENV, LAUNCHER_STATE_ENV, UPDATER_PID_ENV, POWERSHELL_UTF8,
@@ -477,5 +479,29 @@ describe("killAppProcesses", () => {
 
     expect(stop).toHaveBeenCalledTimes(1);
     expect(kill).not.toHaveBeenCalled();
+  });
+});
+
+describe("spawnUpdaterAndExit", () => {
+  it("logs that it hands over to the updater before it exits", () => {
+    // The updater script is copied under DATA_DIR; keep that in the test's dir.
+    vi.stubEnv("DATA_DIR", stateDir);
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    const exit = vi.spyOn(process, "exit").mockImplementation(() => undefined);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      spawnUpdaterAndExit();
+
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledWith(`[Shutdown] started the updater: exiting in ${UPDATER_CONFIG.exitDelayMs} ms so it can replace this install`);
+      expect(exit).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(UPDATER_CONFIG.exitDelayMs);
+      expect(exit).toHaveBeenCalledWith(0);
+    } finally {
+      log.mockRestore();
+      exit.mockRestore();
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
   });
 });

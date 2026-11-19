@@ -16,6 +16,7 @@ export async function POST() {
     ...(busy.length > 0 ? { warning: busyInstallMessage(busy) } : {}),
   });
 
+  console.log("[Shutdown] the dashboard asked to stop for a manual update: exiting in 500 ms");
   setTimeout(() => process.exit(0), 500);
 
   return response;

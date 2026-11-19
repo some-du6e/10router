@@ -448,7 +448,7 @@ flowchart LR
     Next --> SyncCloud
 ```
 
-Restarts: on SIGTERM/SIGINT `custom-server.js` drains (`server-drain.js`). It closes the listening socket, so new connections are refused for the whole drain, and waits up to `SHUTDOWN_DRAIN_TIMEOUT_MS` for in-flight model requests before running the app's own shutdown listeners and exiting. It only helps if the container's stop grace period is longer than that timeout. Never run two instances on one `DATA_DIR` to overlap a restart: SQLite / sql.js writes are last-writer-wins, and rotating OAuth refresh tokens would be lost.
+Restarts: on SIGTERM/SIGINT `custom-server.js` drains (`server-drain.js`). It closes the listening socket, so new connections are refused for the whole drain, and waits up to `SHUTDOWN_DRAIN_TIMEOUT_MS` for in-flight model requests before running the app's own shutdown listeners and exiting. It only helps if the container's stop grace period is longer than that timeout. `installExitRecorder` (also in `server-drain.js`) logs an `[Exit]` line on every exit the process makes itself, with the code, uptime, memory, open requests and its cause: the caller of `process.exit()`, an uncaught exception or unhandled rejection (Node's `_fatalException` on the stack), or "the event loop ran empty". A restart with no `[Exit]` line was a kill from outside, such as the kernel's OOM killer. Never run two instances on one `DATA_DIR` to overlap a restart: SQLite / sql.js writes are last-writer-wins, and rotating OAuth refresh tokens would be lost.
 
 ## Module Mapping (Decision-Critical)
 
