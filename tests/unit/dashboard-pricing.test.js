@@ -8,10 +8,9 @@ const initialPricing = { provider: { model: { input: 2, output: 4 } } };
 const modalPath = "src/shared/components/PricingModal.js";
 const imports = {
   "@/shared/utils/api": { __esModule: true, default: api },
-  "open-sse/providers/pricing.js": { getDefaultPricing: () => initialPricing },
-  "next/navigation": { useRouter: () => ({}) },
 };
 const button = (tree, text) => elements(tree, (element) => element.type === "button" && textContent(element) === text)[0];
+const closeButton = (tree) => elements(tree, (element) => element.type === "button" && element.props["aria-label"] === "Close")[0];
 const alerts = (tree) => elements(tree, (element) => element.props?.role === "alert").map(textContent).join(" ");
 
 describe("pricing settings failure states", () => {
@@ -25,6 +24,42 @@ describe("pricing settings failure states", () => {
     await vi.waitFor(() => expect(alerts(component.render(props))).toContain("Database unavailable"));
     await button(component.render(props), "Save Changes").props.onClick();
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks reset after pricing fails to load", async () => {
+    const fetch = vi.fn().mockResolvedValue(Response.json({ error: "Database unavailable" }, { status: 500 }));
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal("fetch", fetch);
+    vi.stubGlobal("confirm", confirm);
+    const component = dashboardComponent(modalPath, imports);
+    const props = { isOpen: true, onClose: vi.fn(), onSave: vi.fn() };
+    component.render(props);
+    await vi.waitFor(() => expect(alerts(component.render(props))).toContain("Database unavailable"));
+    expect(button(component.render(props), "Reset to Defaults").props.disabled).toBe(true);
+    await button(component.render(props), "Reset to Defaults").props.onClick();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(props.onSave).not.toHaveBeenCalled();
+  });
+
+  it("cannot be closed while a save is pending", async () => {
+    let finishSave;
+    const fetch = vi.fn().mockResolvedValueOnce(Response.json(initialPricing))
+      .mockReturnValueOnce(new Promise((resolve) => { finishSave = resolve; }));
+    vi.stubGlobal("fetch", fetch);
+    const component = dashboardComponent(modalPath, imports);
+    const props = { isOpen: true, onClose: vi.fn(), onSave: vi.fn() };
+    component.render(props);
+    await vi.waitFor(() => expect(elements(component.render(props), (element) => element.type === "input")).toHaveLength(5));
+    const saving = button(component.render(props), "Save Changes").props.onClick();
+    const tree = component.render(props);
+    expect(closeButton(tree).props.disabled).toBe(true);
+    expect(button(tree, "Cancel").props.disabled).toBe(true);
+    finishSave(Response.json({ error: "Write refused" }, { status: 403 }));
+    await saving;
+    expect(props.onClose).not.toHaveBeenCalled();
+    expect(alerts(component.render(props))).toContain("Write refused");
+    expect(closeButton(component.render(props)).props.disabled).toBe(false);
   });
 
   it("keeps a failed save open and allows retry, including non-JSON failures", async () => {
