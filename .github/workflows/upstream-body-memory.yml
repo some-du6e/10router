@@ -11,6 +11,8 @@ on:
       - "tests/unit/upstream-body-memory.test.js"
       - "tests/unit/proxy-fetch-*.test.js"
       - "tests/unit/provider-fetch.test.js"
+      - "tests/unit/base-executor-retry.test.js"
+      - "Dockerfile"
       - ".github/workflows/upstream-body-memory.yml"
   workflow_dispatch:
 
@@ -50,6 +52,53 @@ jobs:
           ./node_modules/.bin/eslint
           open-sse/utils/proxyFetch.js
           tests/unit/upstream-body-memory.test.js
+          tests/unit/provider-fetch.test.js
+
+  # Informational, for the PR's "Before": this branch's memory tests against the
+  # base branch's proxyFetch.js. Reports how many fail; it never fails the run.
+  before-on-base:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Check out the base branch's proxyFetch.js
+        run: git checkout "origin/${{ github.base_ref || 'master' }}" -- open-sse/utils/proxyFetch.js
+      - name: Run this branch's memory tests on it (informational)
+        working-directory: tests
+        run: |
+          ./node_modules/.bin/vitest run --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/before.json" \
+            unit/upstream-body-memory.test.js || true
+          node --input-type=module -e '
+            import { readFileSync, appendFileSync } from "node:fs";
+            const r = JSON.parse(readFileSync(process.env.RUNNER_TEMP + "/before.json", "utf8"));
+            const lines = [`Informational. Before on Node ${process.versions.node} (base proxyFetch.js, this branch tests): ${r.numFailedTests} failed, ${r.numPassedTests} passed of ${r.numTotalTests}`];
+            for (const f of r.testResults) {
+              const rel = f.name.slice(f.name.indexOf("/tests/") + 1);
+              if (!f.assertionResults.length && f.status === "failed") lines.push(`  ${rel}: failed to load`);
+              for (const a of f.assertionResults) {
+                if (a.status !== "failed") continue;
+                lines.push(`  ${rel} :: ${a.fullName}`);
+                const why = (a.failureMessages?.[0] || "").split("\n")[0];
+                if (why) lines.push(`      ${why}`);
+              }
+            }
+            console.log(lines.join("\n"));
+            appendFileSync(process.env.GITHUB_STEP_SUMMARY, "```\n" + lines.join("\n") + "\n```\n");
+          '
 
   # The suite is not all-green on master (see AGENTS.md), so this runs it on
   # both the base and this branch and fails only on tests that pass on the base
