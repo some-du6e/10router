@@ -862,12 +862,16 @@ describe("handleChat early headers for a non-streaming request", () => {
     expect(clientDemandsJson(body, headers)).toBe(want);
   });
 
-  it("a fast answer is the routed Response itself", async () => {
+  // Re-wrapped only so memory admission sees its body end: same status,
+  // headers and bytes, no keepalive in front.
+  it("a fast answer is the routed Response as is", async () => {
     const reply = jsonOk();
     state.core = () => reply;
     const res = await request("/v1/messages", claudeJson, { earlyHeaders: true });
-    expect(res).toBe(reply.response);
+    expect(res.status).toBe(reply.response.status);
+    expect([...res.headers]).toEqual([...reply.response.headers]);
     expect(vi.getTimerCount()).toBe(0);
+    expect(await res.text()).toBe(JSON.stringify(CLAUDE_MESSAGE));
   });
 
   it("a fast failure keeps its real HTTP status", async () => {
