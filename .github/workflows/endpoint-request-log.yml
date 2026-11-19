@@ -4,15 +4,16 @@ on:
   pull_request:
     paths:
       - "src/lib/endpointRequestLog.ts"
-      - "src/lib/endpointDetect.js"
+      - "src/lib/endpointDetect.ts"
       - "src/shared/constants/providers.js"
-      - "src/app/api/providers/[id]/requests/pick.ts"
+      - "src/app/api/providers/*/requests/pick.ts"
       - "open-sse/utils/proxyFetch.js"
-      - "open-sse/utils/anthropicBeta.js"
+      - "open-sse/utils/anthropicBeta.ts"
       - "open-sse/utils/headersTimeout.js"
       - "open-sse/config/runtimeConfig.js"
       - "tests/package.json"
       - "tests/vitest.config.js"
+      - "tests/vitest.shared.js"
       - "tests/unit/endpoint-request-log*.test.js"
       - ".github/workflows/endpoint-request-log.yml"
   workflow_dispatch:

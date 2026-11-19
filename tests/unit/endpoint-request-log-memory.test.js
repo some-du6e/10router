@@ -106,4 +106,25 @@ describe("endpoint request log memory", () => {
       expect(entry.request).toMatch(/more characters\)$/);
     }
   }, 60_000);
+
+  // 256 K characters of a two-byte character encode to 512 KB, so the capture
+  // has to cut again in bytes: 256 KB is exactly 131072 "é".
+  it("cuts a multi-byte body to 256 KB", async () => {
+    clearEndpointRequests(EP);
+    const creds = { apiKey: "test-key-0000000000", providerSpecificData: { baseUrl: base } };
+    const response = await recordEndpointRequests(EP, creds, () => proxyAwareFetch(`${base}/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "text/plain; charset=utf-8" },
+      body: "é".repeat(300_000),
+    }));
+    await finish([response]);
+    await vi.waitFor(() => expect(getEndpointRequests(EP)).toHaveLength(1));
+    const [entry] = getEndpointRequests(EP);
+    // The entry shows the first 8000 characters (MAX_TEXT) and counts the rest.
+    const shown = 8000;
+    const more = Number(/\((\d+) more characters\)$/.exec(entry.request)?.[1]);
+    expect(shown + more).toBe(131_072);
+    expect(entry.request).toContain(`\n\n${"é".repeat(shown)}\n…`);
+    expect(entry.request).not.toContain("�");
+  }, 30_000);
 });
