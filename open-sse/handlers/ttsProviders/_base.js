@@ -23,9 +23,11 @@ export function formatFromContentType(contentType, fallback = "mp3") {
   return fallback;
 }
 
-// The message of an upstream error body: OpenAI-style `error.message`, a string
-// `error`, a bare `message`, or a FastAPI `detail` (a string, `{ message }`, or
-// `[{ msg }]`). Fields that aren't non-empty strings are skipped.
+// The message of an upstream error body: OpenAI-style `error.message`, a bare
+// `message`, a FastAPI `detail` (a string, `{ message }`, or `[{ msg }]`), then
+// a string `error`, which some frameworks fill with the status text ("Bad
+// Request") beside the real `message`. Fields that aren't non-empty strings
+// are skipped.
 export function upstreamErrorMessage(text, status) {
   const fallback = `Upstream error (${status})`;
   const str = (value) => (typeof value === "string" && value.trim() ? value : null);
@@ -35,7 +37,7 @@ export function upstreamErrorMessage(text, status) {
     const detailMsg = Array.isArray(detail)
       ? detail.map((d) => str(d?.msg)).filter(Boolean).join("; ")
       : str(detail) || str(detail?.message);
-    return str(parsed?.error?.message) || str(parsed?.error) || str(parsed?.message) || str(detailMsg) || str(text) || fallback;
+    return str(parsed?.error?.message) || str(parsed?.message) || str(detailMsg) || str(parsed?.error) || str(text) || fallback;
   } catch {
     return str(text) || fallback;
   }

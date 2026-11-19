@@ -139,20 +139,41 @@ describe("self-hosted TTS errors", () => {
     expect((await response.json()).error.message).not.toContain("[object Object]");
   });
 
-  it("returns instead of looping on a rejecting connection with no id", async () => {
-    connections = [{ ...serverA, connectionId: undefined }];
-    upstream.mockImplementation(async () => Response.json({ detail: "unsupported format" }, { status: 422 }));
-    const response = await handleTts(speech({}));
-    expect(response.status).toBe(400);
-    expect(upstream).toHaveBeenCalledTimes(1);
-  });
-
   it("returns instead of looping when an excluded connection comes back", async () => {
-    mocks.credentials.mockImplementation(async () => serverA);
+    // Ignores the exclusions three times, then runs out, so a missing guard
+    // shows up as extra upstream calls rather than a hang.
+    mocks.credentials.mockReset();
+    mocks.credentials
+      .mockResolvedValueOnce(serverA).mockResolvedValueOnce(serverA).mockResolvedValueOnce(serverA)
+      .mockResolvedValue(null);
     upstream.mockImplementation(async () => Response.json({ detail: "unsupported format" }, { status: 422 }));
     const response = await handleTts(speech({}));
     expect(response.status).toBe(400);
     expect(upstream).toHaveBeenCalledTimes(2);
+  });
+
+  it("answers with the first server's message when two reject differently", async () => {
+    connections = [serverA, serverB];
+    upstream.mockImplementation(async (url) => Response.json({ detail: `${new URL(url).host} says no` }, { status: 422 }));
+    const response = await handleTts(speech({}));
+    expect(response.status).toBe(400);
+    expect((await response.json()).error.message).toBe("a.test says no");
+  });
+
+  it.each([
+    [{ statusCode: 400, error: "Bad Request", message: "Invalid API key" }, "Invalid API key"],
+    [{ error: "invalid_request", detail: "voice not found" }, "voice not found"],
+  ])("prefers the real reason over a status-text error in %j", async (body, message) => {
+    upstream.mockImplementation(async () => Response.json(body, { status: 400 }));
+    const result = await selfhostedTts.synthesize("hello", "kokoro", serverA, "mp3").catch((err) => err);
+    expect(result.message).toBe(message);
+  });
+
+  it("still locks a framework-style 400 whose message is about the key", async () => {
+    upstream.mockImplementation(async () => Response.json({ statusCode: 400, error: "Bad Request", message: "Invalid API key" }, { status: 400 }));
+    const response = await handleTts(speech({}));
+    expect(response.status).toBe(502);
+    expect(mocks.markUnavailable).toHaveBeenCalledWith("conn-a", 502, "Invalid API key", "selfhosted-tts", "kokoro/af_heart", null, "any");
   });
 
   it("still treats an upstream server error as the connection's failure", async () => {
@@ -208,6 +229,6 @@ describe("a config-driven adapter on the shared helpers", () => {
 
   it("throws the upstream's string error", async () => {
     upstream.mockResolvedValue(Response.json({ error: "Unsupported format" }, { status: 400 }));
-    await expect(deepgram()).rejects.toThrow("Unsupported format");
+    await expect(deepgram()).rejects.toThrow(/^Unsupported format$/);
   });
 });

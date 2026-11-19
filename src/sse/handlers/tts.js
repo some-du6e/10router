@@ -105,9 +105,9 @@ async function handleSingleModelTts(body, modelStr, responseFormat, language, st
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
-  // The first server that rejected the request's message. A rejected request
-  // fails the same way on retry, so when no connection serves it this 400 is
-  // the answer, not a locked-accounts 5xx with Retry-After.
+  // The message of the first server that rejected the request. A rejected
+  // request fails the same way on retry, so when no connection serves it this
+  // 400 is the answer, not a locked-accounts 5xx with Retry-After.
   let rejectedError = null;
 
   while (true) {
@@ -138,12 +138,10 @@ async function handleSingleModelTts(body, modelStr, responseFormat, language, st
     // it, but lock none: the request, not the account, was at fault.
     if (result.upstreamRejected) {
       // A connection that can't be excluded would come back forever.
-      if (!credentials.connectionId || excludeConnectionIds.has(credentials.connectionId)) return result.response;
+      if (excludeConnectionIds.has(credentials.connectionId)) return result.response;
       log.warn("AUTH", `${credentials.connectionName} rejected the request [${result.status}], not locking`);
       excludeConnectionIds.add(credentials.connectionId);
       rejectedError ??= result.error;
-      lastError = result.error;
-      lastStatus = result.status;
       continue;
     }
     // handleTtsCore's own 400s (no input, provider without TTS) are the same

@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { createErrorResult } from "../utils/error.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
-import { namesAccountOrLimit } from "../services/accountFallback.js";
+import { isRequestError } from "../services/accountFallback.js";
 import { getTtsAdapter, synthesizeViaConfig } from "./ttsProviders/index.js";
 
 // Re-export voice fetchers + voices APIs for backward compat with existing routes
@@ -71,17 +71,13 @@ export async function handleTtsCore({ provider, model, input, credentials, respo
     return createErrorResult(HTTP_STATUS.BAD_REQUEST, `Provider '${provider}' does not support TTS via this route.`);
   } catch (err) {
     // An adapter attaches the upstream status when the upstream answered. A
-    // 400/422 that isn't about the key or a limit rejected this request (an
-    // unsupported format, say), so it goes back to the client as a 400, marked
-    // so the caller can try another server without locking this one.
-    if (rejectedRequest(err)) {
+    // request error (isRequestError: 400/404/422 not about the key or a limit)
+    // rejected this request (an unsupported format, say), so it goes back to
+    // the client as a 400, marked so the caller can try another server without
+    // locking this one.
+    if (isRequestError(err?.status, err?.message)) {
       return { ...createErrorResult(HTTP_STATUS.BAD_REQUEST, err.message), upstreamRejected: true };
     }
     return createErrorResult(HTTP_STATUS.BAD_GATEWAY, err.message || "TTS synthesis failed");
   }
-}
-
-function rejectedRequest(err) {
-  return (err?.status === HTTP_STATUS.BAD_REQUEST || err?.status === HTTP_STATUS.UNPROCESSABLE_ENTITY)
-    && !namesAccountOrLimit(err.message);
 }
