@@ -55,6 +55,7 @@ export default function CombosPage() {
   const [capacityAdapter, setCapacityAdapter] = useState(EMPTY_CAPACITY_ADAPTER);
   const { getCaps } = useModelCaps();
   const [confirmState, setConfirmState] = useState(null);
+  const [actionError, setActionError] = useState("");
   const { copied, copy } = useCopyToClipboard();
 
   useEffect(() => {
@@ -92,15 +93,12 @@ export default function CombosPage() {
   };
 
   const handleSetCapacityAdapter = async (next) => {
-    setCapacityAdapter(next);
+    setActionError("");
     try {
-      await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ capacityAdapter: next }),
-      });
+      await api.patch("/api/settings", { capacityAdapter: next });
+      setCapacityAdapter(next);
     } catch (error) {
-      console.log("Error updating capacity adapter:", error);
+      setActionError(`Failed to update capacity adapter: ${error.message}`);
     }
   };
 
@@ -122,13 +120,12 @@ export default function CombosPage() {
       message: "Delete this combo?",
       onConfirm: async () => {
         setConfirmState(null);
+        setActionError("");
         try {
-          const res = await fetch(`/api/combos/${id}`, { method: "DELETE" });
-          if (res.ok) {
-            setCombos(combos.filter(c => c.id !== id));
-          }
+          await api.del(`/api/combos/${id}`);
+          setCombos((prev) => prev.filter(c => c.id !== id));
         } catch (error) {
-          console.log("Error deleting combo:", error);
+          setActionError(`Failed to delete combo: ${error.message}`);
         }
       }
     });
@@ -137,25 +134,21 @@ export default function CombosPage() {
   // Merge a per-combo strategy patch into settings.comboStrategies. Passing an empty
   // patch (strategy back to default "fallback") drops the entry entirely.
   const handleSetComboStrategy = async (comboName, patch) => {
+    const updated = { ...comboStrategies };
+    const next = { ...(updated[comboName] || {}), ...patch };
+    // Prune to keep settings clean: default fallback with no extras = no entry.
+    if (!next.fallbackStrategy || next.fallbackStrategy === "fallback") {
+      delete updated[comboName];
+    } else {
+      updated[comboName] = next;
+    }
+
+    setActionError("");
     try {
-      const updated = { ...comboStrategies };
-      const next = { ...(updated[comboName] || {}), ...patch };
-      // Prune to keep settings clean: default fallback with no extras = no entry.
-      if (!next.fallbackStrategy || next.fallbackStrategy === "fallback") {
-        delete updated[comboName];
-      } else {
-        updated[comboName] = next;
-      }
-
-      await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ comboStrategies: updated }),
-      });
-
+      await api.patch("/api/settings", { comboStrategies: updated });
       setComboStrategies(updated);
     } catch (error) {
-      console.log("Error updating combo strategy:", error);
+      setActionError(`Failed to update combo strategy: ${error.message}`);
     }
   };
 
@@ -186,6 +179,8 @@ export default function CombosPage() {
           Create Combo
         </Button>
       </div>
+
+      {actionError && <p role="alert" className="text-sm text-red-500">{actionError}</p>}
 
       {/* Combos List */}
       {combos.length === 0 ? (
