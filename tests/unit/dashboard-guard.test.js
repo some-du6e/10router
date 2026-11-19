@@ -807,18 +807,32 @@ describe("dashboard guard login-off Host allowlist", () => {
 
   // nginx's default proxy_set_header Host $proxy_host: every name the browser
   // used, a rebound one included, arrives as the upstream's loopback Host.
-  it("refuses a loopback Host behind a proxy, and keeps it for a client on this machine", async () => {
+  // What custom-server.js stamps for a loopback (or TRUST_PROXY-listed) proxy
+  // peer, and for a direct peer from another address with no forwarding headers.
+  const PROXY_HOP = { "x-9r-peer-token": PEER_TOKEN, "x-9r-real-ip": "203.0.113.9", "x-9r-socket-ip": "127.0.0.1", "x-9r-via-proxy": "1", "x-9r-proxy-hop": "1" };
+  const DOCKER_PEER = { "x-9r-peer-token": PEER_TOKEN, "x-9r-real-ip": "172.17.0.1", "x-9r-socket-ip": "172.17.0.1", "x-9r-via-proxy": "1" };
+
+  it("refuses a loopback Host from a proxy hop, however it is written", async () => {
     process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
-    const proxied = { "x-9r-peer-token": PEER_TOKEN, "x-9r-real-ip": "203.0.113.9", "x-9r-via-proxy": "1" };
-    for (const host of ["127.0.0.1:20128", "localhost:20128", "[::1]:20128"]) {
-      expect((await proxy(request("/api/settings", { host, ...proxied }))).status, host).toBe(401);
-      expect(await proxy(localRequest("/api/settings", { host })), host).toBe(mocks.nextResponse);
+    for (const host of ["127.0.0.1:20128", "localhost:20128", "[::1]:20128", "0.0.0.0:20128", "127.0.0.2", "127.1:20128", "2130706433", "[::ffff:127.0.0.1]:20128", "[0:0:0:0:0:0:0:1]"]) {
+      expect((await proxy(request("/api/settings", { host, ...PROXY_HOP }))).status, host).toBe(401);
     }
     // A proxy that passes the browser's Host through is judged by that Host.
     vi.stubEnv("ALLOWED_HOSTS", "router.example.com");
-    expect(await proxy(request("/api/settings", { host: "router.example.com", ...proxied }))).toBe(mocks.nextResponse);
-    // A client's own via-proxy stamp, without the wrapper's proof, is ignored.
-    expect(await proxy(request("/api/settings", { host: "127.0.0.1:20128", "x-9r-via-proxy": "1" }))).toBe(mocks.nextResponse);
+    expect(await proxy(request("/api/settings", { host: "router.example.com", ...PROXY_HOP }))).toBe(mocks.nextResponse);
+    expect(await proxy(request("/api/settings", { host: "192.168.1.10:20128", ...PROXY_HOP }))).toBe(mocks.nextResponse);
+  });
+
+  // Docker with a published port, ssh -L through a jump host, a WSL2 or VM NAT
+  // forward: the peer isn't this machine, but nothing rewrote the browser's Host.
+  it("keeps a loopback Host from a direct peer elsewhere, and from a client on this machine", async () => {
+    process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
+    for (const host of ["localhost:20128", "127.0.0.1:20128", "[::1]:20128"]) {
+      expect(await proxy(request("/api/settings", { host, ...DOCKER_PEER })), host).toBe(mocks.nextResponse);
+      expect(await proxy(localRequest("/api/settings", { host })), host).toBe(mocks.nextResponse);
+    }
+    // A client's own proxy-hop stamp, without the wrapper's proof, is ignored.
+    expect(await proxy(request("/api/settings", { host: "127.0.0.1:20128", "x-9r-proxy-hop": "1" }))).toBe(mocks.nextResponse);
   });
 
   it("leaves a session and the CLI token alone on any Host", async () => {

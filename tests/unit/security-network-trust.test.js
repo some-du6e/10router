@@ -117,6 +117,15 @@ describe("custom-server wrapper: who is local and which address it keys on", () 
     expect(realIpOnly["x-9r-alt-ips"]).toBeUndefined();
   });
 
+  // A loopback peer that isn't local is a proxy whose Host may be its own.
+  it("stamps x-9r-proxy-hop on a loopback proxy hop only, and drops a client's own", async () => {
+    expect((await get({ host: `localhost:${port}`, "x-9r-proxy-hop": "1" }))["x-9r-proxy-hop"]).toBeUndefined();
+    expect((await get({ host: `localhost:${port}`, "x-forwarded-for": "203.0.113.7" }))["x-9r-proxy-hop"]).toBe("1");
+    expect((await get({ host: "router.example.com" }))["x-9r-proxy-hop"]).toBe("1");
+    vi.stubEnv("TRUST_PROXY", "true");
+    expect((await get({ host: `localhost:${port}` }))["x-9r-proxy-hop"]).toBe("1");
+  });
+
   it("drops a client's own x-9r-alt-ips", async () => {
     expect((await get({ host: `localhost:${port}`, "x-9r-alt-ips": "203.0.113.1" }))["x-9r-alt-ips"]).toBeUndefined();
   });

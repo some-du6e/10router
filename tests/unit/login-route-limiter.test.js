@@ -27,7 +27,11 @@ vi.mock("next/server", () => ({
     redirect: (url) => ({ status: 307, url }),
   },
 }));
-vi.mock("next/headers", () => ({ cookies: async () => ({}) }));
+vi.mock("next/headers", () => ({ cookies: async () => ({ get: () => undefined, delete: vi.fn() }) }));
+vi.mock("@/lib/auth/saml.js", async (importOriginal) => ({
+  ...(await importOriginal()),
+  getSamlBaseUrl: () => "http://localhost:20128",
+}));
 vi.mock("@/lib/localDb", () => ({ getSettings: mocks.getSettings, updateSettings: vi.fn(), validateApiKey: vi.fn() }));
 vi.mock("@/lib/auth/setupToken", () => ({
   consumeSetupToken: () => ({ ok: false, reason: "invalid" }),
@@ -58,6 +62,7 @@ vi.mock("@/lib/auth/loginLimiter", async () => {
 
 const { POST: login } = await import("../../src/app/api/auth/login/route.js");
 const { POST: setup } = await import("../../src/app/api/auth/setup/route.js");
+const { POST: samlAcs } = await import("../../src/app/api/auth/saml/acs/route.js");
 
 function loginRequest({ body = JSON.stringify({ password: PASSWORD }), headers = {} } = {}) {
   return new Request("http://localhost:20128/api/auth/login", {
@@ -167,6 +172,16 @@ describe("login route and the limiter", () => {
       method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ token: "guess", password: PASSWORD }),
     }));
     expect(response.status).toBe(401);
+    expect(mocks.limiter.checkLock).toHaveBeenCalledWith(["198.51.100.1", "203.0.113.8"]);
+    expect(mocks.limiter.recordFail).toHaveBeenCalledWith(["198.51.100.1", "203.0.113.8"]);
+  });
+
+  it("limits a failed SAML sign-in on both addresses a proxy sent", async () => {
+    const headers = { ...REMOTE, "x-9r-real-ip": "198.51.100.1", "x-9r-alt-ips": "203.0.113.8" };
+    const response = await samlAcs(new Request("http://localhost:20128/api/auth/saml/acs", {
+      method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", ...headers }, body: "",
+    }));
+    expect(response.status).toBe(307);
     expect(mocks.limiter.checkLock).toHaveBeenCalledWith(["198.51.100.1", "203.0.113.8"]);
     expect(mocks.limiter.recordFail).toHaveBeenCalledWith(["198.51.100.1", "203.0.113.8"]);
   });

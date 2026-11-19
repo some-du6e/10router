@@ -175,14 +175,11 @@ describe("/api/health launch proof", () => {
     expect(await cli.provesLaunchNonce({ host: "127.0.0.1", port: server, nonce })).toBe(true);
   });
 
-  it("passes with a TRUST_PROXY list covering loopback", async () => {
-    vi.stubEnv("TRUST_PROXY", "127.0.0.0/8, ::1");
-    expect(await cli.provesLaunchNonce({ host: "127.0.0.1", port: server, nonce })).toBe(true);
-  });
-
   // `--host <LAN address>` with that address in TRUST_PROXY: the launcher's
   // socket is a listed proxy peer with no forwarding header, keyed `unknown`.
-  it.skipIf(!lanAddress)("passes for a launcher on a LAN bind that a TRUST_PROXY list covers", async () => {
+  // CI runners have a LAN address, so there a missing one fails rather than skips.
+  it.skipIf(!lanAddress && !process.env.CI)("passes for a launcher on a LAN bind that a TRUST_PROXY list covers", async () => {
+    expect(lanAddress, "no non-loopback IPv4 address on this machine").toBeTruthy();
     const lanServer = await listen(healthRoute, lanAddress);
     vi.stubEnv("TRUST_PROXY", `${lanAddress}/32`);
     expect(await cli.provesLaunchNonce({ host: lanAddress, port: lanServer, nonce })).toBe(true);

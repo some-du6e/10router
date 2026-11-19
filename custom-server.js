@@ -712,7 +712,7 @@ function startBackgroundTokenRefreshFromCustomServer() {
 }
 
 // Wrap Next standalone HTTP server: decide who each request comes from (above)
-// and stamp the verdict as x-9r-real-ip / x-9r-alt-ips / x-9r-via-proxy / x-9r-via-tunnel
+// and stamp the verdict as x-9r-real-ip / x-9r-alt-ips / x-9r-via-proxy / x-9r-proxy-hop / x-9r-via-tunnel
 // (plus the raw TCP peer as x-9r-socket-ip / x-9r-socket-port), with
 // the peer token proving the stamp. Client-sent x-9r-* headers are replaced, and
 // X-Forwarded-For is removed so nothing downstream keys on it. The other
@@ -732,10 +732,14 @@ http.createServer = (...args) => {
     // x-9r-real-ip is the address logged and keyed on, x-9r-alt-ips the other
     // login key candidates (see clientKeysFor); x-9r-via-proxy marks every
     // request not from a client on this machine; x-9r-via-tunnel, one whose Host
-    // is a Cloudflare quick tunnel or Tailscale name.
+    // is a Cloudflare quick tunnel or Tailscale name; x-9r-proxy-hop, one not
+    // local whose peer is a proxy whose headers are read (loopback, or listed in
+    // TRUST_PROXY), so its Host may be one the proxy wrote, not the browser.
     const local = isOnThisMachine(req.headers, socketIp);
     const [ip, ...altIps] = clientKeysFor(req.headers, socketIp);
     const viaTunnel = isTunnelTraffic(req.headers, socketIp);
+    const proxyHop = !local && (isLoopbackHost(socketIp) || isTrustedProxyPeer(socketIp));
+    delete req.headers["x-9r-proxy-hop"];
     delete req.headers["x-9r-real-ip"];
     delete req.headers["x-9r-alt-ips"];
     delete req.headers["x-forwarded-for"];
@@ -754,6 +758,7 @@ http.createServer = (...args) => {
     req.headers["x-9r-socket-port"] = String(req.socket?.remotePort ?? "");
     req.headers["x-9r-peer-token"] = PEER_TOKEN;
     if (!local) req.headers["x-9r-via-proxy"] = "1";
+    if (proxyHop) req.headers["x-9r-proxy-hop"] = "1";
     if (viaTunnel) req.headers["x-9r-via-tunnel"] = "1";
     return handler(req, res);
   };

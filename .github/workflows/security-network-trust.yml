@@ -12,6 +12,7 @@ on:
       - "src/app/api/auth/saml/acs/**"
       - "src/app/api/health/**"
       - "src/lib/launchProof.js"
+      - "cli/src/cli/utils/serverProcess.js"
       - "server-drain.js"
       - "next.config.mjs"
       - ".env.example"
@@ -80,6 +81,8 @@ jobs:
           src/dashboardGuard.js
           src/lib/auth/loginLimiter.ts
           src/app/api/auth/login/route.js
+          src/app/api/auth/setup/route.js
+          src/app/api/auth/saml/acs/route.js
           next.config.mjs
           tests/unit/security-network-trust.test.js
           tests/unit/dashboard-guard.test.js

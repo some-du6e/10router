@@ -208,6 +208,14 @@ function allowedHostNames(settings) {
     .filter(Boolean);
 }
 
+// A URL hostname (already canonical: 127.1 and 2130706433 read 127.0.0.1,
+// IPv6 is compressed and bracketed) naming this machine: the loopback names,
+// 127.0.0.0/8, [::1], and 127.0.0.0/8 mapped into IPv6.
+function isLoopbackLiteral(name) {
+  if (isLoopbackHostname(name)) return true;
+  return /^127\.\d+\.\d+\.\d+$/.test(name) || /^\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\]$/.test(name);
+}
+
 function isAllowedOpenHost(request, settings) {
   const raw = request.headers.get("host");
   if (!raw) return true;
@@ -215,9 +223,12 @@ function isAllowedOpenHost(request, settings) {
   if (!url) return false;
   const name = url.hostname.toLowerCase().replace(/\.$/, "");
   // A proxy that rewrites Host to its upstream (nginx's default) sends a loopback
-  // Host for every name the browser used, rebound ones included. Behind a proxy
-  // only the browser's own Host counts, so it must pass Host through.
-  if (isLoopbackHostname(name)) return !(hasTrustedPeerHeaders(request) && request.headers.get("x-9r-via-proxy"));
+  // Host for every name the browser used, rebound ones included. So behind one
+  // (custom-server.js stamps x-9r-proxy-hop for a loopback or TRUST_PROXY-listed
+  // peer) only a browser's own Host counts, and the proxy must pass it through.
+  // A direct peer from elsewhere (a Docker port, an ssh -L or NAT forward) keeps
+  // its Host: a page can't make a browser send a loopback Host for its own name.
+  if (isLoopbackLiteral(name)) return !(hasTrustedPeerHeaders(request) && request.headers.get("x-9r-proxy-hop"));
   if (name.startsWith("[") || /^\d{1,3}(\.\d{1,3}){3}$/.test(name)) return true;
   return allowedHostNames(settings).includes(name);
 }
