@@ -23,13 +23,13 @@ import { respondWithEarlyHeaders } from "open-sse/utils/earlyHeaders.js";
 import { errorResponse, unavailableResponse, clientAbortResult } from "open-sse/utils/error.js";
 import { createLimitHoldResponse, awaitLimitClear, isLimitError, allLockedError } from "open-sse/utils/limitHold.js";
 import { resolveLimitHold } from "../services/limitHoldConfig.js";
-import { checkApiKeyLimits, apiKeyLimitDenial, keepAllowedAdapterModels, keepAllowedComboMembers, comboMembersRefusal, requestKeyAllowsModel, keyHasBudget } from "../services/keyLimits.js";
+import { checkApiKeyLimits, apiKeyLimitDenial, keepAllowedAdapterModels, keepAllowedComboMembers, comboMembersRefusal, keyHasBudget } from "../services/keyLimits.js";
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS, MAX_COMBO_DEPTH, NON_STREAM_EARLY_HEADERS_MS, STREAM_EARLY_HEADERS_MS } from "open-sse/config/runtimeConfig.js";
 import { isRequestError } from "open-sse/services/accountFallback.js";
-import { createSameRequestErrorTally } from "open-sse/services/sameRequestError.js";
+import { createSameRequestErrorTally, requestErrorSignature } from "open-sse/services/sameRequestError.js";
 import { connectionUpstream } from "../services/connectionUpstream.js";
 import { checkModelHang, noteHeadersTimeout, noteModelServed, noteProbeBudget, releaseProbe } from "open-sse/services/modelHang.js";
 import { HEADERS_TIMEOUT } from "open-sse/config/errorConfig.js";
@@ -102,6 +102,9 @@ interface RoutingFailure {
   resetAtMs?: number | null;
   retryAtMs?: number;
   error?: string;
+  // Every account was locked before this request reached one: the error is
+  // the one stored with the locks, from an earlier request.
+  fromLocks?: boolean;
 }
 
 interface ProviderSpecificData {
@@ -145,10 +148,14 @@ interface PassResult {
   unconfigured?: boolean;
   resetAtMs?: number | null;
   retryAtMs?: number;
+  fromLocks?: boolean;
 }
 
 interface SingleModelOptions {
   allowHold?: boolean;
+  // The model a hold re-checks the key's allowlist on before each re-run, when
+  // not this one: an auto combo member passed under the client's bare id.
+  holdModel?: string;
   routingFailures?: RoutingFailure[];
   // Set inside an auto combo: connections billed this way are never used.
   blockedBilling?: Set<BillingSet> | null;
@@ -197,6 +204,8 @@ interface HoldArgs {
   willStream: boolean;
   sourceFormat: string;
   modelStr: string;
+  // The model the key's allowlist is re-checked on, when not modelStr.
+  allowModel?: string;
   provider: string;
   model?: string;
   signal?: AbortSignal | null;
@@ -475,9 +484,13 @@ interface IngressComboArgs extends Omit<RoutedChatArgs, "ingressCombo"> {
  * Home members use every account, as a request pinned to them does: blocked
  * billing sets only apply to the members behind them.
  *
- * A home member's request error (a 400 or 422 about the request itself, such
- * as a context too long) is the answer: the members behind it would refuse
- * the same request, so their errors would only hide it.
+ * A home member's request error is the answer: the members behind it would
+ * refuse the same request, so their errors would only hide it. That is a 400,
+ * 413 or 422 whose message reads as the request's own fault (a context or
+ * token limit, a rejected tool schema: requestErrorSignature). A refusal of
+ * the model or plan on that account (Codex's "not supported when using Codex
+ * with a ChatGPT account"), any other 4xx, and an error stored with locks an
+ * earlier request left on every account still fall back.
  *
  * When the session is pinned to an account of a home member and the limit
  * hold covers pinned accounts, that member runs with the hold, as a request
@@ -488,8 +501,9 @@ interface IngressComboArgs extends Omit<RoutedChatArgs, "ingressCombo"> {
  * request ends as if it had been pinned to that member: the reply is that
  * member's, and the routing failures are its own, so a Codex client still
  * gets its terminal "limits reached" reply. With the limit hold on, the
- * member runs again pinned, which waits for its reset, under a spelling the
- * key allows. Otherwise a failed combo answers with the last member's own
+ * member runs again pinned, which waits for its reset. Either hold re-checks
+ * the key's allowlist on the client's bare id, which already passed it, so a
+ * member the provider spells differently is still re-run as it lists it. Otherwise a failed combo answers with the last member's own
  * reply, so its status and message belong together.
  */
 async function routeIngressCombo({ body, modelStr, settings, clientRawRequest, request, apiKey, routingFailures, signal = null, requiredCapabilities, models, home }: IngressComboArgs): Promise<Response> {
@@ -515,14 +529,22 @@ async function routeIngressCombo({ body, modelStr, settings, clientRawRequest, r
         const mark = routingFailures.length;
         const isHome = home.includes(m);
         const holdOnPinned = isHome && limitHold.enabled && limitHold.onPinned && await sessionPinned(m, b, request);
+        // The hold re-checks the key's allowlist before each re-run. The
+        // member's own id may be spelled differently from the client's bare
+        // id, which the key's allowlist already let through.
         const reply = await handleSingleModelChat(b, m, clientRawRequest, request, apiKey, {
-          allowHold: holdOnPinned, routingFailures, blockedBilling: isHome ? null : blockedBilling, signal, comboPath: [comboKey],
+          allowHold: holdOnPinned, holdModel: modelStr, routingFailures, blockedBilling: isHome ? null : blockedBilling, signal, comboPath: [comboKey],
         });
         if (!reply.ok) {
           seen.lastFailed = reply;
           const failures = routingFailures.slice(mark);
           const error = failures[failures.length - 1]?.error || "";
-          if (isHome && reply.status !== HTTP_STATUS.NOT_FOUND && !failures.some((f) => f.unconfigured) && isRequestError(reply.status, error)) {
+          // Only an error that reads as the request's own fault (a context or
+          // token limit, a rejected tool schema) ends the combo: not a refusal
+          // of the model or plan on this account, and not one stored with
+          // locks an earlier request left on every account.
+          const requestFault = isHome && failures.length > 0 && !failures.some((f) => f.unconfigured || f.fromLocks) && requestErrorSignature(reply.status, error) !== null;
+          if (requestFault) {
             seen.homeRequestError = reply;
           } else if (!seen.limitedHome && isHome && failures.some((f) => f.rateLimited)) {
             seen.limitedHome = { model: m, reply, failures, held: holdOnPinned };
@@ -538,19 +560,18 @@ async function routeIngressCombo({ body, modelStr, settings, clientRawRequest, r
     autoSwitch: false,
   }) as Response;
   if (response.ok || signal?.aborted) return response;
+  // Ahead of a limit an earlier home member hit: the request itself is at fault.
   if (seen.homeRequestError) return seen.homeRequestError;
   const limited = seen.limitedHome;
   if (limited) {
     // The fallbacks' failures would hide that the request ended on a limit.
     routingFailures.splice(0, routingFailures.length, ...limited.failures);
     if (!limitHold.enabled || limited.held) return limited.reply;
-    // The hold checks the key's allowlist on the model it re-runs, so re-run
-    // under the client's spelling when the key refuses the member's.
-    const clientSpelling = `${limited.model.slice(0, limited.model.indexOf("/") + 1)}${modelStr}`;
-    const rerunModel = limited.model === clientSpelling || !request || await requestKeyAllowsModel(request, limited.model) ? limited.model : clientSpelling;
-    log.warn("LIMITHOLD", `combo ${modelStr}: ${rerunModel} rate-limited and no fallback answered, waiting on it`);
+    // Re-run the member as the provider lists it; the hold re-checks the
+    // key's allowlist on the client's bare id, which passed it already.
+    log.warn("LIMITHOLD", `combo ${modelStr}: ${limited.model} rate-limited and no fallback answered, waiting on it`);
     routingFailures.length = 0;
-    return handleSingleModelChat(body, rerunModel, clientRawRequest, request, apiKey, { routingFailures, blockedBilling: null, signal });
+    return handleSingleModelChat(body, limited.model, clientRawRequest, request, apiKey, { holdModel: modelStr, routingFailures, blockedBilling: null, signal });
   }
   return seen.lastFailed || response;
 }
@@ -650,7 +671,7 @@ async function leafModelInfos(
 }
 
 /** Wait out a limit: a narrated stream for streaming clients, a silent hang for JSON ones. */
-async function holdUntilClear({ first, attempt: rerun, willStream, sourceFormat, modelStr, provider, model, signal = null, apiKey = null }: HoldArgs): Promise<Response> {
+async function holdUntilClear({ first, attempt: rerun, willStream, sourceFormat, modelStr, allowModel, provider, model, signal = null, apiKey = null }: HoldArgs): Promise<Response> {
   // A hold can last hours: the key may run out of budget (other requests) or
   // expire meanwhile, so each re-run checks it first. A refusal ends the hold.
   const attempt = async (): Promise<PassResult> => {
@@ -658,7 +679,7 @@ async function holdUntilClear({ first, attempt: rerun, willStream, sourceFormat,
       log.warn("LIMITHOLD", "API key disabled or deleted during the hold");
       return { success: false, limited: false, status: HTTP_STATUS.UNAUTHORIZED, error: "Invalid API key", response: errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key") };
     }
-    const denied = await apiKeyLimitDenial(apiKey, { model: modelStr, format: sourceFormat });
+    const denied = await apiKeyLimitDenial(apiKey, { model: allowModel || modelStr, format: sourceFormat });
     if (denied) return { success: false, limited: false, status: denied.status, error: denied.message, response: denied.response };
     return rerun();
   };
@@ -694,7 +715,7 @@ async function handleSingleModelChat(
   clientRawRequest: ClientRawRequest | null = null,
   request: Request | null = null,
   apiKey: string | null = null,
-  { allowHold = true, routingFailures = [], blockedBilling = null, signal = null, comboPath = [] }: SingleModelOptions = {},
+  { allowHold = true, holdModel, routingFailures = [], blockedBilling = null, signal = null, comboPath = [] }: SingleModelOptions = {},
 ): Promise<Response> {
   // The client is gone: a combo's later models have no one to answer.
   if (signal?.aborted) return clientAbortResult().response;
@@ -702,7 +723,7 @@ async function handleSingleModelChat(
   // panels with empty/unparseable content must also remain retryable.
   const unconfirmed: RoutingFailure = { limited: false };
   routingFailures.push(unconfirmed);
-  const response = await routeSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { allowHold, routingFailures, blockedBilling, signal, comboPath });
+  const response = await routeSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { allowHold, holdModel, routingFailures, blockedBilling, signal, comboPath });
   if (!response.ok) routingFailures.splice(routingFailures.indexOf(unconfirmed), 1);
   return response;
 }
@@ -772,7 +793,7 @@ async function routeSingleModelChat(
   clientRawRequest: ClientRawRequest | null,
   request: Request | null,
   apiKey: string | null,
-  { allowHold, routingFailures, blockedBilling = null, signal = null, comboPath = [] }: { allowHold: boolean; routingFailures: RoutingFailure[]; blockedBilling?: Set<BillingSet> | null; signal?: AbortSignal | null; comboPath?: string[] },
+  { allowHold, holdModel, routingFailures, blockedBilling = null, signal = null, comboPath = [] }: { allowHold: boolean; holdModel?: string; routingFailures: RoutingFailure[]; blockedBilling?: Set<BillingSet> | null; signal?: AbortSignal | null; comboPath?: string[] },
 ): Promise<Response> {
   // Detect source format by endpoint + body (scoped per-call; handleChat's copy is a
   // separate function and is not visible here)
@@ -969,6 +990,7 @@ async function routeSingleModelChat(
             accountFailures.every(failure => isLimitError(failure.status, failure.error)),
           resetAtMs: credentials.providerResetAtMs,
           retryAtMs,
+          fromLocks: accountFailures.length === 0,
           response: unavailableResponse(status, prefixedError, credentials.retryAfter, credentials.retryAfterHuman),
         };
       }
@@ -1203,6 +1225,7 @@ async function routeSingleModelChat(
     unconfigured: first.unconfigured === true,
     retryAtMs: first.retryAtMs,
     error: first.error,
+    fromLocks: first.fromLocks === true,
   });
 
   if (!first.limited || !limitHold.enabled || signal?.aborted) return first.response;
@@ -1221,6 +1244,7 @@ async function routeSingleModelChat(
     willStream,
     sourceFormat: holdSourceFormat,
     modelStr,
+    allowModel: holdModel,
     provider,
     model,
     signal,

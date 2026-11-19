@@ -8,7 +8,8 @@ const state = vi.hoisted(() => ({
   settings: {}, hold: false, held: [], apiKeyOnly: new Set(),
   // codexId: cx/ resolves to the real provider id "codex" (session affinity needs it).
   // keyAllows: models the client key may use, null = no allowlist.
-  // runHeldAttempt: the hold re-runs the request once instead of answering at once.
+  // runHeldAttempt: the hold re-runs the request once, with every account usable
+  // again as after the reset, instead of answering at once.
   codexId: false, keyAllows: null, runHeldAttempt: false,
 }));
 
@@ -77,7 +78,11 @@ vi.mock("open-sse/utils/limitHold.js", async (importOriginal) => ({
   // re-run the request once and answer with that.
   awaitLimitClear: async ({ retryAtMs, attempt }) => {
     state.held.push(retryAtMs);
-    if (state.runHeldAttempt) return { response: (await attempt()).response };
+    if (state.runHeldAttempt) {
+      state.served = new Set();
+      state.limited = {};
+      return { response: (await attempt()).response };
+    }
     return { response: new Response('{"held":true}', { headers: { "Content-Type": "application/json" } }) };
   },
 }));
@@ -176,6 +181,59 @@ describe("Codex ingress auto combo, end to end", () => {
     expect(JSON.stringify(await res.json())).toContain("context_length_exceeded");
   });
 
+  it("falls back past Codex's refusal of the model on a ChatGPT plan", async () => {
+    state.results.cx = () => fail(400, "The 'gpt-x' model is not supported when using Codex with a ChatGPT account.");
+    const res = await post(POST, "gpt-x");
+    expect(tried()).toEqual(["cx/gpt-x", "ctso/openai-gpt-x"]);
+    expect(res.status).toBe(200);
+  });
+
+  it("falls back past a Codex 404", async () => {
+    state.results.cx = () => fail(404, "not found");
+    const res = await post(POST, "gpt-x");
+    expect(tried()).toEqual(["cx/gpt-x", "ctso/openai-gpt-x"]);
+    expect(res.status).toBe(200);
+  });
+
+  it("falls back when every Codex account is locked on another request's too-long 400", async () => {
+    // Another conversation's 400 locked the model on the Codex account; this
+    // request reaches no Codex account and gets that stored error.
+    state.served = new Set(["cx"]);
+    state.limited.cx = {
+      allRateLimited: true, lastErrorCode: 400, lastError: "context_length_exceeded: the input is too long",
+      retryAfter: CODEX_RESET, retryAfterHuman: "reset after 1m",
+    };
+    const res = await post(POST, "gpt-x");
+    expect(tried()).toEqual(["ctso/openai-gpt-x"]);
+    expect(res.status).toBe(200);
+  });
+
+  describe("a rate-limited Codex with the hold on and the other provider answering", () => {
+    beforeEach(() => {
+      state.hold = true;
+      state.results.cx = () => fail(429, CODEX_LIMIT_ERROR);
+      state.limited.cx = { allRateLimited: true, lastErrorCode: 429, lastError: CODEX_LIMIT_ERROR, retryAfter: CODEX_RESET, retryAfterHuman: "reset after 1m" };
+    });
+
+    it("falls back without holding", async () => {
+      const res = await post(POST, "gpt-x", undefined, { stream: false });
+      expect(tried()).toEqual(["cx/gpt-x", "ctso/openai-gpt-x"]);
+      expect(state.held).toEqual([]);
+      expect(res.status).toBe(200);
+    });
+
+    it("falls back without holding when the hold covers pinned accounts but the session isn't pinned", async () => {
+      state.codexId = true;
+      state.settings = { codexSessionAffinity: true, limitHoldOnPinned: true };
+      state.results.codex = state.results.cx;
+      state.limited.codex = state.limited.cx;
+      const res = await post(POST, "gpt-x", undefined, { stream: false, prompt_cache_key: "session-never-bound" });
+      expect(tried()).toEqual(["codex/gpt-x", "ctso/openai-gpt-x"]);
+      expect(state.held).toEqual([]);
+      expect(res.status).toBe(200);
+    });
+  });
+
   it("answers with the last provider's own reply when every one fails", async () => {
     state.results.cx = AUTH_FAILED;
     state.results.ctso = OTHER_REFUSED;
@@ -224,15 +282,50 @@ describe("Codex ingress auto combo, end to end", () => {
       expect(await res.json()).toEqual({ held: true });
     });
 
-    it("re-runs the hold under a spelling the key allows", async () => {
+    it("holds the pinned Codex account once: a hold that still fails isn't held again", async () => {
+      state.codexId = true;
+      state.hold = true;
+      state.runHeldAttempt = true;
+      state.settings = { codexSessionAffinity: true, limitHoldOnPinned: true };
+      state.results.codex = state.results.cx;
+      const body = { prompt_cache_key: "session-held-once" };
+      bindAffinity(affinityKeyFor({ provider: "codex", headers: {}, body }), "codex-1");
+      const res = await post(POST, "gpt-x", undefined, { stream: false, ...body });
+      expect(state.held).toHaveLength(1);
+      expect(tried()).toEqual(["codex/gpt-x", "codex/gpt-x", "ctso/openai-gpt-x"]);
+      expect(res.status).toBe(429);
+    });
+
+    it("re-runs the hold on Codex's own id when the key allows only the client's spelling", async () => {
       state.combo = ["cx/gpt-x.1", "ctso/openai-gpt-x-1"];
       state.catalog = [{ id: "cx/gpt-x.1", provider: "codex" }, { id: "ctso/openai-gpt-x-1", provider: "ctso" }];
-      state.keyAllows = ["gpt-x-1", "cx/gpt-x-1"];
+      state.keyAllows = ["gpt-x-1", "ctso/openai-gpt-x-1"];
       state.hold = true;
       state.runHeldAttempt = true;
       const res = await post(POST, "gpt-x-1", undefined, { stream: false });
       expect(state.held).toHaveLength(1);
-      // Still Codex's limit after the wait, not a refusal of Codex's spelling.
+      // After the wait Codex gets the id it lists, not the client's spelling.
+      expect(tried()).toEqual(["cx/gpt-x.1", "ctso/openai-gpt-x-1", "cx/gpt-x.1"]);
+      // Still Codex's limit after the wait, not a refusal by the key's allowlist.
+      expect(res.status).toBe(429);
+    });
+
+    it("holds a pinned Codex account whose id the key allows only under the client's spelling", async () => {
+      state.combo = ["cx/gpt-x.1", "ctso/openai-gpt-x-1"];
+      state.catalog = [{ id: "cx/gpt-x.1", provider: "codex" }, { id: "ctso/openai-gpt-x-1", provider: "ctso" }];
+      state.keyAllows = ["gpt-x-1", "ctso/openai-gpt-x-1"];
+      state.codexId = true;
+      state.hold = true;
+      state.runHeldAttempt = true;
+      state.settings = { codexSessionAffinity: true, limitHoldOnPinned: true };
+      state.results.codex = () => fail(429, CODEX_LIMIT_ERROR);
+      state.results.ctso = OTHER_REFUSED;
+      const body = { prompt_cache_key: "session-dotted" };
+      bindAffinity(affinityKeyFor({ provider: "codex", headers: {}, body }), "codex-1");
+      const res = await post(POST, "gpt-x-1", undefined, { stream: false, ...body });
+      expect(state.held).toHaveLength(1);
+      // The hold re-ran Codex rather than ending on the allowlist.
+      expect(tried()).toEqual(["codex/gpt-x.1", "codex/gpt-x.1", "ctso/openai-gpt-x-1"]);
       expect(res.status).toBe(429);
     });
 

@@ -388,12 +388,15 @@ describe("model allowlist", () => {
     const res = await handleChat(chatRequest(key, "claude-opus-5-5"));
     expect(res.status).toBe(200);
     expect(upstream.core).toHaveBeenCalledTimes(1);
-    expect(upstream.core.mock.calls[0][0].modelInfo.model).not.toMatch(/openai-/);
+    // The dotted member, first after the dropped openai- one: not the bare id routed alone.
+    expect(upstream.core.mock.calls[0][0].modelInfo).toMatchObject({ provider: "kiro", model: "claude-opus-5.5" });
 
     upstream.core.mockClear();
     autoComboState.models = ["or/anthropic/claude-opus-5-5"];
     expect((await handleChat(chatRequest(key, "claude-opus-5-5"))).status).toBe(200);
     expect(upstream.core).toHaveBeenCalledTimes(1);
+    // The nested member itself, not the bare id routed alone.
+    expect(upstream.core.mock.calls[0][0].modelInfo).toMatchObject({ model: "anthropic/claude-opus-5-5" });
 
     // Only openai- members: as before openai- matching, no auto combo forms
     // and the bare id routes on its own.

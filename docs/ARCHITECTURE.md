@@ -115,7 +115,9 @@ Important compatibility routes:
   (`responses` and `responses/compact` both go through `routeCodexRequest` in
   `src/sse/services/codexIngress.ts`, which picks Codex, an auto combo with Codex
   accounts first, or the model as named, then call `handleChat` like the `/v1`
-  routes; `[...path]` acknowledges Codex's advisory side-calls). `models` serves the routed models in
+  routes. A compaction (`responses/compact`), and a later turn carrying Codex's
+  encrypted compaction item, never get the auto combo: no other provider can
+  read them, so they stay on `cx/`; `[...path]` acknowledges Codex's advisory side-calls). `models` serves the routed models in
   Codex's `{ "models": [...] }` shape (`src/lib/codex/modelCatalog.js`), which
   replaces Codex's own catalog once it decodes. A routed model that Codex's own
   lookup matches to a model in Codex's bundled catalog (vendored in
