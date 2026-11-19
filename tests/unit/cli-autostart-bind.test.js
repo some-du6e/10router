@@ -11,7 +11,8 @@ const launch = { host: "127.0.0.1", port: 20200, dataDir: "/srv/router data" };
 const logs = { out: "/u/Library/Logs/10router/10router.log", err: "/u/Library/Logs/10router/10router.error.log" };
 
 // An in-memory machine: files written, modes set, commands run.
-function fakeSystem(platform, { existing = [], files: initial = {}, owners = {}, fds = {} } = {}) {
+function fakeSystem(platform, { existing = [], files: initial = {}, owners = {}, fds = {}, symlinks = {} } = {}) {
+  const inode = (p) => [...p].reduce((n, ch) => n * 31 + ch.charCodeAt(0), 7) % 1e9;
   const files = new Map(Object.entries(initial));
   const dirs = new Set();
   const modes = new Map();
@@ -24,10 +25,16 @@ function fakeSystem(platform, { existing = [], files: initial = {}, owners = {},
     openSync: (p) => { if (!files.has(p)) files.set(p, ""); return 3; },
     closeSync: () => {},
     chmodSync: (p, mode) => { modes.set(p, mode); },
+    // Each path is its own inode on device 1; symlinks maps a link to its target.
     lstatSync: (p) => {
+      if (p in symlinks) return { isFile: () => false, isSymbolicLink: () => true, uid: owners[p] ?? 501, dev: 1, ino: inode(p) };
       if (!files.has(p)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-      // Each path is its own inode on device 1.
-      return { isFile: () => true, uid: owners[p] ?? 501, dev: 1, ino: [...p].reduce((n, ch) => n * 31 + ch.charCodeAt(0), 7) % 1e9 };
+      return { isFile: () => true, isSymbolicLink: () => false, uid: owners[p] ?? 501, dev: 1, ino: inode(p) };
+    },
+    statSync: (p) => {
+      const target = symlinks[p] ?? p;
+      if (!files.has(target)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      return { isFile: () => true, isSymbolicLink: () => false, uid: owners[target] ?? 501, dev: 1, ino: inode(target) };
     },
     fstatSync: (fd) => {
       if (!(fd in fds)) throw Object.assign(new Error("EBADF"), { code: "EBADF" });
@@ -149,6 +156,28 @@ describe("LaunchAgents written by an older 10router", () => {
     expect(writesToLegacyLog(fakeSystem("darwin", { files: { "/tmp/10router.log": "" }, fds: { 1: { dev: 9, ino: 9 } } }).sys)).toBe(false);
     expect(writesToLegacyLog(fakeSystem("darwin").sys)).toBe(false);
     expect(writesToLegacyLog(fakeSystem("linux", { files: { "/tmp/10router.log": "" }, fds }).sys)).toBe(false);
+  });
+
+  // launchd follows a symlink planted at the old path: the token would land in
+  // whatever it points to.
+  it("treats a symlink at an old /tmp log path as a legacy log", () => {
+    const target = "/Users/other/public/log";
+    const probe = fakeSystem("darwin", { files: { [target]: "" } });
+    const out = probe.sys.fs.statSync(target);
+    const linked = fakeSystem("darwin", { files: { [target]: "" }, symlinks: { "/tmp/10router.log": target }, fds: { 1: { dev: out.dev, ino: out.ino } } });
+    expect(writesToLegacyLog(linked.sys)).toBe(true);
+    // Even when stdout isn't (yet) the link's target.
+    const dangling = fakeSystem("darwin", { symlinks: { "/tmp/10router.error.log": "/nowhere" } });
+    expect(writesToLegacyLog(dangling.sys)).toBe(true);
+  });
+
+  it("never deletes or chmods through a symlink at an old log path", () => {
+    const target = "/Users/other/public/log";
+    const m = fakeSystem("darwin", { files: { [plistPath]: oldPlist, [target]: "theirs" }, symlinks: { "/tmp/10router.log": target } });
+    migrateMacLogs(m.sys);
+    expect(m.files.get(target)).toBe("theirs");
+    expect(m.modes.has(target)).toBe(false);
+    expect(m.modes.has("/tmp/10router.log")).toBe(false);
   });
 
   it("leaves a /tmp file another user owns alone", () => {

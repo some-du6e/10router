@@ -30,9 +30,16 @@ async function healthRoute(req, res) {
   res.end(await response.text());
 }
 
+// What custom-server.js alone did with the nonce, read before launchProof.js
+// (which would also take it out of the env) is loaded.
+let envAfterBoot;
+let globalAfterBoot;
+
 beforeAll(async () => {
   process.env[cli.LAUNCH_NONCE_ENV] = nonce;
   require("../../custom-server.js");
+  envAfterBoot = process.env[cli.LAUNCH_NONCE_ENV];
+  globalAfterBoot = globalThis[Symbol.for("10router.launchNonce")];
   routes = await import("../../src/lib/launchProof.js");
   ({ GET } = await import("../../src/app/api/health/route.js"));
   server = await listen(healthRoute);
@@ -45,6 +52,8 @@ afterAll(async () => {
 describe("launch nonce", () => {
   // cloudflared, tailscale and the updater inherit the server's env.
   it("custom-server takes it out of the env at boot", () => {
+    expect(envAfterBoot).toBeUndefined();
+    expect(globalAfterBoot).toBe(nonce);
     expect(process.env[cli.LAUNCH_NONCE_ENV]).toBeUndefined();
     expect(routes.takeLaunchNonce()).toBe(nonce);
   });

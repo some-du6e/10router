@@ -140,6 +140,34 @@ describe("one launcher per DATA_DIR", () => {
       expect(readLock().pid).toBe(222);
     });
 
+    // The age check passed for one lock; whatever tryLock finds next must be
+    // judged on its own, so a fresh lock written meanwhile is never removed.
+    it("takes over only the exact lock content whose age was checked", () => {
+      writeLock({ pid: 111, startTime: "old" });
+      const checkedRaw = fs.readFileSync(lockPath(dir), "utf8");
+      writeLock({ pid: 555, startTime: "fresh" });
+      const other = tryLock(dir, { pid: 222, startTime: "t2", isRunning: unknown, takeOverUnknown: (raw) => raw === checkedRaw });
+      expect(other).toMatchObject({ ok: false, unknown: true, holder: { pid: 555 } });
+      expect(readLock().pid).toBe(555);
+
+      writeLock({ pid: 111, startTime: "old" });
+      expect(tryLock(dir, { pid: 222, startTime: "t2", isRunning: unknown, takeOverUnknown: (raw) => raw === checkedRaw }).ok).toBe(true);
+    });
+
+    it("lets only one of two launchers take over the same old lock", async () => {
+      writeLock({ pid: 111, startTime: "old" });
+      fs.utimesSync(lockPath(dir), new Date(0), new Date(0));
+      const options = { isRunning: unknown, waitMs: 0, unknownWaitMs: 30, intervalMs: 5 };
+      const [a, b] = await Promise.all([
+        acquireDataDirLock(dir, { ...options, pid: 222, startTime: "ta" }),
+        acquireDataDirLock(dir, { ...options, pid: 333, startTime: "tb" }),
+      ]);
+      expect([a.ok, b.ok].filter(Boolean)).toHaveLength(1);
+      const winner = a.ok ? 222 : 333;
+      expect(readLock().pid).toBe(winner);
+      expect((a.ok ? b : a)).toMatchObject({ ok: false, unknown: true, holder: { pid: winner } });
+    });
+
     it("stops being retried as soon as the check works", async () => {
       writeLock({ pid: 111, startTime: "t1" });
       let calls = 0;

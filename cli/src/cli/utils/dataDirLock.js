@@ -153,8 +153,9 @@ function writtenBeforeBoot(file, { now = Date.now(), uptimeSec = os.uptime() } =
 // plus `conflict` (a three-way takeover race) or `unknown` (the holder's
 // start time couldn't be read). Without startTime nothing is written (no one
 // could tell later that the lock went stale), but a live holder still refuses.
-// takeOverUnknown: treat a holder that can't be checked as stale.
-function tryLock(dataDir, { pid = process.pid, startTime = ownStartTime(), isRunning = holderRuns, takeOverUnknown = false } = {}) {
+// takeOverUnknown(raw): true for the one lock content whose holder can't be
+// checked but may be taken over anyway; any other such holder is refused.
+function tryLock(dataDir, { pid = process.pid, startTime = ownStartTime(), isRunning = holderRuns, takeOverUnknown = () => false } = {}) {
   const file = lockPath(dataDir);
   const content = startTime ? JSON.stringify({ pid, startTime }) : null;
   const release = () => {
@@ -172,7 +173,7 @@ function tryLock(dataDir, { pid = process.pid, startTime = ownStartTime(), isRun
     if (!holder || holder.pid === pid) return null;
     const state = isRunning(holder);
     if (state === true) return { ok: false, holder, file };
-    if (state === UNKNOWN && !takeOverUnknown) return { ok: false, holder, file, unknown: true };
+    if (state === UNKNOWN && !takeOverUnknown(raw)) return { ok: false, holder, file, unknown: true };
     return null;
   };
 
@@ -213,8 +214,13 @@ async function acquireDataDirLock(dataDir, {
     const waited = Date.now() - started;
     if (!result.unknown && waited >= waitMs) return result;
     if (result.unknown && waited >= unknownWaitMs) {
-      if (!writtenBeforeBoot(result.file, { uptimeSec })) return result;
-      return tryLock(dataDir, { ...options, startTime, takeOverUnknown: true });
+      // The takeover applies only to the content whose age was checked: read
+      // it on both sides of the age check, so a fresh lock another launcher
+      // writes meanwhile is judged on its own.
+      const checkedRaw = readRaw(result.file);
+      if (checkedRaw === null) return tryLock(dataDir, { ...options, startTime }); // released meanwhile
+      if (!writtenBeforeBoot(result.file, { uptimeSec }) || readRaw(result.file) !== checkedRaw) return result;
+      return tryLock(dataDir, { ...options, startTime, takeOverUnknown: (raw) => raw === checkedRaw });
     }
     await new Promise((r) => setTimeout(r, intervalMs));
   }

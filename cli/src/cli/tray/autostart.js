@@ -329,7 +329,10 @@ function writesToLegacyLog(sys = system()) {
   if (sys.platform !== "darwin") return false;
   return OLD_MAC_LOGS.some((file) => {
     try {
-      return writesTo(sys.fs.lstatSync(file), sys);
+      // launchd follows a symlink planted at the old path, so a link there
+      // counts whatever it points to, and the identity check uses stat.
+      if (sys.fs.lstatSync(file).isSymbolicLink()) return true;
+      return writesTo(sys.fs.statSync(file), sys);
     } catch {
       return false;
     }
