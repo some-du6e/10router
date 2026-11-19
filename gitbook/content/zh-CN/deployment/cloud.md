@@ -53,7 +53,7 @@ export NODE_ENV="production"
 | `DATA_DIR` | `~/.9router` | 数据库与数据存储路径 （目录名称与旧版本保持一致，以确保向后兼容） |
 | `NODE_ENV` | `development` | 部署时设为 `production` |
 | `ENABLE_REQUEST_LOGS` | `false` | 启用 debug 请求/响应日志 |
-| `TRUST_PROXY` | 未设置 | 当本机上的转发工具不添加任何转发头(`X-Forwarded-For`、`X-Real-IP` 等)时(socat、`ssh -R`、TCP 隧道)设为 `true`:客户端自己的 `Host` 会原样到达,发送 `Host: localhost` 就会被当作本机。设为 `true` 后任何回环连接都不再算作本机,因此服务器本机上的工具也需要 API 密钥或 CLI 令牌。也可以填 IP/CIDR 的逗号列表(`192.168.1.10,10.0.0.0/8`),用于其他主机或容器上的反向代理,届时会读取它的转发头。当 10router 在 Docker 中运行、位于主机上的 Nginx 之后时,Nginx 从 Docker 网桥网关访问容器,因此请列出该网关或 compose 网络(`172.17.0.1`、`172.18.0.0/16`);否则所有登录都以网关为键,Nginx 的转发头会被忽略。列出之后,关闭登录时经发布端口访问的 `http://localhost:20128` 仍然可用:它同样来自网关,但没有转发头,因此算作直接访问,不算经过代理 |
+| `TRUST_PROXY` | 未设置 | 当本机上的转发工具不添加任何转发头(`X-Forwarded-For`、`X-Real-IP` 等)时(socat、`ssh -R`、TCP 隧道)设为 `true`:客户端自己的 `Host` 会原样到达,发送 `Host: localhost` 就会被当作本机。设为 `true` 后任何回环连接都不再算作本机,因此服务器本机上的工具也需要 API 密钥或 CLI 令牌。也可以填 IP/CIDR 的逗号列表(`192.168.1.10,10.0.0.0/8`),用于其他主机或容器上的反向代理,届时会读取它的转发头。当 10router 在 Docker 中运行、位于主机上的 Nginx 之后时,Nginx 从 Docker 网桥网关访问容器,因此请列出该网关或 compose 网络(`172.17.0.1`、`172.18.0.0/16`);否则所有登录都以网关为键,Nginx 的转发头会被忽略。列出之后,关闭登录时经发布端口访问的 `http://localhost:20128` 仍然可用:它同样来自网关,但没有转发头,因此算作直接访问,不算经过代理。所以列出的代理必须在每个 location 上都发送转发头:Nginx 在设置了自己 `proxy_set_header` 的 location(例如为 WebSocket 设置 `Upgrade`/`Connection`)中会丢弃 server 级别的 `proxy_set_header`,该 location 就会看起来像直接访问 |
 | `ALLOWED_HOSTS` | 未设置 | 关闭 "Require login" 时,除 `localhost`、IP 地址、隧道 URL 和 `BASE_URL` 外,仪表盘 API 还会响应的主机名(逗号分隔)。请求经过代理(不属于本机的回环对端,或 `TRUST_PROXY` 列出且发送了转发头的对端)时,回环 `Host` 不算数 |
 
 ### 步骤 5:创建数据目录

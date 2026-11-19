@@ -83,8 +83,8 @@ describe("custom-server proxy-hop stamp for a non-loopback peer", () => {
     expect(lanAddress, "no non-loopback IPv4 address on this machine").toBeTruthy();
     let seen;
     const port = await listen((req, res) => { seen = req.headers; res.end("ok"); }, lanAddress);
-    const send = () => new Promise((resolve) => {
-      const req = http.request({ host: lanAddress, port, agent: false, headers: { host: "localhost", "x-forwarded-for": "203.0.113.7" } }, (res) => { res.resume(); res.on("end", resolve); });
+    const send = (forwarding = { "x-forwarded-for": "203.0.113.7" }) => new Promise((resolve) => {
+      const req = http.request({ host: lanAddress, port, agent: false, headers: { host: "localhost", ...forwarding } }, (res) => { res.resume(); res.on("end", resolve); });
       req.end();
     });
 
@@ -97,6 +97,12 @@ describe("custom-server proxy-hop stamp for a non-loopback peer", () => {
     await send();
     expect(seen["x-9r-proxy-hop"]).toBe("1");
     expect(seen["x-9r-real-ip"]).toBe("203.0.113.7");
+    // Any forwarding header makes it a proxy hop, not only X-Forwarded-For.
+    await send({ "x-real-ip": "203.0.113.8" });
+    expect(seen["x-9r-proxy-hop"]).toBe("1");
+    expect(seen["x-9r-real-ip"]).toBe("203.0.113.8");
+    await send({ forwarded: "for=203.0.113.9" });
+    expect(seen["x-9r-proxy-hop"]).toBe("1");
   });
 
   // Docker with the bridge gateway listed: the owner's own browser on
