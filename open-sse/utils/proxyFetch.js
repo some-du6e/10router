@@ -202,6 +202,36 @@ async function getDirectDispatcher() {
   return directDispatcher;
 }
 
+// Node's fetch (undici) clones a request it may redirect: it tees the body, sends
+// one branch and leaves the other unread, so a copy of the whole body stays
+// queued off the JS heap until the response ends (a stream: minutes). With
+// redirect "error" and no window it sends the request itself. A body that can be
+// sent again goes out that way; if the upstream answers with a redirect, the
+// request is sent again as the caller asked, which follows it. Bun's fetch fails
+// a redirect differently, so this is Node only.
+const SEND_WITHOUT_CLONE = Boolean(process.versions?.undici) && !process.versions?.bun;
+const UNDICI_REDIRECT_ERROR = "unexpected redirect";
+
+function canSendAgain(body) {
+  return typeof body === "string" || body instanceof ArrayBuffer || ArrayBuffer.isView(body) || body instanceof URLSearchParams;
+}
+
+function isUnexpectedRedirect(error) {
+  return error?.name === "TypeError" && error.cause?.message === UNDICI_REDIRECT_ERROR;
+}
+
+async function send(target, init) {
+  if (!SEND_WITHOUT_CLONE || !init || init.redirect !== undefined || "window" in init || !canSendAgain(init.body)) {
+    return originalFetch(target, init);
+  }
+  try {
+    return await originalFetch(target, { ...init, redirect: "error", window: null });
+  } catch (error) {
+    if (!isUnexpectedRedirect(error)) throw error;
+    return originalFetch(target, init);
+  }
+}
+
 // An optional observer the app installs on globalThis (the custom-endpoint
 // request log, src/lib/endpointRequestLog.ts, on runtimes whose undici lacks the
 // body diagnostics channels). Kept as a global so the engine imports nothing
@@ -228,7 +258,7 @@ async function fetchVia(url, options, proxyOptions, noHeadersTimeout = false) {
   const targetUrl = typeof url === "string" ? url : url.toString();
   const direct = async (target, init) => {
     const dispatcher = noHeadersTimeout ? await getDirectDispatcher() : null;
-    return originalFetch(target, dispatcher ? { ...init, dispatcher } : init);
+    return send(target, dispatcher ? { ...init, dispatcher } : init);
   };
 
   // Vercel relay: forward request via relay headers
@@ -250,7 +280,7 @@ async function fetchVia(url, options, proxyOptions, noHeadersTimeout = false) {
   if (proxyUrl) {
     try {
       const dispatcher = await getDispatcher(proxyUrl, { noHeadersTimeout });
-      return await originalFetch(url, { ...options, dispatcher });
+      return await send(url, { ...options, dispatcher });
     } catch (proxyError) {
       // The caller aborted (a client hang-up, or its own timer): not the proxy
       // failing. Passed on as is, so it still reads as an abort.
