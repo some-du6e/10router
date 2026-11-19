@@ -16,6 +16,8 @@ on:
       - "src/lib/localDb.js"
       - "src/lib/db/**"
       - "open-sse/services/accountFallback.js"
+      - "open-sse/services/sameRequestError.ts"
+      - "open-sse/config/errorConfig.js"
       - "open-sse/services/capacityAdapter.js"
       - "open-sse/handlers/chatCore.js"
       - "open-sse/services/model.js"

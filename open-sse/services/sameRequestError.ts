@@ -100,6 +100,18 @@ export function requestErrorSignatures(status: number | null | undefined, error:
 }
 
 /**
+ * Whether one upstream's error is the request's own fault, so another provider
+ * would refuse the same request: a 400 or 422 whose message reads that way, or
+ * a 413 whose message does too. A 413 alone says only that this upstream's
+ * limit was passed (an empty body, an edge proxy's HTML page), and another
+ * provider's limit may be higher. Never an error about the key.
+ */
+export function isRequestFault(status: number | null | undefined, error: unknown): boolean {
+  if (!requestErrorSignatures(status, error)) return false;
+  return status !== HTTP_STATUS.PAYLOAD_TOO_LARGE || SAME_REQUEST_ERROR_PATTERNS.some((p) => p.test(upstreamMessage(error)));
+}
+
+/**
  * How far accounts agree: "exact" once `exactAfter` (max(stopAfter, 2))
  * distinct upstreams gave the very same limit message (a stop wherever the
  * keys point), "normalized" once `stopAfter` accounts gave it up to numbers

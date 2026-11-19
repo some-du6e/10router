@@ -6,10 +6,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const state = vi.hoisted(() => ({
   combo: null, catalog: [], resolved: 0, tried: [], served: new Set(), results: {}, limited: {},
   settings: {}, hold: false, held: [], apiKeyOnly: new Set(),
+  // accounts: how many accounts a provider has (default 1); taken: how many were handed out.
+  accounts: {}, taken: {},
   // codexId: cx/ resolves to the real provider id "codex" (session affinity needs it).
   // keyAllows: models the client key may use, null = no allowlist.
-  // runHeldAttempt: the hold re-runs the request once, with every account usable
-  // again as after the reset, instead of answering at once.
+  // runHeldAttempt: the hold re-runs the request once, with every account
+  // usable again as after the reset (still limited once used), instead of
+  // answering at once.
   codexId: false, keyAllows: null, runHeldAttempt: false,
 }));
 
@@ -30,15 +33,17 @@ vi.mock("@/sse/services/autoCombo.js", async (importOriginal) => ({
 vi.mock("@/sse/services/auth.js", async (importOriginal) => ({
   ...(await importOriginal()),
   extractApiKey: () => null,
-  // One account per provider. Once tried it is gone, or rate-limited when the
-  // test says so.
+  // One account per provider unless state.accounts says more. Once all are
+  // tried they are gone, or rate-limited when the test says so.
   // A provider in apiKeyOnly has just a Codex API-key account, which an auto
   // combo's billing filter (pay per token blocked by default) would skip.
   getProviderCredentials: async (provider, _exclude, _model, options) => {
     if (state.apiKeyOnly.has(provider) && options?.connectionFilter && !options.connectionFilter({ provider: "codex", authType: "apikey" })) return null;
     if (state.served.has(provider)) return state.limited[provider] || null;
-    state.served.add(provider);
-    return { connectionId: `${provider}-1`, connectionName: provider, accessToken: "t" };
+    const n = (state.taken[provider] || 0) + 1;
+    state.taken[provider] = n;
+    if (n >= (state.accounts[provider] || 1)) state.served.add(provider);
+    return { connectionId: `${provider}-${n}`, connectionName: `${provider}-${n}`, accessToken: "t" };
   },
   markAccountUnavailable: async () => ({ shouldFallback: true, cooldownMs: 1000 }),
   clearAccountError: async () => {},
@@ -80,7 +85,7 @@ vi.mock("open-sse/utils/limitHold.js", async (importOriginal) => ({
     state.held.push(retryAtMs);
     if (state.runHeldAttempt) {
       state.served = new Set();
-      state.limited = {};
+      state.taken = {};
       return { response: (await attempt()).response };
     }
     return { response: new Response('{"held":true}', { headers: { "Content-Type": "application/json" } }) };
@@ -88,10 +93,11 @@ vi.mock("open-sse/utils/limitHold.js", async (importOriginal) => ({
 }));
 vi.mock("open-sse/handlers/chatCore.js", async (importOriginal) => ({
   ...(await importOriginal()),
-  handleChatCore: async ({ modelInfo, body }) => {
+  handleChatCore: async ({ modelInfo, body, connectionId }) => {
     state.tried.push({ model: `${modelInfo.provider}/${modelInfo.model}`, compact: body._compact === true });
-    // Results are factories: a Response body can be read only once.
-    return state.results[modelInfo.provider]?.() || { success: true, response: new Response('{"ok":true}', { headers: { "Content-Type": "application/json" } }) };
+    // Results are factories: a Response body can be read only once. Keyed by
+    // account (`cx-2`) or by provider.
+    return (state.results[connectionId] || state.results[modelInfo.provider])?.() || { success: true, response: new Response('{"ok":true}', { headers: { "Content-Type": "application/json" } }) };
   },
 }));
 
@@ -121,6 +127,8 @@ beforeEach(() => {
   state.resolved = 0;
   state.tried = [];
   state.served = new Set();
+  state.accounts = {};
+  state.taken = {};
   state.results = {};
   state.limited = {};
   state.settings = {};
@@ -186,6 +194,30 @@ describe("Codex ingress auto combo, end to end", () => {
     const res = await post(POST, "gpt-x");
     expect(tried()).toEqual(["cx/gpt-x", "ctso/openai-gpt-x"]);
     expect(res.status).toBe(200);
+  });
+
+  it("answers with one Codex account's request error though another refused the model on its plan", async () => {
+    state.accounts.cx = 2;
+    state.results["cx-1"] = () => fail(400, "The 'gpt-x' model is not supported when using Codex with a ChatGPT account.");
+    state.results["cx-2"] = () => fail(400, "Your input exceeds the context window of this model.");
+    const res = await post(POST, "gpt-x");
+    expect(tried()).toEqual(["cx/gpt-x", "cx/gpt-x"]);
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(await res.json())).toContain("context window");
+  });
+
+  it("falls back past a Codex 413 that doesn't say why", async () => {
+    state.results.cx = () => fail(413, "");
+    const res = await post(POST, "gpt-x");
+    expect(tried()).toEqual(["cx/gpt-x", "ctso/openai-gpt-x"]);
+    expect(res.status).toBe(200);
+  });
+
+  it("answers with a Codex 413 that says the request is too large", async () => {
+    state.results.cx = () => fail(413, "Request body is too large for this model.");
+    const res = await post(POST, "gpt-x");
+    expect(tried()).toEqual(["cx/gpt-x"]);
+    expect(res.status).toBe(413);
   });
 
   it("falls back past a Codex 404", async () => {
@@ -288,6 +320,8 @@ describe("Codex ingress auto combo, end to end", () => {
       state.runHeldAttempt = true;
       state.settings = { codexSessionAffinity: true, limitHoldOnPinned: true };
       state.results.codex = state.results.cx;
+      // Still limited after the wait, so a second hold would have something to wait on.
+      state.limited.codex = state.limited.cx;
       const body = { prompt_cache_key: "session-held-once" };
       bindAffinity(affinityKeyFor({ provider: "codex", headers: {}, body }), "codex-1");
       const res = await post(POST, "gpt-x", undefined, { stream: false, ...body });

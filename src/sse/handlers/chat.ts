@@ -29,7 +29,7 @@ import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActi
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS, MAX_COMBO_DEPTH, NON_STREAM_EARLY_HEADERS_MS, STREAM_EARLY_HEADERS_MS } from "open-sse/config/runtimeConfig.js";
 import { isRequestError } from "open-sse/services/accountFallback.js";
-import { createSameRequestErrorTally, requestErrorSignature } from "open-sse/services/sameRequestError.js";
+import { createSameRequestErrorTally, isRequestFault } from "open-sse/services/sameRequestError.js";
 import { connectionUpstream } from "../services/connectionUpstream.js";
 import { checkModelHang, noteHeadersTimeout, noteModelServed, noteProbeBudget, releaseProbe } from "open-sse/services/modelHang.js";
 import { HEADERS_TIMEOUT } from "open-sse/config/errorConfig.js";
@@ -102,9 +102,14 @@ interface RoutingFailure {
   resetAtMs?: number | null;
   retryAtMs?: number;
   error?: string;
-  // Every account was locked before this request reached one: the error is
-  // the one stored with the locks, from an earlier request.
-  fromLocks?: boolean;
+  // Each account's own failure on this request, in the pass that set this
+  // entry. Empty when it reached no account (all locked, none configured).
+  accountErrors?: AccountError[];
+}
+
+interface AccountError {
+  status?: number;
+  error?: unknown;
 }
 
 interface ProviderSpecificData {
@@ -148,7 +153,6 @@ interface PassResult {
   unconfigured?: boolean;
   resetAtMs?: number | null;
   retryAtMs?: number;
-  fromLocks?: boolean;
 }
 
 interface SingleModelOptions {
@@ -485,12 +489,12 @@ interface IngressComboArgs extends Omit<RoutedChatArgs, "ingressCombo"> {
  * billing sets only apply to the members behind them.
  *
  * A home member's request error is the answer: the members behind it would
- * refuse the same request, so their errors would only hide it. That is a 400,
- * 413 or 422 whose message reads as the request's own fault (a context or
- * token limit, a rejected tool schema: requestErrorSignature). A refusal of
- * the model or plan on that account (Codex's "not supported when using Codex
- * with a ChatGPT account"), any other 4xx, and an error stored with locks an
- * earlier request left on every account still fall back.
+ * refuse the same request, so their errors would only hide it. That is an
+ * account of the member answering this request with a 400, 413 or 422 whose
+ * own message reads as the request's fault (a context or token limit, a
+ * rejected tool schema: isRequestFault). A bare 413, Codex's refusal of a
+ * model the account's plan can't use, any other 4xx, and an error stored with
+ * locks an earlier request left on every account still fall back.
  *
  * When the session is pinned to an account of a home member and the limit
  * hold covers pinned accounts, that member runs with the hold, as a request
@@ -538,12 +542,9 @@ async function routeIngressCombo({ body, modelStr, settings, clientRawRequest, r
         if (!reply.ok) {
           seen.lastFailed = reply;
           const failures = routingFailures.slice(mark);
-          const error = failures[failures.length - 1]?.error || "";
-          // Only an error that reads as the request's own fault (a context or
-          // token limit, a rejected tool schema) ends the combo: not a refusal
-          // of the model or plan on this account, and not one stored with
-          // locks an earlier request left on every account.
-          const requestFault = isHome && failures.length > 0 && !failures.some((f) => f.unconfigured || f.fromLocks) && requestErrorSignature(reply.status, error) !== null;
+          // Read each account's own error, not the pass's summary: one
+          // account's key-shaped wording mustn't hide another's request error.
+          const requestFault = isHome && failures.some((f) => f.accountErrors?.some((a) => isRequestFault(a.status, a.error)));
           if (requestFault) {
             seen.homeRequestError = reply;
           } else if (!seen.limitedHome && isHome && failures.some((f) => f.rateLimited)) {
@@ -916,6 +917,9 @@ async function routeSingleModelChat(
   // stream open and wait for the reset instead of returning an error.
   const limitHold = allowHold ? await resolveLimitHold(apiKey) : { enabled: false, onPinned: false };
 
+  // Each account's own failure in the latest pass (RoutingFailure.accountErrors).
+  let passAccountErrors: AccountError[] = [];
+
   // One full pass over the available accounts. Returns a structured result so a
   // limit can be retried later by the hold, rather than being burned into a
   // Response the caller can no longer act on.
@@ -926,6 +930,8 @@ async function routeSingleModelChat(
   // inherit exclusions from the pass that ran hours ago.
   const excludeConnectionIds = new Set<string>();
   const accountFailures: { account?: string; status?: number; error?: string }[] = [];
+  const accountErrors: AccountError[] = [];
+  passAccountErrors = accountErrors;
   // One entry per account: a warm key retried after its 429 replaces its own.
   const failureIndex = new Map<string, number>();
   let lastError: string | null | undefined = null;
@@ -990,7 +996,6 @@ async function routeSingleModelChat(
             accountFailures.every(failure => isLimitError(failure.status, failure.error)),
           resetAtMs: credentials.providerResetAtMs,
           retryAtMs,
-          fromLocks: accountFailures.length === 0,
           response: unavailableResponse(status, prefixedError, credentials.retryAfter, credentials.retryAfterHuman),
         };
       }
@@ -1078,6 +1083,7 @@ async function routeSingleModelChat(
       return result;
     }
     if (signal?.aborted) return clientAbortResult();
+    accountErrors.push({ status: result.status, error: result.error });
 
     // Refresh Antigravity quota before deciding how long to lock the account.
     let quotaResetMs: number | null = null;
@@ -1225,7 +1231,7 @@ async function routeSingleModelChat(
     unconfigured: first.unconfigured === true,
     retryAtMs: first.retryAtMs,
     error: first.error,
-    fromLocks: first.fromLocks === true,
+    accountErrors: passAccountErrors,
   });
 
   if (!first.limited || !limitHold.enabled || signal?.aborted) return first.response;
