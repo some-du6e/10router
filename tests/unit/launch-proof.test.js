@@ -75,6 +75,31 @@ describe("launch nonce", () => {
   });
 });
 
+// A peer on another address, through the real wrapper: its forwarding headers
+// are read, and its Host may be a proxy's, only when TRUST_PROXY lists it.
+// CI runners have a LAN address, so there a missing one fails rather than skips.
+describe("custom-server proxy-hop stamp for a non-loopback peer", () => {
+  it.skipIf(!lanAddress && !process.env.CI)("stamps x-9r-proxy-hop on a listed peer only", async () => {
+    expect(lanAddress, "no non-loopback IPv4 address on this machine").toBeTruthy();
+    let seen;
+    const port = await listen((req, res) => { seen = req.headers; res.end("ok"); }, lanAddress);
+    const send = () => new Promise((resolve) => {
+      const req = http.request({ host: lanAddress, port, agent: false, headers: { host: "localhost", "x-forwarded-for": "203.0.113.7" } }, (res) => { res.resume(); res.on("end", resolve); });
+      req.end();
+    });
+
+    await send();
+    expect(seen["x-9r-via-proxy"]).toBe("1");
+    expect(seen["x-9r-proxy-hop"]).toBeUndefined();
+    expect(seen["x-9r-real-ip"]).toBe(lanAddress);
+
+    vi.stubEnv("TRUST_PROXY", `${lanAddress}/32`);
+    await send();
+    expect(seen["x-9r-proxy-hop"]).toBe("1");
+    expect(seen["x-9r-real-ip"]).toBe("203.0.113.7");
+  });
+});
+
 describe("custom-server peer socket", () => {
   async function stampsFor(headers) {
     let seen;
