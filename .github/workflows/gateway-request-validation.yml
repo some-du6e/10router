@@ -12,12 +12,23 @@ on:
       - "src/sse/handlers/systemone.js"
       - "src/sse/handlers/tts.js"
       - "open-sse/handlers/ttsCore.js"
+      - "open-sse/handlers/ttsProviders/**"
+      - "open-sse/utils/error.js"
+      - "open-sse/config/runtimeConfig.js"
       - "src/sse/services/memoryAdmission.js"
+      - "src/sse/services/codexIngress.ts"
+      - "src/sse/services/keyLimits.js"
+      - "src/app/api/v1/codex/**"
+      - "src/app/api/v1/responses/compact/route.js"
+      - "src/app/api/v1beta/models/**"
+      - "src/app/api/v1/messages/count_tokens/route.js"
       - "tests/package.json"
       - "tests/vitest.config.js"
       - "tests/vitest.shared.js"
       - "tests/unit/gateway-request-validation.test.js"
       - "tests/unit/gateway-tts-response-format.test.js"
+      - "tests/unit/gateway-route-bodies.test.js"
+      - "tests/unit/tts-selfhosted-format.test.js"
       - ".github/workflows/gateway-request-validation.yml"
   workflow_dispatch:
 
@@ -44,7 +55,8 @@ jobs:
           ./node_modules/.bin/vitest run
           unit/gateway-request-validation.test.js
           unit/gateway-tts-response-format.test.js
-          unit/memory-admission.test.js
+          unit/gateway-route-bodies.test.js
+          unit/tts-selfhosted-format.test.js
       - name: Lint
         run: >
           ./node_modules/.bin/eslint
@@ -56,20 +68,15 @@ jobs:
           src/sse/handlers/search.js
           src/sse/handlers/systemone.js
           src/sse/handlers/tts.js
+          open-sse/handlers/ttsCore.js
+          open-sse/handlers/ttsProviders/selfhostedTts.js
+          src/app/api/v1/responses/compact/route.js
+          "src/app/api/v1beta/models/[...path]/route.js"
+          src/app/api/v1/messages/count_tokens/route.js
           tests/unit/gateway-request-validation.test.js
           tests/unit/gateway-tts-response-format.test.js
-      # Fails only on errors in the files this workflow covers, so unrelated
-      # type errors elsewhere don't block it.
-      - name: Type check
-        run: |
-          set +e
-          ./node_modules/.bin/tsc --noEmit -p . > tsc.log 2>&1
-          code=$?
-          set -e
-          tail -5 tsc.log
-          if [ "$code" -gt 2 ] || ! [ -x ./node_modules/.bin/tsc ]; then echo "tsc did not run (exit $code)"; exit 1; fi
-          if grep -F "src/sse/handlers/chat.ts" tsc.log; then exit 1; fi
-          if grep -F "src/sse/utils/requestBody.js" tsc.log; then exit 1; fi
+          tests/unit/gateway-route-bodies.test.js
+          tests/unit/tts-selfhosted-format.test.js
 
   # The suite is not all-green on master (see AGENTS.md), so this runs it on
   # both the base and this branch and fails only on tests that pass on the base

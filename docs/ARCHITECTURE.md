@@ -478,7 +478,7 @@ Memory admission: every chat request (`handleChat`, and the Codex and compact ro
 
 ### Routing and Execution Core
 
-- `src/sse/handlers/chat.js`: request parse, combo handling, account selection loop
+- `src/sse/handlers/chat.ts`: combo handling, account selection loop (the JSON body is read and checked by `src/sse/utils/requestBody.js`)
 - `open-sse/handlers/chatCore.js`: translation, executor dispatch, retry/refresh handling, stream setup
 - `open-sse/executors/*`: provider-specific network and format behavior
 

@@ -28,8 +28,9 @@ curl "$TENROUTER_URL/v1/audio/voices?provider=edge-tts&lang=vi" | jq '.data[].mo
 |---|---|---|
 | `model` | yes | voice ID from `/v1/models/tts` |
 | `input` | yes | text to speak |
+| `response_format` | no | `mp3` (default, raw bytes), `json` (`{audio: base64, format}`), or an audio format the provider serves, such as `wav` or `opus` |
 
-Query `?response_format=mp3` (default, raw bytes) or `?response_format=json` (`{audio: base64, format}`).
+`response_format` can also go in the query (`?response_format=json`). The query parameter wins over the body field.
 
 ## Examples
 
@@ -57,9 +58,9 @@ await writeFile("speech.mp3", Buffer.from(await r.arrayBuffer()));
 
 ## Response shape
 
-Default → raw audio bytes (Content-Type `audio/mp3`).
+Default → raw audio bytes (Content-Type `audio/mp3`). Another audio format (`wav`, say) → raw bytes as `audio/<format>`, from providers that honor it.
 
-`?response_format=json`:
+`"response_format": "json"` in the body, or `?response_format=json`:
 ```json
 { "audio": "SUQzBAAAA...", "format": "mp3" }
 ```

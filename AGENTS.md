@@ -42,9 +42,11 @@ After touching the provider registry, aliases, or OAuth URLs, also run the match
 ## Architecture gotchas
 
 ### Request flow
-`src/app/api/v1/*` (via the `/v1/*` rewrite in `next.config.mjs`) → `src/sse/handlers/chat.js` (combo expansion, account-selection loop) → `open-sse/handlers/chatCore.js` (detect format, translate, dispatch, retry/refresh, stream) → `open-sse/executors/*` (`default.js` covers any OpenAI-compatible upstream) → SSE back to the client.
+`src/app/api/v1/*` (via the `/v1/*` rewrite in `next.config.mjs`) → `src/sse/handlers/chat.ts` (combo expansion, account-selection loop) → `open-sse/handlers/chatCore.js` (detect format, translate, dispatch, retry/refresh, stream) → `open-sse/executors/*` (`default.js` covers any OpenAI-compatible upstream) → SSE back to the client.
 
 `src/sse/` is the app-side glue and `open-sse/` is the engine. The boundary leaks: `chatCore.js` imports `@/lib/usageDb.js`. Put types shared across it somewhere both sides can import.
+
+- Gateway handlers read JSON with `readJsonObject` and check `model` with `missingModel` (both in `src/sse/utils/requestBody.js`); tests in `tests/unit/gateway-request-validation.test.js`.
 
 ### Translators (`open-sse/translator/`)
 - Translation pivots through OpenAI format. A translator registered on an exact pair (e.g. `claude:kiro`) is a **direct route** that skips the lossy double hop; use one for fragile pairs (thinking blocks, tool ids, non-base64 images, `is_error`).
