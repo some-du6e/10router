@@ -105,11 +105,16 @@ async function handleSingleModelTts(body, modelStr, responseFormat, language, st
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
+  // The first server that rejected the request's message. A rejected request
+  // fails the same way on retry, so when no connection serves it this 400 is
+  // the answer, not a locked-accounts 5xx with Retry-After.
+  let rejectedError = null;
 
   while (true) {
     const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
 
     if (!credentials || credentials.allRateLimited) {
+      if (rejectedError !== null) return errorResponse(HTTP_STATUS.BAD_REQUEST, rejectedError);
       if (credentials?.allRateLimited) {
         const { status, error } = allLockedError(lastStatus, lastError, credentials);
         const msg = error || "Unavailable";
@@ -130,13 +135,13 @@ async function handleSingleModelTts(body, modelStr, responseFormat, language, st
     }
     // This connection's server rejected the request. Another connection may be
     // a different server (self-hosted ones each have their own baseUrl), so try
-    // it, but lock none: the request, not the account, was at fault. When none
-    // is left, the loop above answers with this 400.
+    // it, but lock none: the request, not the account, was at fault.
     if (result.upstreamRejected) {
       // A connection that can't be excluded would come back forever.
       if (!credentials.connectionId || excludeConnectionIds.has(credentials.connectionId)) return result.response;
       log.warn("AUTH", `${credentials.connectionName} rejected the request [${result.status}], not locking`);
       excludeConnectionIds.add(credentials.connectionId);
+      rejectedError ??= result.error;
       lastError = result.error;
       lastStatus = result.status;
       continue;

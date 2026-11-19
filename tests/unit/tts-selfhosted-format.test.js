@@ -1,5 +1,3 @@
-// Self-hosted TTS gets an audio format it can serve, and a request a server
-// rejects tries the next connection and locks none.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ credentials: vi.fn(), markUnavailable: vi.fn(), clearError: vi.fn() }));
@@ -16,6 +14,8 @@ vi.mock("@/sse/utils/logger.js", () => ({ request: vi.fn(), info: vi.fn(), warn:
 
 import { handleTts } from "@/sse/handlers/tts.js";
 import selfhostedTts from "../../open-sse/handlers/ttsProviders/selfhostedTts.js";
+import { formatFromContentType } from "../../open-sse/handlers/ttsProviders/_base.js";
+import { FORMAT_HANDLERS } from "../../open-sse/handlers/ttsProviders/genericFormats.js";
 
 const connection = (id, baseUrl) => ({ connectionId: id, connectionName: id, apiKey: "any", providerSpecificData: { baseUrl } });
 const serverA = connection("conn-a", "http://a.test");
@@ -123,10 +123,91 @@ describe("self-hosted TTS errors", () => {
     expect(mocks.markUnavailable).toHaveBeenCalledWith("conn-a", 502, "Invalid API key", "selfhosted-tts", "kokoro/af_heart", null, "any");
   });
 
+  it.each([
+    [{ error: "Unsupported format" }, "Unsupported format"],
+    [{ error: { message: { code: 1 } }, message: 42, detail: "voice not found" }, "voice not found"],
+  ])("reads the message of error body %j as a string", async (body, message) => {
+    upstream.mockResolvedValue(Response.json(body, { status: 422 }));
+    const response = await handleTts(speech({}));
+    expect(response.status).toBe(400);
+    expect((await response.json()).error.message).toBe(message);
+  });
+
+  it("never reports an object as the message", async () => {
+    upstream.mockResolvedValue(Response.json({ error: { message: { code: 1 } } }, { status: 422 }));
+    const response = await handleTts(speech({}));
+    expect((await response.json()).error.message).not.toContain("[object Object]");
+  });
+
+  it("returns instead of looping on a rejecting connection with no id", async () => {
+    connections = [{ ...serverA, connectionId: undefined }];
+    upstream.mockImplementation(async () => Response.json({ detail: "unsupported format" }, { status: 422 }));
+    const response = await handleTts(speech({}));
+    expect(response.status).toBe(400);
+    expect(upstream).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns instead of looping when an excluded connection comes back", async () => {
+    mocks.credentials.mockImplementation(async () => serverA);
+    upstream.mockImplementation(async () => Response.json({ detail: "unsupported format" }, { status: 422 }));
+    const response = await handleTts(speech({}));
+    expect(response.status).toBe(400);
+    expect(upstream).toHaveBeenCalledTimes(2);
+  });
+
   it("still treats an upstream server error as the connection's failure", async () => {
     upstream.mockResolvedValue(new Response("down", { status: 500 }));
     const response = await handleTts(speech({}));
     expect(response.status).toBe(502);
     expect(mocks.markUnavailable).toHaveBeenCalledWith("conn-a", 502, expect.any(String), "selfhosted-tts", "kokoro/af_heart", null, "any");
+  });
+});
+
+describe("self-hosted TTS rejection when the other connections are locked", () => {
+  const locked = { allRateLimited: true, retryAfter: new Date(Date.now() + 30_000).toISOString(), retryAfterHuman: "30s", lastError: "down", lastErrorCode: 502 };
+  const serverError = () => new Response("down", { status: 500 });
+  const rejection = () => Response.json({ detail: "A rejects this" }, { status: 422 });
+
+  beforeEach(() => {
+    mocks.markUnavailable.mockResolvedValue({ shouldFallback: true });
+    // Like getProviderCredentials once a locked connection is all that's left.
+    mocks.credentials.mockImplementation(async (_provider, excluded) => connections.find((c) => !excluded.has(c.connectionId)) ?? locked);
+  });
+
+  it.each([
+    ["A rejects, then B fails", [serverA, serverB]],
+    ["B fails, then A rejects", [serverB, serverA]],
+    ["A rejects while B is locked from earlier", [serverA]],
+  ])("%s: 400 with A's message and no Retry-After", async (_name, order) => {
+    connections = order;
+    upstream.mockImplementation(async (url) => (new URL(url).host === "a.test" ? rejection() : serverError()));
+    const response = await handleTts(speech({}));
+    expect(response.status).toBe(400);
+    expect(response.headers.get("Retry-After")).toBeNull();
+    expect((await response.json()).error.message).toBe("A rejects this");
+  });
+});
+
+describe("formatFromContentType", () => {
+  it.each([
+    ["audio/opus", "opus"], ["audio/aac", "aac"], ["audio/flac", "flac"], ["audio/pcm", "pcm"],
+    ["audio/wav", "wav"], ["audio/mpeg", "mp3"], ["audio/ogg; codecs=opus", "ogg"],
+    ["application/octet-stream", "wav"], [null, "wav"],
+  ])("%s → %s", (contentType, format) => {
+    expect(formatFromContentType(contentType, "wav")).toBe(format);
+  });
+});
+
+describe("a config-driven adapter on the shared helpers", () => {
+  const deepgram = (overrides = {}) => FORMAT_HANDLERS.deepgram({ baseUrl: "http://deepgram.test/v1/speak", apiKey: "k", text: "hello", ...overrides });
+
+  it("labels its audio by the upstream Content-Type", async () => {
+    upstream.mockResolvedValue(new Response(new Uint8Array(200), { headers: { "Content-Type": "audio/flac" } }));
+    expect((await deepgram()).format).toBe("flac");
+  });
+
+  it("throws the upstream's string error", async () => {
+    upstream.mockResolvedValue(Response.json({ error: "Unsupported format" }, { status: 400 }));
+    await expect(deepgram()).rejects.toThrow("Unsupported format");
   });
 });

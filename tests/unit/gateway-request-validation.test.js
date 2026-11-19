@@ -77,8 +77,6 @@ describe.each(Object.entries(handlers))("%s rejected-body logging", (name, handl
   });
 });
 
-// A key whose allowlist doesn't cover the model: the limit check answers 403.
-// A model that isn't a string must get 400 before that check runs.
 describe.each(Object.entries({ chat: handleChat, embeddings: handleEmbeddings }))("%s model check before key limits", (_, handle) => {
   beforeEach(() => {
     mocks.apiKey.mockReturnValue("sk-client");
