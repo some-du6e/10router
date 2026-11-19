@@ -32,6 +32,7 @@ on:
       - "tests/unit/codex-ingress-fallback.test.js"
       - "tests/unit/stream-early-headers-routes.test.js"
       - "tests/unit/api-key-budgets.test.js"
+      - "tests/unit/same-request-error-routing.test.js"
       - ".github/workflows/codex-ingress-fallback.yml"
   workflow_dispatch:
 
@@ -61,6 +62,7 @@ jobs:
           unit/codex-ingress-fallback.test.js
           unit/stream-early-headers-routes.test.js
           unit/api-key-budgets.test.js
+          unit/same-request-error-routing.test.js
       - name: Lint
         run: >
           ./node_modules/.bin/eslint
@@ -71,6 +73,7 @@ jobs:
           src/sse/services/keyLimits.js
           src/sse/handlers/chat.ts
           open-sse/services/combo.js
+          open-sse/services/sameRequestError.ts
           tests/unit/api-key-budgets.test.js
           tests/unit/auto-combo.test.js
           tests/unit/codex-ingress-auto-combo.test.js

@@ -53,7 +53,7 @@ vi.mock("@/sse/utils/logger.js", async (importOriginal) => ({
 
 const db = await import("@/lib/db/index.js");
 const { handleChat } = await import("@/sse/handlers/chat.js");
-const { normalizeErrorMessage, upstreamMessage, requestErrorSignature, createSameRequestErrorTally } = await import("open-sse/services/sameRequestError.js");
+const { normalizeErrorMessage, upstreamMessage, requestErrorSignature, isRequestFault, createSameRequestErrorTally } = await import("open-sse/services/sameRequestError.js");
 const { SAME_REQUEST_ERROR_PATTERNS, SAME_REQUEST_ERROR_KEY_LIMIT, MODEL_REFUSAL, OPERATION_REFUSAL } = await import("open-sse/config/errorConfig.js");
 const { namesAccountOrLimit } = await import("open-sse/services/accountFallback.js");
 const { isLimitError } = await import("open-sse/utils/limitHold.js");
@@ -387,6 +387,21 @@ describe("which errors count", () => {
 
   it("counts only 400, 413 and 422", () => {
     for (const status of [401, 403, 404, 429, 500, 502, 503, 504]) expect(requestErrorSignature(status, `[${status}]: ${TOO_LONG}`)).toBeNull();
+  });
+});
+
+// What the Codex ingress reads to end its combo on Codex's reply: the
+// request's fault, which another provider would refuse too.
+describe("isRequestFault", () => {
+  const NGINX_413 = "<html>\r\n<head><title>413 Request Entity Too Large</title></head>\r\n<body>\r\n<center><h1>413 Request Entity Too Large</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>";
+  it.each([
+    ["an empty-body 413", 413, "", false],
+    ["an nginx HTML 413 page", 413, `[413]: ${NGINX_413}`, false],
+    ["a 413 whose message says the request is too large", 413, "[413]: Request body is too large for this model.", true],
+    ["a 400 context-window message", 400, "[400]: Your input exceeds the context window of this model.", true],
+    ["a 400 plan refusal", 400, "[400]: The 'gpt-x' model is not supported when using Codex with a ChatGPT account.", false],
+  ])("%s", (_name, status, error, expected) => {
+    expect(isRequestFault(status, error)).toBe(expected);
   });
 });
 
