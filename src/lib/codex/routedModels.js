@@ -43,6 +43,24 @@ const state = (globalThis._codexRoutedModels ??= {
   models: null, builtAt: 0, inflight: null, generation: 0, started: 0, written: 0, connections: -1,
 });
 
+const prefixOf = (model) => {
+  const id = typeof model?.id === "string" ? model.id : "";
+  return id.includes("/") ? id.slice(0, id.indexOf("/")) : "";
+};
+
+// A provider whose live catalog timed out in this build keeps the models the
+// held list had for it: its static models stood in, and they are a worse
+// guess (Zed has none, Kiro lacks its per-account variants). Every provider
+// that answered is replaced. With nothing held (cold start), the static
+// models are all there is.
+function keepTimedOutProviders(fresh, held, timedOut) {
+  if (!held || timedOut.size === 0) return fresh;
+  return [
+    ...fresh.filter((model) => !timedOut.has(prefixOf(model))),
+    ...held.filter((model) => timedOut.has(prefixOf(model))),
+  ];
+}
+
 function refresh() {
   if (state.inflight) return state.inflight;
   const generation = state.generation;
@@ -50,9 +68,11 @@ function refresh() {
   // Read before the build, so a change made while it runs triggers another.
   const version = writesVersion();
   let deadline;
-  const build = buildModelsList(["llm"]).then((models) => {
+  const timedOutAliases = new Set();
+  const onLiveTimeout = (_providerId, { alias } = {}) => { if (alias) timedOutAliases.add(alias); };
+  const build = buildModelsList(["llm"], { onLiveTimeout }).then((models) => {
     if (generation !== state.generation || seq < state.written) return;
-    state.models = models;
+    state.models = keepTimedOutProviders(models, state.models, timedOutAliases);
     state.builtAt = now();
     state.written = seq;
     state.connections = version;
