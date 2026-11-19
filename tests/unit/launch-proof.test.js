@@ -1,9 +1,15 @@
 // The launcher's readiness proof, end to end: custom-server.js stamps the TCP
 // peer, /api/health signs the challenge for that peer with the launch nonce,
 // and the launcher checks it against its own end of the connection.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createRequire } from "node:module";
 import http from "node:http";
+import os from "node:os";
+
+// A non-loopback IPv4 address of this machine, for a launcher bound to its LAN
+// address; none on a host with only loopback.
+const lanAddress = Object.values(os.networkInterfaces()).flat()
+  .find((entry) => entry && entry.family === "IPv4" && !entry.internal)?.address;
 
 const require = createRequire(import.meta.url);
 const cli = require("../../cli/src/cli/utils/serverProcess.js");
@@ -14,13 +20,17 @@ let server;
 let routes;
 const servers = [];
 
-function listen(handler) {
+function listen(handler, host = "127.0.0.1") {
   return new Promise((resolve) => {
     const s = http.createServer(handler);
     servers.push(s);
-    s.listen({ host: "127.0.0.1", port: 0 }, () => resolve(s.address().port));
+    s.listen({ host, port: 0 }, () => resolve(s.address().port));
   });
 }
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 // Serves /api/health through the real route, as Next would behind custom-server.
 async function healthRoute(req, res) {
@@ -65,17 +75,56 @@ describe("launch nonce", () => {
   });
 });
 
-describe("custom-server peer port", () => {
-  it("stamps the socket's source port and drops a client-supplied one", async () => {
+// A peer on another address, through the real wrapper: its forwarding headers
+// are read, and its Host may be a proxy's, only when TRUST_PROXY lists it.
+// CI runners have a LAN address, so there a missing one fails rather than skips.
+describe("custom-server proxy-hop stamp for a non-loopback peer", () => {
+  it.skipIf(!lanAddress && !process.env.CI)("stamps x-9r-proxy-hop on a listed peer only", async () => {
+    expect(lanAddress, "no non-loopback IPv4 address on this machine").toBeTruthy();
+    let seen;
+    const port = await listen((req, res) => { seen = req.headers; res.end("ok"); }, lanAddress);
+    const send = () => new Promise((resolve) => {
+      const req = http.request({ host: lanAddress, port, agent: false, headers: { host: "localhost", "x-forwarded-for": "203.0.113.7" } }, (res) => { res.resume(); res.on("end", resolve); });
+      req.end();
+    });
+
+    await send();
+    expect(seen["x-9r-via-proxy"]).toBe("1");
+    expect(seen["x-9r-proxy-hop"]).toBeUndefined();
+    expect(seen["x-9r-real-ip"]).toBe(lanAddress);
+
+    vi.stubEnv("TRUST_PROXY", `${lanAddress}/32`);
+    await send();
+    expect(seen["x-9r-proxy-hop"]).toBe("1");
+    expect(seen["x-9r-real-ip"]).toBe("203.0.113.7");
+  });
+});
+
+describe("custom-server peer socket", () => {
+  async function stampsFor(headers) {
     let seen;
     const port = await listen((req, res) => { seen = req.headers; res.end("ok"); });
     let localPort;
     await new Promise((resolve) => {
-      const req = http.request({ host: "127.0.0.1", port, agent: false, headers: { "x-9r-real-port": "1" } }, (res) => { res.resume(); res.on("end", resolve); });
+      const req = http.request({ host: "127.0.0.1", port, agent: false, headers }, (res) => { res.resume(); res.on("end", resolve); });
       req.on("socket", (s) => s.on("connect", () => { localPort = s.localPort; }));
       req.end();
     });
-    expect(seen["x-9r-real-port"]).toBe(String(localPort));
+    return { seen, localPort };
+  }
+
+  it("stamps the socket's address and source port and drops client-supplied ones", async () => {
+    const { seen, localPort } = await stampsFor({ "x-9r-socket-ip": "203.0.113.1", "x-9r-socket-port": "1", "x-9r-real-port": "1" });
+    expect(seen["x-9r-socket-ip"]).toMatch(/^(::ffff:)?127\.0\.0\.1$/);
+    expect(seen["x-9r-socket-port"]).toBe(String(localPort));
+    expect(seen["x-9r-real-port"]).toBeUndefined();
+  });
+
+  it("stamps the socket, not the forwarded address the limiter keys on", async () => {
+    const { seen, localPort } = await stampsFor({ "x-forwarded-for": "203.0.113.7" });
+    expect(seen["x-9r-real-ip"]).toBe("203.0.113.7");
+    expect(seen["x-9r-socket-ip"]).toMatch(/^(::ffff:)?127\.0\.0\.1$/);
+    expect(seen["x-9r-socket-port"]).toBe(String(localPort));
   });
 });
 
@@ -125,16 +174,41 @@ describe("/api/health launch proof", () => {
     expect(salts[1]).not.toBe(salts[0]);
   });
 
-  it("gives no proof without custom-server's stamp or through a proxy hop", async () => {
+  it("gives no proof without custom-server's stamp", async () => {
     const challenge = "0123456789abcdef0123456789abcdef";
-    const bare = await GET(new Request("http://127.0.0.1/api/health", { headers: { [cli.LAUNCH_CHALLENGE_HEADER]: challenge, "x-9r-real-ip": "127.0.0.1", "x-9r-real-port": "5000" } }));
+    const bare = await GET(new Request("http://127.0.0.1/api/health", { headers: { [cli.LAUNCH_CHALLENGE_HEADER]: challenge, "x-9r-socket-ip": "127.0.0.1", "x-9r-socket-port": "5000" } }));
     expect(bare.headers.get(cli.LAUNCH_PROOF_HEADER)).toBeNull();
-    const proxied = await GET(new Request("http://127.0.0.1/api/health", {
+  });
+
+  // The proof follows the socket, not x-9r-real-ip / x-9r-via-proxy, which
+  // TRUST_PROXY and a non-loopback bind change for the launcher's own connection.
+  it("signs for the stamped socket whatever the limiter key and proxy marker say", async () => {
+    const challenge = "0123456789abcdef0123456789abcdef";
+    const res = await GET(new Request("http://192.0.2.10/api/health", {
       headers: {
-        [cli.LAUNCH_CHALLENGE_HEADER]: challenge, "x-9r-real-ip": "127.0.0.1", "x-9r-real-port": "5000",
-        "x-9r-peer-token": process.env.NINEROUTER_PEER_TOKEN, "x-9r-via-proxy": "1",
+        [cli.LAUNCH_CHALLENGE_HEADER]: challenge, "x-9r-real-ip": "unknown", "x-9r-via-proxy": "1",
+        "x-9r-socket-ip": "192.0.2.10", "x-9r-socket-port": "5000", "x-9r-peer-token": process.env.NINEROUTER_PEER_TOKEN,
       },
     }));
-    expect(proxied.headers.get(cli.LAUNCH_PROOF_HEADER)).toBeNull();
+    const salt = res.headers.get(cli.LAUNCH_SALT_HEADER);
+    expect(res.headers.get(cli.LAUNCH_PROOF_HEADER)).toBe(cli.launchProof(nonce, challenge, "192.0.2.10", 5000, salt));
+  });
+
+  // TRUST_PROXY=true makes no loopback peer local and keys it on `unknown`.
+  it("passes for the launcher's own connection with TRUST_PROXY=true", async () => {
+    vi.stubEnv("TRUST_PROXY", "true");
+    expect(await cli.provesLaunchNonce({ host: "127.0.0.1", port: server, nonce })).toBe(true);
+  });
+
+  // `--host <LAN address>` with that address in TRUST_PROXY: the launcher's
+  // socket is a listed proxy peer with no forwarding header, keyed `unknown`.
+  // CI runners have a LAN address, so there a missing one fails rather than skips.
+  it.skipIf(!lanAddress && !process.env.CI)("passes for a launcher on a LAN bind that a TRUST_PROXY list covers", async () => {
+    expect(lanAddress, "no non-loopback IPv4 address on this machine").toBeTruthy();
+    const lanServer = await listen(healthRoute, lanAddress);
+    vi.stubEnv("TRUST_PROXY", `${lanAddress}/32`);
+    expect(await cli.provesLaunchNonce({ host: lanAddress, port: lanServer, nonce })).toBe(true);
+    vi.stubEnv("TRUST_PROXY", "");
+    expect(await cli.provesLaunchNonce({ host: lanAddress, port: lanServer, nonce })).toBe(true);
   });
 });

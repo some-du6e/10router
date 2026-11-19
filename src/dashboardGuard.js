@@ -86,11 +86,13 @@ const LOCAL_ONLY_PATHS = [
   "/api/auth/reset-password",
 ];
 
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
 
 // Accepts a Host header, a URL hostname or a raw socket address. Splitting on the first
 // colon only works for IPv4 and would reduce every IPv6 form to "", so a dual-stack
-// listener handing back ::ffff:127.0.0.1 would not read as loopback.
+// listener handing back ::ffff:127.0.0.1 would not read as loopback. Same rule as
+// isLoopbackHost in custom-server.js (which can't import from src/); the parity table
+// in tests/unit/dashboard-guard.test.js holds them together.
 function isLoopbackHostname(h) {
   if (!h) return false;
   let name = String(h).trim().toLowerCase();
@@ -117,12 +119,129 @@ function isLoopbackPeer(request) {
   return false;
 }
 
+// A browser request another site started (link, <img>, form, fetch). Browsers send no
+// Origin on cross-site GETs, so this is the only header that tells them apart.
+function isCrossSiteBrowserRequest(request) {
+  const site = request.headers.get("sec-fetch-site");
+  return !!site && site !== "same-origin" && site !== "none";
+}
+
+// The Host the browser used, as a URL (scheme from Origin), or null.
+function hostUrl(host, protocol) {
+  if (!host || !host.trim()) return null;
+  try {
+    return new URL(`${protocol}//${host.trim()}`);
+  } catch {
+    return null;
+  }
+}
+
+// Same host name, and the same port unless Host carries none (nginx's $host drops
+// it). Default ports compare equal, since URL drops them.
+function originMatchesHost(originUrl, host) {
+  const target = hostUrl(host, originUrl.protocol);
+  if (!target || target.hostname.replace(/\.$/, "") !== originUrl.hostname.replace(/\.$/, "")) return false;
+  return !target.port || target.port === originUrl.port;
+}
+
+// A browser sends Origin on every cross-origin POST and fetch, plain HTTP included,
+// where it sends no Sec-Fetch-Site. A request whose Origin isn't this server came
+// from another page, so neither a session cookie nor requireLogin=false admits it.
+// Sec-Fetch-Site: same-origin settles it first (it also covers `Origin: null` from a
+// no-referrer page). Otherwise "this server" is the Host the browser used: the Host
+// header, or X-Forwarded-Host from a proxy that rewrites Host (a page can't set that
+// header on a cross-origin request without a CORS preflight, which is never granted).
+function isOtherOriginBrowserRequest(request) {
+  if (request.headers.get("sec-fetch-site") === "same-origin") return false;
+  const origin = request.headers.get("origin");
+  if (!origin) return false;
+  let originUrl;
+  try {
+    originUrl = new URL(origin);
+  } catch {
+    return true; // "null" (sandboxed frame, file://, no-referrer) or junk
+  }
+  const hosts = [request.headers.get("host"), (request.headers.get("x-forwarded-host") || "").split(",")[0]];
+  return !hosts.some((host) => originMatchesHost(originUrl, host));
+}
+
+// Proof a browser request came from this server's own page: Sec-Fetch-Site
+// same-origin (or none: typed, bookmarked), or an Origin that matches the Host. A
+// GET from another page carries neither when the target isn't a secure context
+// (http://0.0.0.0, a LAN address), so the absence of a cross-site marker isn't enough.
+function hasSameOriginProof(request) {
+  const site = request.headers.get("sec-fetch-site");
+  if (site === "same-origin" || site === "none") return true;
+  return !!request.headers.get("origin") && !isOtherOriginBrowserRequest(request);
+}
+
+function hostnameOf(value) {
+  try {
+    return value ? new URL(value).hostname.toLowerCase().replace(/\.$/, "") : "";
+  } catch {
+    return "";
+  }
+}
+
+// The request came in on the Cloudflare tunnel or Tailscale URL. custom-server.js
+// also stamps x-9r-via-tunnel on a loopback peer whose Host is a *.trycloudflare.com
+// or *.ts.net name, so a stale stored URL can't let tunnel traffic in. A
+// Cloudflare-proxied domain in front of a reverse proxy isn't tunnel traffic.
+// A malformed stored URL matches nothing rather than throwing.
+export function isTunnelHost(request, settings) {
+  if (hasTrustedPeerHeaders(request) && request.headers.get("x-9r-via-tunnel")) return true;
+  const host = (request.headers.get("host") || "").split(":")[0].toLowerCase().replace(/\.$/, "");
+  if (!host) return false;
+  return [settings?.tunnelUrl, settings?.tailscaleUrl].some((url) => hostnameOf(url) === host);
+}
+
+// With login off, a page on any domain that resolves to this machine (DNS
+// rebinding) would be same-origin with it. So the open dashboard API answers only
+// Hosts that can't be rebound: loopback names, IP literals, and the hosts this
+// install was given: the tunnel and Tailscale URLs, BASE_URL / NEXT_PUBLIC_BASE_URL,
+// and ALLOWED_HOSTS (a comma list of host names or URLs, for an install reached
+// by several names, such as a tunnel domain and a LAN name).
+function allowedHostNames(settings) {
+  const listed = String(process.env.ALLOWED_HOSTS || "").split(",").map((entry) => entry.trim()).filter(Boolean);
+  return [settings?.tunnelUrl, settings?.tailscaleUrl, process.env.BASE_URL, process.env.NEXT_PUBLIC_BASE_URL, ...listed]
+    .map((value) => (value && !String(value).includes("://") ? hostUrl(String(value), "http:")?.hostname.toLowerCase().replace(/\.$/, "") || "" : hostnameOf(value)))
+    .filter(Boolean);
+}
+
+// A URL hostname (already canonical: 127.1 and 2130706433 read 127.0.0.1,
+// IPv6 is compressed and bracketed) naming this machine: the loopback names,
+// 127.0.0.0/8, [::1], and 127.0.0.0/8 mapped into IPv6.
+function isLoopbackLiteral(name) {
+  if (isLoopbackHostname(name)) return true;
+  return /^127\.\d+\.\d+\.\d+$/.test(name) || /^\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\]$/.test(name);
+}
+
+function isAllowedOpenHost(request, settings) {
+  const raw = request.headers.get("host");
+  if (!raw) return true;
+  const url = hostUrl(raw, "http:");
+  if (!url) return false;
+  const name = url.hostname.toLowerCase().replace(/\.$/, "");
+  // A proxy that rewrites Host to its upstream (nginx's default) sends a loopback
+  // Host for every name the browser used, rebound ones included. So behind one
+  // (custom-server.js stamps x-9r-proxy-hop for a loopback or TRUST_PROXY-listed
+  // peer) only a browser's own Host counts, and the proxy must pass it through.
+  // A direct peer from elsewhere (a Docker port, an ssh -L or NAT forward) keeps
+  // its Host: a page can't make a browser send a loopback Host for its own name.
+  if (isLoopbackLiteral(name)) return !(hasTrustedPeerHeaders(request) && request.headers.get("x-9r-proxy-hop"));
+  if (name.startsWith("[") || /^\d{1,3}(\.\d{1,3}){3}$/.test(name)) return true;
+  return allowedHostNames(settings).includes(name);
+}
+
 export function isLocalRequest(request) {
-  // Stamped by custom-server.js when forwarding headers exist: request came through
-  // a reverse proxy, so the loopback socket is the proxy hop, not the end-user.
+  // Stamped by custom-server.js on every request not from a client on this machine
+  // (isOnThisMachine there): a loopback socket that is a proxy hop, not the end user.
   if (request.headers.get("x-9r-via-proxy")) return false;
   if (!isLoopbackPeer(request)) return false;
   const origin = request.headers.get("origin");
+  // A cross-site request without Origin (a navigation or simple GET) can't be
+  // told apart from a local tool by Origin, so Sec-Fetch-Site decides it.
+  if (!origin && isCrossSiteBrowserRequest(request)) return false;
   if (origin) {
     try {
       if (!isLoopbackHostname(new URL(origin).hostname)) return false;
@@ -151,9 +270,18 @@ async function canAccessPublicLlmApi(request) {
 
 async function canAccessLocalOnlyRoute(request) {
   if (await hasValidCliToken(request)) return true;
-  // Browser on host: loopback Host + Origin (blocks tunnel/CSRF) + auth (JWT or requireLogin=false)
-  if (isLocalRequest(request) && await isAuthenticated(request)) return true;
-  return false;
+  // Browser on host: loopback peer + Origin (blocks tunnel/CSRF) + auth (JWT or requireLogin=false)
+  if (!isLocalRequest(request)) return false;
+  // These routes spawn processes or read host secrets, and a GET from another page
+  // (<img>, EventSource) can reach one with no Origin and, on http://0.0.0.0, no
+  // Sec-Fetch-Site either. Without the CLI token, a GET needs same-origin proof.
+  if (isSafeMethod(request) && !hasSameOriginProof(request)) return false;
+  return await isAuthenticated(request);
+}
+
+function isSafeMethod(request) {
+  const method = String(request.method || "GET").toUpperCase();
+  return method === "GET" || method === "HEAD";
 }
 
 // The only endpoints a restricted (forced-password-change) session may reach.
@@ -177,6 +305,7 @@ async function readSession(request) {
 // repoint SSO (acceptsDashboardSession). The CLI token and the setup routes
 // don't go through here.
 async function hasValidToken(request) {
+  if (isOtherOriginBrowserRequest(request)) return false;
   const session = await readSession(request);
   if (!session || session.pwChange === true) return false;
   const settings = await loadSettings();
@@ -202,7 +331,11 @@ async function isAuthenticated(request) {
   const settings = await loadSettings();
   // requireLogin=false is an opt-out for a *claimed* instance. An instance that
   // has never been set up must never be open, whatever the stored flag says.
-  if (settings && settings.requireLogin === false) return !(await needsSetup(settings));
+  if (settings && settings.requireLogin === false) {
+    if (isCrossSiteBrowserRequest(request) || isOtherOriginBrowserRequest(request)) return false;
+    if (!isAllowedOpenHost(request, settings)) return false;
+    return !(await needsSetup(settings));
+  }
   return false;
 }
 
@@ -213,6 +346,10 @@ function isPublicApi(pathname) {
 
 export const __test__ = {
   isLocalRequest,
+  isLoopbackHostname,
+  isOtherOriginBrowserRequest,
+  hasSameOriginProof,
+  isAllowedOpenHost,
   isPublicLlmApi,
   extractApiKey,
   canAccessPublicLlmApi,
@@ -266,6 +403,15 @@ export async function proxy(request) {
     }
   }
 
+  // ALWAYS_PROTECTED too: /api/version/shutdown and /update sit under the public
+  // /api/version.
+  if (pathname.startsWith("/api/") && (!isPublicApi(pathname) || ALWAYS_PROTECTED.some((p) => pathname.startsWith(p)))) {
+    const settings = await loadSettings();
+    if (settings && settings.tunnelDashboardAccess !== true && isTunnelHost(request, settings)) {
+      return NextResponse.json({ error: "Dashboard access via tunnel is disabled" }, { status: 403 });
+    }
+  }
+
   // Local-only gate for spawn-capable / host-secret routes.
   if (LOCAL_ONLY_PATHS.some((p) => pathname.startsWith(p))) {
     if (!(await canAccessLocalOnlyRoute(request))) {
@@ -314,13 +460,8 @@ export async function proxy(request) {
         tunnelDashboardAccess = settings.tunnelDashboardAccess === true;
 
         // Block tunnel/tailscale access if disabled (redirect to login)
-        if (!tunnelDashboardAccess) {
-          const host = (request.headers.get("host") || "").split(":")[0].toLowerCase();
-          const tunnelHost = settings.tunnelUrl ? new URL(settings.tunnelUrl).hostname.toLowerCase() : "";
-          const tailscaleHost = settings.tailscaleUrl ? new URL(settings.tailscaleUrl).hostname.toLowerCase() : "";
-          if ((tunnelHost && host === tunnelHost) || (tailscaleHost && host === tailscaleHost)) {
-            return NextResponse.redirect(new URL("/login", request.url));
-          }
+        if (!tunnelDashboardAccess && isTunnelHost(request, settings)) {
+          return NextResponse.redirect(new URL("/login", request.url));
         }
       }
     } catch {

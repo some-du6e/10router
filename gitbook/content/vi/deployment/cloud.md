@@ -53,6 +53,8 @@ export NODE_ENV="production"
 | `DATA_DIR` | `~/.9router` | Đường dẫn lưu database và data (tên thư mục giữ nguyên như bản phát hành trước để tương thích ngược) |
 | `NODE_ENV` | `development` | Đặt `production` cho deployment |
 | `ENABLE_REQUEST_LOGS` | `false` | Bật debug request/response logs |
+| `TRUST_PROXY` | chưa đặt | Đặt `true` khi một công cụ chuyển tiếp trên máy này không thêm header chuyển tiếp nào (`X-Forwarded-For`, `X-Real-IP`, …), như socat, `ssh -R`, tunnel TCP: `Host` của client đến nguyên vẹn, nên client có thể gửi `Host: localhost` và được coi là cục bộ. Khi bật, không kết nối loopback nào được coi là cục bộ, nên các công cụ trên chính server cũng cần API key hoặc CLI token. Hoặc một danh sách IP/CIDR (`192.168.1.10,10.0.0.0/8`) cho reverse proxy trên host hoặc container khác, khi đó header chuyển tiếp của nó được đọc. Khi 10router chạy trong Docker phía sau Nginx trên host, Nginx đến container từ gateway của Docker bridge, nên hãy liệt kê gateway đó hoặc mạng compose (`172.17.0.1`, `172.18.0.0/16`); nếu không, mọi lần đăng nhập đều dùng gateway làm khóa và header của Nginx bị bỏ qua. Khi đã liệt kê, `http://localhost:20128` qua cổng đã publish cũng đến từ gateway và được coi là đi qua proxy, nên khi tắt đăng nhập, API dashboard trả về 401 ở đó |
+| `ALLOWED_HOSTS` | chưa đặt | Khi tắt "Require login", danh sách tên host thêm (phân tách bằng dấu phẩy) mà API dashboard trả lời, ngoài `localhost`, địa chỉ IP, URL tunnel và `BASE_URL`. `Host` loopback không được tính khi request đi qua proxy (peer loopback không phải cục bộ, hoặc peer có trong `TRUST_PROXY`) |
 
 ### Bước 5: Tạo Data Directory
 
@@ -345,19 +347,22 @@ sudo ufw enable
 
 ### 3. Giới hạn truy cập Dashboard
 
-Nếu chỉ cần truy cập API, giới hạn port dashboard:
+Nếu chỉ cần truy cập API qua Nginx, chặn các cổng của chính app từ bên ngoài:
 
 ```bash
-# Only allow localhost access to dashboard
+# Chỉ cho phép truy cập 10router từ localhost
+sudo ufw deny 20128/tcp
 sudo ufw deny 3000/tcp
 ```
 
-Truy cập dashboard qua SSH tunnel:
+Truy cập dashboard qua SSH tunnel tới cổng của app (được coi là truy cập từ chính máy này):
 
 ```bash
-ssh -L 3000:localhost:3000 user@your-server.com
-# Then open http://localhost:3000 in your browser
+ssh -L 20128:localhost:20128 user@your-server.com
+# Rồi mở http://localhost:20128 trong trình duyệt
 ```
+
+Request đi qua Nginx (hoặc bất kỳ proxy hay tunnel nào trên server) được coi là từ xa: cần API key cho `/v1`, còn các route chỉ dành cho máy cục bộ (MCP server, điều khiển tunnel, Reset Password) và endpoint có URL nội bộ (như Ollama trên `localhost`) trả về 403 hoặc "URL not allowed". Với những việc đó, dùng SSH tunnel ở trên (`ssh -L 20128:localhost:20128`) hoặc CLI trên server. Giữ các dòng `X-Real-IP` và `X-Forwarded-For` trong cấu hình Nginx để khóa đăng nhập đếm riêng từng client, và giữ `Host $host` (hoặc gửi `X-Forwarded-Host`) để các lệnh gọi API của chính dashboard được chấp nhận. Mọi proxy phía trước phải ghi đè hoặc nối thêm `X-Forwarded-For` và `X-Real-IP`: proxy nào để nguyên giá trị do client gửi (ví dụ một khối Nginx chỉ đặt `Host` và `X-Forwarded-Proto`) sẽ cho mỗi client tự chọn khóa dùng để giới hạn đăng nhập của nó.
 
 ### 4. Cập nhật định kỳ
 

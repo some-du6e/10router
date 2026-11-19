@@ -3,36 +3,44 @@ import { getSettings } from "@/lib/localDb";
 import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
 import { setDashboardAuthCookie } from "@/lib/auth/dashboardSession";
-import { checkLock, recordFail, recordSuccess, getClientIp } from "@/lib/auth/loginLimiter";
+import { checkLock, recordFail, recordSuccess, getClientKeys, reserveAttempt, releaseAttempt, LOCAL_LOGIN_KEY } from "@/lib/auth/loginLimiter";
+import { isLocalRequest, isTunnelHost } from "@/dashboardGuard";
 import { getAuthBootstrapState, getBootstrapSecret } from "@/lib/auth/setupState";
 import { getConfiguredSsoType, isPasswordLoginDisabled } from "@/lib/auth/authMode.js";
 
 const RESET_HINT = "Forgot password? Run 10router CLI → Settings → Reset Password, then follow what it prints (or sign in with INITIAL_PASSWORD if it's set).";
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" };
 
-function isTunnelRequest(request, settings) {
-  const host = (request.headers.get("host") || "").split(":")[0].toLowerCase();
-  const tunnelHost = settings.tunnelUrl ? new URL(settings.tunnelUrl).hostname.toLowerCase() : "";
-  const tailscaleHost = settings.tailscaleUrl ? new URL(settings.tailscaleUrl).hostname.toLowerCase() : "";
-  return (tunnelHost && host === tunnelHost) || (tailscaleHost && host === tailscaleHost);
+function tooManyAttempts(retryAfter) {
+  return NextResponse.json(
+    { error: `Too many failed attempts. Try again in ${retryAfter}s. ${RESET_HINT}`, retryAfter, resetHint: RESET_HINT },
+    { status: 429, headers: { "Retry-After": String(retryAfter) } }
+  );
 }
 
 export async function POST(request) {
+  // Logins from this machine share their own bucket: remote clients never land
+  // in it, so they can't lock the owner out, and a forwarder that makes a remote
+  // client look local (see TRUST_PROXY) still gets limited. A remote login may
+  // have two keys (X-Forwarded-For and X-Real-IP); it counts against both.
+  const ip = isLocalRequest(request) ? [LOCAL_LOGIN_KEY] : getClientKeys(request);
+  const early = checkLock(ip);
+  if (early.locked) return tooManyAttempts(early.retryAfter);
+  // The attempt is reserved once the body is in, so a client trickling its
+  // body in can't hold reservations (and so the key at 429) without failing.
+  let password;
   try {
-    const ip = getClientIp(request);
-    const lock = checkLock(ip);
-    if (lock.locked) {
-      return NextResponse.json(
-        { error: `Too many failed attempts. Try again in ${lock.retryAfter}s. ${RESET_HINT}`, retryAfter: lock.retryAfter, resetHint: RESET_HINT },
-        { status: 429, headers: { "Retry-After": String(lock.retryAfter) } }
-      );
-    }
-
-    const { password } = await request.json();
+    ({ password } = await request.json());
+  } catch (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+  const lock = reserveAttempt(ip);
+  if (!lock.ok) return tooManyAttempts(lock.retryAfter);
+  try {
     const settings = await getSettings();
 
     // Block login via tunnel/tailscale if dashboard access is disabled
-    if (isTunnelRequest(request, settings) && settings.tunnelDashboardAccess !== true) {
+    if (isTunnelHost(request, settings) && settings.tunnelDashboardAccess !== true) {
       return NextResponse.json({ error: "Dashboard access via tunnel is disabled" }, { status: 403 });
     }
 
@@ -111,17 +119,14 @@ export async function POST(request) {
 
     const { remainingBeforeLock } = recordFail(ip);
     const postLock = checkLock(ip);
-    if (postLock.locked) {
-      return NextResponse.json(
-        { error: `Too many failed attempts. Try again in ${postLock.retryAfter}s. ${RESET_HINT}`, retryAfter: postLock.retryAfter, resetHint: RESET_HINT },
-        { status: 429, headers: { "Retry-After": String(postLock.retryAfter) } }
-      );
-    }
+    if (postLock.locked) return tooManyAttempts(postLock.retryAfter);
     return NextResponse.json(
       { error: `Invalid password. ${remainingBeforeLock} attempt(s) left before lockout.`, remainingBeforeLock },
       { status: 401 }
     );
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
+  } finally {
+    releaseAttempt(ip);
   }
 }

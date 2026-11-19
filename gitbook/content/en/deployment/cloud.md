@@ -53,6 +53,8 @@ export NODE_ENV="production"
 | `DATA_DIR` | `~/.9router` | Database and data storage path (the directory name is unchanged from the previous release for backward compatibility) |
 | `NODE_ENV` | `development` | Set to `production` for deployment |
 | `ENABLE_REQUEST_LOGS` | `false` | Enable debug request/response logs |
+| `TRUST_PROXY` | unset | `true` when a forwarder on this machine adds no forwarding header (`X-Forwarded-For`, `X-Real-IP`, …), such as socat, `ssh -R` or a TCP tunnel: its clients' own `Host` reaches 10router, so one could send `Host: localhost` and count as local. With it, no loopback connection counts as local, so tools on the server itself need an API key or the CLI token too. Or a comma list of IPs/CIDRs (`192.168.1.10,10.0.0.0/8`) for a reverse proxy on another host or container, whose forwarding headers are then read. When 10router runs in Docker behind Nginx on the host, Nginx reaches the container from the Docker bridge gateway, so list that gateway or the compose network (`172.17.0.1`, `172.18.0.0/16`); otherwise every login keys on the gateway and Nginx's headers are ignored. With it listed, `http://localhost:20128` through the published port also comes from the gateway and counts as a proxy hop, so with login off the dashboard API answers 401 there |
+| `ALLOWED_HOSTS` | unset | With "Require login" off, extra host names (comma list) the dashboard API answers, besides `localhost`, IP addresses, the tunnel URLs and `BASE_URL`. A loopback Host doesn't count when the request comes through a proxy hop (a loopback peer that isn't local, or one `TRUST_PROXY` lists) |
 
 ### Step 5: Create Data Directory
 
@@ -347,19 +349,22 @@ sudo ufw enable
 
 ### 3. Restrict Dashboard Access
 
-If you only need API access, restrict dashboard port:
+If you only need API access through Nginx, block the app's own ports from outside:
 
 ```bash
-# Only allow localhost access to dashboard
+# Only allow localhost access to 10router itself
+sudo ufw deny 20128/tcp
 sudo ufw deny 3000/tcp
 ```
 
-Access dashboard via SSH tunnel:
+Reach the dashboard over an SSH tunnel to the app's port, which counts as this machine:
 
 ```bash
-ssh -L 3000:localhost:3000 user@your-server.com
-# Then open http://localhost:3000 in your browser
+ssh -L 20128:localhost:20128 user@your-server.com
+# Then open http://localhost:20128 in your browser
 ```
+
+Requests through Nginx (or any proxy or tunnel on the server) are treated as remote: they need an API key for `/v1`, and the local-only routes (MCP servers, tunnel controls, Reset Password) and endpoints with a private URL (such as an Ollama on `localhost`) answer 403 or "URL not allowed". For those, use the SSH tunnel above (`ssh -L 20128:localhost:20128`) or the CLI on the server. Keep the `X-Real-IP` and `X-Forwarded-For` lines in the Nginx config so the login lockout counts each client separately, and keep `Host $host`, or send `X-Forwarded-Host`, so the dashboard's own API calls are accepted. Any proxy in front must overwrite or append `X-Forwarded-For` and `X-Real-IP`: one that passes the client's own values through (an Nginx block setting only `Host` and `X-Forwarded-Proto`, say) lets each client choose the keys its logins are limited on.
 
 ### 4. Regular Updates
 

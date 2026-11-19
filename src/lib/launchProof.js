@@ -3,8 +3,8 @@ import crypto from "node:crypto";
 // The CLI launcher hands its server a random TENROUTER_LAUNCH_NONCE and, before
 // it sends the CLI token anywhere, asks /api/health with a fresh challenge. The
 // server answers HMAC-SHA256(nonce, challenge|peer host|peer port|salt), where
-// the peer is the TCP connection custom-server.js stamped (x-9r-real-ip,
-// x-9r-real-port) and the salt is fresh per answer. So a process that relays
+// the peer is the TCP connection custom-server.js stamped (x-9r-socket-ip,
+// x-9r-socket-port) and the salt is fresh per answer. So a process that relays
 // the challenge to the real server over its own connection gets a proof for
 // the wrong peer, and answers from /api/health can't be correlated.
 // cli/src/cli/utils/serverProcess.js holds the other half;

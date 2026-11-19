@@ -53,6 +53,8 @@ export NODE_ENV="production"
 | `DATA_DIR` | `~/.9router` | 数据库与数据存储路径 （目录名称与旧版本保持一致，以确保向后兼容） |
 | `NODE_ENV` | `development` | 部署时设为 `production` |
 | `ENABLE_REQUEST_LOGS` | `false` | 启用 debug 请求/响应日志 |
+| `TRUST_PROXY` | 未设置 | 当本机上的转发工具不添加任何转发头(`X-Forwarded-For`、`X-Real-IP` 等)时(socat、`ssh -R`、TCP 隧道)设为 `true`:客户端自己的 `Host` 会原样到达,发送 `Host: localhost` 就会被当作本机。设为 `true` 后任何回环连接都不再算作本机,因此服务器本机上的工具也需要 API 密钥或 CLI 令牌。也可以填 IP/CIDR 的逗号列表(`192.168.1.10,10.0.0.0/8`),用于其他主机或容器上的反向代理,届时会读取它的转发头。当 10router 在 Docker 中运行、位于主机上的 Nginx 之后时,Nginx 从 Docker 网桥网关访问容器,因此请列出该网关或 compose 网络(`172.17.0.1`、`172.18.0.0/16`);否则所有登录都以网关为键,Nginx 的转发头会被忽略。列出之后,经发布端口访问的 `http://localhost:20128` 也来自网关,会被视为经过代理,因此关闭登录时仪表盘 API 在那里返回 401 |
+| `ALLOWED_HOSTS` | 未设置 | 关闭 "Require login" 时,除 `localhost`、IP 地址、隧道 URL 和 `BASE_URL` 外,仪表盘 API 还会响应的主机名(逗号分隔)。请求经过代理(不属于本机的回环对端,或 `TRUST_PROXY` 列出的对端)时,回环 `Host` 不算数 |
 
 ### 步骤 5:创建数据目录
 
@@ -345,19 +347,22 @@ sudo ufw enable
 
 ### 3. 限制仪表盘访问
 
-如果只需要 API 访问,可限制仪表盘端口:
+如果只需要经 Nginx 的 API 访问,可从外部屏蔽应用自身的端口:
 
 ```bash
-# 仅允许 localhost 访问仪表盘
+# 仅允许 localhost 访问 10router 本身
+sudo ufw deny 20128/tcp
 sudo ufw deny 3000/tcp
 ```
 
-通过 SSH 隧道访问仪表盘:
+通过到应用端口的 SSH 隧道访问仪表盘(视为来自本机):
 
 ```bash
-ssh -L 3000:localhost:3000 user@your-server.com
-# 然后在浏览器打开 http://localhost:3000
+ssh -L 20128:localhost:20128 user@your-server.com
+# 然后在浏览器打开 http://localhost:20128
 ```
+
+经过 Nginx(或服务器上任何代理、隧道)的请求被视为远程请求:`/v1` 需要 API 密钥,仅限本机的路由(MCP 服务器、隧道控制、重置密码)以及使用私有 URL 的端点(例如 `localhost` 上的 Ollama)会返回 403 或 "URL not allowed"。这些操作请使用上面的 SSH 隧道(`ssh -L 20128:localhost:20128`)或服务器上的 CLI。保留 Nginx 配置中的 `X-Real-IP` 和 `X-Forwarded-For` 两行,让登录锁定按客户端分别计数;并保留 `Host $host`(或发送 `X-Forwarded-Host`),让仪表盘自身的 API 调用被接受。前面的任何代理都必须覆盖或追加 `X-Forwarded-For` 和 `X-Real-IP`:原样转发客户端自带值的代理(例如只设置 `Host` 和 `X-Forwarded-Proto` 的 Nginx 配置块)会让每个客户端自己选择限制其登录所用的键。
 
 ### 4. 定期更新
 
