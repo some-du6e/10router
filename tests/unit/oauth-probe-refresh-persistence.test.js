@@ -23,9 +23,12 @@ const tokenReply = () => Response.json({ access_token: "new-access", refresh_tok
 
 const tokenWrites = () => update.mock.calls.filter(([, data]) => "accessToken" in data);
 const statusWrites = () => update.mock.calls.filter(([, data]) => "testStatus" in data);
+// A token save goes through updateProviderCredentials: its metadata patch and
+// lastRefreshAt options, plus the compare-and-set on the refresh token.
+const tokenSaveOptions = (refreshTokenUsed) => ({ patchProviderSpecificData: true, stampLastRefreshAt: true, refreshTokenUsed });
 const expectTokensSaved = () => {
   expect(tokenWrites()).toEqual([["account-a", expect.objectContaining({ accessToken: "new-access", refreshToken: "new-refresh" }),
-    { refreshTokenUsed: ["old-refresh", "new-refresh"] }]]);
+    tokenSaveOptions(["old-refresh", "new-refresh"])]]);
 };
 const stubFetch = (...replies) => {
   const fetch = vi.fn();
@@ -133,8 +136,25 @@ describe("connection tests save a token refresh as soon as it succeeds", () => {
     stubFetch(status(401), status(400));
     expect(await testSingleConnection("account-a")).toMatchObject({ valid: true, refreshed: true });
     expect(tokenWrites()).toEqual([["account-a", expect.objectContaining({ accessToken: "new-access", refreshToken: "old-refresh" }),
-      { refreshTokenUsed: ["old-refresh"] }]]);
+      tokenSaveOptions(["old-refresh"])]]);
     expect(statusWrites()).toEqual([["account-a", expect.objectContaining({ testStatus: "active" }), { refreshTokenUsed: "old-refresh" }]]);
+  });
+
+  it("saves the rotated tokens when the provider's expires_in isn't a number", async () => {
+    refresh.mockResolvedValue({ ...rotated, expiresIn: "soon" });
+    stubFetch(status(401), status(400));
+    expect(await testSingleConnection("account-a")).toMatchObject({ valid: true, refreshed: true });
+    expectTokensSaved();
+    expect(tokenWrites()[0][1]).not.toHaveProperty("expiresAt");
+  });
+
+  it("sends only the refresh's own metadata, for the repo to apply over the stored row", async () => {
+    get.mockResolvedValue({ ...connection, providerSpecificData: { accountId: "snapshot-account" } });
+    refresh.mockResolvedValue({ ...rotated, providerSpecificData: { session: "new-session" } });
+    stubFetch(status(401), status(400));
+    await testSingleConnection("account-a");
+    expect(tokenWrites()[0][1].providerSpecificData).toEqual({ session: "new-session" });
+    expect(tokenWrites()[0][2]).toMatchObject({ patchProviderSpecificData: true });
   });
 
   it("records a test without a refresh only while the row still holds the token it tested", async () => {
@@ -165,7 +185,7 @@ describe("connection tests save a token refresh as soon as it succeeds", () => {
     expect(fetch.mock.calls.map(([, init]) => init.headers.Authorization))
       .toEqual(["Bearer old-access", "Bearer request-access", "Bearer new-access"]);
     expect(tokenWrites()).toEqual([["account-a", expect.objectContaining({ accessToken: "new-access", refreshToken: "new-refresh" }),
-      { refreshTokenUsed: ["request-refresh", "new-refresh"] }]]);
+      tokenSaveOptions(["request-refresh", "new-refresh"])]]);
     expect(statusWrites()).toEqual([["account-a", expect.objectContaining({ testStatus: "active" }), { refreshTokenUsed: "new-refresh" }]]);
   });
 

@@ -312,7 +312,12 @@ export async function createProviderConnection(data) {
 // refreshTokenUsed (a refresh token, or a list of them; null means none) makes
 // the whole write conditional: it lands only while the row holds one of them,
 // and otherwise returns null.
-export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, noteServed = false, apiKeyUsed, refreshTokenUsed } = {}) {
+// patchProviderSpecificData applies data.providerSpecificData over the stored
+// one in this transaction instead of replacing it (undefined values and a
+// null patch change nothing). stampLastRefreshAt sets lastRefreshAt to now
+// when data carries an access token other than the stored one and no
+// lastRefreshAt of its own.
+export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, noteServed = false, apiKeyUsed, refreshTokenUsed, patchProviderSpecificData = false, stampLastRefreshAt = false } = {}) {
   const db = await getAdapter();
   let result;
   let servesChanged = false;
@@ -328,6 +333,13 @@ export async function updateProviderConnection(id, data, { autoDisable = null, d
       }
     }
     const merged = { ...existing, ...data, updatedAt: new Date().toISOString() };
+    if (patchProviderSpecificData && "providerSpecificData" in data) {
+      const patch = Object.entries(data.providerSpecificData || {}).filter(([, value]) => value !== undefined);
+      merged.providerSpecificData = { ...(existing.providerSpecificData || {}), ...Object.fromEntries(patch) };
+    }
+    if (stampLastRefreshAt && data.accessToken && data.accessToken !== existing.accessToken && !data.lastRefreshAt) {
+      merged.lastRefreshAt = merged.updatedAt;
+    }
     const staleKey = apiKeyUsed !== undefined && existing.apiKey !== apiKeyUsed;
     if (staleKey) {
       for (const f of AUTH_STREAK_FIELDS) {

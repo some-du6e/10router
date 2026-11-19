@@ -180,12 +180,7 @@ export async function handleVideoCreate(request, action) {
       signal: request.signal,
       log,
       onCredentialsRefreshed: async (newCreds) => {
-        await updateProviderCredentials(credentials.connectionId, {
-          accessToken: newCreds.accessToken,
-          refreshToken: newCreds.refreshToken,
-          providerSpecificData: newCreds.providerSpecificData,
-          testStatus: "active",
-        });
+        await updateProviderCredentials(credentials.connectionId, newCreds);
       },
     });
 
@@ -246,12 +241,7 @@ export async function handleVideoGet(request, requestId) {
     signal: request.signal,
     log,
     onCredentialsRefreshed: async (newCreds) => {
-      await updateProviderCredentials(credentials.connectionId, {
-        accessToken: newCreds.accessToken,
-        refreshToken: newCreds.refreshToken,
-        providerSpecificData: newCreds.providerSpecificData,
-        testStatus: "active",
-      });
+      await updateProviderCredentials(credentials.connectionId, newCreds);
     },
   });
 
