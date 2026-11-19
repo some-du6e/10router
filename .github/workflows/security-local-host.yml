@@ -60,6 +60,7 @@ on:
       - "tests/unit/cli-pid-file.test.js"
       - "tests/unit/cli-launcher-lifecycle.test.js"
       - "tests/unit/cli-autostart-bind.test.js"
+      - "tests/unit/tunnel-pid-ownership.test.js"
       - "tests/vitest.config.js"
       - "package.json"
       - "tests/package.json"
@@ -103,6 +104,13 @@ jobs:
           unit/app-updater-relaunch.test.js
           unit/cli-data-dir-lock.test.js
           unit/launch-proof.test.js
+          unit/tunnel-pid-ownership.test.js
+      - name: Lint
+        run: >
+          ./node_modules/.bin/eslint
+          src/lib/tunnel/cloudflare/pid.js
+          src/lib/tunnel/cloudflare/cloudflared.js
+          tests/unit/tunnel-pid-ownership.test.js
 
   # known-fails.txt lags master, so compare against the base branch run instead.
   no-new-failures:

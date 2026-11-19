@@ -46,6 +46,10 @@ ${SERVE}`);
 // No signal listeners of its own: without the drain's, Node's default action kills it.
 const bareDir = entryDir(`const http = require("http");
 ${SERVE}`);
+// Throws once listening, with nothing to catch it.
+const crashDir = entryDir(`const http = require("http");
+${SERVE}
+server.once("listening", () => setTimeout(() => { throw new Error("boom"); }, 50));`);
 
 const children = [];
 
@@ -113,6 +117,15 @@ describe("custom-server.js drain on SIGTERM", () => {
     const drained = out.indexOf("drained in");
     expect(out.indexOf("async-flush-done")).toBeGreaterThan(drained);
     expect(out.indexOf("db-closed")).toBeGreaterThan(out.indexOf("async-flush-done"));
+    // One [Exit] line, last, from the drain's own exit: the "db-closed"
+    // listener's process.exit(0) is held off until the drain exits.
+    const lines = out.split("\n");
+    const exitAt = lines.findIndex((line) => line.startsWith("[Exit]"));
+    expect(lines.filter((line) => line.startsWith("[Exit]"))).toHaveLength(1);
+    expect(lines[exitAt]).toMatch(/^\[Exit\] exiting with code 0 after \d+s with 0 request\(s\) open, rss \d+ MB, heap \d+ MB$/);
+    expect(out.indexOf("[Exit]")).toBeGreaterThan(out.indexOf("db-closed"));
+    expect(lines[exitAt + 1]).toBe("  process.exit() called from:");
+    expect(lines[exitAt + 2]).toMatch(/[/\\]server-drain\.js:/);
   }, 20_000);
 
   it("drains on SIGINT (Ctrl-C) too: the app's SIGINT listener runs only after the stream ends", async () => {
@@ -152,5 +165,17 @@ describe("custom-server.js drain on SIGTERM", () => {
     expect(result.complete).toBe(false);
     expect(run.output()).not.toContain("[Shutdown]");
     expect(run.output()).toContain("SIG undefined");
+    // With no drain, the app listener's own process.exit(0) ends the process,
+    // and the [Exit] line names that listener in server.js.
+    expect(run.output()).toMatch(/\[Exit\] exiting with code 0 [^\n]*\n {2}process\.exit\(\) called from:\n[^\n]*[/\\]server\.js:/);
+  }, 20_000);
+
+  it("names an uncaught exception as what ended the process", async () => {
+    const run = runEntry({ SHUTDOWN_DRAIN_TIMEOUT_MS: "20000" }, crashDir);
+    await run.port;
+    const { code } = await run.exited;
+
+    expect(code).toBe(1);
+    expect(run.output()).toMatch(/\[Exit\] exiting with code 1 [^\n]*\n {2}an uncaught exception ended the process/);
   }, 20_000);
 });

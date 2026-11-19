@@ -328,7 +328,8 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
   // Check if model is a combo (has multiple models with fallback). A bare id
   // with no combo or alias falls back across every provider serving it.
   const userComboModels = await getComboModels(modelStr);
-  const comboModels = userComboModels ?? (await resolveAutoCombo(modelStr, BUILTIN_MODEL_ALIASES, settings));
+  // Right after a restart this waits for the model list; a hang-up ends the wait.
+  const comboModels = userComboModels ?? (await resolveAutoCombo(modelStr, BUILTIN_MODEL_ALIASES, settings, { signal }));
   if (comboModels) {
     // An auto combo picked its providers by billing; every account it reaches,
     // including fallbacks within a provider, has to pass the same check.
