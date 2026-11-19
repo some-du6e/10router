@@ -19,9 +19,10 @@ vi.mock("../../open-sse/services/tokenRefresh.js", async (importOriginal) => ({
   refreshKiroToken: mocks.refreshKiro,
 }));
 // chatCore's logging and usage side effects
+// Every logger method is a no-op ("then" stays undefined so the logger isn't taken for a promise).
 vi.mock("../../open-sse/utils/requestLogger.js", () => ({
-  createRequestLogger: vi.fn(async () => ({
-    logClientRawRequest: vi.fn(), logRawRequest: vi.fn(), logTargetRequest: vi.fn(), logError: vi.fn(),
+  createRequestLogger: vi.fn(async () => new Proxy({}, {
+    get: (target, key) => (key === "then" ? undefined : (target[key] ??= vi.fn())),
   })),
 }));
 vi.mock("../../open-sse/translator/concerns/prefetch.js", () => ({ prefetchRemoteImages: vi.fn(async () => 0) }));
