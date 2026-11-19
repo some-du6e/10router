@@ -44,7 +44,6 @@ interface Pending {
   url: string;
   reqHeaders: [string, string][];
   reqBody: Buffer[];
-  reqBytes: number;
   status: number;
   resHeaders: [string, string][];
   resBody: Buffer[];
@@ -133,11 +132,17 @@ function headerPairs(raw: HeadersLike): [string, string][] {
   return Object.entries(raw).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]);
 }
 
+// The first MAX_CAPTURE_BYTES of a request body, in a buffer of its own: a view
+// into a copy of the whole body would keep all of it alive while the request runs.
 function bodyBytes(body: unknown): Buffer | null {
-  if (typeof body === "string") return Buffer.from(body);
-  if (body instanceof Uint8Array) return Buffer.from(body);
-  if (body instanceof ArrayBuffer) return Buffer.from(body);
-  if (body instanceof URLSearchParams) return Buffer.from(body.toString());
+  if (typeof body === "string") {
+    // A character is at least one UTF-8 byte, so this many cover the cap.
+    const bytes = Buffer.from(body.slice(0, MAX_CAPTURE_BYTES));
+    return bytes.length > MAX_CAPTURE_BYTES ? Buffer.from(bytes.subarray(0, MAX_CAPTURE_BYTES)) : bytes;
+  }
+  if (body instanceof Uint8Array) return Buffer.from(body.subarray(0, MAX_CAPTURE_BYTES));
+  if (body instanceof ArrayBuffer) return Buffer.from(new Uint8Array(body, 0, Math.min(body.byteLength, MAX_CAPTURE_BYTES)));
+  if (body instanceof URLSearchParams) return bodyBytes(body.toString());
   return null;
 }
 
@@ -167,7 +172,7 @@ function subscribe(s: Store) {
         const reqBody = bodyBytes(options.body);
         const p: Pending = {
           ctx, start: Date.now(), method: (options.method || "GET").toUpperCase(), url: u.href,
-          reqHeaders: headerPairs(options.headers), reqBody: reqBody ? [reqBody.subarray(0, MAX_CAPTURE_BYTES)] : [], reqBytes: reqBody?.length || 0,
+          reqHeaders: headerPairs(options.headers), reqBody: reqBody ? [reqBody] : [],
           status: 0, resHeaders: [], resBody: [], resBytes: 0, done: false,
         };
         return {
