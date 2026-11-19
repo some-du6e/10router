@@ -74,6 +74,20 @@ describe("POST /api/version/shutdown", () => {
     expect(exit).toHaveBeenCalledWith(0);
   });
 
+  it("logs why it is about to exit, before the exit", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await shutdown();
+
+      expect(log).toHaveBeenCalledWith("[Shutdown] the dashboard asked to stop for a manual update: exiting in 500 ms");
+      expect(exit).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(500);
+      expect(exit).toHaveBeenCalledWith(0);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it("has no warning key when nothing else runs", async () => {
     const res = await shutdown();
 

@@ -117,5 +117,6 @@ export function spawnUpdaterAndExit(packageName = UPDATER_CONFIG.npmPackageName)
     },
   }).unref();
 
+  console.log(`[Shutdown] started the updater: exiting in ${UPDATER_CONFIG.exitDelayMs} ms so it can replace this install`);
   setTimeout(() => process.exit(0), UPDATER_CONFIG.exitDelayMs);
 }
