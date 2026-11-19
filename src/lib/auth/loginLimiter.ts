@@ -20,7 +20,17 @@ type Entry = { fails: number; lockUntil: number; lockLevel: number; lastFailAt: 
 export type Reservation = { ok: true } | { ok: false; retryAfter: number };
 export type LockState = { locked: false } | { locked: true; retryAfter: number };
 
-const attempts = new Map<string, Entry>();
+type Table = Map<string, Entry>;
+
+// Logins with one key, and logins with two (see getClientKeys). One of a
+// two-key login's keys is a header the client wrote, so its failures go in
+// their own table: a client sending someone else's address as that header
+// locks that address for two-key logins only, never for its owner's ordinary
+// one-key logins. A two-key login is refused while either key is locked in
+// either table, so rotating the free header still runs into the fixed key's
+// locks: 5 guesses per lock as a two-key login, 5 more without the free header.
+const attempts: Table = new Map();
+const pairAttempts: Table = new Map();
 
 function now(): number {
   return Date.now();
@@ -30,12 +40,12 @@ function newEntry(): Entry {
   return { fails: 0, lockUntil: 0, lockLevel: 0, lastFailAt: 0, inFlight: 0 };
 }
 
-function getEntry(key: string): Entry | null {
-  const e = attempts.get(key);
+function getEntry(table: Table, key: string): Entry | null {
+  const e = table.get(key);
   if (!e) return null;
   // Auto reset if window expired and not currently locked
   if (e.lastFailAt && now() - e.lastFailAt > FAIL_WINDOW_MS && (!e.lockUntil || now() >= e.lockUntil)) {
-    attempts.delete(key);
+    table.delete(key);
     return null;
   }
   return e;
@@ -51,12 +61,22 @@ function keyList(keys: Keys): string[] {
   return [...new Set(typeof keys === "string" ? [keys] : keys)];
 }
 
+// The table a login's attempts and failures are counted in.
+function tableFor(list: readonly string[]): Table {
+  return list.length > 1 ? pairAttempts : attempts;
+}
+
 export function checkLock(keys: Keys): LockState {
+  const list = keyList(keys);
+  // A one-key login answers only to one-key locks; a two-key login to both.
+  const tables = list.length > 1 ? [attempts, pairAttempts] : [attempts];
   let retryAfter = 0;
-  for (const key of keyList(keys)) {
-    const e = getEntry(key);
-    const remaining = e && e.lockUntil ? e.lockUntil - now() : 0;
-    if (remaining > 0) retryAfter = Math.max(retryAfter, Math.ceil(remaining / 1000));
+  for (const table of tables) {
+    for (const key of list) {
+      const e = getEntry(table, key);
+      const remaining = e && e.lockUntil ? e.lockUntil - now() : 0;
+      if (remaining > 0) retryAfter = Math.max(retryAfter, Math.ceil(remaining / 1000));
+    }
   }
   return retryAfter ? { locked: true, retryAfter } : { locked: false };
 }
@@ -70,29 +90,34 @@ export function reserveAttempt(keys: Keys): Reservation {
   const lock = checkLock(keys);
   if (lock.locked) return { ok: false, retryAfter: lock.retryAfter };
   const list = keyList(keys);
-  const entries = list.map((key) => getEntry(key) ?? newEntry());
+  const table = tableFor(list);
+  const entries = list.map((key) => getEntry(table, key) ?? newEntry());
   if (entries.some((e) => e.fails + e.inFlight >= MAX_FAILS_BEFORE_LOCK)) return { ok: false, retryAfter: 1 };
   entries.forEach((e, i) => {
     e.inFlight += 1;
-    attempts.set(list[i], e);
+    table.set(list[i], e);
   });
   return { ok: true };
 }
 
 export function releaseAttempt(keys: Keys): void {
-  for (const key of keyList(keys)) {
-    const e = attempts.get(key);
+  const list = keyList(keys);
+  const table = tableFor(list);
+  for (const key of list) {
+    const e = table.get(key);
     if (!e || !e.inFlight) continue;
     e.inFlight -= 1;
     // Nothing left to remember: don't keep one entry per address that ever tried.
-    if (!e.inFlight && !e.fails && !e.lockUntil && !e.lockLevel) attempts.delete(key);
+    if (!e.inFlight && !e.fails && !e.lockUntil && !e.lockLevel) table.delete(key);
   }
 }
 
 export function recordFail(keys: Keys): { remainingBeforeLock: number } {
+  const list = keyList(keys);
+  const table = tableFor(list);
   let remainingBeforeLock = MAX_FAILS_BEFORE_LOCK;
-  for (const key of keyList(keys)) {
-    const e = getEntry(key) ?? newEntry();
+  for (const key of list) {
+    const e = getEntry(table, key) ?? newEntry();
     e.fails += 1;
     e.lastFailAt = now();
     if (e.fails >= MAX_FAILS_BEFORE_LOCK) {
@@ -104,15 +129,17 @@ export function recordFail(keys: Keys): { remainingBeforeLock: number } {
       }
       e.fails = 0;
     }
-    attempts.set(key, e);
+    table.set(key, e);
     remainingBeforeLock = Math.min(remainingBeforeLock, Math.max(0, MAX_FAILS_BEFORE_LOCK - e.fails));
   }
   return { remainingBeforeLock };
 }
 
 export function recordSuccess(keys: Keys): void {
-  for (const key of keyList(keys)) {
-    const e = attempts.get(key);
+  const list = keyList(keys);
+  const table = tableFor(list);
+  for (const key of list) {
+    const e = table.get(key);
     if (!e) continue;
     // A lock that concurrent failures set while this attempt was in flight stands.
     if (e.lockUntil > now()) continue;
@@ -121,7 +148,7 @@ export function recordSuccess(keys: Keys): void {
       Object.assign(e, { fails: 0, lockUntil: 0, lockLevel: 0, lastFailAt: 0 });
       continue;
     }
-    attempts.delete(key);
+    table.delete(key);
   }
 }
 
@@ -186,8 +213,9 @@ export function getClientKeys(request: Request): string[] {
 export const __test__ = {
   reset(): void {
     attempts.clear();
+    pairAttempts.clear();
   },
   size(): number {
-    return attempts.size;
+    return attempts.size + pairAttempts.size;
   },
 };

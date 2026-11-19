@@ -280,11 +280,31 @@ function addressOf(value) {
   return net.isIP(text) ? text : "";
 }
 
-// An address from a header the limiter may key on: an IP that isn't loopback,
-// which would put a remote client in the bucket of this machine's own logins.
+// Addresses that are, or key in the limiter as, this machine, however they are
+// spelled (::ffff:7f00:1, 0:0:0:0:0:0:0:1): 127.0.0.0/8 and 0.0.0.0/8, also
+// IPv4-mapped (BlockList matches a mapped address against IPv4 rules), and ::/64
+// outside the mapped range, the /64 the limiter keys ::1 on.
+const OWN_HOST_V4 = new net.BlockList();
+OWN_HOST_V4.addSubnet("127.0.0.0", 8, "ipv4");
+OWN_HOST_V4.addSubnet("0.0.0.0", 8, "ipv4");
+const MAPPED_V6 = new net.BlockList();
+MAPPED_V6.addSubnet("::ffff:0:0", 96, "ipv6");
+const OWN_HOST_V6 = new net.BlockList();
+OWN_HOST_V6.addSubnet("::", 64, "ipv6");
+
+function isOwnHostAddress(address) {
+  const family = net.isIP(address);
+  if (family === 4) return OWN_HOST_V4.check(address, "ipv4");
+  if (family !== 6) return false;
+  if (MAPPED_V6.check(address, "ipv6")) return OWN_HOST_V4.check(address, "ipv6");
+  return OWN_HOST_V6.check(address, "ipv6");
+}
+
+// An address from a header the limiter may key on: an IP that isn't this
+// machine, which would put a remote client in the bucket of its own logins.
 function usableAddress(value) {
   const address = addressOf(value);
-  return address && !isLoopbackHost(address) ? address : "";
+  return address && !isLoopbackHost(address) && !isOwnHostAddress(address) ? address : "";
 }
 
 /**
@@ -692,7 +712,8 @@ function startBackgroundTokenRefreshFromCustomServer() {
 }
 
 // Wrap Next standalone HTTP server: decide who each request comes from (above)
-// and stamp the verdict as x-9r-real-ip / x-9r-alt-ips / x-9r-via-proxy / x-9r-via-tunnel, with
+// and stamp the verdict as x-9r-real-ip / x-9r-alt-ips / x-9r-via-proxy / x-9r-via-tunnel
+// (plus the raw TCP peer as x-9r-socket-ip / x-9r-socket-port), with
 // the peer token proving the stamp. Client-sent x-9r-* headers are replaced, and
 // X-Forwarded-For is removed so nothing downstream keys on it. The other
 // forwarding headers pass through unchanged.
@@ -722,13 +743,15 @@ http.createServer = (...args) => {
     delete req.headers["x-9r-via-tunnel"];
     delete req.headers["x-9r-peer-token"];
     delete req.headers["x-9r-real-port"];
+    delete req.headers["x-9r-socket-ip"];
+    delete req.headers["x-9r-socket-port"];
     req.headers["x-9r-real-ip"] = ip;
     if (altIps.length) req.headers["x-9r-alt-ips"] = altIps.join(",");
-    // The socket's own source port, stamped only when x-9r-real-ip is the
-    // socket's address too, so the pair names one TCP connection. The launch
-    // proof is bound to it, so a relayed challenge gets a proof for the
-    // relay's connection, and a proxied one (forwarded address) gets none.
-    if (ip === socketIp) req.headers["x-9r-real-port"] = String(req.socket?.remotePort ?? "");
+    // The TCP peer itself, whatever TRUST_PROXY says, for the CLI launcher's
+    // readiness proof only (src/lib/launchProof.js): a relay or proxy has its
+    // own connection, so it gets a proof for that one. Nothing keys or trusts on it.
+    req.headers["x-9r-socket-ip"] = socketIp;
+    req.headers["x-9r-socket-port"] = String(req.socket?.remotePort ?? "");
     req.headers["x-9r-peer-token"] = PEER_TOKEN;
     if (!local) req.headers["x-9r-via-proxy"] = "1";
     if (viaTunnel) req.headers["x-9r-via-tunnel"] = "1";

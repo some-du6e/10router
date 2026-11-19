@@ -164,7 +164,7 @@ describe("TRUST_PROXY", () => {
       expect(clientKeysFor(headers, peer), peer).toEqual(["203.0.113.7"]);
       expect(isOnThisMachine(headers, peer), peer).toBe(false);
     }
-    for (const peer of ["192.168.1.11", "11.0.0.1", "2001:db8:ab::5"]) {
+    for (const peer of ["192.168.1.11", "192.0.2.1", "2001:db8:ab::5"]) {
       expect(isTrustedProxyPeer(peer), peer).toBe(false);
       expect(clientKeysFor(headers, peer), peer).toEqual([peer]);
     }
@@ -248,6 +248,22 @@ describe("isOnThisMachine and clientIpFor", () => {
     ["no CF-Connecting-IP next to either", { "x-real-ip": "203.0.113.8", "cf-connecting-ip": "203.0.113.9" }, ["203.0.113.8"]],
   ])("behind a loopback proxy, lists %s", (_name, headers, expected) => {
     expect(clientKeysFor({ host: "router.example.com", ...headers }, "127.0.0.1")).toEqual(expected);
+  });
+
+  // The limiter keys these as 127.0.0.1 or as ::1's /64, this machine's own
+  // buckets (the first-run setup's, say).
+  it.each(["::ffff:7f00:1", "0:0:0:0:0:ffff:127.0.0.1", "0:0:0:0:0:0:0:1", "::ffff:127.0.0.9", "127.0.0.2", "::2", "0.0.0.0", "::"])(
+    "never keys a proxied request on this machine spelled %s",
+    (address) => {
+      for (const name of ["x-forwarded-for", "x-real-ip", "cf-connecting-ip"]) {
+        expect(clientKeysFor({ host: "router.example.com", [name]: address }, "127.0.0.1"), name).toEqual(["unknown"]);
+      }
+    }
+  );
+
+  it("still keys on a remote address written as IPv4-mapped IPv6", () => {
+    expect(clientKeysFor({ host: "router.example.com", "x-forwarded-for": "::ffff:203.0.113.7" }, "127.0.0.1")).toEqual(["::ffff:203.0.113.7"]);
+    expect(clientKeysFor({ host: "router.example.com", "x-forwarded-for": "2001:db8::7" }, "127.0.0.1")).toEqual(["2001:db8::7"]);
   });
 
   // The owner's bucket is a name no address can spell.
@@ -398,6 +414,47 @@ describe("login limiter", () => {
   ])("stops a client behind %s after five guesses", (_name, keysFor) => {
     for (let i = 1; i <= 5; i++) fail(keysFor(i));
     for (let i = 6; i <= 20; i++) expect(limiter.reserveAttempt(keysFor(i)).ok, `rotation ${i}`).toBe(false);
+  });
+
+  // The header the proxy didn't write is the client's: it can name anyone.
+  it.each([
+    ["Caddy (client's X-Real-IP names the victim)", (victim) => ["203.0.113.7", victim]],
+    ["nginx with only X-Real-IP (client's X-Forwarded-For names the victim)", (victim) => [victim, "203.0.113.8"]],
+  ])("doesn't let a client behind %s lock out the victim's own logins", (_name, keysFor) => {
+    const victim = "198.51.100.77";
+    for (let round = 0; round < 4; round++) {
+      for (let i = 0; i < 5; i++) {
+        if (limiter.reserveAttempt(keysFor(victim)).ok) {
+          limiter.recordFail(keysFor(victim));
+          limiter.releaseAttempt(keysFor(victim));
+        }
+      }
+    }
+    expect(limiter.checkLock(victim).locked).toBe(false);
+    for (let i = 0; i < 4; i++) fail(victim);
+    expect(limiter.reserveAttempt(victim).ok).toBe(true);
+  });
+
+  // Two-key guesses first, so their lock doesn't stop the one-key ones: the most a client gets.
+  it("caps a rotating client at five two-key guesses and five one-key ones per lock", () => {
+    const fixed = "203.0.113.7";
+    let guesses = 0;
+    for (let i = 0; i < 40; i++) {
+      const keys = i < 20 ? [fixed, `198.51.100.${i}`] : [fixed];
+      if (!limiter.reserveAttempt(keys).ok) continue;
+      guesses += 1;
+      limiter.recordFail(keys);
+      limiter.releaseAttempt(keys);
+    }
+    expect(guesses).toBe(10);
+    expect(limiter.checkLock(fixed).locked).toBe(true);
+    expect(limiter.checkLock([fixed, "198.51.100.200"]).locked).toBe(true);
+  });
+
+  it("refuses a two-key login while either key has a one-key lock", () => {
+    for (let i = 0; i < 5; i++) fail("203.0.113.20");
+    expect(limiter.reserveAttempt(["198.51.100.1", "203.0.113.20"]).ok).toBe(false);
+    expect(limiter.reserveAttempt(["198.51.100.1", "203.0.113.21"]).ok).toBe(true);
   });
 
   it("counts a burst with rotating keys against the fixed one", () => {

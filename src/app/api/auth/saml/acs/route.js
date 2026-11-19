@@ -9,13 +9,13 @@ import {
 } from "@/lib/auth/saml.js";
 import { setDashboardAuthCookie } from "@/lib/auth/dashboardSession";
 import { isSsoPrincipalAllowed } from "@/lib/auth/ssoAllowlist.js";
-import { checkLock, recordFail, recordSuccess, getClientIp } from "@/lib/auth/loginLimiter";
+import { checkLock, recordFail, recordSuccess, getClientKeys } from "@/lib/auth/loginLimiter";
 import { getConfiguredSsoType } from "@/lib/auth/authMode.js";
 
 export async function POST(request) {
   const settings = await getSettings();
   const origin = getSamlBaseUrl(request, settings);
-  const ip = getClientIp(request);
+  const ip = getClientKeys(request);
 
   const lock = checkLock(ip);
   if (lock.locked) {

@@ -8,6 +8,8 @@ on:
       - "src/proxy.js"
       - "src/lib/auth/**"
       - "src/app/api/auth/login/**"
+      - "src/app/api/auth/setup/**"
+      - "src/app/api/auth/saml/acs/**"
       - "src/app/api/health/**"
       - "src/lib/launchProof.js"
       - "server-drain.js"

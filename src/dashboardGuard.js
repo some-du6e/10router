@@ -214,7 +214,10 @@ function isAllowedOpenHost(request, settings) {
   const url = hostUrl(raw, "http:");
   if (!url) return false;
   const name = url.hostname.toLowerCase().replace(/\.$/, "");
-  if (isLoopbackHostname(name)) return true;
+  // A proxy that rewrites Host to its upstream (nginx's default) sends a loopback
+  // Host for every name the browser used, rebound ones included. Behind a proxy
+  // only the browser's own Host counts, so it must pass Host through.
+  if (isLoopbackHostname(name)) return !(hasTrustedPeerHeaders(request) && request.headers.get("x-9r-via-proxy"));
   if (name.startsWith("[") || /^\d{1,3}(\.\d{1,3}){3}$/.test(name)) return true;
   return allowedHostNames(settings).includes(name);
 }
@@ -389,7 +392,9 @@ export async function proxy(request) {
     }
   }
 
-  if (pathname.startsWith("/api/") && !isPublicApi(pathname)) {
+  // ALWAYS_PROTECTED too: /api/version/shutdown and /update sit under the public
+  // /api/version.
+  if (pathname.startsWith("/api/") && (!isPublicApi(pathname) || ALWAYS_PROTECTED.some((p) => pathname.startsWith(p)))) {
     const settings = await loadSettings();
     if (settings && settings.tunnelDashboardAccess !== true && isTunnelHost(request, settings)) {
       return NextResponse.json({ error: "Dashboard access via tunnel is disabled" }, { status: 403 });

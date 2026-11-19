@@ -28,11 +28,18 @@ vi.mock("next/server", () => ({
   },
 }));
 vi.mock("next/headers", () => ({ cookies: async () => ({}) }));
-vi.mock("@/lib/localDb", () => ({ getSettings: mocks.getSettings, validateApiKey: vi.fn() }));
+vi.mock("@/lib/localDb", () => ({ getSettings: mocks.getSettings, updateSettings: vi.fn(), validateApiKey: vi.fn() }));
+vi.mock("@/lib/auth/setupToken", () => ({
+  consumeSetupToken: () => ({ ok: false, reason: "invalid" }),
+  getSetupTokenState: () => ({ present: true, expired: false, expiresInSec: 60 }),
+  SETUP_WINDOW_MS: 60_000,
+}));
+vi.mock("@/lib/auth/setupBootstrap", () => ({ ensureSetupToken: vi.fn() }));
 vi.mock("@/shared/utils/machineId", () => ({ getConsistentMachineId: vi.fn(async () => "cli-token") }));
 vi.mock("@/lib/db/helpers/metaStore.js", () => ({ getMeta: vi.fn(async () => "0"), setMeta: vi.fn() }));
 vi.mock("@/lib/auth/dashboardSession", () => ({
   setDashboardAuthCookie: mocks.setDashboardAuthCookie,
+  revokeDashboardSessions: vi.fn(),
   verifyDashboardAuthToken: vi.fn(),
   getDashboardAuthSession: vi.fn(),
 }));
@@ -40,6 +47,8 @@ vi.mock("@/lib/auth/setupState", () => ({
   getAuthBootstrapState: mocks.getAuthBootstrapState,
   getBootstrapSecret: mocks.getBootstrapSecret,
   needsSetup: vi.fn(async () => false),
+  validateNewPassword: () => ({ ok: true }),
+  MIN_PASSWORD_LENGTH: 8,
 }));
 vi.mock("@/lib/auth/loginLimiter", async () => {
   const actual = await vi.importActual("../../src/lib/auth/loginLimiter.ts");
@@ -48,6 +57,7 @@ vi.mock("@/lib/auth/loginLimiter", async () => {
 });
 
 const { POST: login } = await import("../../src/app/api/auth/login/route.js");
+const { POST: setup } = await import("../../src/app/api/auth/setup/route.js");
 
 function loginRequest({ body = JSON.stringify({ password: PASSWORD }), headers = {} } = {}) {
   return new Request("http://localhost:20128/api/auth/login", {
@@ -116,10 +126,54 @@ describe("login route and the limiter", () => {
     expect(mocks.limiter.releaseAttempt).toHaveBeenCalledTimes(1);
   });
 
-  it("releases once when the body isn't JSON (500)", async () => {
+  it("takes no reservation when the body isn't JSON (500)", async () => {
     const response = await login(loginRequest({ body: "{not json", headers: REMOTE }));
     expect(response.status).toBe(500);
+    expect(mocks.limiter.reserveAttempt).not.toHaveBeenCalled();
+    expect(mocks.limiter.releaseAttempt).not.toHaveBeenCalled();
+  });
+
+  // Five connections trickling their bodies in would otherwise hold all five
+  // reservations, keeping the key at 429 without ever failing.
+  it("reserves only once the body has arrived", async () => {
+    let push;
+    const body = new ReadableStream({ start(controller) { push = controller; } });
+    const pending = login(new Request("http://localhost:20128/api/auth/login", {
+      method: "POST", headers: { "content-type": "application/json", ...REMOTE }, body, duplex: "half",
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mocks.limiter.reserveAttempt).not.toHaveBeenCalled();
+    push.enqueue(new TextEncoder().encode(JSON.stringify({ password: PASSWORD })));
+    push.close();
+    expect((await pending).status).toBe(200);
+    expect(mocks.limiter.reserveAttempt).toHaveBeenCalledTimes(1);
     expect(mocks.limiter.releaseAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a locked key before reading its body", async () => {
+    mocks.limiter.checkLock.mockReturnValue({ locked: true, retryAfter: 9 });
+    const response = await login(loginRequest({ body: "{not json", headers: REMOTE }));
+    expect(response.status).toBe(429);
+    expect(response.headers["Retry-After"]).toBe("9");
+    expect(mocks.limiter.reserveAttempt).not.toHaveBeenCalled();
+  });
+
+  // Behind nginx with only X-Real-IP the client rotates X-Forwarded-For, which
+  // x-9r-real-ip may carry: the setup token is limited on both, as login is.
+  it("limits a setup-token guess on both addresses a proxy sent", async () => {
+    mocks.getAuthBootstrapState.mockResolvedValue("setup");
+    const headers = { ...REMOTE, "x-9r-real-ip": "198.51.100.1", "x-9r-alt-ips": "203.0.113.8" };
+    const response = await setup(new Request("http://localhost:20128/api/auth/setup", {
+      method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ token: "guess", password: PASSWORD }),
+    }));
+    expect(response.status).toBe(401);
+    expect(mocks.limiter.checkLock).toHaveBeenCalledWith(["198.51.100.1", "203.0.113.8"]);
+    expect(mocks.limiter.recordFail).toHaveBeenCalledWith(["198.51.100.1", "203.0.113.8"]);
+  });
+
+  it("keys an IPv6 client on its /64", async () => {
+    await login(loginRequest({ headers: { ...REMOTE, "x-9r-real-ip": "2001:db8:1:2::7", "x-9r-alt-ips": "2001:db8:1:2:ffff::9" } }));
+    expect(mocks.limiter.reserveAttempt).toHaveBeenCalledWith(["2001:db8:1:2::/64"]);
   });
 
   it("releases once when something throws mid-login", async () => {

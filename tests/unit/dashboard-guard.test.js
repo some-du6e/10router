@@ -598,6 +598,16 @@ describe("dashboard guard network trust", () => {
     }
   });
 
+  // They sit under the public /api/version, which a prefix match let through.
+  it("refuses /api/version/shutdown and /update on the tunnel host, even with a session", async () => {
+    mocks.getSettings.mockResolvedValue(TUNNEL);
+    mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
+    for (const path of ["/api/version/shutdown", "/api/version/update"]) {
+      expect((await proxy(request(path, { host: "abc.trycloudflare.com" }, "session"))).status, path).toBe(403);
+    }
+    expect(await proxy(request("/api/version", { host: "abc.trycloudflare.com" }))).toBe(mocks.nextResponse);
+  });
+
   it("serves admin APIs on the tunnel host once tunnel dashboard access is on", async () => {
     mocks.getSettings.mockResolvedValue({ ...TUNNEL, tunnelDashboardAccess: true });
     expect(await proxy(request("/api/keys", { host: "abc.trycloudflare.com" }))).toBe(mocks.nextResponse);
@@ -727,6 +737,14 @@ describe("dashboard guard Origin must match Host for cookie and login-off access
     expect(check({ host: "localhost:20128" })).toBe(false);
     expect(check({ origin: "http://localhost:20128" })).toBe(true);
   });
+
+  // Only the first X-Forwarded-Host entry is the browser's Host; later ones are hops.
+  it("reads the first entry of a multi-entry X-Forwarded-Host", () => {
+    const check = (xfh) => __test__.isOtherOriginBrowserRequest(request("/api/settings", { host: "127.0.0.1:20128", "x-forwarded-host": xfh, origin: "https://router.example.com" }));
+    expect(check("router.example.com, internal.lan")).toBe(false);
+    expect(check(" router.example.com ,internal.lan")).toBe(false);
+    expect(check("evil.example, router.example.com")).toBe(true);
+  });
 });
 
 // With login off, a page on a domain the attacker points at this machine (DNS
@@ -780,6 +798,29 @@ describe("dashboard guard login-off Host allowlist", () => {
     }
   });
 
+  it("admits a request with no Host and refuses one it can't parse", async () => {
+    expect(await proxy(request("/api/settings"))).toBe(mocks.nextResponse);
+    for (const host of ["exa mple.com", "[::1", "router.example.com:notaport"]) {
+      expect((await proxy(request("/api/settings", { host }))).status, host).toBe(401);
+    }
+  });
+
+  // nginx's default proxy_set_header Host $proxy_host: every name the browser
+  // used, a rebound one included, arrives as the upstream's loopback Host.
+  it("refuses a loopback Host behind a proxy, and keeps it for a client on this machine", async () => {
+    process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
+    const proxied = { "x-9r-peer-token": PEER_TOKEN, "x-9r-real-ip": "203.0.113.9", "x-9r-via-proxy": "1" };
+    for (const host of ["127.0.0.1:20128", "localhost:20128", "[::1]:20128"]) {
+      expect((await proxy(request("/api/settings", { host, ...proxied }))).status, host).toBe(401);
+      expect(await proxy(localRequest("/api/settings", { host })), host).toBe(mocks.nextResponse);
+    }
+    // A proxy that passes the browser's Host through is judged by that Host.
+    vi.stubEnv("ALLOWED_HOSTS", "router.example.com");
+    expect(await proxy(request("/api/settings", { host: "router.example.com", ...proxied }))).toBe(mocks.nextResponse);
+    // A client's own via-proxy stamp, without the wrapper's proof, is ignored.
+    expect(await proxy(request("/api/settings", { host: "127.0.0.1:20128", "x-9r-via-proxy": "1" }))).toBe(mocks.nextResponse);
+  });
+
   it("leaves a session and the CLI token alone on any Host", async () => {
     mocks.getSettings.mockResolvedValue({ ...OPEN, requireLogin: true });
     mocks.getDashboardAuthSession.mockResolvedValue({ authenticated: true });
@@ -819,6 +860,13 @@ describe("dashboard guard local-only GET routes need same-origin proof", () => {
     ]) {
       expect(await proxy(localRequest("/api/mcp/browsermcp/sse", { host: "0.0.0.0:20128", ...headers })), JSON.stringify(headers)).toBe(mocks.nextResponse);
     }
+  });
+
+  it("treats HEAD like GET", async () => {
+    const head = { ...localRequest("/api/mcp/browsermcp/sse", { host: "0.0.0.0:20128" }), method: "HEAD" };
+    expect((await proxy(head)).status).toBe(403);
+    const proven = { ...localRequest("/api/mcp/browsermcp/sse", { host: "0.0.0.0:20128", "sec-fetch-site": "same-origin" }), method: "head" };
+    expect(await proxy(proven)).toBe(mocks.nextResponse);
   });
 
   it("leaves non-GET local-only requests to the Origin checks", async () => {

@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
 import { getSettings, updateSettings } from "@/lib/localDb";
 import { setDashboardAuthCookie, revokeDashboardSessions } from "@/lib/auth/dashboardSession";
-import { checkLock, recordFail, recordSuccess, getClientIp } from "@/lib/auth/loginLimiter";
+import { checkLock, recordFail, recordSuccess, getClientKeys } from "@/lib/auth/loginLimiter";
 import {
   getAuthBootstrapState,
   validateNewPassword,
@@ -40,7 +40,7 @@ export async function GET() {
 
 export async function POST(request) {
   try {
-    const ip = getClientIp(request);
+    const ip = getClientKeys(request);
     const lock = checkLock(ip);
     if (lock.locked) {
       return NextResponse.json(

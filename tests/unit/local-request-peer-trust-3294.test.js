@@ -204,9 +204,9 @@ describe("login limiter client IP", () => {
     expect(ip).toBe("203.0.113.9");
   });
 
-  // TRUST_PROXY now only tells custom-server.js that a proxy runs in front; the
-  // address it picks arrives stamped. Without that proof, X-Forwarded-For is
-  // still the client's to set, so it never picks the bucket.
+  // Only custom-server.js reads TRUST_PROXY, and the address it picks arrives
+  // stamped. Without that proof, X-Forwarded-For is the client's to set, so it
+  // never picks the bucket.
   it("ignores X-Forwarded-For without the wrapper's proof, TRUST_PROXY or not", () => {
     process.env.TRUST_PROXY = "true";
 
