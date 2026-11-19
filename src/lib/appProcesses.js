@@ -3,6 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { loadPid as loadCloudflaredPid } from "@/lib/tunnel/cloudflare/pid.js";
+import { getDataDir } from "@/lib/dataDir";
 
 // Shutdown and update stop only processes this install started and recorded:
 // - the CLI launcher that spawned this server (it passes its PID in the env),
@@ -53,6 +54,25 @@ export function runtimeUpdaterPath(env = process.env, platform = process.platfor
       ? paths.join(env.APPDATA || paths.join(os.homedir(), "AppData", "Roaming"), "9router")
       : paths.join(os.homedir(), ".9router"));
   return paths.join(dataDir, "runtime", "updater", "updater.js");
+}
+
+// The CLI launcher's one-per-DATA_DIR lock (cli/src/cli/utils/dataDirLock.js).
+// getDataDir applies the same fallbacks as the CLI's copy (a Unix-style path
+// on Windows, a DATA_DIR it can't create), so this is the file the launcher
+// locked.
+export const LAUNCHER_LOCK_FILE = "launcher.lock";
+
+export function launcherLockPath() {
+  return path.join(getDataDir(), LAUNCHER_LOCK_FILE);
+}
+
+// A launcher killed here can't remove its lock. Remove it only while it still
+// names that launcher, so a newer launcher's lock is never touched.
+function removeLauncherLock(launcherPid) {
+  const file = launcherLockPath();
+  try {
+    if (JSON.parse(fs.readFileSync(file, "utf8"))?.pid === launcherPid) fs.unlinkSync(file);
+  } catch { /* no lock, or not readable */ }
 }
 
 // The CLI package this server runs from: <pkg>/app/custom-server.js → <pkg>.
@@ -267,7 +287,7 @@ function stopOwnCloudflared() {
 // Stop this install's other processes so an update can replace its files.
 export async function killAppProcesses() {
   const ownCloudflared = stopOwnCloudflared();
-  const { pids, stateFile } = planKills();
+  const { pids, stateFile, launcher } = planKills();
   let killed = ownCloudflared ? 1 : 0;
   for (const pid of pids) {
     if (pid === ownCloudflared) continue;
@@ -278,6 +298,7 @@ export async function killAppProcesses() {
         process.kill(pid, "SIGKILL");
       }
       killed++;
+      if (pid === launcher) removeLauncherLock(launcher);
     } catch { /* already gone */ }
   }
   // A SIGKILLed launcher can't remove its own state file.

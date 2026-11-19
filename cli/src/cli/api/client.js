@@ -78,6 +78,15 @@ function configure(options = {}) {
   config = { ...config, ...options };
 }
 
+// Every request waits for this promise first. The launcher sets it to its
+// readiness check after each server (re)start, so the CLI token only goes to
+// a server that proved it is the launcher's own. Resolving false fails the
+// requests instead.
+let readyGate = null;
+function pauseUntil(gate) {
+  readyGate = gate ? Promise.resolve(gate) : null;
+}
+
 /**
  * Make HTTP request to API
  * @param {string} method - HTTP method
@@ -85,7 +94,10 @@ function configure(options = {}) {
  * @param {Object} body - Request body (optional)
  * @returns {Promise<Object>} Response with { success, data/error }
  */
-function makeRequest(method, path, body = null) {
+async function makeRequest(method, path, body = null) {
+  if (readyGate && !(await readyGate)) {
+    return { success: false, error: "The server isn't ready (it hasn't proved it is this launcher's server)." };
+  }
   return new Promise((resolve) => {
     const httpModule = config.protocol === "https:" ? https : http;
     
@@ -498,6 +510,7 @@ async function disableTunnel() {
 
 module.exports = {
   configure,
+  pauseUntil,
   hostForBind,
   
   // Providers

@@ -175,10 +175,12 @@ const PREVIEW_PRESERVE_KEYS = new Set([
 const TRUNCATED_SUFFIX = "\n[Content truncated]";
 
 function shortenPreview(item, limit, key = "") {
+  // Joined, not concatenated: a joined string is a fresh copy, while a slice
+  // (or a concatenation holding one) keeps its whole parent string alive.
   if (typeof item === "string")
     return PREVIEW_PRESERVE_KEYS.has(key) || item.length <= limit
       ? item
-      : `${item.slice(0, limit)}${TRUNCATED_SUFFIX}`;
+      : [item.slice(0, limit), TRUNCATED_SUFFIX].join("");
   if (Array.isArray(item)) return item.map((child) => shortenPreview(child, limit));
   if (item && typeof item === "object")
     return Object.fromEntries(
