@@ -180,7 +180,8 @@ function createWsDecoder(onMessage, onClose, onPing) {
 //     local-only routes;
 //   - clientIpFor: the address the login limiter and logs key on.
 // Forwarding headers count only from a loopback peer (a reverse proxy on this
-// machine); a direct remote peer is always its socket address.
+// machine) or a peer TRUST_PROXY lists; any other remote peer, and a listed one
+// that sent no forwarding header, is its socket address.
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
 
@@ -324,9 +325,9 @@ function usableAddress(value) {
  * peer is its socket, and so is a TRUST_PROXY-listed one that sent no forwarding
  * header. Behind a proxy (on this machine, or a listed one that sent a forwarding
  * header) the candidates are the rightmost X-Forwarded-For entry that is a usable
- * address (the hop an appending proxy such as Caddy, Traefik, cloudflared or Tailscale
- * added; everything left of it is the client's) and the X-Real-IP (what nginx
- * with `X-Real-IP $remote_addr` sets). Whichever one the proxy wrote is fixed,
+ * address (the hop an appending proxy such as Caddy, Traefik, cloudflared or
+ * Tailscale added; everything left of it is the client's) and the X-Real-IP
+ * (what nginx with `X-Real-IP $remote_addr` sets). Whichever one the proxy wrote is fixed,
  * the other is the client's to rotate, and this file can't tell which is which,
  * so the limiter counts a failure against both and refuses while either is
  * locked. CF-Connecting-IP counts only when neither is there. With nothing

@@ -76,10 +76,11 @@ describe("launch nonce", () => {
 });
 
 // A peer on another address, through the real wrapper: its forwarding headers
-// are read, and its Host may be a proxy's, only when TRUST_PROXY lists it.
+// are read, and its Host may be a proxy's, only when TRUST_PROXY lists it and
+// it sent a forwarding header.
 // CI runners have a LAN address, so there a missing one fails rather than skips.
 describe("custom-server proxy-hop stamp for a non-loopback peer", () => {
-  it.skipIf(!lanAddress && !process.env.CI)("stamps x-9r-proxy-hop on a listed peer only", async () => {
+  it.skipIf(!lanAddress && !process.env.CI)("stamps x-9r-proxy-hop only on a listed peer that sent a forwarding header", async () => {
     expect(lanAddress, "no non-loopback IPv4 address on this machine").toBeTruthy();
     let seen;
     const port = await listen((req, res) => { seen = req.headers; res.end("ok"); }, lanAddress);
@@ -224,7 +225,7 @@ describe("/api/health launch proof", () => {
   });
 
   // `--host <LAN address>` with that address in TRUST_PROXY: the launcher's
-  // socket is a listed proxy peer with no forwarding header, keyed on itself.
+  // socket is listed but sends no forwarding header, so it is a direct peer keyed on itself.
   // CI runners have a LAN address, so there a missing one fails rather than skips.
   it.skipIf(!lanAddress && !process.env.CI)("passes for a launcher on a LAN bind that a TRUST_PROXY list covers", async () => {
     expect(lanAddress, "no non-loopback IPv4 address on this machine").toBeTruthy();

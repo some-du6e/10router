@@ -806,7 +806,7 @@ describe("dashboard guard login-off Host allowlist", () => {
   });
 
   // nginx's default proxy_set_header Host $proxy_host: every name the browser
-  // used, a rebound one included, arrives as the upstream's loopback Host.
+  // used, a rebound one included, arrives as the upstream's loopback or IP Host.
   // What custom-server.js stamps for a loopback proxy peer that isn't local, or
   // a TRUST_PROXY-listed peer that sent a forwarding header (PROXY_HOP); and for
   // a direct peer from another address with no forwarding header, listed in
@@ -822,7 +822,25 @@ describe("dashboard guard login-off Host allowlist", () => {
     // A proxy that passes the browser's Host through is judged by that Host.
     vi.stubEnv("ALLOWED_HOSTS", "router.example.com");
     expect(await proxy(request("/api/settings", { host: "router.example.com", ...PROXY_HOP }))).toBe(mocks.nextResponse);
-    expect(await proxy(request("/api/settings", { host: "192.168.1.10:20128", ...PROXY_HOP }))).toBe(mocks.nextResponse);
+  });
+
+  // nginx with `proxy_pass http://192.168.1.5:20128` (or a container IP) and the
+  // default Host $proxy_host sends that IP for every name, a rebound one included.
+  it("refuses an IP-literal Host from a proxy hop unless this install was given it", async () => {
+    process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
+    for (const host of ["192.168.1.5:20128", "172.17.0.2:20128", "[2001:db8::5]:20128"]) {
+      expect((await proxy(request("/api/settings", { host, ...PROXY_HOP }))).status, host).toBe(401);
+    }
+    vi.stubEnv("ALLOWED_HOSTS", "router.example.com,192.168.1.5");
+    expect(await proxy(request("/api/settings", { host: "192.168.1.5:20128", ...PROXY_HOP }))).toBe(mocks.nextResponse);
+    expect((await proxy(request("/api/settings", { host: "172.17.0.2:20128", ...PROXY_HOP }))).status).toBe(401);
+    vi.stubEnv("BASE_URL", "http://172.17.0.2:20128");
+    expect(await proxy(request("/api/settings", { host: "172.17.0.2:20128", ...PROXY_HOP }))).toBe(mocks.nextResponse);
+    // A direct peer's IP-literal Host is the one the browser typed.
+    for (const host of ["192.168.1.5:20128", "[2001:db8::5]:20128"]) {
+      expect(await proxy(request("/api/settings", { host, ...DOCKER_PEER })), host).toBe(mocks.nextResponse);
+      expect(await proxy(request("/api/settings", { host })), host).toBe(mocks.nextResponse);
+    }
   });
 
   // Docker with a published port, ssh -L through a jump host, a WSL2 or VM NAT

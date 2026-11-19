@@ -222,15 +222,18 @@ function isAllowedOpenHost(request, settings) {
   const url = hostUrl(raw, "http:");
   if (!url) return false;
   const name = url.hostname.toLowerCase().replace(/\.$/, "");
-  // A proxy that rewrites Host to its upstream (nginx's default) sends a loopback
-  // Host for every name the browser used, rebound ones included. So behind one
-  // (custom-server.js stamps x-9r-proxy-hop for a loopback peer that isn't local,
-  // or a TRUST_PROXY-listed one that sent a forwarding header) only a browser's
-  // own Host counts, and the proxy must pass it through.
-  // A direct peer from elsewhere (a Docker port, an ssh -L or NAT forward) keeps
-  // its Host: a page can't make a browser send a loopback Host for its own name.
-  if (isLoopbackLiteral(name)) return !(hasTrustedPeerHeaders(request) && request.headers.get("x-9r-proxy-hop"));
-  if (name.startsWith("[") || /^\d{1,3}(\.\d{1,3}){3}$/.test(name)) return true;
+  // A proxy that rewrites Host to its upstream (nginx's default) sends that
+  // upstream's loopback name or IP for every name the browser used, rebound ones
+  // included. So behind one (custom-server.js stamps x-9r-proxy-hop for a loopback
+  // peer that isn't local, or a TRUST_PROXY-listed one that sent a forwarding
+  // header) a loopback Host never counts, and an IP literal only when this install
+  // was given it (ALLOWED_HOSTS, BASE_URL); otherwise the proxy must pass the
+  // browser's Host through. A direct peer from elsewhere (a Docker port, an ssh -L
+  // or NAT forward) keeps its Host: a page can't make a browser send a loopback
+  // or IP-literal Host for its own name.
+  const proxyHop = hasTrustedPeerHeaders(request) && !!request.headers.get("x-9r-proxy-hop");
+  if (isLoopbackLiteral(name)) return !proxyHop;
+  if ((name.startsWith("[") || /^\d{1,3}(\.\d{1,3}){3}$/.test(name)) && !proxyHop) return true;
   return allowedHostNames(settings).includes(name);
 }
 
