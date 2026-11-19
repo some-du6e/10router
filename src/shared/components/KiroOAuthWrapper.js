@@ -39,16 +39,8 @@ export default function KiroOAuthWrapper({ isOpen, providerInfo, onSuccess, onCl
     setIdcConfig(null);
   };
 
-  const handleSocialSuccess = (result) => {
-    setAuthMethod(null);
-    setSocialProvider(null);
-    onSuccess?.(result);
-    onClose?.(); // Close modal after success
-  };
-
-  const handleDeviceSuccess = (result) => {
-    setAuthMethod(null);
-    setIdcConfig(null);
+  const handleSuccess = (result) => {
+    handleBack();
     onSuccess?.(result);
     onClose?.(); // Close modal after success
   };
@@ -71,7 +63,7 @@ export default function KiroOAuthWrapper({ isOpen, providerInfo, onSuccess, onCl
         isOpen={isOpen}
         provider="kiro"
         providerInfo={providerInfo}
-        onSuccess={handleDeviceSuccess}
+        onSuccess={handleSuccess}
         onClose={handleBack}
         idcConfig={idcConfig}
       />
@@ -84,7 +76,7 @@ export default function KiroOAuthWrapper({ isOpen, providerInfo, onSuccess, onCl
       <KiroSocialOAuthModal
         isOpen={isOpen}
         provider={socialProvider}
-        onSuccess={handleSocialSuccess}
+        onSuccess={handleSuccess}
         onClose={handleBack}
       />
     );

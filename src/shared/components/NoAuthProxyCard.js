@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import PropTypes from "prop-types";
 import Card from "./Card";
 import Select from "./Select";
@@ -42,7 +42,7 @@ export default function NoAuthProxyCard({ providerId }) {
     return () => { cancelled = true; };
   }, [providerId]);
 
-  const save = useCallback(async (poolId, strategy) => {
+  const save = async (poolId, strategy) => {
     if (!loaded || saving) return;
     setSaving(true);
     setSavedFlash(false);
@@ -68,14 +68,6 @@ export default function NoAuthProxyCard({ providerId }) {
     } finally {
       setSaving(false);
     }
-  }, [providerId, loaded, saving]);
-
-  const handlePoolChange = (newPoolId) => {
-    return save(newPoolId, rotateStrategy);
-  };
-
-  const handleStrategyChange = (newStrategy) => {
-    return save(proxyPoolId, newStrategy);
   };
 
   const canRotate = proxyPools.length >= 2;
@@ -97,7 +89,7 @@ export default function NoAuthProxyCard({ providerId }) {
       <Select
         label="Proxy Pool"
         value={proxyPoolId}
-        onChange={(e) => handlePoolChange(e.target.value)}
+        onChange={(e) => save(e.target.value, rotateStrategy)}
         disabled={!loaded || saving || isRotation}
         options={[
           { value: NONE_PROXY_POOL_VALUE, label: "None (direct)" },
@@ -110,7 +102,7 @@ export default function NoAuthProxyCard({ providerId }) {
         <label className="text-sm font-medium text-text-main">Rotation Strategy</label>
         <select
           value={rotateStrategy}
-          onChange={(e) => handleStrategyChange(e.target.value)}
+          onChange={(e) => save(proxyPoolId, e.target.value)}
           disabled={!loaded || saving}
           className="py-2 px-3 text-sm text-text-main bg-white dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-md focus:ring-1 focus:ring-primary/30 focus:border-primary/50 focus:outline-none transition-all disabled:opacity-50"
         >

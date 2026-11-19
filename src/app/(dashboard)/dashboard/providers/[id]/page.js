@@ -15,6 +15,8 @@ import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { translate } from "@/i18n/runtime";
 import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
 import { getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
+import { reauthOutcome } from "@/shared/utils/reauthOutcome";
+import api from "@/shared/utils/api";
 import ModelRow from "./ModelRow";
 import PassthroughModelsSection from "./PassthroughModelsSection";
 import ConnectionRow from "./ConnectionRow";
@@ -772,24 +774,10 @@ export default function ProviderDetailPage() {
   };
 
   const handleOAuthSuccess = async (result) => {
-    const authenticatedId = result?.connection?.id || result?.connectionId;
-    if (reauthConnectionId && authenticatedId === reauthConnectionId) {
+    const outcome = reauthOutcome(reauthConnectionId, result);
+    if (outcome === "confirmed") {
       try {
-        const res = await fetch(`/api/providers/${reauthConnectionId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ testStatus: "active", lastError: null, lastErrorAt: null, errorCode: null }),
-        });
-        if (!res.ok) {
-          let message = "Failed to clear the previous connection error";
-          try {
-            const data = await res.json();
-            if (data?.error) message = data.error;
-          } catch {
-            // Keep the fallback message when the API does not return JSON.
-          }
-          throw new Error(message);
-        }
+        await api.put(`/api/providers/${reauthConnectionId}`, { testStatus: "active", lastError: null, lastErrorAt: null, errorCode: null });
       } catch (error) {
         console.log("Error clearing re-auth status:", error);
         if (typeof window !== "undefined") {
@@ -799,7 +787,7 @@ export default function ProviderDetailPage() {
       }
     }
     await fetchConnections();
-    if (reauthConnectionId && authenticatedId !== reauthConnectionId) {
+    if (outcome === "unconfirmed") {
       window.alert("The selected account was not confirmed by this sign-in. Its existing error was kept. Sign in with that account to re-authenticate it.");
     }
     setShowOAuthModal(false);

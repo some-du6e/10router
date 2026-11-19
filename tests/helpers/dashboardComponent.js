@@ -24,6 +24,11 @@ export function dashboardComponent(path, imports = {}, componentName = null) {
   let effects = [];
   const hooks = {
     useCallback(callback) { return callback; },
+    useRef(initial) {
+      const index = cursor++;
+      if (!(index in state)) state[index] = { current: initial };
+      return state[index];
+    },
     useState(initial) {
       const index = cursor++;
       if (!(index in state)) state[index] = typeof initial === "function" ? initial() : initial;
@@ -57,22 +62,6 @@ export function dashboardComponent(path, imports = {}, componentName = null) {
       return tree;
     },
   };
-}
-
-export function dashboardHandler(path, name, scope) {
-  const source = readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
-  let handler;
-  transformSync(source, {
-    filename: path, babelrc: false, configFile: false,
-    parserOpts: { plugins: ["jsx"] },
-    plugins: [() => ({ visitor: {
-      VariableDeclarator(nodePath) {
-        if (nodePath.node.id.name === name) handler = source.slice(nodePath.node.init.start, nodePath.node.init.end);
-      },
-    } })],
-  });
-  if (!handler) throw new Error(`Handler ${name} not found in ${path}`);
-  return new Function(...Object.keys(scope), `return (${handler});`)(...Object.values(scope));
 }
 
 export function elements(tree, predicate) {

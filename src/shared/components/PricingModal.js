@@ -44,7 +44,7 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
   };
 
   const handleSave = async () => {
-    if (loading || saving || !loaded) return;
+    if (saving || !loaded) return;
     setSaving(true);
     setError("");
     try {
@@ -59,7 +59,7 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
   };
 
   const handleReset = async () => {
-    if (loading || saving || !loaded) return;
+    if (saving || !loaded) return;
     if (!confirm("Reset all pricing to defaults? This cannot be undone.")) return;
     setSaving(true);
     setError("");
@@ -170,7 +170,7 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
           <button
             onClick={handleReset}
             className="px-4 py-2 text-sm text-red-500 hover:bg-red-500/10 rounded border border-red-500/20 transition-colors"
-            disabled={saving || loading || !loaded}
+            disabled={saving || !loaded}
           >
             Reset to Defaults
           </button>
@@ -185,7 +185,7 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
             <button
               onClick={handleSave}
               className="px-4 py-2 text-sm bg-primary text-white rounded hover:bg-primary/90 transition-colors disabled:opacity-50"
-              disabled={saving || loading || !loaded}
+              disabled={saving || !loaded}
             >
               {saving ? "Saving..." : "Save Changes"}
             </button>
