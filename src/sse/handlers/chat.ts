@@ -23,13 +23,13 @@ import { respondWithEarlyHeaders } from "open-sse/utils/earlyHeaders.js";
 import { errorResponse, unavailableResponse, clientAbortResult } from "open-sse/utils/error.js";
 import { createLimitHoldResponse, awaitLimitClear, isLimitError, allLockedError } from "open-sse/utils/limitHold.js";
 import { resolveLimitHold } from "../services/limitHoldConfig.js";
-import { checkApiKeyLimits, apiKeyLimitDenial, keepAllowedAdapterModels, keyHasBudget } from "../services/keyLimits.js";
+import { checkApiKeyLimits, apiKeyLimitDenial, keepAllowedAdapterModels, keepAllowedComboMembers, comboMembersRefusal, keyHasBudget } from "../services/keyLimits.js";
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS, MAX_COMBO_DEPTH, NON_STREAM_EARLY_HEADERS_MS, STREAM_EARLY_HEADERS_MS } from "open-sse/config/runtimeConfig.js";
 import { isRequestError } from "open-sse/services/accountFallback.js";
-import { createSameRequestErrorTally } from "open-sse/services/sameRequestError.js";
+import { createSameRequestErrorTally, isRequestFault } from "open-sse/services/sameRequestError.js";
 import { connectionUpstream } from "../services/connectionUpstream.js";
 import { checkModelHang, noteHeadersTimeout, noteModelServed, noteProbeBudget, releaseProbe } from "open-sse/services/modelHang.js";
 import { HEADERS_TIMEOUT } from "open-sse/config/errorConfig.js";
@@ -102,6 +102,14 @@ interface RoutingFailure {
   resetAtMs?: number | null;
   retryAtMs?: number;
   error?: string;
+  // Each account's own failure on this request, in the pass that set this
+  // entry. Empty when it reached no account (all locked, none configured).
+  accountErrors?: AccountError[];
+}
+
+interface AccountError {
+  status?: number;
+  error?: unknown;
 }
 
 interface ProviderSpecificData {
@@ -149,6 +157,9 @@ interface PassResult {
 
 interface SingleModelOptions {
   allowHold?: boolean;
+  // The model a hold re-checks the key's allowlist on before each re-run, when
+  // not this one: an auto combo member passed under the client's bare id.
+  holdModel?: string;
   routingFailures?: RoutingFailure[];
   // Set inside an auto combo: connections billed this way are never used.
   blockedBilling?: Set<BillingSet> | null;
@@ -167,6 +178,16 @@ interface RoutedChatArgs {
   apiKey: string | null;
   routingFailures: RoutingFailure[];
   signal?: AbortSignal | null;
+  ingressCombo?: IngressAutoCombo | null;
+  // The client's API format, for refusals shaped like it.
+  sourceFormat?: string;
+}
+
+/** An auto combo an ingress resolved itself (the Codex one), routed as given. */
+interface IngressAutoCombo {
+  models: string[];
+  // Members to wait on when they were rate-limited and nothing behind them answered.
+  home: string[];
 }
 
 interface ComboLimitHoldArgs {
@@ -187,10 +208,24 @@ interface HoldArgs {
   willStream: boolean;
   sourceFormat: string;
   modelStr: string;
+  // The model the key's allowlist is re-checked on, when not modelStr.
+  allowModel?: string;
   provider: string;
   model?: string;
   signal?: AbortSignal | null;
   apiKey?: string | null;
+}
+
+interface HandleChatOptions {
+  // Routes whose response goes straight to the client turn this on; wrappers
+  // that reshape the response (Ollama, Gemini) need its real status.
+  earlyHeaders?: boolean;
+  // An auto combo the route already resolved (the Codex ingress), routed in
+  // this order instead of resolving one here. Set by server code only.
+  autoCombo?: string[];
+  // The members of autoCombo to wait on when they were rate-limited and
+  // nothing behind them answered.
+  autoComboHome?: string[];
 }
 
 /**
@@ -201,9 +236,7 @@ interface HoldArgs {
 export async function handleChat(
   request: Request,
   clientRawRequest: ClientRawRequest | null = null,
-  // Routes whose response goes straight to the client turn this on; wrappers that
-  // reshape the response (Ollama, Gemini) need its real status.
-  options: { earlyHeaders?: boolean } = {},
+  options: HandleChatOptions = {},
 ): Promise<Response> {
   // Waits for memory room before the body is read (memoryAdmission.js), and
   // holds that room until the reply has ended.
@@ -221,7 +254,7 @@ async function readJsonBody(request: Request, ticket: AdmissionTicket | null): P
 async function admittedChat(
   request: Request,
   clientRawRequest: ClientRawRequest | null,
-  { earlyHeaders = false }: { earlyHeaders?: boolean },
+  { earlyHeaders = false, autoCombo, autoComboHome = [] }: HandleChatOptions,
   ticket: AdmissionTicket | null,
 ): Promise<Response> {
   let body: ChatBody;
@@ -307,7 +340,10 @@ async function admittedChat(
   const clientTool = detectClientTool(Object.fromEntries(request.headers.entries()), body);
   const rawRequest = clientRawRequest;
   const route = async (signal: AbortSignal | null = null): Promise<Response> => finalizeRoutingError(
-    await handleRoutedChat({ body, modelStr, settings, clientRawRequest: rawRequest, request, apiKey, routingFailures, signal }),
+    await handleRoutedChat({
+      body, modelStr, settings, clientRawRequest: rawRequest, request, apiKey, routingFailures, signal,
+      ingressCombo: autoCombo?.length ? { models: autoCombo, home: autoComboHome } : null, sourceFormat,
+    }),
     { clientTool, routingFailures } as Parameters<typeof finalizeRoutingError>[1],
   );
 
@@ -322,14 +358,32 @@ async function admittedChat(
   return respondWithEarlyHeaders({ run: route, sourceFormat, json, delayMs, signal: request.signal, log });
 }
 
-async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, request, apiKey, routingFailures, signal = null }: RoutedChatArgs): Promise<Response> {
+async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, request, apiKey, routingFailures, signal = null, ingressCombo = null, sourceFormat }: RoutedChatArgs): Promise<Response> {
   const requiredCapabilities = detectRequiredCapabilities(body);
 
   // Check if model is a combo (has multiple models with fallback). A bare id
-  // with no combo or alias falls back across every provider serving it.
+  // with no combo or alias falls back across every provider serving it, from
+  // the list an ingress resolved or else one resolved here.
   const userComboModels = await getComboModels(modelStr);
+  const ingress = userComboModels ? null : ingressCombo;
   // Right after a restart this waits for the model list; a hang-up ends the wait.
-  const comboModels = userComboModels ?? (await resolveAutoCombo(modelStr, BUILTIN_MODEL_ALIASES, settings, { signal }));
+  let resolved: string[] | null = userComboModels ?? ingress?.models ?? (await resolveAutoCombo(modelStr, BUILTIN_MODEL_ALIASES, settings, { signal }));
+  if (resolved && !userComboModels) {
+    // The key's allowlist let the bare id through; a member matched only
+    // through a leading `openai-` has another name and has to pass too.
+    resolved = (await keepAllowedComboMembers(apiKey, resolved)) as string[];
+    if (resolved.length === 0) {
+      // The ingress handed over only members the key refuses. An auto combo
+      // resolved here that had only such members routes as if none had
+      // formed, as before `openai-` matching.
+      if (ingress) return comboMembersRefusal(modelStr, sourceFormat);
+      resolved = null;
+    }
+  }
+  const comboModels = resolved;
+  if (comboModels && ingress) {
+    return routeIngressCombo({ body, modelStr, settings, clientRawRequest, request, apiKey, routingFailures, signal, requiredCapabilities, models: comboModels, home: ingress.home });
+  }
   if (comboModels) {
     // An auto combo picked its providers by billing; every account it reaches,
     // including fallbacks within a provider, has to pass the same check.
@@ -420,6 +474,117 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
   return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { routingFailures, blockedBilling: soloBlockedBilling, signal });
 }
 
+interface IngressComboArgs extends Omit<RoutedChatArgs, "ingressCombo"> {
+  requiredCapabilities: Set<string>;
+  models: string[];
+  home: string[];
+}
+
+/**
+ * An auto combo an ingress resolved (the Codex one: its own accounts first,
+ * then the other providers serving the model). It runs in the order given,
+ * whatever strategy is set for the model name, so the home members go first.
+ *
+ * Home members use every account, as a request pinned to them does: blocked
+ * billing sets only apply to the members behind them.
+ *
+ * A home member's request error is the answer: the members behind it would
+ * refuse the same request, so their errors would only hide it. That is an
+ * account of the member answering this request with a 400, 413 or 422 whose
+ * own message reads as the request's fault (a context or token limit, a
+ * rejected tool schema: isRequestFault). A bare 413, Codex's refusal of a
+ * model the account's plan can't use, any other 4xx, and an error stored with
+ * locks an earlier request left on every account still fall back.
+ *
+ * When the session is pinned to an account of a home member and the limit
+ * hold covers pinned accounts, that member runs with the hold, as a request
+ * pinned to it does, so a limit on the pinned account waits instead of moving
+ * the conversation elsewhere.
+ *
+ * When a home member was rate-limited and nothing behind it answered, the
+ * request ends as if it had been pinned to that member: the reply is that
+ * member's, and the routing failures are its own, so a Codex client still
+ * gets its terminal "limits reached" reply. With the limit hold on, the
+ * member runs again pinned, which waits for its reset. Either hold re-checks
+ * the key's allowlist on the client's bare id, which already passed it, so a
+ * member the provider spells differently is still re-run as it lists it. Otherwise a failed combo answers with the last member's own
+ * reply, so its status and message belong together.
+ */
+async function routeIngressCombo({ body, modelStr, settings, clientRawRequest, request, apiKey, routingFailures, signal = null, requiredCapabilities, models, home }: IngressComboArgs): Promise<Response> {
+  const blockedBilling = blockedBillingSets(settings);
+  const augmentedModels = await keepAllowedAdapterModels(apiKey, augmentModelsWithCapacityAdapter(models, requiredCapabilities, settings), models);
+  const adapterAdded = augmentedModels.filter((m: string) => !models.includes(m));
+  const comboKey = comboLookupName(modelStr);
+  const limitHold = await resolveLimitHold(apiKey);
+  const seen: {
+    // held: the member already ran with the hold (a pinned session), so its reply is final.
+    limitedHome: { model: string; reply: Response; failures: RoutingFailure[]; held: boolean } | null;
+    homeRequestError: Response | null;
+    lastFailed: Response | null;
+  } = { limitedHome: null, homeRequestError: null, lastFailed: null };
+  log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: fallback, from the ingress)`);
+  const response = await handleComboChat({
+    body,
+    models: augmentedModels,
+    handleSingleModel: withCapacityAdapterStripping(
+      async (b: ChatBody, m: string) => {
+        // Nobody behind a home member's request error gets the request.
+        if (seen.homeRequestError) return seen.homeRequestError;
+        const mark = routingFailures.length;
+        const isHome = home.includes(m);
+        const holdOnPinned = isHome && limitHold.enabled && limitHold.onPinned && await sessionPinned(m, b, request);
+        // The hold re-checks the key's allowlist before each re-run. The
+        // member's own id may be spelled differently from the client's bare
+        // id, which the key's allowlist already let through.
+        const reply = await handleSingleModelChat(b, m, clientRawRequest, request, apiKey, {
+          allowHold: holdOnPinned, holdModel: modelStr, routingFailures, blockedBilling: isHome ? null : blockedBilling, signal, comboPath: [comboKey],
+        });
+        if (!reply.ok) {
+          seen.lastFailed = reply;
+          const failures = routingFailures.slice(mark);
+          // Read each account's own error, not the pass's summary: one
+          // account's key-shaped wording mustn't hide another's request error.
+          const requestFault = isHome && failures.some((f) => f.accountErrors?.some((a) => isRequestFault(a.status, a.error)));
+          if (requestFault) {
+            seen.homeRequestError = reply;
+          } else if (!seen.limitedHome && isHome && failures.some((f) => f.rateLimited)) {
+            seen.limitedHome = { model: m, reply, failures, held: holdOnPinned };
+          }
+        }
+        return reply;
+      },
+      adapterAdded
+    ),
+    log,
+    comboName: comboKey,
+    comboStrategy: "fallback",
+    autoSwitch: false,
+  }) as Response;
+  if (response.ok || signal?.aborted) return response;
+  // Ahead of a limit an earlier home member hit: the request itself is at fault.
+  if (seen.homeRequestError) return seen.homeRequestError;
+  const limited = seen.limitedHome;
+  if (limited) {
+    // The fallbacks' failures would hide that the request ended on a limit.
+    routingFailures.splice(0, routingFailures.length, ...limited.failures);
+    if (!limitHold.enabled || limited.held) return limited.reply;
+    // Re-run the member as the provider lists it; the hold re-checks the
+    // key's allowlist on the client's bare id, which passed it already.
+    log.warn("LIMITHOLD", `combo ${modelStr}: ${limited.model} rate-limited and no fallback answered, waiting on it`);
+    routingFailures.length = 0;
+    return handleSingleModelChat(body, limited.model, clientRawRequest, request, apiKey, { holdModel: modelStr, routingFailures, blockedBilling: null, signal });
+  }
+  return seen.lastFailed || response;
+}
+
+/** Whether this request's session is pinned to an account of this model's provider (session affinity). */
+async function sessionPinned(model: string, body: ChatBody, request: Request | null): Promise<boolean> {
+  const { provider } = (await getModelInfo(model).catch(() => ({}))) as ModelInfo;
+  if (!provider || !isAffinityProvider(provider)) return false;
+  if (!((await getSettings()) as { codexSessionAffinity?: boolean }).codexSessionAffinity) return false;
+  return Boolean(getAffinity(affinityKeyFor({ provider, headers: request?.headers, body })));
+}
+
 /**
  * Rate-limit hold for a combo.
  *
@@ -507,7 +672,7 @@ async function leafModelInfos(
 }
 
 /** Wait out a limit: a narrated stream for streaming clients, a silent hang for JSON ones. */
-async function holdUntilClear({ first, attempt: rerun, willStream, sourceFormat, modelStr, provider, model, signal = null, apiKey = null }: HoldArgs): Promise<Response> {
+async function holdUntilClear({ first, attempt: rerun, willStream, sourceFormat, modelStr, allowModel, provider, model, signal = null, apiKey = null }: HoldArgs): Promise<Response> {
   // A hold can last hours: the key may run out of budget (other requests) or
   // expire meanwhile, so each re-run checks it first. A refusal ends the hold.
   const attempt = async (): Promise<PassResult> => {
@@ -515,7 +680,7 @@ async function holdUntilClear({ first, attempt: rerun, willStream, sourceFormat,
       log.warn("LIMITHOLD", "API key disabled or deleted during the hold");
       return { success: false, limited: false, status: HTTP_STATUS.UNAUTHORIZED, error: "Invalid API key", response: errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key") };
     }
-    const denied = await apiKeyLimitDenial(apiKey, { model: modelStr, format: sourceFormat });
+    const denied = await apiKeyLimitDenial(apiKey, { model: allowModel || modelStr, format: sourceFormat });
     if (denied) return { success: false, limited: false, status: denied.status, error: denied.message, response: denied.response };
     return rerun();
   };
@@ -551,7 +716,7 @@ async function handleSingleModelChat(
   clientRawRequest: ClientRawRequest | null = null,
   request: Request | null = null,
   apiKey: string | null = null,
-  { allowHold = true, routingFailures = [], blockedBilling = null, signal = null, comboPath = [] }: SingleModelOptions = {},
+  { allowHold = true, holdModel, routingFailures = [], blockedBilling = null, signal = null, comboPath = [] }: SingleModelOptions = {},
 ): Promise<Response> {
   // The client is gone: a combo's later models have no one to answer.
   if (signal?.aborted) return clientAbortResult().response;
@@ -559,7 +724,7 @@ async function handleSingleModelChat(
   // panels with empty/unparseable content must also remain retryable.
   const unconfirmed: RoutingFailure = { limited: false };
   routingFailures.push(unconfirmed);
-  const response = await routeSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { allowHold, routingFailures, blockedBilling, signal, comboPath });
+  const response = await routeSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, { allowHold, holdModel, routingFailures, blockedBilling, signal, comboPath });
   if (!response.ok) routingFailures.splice(routingFailures.indexOf(unconfirmed), 1);
   return response;
 }
@@ -629,7 +794,7 @@ async function routeSingleModelChat(
   clientRawRequest: ClientRawRequest | null,
   request: Request | null,
   apiKey: string | null,
-  { allowHold, routingFailures, blockedBilling = null, signal = null, comboPath = [] }: { allowHold: boolean; routingFailures: RoutingFailure[]; blockedBilling?: Set<BillingSet> | null; signal?: AbortSignal | null; comboPath?: string[] },
+  { allowHold, holdModel, routingFailures, blockedBilling = null, signal = null, comboPath = [] }: { allowHold: boolean; holdModel?: string; routingFailures: RoutingFailure[]; blockedBilling?: Set<BillingSet> | null; signal?: AbortSignal | null; comboPath?: string[] },
 ): Promise<Response> {
   // Detect source format by endpoint + body (scoped per-call; handleChat's copy is a
   // separate function and is not visible here)
@@ -752,6 +917,9 @@ async function routeSingleModelChat(
   // stream open and wait for the reset instead of returning an error.
   const limitHold = allowHold ? await resolveLimitHold(apiKey) : { enabled: false, onPinned: false };
 
+  // Each account's own failure in the latest pass (RoutingFailure.accountErrors).
+  let passAccountErrors: AccountError[] = [];
+
   // One full pass over the available accounts. Returns a structured result so a
   // limit can be retried later by the hold, rather than being burned into a
   // Response the caller can no longer act on.
@@ -762,6 +930,8 @@ async function routeSingleModelChat(
   // inherit exclusions from the pass that ran hours ago.
   const excludeConnectionIds = new Set<string>();
   const accountFailures: { account?: string; status?: number; error?: string }[] = [];
+  const accountErrors: AccountError[] = [];
+  passAccountErrors = accountErrors;
   // One entry per account: a warm key retried after its 429 replaces its own.
   const failureIndex = new Map<string, number>();
   let lastError: string | null | undefined = null;
@@ -913,6 +1083,7 @@ async function routeSingleModelChat(
       return result;
     }
     if (signal?.aborted) return clientAbortResult();
+    accountErrors.push({ status: result.status, error: result.error });
 
     // Refresh Antigravity quota before deciding how long to lock the account.
     let quotaResetMs: number | null = null;
@@ -1060,6 +1231,7 @@ async function routeSingleModelChat(
     unconfigured: first.unconfigured === true,
     retryAtMs: first.retryAtMs,
     error: first.error,
+    accountErrors: passAccountErrors,
   });
 
   if (!first.limited || !limitHold.enabled || signal?.aborted) return first.response;
@@ -1078,6 +1250,7 @@ async function routeSingleModelChat(
     willStream,
     sourceFormat: holdSourceFormat,
     modelStr,
+    allowModel: holdModel,
     provider,
     model,
     signal,

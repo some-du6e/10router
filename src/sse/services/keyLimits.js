@@ -120,6 +120,12 @@ export async function isModelAllowed(requested, allowedModels, lookup, depth = 0
   return matchesAllowed(req, allowed);
 }
 
+/** May this key policy use this model? A policy without an allowlist may use any. */
+async function keyAllowsModel(key, model) {
+  if (!key?.allowedModels?.length) return true;
+  return Boolean(model) && isModelAllowed(model, key.allowedModels, await allowlistLookup());
+}
+
 // ---- Request checks ----------------------------------------------------------
 
 /**
@@ -138,7 +144,7 @@ export async function apiKeyLimitDenial(apiKey, { model = null, format = FORMATS
   if (isKeyExpired(key)) {
     kind = "expired";
     message = `This API key expired on ${new Date(key.expiresAt).toISOString()}. Ask its owner for a new key or a later expiry date.`;
-  } else if (key.allowedModels?.length && !(model && await isModelAllowed(model, key.allowedModels, await allowlistLookup()))) {
+  } else if (!(await keyAllowsModel(key, model))) {
     kind = "model";
     const what = model ? `model "${model}"` : "a request without a model";
     message = `This API key is not allowed to use ${what}. It may use: ${key.allowedModels.join(", ")}.`;
@@ -162,6 +168,62 @@ export async function apiKeyLimitDenial(apiKey, { model = null, format = FORMATS
  */
 export async function checkApiKeyLimits(apiKey, opts) {
   return (await apiKeyLimitDenial(apiKey, opts))?.response || null;
+}
+
+/**
+ * May the client key on this request use this model? True with no key, a key
+ * 10router doesn't know, or a key without an allowlist. Only the allowlist:
+ * budget and expiry are checked when the request is handled.
+ *
+ * @param {Request} request
+ * @param {string} model
+ * @returns {Promise<boolean>}
+ */
+export async function requestKeyAllowsModel(request, model) {
+  const apiKey = request?.headers ? extractApiKey(request) : null;
+  if (!apiKey) return true;
+  return keyAllowsModel(await getApiKeyPolicy(apiKey), model);
+}
+
+/** "or/anthropic/Claude-Opus-5.5[1m]" → "claude-opus-5-5": last path segment, context window, case and dots dropped. */
+function looseModelKey(id) {
+  const bare = stripContextWindowSuffix(String(id).trim()).model;
+  return bare.slice(bare.lastIndexOf("/") + 1).toLowerCase().replace(/\./g, "-");
+}
+
+/**
+ * The auto combo members a key may use for a bare id it was allowed, in
+ * order. A member is kept by a bare allowlist entry with its name, give or
+ * take case, dots and a provider path (`kr/claude-opus-5.5` and
+ * `or/anthropic/claude-opus-5-5` by `claude-opus-5-5`), or by an entry for its
+ * full id. So a member matched only through a leading `openai-`
+ * (`ctso/openai-gpt-x` for `gpt-x`) needs `openai-gpt-x` or its own id on the
+ * list. A key with no allowlist keeps them all.
+ *
+ * @param {string|null} apiKey
+ * @param {string[]} models
+ */
+export async function keepAllowedComboMembers(apiKey, models) {
+  if (!apiKey) return models;
+  const key = await getApiKeyPolicy(apiKey);
+  if (!key?.allowedModels?.length) return models;
+  const bareEntries = new Set(key.allowedModels.filter((e) => typeof e === "string" && e && !e.includes("/")).map(looseModelKey));
+  const kept = [];
+  for (const m of models) {
+    if (bareEntries.has(looseModelKey(m)) || await keyAllowsModel(key, m)) kept.push(m);
+  }
+  return kept;
+}
+
+/**
+ * The refusal for a bare id whose every auto combo member the key's allowlist
+ * refuses, shaped like the client's API (`model_not_allowed`).
+ *
+ * @param {string} model
+ * @param {string} [format]
+ */
+export function comboMembersRefusal(model, format = FORMATS.OPENAI) {
+  return limitResponse("model", `This API key is not allowed to use any provider serving "${model}".`, format);
 }
 
 /** Does this key have a spend budget? Its streams are drained on hang-up for real usage. */

@@ -11,7 +11,11 @@ vi.mock("@/lib/localDb", () => ({
   getModelAliases: async () => ({}),
   getComboByName: async () => null,
 }));
-vi.mock("@/sse/services/autoCombo.js", () => ({ resolveAutoCombo: async () => null, getAutoComboProviders: () => [] }));
+vi.mock("@/sse/services/autoCombo.js", () => ({
+  resolveAutoCombo: async () => null,
+  getAutoComboCatalogMatches: () => [],
+  isPlainBareId: async (model) => !model.includes("/"),
+}));
 vi.mock("@/sse/services/codexPooledUsage", () => ({ getPooledCodexRateLimitHeaders: () => ({}) }));
 
 const sse = () => new Response("data: [DONE]\n\n", { headers: { "Content-Type": "text/event-stream" } });
@@ -47,6 +51,13 @@ describe("early headers route opt-in", () => {
     expect(earlyOpt()?.earlyHeaders).toBeFalsy();
   });
 
+  it("the Codex ingress compact route does not", async () => {
+    const { POST } = await import("../../src/app/api/v1/codex/responses/compact/route.js");
+    await POST(post("/backend-api/codex/responses/compact", { model: "gpt-5", input: "hi" }));
+    expect(handleChatMock).toHaveBeenCalled();
+    expect(earlyOpt()?.earlyHeaders).toBeFalsy();
+  });
+
   it("the Ollama route does not", async () => {
     const { POST } = await import("../../src/app/api/v1/api/chat/route.js");
     await POST(post("/v1/api/chat", { model: "openai/gpt-4o", messages: [{ role: "user", content: "hi" }] }));
@@ -68,6 +79,7 @@ describe("rebuilt requests keep the client's signal", () => {
   it.each([
     ["the Codex ingress (bare model rewritten to cx/)", () => import("../../src/app/api/v1/codex/responses/route.js"), "/backend-api/codex/responses", { model: "gpt-5", stream: true, input: "hi" }, undefined],
     ["/v1/responses/compact", () => import("../../src/app/api/v1/responses/compact/route.js"), "/v1/responses/compact", { model: "openai/gpt-4o", input: "hi" }, undefined],
+    ["the Codex ingress compact route", () => import("../../src/app/api/v1/codex/responses/compact/route.js"), "/backend-api/codex/responses/compact", { model: "openai/gpt-4o", input: "hi" }, undefined],
     ["the Gemini v1beta route", () => import("../../src/app/api/v1beta/models/[...path]/route.js"), "/v1beta/models/openai/gpt-4o:streamGenerateContent", geminiBody, { params: Promise.resolve({ path: ["openai", "gpt-4o:streamGenerateContent"] }) }],
   ])("%s", async (_name, load, path, body, ctx) => {
     const { POST } = await load();

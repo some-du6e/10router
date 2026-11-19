@@ -60,7 +60,8 @@ export async function GET(request) {
     const entries = buildCodexCatalog(models, codexModels);
 
     // Codex looks up its own models by their bare names: a bare model in the
-    // config (routed to `cx/` by the Codex ingress) and the ones it picks for
+    // config (which the Codex ingress sends to Codex: pinned to `cx/` when no
+    // other allowed provider serves it, else Codex accounts first) and the ones it picks for
     // side requests. Once this catalog decodes it replaces the one Codex ships,
     // so those stay in, hidden from the picker.
     const listed = new Set(entries.map((entry) => entry.slug));

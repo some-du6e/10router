@@ -97,6 +97,45 @@ describe("auto combos", () => {
     ]);
   });
 
+  it("matches ids a provider lists with an openai- prefix, either way round", async () => {
+    const ctx = await setup(["ctso/openai-gpt-x", "cx/gpt-x"], [...SUBS, { provider: "openai-compatible-chat-x", prefix: "ctso" }], { autoComboBlockedBilling: [] });
+
+    await expect(ctx.resolveAutoCombo("gpt-x")).resolves.toEqual(["cx/gpt-x", "ctso/openai-gpt-x"]);
+    await expect(ctx.resolveAutoCombo("openai-gpt-x")).resolves.toEqual(["cx/gpt-x", "ctso/openai-gpt-x"]);
+  });
+
+  it("strips openai- only as a prefix", async () => {
+    const ctx = await setup(["ctso/gpt-openai-x", "cx/gpt-x"], [...SUBS, { provider: "openai-compatible-chat-x", prefix: "ctso" }], { autoComboBlockedBilling: [] });
+
+    await expect(ctx.resolveAutoCombo("gpt-x")).resolves.toEqual(["cx/gpt-x"]);
+  });
+
+  it("tells a plain bare id from a prefixed id, a combo or an alias", async () => {
+    const ctx = await setup([], SUBS);
+    await ctx.createCombo({ name: "my-combo", models: ["cc/claude-x"] });
+    await ctx.setModelAlias("my-alias", "cc/claude-x");
+
+    await expect(ctx.isPlainBareId("gpt-x[1m]")).resolves.toBe(true);
+    await expect(ctx.isPlainBareId("cx/gpt-x")).resolves.toBe(false);
+    await expect(ctx.isPlainBareId("my-combo[1m]")).resolves.toBe(false);
+    await expect(ctx.isPlainBareId("my-alias")).resolves.toBe(false);
+    await expect(ctx.isPlainBareId("grok-build", { "grok-build": "gcli/grok-build" })).resolves.toBe(false);
+    await expect(ctx.billingPolicyApplies("gpt-x")).resolves.toBe(true);
+    await expect(ctx.billingPolicyApplies("my-alias")).resolves.toBe(false);
+  });
+
+  it("lists every catalog entry serving a bare id with its provider, ignoring auto combo settings", async () => {
+    const ctx = await setup(
+      ["cx/gpt-x", "ctso/openai-gpt.x", "cc/claude-x"],
+      [...SUBS, { provider: "openai-compatible-chat-x", prefix: "ctso" }],
+      { autoComboExcludedProviders: ["codex"] },
+    );
+    expect(ctx.getAutoComboCatalogMatches("gpt-x[1m]")).toEqual([
+      { id: "cx/gpt-x", provider: "codex" },
+      { id: "ctso/openai-gpt.x", provider: "openai-compatible-chat-x" },
+    ]);
+  });
+
   it("routes a single match through the same path", async () => {
     const ctx = await setup(["cc/claude-haiku-5-5", "kr/claude-opus-5-5"], SUBS);
 

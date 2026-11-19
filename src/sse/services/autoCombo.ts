@@ -334,11 +334,12 @@ export async function warmAutoComboCatalog(): Promise<void> {
   await refreshCatalog();
 }
 
-// Bare ids match catalog ids by their last path segment, with dots and case
-// ignored, so "sfff/claude-opus-5.5" and "or/anthropic/claude-opus-5-5" both
-// serve "claude-opus-5-5".
+// Bare ids match catalog ids by their last path segment, with dots, case and a
+// leading "openai-" ignored, so "sfff/claude-opus-5.5" and
+// "or/anthropic/claude-opus-5-5" both serve "claude-opus-5-5", and
+// "ctso/openai-gpt-x" serves "gpt-x".
 function modelKey(modelId: string): string {
-  return modelId.toLowerCase().replace(/\./g, "-");
+  return modelId.toLowerCase().replace(/\./g, "-").replace(/^openai-/, "");
 }
 
 function sortByBilling(entries: CatalogEntry[], blocked: Set<string>): CatalogEntry[] {
@@ -407,15 +408,27 @@ export async function getAutoComboModels(modelStr: string, settingsIn?: AutoComb
   return sortByBilling(matching, blockedBillingSets(settings)).map((e) => e.id);
 }
 
-
-/** Every catalog id serving this bare id, before any user filter. */
-export function getAutoComboProviders(modelStr: string): string[] {
+/** Every catalog entry serving this bare id, before any user filter. */
+export function getAutoComboCatalogMatches(modelStr: string): { id: string; provider: string }[] {
   const bare = stripContextWindowSuffix(modelStr).model;
   if (!bare || bare.includes("/")) return [];
   const key = modelKey(bare);
   return currentCatalog()
     .filter((e) => modelKey(e.id.slice(e.id.lastIndexOf("/") + 1)) === key)
-    .map((e) => e.provider);
+    .map((e) => ({ id: e.id, provider: e.provider }));
+}
+
+/**
+ * Whether this is a plain bare id: no provider prefix, and no combo or alias
+ * by that name, user-made or built in. Context-window markers are ignored.
+ * Throws when the combo or alias lookup fails; callers pick the safe side.
+ */
+export async function isPlainBareId(modelStr: string, builtinAliases: Record<string, unknown> = {}): Promise<boolean> {
+  const bare = stripContextWindowSuffix(modelStr).model;
+  if (!bare || bare.includes("/") || builtinAliases[bare]) return false;
+  if (await getComboByName(bare)) return false;
+  const aliases = (await getModelAliases()) as Record<string, unknown> | null;
+  return !aliases?.[bare];
 }
 
 /**
@@ -431,13 +444,9 @@ export async function resolveAutoCombo(
   wait: CatalogWait = {},
 ): Promise<string[] | null> {
   try {
-    const bare = stripContextWindowSuffix(modelStr).model;
-    if (!bare || bare.includes("/") || builtinAliases[bare]) return null;
-    if (await getComboByName(bare)) return null;
-    const aliases = (await getModelAliases()) as Record<string, unknown> | null;
-    if (aliases?.[bare]) return null;
-    const models = await getAutoComboModels(bare, settings, wait);
-    return models.length === 0 ? null : models;
+    if (!(await isPlainBareId(modelStr, builtinAliases))) return null;
+    const models = await getAutoComboModels(modelStr, settings, wait);
+    return models.length ? models : null;
   } catch {
     return null;
   }
@@ -450,12 +459,8 @@ export async function resolveAutoCombo(
  * alone, claude-* to Anthropic, gpt-* to OpenAI, straight onto a metered key.
  */
 export async function billingPolicyApplies(modelStr: string, builtinAliases: Record<string, unknown> = {}): Promise<boolean> {
-  const bare = stripContextWindowSuffix(modelStr).model;
-  if (!bare || bare.includes("/") || builtinAliases[bare]) return false;
   try {
-    if (await getComboByName(bare)) return false;
-    const aliases = (await getModelAliases()) as Record<string, unknown> | null;
-    return !aliases?.[bare];
+    return await isPlainBareId(modelStr, builtinAliases);
   } catch {
     // Unsure means the safe side: the request may only use allowed accounts.
     return true;

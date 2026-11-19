@@ -4,84 +4,31 @@
 // `wire_api = "responses"`. Pointing it at the plain `/v1` ingress works, but
 // Codex only serves its native model catalog and ChatGPT-style auth from a
 // `/backend-api/codex` base URL — so this mirror exists to accept that shape.
-// The body is the same OpenAI Responses payload, so it reuses the /v1/responses
-// handler untouched (see next.config.mjs for the /backend-api/codex rewrites).
-import { POST as responsesPost } from "../../responses/route.js";
+// The body is the same OpenAI Responses payload, so it goes through the same
+// handleChat call as /v1/responses once routeCodexRequest has picked where the
+// model goes (see next.config.mjs for the /backend-api/codex rewrites).
+import { handleChat } from "@/sse/handlers/chat.js";
+import { initTranslators } from "open-sse/translator/index.js";
 import { getPooledCodexRateLimitHeaders } from "@/sse/services/codexPooledUsage";
-import { getModelAliases, getComboByName } from "@/lib/localDb";
-import { stripContextWindowSuffix } from "open-sse/services/model.js";
-import { BUILTIN_MODEL_ALIASES } from "open-sse/services/model.js";
-import { getAutoComboProviders, resolveAutoCombo } from "@/sse/services/autoCombo.js";
+import { routeCodexRequest } from "@/sse/services/codexIngress.js";
 import { withMemoryAdmission, carryAdmission } from "@/sse/services/memoryAdmission.js";
 
 export { OPTIONS } from "../../responses/route.js";
 
-// How long a Codex request waits here for the model list right after a restart.
-const CODEX_INGRESS_CATALOG_WAIT_MS = 20_000;
-
-// A bare model name reaching the shared handler is treated as an alias, and an
-// unmatched alias is guessed at by name — which lands on OpenAI for anything
-// shaped like `gpt-*`. That is the wrong default here: this door is the Codex
-// wire, and Codex asks for models of its own that we would then send to a
-// provider the user very likely has no key for.
-//
-// Codex also asks for models the user never chose. Its side requests (thread
-// titles among them) carry a small model of Codex's own picking, not the model
-// configured for the session, so the name cannot be assumed to be one the user
-// has set up.
-//
-// Only the fallback changes: an explicit `provider/model`, a model alias, or a
-// combo still resolves the way it always did, so pointing Codex at Claude or
-// anything else through this endpoint keeps working.
-async function withCodexFallback(request) {
-  let body;
-  try {
-    body = await request.clone().json();
-  } catch {
-    return request; // not JSON — let the shared handler reject it as it would
-  }
-
-  const model = body?.model;
-  if (typeof model !== "string" || !model || model.includes("/")) return request;
-
-  // A client-side context selector ("claude-opus-5[1m]") is not part of any
-  // stored name, so it has to come off before the alias/combo lookup — the same
-  // way handleChat strips it before routing. Without this, the plain id matches
-  // its combo and routes to Claude while the [1m] variant misses, falls through
-  // to `cx/`, and dies upstream as "model is not supported ... with a ChatGPT
-  // account". The marker stays on the forwarded body; handleChat strips it.
-  const { model: bareModel } = stripContextWindowSuffix(model);
-
-  const aliases = await getModelAliases();
-  if (aliases?.[bareModel]) return request;
-  if (await getComboByName(bareModel)) return request;
-  // Codex keeps its own accounts first. Only a model no Codex account serves
-  // is left for handleChat to route across the providers that do.
-  // resolveAutoCombo waits out a cold catalog, so ask it before checking Codex.
-  // This runs before the handler's early headers, so the wait is capped well
-  // under a proxy's ~100 s limit and ends when the client hangs up.
-  const wait = { signal: request.signal, maxWaitMs: CODEX_INGRESS_CATALOG_WAIT_MS };
-  if ((await resolveAutoCombo(bareModel, BUILTIN_MODEL_ALIASES, undefined, wait)) && !getAutoComboProviders(bareModel).includes("codex")) {
-    return request;
-  }
-
-  return new Request(request.url, {
-    method: request.method,
-    headers: request.headers,
-    body: JSON.stringify({ ...body, model: `cx/${model}` }),
-    // Keep the client's hang-up signal, or routing never hears it left.
-    signal: request.signal,
-  });
-}
-
-// Admitted before withCodexFallback reads the body, so a request waiting for
+// Admitted before routeCodexRequest reads the body, so a request waiting for
 // memory room holds no parsed copy; handleChat runs under the same admission.
 export function POST(request) {
   return withMemoryAdmission(request, () => codexPost(request));
 }
 
 async function codexPost(request) {
-  const response = await responsesPost(carryAdmission(request, await withCodexFallback(request)));
+  initTranslators();
+  const routed = await routeCodexRequest(request);
+  const response = await handleChat(carryAdmission(request, routed.request), null, {
+    earlyHeaders: true,
+    autoCombo: routed.autoCombo ?? undefined,
+    autoComboHome: routed.autoCombo ? routed.autoComboHome : undefined,
+  });
 
   // Codex reads its usage bar off these headers rather than from an endpoint.
   // Requests are served from all connected Codex accounts, so report the pooled

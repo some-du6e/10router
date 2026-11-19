@@ -6,6 +6,7 @@ on:
       - "src/sse/services/memoryAdmission.js"
       - "src/sse/handlers/chat.ts"
       - "src/app/api/v1/codex/responses/route.js"
+      - "src/app/api/v1/codex/responses/compact/route.js"
       - "src/app/api/v1/responses/compact/route.js"
       - "open-sse/config/runtimeConfig.js"
       - "tests/package.json"
@@ -46,6 +47,7 @@ jobs:
           src/sse/services/memoryAdmission.js
           src/sse/handlers/chat.ts
           src/app/api/v1/codex/responses/route.js
+          src/app/api/v1/codex/responses/compact/route.js
           src/app/api/v1/responses/compact/route.js
           open-sse/config/runtimeConfig.js
           tests/unit/memory-admission.test.js
