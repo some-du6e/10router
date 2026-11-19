@@ -64,6 +64,8 @@ import { detectClientTool } from "open-sse/utils/clientDetector.js";
 import { sanitizeNodeQuirks } from "@/shared/utils/nodeQuirks.js";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers.js";
 import { recordEndpointRequests } from "@/lib/endpointRequestLog.js";
+import { withMemoryAdmission } from "../services/memoryAdmission.js";
+import type { AdmissionTicket } from "../services/memoryAdmission.js";
 
 // ---- Types -------------------------------------------------------------------
 
@@ -201,11 +203,30 @@ export async function handleChat(
   clientRawRequest: ClientRawRequest | null = null,
   // Routes whose response goes straight to the client turn this on; wrappers that
   // reshape the response (Ollama, Gemini) need its real status.
-  { earlyHeaders = false }: { earlyHeaders?: boolean } = {},
+  options: { earlyHeaders?: boolean } = {},
+): Promise<Response> {
+  // Waits for memory room before the body is read (memoryAdmission.js), and
+  // holds that room until the reply has ended.
+  return withMemoryAdmission(request, (ticket) => admittedChat(request, clientRawRequest, options, ticket));
+}
+
+// The body is read and parsed in its own call, so its text is not kept for the
+// request's lifetime by handleChat's suspended frame.
+async function readJsonBody(request: Request, ticket: AdmissionTicket | null): Promise<ChatBody> {
+  const text = await request.text();
+  ticket?.noteBodyLength(text.length);
+  return JSON.parse(text);
+}
+
+async function admittedChat(
+  request: Request,
+  clientRawRequest: ClientRawRequest | null,
+  { earlyHeaders = false }: { earlyHeaders?: boolean },
+  ticket: AdmissionTicket | null,
 ): Promise<Response> {
   let body: ChatBody;
   try {
-    body = await request.json();
+    body = await readJsonBody(request, ticket);
   } catch {
     log.warn("CHAT", "Invalid JSON body");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");

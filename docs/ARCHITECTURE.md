@@ -450,6 +450,8 @@ flowchart LR
 
 Restarts: on SIGTERM/SIGINT `custom-server.js` drains (`server-drain.js`). It closes the listening socket, so new connections are refused for the whole drain, and waits up to `SHUTDOWN_DRAIN_TIMEOUT_MS` for in-flight model requests before running the app's own shutdown listeners and exiting. It only helps if the container's stop grace period is longer than that timeout. Never run two instances on one `DATA_DIR` to overlap a restart: SQLite / sql.js writes are last-writer-wins, and rotating OAuth refresh tokens would be lost.
 
+Memory admission: every chat request (`handleChat`, and the Codex and compact routes before they read the body) passes `src/sse/services/memoryAdmission.js` first, which keeps a burst of big prompts from taking the process past its memory limit. See [MEMORY_ADMISSION.md](MEMORY_ADMISSION.md).
+
 ## Module Mapping (Decision-Critical)
 
 ### Route and API Modules
@@ -593,6 +595,7 @@ Environment variables actively used by code:
 - Outbound proxy: `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and lowercase variants
 - Endpoint detection: `DETECT_ANTHROPIC_FIRST_HINTS` (URL substrings that get Anthropic Messages probed first)
 - Shutdown: `SHUTDOWN_DRAIN_TIMEOUT_MS` (default `180000`; `0`/`off`/`false` disables). How long `custom-server.js` waits on SIGTERM/SIGINT for in-flight model requests (`/v1*`, `/api/v1*`, `/v1beta*`, `/api/v1beta*`, `/responses`, `/systemone`, `/codex/*`, `/backend-api/codex/*`, Codex WebSocket turns, a budgeted key's post-hang-up usage read) before exiting; see `server-drain.js` and the README's deploy notes. The stop timeout of whatever stops the process (container grace period, PM2 `kill_timeout`, systemd `TimeoutStopSec`) must be longer than this, or it kills the process first.
+- Memory admission: `INFLIGHT_BODY_BUDGET_MB` (default `900`; `0` disables), `INFLIGHT_QUEUE_WAIT_MS` (default `15000`), `INFLIGHT_RETRY_AFTER_S` (default `10`), `MEMORY_HIGH_WATER_MB` (default 80% of the cgroup memory limit, off without one; `0` disables). See [MEMORY_ADMISSION.md](MEMORY_ADMISSION.md).
 - Platform/runtime helpers (not app-specific config): `APPDATA`, `NODE_ENV`, `PORT`, `HOSTNAME`
 
 ## Known Architectural Notes
