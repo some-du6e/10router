@@ -12,8 +12,12 @@ import { getModelAliases, getComboByName } from "@/lib/localDb";
 import { stripContextWindowSuffix } from "open-sse/services/model.js";
 import { BUILTIN_MODEL_ALIASES } from "open-sse/services/model.js";
 import { getAutoComboProviders, resolveAutoCombo } from "@/sse/services/autoCombo.js";
+import { withMemoryAdmission, carryAdmission } from "@/sse/services/memoryAdmission.js";
 
 export { OPTIONS } from "../../responses/route.js";
+
+// How long a Codex request waits here for the model list right after a restart.
+const CODEX_INGRESS_CATALOG_WAIT_MS = 20_000;
 
 // A bare model name reaching the shared handler is treated as an alias, and an
 // unmatched alias is guessed at by name — which lands on OpenAI for anything
@@ -54,7 +58,10 @@ async function withCodexFallback(request) {
   // Codex keeps its own accounts first. Only a model no Codex account serves
   // is left for handleChat to route across the providers that do.
   // resolveAutoCombo waits out a cold catalog, so ask it before checking Codex.
-  if ((await resolveAutoCombo(bareModel, BUILTIN_MODEL_ALIASES)) && !getAutoComboProviders(bareModel).includes("codex")) {
+  // This runs before the handler's early headers, so the wait is capped well
+  // under a proxy's ~100 s limit and ends when the client hangs up.
+  const wait = { signal: request.signal, maxWaitMs: CODEX_INGRESS_CATALOG_WAIT_MS };
+  if ((await resolveAutoCombo(bareModel, BUILTIN_MODEL_ALIASES, undefined, wait)) && !getAutoComboProviders(bareModel).includes("codex")) {
     return request;
   }
 
@@ -67,8 +74,14 @@ async function withCodexFallback(request) {
   });
 }
 
-export async function POST(request) {
-  const response = await responsesPost(await withCodexFallback(request));
+// Admitted before withCodexFallback reads the body, so a request waiting for
+// memory room holds no parsed copy; handleChat runs under the same admission.
+export function POST(request) {
+  return withMemoryAdmission(request, () => codexPost(request));
+}
+
+async function codexPost(request) {
+  const response = await responsesPost(carryAdmission(request, await withCodexFallback(request)));
 
   // Codex reads its usage bar off these headers rather than from an endpoint.
   // Requests are served from all connected Codex accounts, so report the pooled

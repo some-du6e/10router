@@ -3,7 +3,7 @@ import path from "path";
 import https from "https";
 import os from "os";
 import { execSync, spawn } from "child_process";
-import { savePid, loadPid, clearPid } from "./pid.js";
+import { savePid, loadOwnPid, clearPid } from "./pid.js";
 import { DATA_DIR } from "@/lib/dataDir.js";
 import { rememberOwnCloudflared } from "@/lib/appProcesses.js";
 
@@ -429,7 +429,9 @@ export function killCloudflared(localPort) {
     cloudflaredProcess = null;
   }
 
-  const pid = loadPid();
+  // Only while the recorded PID still runs our own binary: the file outlives
+  // restarts, and its number may now be this server or any other process.
+  const pid = loadOwnPid(BIN_PATH);
   if (pid) {
     try {
       process.kill(pid);
@@ -441,7 +443,7 @@ export function killCloudflared(localPort) {
 }
 
 export function isCloudflaredRunning() {
-  const pid = loadPid();
+  const pid = loadOwnPid(BIN_PATH);
   if (!pid) return false;
   try {
     process.kill(pid, 0);

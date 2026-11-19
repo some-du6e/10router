@@ -1,3 +1,5 @@
+import { CODEX_AUTH_CLAIM, CODEX_PROFILE_CLAIM } from "./constants/oauth.js";
+
 const BASE64_BLOCK_SIZE = 4;
 
 function validateXaiOAuthEndpoint(rawUrl, field) {
@@ -70,15 +72,63 @@ export async function fetchKiroProfileArn(accessToken) {
   }
 }
 
-export function extractCodexAccountInfo(idToken) {
-  const payload = decodeJwtPayload(idToken);
-  if (!payload) return {};
-  const chatgpt = payload["https://api.openai.com/auth"] || {};
+const claimString = (value) => (typeof value === "string" && value.trim() ? value.trim() : undefined);
+
+/** The identity claims one decoded Codex token carries; non-string values are ignored. */
+function codexClaims(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const auth = payload[CODEX_AUTH_CLAIM] || {};
+  const profile = payload[CODEX_PROFILE_CLAIM] || {};
   return {
-    email: payload.email,
-    chatgptAccountId: chatgpt.chatgpt_account_id || payload.account_id,
-    chatgptPlanType: chatgpt.chatgpt_plan_type || payload.plan_type,
+    sub: claimString(payload.sub),
+    email: claimString(payload.email) || claimString(profile.email),
+    preferredUsername: claimString(payload.preferred_username),
+    chatgptAccountId: claimString(auth.chatgpt_account_id) || claimString(payload.account_id),
+    chatgptPlanType: claimString(auth.chatgpt_plan_type) || claimString(payload.plan_type),
   };
+}
+
+/**
+ * Email, subject, workspace and plan for a Codex account.
+ * - Only one decodable token: its claims.
+ * - Both name the same `sub`: ID-token claims first, the access token fills gaps.
+ * - Both name a `sub` and they differ: the access token's claims, since it is
+ *   the credential that gets stored and sent, and `subjectMismatch` is set.
+ * - Either lacks a `sub`: the ID token's claims alone, so a token pair that
+ *   can't be tied to one user never mixes.
+ */
+export function extractCodexAccountInfo(idToken, accessToken) {
+  const id = codexClaims(decodeJwtPayload(idToken));
+  const access = codexClaims(decodeJwtPayload(accessToken));
+  const subjectMismatch = !!(id?.sub && access?.sub && id.sub !== access.sub);
+  let sources;
+  if (!id || !access) sources = [id || access];
+  else if (subjectMismatch) sources = [access];
+  else if (id.sub && id.sub === access.sub) sources = [id, access];
+  else sources = [id];
+  const pick = (field) => sources.map((claims) => claims?.[field]).find(Boolean);
+  return {
+    email: pick("email") || pick("preferredUsername"),
+    sub: pick("sub"),
+    chatgptAccountId: pick("chatgptAccountId"),
+    chatgptPlanType: pick("chatgptPlanType"),
+    subjectMismatch,
+  };
+}
+
+/**
+ * Connection fields for a pasted Codex access token: email and providerSpecificData.
+ * @param {string} accessToken
+ * @returns {{ email: string | null, providerSpecificData: { authMethod: string, chatgptAccountId?: string, chatgptPlanType?: string, jwtExp?: number } }}
+ */
+export function codexAccessTokenFields(accessToken) {
+  const info = extractCodexAccountInfo(null, accessToken);
+  const providerSpecificData = { authMethod: "access_token" };
+  if (info.chatgptAccountId) providerSpecificData.chatgptAccountId = info.chatgptAccountId;
+  if (info.chatgptPlanType) providerSpecificData.chatgptPlanType = info.chatgptPlanType;
+  const exp = decodeJwtPayload(accessToken)?.exp;
+  if (Number.isFinite(exp)) providerSpecificData.jwtExp = exp;
+  return { email: info.email || null, providerSpecificData };
 }
 
 export {

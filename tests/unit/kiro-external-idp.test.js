@@ -45,18 +45,17 @@ describe("Kiro external_idp (CLIProxyAPI) import and refresh", () => {
       region: "us-east-1",
     });
 
+    // Only the refresh's own fields: the stored profileArn and region stay as saved.
     expect(result).toMatchObject({
       accessToken: "new-access-token",
       refreshToken: "rotated-refresh-token",
       expiresIn: 3600,
-      providerSpecificData: {
-        profileArn: "arn:aws:codewhisperer:us-east-1:123456789012:profile/ABC",
-        authMethod: "external_idp",
-        clientId: TEST_CLIENT_ID,
-        tokenEndpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token",
-        scope: TEST_SCOPE,
-        region: "us-east-1",
-      },
+    });
+    expect(result.providerSpecificData).toEqual({
+      authMethod: "external_idp",
+      clientId: TEST_CLIENT_ID,
+      tokenEndpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token",
+      scope: TEST_SCOPE,
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);

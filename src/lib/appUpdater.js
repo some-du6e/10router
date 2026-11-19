@@ -1,6 +1,7 @@
 import { spawn } from "child_process";
 import path from "path";
 import fs from "fs";
+import { isIP } from "net";
 import { UPDATER_CONFIG } from "@/shared/constants/config";
 import { runtimeUpdaterPath } from "./appProcesses.js";
 
@@ -38,23 +39,58 @@ function ensureRuntimeUpdater(bundledPath) {
   }
 }
 
-// Resolve npx/10router binary to relaunch after update (cross-platform)
+// Resolve npx to relaunch after update (cross-platform). `npx 10router` works
+// regardless of global bin path changes after npm i -g.
 function resolveRelaunchCommand() {
-  const isWin = process.platform === "win32";
-  // Prefer `npx 10router` — works regardless of global bin path changes after npm i -g
-  const npx = isWin ? "npx.cmd" : "npx";
-  return { cmd: npx, args: [UPDATER_CONFIG.npmPackageName] };
+  return { cmd: process.platform === "win32" ? "npx.cmd" : "npx" };
+}
+
+// The address a local client dials for a server bound to `bindHost`
+// (mirrors cli/src/cli/api/client.js hostForBind).
+export function dialHostForBind(bindHost) {
+  const host = String(bindHost || "").trim().replace(/^\[(.*)\]$/, "$1");
+  if (!host || host === "0.0.0.0" || host === "localhost") return "127.0.0.1";
+  if (host === "::") return "::1";
+  return host;
+}
+
+// Same rule as the CLI's --host check (cli/src/cli/utils/launchArgs.js): an IP
+// address or a plain hostname. The relaunch goes through npx.cmd with a
+// shell on Windows, so nothing else may reach its arguments.
+const HOSTNAME_RE = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
+export function isValidHost(host) {
+  return typeof host === "string" && !!host && (isIP(host) !== 0 || HOSTNAME_RE.test(host));
+}
+
+// Where this server listens. When the CLI launcher started this server (its
+// PID is in the env and it is our parent), PORT and HOSTNAME are the
+// --port/--host it was given. Otherwise HOSTNAME is usually just the
+// machine's name, so it is not a bind.
+export function serverBind(env = process.env, parentPid = process.ppid) {
+  const parsed = /^\d+$/.test(env.PORT || "") ? Number(env.PORT) : NaN;
+  const port = parsed >= 1 && parsed <= 65535 ? parsed : UPDATER_CONFIG.appPort;
+  const launched = env.TENROUTER_LAUNCHER_PID === String(parentPid);
+  const host = launched && isValidHost(env.HOSTNAME) ? env.HOSTNAME : "";
+  return { port, host };
+}
+
+// Relaunch matching the original launch: tray stays tray, foreground stays
+// foreground, and a --host/--port bind comes back on the same address.
+export function buildRelaunchArgs(env = process.env, parentPid = process.ppid) {
+  const { port, host } = serverBind(env, parentPid);
+  const args = [UPDATER_CONFIG.npmPackageName];
+  if (env.TRAY_MODE === "1") args.push("--tray");
+  args.push("--skip-update", "--port", String(port));
+  if (host) args.push("--host", host);
+  return args;
 }
 
 // Spawn detached headless updater (Node process) then exit current server
 export function spawnUpdaterAndExit(packageName = UPDATER_CONFIG.npmPackageName) {
   const updaterPath = ensureRuntimeUpdater(resolveBundledUpdaterPath());
-  const isTray = process.env.TRAY_MODE === "1";
   const relaunch = resolveRelaunchCommand();
-  // Relaunch matching original env: tray stays tray, foreground stays foreground
-  const relaunchArgs = isTray
-    ? [...relaunch.args, "--tray", "--skip-update"]
-    : [...relaunch.args, "--skip-update"];
+  const relaunchArgs = buildRelaunchArgs();
+  const bind = serverBind();
 
   spawn(process.execPath, [updaterPath], {
     detached: true,
@@ -71,12 +107,16 @@ export function spawnUpdaterAndExit(packageName = UPDATER_CONFIG.npmPackageName)
       UPDATER_WAIT_MIN_MS: String(UPDATER_CONFIG.waitForExitMinMs),
       UPDATER_WAIT_MAX_MS: String(UPDATER_CONFIG.waitForExitMaxMs),
       UPDATER_WAIT_CHECK_MS: String(UPDATER_CONFIG.waitForExitCheckMs),
-      UPDATER_APP_PORT: String(UPDATER_CONFIG.appPort),
+      // The updater waits for this server's port to free up, then for the
+      // relaunched one to answer, on the address it is bound to.
+      UPDATER_APP_PORT: String(bind.port),
+      UPDATER_APP_HOST: dialHostForBind(bind.host),
       UPDATER_RELAUNCH: "1",
       UPDATER_RELAUNCH_CMD: relaunch.cmd,
       UPDATER_RELAUNCH_ARGS: JSON.stringify(relaunchArgs),
     },
   }).unref();
 
+  console.log(`[Shutdown] started the updater: exiting in ${UPDATER_CONFIG.exitDelayMs} ms so it can replace this install`);
   setTimeout(() => process.exit(0), UPDATER_CONFIG.exitDelayMs);
 }

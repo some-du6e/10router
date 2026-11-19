@@ -17,6 +17,20 @@ on:
       - "cli/src/cli/terminalUI.js"
       - "cli/src/cli/tray/**"
       - "cli/src/cli/utils/launcherState.js"
+      - "cli/src/cli/utils/launchArgs.js"
+      - "cli/src/cli/utils/serverSupervisor.js"
+      - "cli/src/cli/utils/serverProcess.js"
+      - "cli/src/cli/utils/dataDirLock.js"
+      - "cli/src/cli/utils/input.js"
+      - "src/lib/auth/setupToken.js"
+      - "src/lib/launchProof.js"
+      - "src/lib/auth/trustedPeer.js"
+      - "custom-server.js"
+      - "tests/unit/launch-proof.test.js"
+      - "src/app/api/health/route.js"
+      - "tests/unit/app-updater-relaunch.test.js"
+      - "tests/unit/cli-data-dir-lock.test.js"
+      - "cli/AGENTS.md"
       - "open-sse/handlers/ttsProviders/localDevice.js"
       - "src/lib/appUpdater.js"
       - "src/lib/appProcesses.js"
@@ -44,6 +58,9 @@ on:
       - "tests/unit/cli-data-dir.test.js"
       - "tests/unit/cli-client-data-dir.test.js"
       - "tests/unit/cli-pid-file.test.js"
+      - "tests/unit/cli-launcher-lifecycle.test.js"
+      - "tests/unit/cli-autostart-bind.test.js"
+      - "tests/unit/tunnel-pid-ownership.test.js"
       - "tests/vitest.config.js"
       - "package.json"
       - "tests/package.json"
@@ -82,6 +99,18 @@ jobs:
           unit/cli-data-dir.test.js
           unit/cli-client-data-dir.test.js
           unit/cli-pid-file.test.js
+          unit/cli-launcher-lifecycle.test.js
+          unit/cli-autostart-bind.test.js
+          unit/app-updater-relaunch.test.js
+          unit/cli-data-dir-lock.test.js
+          unit/launch-proof.test.js
+          unit/tunnel-pid-ownership.test.js
+      - name: Lint
+        run: >
+          ./node_modules/.bin/eslint
+          src/lib/tunnel/cloudflare/pid.js
+          src/lib/tunnel/cloudflare/cloudflared.js
+          tests/unit/tunnel-pid-ownership.test.js
 
   # known-fails.txt lags master, so compare against the base branch run instead.
   no-new-failures:

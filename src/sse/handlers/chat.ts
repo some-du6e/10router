@@ -64,6 +64,8 @@ import { detectClientTool } from "open-sse/utils/clientDetector.js";
 import { sanitizeNodeQuirks } from "@/shared/utils/nodeQuirks.js";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers.js";
 import { recordEndpointRequests } from "@/lib/endpointRequestLog.js";
+import { withMemoryAdmission } from "../services/memoryAdmission.js";
+import type { AdmissionTicket } from "../services/memoryAdmission.js";
 
 // ---- Types -------------------------------------------------------------------
 
@@ -201,11 +203,30 @@ export async function handleChat(
   clientRawRequest: ClientRawRequest | null = null,
   // Routes whose response goes straight to the client turn this on; wrappers that
   // reshape the response (Ollama, Gemini) need its real status.
-  { earlyHeaders = false }: { earlyHeaders?: boolean } = {},
+  options: { earlyHeaders?: boolean } = {},
+): Promise<Response> {
+  // Waits for memory room before the body is read (memoryAdmission.js), and
+  // holds that room until the reply has ended.
+  return withMemoryAdmission(request, (ticket) => admittedChat(request, clientRawRequest, options, ticket));
+}
+
+// The body is read and parsed in its own call, so its text is not kept for the
+// request's lifetime by handleChat's suspended frame.
+async function readJsonBody(request: Request, ticket: AdmissionTicket | null): Promise<ChatBody> {
+  const text = await request.text();
+  ticket?.noteBodyLength(text.length);
+  return JSON.parse(text);
+}
+
+async function admittedChat(
+  request: Request,
+  clientRawRequest: ClientRawRequest | null,
+  { earlyHeaders = false }: { earlyHeaders?: boolean },
+  ticket: AdmissionTicket | null,
 ): Promise<Response> {
   let body: ChatBody;
   try {
-    body = await request.json();
+    body = await readJsonBody(request, ticket);
   } catch {
     log.warn("CHAT", "Invalid JSON body");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
@@ -307,7 +328,8 @@ async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, re
   // Check if model is a combo (has multiple models with fallback). A bare id
   // with no combo or alias falls back across every provider serving it.
   const userComboModels = await getComboModels(modelStr);
-  const comboModels = userComboModels ?? (await resolveAutoCombo(modelStr, BUILTIN_MODEL_ALIASES, settings));
+  // Right after a restart this waits for the model list; a hang-up ends the wait.
+  const comboModels = userComboModels ?? (await resolveAutoCombo(modelStr, BUILTIN_MODEL_ALIASES, settings, { signal }));
   if (comboModels) {
     // An auto combo picked its providers by billing; every account it reaches,
     // including fallbacks within a provider, has to pass the same check.
@@ -867,11 +889,7 @@ async function routeSingleModelChat(
       clientSignal: signal,
       drainOnDisconnect,
       onCredentialsRefreshed: async (newCreds: Record<string, unknown>) => {
-        await updateProviderCredentials(credentials.connectionId, {
-          ...newCreds,
-          existingProviderSpecificData: credentials.providerSpecificData,
-          testStatus: "active"
-        });
+        await updateProviderCredentials(credentials.connectionId, newCreds);
       },
       // Anthropic-compatible endpoint rejected some beta flags; remember them on the
       // connection so later requests skip the failed first try.

@@ -8,6 +8,8 @@ on:
       - "src/proxy.js"
       - "src/lib/auth/**"
       - "src/app/api/auth/login/**"
+      - "src/app/api/health/**"
+      - "src/lib/launchProof.js"
       - "server-drain.js"
       - "next.config.mjs"
       - ".env.example"
@@ -33,6 +35,7 @@ on:
       - "tests/unit/auth-login-mode.test.js"
       - "tests/unit/login-route-limiter.test.js"
       - "tests/unit/local-request-peer-trust-3294.test.js"
+      - "tests/unit/launch-proof.test.js"
       - ".github/workflows/security-network-trust.yml"
   workflow_dispatch:
 
@@ -67,6 +70,7 @@ jobs:
           unit/auth-login-mode.test.js
           unit/login-route-limiter.test.js
           unit/local-request-peer-trust-3294.test.js
+          unit/launch-proof.test.js
       - name: Lint
         run: >
           ./node_modules/.bin/eslint
@@ -81,6 +85,8 @@ jobs:
           tests/unit/custom-server-peer-headers.test.js
           tests/unit/login-route-limiter.test.js
           tests/unit/local-request-peer-trust-3294.test.js
+          tests/unit/launch-proof.test.js
+          src/app/api/health/route.js
 
   no-new-failures:
     runs-on: ubuntu-latest
