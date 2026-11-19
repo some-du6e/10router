@@ -2,6 +2,17 @@ import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 
+// Changes on every combo write, for caches that list combos (the Codex
+// catalog's routed model list). Not connectionsVersion: auto-combo rebuilds on
+// that, and combos don't change what it builds.
+export function bumpCombosVersion() {
+  global._combosVersion = (global._combosVersion || 0) + 1;
+}
+
+export function combosVersion() {
+  return global._combosVersion || 0;
+}
+
 function rowToCombo(row) {
   if (!row) return null;
   return {
@@ -47,6 +58,7 @@ export async function createCombo(data) {
     `INSERT INTO combos(id, name, kind, models, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
     [combo.id, combo.name, combo.kind, stringifyJson(combo.models), combo.createdAt, combo.updatedAt]
   );
+  bumpCombosVersion();
   return combo;
 }
 
@@ -63,11 +75,14 @@ export async function updateCombo(id, data) {
     );
     result = merged;
   });
+  if (result) bumpCombosVersion();
   return result;
 }
 
 export async function deleteCombo(id) {
   const db = await getAdapter();
   const res = db.run(`DELETE FROM combos WHERE id = ?`, [id]);
-  return (res?.changes ?? 0) > 0;
+  const deleted = (res?.changes ?? 0) > 0;
+  if (deleted) bumpCombosVersion();
+  return deleted;
 }

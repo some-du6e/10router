@@ -9,8 +9,16 @@ import {
   validateNewPassword,
   clearLegacyGrace,
 } from "@/lib/auth/setupState";
-import { verifyDashboardPassword } from "@/lib/auth/dashboardSession";
+import { cookies } from "next/headers";
+import {
+  verifyDashboardPassword,
+  getDashboardAuthSession,
+  revokeDashboardSessions,
+  reissueDashboardSession,
+} from "@/lib/auth/dashboardSession";
 import { clearSetupToken } from "@/lib/auth/setupToken";
+import { sanitizeAutoComboSetting } from "@/sse/services/autoCombo.js";
+import { clearRequestDetailFullData } from "@/lib/db/index.js";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -21,6 +29,10 @@ const SETTINGS_RESPONSE_HEADERS = {
 
 // Secrets must never be mass-assigned from request body (CWE-915)
 const PROTECTED_SETTING_KEYS = ["password", "usageHubKeyHash", "usageHubEnabled"];
+// Written only by the tunnel and Tailscale managers (src/lib/tunnel/*/manager.js),
+// from the URL the tunnel actually came up on. The guard and the CLI tools page
+// treat those URLs as this instance, so a PATCH must never set them.
+const INFRASTRUCTURE_SETTING_KEYS = ["tunnelEnabled", "tunnelUrl", "tunnelProvider", "tailscaleEnabled", "tailscaleUrl"];
 
 export async function GET() {
   try {
@@ -51,6 +63,13 @@ export async function PATCH(request) {
 
     // Strip protected secrets before any internal handling sets them
     for (const key of PROTECTED_SETTING_KEYS) delete body[key];
+    const infrastructure = INFRASTRUCTURE_SETTING_KEYS.filter((key) => Object.prototype.hasOwnProperty.call(body, key));
+    if (infrastructure.length) {
+      return NextResponse.json(
+        { error: `${infrastructure.join(", ")} can't be set here: the tunnel and Tailscale controls set them` },
+        { status: 400 }
+      );
+    }
 
     let passwordChanged = false;
 
@@ -115,6 +134,13 @@ export async function PATCH(request) {
       }
     }
 
+    for (const key of ["autoComboBlockedBilling", "autoComboExcludedProviders"]) {
+      if (!Object.prototype.hasOwnProperty.call(body, key)) continue;
+      const clean = sanitizeAutoComboSetting(key, body[key]);
+      if (!clean) return NextResponse.json({ error: `Invalid ${key}` }, { status: 400 });
+      body[key] = clean;
+    }
+
     const settings = await updateSettings(body);
 
     // Only once the replacement hash is persisted: revoking the legacy default
@@ -123,6 +149,17 @@ export async function PATCH(request) {
     if (passwordChanged) {
       await clearLegacyGrace();
       clearSetupToken();
+      const cookieStore = await cookies();
+      // Read before the revocation, which invalidates it. Other browsers are
+      // signed out; this one stays signed in as the same user.
+      const session = await getDashboardAuthSession(cookieStore.get("auth_token")?.value);
+      await revokeDashboardSessions();
+      await reissueDashboardSession(cookieStore, request, session);
+    }
+
+    // Stored full payloads hold prompts; turning the setting off removes them.
+    if (body.showSensitiveRequestDetails === false) {
+      await clearRequestDetailFullData();
     }
 
     // Apply outbound proxy settings immediately (no restart required)

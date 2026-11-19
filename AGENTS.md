@@ -1,106 +1,97 @@
 # AGENTS.md
 
-This file provides guidance to coding agents when working with code in this repository.
+10router (`10router-app`) is a local AI routing gateway with a Next.js dashboard. One OpenAI-compatible endpoint (`/v1/*`) routes traffic across 40+ upstream providers, with format translation, combo and multi-account fallback, OAuth/API-key credentials, token refresh, quota tracking, and optional cloud sync.
 
-## What this is
+The repo ships two independently versioned packages:
+- **Gateway + dashboard** (root `package.json`): `src/` is the Next.js app and its API routes; `open-sse/` is the provider-agnostic routing and translation engine.
+- **CLI launcher** (`cli/`, published to npm as `10router`): installs and starts the server and runs the tray. It has its own `package.json` and build.
 
-10router (`10router-app`) — a local AI routing gateway + Next.js dashboard. It exposes one OpenAI-compatible endpoint (`/v1/*`) and routes traffic across 40+ upstream providers with format translation, model-combo fallback, multi-account fallback, OAuth/API-key credential management, token refresh, quota/usage tracking, and optional cloud sync.
+Read before working in these areas:
+- `docs/ARCHITECTURE.md`: request lifecycle, fallback, OAuth refresh, cloud sync, data model. Its persistence section is stale; see [Persistence](#persistence).
+- `open-sse/AGENTS.md`: engine conventions and how to add a provider, executor, or translator. Read it before editing anything under `open-sse/`.
+- `cli/AGENTS.md`: launcher rules (which processes it may stop, restarts, the DATA_DIR lock, autostart arguments). Read it before editing `cli/cli.js` or `cli/src/cli/`.
 
-Two published artifacts live in this one repo:
-- The **dashboard + gateway** (root `package.json`, `10router-app`) — the Next.js server that does the actual routing.
-- The **CLI launcher** (`cli/`, published to npm as `10router`) — a separate package that installs/starts the server and manages the tray. It has its own `package.json`, version, and build.
+## TypeScript migration
 
-The code lives in `src/` (Next.js app + dashboard/compat APIs), `open-sse/` (the provider-agnostic routing/translation engine), `cli/` (the launcher package), and `tests/`.
+The codebase is moving from JavaScript to TypeScript one file at a time:
+- Write new code in `src/` and `open-sse/` as `.ts`, or `.tsx` when it renders JSX.
+- When a change substantially rewrites an existing `.js` module, convert that module in the same change, provided the conversion stays contained to it.
+- Keep import specifiers ending in `.js`. Bundler resolution maps `./foo.js` to `./foo.ts`, so converting a file changes none of its importers.
+- Finish with `bun run typecheck` green. Converted files are checked under `strict`; untouched JavaScript is unchecked (`checkJs: false`).
+- Everything outside `src/` and `open-sse/` stays JavaScript: `cli/`, `tests/`, `scripts/`, `gitbook/`, and root config files. `custom-server.js` and `cli/` are CommonJS that ships uncompiled, so converting them would break publishing.
+- `scripts/generate-registry-index.mjs` only lists `.js` files in `open-sse/providers/registry/`. Update its filter before converting a registry entry, or the provider silently disappears.
 
-## Commands
+## Installing and running
 
-### Dependency installs across worktrees
+Install with `bun install` in each worktree, keeping that worktree's own `node_modules`. The repo tracks no lockfiles, deliberately: install without committing a generated `bun.lock` and without changing dependency versions. Where a package does carry a lockfile, install with `bun install --frozen-lockfile`, or `npm ci` for a `package-lock.json`, and fix the cause of any frozen-install failure while leaving the lock as it is.
 
-- Prefer `bun install` for dependencies. On Linux, Bun's shared package cache and default hardlink backend reduce duplication across worktrees when the cache and worktrees share a filesystem. Keep a separate `node_modules` in each worktree.
-- Preserve existing lockfile versions. When a package has `bun.lock` or `bun.lockb`, use `bun install --frozen-lockfile`; if it only has `package-lock.json`, use `npm ci` to preserve that lockfile without migrating it. Do not delete or regenerate locks to bypass a frozen-install failure.
-- This repo currently ignores `package-lock.json` and tracks no lockfiles. Keep that policy: do not commit generated Bun locks, change dependency versions, or start a package-manager migration as part of a local install. Without a lockfile, exact versions are not pinned.
-- Bun is the preferred installer; keep the Node runtime and the `npm run` / `npx` commands below unless the task explicitly changes runtime.
-- Next.js build caches such as `.next/cache` are separate from Bun's dependency cache. Do not blindly clear Bun's shared cache to reclaim worktree space, or symlink whole `node_modules` directories between branches with different dependencies.
+Bun is the installer; Node stays the runtime. Run the scripts in `package.json` through `npm run` (the `*:bun` variants run on Bun). The deployed port is **20128** (`/dashboard`, `/v1`). The scripts default to 20127, so pass `PORT=20128 NEXT_PUBLIC_BASE_URL=http://localhost:20128` to match production. Start from `cp .env.example .env`. Lint with `npx eslint .`.
 
-Dashboard/gateway (run from repo root):
-```bash
-cp .env.example .env
-bun install  # apply the lockfile rules above
-PORT=20128 NEXT_PUBLIC_BASE_URL=http://localhost:20128 npm run dev   # dev (webpack, port 20127 by default via next dev)
-npm run build && PORT=20128 HOSTNAME=0.0.0.0 npm run start           # production
-```
-- Bun variants: `npm run dev:bun` / `build:bun` / `start:bun`.
-- Default runtime port is **20128** (dashboard at `/dashboard`, API at `/v1`).
-- Lint: `npx eslint .` (config `eslint.config.mjs`, extends `eslint-config-next`).
+## Tests
 
-CLI package (`cli/`):
-```bash
-npm run cli:pack       # build + npm pack from root
-cd cli && npm run dev  # nodemon watch
-```
+`tests/` is a separate ESM package with vitest. Install root deps first, then `cd tests && bun install`, then `npx vitest run [file]` with paths relative to `tests/`. Ignore the `test` script in `tests/package.json`; it hardcodes `/tmp/node_modules`.
 
-Tests (vitest, in `tests/`, an **independent** ESM package — not wired into root `npm test`):
-```bash
-bun install                             # ROOT deps first; apply the lockfile rules above
-cd tests && bun install                 # then tests' own deps; apply the same lockfile rules here
-npx vitest run                          # all tests; auto-discovers tests/vitest.config.js
-npx vitest run unit/capabilities.test.js   # single file (path relative to tests/)
-```
-> The committed `tests/package.json` `test` script hardcodes Unix paths (`NODE_PATH=/tmp/node_modules …`) — a shared-install workaround from upstream. On Windows (or anywhere), ignore it and use the `npx vitest` form above; `vitest.config.js` resolves the `open-sse`/`@/` aliases from the repo root regardless of where vitest lives.
->
-> **The suite is NOT expected to be all-green on a plain checkout.** ~938 pass, ~64 fail. Judge regressions with `tests/__baseline__/verify-no-regression.mjs`, not a raw run. Expected red:
-> - 26 catalogued in `tests/__baseline__/known-fails.txt` (rtk, oauth-cursor-auto-import, translator-request-normalization, …).
-> - `unit/embeddings.cloud.test.js` imports `cloud/src/handlers/embeddings.js` — the `cloud/` worker dir is **not in this repo**, so it always fails here.
-> - `unit/xai-oauth-service.test.js` times out (5s) when the xAI endpoint-discovery fetch isn't reachable/mocked.
-> - `real/*.real.test.js` make live provider calls — need credentials, skip otherwise.
-- `*.real.test.js` under `tests/translator/real/` make live provider calls — skip unless credentials are set.
-- Regression baselines: `tests/__baseline__/verify-*.mjs` compare against committed snapshots (providers, aliases, OAuth URLs). Run these after touching provider registry / alias logic.
+The suite is **red on a clean checkout** (dozens of expected failures), so a raw run proves nothing. Judge a change with `node tests/__baseline__/verify-no-regression.mjs`. Expected failures:
+- the tests listed in `tests/__baseline__/known-fails.txt`
+- `unit/embeddings.cloud.test.js`, which needs a `cloud/` worker directory that is not in this repo
+- `unit/xai-oauth-service.test.js`, which times out without network access to xAI
+- `*.real.test.js`, which make live provider calls and need credentials
 
-## Architecture
+After touching the provider registry, aliases, or OAuth URLs, also run the matching `tests/__baseline__/verify-*.mjs` snapshot check.
 
-Two authoritative docs already exist — read them before working in these areas rather than re-deriving:
-- `docs/ARCHITECTURE.md` — full system: request lifecycle, combo/account fallback, OAuth + token refresh, cloud sync, data model.
-- `open-sse/AGENTS.md` — the routing/translation engine's own conventions and "how to add a provider/executor/translator". **Read this before editing anything under `open-sse/`.**
+## Architecture gotchas
 
-### Request flow (the thing to understand first)
-`src/app/api/v1/*` route (Next rewrite maps `/v1/*` → `/api/v1/*` in `next.config.mjs`)
-→ `src/sse/handlers/chat.js` (parse, combo expansion, account-selection loop)
-→ `open-sse/handlers/chatCore.js` (detect source format, translate request, dispatch to executor, retry/refresh, stream setup)
-→ `open-sse/executors/*` (per-provider upstream call; `default.js` handles any OpenAI-compatible provider)
-→ `open-sse/translator/*` (client format ↔ provider format)
-→ SSE back to client.
+### Request flow
+`src/app/api/v1/*` (via the `/v1/*` rewrite in `next.config.mjs`) → `src/sse/handlers/chat.js` (combo expansion, account-selection loop) → `open-sse/handlers/chatCore.js` (detect format, translate, dispatch, retry/refresh, stream) → `open-sse/executors/*` (`default.js` covers any OpenAI-compatible upstream) → SSE back to the client.
 
-`src/sse/` is the app-side entry glue; `open-sse/` is the provider-agnostic engine (also usable standalone). Cross that boundary consciously.
+`src/sse/` is the app-side glue and `open-sse/` is the engine. The boundary leaks: `chatCore.js` imports `@/lib/usageDb.js`. Put types shared across it somewhere both sides can import.
 
-### Translator engine (`open-sse/translator/`)
-- Pivots through **OpenAI as the intermediate format**. A translator registered on an exact `source:target` pair (e.g. `claude:kiro`) runs as a **direct route**, skipping the lossy double-hop. Prefer a direct route for fragile pairs (thinking blocks, tool ids, non-base64 images, `is_error`).
-- Translators **self-register** via `register(from, to, reqFn, resFn)` as an import side effect — a new translator file MUST be imported in `open-sse/translator/index.js` or it never runs.
-- Never hardcode role/block/model strings — use `open-sse/translator/schema/` and `open-sse/config/` constants. Config-driven and DRY is enforced by convention here.
+### Translators (`open-sse/translator/`)
+- Translation pivots through OpenAI format. A translator registered on an exact pair (e.g. `claude:kiro`) is a **direct route** that skips the lossy double hop; use one for fragile pairs (thinking blocks, tool ids, non-base64 images, `is_error`).
+- Translators self-register as an import side effect, so a new translator file runs only once it is imported in `open-sse/translator/index.ts`.
+- Take role, block, and model strings from the constants in `open-sse/translator/schema/` and `open-sse/config/`.
+- Binary upstreams (kiro EventStream, cursor protobuf, commandcode NDJSON) are decoded inside their own executor, outside the translator.
 
-### Provider registry (`open-sse/providers/registry/*`)
-- One file per provider. `providers/registry/index.js` is an **auto-generated** static import list — regenerate it with `scripts/migrate-registry.mjs` / `injectDisplayToRegistry.mjs`, don't hand-edit.
-- Add a provider: copy `providers/REGISTRY_TEMPLATE.js`, add models to `config/providerModels.js`. Only add an executor for non-OpenAI-compatible upstreams.
+### Provider registry (`open-sse/providers/registry/`)
+One file per provider, starting from `open-sse/providers/REGISTRY_TEMPLATE.js`, with models in `open-sse/config/providerModels.js`. `index.js` is generated: rerun `scripts/generate-registry-index.mjs` after adding a file. Write an executor only for an upstream that is not OpenAI-compatible.
 
-### Persistence — IMPORTANT (ARCHITECTURE.md is stale here)
-State is **no longer `db.json`**. It's a SQLite layer under `src/lib/db/` with an adapter fallback chain (`driver.js`): `bun:sqlite` → `better-sqlite3` (optional native dep) → `node:sqlite` (Node ≥22.5) → `sql.js` (pure-JS fallback, always works). `better-sqlite3` is deliberately in `optionalDependencies` so install never fails without build tools.
-- `src/lib/localDb.js` is a **backward-compat shim** re-exporting `src/lib/db/index.js`. New code should import from `@/lib/db/index.js`; per-entity logic lives in `src/lib/db/repos/*`. Schema/migrations in `src/lib/db/migrations/`.
-- DB file location resolves via `src/lib/db/paths.js` (`DATA_DIR`, else `~/.9router/` — the `.9router` directory name is retained for compatibility with existing installs).
-- Usage/logs (`src/lib/usageDb.js`, `usage.json` + `log.txt`) still live under `~/.9router` (name retained for backward compatibility) and do **not** follow `DATA_DIR`.
+### Persistence
+State lives in SQLite under `src/lib/db/` (the old `db.json` is gone). `driver.js` picks an adapter: on Bun, `bun:sqlite` then `sql.js`; on Node, `better-sqlite3` then `node:sqlite` then `sql.js`. `better-sqlite3` is in `optionalDependencies` so installs succeed without build tools.
+- Import from `@/lib/db/index.js`. `src/lib/localDb.js` is a compatibility shim. Per-entity logic lives in `src/lib/db/repos/`, migrations in `src/lib/db/migrations/`.
+- The DB path comes from `src/lib/db/paths.js`: `DATA_DIR`, else `~/.9router/`. The directory keeps that name for existing installs.
+- Usage and logs (`src/lib/usageDb.js`) always write to `~/.9router` and ignore `DATA_DIR`.
+- A token refresh result's `providerSpecificData` holds only the fields the refresh changed. Save the whole result with `updateProviderCredentials` (`src/sse/services/credentialSave.js`, re-exported by `tokenRefresh.js`), or `saveRefreshedCredentials` where the caller goes on with the new tokens even if the save fails; the connection test passes its `refreshTokenUsed` through it. `updateProviderConnection` then applies that metadata over the stored row and stamps `lastRefreshAt` (only if the access token changed) in one transaction. On the request's own copy, the chat, embeddings, image and video cores, the Kiro model lister and the translator's send apply it with `applyRefreshedCredentials`; usage polling merges `buildCredentialUpdates` the same way. `tests/unit/gateway-refresh-persistence.test.js`, `refresh-metadata-patch.test.js` and `refresh-retry-credentials.test.js` hold this.
 
-### RTK token saver (`open-sse/rtk/`)
-Pre-translate hooks that compress `tool_result` content in-place to cut tokens. **Fail-open**: any error returns null and leaves the body untouched — never throw out of them. Skips `is_error`/`status:"error"` results to preserve traces.
+### Icons
+The dashboard draws Material Symbols from a subset font, `src/app/fonts/material-symbols-outlined.woff2`, holding only the icons the source names (listed in the `.icons.txt` beside it). An icon outside the subset renders as its raw name, so after using a new icon name, rerun `node scripts/subset-icon-font.mjs` (needs python3 with `fonttools` and `brotli`) and commit both files; `tests/unit/icon-font-subset.test.js` goes red until you do. The font loads through `next/font/local` in `src/app/layout.js`. Importing `material-symbols/*.css` would pull the full 3.9 MB font back in. The logo is an inline SVG (`src/shared/components/LogoMark.tsx`) so it paints before the font arrives; use it rather than a `hub` icon for the brand mark.
 
-## Conventions & gotchas
+### Security
+- `custom-server.js` decides who a request comes from, through two helpers every caller uses: `isOnThisMachine` (a loopback socket with no forwarding header and `TRUST_PROXY` not `true`; `Host` can only rule a request out, since the client picks it) and `clientKeysFor` (the socket for a direct peer; behind a loopback proxy or a peer `TRUST_PROXY` lists as IPs/CIDRs, the rightmost `X-Forwarded-For` entry that is a non-loopback IP and the `X-Real-IP`, both when both are sent, `CF-Connecting-IP` only when neither is; `unknown` behind `TRUST_PROXY=true`). It stamps the result as `x-9r-real-ip` / `x-9r-alt-ips` / `x-9r-via-proxy`, `x-9r-proxy-hop` when the peer is a loopback or listed proxy (so its `Host` may be the proxy's, which the login-off Host check refuses when loopback), plus `x-9r-via-tunnel` for a loopback peer whose `Host` is `*.trycloudflare.com` or `*.ts.net`, with the peer token, and `src/` reads only those stamps. Keep that guarantee in any request, IP, or rate-limit change: a same-host reverse proxy is remote, and a forwarding header counts only from a loopback or listed peer. It also stamps the raw TCP peer as `x-9r-socket-ip` / `x-9r-socket-port`, whatever `TRUST_PROXY` says, for the CLI launcher's `/api/health` proof only; nothing may key on or trust them (`tests/unit/launch-proof.test.js`).
+- A connection test shares `withCredentialRefreshLock` with the request path's proactive and background refresh (`checkAndRefreshToken`). A request's refresh after a 401 takes it only for Codex and Grok CLI, whose executors go through `refreshProviderCredentials`; for other providers it doesn't. Inside the lock it re-reads the row and uses the stored tokens if a request, another test or a new sign-in rotated them since it read the row, refreshing those once if they are refused. It saves a successful refresh as soon as it returns, before any probe that follows, stamping `lastRefreshAt` so `checkAndRefreshToken` adopts it when the refresh token rotated, and only onto a row that still holds the refresh token it used or the one it got (`updateProviderConnection`'s `refreshTokenUsed`). Every status write it makes on an OAuth row is under the same check. Rotating providers retire the old token whatever the probe says (`tests/unit/oauth-probe-refresh-persistence.test.js`, `tests/unit/connection-refresh-token-cas.test.js`).
+- Codex identity comes from `extractCodexAccountInfo(idToken, accessToken)`. The access token fills ID-token gaps only when the ID token is missing, undecodable, or names the same `sub`. When the two name different subjects, the access token's claims win, since it's the stored credential, and `subjectMismatch` is set as a flag only; nothing refuses the pair, because ID and access tokens aren't known to share `sub` (`tests/unit/oauth-codex-identity.test.js`).
+- A fresh install has no default password. It prints a one-time setup token to the console (`src/lib/auth/setupState.js`, `setupToken.js`), or takes `INITIAL_PASSWORD` (8+ chars) for headless bootstrap. The env contract lives in `.env.example`.
 
-- Plain JavaScript (ESM), no TypeScript. `@/*` path alias → `src/*` (`jsconfig.json`).
-- `custom-server.js` wraps the Next standalone server to derive client IP from the TCP socket and strip attacker-controlled `X-Forwarded-For` — trusting forwarding headers only from a loopback reverse proxy. Preserve this when touching request/IP/rate-limit code.
-- Security-sensitive env: `JWT_SECRET` (session cookie), `INITIAL_PASSWORD` (optional headless bootstrap password, min 8 chars — there is **no** default password; a fresh install requires the one-time setup token printed to the server console, see `src/lib/auth/setupState.js` + `setupToken.js`), `API_KEY_SECRET`, `MACHINE_ID_SALT`. Full env contract in `.env.example` and ARCHITECTURE.md's env matrix.
-- Binary/protobuf upstreams (kiro EventStream, cursor protobuf, commandcode NDJSON) don't round-trip through OpenAI — they're handled inside their own executor, not the translator.
-- Versioning: root and `cli/` are versioned independently; changes are logged in `CHANGELOG.md`. Commit style is Conventional Commits (`fix(translator): …`, `feat(...)`).
+Auth rules and the tests that hold them (all run in the default suite, and on PRs in `.github/workflows/security-sso-oauth.yml`, or `security-network-trust.yml` for the network-trust rows):
+
+| Rule | Enforcement |
+| --- | --- |
+| Network trust: only `isOnThisMachine` grants keyless `/v1`, the local-only routes and private endpoint URLs; the login limiter keys on `clientKeysFor`. `isLoopbackHost` in `custom-server.js` and `isLoopbackHostname` in `dashboardGuard.js` are one rule in two files (`custom-server.js` ships standalone and can't import `src/`). | `custom-server.js`, `isLocalRequest`; `tests/unit/security-network-trust.test.js` (through the real wrapper, both proxy header styles, loopback addresses from headers), `custom-server-peer-headers.test.js`, `codex-ws-bridge-peer.test.js`, the parity table in `dashboard-guard.test.js`. |
+| Password login lockout (`login/route.js`): `reserveAttempt` before the password check and `releaseAttempt` exactly once after it, on every key the login has (`getClientKeys`: one, or two when a proxy sent both `X-Forwarded-For` and `X-Real-IP`); per key only (IPv4 address, IPv6 /64), no global block. Two-key failures go in their own table, since one key is the client's to choose: a two-key login is refused by a lock on either key in either table, a one-key login only by one-key locks. Password logins from this machine share the `local` key, which no header value can produce; the shared `unknown` key locks for a fixed 15 s and never escalates. The setup and SAML ACS routes take the same one or two keys (`getClientKeys`) with `checkLock`/`recordFail`. | `src/lib/auth/loginLimiter.ts`, `login/route.js`, `setup/route.js`, `saml/acs/route.js`; `security-network-trust.test.js`, `login-route-limiter.test.js`. |
+| Browser requests: no Origin and `Sec-Fetch-Site` cross-site or same-site is never local; an `Origin` that isn't this server (`Sec-Fetch-Site: same-origin` first; then same host as `Host` or a Host-rewriting proxy's `X-Forwarded-Host`, same port unless `Host` has none) gets nothing from a session cookie or `requireLogin=false`. With login off, the API answers only loopback names, IP literals and the configured tunnel, `BASE_URL` and `ALLOWED_HOSTS` hosts; a local-only GET without the CLI token needs same-origin proof. With tunnel dashboard access off, the tunnel host and anything stamped `x-9r-via-tunnel` get 403 on every non-public `/api/*` (`isTunnelHost`, also used by password login). | `dashboardGuard.js`; `dashboard-guard.test.js`, `login-route-limiter.test.js`. |
+| Bind every OIDC ID token to the stored login nonce. Bind every SAML response to the request named in the browser's `saml_state` cookie (HMAC-signed with the session secret, 10-minute expiry) and use each request once per process. `/start` keeps no server state. Missing or bad state fails closed. | `verifyOidcIdToken`, `createSamlStateCookie`/`readSamlStateCookie`, `validateSamlResponse`; `tests/unit/oidc-token-binding.test.js` (real signed tokens and JWKS), `saml-state-cookie.test.js` (tampering, other secret, expiry), `auth-secret.test.js` (one secret file, first-boot race), `saml-response-binding.test.js` (cookieless and replayed responses), `saml-signed-request-binding.test.js` (real signed XML: forged cookie, replay, expiry, /start spam, a second process). |
+| The server routes resolve the login mode through `src/lib/auth/authMode.ts` (`getConfiguredSsoType`, `isPasswordLoginDisabled`). Password mode can't enable a saved SSO configuration, "both" keeps the password recovery paths, and Reset Password in SSO-only mode switches to "both" unless `INITIAL_PASSWORD` is set. While setup is pending for any reason, the API takes no password session (`hasValidToken` via `acceptsDashboardSession`, `dashboard-guard.test.js`). With a configured SSO protocol, `/login` and SSO sign-in stay reachable, and the dashboard pages and API take only a session from that protocol, or the CLI token (`dashboardGuard.js`, `loginLanding.ts`). The OIDC/SAML settings test routes are dashboard APIs, not public, and the OIDC test sends the saved client secret only to the saved issuer (`oidc-test-route.test.js`). `authMode.ts` has no dependencies, because the request proxy loads `setupState.js`. | Bootstrap, OIDC runtime, SAML start/ACS, password login, Reset Password and auth status; `tests/unit/auth-mode-consistency.test.js`, `auth-login-mode.test.js`, `dashboard-guard.test.js`, `auth-status.test.js`, `login-landing.test.js`. The profile page still reads the mode itself. |
+| HTTPS SAML request-state cookies must survive the IdP's cross-site POST. | `tests/unit/saml-start-cookie.test.js`. |
+| `SSO_ALLOWED_USERS` gates OIDC and SAML sign-in, and a refusal doesn't count toward the login lockout. Email entries match only an IdP-verified email; entries without `@` match only the subject. | `tests/unit/sso-allowlist.test.js`. |
+| The Trae loopback proxy answers only its random callback path. | `tests/unit/trae-callback-binding.test.js`. |
+| The OAuth connect dialog uses a relayed callback only when it echoes the pending login's state; Cline and Cline Pass (no state) only from the popup the dialog opened (a fresh window name per login) and from the redirect URI's origin. Never for proxy providers (Trae, Windsurf, Zed). Anything else, a stateless `?error=` included, is ignored without ending the login, and a pasted URL naming another login's state is refused. | `handleRelayedCallback`, `isOwnPopup`, `newPopupName` and `parsePastedCallback` in `src/shared/utils/oauthCallbackBinding.ts`; `tests/unit/oauth-callback-binding.test.js`. |
+
+## Commits
+
+Conventional Commits (`fix(translator): …`). Log user-facing changes in `CHANGELOG.md`; bump root and `cli/` versions independently.
 
 <!-- BEGIN:nextjs-agent-rules -->
 
-# This is NOT the Next.js you know
+## This is NOT the Next.js you know
 
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
 

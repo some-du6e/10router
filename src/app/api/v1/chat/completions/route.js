@@ -30,6 +30,6 @@ export async function POST(request) {
   // Fallback to local handling
   await ensureInitialized();
   
-  return await handleChat(request);
+  return await handleChat(request, null, { earlyHeaders: true });
 }
 

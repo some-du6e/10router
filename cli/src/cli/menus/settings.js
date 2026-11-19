@@ -15,7 +15,7 @@ const COLORS = {
 
 
 /**
- * Show settings menu (tunnel + RTK + reset password)
+ * Show settings menu (tunnel + reset password)
  * @param {Array<string>} breadcrumb - Breadcrumb path
  */
 async function showSettingsMenu(breadcrumb = []) {
@@ -34,12 +34,6 @@ async function showSettingsMenu(breadcrumb = []) {
         lines.push(`  Endpoint: http://localhost:20128/v1`);
         lines.push(`  Tunnel:   ${COLORS.red}OFF${COLORS.reset} ${COLORS.dim}(local only)${COLORS.reset}`);
       }
-
-      // RTK section
-      const rtkOn = data?.settings?.rtkEnabled !== false;
-      lines.push(`  RTK:      ${rtkOn ? `${COLORS.green}ON${COLORS.reset}` : `${COLORS.red}OFF${COLORS.reset}`} ${COLORS.dim}(Token Saver)${COLORS.reset}`);
-      const headroomOn = data?.settings?.headroomEnabled === true;
-      lines.push(`  Headroom: ${headroomOn ? `${COLORS.green}ON${COLORS.reset}` : `${COLORS.red}OFF${COLORS.reset}`} ${COLORS.dim}(${data?.settings?.headroomUrl || "http://localhost:8787"})${COLORS.reset}`);
 
       // Auth mode section
       const authMode = data?.settings?.authMode || "password";
@@ -68,21 +62,7 @@ async function showSettingsMenu(breadcrumb = []) {
         action: async () => { await disableTunnel(); return true; }
       },
       {
-        label: (d) => {
-          const on = d?.settings?.rtkEnabled !== false;
-          return `Token Saver (RTK): ${on ? "ON" : "OFF"} → toggle`;
-        },
-        action: async (d) => { await toggleRtk(d?.settings?.rtkEnabled !== false); return true; }
-      },
-      {
-        label: (d) => {
-          const on = d?.settings?.headroomEnabled === true;
-          return `Token Saver (Headroom): ${on ? "ON" : "OFF"} → toggle`;
-        },
-        action: async (d) => { await toggleHeadroom(d?.settings?.headroomEnabled === true); return true; }
-      },
-      {
-        label: "🔑 Reset Password (re-run setup)",
+        label: "🔑 Reset Password",
         action: async () => { await resetPassword(); return true; }
       },
       {
@@ -154,39 +134,14 @@ async function disableTunnel() {
 }
 
 /**
- * Toggle RTK (Token Saver) via API
- * @param {boolean} currentlyOn
- */
-async function toggleRtk(currentlyOn) {
-  const next = !currentlyOn;
-  const result = await api.updateSettings({ rtkEnabled: next });
-  if (result.success) {
-    showStatus(`Token Saver ${next ? "enabled" : "disabled"}`, "success");
-  } else {
-    showStatus(`Failed: ${result.error}`, "error");
-  }
-  await pause();
-}
-
-async function toggleHeadroom(currentlyOn) {
-  const next = !currentlyOn;
-  const result = await api.updateSettings({ headroomEnabled: next });
-  if (result.success) {
-    showStatus(`Headroom ${next ? "enabled" : "disabled"}`, "success");
-  } else {
-    showStatus(`Failed: ${result.error}`, "error");
-  }
-  await pause();
-}
-
-/**
  * Clear the dashboard password via server API (writes the live SQLite DB) and
- * put the instance back into first-run setup. There is no default password:
- * the server mints a one-time setup token, printed here and on the server
- * console, which must be used at /setup before the token expires.
+ * print what the server says happened. Without INITIAL_PASSWORD the instance
+ * goes back to first-run setup and the server mints a one-time setup token,
+ * printed here and on the server console. With INITIAL_PASSWORD set, no token
+ * is minted: that password is the way back in.
  */
 async function resetPassword() {
-  const ok = await confirm("Clear the dashboard password and re-run first-time setup?");
+  const ok = await confirm("Clear the dashboard password? You'll get a setup token, or sign in with INITIAL_PASSWORD if it's set.");
   if (!ok) {
     showStatus("Cancelled", "info");
     await pause();
@@ -195,12 +150,15 @@ async function resetPassword() {
 
   const result = await api.resetPassword();
   if (result.success) {
-    const { token, expiresInSec } = result.data || {};
-    if (token) {
-      const minutes = Math.max(1, Math.round((expiresInSec || 300) / 60));
-      showStatus("Password cleared. Open the dashboard to finish setup.", "success");
-      console.log(`\n  Setup token: ${COLORS.cyan}${token}${COLORS.reset}`);
-      console.log(`  ${COLORS.dim}Valid for ${minutes} minutes — restart 10router for a new one.${COLORS.reset}\n`);
+    const { token, expiresInSec, message } = result.data || {};
+    if (message || token) {
+      // Newer servers say what the reset did (mode switch, INITIAL_PASSWORD, setup token).
+      showStatus(message || "Password cleared. Open the dashboard to finish setup.", "success");
+      if (token) {
+        const minutes = Math.max(1, Math.round((expiresInSec || 300) / 60));
+        console.log(`\n  Setup token: ${COLORS.cyan}${token}${COLORS.reset}`);
+        console.log(`  ${COLORS.dim}Valid for ${minutes} minutes — restart 10router for a new one.${COLORS.reset}\n`);
+      }
     } else {
       showStatus("Password cleared. Check the server console for the setup token.", "success");
     }

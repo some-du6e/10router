@@ -37,21 +37,24 @@ npm run build
 Crea un archivo `.env` o exporta variables:
 
 ```bash
-export JWT_SECRET="your-secure-secret-change-this-to-random-string"
 export INITIAL_PASSWORD="your-secure-password"
 export DATA_DIR="/var/lib/10router"
 export NODE_ENV="production"
 ```
 
+> `JWT_SECRET` es opcional. Déjalo sin definir y 10router genera uno una sola vez en `$DATA_DIR/jwt-secret`, así las sesiones sobreviven a los reinicios. Solo para varias instancias detrás de una misma URL: genera un valor una vez (`openssl rand -hex 32`), guárdalo y usa ese mismo valor en todas las instancias. Los valores de menos de 32 caracteres o un placeholder documentado se ignoran.
+
 **Variables de entorno:**
 
 | Variable | Por defecto | Descripción |
 |----------|---------|-------------|
-| `JWT_SECRET` | Auto-generado | **¡DEBE cambiarse en producción!** Usado para firmar tokens JWT |
+| `JWT_SECRET` | Auto-generado (`$DATA_DIR/jwt-secret`) | Opcional. Firma las sesiones del panel. Defínelo solo para compartir sesiones entre instancias detrás de una misma URL (32+ caracteres; los valores más cortos y los placeholders documentados se ignoran) |
 | `INITIAL_PASSWORD` | sin definir | Contraseña opcional de arranque headless (mínimo 8 caracteres). Sin definir, el primer arranque requiere el token de configuración de un solo uso impreso en la consola del servidor — no hay contraseña por defecto |
 | `DATA_DIR` | `~/.9router` | Ruta de almacenamiento de la base de datos (el nombre del directorio no ha cambiado respecto a la versión anterior por compatibilidad) |
 | `NODE_ENV` | `development` | Establece a `production` para despliegue |
 | `ENABLE_REQUEST_LOGS` | `false` | Habilita logs de debug de request/response |
+| `TRUST_PROXY` | sin definir | `true` cuando un reenviador en esta máquina no añade ninguna cabecera de reenvío (`X-Forwarded-For`, `X-Real-IP`, …), como socat, `ssh -R` o un túnel TCP: el `Host` de sus clientes llega tal cual, así que uno podría enviar `Host: localhost` y contar como local. Con él, ninguna conexión loopback cuenta como local, así que las herramientas del propio servidor también necesitan una clave API o el token del CLI. O una lista de IP/CIDR (`192.168.1.10,10.0.0.0/8`) para un proxy inverso en otro host o contenedor, cuyas cabeceras de reenvío se leen entonces. Si 10router corre en Docker detrás de Nginx en el host, Nginx llega al contenedor desde la puerta de enlace del bridge de Docker, así que añade esa puerta de enlace o la red de compose (`172.17.0.1`, `172.18.0.0/16`); si no, todos los inicios de sesión usan la puerta de enlace como clave y se ignoran las cabeceras de Nginx. Con ella en la lista, `http://localhost:20128` por el puerto publicado también llega desde la puerta de enlace y cuenta como salto de proxy, así que con el login desactivado la API del dashboard responde 401 ahí |
+| `ALLOWED_HOSTS` | sin definir | Con "Require login" desactivado, nombres de host extra (lista separada por comas) a los que responde la API del dashboard, además de `localhost`, las direcciones IP, las URL de túnel y `BASE_URL`. Un `Host` loopback no cuenta cuando la petición llega por un salto de proxy (un par loopback que no es local, o uno que `TRUST_PROXY` lista) |
 
 ### Paso 5: Crear el directorio de datos
 
@@ -154,11 +157,12 @@ docker run -d \
   --name 10router \
   -p 3000:3000 \
   -p 20128:20128 \
-  -e JWT_SECRET="your-secure-secret-change-this" \
   -e INITIAL_PASSWORD="your-secure-password" \
   -v 10router-data:/app/data \
   10router
 ```
+
+> `JWT_SECRET` se deja sin definir a propósito (ver la nota anterior): el secreto generado en `$DATA_DIR/jwt-secret` se mantiene entre reinicios.
 
 ### Opción 2: Docker Compose
 
@@ -176,7 +180,6 @@ services:
       - "20128:20128"
     environment:
       - NODE_ENV=production
-      - JWT_SECRET=your-secure-secret-change-this
       - INITIAL_PASSWORD=your-secure-password
       - DATA_DIR=/app/data
     volumes:
@@ -186,6 +189,8 @@ services:
 volumes:
   10router-data:
 ```
+
+> `JWT_SECRET` se deja sin definir a propósito (ver la nota anterior): el secreto generado en `$DATA_DIR/jwt-secret` se mantiene entre reinicios.
 
 **Ejecutar con Docker Compose:**
 
@@ -311,16 +316,15 @@ sudo certbot renew --dry-run
 
 ## 🔒 Consideraciones de seguridad
 
-### 1. Cambiar credenciales por defecto
+### 1. Protege el acceso al panel
 
-**CRÍTICO:** Cambia `JWT_SECRET` y `INITIAL_PASSWORD` antes del despliegue:
+Define un `INITIAL_PASSWORD` seguro antes del despliegue, o déjalo sin definir y completa la configuración inicial con el token de un solo uso que se imprime en la consola del servidor. No hay contraseña por defecto.
+
+`JWT_SECRET` es opcional: 10router genera uno en `$DATA_DIR/jwt-secret` y lo conserva, así que mantén el directorio de datos privado. Define `JWT_SECRET` solo para compartir sesiones entre varias instancias detrás de una misma URL, con un valor de 32+ caracteres generado una vez y guardado:
 
 ```bash
-# Generar JWT secret seguro
-openssl rand -base64 32
-
-# Usa este valor para JWT_SECRET
-export JWT_SECRET="generated-secret-here"
+# Ejecútalo una vez, guarda el valor y úsalo en todas las instancias
+openssl rand -hex 32
 ```
 
 ### 2. Configuración del firewall
@@ -343,19 +347,22 @@ sudo ufw enable
 
 ### 3. Restringir el acceso al dashboard
 
-Si solo necesitas acceso por API, restringe el puerto del dashboard:
+Si solo necesitas acceso por API a través de Nginx, bloquea desde fuera los puertos de la propia app:
 
 ```bash
-# Solo permitir acceso localhost al dashboard
+# Solo permitir acceso localhost a 10router
+sudo ufw deny 20128/tcp
 sudo ufw deny 3000/tcp
 ```
 
-Accede al dashboard vía túnel SSH:
+Accede al dashboard con un túnel SSH al puerto de la app, que cuenta como esta máquina:
 
 ```bash
-ssh -L 3000:localhost:3000 user@your-server.com
-# Luego abre http://localhost:3000 en tu navegador
+ssh -L 20128:localhost:20128 user@your-server.com
+# Luego abre http://localhost:20128 en tu navegador
 ```
+
+Las peticiones que pasan por Nginx (o por cualquier proxy o túnel en el servidor) se tratan como remotas: necesitan una clave API para `/v1`, y las rutas solo locales (servidores MCP, controles del túnel, Reset Password) y los endpoints con una URL privada (como un Ollama en `localhost`) responden 403 o "URL not allowed". Para eso usa el túnel SSH de arriba (`ssh -L 20128:localhost:20128`) o el CLI en el servidor. Mantén las líneas `X-Real-IP` y `X-Forwarded-For` en la configuración de Nginx para que el bloqueo de login cuente cada cliente por separado, y mantén `Host $host`, o envía `X-Forwarded-Host`, para que se acepten las llamadas a la API del propio dashboard. Cualquier proxy delante debe sobrescribir o añadir `X-Forwarded-For` y `X-Real-IP`: uno que deja pasar los valores del propio cliente (un bloque de Nginx que solo fija `Host` y `X-Forwarded-Proto`, por ejemplo) deja que cada cliente elija las claves con las que se limitan sus inicios de sesión.
 
 ### 4. Actualizaciones regulares
 
@@ -461,7 +468,7 @@ Asegúrate de que `proxy_buffering off` esté configurado en Nginx para soporte 
 ```bash
 # Corregir permisos del directorio de datos
 sudo chown -R $USER:$USER /var/lib/10router
-chmod 755 /var/lib/10router
+chmod 700 /var/lib/10router
 ```
 
 ---

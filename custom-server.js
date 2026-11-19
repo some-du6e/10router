@@ -2,14 +2,22 @@ const http = require("http");
 const crypto = require("crypto");
 const path = require("path");
 const fs = require("fs");
+const net = require("net");
 const { pathToFileURL } = require("url");
+const { createDrain, installExitRecorder, installShutdownDrain, parseDrainTimeout } = require("./server-drain.js");
 
 const origCreate = http.createServer.bind(http);
 
+// Graceful drain on SIGTERM/SIGINT (see server-drain.js). It is wired to the
+// process's signals only when this file is the entry point, at the bottom.
+const drain = createDrain({ timeoutMs: parseDrainTimeout(process.env.SHUTDOWN_DRAIN_TIMEOUT_MS) });
+
 // ─── Codex WebSocket transport ────────────────────────────────────────────────
 //
-// Codex ≥0.147 with `supports_websockets = true` upgrades
-// `<base_url>/responses` instead of POSTing it. The client sends one text frame:
+// Codex upgrades `<base_url>/responses` instead of POSTing it: by default on
+// the built-in `openai` provider (0.137 already does, with no way to turn it
+// off), and on a custom provider with `supports_websockets = true`. The client
+// sends one text frame:
 //
 //   {"type":"response.create","model":"…","input":[…]}
 //
@@ -50,8 +58,9 @@ const origCreate = http.createServer.bind(http);
 //     conversation under it. See the PR discussion for what serving these
 //     properly would require (an upstream websocket held per session).
 //
-// Both get an error frame, which makes the client fall back to a self-contained
-// turn on a fresh connection. That fallback is the path every working turn
+// Both get an error frame (with no `status`, so Codex skips it) and a close,
+// which Codex treats as a failed stream: it retries on a fresh connection,
+// where the turn is self-contained. That fallback is the path every working turn
 // already takes today ("websocket reuse properties didn't match"). It is also
 // the same recovery codex-lb performs when its own upstream rejects an anchor:
 // surface `previous_response_not_found` to the client and let it rebuild the
@@ -60,6 +69,10 @@ const origCreate = http.createServer.bind(http);
 const CODEX_WS_PATH = "/backend-api/codex/responses";
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const MAX_WS_MESSAGE_BYTES = 64 * 1024 * 1024;
+const MAX_ERROR_TEXT = 2000;
+// Big enough for a JSON error envelope that echoes a long request, so it still
+// parses; small enough to bound what one rejected turn holds (UTF-16 units).
+const MAX_ERROR_BODY = 1024 * 1024;
 
 function wsAccept(key) {
   return crypto.createHash("sha1").update(key + WS_GUID).digest("base64");
@@ -160,15 +173,199 @@ function createWsDecoder(onMessage, onClose, onPing) {
   };
 }
 
-// Run one `response.create` through this process's own HTTP endpoint and relay
-// each SSE event back as a text frame.
-function bridgeCodexTurn(request, port, headers, peerIp, send, done) {
-  const { type, ...body } = request;
-  void type;
-  body.stream = true; // the WS transport is inherently streaming
+// ─── Who a request comes from ────────────────────────────────────────────────
+//
+// Two helpers decide it, and every caller goes through them:
+//   - isOnThisMachine: a client on this machine, which gets keyless /v1 and the
+//     local-only routes;
+//   - clientIpFor: the address the login limiter and logs key on.
+// Forwarding headers count only from a loopback peer (a reverse proxy on this
+// machine); a direct remote peer is always its socket address.
 
-  const payload = Buffer.from(JSON.stringify(body), "utf8");
-  const forwarded = { "content-type": "application/json", "content-length": payload.length };
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
+
+// Accepts a socket address, a Host header (with or without port, IPv6 in
+// brackets) or one X-Forwarded-For entry. isLoopbackHostname in
+// src/dashboardGuard.js is the same rule (this file ships standalone and can't
+// import src/); the parity table in tests/unit/dashboard-guard.test.js holds them together.
+function isLoopbackHost(value) {
+  if (!value) return false;
+  let name = String(value).trim().toLowerCase();
+  if (name.startsWith("[")) {
+    const end = name.indexOf("]");
+    if (end === -1) return false;
+    name = name.slice(1, end);
+  } else if (name.indexOf(":") !== -1 && name.indexOf(":") === name.lastIndexOf(":")) {
+    name = name.slice(0, name.indexOf(":"));
+  }
+  if (name.startsWith("::ffff:")) name = name.slice(7);
+  return LOOPBACK_HOSTS.has(name);
+}
+
+// Any of these from a loopback peer means a proxy or tunnel relayed someone else.
+const FORWARDING_HEADERS = [
+  "x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host", "x-forwarded-proto", "true-client-ip",
+  "cf-connecting-ip", "cf-ray", "tailscale-funnel-request",
+];
+
+// TRUST_PROXY has two forms:
+//   - "true": a forwarder on this machine adds no forwarding header (socat,
+//     ssh -R, a TCP tunnel). No loopback peer is local, and since its clients
+//     write every header, none of them picks a login bucket (all share "unknown").
+//   - a comma list of IPs and CIDRs (192.168.1.10,10.0.0.0/8): reverse proxies on
+//     other hosts or containers. Their forwarding headers are read as a loopback
+//     proxy's are, so each client behind them gets its own bucket.
+function isHeaderlessForwarderMode() {
+  return String(process.env.TRUST_PROXY || "").trim().toLowerCase() === "true";
+}
+
+let trustedProxyCache = { raw: null, list: null };
+function trustedProxyList() {
+  const raw = String(process.env.TRUST_PROXY || "").trim();
+  if (trustedProxyCache.raw === raw) return trustedProxyCache.list;
+  let list = null;
+  if (raw && !["true", "false"].includes(raw.toLowerCase())) {
+    list = new net.BlockList();
+    for (const entry of raw.split(",").map((part) => part.trim()).filter(Boolean)) {
+      const [address, bits] = entry.split("/");
+      const family = net.isIP(address);
+      if (!family) continue;
+      const type = family === 6 ? "ipv6" : "ipv4";
+      try {
+        if (bits === undefined) list.addAddress(address, type);
+        else list.addSubnet(address, Number(bits), type);
+      } catch {
+        // A malformed prefix length trusts nothing.
+      }
+    }
+  }
+  trustedProxyCache = { raw, list };
+  return list;
+}
+
+function isTrustedProxyPeer(socketIp) {
+  const list = trustedProxyList();
+  if (!list || !socketIp) return false;
+  const address = String(socketIp).toLowerCase().startsWith("::ffff:") ? String(socketIp).slice(7) : String(socketIp);
+  const family = net.isIP(address);
+  return !!family && list.check(address, family === 6 ? "ipv6" : "ipv4");
+}
+
+/**
+ * A loopback peer is a client on this machine only when nothing says it relays
+ * someone else: no forwarding header, and TRUST_PROXY not "true". Host never
+ * proves a request local, since the client chooses it; a non-loopback Host (a
+ * Host-preserving proxy, a rebound DNS name) only proves it remote. A forwarder
+ * that adds no forwarding header (socat, ssh -R, a TCP tunnel, nginx with neither
+ * X-Forwarded-For nor X-Real-IP set, which sends its own loopback Host by
+ * default) can't be told apart from a local client: it needs TRUST_PROXY=true.
+ */
+function isOnThisMachine(headers, socketIp) {
+  if (!isLoopbackHost(socketIp)) return false;
+  if (isHeaderlessForwarderMode()) return false;
+  if (FORWARDING_HEADERS.some((name) => headers[name])) return false;
+  if (headers.host && !isLoopbackHost(headers.host)) return false;
+  return true;
+}
+
+// One address from a header, without brackets or port; "" unless it is an IP.
+function addressOf(value) {
+  let text = String(value || "").trim();
+  if (text.startsWith("[")) {
+    const end = text.indexOf("]");
+    text = end === -1 ? "" : text.slice(1, end);
+  } else if (text.indexOf(":") !== -1 && text.indexOf(":") === text.lastIndexOf(":")) {
+    text = text.slice(0, text.indexOf(":"));
+  }
+  return net.isIP(text) ? text : "";
+}
+
+// Addresses that are, or key in the limiter as, this machine, however they are
+// spelled (::ffff:7f00:1, 0:0:0:0:0:0:0:1): 127.0.0.0/8 and 0.0.0.0/8, also
+// IPv4-mapped (BlockList matches a mapped address against IPv4 rules), and ::/64
+// outside the mapped range, the /64 the limiter keys ::1 on.
+const OWN_HOST_V4 = new net.BlockList();
+OWN_HOST_V4.addSubnet("127.0.0.0", 8, "ipv4");
+OWN_HOST_V4.addSubnet("0.0.0.0", 8, "ipv4");
+const MAPPED_V6 = new net.BlockList();
+MAPPED_V6.addSubnet("::ffff:0:0", 96, "ipv6");
+const OWN_HOST_V6 = new net.BlockList();
+OWN_HOST_V6.addSubnet("::", 64, "ipv6");
+
+function isOwnHostAddress(address) {
+  const family = net.isIP(address);
+  if (family === 4) return OWN_HOST_V4.check(address, "ipv4");
+  if (family !== 6) return false;
+  if (MAPPED_V6.check(address, "ipv6")) return OWN_HOST_V4.check(address, "ipv6");
+  return OWN_HOST_V6.check(address, "ipv6");
+}
+
+// An address from a header the limiter may key on: an IP that isn't this
+// machine, which would put a remote client in the bucket of its own logins.
+function usableAddress(value) {
+  const address = addressOf(value);
+  return address && !isLoopbackHost(address) && !isOwnHostAddress(address) ? address : "";
+}
+
+/**
+ * The addresses to key a login on, the first one being the one logged. A direct
+ * peer is its socket. Behind a proxy (on this machine, or one TRUST_PROXY lists)
+ * the candidates are the rightmost X-Forwarded-For entry that is a usable address
+ * (the hop an appending proxy such as Caddy, Traefik, cloudflared or Tailscale
+ * added; everything left of it is the client's) and the X-Real-IP (what nginx
+ * with `X-Real-IP $remote_addr` sets). Whichever one the proxy wrote is fixed,
+ * the other is the client's to rotate, and this file can't tell which is which,
+ * so the limiter counts a failure against both and refuses while either is
+ * locked. CF-Connecting-IP counts only when neither is there. With nothing
+ * usable, or behind a header-less forwarder (TRUST_PROXY=true), the key is the
+ * shared "unknown".
+ */
+function clientKeysFor(headers, socketIp) {
+  const loopback = isLoopbackHost(socketIp);
+  if (!loopback && !isTrustedProxyPeer(socketIp)) return [socketIp || "unknown"];
+  if (isOnThisMachine(headers, socketIp)) return [socketIp];
+  if (loopback && isHeaderlessForwarderMode()) return ["unknown"];
+  let fromXff = "";
+  const hops = String(headers["x-forwarded-for"] || "").split(",");
+  for (let i = hops.length - 1; i >= 0 && !fromXff; i--) fromXff = usableAddress(hops[i]);
+  const fromRealIp = usableAddress(String(headers["x-real-ip"] || "").split(",").pop());
+  const keys = [...new Set([fromXff, fromRealIp].filter(Boolean))];
+  if (!keys.length) {
+    const fromCf = usableAddress(headers["cf-connecting-ip"]);
+    if (fromCf) keys.push(fromCf);
+  }
+  return keys.length ? keys : ["unknown"];
+}
+
+function clientIpFor(headers, socketIp) {
+  return clientKeysFor(headers, socketIp)[0];
+}
+
+// A loopback peer whose Host is a Cloudflare quick tunnel or a Tailscale name:
+// traffic that crossed a tunnel this install opens. The dashboard guard also
+// matches the stored tunnel URLs. A domain behind a Cloudflare-proxied
+// reverse proxy is not tunnel traffic.
+const TUNNEL_HOST_SUFFIXES = [".trycloudflare.com", ".ts.net"];
+function isTunnelTraffic(headers, socketIp) {
+  if (!isLoopbackHost(socketIp) || !headers.host) return false;
+  let name = String(headers.host).trim().toLowerCase();
+  if (!name.startsWith("[") && name.indexOf(":") !== -1) name = name.slice(0, name.indexOf(":"));
+  name = name.replace(/\.$/, "");
+  return TUNNEL_HOST_SUFFIXES.some((suffix) => name.endsWith(suffix));
+}
+
+/**
+ * The headers a bridged Codex turn is POSTed to loopback with. The POST always
+ * comes from 127.0.0.1, so the HTTP wrapper below would read it as local; the
+ * forwarding header decides that instead, by the same rule the wrapper uses
+ * for the handshake. A client on this machine (loopback socket, no forwarding
+ * headers) stays local, so a keyless local install keeps working. Anything
+ * else stays remote: a direct remote peer, or a local reverse proxy or tunnel
+ * that forwarded the handshake. The value is the socket address, never the
+ * handshake's own forwarding header, which a remote client can partly set.
+ */
+function bridgeForwardHeaders(handshakeHeaders, socketIp, payloadLength) {
+  const forwarded = { "content-type": "application/json", "content-length": payloadLength };
   // Carry through auth and Codex's own request metadata, but drop:
   //   - hop-by-hop / websocket-specific headers, meaningless on a POST;
   //   - forwarding headers — the bridged request originates from 127.0.0.1, so
@@ -176,13 +373,74 @@ function bridgeCodexTurn(request, port, headers, peerIp, send, done) {
   //     remote client's own x-forwarded-for, letting it pick the IP used for
   //     rate limiting. The real peer is attached below instead;
   //   - cookie, so a browser-initiated handshake cannot ride a session cookie
-  //     into a route that accepts one.
-  for (const [name, value] of Object.entries(headers)) {
+  //     into a route that accepts one;
+  //   - accept / accept-encoding, replaced below. A proxy in front (Cloudflare
+  //     among them) adds `accept-encoding: gzip` to the upgrade request;
+  //     forwarded, it makes Next gzip the event stream, which the line parser
+  //     below cannot read, so the client gets no events at all. The bridge
+  //     reads plain SSE, so it asks for exactly that.
+  for (const [name, value] of Object.entries(handshakeHeaders)) {
     if (/^(host|connection|upgrade|sec-websocket-|content-length|content-type)/i.test(name)) continue;
     if (/^(x-forwarded-for|x-real-ip|x-9r-|cookie)/i.test(name)) continue;
     forwarded[name] = value;
   }
-  if (peerIp) forwarded["x-forwarded-for"] = peerIp;
+  forwarded.accept = "text/event-stream";
+  forwarded["accept-encoding"] = "identity";
+  if (!isOnThisMachine(handshakeHeaders, socketIp)) forwarded["x-forwarded-for"] = socketIp || "unknown";
+  return forwarded;
+}
+
+/**
+ * The WebSocket error frame for a rejected turn. Codex reads `error` as an
+ * object; the gateway's own refusals (a missing key, a management key) carry
+ * it as a string, which is wrapped. `status` is what makes Codex treat the
+ * frame as the HTTP error it stands for (show a 400, retry a 5xx); an error
+ * frame without one is skipped as an unknown event, so the client only sees
+ * the socket close and retries a turn that will fail the same way. A plain-text
+ * body (the final "All your accounts have hit their limits…" refusal) is the
+ * message itself.
+ */
+function bridgeErrorFrame(raw, statusCode) {
+  let error;
+  try {
+    error = JSON.parse(raw).error;
+  } catch {
+    error = null;
+  }
+  const type = statusCode < 500 ? "invalid_request_error" : "server_error";
+  if (typeof error === "string") error = { message: error, type: "invalid_request_error" };
+  if (!error || typeof error !== "object") {
+    // Cut on code points: a split surrogate pair is invalid JSON text to Codex,
+    // which would then drop the whole frame. Cut by length first, so a big body
+    // is never spread into an array (2000 code points fit in 4000 UTF-16 units).
+    const text = typeof raw === "string" ? Array.from(raw.trim().slice(0, MAX_ERROR_TEXT * 2)).slice(0, MAX_ERROR_TEXT).join("") : "";
+    error = text ? { message: text, type } : { message: `Request failed with status ${statusCode}`, type: "server_error" };
+  }
+  return JSON.stringify({ type: "error", status: statusCode, error });
+}
+
+// The bridge's own failures, in the same frame shape. `status` is required for
+// Codex to act on them; 502 for a failed loopback request (Codex retries it),
+// 409 for a second turn while one is still running on the socket.
+function bridgeLocalErrorFrame(status, message, type, code) {
+  const error = { message, type };
+  if (code) error.code = code;
+  return JSON.stringify({ type: "error", status, error });
+}
+
+// Run one `response.create` through this process's own HTTP endpoint and relay
+// each SSE event back as a text frame.
+function bridgeCodexTurn(request, port, headers, peerIp, send, done, { errorFrame = bridgeErrorFrame } = {}) {
+  const { type, ...body } = request;
+  void type;
+  body.stream = true; // the WS transport is inherently streaming
+
+  const payload = Buffer.from(JSON.stringify(body), "utf8");
+  const forwarded = bridgeForwardHeaders(headers, peerIp, payload.length);
+  // Marks the POST as this process's own, so a shutdown drain that began a
+  // moment ago still admits it (see the wrapper below). The wrapper replaces
+  // the header, as it does on every request.
+  forwarded["x-9r-peer-token"] = PEER_TOKEN;
 
   const req = http.request(
     { host: "127.0.0.1", port, path: CODEX_WS_PATH, method: "POST", headers: forwarded },
@@ -194,19 +452,11 @@ function bridgeCodexTurn(request, port, headers, peerIp, send, done) {
       // JSON error body, not an event stream. Without this the SSE parser finds
       // no `data:` lines and the client is left waiting on a silent socket.
       if (res.statusCode < 200 || res.statusCode >= 300) {
+        // Read the rest so the reply ends, but keep only the head of it.
         let raw = "";
-        res.on("data", (chunk) => { raw += chunk; });
+        res.on("data", (chunk) => { if (raw.length < MAX_ERROR_BODY) raw += chunk; });
         res.on("end", () => {
-          let error;
-          try {
-            error = JSON.parse(raw).error;
-          } catch {
-            error = null;
-          }
-          send(JSON.stringify({
-            type: "error",
-            error: error || { message: `Request failed with status ${res.statusCode}`, type: "server_error" },
-          }));
+          send(errorFrame(raw, res.statusCode));
           done(null, res.statusCode);
         });
         res.on("error", (error) => done(error));
@@ -282,7 +532,15 @@ function handleCodexUpgrade(req, socket, head, port) {
   // bridge's completion callback treats the destroy below as an abandoned turn
   // rather than one that failed on its own.
   let inflight = null;
+  // Holds a graceful shutdown open from the turn's start until the bridge has
+  // relayed its last event (the loopback POST alone ends a moment earlier).
+  let releaseTurn = null;
+  const endTurn = () => {
+    if (releaseTurn) releaseTurn();
+    releaseTurn = null;
+  };
   const abortInflight = () => {
+    endTurn();
     if (!inflight) return;
     inflight.destroy();
     inflight = null;
@@ -328,10 +586,7 @@ function handleCodexUpgrade(req, socket, head, port) {
       // completes. Honouring an overlapping one would drop the first request's
       // handle, leaving a turn nothing can abandon.
       if (inflight) {
-        send(JSON.stringify({
-          type: "error",
-          error: { message: "A turn is already in progress on this connection", type: "invalid_request_error", code: "turn_in_progress" },
-        }));
+        send(bridgeLocalErrorFrame(409, "A turn is already in progress on this connection", "invalid_request_error", "turn_in_progress"));
         return;
       }
 
@@ -355,19 +610,31 @@ function handleCodexUpgrade(req, socket, head, port) {
         );
       }
 
+      // The server is shutting down: start no new upstream work. The turn
+      // fails; Codex's retry succeeds only once a server is accepting again.
+      if (drain.draining) {
+        send(bridgeLocalErrorFrame(503, "Server is restarting; retry shortly.", "server_error", "server_draining"));
+        return close(1012, "server restarting");
+      }
+
+      releaseTurn = drain.hold();
       inflight = bridgeCodexTurn(request, port, req.headers, peerIp, send, (error, rejectedStatus) => {
         inflight = null;
-        // The client is already gone — its socket handler abandoned this turn.
-        if (closed) return;
-        if (error) {
-          send(JSON.stringify({ type: "error", error: { message: error.message, type: "server_error" } }));
-          return close(1011, "bridge error");
+        try {
+          // The client is already gone — its socket handler abandoned this turn.
+          if (closed) return;
+          if (error) {
+            send(bridgeLocalErrorFrame(502, error.message, "server_error"));
+            return close(1011, "bridge error");
+          }
+          // A rejected turn already sent its error frame; close so the client
+          // stops waiting instead of holding a socket that will never stream.
+          if (rejectedStatus) return close(1011, `upstream ${rejectedStatus}`);
+          // Otherwise leave the socket open: Codex opens one connection per turn
+          // and closes it itself, and closing early races its own shutdown.
+        } finally {
+          endTurn();
         }
-        // A rejected turn already sent its error frame; close so the client
-        // stops waiting instead of holding a socket that will never stream.
-        if (rejectedStatus) return close(1011, `upstream ${rejectedStatus}`);
-        // Otherwise leave the socket open: Codex opens one connection per turn
-        // and closes it itself, and closing early races its own shutdown.
       });
     },
     (code) => close(code === 1005 ? 1000 : code, ""),
@@ -403,6 +670,14 @@ function handleCodexUpgrade(req, socket, head, port) {
 const PEER_TOKEN = crypto.randomBytes(24).toString("hex");
 process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
 
+// The CLI launcher's readiness nonce (src/lib/launchProof.js) stays inside
+// this process: it moves to a process-global and leaves the env, so the
+// children that inherit the env (cloudflared, tailscale, the updater) never
+// see it.
+const LAUNCH_NONCE_KEY = Symbol.for("10router.launchNonce");
+if (globalThis[LAUNCH_NONCE_KEY] === undefined) globalThis[LAUNCH_NONCE_KEY] = process.env.TENROUTER_LAUNCH_NONCE || null;
+delete process.env.TENROUTER_LAUNCH_NONCE;
+
 let backgroundRefreshStarted = false;
 
 function startBackgroundTokenRefreshFromCustomServer() {
@@ -436,33 +711,59 @@ function startBackgroundTokenRefreshFromCustomServer() {
     });
 }
 
-// Wrap Next standalone HTTP server: derive client IP from the TCP socket
-// (unspoofable) and strip client-supplied forwarding headers so downstream
-// rate-limiting keys on the real peer address instead of attacker-controlled XFF.
+// Wrap Next standalone HTTP server: decide who each request comes from (above)
+// and stamp the verdict as x-9r-real-ip / x-9r-alt-ips / x-9r-via-proxy / x-9r-proxy-hop / x-9r-via-tunnel
+// (plus the raw TCP peer as x-9r-socket-ip / x-9r-socket-port), with
+// the peer token proving the stamp. Client-sent x-9r-* headers are replaced, and
+// X-Forwarded-For is removed so nothing downstream keys on it. The other
+// forwarding headers pass through unchanged.
 http.createServer = (...args) => {
   const handler = args.find((a) => typeof a === "function");
   const rest = args.filter((a) => typeof a !== "function");
   if (!handler) return origCreate(...args);
   const wrapped = (req, res) => {
     const socketIp = req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : "";
-    const xff = req.headers["x-forwarded-for"];
-    const xRealIp = req.headers["x-real-ip"];
-    const viaProxy = !!(xff || xRealIp);
-    const isLoopbackProxy = socketIp === "127.0.0.1" || socketIp === "::1" || socketIp === "::ffff:127.0.0.1";
-    // Trust forwarding headers only when the TCP peer is a local reverse proxy.
-    // Direct/public sockets remain keyed by the unspoofable peer address.
-    const proxyIp = xRealIp || (xff ? String(xff).split(",")[0].trim() : "");
-    const ip = isLoopbackProxy && proxyIp ? proxyIp : socketIp;
+    // A Codex WebSocket turn's loopback POST from this process, sent just
+    // before a shutdown signal, is still served and counted. One whose TCP
+    // connect hadn't been accepted when server.close() ran is reset instead,
+    // and the turn fails with a 502 frame.
+    const ownBridgeTurn = isLoopbackHost(socketIp) && req.headers["x-9r-peer-token"] === PEER_TOKEN;
+    if (!drain.track(req, res, { admit: ownBridgeTurn })) return;
+    // x-9r-real-ip is the address logged and keyed on, x-9r-alt-ips the other
+    // login key candidates (see clientKeysFor); x-9r-via-proxy marks every
+    // request not from a client on this machine; x-9r-via-tunnel, one whose Host
+    // is a Cloudflare quick tunnel or Tailscale name; x-9r-proxy-hop, one not
+    // local whose peer is a proxy whose headers are read (loopback, or listed in
+    // TRUST_PROXY), so its Host may be one the proxy wrote, not the browser.
+    const local = isOnThisMachine(req.headers, socketIp);
+    const [ip, ...altIps] = clientKeysFor(req.headers, socketIp);
+    const viaTunnel = isTunnelTraffic(req.headers, socketIp);
+    const proxyHop = !local && (isLoopbackHost(socketIp) || isTrustedProxyPeer(socketIp));
+    delete req.headers["x-9r-proxy-hop"];
     delete req.headers["x-9r-real-ip"];
+    delete req.headers["x-9r-alt-ips"];
     delete req.headers["x-forwarded-for"];
     delete req.headers["x-9r-via-proxy"];
+    delete req.headers["x-9r-via-tunnel"];
     delete req.headers["x-9r-peer-token"];
+    delete req.headers["x-9r-real-port"];
+    delete req.headers["x-9r-socket-ip"];
+    delete req.headers["x-9r-socket-port"];
     req.headers["x-9r-real-ip"] = ip;
+    if (altIps.length) req.headers["x-9r-alt-ips"] = altIps.join(",");
+    // The TCP peer itself, whatever TRUST_PROXY says, for the CLI launcher's
+    // readiness proof only (src/lib/launchProof.js): a relay or proxy has its
+    // own connection, so it gets a proof for that one. Nothing keys or trusts on it.
+    req.headers["x-9r-socket-ip"] = socketIp;
+    req.headers["x-9r-socket-port"] = String(req.socket?.remotePort ?? "");
     req.headers["x-9r-peer-token"] = PEER_TOKEN;
-    if (viaProxy) req.headers["x-9r-via-proxy"] = "1";
+    if (!local) req.headers["x-9r-via-proxy"] = "1";
+    if (proxyHop) req.headers["x-9r-proxy-hop"] = "1";
+    if (viaTunnel) req.headers["x-9r-via-tunnel"] = "1";
     return handler(req, res);
   };
   const server = origCreate(...rest, wrapped);
+  drain.addServer(server);
   server.once("listening", () => {
     startBackgroundTokenRefreshFromCustomServer();
   });
@@ -470,6 +771,10 @@ http.createServer = (...args) => {
   // JBR 25 sends h2c upgrades that the HTTP/1.1 server would otherwise close.
   server.emit = function (event, ...eventArgs) {
     const [req, socket, head] = eventArgs;
+    if (event === "upgrade" && drain.draining) {
+      drain.rejectUpgrade(socket);
+      return true;
+    }
     if (event === "upgrade" && String(req.headers.upgrade || "").toLowerCase() === "websocket") {
       const requestPath = String(req.url || "").split("?")[0].replace(/\/+$/, "");
       // Codex appends /v1 to the base URL in some configurations; both spellings
@@ -527,7 +832,12 @@ http.createServer = (...args) => {
   return server;
 };
 
+module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn, MAX_ERROR_BODY, drain, isLoopbackHost, isOnThisMachine, clientIpFor, clientKeysFor, isTrustedProxyPeer, isTunnelTraffic } };
+
 if (require.main === module) {
+  // Before the app loads: its own signal listeners must not see SIGTERM first.
+  installShutdownDrain(process, drain);
+  installExitRecorder(process, { inflight: () => drain.inflight });
   const standalone = path.join(__dirname, "server.js");
   if (fs.existsSync(standalone)) {
     require(standalone);

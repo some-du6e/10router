@@ -24,6 +24,9 @@ import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
 import { BaseExecutor } from "./base.js";
+import { toolContentText } from "../translator/concerns/toolContent.js";
+import { OPENAI_BLOCK } from "../translator/schema/index.js";
+import { MEDIA_OMITTED_TEXT } from "../config/mediaConfig.js";
 
 // ─── Binary discovery ────────────────────────────────────────────────────────
 
@@ -172,7 +175,7 @@ function extractClientToolResults(messages) {
       const mcpName = idToMcpName.get(m.tool_call_id);
       if (mcpName) {
         results[mcpName] =
-          typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "");
+          toolContentText(m.content);
       }
     }
     // Claude-style tool_result blocks in user content
@@ -183,7 +186,7 @@ function extractClientToolResults(messages) {
           if (mcpName) {
             const c = b.content;
             results[mcpName] =
-              typeof c === "string" ? c : JSON.stringify(c ?? "");
+              toolContentText(c);
           }
         }
       }
@@ -263,11 +266,14 @@ function buildPromptText(messages) {
       for (const p of m.content) {
         if (!p || typeof p !== "object") continue;
         if (p.type === "text") text += String(p.text || "");
+        // The prompt is text only: an image (a tool's screenshot moved to a
+        // user turn, say) is named, never inlined.
+        else if (p.type === OPENAI_BLOCK.IMAGE_URL || p.type === OPENAI_BLOCK.IMAGE) text += MEDIA_OMITTED_TEXT.IMAGE;
         else if (p.type === "tool_use") {
           text += `\n[Tool call ${p.name} id=${p.id}]\n${JSON.stringify(p.input ?? {})}\n`;
         } else if (p.type === "tool_result") {
           const c =
-            typeof p.content === "string" ? p.content : JSON.stringify(p.content ?? "");
+            toolContentText(p.content);
           text += `\n[Tool result id=${p.tool_use_id}]\n${c}\n`;
         }
       }
@@ -284,7 +290,7 @@ function buildPromptText(messages) {
     }
     // OpenAI role=tool messages
     if (role === "tool") {
-      const c = typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "");
+      const c = toolContentText(m.content);
       text = `[Tool result id=${m.tool_call_id || ""}]\n${c}`;
     }
     if (!text.trim()) continue;
@@ -395,7 +401,9 @@ export class DevinCliExecutor extends BaseExecutor {
     const sseStream = new ReadableStream({
       start(controller) {
         const enc = new TextEncoder();
-        const emit = (data) => controller.enqueue(enc.encode(data));
+        // Once the client is gone the stream is errored: later output is dropped.
+        let clientGone = false;
+        const emit = (data) => { if (!clientGone) controller.enqueue(enc.encode(data)); };
 
         // Inherit the parent environment so devin resolves stored CLI credentials
         // (~/.local/share/devin/credentials.toml from `devin auth login`). Do NOT
@@ -434,6 +442,7 @@ export class DevinCliExecutor extends BaseExecutor {
 
         child.on("error", (err) => {
           spawnError = err;
+          if (clientGone) return;
           const msg =
             err.message.includes("ENOENT") || err.message.includes("not found")
               ? `Devin CLI not found: ${devinBin}. Install via https://cli.devin.ai or set CLI_DEVIN_BIN env var.`
@@ -444,12 +453,6 @@ export class DevinCliExecutor extends BaseExecutor {
           emit("data: [DONE]\n\n");
           controller.close();
         });
-
-        if (signal) {
-          signal.addEventListener("abort", () => {
-            if (!child.killed) child.kill("SIGTERM");
-          });
-        }
 
         // ── JSON-RPC state machine ──────────────────────────────────────────
         let idCounter = 1;
@@ -462,6 +465,24 @@ export class DevinCliExecutor extends BaseExecutor {
         let roleEmitted = false;
         let totalText = "";
         let finished = false;
+
+        // A client hang-up stops devin and reaches the reader as an abort, not
+        // as a finished (or failed) answer: the exit it causes must not end the
+        // stream with [DONE] or an error frame, or the hang-up goes uncharged.
+        const onAbort = () => {
+          if (!child.killed) child.kill("SIGTERM");
+          if (finished) return;
+          finished = true;
+          clientGone = true;
+          const reason = signal?.reason;
+          const error = reason?.name === "AbortError" ? reason : Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+          try { controller.error(error); } catch { /* already closed */ }
+          cleanupMcp();
+        };
+        if (signal) {
+          if (signal.aborted) onAbort();
+          else signal.addEventListener("abort", onAbort, { once: true });
+        }
 
         const sendRpc = (method, params) => {
           if (stdinClosed || child.stdin.destroyed) return;

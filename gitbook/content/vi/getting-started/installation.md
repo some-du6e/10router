@@ -196,8 +196,7 @@ curl http://localhost:20128/v1/chat/completions \
 Tạo file `.env` hoặc set biến môi trường:
 
 ```bash
-# Security (REQUIRED in production)
-export JWT_SECRET="your-secure-secret-change-this"
+# Security: optional headless bootstrap password
 export INITIAL_PASSWORD="your-password"
 
 # Storage
@@ -210,6 +209,8 @@ export NODE_ENV="production"
 # Logging
 export ENABLE_REQUEST_LOGS="false"
 ```
+
+> `JWT_SECRET` là tùy chọn. Để trống và 10router sẽ tạo một lần vào `$DATA_DIR/jwt-secret`, nên phiên đăng nhập vẫn giữ sau khi khởi động lại. Chỉ khi chạy nhiều instance sau cùng một URL: tạo một giá trị một lần (`openssl rand -hex 32`), lưu lại và đặt cùng giá trị đó cho mọi instance. Giá trị dưới 32 ký tự hoặc placeholder trong tài liệu sẽ bị bỏ qua.
 
 ### Data Directory
 
@@ -393,7 +394,6 @@ npm install -g 10router
 npm install -g 10router
 
 # Configure
-export JWT_SECRET="your-secure-secret"
 export INITIAL_PASSWORD="your-password"
 export NODE_ENV="production"
 
@@ -404,6 +404,8 @@ pm2 save
 pm2 startup
 ```
 
+> `JWT_SECRET` được cố ý để trống (xem ghi chú ở trên): secret được tạo trong `$DATA_DIR/jwt-secret` được giữ lại sau khi khởi động lại.
+
 **Use case:** Team access, remote coding
 
 ### Docker
@@ -413,12 +415,13 @@ docker pull 10router/10router:latest
 
 docker run -d \
   -p 20128:20128 \
-  -e JWT_SECRET="your-secure-secret" \
   -e INITIAL_PASSWORD="your-password" \
   -v 10router-data:/root/.9router \
   --name 10router \
   10router/10router:latest
 ```
+
+> `JWT_SECRET` được cố ý để trống (xem ghi chú ở trên): secret được tạo trong `$DATA_DIR/jwt-secret` được giữ lại sau khi khởi động lại.
 
 **Use case:** Containerized deployment, Kubernetes
 
@@ -435,6 +438,8 @@ server {
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
         proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         
         # SSE support for streaming
         proxy_buffering off;

@@ -20,8 +20,7 @@ const EXCLUDE_PATTERNS = [
   "sharp",          // Sharp core lib (not needed with unoptimized images)
   "detect-libc",    // Sharp dependency
   ".env",           // Environment files
-  ".env.local",
-  ".env.*.local",
+  ".env.*",
   "*.log",          // Log files
   "tmp",            // Temp files
   ".DS_Store",      // macOS files
@@ -217,11 +216,17 @@ function buildCliPackage() {
   if (fs.existsSync(customServerSrc)) {
     fs.copyFileSync(customServerSrc, path.join(cliAppDir, "custom-server.js"));
     console.log("✅ Copied custom-server.js\n");
+    // custom-server.js requires it at boot.
+    fs.copyFileSync(path.join(appDir, "server-drain.js"), path.join(cliAppDir, "server-drain.js"));
   } else {
     console.error("❌ custom-server.js not found — without it no request can be proven local,");
     console.error("   so the packaged CLI would demand an API key for its own dashboard and /v1.");
     process.exit(1);
   }
+
+  // The built app carries vendored Apache-2.0 material (open-sse/config/codex/).
+  fs.copyFileSync(path.join(appDir, "THIRD_PARTY_NOTICES.md"), path.join(cliAppDir, "THIRD_PARTY_NOTICES.md"));
+  console.log("✅ Copied THIRD_PARTY_NOTICES.md\n");
 
   // Step 3b: Ensure sql.js (pure JS fallback) bundled in app/cli/app/node_modules.
   // Strip better-sqlite3 (native) — it lives in ~/.9router/runtime to avoid
@@ -334,6 +339,7 @@ module.exports = {
   assertRequiredApiArtifacts,
   copyStandaloneBuild,
   mergeServerArtifacts,
+  shouldExclude,
 };
 
 if (require.main === module) {

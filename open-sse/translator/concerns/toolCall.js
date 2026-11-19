@@ -1,4 +1,5 @@
 // Tool call helper functions for translator
+import { TOOL_TYPE } from "../schema/index.js";
 
 // Anthropic tool_use.id must match: ^[a-zA-Z0-9_-]+$
 const TOOL_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
@@ -38,9 +39,10 @@ export function ensureToolCallIds(body) {
         if (!tc.type) {
           tc.type = "function";
         }
-        // Ensure arguments is JSON string, not object
+        // Ensure arguments is JSON string, not object. A new function object:
+        // the attempt's copy of a tool call shares the client's.
         if (tc.function?.arguments && typeof tc.function.arguments !== "string") {
-          tc.function.arguments = JSON.stringify(tc.function.arguments);
+          tc.function = { ...tc.function, arguments: JSON.stringify(tc.function.arguments) };
         }
       }
     }
@@ -125,7 +127,12 @@ export function fixMissingToolResponses(body) {
 
   for (let i = 0; i < body.messages.length; i++) {
     const msg = body.messages[i];
-    const nextMsg = body.messages[i + 1];
+    // A mid-conversation system message can sit between tool_use and its
+    // result; claude-to-openai moves it after the results (other targets hoist
+    // system), so look past it.
+    let j = i + 1;
+    while (body.messages[j]?.role === "system") j++;
+    const nextMsg = body.messages[j];
 
     newMessages.push(msg);
 
@@ -134,7 +141,8 @@ export function fixMissingToolResponses(body) {
     if (toolCallIds.length === 0) continue;
 
     // Check if next message has tool_result
-    if (nextMsg && !hasToolResults(nextMsg, toolCallIds)) {
+    // Trailing system messages with nothing after them still need stubs.
+    if ((nextMsg || j > i + 1) && !(nextMsg && hasToolResults(nextMsg, toolCallIds))) {
       // Insert tool responses for each tool_call
       for (const id of toolCallIds) {
         // OpenAI format: role = "tool"
@@ -162,6 +170,18 @@ export function fixMissingToolResponses(body) {
 // overwrite the default. `{ type: "custom", ...tool }` would let `type: null` survive.
 export function defaultClaudeToolType(tools) {
   if (!Array.isArray(tools)) return tools;
-  return tools.map(tool => tool?.type ? tool : { ...tool, type: "custom" });
+  return tools.map(tool => tool?.type ? tool : { ...tool, type: TOOL_TYPE.CUSTOM });
+}
+
+// A custom (freeform) tool is declared upstream as a function taking one string
+// `input`; return the raw text the client expects from the call's arguments.
+export function customToolInput(args) {
+  if (args && typeof args === "object" && typeof args.input === "string") return args.input;
+  const text = typeof args === "string" ? args : JSON.stringify(args ?? {});
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && typeof parsed.input === "string") return parsed.input;
+  } catch { /* incomplete or raw freeform input */ }
+  return text;
 }
 

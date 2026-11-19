@@ -37,21 +37,24 @@ npm run build
 `.env` ファイルを作成するか、変数をエクスポート:
 
 ```bash
-export JWT_SECRET="your-secure-secret-change-this-to-random-string"
 export INITIAL_PASSWORD="your-secure-password"
 export DATA_DIR="/var/lib/10router"
 export NODE_ENV="production"
 ```
 
+> `JWT_SECRET` は任意です。未設定のままにすると、10router が `$DATA_DIR/jwt-secret` に一度だけ生成するため、再起動してもセッションは維持されます。1つのURLの背後で複数インスタンスを動かす場合のみ: 値を一度だけ生成し (`openssl rand -hex 32`)、保存して、すべてのインスタンスに同じ値を設定してください。32文字未満の値やドキュメント記載のプレースホルダーは無視されます。
+
 **環境変数:**
 
 | 変数 | デフォルト | 説明 |
 |----------|---------|-------------|
-| `JWT_SECRET` | 自動生成 | **本番環境では必ず変更!** JWTトークンの署名に使用 |
+| `JWT_SECRET` | 自動生成 (`$DATA_DIR/jwt-secret`) | 任意。ダッシュボードのセッションに署名します。1つのURLの背後にある複数インスタンスでセッションを共有する場合のみ設定 (32文字以上。短い値やドキュメント記載のプレースホルダーは無視されます) |
 | `INITIAL_PASSWORD` | 未設定 | ヘッドレス起動用のオプションパスワード(8文字以上)。未設定の場合、初回起動にはサーバーコンソールに出力されるワンタイムのセットアップトークンが必要 — デフォルトパスワードはありません |
 | `DATA_DIR` | `~/.9router` | データベースとデータの保存パス （ディレクトリ名は後方互換性のため以前のリリースから変更されていません） |
 | `NODE_ENV` | `development` | デプロイ時は `production` に設定 |
 | `ENABLE_REQUEST_LOGS` | `false` | デバッグリクエスト/レスポンスログを有効化 |
+| `TRUST_PROXY` | 未設定 | このマシン上の転送ツールが転送ヘッダー(`X-Forwarded-For`、`X-Real-IP` など)を一切付けない場合(socat、`ssh -R`、TCP トンネル)は `true` にしてください。クライアント自身の `Host` がそのまま届くため、`Host: localhost` を送ればローカル扱いになってしまいます。`true` にするとループバック接続をローカルとして扱わないため、サーバー上のツールにも API キーか CLI トークンが必要になります。別ホストやコンテナのリバースプロキシには IP/CIDR のカンマ区切りリスト(`192.168.1.10,10.0.0.0/8`)を指定すると、その転送ヘッダーを読みます。10router を Docker で動かし、ホスト上の Nginx の背後に置く場合、Nginx は Docker ブリッジのゲートウェイからコンテナに届くため、そのゲートウェイか compose ネットワーク(`172.17.0.1`、`172.18.0.0/16`)を指定してください。指定しないと、すべてのログインがゲートウェイをキーにし、Nginx のヘッダーは無視されます。指定すると、公開ポート経由の `http://localhost:20128` もゲートウェイから届いてプロキシ経由として扱われるため、ログインがオフのときダッシュボード API はそこで 401 を返します |
+| `ALLOWED_HOSTS` | 未設定 | 「Require login」がオフのとき、`localhost`、IP アドレス、トンネル URL、`BASE_URL` に加えてダッシュボード API が応答するホスト名(カンマ区切り)。プロキシ経由(ローカルでないループバックのピア、または `TRUST_PROXY` に載っているピア)のリクエストでは、ループバックの `Host` は数えません |
 
 ### ステップ5: データディレクトリを作成
 
@@ -154,11 +157,12 @@ docker run -d \
   --name 10router \
   -p 3000:3000 \
   -p 20128:20128 \
-  -e JWT_SECRET="your-secure-secret-change-this" \
   -e INITIAL_PASSWORD="your-secure-password" \
   -v 10router-data:/app/data \
   10router
 ```
+
+> `JWT_SECRET` は意図的に未設定です (上記の注を参照): `$DATA_DIR/jwt-secret` に生成されたシークレットは再起動後も維持されます。
 
 ### オプション2: Docker Compose
 
@@ -176,7 +180,6 @@ services:
       - "20128:20128"
     environment:
       - NODE_ENV=production
-      - JWT_SECRET=your-secure-secret-change-this
       - INITIAL_PASSWORD=your-secure-password
       - DATA_DIR=/app/data
     volumes:
@@ -186,6 +189,8 @@ services:
 volumes:
   10router-data:
 ```
+
+> `JWT_SECRET` は意図的に未設定です (上記の注を参照): `$DATA_DIR/jwt-secret` に生成されたシークレットは再起動後も維持されます。
 
 **Docker Composeで実行:**
 
@@ -311,16 +316,15 @@ sudo certbot renew --dry-run
 
 ## 🔒 セキュリティ考慮事項
 
-### 1. デフォルト認証情報を変更
+### 1. ダッシュボードのログインを保護
 
-**重要:** デプロイ前に `JWT_SECRET` と `INITIAL_PASSWORD` を変更:
+デプロイ前に強力な `INITIAL_PASSWORD` を設定するか、未設定のままにしてサーバーコンソールに出力されるワンタイムのセットアップトークンで初回セットアップを完了してください。デフォルトパスワードはありません。
+
+`JWT_SECRET` は任意です: 10router が `$DATA_DIR/jwt-secret` に生成して保持するため、データディレクトリは非公開にしてください。`JWT_SECRET` は、1つのURLの背後にある複数インスタンスでセッションを共有する場合にのみ、一度だけ生成して保存した32文字以上の値で設定します:
 
 ```bash
-# 安全なJWTシークレットを生成
-openssl rand -base64 32
-
-# この値をJWT_SECRETに使用
-export JWT_SECRET="generated-secret-here"
+# 一度だけ実行し、値を保存して、すべてのインスタンスに設定
+openssl rand -hex 32
 ```
 
 ### 2. ファイアウォール設定
@@ -343,19 +347,22 @@ sudo ufw enable
 
 ### 3. ダッシュボードアクセスを制限
 
-APIアクセスのみ必要な場合、ダッシュボードポートを制限:
+Nginx 経由の API アクセスだけが必要な場合は、アプリ自身のポートを外部から遮断:
 
 ```bash
-# ダッシュボードへのlocalhostアクセスのみ許可
+# 10router 本体へは localhost からのアクセスのみ許可
+sudo ufw deny 20128/tcp
 sudo ufw deny 3000/tcp
 ```
 
-SSHトンネル経由でダッシュボードにアクセス:
+アプリのポートへの SSH トンネルでダッシュボードにアクセス(このマシンからのアクセスとして扱われます):
 
 ```bash
-ssh -L 3000:localhost:3000 user@your-server.com
-# ブラウザで http://localhost:3000 を開く
+ssh -L 20128:localhost:20128 user@your-server.com
+# ブラウザで http://localhost:20128 を開く
 ```
+
+Nginx(またはサーバー上の任意のプロキシやトンネル)経由のリクエストはリモートとして扱われます。`/v1` には API キーが必要で、ローカル専用ルート(MCP サーバー、トンネル操作、パスワードリセット)とプライベート URL のエンドポイント(`localhost` の Ollama など)は 403 または "URL not allowed" を返します。これらには上の SSH トンネル(`ssh -L 20128:localhost:20128`)か、サーバー上の CLI を使ってください。ログインのロックアウトがクライアントごとに数えられるよう、Nginx 設定の `X-Real-IP` と `X-Forwarded-For` の行は残してください。ダッシュボード自身の API 呼び出しが受け付けられるよう、`Host $host` も残すか、`X-Forwarded-Host` を送ってください。前段のプロキシは `X-Forwarded-For` と `X-Real-IP` を上書きするか追記する必要があります。クライアント自身の値をそのまま通すプロキシ(たとえば `Host` と `X-Forwarded-Proto` だけを設定する Nginx ブロック)では、ログインの制限に使うキーをクライアントが自由に選べてしまいます。
 
 ### 4. 定期的な更新
 
@@ -461,7 +468,7 @@ SSEサポート用にNginx設定で `proxy_buffering off` が設定されてい�
 ```bash
 # データディレクトリ権限を修正
 sudo chown -R $USER:$USER /var/lib/10router
-chmod 755 /var/lib/10router
+chmod 700 /var/lib/10router
 ```
 
 ---

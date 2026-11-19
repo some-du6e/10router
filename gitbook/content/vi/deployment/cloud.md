@@ -37,21 +37,24 @@ npm run build
 Tạo file `.env` hoặc export biến:
 
 ```bash
-export JWT_SECRET="your-secure-secret-change-this-to-random-string"
 export INITIAL_PASSWORD="your-secure-password"
 export DATA_DIR="/var/lib/10router"
 export NODE_ENV="production"
 ```
 
+> `JWT_SECRET` là tùy chọn. Để trống và 10router sẽ tạo một lần vào `$DATA_DIR/jwt-secret`, nên phiên đăng nhập vẫn giữ sau khi khởi động lại. Chỉ khi chạy nhiều instance sau cùng một URL: tạo một giá trị một lần (`openssl rand -hex 32`), lưu lại và đặt cùng giá trị đó cho mọi instance. Giá trị dưới 32 ký tự hoặc placeholder trong tài liệu sẽ bị bỏ qua.
+
 **Biến môi trường:**
 
 | Biến | Mặc định | Mô tả |
 |----------|---------|-------------|
-| `JWT_SECRET` | Auto-generated | **PHẢI đổi trong production!** Dùng để ký JWT token |
+| `JWT_SECRET` | Auto-generated (`$DATA_DIR/jwt-secret`) | Tùy chọn. Dùng để ký phiên đăng nhập dashboard. Chỉ đặt khi cần chia sẻ phiên giữa các instance sau cùng một URL (từ 32 ký tự; giá trị ngắn hơn và placeholder trong tài liệu bị bỏ qua) |
 | `INITIAL_PASSWORD` | không đặt | Mật khẩu bootstrap headless tùy chọn (tối thiểu 8 ký tự). Nếu không đặt, lần chạy đầu cần setup token dùng một lần in ra console của server — không có mật khẩu mặc định |
 | `DATA_DIR` | `~/.9router` | Đường dẫn lưu database và data (tên thư mục giữ nguyên như bản phát hành trước để tương thích ngược) |
 | `NODE_ENV` | `development` | Đặt `production` cho deployment |
 | `ENABLE_REQUEST_LOGS` | `false` | Bật debug request/response logs |
+| `TRUST_PROXY` | chưa đặt | Đặt `true` khi một công cụ chuyển tiếp trên máy này không thêm header chuyển tiếp nào (`X-Forwarded-For`, `X-Real-IP`, …), như socat, `ssh -R`, tunnel TCP: `Host` của client đến nguyên vẹn, nên client có thể gửi `Host: localhost` và được coi là cục bộ. Khi bật, không kết nối loopback nào được coi là cục bộ, nên các công cụ trên chính server cũng cần API key hoặc CLI token. Hoặc một danh sách IP/CIDR (`192.168.1.10,10.0.0.0/8`) cho reverse proxy trên host hoặc container khác, khi đó header chuyển tiếp của nó được đọc. Khi 10router chạy trong Docker phía sau Nginx trên host, Nginx đến container từ gateway của Docker bridge, nên hãy liệt kê gateway đó hoặc mạng compose (`172.17.0.1`, `172.18.0.0/16`); nếu không, mọi lần đăng nhập đều dùng gateway làm khóa và header của Nginx bị bỏ qua. Khi đã liệt kê, `http://localhost:20128` qua cổng đã publish cũng đến từ gateway và được coi là đi qua proxy, nên khi tắt đăng nhập, API dashboard trả về 401 ở đó |
+| `ALLOWED_HOSTS` | chưa đặt | Khi tắt "Require login", danh sách tên host thêm (phân tách bằng dấu phẩy) mà API dashboard trả lời, ngoài `localhost`, địa chỉ IP, URL tunnel và `BASE_URL`. `Host` loopback không được tính khi request đi qua proxy (peer loopback không phải cục bộ, hoặc peer có trong `TRUST_PROXY`) |
 
 ### Bước 5: Tạo Data Directory
 
@@ -154,11 +157,12 @@ docker run -d \
   --name 10router \
   -p 3000:3000 \
   -p 20128:20128 \
-  -e JWT_SECRET="your-secure-secret-change-this" \
   -e INITIAL_PASSWORD="your-secure-password" \
   -v 10router-data:/app/data \
   10router
 ```
+
+> `JWT_SECRET` được cố ý để trống (xem ghi chú ở trên): secret được tạo trong `$DATA_DIR/jwt-secret` được giữ lại sau khi khởi động lại.
 
 ### Cách 2: Docker Compose
 
@@ -176,7 +180,6 @@ services:
       - "20128:20128"
     environment:
       - NODE_ENV=production
-      - JWT_SECRET=your-secure-secret-change-this
       - INITIAL_PASSWORD=your-secure-password
       - DATA_DIR=/app/data
     volumes:
@@ -186,6 +189,8 @@ services:
 volumes:
   10router-data:
 ```
+
+> `JWT_SECRET` được cố ý để trống (xem ghi chú ở trên): secret được tạo trong `$DATA_DIR/jwt-secret` được giữ lại sau khi khởi động lại.
 
 **Chạy với Docker Compose:**
 
@@ -311,16 +316,15 @@ sudo certbot renew --dry-run
 
 ## 🔒 Cân nhắc về Bảo mật
 
-### 1. Đổi credentials mặc định
+### 1. Bảo vệ đăng nhập dashboard
 
-**QUAN TRỌNG:** Đổi `JWT_SECRET` và `INITIAL_PASSWORD` trước khi deploy:
+Đặt `INITIAL_PASSWORD` mạnh trước khi deploy, hoặc để trống và hoàn tất thiết lập lần đầu bằng setup token dùng một lần được in ra console của server. Không có mật khẩu mặc định.
+
+`JWT_SECRET` là tùy chọn: 10router tạo một secret trong `$DATA_DIR/jwt-secret` và giữ lại, nên hãy giữ thư mục dữ liệu ở chế độ riêng tư. Chỉ đặt `JWT_SECRET` khi cần chia sẻ phiên đăng nhập giữa nhiều instance sau cùng một URL, dùng một giá trị từ 32 ký tự trở lên, tạo một lần và lưu lại:
 
 ```bash
-# Generate secure JWT secret
-openssl rand -base64 32
-
-# Use this value for JWT_SECRET
-export JWT_SECRET="generated-secret-here"
+# Chạy một lần, lưu giá trị và đặt cho mọi instance
+openssl rand -hex 32
 ```
 
 ### 2. Cấu hình Firewall
@@ -343,19 +347,22 @@ sudo ufw enable
 
 ### 3. Giới hạn truy cập Dashboard
 
-Nếu chỉ cần truy cập API, giới hạn port dashboard:
+Nếu chỉ cần truy cập API qua Nginx, chặn các cổng của chính app từ bên ngoài:
 
 ```bash
-# Only allow localhost access to dashboard
+# Chỉ cho phép truy cập 10router từ localhost
+sudo ufw deny 20128/tcp
 sudo ufw deny 3000/tcp
 ```
 
-Truy cập dashboard qua SSH tunnel:
+Truy cập dashboard qua SSH tunnel tới cổng của app (được coi là truy cập từ chính máy này):
 
 ```bash
-ssh -L 3000:localhost:3000 user@your-server.com
-# Then open http://localhost:3000 in your browser
+ssh -L 20128:localhost:20128 user@your-server.com
+# Rồi mở http://localhost:20128 trong trình duyệt
 ```
+
+Request đi qua Nginx (hoặc bất kỳ proxy hay tunnel nào trên server) được coi là từ xa: cần API key cho `/v1`, còn các route chỉ dành cho máy cục bộ (MCP server, điều khiển tunnel, Reset Password) và endpoint có URL nội bộ (như Ollama trên `localhost`) trả về 403 hoặc "URL not allowed". Với những việc đó, dùng SSH tunnel ở trên (`ssh -L 20128:localhost:20128`) hoặc CLI trên server. Giữ các dòng `X-Real-IP` và `X-Forwarded-For` trong cấu hình Nginx để khóa đăng nhập đếm riêng từng client, và giữ `Host $host` (hoặc gửi `X-Forwarded-Host`) để các lệnh gọi API của chính dashboard được chấp nhận. Mọi proxy phía trước phải ghi đè hoặc nối thêm `X-Forwarded-For` và `X-Real-IP`: proxy nào để nguyên giá trị do client gửi (ví dụ một khối Nginx chỉ đặt `Host` và `X-Forwarded-Proto`) sẽ cho mỗi client tự chọn khóa dùng để giới hạn đăng nhập của nó.
 
 ### 4. Cập nhật định kỳ
 
@@ -461,7 +468,7 @@ sudo nginx -t
 ```bash
 # Fix data directory permissions
 sudo chown -R $USER:$USER /var/lib/10router
-chmod 755 /var/lib/10router
+chmod 700 /var/lib/10router
 ```
 
 ---

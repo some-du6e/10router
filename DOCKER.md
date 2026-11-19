@@ -69,35 +69,6 @@ docker run -d \
   some-du6e/10router:latest
 ```
 
-## Optional Headroom sidecar
-
-The 10router image does not bundle Python or Headroom. To use Headroom in Docker, run it as a separate service and point 10router at that proxy:
-
-```yaml
-services:
-  10router:
-    image: some-du6e/10router:latest
-    ports:
-      - "20128:20128"
-    volumes:
-      # ".9router" host path retained for compatibility with existing installs.
-      - "$HOME/.9router:/app/data"
-    environment:
-      DATA_DIR: /app/data
-      HEADROOM_URL: http://headroom:8787
-    depends_on:
-      - headroom
-
-  headroom:
-    image: ghcr.io/chopratejas/headroom:latest
-    ports:
-      - "8787:8787"
-```
-
-In the dashboard, open `Endpoint` → `Token Saver` → `Headroom`, confirm the URL is `http://headroom:8787`, recheck status, then enable Headroom.
-
-If Headroom runs on the Docker host instead of as a sidecar, use `http://host.docker.internal:8787` on macOS/Windows. On Linux, add `--add-host=host.docker.internal:host-gateway` or the equivalent compose `extra_hosts` entry.
-
 ## Update to latest
 
 ```bash
@@ -120,6 +91,16 @@ docker run --rm -p 20128:20128 \
   -e DATA_DIR=/app/data \
   10router
 ```
+
+Google Analytics is off unless you build the image with a GA4 measurement ID:
+
+```bash
+docker build --build-arg NEXT_PUBLIC_GA_ID=G-XXXXXXXXXX -t 10router .
+```
+
+The ID is baked in at build time. The published images are built without it, so they never load analytics, and setting `NEXT_PUBLIC_GA_ID` in the compose `.env` or with `docker run -e` has no effect.
+
+`.env` and every other `.env.*` file except `.env.example`, in any folder, stay out of the build context (`.dockerignore`), so a `.env.production` next to the Dockerfile is never read during the build. Pass build-time values as build args: `--build-arg NEXT_PUBLIC_GA_ID=…` and `--build-arg NEXT_PUBLIC_CLOUD_URL=…` (the cloud URL the dashboard shows).
 
 ## Publish (automatic via CI)
 

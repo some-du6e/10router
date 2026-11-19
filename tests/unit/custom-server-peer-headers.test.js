@@ -7,12 +7,15 @@ import { __test__ as requestDetails } from "@/lib/db/repos/requestDetailsRepo.js
 
 const require = createRequire(import.meta.url);
 
+const SERVER_PATH = require.resolve("../../custom-server.js");
+const originalCreateServer = http.createServer;
+
 let server;
 let baseUrl;
 let seenHeaders;
 
 beforeAll(async () => {
-  require("../../custom-server.js");
+  require(SERVER_PATH);
   server = http.createServer((req, res) => {
     seenHeaders = req.headers;
     res.end("ok");
@@ -23,6 +26,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await new Promise((resolve) => server.close(resolve));
+  // custom-server.js wraps http.createServer when loaded; leave the module as found.
+  http.createServer = originalCreateServer;
+  delete require.cache[SERVER_PATH];
 });
 
 async function get(headers = {}) {
@@ -60,12 +66,22 @@ describe("custom-server peer header sanitizing", () => {
     expect(headers["x-9r-via-proxy"]).toBeUndefined();
   });
 
-  it("marks via-proxy and adopts the forwarded IP for a loopback proxy hop", async () => {
+  it("marks via-proxy and adopts the hop the loopback proxy appended", async () => {
     const headers = await get({ "x-forwarded-for": "203.0.113.9, 10.0.0.1" });
 
     expect(headers["x-9r-via-proxy"]).toBe("1");
-    expect(headers["x-9r-real-ip"]).toBe("203.0.113.9");
+    expect(headers["x-9r-real-ip"]).toBe("10.0.0.1");
     expect(headers["x-forwarded-for"]).toBeUndefined();
+  });
+
+  it("stamps X-Forwarded-For first and X-Real-IP as the other login key when both are sent", async () => {
+    const both = await get({ "x-real-ip": "203.0.113.8", "x-forwarded-for": "198.51.100.66" });
+    expect(both["x-9r-via-proxy"]).toBe("1");
+    expect(both["x-9r-real-ip"]).toBe("198.51.100.66");
+    expect(both["x-9r-alt-ips"]).toBe("203.0.113.8");
+
+    const realIpOnly = await get({ "x-real-ip": "203.0.113.8" });
+    expect(realIpOnly["x-9r-real-ip"]).toBe("203.0.113.8");
   });
 
   // chat.js snapshots every client header into the request detail. Anything that grants

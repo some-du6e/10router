@@ -1,5 +1,5 @@
 import { CODEX_CONFIG } from "../constants/oauth.js";
-import { extractCodexAccountInfo, extractEmailFromAccessToken } from "../providerHelpers.js";
+import { extractCodexAccountInfo } from "../providerHelpers.js";
 
 const codex = {
   config: CODEX_CONFIG,
@@ -46,7 +46,7 @@ const codex = {
     return await response.json();
   },
   mapTokens: (tokens) => {
-    const info = extractCodexAccountInfo(tokens.id_token);
+    const info = extractCodexAccountInfo(tokens.id_token, tokens.access_token);
     const mapped = {
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token,
@@ -54,7 +54,8 @@ const codex = {
       expiresIn: tokens.expires_in,
       lastRefreshAt: new Date().toISOString(),
     };
-    const email = info.email || extractEmailFromAccessToken(tokens.access_token);
+    // `sub` keeps a token without an email claim matching its existing row.
+    const email = info.email || info.sub;
     if (email) mapped.email = email;
     if (info.chatgptAccountId || info.chatgptPlanType) {
       mapped.providerSpecificData = {

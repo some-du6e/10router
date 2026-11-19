@@ -23,6 +23,15 @@ export const CLAUDE_BLOCK = {
   WEB_SEARCH_TOOL: "web_search_20250305",
   SERVER_TOOL_USE: "server_tool_use",
   WEB_SEARCH_TOOL_RESULT: "web_search_tool_result",
+  // Mid-conversation tool changes, carried by a role "system" message in messages[].
+  TOOL_ADDITION: "tool_addition",
+  TOOL_REMOVAL: "tool_removal",
+};
+
+// How a tool_addition / tool_removal names its tool (block.tool.type).
+export const CLAUDE_TOOL_REF = {
+  REFERENCE: "tool_reference",
+  DEFINITION: "tool_definition",
 };
 
 // OpenAI Responses API item types.
@@ -37,8 +46,39 @@ export const RESPONSES_ITEM = {
   OUTPUT_TEXT: "output_text",
   INPUT_TEXT: "input_text",
   INPUT_IMAGE: "input_image",
+  INPUT_FILE: "input_file",
   SUMMARY_TEXT: "summary_text",
   NAMESPACE: "namespace",
+};
+
+// Prefixes of the output item ids 10router makes up (`msg_…`, `rs_…`, `fc_…`, `ctc_…`).
+export const RESPONSES_ITEM_ID_PREFIX = {
+  MESSAGE: "msg",
+  REASONING: "rs",
+  FUNCTION_CALL: "fc",
+  CUSTOM_TOOL_CALL: "ctc",
+};
+
+// Tool choice values shared by Chat Completions and Claude.
+export const TOOL_CHOICE = {
+  AUTO: "auto",
+  NONE: "none",
+  REQUIRED: "required", // Chat: call some tool
+  ANY: "any",           // Claude: call some tool
+  TOOL: "tool",         // Claude: call the named tool
+};
+
+// OpenAI Responses `status` values, on a response and on its output items.
+export const RESPONSES_STATUS = {
+  IN_PROGRESS: "in_progress",
+  COMPLETED: "completed",
+  INCOMPLETE: "incomplete",
+};
+
+// Tool declaration `type` values for client-defined tools.
+export const TOOL_TYPE = {
+  FUNCTION: OPENAI_BLOCK.FUNCTION,
+  CUSTOM: "custom",
 };
 
 // Valid OpenAI block types (used by filterToOpenAIFormat).

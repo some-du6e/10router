@@ -3,18 +3,19 @@ import { cookies } from "next/headers";
 import { getSettings } from "@/lib/localDb";
 import {
   getSamlBaseUrl,
-  isSamlConfigured,
   pickSamlDisplayName,
   pickSamlEmail,
   validateSamlResponse,
 } from "@/lib/auth/saml.js";
 import { setDashboardAuthCookie } from "@/lib/auth/dashboardSession";
-import { checkLock, recordFail, recordSuccess, getClientIp } from "@/lib/auth/loginLimiter";
+import { isSsoPrincipalAllowed } from "@/lib/auth/ssoAllowlist.js";
+import { checkLock, recordFail, recordSuccess, getClientKeys } from "@/lib/auth/loginLimiter";
+import { getConfiguredSsoType } from "@/lib/auth/authMode.js";
 
 export async function POST(request) {
   const settings = await getSettings();
   const origin = getSamlBaseUrl(request, settings);
-  const ip = getClientIp(request);
+  const ip = getClientKeys(request);
 
   const lock = checkLock(ip);
   if (lock.locked) {
@@ -27,7 +28,7 @@ export async function POST(request) {
   }
 
   const cookieStore = await cookies();
-  const storedRequestId = cookieStore.get("saml_state")?.value || "";
+  const stateCookie = cookieStore.get("saml_state")?.value || "";
 
   // Always clear saml_state cookie after attempt
   cookieStore.delete("saml_state");
@@ -41,15 +42,21 @@ export async function POST(request) {
       return NextResponse.redirect(new URL("/login?error=saml_missing_response", origin));
     }
 
-    if (!isSamlConfigured(settings)) {
+    if (getConfiguredSsoType(settings) !== "saml") {
       recordFail(ip);
       return NextResponse.redirect(new URL("/login?error=saml_not_configured", origin));
     }
 
-    const profile = await validateSamlResponse(request, { SAMLResponse }, storedRequestId, settings);
+    const profile = await validateSamlResponse(request, { SAMLResponse }, stateCookie, settings);
 
     const samlEmail = pickSamlEmail(profile, settings) || null;
     const samlName = pickSamlDisplayName(profile, settings) || "SAML user";
+
+    // Not a failed login: the IdP signed this user in. Counting it would let
+    // refused colleagues behind one NAT lock the admins out.
+    if (!isSsoPrincipalAllowed({ subject: profile?.nameID, email: samlEmail, emailVerified: true })) {
+      return NextResponse.redirect(new URL("/login?error=sso_user_not_allowed", origin));
+    }
 
     recordSuccess(ip);
 

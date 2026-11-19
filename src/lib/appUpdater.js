@@ -1,80 +1,11 @@
-import { spawn, execSync } from "child_process";
+import { spawn } from "child_process";
 import path from "path";
 import fs from "fs";
-import os from "os";
+import { isIP } from "net";
 import { UPDATER_CONFIG } from "@/shared/constants/config";
+import { runtimeUpdaterPath } from "./appProcesses.js";
 
-const KILL_TIMEOUT_MS = 5000;
-const PROCESS_WAIT_MS = 1500;
-
-// Collect PIDs of all 10router-related processes (excluding current)
-function collectAppPids() {
-  const pids = [];
-  const platform = process.platform;
-
-  if (platform === "win32") {
-    try {
-      const psCmd = `powershell -NonInteractive -WindowStyle Hidden -Command "Get-WmiObject Win32_Process -Filter 'Name=\\"node.exe\\"' | Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation"`;
-      const output = execSync(psCmd, { encoding: "utf8", windowsHide: true, timeout: KILL_TIMEOUT_MS });
-      const lines = output.split("\n").slice(1).filter(l => l.trim());
-      lines.forEach(line => {
-        const lower = line.toLowerCase();
-        // Match anything running from 10router install dir or wrapper cli.js
-        const isAppProcess = lower.includes("10router") ||
-          lower.includes("next-server") ||
-          lower.includes("\\bin\\app\\") ||
-          lower.includes("/bin/app/") ||
-          lower.includes("cli.js");
-        if (isAppProcess) {
-          const match = line.match(/^"(\d+)"/);
-          if (match && match[1] && match[1] !== process.pid.toString()) pids.push(match[1]);
-        }
-      });
-    } catch { /* no processes */ }
-
-    // Kill cloudflared + tray binaries (hold app dir lock)
-    for (const procName of ["cloudflared", "tray_windows_release"]) {
-      try {
-        const cmd = `powershell -NonInteractive -WindowStyle Hidden -Command "Get-Process ${procName} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id"`;
-        const out = execSync(cmd, { encoding: "utf8", windowsHide: true, timeout: KILL_TIMEOUT_MS });
-        out.split("\n").forEach(l => {
-          const pid = l.trim();
-          if (pid && !isNaN(pid)) pids.push(pid);
-        });
-      } catch { /* not running */ }
-    }
-  } else {
-    try {
-      const output = execSync("ps aux 2>/dev/null", { encoding: "utf8", timeout: KILL_TIMEOUT_MS });
-      output.split("\n").forEach(line => {
-        const isAppProcess = line.includes("10router") ||
-          line.includes("next-server") ||
-          line.includes("cloudflared") ||
-          line.includes("/bin/app/") ||
-          line.includes("tray_darwin") ||
-          line.includes("tray_linux");
-        if (isAppProcess) {
-          const parts = line.trim().split(/\s+/);
-          const pid = parts[1];
-          if (pid && !isNaN(pid) && pid !== process.pid.toString()) pids.push(pid);
-        }
-      });
-    } catch { /* no processes */ }
-  }
-
-  return pids;
-}
-
-// Copy updater.js into DATA_DIR so npm -g can overwrite node_modules safely.
-// The "9router" / ".9router" dir name is deliberately kept for backward
-// compatibility with existing installs — not a missed rebrand.
-function getDataDir() {
-  if (process.env.DATA_DIR) return process.env.DATA_DIR;
-  if (process.platform === "win32") {
-    return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "9router");
-  }
-  return path.join(os.homedir(), ".9router");
-}
+export { collectAppPids, killAppProcesses, busyInstallPids, busyInstallMessage } from "./appProcesses.js";
 
 function resolveBundledUpdaterPath() {
   if (process.env.UPDATER_SCRIPT_PATH && fs.existsSync(process.env.UPDATER_SCRIPT_PATH)) {
@@ -89,11 +20,12 @@ function resolveBundledUpdaterPath() {
   return fromCwd;
 }
 
+// Copy updater.js into DATA_DIR so npm -g can overwrite node_modules safely.
 function ensureRuntimeUpdater(bundledPath) {
   try {
     if (!bundledPath || !fs.existsSync(bundledPath)) return bundledPath;
-    const runtimeDir = path.join(getDataDir(), "runtime", "updater");
-    const runtimePath = path.join(runtimeDir, "updater.js");
+    const runtimePath = runtimeUpdaterPath();
+    const runtimeDir = path.dirname(runtimePath);
     if (fs.existsSync(runtimePath)) {
       try {
         if (fs.statSync(bundledPath).size === fs.statSync(runtimePath).size) return runtimePath;
@@ -107,43 +39,58 @@ function ensureRuntimeUpdater(bundledPath) {
   }
 }
 
-// Kill all app-related processes to release file locks (esp. on Windows)
-export async function killAppProcesses() {
-  const pids = collectAppPids();
-  const platform = process.platform;
-
-  pids.forEach(pid => {
-    try {
-      if (platform === "win32") {
-        execSync(`taskkill /F /PID ${pid} 2>nul`, { stdio: "ignore", shell: true, windowsHide: true, timeout: 3000 });
-      } else {
-        execSync(`kill -9 ${pid} 2>/dev/null`, { stdio: "ignore", timeout: 3000 });
-      }
-    } catch { /* already dead */ }
-  });
-
-  if (pids.length > 0) {
-    await new Promise(r => setTimeout(r, PROCESS_WAIT_MS));
-  }
+// Resolve npx to relaunch after update (cross-platform). `npx 10router` works
+// regardless of global bin path changes after npm i -g.
+function resolveRelaunchCommand() {
+  return { cmd: process.platform === "win32" ? "npx.cmd" : "npx" };
 }
 
-// Resolve npx/10router binary to relaunch after update (cross-platform)
-function resolveRelaunchCommand() {
-  const isWin = process.platform === "win32";
-  // Prefer `npx 10router` — works regardless of global bin path changes after npm i -g
-  const npx = isWin ? "npx.cmd" : "npx";
-  return { cmd: npx, args: [UPDATER_CONFIG.npmPackageName] };
+// The address a local client dials for a server bound to `bindHost`
+// (mirrors cli/src/cli/api/client.js hostForBind).
+export function dialHostForBind(bindHost) {
+  const host = String(bindHost || "").trim().replace(/^\[(.*)\]$/, "$1");
+  if (!host || host === "0.0.0.0" || host === "localhost") return "127.0.0.1";
+  if (host === "::") return "::1";
+  return host;
+}
+
+// Same rule as the CLI's --host check (cli/src/cli/utils/launchArgs.js): an IP
+// address or a plain hostname. The relaunch goes through npx.cmd with a
+// shell on Windows, so nothing else may reach its arguments.
+const HOSTNAME_RE = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
+export function isValidHost(host) {
+  return typeof host === "string" && !!host && (isIP(host) !== 0 || HOSTNAME_RE.test(host));
+}
+
+// Where this server listens. When the CLI launcher started this server (its
+// PID is in the env and it is our parent), PORT and HOSTNAME are the
+// --port/--host it was given. Otherwise HOSTNAME is usually just the
+// machine's name, so it is not a bind.
+export function serverBind(env = process.env, parentPid = process.ppid) {
+  const parsed = /^\d+$/.test(env.PORT || "") ? Number(env.PORT) : NaN;
+  const port = parsed >= 1 && parsed <= 65535 ? parsed : UPDATER_CONFIG.appPort;
+  const launched = env.TENROUTER_LAUNCHER_PID === String(parentPid);
+  const host = launched && isValidHost(env.HOSTNAME) ? env.HOSTNAME : "";
+  return { port, host };
+}
+
+// Relaunch matching the original launch: tray stays tray, foreground stays
+// foreground, and a --host/--port bind comes back on the same address.
+export function buildRelaunchArgs(env = process.env, parentPid = process.ppid) {
+  const { port, host } = serverBind(env, parentPid);
+  const args = [UPDATER_CONFIG.npmPackageName];
+  if (env.TRAY_MODE === "1") args.push("--tray");
+  args.push("--skip-update", "--port", String(port));
+  if (host) args.push("--host", host);
+  return args;
 }
 
 // Spawn detached headless updater (Node process) then exit current server
 export function spawnUpdaterAndExit(packageName = UPDATER_CONFIG.npmPackageName) {
   const updaterPath = ensureRuntimeUpdater(resolveBundledUpdaterPath());
-  const isTray = process.env.TRAY_MODE === "1";
   const relaunch = resolveRelaunchCommand();
-  // Relaunch matching original env: tray stays tray, foreground stays foreground
-  const relaunchArgs = isTray
-    ? [...relaunch.args, "--tray", "--skip-update"]
-    : [...relaunch.args, "--skip-update"];
+  const relaunchArgs = buildRelaunchArgs();
+  const bind = serverBind();
 
   spawn(process.execPath, [updaterPath], {
     detached: true,
@@ -160,12 +107,16 @@ export function spawnUpdaterAndExit(packageName = UPDATER_CONFIG.npmPackageName)
       UPDATER_WAIT_MIN_MS: String(UPDATER_CONFIG.waitForExitMinMs),
       UPDATER_WAIT_MAX_MS: String(UPDATER_CONFIG.waitForExitMaxMs),
       UPDATER_WAIT_CHECK_MS: String(UPDATER_CONFIG.waitForExitCheckMs),
-      UPDATER_APP_PORT: String(UPDATER_CONFIG.appPort),
+      // The updater waits for this server's port to free up, then for the
+      // relaunched one to answer, on the address it is bound to.
+      UPDATER_APP_PORT: String(bind.port),
+      UPDATER_APP_HOST: dialHostForBind(bind.host),
       UPDATER_RELAUNCH: "1",
       UPDATER_RELAUNCH_CMD: relaunch.cmd,
       UPDATER_RELAUNCH_ARGS: JSON.stringify(relaunchArgs),
     },
   }).unref();
 
+  console.log(`[Shutdown] started the updater: exiting in ${UPDATER_CONFIG.exitDelayMs} ms so it can replace this install`);
   setTimeout(() => process.exit(0), UPDATER_CONFIG.exitDelayMs);
 }

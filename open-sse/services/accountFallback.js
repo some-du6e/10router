@@ -1,8 +1,9 @@
-import { ERROR_RULES, BACKOFF_CONFIG, TRANSIENT_COOLDOWN_MS } from "../config/errorConfig.js";
+import { ERROR_RULES, BACKOFF_CONFIG, TRANSIENT_COOLDOWN_MS, BAD_KEY_TEXTS, BILLING_TEXTS, HEADERS_TIMEOUT } from "../config/errorConfig.js";
+import { HTTP_STATUS } from "../config/runtimeConfig.js";
 
 /**
  * Calculate exponential backoff cooldown for rate limits (429)
- * Level 1: 1s, Level 2: 2s, Level 3: 4s... → max 4 min
+ * Level 1: 2s, Level 2: 4s, Level 3: 8s... → max 5 min (BACKOFF_CONFIG)
  * @param {number} backoffLevel - Current backoff level
  * @returns {number} Cooldown in milliseconds
  */
@@ -47,6 +48,32 @@ export function checkFallbackError(status, errorText, backoffLevel = 0) {
 
   // Default: transient cooldown for any unmatched error
   return { shouldFallback: true, cooldownMs: TRANSIENT_COOLDOWN_MS };
+}
+
+// Statuses that describe the request, not the account: a different key sees the
+// same body, so locking the key only takes the whole pool down. Text rules (rate
+// limit, quota, ...) still win, since some gateways send those as 400.
+const REQUEST_ERROR_STATUSES = new Set([400, 404, 422]);
+// ...except errors about the account some upstreams send as 400 (a bad key or
+// no money left). Those still lock.
+const ACCOUNT_ERROR_TEXTS = [...BAD_KEY_TEXTS, ...BILLING_TEXTS];
+
+export function isRequestError(status, errorText) {
+  return REQUEST_ERROR_STATUSES.has(status) && !namesAccountOrLimit(errorText);
+}
+
+/** The error text is about the key (bad key, no money) or a limit, whatever its status. */
+export function namesAccountOrLimit(errorText) {
+  const lowerError = errorText
+    ? (typeof errorText === "string" ? errorText : JSON.stringify(errorText)).toLowerCase()
+    : "";
+  if (ACCOUNT_ERROR_TEXTS.some((t) => lowerError.includes(t))) return true;
+  return ERROR_RULES.some((rule) => rule.text && lowerError.includes(rule.text));
+}
+
+/** A 504 from a chat call that got no response headers in time (utils/headersTimeout.js). */
+export function isHeadersTimeout(status, errorText) {
+  return status === HTTP_STATUS.GATEWAY_TIMEOUT && typeof errorText === "string" && errorText.includes(HEADERS_TIMEOUT.text);
 }
 
 /**
@@ -113,15 +140,34 @@ export function getModelLockKey(model) {
   return model ? `${MODEL_LOCK_PREFIX}${model}` : MODEL_LOCK_ALL;
 }
 
+/** Lock scopes kept next to the model locks: web search and web fetch, per provider. */
+export const WEBSEARCH_LOCK_PREFIX = "websearch:";
+export const WEBFETCH_LOCK_PREFIX = "webfetch:";
+
 /**
- * Check if a model lock on a connection is still active.
- * Reads flat field `modelLock_${model}` (or `modelLock___all` when model=null).
+ * Would a lock on this model id land on one of the router's own scopes (the
+ * account-wide lock, or a web search/fetch lock)? Such an id can't be a
+ * client's model: handlers refuse it before any account is tried.
  */
+export function isReservedLockName(model) {
+  const id = String(model ?? "");
+  return getModelLockKey(id) === MODEL_LOCK_ALL || id.startsWith(WEBSEARCH_LOCK_PREFIX) || id.startsWith(WEBFETCH_LOCK_PREFIX);
+}
+
+/**
+ * When a model's lock on a connection ends, in ms: the later of `modelLock_${model}`
+ * and the account-wide `modelLock___all`. 0 when neither is set or parses.
+ */
+export function getModelLockUntil(connection, model) {
+  const ends = [connection?.[getModelLockKey(model)], connection?.[MODEL_LOCK_ALL]]
+    .map(until => (until ? new Date(until).getTime() : 0))
+    .filter(Number.isFinite);
+  return Math.max(0, ...ends);
+}
+
+/** Check if a model lock (its own or the account-wide one) on a connection is still active. */
 export function isModelLockActive(connection, model) {
-  const key = getModelLockKey(model);
-  const expiry = connection[key] || connection[MODEL_LOCK_ALL];
-  if (!expiry) return false;
-  return new Date(expiry).getTime() > Date.now();
+  return getModelLockUntil(connection, model) > Date.now();
 }
 
 /**
