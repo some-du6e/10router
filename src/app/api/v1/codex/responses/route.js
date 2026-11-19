@@ -12,6 +12,7 @@ import { getModelAliases, getComboByName } from "@/lib/localDb";
 import { stripContextWindowSuffix } from "open-sse/services/model.js";
 import { BUILTIN_MODEL_ALIASES } from "open-sse/services/model.js";
 import { getAutoComboProviders, resolveAutoCombo } from "@/sse/services/autoCombo.js";
+import { withMemoryAdmission, carryAdmission } from "@/sse/services/memoryAdmission.js";
 
 export { OPTIONS } from "../../responses/route.js";
 
@@ -73,8 +74,14 @@ async function withCodexFallback(request) {
   });
 }
 
-export async function POST(request) {
-  const response = await responsesPost(await withCodexFallback(request));
+// Admitted before withCodexFallback reads the body, so a request waiting for
+// memory room holds no parsed copy; handleChat runs under the same admission.
+export function POST(request) {
+  return withMemoryAdmission(request, () => codexPost(request));
+}
+
+async function codexPost(request) {
+  const response = await responsesPost(carryAdmission(request, await withCodexFallback(request)));
 
   // Codex reads its usage bar off these headers rather than from an endpoint.
   // Requests are served from all connected Codex accounts, so report the pooled
