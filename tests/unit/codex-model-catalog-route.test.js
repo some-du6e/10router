@@ -329,6 +329,41 @@ describe("the routed model list behind it", () => {
     expect(ids(await catalog())).toEqual(["acme/two"]);
   });
 
+  it("keeps a provider's held models when its live catalog timed out in a rebuild, and replaces the rest", async () => {
+    vi.useFakeTimers({ toFake: CLOCK });
+    const { getRoutedModels } = await import("@/lib/codex/routedModels.js");
+    const routedIds = async () => (await getRoutedModels()).map((m) => m.id);
+    routed.models = [
+      { id: "acme/one", owned_by: "acme" },
+      { id: "zed/z-1", owned_by: "zed" },
+      { id: "kr/k-1-thinking", owned_by: "kr" },
+    ];
+    expect(await routedIds()).toEqual(["acme/one", "zed/z-1", "kr/k-1-thinking"]);
+
+    // Zed's and Kiro's live catalogs time out: Zed has no static models, and
+    // Kiro's static list lacks the per-account variant.
+    routed.build = (options) => {
+      options.onLiveTimeout?.("zed", { alias: "zed" });
+      options.onLiveTimeout?.("kiro", { alias: "kr" });
+      return [{ id: "acme/two", owned_by: "acme" }, { id: "kr/k-1", owned_by: "kr" }];
+    };
+    await advance(T.FRESH_MS + 1_000);
+    await routedIds();
+    await advance(0);
+    expect(await routedIds()).toEqual(["acme/two", "zed/z-1", "kr/k-1-thinking"]);
+  });
+
+  it("takes a cold-start build whose live catalogs timed out as it is, with nothing held to keep", async () => {
+    vi.useFakeTimers({ toFake: CLOCK });
+    const { getRoutedModels } = await import("@/lib/codex/routedModels.js");
+    routed.build = (options) => {
+      if (options.skipLiveCatalogs) return list("static");
+      options.onLiveTimeout?.("kiro", { alias: "kr" });
+      return [{ id: "kr/k-1", owned_by: "kr" }];
+    };
+    expect((await getRoutedModels()).map((m) => m.id)).toEqual(["kr/k-1"]);
+  });
+
   it("measures age on a monotonic clock, so moving the wall clock back doesn't freeze the list", async () => {
     vi.useFakeTimers({ toFake: CLOCK });
     routed.models = list("one");

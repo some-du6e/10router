@@ -3,7 +3,7 @@ const crypto = require("crypto");
 const path = require("path");
 const fs = require("fs");
 const { pathToFileURL } = require("url");
-const { createDrain, installShutdownDrain, parseDrainTimeout } = require("./server-drain.js");
+const { createDrain, installExitRecorder, installShutdownDrain, parseDrainTimeout } = require("./server-drain.js");
 
 const origCreate = http.createServer.bind(http);
 
@@ -647,6 +647,7 @@ module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCod
 if (require.main === module) {
   // Before the app loads: its own signal listeners must not see SIGTERM first.
   installShutdownDrain(process, drain);
+  installExitRecorder(process, { inflight: () => drain.inflight });
   const standalone = path.join(__dirname, "server.js");
   if (fs.existsSync(standalone)) {
     require(standalone);

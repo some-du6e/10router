@@ -253,6 +253,13 @@ On `SIGTERM` or `SIGINT` (`docker stop` sends `SIGTERM`) the server drains befor
   it got); a later one exits at once. `SHUTDOWN_DRAIN_TIMEOUT_MS=0` turns the drain off.
 - It needs Node (the Docker image and `npm run start`). Under Bun (`start:bun`) a signal still
   exits at once.
+- **A restart you didn't ask for:** every exit the process makes itself logs an `[Exit]` line
+  with the exit code, uptime, memory use, the requests still open and its cause: the code that
+  called `process.exit()`, an uncaught exception or unhandled rejection (Node prints it just
+  before), or "the event loop ran empty". **No `[Exit]` line at all means the process
+  was killed from outside.** Check the kernel log for an out-of-memory kill (`dmesg` or
+  `journalctl -k` on the host) and `docker events --filter event=die` for the real exit code,
+  since `docker inspect` on a container its restart policy already started again can show 0.
 
 **The drain does nothing unless whatever stops the process waits for it.** Docker kills the
 process 10 seconds after `docker stop` by default, which cuts the drain short and can kill the

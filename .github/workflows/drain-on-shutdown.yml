@@ -50,6 +50,7 @@ jobs:
           unit/server-drain.test.js
           unit/server-drain-entry.test.js
           unit/server-drain-wiring.test.js
+          unit/server-drain-exit-recorder.test.js
           unit/request-details-shutdown.test.js
           unit/standalone-assets.test.js
           unit/custom-server-h2c.test.js
@@ -68,6 +69,7 @@ jobs:
           tests/unit/server-drain.test.js
           tests/unit/server-drain-entry.test.js
           tests/unit/server-drain-wiring.test.js
+          tests/unit/server-drain-exit-recorder.test.js
 
   # The suite is not all-green on master (see AGENTS.md), so this runs it on
   # both the base and this branch and fails only on tests that pass on the base

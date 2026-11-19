@@ -15,6 +15,9 @@ import { getAutoComboProviders, resolveAutoCombo } from "@/sse/services/autoComb
 
 export { OPTIONS } from "../../responses/route.js";
 
+// How long a Codex request waits here for the model list right after a restart.
+const CODEX_INGRESS_CATALOG_WAIT_MS = 20_000;
+
 // A bare model name reaching the shared handler is treated as an alias, and an
 // unmatched alias is guessed at by name — which lands on OpenAI for anything
 // shaped like `gpt-*`. That is the wrong default here: this door is the Codex
@@ -54,7 +57,10 @@ async function withCodexFallback(request) {
   // Codex keeps its own accounts first. Only a model no Codex account serves
   // is left for handleChat to route across the providers that do.
   // resolveAutoCombo waits out a cold catalog, so ask it before checking Codex.
-  if ((await resolveAutoCombo(bareModel, BUILTIN_MODEL_ALIASES)) && !getAutoComboProviders(bareModel).includes("codex")) {
+  // This runs before the handler's early headers, so the wait is capped well
+  // under a proxy's ~100 s limit and ends when the client hangs up.
+  const wait = { signal: request.signal, maxWaitMs: CODEX_INGRESS_CATALOG_WAIT_MS };
+  if ((await resolveAutoCombo(bareModel, BUILTIN_MODEL_ALIASES, undefined, wait)) && !getAutoComboProviders(bareModel).includes("codex")) {
     return request;
   }
 
