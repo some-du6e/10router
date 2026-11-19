@@ -96,14 +96,14 @@ describe("custom-server proxy-hop stamp for a non-loopback peer", () => {
 
     vi.stubEnv("TRUST_PROXY", `${lanAddress}/32`);
     await send();
-    expect(seen["x-9r-proxy-hop"]).toBe("1");
+    expect(seen["x-9r-proxy-hop"]).toBe("listed");
     expect(seen["x-9r-real-ip"]).toBe("203.0.113.7");
     // Any forwarding header makes it a proxy hop, not only X-Forwarded-For.
     await send({ "x-real-ip": "203.0.113.8" });
-    expect(seen["x-9r-proxy-hop"]).toBe("1");
+    expect(seen["x-9r-proxy-hop"]).toBe("listed");
     expect(seen["x-9r-real-ip"]).toBe("203.0.113.8");
     await send({ forwarded: "for=203.0.113.9" });
-    expect(seen["x-9r-proxy-hop"]).toBe("1");
+    expect(seen["x-9r-proxy-hop"]).toBe("listed");
   });
 
   // Docker with the bridge gateway listed: the owner's own browser on
@@ -225,7 +225,8 @@ describe("/api/health launch proof", () => {
   });
 
   // `--host <LAN address>` with that address in TRUST_PROXY: the launcher's
-  // socket is listed but sends no forwarding header, so it is a direct peer keyed on itself.
+  // socket is listed but sends no forwarding header, so it is a direct peer
+  // keyed on itself.
   // CI runners have a LAN address, so there a missing one fails rather than skips.
   it.skipIf(!lanAddress && !process.env.CI)("passes for a launcher on a LAN bind that a TRUST_PROXY list covers", async () => {
     expect(lanAddress, "no non-loopback IPv4 address on this machine").toBeTruthy();

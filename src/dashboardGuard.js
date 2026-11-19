@@ -200,11 +200,18 @@ export function isTunnelHost(request, settings) {
 // Hosts that can't be rebound: loopback names, IP literals, and the hosts this
 // install was given: the tunnel and Tailscale URLs, BASE_URL / NEXT_PUBLIC_BASE_URL,
 // and ALLOWED_HOSTS (a comma list of host names or URLs, for an install reached
-// by several names, such as a tunnel domain and a LAN name).
+// by several names, such as a tunnel domain and a LAN name). An IPv6 entry may be
+// bare (2001:db8::5) or bracketed ([2001:db8::5], [2001:db8::5]:20128).
 function allowedHostNames(settings) {
   const listed = String(process.env.ALLOWED_HOSTS || "").split(",").map((entry) => entry.trim()).filter(Boolean);
   return [settings?.tunnelUrl, settings?.tailscaleUrl, process.env.BASE_URL, process.env.NEXT_PUBLIC_BASE_URL, ...listed]
-    .map((value) => (value && !String(value).includes("://") ? hostUrl(String(value), "http:")?.hostname.toLowerCase().replace(/\.$/, "") || "" : hostnameOf(value)))
+    .map((value) => {
+      if (!value) return "";
+      const text = String(value);
+      if (text.includes("://")) return hostnameOf(text);
+      const host = !text.startsWith("[") && (text.match(/:/g) || []).length > 1 ? `[${text}]` : text;
+      return hostUrl(host, "http:")?.hostname.toLowerCase().replace(/\.$/, "") || "";
+    })
     .filter(Boolean);
 }
 
@@ -224,16 +231,18 @@ function isAllowedOpenHost(request, settings) {
   const name = url.hostname.toLowerCase().replace(/\.$/, "");
   // A proxy that rewrites Host to its upstream (nginx's default) sends that
   // upstream's loopback name or IP for every name the browser used, rebound ones
-  // included. So behind one (custom-server.js stamps x-9r-proxy-hop for a loopback
-  // peer that isn't local, or a TRUST_PROXY-listed one that sent a forwarding
-  // header) a loopback Host never counts, and an IP literal only when this install
-  // was given it (ALLOWED_HOSTS, BASE_URL); otherwise the proxy must pass the
-  // browser's Host through. A direct peer from elsewhere (a Docker port, an ssh -L
-  // or NAT forward) keeps its Host: a page can't make a browser send a loopback
-  // or IP-literal Host for its own name.
-  const proxyHop = hasTrustedPeerHeaders(request) && !!request.headers.get("x-9r-proxy-hop");
+  // included. custom-server.js stamps x-9r-proxy-hop "loopback" for a loopback
+  // peer that isn't local and "listed" for a TRUST_PROXY-listed one that sent a
+  // forwarding header. Behind either, a loopback Host never counts. Behind a
+  // listed one, which reaches this server by a non-loopback IP, an IP literal
+  // counts only when this install was given it (ALLOWED_HOSTS, BASE_URL); a
+  // same-host proxy's upstream is loopback, so an IP there is the browser's own
+  // (Caddy or `tailscale serve` opened by IP). A direct peer from elsewhere (a
+  // Docker port, an ssh -L or NAT forward) keeps its Host: a page can't make a
+  // browser send a loopback or IP-literal Host for its own name.
+  const proxyHop = hasTrustedPeerHeaders(request) ? request.headers.get("x-9r-proxy-hop") || "" : "";
   if (isLoopbackLiteral(name)) return !proxyHop;
-  if ((name.startsWith("[") || /^\d{1,3}(\.\d{1,3}){3}$/.test(name)) && !proxyHop) return true;
+  if ((name.startsWith("[") || /^\d{1,3}(\.\d{1,3}){3}$/.test(name)) && proxyHop !== "listed") return true;
   return allowedHostNames(settings).includes(name);
 }
 

@@ -327,10 +327,10 @@ function usableAddress(value) {
  * header) the candidates are the rightmost X-Forwarded-For entry that is a usable
  * address (the hop an appending proxy such as Caddy, Traefik, cloudflared or
  * Tailscale added; everything left of it is the client's) and the X-Real-IP
- * (what nginx with `X-Real-IP $remote_addr` sets). Whichever one the proxy wrote is fixed,
- * the other is the client's to rotate, and this file can't tell which is which,
- * so the limiter counts a failure against both and refuses while either is
- * locked. CF-Connecting-IP counts only when neither is there. With nothing
+ * (what nginx with `X-Real-IP $remote_addr` sets). Whichever one the proxy
+ * wrote is fixed, the other is the client's to rotate, and this file can't tell
+ * which is which, so the limiter counts a failure against both and refuses while
+ * either is locked. CF-Connecting-IP counts only when neither is there. With nothing
  * usable, or behind a header-less forwarder (TRUST_PROXY=true), the key is the
  * shared "unknown".
  */
@@ -748,12 +748,14 @@ http.createServer = (...args) => {
     // request not from a client on this machine; x-9r-via-tunnel, one whose Host
     // is a Cloudflare quick tunnel or Tailscale name; x-9r-proxy-hop, one not
     // local whose peer is a proxy whose headers are read, so its Host may be one
-    // the proxy wrote, not the browser: a loopback peer that isn't local, or
-    // isListedProxyHop.
+    // the proxy wrote, not the browser: "loopback" for a loopback peer that
+    // isn't local, "listed" for isListedProxyHop.
     const local = isOnThisMachine(req.headers, socketIp);
     const [ip, ...altIps] = clientKeysFor(req.headers, socketIp);
     const viaTunnel = isTunnelTraffic(req.headers, socketIp);
-    const proxyHop = !local && (isLoopbackHost(socketIp) || isListedProxyHop(req.headers, socketIp));
+    let proxyHop = "";
+    if (!local && isLoopbackHost(socketIp)) proxyHop = "loopback";
+    else if (isListedProxyHop(req.headers, socketIp)) proxyHop = "listed";
     delete req.headers["x-9r-proxy-hop"];
     delete req.headers["x-9r-real-ip"];
     delete req.headers["x-9r-alt-ips"];
@@ -773,7 +775,7 @@ http.createServer = (...args) => {
     req.headers["x-9r-socket-port"] = String(req.socket?.remotePort ?? "");
     req.headers["x-9r-peer-token"] = PEER_TOKEN;
     if (!local) req.headers["x-9r-via-proxy"] = "1";
-    if (proxyHop) req.headers["x-9r-proxy-hop"] = "1";
+    if (proxyHop) req.headers["x-9r-proxy-hop"] = proxyHop;
     if (viaTunnel) req.headers["x-9r-via-tunnel"] = "1";
     return handler(req, res);
   };
