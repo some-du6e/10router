@@ -46,6 +46,10 @@ export default {
       }
     }
 
+    // `json` is 10router's base64 wrapper (ttsCore builds it), not an audio
+    // format: the upstream is asked for mp3, which the wrapper then carries.
+    const audioFormat = responseFormat === "json" ? "mp3" : responseFormat;
+
     const res = await fetch(`${base}/v1/audio/speech`, {
       method: "POST",
       headers: {
@@ -56,14 +60,15 @@ export default {
         model: ttsModel,
         voice,
         input: text,
-        response_format: responseFormat,
+        response_format: audioFormat,
       }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err?.error?.message || `Self-hosted TTS failed: ${res.status}`);
+      // The status lets ttsCore tell a rejected request from a failing server.
+      throw Object.assign(new Error(err?.error?.message || `Self-hosted TTS failed: ${res.status}`), { status: res.status });
     }
     const buf = await res.arrayBuffer();
-    return { base64: Buffer.from(buf).toString("base64"), format: responseFormat };
+    return { base64: Buffer.from(buf).toString("base64"), format: audioFormat };
   },
 };

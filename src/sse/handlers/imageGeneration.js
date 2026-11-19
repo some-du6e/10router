@@ -1,4 +1,4 @@
-import { readJsonObject } from "../utils/requestBody.js";
+import { readJsonObject, missingModel } from "../utils/requestBody.js";
 import {
   getProviderCredentials,
   markAccountUnavailable,
@@ -26,7 +26,7 @@ const NO_AUTH_PROVIDERS = new Set(["sdwebui", "comfyui"]);
  * @param {Request} request
  */
 export async function handleImageGeneration(request) {
-  const { body, error } = await readJsonObject(request);
+  const { body, error } = await readJsonObject(request, { logTag: "IMAGE" });
   if (error) return error;
 
   const url = new URL(request.url);
@@ -43,7 +43,8 @@ export async function handleImageGeneration(request) {
     if (!valid) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
   }
 
-  if (typeof modelStr !== "string" || !modelStr.trim()) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
+  const noModel = missingModel(modelStr, "IMAGE");
+  if (noModel) return noModel;
   if (!body.prompt) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: prompt");
   const limitDenied = await checkApiKeyLimits(apiKey, { model: modelStr });
   if (limitDenied) return limitDenied;

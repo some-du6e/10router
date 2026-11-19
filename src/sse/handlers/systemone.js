@@ -1,4 +1,4 @@
-import { readJsonObject } from "../utils/requestBody.js";
+import { readJsonObject, missingModel } from "../utils/requestBody.js";
 import {
   getProviderCredentials,
   markAccountUnavailable,
@@ -25,7 +25,7 @@ import { checkApiKeyLimits } from "../services/keyLimits.js";
  * @param {Request} request
  */
 export async function handleSystemone(request) {
-  const { body, error } = await readJsonObject(request);
+  const { body, error } = await readJsonObject(request, { logTag: "SYSTEMONE" });
   if (error) return error;
 
   const url = new URL(request.url);
@@ -55,10 +55,8 @@ export async function handleSystemone(request) {
     }
   }
 
-  if (typeof modelStr !== "string" || !modelStr.trim()) {
-    log.warn("SYSTEMONE", "Missing model");
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
-  }
+  const noModel = missingModel(modelStr, "SYSTEMONE");
+  if (noModel) return noModel;
   if (body.state === undefined || body.state === null) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: state");
   }

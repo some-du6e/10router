@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ synthesize: vi.fn(), comboModels: vi.fn(), credentials: vi.fn(), combo: vi.fn() }));
-vi.mock("@/lib/localDb", () => ({ getSettings: async () => ({}) }));
+const mocks = vi.hoisted(() => ({
+  synthesize: vi.fn(), comboModels: vi.fn(), credentials: vi.fn(), combo: vi.fn(), settings: vi.fn(),
+}));
+vi.mock("@/lib/localDb", () => ({ getSettings: mocks.settings }));
 vi.mock("@/sse/services/auth.js", () => ({
   extractApiKey: () => null, isValidApiKey: vi.fn(),
   getProviderCredentials: mocks.credentials, markAccountUnavailable: vi.fn(),
@@ -10,7 +12,7 @@ vi.mock("@/sse/services/model.js", () => ({
   getModelInfo: async () => ({ provider: "google-tts", model: "en" }),
   getComboModels: mocks.comboModels, comboLookupName: (name) => name,
 }));
-vi.mock("@/sse/utils/logger.js", () => ({ request: vi.fn(), info: vi.fn() }));
+vi.mock("@/sse/utils/logger.js", () => ({ request: vi.fn(), info: vi.fn(), warn: vi.fn() }));
 vi.mock("open-sse/services/combo.js", () => ({ handleComboChat: mocks.combo }));
 vi.mock("../../open-sse/handlers/ttsProviders/index.js", () => ({
   getTtsAdapter: () => ({ synthesize: mocks.synthesize }), synthesizeViaConfig: vi.fn(),
@@ -28,6 +30,7 @@ function request(body = {}, query = "") {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.settings.mockResolvedValue({});
   mocks.comboModels.mockResolvedValue(null);
   mocks.synthesize.mockResolvedValue({ base64: "aGVsbG8=", format: "mp3" });
   mocks.combo.mockImplementation(({ body, models, handleSingleModel }) => handleSingleModel(body, models[0]));
@@ -77,6 +80,39 @@ describe("TTS response_format at JSON ingress", () => {
     const response = await handleTts(request({ response_format }));
     expect(response.status).toBe(400);
     expect((await response.json()).error.message).toBe("response_format must be a non-empty string");
+    expect(mocks.synthesize).not.toHaveBeenCalled();
+  });
+
+  it("rejects a whitespace-only format", async () => {
+    const response = await handleTts(request({ response_format: "   " }));
+    expect(response.status).toBe(400);
+    expect((await response.json()).error.message).toBe("response_format must be a non-empty string");
+    expect(mocks.synthesize).not.toHaveBeenCalled();
+  });
+
+  it("treats response_format null as the mp3 default", async () => {
+    const response = await handleTts(request({ response_format: null }));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("audio/mp3");
+    expect(mocks.synthesize).toHaveBeenCalledWith("hello", "en", undefined, "mp3", expect.any(Object));
+  });
+
+  it("falls through an empty query value to the body's format", async () => {
+    const response = await handleTts(request({ response_format: "json" }, "?response_format="));
+    expect(response.headers.get("Content-Type")).toBe("application/json");
+    expect(await response.json()).toEqual({ audio: "aGVsbG8=", format: "mp3" });
+  });
+
+  it("trims and lowercases the format before use", async () => {
+    const response = await handleTts(request({ response_format: " JSON " }));
+    expect(await response.json()).toEqual({ audio: "aGVsbG8=", format: "mp3" });
+    expect(mocks.synthesize).toHaveBeenCalledWith("hello", "en", undefined, "json", expect.any(Object));
+  });
+
+  it("answers a missing API key with 401 before judging the format", async () => {
+    mocks.settings.mockResolvedValue({ requireApiKey: true });
+    const response = await handleTts(request({ response_format: {} }));
+    expect(response.status).toBe(401);
     expect(mocks.synthesize).not.toHaveBeenCalled();
   });
 });

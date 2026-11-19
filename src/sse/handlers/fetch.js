@@ -26,7 +26,7 @@ import { assertPublicUrlResolved } from "@/shared/utils/ssrfGuard.js";
  * @param {Request} request
  */
 export async function handleFetch(request) {
-  const { body, error } = await readJsonObject(request);
+  const { body, error } = await readJsonObject(request, { logTag: "FETCH" });
   if (error) return error;
 
   const reqUrl = new URL(request.url);

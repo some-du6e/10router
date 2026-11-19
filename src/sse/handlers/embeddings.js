@@ -1,4 +1,4 @@
-import { readJsonObject } from "../utils/requestBody.js";
+import { readJsonObject, missingModel } from "../utils/requestBody.js";
 import {
   getProviderCredentials,
   markAccountUnavailable,
@@ -34,7 +34,7 @@ function exactEmbeddingUsage(raw) {
  * @param {Request} request
  */
 export async function handleEmbeddings(request) {
-  const { body, error } = await readJsonObject(request);
+  const { body, error } = await readJsonObject(request, { logTag: "EMBEDDINGS" });
   if (error) return error;
 
   const url = new URL(request.url);
@@ -64,10 +64,8 @@ export async function handleEmbeddings(request) {
     }
   }
 
-  if (typeof modelStr !== "string" || !modelStr.trim()) {
-    log.warn("EMBEDDINGS", "Missing model");
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
-  }
+  const noModel = missingModel(modelStr, "EMBEDDINGS");
+  if (noModel) return noModel;
 
   if (!body.input) {
     log.warn("EMBEDDINGS", "Missing input");

@@ -66,7 +66,7 @@ import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/sha
 import { recordEndpointRequests } from "@/lib/endpointRequestLog.js";
 import { withMemoryAdmission } from "../services/memoryAdmission.js";
 import type { AdmissionTicket } from "../services/memoryAdmission.js";
-import { readJsonObject } from "../utils/requestBody.js";
+import { readJsonObject, missingModel } from "../utils/requestBody.js";
 
 // ---- Types -------------------------------------------------------------------
 
@@ -250,12 +250,8 @@ async function admittedChat(
   { earlyHeaders = false, autoCombo, autoComboHome = [] }: HandleChatOptions,
   ticket: AdmissionTicket | null,
 ): Promise<Response> {
-  // Read inside the admission, which counts the body's length once it is read.
-  const parsed = await readJsonObject(request, { ticket });
-  if (parsed.error) {
-    log.warn("CHAT", "Invalid request body");
-    return parsed.error;
-  }
+  const parsed = await readJsonObject(request, { ticket, logTag: "CHAT" });
+  if (parsed.error) return parsed.error;
   const body: ChatBody = parsed.body;
 
   // Build clientRawRequest for logging (if not provided)
@@ -299,10 +295,8 @@ async function admittedChat(
     }
   }
 
-  if (typeof modelStr !== "string" || !modelStr.trim()) {
-    log.warn("CHAT", "Missing model");
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
-  }
+  const noModel = missingModel(modelStr, "CHAT");
+  if (noModel) return noModel;
 
   const sourceFormatOverride = request?.url
     ? detectFormatByEndpoint(new URL(request.url).pathname, body)

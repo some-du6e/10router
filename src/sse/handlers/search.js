@@ -25,7 +25,7 @@ import { handleComboChat, getComboModelsFromData } from "open-sse/services/combo
  * @param {Request} request
  */
 export async function handleSearch(request) {
-  const { body, error } = await readJsonObject(request);
+  const { body, error } = await readJsonObject(request, { logTag: "SEARCH" });
   if (error) return error;
 
   const url = new URL(request.url);

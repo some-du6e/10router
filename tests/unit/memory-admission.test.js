@@ -341,4 +341,38 @@ describe("handleChat wiring", () => {
     await res.text();
     expect(memoryAdmissionStats().inflight).toBe(0);
   });
+
+  // With no content-length the gate admits the request at 0 bytes, so only the
+  // body read under the ticket can count it. Reading it before admission, or
+  // without passing the ticket, leaves the held bytes at 0.
+  it("reads a body without content-length only once admitted, and counts it while the reply is open", async () => {
+    const before = memoryAdmissionStats();
+    const text = JSON.stringify({ model: "openai/gpt-x", messages: [{ role: "user", content: "x".repeat(4096) }] });
+    let admittedAtFirstRead = null;
+    const stream = new ReadableStream({
+      pull(controller) {
+        admittedAtFirstRead ??= memoryAdmissionStats().admitted;
+        controller.enqueue(new TextEncoder().encode(text));
+        controller.close();
+      },
+    }, { highWaterMark: 0 });
+    const request = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: stream,
+      duplex: "half",
+    });
+    expect(request.headers.get("content-length")).toBeNull();
+
+    const res = await handleChat(request);
+    // No API key while one is required: refused after the body is read.
+    expect(res.status).toBe(401);
+    expect(admittedAtFirstRead).toBe(before.admitted + 1);
+    const held = memoryAdmissionStats();
+    expect(held.inflight).toBe(before.inflight + 1);
+    expect(held.heldBytes - before.heldBytes).toBeGreaterThanOrEqual(text.length);
+
+    await res.text();
+    expect(memoryAdmissionStats()).toMatchObject({ inflight: before.inflight, heldBytes: before.heldBytes });
+  });
 });

@@ -2,18 +2,24 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   settings: vi.fn(), modelInfo: vi.fn(), comboModels: vi.fn(), credentials: vi.fn(),
-  embeddings: vi.fn(), tts: vi.fn(), saveUsage: vi.fn(),
+  embeddings: vi.fn(), tts: vi.fn(), saveUsage: vi.fn(), apiKey: vi.fn(), keyPolicy: vi.fn(),
 }));
 
 vi.mock("open-sse/index.js", () => ({}));
 vi.mock("@/lib/localDb", () => ({ getSettings: mocks.settings, getCombos: vi.fn() }));
-vi.mock("@/lib/db/index.js", () => ({ getSettings: mocks.settings }));
+vi.mock("@/lib/db/index.js", () => ({
+  getSettings: mocks.settings, getApiKeyPolicy: mocks.keyPolicy, getModelAliases: async () => ({}),
+}));
 vi.mock("@/sse/services/auth.js", () => ({
-  extractApiKey: () => null, isValidApiKey: vi.fn(),
+  extractApiKey: mocks.apiKey, isValidApiKey: vi.fn(),
   getProviderCredentials: mocks.credentials, markAccountUnavailable: vi.fn(), clearAccountError: vi.fn(),
 }));
 vi.mock("@/sse/services/model.js", () => ({
   getModelInfo: mocks.modelInfo, getComboModels: mocks.comboModels, comboLookupName: (name) => name,
+  parseModel: (id) => {
+    const [provider, ...rest] = id.split("/");
+    return rest.length ? { provider, model: rest.join("/") } : { provider: null, model: id };
+  },
 }));
 vi.mock("@/sse/services/tokenRefresh.js", () => ({
   checkAndRefreshToken: async (_, credentials) => credentials, updateProviderCredentials: vi.fn(),
@@ -33,9 +39,6 @@ vi.mock("open-sse/services/combo.js", () => ({
   handleComboChat: vi.fn(), handleFusionChat: vi.fn(), detectRequiredCapabilities: () => new Set(),
   getComboModelsFromData: vi.fn(),
 }));
-vi.mock("@/lib/headroom/detect", () => ({ DEFAULT_HEADROOM_URL: "http://headroom.test" }));
-vi.mock("@/lib/pxpipe/loader.js", () => ({ getTransform: vi.fn() }));
-vi.mock("@/lib/pxpipe/events.js", () => ({ appendPxpipeEvent: vi.fn() }));
 vi.mock("@/sse/services/antigravityQuota.js", () => ({ handleAntigravityQuotaError: vi.fn(), clearAntigravityStrikes: vi.fn() }));
 vi.mock("open-sse/services/projectId.js", () => ({ getProjectIdForConnection: vi.fn() }));
 vi.mock("@/sse/services/claudeBuiltinSearch.js", () => ({ enrichClaudeBuiltinSearch: vi.fn() }));
@@ -47,6 +50,7 @@ import { handleImageGeneration } from "@/sse/handlers/imageGeneration.js";
 import { handleSearch } from "@/sse/handlers/search.js";
 import { handleFetch } from "@/sse/handlers/fetch.js";
 import { handleSystemone } from "@/sse/handlers/systemone.js";
+import * as log from "@/sse/utils/logger.js";
 
 const handlers = { chat: handleChat, embeddings: handleEmbeddings, tts: handleTts,
   image: handleImageGeneration, search: handleSearch, fetch: handleFetch, systemone: handleSystemone };
@@ -60,6 +64,39 @@ beforeEach(() => {
   mocks.comboModels.mockResolvedValue(null);
   mocks.modelInfo.mockResolvedValue({ provider: null });
   mocks.saveUsage.mockResolvedValue(undefined);
+  mocks.apiKey.mockReturnValue(null);
+  mocks.keyPolicy.mockResolvedValue(null);
+});
+
+const logTags = { chat: "CHAT", embeddings: "EMBEDDINGS", tts: "TTS", image: "IMAGE", search: "SEARCH", fetch: "FETCH", systemone: "SYSTEMONE" };
+
+describe.each(Object.entries(handlers))("%s rejected-body logging", (name, handle) => {
+  it.each([["{", "Invalid JSON body"], ["null", "Request body must be an object"]])("logs %s under its own tag", async (raw, message) => {
+    await handle(request(raw));
+    expect(log.warn).toHaveBeenCalledWith(logTags[name], message);
+  });
+});
+
+// A key whose allowlist doesn't cover the model: the limit check answers 403.
+// A model that isn't a string must get 400 before that check runs.
+describe.each(Object.entries({ chat: handleChat, embeddings: handleEmbeddings }))("%s model check before key limits", (_, handle) => {
+  beforeEach(() => {
+    mocks.apiKey.mockReturnValue("sk-client");
+    mocks.keyPolicy.mockResolvedValue({ allowedModels: ["openai/allowed-model"] });
+  });
+
+  it("answers 400 Missing model for model 123, without reading the key's limits", async () => {
+    const response = await handle(request(JSON.stringify({ model: 123, input: "hello", messages: [{ role: "user", content: "hi" }] })));
+    expect(response.status).toBe(400);
+    expect((await response.json()).error.message).toBe("Missing model");
+    expect(mocks.keyPolicy).not.toHaveBeenCalled();
+  });
+
+  it("still answers 403 for a string model the allowlist doesn't cover", async () => {
+    const response = await handle(request(JSON.stringify({ model: "openai/other-model", input: "hello", messages: [{ role: "user", content: "hi" }] })));
+    expect(response.status).toBe(403);
+    expect(mocks.keyPolicy).toHaveBeenCalled();
+  });
 });
 
 describe.each(Object.entries(handlers))("%s JSON ingress", (_, handle) => {

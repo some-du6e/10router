@@ -1,4 +1,4 @@
-import { readJsonObject } from "../utils/requestBody.js";
+import { readJsonObject, missingModel } from "../utils/requestBody.js";
 import {
   extractApiKey, isValidApiKey,
   getProviderCredentials, markAccountUnavailable, clearAccountError,
@@ -23,19 +23,17 @@ const CREDENTIALED_PROVIDERS = new Set(
 );
 
 export async function handleTts(request) {
-  const { body, error } = await readJsonObject(request);
+  const { body, error } = await readJsonObject(request, { logTag: "TTS" });
   if (error) return error;
 
   const url = new URL(request.url);
   const modelStr = body.model;
-  // Keep the query override used by the dashboard; API clients send this in JSON.
-  const responseFormat = (url.searchParams.get("response_format") || body.response_format) ?? "mp3";
-  if (typeof responseFormat !== "string" || !responseFormat.trim()) {
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "response_format must be a non-empty string");
-  }
+  // The query parameter (the dashboard sends it) wins over the body's, which is
+  // where API clients put it. An empty query value falls through to the body.
+  const requestedFormat = url.searchParams.get("response_format") || body.response_format;
   const language = body.language || ""; // Optional language hint (currently used by Gemini)
   const style = body.style || ""; // Optional style/voice instructions (e.g. Xiaomi MiMo)
-  log.request("POST", `${url.pathname} | ${modelStr} | format=${responseFormat}${language ? ` | lang=${language}` : ""}`);
+  log.request("POST", `${url.pathname} | ${modelStr} | format=${requestedFormat ?? "mp3"}${language ? ` | lang=${language}` : ""}`);
 
   const settings = await getSettings();
   const apiKey = extractApiKey(request);
@@ -45,7 +43,13 @@ export async function handleTts(request) {
     if (!valid) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
   }
 
-  if (typeof modelStr !== "string" || !modelStr.trim()) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
+  if (requestedFormat != null && (typeof requestedFormat !== "string" || !requestedFormat.trim())) {
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, "response_format must be a non-empty string");
+  }
+  const responseFormat = requestedFormat == null ? "mp3" : requestedFormat.trim().toLowerCase();
+
+  const noModel = missingModel(modelStr, "TTS");
+  if (noModel) return noModel;
   if (typeof body.input !== "string" || !body.input.trim()) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: input");
   const limitDenied = await checkApiKeyLimits(apiKey, { model: modelStr });
   if (limitDenied) return limitDenied;
@@ -117,6 +121,9 @@ async function handleSingleModelTts(body, modelStr, responseFormat, language, st
         .catch((error) => log.warn("AUTH", `Could not clear ${credentials.connectionName} errors: ${error.message}`));
       return result.response;
     }
+    // A request the upstream rejected (handleTtsCore's 400) fails the same on
+    // every account, so it locks none.
+    if (result.status === HTTP_STATUS.BAD_REQUEST) return result.response;
 
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, null, credentials.apiKey);
     if (shouldFallback) {
