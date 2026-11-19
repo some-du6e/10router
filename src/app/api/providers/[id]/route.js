@@ -1,10 +1,15 @@
 import { NextResponse } from "next/server";
+import { withoutProviderDataSecrets } from "open-sse/utils/redact.js";
 import {
   getProviderConnectionById,
+  getProviderNodeById,
   getProxyPoolById,
   updateProviderConnection,
   deleteProviderConnection,
 } from "@/models";
+import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
+import { resolveKeyBaseUrl, withKeyBaseUrl, withoutKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
+import { isLocalRequest } from "@/dashboardGuard";
 
 function normalizeProxyConfig(body = {}) {
   const hasAnyProxyField =
@@ -75,6 +80,9 @@ export async function GET(request, { params }) {
     delete result.accessToken;
     delete result.refreshToken;
     delete result.idToken;
+    // Copilot's bearer token, Kiro IDC's client secret, ... Left out, not masked:
+    // a PUT merges providerSpecificData, so the stored values survive a round trip.
+    result.providerSpecificData = withoutProviderDataSecrets(result.providerSpecificData);
 
     return NextResponse.json({ connection: result });
   } catch (error) {
@@ -100,13 +108,20 @@ export async function PUT(request, { params }) {
       lastErrorAt,
       errorCode,
       monthlyCost,
-      providerSpecificData
     } = body;
 
     const existing = await getProviderConnectionById(id);
     if (!existing) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
     }
+
+    // On node-backed keys, psd.baseUrl is the endpoint the key is sent to. It
+    // comes from the node, or for compatible keys from the checked baseUrl
+    // field below; never from client-sent providerSpecificData.
+    const isCompatibleKey = isOpenAICompatibleProvider(existing.provider) || isAnthropicCompatibleProvider(existing.provider);
+    const providerSpecificData = isCompatibleKey || isCustomEmbeddingProvider(existing.provider)
+      ? withoutKeyBaseUrl(body.providerSpecificData)
+      : body.providerSpecificData;
 
     const proxyConfig = normalizeProxyConfig(body);
     if (proxyConfig.error) {
@@ -193,6 +208,22 @@ export async function PUT(request, { params }) {
       }
     }
 
+    // Per-key endpoint URL on compatible nodes. A string changes it; empty or
+    // null goes back to the provider's URL.
+    if (isCompatibleKey && body.baseUrl !== undefined) {
+      if (body.baseUrl !== null && typeof body.baseUrl !== "string") {
+        return NextResponse.json({ error: "Invalid baseUrl", field: "baseUrl" }, { status: 400 });
+      }
+      const node = await getProviderNodeById(existing.provider);
+      if (!node) return NextResponse.json({ error: "Provider node not found" }, { status: 404 });
+      const keyUrl = await resolveKeyBaseUrl(body.baseUrl, node.baseUrl, { remote: !isLocalRequest(request) });
+      if (!keyUrl.ok) return NextResponse.json({ error: keyUrl.error, field: "baseUrl" }, { status: 400 });
+      updateData.providerSpecificData = withKeyBaseUrl(
+        updateData.providerSpecificData || { ...(existing.providerSpecificData || {}) },
+        keyUrl,
+      );
+    }
+
     const updated = await updateProviderConnection(id, updateData);
 
     // Hide sensitive fields
@@ -201,6 +232,9 @@ export async function PUT(request, { params }) {
     delete result.accessToken;
     delete result.refreshToken;
     delete result.idToken;
+    // Copilot's bearer token, Kiro IDC's client secret, ... Left out, not masked:
+    // a PUT merges providerSpecificData, so the stored values survive a round trip.
+    result.providerSpecificData = withoutProviderDataSecrets(result.providerSpecificData);
 
     return NextResponse.json({ connection: result });
   } catch (error) {

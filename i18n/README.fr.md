@@ -3,7 +3,7 @@
   
   # 9Router - Routeur IA GRATUIT et économiseur de tokens
   
-  **N'arrêtez jamais de coder. Économisez 20 à 40 % de tokens avec RTK + bascule automatique vers des modèles d'IA GRATUITS et bon marché.**
+  **N'arrêtez jamais de coder. Bascule automatique vers des modèles d'IA GRATUITS et bon marché.**
   
   **Connectez tous vos outils de codage IA (Claude Code, Cursor, Antigravity, Copilot, Codex, Gemini, OpenCode, Cline, OpenClaw...) à plus de 40 fournisseurs d'IA et plus de 100 modèles.**
   
@@ -35,7 +35,6 @@
 
 **9Router résout tout cela :**
 
-- ✅ **Économiseur de tokens RTK** - Compresse automatiquement le contenu de tool_result et économise 20 à 40 % de tokens par requête
 - ✅ **Maximise les abonnements** - Suit le quota et utilise chaque bit avant sa réinitialisation
 - ✅ **Bascule automatique** - Abonnement → Bon marché → Gratuit, zéro temps d'arrêt
 - ✅ **Multi-comptes** - Round-robin entre les comptes de chaque fournisseur
@@ -54,7 +53,6 @@
        ↓
 ┌─────────────────────────────────────────────┐
 │           9Router (Smart Router)            │
-│  • RTK Token Saver (cut tool_result tokens) │
 │  • Format translation (OpenAI ↔ Claude)     │
 │  • Quota tracking                           │
 │  • Auto token refresh                       │
@@ -66,7 +64,7 @@
        │   ↓ budget limit
        └─→ [Tier 3: FREE] Kiro, OpenCode Free, Vertex ($300 credits)
 
-Result: Never stop coding, minimal cost + 20-40% token savings via RTK
+Result: Never stop coding, minimal cost
 ```
 
 ---
@@ -433,10 +431,6 @@ URL par défaut :
 
 | Fonctionnalité                                                                         | Ce qu'elle fait                                                                                      | Pourquoi c'est important                                  |
 | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| 🚀 **Économiseur de tokens RTK** ([RTK](https://github.com/rtk-ai/rtk) ⭐40K)           | Compresse les sorties des outils (`git diff`, `grep`, `ls`, `tree`...) avant de les envoyer au LLM    | Économise **20 à 40 % de tokens d'entrée** par requête    |
-| 🧠 **Économiseur de tokens Headroom** ([Headroom](https://github.com/chopratejas/headroom)) | Proxy externe optionnel `/v1/compress` avant le routage vers le fournisseur                      | Économise plus de tokens de contexte sans changer les clients |
-| 🪨 **Mode cavernicole** ([Caveman](https://github.com/JuliusBrussee/caveman) ⭐52K)     | Injecte un prompt en langage cavernicole → le LLM répond de manière concise, le contenu technique est conservé | Économise **jusqu'à 65 % de tokens de sortie** |
-| 🐴 **Ponytail** ([Ponytail](https://github.com/DietrichGebert/ponytail))                | Injecte un prompt de "dev sénior fainéant" → le LLM écrit un code minimal, YAGNI d'abord (Lite/Full/Ultra) | **Moins de tokens de sortie, moins de refactorisation** |
 | 🎯 **Repli intelligent à 3 niveaux**                                                    | Routage automatique : Abonnement → Bon marché → Gratuit                                              | N'arrêtez jamais de coder, zéro temps d'arrêt             |
 | 📊 **Suivi de quota en temps réel**                                                     | Compteur de tokens en direct + compte à rebours de réinitialisation                                   | Maximisez la valeur de votre abonnement                   |
 | 🔄 **Traduction de formats**                                                            | OpenAI ↔ Claude ↔ Gemini ↔ Cursor ↔ Kiro ↔ Vertex                                                   | Fonctionne avec n'importe quel outil CLI                  |
@@ -450,65 +444,6 @@ URL par défaut :
 
 <details>
 <summary><b>📖 Détails des fonctionnalités</b></summary>
-
-### 🚀 Économiseur de tokens RTK
-
-Les sorties des outils (`git diff`, `grep`, `find`, `ls`, `tree`, vidages de journaux...) consomment souvent 30 à 50 % de votre budget de prompt. RTK les détecte et applique une compression intelligente et sans perte **avant** que la requête n'atteigne le LLM :
-
-- **Filtres :** `git-diff`, `git-status`, `grep`, `find`, `ls`, `tree`, `dedup-log`, `smart-truncate`, `read-numbered`, `search-list`
-- **Détection automatique :** Aucune configuration requise — RTK inspecte le premier 1 Ko de chaque `tool_result` et choisit le bon filtre.
-- **Sûr par conception :** Si un filtre échoue, génère une erreur ou rend la sortie plus volumineuse, RTK conserve silencieusement le texte original. Les erreurs ne cassent jamais votre requête.
-- **Universel :** Fonctionne dans tous les formats (OpenAI, Claude, Gemini, Cursor, Kiro, OpenAI Responses) car il s'exécute **avant** toute traduction de format.
-- **Activé par défaut :** Activez-le ou désactivez-le à tout moment dans Tableau de bord → Paramètres d'Endpoint.
-
-```
-Sans RTK : 47K tokens envoyés au LLM
-Avec RTK :   28K tokens envoyés au LLM   (40 % économisés · même contexte · même réponse)
-```
-
-### 🧠 Économiseur de tokens Headroom
-
-Headroom est optionnel et s'exécute séparément. 9Router appelle l'endpoint local `/v1/compress` de Headroom, puis conserve le routage, le repli, l'authentification et le suivi d'utilisation normaux :
-
-```
-Client → 9Router → Headroom /v1/compress → 9Router → fournisseur
-```
-
-Configuration locale :
-
-```bash
-pip install "headroom-ai[proxy]"
-headroom proxy --port 8787
-```
-
-Activez-le dans Tableau de bord → Endpoint → Token Saver → Headroom. URL par défaut : `http://localhost:8787`.
-
-Exemples Docker :
-
-```bash
-# Service Headroom dans le même réseau Docker
-http://headroom:8787
-
-# Headroom exécuté sur la machine hôte
-http://host.docker.internal:8787
-```
-
-Si Headroom est indisponible ou renvoie une erreur, 9Router bascule en mode dégradé et envoie la requête originale.
-
-### 🐴 Ponytail (Dev sénior fainéant)
-
-Ponytail injecte un prompt système de _"dev sénior fainéant"_ dans chaque requête, orientant le LLM vers un code minimal et YAGNI d'abord — la suppression plutôt que l'ajout, la bibliothèque standard plutôt que de nouvelles dépendances, une ligne plutôt que des abstractions. Adapté de [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail).
-
-- **Lite** — Construisez ce qui est demandé, nommez l'alternative plus fainéante.
-- **Full** — Hiérarchie YAGNI appliquée : stdlib → natif → dépendances existantes → une ligne → code minimal.
-- **Ultra** — Extrémiste du YAGNI : suppression d'abord, livrez la solution d'une ligne, remettez en question le reste de l'exigence dans la même réponse.
-
-```
-Sans Ponytail : code verbeux, abstractions superflues, échafaudage "au cas où"
-Avec Ponytail :    diff fonctionnel le plus court, aucune abstraction non demandée, moins de tokens
-```
-
-Ne sacrifie jamais : la validation des entrées, la gestion des erreurs qui évite la perte de données, la sécurité, l'accessibilité ni rien d'explicitement demandé. Activez-le dans Tableau de bord → Endpoint → Ponytail. Se cumule avec Caveman (concision de sortie) et RTK (compression d'entrée).
 
 ### 🎯 Repli intelligent à 3 niveaux
 
@@ -612,7 +547,6 @@ Traduction transparente entre les formats :
 
 | Niveau                 | Fournisseur           | Coût            | Réinitialisation du quota | Idéal pour                                |
 | ---------------------- | --------------------- | --------------- | ------------------------- | ----------------------------------------- |
-| **🚀 ÉCONOMIE DE TOKENS** | **RTK (intégré)**     | **GRATUIT**     | Toujours actif            | **Économisez 20 à 40 % de tokens sur CHAQUE requête** |
 | **💳 ABONNEMENT**      | Claude Code (Pro/Max) | 20 à 200 $/mois | 5 h + hebdomadaire        | Déjà abonné                                |
 |                        | Codex (Plus/Pro)      | 20 à 200 $/mois | 5 h + hebdomadaire        | Utilisateurs d'OpenAI                      |
 |                        | GitHub Copilot        | 10 à 19 $/mois  | Mensuelle                 | Utilisateurs de GitHub                     |
@@ -624,7 +558,7 @@ Traduction transparente entre les formats :
 |                        | OpenCode Free         | 0 $             | Illimité                  | Sans authentification, modèles automatiques |
 |                        | Vertex AI             | 300 $ de crédit | Nouveaux comptes GCP      | Gemini 3 Pro + DeepSeek + GLM-5            |
 
-**💡 Astuce pro :** Le combo RTK + Kiro AI + OpenCode Free = **0 $ de coût + 20 à 40 % d'économie de tokens** !
+**💡 Astuce pro :** Le combo Kiro AI + OpenCode Free = **0 $ de coût** !
 
 ---
 
@@ -696,7 +630,7 @@ Combo : "free-forever"
   3. oc/<auto>                 (OpenCode Free, sans authentification)
 
 Coût mensuel : 0 $
-Qualité : Modèles prêts pour la production + RTK économise 20 à 40 % de tokens
+Qualité : Modèles prêts pour la production
 ```
 
 ### Cas 3 : "J'ai besoin de coder 24h/24 et 7j/7, sans interruptions"
@@ -1031,7 +965,7 @@ Modèles :
   2. kr/glm-5 (GLM-5 gratuit via Kiro)
   3. vertex/gemini-3.1-pro-preview (300 $ de crédit gratuit)
 
-Coût : 0 $ pour toujours (+ 20 à 40 % d'économie de tokens via RTK) !
+Coût : 0 $ pour toujours !
 ```
 
 </details>
@@ -1133,7 +1067,6 @@ npm install
 npm run build
 
 # Configuration
-export JWT_SECRET="votre-secret-sécurisé-changez-le"
 export INITIAL_PASSWORD="votre-mot-de-passe"
 export DATA_DIR="/var/lib/9router"
 export PORT="20128"
@@ -1153,6 +1086,8 @@ pm2 start npm --name 9router -- start
 pm2 save
 pm2 startup
 ```
+
+> `JWT_SECRET` est facultatif. Laissez-le vide et 10router en génère un une seule fois dans `$DATA_DIR/jwt-secret`, donc les sessions survivent aux redémarrages. Uniquement pour plusieurs instances derrière une même URL : générez une valeur une fois (`openssl rand -hex 32`), conservez-la et définissez cette même valeur sur chaque instance. Les valeurs de moins de 32 caractères ou un placeholder documenté sont ignorés.
 
 ### Docker
 
@@ -1204,7 +1139,7 @@ docker pull decolua/9router:latest   # mise à jour vers la dernière version
 
 | Variable                                             | Par défaut                                  | Description                                                                                  |
 | ---------------------------------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `JWT_SECRET`                                         | Généré automatiquement (`~/.9router/jwt-secret`) | Secret de signature JWT pour le cookie d'authentification du tableau de bord (remplacez-le pour partager entre instances) |
+| `JWT_SECRET`                                         | Généré automatiquement (`~/.9router/jwt-secret`) | Secret de signature JWT pour le cookie d'authentification du tableau de bord ; définissez-le uniquement pour partager les sessions entre instances (32 caractères ou plus ; les valeurs plus courtes et les placeholders documentés sont ignorés) |
 | `INITIAL_PASSWORD`                                   | `123456`                                    | Mot de passe de première connexion quand aucun hash n'est enregistré                          |
 | `DATA_DIR`                                           | `~/.9router`                                | Emplacement principal des données de l'app (SQLite dans `$DATA_DIR/db/data.sqlite`)          |
 | `PORT`                                               | défaut du framework                         | Port du service (`20128` dans les exemples)                                                   |
@@ -1219,8 +1154,11 @@ docker pull decolua/9router:latest   # mise à jour vers la dernière version
 | `ENABLE_REQUEST_LOGS`                                | `false`                                     | Active les journaux de requêtes/réponses dans `logs/`                                         |
 | `AUTH_COOKIE_SECURE`                                 | `false`                                     | Force le cookie d'authentification `Secure` (mettez `true` derrière un proxy inverse HTTPS)   |
 | `REQUIRE_API_KEY`                                    | `false`                                     | Applique la clé API Bearer sur les routes `/v1/*` (recommandé pour les déploiements exposés à Internet) |
+| `TRUST_PROXY`                                        | non défini                                  | Deux formes. `true` : un relais sur cette machine n'ajoute aucun en-tête de transfert (socat, `ssh -R`, un tunnel TCP, nginx sans `X-Forwarded-For` ni `X-Real-IP`, qui envoie par défaut son propre `Host` loopback), donc un client distant pourrait envoyer `Host: localhost` et compter comme local. Avec ce réglage, aucune connexion loopback ne compte comme locale (les clients de cette machine ont aussi besoin d'une clé API ou du jeton CLI) et toutes leurs connexions partagent un même compteur de verrouillage court, car leurs en-têtes viennent du client. Une liste d'IP et de CIDR (`192.168.1.10,10.0.0.0/8`) : des proxys inverses sur d'autres hôtes ou conteneurs, dont `X-Forwarded-For`/`X-Real-IP` sont lus comme ceux d'un proxy local, donc chaque client derrière eux a son propre compteur. Un proxy local qui envoie `X-Forwarded-For`/`X-Real-IP` n'a besoin d'aucune des deux. Tout proxy doit écraser ou compléter ces deux en-têtes : un proxy qui laisse passer les valeurs du client (nginx qui ne fixe que `Host` et `X-Forwarded-Proto`, par exemple) laisse chaque client choisir les clés sur lesquelles ses connexions sont limitées. Un pair listé ne compte comme proxy que sur une requête avec un en-tête de transfert ; envoyez-en un dans chaque location (nginx ignore les lignes `proxy_set_header` du niveau server dans une location qui définit les siennes). |
+| `ALLOWED_HOSTS`                                      | non défini                                  | Liste de noms d'hôte (ou d'URL) séparés par des virgules auxquels l'API du dashboard répond quand « Require login » est désactivé, en plus de `localhost`, des adresses IP, des URL de tunnel et de `BASE_URL`. Pour une installation joignable sous plusieurs noms, comme un domaine de tunnel et un nom sur le réseau local. Quand la requête passe par un saut de proxy (un pair loopback qui n'est pas local, ou un pair listé dans `TRUST_PROXY` qui a envoyé un en-tête de transfert), un `Host` loopback ne compte jamais, car le proxy a pu l'écrire, et derrière un proxy listé un `Host` en IP littérale ne compte que si `ALLOWED_HOSTS` ou `BASE_URL` le nomme. Connexion désactivée derrière un proxy listé, réglez `proxy_set_header Host $host` sur ce proxy, puis ajoutez ici les IP que les navigateurs tapent pour joindre le proxy. N'ajoutez jamais (et ne mettez jamais dans `BASE_URL`) l'IP amont qu'envoie un proxy qui réécrit `Host` : cela accepte tous les noms passant par le proxy, y compris ceux détournés par DNS rebinding. Une entrée IPv6 peut être nue ou entre crochets ; mettez des crochets si vous indiquez un port (`2001:db8::5:8443` sans crochets est une autre adresse). Préférez `BASE_URL` ou cette liste à `NEXT_PUBLIC_BASE_URL`, qu'une compilation depuis les sources intègre au moment du build. Cela couvre les proxys qui joignent 10router en loopback (un amont `127.0.0.1`, `localhost` ou `::1`) et envoient un en-tête de transfert (un proxy sans en-tête compte comme local ; voir `TRUST_PROXY=true`), et ceux listés dans `TRUST_PROXY` qui envoient un en-tête de transfert. Un proxy sur un autre hôte doit être listé. Dans Docker, l'hôte est une autre machine pour le conteneur : ajoutez la passerelle du bridge à `TRUST_PROXY`, sinon un proxy de l'hôte vers `127.0.0.1:20128` est un pair direct. Un proxy sur le même hôte dont le `proxy_pass` vise l'IP LAN de cette machine arrive depuis cette IP, donc faites-le pointer vers `127.0.0.1` ou `localhost` (ou ajoutez cette IP à `TRUST_PROXY`). |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` | vide                                        | Proxy sortant optionnel pour les appels aux fournisseurs externes                              |
 | `SEARXNG_URL`                                        | `http://localhost:8888/search`              | Endpoint du fournisseur de recherche web SearXNG intégré, sans authentification               |
+| `DETECT_ANTHROPIC_FIRST_HINTS`                       | vide                                        | Fragments d'URL qui font tester d'abord Anthropic Messages par « Add endpoint ». Séparés par des virgules, sans tenir compte de la casse ; les guillemets autour d'une entrée sont ignorés. Les URL qui nomment Anthropic ou Claude et les clés `sk-ant-` le font déjà. Chaque fragment est cherché n'importe où dans l'URL de l'endpoint (schéma, hôte, chemin, query ; un chemin d'API final comme `/chat/completions` est retiré avant) : choisissez une partie distinctive de l'hôte. Redémarrez après modification. |
 
 Remarques :
 
@@ -1336,7 +1274,6 @@ Remarques :
 
 **Coûts élevés**
 
-- Activez RTK dans Tableau de bord → Paramètres d'Endpoint (activé par défaut, économise 20 à 40 % de tokens)
 - Consultez les statistiques d'utilisation dans le tableau de bord
 - Changez le modèle principal pour GLM/MiniMax
 - Utilisez le niveau gratuit (Kiro, OpenCode Free, Vertex) pour les tâches non critiques
@@ -1425,9 +1362,6 @@ Merci à tous les contributeurs qui ont contribué à améliorer 9Router !
 Construit sur les épaules de géants :
 
 - **[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)** — implémentation originale en Go qui a inspiré ce port JavaScript.
-- **[RTK](https://github.com/rtk-ai/rtk)** ![Stars](https://img.shields.io/github/stars/rtk-ai/rtk?style=flat&color=yellow) — économiseur de tokens en Rust. 9Router porte son pipeline de compression en JS → **−20 à 40 % de tokens d'entrée** sur chaque requête.
-- **[Caveman](https://github.com/JuliusBrussee/caveman)** ![Stars](https://img.shields.io/github/stars/JuliusBrussee/caveman?style=flat&color=yellow) par **[@JuliusBrussee](https://github.com/JuliusBrussee)** — viral _"why use many token when few token do trick"_. 9Router adapte son prompt → **−65 % de tokens de sortie**.
-- **[Ponytail](https://github.com/DietrichGebert/ponytail)** ![Stars](https://img.shields.io/github/stars/DietrichGebert/ponytail?style=flat&color=yellow) par **[@DietrichGebert](https://github.com/DietrichGebert)** — compétence de _"dev sénior fainéant"_. 9Router injecte sa hiérarchie YAGNI-d'abord → **moins de tokens, moins de code, des diffs plus courts**.
 
 Un immense merci à ces auteurs — sans leur travail, les fonctionnalités d'économie de tokens de 9Router n'existeraient pas. Mettez-leur une ⭐ sur GitHub !
 

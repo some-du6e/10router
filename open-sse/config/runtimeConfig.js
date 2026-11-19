@@ -7,7 +7,11 @@ export const HTTP_STATUS = {
   NOT_FOUND: 404,
   NOT_ACCEPTABLE: 406,
   REQUEST_TIMEOUT: 408,
+  CONFLICT: 409,
+  PAYLOAD_TOO_LARGE: 413,
+  UNPROCESSABLE_ENTITY: 422,
   RATE_LIMITED: 429,
+  CLIENT_CLOSED_REQUEST: 499,
   SERVER_ERROR: 500,
   BAD_GATEWAY: 502,
   SERVICE_UNAVAILABLE: 503,
@@ -31,12 +35,24 @@ export const MEMORY_CONFIG = {
   maxAffinitySessions: 5000,
 };
 
-// Parse a positive integer env override, falling back to a default.
-function envMs(name, def) {
+// Largest delay setTimeout honours; above it the timer fires at once.
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+// Parse an integer env override (min..MAX_TIMER_MS), falling back to a default.
+function envMs(name, def, min = 1) {
   const raw = process.env[name];
   if (raw == null || raw === "") return def;
   const n = parseInt(raw, 10);
-  return Number.isFinite(n) && n > 0 ? n : def;
+  return Number.isFinite(n) && n >= min && n <= MAX_TIMER_MS ? n : def;
+}
+
+// Parse a plain non-negative decimal integer env override (min..max), else the
+// default. Unlike envMs, "5m", "1e4" or "0x10" are rejected, not misread.
+function envInt(name, def, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const raw = process.env[name]?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return def;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n >= min && n <= max ? n : def;
 }
 
 function envUrl(name, def) {
@@ -45,12 +61,122 @@ function envUrl(name, def) {
 }
 
 // SearXNG endpoint used by the unauthenticated web-search provider.
-// Configure this for a separate Docker service or remote SearXNG instance.
+// Must resolve to a public address; fetchPublic blocks localhost and private hosts.
 export const SEARXNG_URL = envUrl("SEARXNG_URL", "http://localhost:8888/search");
+export const SEARXNG_CONFIGURED = Boolean(envUrl("SEARXNG_URL", ""));
+
+// Prompt-cache affinity (services/cacheAffinity.js): a conversation that asks for
+// a prompt cache prefers the keys (accounts) that served it recently, because
+// the upstream cache is per account.
+export const CACHE_AFFINITY = {
+  // How long after a key last served a conversation it counts as warm for it:
+  // the upstream 5-minute prompt cache TTL. 0 turns cache affinity off.
+  // Env: CACHE_AFFINITY_TTL_MS.
+  ttlMs: envInt("CACHE_AFFINITY_TTL_MS", 5 * 60 * 1000),
+  // Used instead when the request's cache_control asks for ttl: "1h".
+  longTtlMs: 60 * 60 * 1000,
+  // Longest one request waits, in all per model it tries, for a warm key's
+  // rate-limit lock to clear instead of moving to a cold key. 0: never wait.
+  // Env: CACHE_AFFINITY_MAX_WAIT_MS.
+  maxWaitMs: envInt("CACHE_AFFINITY_MAX_WAIT_MS", 10 * 1000, { max: MAX_TIMER_MS }),
+  // Only a request at least this big (estimated prompt tokens) waits; a smaller
+  // one rebuilds its cache cheaply on another key. Env: CACHE_AFFINITY_MIN_TOKENS.
+  minPromptTokens: envInt("CACHE_AFFINITY_MIN_TOKENS", 32 * 1000),
+  // Conversations remembered at once; the least recently used goes first.
+  maxEntries: 10 * 1000,
+  // Warm keys remembered per conversation; the least recently used goes first.
+  maxWarmKeys: 4,
+  // Added to a wait so the lock has surely ended when the request retries.
+  lockSlackMs: 25,
+  // Up to this much more, at random, so requests waiting on one key don't all
+  // retry it at once and escalate its backoff.
+  jitterMs: 250,
+};
+
+// On a custom (OpenAI-/Anthropic-compatible) endpoint, a request error every
+// key would refuse (a prompt longer than the model's context window, a tool
+// schema the upstream rejects) stops the account walk once this many accounts
+// of one model answered it with the same message, instead of trying every key
+// (services/sameRequestError.ts). The message has to read as the request's
+// fault (SAME_REQUEST_ERROR_PATTERNS in errorConfig.js), or the status be 413,
+// and either way pass the vetoes on key, billing, limit and plan wording. Keys
+// on one upstream, reached the same way (same proxy or relay), match up to
+// numbers. When the keys don't all reach one upstream that way, max(this, 2) distinct upstreams must give the very same context or
+// token limit message naming both sizes (two runs of 4+ digits), never a 413.
+// 1 stops at the first such error, only when the keys share one upstream
+// reached the same way (same proxy or relay).
+// Env: SAME_REQUEST_ERROR_STOP_AFTER (0 tries every key, as before, on every
+// node; anything that isn't a whole number falls back to 2).
+export const SAME_REQUEST_ERROR_STOP_AFTER = envInt("SAME_REQUEST_ERROR_STOP_AFTER", 2);
+// The statuses it counts. 401/403/404/429, 5xx and header timeouts never count.
+export const SAME_REQUEST_ERROR_STATUSES = new Set([HTTP_STATUS.BAD_REQUEST, HTTP_STATUS.PAYLOAD_TOO_LARGE, HTTP_STATUS.UNPROCESSABLE_ENTITY]);
+
+// Memory admission for the chat routes (src/sse/services/memoryAdmission.js).
+// Every request in flight holds its prompt several times over (parsed, then
+// translated, then serialized for the upstream) until its reply ends, so a burst
+// of big prompts can take the process past its memory limit. A request that
+// would push the held total over the budget, or that arrives while the process
+// is above its high-water mark, waits in a FIFO queue; if it still can't go
+// after maxWaitMs it gets a 503 with Retry-After, which agents retry. With
+// nothing in flight a request is always admitted, however big.
+const MB = 1024 * 1024;
+export const MEMORY_ADMISSION = {
+  // Bytes of request bodies (times bodyCopies) admitted requests may hold.
+  // Env: INFLIGHT_BODY_BUDGET_MB (0 turns the budget off).
+  budgetBytes: envInt("INFLIGHT_BODY_BUDGET_MB", 900) * MB,
+  // Copies of its body one request holds while it runs.
+  bodyCopies: 3,
+  // Longest a request waits for room before it is refused.
+  // Env: INFLIGHT_QUEUE_WAIT_MS (0 refuses at once).
+  maxWaitMs: envInt("INFLIGHT_QUEUE_WAIT_MS", 15 * 1000, { max: MAX_TIMER_MS }),
+  // Seconds a refused client is told to wait. Env: INFLIGHT_RETRY_AFTER_S.
+  retryAfterSec: envInt("INFLIGHT_RETRY_AFTER_S", 10, { min: 1, max: 3600 }),
+  // Resident memory (MB) above which new requests wait. -1 (unset):
+  // highWaterFraction of the container's memory limit (cgroup memory.max), or
+  // off when there is none. Env: MEMORY_HIGH_WATER_MB (0 turns the check off).
+  highWaterMb: envInt("MEMORY_HIGH_WATER_MB", -1),
+  highWaterFraction: 0.8,
+  // How often waiting requests recheck resident memory, which drops without
+  // any request ending (garbage collection).
+  recheckMs: 250,
+};
 
 // Inter-chunk stall timeout (once tokens are flowing). Generous headroom so
 // slow reasoning models aren't aborted mid-stream. Env: STREAM_STALL_TIMEOUT_MS.
 export const STREAM_STALL_TIMEOUT_MS = envMs("STREAM_STALL_TIMEOUT_MS", 360 * 1000);
+
+// Write an SSE comment to the client after this long without output, so proxies
+// that drop idle connections (Cloudflare cuts at ~100s) keep the stream open.
+// Env: STREAM_KEEPALIVE_MS (0 disables).
+export const STREAM_KEEPALIVE_MS = envMs("STREAM_KEEPALIVE_MS", 15 * 1000, 0);
+
+// Opt-in: a key with a spend budget whose client hangs up mid-stream keeps
+// reading the upstream (discarding it) until the final usage arrives, for at
+// most this long, so the key is charged what the provider reports. Off by
+// default: every Esc would otherwise run the whole generation upstream.
+// Env: STREAM_DRAIN_MAX_MS (0, the default, disables the drain).
+export const STREAM_DRAIN_MAX_MS = envMs("STREAM_DRAIN_MAX_MS", 0, 0);
+
+// A stream cut short before its final usage is charged at least this many
+// output tokens per second it ran: hidden thinking streams nothing visible,
+// so the visible text alone would make an early Esc nearly free.
+// Env: STREAM_ABORT_FLOOR_TPS (0 disables the floor).
+export const STREAM_ABORT_FLOOR_TPS = envMs("STREAM_ABORT_FLOOR_TPS", 150, 0);
+
+// A streaming request whose upstream hasn't sent response headers after this
+// long gets 200 + SSE headers and keepalives, so a proxy that waits ~100s for
+// headers (Cloudflare 524) doesn't drop it. Fallback continues server-side; a
+// final failure is then written into the stream.
+// Env: STREAM_EARLY_HEADERS_MS (0 disables; so does STREAM_KEEPALIVE_MS=0).
+export const STREAM_EARLY_HEADERS_MS = envMs("STREAM_EARLY_HEADERS_MS", 30 * 1000, 0);
+
+// The same for a non-streaming request (/v1/messages, /v1/chat/completions,
+// /v1/responses): 200 + JSON content type, a whitespace byte every
+// STREAM_KEEPALIVE_MS, then the JSON body, or the failure as the client's error
+// body. Defaults to STREAM_EARLY_HEADERS_MS, so while this is unset that
+// switch turns both off.
+// Env: NON_STREAM_EARLY_HEADERS_MS (0 disables only this; so does STREAM_KEEPALIVE_MS=0).
+export const NON_STREAM_EARLY_HEADERS_MS = envMs("NON_STREAM_EARLY_HEADERS_MS", STREAM_EARLY_HEADERS_MS, 0);
 
 // Wait for a Chat Completions usage trailer before completing a Responses stream.
 export const RESPONSES_COMPLETION_WAIT_MS = 3000;
@@ -58,33 +184,53 @@ export const RESPONSES_COMPLETION_WAIT_MS = 3000;
 // Time-to-first-token timeout (prompt prefill). Env: STREAM_FIRST_CHUNK_TIMEOUT_MS.
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_MS", 200 * 1000);
 
-// Fetch connect timeout: abort if upstream doesn't return response headers within this duration
+// Fetch connect timeout: abort if upstream doesn't return response headers within this duration.
 export const FETCH_CONNECT_TIMEOUT_MS = envMs("FETCH_CONNECT_TIMEOUT_MS", 60 * 1000);
+
+// A chat call waits for headers on a long prompt's prefill (and a non-streaming
+// one on its whole reply), so it gets one attempt as long as the
+// HEADERS_TIMEOUT_ATTEMPTS attempts of FETCH_CONNECT_TIMEOUT_MS (or of an
+// endpoint's own Timeout) it got while a header timeout was retried on the same
+// key. A stream's default can be set apart. Env: UPSTREAM_STREAM_HEADERS_TIMEOUT_MS.
+export const HEADERS_TIMEOUT_ATTEMPTS = 4;
+const allAttemptsMs = (attemptMs) => Math.min(HEADERS_TIMEOUT_ATTEMPTS * attemptMs, MAX_TIMER_MS);
+export const UPSTREAM_STREAM_HEADERS_TIMEOUT_MS = envMs("UPSTREAM_STREAM_HEADERS_TIMEOUT_MS", allAttemptsMs(FETCH_CONNECT_TIMEOUT_MS));
+
+/**
+ * How long a chat call waits for the upstream's response headers, and the
+ * setting behind it. timeoutMs: an endpoint's own Timeout; attempts: the
+ * attempts its Retries setting gave (Retries + 1), when set. Either makes the
+ * budget that many attempts (HEADERS_TIMEOUT_ATTEMPTS without Retries) of the
+ * Timeout, or of FETCH_CONNECT_TIMEOUT_MS without one.
+ */
+export function upstreamHeadersBudget({ stream = false, timeoutMs = 0, attempts = 0 } = {}) {
+  if (timeoutMs > 0 || attempts > 0) {
+    const n = attempts > 0 ? attempts : HEADERS_TIMEOUT_ATTEMPTS;
+    const what = timeoutMs > 0 ? "the endpoint's Timeout setting" : "FETCH_CONNECT_TIMEOUT_MS";
+    return { ms: Math.min(n * (timeoutMs > 0 ? timeoutMs : FETCH_CONNECT_TIMEOUT_MS), MAX_TIMER_MS), setBy: n === 1 ? what : `${n}x ${what}` };
+  }
+  if (stream) return { ms: UPSTREAM_STREAM_HEADERS_TIMEOUT_MS, setBy: "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS" };
+  return { ms: allAttemptsMs(FETCH_CONNECT_TIMEOUT_MS), setBy: `${HEADERS_TIMEOUT_ATTEMPTS}x FETCH_CONNECT_TIMEOUT_MS` };
+}
+
+// undici's own default headersTimeout. A fetch whose budget is at least this
+// long goes through a dispatcher with that timeout off (utils/proxyFetch.js),
+// so the router's timer is the one that ends it. Not through a SOCKS proxy:
+// undici's SOCKS agent builds its pools without the options, so this limit
+// stays, and ends such a fetch as a header timeout.
+export const UNDICI_HEADERS_TIMEOUT_MS = 300 * 1000;
 
 // Gemini native TTS fetch timeout: abort if Google does not return response headers in time.
 export const GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS = envMs("GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS", 45 * 1000);
 
+// How many combos deep a request may nest (the requested combo counts as 1).
+// A deeper combo, like one already being expanded, fails as that member.
+// Routing (src/sse/handlers/chat.ts) and key allowlists (keyLimits.js) share it.
+export const MAX_COMBO_DEPTH = 4;
+
 // Default token limits
 export const DEFAULT_MAX_TOKENS = 64000;
 export const DEFAULT_MIN_TOKENS = 32000;
-
-// Inbound per-request opt-out header. `x-10router-token-saver` is the primary
-// name; the pre-rebrand `x-9router-token-saver` is still accepted so clients
-// configured before the 10router rebrand keep working. Always read both via
-// `getTokenSaverHeader()` — never index a request's headers with only one.
-export const TOKEN_SAVER_HEADER = "x-10router-token-saver";
-export const TOKEN_SAVER_HEADER_LEGACY = "x-9router-token-saver";
-
-/**
- * Read the token-saver opt-out header from a raw request's headers,
- * preferring the current name and falling back to the legacy one.
- * @param {Record<string, string>|undefined|null} headers lowercase-keyed headers
- * @returns {string|undefined} raw header value, if present
- */
-export function getTokenSaverHeader(headers) {
-  if (!headers) return undefined;
-  return headers[TOKEN_SAVER_HEADER] ?? headers[TOKEN_SAVER_HEADER_LEGACY];
-}
 
 // Retry config for 429 responses (legacy - kept for backward compatibility)
 export const RETRY_CONFIG = {

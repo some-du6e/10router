@@ -16,12 +16,20 @@ const KEEP_BACKUPS = 3;
 // Tables excluded from safety backups (large, non-critical, reproducible).
 const BACKUP_EXCLUDE_TABLES = ["requestDetails"];
 
+function ownerOnly(target, mode) {
+  if (process.platform === "win32") return;
+  try { fs.chmodSync(target, mode); } catch {}
+}
+
 export function makeBackupDir(label) {
   ensureDirs();
   const ver = getAppVersion();
   const slug = `${label}-${ver}-${timestampSlug()}`;
   const dir = path.join(BACKUPS_DIR, slug);
-  fs.mkdirSync(dir, { recursive: true });
+  // Backups are full copies of the credential store (and of _meta, which holds
+  // the session epoch): owner-only, like the database itself.
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  ownerOnly(dir, 0o700);
   return dir;
 }
 
@@ -30,6 +38,7 @@ export function backupFile(srcPath, destDir, destName = null) {
   const name = destName || path.basename(srcPath);
   const dest = path.join(destDir, name);
   fs.copyFileSync(srcPath, dest);
+  ownerOnly(dest, 0o600);
   return dest;
 }
 
@@ -59,6 +68,7 @@ export function backupDbLite(adapter, destDir, destName = "data.sqlite") {
   } finally {
     try { adapter.exec("DETACH DATABASE bak"); } catch {}
   }
+  ownerOnly(dest, 0o600);
   return dest;
 }
 

@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
 import { getSettings, updateSettings } from "@/lib/localDb";
-import { setDashboardAuthCookie } from "@/lib/auth/dashboardSession";
-import { checkLock, recordFail, recordSuccess, getClientIp } from "@/lib/auth/loginLimiter";
+import { setDashboardAuthCookie, revokeDashboardSessions } from "@/lib/auth/dashboardSession";
+import { checkLock, recordFail, recordSuccess, getClientKeys } from "@/lib/auth/loginLimiter";
 import {
   getAuthBootstrapState,
   validateNewPassword,
@@ -40,7 +40,7 @@ export async function GET() {
 
 export async function POST(request) {
   try {
-    const ip = getClientIp(request);
+    const ip = getClientKeys(request);
     const lock = checkLock(ip);
     if (lock.locked) {
       return NextResponse.json(
@@ -84,6 +84,7 @@ export async function POST(request) {
     // time must not come up with authentication disabled.
     await updateSettings({ password: hash, requireLogin: true });
     recordSuccess(ip);
+    await revokeDashboardSessions();
 
     const cookieStore = await cookies();
     await setDashboardAuthCookie(cookieStore, request);

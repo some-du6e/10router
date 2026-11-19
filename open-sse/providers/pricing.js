@@ -359,13 +359,26 @@ export const PATTERN_PRICING = [
   { pattern: "grok-*",          pricing: { input: 0.50,  output: 2.00,  cached: 0.25,  reasoning: 3.00,   cache_creation: 0.50  } },
 ];
 
+// Compiled glob regexes keyed by pattern string. Patterns come from static
+// tables, so this stays bounded. No "g" flag, so test() keeps no state.
+const patternRegexCache = new Map();
+
 /**
  * Match a model ID against a glob pattern (* = wildcard). Case-insensitive:
  * registry ids mix casing (e.g. "MiniMax-M2.5" vs "minimax-m2.5").
  */
 export function matchPattern(pattern, model) {
-  const regex = new RegExp("^" + pattern.split("*").map(s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$", "i");
+  let regex = patternRegexCache.get(pattern);
+  if (!regex) {
+    regex = new RegExp("^" + pattern.split("*").map(s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$", "i");
+    patternRegexCache.set(pattern, regex);
+  }
   return regex.test(model);
+}
+
+// Test hook: number of compiled patterns held in the cache.
+export function getPatternRegexCacheSize() {
+  return patternRegexCache.size;
 }
 
 /**

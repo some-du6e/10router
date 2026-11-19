@@ -7,22 +7,47 @@ export const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/5
 export async function responseToBase64(res, defaultFormat = "mp3") {
   const buf = await res.arrayBuffer();
   if (buf.byteLength < 100) throw new Error("Upstream returned empty audio");
-  const ctype = res.headers.get("content-type") || "";
-  let format = defaultFormat;
-  if (ctype.includes("wav")) format = "wav";
-  else if (ctype.includes("mpeg") || ctype.includes("mp3")) format = "mp3";
-  else if (ctype.includes("ogg")) format = "ogg";
-  return { base64: Buffer.from(buf).toString("base64"), format };
+  return { base64: Buffer.from(buf).toString("base64"), format: formatFromContentType(res.headers.get("content-type"), defaultFormat) };
+}
+
+// The audio format an upstream Content-Type names, or `fallback` when it names none we know.
+export function formatFromContentType(contentType, fallback = "mp3") {
+  const ctype = (contentType || "").toLowerCase();
+  if (ctype.includes("wav")) return "wav";
+  if (ctype.includes("mpeg") || ctype.includes("mp3")) return "mp3";
+  if (ctype.includes("ogg")) return "ogg";
+  if (ctype.includes("opus")) return "opus";
+  if (ctype.includes("aac")) return "aac";
+  if (ctype.includes("flac")) return "flac";
+  if (ctype.includes("pcm")) return "pcm";
+  return fallback;
+}
+
+// The message of an upstream error body: OpenAI-style `error.message`, a bare
+// `message`, a FastAPI `detail` (a string, `{ message }`, or `[{ msg }]`), then
+// a string `error`, which some frameworks fill with the status text ("Bad
+// Request") beside the real `message`. Fields that aren't non-empty strings
+// are skipped.
+export function upstreamErrorMessage(text, status) {
+  const fallback = `Upstream error (${status})`;
+  const str = (value) => (typeof value === "string" && value.trim() ? value : null);
+  try {
+    const parsed = JSON.parse(text);
+    const detail = parsed?.detail;
+    const detailMsg = Array.isArray(detail)
+      ? detail.map((d) => str(d?.msg)).filter(Boolean).join("; ")
+      : str(detail) || str(detail?.message);
+    // NestJS validation sends `message` as an array of strings.
+    const message = Array.isArray(parsed?.message) ? parsed.message.map(str).filter(Boolean).join("; ") : parsed?.message;
+    return str(parsed?.error?.message) || str(message) || str(detailMsg) || str(parsed?.error) || str(text) || fallback;
+  } catch {
+    return str(text) || fallback;
+  }
 }
 
 export async function throwUpstreamError(res) {
   const text = await res.text().catch(() => "");
-  let msg = `Upstream error (${res.status})`;
-  try {
-    const parsed = JSON.parse(text);
-    msg = parsed?.error?.message || parsed?.message || parsed?.detail?.message || (typeof parsed?.detail === "string" ? parsed.detail : null) || text || msg;
-  } catch { msg = text || msg; }
-  throw new Error(msg);
+  throw new Error(upstreamErrorMessage(text, res.status));
 }
 
 // Parse `model` string as "modelId/voiceId" — match against known model list (longest prefix wins)

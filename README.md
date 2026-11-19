@@ -15,32 +15,26 @@ API formats and falling back across models and accounts.
 ## What it does
 
 - **One endpoint** — point any OpenAI-compatible client at `http://localhost:20128/v1`.
-- **Format translation** — OpenAI ↔ Claude ↔ Gemini ↔ Cursor ↔ Kiro ↔ Vertex ↔ Antigravity ↔ Ollama ↔ OpenAI Responses.
+- **Format translation** — translate OpenAI-compatible requests to provider-specific APIs and back.
 - **Combo fallback** — define an ordered list of models; the router advances on quota exhaustion or error.
 - **Multi-account** — several accounts per provider, round-robin or priority.
 - **Credential management** — OAuth (PKCE) and API keys, with automatic token refresh.
 - **Quota and usage tracking** — per provider and model, with reset countdowns.
-- **Token savers** — optional request/response compression (see below).
-- **Deployment** — localhost, VPS, Docker, or Cloudflare Workers.
+- **Deployment** — designed for local use. Docker is available for self-hosting.
 
-## What this fork adds
+## What changed from 9router
 
-These are the parts of 10router that grew after the 9router fork:
+![10router vs 9router: native Codex backend, setup token instead of 123456, quota alerts](images/10router-vs-9router.png)
 
-- **A first-class Codex gateway.** Serve Codex's native Responses API, model catalog,
-  compact endpoint, and WebSocket transport from the same local gateway. The CLI tool
-  can configure the native Codex endpoint for you.
-- **Codex account intelligence.** Keep a conversation on one account while it is warm
-  so prompt caching can work, pool usage across accounts, and skip accounts that cannot
-  serve the requested model or plan.
-- **Claude web search through your router.** Claude's built-in web-search tool keeps
-  working when Claude Code is routed to another model. Results come through the configured
-  10router search provider instead of silently disappearing.
-- **Quota alerts.** Send quota-exhausted and quota-reset notifications to Slack, ntfy,
-  Telegram, generic webhooks, or an Apprise server. Channels can be tested and configured
-  independently from the dashboard.
-- **Rate-limit recovery.** Wait through temporary provider rate limits when it is safe,
-  then continue with the same request or move through the configured fallback chain.
+- Codex connects natively at `/backend-api/codex`, over HTTP or WebSocket, as if 10router
+  were ChatGPT's backend.
+- Session affinity keeps a Codex conversation on one account, so it stops re-sending about
+  21k tokens of cached prompt every turn.
+- Tools from the ChatGPT app survive translation, and `[1m]` model ids route instead of
+  returning 404.
+- A fresh install prints a one-time setup token. 9router fell back to the password `123456`.
+
+The full list is in [10router-vs-9router.md](10router-vs-9router.md).
 
 ## Compatibility
 
@@ -53,6 +47,7 @@ practical promise, not a claim that upstream providers will never change their A
 - Chat clients call `POST /v1/chat/completions`.
 - Anthropic-shaped clients call `POST /v1/messages`.
 - Model discovery uses `GET /v1/models`.
+- A key holder checks their own key's budget, spend and limits with `GET /v1/key`.
 - Codex-native clients can use `http://localhost:20128/backend-api/codex`, including
   `/responses`, `/responses/compact`, and `/models`.
 
@@ -62,22 +57,18 @@ practical promise, not a claim that upstream providers will never change their A
 - Use provider-prefixed model IDs such as `cc/claude-opus-4-7` or `cx/gpt-5.5`.
 - Combo names are accepted anywhere a model ID is accepted and preserve their ordered
   fallback behavior.
-
-### Upgrades
-
-- Existing data stays under `~/.9router` unless `DATA_DIR` is set.
-- SQLite migrations run when the server starts, with backups created before migrations.
-- Existing 9router data paths and supported legacy environment variable names remain
-  compatible where the project documents them.
-- Changes to endpoints, model ID formats, environment variables, or stored data will be
-  called out in the changelog with upgrade instructions.
+- A key can have a spend budget, a model allowlist and an expiry date (Endpoint page →
+  API Keys). See [docs/API_KEY_BUDGETS.md](docs/API_KEY_BUDGETS.md).
+- A management key (`10r-mgmt-…`) manages client keys or provider keys over
+  `/api/management/v1`, limited to the providers, models and budget cap its scope allows.
+  It never works on `/v1`. See [docs/MANAGEMENT_KEYS.md](docs/MANAGEMENT_KEYS.md).
 
 ## Request flow
 
 ```
 client (Claude Code, Codex, Cursor, Cline, …)
   → http://localhost:20128/v1
-  → 10router: token savers → format translation → account selection
+  → 10router: format translation → account selection
   → upstream provider
   → SSE back to client
 ```
@@ -114,74 +105,7 @@ npm run build
 PORT=20128 HOSTNAME=0.0.0.0 NEXT_PUBLIC_BASE_URL=http://localhost:20128 npm run start
 ```
 
-## Client configuration
-
-```
-Endpoint: http://localhost:20128/v1
-API Key:  [generate in the dashboard]
-Model:    <provider-prefix>/<model>   e.g. cc/claude-opus-4-7
-```
-
-### Cursor
-
-```
-Settings → Models → Advanced:
-  OpenAI API Base URL: http://localhost:20128/v1
-  OpenAI API Key: [from dashboard]
-  Model: cc/claude-opus-4-7
-```
-
-### Claude Code
-
-`~/.claude/config.json`:
-
-```json
-{
-  "anthropic_api_base": "http://localhost:20128/v1",
-  "anthropic_api_key": "your-10router-api-key"
-}
-```
-
-### Codex CLI
-
-```bash
-export OPENAI_BASE_URL="http://localhost:20128"
-export OPENAI_API_KEY="your-10router-api-key"
-```
-
-### OpenClaw
-
-Dashboard → CLI Tools → OpenClaw → select model → Apply. Or edit `~/.openclaw/openclaw.json`:
-
-```json
-{
-  "agents": { "defaults": { "model": { "primary": "10router/kr/claude-sonnet-4.5" } } },
-  "models": {
-    "providers": {
-      "10router": {
-        "baseUrl": "http://127.0.0.1:20128/v1",
-        "apiKey": "sk_10router",
-        "api": "openai-completions",
-        "models": [{ "id": "kr/claude-sonnet-4.5", "name": "Claude Sonnet 4.5" }]
-      }
-    }
-  }
-}
-```
-
-OpenClaw only talks to a local 10router. Use `127.0.0.1`, not `localhost` — `localhost` can resolve to IPv6 and fail.
-
-### Cline / Continue / RooCode
-
-```
-Provider: OpenAI Compatible
-Base URL: http://localhost:20128/v1
-API Key: [from dashboard]
-```
-
-Also works with Antigravity, Copilot, OpenCode, Droid, Roo, Kilo Code, jcode, Grok Build,
-Devin CLI, DeepSeek TUI, Qwen Code, OpenDesign, and anything else that accepts a custom
-OpenAI base URL.
+For client setup, see [CLIENT-CONFIGURATION.md](CLIENT-CONFIGURATION.md).
 
 ## Providers
 
@@ -234,60 +158,6 @@ Self-hosted Embedding has **no cloud fallback by design** — a connection saved
 `api.openai.com`, which would send your input text and API key to a third party under a
 provider named "Self-hosted".
 
-## Token savers
-
-Set the header `X-10Router-Token-Saver: off` to bypass all of them for one request. The
-pre-rebrand `X-9Router-Token-Saver` is still accepted for existing clients; if both are
-present, the `10Router` one wins.
-
-### RTK (built in, default on)
-
-Compresses `tool_result` content in place before the request reaches the LLM.
-
-- Filters: `git-diff`, `git-status`, `grep`, `find`, `ls`, `tree`, `dedup-log`,
-  `smart-truncate`, `read-numbered`, `search-list`.
-- Auto-detect: peeks the first 1KB of each `tool_result` and picks a filter. No config.
-- Fail-open: if a filter throws or makes output larger, the original text is kept.
-- Runs before format translation, so it applies to every client format.
-- Toggle in Dashboard → Endpoint settings.
-
-Ported from [rtk-ai/rtk](https://github.com/rtk-ai/rtk).
-
-### Headroom (external, optional)
-
-Calls a local Headroom `/v1/compress` endpoint before routing:
-
-```
-client → 10router → Headroom /v1/compress → 10router → provider
-```
-
-```bash
-pip install "headroom-ai[proxy]"
-headroom proxy --port 8787
-```
-
-Enable in Dashboard → Endpoint → Token Saver → Headroom. Default URL
-`http://localhost:8787`; in Docker use `http://headroom:8787` (same network) or
-`http://host.docker.internal:8787` (host). Fails open if Headroom is down.
-
-### Caveman
-
-Injects a terse-output system prompt. Adapted from
-[JuliusBrussee/caveman](https://github.com/JuliusBrussee/caveman).
-
-### Ponytail
-
-Injects a "lazy senior dev" system prompt biasing toward minimal, YAGNI-first code —
-deletion over addition, stdlib over new deps, one-liners over abstractions. Three levels:
-
-- **Lite** — build what's asked, name the lazier alternative.
-- **Full** — YAGNI ladder: stdlib → native → existing deps → one-liner → minimal code.
-- **Ultra** — deletion first, ship the one-liner, challenge the rest of the requirement.
-
-Never trades away input validation, error handling that prevents data loss, security,
-accessibility, or anything explicitly requested. Adapted from
-[DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail).
-
 ## Combos
 
 A combo is a named, ordered list of models. The router tries them in order, advancing when
@@ -307,8 +177,12 @@ Use the combo name in place of a model id in your client.
 ## Cost display
 
 The "cost" in Usage Analytics is an estimate of what the same traffic would have cost on
-paid APIs directly. It is a tracking figure, not a bill — 10router has no billing system.
-You pay providers directly, if at all.
+paid APIs directly, from the pricing table. You pay providers directly, if at all; 10router
+charges no one.
+
+The same figure is what an API key's budget counts against: give a key a $2,000 budget and
+it is refused once its requests add up to $2,000 at those prices. See
+[docs/API_KEY_BUDGETS.md](docs/API_KEY_BUDGETS.md).
 
 ## Cloud sync
 
@@ -324,35 +198,9 @@ fast so the UI doesn't hang when cloud DNS or network is unavailable.
 
 ## Deployment
 
-### VPS
-
-```bash
-git clone https://github.com/some-du6e/10router.git
-cd 10router
-npm install
-npm run build
-
-export JWT_SECRET="your-secure-secret-change-this"
-export INITIAL_PASSWORD="your-password"   # optional; omit to use the console setup token
-export DATA_DIR="/var/lib/10router"
-export PORT="20128"
-export HOSTNAME="0.0.0.0"
-export NODE_ENV="production"
-export NEXT_PUBLIC_BASE_URL="http://localhost:20128"
-export API_KEY_SECRET="endpoint-proxy-api-key-secret"
-export MACHINE_ID_SALT="endpoint-proxy-salt"
-
-npm run start
-```
-
-With PM2:
-
-```bash
-npm install -g pm2
-pm2 start npm --name 10router -- start
-pm2 save
-pm2 startup
-```
+10router is intended to run on the same machine as the clients using it. Avoid exposing
+it from a datacenter or VPS IP: subscription providers may treat that traffic as token
+resale or abuse and suspend the account.
 
 ### Docker
 
@@ -382,6 +230,59 @@ docker run -d --name 10router -p 20128:20128 \
 
 Container defaults: `PORT=20128`, `HOSTNAME=0.0.0.0`.
 
+#### Restarts and deploys
+
+On `SIGTERM` or `SIGINT` (`docker stop` sends `SIGTERM`) the server drains before it exits:
+
+- It closes its listening socket, so **new connections are refused for the whole drain**.
+  On a setup that stops the old container before starting the new one, that's the trade-off:
+  turns already running finish, and new requests fail until the new instance is up. So each
+  deploy's outage now lasts as long as the drain runs: up to 3 minutes by default once the
+  stop grace period is raised (below), and up to the grace period itself before that.
+- Model requests already running get up to `SHUTDOWN_DRAIN_TIMEOUT_MS` (3 minutes by default)
+  to finish, long streams included. That covers `/v1*`, `/api/v1*`, `/v1beta*`, `/api/v1beta*`,
+  `/responses`, `/systemone`, `/codex/*`, `/backend-api/codex/*` and Codex WebSocket turns.
+  Then the app's own shutdown work runs (database flush and close) and it exits. A request
+  held at a provider limit keeps the drain open until that timeout.
+- A request sent on a keep-alive connection that was already open gets a `503` with
+  `Retry-After: 5` and `Connection: close`. A Codex turn started during the drain fails; Codex's
+  retry works once a server is accepting again. Dashboard streams that never end (usage,
+  console logs, MCP) are closed at the start, so an open dashboard tab may need a reload after
+  the restart.
+- A repeat signal within 1.5 seconds of the first is ignored (`npm run start` forwards the one
+  it got); a later one exits at once. `SHUTDOWN_DRAIN_TIMEOUT_MS=0` turns the drain off.
+- It needs Node (the Docker image and `npm run start`). Under Bun (`start:bun`) a signal still
+  exits at once.
+- **A restart you didn't ask for:** every exit the process makes itself logs an `[Exit]` line
+  with the exit code, uptime, memory use, the requests still open and its cause: the code that
+  called `process.exit()`, an uncaught exception or unhandled rejection (Node prints it just
+  before), or "the event loop ran empty". **No `[Exit]` line at all means the process
+  was killed from outside.** Check the kernel log for an out-of-memory kill (`dmesg` or
+  `journalctl -k` on the host) and `docker events --filter event=die` for the real exit code,
+  since `docker inspect` on a container its restart policy already started again can show 0.
+
+**The drain does nothing unless whatever stops the process waits for it.** Docker kills the
+process 10 seconds after `docker stop` by default, which cuts the drain short and can kill the
+shutdown work after it. Set the stop timeout **longer** than the drain timeout, e.g. drain +
+30 seconds:
+
+- `docker stop -t 210 10router` (or `docker run --stop-timeout 210 …`)
+- Compose: `stop_grace_period: 3m30s` (the repo's `docker-compose.yml` sets it)
+- A hosting platform: its container stop timeout / grace period setting.
+- PM2: `kill_timeout` (default 1.6 seconds), e.g. `pm2 start npm --name 10router --kill-timeout 210000 -- start`.
+- systemd: `TimeoutStopSec=210` in the unit.
+
+A kill that comes too early loses about the last 5 seconds of buffered request-detail rows
+and, on the sql.js driver, about 100 ms of writes. SQLite itself replays its WAL on the next
+open.
+
+`GET /api/health` answers `200` while the server is up, with no auth, for a platform health
+check. During the drain new connections are refused, so a health check fails then.
+
+Don't overlap a restart by running two instances side by side on one `DATA_DIR`. SQLite and
+sql.js writes are last-writer-wins, and OAuth refresh tokens rotate, so each instance would
+overwrite or invalidate the other's state.
+
 Data persists at `$HOME/.9router/db/data.sqlite` on the host (the `.9router` directory name
 is retained for compatibility with existing installs) ↔ `/app/data/db/data.sqlite` in the
 container.
@@ -390,23 +291,29 @@ container.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `JWT_SECRET` | Auto-generated (`~/.9router/jwt-secret`) | JWT signing secret for the dashboard auth cookie (override to share across instances) |
+| `JWT_SECRET` | Auto-generated (`$DATA_DIR/jwt-secret`, `~/.9router` by default) | Signs the dashboard session cookie and the SAML `saml_state` cookie; set the same value on every instance behind one URL (each instance still refuses a request it already used). Values shorter than 32 characters and documented placeholders are ignored with a warning, and the generated file is used instead; generate one with `openssl rand -hex 32`. Logout and password changes end sessions through the database, so instances that each have their own database revoke only their own sessions; behind one URL they need a shared database for that to apply everywhere |
 | `INITIAL_PASSWORD` | unset | Optional headless bootstrap password (min 8 chars). When unset, first run requires the one-time setup token printed to the server console. There is no default password |
+| `SSO_ALLOWED_USERS` | unset (any IdP account) | Optional OIDC/SAML dashboard allowlist: comma-separated emails, `@domain` suffixes or IdP subject IDs (OIDC `sub`, SAML NameID). Unset, every account the IdP signs in gets admin access. For OIDC, email entries only match an email the IdP marks verified (`email_verified`; Entra ID often omits it, so list Entra users by subject ID). For SAML, an email entry trusts the email the IdP asserts, so if users can register or change their email at the IdP, list them by NameID |
 | `DATA_DIR` | `~/.9router` | App data location (SQLite at `$DATA_DIR/db/data.sqlite`); the `.9router` name is kept for compatibility |
 | `PORT` | framework default | Service port (`20128` in examples) |
 | `HOSTNAME` | framework default | Bind host (Docker defaults to `0.0.0.0`) |
 | `NODE_ENV` | runtime default | Set `production` for deploy |
+| `SHUTDOWN_DRAIN_TIMEOUT_MS` | `180000` | On SIGTERM/SIGINT, how long in-flight model requests get to finish before exit (new connections are refused meanwhile); `0`/`off`/`false` exits at once. Set the container stop grace period longer than this |
 | `BASE_URL` | `http://localhost:20128` | Server-side internal base URL used by cloud sync jobs |
 | `CLOUD_URL` | `https://9router.com` | Server-side cloud sync endpoint base URL |
 | `NEXT_PUBLIC_BASE_URL` | `http://localhost:3000` | Backward-compatible/public base URL (prefer `BASE_URL`) |
 | `NEXT_PUBLIC_CLOUD_URL` | `https://9router.com` | Backward-compatible/public cloud URL (prefer `CLOUD_URL`) |
+| `NEXT_PUBLIC_GA_ID` | unset (no analytics) | Optional Google Analytics 4 measurement ID (`G-...`) for the dashboard; never loaded on `/callback`. Baked in by `next build`, so a running server ignores it (Docker: `--build-arg NEXT_PUBLIC_GA_ID=...`) |
 | `API_KEY_SECRET` | `endpoint-proxy-api-key-secret` | HMAC secret for generated API keys |
 | `MACHINE_ID_SALT` | `endpoint-proxy-salt` | Salt for stable machine ID hashing |
 | `ENABLE_REQUEST_LOGS` | `false` | Enables request/response logs under `logs/` |
 | `AUTH_COOKIE_SECURE` | `false` | Force `Secure` auth cookie (set `true` behind an HTTPS reverse proxy) |
 | `REQUIRE_API_KEY` | `false` | Enforce Bearer API key on `/v1/*` (recommended for internet-exposed deploys) |
+| `TRUST_PROXY` | unset | Two forms. `true`: a forwarder on this machine adds no forwarding header (socat, `ssh -R`, a TCP tunnel, nginx with neither `X-Forwarded-For` nor `X-Real-IP` set, which sends its own loopback `Host` by default), so a remote client behind it could send `Host: localhost` and count as local. With it, no loopback connection counts as local (clients on this machine need an API key or the CLI token too), and all their logins share one short-lock bucket, since their headers are the client's. A comma list of IPs and CIDRs (`192.168.1.10,10.0.0.0/8`): reverse proxies on other hosts or containers whose `X-Forwarded-For`/`X-Real-IP` are read like a same-host proxy's, so each client behind them gets its own login bucket. A same-host proxy that sends `X-Forwarded-For`/`X-Real-IP` needs neither. Any proxy must overwrite or append both headers: one that passes the client's own values through (nginx setting only `Host` and `X-Forwarded-Proto`, say) lets each client choose the keys its logins are limited on. A listed peer counts as a proxy only on a request with a forwarding header (one without is a direct visit, keyed on the peer's address), so a listed proxy must send one on every location: nginx drops the server-level `proxy_set_header` lines from a location that sets its own (`Upgrade`/`Connection` for WebSockets, say). A location without one puts every client behind the proxy on the peer's single login bucket, which escalates, so one client can lock everyone out, and the Host the proxy rewrote is accepted as a direct visit's. |
+| `ALLOWED_HOSTS` | unset | Comma list of host names (or URLs) the dashboard API answers with "Require login" off, besides `localhost`, IP addresses, the tunnel URLs and `BASE_URL` (or `NEXT_PUBLIC_BASE_URL`, which a from-source build inlines at build time, so prefer `BASE_URL` or this list). For one install reached by several names, such as a tunnel domain and a LAN name. An IPv6 entry may be bare or bracketed; use brackets when you include a port (a bare `2001:db8::5:8443` is a different address). Through a proxy hop (a loopback peer that isn't local, or one `TRUST_PROXY` lists that sent a forwarding header) a loopback Host never counts, since the proxy may have written it, and behind a listed proxy an IP-literal Host counts only when `ALLOWED_HOSTS` or `BASE_URL` names it. With login off behind a listed proxy, set `proxy_set_header Host $host` on it, then list here any IP browsers type to reach the proxy. Never list, or set `BASE_URL` to, the upstream IP a Host-rewriting proxy sends: that accepts every name through the proxy, rebound ones included. This covers proxies that reach 10router over loopback (a `127.0.0.1`, `localhost` or `::1` upstream) and send a forwarding header (a header-less one counts as local; see `TRUST_PROXY=true`), and `TRUST_PROXY`-listed ones that send a forwarding header. A proxy on another host must be listed. In Docker the host is another machine to the container: list the bridge gateway in `TRUST_PROXY`, or a host proxy to `127.0.0.1:20128` is a direct peer. A same-host proxy whose `proxy_pass` targets this machine's LAN IP arrives from that IP, so point it at `127.0.0.1` or `localhost` instead (or list that IP in `TRUST_PROXY`). |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` | empty | Outbound proxy for upstream provider calls |
-| `SEARXNG_URL` | `http://localhost:8888/search` | Endpoint for the built-in unauthenticated SearXNG web-search provider |
+| `SEARXNG_URL` | `http://localhost:8888/search` | Endpoint for the built-in unauthenticated SearXNG web-search provider. Must resolve to a public address (the SSRF guard blocks private hosts). Claude Code's WebSearch only falls back to SearXNG when this is set. |
+| `DETECT_ANTHROPIC_FIRST_HINTS` | empty | URL substrings that make Add endpoint probe Anthropic Messages first. Comma-separated, any case; quotes around entries are ignored. URLs naming Anthropic or Claude and `sk-ant-` keys already do. A hint matches anywhere in the endpoint URL (scheme, host, path, query; a trailing API path like `/chat/completions` is cut off first), so use a distinctive piece of the host. Restart after changing it. |
 
 Notes:
 
@@ -420,7 +327,8 @@ Notes:
 
 - App state: `${DATA_DIR}/db/data.sqlite` (providers, combos, aliases, keys, settings, usage history)
 - Auto backups: `${DATA_DIR}/db/backups/`
-- Request/translator logs: `<repo>/logs/...` when `ENABLE_REQUEST_LOGS=true`
+- Request/translator logs: `<repo>/logs/...` when `ENABLE_REQUEST_LOGS=true`. Credential headers are masked to their last 4 characters (rate-limit and token-count headers stay readable), and every query param whose name contains `key`, `token`, `secret`, `auth` or `sig` (plus `code`) is redacted. That rule is broad on purpose, so harmless params such as `max_tokens` or `author` read `[REDACTED]` too. `Bearer` tokens in error text are redacted from 8 characters
+- Owner-only: `${DATA_DIR}/db/` and `backups/` are `0700`, `data.sqlite` (with `-wal`/`-shm`) and any leftover `db.json`/`usage.json`/`disabledModels.json`/`request-details.json` and the safety backups are owner-only, and `logs/` is `0700` with `0600` files. A backup job or sidecar running as another OS user can no longer read them; run it as the same user. A `DATA_DIR` you created yourself keeps its own mode
 - In Docker, `${DATA_DIR}` and `~/.9router` resolve to the same location — the symlink
   `/root/.9router -> /app/data` is created at build time.
 
@@ -523,7 +431,38 @@ GET http://localhost:20128/v1/models
 Authorization: Bearer your-api-key
 ```
 
-Returns all models and combos in OpenAI format.
+Returns all models and combos in OpenAI format. A key with a model allowlist sees only
+the models it may use.
+
+### Your key's budget and spend
+
+```bash
+GET http://localhost:20128/v1/key
+Authorization: Bearer your-api-key
+```
+
+Returns the calling key's own budget (`limit`), spend (`usage`), what's left
+(`limit_remaining`), allowed models and expiry, and nothing about other keys. See
+[docs/API_KEY_BUDGETS.md](docs/API_KEY_BUDGETS.md).
+
+### Management API
+
+```bash
+GET  http://localhost:20128/api/management/v1/me
+GET  http://localhost:20128/api/management/v1/client-keys
+POST http://localhost:20128/api/management/v1/client-keys     {"name", "allowedModels", "budgetUsd", "expiresAt"}
+POST http://localhost:20128/api/management/v1/provider-keys   {"provider", "apiKey", "name", "baseUrl"}
+Authorization: Bearer 10r-mgmt-...
+```
+
+Create a management key on the Endpoint page and pick what it may do: client keys
+(optionally only for some providers or models, under a budget cap) and/or provider keys
+(optionally only for some providers). For an upstream where each key has its own host,
+the dashboard can also list, per custom endpoint, the hosts a key it adds may use for its
+own `baseUrl` (`*.acme.example`, https only). By default it sees and deletes only the keys it
+created. Responses never include provider secrets, and a new client key's full value
+appears only in the response that created it. Management keys can't be created or listed
+through this API. See [docs/MANAGEMENT_KEYS.md](docs/MANAGEMENT_KEYS.md).
 
 ## Troubleshooting
 
@@ -554,12 +493,6 @@ dashboard quota tracker; add a combo fallback.
 
 - **[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)** — the original Go
   implementation this JavaScript port was based on.
-- **[RTK](https://github.com/rtk-ai/rtk)** — Rust token saver; its compression pipeline is
-  ported to JS here.
-- **[Caveman](https://github.com/JuliusBrussee/caveman)** by
-  [@JuliusBrussee](https://github.com/JuliusBrussee) — terse-output prompt.
-- **[Ponytail](https://github.com/DietrichGebert/ponytail)** by
-  [@DietrichGebert](https://github.com/DietrichGebert) — YAGNI-first prompt.
 
 ## License
 

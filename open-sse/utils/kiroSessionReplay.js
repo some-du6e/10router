@@ -1,4 +1,5 @@
 import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
+import { capKiroImages } from "../translator/concerns/toolImageCap.js";
 
 const sessionStartStore = new Map();
 const MAX_SESSION_STARTS = 5000;
@@ -7,8 +8,8 @@ function clone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
 
-function sessionKey(connectionId, conversationId) {
-  return `${connectionId || ""}:${conversationId || ""}`;
+function sessionKey(clientScope, connectionId, conversationId) {
+  return `${clientScope || ""}:${connectionId || ""}:${conversationId || ""}`;
 }
 
 function ensureUserMessageModelId(message, modelId) {
@@ -65,6 +66,7 @@ function rememberSessionStart(key, entry) {
 export function applyKiroSessionReplay({
   conversationId,
   connectionId,
+  clientScope = "",
   modelId,
   systemPrompt = "",
   contentPrefix = "",
@@ -72,7 +74,7 @@ export function applyKiroSessionReplay({
   history = [],
   currentMessage,
 } = {}) {
-  const key = sessionKey(connectionId, conversationId);
+  const key = sessionKey(clientScope, connectionId, conversationId);
   const existing = conversationId ? sessionStartStore.get(key) : null;
   const baseHistory = clone(history) || [];
   const baseCurrent = clone(currentMessage) || { userInputMessage: { content: "" } };
@@ -89,11 +91,13 @@ export function applyKiroSessionReplay({
         baseHistory.push({ assistantResponseMessage: { content: "..." } });
       }
     }
-    return {
+    // Kiro's one image window, on the conversation as it will be sent,
+    // the replayed first turn included.
+    const capped = capKiroImages({
       history: ensureHistoryModelIds(baseHistory, modelId),
       currentMessage: prefixUserMessage(baseCurrent, currentContentPrefix, modelId),
-      replayed: true,
-    };
+    });
+    return { ...capped, replayed: true };
   }
 
   const firstUserIndex = findFirstUserIndex(baseHistory);
@@ -124,11 +128,12 @@ export function applyKiroSessionReplay({
     });
   }
 
-  return {
+  // Kiro's one image window, on the conversation as it will be sent.
+  const capped = capKiroImages({
     history: ensureHistoryModelIds(baseHistory, modelId),
     currentMessage: nextCurrent,
-    replayed: false,
-  };
+  });
+  return { ...capped, replayed: false };
 }
 
 export function clearKiroSessionReplayStore() {

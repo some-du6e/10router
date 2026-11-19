@@ -343,7 +343,12 @@ export class KiroExecutor extends BaseExecutor {
    */
   async execute(args) {
     const result = await super.execute(args);
-    if (result?.response?.ok) this.attachIntegrityGate(result, args);
+    const fetchedAt = Date.now();
+    if (result?.response?.ok) {
+      this.attachIntegrityGate(result, args);
+      // The gate buffers ahead of the stream; a cut-short stream's floor starts here.
+      result.response.upstreamStartedAt = fetchedAt;
+    }
     return result;
   }
 
@@ -436,8 +441,12 @@ export class KiroExecutor extends BaseExecutor {
       ? appendRepairInstruction(args.body, repairKind === "invalid_tool" ? "tool" : repairKind)
       : structuredClone(args.body || {});
 
+    // The repair runs while the client reads the body, after execute() has
+    // returned: it is part of the attempt already reported, so it must not
+    // report (and reset) an attempt of its own.
     const retry = await BaseExecutor.prototype.execute.call(this, {
       ...args,
+      onUpstreamAttempt: null,
       body: repairBody,
       signal: options.signal
     });

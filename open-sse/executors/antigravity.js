@@ -310,9 +310,8 @@ export class AntigravityExecutor extends BaseExecutor {
 
       return {
         accessToken: tokens.access_token,
-        refreshToken: tokens.refresh_token || credentials.refreshToken,
+        ...(tokens.refresh_token ? { refreshToken: tokens.refresh_token } : {}),
         expiresIn: tokens.expires_in,
-        projectId: credentials.projectId
       };
     } catch (error) {
       log?.error?.("TOKEN", `Antigravity refresh error: ${error.message}`);

@@ -8,7 +8,7 @@ vi.mock("../../src/sse/services/auth.js", () => ({
   extractApiKey: (request) => request.headers.get("authorization")?.replace(/^Bearer /, ""),
   isValidApiKey: mocks.validKey,
 }));
-vi.mock("../../src/lib/db/index.js", () => ({ getSettings: mocks.settings }));
+vi.mock("../../src/lib/db/index.js", () => ({ getSettings: mocks.settings, getApiKeyPolicy: async () => null }));
 vi.mock("../../src/sse/services/model.js", () => ({ getModelInfo: mocks.modelInfo }));
 vi.mock("../../src/sse/services/tokenRefresh.js", () => ({ checkAndRefreshToken: async (_, credentials) => credentials }));
 vi.mock("../../open-sse/handlers/systemoneCore.js", () => ({ handleSystemoneCore: mocks.core }));

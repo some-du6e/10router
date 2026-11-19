@@ -37,21 +37,24 @@ npm run build
 Create a `.env` file or export variables:
 
 ```bash
-export JWT_SECRET="your-secure-secret-change-this-to-random-string"
 export INITIAL_PASSWORD="your-secure-password"
 export DATA_DIR="/var/lib/10router"
 export NODE_ENV="production"
 ```
 
+> `JWT_SECRET` is optional. Leave it unset and 10router generates one once into `$DATA_DIR/jwt-secret`, so sessions survive restarts. Only for several instances behind one URL: generate one value once (`openssl rand -hex 32`), store it, and set that same value on every instance. Values under 32 characters or a documented placeholder are ignored.
+
 **Environment Variables:**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `JWT_SECRET` | Auto-generated | **MUST change in production!** Used for JWT token signing |
+| `JWT_SECRET` | Auto-generated (`$DATA_DIR/jwt-secret`) | Optional. Signs dashboard sessions. Set it only to share sessions across instances behind one URL (32+ characters; shorter values and documented placeholders are ignored) |
 | `INITIAL_PASSWORD` | unset | Optional headless bootstrap password (min 8 chars). When unset, first run requires the one-time setup token printed to the server console — there is no default password |
 | `DATA_DIR` | `~/.9router` | Database and data storage path (the directory name is unchanged from the previous release for backward compatibility) |
 | `NODE_ENV` | `development` | Set to `production` for deployment |
 | `ENABLE_REQUEST_LOGS` | `false` | Enable debug request/response logs |
+| `TRUST_PROXY` | unset | `true` when a forwarder on this machine adds no forwarding header (`X-Forwarded-For`, `X-Real-IP`, …), such as socat, `ssh -R` or a TCP tunnel: its clients' own `Host` reaches 10router, so one could send `Host: localhost` and count as local. With it, no loopback connection counts as local, so tools on the server itself need an API key or the CLI token too. Or a comma list of IPs/CIDRs (`192.168.1.10,10.0.0.0/8`) for a reverse proxy on another host or container, whose forwarding headers are then read. When 10router runs in Docker behind Nginx on the host, Nginx reaches the container from the Docker bridge gateway, so list that gateway or the compose network (`172.17.0.1`, `172.18.0.0/16`); otherwise every login keys on the gateway and Nginx's headers are ignored. With it listed, `http://localhost:20128` through the published port still works with login off: it also comes from the gateway, but with no forwarding header, so it counts as a direct visit, not a proxy hop. A host proxy (Nginx, Caddy, `tailscale serve`) opened by IP is a listed proxy hop with an IP-literal `Host`, so with login off it gets 401 until that IP is in `ALLOWED_HOSTS`, which is safe when the proxy passes the browser's `Host` through. A listed proxy must send a forwarding header on every location: nginx drops the server-level `proxy_set_header` lines from a location that sets its own (`Upgrade`/`Connection` for WebSockets, say), and that location then looks like a direct visit: every client behind the proxy shares the gateway's single login bucket, which escalates, so one client can lock everyone out, and the Host the proxy rewrote is accepted |
+| `ALLOWED_HOSTS` | unset | With "Require login" off, extra host names (comma list) the dashboard API answers, besides `localhost`, IP addresses, the tunnel URLs and `BASE_URL`. An IPv6 entry may be bare or bracketed; use brackets when you include a port (a bare `2001:db8::5:8443` is a different address). Through a proxy hop (a loopback peer that isn't local, or one `TRUST_PROXY` lists that sent a forwarding header) a loopback Host never counts, and behind a listed proxy an IP-literal Host counts only when `ALLOWED_HOSTS` or `BASE_URL` names it. With login off behind a listed proxy, set `proxy_set_header Host $host` on it, then list here any IP browsers type to reach the proxy. Never list, or set `BASE_URL` to, the upstream IP a Host-rewriting proxy sends: that accepts every name through the proxy, rebound ones included. Prefer `BASE_URL` or this list to `NEXT_PUBLIC_BASE_URL`, which a from-source build inlines at build time. This covers proxies that reach 10router over loopback (a `127.0.0.1`, `localhost` or `::1` upstream) and send a forwarding header (a header-less one counts as local; see `TRUST_PROXY=true`), and `TRUST_PROXY`-listed ones that send a forwarding header. A proxy on another host must be listed. In Docker the host is another machine to the container: list the bridge gateway in `TRUST_PROXY`, or a host proxy to `127.0.0.1:20128` is a direct peer. A same-host proxy whose `proxy_pass` targets this machine's LAN IP arrives from that IP, so point it at `127.0.0.1` or `localhost` instead (or list that IP in `TRUST_PROXY`) |
 
 ### Step 5: Create Data Directory
 
@@ -74,8 +77,10 @@ PM2 keeps your application running and restarts it on crashes:
 # Install PM2 globally
 npm install -g pm2
 
-# Start 10router with PM2
-pm2 start npm --name 10router -- start
+# Start 10router with PM2. --kill-timeout gives requests in flight time to
+# finish on `pm2 restart`/`stop`: it must be longer than SHUTDOWN_DRAIN_TIMEOUT_MS
+# (3 min by default); PM2's own default is 1.6 s.
+pm2 start npm --name 10router --kill-timeout 210000 -- start
 
 # Save PM2 configuration
 pm2 save
@@ -154,11 +159,12 @@ docker run -d \
   --name 10router \
   -p 3000:3000 \
   -p 20128:20128 \
-  -e JWT_SECRET="your-secure-secret-change-this" \
   -e INITIAL_PASSWORD="your-secure-password" \
   -v 10router-data:/app/data \
   10router
 ```
+
+> `JWT_SECRET` is left unset on purpose (see the note above): the secret generated in `$DATA_DIR/jwt-secret` persists across restarts.
 
 ### Option 2: Docker Compose
 
@@ -176,7 +182,6 @@ services:
       - "20128:20128"
     environment:
       - NODE_ENV=production
-      - JWT_SECRET=your-secure-secret-change-this
       - INITIAL_PASSWORD=your-secure-password
       - DATA_DIR=/app/data
     volumes:
@@ -186,6 +191,8 @@ services:
 volumes:
   10router-data:
 ```
+
+> `JWT_SECRET` is left unset on purpose (see the note above): the secret generated in `$DATA_DIR/jwt-secret` persists across restarts.
 
 **Run with Docker Compose:**
 
@@ -311,16 +318,15 @@ sudo certbot renew --dry-run
 
 ## 🔒 Security Considerations
 
-### 1. Change Default Credentials
+### 1. Secure the Dashboard Login
 
-**CRITICAL:** Change `JWT_SECRET` and `INITIAL_PASSWORD` before deployment:
+Set a strong `INITIAL_PASSWORD` before deployment, or leave it unset and finish first-run setup with the one-time setup token printed to the server console. There is no default password.
+
+`JWT_SECRET` is optional: 10router generates one into `$DATA_DIR/jwt-secret` and keeps it, so keep the data directory private. Set `JWT_SECRET` only to share sessions across several instances behind one URL, using one value of 32+ characters generated once and stored:
 
 ```bash
-# Generate secure JWT secret
-openssl rand -base64 32
-
-# Use this value for JWT_SECRET
-export JWT_SECRET="generated-secret-here"
+# Run once, store the value, and set it on every instance
+openssl rand -hex 32
 ```
 
 ### 2. Firewall Configuration
@@ -343,19 +349,22 @@ sudo ufw enable
 
 ### 3. Restrict Dashboard Access
 
-If you only need API access, restrict dashboard port:
+If you only need API access through Nginx, block the app's own ports from outside:
 
 ```bash
-# Only allow localhost access to dashboard
+# Only allow localhost access to 10router itself
+sudo ufw deny 20128/tcp
 sudo ufw deny 3000/tcp
 ```
 
-Access dashboard via SSH tunnel:
+Reach the dashboard over an SSH tunnel to the app's port, which counts as this machine:
 
 ```bash
-ssh -L 3000:localhost:3000 user@your-server.com
-# Then open http://localhost:3000 in your browser
+ssh -L 20128:localhost:20128 user@your-server.com
+# Then open http://localhost:20128 in your browser
 ```
+
+Requests through Nginx (or any proxy or tunnel on the server) are treated as remote: they need an API key for `/v1`, and the local-only routes (MCP servers, tunnel controls, Reset Password) and endpoints with a private URL (such as an Ollama on `localhost`) answer 403 or "URL not allowed". For those, use the SSH tunnel above (`ssh -L 20128:localhost:20128`) or the CLI on the server. Keep the `X-Real-IP` and `X-Forwarded-For` lines in the Nginx config so the login lockout counts each client separately, and keep `Host $host`, or send `X-Forwarded-Host`, so the dashboard's own API calls are accepted. Any proxy in front must overwrite or append `X-Forwarded-For` and `X-Real-IP`: one that passes the client's own values through (an Nginx block setting only `Host` and `X-Forwarded-Proto`, say) lets each client choose the keys its logins are limited on.
 
 ### 4. Regular Updates
 
@@ -461,7 +470,7 @@ Ensure `proxy_buffering off` is set in Nginx configuration for SSE support.
 ```bash
 # Fix data directory permissions
 sudo chown -R $USER:$USER /var/lib/10router
-chmod 755 /var/lib/10router
+chmod 700 /var/lib/10router
 ```
 
 ---

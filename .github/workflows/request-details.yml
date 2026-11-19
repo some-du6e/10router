@@ -1,0 +1,206 @@
+name: Request details
+
+on:
+  pull_request:
+    paths:
+      - "src/app/(dashboard)/dashboard/usage/components/RequestDetailsTab.js"
+      - "src/app/api/usage/request-details/**"
+      - "src/app/api/usage/providers/route.js"
+      - "src/lib/requestDetailLabels.ts"
+      - "src/lib/db/**"
+      - "src/shared/utils/requestConversation.js"
+      - "open-sse/utils/redact.js"
+      - "src/shared/constants/providers.js"
+      - "open-sse/handlers/chatCore.js"
+      - "open-sse/handlers/chatCore/requestDetail.js"
+      - "open-sse/handlers/chatCore/streamingHandler.js"
+      - "open-sse/handlers/chatCore/nonStreamingHandler.js"
+      - "open-sse/handlers/chatCore/sseToJsonHandler.js"
+      - "tests/unit/request-details-*.test.js"
+      - "tests/package.json"
+      - "tests/vitest.config.js"
+      - "tests/vitest.shared.js"
+      - ".github/workflows/request-details.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          # The backup test in request-details-tab opens the DB with better-sqlite3.
+          npm rebuild better-sqlite3
+          cd tests && bun install --ignore-scripts
+      - name: Unit test
+        working-directory: tests
+        run: >
+          ./node_modules/.bin/vitest run
+          unit/request-details-tab.test.js
+          unit/request-details-redaction.test.js
+          unit/request-details-full-data-db.test.js
+          unit/request-details-error-class.test.js
+          unit/request-details-shutdown.test.js
+          unit/request-details-effort.test.js
+          unit/request-details-logging.test.js
+          unit/request-details-stream-reuse.test.js
+          unit/request-details-backlog.test.js
+      # set-state-in-effect: RequestDetailsTab.js's data-loading effects, which
+      # predate this check.
+      - name: Lint
+        run: >
+          ./node_modules/.bin/eslint --rule 'react-hooks/set-state-in-effect: off'
+          "src/app/(dashboard)/dashboard/usage/components/RequestDetailsTab.js"
+          src/app/api/usage/request-details/route.js
+          "src/app/api/usage/request-details/[id]/route.ts"
+          src/app/api/usage/providers/route.js
+          src/lib/requestDetailLabels.ts
+          src/lib/db/repos/requestDetailsRepo.js
+          tests/unit/request-details-tab.test.js
+          tests/unit/request-details-backlog.test.js
+          tests/unit/request-details-shutdown.test.js
+      # Fails only on errors in the new .ts files, so unrelated type errors
+      # elsewhere don't block it.
+      - name: Type check
+        run: |
+          set +e
+          ./node_modules/.bin/tsc --noEmit -p . > tsc.log 2>&1
+          code=$?
+          set -e
+          tail -5 tsc.log
+          if [ "$code" -gt 2 ] || ! [ -x ./node_modules/.bin/tsc ]; then echo "tsc did not run (exit $code)"; exit 1; fi
+          if grep -E "requestDetailLabels\.ts|request-details/\[id\]/route\.ts" tsc.log; then exit 1; fi
+
+  # Informational, for the PR's "Before": this branch's test against the base
+  # branch's code. Every source file under open-sse/ and src/ that this branch
+  # modifies is checked out from the base (files it adds stay, unused); the
+  # tests stay. Reports what fails and why; test failures there don't fail the
+  # run, only a step that can't run at all does.
+  before-on-base:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Check out the base branch's code for the changed source files
+        run: |
+          base="origin/${{ github.base_ref || 'master' }}"
+          changed=$(git diff --name-only --diff-filter=M "$base"...HEAD -- open-sse src)
+          if [ -z "$changed" ]; then echo "No source files changed from $base; nothing to compare."; exit 0; fi
+          echo "$changed"
+          git checkout "$base" -- $changed
+          echo "compare=yes" >> "$GITHUB_ENV"
+      - name: Run this branch's test on it (informational)
+        if: env.compare == 'yes'
+        working-directory: tests
+        # Failures are the point here, so vitest's exit code is only reported.
+        # With no readable report (vitest crashed before writing one) it says so and passes.
+        run: |
+          status=0
+          ./node_modules/.bin/vitest run --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/before.json" \
+            unit/request-details-backlog.test.js || status=$?
+          VITEST_STATUS="$status" node --input-type=module -e '
+            import { existsSync, readFileSync, appendFileSync } from "node:fs";
+            const file = process.env.RUNNER_TEMP + "/before.json";
+            const exited = `vitest exited ${process.env.VITEST_STATUS}`;
+            let r = null;
+            try { if (existsSync(file)) r = JSON.parse(readFileSync(file, "utf8")); } catch { r = null; }
+            if (!r) {
+              const line = `Informational. Before: ${exited} without a readable report.`;
+              console.log(line);
+              appendFileSync(process.env.GITHUB_STEP_SUMMARY, line + "\n");
+              process.exit(0);
+            }
+            const lines = [`Informational. Before (base code, this branch tests): ${r.numFailedTests} failed, ${r.numPassedTests} passed of ${r.numTotalTests}; ${exited}`];
+            for (const f of r.testResults) {
+              const rel = f.name.slice(f.name.indexOf("/tests/") + 1);
+              if (!f.assertionResults.length && f.status === "failed") lines.push(`  ${rel}: failed to load`);
+              for (const a of f.assertionResults) {
+                if (a.status !== "failed") continue;
+                lines.push(`  ${rel} :: ${a.fullName}`);
+                const why = (a.failureMessages || [])[0]?.split("\n")[0];
+                if (why) lines.push(`    ${why}`);
+              }
+            }
+            console.log(lines.join("\n"));
+            appendFileSync(process.env.GITHUB_STEP_SUMMARY, "```\n" + lines.join("\n") + "\n```\n");
+          '
+
+  # The suite is not all-green on master (see AGENTS.md), so this runs it on
+  # both the base and this branch and fails only on tests that pass on the base
+  # and fail here.
+  no-new-failures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Check out the base branch next to this one
+        run: git worktree add ../base "origin/${{ github.base_ref || 'master' }}"
+      - name: Install dependencies (branch and base)
+        run: |
+          for dir in . ../base; do
+            (cd "$dir" && bun install --ignore-scripts && cd tests && bun install --ignore-scripts)
+          done
+      - name: Run the suite on the base
+        working-directory: ../base/tests
+        # Each run gets its own HOME: tests without a DATA_DIR use ~/.9router,
+        # and one run's database must not leak into the other.
+        run: |
+          mkdir -p "$RUNNER_TEMP/home-base"
+          HOME="$RUNNER_TEMP/home-base" ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/base.json" > /dev/null 2>&1 || true
+      - name: Run the suite on this branch
+        working-directory: tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/home-head"
+          HOME="$RUNNER_TEMP/home-head" ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/head.json" > /dev/null 2>&1 || true
+      - name: Compare
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const load = (file, root) => {
+              const r = JSON.parse(readFileSync(file, "utf8"));
+              const status = new Map();
+              for (const f of r.testResults) {
+                const rel = f.name.slice(f.name.indexOf("/tests/") + 1);
+                for (const a of f.assertionResults) status.set(`${rel} :: ${a.fullName}`, a.status);
+                // A file that failed to load has no assertions; count it as one failure.
+                if (!f.assertionResults.length && f.status === "failed") status.set(`${rel} :: (file failed to load)`, "failed");
+              }
+              return { status, total: r.numTotalTests, failed: r.numFailedTests };
+            };
+            const base = load(process.env.RUNNER_TEMP + "/base.json");
+            const head = load(process.env.RUNNER_TEMP + "/head.json");
+            console.log(`base: ${base.failed}/${base.total} failed, head: ${head.failed}/${head.total} failed`);
+            const regressions = [...head.status].filter(([k, s]) => s === "failed" && base.status.get(k) === "passed").map(([k]) => k);
+            const fixed = [...base.status].filter(([k, s]) => s === "failed" && head.status.get(k) === "passed").map(([k]) => k);
+            const newFailing = [...head.status].filter(([k, s]) => s === "failed" && !base.status.has(k)).map(([k]) => k);
+            if (fixed.length) console.log("Now passing:\n  " + fixed.join("\n  "));
+            if (newFailing.length) console.log("New tests failing:\n  " + newFailing.join("\n  "));
+            if (regressions.length) console.log("Passed on the base, fail here:\n  " + regressions.join("\n  "));
+            if (regressions.length || newFailing.length) process.exit(1);
+          '

@@ -204,11 +204,14 @@ describe("login limiter client IP", () => {
     expect(ip).toBe("203.0.113.9");
   });
 
-  it("still honours TRUST_PROXY for operators fronting 9router with a reverse proxy", () => {
+  // Only custom-server.js reads TRUST_PROXY, and the address it picks arrives
+  // stamped. Without that proof, X-Forwarded-For is the client's to set, so it
+  // never picks the bucket.
+  it("ignores X-Forwarded-For without the wrapper's proof, TRUST_PROXY or not", () => {
     process.env.TRUST_PROXY = "true";
 
     const ip = getClientIp(request("/api/auth/login", { "x-forwarded-for": "198.51.100.7, 10.0.0.1" }));
 
-    expect(ip).toBe("198.51.100.7");
+    expect(ip).toBe("unknown");
   });
 });
