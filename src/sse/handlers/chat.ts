@@ -66,6 +66,7 @@ import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/sha
 import { recordEndpointRequests } from "@/lib/endpointRequestLog.js";
 import { withMemoryAdmission } from "../services/memoryAdmission.js";
 import type { AdmissionTicket } from "../services/memoryAdmission.js";
+import { readJsonObject, missingModel } from "../utils/requestBody.js";
 
 // ---- Types -------------------------------------------------------------------
 
@@ -243,27 +244,15 @@ export async function handleChat(
   return withMemoryAdmission(request, (ticket) => admittedChat(request, clientRawRequest, options, ticket));
 }
 
-// The body is read and parsed in its own call, so its text is not kept for the
-// request's lifetime by handleChat's suspended frame.
-async function readJsonBody(request: Request, ticket: AdmissionTicket | null): Promise<ChatBody> {
-  const text = await request.text();
-  ticket?.noteBodyLength(text.length);
-  return JSON.parse(text);
-}
-
 async function admittedChat(
   request: Request,
   clientRawRequest: ClientRawRequest | null,
   { earlyHeaders = false, autoCombo, autoComboHome = [] }: HandleChatOptions,
   ticket: AdmissionTicket | null,
 ): Promise<Response> {
-  let body: ChatBody;
-  try {
-    body = await readJsonBody(request, ticket);
-  } catch {
-    log.warn("CHAT", "Invalid JSON body");
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
-  }
+  const parsed = await readJsonObject(request, { ticket, logTag: "CHAT" });
+  if (parsed.error) return parsed.error;
+  const body: ChatBody = parsed.body;
 
   // Build clientRawRequest for logging (if not provided)
   if (!clientRawRequest) {
@@ -306,10 +295,8 @@ async function admittedChat(
     }
   }
 
-  if (!modelStr) {
-    log.warn("CHAT", "Missing model");
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
-  }
+  const noModel = missingModel(modelStr, "CHAT");
+  if (noModel) return noModel;
 
   const sourceFormatOverride = request?.url
     ? detectFormatByEndpoint(new URL(request.url).pathname, body)

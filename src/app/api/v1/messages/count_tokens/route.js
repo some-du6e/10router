@@ -1,4 +1,5 @@
 import { IMAGE_TOKEN_ESTIMATE } from "open-sse/config/mediaConfig.js";
+import { readJsonObject } from "@/sse/utils/requestBody.js";
 
 const CHARS_PER_TOKEN = 4;
 
@@ -82,15 +83,8 @@ export function estimateAnthropicInputTokens(body = {}) {
  * POST /v1/messages/count_tokens - Mock token count response
  */
 export async function POST(request) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json", ...CORS_HEADERS }
-    });
-  }
+  const { body, error } = await readJsonObject(request, { logTag: "COUNT_TOKENS" });
+  if (error) return error;
 
   const inputTokens = estimateAnthropicInputTokens(body);
 
