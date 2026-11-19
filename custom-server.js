@@ -180,7 +180,8 @@ function createWsDecoder(onMessage, onClose, onPing) {
 //     local-only routes;
 //   - clientIpFor: the address the login limiter and logs key on.
 // Forwarding headers count only from a loopback peer (a reverse proxy on this
-// machine); a direct remote peer is always its socket address.
+// machine) or a peer TRUST_PROXY lists; any other remote peer, and a listed one
+// that sent no forwarding header, is its socket address.
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
 
@@ -202,11 +203,15 @@ function isLoopbackHost(value) {
   return LOOPBACK_HOSTS.has(name);
 }
 
-// Any of these from a loopback peer means a proxy or tunnel relayed someone else.
+// Any of these from a loopback or TRUST_PROXY-listed peer means a proxy or
+// tunnel relayed someone else.
 const FORWARDING_HEADERS = [
   "x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host", "x-forwarded-proto", "true-client-ip",
   "cf-connecting-ip", "cf-ray", "tailscale-funnel-request",
 ];
+function hasForwardingHeader(headers) {
+  return FORWARDING_HEADERS.some((name) => headers[name]);
+}
 
 // TRUST_PROXY has two forms:
 //   - "true": a forwarder on this machine adds no forwarding header (socat,
@@ -251,6 +256,14 @@ function isTrustedProxyPeer(socketIp) {
   return !!family && list.check(address, family === 6 ? "ipv6" : "ipv4");
 }
 
+// A non-loopback peer TRUST_PROXY lists that sent a forwarding header: a proxy
+// whose headers are read and whose Host may be its own. One that sent none (a
+// browser through a Docker published port, from the listed bridge gateway)
+// relayed no one and is a direct peer.
+function isListedProxyHop(headers, socketIp) {
+  return !isLoopbackHost(socketIp) && isTrustedProxyPeer(socketIp) && hasForwardingHeader(headers);
+}
+
 /**
  * A loopback peer is a client on this machine only when nothing says it relays
  * someone else: no forwarding header, and TRUST_PROXY not "true". Host never
@@ -263,7 +276,7 @@ function isTrustedProxyPeer(socketIp) {
 function isOnThisMachine(headers, socketIp) {
   if (!isLoopbackHost(socketIp)) return false;
   if (isHeaderlessForwarderMode()) return false;
-  if (FORWARDING_HEADERS.some((name) => headers[name])) return false;
+  if (hasForwardingHeader(headers)) return false;
   if (headers.host && !isLoopbackHost(headers.host)) return false;
   return true;
 }
@@ -309,20 +322,21 @@ function usableAddress(value) {
 
 /**
  * The addresses to key a login on, the first one being the one logged. A direct
- * peer is its socket. Behind a proxy (on this machine, or one TRUST_PROXY lists)
- * the candidates are the rightmost X-Forwarded-For entry that is a usable address
- * (the hop an appending proxy such as Caddy, Traefik, cloudflared or Tailscale
- * added; everything left of it is the client's) and the X-Real-IP (what nginx
- * with `X-Real-IP $remote_addr` sets). Whichever one the proxy wrote is fixed,
- * the other is the client's to rotate, and this file can't tell which is which,
- * so the limiter counts a failure against both and refuses while either is
- * locked. CF-Connecting-IP counts only when neither is there. With nothing
+ * peer is its socket, and so is a TRUST_PROXY-listed one that sent no forwarding
+ * header. Behind a proxy (on this machine, or a listed one that sent a forwarding
+ * header) the candidates are the rightmost X-Forwarded-For entry that is a usable
+ * address (the hop an appending proxy such as Caddy, Traefik, cloudflared or
+ * Tailscale added; everything left of it is the client's) and the X-Real-IP
+ * (what nginx with `X-Real-IP $remote_addr` sets). Whichever one the proxy
+ * wrote is fixed, the other is the client's to rotate, and this file can't tell
+ * which is which, so the limiter counts a failure against both and refuses while
+ * either is locked. CF-Connecting-IP counts only when neither is there. With nothing
  * usable, or behind a header-less forwarder (TRUST_PROXY=true), the key is the
  * shared "unknown".
  */
 function clientKeysFor(headers, socketIp) {
   const loopback = isLoopbackHost(socketIp);
-  if (!loopback && !isTrustedProxyPeer(socketIp)) return [socketIp || "unknown"];
+  if (!loopback && !isListedProxyHop(headers, socketIp)) return [socketIp || "unknown"];
   if (isOnThisMachine(headers, socketIp)) return [socketIp];
   if (loopback && isHeaderlessForwarderMode()) return ["unknown"];
   let fromXff = "";
@@ -733,12 +747,15 @@ http.createServer = (...args) => {
     // login key candidates (see clientKeysFor); x-9r-via-proxy marks every
     // request not from a client on this machine; x-9r-via-tunnel, one whose Host
     // is a Cloudflare quick tunnel or Tailscale name; x-9r-proxy-hop, one not
-    // local whose peer is a proxy whose headers are read (loopback, or listed in
-    // TRUST_PROXY), so its Host may be one the proxy wrote, not the browser.
+    // local whose peer is a proxy whose headers are read, so its Host may be one
+    // the proxy wrote, not the browser: "loopback" for a loopback peer that
+    // isn't local, "listed" for isListedProxyHop.
     const local = isOnThisMachine(req.headers, socketIp);
     const [ip, ...altIps] = clientKeysFor(req.headers, socketIp);
     const viaTunnel = isTunnelTraffic(req.headers, socketIp);
-    const proxyHop = !local && (isLoopbackHost(socketIp) || isTrustedProxyPeer(socketIp));
+    let proxyHop = "";
+    if (!local && isLoopbackHost(socketIp)) proxyHop = "loopback";
+    else if (isListedProxyHop(req.headers, socketIp)) proxyHop = "listed";
     delete req.headers["x-9r-proxy-hop"];
     delete req.headers["x-9r-real-ip"];
     delete req.headers["x-9r-alt-ips"];
@@ -758,7 +775,7 @@ http.createServer = (...args) => {
     req.headers["x-9r-socket-port"] = String(req.socket?.remotePort ?? "");
     req.headers["x-9r-peer-token"] = PEER_TOKEN;
     if (!local) req.headers["x-9r-via-proxy"] = "1";
-    if (proxyHop) req.headers["x-9r-proxy-hop"] = "1";
+    if (proxyHop) req.headers["x-9r-proxy-hop"] = proxyHop;
     if (viaTunnel) req.headers["x-9r-via-tunnel"] = "1";
     return handler(req, res);
   };

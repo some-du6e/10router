@@ -200,19 +200,28 @@ export function isTunnelHost(request, settings) {
 // Hosts that can't be rebound: loopback names, IP literals, and the hosts this
 // install was given: the tunnel and Tailscale URLs, BASE_URL / NEXT_PUBLIC_BASE_URL,
 // and ALLOWED_HOSTS (a comma list of host names or URLs, for an install reached
-// by several names, such as a tunnel domain and a LAN name).
+// by several names, such as a tunnel domain and a LAN name). An IPv6 entry may be
+// bare (2001:db8::5) or bracketed ([2001:db8::5], [2001:db8::5]:20128).
 function allowedHostNames(settings) {
   const listed = String(process.env.ALLOWED_HOSTS || "").split(",").map((entry) => entry.trim()).filter(Boolean);
   return [settings?.tunnelUrl, settings?.tailscaleUrl, process.env.BASE_URL, process.env.NEXT_PUBLIC_BASE_URL, ...listed]
-    .map((value) => (value && !String(value).includes("://") ? hostUrl(String(value), "http:")?.hostname.toLowerCase().replace(/\.$/, "") || "" : hostnameOf(value)))
+    .map((value) => {
+      if (!value) return "";
+      const text = String(value);
+      if (text.includes("://")) return hostnameOf(text);
+      const host = !text.startsWith("[") && (text.match(/:/g) || []).length > 1 ? `[${text}]` : text;
+      return hostUrl(host, "http:")?.hostname.toLowerCase().replace(/\.$/, "") || "";
+    })
     .filter(Boolean);
 }
 
 // A URL hostname (already canonical: 127.1 and 2130706433 read 127.0.0.1,
 // IPv6 is compressed and bracketed) naming this machine: the loopback names,
-// 127.0.0.0/8, [::1], and 127.0.0.0/8 mapped into IPv6.
+// 127.0.0.0/8, [::1], 127.0.0.0/8 mapped into IPv6, and the unspecified address
+// in IPv6 ([::], [::ffff:0:0]) as well as 0.0.0.0, which connect to this machine.
 function isLoopbackLiteral(name) {
   if (isLoopbackHostname(name)) return true;
+  if (name === "[::]" || name === "[::ffff:0:0]") return true;
   return /^127\.\d+\.\d+\.\d+$/.test(name) || /^\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\]$/.test(name);
 }
 
@@ -222,14 +231,20 @@ function isAllowedOpenHost(request, settings) {
   const url = hostUrl(raw, "http:");
   if (!url) return false;
   const name = url.hostname.toLowerCase().replace(/\.$/, "");
-  // A proxy that rewrites Host to its upstream (nginx's default) sends a loopback
-  // Host for every name the browser used, rebound ones included. So behind one
-  // (custom-server.js stamps x-9r-proxy-hop for a loopback or TRUST_PROXY-listed
-  // peer) only a browser's own Host counts, and the proxy must pass it through.
-  // A direct peer from elsewhere (a Docker port, an ssh -L or NAT forward) keeps
-  // its Host: a page can't make a browser send a loopback Host for its own name.
-  if (isLoopbackLiteral(name)) return !(hasTrustedPeerHeaders(request) && request.headers.get("x-9r-proxy-hop"));
-  if (name.startsWith("[") || /^\d{1,3}(\.\d{1,3}){3}$/.test(name)) return true;
+  // A proxy that rewrites Host to its upstream (nginx's default) sends that
+  // upstream's loopback name or IP for every name the browser used, rebound ones
+  // included. custom-server.js stamps x-9r-proxy-hop "loopback" for a loopback
+  // peer that isn't local and "listed" for a TRUST_PROXY-listed one that sent a
+  // forwarding header. Behind either, a loopback Host never counts. Behind a
+  // listed one, which reaches this server by a non-loopback IP, an IP literal
+  // counts only when this install was given it (ALLOWED_HOSTS, BASE_URL); a
+  // same-host proxy's upstream is loopback, so an IP there is the browser's own
+  // (Caddy or `tailscale serve` opened by IP). A direct peer from elsewhere (a
+  // Docker port, an ssh -L or NAT forward) keeps its Host: a page can't make a
+  // browser send a loopback or IP-literal Host for its own name.
+  const proxyHop = hasTrustedPeerHeaders(request) ? request.headers.get("x-9r-proxy-hop") || "" : "";
+  if (isLoopbackLiteral(name)) return !proxyHop;
+  if ((name.startsWith("[") || /^\d{1,3}(\.\d{1,3}){3}$/.test(name)) && proxyHop !== "listed") return true;
   return allowedHostNames(settings).includes(name);
 }
 

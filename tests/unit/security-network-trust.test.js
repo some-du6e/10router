@@ -119,11 +119,13 @@ describe("custom-server wrapper: who is local and which address it keys on", () 
 
   // A loopback peer that isn't local is a proxy whose Host may be its own.
   it("stamps x-9r-proxy-hop on a loopback proxy hop only, and drops a client's own", async () => {
-    expect((await get({ host: `localhost:${port}`, "x-9r-proxy-hop": "1" }))["x-9r-proxy-hop"]).toBeUndefined();
-    expect((await get({ host: `localhost:${port}`, "x-forwarded-for": "203.0.113.7" }))["x-9r-proxy-hop"]).toBe("1");
-    expect((await get({ host: "router.example.com" }))["x-9r-proxy-hop"]).toBe("1");
+    expect((await get({ host: `localhost:${port}`, "x-9r-proxy-hop": "listed" }))["x-9r-proxy-hop"]).toBeUndefined();
+    expect((await get({ host: `localhost:${port}`, "x-forwarded-for": "203.0.113.7" }))["x-9r-proxy-hop"]).toBe("loopback");
+    expect((await get({ host: "router.example.com" }))["x-9r-proxy-hop"]).toBe("loopback");
+    // A client can't upgrade a loopback hop to a listed one.
+    expect((await get({ host: "router.example.com", "x-9r-proxy-hop": "listed" }))["x-9r-proxy-hop"]).toBe("loopback");
     vi.stubEnv("TRUST_PROXY", "true");
-    expect((await get({ host: `localhost:${port}` }))["x-9r-proxy-hop"]).toBe("1");
+    expect((await get({ host: `localhost:${port}` }))["x-9r-proxy-hop"]).toBe("loopback");
   });
 
   it("drops a client's own x-9r-alt-ips", async () => {
@@ -177,6 +179,11 @@ describe("TRUST_PROXY", () => {
       expect(isTrustedProxyPeer(peer), peer).toBe(false);
       expect(clientKeysFor(headers, peer), peer).toEqual([peer]);
     }
+    // A listed peer with no forwarding header relayed no one (a browser through
+    // a Docker published port arrives from the listed gateway): it keys on
+    // itself. One with a forwarding header but no usable address is still a proxy.
+    expect(clientKeysFor({ host: "localhost:20128" }, "10.20.30.40")).toEqual(["10.20.30.40"]);
+    expect(clientKeysFor({ host: "localhost:20128", "x-forwarded-proto": "https" }, "10.20.30.40")).toEqual(["unknown"]);
     // Loopback keeps its own rules: a client on this machine is still local.
     expect(isOnThisMachine({ host: "localhost" }, "127.0.0.1")).toBe(true);
   });
