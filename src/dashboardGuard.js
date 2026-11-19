@@ -217,9 +217,11 @@ function allowedHostNames(settings) {
 
 // A URL hostname (already canonical: 127.1 and 2130706433 read 127.0.0.1,
 // IPv6 is compressed and bracketed) naming this machine: the loopback names,
-// 127.0.0.0/8, [::1], and 127.0.0.0/8 mapped into IPv6.
+// 127.0.0.0/8, [::1], 127.0.0.0/8 mapped into IPv6, and the unspecified address
+// in IPv6 ([::], [::ffff:0:0]) as well as 0.0.0.0, which connect to this machine.
 function isLoopbackLiteral(name) {
   if (isLoopbackHostname(name)) return true;
+  if (name === "[::]" || name === "[::ffff:0:0]") return true;
   return /^127\.\d+\.\d+\.\d+$/.test(name) || /^\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\]$/.test(name);
 }
 

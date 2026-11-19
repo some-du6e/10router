@@ -818,7 +818,7 @@ describe("dashboard guard login-off Host allowlist", () => {
   it("refuses a loopback Host from a proxy hop, however it is written", async () => {
     process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
     for (const hop of [PROXY_HOP, LISTED_HOP]) {
-      for (const host of ["127.0.0.1:20128", "localhost:20128", "[::1]:20128", "0.0.0.0:20128", "127.0.0.2", "127.1:20128", "2130706433", "[::ffff:127.0.0.1]:20128", "[0:0:0:0:0:0:0:1]"]) {
+      for (const host of ["127.0.0.1:20128", "localhost:20128", "[::1]:20128", "0.0.0.0:20128", "127.0.0.2", "127.1:20128", "2130706433", "[::ffff:127.0.0.1]:20128", "[0:0:0:0:0:0:0:1]", "[::]:20128", "[0:0:0:0:0:0:0:0]", "[::ffff:0.0.0.0]:20128"]) {
         expect((await proxy(request("/api/settings", { host, ...hop }))).status, `${hop["x-9r-proxy-hop"]} ${host}`).toBe(401);
       }
     }
@@ -870,6 +870,8 @@ describe("dashboard guard login-off Host allowlist", () => {
     }
     // A client's own proxy-hop stamp, without the wrapper's proof, is ignored.
     expect(await proxy(request("/api/settings", { host: "127.0.0.1:20128", "x-9r-proxy-hop": "1" }))).toBe(mocks.nextResponse);
+    expect(await proxy(request("/api/settings", { host: "192.168.1.5:20128", "x-9r-proxy-hop": "listed" }))).toBe(mocks.nextResponse);
+    expect(await proxy(request("/api/settings", { host: "192.168.1.5:20128", "x-9r-proxy-hop": "listed", "x-9r-peer-token": "forged" }))).toBe(mocks.nextResponse);
   });
 
   it("leaves a session and the CLI token alone on any Host", async () => {

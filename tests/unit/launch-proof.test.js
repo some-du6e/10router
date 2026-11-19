@@ -108,19 +108,22 @@ describe("custom-server proxy-hop stamp for a non-loopback peer", () => {
 
   // Docker with the bridge gateway listed: the owner's own browser on
   // http://localhost:20128 comes in through the published port from the same
-  // gateway, with no forwarding header. Nothing rewrote its Host.
+  // gateway, with no forwarding header. Nothing rewrote its Host. A client's own
+  // x-9r-proxy-hop is dropped, not passed on.
   it.skipIf(!lanAddress && !process.env.CI)("keeps a listed peer with no forwarding header a direct peer", async () => {
     expect(lanAddress, "no non-loopback IPv4 address on this machine").toBeTruthy();
     let seen;
     const port = await listen((req, res) => { seen = req.headers; res.end("ok"); }, lanAddress);
     vi.stubEnv("TRUST_PROXY", `${lanAddress}/32`);
-    await new Promise((resolve) => {
-      const req = http.request({ host: lanAddress, port, agent: false, headers: { host: "localhost:20128" } }, (res) => { res.resume(); res.on("end", resolve); });
-      req.end();
-    });
-    expect(seen["x-9r-via-proxy"]).toBe("1");
-    expect(seen["x-9r-proxy-hop"]).toBeUndefined();
-    expect(seen["x-9r-real-ip"]).toBe(lanAddress);
+    for (const headers of [{ host: "localhost:20128" }, { host: "localhost:20128", "x-9r-proxy-hop": "listed" }]) {
+      await new Promise((resolve) => {
+        const req = http.request({ host: lanAddress, port, agent: false, headers }, (res) => { res.resume(); res.on("end", resolve); });
+        req.end();
+      });
+      expect(seen["x-9r-via-proxy"], JSON.stringify(headers)).toBe("1");
+      expect(seen["x-9r-proxy-hop"], JSON.stringify(headers)).toBeUndefined();
+      expect(seen["x-9r-real-ip"], JSON.stringify(headers)).toBe(lanAddress);
+    }
   });
 });
 
