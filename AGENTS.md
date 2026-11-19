@@ -9,6 +9,7 @@ The repo ships two independently versioned packages:
 Read before working in these areas:
 - `docs/ARCHITECTURE.md`: request lifecycle, fallback, OAuth refresh, cloud sync, data model. Its persistence section is stale; see [Persistence](#persistence).
 - `open-sse/AGENTS.md`: engine conventions and how to add a provider, executor, or translator. Read it before editing anything under `open-sse/`.
+- `cli/AGENTS.md`: launcher rules (which processes it may stop, restarts, the DATA_DIR lock, autostart arguments). Read it before editing `cli/cli.js` or `cli/src/cli/`.
 
 ## TypeScript migration
 
