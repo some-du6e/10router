@@ -364,7 +364,7 @@ ssh -L 20128:localhost:20128 user@your-server.com
 # Then open http://localhost:20128 in your browser
 ```
 
-Requests through Nginx (or any proxy or tunnel on the server) are treated as remote: they need an API key for `/v1`, and the local-only routes (MCP servers, tunnel controls, Reset Password) and endpoints with a private URL (such as an Ollama on `localhost`) answer 403 or "URL not allowed". For those, use the SSH tunnel above (`ssh -L 20128:localhost:20128`) or the CLI on the server. Keep the `X-Real-IP` and `X-Forwarded-For` lines in the Nginx config so the login lockout counts each client separately, and keep `Host $host`, or send `X-Forwarded-Host`, so the dashboard's own API calls are accepted.
+Requests through Nginx (or any proxy or tunnel on the server) are treated as remote: they need an API key for `/v1`, and the local-only routes (MCP servers, tunnel controls, Reset Password) and endpoints with a private URL (such as an Ollama on `localhost`) answer 403 or "URL not allowed". For those, use the SSH tunnel above (`ssh -L 20128:localhost:20128`) or the CLI on the server. Keep the `X-Real-IP` and `X-Forwarded-For` lines in the Nginx config so the login lockout counts each client separately, and keep `Host $host`, or send `X-Forwarded-Host`, so the dashboard's own API calls are accepted. Any proxy in front must overwrite or append `X-Forwarded-For` and `X-Real-IP`: one that passes the client's own values through (an Nginx block setting only `Host` and `X-Forwarded-Proto`, say) lets each client choose the keys its logins are limited on.
 
 ### 4. Regular Updates
 

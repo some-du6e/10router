@@ -362,7 +362,7 @@ ssh -L 20128:localhost:20128 user@your-server.com
 # Rồi mở http://localhost:20128 trong trình duyệt
 ```
 
-Request đi qua Nginx (hoặc bất kỳ proxy hay tunnel nào trên server) được coi là từ xa: cần API key cho `/v1`, còn các route chỉ dành cho máy cục bộ (MCP server, điều khiển tunnel, Reset Password) và endpoint có URL nội bộ (như Ollama trên `localhost`) trả về 403 hoặc "URL not allowed". Với những việc đó, dùng SSH tunnel ở trên (`ssh -L 20128:localhost:20128`) hoặc CLI trên server. Giữ các dòng `X-Real-IP` và `X-Forwarded-For` trong cấu hình Nginx để khóa đăng nhập đếm riêng từng client, và giữ `Host $host` (hoặc gửi `X-Forwarded-Host`) để các lệnh gọi API của chính dashboard được chấp nhận.
+Request đi qua Nginx (hoặc bất kỳ proxy hay tunnel nào trên server) được coi là từ xa: cần API key cho `/v1`, còn các route chỉ dành cho máy cục bộ (MCP server, điều khiển tunnel, Reset Password) và endpoint có URL nội bộ (như Ollama trên `localhost`) trả về 403 hoặc "URL not allowed". Với những việc đó, dùng SSH tunnel ở trên (`ssh -L 20128:localhost:20128`) hoặc CLI trên server. Giữ các dòng `X-Real-IP` và `X-Forwarded-For` trong cấu hình Nginx để khóa đăng nhập đếm riêng từng client, và giữ `Host $host` (hoặc gửi `X-Forwarded-Host`) để các lệnh gọi API của chính dashboard được chấp nhận. Mọi proxy phía trước phải ghi đè hoặc nối thêm `X-Forwarded-For` và `X-Real-IP`: proxy nào để nguyên giá trị do client gửi (ví dụ một khối Nginx chỉ đặt `Host` và `X-Forwarded-Proto`) sẽ cho mỗi client tự chọn khóa dùng để giới hạn đăng nhập của nó.
 
 ### 4. Cập nhật định kỳ
 

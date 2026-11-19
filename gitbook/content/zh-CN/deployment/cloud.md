@@ -362,7 +362,7 @@ ssh -L 20128:localhost:20128 user@your-server.com
 # 然后在浏览器打开 http://localhost:20128
 ```
 
-经过 Nginx(或服务器上任何代理、隧道)的请求被视为远程请求:`/v1` 需要 API 密钥,仅限本机的路由(MCP 服务器、隧道控制、重置密码)以及使用私有 URL 的端点(例如 `localhost` 上的 Ollama)会返回 403 或 "URL not allowed"。这些操作请使用上面的 SSH 隧道(`ssh -L 20128:localhost:20128`)或服务器上的 CLI。保留 Nginx 配置中的 `X-Real-IP` 和 `X-Forwarded-For` 两行,让登录锁定按客户端分别计数;并保留 `Host $host`(或发送 `X-Forwarded-Host`),让仪表盘自身的 API 调用被接受。
+经过 Nginx(或服务器上任何代理、隧道)的请求被视为远程请求:`/v1` 需要 API 密钥,仅限本机的路由(MCP 服务器、隧道控制、重置密码)以及使用私有 URL 的端点(例如 `localhost` 上的 Ollama)会返回 403 或 "URL not allowed"。这些操作请使用上面的 SSH 隧道(`ssh -L 20128:localhost:20128`)或服务器上的 CLI。保留 Nginx 配置中的 `X-Real-IP` 和 `X-Forwarded-For` 两行,让登录锁定按客户端分别计数;并保留 `Host $host`(或发送 `X-Forwarded-Host`),让仪表盘自身的 API 调用被接受。前面的任何代理都必须覆盖或追加 `X-Forwarded-For` 和 `X-Real-IP`:原样转发客户端自带值的代理(例如只设置 `Host` 和 `X-Forwarded-Proto` 的 Nginx 配置块)会让每个客户端自己选择限制其登录所用的键。
 
 ### 4. 定期更新
 
