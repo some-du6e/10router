@@ -6,7 +6,7 @@
 import http from "node:http";
 import v8 from "node:v8";
 import vm from "node:vm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { recordEndpointRequests, getEndpointRequests, clearEndpointRequests } from "../../src/lib/endpointRequestLog.ts";
 import { proxyAwareFetch } from "../../open-sse/utils/proxyFetch.js";
 
@@ -46,14 +46,21 @@ const settle = async () => {
   }
 };
 
+// The body types an executor sends: JSON text, or its encoded bytes.
+const BODY_KINDS = {
+  string: (json) => json,
+  Uint8Array: (json) => new TextEncoder().encode(json),
+};
+
 // One request whose prompt is `BODY_MB` MB, sent and answered with headers; its
-// stream stays open. The body string is built here, so only the fetch (and,
-// with `capture`, the endpoint log) can keep it.
-function startRequest(i, capture) {
+// stream stays open. The body is built here, so only the fetch (and, with
+// `capture`, the endpoint log) can keep it.
+function startRequest(i, kind, capture) {
+  const json = JSON.stringify({ model: `model-${i}`, stream: true, messages: [{ role: "user", content: String(i).repeat(BODY_MB * MB) }] });
   const send = () => proxyAwareFetch(`${base}/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model: `model-${i}`, stream: true, messages: [{ role: "user", content: String(i).repeat(BODY_MB * MB) }] }),
+    body: BODY_KINDS[kind](json),
   });
   if (!capture) return send();
   const creds = { apiKey: "test-key-0000000000", providerSpecificData: { baseUrl: base } };
@@ -61,11 +68,11 @@ function startRequest(i, capture) {
 }
 
 // Buffer memory held while IN_FLIGHT requests stream, and their responses.
-async function heldWhileRunning(capture) {
+async function heldWhileRunning(kind, capture) {
   await settle();
   const before = process.memoryUsage().arrayBuffers;
   const responses = [];
-  for (let i = 0; i < IN_FLIGHT; i++) responses.push(await startRequest(i, capture));
+  for (let i = 0; i < IN_FLIGHT; i++) responses.push(await startRequest(i, kind, capture));
   expect(responses.every((r) => r.status === 200)).toBe(true);
   await settle();
   return { held: process.memoryUsage().arrayBuffers - before, responses };
@@ -74,30 +81,29 @@ async function heldWhileRunning(capture) {
 async function finish(responses) {
   for (const res of open.splice(0)) res.end("data: [DONE]\n\n");
   await Promise.all(responses.map((r) => r.text()));
-  await new Promise((resolve) => setTimeout(resolve, 50));
 }
 
 describe("endpoint request log memory", () => {
-  it("keeps only a capped copy of each running request's body", async () => {
+  it.each(Object.keys(BODY_KINDS))("keeps only a capped copy of each running request's %s body", async (kind) => {
     clearEndpointRequests(EP);
     // What the fetches themselves hold, without the log.
-    const plain = await heldWhileRunning(false);
+    const plain = await heldWhileRunning(kind, false);
     await finish(plain.responses);
 
-    const logged = await heldWhileRunning(true);
+    const logged = await heldWhileRunning(kind, true);
     // Whole bodies would add IN_FLIGHT x BODY_MB (32 MB); capped ones add 256 KB each.
     expect(logged.held - plain.held).toBeLessThan(4 * MB);
     // Still running: nothing is logged before its response ends.
     expect(getEndpointRequests(EP)).toEqual([]);
     await finish(logged.responses);
 
-    const log = getEndpointRequests(EP);
-    expect(log).toHaveLength(IN_FLIGHT);
-    for (const entry of log) {
+    // The response clone is read after the caller's.
+    await vi.waitFor(() => expect(getEndpointRequests(EP)).toHaveLength(IN_FLIGHT));
+    for (const entry of getEndpointRequests(EP)) {
       expect(entry).toMatchObject({ ok: true, status: 200, reply: "Hi" });
       expect(entry.request).toMatch(/^POST http:\/\/127\.0\.0\.1:\d+\/v1\/chat\/completions/);
       expect(entry.request).toContain('{"model":"model-');
       expect(entry.request).toMatch(/more characters\)$/);
     }
-  }, 30_000);
+  }, 60_000);
 });

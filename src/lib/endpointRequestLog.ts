@@ -137,7 +137,7 @@ function headerPairs(raw: HeadersLike): [string, string][] {
 function bodyBytes(body: unknown): Buffer | null {
   if (typeof body === "string") {
     // A character is at least one UTF-8 byte, so this many cover the cap.
-    const bytes = Buffer.from(body.length > MAX_CAPTURE_BYTES ? body.slice(0, MAX_CAPTURE_BYTES) : body);
+    const bytes = Buffer.from(body.slice(0, MAX_CAPTURE_BYTES));
     return bytes.length > MAX_CAPTURE_BYTES ? Buffer.from(bytes.subarray(0, MAX_CAPTURE_BYTES)) : bytes;
   }
   if (body instanceof Uint8Array) return Buffer.from(body.subarray(0, MAX_CAPTURE_BYTES));
