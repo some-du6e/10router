@@ -224,8 +224,9 @@ function isAllowedOpenHost(request, settings) {
   const name = url.hostname.toLowerCase().replace(/\.$/, "");
   // A proxy that rewrites Host to its upstream (nginx's default) sends a loopback
   // Host for every name the browser used, rebound ones included. So behind one
-  // (custom-server.js stamps x-9r-proxy-hop for a loopback or TRUST_PROXY-listed
-  // peer) only a browser's own Host counts, and the proxy must pass it through.
+  // (custom-server.js stamps x-9r-proxy-hop for a loopback peer that isn't local,
+  // or a TRUST_PROXY-listed one that sent a forwarding header) only a browser's
+  // own Host counts, and the proxy must pass it through.
   // A direct peer from elsewhere (a Docker port, an ssh -L or NAT forward) keeps
   // its Host: a page can't make a browser send a loopback Host for its own name.
   if (isLoopbackLiteral(name)) return !(hasTrustedPeerHeaders(request) && request.headers.get("x-9r-proxy-hop"));

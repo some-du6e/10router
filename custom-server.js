@@ -202,11 +202,15 @@ function isLoopbackHost(value) {
   return LOOPBACK_HOSTS.has(name);
 }
 
-// Any of these from a loopback peer means a proxy or tunnel relayed someone else.
+// Any of these from a loopback or TRUST_PROXY-listed peer means a proxy or
+// tunnel relayed someone else.
 const FORWARDING_HEADERS = [
   "x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host", "x-forwarded-proto", "true-client-ip",
   "cf-connecting-ip", "cf-ray", "tailscale-funnel-request",
 ];
+function hasForwardingHeader(headers) {
+  return FORWARDING_HEADERS.some((name) => headers[name]);
+}
 
 // TRUST_PROXY has two forms:
 //   - "true": a forwarder on this machine adds no forwarding header (socat,
@@ -263,7 +267,7 @@ function isTrustedProxyPeer(socketIp) {
 function isOnThisMachine(headers, socketIp) {
   if (!isLoopbackHost(socketIp)) return false;
   if (isHeaderlessForwarderMode()) return false;
-  if (FORWARDING_HEADERS.some((name) => headers[name])) return false;
+  if (hasForwardingHeader(headers)) return false;
   if (headers.host && !isLoopbackHost(headers.host)) return false;
   return true;
 }
@@ -309,8 +313,8 @@ function usableAddress(value) {
 
 /**
  * The addresses to key a login on, the first one being the one logged. A direct
- * peer is its socket. Behind a proxy (on this machine, or one TRUST_PROXY lists)
- * the candidates are the rightmost X-Forwarded-For entry that is a usable address
+ * peer is its socket, and so is a TRUST_PROXY-listed one that sent no forwarding
+ * header. Behind a proxy (on this machine, or one TRUST_PROXY lists) the candidates are the rightmost X-Forwarded-For entry that is a usable address
  * (the hop an appending proxy such as Caddy, Traefik, cloudflared or Tailscale
  * added; everything left of it is the client's) and the X-Real-IP (what nginx
  * with `X-Real-IP $remote_addr` sets). Whichever one the proxy wrote is fixed,
@@ -322,7 +326,7 @@ function usableAddress(value) {
  */
 function clientKeysFor(headers, socketIp) {
   const loopback = isLoopbackHost(socketIp);
-  if (!loopback && !isTrustedProxyPeer(socketIp)) return [socketIp || "unknown"];
+  if (!loopback && (!isTrustedProxyPeer(socketIp) || !hasForwardingHeader(headers))) return [socketIp || "unknown"];
   if (isOnThisMachine(headers, socketIp)) return [socketIp];
   if (loopback && isHeaderlessForwarderMode()) return ["unknown"];
   let fromXff = "";
@@ -733,12 +737,15 @@ http.createServer = (...args) => {
     // login key candidates (see clientKeysFor); x-9r-via-proxy marks every
     // request not from a client on this machine; x-9r-via-tunnel, one whose Host
     // is a Cloudflare quick tunnel or Tailscale name; x-9r-proxy-hop, one not
-    // local whose peer is a proxy whose headers are read (loopback, or listed in
-    // TRUST_PROXY), so its Host may be one the proxy wrote, not the browser.
+    // local whose peer is a proxy whose headers are read, so its Host may be one
+    // the proxy wrote, not the browser. A loopback peer is one when it isn't
+    // local; a TRUST_PROXY-listed peer only when it sent a forwarding header,
+    // since the same address (a Docker bridge gateway) also carries direct
+    // visits through a published port.
     const local = isOnThisMachine(req.headers, socketIp);
     const [ip, ...altIps] = clientKeysFor(req.headers, socketIp);
     const viaTunnel = isTunnelTraffic(req.headers, socketIp);
-    const proxyHop = !local && (isLoopbackHost(socketIp) || isTrustedProxyPeer(socketIp));
+    const proxyHop = !local && (isLoopbackHost(socketIp) || (isTrustedProxyPeer(socketIp) && hasForwardingHeader(req.headers)));
     delete req.headers["x-9r-proxy-hop"];
     delete req.headers["x-9r-real-ip"];
     delete req.headers["x-9r-alt-ips"];

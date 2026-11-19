@@ -98,6 +98,23 @@ describe("custom-server proxy-hop stamp for a non-loopback peer", () => {
     expect(seen["x-9r-proxy-hop"]).toBe("1");
     expect(seen["x-9r-real-ip"]).toBe("203.0.113.7");
   });
+
+  // Docker with the bridge gateway listed: the owner's own browser on
+  // http://localhost:20128 comes in through the published port from the same
+  // gateway, with no forwarding header. Nothing rewrote its Host.
+  it.skipIf(!lanAddress && !process.env.CI)("keeps a listed peer with no forwarding header a direct peer", async () => {
+    expect(lanAddress, "no non-loopback IPv4 address on this machine").toBeTruthy();
+    let seen;
+    const port = await listen((req, res) => { seen = req.headers; res.end("ok"); }, lanAddress);
+    vi.stubEnv("TRUST_PROXY", `${lanAddress}/32`);
+    await new Promise((resolve) => {
+      const req = http.request({ host: lanAddress, port, agent: false, headers: { host: "localhost:20128" } }, (res) => { res.resume(); res.on("end", resolve); });
+      req.end();
+    });
+    expect(seen["x-9r-via-proxy"]).toBe("1");
+    expect(seen["x-9r-proxy-hop"]).toBeUndefined();
+    expect(seen["x-9r-real-ip"]).toBe(lanAddress);
+  });
 });
 
 describe("custom-server peer socket", () => {
@@ -201,7 +218,7 @@ describe("/api/health launch proof", () => {
   });
 
   // `--host <LAN address>` with that address in TRUST_PROXY: the launcher's
-  // socket is a listed proxy peer with no forwarding header, keyed `unknown`.
+  // socket is a listed proxy peer with no forwarding header, keyed on itself.
   // CI runners have a LAN address, so there a missing one fails rather than skips.
   it.skipIf(!lanAddress && !process.env.CI)("passes for a launcher on a LAN bind that a TRUST_PROXY list covers", async () => {
     expect(lanAddress, "no non-loopback IPv4 address on this machine").toBeTruthy();

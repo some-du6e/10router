@@ -177,6 +177,11 @@ describe("TRUST_PROXY", () => {
       expect(isTrustedProxyPeer(peer), peer).toBe(false);
       expect(clientKeysFor(headers, peer), peer).toEqual([peer]);
     }
+    // A listed peer with no forwarding header relayed no one (a browser through
+    // a Docker published port arrives from the listed gateway): it keys on
+    // itself. One with a forwarding header but no usable address is still a proxy.
+    expect(clientKeysFor({ host: "localhost:20128" }, "10.20.30.40")).toEqual(["10.20.30.40"]);
+    expect(clientKeysFor({ host: "localhost:20128", "x-forwarded-proto": "https" }, "10.20.30.40")).toEqual(["unknown"]);
     // Loopback keeps its own rules: a client on this machine is still local.
     expect(isOnThisMachine({ host: "localhost" }, "127.0.0.1")).toBe(true);
   });

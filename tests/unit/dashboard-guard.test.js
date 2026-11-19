@@ -808,7 +808,8 @@ describe("dashboard guard login-off Host allowlist", () => {
   // nginx's default proxy_set_header Host $proxy_host: every name the browser
   // used, a rebound one included, arrives as the upstream's loopback Host.
   // What custom-server.js stamps for a loopback (or TRUST_PROXY-listed) proxy
-  // peer, and for a direct peer from another address with no forwarding headers.
+  // peer, and for a direct peer from another address with no forwarding headers,
+  // listed in TRUST_PROXY or not.
   const PROXY_HOP = { "x-9r-peer-token": PEER_TOKEN, "x-9r-real-ip": "203.0.113.9", "x-9r-socket-ip": "127.0.0.1", "x-9r-via-proxy": "1", "x-9r-proxy-hop": "1" };
   const DOCKER_PEER = { "x-9r-peer-token": PEER_TOKEN, "x-9r-real-ip": "172.17.0.1", "x-9r-socket-ip": "172.17.0.1", "x-9r-via-proxy": "1" };
 
