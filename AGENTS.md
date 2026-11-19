@@ -39,12 +39,6 @@ The suite is **red on a clean checkout** (dozens of expected failures), so a raw
 
 After touching the provider registry, aliases, or OAuth URLs, also run the matching `tests/__baseline__/verify-*.mjs` snapshot check.
 
-### Enforced dashboard rules
-
-| Rule | Enforcement |
-| --- | --- |
-| Dashboard writes must report failures, release pending state, and retain saved values until the API accepts the update. Reauthentication may clear errors only on the account that received credentials. | `tests/unit/dashboard-followups.test.js` covers combo retries, proxy read/write failures, OAuth result forwarding, and account identity checks. |
-
 ## Architecture gotchas
 
 ### Request flow
@@ -72,6 +66,14 @@ State lives in SQLite under `src/lib/db/` (the old `db.json` is gone). `driver.j
 
 ### Icons
 The dashboard draws Material Symbols from a subset font, `src/app/fonts/material-symbols-outlined.woff2`, holding only the icons the source names (listed in the `.icons.txt` beside it). An icon outside the subset renders as its raw name, so after using a new icon name, rerun `node scripts/subset-icon-font.mjs` (needs python3 with `fonttools` and `brotli`) and commit both files; `tests/unit/icon-font-subset.test.js` goes red until you do. The font loads through `next/font/local` in `src/app/layout.js`. Importing `material-symbols/*.css` would pull the full 3.9 MB font back in. The logo is an inline SVG (`src/shared/components/LogoMark.tsx`) so it paints before the font arrives; use it rather than a `hub` icon for the brand mark.
+
+### Dashboard
+
+These run in the default suite, and on PRs in `.github/workflows/dashboard-saves.yml`.
+
+| Rule | Enforcement |
+| --- | --- |
+| A failed dashboard write must reach the user. The pricing, combo, proxy-settings and reauth writes go through `src/shared/utils/api.js`, which throws on any non-2xx response (with `status` and the server's message), so the failure reaches the caller. The caller shows the error, releases its pending state, keeps the dialog open, and keeps the saved value until the API accepts the new one. A sign-in clears an account's error only when the auth route's response names that account (`reauthOutcome` in `src/shared/utils/reauthOutcome.js`), so an auth route that saves credentials must return the connection it saved, as `connection.id` or `connectionId`, and its modal must pass that response to `onSuccess`. Otherwise reauth keeps the old error and warns that the account wasn't confirmed. | `tests/unit/dashboard-api.test.js` (non-2xx errors, header merging), `dashboard-pricing.test.js` (pricing load, save and reset failures), `dashboard-combo-form.test.js` (combo form retry and close-while-saving), `dashboard-save-and-reauth.test.js` (combos page writes, proxy settings, `reauthOutcome`, and the connection id through OAuthModal poll-status, the GitLab PAT route and modal, and the Kiro wrapper and API-key form). |
 
 ### Security
 - `custom-server.js` decides who a request comes from, through two helpers every caller uses: `isOnThisMachine` (a loopback socket with no forwarding header and `TRUST_PROXY` not `true`; `Host` can only rule a request out, since the client picks it) and `clientKeysFor` (the socket for a direct peer, and for a peer `TRUST_PROXY` lists as IPs/CIDRs that sent no forwarding header; behind a loopback proxy, or a listed peer that sent one (`isListedProxyHop`), the rightmost `X-Forwarded-For` entry that is a non-loopback IP and the `X-Real-IP`, both when both are sent, `CF-Connecting-IP` only when neither is; `unknown` behind `TRUST_PROXY=true`). It stamps the result as `x-9r-real-ip` / `x-9r-alt-ips` / `x-9r-via-proxy`, `x-9r-proxy-hop` (`loopback` for a loopback peer that isn't local, `listed` for a listed peer that sent a forwarding header; its `Host` may be the proxy's, so the login-off Host check refuses a loopback one behind either, and an IP literal behind a `listed` hop unless `ALLOWED_HOSTS` or `BASE_URL` names it), plus `x-9r-via-tunnel` for a loopback peer whose `Host` is `*.trycloudflare.com` or `*.ts.net`, with the peer token, and `src/` reads only those stamps. Keep that guarantee in any request, IP, or rate-limit change: a same-host reverse proxy is remote, a forwarding header counts only from a loopback or listed peer, and a listed peer without one is a direct peer. It also stamps the raw TCP peer as `x-9r-socket-ip` / `x-9r-socket-port`, whatever `TRUST_PROXY` says, for the CLI launcher's `/api/health` proof only; nothing may key on or trust them (`tests/unit/launch-proof.test.js`).
