@@ -10,6 +10,7 @@ on:
       - "tests/vitest.shared.js"
       - "tests/unit/upstream-body-memory.test.js"
       - "tests/unit/proxy-fetch-*.test.js"
+      - "tests/unit/provider-fetch.test.js"
       - ".github/workflows/upstream-body-memory.yml"
   workflow_dispatch:
 
@@ -43,6 +44,7 @@ jobs:
           unit/proxy-fetch-headers-timeout.test.js
           unit/proxy-fetch-error-redaction.test.js
           unit/base-executor-retry.test.js
+          unit/provider-fetch.test.js
       - name: Lint
         run: >
           ./node_modules/.bin/eslint
