@@ -294,6 +294,16 @@ export function createSSEStream(options = {}) {
     finalizeStream();
   };
 
+  // A translated stream to a Chat Completions client ends with exactly one
+  // [DONE], after the final chunk and its usage. Claude, Responses and Gemini
+  // clients end on their own terminal events instead.
+  const endChatCompletionsStream = (controller) => {
+    if (mode !== STREAM_MODE.TRANSLATE || sourceFormat !== FORMATS.OPENAI || streamDoneSent) return;
+    streamDoneSent = true;
+    reqLogger?.appendConvertedChunk?.(SSE_DONE);
+    controller.enqueue(sharedEncoder.encode(SSE_DONE));
+  };
+
   // EOF tails must use the same validation, translation, and accounting as complete lines.
   const processBufferedLines = (controller, atEOF = false) => {
     const lines = buffer.split("\n");
@@ -488,12 +498,13 @@ export function createSSEStream(options = {}) {
         }
 
         if (keepsOpenAIResponsesFormat && !streamDoneSent) {
-          const doneOutput = "data: [DONE]\n\n";
-          reqLogger?.appendConvertedChunk?.(doneOutput);
-          controller.enqueue(sharedEncoder.encode(doneOutput));
+          reqLogger?.appendConvertedChunk?.(SSE_DONE);
+          controller.enqueue(sharedEncoder.encode(SSE_DONE));
+          streamDoneSent = true;
+          openAIResponsesDoneSent = true;
         }
-        streamDoneSent = true;
-        if (keepsOpenAIResponsesFormat) openAIResponsesDoneSent = true;
+        // A Chat Completions client gets its [DONE] from flush(), after the
+        // final events the translator still holds.
         continue;
       }
 
@@ -662,16 +673,17 @@ export function createSSEStream(options = {}) {
         }
 
         if (keepsOpenAIResponsesFormat && !openAIResponsesDoneSent && !streamDoneSent) {
-          const doneOutput = "data: [DONE]\n\n";
-          reqLogger?.appendConvertedChunk?.(doneOutput);
-          controller.enqueue(sharedEncoder.encode(doneOutput));
+          reqLogger?.appendConvertedChunk?.(SSE_DONE);
+          controller.enqueue(sharedEncoder.encode(SSE_DONE));
           openAIResponsesDoneSent = true;
           streamDoneSent = true;
         }
 
+        endChatCompletionsStream(controller);
         finalizeStream();
       } catch (error) {
         console.log("Error in flush:", error);
+        try { endChatCompletionsStream(controller); } catch { /* stream already closed */ }
         finalizeStream();
       }
     },
