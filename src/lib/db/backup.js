@@ -47,8 +47,14 @@ export function backupOnce(label, write) {
   const key = path.join(BACKUPS_DIR, label);
   if (backupsThisProcess.has(key)) return { dir: backupsThisProcess.get(key), created: false };
   const dir = makeBackupDir(label);
+  try {
+    write(dir);
+  } catch (err) {
+    // A half-written backup is neither kept nor counted as taken.
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+    throw err;
+  }
   backupsThisProcess.set(key, dir);
-  write(dir);
   return { dir, created: true };
 }
 

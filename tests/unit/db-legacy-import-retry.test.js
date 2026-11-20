@@ -23,6 +23,8 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
+  vi.doUnmock("@/lib/db/adapters/betterSqliteAdapter.js");
+  vi.doUnmock("@/lib/db/adapters/nodeSqliteAdapter.js");
   global._dbAdapter?.instance?.close();
   delete global._dbAdapter;
   fs.rmSync(dir, { recursive: true, force: true });
@@ -33,6 +35,17 @@ afterEach(() => {
 const writeLegacy = (data) => fs.writeFileSync(legacyFile, JSON.stringify(data));
 const importBackups = () => fs.readdirSync(path.join(dir, "db/backups")).filter((name) => name.startsWith("migrate-from-json-"));
 const pendingFlag = (db) => db.get("SELECT value FROM _meta WHERE key = 'legacyImportPending'")?.value;
+
+const abortMessage = /legacy import from .*aborted: .*SKIP_LEGACY_IMPORT=1/;
+const migratedMarker = () => fs.existsSync(path.join(dir, "db/.migrated-from-json"));
+
+// Reads the import flag the way an operator would get past a broken file: boot
+// with SKIP_LEGACY_IMPORT=1, which leaves the flag as it is.
+async function flagAfterSkippedBoot() {
+  vi.stubEnv("SKIP_LEGACY_IMPORT", "1");
+  const db = await (await restart()).getAdapter();
+  return pendingFlag(db);
+}
 
 // A new process: close the open connection and load the driver from scratch.
 async function restart() {
@@ -134,4 +147,71 @@ it("does not import legacy JSON into an install that was already running without
   expect(restarted.all("SELECT id FROM apiKeys")).toEqual([]);
   expect(restarted.get("SELECT data FROM settings WHERE id = 1")).toBeUndefined();
   expect(fs.existsSync(path.join(dir, "db/.migrated-from-json"))).toBe(false);
+});
+
+it.each([
+  ["alone", {}],
+  ["next to a valid usage.json", { "usage.json": { history: [{ timestamp: "2025-02-01T00:00:00.000Z", provider: "p", model: "m", tokens: {} }] } }],
+])("aborts on a db.json that won't parse (%s) and keeps the import pending", async (_name, others) => {
+  fs.writeFileSync(legacyFile, '{ "settings": { "imported": true }, }');
+  for (const [name, data] of Object.entries(others)) fs.writeFileSync(path.join(dir, name), JSON.stringify(data));
+  const { getAdapter } = await import("@/lib/db/driver.js");
+  await expect(getAdapter()).rejects.toThrow(abortMessage);
+  await expect(getAdapter()).rejects.toThrow(/db\.json is not valid JSON/);
+  expect(migratedMarker()).toBe(false);
+  expect(await flagAfterSkippedBoot()).toBe("1");
+  const db = global._dbAdapter.instance;
+  expect(db.get("SELECT COUNT(*) AS c FROM usageHistory").c).toBe(0);
+  expect(migratedMarker()).toBe(false);
+});
+
+it("aborts when the pre-import backup fails, and takes the backup on the next try", async () => {
+  writeLegacy(fixed);
+  vi.spyOn(fs, "copyFileSync").mockImplementationOnce(() => { throw new Error("simulated disk full"); });
+  const { getAdapter, retryAdapterInit } = await import("@/lib/db/driver.js");
+  await expect(getAdapter()).rejects.toThrow(/aborted: simulated disk full.*SKIP_LEGACY_IMPORT=1/);
+  expect(importBackups()).toEqual([]);
+  expect(migratedMarker()).toBe(false);
+
+  const db = await retryAdapterInit();
+  expect(importBackups()).toHaveLength(1);
+  expect(db.all("SELECT id, key FROM apiKeys")).toEqual([{ id: "one", key: "fixed" }]);
+});
+
+it("keeps the import error and drops the listeners when closing the failed adapter throws", async () => {
+  // sql.js is the adapter whose close() writes the file, so a full disk throws there.
+  vi.doMock("@/lib/db/adapters/betterSqliteAdapter.js", () => { throw new Error("simulated unavailable"); });
+  vi.doMock("@/lib/db/adapters/nodeSqliteAdapter.js", () => { throw new Error("simulated unavailable"); });
+  writeLegacy(lossy);
+  const consoleWarn = vi.spyOn(console, "warn");
+  const events = ["beforeExit", "SIGINT", "SIGTERM"];
+  const before = events.map((event) => process.listenerCount(event));
+  vi.spyOn(fs, "writeFileSync").mockImplementation(() => { throw new Error("simulated ENOSPC"); });
+
+  const { getAdapter } = await import("@/lib/db/driver.js");
+  await expect(getAdapter()).rejects.toThrow(/apiKeys row-count mismatch/);
+  expect(consoleWarn.mock.calls.some((c) => /closing the adapter after a failed init failed: simulated ENOSPC/.test(String(c[0])))).toBe(true);
+  expect(events.map((event) => process.listenerCount(event))).toEqual(before);
+});
+
+it("never prunes a backup this process made, however many newer ones exist", async () => {
+  writeLegacy(lossy);
+  const { getAdapter } = await import("@/lib/db/driver.js");
+  await expect(getAdapter()).rejects.toThrow();
+  const [ours] = importBackups();
+  const backups = path.join(dir, "db/backups");
+  const seed = (name, offsetMs) => {
+    const target = path.join(backups, name);
+    fs.mkdirSync(target);
+    const at = new Date(Date.now() + offsetMs);
+    fs.utimesSync(target, at, at);
+  };
+  seed("newer-1", 60_000);
+  seed("newer-2", 120_000);
+  seed("newer-3", 180_000);
+  seed("older", -3_600_000);
+
+  const { pruneOldBackups } = await import("@/lib/db/backup.js");
+  pruneOldBackups();
+  expect(fs.readdirSync(backups).sort()).toEqual([ours, "newer-1", "newer-2", "newer-3"].sort());
 });
