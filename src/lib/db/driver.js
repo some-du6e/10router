@@ -1,7 +1,7 @@
 import { ensureDirs, restrictDbFilePermissions, DATA_FILE } from "./paths.js";
 
 // Use global to survive Next.js dev hot-reload (module state resets on reload)
-if (!global._dbAdapter) global._dbAdapter = { instance: null, initPromise: null, logged: false };
+if (!global._dbAdapter) global._dbAdapter = { instance: null, initPromise: null, initError: null, initFailedAt: 0, logged: false };
 const state = global._dbAdapter;
 
 async function tryBunSqlite() {
@@ -73,19 +73,40 @@ async function initAdapter() {
   try {
     await runMigrationOnce(adapter);
   } catch (error) {
-    adapter.close();
+    try { adapter.close(); } catch (closeError) {
+      console.warn(`[DB] closing the adapter after a failed init failed: ${closeError.message}`);
+    }
     throw error;
   }
   return adapter;
 }
 
+// A failed init is not retried on every DB call: each attempt re-reads the
+// legacy JSON and re-runs the import. Callers get the same error until the
+// backoff passes or retryAdapterInit() is called.
+export const INIT_RETRY_BACKOFF_MS = 30 * 1000;
+
 export async function getAdapter() {
   if (state.instance) return state.instance;
-  if (!state.initPromise) state.initPromise = initAdapter().then((a) => { state.instance = a; return a; }).catch((error) => {
+  if (state.initPromise) return state.initPromise;
+  if (state.initError && Date.now() - state.initFailedAt < INIT_RETRY_BACKOFF_MS) throw state.initError;
+  state.initPromise = initAdapter().then((a) => {
+    state.instance = a;
+    state.initError = null;
+    return a;
+  }, (error) => {
     state.initPromise = null;
+    state.initError = error;
+    state.initFailedAt = Date.now();
     throw error;
   });
   return state.initPromise;
+}
+
+/** Try a failed init again now, without waiting out the backoff. */
+export function retryAdapterInit() {
+  state.initError = null;
+  return getAdapter();
 }
 
 export function getAdapterSync() {
