@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { structuredPreview } from "../../../shared/utils/requestConversation.js";
-import { measureJson } from "../../../shared/utils/jsonMeasure.js";
+import { jsonUtf8Length, measureJson } from "../../../shared/utils/jsonMeasure.js";
 import { readCgroupMemoryLimit } from "../../../shared/utils/cgroupMemory.js";
 import { dropSensitiveHeaders, isBinaryBody, binaryBodyMarker } from "../../../../open-sse/utils/redact.js";
 
@@ -157,22 +157,34 @@ function sanitizeHeaders(headers) {
 }
 
 // A streaming request is saved twice under one id, when it starts and when it
-// ends, with the same request objects both times. Capping a ~1 MB body and
-// building its full copy are the costly part of a save, so the second save
-// reuses the first's.
+// ends, with the same request objects both times. Capping a ~1 MB body is
+// the costly part of a save, so the second save reuses the first's capped
+// record.
 const cappedPayloads = new WeakMap();   // payload object → its capped copy
-const packedFullData = new WeakMap();   // first capped field → its packed full copy
 
-const sameCapped = (a, b) => a.length === b.length && a.every((c, i) => c === b[i]);
+// The text a full copy's JSON has around its payloads: `{"key":`, `,"key":`
+// and the closing `}`. Keys are ASCII, so these are their UTF-8 bytes too.
+const partHead = (key, i) => `${i ? "," : "{"}${JSON.stringify(key)}:`;
+const PARTS_TAIL = "}";
+
+// UTF-8 bytes of a full copy's JSON, read off its payloads without serializing
+// them, or undefined when one can't be measured that way.
+function fullCopyBytes(parts) {
+  let bytes = PARTS_TAIL.length;
+  for (let i = 0; i < parts.length; i++) {
+    const n = jsonUtf8Length(parts[i][1]);
+    if (n === undefined) return undefined;
+    bytes += partHead(parts[i][0], i).length + n;
+  }
+  return bytes;
+}
 
 // What a row's full copy is made from, or null when there is none to make:
 // the payloads truncateField cut, by reference, with the size of their JSON
 // (truncateField measured it) at 2 bytes a character. Nothing is serialized
 // here: a copy that is pushed out of the ring, or replaced by a later save of
-// its row (a stream's end save), is never serialized at all. One over
-// FULL_DATA_MAX_BYTES or the ring's byte cap is skipped. For the same capped
-// objects as an earlier save whose copy was already packed (a stream that
-// outlived a flush), that packed copy.
+// its row (a stream's end save), is never serialized at all. One over the
+// ring's byte cap, or over FULL_DATA_MAX_BYTES of UTF-8, is skipped.
 function fullCopySource(item, record) {
   const parts = [];
   let chars = 0;
@@ -183,34 +195,52 @@ function fullCopySource(item, record) {
     }
   }
   if (!parts.length) return null;
-  // UTF-8 never takes fewer bytes than characters, so this skips oversized
-  // payloads without serializing them.
+  // UTF-8 takes at least a byte and at most 3 per UTF-16 unit, so the exact
+  // size is measured only when those bounds straddle the limit; a payload
+  // that can't be measured is skipped then.
   if (chars > FULL_DATA_MAX_BYTES || chars * JSON_BYTES_PER_CHAR > limits.fullRingMaxBytes) return null;
-  const keys = parts.map(([key]) => key).join();
-  const capped = parts.map(([key]) => record[key]);
-  const prior = packedFullData.get(capped[0]);
-  if (prior?.keys === keys && sameCapped(prior.capped, capped)) return { packed: prior.packed, bytes: prior.packed.length };
-  return { parts, keys, capped, bytes: chars * JSON_BYTES_PER_CHAR };
+  if (chars * 3 > FULL_DATA_MAX_BYTES && !(fullCopyBytes(parts) <= FULL_DATA_MAX_BYTES)) return null;
+  return { parts, bytes: chars * JSON_BYTES_PER_CHAR };
+}
+
+// A full copy's JSON as UTF-8, written straight into one buffer: no joined
+// string, so nothing is flattened, and only one payload's JSON is alive at a
+// time. The same bytes Buffer.from(JSON.stringify(...)) of the joined object
+// gives. Null when it can't be serialized or is over FULL_DATA_MAX_BYTES.
+function fullCopyBuffer(parts) {
+  const total = fullCopyBytes(parts);
+  if (total !== undefined && total > FULL_DATA_MAX_BYTES) return null;
+  // Measured: one buffer of the exact size. Otherwise one per payload, joined.
+  const buffer = total === undefined ? null : Buffer.allocUnsafe(total);
+  const pieces = [];
+  let at = 0;
+  const put = (text) => {
+    if (!buffer) return pieces.push(Buffer.from(text, "utf8"));
+    const n = buffer.write(text, at, "utf8");
+    // A short write means the measured size was off; never store a cut copy.
+    if (n !== Buffer.byteLength(text, "utf8")) throw new Error("full copy size mismatch");
+    at += n;
+  };
+  for (let i = 0; i < parts.length; i++) {
+    put(partHead(parts[i][0], i));
+    const json = JSON.stringify(parts[i][1]);
+    if (typeof json !== "string") throw new Error("payload has no JSON");
+    put(json);
+  }
+  put(PARTS_TAIL);
+  if (buffer) return at === total ? buffer : null;
+  const joined = Buffer.concat(pieces);
+  return joined.length > FULL_DATA_MAX_BYTES ? null : joined;
 }
 
 // Serializes and gzips a full copy's source, or null: only for a row being
 // written. Compression runs on the libuv pool so a big payload doesn't stall
 // streams.
 async function packSource(source) {
-  if (source.packed) return source.packed;
-  let json;
   try {
-    json = `{${source.parts.map(([key, value]) => `${JSON.stringify(key)}:${JSON.stringify(value)}`).join(",")}}`;
-  } catch {
-    return null;
-  }
-  // A UTF-16 code unit is at most 3 UTF-8 bytes, so only count bytes when that bound could exceed the limit.
-  if (json.length * 3 > FULL_DATA_MAX_BYTES && Buffer.byteLength(json, "utf8") > FULL_DATA_MAX_BYTES) return null;
-  try {
-    const packed = (await gzipAsync(json)).toString("base64");
-    // Kept for a later save of the same objects (a stream's end save) only while they live.
-    packedFullData.set(source.capped[0], { keys: source.keys, capped: source.capped, packed });
-    return packed;
+    const input = fullCopyBuffer(source.parts);
+    if (!input) return null;
+    return (await gzipAsync(input)).toString("base64");
   } catch {
     return null;
   }

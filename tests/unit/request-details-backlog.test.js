@@ -151,18 +151,24 @@ describe("request detail backlog", { timeout: 120_000 }, () => {
   });
 
   it("serializes no body when it saves, and none whose copy was pushed out", async () => {
-    const requests = Array.from({ length: 30 }, (_, i) => bigRequest(`lazy-${pad(i)}`));
-    const providerRequests = requests.map((r, i) => bigRequest(`lazy-${pad(i)}-upstream`));
+    const requests = Array.from({ length: 30 }, (_, i) => bigRequest(`lazy-${pad(i)}`, MB));
+    const providerRequests = requests.map((r, i) => bigRequest(`lazy-${pad(i)}-upstream`, MB));
     const serialized = new Map();
     const real = JSON.stringify;
+    let longest = 0;
     const stringify = vi.spyOn(JSON, "stringify").mockImplementation(function (value, ...rest) {
       if (requests.includes(value) || providerRequests.includes(value)) serialized.set(value, (serialized.get(value) || 0) + 1);
-      return real.call(JSON, value, ...rest);
+      const out = real.call(JSON, value, ...rest);
+      if (typeof out === "string") longest = Math.max(longest, out.length);
+      return out;
     });
     try {
       for (let i = 0; i < 30; i++) {
         await db.saveRequestDetail({ ...detail(`lazy-${pad(i)}`, at(2, 100 + i), requests[i]), providerRequest: providerRequests[i] });
       }
+      // Whatever was serialized while saving, nothing near a body's size (1 MB
+      // here): the capped record, at most 128 KB a field, is the largest.
+      expect(longest).toBeLessThan(512 * 1024);
       expect(serialized.size).toBe(0);
       await repo.__test__.flush();
     } finally {
@@ -177,14 +183,15 @@ describe("request detail backlog", { timeout: 120_000 }, () => {
     expect((await db.getRequestDetailFullData("lazy-29")).providerRequest).toEqual(providerRequests[29]);
   });
 
-  it("serializes a stream's body once, when its end save is written", async () => {
+  it("serializes a stream's body once when its end save lands before its start save is written", async () => {
     const request = bigRequest("reuse");
     const stringify = vi.spyOn(JSON, "stringify");
     let atSave;
     let atWrite;
     try {
-      await db.saveRequestDetail(detail("reuse", at(2, 50), request));
-      await db.saveRequestDetail({ ...detail("reuse", at(2, 51), request), status: "ok", tokens: { prompt_tokens: 3, completion_tokens: 2 } });
+      // Newer than the rows above, so the trim keeps this row's full copy.
+      await db.saveRequestDetail(detail("reuse", at(2, 300), request));
+      await db.saveRequestDetail({ ...detail("reuse", at(2, 301), request), status: "ok", tokens: { prompt_tokens: 3, completion_tokens: 2 } });
       atSave = stringify.mock.calls.filter(([value]) => value === request).length;
       await repo.__test__.flush();
       atWrite = stringify.mock.calls.filter(([value]) => value === request).length - atSave;

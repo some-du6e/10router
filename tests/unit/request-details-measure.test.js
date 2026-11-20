@@ -3,7 +3,7 @@
 // not serialize the whole prompt, and with full details on, the full copies
 // kept for the dashboard must fit the container.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { measureJson, quotedLength, MAX_MEASURE_DEPTH } from "../../src/shared/utils/jsonMeasure.js";
+import { measureJson, jsonUtf8Length, quotedLength, quotedUtf8Length, MAX_MEASURE_DEPTH } from "../../src/shared/utils/jsonMeasure.js";
 import { __test__, memoryCaps } from "../../src/lib/db/repos/requestDetailsRepo.js";
 
 const MB = 1024 * 1024;
@@ -27,7 +27,7 @@ function rng(seed) {
 // Pieces that need escaping, or look like they might: lone and paired
 // surrogates (a lone high before a quote, a newline or another high), control
 // characters, and U+2028/2029, which JSON.stringify leaves as they are.
-const PIECES = ["x", "\"", "\\", "\n", "\u0001", "\u001f", "\b", "\f", "\r", "\t", "\u007f", "{[,:]}", "é", "✓", "😀", "𐀀",
+const PIECES = ["x", "\"", "\\", "\n", "\u0001", "\u001f", "\b", "\f", "\r", "\t", "\u007f", "~", "{[,:]}", "é", "߿", "ࠀ", "✓", "�", "😀", "𐀀",
   "\ud800", "\udc00", "\udfff", "\ud800\"", "\ud800\n", "\ud800\ud800", "\udc00\ud800", " ", " ", " "];
 
 function randomString(r) {
@@ -60,6 +60,7 @@ describe("measureJson", () => {
       const value = { m: randomValue(r) };
       const json = JSON.stringify(value);
       seen.add(json);
+      expect(jsonUtf8Length(value)).toBe(Buffer.byteLength(json, "utf8"));
       for (const prefixChars of [0, 1, 2, 7, 100, 2001]) {
         const measured = measureJson(value, prefixChars);
         expect(measured.length).toBe(json.length);
@@ -73,7 +74,10 @@ describe("measureJson", () => {
 
   it("measures every escape the way JSON.stringify writes it", () => {
     for (const piece of PIECES) {
-      for (const s of [piece, `a${piece}`, `${piece}b`, piece.repeat(3)]) expect(quotedLength(s)).toBe(JSON.stringify(s).length);
+      for (const s of [piece, `a${piece}`, `${piece}b`, piece.repeat(3)]) {
+        expect(quotedLength(s)).toBe(JSON.stringify(s).length);
+        expect(quotedUtf8Length(s)).toBe(Buffer.byteLength(JSON.stringify(s), "utf8"));
+      }
     }
   });
 
@@ -168,6 +172,30 @@ describe("request details memory caps", () => {
     } finally {
       stringify.mockRestore();
       limits.fullRingMaxBytes = cap;
+    }
+  });
+
+  it("make no full copy over 16 MB of UTF-8 though under 16M characters, and don't serialize it", () => {
+    const { truncateField, fullCopySource } = __test__;
+    // 6M three-byte characters: 18 MB of UTF-8.
+    const request = { messages: [{ role: "user", content: "€".repeat(6 * MB) }] };
+    const stringify = vi.spyOn(JSON, "stringify");
+    const record = { request: truncateField(request, 5 * 1024) };
+    expect(record.request._originalSize).toBeLessThan(16 * MB);
+    expect(fullCopySource({ request }, record)).toBeNull();
+    expect(stringify.mock.calls.some(([value]) => value === request)).toBe(false);
+  });
+
+  it("pack the same bytes the joined JSON gives, measured or not", async () => {
+    const { truncateField, fullCopySource, packSource } = __test__;
+    const { gunzipSync } = await import("node:zlib");
+    const request = { messages: [{ role: "user", content: "ü😀\"\n\ud800 ".repeat(5000) }] };
+    // A Date can't be measured, so this payload takes the other path.
+    const providerRequest = { at: new Date(0), messages: [{ role: "user", content: "x".repeat(20000) }] };
+    const record = { request: truncateField(request, 1024), providerRequest: truncateField(providerRequest, 1024) };
+    for (const item of [{ request }, { request, providerRequest }]) {
+      const packed = await packSource(fullCopySource(item, record));
+      expect(gunzipSync(Buffer.from(packed, "base64")).equals(Buffer.from(JSON.stringify(item), "utf8"))).toBe(true);
     }
   });
 

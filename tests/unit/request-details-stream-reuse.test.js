@@ -105,24 +105,28 @@ describe("request detail capping on a repeated save", () => {
     expect(await db.getRequestDetailFullData("warm")).toEqual({ request, providerRequest });
   });
 
-  it("does not serialize or compress the request bodies again on the second save", async () => {
+  it("does not cap the request bodies again on the second save, and packs them once at its write", async () => {
     const request = big("s");
     const providerRequest = big("t");
     await db.saveRequestDetail(detail("twice", request, providerRequest, progress));
     await repo.__test__.flush();
-    // From the second save on: the save caps and builds the copy, the flush packs it.
+    // The start save was already written, so the end save's copy is packed again.
     const stringify = vi.spyOn(JSON, "stringify");
-    let again;
+    const bodies = () => stringify.mock.calls.filter(([value]) => value === request || value === providerRequest).length;
+    let atSave;
+    let atWrite;
     try {
       await db.saveRequestDetail(detail("twice", request, providerRequest, done));
+      atSave = bodies();
       gzip.mockClear();
       await repo.__test__.flush();
-      again = stringify.mock.calls.filter(([value]) => value === request || value === providerRequest).length;
+      atWrite = bodies() - atSave;
     } finally {
       stringify.mockRestore();
     }
-    expect(again).toBe(0);
-    expect(gzip).not.toHaveBeenCalled();
+    expect(atSave).toBe(0);
+    expect(atWrite).toBe(2);
+    expect(gzip).toHaveBeenCalledTimes(1);
     expect(await db.getRequestDetailFullData("twice")).toEqual({ request, providerRequest });
   });
 
