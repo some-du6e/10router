@@ -193,12 +193,13 @@ describe("custom-server.js drain on SIGTERM", () => {
     let stderr = "";
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk) => { stderr += chunk; });
+    const stderrClosed = new Promise((res) => child.stderr.once("close", res));
     // stdout isn't read until the child has exited, so its pipe stays full.
     const code = await new Promise((res) => child.once("exit", (exitCode) => res(exitCode)));
     let stdout = "";
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => { stdout += chunk; });
-    await new Promise((res) => child.stdout.once("close", res));
+    await Promise.all([new Promise((res) => child.stdout.once("close", res)), stderrClosed]);
 
     expect(code).toBe(0);
     // console.log would have queued it behind the flood, and the exit drops

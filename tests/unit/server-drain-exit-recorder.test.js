@@ -7,16 +7,23 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { createDrain, installExitRecorder, installShutdownDrain, logSync, writeLineSync } = require("../../server-drain.js");
 
+// Thrown by a process.exit() made inside an "exit" listener: in Node that call
+// never returns, so the listeners after it never run.
+const PROCESS_ENDED = Symbol("process ended");
+
 function fakeProcess() {
   const proc = new EventEmitter();
   proc.exited = [];
-  // Like process.exit(): emits "exit" once from inside the call, not again
-  // when an "exit" listener calls it.
+  // Like process.exit(): emits "exit" once from inside the call. A second call,
+  // from an "exit" listener, ends the process there and then.
   proc.exit = function exit(code) {
     proc.exited.push(code);
-    if (!proc._exiting) {
-      proc._exiting = true;
+    if (proc._exiting) throw PROCESS_ENDED;
+    proc._exiting = true;
+    try {
       proc.emit("exit", code ?? 0);
+    } catch (error) {
+      if (error !== PROCESS_ENDED) throw error;
     }
   };
   proc.uptime = () => 42;
@@ -144,14 +151,20 @@ describe("installExitRecorder", () => {
   it("runs before an earlier \"exit\" listener that calls process.exit(), which would skip the rest", () => {
     const proc = fakeProcess();
     const log = vi.fn();
-    proc.on("exit", () => proc.exit(3));
+    const earlier = () => proc.exit(3);
+    proc.on("exit", earlier);
     installExitRecorder(proc, { log });
+
+    expect(proc.listeners("exit")).toHaveLength(2);
+    expect(proc.listeners("exit")[0]).not.toBe(earlier);
 
     function updaterHandoff() {
       proc.exit(0);
     }
     updaterHandoff();
 
+    // The earlier listener's exit(3) ended the process, after the recorder ran.
+    expect(proc.exited).toEqual([0, 3]);
     expect(log).toHaveBeenCalledTimes(1);
     expect(log.mock.calls[0][0]).toMatch(/^\[Exit\] exiting with code 0 [^\n]*\n {2}process\.exit\(\) called from:\n/);
     expect(log.mock.calls[0][0].split("\n")[2]).toContain("updaterHandoff");
