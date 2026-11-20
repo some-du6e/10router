@@ -4,39 +4,13 @@
 // keep its size and its first 2,000 characters put a body-sized string on the
 // heap each time.
 
-// Characters a string needs escaping for. U+2028 and U+2029 are not among
-// them: JSON.stringify writes them as they are.
-// eslint-disable-next-line no-control-regex
-const NEEDS_ESCAPE = /["\\\u0000-\u001f\ud800-\udfff]/;
-// Anything but printable ASCII that is written as it is (all of it but `"`
-// and `\`).
+// The strings that take the fast path: printable ASCII with no `"` or `\`,
+// which JSON.stringify writes as they are, one byte a character. Anything
+// else (escapes, non-ASCII, U+2028 and U+2029 included) is counted character
+// by character.
 const NOT_PLAIN_ASCII = /[^ -!#-[\]-~]/;
 
 const shortEscape = (c: number): boolean => c === 8 || c === 9 || c === 10 || c === 12 || c === 13;
-
-/** Characters JSON.stringify gives the string `s`, quotes included. */
-export function quotedLength(s: string): number {
-  let n = s.length + 2;
-  if (!NEEDS_ESCAPE.test(s)) return n;
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c < 0x20) n += shortEscape(c) ? 1 : 5;
-    else if (c === 0x22 || c === 0x5c) n += 1;
-    else if (c >= 0xd800 && c <= 0xdfff) {
-      const next = s.charCodeAt(i + 1);
-      // A pair is copied as it is; a lone half is written \udxxx.
-      if (c <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) i++;
-      else n += 5;
-    }
-  }
-  return n;
-}
-
-/** UTF-8 bytes of JSON.stringify(s), quotes included. */
-export function quotedUtf8Length(s: string): number {
-  quotedSizes(s);
-  return sizedBytes;
-}
 
 // quotedSizes' results, in module state so a call allocates nothing.
 let sizedLength = 0;
@@ -179,12 +153,4 @@ export function measureJson(value: unknown, prefixChars: number): JsonMeasure | 
     return undefined;
   }
   return { length, prefix, bytes };
-}
-
-/**
- * Buffer.byteLength(JSON.stringify(value), "utf8"), or undefined for what
- * measureJson can't measure.
- */
-export function jsonUtf8Length(value: unknown): number | undefined {
-  return measureJson(value, 0)?.bytes;
 }

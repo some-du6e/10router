@@ -171,14 +171,10 @@ const partHead = (key, i) => `${i ? "," : "{"}${JSON.stringify(key)}:`;
 const PARTS_TAIL = "}";
 
 // UTF-8 bytes of a full copy's JSON, from what truncateField recorded for
-// each cut payload, or undefined when it recorded none.
+// each cut payload.
 function fullCopyBytes(parts) {
   let bytes = PARTS_TAIL.length;
-  for (let i = 0; i < parts.length; i++) {
-    const n = payloadBytes.get(parts[i][2]);
-    if (n === undefined) return undefined;
-    bytes += partHead(parts[i][0], i).length + n;
-  }
+  for (let i = 0; i < parts.length; i++) bytes += partHead(parts[i][0], i).length + payloadBytes.get(parts[i][2]);
   return bytes;
 }
 
@@ -187,42 +183,39 @@ function fullCopyBytes(parts) {
 // at 2 bytes a character and its exact UTF-8 size. Nothing is serialized or
 // walked here: a copy that is pushed out of the ring, or replaced by a later
 // save of its row (a stream's end save), is never serialized at all. One over
-// the ring's byte cap, or over FULL_DATA_MAX_BYTES of UTF-8, is skipped.
+// the ring's byte cap, or over FULL_DATA_MAX_BYTES of UTF-8, is skipped. Only
+// a record truncateField cut counts as cut: a small payload is stored as the
+// client sent it, so its own `_truncated` and `_originalSize` mean nothing.
 function fullCopySource(item, record) {
   const parts = [];
   let chars = 0;
   for (const key of PAYLOAD_KEYS) {
-    if (record[key]?._truncated === true && item[key] != null) {
-      parts.push([key, item[key], record[key]]);
-      chars += record[key]._originalSize ?? 0;
+    const capped = record[key];
+    if (item[key] != null && payloadBytes.has(capped)) {
+      parts.push([key, item[key], capped]);
+      chars += capped._originalSize;
     }
   }
   if (!parts.length) return null;
   if (chars > FULL_DATA_MAX_BYTES || chars * JSON_BYTES_PER_CHAR > limits.fullRingMaxBytes) return null;
   const utf8 = fullCopyBytes(parts);
-  // UTF-8 takes at most 3 bytes per UTF-16 unit, so a copy is skipped only
-  // when that bound is over the limit and its exact size is too, or unknown.
-  if (chars * 3 > FULL_DATA_MAX_BYTES && !(utf8 <= FULL_DATA_MAX_BYTES)) return null;
+  if (utf8 > FULL_DATA_MAX_BYTES) return null;
   return { parts, bytes: chars * JSON_BYTES_PER_CHAR, utf8 };
 }
 
 // A full copy's JSON as UTF-8, written straight into one buffer of its exact
-// size: no joined string, so nothing is flattened. The same bytes
-// Buffer.from(JSON.stringify(...)) of the joined object gives. With the size
-// known (`utf8`) only one payload's JSON is alive at a time; otherwise each
-// is serialized first and sized natively. Null when it can't be serialized or
-// is over FULL_DATA_MAX_BYTES.
+// size (`utf8`, recorded when it was capped): no joined string, so nothing is
+// flattened, and only one payload's JSON is alive at a time. The same bytes
+// Buffer.from(JSON.stringify(...)) of the joined object gives. Null when it
+// can't be serialized or is over FULL_DATA_MAX_BYTES.
 function fullCopyBuffer(parts, utf8) {
   const serialize = (value) => {
     const json = JSON.stringify(value);
     if (typeof json !== "string") throw new Error("payload has no JSON");
     return json;
   };
-  const known = utf8 !== undefined;
-  const jsons = known ? null : parts.map(([, value]) => serialize(value));
-  const total = known ? utf8 : jsons.reduce((sum, json, i) => sum + partHead(parts[i][0], i).length + Buffer.byteLength(json, "utf8"), PARTS_TAIL.length);
-  if (total > FULL_DATA_MAX_BYTES) return null;
-  const buffer = Buffer.allocUnsafe(total);
+  if (!(utf8 <= FULL_DATA_MAX_BYTES)) return null;
+  const buffer = Buffer.allocUnsafe(utf8);
   let at = 0;
   const put = (text) => {
     const n = buffer.write(text, at, "utf8");
@@ -232,10 +225,10 @@ function fullCopyBuffer(parts, utf8) {
   };
   for (let i = 0; i < parts.length; i++) {
     put(partHead(parts[i][0], i));
-    put(known ? serialize(parts[i][1]) : jsons[i]);
+    put(serialize(parts[i][1]));
   }
   put(PARTS_TAIL);
-  return at === total ? buffer : null;
+  return at === utf8 ? buffer : null;
 }
 
 // Serializes and gzips a full copy's source, or null: only for a row being

@@ -3,7 +3,7 @@
 // not serialize the whole prompt, and with full details on, the full copies
 // kept for the dashboard must fit the container.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { measureJson, jsonUtf8Length, quotedLength, quotedUtf8Length, MAX_MEASURE_DEPTH } from "../../src/shared/utils/jsonMeasure.js";
+import { measureJson, MAX_MEASURE_DEPTH } from "../../src/shared/utils/jsonMeasure.js";
 import { __test__, memoryCaps } from "../../src/lib/db/repos/requestDetailsRepo.js";
 
 const MB = 1024 * 1024;
@@ -60,10 +60,10 @@ describe("measureJson", () => {
       const value = { m: randomValue(r) };
       const json = JSON.stringify(value);
       seen.add(json);
-      expect(jsonUtf8Length(value)).toBe(Buffer.byteLength(json, "utf8"));
       for (const prefixChars of [0, 1, 2, 7, 100, 2001]) {
         const measured = measureJson(value, prefixChars);
         expect(measured.length).toBe(json.length);
+        expect(measured.bytes).toBe(Buffer.byteLength(json, "utf8"));
         expect(json.startsWith(measured.prefix)).toBe(true);
         expect(measured.prefix.length).toBeGreaterThanOrEqual(Math.min(prefixChars, json.length));
       }
@@ -75,8 +75,11 @@ describe("measureJson", () => {
   it("measures every escape the way JSON.stringify writes it", () => {
     for (const piece of PIECES) {
       for (const s of [piece, `a${piece}`, `${piece}b`, piece.repeat(3)]) {
-        expect(quotedLength(s)).toBe(JSON.stringify(s).length);
-        expect(quotedUtf8Length(s)).toBe(Buffer.byteLength(JSON.stringify(s), "utf8"));
+        // As a value and as a key.
+        for (const value of [{ s }, { [s]: 1 }]) {
+          const json = JSON.stringify(value);
+          expect(measureJson(value, 0)).toEqual({ length: json.length, prefix: "", bytes: Buffer.byteLength(json, "utf8") });
+        }
       }
     }
   });
@@ -249,11 +252,59 @@ describe("request details memory caps", () => {
     }
   });
 
+  it("pack without walking the payloads again, writing each one's JSON before serializing the next", async () => {
+    const { truncateField, fullCopySource, packSource } = __test__;
+    const first = { role: "user", content: "ü".repeat(30000) };
+    const second = { role: "user", content: "x".repeat(30000) };
+    const item = { request: { messages: [first] }, providerRequest: { messages: [second] } };
+    const record = { request: truncateField(item.request, 1024), providerRequest: truncateField(item.providerRequest, 1024) };
+    const source = fullCopySource(item, record);
+    expect(source.utf8).toBe(Buffer.byteLength(JSON.stringify(item), "utf8"));
+    const keys = vi.spyOn(Object, "keys");
+    const order = [];
+    const real = JSON.stringify;
+    vi.spyOn(JSON, "stringify").mockImplementation(function (value, ...rest) {
+      if (value === item.request || value === item.providerRequest) order.push(value === item.request ? "serialize request" : "serialize providerRequest");
+      return real.call(JSON, value, ...rest);
+    });
+    const write = Buffer.prototype.write;
+    vi.spyOn(Buffer.prototype, "write").mockImplementation(function (text, ...rest) {
+      if (typeof text === "string" && text.length > 1000) order.push("write");
+      return write.call(this, text, ...rest);
+    });
+    // The recorded size alone sizes the buffer: a wrong one fails the pack.
+    expect(await packSource({ ...source, utf8: source.utf8 + 1 })).toBeNull();
+    order.length = 0;
+    expect(await packSource(source)).toEqual(expect.any(String));
+    vi.restoreAllMocks();
+    expect(keys.mock.calls.filter(([value]) => value === first || value === second)).toHaveLength(0);
+    expect(order).toEqual(["serialize request", "write", "serialize providerRequest", "write"]);
+  });
+
+  it("count as cut only what truncateField cut, not a client's own _truncated fields", () => {
+    const { truncateField, fullCopySource } = __test__;
+    for (const spoofed of ["a", -1e12, 1e15, null]) {
+      // Small enough to be stored as it is.
+      const request = { _truncated: true, _originalSize: spoofed, messages: [{ role: "user", content: "hi" }] };
+      const record = { request: truncateField(request, 5 * 1024) };
+      expect(record.request).toBe(request);
+      expect(fullCopySource({ request }, record)).toBeNull();
+    }
+    // Next to a real cut, the spoofed field is left out and its size not counted.
+    const real = { messages: [{ role: "user", content: "y".repeat(20000) }] };
+    const spoof = { _truncated: true, _originalSize: "a", content: "hi" };
+    const record = { request: truncateField(real, 1024), response: truncateField(spoof, 1024) };
+    const source = fullCopySource({ request: real, response: spoof }, record);
+    expect(source.parts.map(([key]) => key)).toEqual(["request"]);
+    expect(Number.isFinite(source.bytes)).toBe(true);
+    expect(source.bytes).toBe(2 * JSON.stringify(real).length);
+  });
+
   it("pack the same bytes the joined JSON gives, measured or not", async () => {
     const { truncateField, fullCopySource, packSource } = __test__;
     const { gunzipSync } = await import("node:zlib");
     const request = { messages: [{ role: "user", content: "ü😀\"\n\ud800 ".repeat(5000) }] };
-    // A Date can't be measured, so this payload takes the other path.
+    // A Date can't be measured, so capping serializes it and sizes that JSON.
     const providerRequest = { at: new Date(0), messages: [{ role: "user", content: "x".repeat(20000) }] };
     const record = { request: truncateField(request, 1024), providerRequest: truncateField(providerRequest, 1024) };
     for (const item of [{ request }, { request, providerRequest }]) {
