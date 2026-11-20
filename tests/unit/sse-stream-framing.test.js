@@ -273,6 +273,26 @@ describe("the [DONE] sentinel on translated streams", () => {
     expectErrorThenDone(text);
   });
 
+  it("fails a Responses-to-Responses stream before its [DONE] when flush() throws", async () => {
+    const flushErrors = spyFlushErrors();
+    // The delta is the EOF tail, so it is sent from flush(), where logging it throws once.
+    let thrown = false;
+    const reqLogger = {
+      appendConvertedChunk: (chunk) => {
+        if (!thrown && chunk.includes("response.output_text.delta")) { thrown = true; throw new Error("log broke"); }
+      },
+    };
+    const { text } = await runStream(join([responsesDelta], ""), {
+      mode: "translate", body, reqLogger, targetFormat: FORMATS.OPENAI_RESPONSES, sourceFormat: FORMATS.OPENAI_RESPONSES,
+    });
+    expect(flushErrors()).toHaveLength(1);
+    expect(doneCount(text)).toBe(1);
+    const all = frames(text);
+    expect(all.at(-1)).toBe("data: [DONE]");
+    expect(all.at(-2)).toMatch(/^event: response\.failed\n/);
+    expect(text).not.toContain("event: response.completed");
+  });
+
   it.each([
     ["a Claude client", "a Claude upstream", FORMATS.CLAUDE, FORMATS.CLAUDE, claudeReply],
     ["a Claude client", "a Chat Completions upstream", FORMATS.CLAUDE, FORMATS.OPENAI, chatReply],
