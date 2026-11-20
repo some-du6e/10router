@@ -386,7 +386,8 @@ describe("provider page reauthentication", () => {
     await startReauth(render, "account-a").props.onSuccess({ connection: { id: "account-b" } });
     expect(puts(fetch)).toEqual([]);
     expect(alert).toHaveBeenCalledOnce();
-    expect(alert.mock.calls[0][0]).toContain("not confirmed");
+    expect(alert.mock.calls[0][0]).toContain("didn't re-authenticate the selected account");
+    expect(alert.mock.calls[0][0]).not.toContain("Sign in with that account");
     expect(authModal(render()).props.isOpen).toBe(false);
   });
 

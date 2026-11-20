@@ -788,7 +788,7 @@ export default function ProviderDetailPage() {
     }
     await fetchConnections();
     if (outcome === "unconfirmed") {
-      window.alert("The selected account was not confirmed by this sign-in. Its existing error was kept. Sign in with that account to re-authenticate it.");
+      window.alert("This sign-in didn't re-authenticate the selected account, so that account keeps its error. If the sign-in added another account you don't need, remove it.");
     }
     setShowOAuthModal(false);
     setReauthConnectionId(null);
