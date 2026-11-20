@@ -66,23 +66,26 @@ describe("combos page saves", () => {
     await saving;
   });
 
-  const combosPage = async (writeError, { write, settingsError } = {}) => {
+  const savedComboSettings = () => Response.json({ comboStrategies: {}, capacityAdapter: {} });
+  const combosPage = async (writeError, { write, settingsError, readSettings = savedComboSettings, readProviders } = {}) => {
     const fetch = vi.fn(async (url, init = {}) => {
       if (init.method && init.method !== "GET") {
         if (write) return write(init);
         return writeError ? Response.json({ error: writeError }, { status: 500 }) : Response.json({ success: true });
       }
       if (url === "/api/combos") return Response.json({ combos: [{ id: "combo-1", name: "alpha", models: ["provider/model"] }] });
-      if (url === "/api/providers") return Response.json({ connections: [] });
+      if (url === "/api/providers") return readProviders ? readProviders() : Response.json({ connections: [] });
       if (settingsError) return Response.json({ error: settingsError }, { status: 503 });
-      return Response.json({ comboStrategies: {}, capacityAdapter: {} });
+      return readSettings();
     });
     vi.stubGlobal("fetch", fetch);
     const page = dashboardComponent(combosPath, componentImports);
     page.render({});
-    await vi.waitFor(() => expect(elements(page.render({}), (element) => element.props?.onSetStrategy)).toHaveLength(1));
+    // The capacity section renders once loading has finished, whether or not it succeeded.
+    await vi.waitFor(() => expect(capacity(page.render({}))).toBeDefined());
     return { page, fetch, render: () => page.render({}) };
   };
+  const patches = (fetch) => fetch.mock.calls.filter(([, init]) => init?.method === "PATCH");
   const card = (tree) => elements(tree, (element) => element.props?.onSetStrategy)[0];
   const capacity = (tree) => elements(tree, (element) => element.props?.capacityAdapter)[0];
   // Renders the page's capacity section, then one capability's card, from the page tree.
@@ -123,8 +126,49 @@ describe("combos page saves", () => {
 
     await card(render()).props.onSetStrategy({ fallbackStrategy: "round-robin" });
     await enableToggle(vision).props.onChange(false);
-    expect(fetch.mock.calls.filter(([, init]) => init?.method === "PATCH")).toEqual([]);
+    expect(patches(fetch)).toEqual([]);
     expect(card(render()).props.strategy).toEqual({});
+  });
+
+  it("blocks capacity saves when the page's load fails before settings are read", async () => {
+    const { render, fetch } = await combosPage(null, { readProviders: () => Promise.reject(new Error("Network down")) });
+    expect(alerts(render())).toContain("Could not load combo settings");
+    expect(alerts(render())).toContain("Network down");
+    const vision = capacityCap(render(), "vision").render();
+    expect(enableToggle(vision).props.disabled).toBe(true);
+    await enableToggle(vision).props.onChange(false);
+    expect(patches(fetch)).toEqual([]);
+  });
+
+  it("keeps settings loaded when only the providers list is not JSON", async () => {
+    const { render, fetch } = await combosPage(null, { readProviders: () => new Response("<html>Bad gateway</html>", { status: 502 }) });
+    expect(alerts(render())).toContain("Could not load combos");
+    expect(alerts(render())).not.toContain("Could not load combo settings");
+    await enableToggle(capacityCap(render(), "vision").render()).props.onChange(false);
+    expect(patches(fetch)).toHaveLength(1);
+  });
+
+  it("does not let a reload revert a capacity save accepted while it was reading settings", async () => {
+    let reads = 0;
+    let finishReload;
+    const readSettings = () => {
+      reads += 1;
+      if (reads === 1) return savedComboSettings();
+      return new Promise((resolve) => { finishReload = () => resolve(savedComboSettings()); });
+    };
+    const { render, fetch } = await combosPage(null, { readSettings });
+    button(render(), "Create Combo").props.onClick();
+    const creating = elements(render(), (element) => element.key === "create")[0].props.onSave({ name: "beta", models: [] });
+    await vi.waitFor(() => expect(finishReload).toBeTypeOf("function"));
+
+    await enableToggle(capacityCap(render(), "vision").render()).props.onChange(false);
+    expect(capacity(render()).props.capacityAdapter.vision.enabled).toBe(false);
+    finishReload();
+    await creating;
+    expect(capacity(render()).props.capacityAdapter.vision.enabled).toBe(false);
+
+    await enableToggle(capacityCap(render(), "audioInput").render()).props.onChange(false);
+    expect(JSON.parse(patches(fetch).at(-1)[1].body).capacityAdapter).toMatchObject({ vision: { enabled: false }, audioInput: { enabled: false } });
   });
 
   it("keeps every capacity change made while an earlier one is still saving", async () => {
