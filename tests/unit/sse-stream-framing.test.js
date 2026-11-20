@@ -147,9 +147,17 @@ describe("Gemini-family passthrough", () => {
 
 describe("a Chat Completions upstream whose [DONE] has no trailing newline", () => {
   const content = `${chatData({ delta: { role: "assistant", content: "hi" } })}\n\n`;
+  // The [DONE] is the EOF tail, so flush() sends the final events: the stream
+  // must not be terminated from inside flush().
+  function spyTerminate() {
+    const spy = vi.spyOn(TransformStreamDefaultController.prototype, "terminate");
+    onTestFinished(() => spy.mockRestore());
+    return spy;
+  }
 
   it("finishes a Claude client once, without a flush error", async () => {
     const flushErrors = spyFlushErrors();
+    const terminate = spyTerminate();
     const { text } = await runParts([content, "data: [DONE]"], {
       mode: "translate", targetFormat: FORMATS.OPENAI, sourceFormat: FORMATS.CLAUDE, body,
     });
@@ -157,10 +165,12 @@ describe("a Chat Completions upstream whose [DONE] has no trailing newline", () 
     expect(text.match(/event: message_delta/g)).toHaveLength(1);
     expect(dataObjects(text).find((e) => e.type === "message_delta").delta.stop_reason).toBe("end_turn");
     expect(flushErrors()).toEqual([]);
+    expect(terminate).not.toHaveBeenCalled();
   });
 
   it("completes a Responses client once, without a flush error", async () => {
     const flushErrors = spyFlushErrors();
+    const terminate = spyTerminate();
     const finish = `${chatData({ delta: {}, finish_reason: "stop" })}\n\n`;
     const { text } = await runParts([content, finish, "data: [DONE]"], {
       mode: "translate", targetFormat: FORMATS.OPENAI, sourceFormat: FORMATS.OPENAI_RESPONSES, body,
@@ -168,6 +178,7 @@ describe("a Chat Completions upstream whose [DONE] has no trailing newline", () 
     expect(text.match(/event: response\.completed/g)).toHaveLength(1);
     expect(text).not.toContain("response.failed");
     expect(flushErrors()).toEqual([]);
+    expect(terminate).not.toHaveBeenCalled();
   });
 });
 
