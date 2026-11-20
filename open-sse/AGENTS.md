@@ -28,6 +28,7 @@ Provider-agnostic SSE engine: one OpenAI-style request → any provider (LLM cha
 
 - **Provider**: copy `providers/REGISTRY_TEMPLATE.js` → `providers/registry/{id}.js`; add models to `config/providerModels.js`. Generic providers need no executor (DefaultExecutor handles OpenAI-compatible APIs).
 - **Executor** (only for non-standard upstream): subclass `BaseExecutor` (override `getBaseUrls`/`buildHeaders`/`buildUrl`/`transformRequest`/`finalizeBody`/`execute`; `finalizeBody` runs after the final headers, and an `execute` override that sends Claude-format bodies must call it itself), register in `executors/index.js` map. `getExecutor` falls back to `DefaultExecutor` when absent.
+- **Body reuse** (`BaseExecutor.prepareSend`): resends to the same account reuse the serialized body while `transformRequestInputs`/`finalizeBodyInputs` return the same strings. When Base, Default or Kiro's `transformRequest`/`finalizeBody` (or a helper they call) starts reading anything new, add it to those strings in the same change, or resends go out with a stale body. An override that doesn't restate its inputs next to itself gets a fresh build every send. An executor that states inputs runs `buildHeaders` before `transformRequest`, so its transform must not set state the headers read.
 - **Translator**: add `request|response/<from>-to-<to>.js` calling `register(...)`, then import it in `translator/index.ts`. Reuse `schema/` + `concerns/` — don't re-implement parsing.
 
 ## Pitfalls
