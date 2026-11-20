@@ -222,8 +222,10 @@ export function createDisconnectAwareStream(transformStream, streamController, o
   };
 
   // Emit a synthesized terminal payload (e.g. Responses response.failed + [DONE]) once
+  // The transform wrote its own terminal ([DONE], or an error frame and [DONE]).
+  const transformEnded = () => { try { return !!transformStream.terminalSent?.(); } catch { return false; } };
   const emitTerminal = (controller) => {
-    if (terminalEmitted || !onAbortTerminal) return;
+    if (terminalEmitted || !onAbortTerminal || transformEnded()) return;
     terminalEmitted = true;
     try {
       const bytes = onAbortTerminal();
@@ -240,7 +242,20 @@ export function createDisconnectAwareStream(transformStream, streamController, o
       if (!streamController.isConnected()) {
         clearKeepalive();
         if (drains()) startDrain();
-        else finalizeOnAbort();
+        else {
+          finalizeOnAbort();
+          // A stall abort the upstream closed cleanly on: the transform's
+          // flush() already queued its terminal, so pass that on instead.
+          if (transformEnded()) {
+            try {
+              for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                controller.enqueue(value);
+              }
+            } catch { /* the upstream errored after its terminal */ }
+          }
+        }
         emitTerminal(controller);
         controller.close();
         return;
@@ -410,6 +425,7 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
       finalUsageSeen: transformStream.finalUsageSeen,
       finalizeNow: transformStream.finalizeNow,
       markClientGone: transformStream.markClientGone,
+      terminalSent: transformStream.terminalSent,
     },
     wrappedController,
     onAbortTerminal ? () => onAbortTerminal(abortMessage) : null,

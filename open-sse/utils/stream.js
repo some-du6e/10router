@@ -306,9 +306,9 @@ export function createSSEStream(options = {}) {
   // and its usage. A chat stream that never sent its finish chunk was cut
   // short, so an error frame goes first rather than passing it off as finished.
   // Claude, Gemini and other Responses clients end on their own terminal events.
+  const keepsResponses = mode === STREAM_MODE.TRANSLATE && targetFormat === FORMATS.OPENAI_RESPONSES && sourceFormat === FORMATS.OPENAI_RESPONSES;
   const sendDone = (controller, cutShortReason = "upstream stream ended before it finished") => {
     if (mode !== STREAM_MODE.TRANSLATE || streamDoneSent) return;
-    const keepsResponses = targetFormat === FORMATS.OPENAI_RESPONSES && sourceFormat === FORMATS.OPENAI_RESPONSES;
     if (!keepsResponses && sourceFormat !== FORMATS.OPENAI) return;
     streamDoneSent = true;
     if (keepsResponses || chatFinishSent) {
@@ -319,6 +319,17 @@ export function createSSEStream(options = {}) {
     const bytes = buildStreamErrorBytes(HTTP_STATUS.BAD_GATEWAY, cutShortReason, FORMATS.OPENAI);
     if (reqLogger?.appendConvertedChunk) reqLogger.appendConvertedChunk(new TextDecoder().decode(bytes));
     controller.enqueue(bytes);
+  };
+
+  // A Responses-to-Responses stream that ends before its terminal event gets
+  // response.failed (before its [DONE]), so it never looks completed.
+  const failIncompleteResponses = (controller) => {
+    if (!keepsResponses || openAIResponsesTerminalSeen) return;
+    openAIResponsesTerminalSeen = true;
+    const failedOutput = formatIncompleteOpenAIResponsesStreamFailure();
+    reqLogger?.appendConvertedChunk?.(failedOutput);
+    controller.enqueue(sharedEncoder.encode(failedOutput));
+    sseEmittedCount++;
   };
 
   // EOF tails must use the same validation, translation, and accounting as complete lines.
@@ -505,18 +516,12 @@ export function createSSEStream(options = {}) {
           return;
         }
 
-        // Synthesize response.failed if the Responses stream never sent a terminal event
-        if (keepsOpenAIResponsesFormat && !openAIResponsesTerminalSeen) {
-          const failedOutput = formatIncompleteOpenAIResponsesStreamFailure();
-          reqLogger?.appendConvertedChunk?.(failedOutput);
-          controller.enqueue(sharedEncoder.encode(failedOutput));
-          openAIResponsesTerminalSeen = true;
-          sseEmittedCount++;
-        }
-
         // A Chat Completions client gets its [DONE] from flush(), after the
         // final events the translator still holds.
-        if (keepsOpenAIResponsesFormat) sendDone(controller);
+        if (keepsOpenAIResponsesFormat) {
+          failIncompleteResponses(controller);
+          sendDone(controller);
+        }
         continue;
       }
 
@@ -645,6 +650,7 @@ export function createSSEStream(options = {}) {
               reqLogger?.appendConvertedChunk?.(doneOutput);
               controller.enqueue(sharedEncoder.encode(doneOutput));
             }
+            if (!isGeminiFamily) streamDoneSent = true;
           }
 
           finalizeStream();
@@ -667,20 +673,15 @@ export function createSSEStream(options = {}) {
           }
         }
 
-        // Synthesize response.failed if a Responses passthrough stream never reached a terminal event
-        const keepsOpenAIResponsesFormat = targetFormat === FORMATS.OPENAI_RESPONSES && sourceFormat === FORMATS.OPENAI_RESPONSES;
-        if (keepsOpenAIResponsesFormat && !openAIResponsesTerminalSeen) {
-          const failedOutput = formatIncompleteOpenAIResponsesStreamFailure();
-          reqLogger?.appendConvertedChunk?.(failedOutput);
-          controller.enqueue(sharedEncoder.encode(failedOutput));
-          openAIResponsesTerminalSeen = true;
-        }
-
+        failIncompleteResponses(controller);
         sendDone(controller);
         finalizeStream();
       } catch (error) {
         console.log("Error in flush:", error);
-        try { sendDone(controller, "stream translation failed"); } catch { /* stream already closed */ }
+        try {
+          failIncompleteResponses(controller);
+          sendDone(controller, "stream translation failed");
+        } catch { /* stream already closed */ }
         finalizeStream();
       }
     },
@@ -700,6 +701,9 @@ export function createSSEStream(options = {}) {
   // The stall watchdog ended the stream: the floor stops at the last upstream byte.
   sse.markStalled = (lastByteAt) => { floorEndAt = lastByteAt; };
   sse.finalizeNow = () => finalizeStream();
+  // The stream already wrote its [DONE] (or error frame and [DONE]): the pipe's
+  // abort terminal must not add a second one.
+  sse.terminalSent = () => streamDoneSent;
   return sse;
 }
 
