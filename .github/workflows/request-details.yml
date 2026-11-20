@@ -55,6 +55,8 @@ jobs:
           unit/request-details-logging.test.js
           unit/request-details-stream-reuse.test.js
           unit/request-details-backlog.test.js
+          unit/request-details-single-stringify.test.js
+          unit/request-details-measure.test.js
       # set-state-in-effect: RequestDetailsTab.js's data-loading effects, which
       # predate this check.
       - name: Lint
@@ -69,6 +71,7 @@ jobs:
           tests/unit/request-details-tab.test.js
           tests/unit/request-details-backlog.test.js
           tests/unit/request-details-shutdown.test.js
+          tests/unit/request-details-measure.test.js
       # Fails only on errors in the new .ts files, so unrelated type errors
       # elsewhere don't block it.
       - name: Type check
@@ -117,7 +120,7 @@ jobs:
         run: |
           status=0
           ./node_modules/.bin/vitest run --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/before.json" \
-            unit/request-details-backlog.test.js || status=$?
+            unit/request-details-backlog.test.js unit/request-details-single-stringify.test.js unit/request-details-measure.test.js || status=$?
           VITEST_STATUS="$status" node --input-type=module -e '
             import { existsSync, readFileSync, appendFileSync } from "node:fs";
             const file = process.env.RUNNER_TEMP + "/before.json";

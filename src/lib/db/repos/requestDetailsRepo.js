@@ -232,7 +232,7 @@ async function unpackFullData(value) {
   return JSON.parse((await gunzipAsync(Buffer.from(value, "base64"))).toString("utf8"));
 }
 
-export const __test__ = { sanitizeHeaders, getMaxJsonSize, truncateField, prettyJsonPrefix, fullCopySource, packSource, unpackFullData, limits,
+export const __test__ = { sanitizeHeaders, getMaxJsonSize, truncateField, prettyJsonPrefix, measureJson, fullCopySource, packSource, unpackFullData, limits,
   queued: () => writeBuffer.length, queuedBytes: () => queuedBytes, inFlightBytes: () => inFlightBytes,
   ringSize: () => fullRing.size, ringBytes: () => fullRingBytes,
   flush: () => flushToDatabase(), shutdown: () => _shutdownHandler() };
@@ -284,25 +284,123 @@ function prettyJsonPrefix(json, limit) {
   return out.substring(0, limit);
 }
 
+// Characters JSON.stringify gives the string `s`, quotes included.
+function quotedLength(s) {
+  let n = s.length + 2;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x20) n += c === 8 || c === 9 || c === 10 || c === 12 || c === 13 ? 1 : 5;
+    else if (c === 0x22 || c === 0x5c) n += 1;
+    else if (c >= 0xd800 && c <= 0xdfff) {
+      const next = s.charCodeAt(i + 1);
+      // A pair is copied as is; a lone half is written \udxxx.
+      if (c <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) i++;
+      else n += 5;
+    }
+  }
+  return n;
+}
+
+const UNSUPPORTED = Symbol("unsupported");
+
+/**
+ * The length of JSON.stringify(value) and at least its first `prefixChars`
+ * characters, without building the whole string. Plain JSON data only (a
+ * parsed request is); undefined for anything else (a toJSON, a class instance,
+ * a BigInt, a cycle, nesting past the stack), which the caller serializes.
+ */
+function measureJson(value, prefixChars) {
+  let length = 0;
+  let prefix = "";
+  const ancestors = new Set();
+  const emit = (text) => {
+    length += text.length;
+    if (prefix.length < prefixChars) prefix += text;
+  };
+  const emitString = (s) => {
+    const n = quotedLength(s);
+    const need = prefixChars - prefix.length;
+    // One extra character, so a surrogate pair at the cut is escaped as a pair.
+    if (need > 0) prefix += n <= need ? JSON.stringify(s) : JSON.stringify(s.slice(0, need + 1)).slice(0, need);
+    length += n;
+  };
+  const skipped = (v) => v === undefined || typeof v === "function" || typeof v === "symbol";
+  const walk = (v) => {
+    if (v === null) return emit("null");
+    switch (typeof v) {
+      case "string": return emitString(v);
+      case "number": return emit(Number.isFinite(v) ? String(v) : "null");
+      case "boolean": return emit(v ? "true" : "false");
+      case "object": break;
+      default:
+        // undefined, a function or a symbol in an array; a BigInt throws in JSON.stringify.
+        if (skipped(v)) return emit("null");
+        throw UNSUPPORTED;
+    }
+    if (ancestors.has(v) || Object.hasOwn(v, "toJSON")) throw UNSUPPORTED;
+    const proto = Object.getPrototypeOf(v);
+    ancestors.add(v);
+    if (Array.isArray(v)) {
+      if (proto !== Array.prototype) throw UNSUPPORTED;
+      emit("[");
+      for (let i = 0; i < v.length; i++) {
+        if (i > 0) emit(",");
+        walk(v[i]);
+      }
+      emit("]");
+    } else {
+      if (proto !== Object.prototype && proto !== null) throw UNSUPPORTED;
+      emit("{");
+      let first = true;
+      for (const key of Object.keys(v)) {
+        const child = v[key];
+        if (skipped(child)) continue;
+        if (!first) emit(",");
+        first = false;
+        emitString(key);
+        emit(":");
+        walk(child);
+      }
+      emit("}");
+    }
+    ancestors.delete(v);
+  };
+  try {
+    if (skipped(value)) return undefined;
+    walk(value);
+  } catch {
+    return undefined;
+  }
+  return { length, prefix };
+}
+
 function truncateField(obj, maxSize, fieldJson, key) {
   if (obj === undefined || obj === null) return {};
   const cached = typeof obj === "object" ? cappedPayloads.get(obj) : undefined;
   // No JSON is kept with it (1 MB per body while the stream runs): a full copy
   // reuses an earlier save's, or serializes again when it can't.
   if (cached?.maxSize === maxSize) return cached.truncated;
-  let str;
-  try {
-    str = JSON.stringify(obj);
-  } catch {
-    return { _truncated: true, _originalSize: null, _preview: "[Payload could not be serialized]" };
+  const previewChars = Math.min(2000, Math.max(0, maxSize - 256));
+  // Only a full copy needs the whole JSON. A capped record needs its length
+  // and head, which measureJson reads without putting a body-sized string on
+  // the heap for every account a request tries.
+  let measured = fieldJson ? undefined : measureJson(obj, previewChars + 1);
+  if (!measured) {
+    let str;
+    try {
+      str = JSON.stringify(obj);
+    } catch {
+      return { _truncated: true, _originalSize: null, _preview: "[Payload could not be serialized]" };
+    }
+    measured = { length: str.length, prefix: str, json: str };
   }
-  if (str.length > maxSize) {
-    if (fieldJson) fieldJson[key] = str;
+  if (measured.length > maxSize) {
+    if (fieldJson) fieldJson[key] = measured.json;
     const truncated = {
       _truncated: true,
-      _originalSize: str.length,
-      _omittedSize: str.length - maxSize,
-      _preview: prettyJsonPrefix(str, Math.min(2000, Math.max(0, maxSize - 256))),
+      _originalSize: measured.length,
+      _omittedSize: measured.length - maxSize,
+      _preview: prettyJsonPrefix(measured.prefix, previewChars),
       _structuredPreview: null,
     };
     while (JSON.stringify(truncated).length > maxSize && truncated._preview.length > 0) {

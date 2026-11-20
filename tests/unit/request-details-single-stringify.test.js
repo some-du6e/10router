@@ -156,7 +156,10 @@ describe("requestDetails truncateField", () => {
     }
   });
 
-  it("serializes a large body at full size only once", () => {
+  it.each([
+    ["without a full copy", false, 0],
+    ["with a full copy", true, 1],
+  ])("serializes a large body at full size only for a full copy (%s)", (_, keepFull, expected) => {
     const body = makeBody(300e3);
     const max = 5 * 1024;
     const real = JSON.stringify;
@@ -168,11 +171,11 @@ describe("requestDetails truncateField", () => {
       if (typeof out === "string" && out.length > 2 * max) fullSize++;
       return out;
     });
-    const stored = truncateField(body, max);
+    const stored = truncateField(body, max, keepFull ? {} : undefined, "request");
     JSON.stringify.mockRestore();
     expect(stored._truncated).toBe(true);
-    expect(onBody).toBe(1);
-    expect(fullSize).toBe(1);
+    expect(onBody).toBe(expected);
+    expect(fullSize).toBe(expected);
   });
 
   it("measures strings exactly at each limit and one either side", () => {
