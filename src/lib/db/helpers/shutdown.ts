@@ -1,5 +1,8 @@
 // Every adapter must release process listeners when its connection is closed.
-export function registerShutdown(callback, { exitOnSignal = true } = {}) {
+export function registerShutdown(
+  callback: () => void,
+  { exitOnSignal = true }: { exitOnSignal?: boolean } = {},
+): () => void {
   const onSignal = () => {
     callback();
     if (exitOnSignal) process.exit(0);

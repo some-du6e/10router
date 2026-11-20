@@ -105,10 +105,13 @@ export async function createSqlJsAdapter(filePath) {
   }
 
   function close() {
-    if (saveTimer) clearTimeout(saveTimer);
-    if (dirty) persist();
     unregisterShutdown();
-    db.close();
+    if (saveTimer) clearTimeout(saveTimer);
+    try {
+      if (dirty) persist();
+    } finally {
+      db.close();
+    }
   }
 
   // Flush on shutdown

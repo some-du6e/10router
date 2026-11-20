@@ -5,9 +5,12 @@ import { registerShutdown } from "../helpers/shutdown.js";
 
 const CHECKPOINT_INTERVAL_MS = 60 * 1000;
 
-export async function createNodeSqliteAdapter(filePath) {
-  // Suppress "ExperimentalWarning: SQLite is an experimental feature" from node:sqlite.
-  // Stable enough for production use as of Node 22.x (RC quality).
+// Suppress "ExperimentalWarning: SQLite is an experimental feature" from node:sqlite.
+// Stable enough for production use as of Node 22.x (RC quality). Installed once
+// per process (the flag survives module reloads), not once per connection.
+function silenceSqliteExperimentalWarning() {
+  if (global._nodeSqliteWarningSilenced) return;
+  global._nodeSqliteWarningSilenced = true;
   const origEmit = process.emit;
   process.emit = function (name, data, ...rest) {
     if (name === "warning" && data?.name === "ExperimentalWarning" && /SQLite/i.test(data.message || "")) {
@@ -15,6 +18,10 @@ export async function createNodeSqliteAdapter(filePath) {
     }
     return origEmit.call(process, name, data, ...rest);
   };
+}
+
+export async function createNodeSqliteAdapter(filePath) {
+  silenceSqliteExperimentalWarning();
 
   // Dynamic import — fails on Node < 22.5 → driver.js falls back to sql.js
   const sqlite = await import("node:sqlite");
