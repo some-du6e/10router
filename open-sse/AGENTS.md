@@ -41,4 +41,5 @@ Provider-agnostic SSE engine: one OpenAI-style request → any provider (LLM cha
 
 | Rule | Enforcement |
 | --- | --- |
-| Process an EOF tail through the same validation, translation, accounting, and terminal handling as complete lines. | `utils/stream.js` uses `processBufferedLines` for both transform and flush; `tests/unit/sse-stream-framing.test.js` covers missing-newline tails and exactly one framed terminal sentinel. |
+| Process an EOF tail through the same validation, translation, accounting, and terminal handling as complete lines. | `utils/stream.js` uses `processBufferedLines` for both transform and flush. `tests/unit/sse-stream-framing.test.js` covers passthrough and translated tails without a newline (normalization, exact usage, finish chunk) and `tests/unit/ollama-stream-tail.test.js` covers NDJSON tails. |
+| A passthrough stream sends exactly one `data: [DONE]\n\n`, closing an open frame with a blank line first, ignores upstream data after it, and sends none to Gemini-family providers (whose open tail frame still gets its blank line). | `tests/unit/sse-stream-framing.test.js` asserts the whole output byte for byte. |

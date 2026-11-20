@@ -621,10 +621,13 @@ export function createSSEStream(options = {}) {
           // Without it they can hang until timeout and trigger failover.
           // Gemini-family clients (Antigravity, Vertex, Gemini) reject this sentinel with 400 syntax errors.
           const isGeminiFamily = provider === "antigravity" || provider === "gemini" || provider === "vertex";
-          if (!streamDoneSent && !isGeminiFamily) {
-            const doneOutput = (passthroughFrameOpen ? "\n" : "") + SSE_DONE;
-            reqLogger?.appendConvertedChunk?.(doneOutput);
-            controller.enqueue(sharedEncoder.encode(doneOutput));
+          // A tail frame still open gets its closing blank line either way.
+          if (!streamDoneSent) {
+            const doneOutput = (passthroughFrameOpen ? "\n" : "") + (isGeminiFamily ? "" : SSE_DONE);
+            if (doneOutput) {
+              reqLogger?.appendConvertedChunk?.(doneOutput);
+              controller.enqueue(sharedEncoder.encode(doneOutput));
+            }
           }
 
           finalizeStream();
