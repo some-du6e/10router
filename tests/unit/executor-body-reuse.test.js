@@ -376,7 +376,9 @@ describe("chatCore", () => {
       body: structuredClone(body),
       modelInfo: { provider, model: MODEL },
       credentials: { apiKey: "k", providerSpecificData: { baseUrl: "https://gateway.example.test/v1" } },
-      clientRawRequest: { endpoint: "/v1/messages", body, headers: {} },
+      // A Claude CLI client goes through untranslated, so context_management
+      // reaches the executor (the OpenAI pivot drops it).
+      clientRawRequest: { endpoint: "/v1/messages", body, headers: { "user-agent": "claude-cli/1.0.0 (external, cli)" } },
       connectionId: "conn-1",
       log: quietLog(),
     });
