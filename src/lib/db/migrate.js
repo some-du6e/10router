@@ -64,12 +64,19 @@ function readLegacyJson(file) {
   try { return JSON.parse(fs.readFileSync(file, "utf-8")); } catch (err) { throw new LegacyFileUnreadable(file, err); }
 }
 
-// What the server throws when the legacy import fails: one line naming the
-// file, the reason, the backup and the way out.
+// The operator's line for a failed legacy import: the file, the reason, the
+// backup and the way out. It holds paths and, for a file that won't parse, a
+// snippet of it, so it goes to the server log only.
+function importAbortLine(file, cause, backupDir) {
+  const backup = backupDir ? ` | backup: ${backupDir}` : "";
+  return `[DB][migrate] legacy import from ${file} aborted: ${cause.message} | legacy JSON kept${backup} | fix the file and restart, or set SKIP_LEGACY_IMPORT=1 to start without importing it`;
+}
+
+// What callers get. Routes return a DB error's message to clients, so it stays
+// generic; the reason is in `cause`.
 export class LegacyImportFailed extends Error {
-  constructor(file, cause, backupDir) {
-    const backup = backupDir ? ` | backup: ${backupDir}` : "";
-    super(`[DB][migrate] legacy import from ${file} aborted: ${cause.message} | legacy JSON kept${backup} | fix the file and restart, or set SKIP_LEGACY_IMPORT=1 to start without importing it`, { cause });
+  constructor(cause) {
+    super("[DB] legacy import failed; see the server log", { cause });
     this.name = "LegacyImportFailed";
   }
 }
@@ -362,9 +369,8 @@ export async function runMigrationOnce(adapter) {
     } catch (err) {
       const file = err instanceof LegacyFileUnreadable ? err.file
         : err instanceof MigrationAborted ? LEGACY_FILES.main : legacySources;
-      const failed = new LegacyImportFailed(file, err, backupDir);
-      console.error(failed.message);
-      throw failed;
+      console.error(importAbortLine(file, err, backupDir));
+      throw new LegacyImportFailed(err);
     }
 
     // Settings just came from a pre-setup-flow install — re-evaluate the grace

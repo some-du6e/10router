@@ -36,7 +36,12 @@ const writeLegacy = (data) => fs.writeFileSync(legacyFile, JSON.stringify(data))
 const importBackups = () => fs.readdirSync(path.join(dir, "db/backups")).filter((name) => name.startsWith("migrate-from-json-"));
 const pendingFlag = (db) => db.get("SELECT value FROM _meta WHERE key = 'legacyImportPending'")?.value;
 
+// The detailed line goes to the server log; callers (and the routes that echo
+// a DB error to clients) get only the generic message.
 const abortMessage = /legacy import from .*aborted: .*SKIP_LEGACY_IMPORT=1/;
+const importFailed = /^\[DB\] legacy import failed; see the server log$/;
+const abortLines = (consoleError) => consoleError.mock.calls.map((c) => String(c[0])).filter((line) => abortMessage.test(line));
+const failure = (promise) => promise.then(() => { throw new Error("expected the init to fail"); }, (error) => error);
 const migratedMarker = () => fs.existsSync(path.join(dir, "db/.migrated-from-json"));
 
 // Reads the import flag the way an operator would get past a broken file: boot
@@ -59,13 +64,15 @@ it("rejects a lossy legacy import and imports corrected JSON on an explicit retr
   const consoleError = vi.spyOn(console, "error");
   writeLegacy(lossy);
   const { getAdapter, retryAdapterInit } = await import("@/lib/db/driver.js");
-  await expect(getAdapter()).rejects.toThrow(/apiKeys row-count mismatch/);
+  const error = await failure(getAdapter());
+  expect(error.message).toMatch(importFailed);
+  expect(error.cause.message).toMatch(/apiKeys row-count mismatch/);
   expect(global._dbAdapter.instance).toBeNull();
   expect(global._dbAdapter.initPromise).toBeNull();
   expect(fs.existsSync(path.join(dir, "db/.migrated-from-json"))).toBe(false);
-  const abort = consoleError.mock.calls.map((c) => String(c[0])).find((line) => line.includes("aborted"));
+  const [abort] = abortLines(consoleError);
   expect(abort).toContain(legacyFile);
-  expect(abort).toContain("SKIP_LEGACY_IMPORT=1");
+  expect(abort).toContain("apiKeys row-count mismatch");
 
   writeLegacy(fixed);
   const db = await retryAdapterInit();
@@ -86,13 +93,13 @@ it("runs a failing init and its backup once per backoff, and keeps the backup ac
 
   const errors = [];
   for (let i = 0; i < 5; i++) errors.push(await getAdapter().catch((error) => error));
-  expect(errors[0].message).toMatch(/row-count mismatch/);
+  expect(errors[0].cause.message).toMatch(/row-count mismatch/);
   for (const error of errors) expect(error).toBe(errors[0]);
   expect(imports()).toBe(1);
   expect(importBackups()).toHaveLength(1);
 
   vi.setSystemTime(Date.now() + INIT_RETRY_BACKOFF_MS + 1000);
-  await expect(getAdapter()).rejects.toThrow(/row-count mismatch/);
+  await expect(getAdapter()).rejects.toThrow(importFailed);
   expect(imports()).toBe(2);
   expect(importBackups()).toHaveLength(1);
 });
@@ -155,9 +162,12 @@ it.each([
 ])("aborts on a db.json that won't parse (%s) and keeps the import pending", async (_name, others) => {
   fs.writeFileSync(legacyFile, '{ "settings": { "imported": true }, }');
   for (const [name, data] of Object.entries(others)) fs.writeFileSync(path.join(dir, name), JSON.stringify(data));
+  const consoleError = vi.spyOn(console, "error");
   const { getAdapter } = await import("@/lib/db/driver.js");
-  await expect(getAdapter()).rejects.toThrow(abortMessage);
-  await expect(getAdapter()).rejects.toThrow(/db\.json is not valid JSON/);
+  await expect(getAdapter()).rejects.toThrow(importFailed);
+  const [abort] = abortLines(consoleError);
+  expect(abort).toContain(legacyFile);
+  expect(abort).toMatch(/db\.json is not valid JSON/);
   expect(migratedMarker()).toBe(false);
   expect(await flagAfterSkippedBoot()).toBe("1");
   const db = global._dbAdapter.instance;
@@ -165,11 +175,27 @@ it.each([
   expect(migratedMarker()).toBe(false);
 });
 
+it("keeps paths and file content out of the error callers get", async () => {
+  // The parse error quotes the text around the mistake, here part of a key.
+  fs.writeFileSync(legacyFile, '{"apiKeys":[{"key":"sk-placeholder-secret-0001", oops}]}');
+  const consoleError = vi.spyOn(console, "error");
+  const { getAdapter } = await import("@/lib/db/driver.js");
+  const error = await failure(getAdapter());
+
+  expect(error.message).toMatch(importFailed);
+  expect(error.message).not.toContain(dir);
+  expect(error.message).not.toContain("db.json");
+  expect(error.message).not.toMatch(/placeholder|secret-0001|oops/);
+  expect(abortLines(consoleError)[0]).toContain(legacyFile);
+});
+
 it("aborts when the pre-import backup fails, and takes the backup on the next try", async () => {
   writeLegacy(fixed);
   vi.spyOn(fs, "copyFileSync").mockImplementationOnce(() => { throw new Error("simulated disk full"); });
+  const consoleError = vi.spyOn(console, "error");
   const { getAdapter, retryAdapterInit } = await import("@/lib/db/driver.js");
-  await expect(getAdapter()).rejects.toThrow(/aborted: simulated disk full.*SKIP_LEGACY_IMPORT=1/);
+  await expect(getAdapter()).rejects.toThrow(importFailed);
+  expect(abortLines(consoleError)[0]).toMatch(/aborted: simulated disk full/);
   expect(importBackups()).toEqual([]);
   expect(migratedMarker()).toBe(false);
 
@@ -189,7 +215,9 @@ it("keeps the import error and drops the listeners when closing the failed adapt
   vi.spyOn(fs, "writeFileSync").mockImplementation(() => { throw new Error("simulated ENOSPC"); });
 
   const { getAdapter } = await import("@/lib/db/driver.js");
-  await expect(getAdapter()).rejects.toThrow(/apiKeys row-count mismatch/);
+  const error = await failure(getAdapter());
+  expect(error.message).toMatch(importFailed);
+  expect(error.cause.message).toMatch(/apiKeys row-count mismatch/);
   expect(consoleWarn.mock.calls.some((c) => /closing the adapter after a failed init failed: simulated ENOSPC/.test(String(c[0])))).toBe(true);
   expect(events.map((event) => process.listenerCount(event))).toEqual(before);
 });
