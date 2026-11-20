@@ -50,6 +50,11 @@ ${SERVE}`);
 const crashDir = entryDir(`const http = require("http");
 ${SERVE}
 server.once("listening", () => setTimeout(() => { throw new Error("boom"); }, 50));`);
+// Fills stdout faster than anyone reads it, then exits: what a busy server's
+// request log does to Docker's log pipe.
+const floodDir = entryDir(`process.stdout.write("x".repeat(4 * 1024 * 1024) + "\\n");
+function exitAfterFlood() { process.exit(0); }
+exitAfterFlood();`);
 
 const children = [];
 
@@ -64,7 +69,10 @@ afterAll(() => {
 function runEntry(env, dir = appDir) {
   const childEnv = { ...process.env, ...env };
   delete childEnv.NEXT_MANUAL_SIG_HANDLE;
-  const child = spawn(process.execPath, ["custom-server.js"], { cwd: dir, env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
+  // stderr (the [Shutdown] and [Exit] lines) into the stdout pipe, so the
+  // output keeps the order the lines were written in. `exec` keeps node the
+  // process that gets the signal.
+  const child = spawn("/bin/sh", ["-c", 'exec "$0" custom-server.js 2>&1', process.execPath], { cwd: dir, env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
   children.push(child);
   let stdout = "";
   child.stdout.setEncoding("utf8");
@@ -177,5 +185,26 @@ describe("custom-server.js drain on SIGTERM", () => {
 
     expect(code).toBe(1);
     expect(run.output()).toMatch(/\[Exit\] exiting with code 1 [^\n]*\n {2}an uncaught exception ended the process/);
+  }, 20_000);
+
+  it("still logs the [Exit] line when stdout's pipe is full at the moment of exit", async () => {
+    const child = spawn(process.execPath, ["custom-server.js"], { cwd: floodDir, env: { ...process.env }, stdio: ["ignore", "pipe", "pipe"] });
+    children.push(child);
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    const stderrClosed = new Promise((res) => child.stderr.once("close", res));
+    // stdout isn't read until the child has exited, so its pipe stays full.
+    const code = await new Promise((res) => child.once("exit", (exitCode) => res(exitCode)));
+    let stdout = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    await Promise.all([new Promise((res) => child.stdout.once("close", res)), stderrClosed]);
+
+    expect(code).toBe(0);
+    // console.log would have queued it behind the flood, and the exit drops
+    // that queue. It goes to stderr instead, whole.
+    expect(stderr).toMatch(/^\[Exit\] exiting with code 0 [^\n]*\n {2}process\.exit\(\) called from:\n[^\n]*exitAfterFlood/);
+    expect(stdout).not.toContain("[Exit]");
   }, 20_000);
 });

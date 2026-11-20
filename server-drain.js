@@ -11,6 +11,8 @@
 // standalone build, the Docker image and the CLI package, outside Next's
 // dependency tracing.
 
+const fs = require("fs");
+
 const DEFAULT_DRAIN_TIMEOUT_MS = 180000;
 // setTimeout's ceiling; a longer delay fires at once.
 const MAX_DRAIN_TIMEOUT_MS = 2147483647;
@@ -247,11 +249,13 @@ function createDrain({
       }
       draining = true;
       drainSignal = signal;
-      startedAt = Date.now();
       log(
         `[Shutdown] ${signal}: draining ${open()} in-flight request(s), up to ${seconds(timeoutMs)}s; ` +
           "new connections are refused meanwhile (send the signal again to exit now)"
       );
+      // After the line: a write that waited on a full pipe must not push the
+      // repeat of this signal out of the duplicate window.
+      startedAt = Date.now();
       // Also closes the connections idle right now (Node 19+).
       for (const server of servers) server.close(() => {});
       for (const res of [...longLived]) res.destroy();
@@ -350,6 +354,64 @@ function installShutdownDrain(proc, drain) {
 
 const mb = (bytes) => Math.round(bytes / 1048576);
 
+// How long one line may wait for room in a full stderr pipe, in all.
+const WRITE_BUDGET_MS = 1000;
+const WRITE_RETRY_MS = 5;
+let pauseCell = null;
+
+function pause(ms) {
+  try {
+    pauseCell ||= new Int32Array(new SharedArrayBuffer(4));
+    Atomics.wait(pauseCell, 0, 0, ms);
+  } catch { /* retry at once */ }
+}
+
+/**
+ * Write one line to stderr (fd 2) before returning. On Linux process.stdout
+ * writes to a pipe (Docker's log stream) asynchronously: once the request log
+ * fills it, console.log queues lines in memory, and an exit right after drops
+ * the queue, so the line that names the exit is the one lost. stdout is the
+ * full pipe then, and a direct write to it would land ahead of the queue, mid
+ * line; stderr is its own pipe (and the CLI launcher's crash log). A write that
+ * finds it full (EAGAIN) is retried for up to `budgetMs`. When process.stderr
+ * still has queued output, part of a line may already be in the pipe, so the
+ * write starts with a newline to end it. Returns false when the whole line
+ * didn't get out.
+ */
+function stderrBacklogged() {
+  try {
+    return (process.stderr && process.stderr.writableLength) > 0;
+  } catch {
+    return false; // process.stderr is built on first access and can throw (a tty that can't initialise)
+  }
+}
+
+function writeLineSync(line, { writeSync = fs.writeSync, budgetMs = WRITE_BUDGET_MS, now = Date.now, sleep = pause, backlogged = stderrBacklogged } = {}) {
+  try {
+    let rest = Buffer.from(`${backlogged() ? "\n" : ""}${line}\n`, "utf8");
+    const deadline = now() + budgetMs;
+    while (rest.length) {
+      let written = 0;
+      try {
+        written = writeSync(2, rest);
+      } catch (error) {
+        if (!error || error.code !== "EAGAIN") throw error;
+      }
+      if (written > 0) rest = rest.subarray(written);
+      else if (now() >= deadline) return false;
+      else sleep(WRITE_RETRY_MS);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// The [Exit] and [Shutdown] lines: written now, or queued as before if fd 2 didn't take them.
+function logSync(line, { write = writeLineSync, fallback = console.log } = {}) {
+  if (!write(line)) fallback(line);
+}
+
 // Frames in a stack taken inside an "exit" listener: the process.exit() call,
 // and Node ending the process on an uncaught exception or rejection.
 const EXIT_FRAME = /^\s*at (?:\S+\.)?exit \(/;
@@ -375,24 +437,29 @@ function exitCause(lines, code) {
  * exit code, uptime, memory and the model requests still open, then who called
  * process.exit(). An "exit" listener runs inside that call, so its stack shows
  * the caller. Node's own exit on an uncaught exception or rejection shows as
- * `_fatalException`; with neither frame and code 0 the event loop ran empty. A kill
- * from outside (SIGKILL, the kernel's OOM killer) runs no listener, so a
- * restart with no `[Exit]` line at all points there.
+ * `_fatalException`; with neither frame and code 0 the event loop ran empty.
+ * The line goes synchronously to stderr (writeLineSync), so a full stdout pipe
+ * can't swallow it. A kill from outside (SIGKILL, the kernel's OOM killer)
+ * runs no listener, so a restart with no `[Exit]` line at all points there.
  */
-function installExitRecorder(proc, { log = console.log, inflight = () => 0 } = {}) {
-  proc.on("exit", (code) => {
-    let memory = "";
+function installExitRecorder(proc, { log = logSync, inflight = () => 0 } = {}) {
+  // First, so an "exit" listener that calls process.exit() can't skip it.
+  proc.prependListener("exit", (code) => {
+    // Throwing here would abort the exit in progress.
     try {
-      const usage = proc.memoryUsage();
-      memory = `, rss ${mb(usage.rss)} MB, heap ${mb(usage.heapUsed)} MB`;
-    } catch { /* not available */ }
-    let open = "?";
-    try { open = inflight(); } catch { /* unknown */ }
-    const limit = Error.stackTraceLimit;
-    Error.stackTraceLimit = 40;
-    const lines = String(new Error().stack || "").split("\n");
-    Error.stackTraceLimit = limit;
-    log(`[Exit] exiting with code ${code} after ${Math.round(proc.uptime())}s with ${open} request(s) open${memory}\n  ${exitCause(lines, code)}`);
+      let memory = "";
+      try {
+        const usage = proc.memoryUsage();
+        memory = `, rss ${mb(usage.rss)} MB, heap ${mb(usage.heapUsed)} MB`;
+      } catch { /* not available */ }
+      let open = "?";
+      try { open = inflight(); } catch { /* unknown */ }
+      const limit = Error.stackTraceLimit;
+      Error.stackTraceLimit = 40;
+      const lines = String(new Error().stack || "").split("\n");
+      Error.stackTraceLimit = limit;
+      log(`[Exit] exiting with code ${code} after ${Math.round(proc.uptime())}s with ${open} request(s) open${memory}\n  ${exitCause(lines, code)}`);
+    } catch { /* nothing left to report with */ }
   });
 }
 
@@ -408,5 +475,7 @@ module.exports = {
   installShutdownDrain,
   isLongLived,
   isModelTraffic,
+  logSync,
   parseDrainTimeout,
+  writeLineSync,
 };
