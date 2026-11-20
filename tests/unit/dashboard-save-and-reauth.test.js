@@ -66,9 +66,10 @@ describe("combos page saves", () => {
     await saving;
   });
 
-  const combosPage = async (writeError) => {
+  const combosPage = async (writeError, { write } = {}) => {
     const fetch = vi.fn(async (url, init = {}) => {
       if (init.method && init.method !== "GET") {
+        if (write) return write(init);
         return writeError ? Response.json({ error: writeError }, { status: 500 }) : Response.json({ success: true });
       }
       if (url === "/api/combos") return Response.json({ combos: [{ id: "combo-1", name: "alpha", models: ["provider/model"] }] });
@@ -83,6 +84,63 @@ describe("combos page saves", () => {
   };
   const card = (tree) => elements(tree, (element) => element.props?.onSetStrategy)[0];
   const capacity = (tree) => elements(tree, (element) => element.props?.capacityAdapter)[0];
+  // Renders the page's capacity section, then one capability's card, from the page tree.
+  const capacityCap = (tree, key) => {
+    const section = dashboardComponent(combosPath, componentImports, "CapacityAdapterSection").render(capacity(tree).props);
+    const { props } = elements(section, (element) => element.props?.cap?.key === key)[0];
+    const component = dashboardComponent(combosPath, componentImports, "CapacityAdapterCap");
+    return { render: () => component.render(props) };
+  };
+  const enableToggle = (tree) => elements(tree, (element) => element.type === "Toggle" && element.props["aria-label"]?.startsWith("Enable "))[0];
+  const heldWrites = () => {
+    const writes = [];
+    const write = (init) => new Promise((resolve) => writes.push({
+      body: JSON.parse(init.body),
+      accept: () => resolve(Response.json({ success: true })),
+      refuse: () => resolve(Response.json({ error: "Settings refused" }, { status: 500 })),
+    }));
+    return { writes, write };
+  };
+  const pickVisionModels = (tree, ...values) => {
+    const vision = capacityCap(tree, "vision");
+    button(vision.render(), "Add Model").props.onClick();
+    const picker = elements(vision.render(), (element) => element.type === "ModelSelectModal")[0];
+    expect(picker.props.closeOnSelect).toBe(false);
+    values.forEach((value) => picker.props.onSelect({ value }));
+  };
+
+  it("keeps every capacity change made while an earlier one is still saving", async () => {
+    const { writes, write } = heldWrites();
+    const { render } = await combosPage(null, { write });
+    pickVisionModels(render(), "provider/first", "provider/second");
+    enableToggle(capacityCap(render(), "audioInput").render()).props.onChange(false);
+    for (let i = 0; i < 3; i += 1) {
+      await vi.waitFor(() => expect(writes.length).toBeGreaterThan(i));
+      writes[i].accept();
+    }
+    const expected = {
+      vision: { enabled: true, roundRobin: false, models: ["provider/first", "provider/second"] },
+      audioInput: { enabled: false, roundRobin: false, models: [] },
+    };
+    await vi.waitFor(() => expect(capacity(render()).props.capacityAdapter).toEqual(expected));
+    expect(writes.at(-1).body).toEqual({ capacityAdapter: expected });
+    expect(alerts(render())).toBe("");
+  });
+
+  it("builds a capacity change queued behind a failed save on the value saved before it", async () => {
+    const { writes, write } = heldWrites();
+    const { render } = await combosPage(null, { write });
+    const before = capacity(render()).props.capacityAdapter;
+    pickVisionModels(render(), "provider/refused", "provider/accepted");
+    await vi.waitFor(() => expect(writes).toHaveLength(1));
+    writes[0].refuse();
+    await vi.waitFor(() => expect(writes).toHaveLength(2));
+    expect(writes[1].body.capacityAdapter.vision.models).toEqual(["provider/accepted"]);
+    expect(capacity(render()).props.capacityAdapter).toBe(before);
+    expect(alerts(render())).toContain("Failed to update capacity adapter: Settings refused");
+    writes[1].accept();
+    await vi.waitFor(() => expect(capacity(render()).props.capacityAdapter.vision.models).toEqual(["provider/accepted"]));
+  });
 
   it("rejects create and update when the API refuses them, keeping the form open", async () => {
     const { render } = await combosPage("Write refused");
@@ -104,7 +162,7 @@ describe("combos page saves", () => {
     expect(card(render()).props.strategy).toEqual({});
 
     const before = capacity(render()).props.capacityAdapter;
-    await capacity(render()).props.onChange({ ...before, vision: { ...before.vision, enabled: false } });
+    await enableToggle(capacityCap(render(), "vision").render()).props.onChange(false);
     expect(alerts(render())).toContain("Failed to update capacity adapter: Settings refused");
     expect(capacity(render()).props.capacityAdapter).toBe(before);
 
@@ -120,9 +178,9 @@ describe("combos page saves", () => {
     expect(card(render()).props.strategy).toEqual({ fallbackStrategy: "round-robin" });
     expect(fetch).toHaveBeenLastCalledWith("/api/settings", expect.objectContaining({ method: "PATCH" }));
 
-    const next = { ...capacity(render()).props.capacityAdapter, vision: { enabled: false, roundRobin: false, models: [] } };
-    await capacity(render()).props.onChange(next);
-    expect(capacity(render()).props.capacityAdapter).toBe(next);
+    await enableToggle(capacityCap(render(), "vision").render()).props.onChange(false);
+    expect(capacity(render()).props.capacityAdapter.vision).toEqual({ enabled: false, roundRobin: false, models: [] });
+    expect(JSON.parse(fetch.mock.lastCall[1].body)).toEqual({ capacityAdapter: capacity(render()).props.capacityAdapter });
 
     card(render()).props.onDelete();
     await elements(render(), (element) => element.type === "ConfirmModal")[0].props.onConfirm();

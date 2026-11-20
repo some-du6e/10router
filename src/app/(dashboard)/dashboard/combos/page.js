@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -57,6 +57,8 @@ export default function CombosPage() {
   const [confirmState, setConfirmState] = useState(null);
   const [actionError, setActionError] = useState("");
   const { copied, copy } = useCopyToClipboard();
+  const savedSettingsRef = useRef({ comboStrategies: {}, capacityAdapter: EMPTY_CAPACITY_ADAPTER });
+  const settingsSaveRef = useRef(Promise.resolve());
 
   useEffect(() => {
     fetchData();
@@ -78,12 +80,14 @@ export default function CombosPage() {
       if (providersRes.ok) {
         setActiveProviders(providersData.connections || []);
       }
-      setComboStrategies(settingsData.comboStrategies || {});
+      const strategies = settingsData.comboStrategies || {};
       const rawAdapter = settingsData.capacityAdapter || {};
       const normalized = {};
       for (const cap of CAPACITY_ADAPTER_CAPS) {
         normalized[cap.key] = normalizeCapEntry(rawAdapter[cap.key]);
       }
+      savedSettingsRef.current = { comboStrategies: strategies, capacityAdapter: normalized };
+      setComboStrategies(strategies);
       setCapacityAdapter(normalized);
     } catch (error) {
       console.log("Error fetching data:", error);
@@ -92,15 +96,27 @@ export default function CombosPage() {
     }
   };
 
-  const handleSetCapacityAdapter = async (next) => {
+  // Settings saves run one at a time, and each builds its value from the last
+  // one the API accepted, so a change made while another is saving keeps it.
+  const saveSetting = (key, update, apply, label) => {
     setActionError("");
-    try {
-      await api.patch("/api/settings", { capacityAdapter: next });
-      setCapacityAdapter(next);
-    } catch (error) {
-      setActionError(`Failed to update capacity adapter: ${error.message}`);
-    }
+    const save = async () => {
+      try {
+        const current = savedSettingsRef.current[key];
+        const next = update(current);
+        if (next === current) return;
+        await api.patch("/api/settings", { [key]: next });
+        savedSettingsRef.current = { ...savedSettingsRef.current, [key]: next };
+        apply(next);
+      } catch (error) {
+        setActionError(`Failed to update ${label}: ${error.message}`);
+      }
+    };
+    settingsSaveRef.current = settingsSaveRef.current.then(save);
+    return settingsSaveRef.current;
   };
+
+  const handleSetCapacityAdapter = (update) => saveSetting("capacityAdapter", update, setCapacityAdapter, "capacity adapter");
 
   const handleCreate = async (data) => {
     await api.post("/api/combos", data);
@@ -133,8 +149,8 @@ export default function CombosPage() {
 
   // Merge a per-combo strategy patch into settings.comboStrategies. Passing an empty
   // patch (strategy back to default "fallback") drops the entry entirely.
-  const handleSetComboStrategy = async (comboName, patch) => {
-    const updated = { ...comboStrategies };
+  const handleSetComboStrategy = (comboName, patch) => saveSetting("comboStrategies", (strategies) => {
+    const updated = { ...strategies };
     const next = { ...(updated[comboName] || {}), ...patch };
     // Prune to keep settings clean: default fallback with no extras = no entry.
     if (!next.fallbackStrategy || next.fallbackStrategy === "fallback") {
@@ -142,15 +158,8 @@ export default function CombosPage() {
     } else {
       updated[comboName] = next;
     }
-
-    setActionError("");
-    try {
-      await api.patch("/api/settings", { comboStrategies: updated });
-      setComboStrategies(updated);
-    } catch (error) {
-      setActionError(`Failed to update combo strategy: ${error.message}`);
-    }
-  };
+    return updated;
+  }, setComboStrategies, "combo strategy");
 
   if (loading) {
     return (
@@ -400,7 +409,11 @@ function CapacityAdapterSection({ capacityAdapter, onChange, activeProviders, ge
             key={cap.key}
             cap={cap}
             entry={capacityAdapter[cap.key] || EMPTY_CAP_ENTRY}
-            onChange={(entry) => onChange({ ...capacityAdapter, [cap.key]: entry })}
+            onChange={(updateEntry) => onChange((adapter) => {
+              const entry = adapter[cap.key] || EMPTY_CAP_ENTRY;
+              const next = updateEntry(entry);
+              return next === entry ? adapter : { ...adapter, [cap.key]: next };
+            })}
             activeProviders={activeProviders}
             getCaps={getCaps}
           />
@@ -414,24 +427,32 @@ function CapacityAdapterCap({ cap, entry, onChange, activeProviders, getCaps }) 
   const [showModelSelect, setShowModelSelect] = useState(false);
   const { enabled, roundRobin, models } = entry;
 
-  const patch = (p) => onChange({ ...entry, ...p });
+  // Changes are functions of the saved entry: a save may still be running, so
+  // the rendered `entry` can be out of date by the time this change is applied.
+  const patch = (p) => onChange((current) => ({ ...current, ...p }));
 
-  const handleAdd = (model) => {
-    if (models.includes(model.value)) return;
-    patch({ models: [...models, model.value] });
-  };
+  const handleAdd = (model) => onChange((current) => (
+    current.models.includes(model.value) ? current : { ...current, models: [...current.models, model.value] }
+  ));
 
   const handleRemove = (index) => {
-    const next = models.filter((_, i) => i !== index);
-    patch({ models: next.length === 0 ? [DEFAULT_FALLBACK_MODEL] : next });
+    const model = models[index];
+    return onChange((current) => {
+      const next = current.models.filter((m) => m !== model);
+      return { ...current, models: next.length === 0 ? [DEFAULT_FALLBACK_MODEL] : next };
+    });
   };
 
   const handleMove = (index, delta) => {
-    const target = index + delta;
-    if (target < 0 || target >= models.length) return;
-    const next = [...models];
-    [next[index], next[target]] = [next[target], next[index]];
-    patch({ models: next });
+    const model = models[index];
+    return onChange((current) => {
+      const from = current.models.indexOf(model);
+      const to = from + delta;
+      if (from === -1 || to < 0 || to >= current.models.length) return current;
+      const next = [...current.models];
+      [next[from], next[to]] = [next[to], next[from]];
+      return { ...current, models: next };
+    });
   };
 
   return (
