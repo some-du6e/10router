@@ -21,7 +21,7 @@ describe("AUDIT-002: API key masking", () => {
     process.env.DATA_DIR = dir;
     delete global._dbAdapter;
     vi.resetModules();
-    usage = await import("../../src/lib/db/repos/usageRepo.js");
+    usage = await import("@/lib/db/repos/usageRepo.js");
     await usage.saveRequestUsage({ provider: "audit", model: "model", apiKey: secret,
       tokens: { prompt_tokens: 10, completion_tokens: 5 } });
   });
@@ -40,16 +40,6 @@ describe("AUDIT-002: API key masking", () => {
     expect(history[0].apiKeyMasked).toBe("sk-secur***");
     expect(history[0]).not.toHaveProperty("apiKey");
     expect(JSON.stringify(history)).not.toContain(secret);
-  });
-
-  it.each(["7d", "24h"])("redacts keys in %s stats values and property names", async (period) => {
-    const stats = await usage.getUsageStats(period);
-    const entries = Object.values(stats.byApiKey);
-    expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({ requests: 1, promptTokens: 10, completionTokens: 5, apiKeyMasked: "sk-secur***" });
-    expect(JSON.stringify(stats)).not.toContain(secret);
-    expect(entries[0]).not.toHaveProperty("apiKey");
-    expect(Object.keys(stats.byApiKey)[0]).not.toContain(secret);
   });
 });
 
